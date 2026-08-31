@@ -1,4 +1,6 @@
 import type { LaneLinearIssue, LaneLinearIssueLinkRole } from "./types";
+import { readLinearIssueRef } from "./issueRef";
+import { issueRefPrReference } from "./issueRefFormat";
 
 function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -12,8 +14,26 @@ export function buildLinearPrTitle(issue: LaneLinearIssue): string {
   return `${issue.identifier}: ${issue.title}`.trim();
 }
 
+/**
+ * The key this module writes and matches on.
+ *
+ * It is `issue.identifier` for every row ADE has ever stored — a row that
+ * carries an `IssueRef` is written by `issueRefToStoredLinearIssue`, which sets
+ * `identifier` FROM `ref.key`. Reading it through the ref is what keeps the
+ * written reference and the regex that finds it derived from one value, so they
+ * cannot drift apart if some future writer ever lets them.
+ */
+function linearReferenceKey(issue: LaneLinearIssue): string {
+  return readLinearIssueRef(issue).key;
+}
+
 export function buildLinearPrReference(issue: LaneLinearIssue, closeOnMerge: boolean): string {
-  return `${linearPrMagicWord(closeOnMerge)} ${issue.identifier}`;
+  // Delegates to the provider-neutral builder. For a Linear ref that is
+  // `Fixes`/`Refs` + the key, byte-identical to what this returned before. A row
+  // carrying a THIRD-PARTY ref (a plugin tracker projected into the Linear
+  // shape) now correctly gets `Refs`, because no merge closes it. See
+  // `issueRefFormat.ts`.
+  return issueRefPrReference(readLinearIssueRef(issue), closeOnMerge);
 }
 
 export type LinearPrIssueReference = {
@@ -29,7 +49,7 @@ export function ensureLinearPrReference(
   options: { preserveExisting?: boolean } = {},
 ): string {
   const reference = buildLinearPrReference(issue, closeOnMerge);
-  const identifier = escapeRegExp(issue.identifier);
+  const identifier = escapeRegExp(linearReferenceKey(issue));
   const supportedLineRe = new RegExp(`^(?:Refs|Fixes)\\s+${identifier}\\s*$`, "im");
   if (supportedLineRe.test(body)) {
     return options.preserveExisting === false

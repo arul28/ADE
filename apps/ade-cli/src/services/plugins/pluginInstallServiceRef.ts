@@ -309,6 +309,17 @@ export type PluginActionInvoker = (args: {
   pluginId: string;
   action: string;
   args?: Record<string, unknown>;
+  /**
+   * Which kind of client is driving this call — a hint, never a permission.
+   *
+   * Everything that reaches this seam arrived over sync from another device, so
+   * the caller here is the one thing that KNOWS the answer. Without it the host
+   * would present a phone with a `loopback` sign-in that opens a browser on the
+   * desktop, and the person holding the phone would wait forever for a window
+   * they cannot see. See `PluginDomainService.invoke` in `shared/plugins/sdk.ts`
+   * for the single decision it feeds.
+   */
+  client?: "desktop" | "mobile";
 }) => Promise<unknown>;
 
 let invoker: PluginActionInvoker | null = null;
@@ -327,4 +338,46 @@ export function requirePluginActionInvoker(): PluginActionInvoker {
     );
   }
   return invoker;
+}
+
+/**
+ * Deliver the parameters a client captured from a sign-in redirect back to the
+ * host that started it.
+ *
+ * A third late-binding seam rather than a member of the two above, for the same
+ * reason `PluginActionInvoker` is separate from the install service: this
+ * reaches the auth broker, which knows about listeners, minted `state` values
+ * and live child processes — none of which the sync layer may import.
+ *
+ * It takes ONLY the callback parameters. It names no plugin and no session
+ * because the host routes by the `state` it minted itself and never gave out,
+ * so a caller can address exactly one flow: the live one whose `state` it is
+ * handing back. A parameter naming the session would be a door into a flow the
+ * caller did not start, and delivering one plugin's authorization code to
+ * another plugin is the single thing this seam exists to make impossible.
+ *
+ * Synchronous, matching `PluginHostService.completeAuthSessionCallback`: the
+ * broker claims the flow in one step so a link opened twice cannot deliver the
+ * same authorization twice.
+ */
+export type PluginAuthSessionCompleter = (
+  params: Record<string, string>,
+) => { ok: boolean; reason?: string };
+
+let authSessionCompleter: PluginAuthSessionCompleter | null = null;
+
+/** Bind the host's completer. Pass null on dispose. */
+export function setPluginAuthSessionCompleter(next: PluginAuthSessionCompleter | null): void {
+  authSessionCompleter = next;
+}
+
+/** The completer, or the same typed unavailability the install service raises. */
+export function requirePluginAuthSessionCompleter(): PluginAuthSessionCompleter {
+  if (!authSessionCompleter) {
+    throw codedError(
+      "Plugins are not available on this computer.",
+      PLUGIN_SERVICE_UNAVAILABLE_CODE,
+    );
+  }
+  return authSessionCompleter;
 }

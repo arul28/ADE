@@ -12,6 +12,15 @@ import Foundation
 /// client-side vocabulary at all.
 let pluginInvokeRemoteAction = "plugins.invoke"
 
+/// The one door a captured sign-in callback comes back through.
+///
+/// Generic for the same reason `plugins.invoke` is, and narrow for a second
+/// one: its only argument is the parameters the provider returned. The host
+/// routes them by the `state` it minted, so this action cannot be used to
+/// address a particular plugin or a particular flow — only to deliver an answer
+/// to whichever flow that host is still holding open.
+let pluginCompleteAuthSessionRemoteAction = "plugins.completeAuthSession"
+
 /// One element of a tolerantly-decoded array: the value, or nil when this
 /// element alone failed to decode.
 ///
@@ -165,8 +174,17 @@ struct PluginInvokeResult: Decodable, Equatable {
   /// when ``prompt`` is nil because the request was refused.
   var askedForPrompt = false
 
+  /// The sign-in the action asked the client to present, already stamped by the
+  /// host with the URL to open.
+  ///
+  /// The plugin's own result named a session and nothing else; everything here
+  /// that could send the reader somewhere was filled in by the machine from the
+  /// manifest. Mirrors `readPluginActionAuthSession` in
+  /// `apps/desktop/src/shared/plugins/sdk.ts`.
+  var authSession: PluginInvokeAuthSession?
+
   private enum CodingKeys: String, CodingKey {
-    case ok, message, error, result, navigate, composer, openUrl, resetState, prompt
+    case ok, message, error, result, navigate, composer, openUrl, resetState, prompt, authSession
   }
 
   init(
@@ -176,8 +194,10 @@ struct PluginInvokeResult: Decodable, Equatable {
     composer: PluginInvokeComposerEdit? = nil,
     openURL: URL? = nil,
     resetState: PluginInvokeStateReset? = nil,
-    prompt: PluginActionPrompt? = nil
+    prompt: PluginActionPrompt? = nil,
+    authSession: PluginInvokeAuthSession? = nil
   ) {
+    self.authSession = authSession
     self.ok = ok
     self.message = message
     self.navigate = navigate
@@ -263,6 +283,12 @@ struct PluginInvokeResult: Decodable, Equatable {
       if case .object = (try? handlerResult.decodeIfPresent(RemoteJSONValue.self, forKey: .prompt)) ?? nil {
         askedForPrompt = true
       }
+      // A malformed sign-in instruction drops to nil rather than taking the
+      // whole result with it, the way every other verb here does — the outcome
+      // and the sentence the action wrote are still owed to the reader. The
+      // caller says so out loud instead of leaving a Connect button that looks
+      // broken.
+      authSession = (try? handlerResult.decodeIfPresent(PluginInvokeAuthSession.self, forKey: .authSession)) ?? nil
     }
   }
 }
@@ -287,6 +313,90 @@ enum PluginInvokeStateReset: Equatable {
     }
     guard !cleaned.isEmpty else { return nil }
     self = .keys(cleaned)
+  }
+}
+
+/// The `{authSession}` verb, as the HOST stamped it: present this sign-in.
+///
+/// Two halves live behind one field name and only this one reaches a client. A
+/// plugin writes `{authSession: {sessionId}}` and nothing more; the machine
+/// resolves that id against the manifest's declared flow, mints the `state` it
+/// keeps to itself, builds the authorize URL and stamps it here. So `url` is a
+/// host-built value, never a plugin-supplied one — which is why a plugin cannot
+/// point ADE's sign-in sheet at an origin its manifest never declared.
+///
+/// Mirrors `PluginActionAuthSession` in `apps/desktop/src/shared/plugins/sdk.ts`.
+struct PluginInvokeAuthSession: Decodable, Equatable {
+  /// Which callback the client's in-app auth session must watch for. The phone
+  /// can only finish `app`; see ``PluginInvokeAuthSession/transport``.
+  enum Transport: String, Decodable, Equatable {
+    /// The host catches the redirect on `127.0.0.1` itself. Desktop-only: the
+    /// phone is not the machine that has the listener open.
+    case loopback
+    /// The provider is sent to ADE's relay, which bounces the query to the
+    /// app's custom scheme for `ASWebAuthenticationSession` to capture.
+    case app
+  }
+
+  /// The flow's manifest id. Carried for the sentence a client writes and for
+  /// logging — it is NOT what the callback is routed by, which is the host's
+  /// `state`.
+  var sessionId: String
+  /// Host-built authorize URL. `https:` and nothing else.
+  var url: URL
+  var transport: Transport
+  /// The scheme to watch for, on the `app` transport. Absent on `loopback`,
+  /// where nothing ever sends one and a client watching for a scheme would wait
+  /// forever.
+  var callbackScheme: String?
+
+  private enum CodingKeys: String, CodingKey {
+    case sessionId, url, transport, callbackScheme
+  }
+
+  init(sessionId: String, url: URL, transport: Transport, callbackScheme: String? = nil) {
+    self.sessionId = sessionId
+    self.url = url
+    self.transport = transport
+    self.callbackScheme = callbackScheme
+  }
+
+  /// Throws on anything the client could not act on, so the caller's `try?`
+  /// turns a bad instruction into "no sign-in was asked for" rather than a sheet
+  /// pointed somewhere unintended.
+  ///
+  /// `url` is held to the same rule as ``PluginInvokeResult/parseOpenURL(_:)``:
+  /// `https:` with a real host. `file:` would make a sign-in a local read,
+  /// `javascript:` and `data:` would make it script, and `ade:` would aim the
+  /// flow back into the app's own deep links. An unknown `transport` throws too
+  /// — a client that guessed would either strand the reader in a browser it
+  /// cannot get an answer out of, or watch for a callback nothing will send.
+  init(from decoder: Decoder) throws {
+    let container = try decoder.container(keyedBy: CodingKeys.self)
+    let sessionId = try container.decode(String.self, forKey: .sessionId)
+    guard ADEDeepLinkURLParsing.isValidPluginPanelId(sessionId) else {
+      throw DecodingError.dataCorruptedError(
+        forKey: .sessionId,
+        in: container,
+        debugDescription: "Not a plugin identifier."
+      )
+    }
+    self.sessionId = sessionId
+    let rawURL = try container.decode(String.self, forKey: .url)
+    guard let url = PluginInvokeResult.parseOpenURL(rawURL) else {
+      throw DecodingError.dataCorruptedError(
+        forKey: .url,
+        in: container,
+        debugDescription: "Not an https sign-in URL."
+      )
+    }
+    self.url = url
+    transport = try container.decode(Transport.self, forKey: .transport)
+    // Tolerant, unlike the two above: a blank scheme reads as absent, and the
+    // caller decides what a missing one means for the transport it got.
+    let scheme = (try? container.decodeIfPresent(String.self, forKey: .callbackScheme)) ?? nil
+    let trimmed = scheme?.trimmingCharacters(in: .whitespacesAndNewlines)
+    callbackScheme = (trimmed?.isEmpty == false) ? trimmed : nil
   }
 }
 

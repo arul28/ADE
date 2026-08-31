@@ -102,7 +102,13 @@ enum LaneDeeplinkHelpers {
   ) -> ADEDeeplinkEnvelope? {
     let branch = lane.map { normalizedPrBranchName($0.branchRef) }?
       .trimmingCharacters(in: .whitespacesAndNewlines)
-    let issue = lane.flatMap(primaryLaneLinearIssue(for:))?.identifier
+    // Only a Linear ref belongs in the `linearIssue` envelope field: the
+    // receiving surface turns it into a linear.app URL. Another tracker's key
+    // is dropped rather than mislabelled as a Linear issue. A Linear ref's key
+    // IS the legacy `identifier`, so this is unchanged for every existing lane.
+    let issue = lane.flatMap(primaryLaneIssueRef(for:)).flatMap { ref -> String? in
+      ref.isLinear ? ref.key : nil
+    }
     return envelope(
       repoOwner: pullRequest?.repoOwner,
       repoName: pullRequest?.repoName,

@@ -11,12 +11,25 @@
 //   ade://repo/<owner>/<repo>/branch/<branch>[?pr=<n>]
 //   ade://pr/<owner>/<repo>/<number>[?tab=overview|files|checks]
 //   ade://linear-issue/<ADE-123>[?branch=<branch>]
+//   ade://issue/<provider>/<issue-key>[?branch=<branch>&plugin=<plugin-id>]
 //   ade://plugin/<plugin-id>/<panel-id>[?ctx=<json-object>]
 //
-//   https://ade-app.dev/open?type=<lane|session|file|commit|artifact|branch|pr|linear-issue|plugin>&...
+//   https://ade-app.dev/open?type=<lane|session|file|commit|artifact|branch|pr|linear-issue|issue|plugin>&...
 //   (param names: lane→id; session→id[+lane,event,offset]; file→path[+line,lane];
 //    commit→sha[+lane]; artifact→id; branch→repo&branch[+pr]; pr→repo&number[+tab];
-//    linear-issue→issue[+branch]; plugin→plugin&panel[+ctx])
+//    linear-issue→issue[+branch]; issue→provider&issue[+branch,plugin];
+//    plugin→plugin&panel[+ctx])
+//
+// `issue` is the provider-neutral form of `linear-issue`: it names the tracker
+// vocabulary (`linear`, `github`, `jira`, …) alongside the key, so a plugin can
+// own a tracker ADE has never heard of. `linear-issue` is NOT deprecated by it
+// and never will be — every link already minted into a PR body, a Linear
+// comment or somebody's notes says `linear-issue`, and every peer on an older
+// build only understands that word. The two parse to different targets and
+// resolve identically; `linearIssueTargetToIssueTarget` is the one-way bridge
+// resolvers use so neither has to be handled twice. Linear links keep being
+// MINTED as `linear-issue` for exactly that reason: a byte-identical link is
+// one an older ADE can still open.
 //
 // A plugin link addresses a panel of an installed plugin, and `ctx` is the same
 // small object an action's `{navigate:{context}}` carries — the two are one
@@ -32,10 +45,11 @@
 // registered. Both forms parse to the same AppNavigationTarget shape.
 //
 // Machine-local targets (lane / session / commit / artifact) additionally
-// carry a portable envelope (?repo=<owner>/<repo>&branch=..&pr=..&linear=..)
-// so a receiver that cannot resolve the primary id can fall back to the
-// branch, PR, or Linear issue — see DeeplinkEnvelope.
+// carry a portable envelope (?repo=<owner>/<repo>&branch=..&pr=..&linear=..
+// &issueProvider=..&issueKey=..) so a receiver that cannot resolve the primary
+// id can fall back to the branch, PR, or tracker issue — see DeeplinkEnvelope.
 
+import { ISSUE_PROVIDER_LINEAR } from "./issueRef";
 import { isValidPluginId, isValidPluginManifestIdentifier } from "./plugins/manifest";
 import { PLUGIN_NAVIGATE_CONTEXT_MAX_BYTES, pluginUtf8ByteLength } from "./plugins/sdk";
 import type { AppNavigationTarget } from "./types/core";
@@ -51,7 +65,20 @@ export type DeeplinkEnvelope = {
   repoName?: string;
   branch?: string;
   prNumber?: number;
+  /**
+   * The Linear identifier, in the one param an older peer understands.
+   *
+   * Kept as its own field rather than folded into {@link issue} because it is
+   * what is already on the wire: a build that predates provider-neutral issues
+   * reads `?linear=` and nothing else, so ADE keeps writing it for a Linear
+   * issue forever, and keeps validating it with the strict Linear rule.
+   */
   linearIssue?: string;
+  /**
+   * The same fallback for any tracker. Written as `?issueProvider=` +
+   * `?issueKey=`, which an older peer ignores rather than chokes on.
+   */
+  issue?: { provider: string; key: string };
 };
 
 /**
@@ -145,6 +172,30 @@ export type DeeplinkLinearIssueTarget = {
 };
 
 /**
+ * An issue on any tracker.
+ *
+ * The generalization of {@link DeeplinkLinearIssueTarget}: `provider` is the
+ * tracker vocabulary from `shared/issueRef.ts` (`linear`, `github`, `jira`, …)
+ * and `issueKey` is that tracker's human key — `ADE-123`, `owner/repo#42`,
+ * `PROJ-9`. ADE validates the key only loosely on purpose: it is another
+ * system's identifier, and a parser that thought it knew the shape of every
+ * tracker's key would reject links it merely does not recognize.
+ *
+ * `pluginId` pins the link to the plugin that minted it. It is a hint, not a
+ * requirement — a link that carries none is resolved by looking up whoever owns
+ * the provider on the receiving machine, which is what makes a link minted by
+ * one person's Jira plugin openable by someone whose Jira plugin has a
+ * different id.
+ */
+export type DeeplinkIssueTarget = {
+  kind: "issue";
+  provider: string;
+  issueKey: string;
+  branch?: string;
+  pluginId?: string;
+};
+
+/**
  * A panel of an installed plugin.
  *
  * The only target kind whose destination may genuinely not exist on the
@@ -170,7 +221,53 @@ export type DeeplinkTarget =
   | DeeplinkBranchTarget
   | DeeplinkPrTarget
   | DeeplinkLinearIssueTarget
+  | DeeplinkIssueTarget
   | DeeplinkPluginTarget;
+
+/**
+ * Read a `linear-issue` target as the neutral `issue` shape.
+ *
+ * The alias exists so that resolvers handle ONE kind. Every already-minted
+ * `ade://linear-issue/ADE-123` keeps parsing to its own target — that is the
+ * compatibility promise — and this is how it stops being a second code path
+ * everywhere downstream of the parser.
+ */
+export function linearIssueTargetToIssueTarget(
+  target: DeeplinkLinearIssueTarget,
+): DeeplinkIssueTarget {
+  return {
+    kind: "issue",
+    provider: ISSUE_PROVIDER_LINEAR,
+    issueKey: target.issueIdentifier,
+    ...(target.branch ? { branch: target.branch } : {}),
+  };
+}
+
+/**
+ * The panel a tracker plugin is assumed to draw one issue in.
+ *
+ * A convention, not a rule: it is the starting guess for a link that names a
+ * plugin but no panel, and the renderer's resolver overrides it with whatever
+ * panel the installed plugin actually registered.
+ */
+export const PLUGIN_ISSUE_PANEL_ID = "issue";
+
+/**
+ * The render context an issue link hands a plugin panel.
+ *
+ * One shape, built here, so the deeplink route and the renderer's resolver
+ * cannot disagree about what a panel receives — the same reason `ctx` and an
+ * action's `{navigate:{context}}` are one value.
+ */
+export function issueDeeplinkContext(target: DeeplinkIssueTarget): Record<string, unknown> {
+  return {
+    issue: {
+      provider: target.provider,
+      key: target.issueKey,
+      ...(target.branch ? { branch: target.branch } : {}),
+    },
+  };
+}
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 // GitHub: owner 1-39 chars [A-Za-z0-9-]; repo can include _.-, no path separators.
@@ -198,6 +295,34 @@ function isValidGhRepo(value: string): boolean {
 
 function isValidLinearIdentifier(value: string): boolean {
   return LINEAR_ID_RE.test(value);
+}
+
+// A tracker vocabulary, as `shared/issueRef.ts` writes it: lowercase, and short
+// enough to be a path segment nobody has to escape.
+const ISSUE_PROVIDER_RE = /^[a-z0-9][a-z0-9._-]{0,63}$/;
+// Another system's key. Whitespace and control characters are refused because
+// they cannot survive a URL round trip; everything else is that system's
+// business — `owner/repo#42` and `PROJ-9` are both real keys.
+const ISSUE_KEY_BAD_RE = /[\s\x00-\x1f\x7f]/;
+
+/**
+ * Tracker vocabulary rule, shared with the CLI so `ade link issue` refuses at
+ * minting exactly what the parser would refuse at reading.
+ */
+export function isValidIssueProvider(value: string): boolean {
+  return ISSUE_PROVIDER_RE.test(value.trim().toLowerCase());
+}
+
+/**
+ * Issue key rule: non-empty, no whitespace, at most 128 characters.
+ *
+ * Deliberately looser than {@link isValidLinearIdentifier}, which stays exactly
+ * as strict as it is — it guards the `?linear=` param an older peer reads, and
+ * loosening it would put values there that such a peer cannot interpret.
+ */
+export function isValidIssueKey(value: string): boolean {
+  const trimmed = value.trim();
+  return trimmed.length > 0 && trimmed.length <= 128 && !ISSUE_KEY_BAD_RE.test(trimmed);
 }
 
 function isValidBranch(value: string): boolean {
@@ -284,7 +409,22 @@ function appendEnvelopeParams(params: URLSearchParams, envelope: DeeplinkEnvelop
   if (envelope.repoOwner && envelope.repoName) params.set("repo", `${envelope.repoOwner}/${envelope.repoName}`);
   if (envelope.branch) params.set("branch", envelope.branch);
   if (envelope.prNumber != null) params.set("pr", String(envelope.prNumber));
-  if (envelope.linearIssue) params.set("linear", envelope.linearIssue);
+  // `?linear=` is written for every Linear issue, from whichever field carries
+  // it. It is the only issue fallback a peer on an older build can read, so a
+  // link that dropped it in favour of the neutral params would be a link that
+  // silently lost its fallback on exactly the machines that needed one.
+  if (envelope.linearIssue) {
+    params.set("linear", envelope.linearIssue);
+  } else if (
+    envelope.issue?.provider === ISSUE_PROVIDER_LINEAR
+    && isValidLinearIdentifier(envelope.issue.key)
+  ) {
+    params.set("linear", envelope.issue.key);
+  }
+  if (envelope.issue?.provider && envelope.issue.key) {
+    params.set("issueProvider", envelope.issue.provider);
+    params.set("issueKey", envelope.issue.key);
+  }
 }
 
 function appendOwnershipParams(
@@ -369,6 +509,26 @@ function readEnvelopeParams(searchParams: URLSearchParams): DeeplinkEnvelope | u
   if (typeof pr === "number" && pr >= 1) envelope.prNumber = pr;
   const linear = searchParams.get("linear");
   if (linear && isValidLinearIdentifier(linear)) envelope.linearIssue = linear;
+  const issueProvider = searchParams.get("issueProvider")?.trim().toLowerCase() ?? "";
+  const issueKey = searchParams.get("issueKey")?.trim() ?? "";
+  if (issueProvider && issueKey && isValidIssueProvider(issueProvider) && isValidIssueKey(issueKey)) {
+    envelope.issue = { provider: issueProvider, key: issueKey };
+  } else if (envelope.linearIssue) {
+    // A link minted before the neutral params existed carries only `?linear=`.
+    // Both fields are filled from it so a reader that only knows the new shape
+    // resolves the fallback too — the alias promise, applied to the envelope.
+    envelope.issue = { provider: ISSUE_PROVIDER_LINEAR, key: envelope.linearIssue };
+  }
+  // The reverse direction: a hand-written link that carries only the neutral
+  // params for Linear still gets the legacy field, so nothing downstream has to
+  // ask which spelling it was handed.
+  if (
+    !envelope.linearIssue
+    && envelope.issue?.provider === ISSUE_PROVIDER_LINEAR
+    && isValidLinearIdentifier(envelope.issue.key)
+  ) {
+    envelope.linearIssue = envelope.issue.key;
+  }
   return Object.keys(envelope).length > 0 ? envelope : undefined;
 }
 
@@ -482,6 +642,14 @@ function buildAdeUrl(target: DeeplinkTarget): string {
       const base = `${ADE_DEEPLINK_SCHEME}://linear-issue/${encodeURIComponent(target.issueIdentifier)}`;
       return target.branch ? `${base}?branch=${encodeURIComponent(target.branch)}` : base;
     }
+    case "issue": {
+      const params = new URLSearchParams();
+      if (target.branch) params.set("branch", target.branch);
+      if (target.pluginId) params.set("plugin", target.pluginId);
+      const base = `${ADE_DEEPLINK_SCHEME}://issue/${encodeURIComponent(target.provider)}/${encodeURIComponent(target.issueKey)}`;
+      const qs = params.toString();
+      return qs ? `${base}?${qs}` : base;
+    }
     case "plugin": {
       const params = new URLSearchParams();
       appendPluginContextParam(params, target.context);
@@ -545,6 +713,13 @@ function buildHttpsUrl(target: DeeplinkTarget): string {
       params.set("type", "linear-issue");
       params.set("issue", target.issueIdentifier);
       if (target.branch) params.set("branch", target.branch);
+      break;
+    case "issue":
+      params.set("type", "issue");
+      params.set("provider", target.provider);
+      params.set("issue", target.issueKey);
+      if (target.branch) params.set("branch", target.branch);
+      if (target.pluginId) params.set("plugin", target.pluginId);
       break;
     case "plugin":
       params.set("type", "plugin");
@@ -681,6 +856,21 @@ function parseAdeUrl(url: URL, rawUrl: string): ParseResult {
     };
   }
 
+  if (host === "issue") {
+    if (pathSegments.length < 2) {
+      return { ok: false, error: { kind: "malformed", reason: "expected issue/<provider>/<key>" }, rawUrl };
+    }
+    return buildIssueTarget(
+      safeDecode(pathSegments[0]),
+      // A key may legitimately contain a slash (`owner/repo#42`), so everything
+      // after the provider is the key rather than only the next segment.
+      pathSegments.slice(1).map(safeDecode).join("/"),
+      url.searchParams.get("branch"),
+      url.searchParams.get("plugin"),
+      rawUrl,
+    );
+  }
+
   if (host === "plugin") {
     if (pathSegments.length !== 2) {
       return { ok: false, error: { kind: "malformed", reason: "expected plugin/<plugin-id>/<panel-id>" }, rawUrl };
@@ -751,6 +941,15 @@ function parseHttpsParams(url: URL, rawUrl: string): ParseResult {
       rawUrl,
     };
   }
+  if (type === "issue") {
+    return buildIssueTarget(
+      url.searchParams.get("provider") ?? "",
+      url.searchParams.get("issue") ?? "",
+      url.searchParams.get("branch"),
+      url.searchParams.get("plugin"),
+      rawUrl,
+    );
+  }
   if (type === "plugin") {
     return buildPluginTarget(
       url.searchParams.get("plugin") ?? "",
@@ -786,6 +985,54 @@ function buildPluginTarget(
   return {
     ok: true,
     target: { kind: "plugin", pluginId, panelId, ...(context ? { context } : {}) },
+    rawUrl,
+  };
+}
+
+/**
+ * Shared issue-target assembly for the ade:// and https:// parse paths.
+ *
+ * The provider is normalized to lowercase the way `shared/issueRef.ts`
+ * normalizes it, so `ade://issue/Linear/ADE-1` and `ade://issue/linear/ADE-1`
+ * are one link rather than two. The key is NOT normalized: it belongs to
+ * another system, and `owner/Repo#42` is not the same string as
+ * `owner/repo#42` on GitHub.
+ *
+ * A malformed `plugin` is fatal for the same reason a malformed plugin id is on
+ * the `plugin` kind — it names a directory on the receiving machine, and a
+ * boundary that repaired it would disagree with the parser that named it. A
+ * malformed `branch` is fatal for the reason it already is on `linear-issue`.
+ */
+function buildIssueTarget(
+  provider: string,
+  issueKey: string,
+  branchRaw: string | null,
+  pluginRaw: string | null,
+  rawUrl: string,
+): ParseResult {
+  const normalizedProvider = provider.trim().toLowerCase();
+  if (!isValidIssueProvider(normalizedProvider)) {
+    return { ok: false, error: { kind: "malformed", reason: "invalid issue provider" }, rawUrl };
+  }
+  const key = issueKey.trim();
+  if (!isValidIssueKey(key)) {
+    return { ok: false, error: { kind: "malformed", reason: "invalid issue key" }, rawUrl };
+  }
+  if (branchRaw != null && !isValidBranch(branchRaw)) {
+    return { ok: false, error: { kind: "malformed", reason: "invalid branch" }, rawUrl };
+  }
+  if (pluginRaw != null && !isValidPluginId(pluginRaw)) {
+    return { ok: false, error: { kind: "malformed", reason: "invalid plugin id" }, rawUrl };
+  }
+  return {
+    ok: true,
+    target: {
+      kind: "issue",
+      provider: normalizedProvider,
+      issueKey: key,
+      ...(branchRaw ? { branch: branchRaw } : {}),
+      ...(pluginRaw ? { pluginId: pluginRaw } : {}),
+    },
     rawUrl,
   };
 }
@@ -975,6 +1222,12 @@ export function describeTarget(target: DeeplinkTarget): string {
         : `PR #${target.prNumber}`;
     case "linear-issue":
       return target.branch ? `${target.issueIdentifier} (${target.branch})` : target.issueIdentifier;
+    case "issue":
+      // Deliberately identical to the alias for a Linear issue: the two links
+      // point at the same thing, and reading differently would suggest they do
+      // not. The provider is not named because the key already carries the
+      // tracker's own spelling.
+      return target.branch ? `${target.issueKey} (${target.branch})` : target.issueKey;
     case "plugin":
       return `${target.pluginId} · ${target.panelId}`;
   }
@@ -1043,6 +1296,28 @@ export function deeplinkToNavigationTarget(target: DeeplinkTarget): AppNavigatio
         kind: "linear-issue",
         issueIdentifier: target.issueIdentifier,
         branch: target.branch ?? null,
+      };
+    case "issue":
+      // Linear with nobody claiming it is the compiled Linear surface, and it
+      // maps to the SAME navigation target the alias does — which is what keeps
+      // `ade://issue/linear/ADE-123` working on a build whose dispatcher only
+      // knows `linear-issue`.
+      if (!target.pluginId && target.provider === ISSUE_PROVIDER_LINEAR) {
+        return {
+          kind: "linear-issue",
+          issueIdentifier: target.issueKey,
+          branch: target.branch ?? null,
+        };
+      }
+      // Everything else is a plugin's issue. Which panel draws it is a question
+      // only the receiving machine's registry can answer, so this names the
+      // conventional one and the renderer's `resolveIssueDeeplinkRouting`
+      // replaces it with the panel that plugin actually registered.
+      return {
+        kind: "plugin",
+        pluginId: target.pluginId ?? target.provider,
+        panelId: PLUGIN_ISSUE_PANEL_ID,
+        context: issueDeeplinkContext(target),
       };
     case "plugin":
       return {

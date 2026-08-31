@@ -1,3 +1,4 @@
+import type { IssueRef } from "../issueRef";
 import type { AgentChatSessionSummary } from "./chat";
 import type { LaneEnvInitProgress } from "./config";
 import type { ConflictOverlap, ConflictStatus } from "./conflicts";
@@ -103,7 +104,17 @@ export type LaneSummary = {
   activeBranchProfile?: LaneBranchProfile | null;
   linearIssue?: LaneLinearIssue | null;
   linearIssueLinks?: LaneLinearIssueLink[];
-  githubIssueLinks?: LaneGitHubIssueLink[];
+  /**
+   * The lane's primary issue, on whichever tracker owns it. Derived from
+   * `linearIssue` when the row predates `IssueRef`, so it is never emptier than
+   * the legacy field.
+   */
+  primaryIssue?: IssueRef | null;
+  /**
+   * Every issue link on the lane, across trackers. This is the union of the
+   * Linear and GitHub link rows, projected through `IssueRef`.
+   */
+  issueLinks?: IssueLink[];
 };
 
 export type LaneLinearIssue = {
@@ -144,7 +155,47 @@ export type LaneLinearIssueLinkSource =
   | "linear_open_issue"
   | "commit"
   | "pr_body"
-  | "manual";
+  | "manual"
+  /** A plugin created the link through `sdk.lanes.linkIssue`. */
+  | "plugin_link";
+
+/**
+ * The role and the source vocabularies never carried anything Linear-specific.
+ * The GitHub link types already reuse them verbatim. These aliases are the
+ * provider-neutral names that new code uses.
+ */
+export type IssueLinkRole = LaneLinearIssueLinkRole;
+export type IssueLinkSource = LaneLinearIssueLinkSource;
+
+export type IssueLinkEvidence = {
+  chatSessionId?: string | null;
+  commitSha?: string | null;
+  prId?: string | null;
+};
+
+/**
+ * A lane-scoped or session-scoped link to an issue on any tracker.
+ *
+ * This is the shape the PR body writer, the branch namer, the deeplink
+ * envelope and the sync projections read. It is projected out of the same rows
+ * that back `LaneLinearIssueLink` and `SessionGitHubIssueLink`; see
+ * `shared/issueRef.ts` for how one row serves both shapes at once.
+ */
+export type IssueLink = {
+  id: string;
+  /** Set when the link hangs off a lane. */
+  laneId: string | null;
+  /** Set when the link hangs off a chat or CLI session. */
+  sessionId: string | null;
+  issue: IssueRef;
+  role: IssueLinkRole;
+  source: IssueLinkSource;
+  includeInPr: boolean;
+  closeOnMerge: boolean;
+  evidence?: IssueLinkEvidence | null;
+  createdAt: string;
+  updatedAt: string;
+};
 
 export type LaneLinearIssueLink = {
   id: string;

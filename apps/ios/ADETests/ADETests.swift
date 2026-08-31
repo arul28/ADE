@@ -27753,3 +27753,336 @@ final class WorkPendingInputOriginTests: XCTestCase {
     XCTAssertTrue(PluginSymbol.assetExists("BrandMark"))
   }
 }
+
+
+/**
+ * The provider-neutral issue link, as the phone reads it.
+ *
+ * A lane's issue arrives inside `issue_json` as a Linear-shaped object. A newer
+ * writer embeds an `IssueRef` beside those fields under `__issueRef`; every row
+ * written before that carries none, so the derive from the legacy fields is the
+ * ordinary path and not an error path. These tests pin both, plus the rule that
+ * a damaged ref costs the row nothing.
+ *
+ * The fixtures mirror `apps/desktop/src/shared/issueRef.test.ts` field for
+ * field, so a change on either side that breaks the pairing fails here.
+ */
+final class LaneIssueRefDecodingTests: XCTestCase {
+  /// The legacy Linear row the desktop test calls `linearIssue()`. No
+  /// `__issueRef` — this is what every existing row looks like.
+  private let legacyLinearJSON = """
+  {
+    "id": "issue-uuid-1",
+    "identifier": "ADE-123",
+    "title": "Fix the thing",
+    "description": "A description",
+    "url": "https://linear.app/ade/issue/ADE-123",
+    "projectId": "project-uuid",
+    "projectSlug": "ade",
+    "projectName": "ADE",
+    "teamId": "team-uuid",
+    "teamKey": "ADE",
+    "teamName": "ADE Team",
+    "stateId": "state-uuid",
+    "stateName": "In Progress",
+    "stateType": "started",
+    "priority": 2,
+    "priorityLabel": "high",
+    "labels": ["bug"],
+    "assigneeId": "user-uuid",
+    "assigneeName": "Ada",
+    "creatorId": "creator-uuid",
+    "creatorName": "Grace",
+    "dueDate": "2026-09-01",
+    "estimate": 3,
+    "branchName": "ade-123-fix-the-thing",
+    "createdAt": "2026-08-01T00:00:00.000Z",
+    "updatedAt": "2026-08-02T00:00:00.000Z"
+  }
+  """
+
+  /// A Jira link exactly as `issueRefToStoredLinearIssue` writes it: the ref
+  /// under the reserved key, beside a full Linear-shaped projection of itself
+  /// so a peer on an older build still parses the row.
+  private func storedJiraJSON(ref: String) -> String {
+    """
+    {
+      "id": "10042",
+      "identifier": "OPS-42",
+      "title": "Rotate the certificates",
+      "description": "The certs expire in October.",
+      "url": "https://example.atlassian.net/browse/OPS-42",
+      "projectId": "",
+      "projectSlug": "",
+      "projectName": null,
+      "teamId": "10000",
+      "teamKey": "OPS",
+      "teamName": "Operations",
+      "stateId": "3",
+      "stateName": "In Review",
+      "stateType": "started",
+      "priority": 1,
+      "priorityLabel": "high",
+      "labels": ["security"],
+      "assigneeId": "acct-1",
+      "assigneeName": "Ada",
+      "creatorId": null,
+      "creatorName": null,
+      "dueDate": null,
+      "estimate": null,
+      "branchName": "ops-42-rotate-the-certificates",
+      "createdAt": "2026-08-01T00:00:00.000Z",
+      "updatedAt": "2026-08-02T00:00:00.000Z",
+      "__issueRef": \(ref)
+    }
+    """
+  }
+
+  private let jiraRefJSON = """
+  {
+    "pluginId": "ade-jira",
+    "provider": "jira",
+    "issueId": "10042",
+    "key": "OPS-42",
+    "title": "Rotate the certificates",
+    "url": "https://example.atlassian.net/browse/OPS-42",
+    "state": { "id": "3", "name": "In Review", "category": "started" },
+    "container": { "id": "10000", "key": "OPS", "name": "Operations" },
+    "branchName": "ops-42-rotate-the-certificates",
+    "assignee": { "id": "acct-1", "name": "Ada" },
+    "priority": { "rank": 1, "label": "high" },
+    "labels": ["security"],
+    "description": "The certs expire in October.",
+    "createdAt": "2026-08-01T00:00:00.000Z",
+    "updatedAt": "2026-08-02T00:00:00.000Z",
+    "extra": { "sprint": "2026-33" }
+  }
+  """
+
+  private func decodeIssue(_ json: String) throws -> LaneLinearIssue {
+    try JSONDecoder().decode(LaneLinearIssue.self, from: Data(json.utf8))
+  }
+
+  // MARK: - The embedded ref
+
+  func testRowCarryingAnIssueRefIsReadAsItsOwnTracker() throws {
+    let issue = try decodeIssue(storedJiraJSON(ref: jiraRefJSON))
+    let ref = issue.issueRef
+
+    XCTAssertEqual(ref.pluginId, "ade-jira")
+    XCTAssertEqual(ref.provider, "jira")
+    XCTAssertFalse(ref.isLinear)
+    XCTAssertEqual(ref.issueId, "10042")
+    XCTAssertEqual(ref.key, "OPS-42")
+    XCTAssertEqual(ref.title, "Rotate the certificates")
+    XCTAssertEqual(ref.url, "https://example.atlassian.net/browse/OPS-42")
+    XCTAssertEqual(ref.state, IssueRefState(id: "3", name: "In Review", category: .started))
+    XCTAssertEqual(ref.container, IssueRefContainer(id: "10000", key: "OPS", name: "Operations"))
+    XCTAssertEqual(ref.assignee, IssueRefActor(id: "acct-1", name: "Ada"))
+    XCTAssertEqual(ref.priority, IssueRefPriority(rank: 1, label: "high"))
+    XCTAssertEqual(ref.labels, ["security"])
+    XCTAssertEqual(ref.description, "The certs expire in October.")
+    XCTAssertEqual(ref.createdAt, "2026-08-01T00:00:00.000Z")
+    XCTAssertEqual(ref.updatedAt, "2026-08-02T00:00:00.000Z")
+    // `extra` is kept opaque: core never reads a key out of it, and holding it
+    // as JSON is what lets the phone hand a tracker's residue back untouched.
+    XCTAssertEqual(ref.extra?["sprint"], .string("2026-33"))
+    // The legacy projection still decodes beside it, which is what an older
+    // peer — and every Linear-only surface in this app — reads.
+    XCTAssertEqual(issue.identifier, "OPS-42")
+    XCTAssertEqual(issue.stateName, "In Review")
+  }
+
+  /// What the badge and the copy-link row read. The label follows the tracker
+  /// instead of saying "Linear" at a Jira issue.
+  func testProviderNameFollowsTheTrackerAndNotTheColumnItLivesIn() throws {
+    XCTAssertEqual(try decodeIssue(storedJiraJSON(ref: jiraRefJSON)).issueRef.providerDisplayName, "Jira")
+    XCTAssertEqual(try decodeIssue(legacyLinearJSON).issueRef.providerDisplayName, "Linear")
+    XCTAssertEqual(issueProviderDisplayName("github"), "GitHub")
+    XCTAssertEqual(issueProviderDisplayName("gitlab"), "GitLab")
+    // A tracker nobody has hard-coded still reads as a name, not as an id.
+    XCTAssertEqual(issueProviderDisplayName("bugzilla"), "Bugzilla")
+    XCTAssertEqual(issueProviderDisplayName(""), "Issue")
+  }
+
+  func testEmbeddedRefTakesTheLiveBranchNameFromTheLegacyField() throws {
+    // ADE rewrites `branchName` on every attach through `finalizeLaneLinearIssue`,
+    // which does not reach inside the ref, so the legacy field is the live one.
+    let renamed = storedJiraJSON(ref: jiraRefJSON)
+      .replacingOccurrences(
+        of: "\"branchName\": \"ops-42-rotate-the-certificates\",\n  \"createdAt\"",
+        with: "\"branchName\": \"ops-42-renamed\",\n  \"createdAt\""
+      )
+    XCTAssertEqual(try decodeIssue(renamed).issueRef.branchName, "ops-42-renamed")
+  }
+
+  /// The phone re-encodes this struct when it sends `linearIssue` back to a
+  /// machine. If the island were dropped on decode, the round trip would
+  /// silently strip the tracker identity from the row it writes.
+  func testReEncodingKeepsTheEmbeddedRefVerbatim() throws {
+    let issue = try decodeIssue(storedJiraJSON(ref: jiraRefJSON))
+    let reread = try JSONDecoder().decode(
+      LaneLinearIssue.self,
+      from: try JSONEncoder().encode(issue)
+    )
+    XCTAssertEqual(reread.issueRef.provider, "jira")
+    XCTAssertEqual(reread.issueRef.issueId, "10042")
+    XCTAssertEqual(reread.issueRef.extra?["sprint"], .string("2026-33"))
+  }
+
+  // MARK: - The derive, which every existing row takes
+
+  func testLegacyLinearRowDerivesTheRefTheSharedCodeDerives() throws {
+    let issue = try decodeIssue(legacyLinearJSON)
+    XCTAssertNil(issue.__issueRef, "the fixture must carry no ref, or this proves nothing")
+    let ref = issue.issueRef
+
+    // Mirrors `issueRefFromLinearIssue` field for field.
+    XCTAssertEqual(ref.pluginId, IssueRef.corePluginId)
+    XCTAssertEqual(ref.pluginId, "core")
+    XCTAssertEqual(ref.provider, "linear")
+    XCTAssertTrue(ref.isLinear)
+    XCTAssertEqual(ref.issueId, "issue-uuid-1")
+    XCTAssertEqual(ref.key, "ADE-123")
+    XCTAssertEqual(ref.title, "Fix the thing")
+    XCTAssertEqual(ref.url, "https://linear.app/ade/issue/ADE-123")
+    XCTAssertEqual(ref.state, IssueRefState(id: "state-uuid", name: "In Progress", category: .started))
+    XCTAssertEqual(ref.container, IssueRefContainer(id: "team-uuid", key: "ADE", name: "ADE Team"))
+    XCTAssertEqual(ref.branchName, "ade-123-fix-the-thing")
+    XCTAssertEqual(ref.assignee, IssueRefActor(id: "user-uuid", name: "Ada"))
+    XCTAssertEqual(ref.priority, IssueRefPriority(rank: 2, label: "high"))
+    XCTAssertEqual(ref.labels, ["bug"])
+    XCTAssertEqual(ref.description, "A description")
+    XCTAssertEqual(ref.createdAt, "2026-08-01T00:00:00.000Z")
+    XCTAssertEqual(ref.updatedAt, "2026-08-02T00:00:00.000Z")
+    XCTAssertEqual(ref.extra?["projectSlug"], .string("ade"))
+    XCTAssertEqual(ref.extra?["creatorName"], .string("Grace"))
+    XCTAssertEqual(ref.extra?["dueDate"], .string("2026-09-01"))
+    XCTAssertEqual(ref.extra?["estimate"], .number(3))
+  }
+
+  /// The badge reads exactly these four, so a Linear row must render from the
+  /// derived ref the same way it rendered from the legacy fields.
+  func testDerivedRefRendersALinearRowIdenticallyToTheLegacyFields() throws {
+    let issue = try decodeIssue(legacyLinearJSON)
+    let ref = issue.issueRef
+    XCTAssertEqual(ref.key, issue.identifier)
+    XCTAssertEqual(ref.title, issue.title)
+    XCTAssertEqual(ref.state?.name, issue.stateName)
+    XCTAssertEqual(ref.url, issue.url)
+  }
+
+  func testDeriveSurvivesAPartialRowFromAnOlderHost() throws {
+    // iOS types more of these fields as optional than desktop does, because a
+    // lane snapshot from an older host can omit them. A row missing the state
+    // and team blocks must still produce a displayable ref rather than nothing.
+    let ref = try decodeIssue("""
+    { "id": "issue-2", "identifier": "ADE-9", "title": "Sparse" }
+    """).issueRef
+    XCTAssertEqual(ref.key, "ADE-9")
+    XCTAssertEqual(ref.state?.category, .unstarted)
+    XCTAssertNil(ref.state?.name)
+    XCTAssertNil(ref.container?.key)
+    XCTAssertNil(ref.assignee)
+    XCTAssertEqual(ref.labels, [])
+  }
+
+  // MARK: - A damaged ref costs the row nothing
+
+  func testUnparseableIssueRefFallsBackToTheDeriveRatherThanFailingTheRow() throws {
+    // A ref missing a provider, one that is not an object at all, and one whose
+    // required fields are blank. Every one of them must leave the lane with a
+    // working Linear issue instead of throwing out of `LaneLinearIssue`.
+    let poisons = [
+      #"{ "provider": "" }"#,
+      #"{ "issueId": "1", "key": "OPS-1", "title": "t" }"#,
+      #"{ "provider": "jira", "issueId": "1", "key": "OPS-1" }"#,
+      "\"a string, not an object\"",
+      "[1, 2, 3]",
+      "null",
+      "17",
+    ]
+    for poison in poisons {
+      let json = legacyLinearJSON.replacingOccurrences(
+        of: "\"updatedAt\": \"2026-08-02T00:00:00.000Z\"",
+        with: "\"updatedAt\": \"2026-08-02T00:00:00.000Z\", \"__issueRef\": \(poison)"
+      )
+      let issue = try decodeIssue(json)
+      let ref = issue.issueRef
+      XCTAssertEqual(ref.provider, "linear", "poisoned ref should derive: \(poison)")
+      XCTAssertEqual(ref.key, "ADE-123", "poisoned ref should derive: \(poison)")
+      XCTAssertEqual(ref.title, "Fix the thing", "poisoned ref should derive: \(poison)")
+    }
+  }
+
+  func testMixedCaseProviderStillMatchesTheLinearGate() throws {
+    let issue = try decodeIssue(storedJiraJSON(ref: #"""
+    { "provider": "LINEAR", "issueId": "1", "key": "ADE-1", "title": "Shouty" }
+    """#))
+    XCTAssertEqual(issue.issueRef.provider, "linear")
+    XCTAssertTrue(issue.issueRef.isLinear)
+  }
+
+  // MARK: - The state vocabulary
+
+  func testStateCategoryVocabularyMatchesTheSharedOne() {
+    XCTAssertEqual(
+      IssueStateCategory.allCases.map(\.rawValue),
+      ["triage", "backlog", "unstarted", "started", "completed", "canceled"]
+    )
+    XCTAssertEqual(IssueStateCategory(rawTrackerValue: "Completed"), .completed)
+    XCTAssertEqual(IssueStateCategory(rawTrackerValue: "  triage "), .triage)
+    // Not in the vocabulary, so not repaired into the nearest neighbour: nil,
+    // and the caller decides the fallback.
+    XCTAssertNil(IssueStateCategory(rawTrackerValue: "cancelled"))
+    XCTAssertNil(IssueStateCategory(rawTrackerValue: "in_progress"))
+    XCTAssertNil(IssueStateCategory(rawTrackerValue: ""))
+    XCTAssertNil(IssueStateCategory(rawTrackerValue: nil))
+  }
+
+  func testAnUnknownStateTypeDerivesAsUnstartedAndAnUnknownCategoryDropsTheState() throws {
+    // Derive: the same `?? "unstarted"` the shared code applies.
+    let odd = legacyLinearJSON.replacingOccurrences(
+      of: "\"stateType\": \"started\"",
+      with: "\"stateType\": \"in_progress\""
+    )
+    XCTAssertEqual(try decodeIssue(odd).issueRef.state?.category, .unstarted)
+    // Embedded: a state block whose category is outside the vocabulary is
+    // dropped whole rather than guessed at, exactly as `parseIssueRefState` does.
+    let issue = try decodeIssue(storedJiraJSON(ref: #"""
+    {
+      "provider": "jira", "issueId": "1", "key": "OPS-1", "title": "t",
+      "state": { "id": "3", "name": "In Review", "category": "reviewing" }
+    }
+    """#))
+    XCTAssertNil(issue.issueRef.state)
+  }
+
+  // MARK: - The lane helper the views call
+
+  func testPrimaryLaneIssueRefReadsTheLaneRow() throws {
+    let lane = try JSONDecoder().decode(LaneSummary.self, from: Data("""
+    {
+      "id": "lane-1",
+      "name": "Rotate certs",
+      "laneType": "worktree",
+      "baseRef": "main",
+      "branchRef": "ops-42-rotate-the-certificates",
+      "worktreePath": "/tmp/lane-1",
+      "childCount": 0,
+      "stackDepth": 0,
+      "isEditProtected": false,
+      "status": { "dirty": false, "ahead": 0, "behind": 0, "remoteBehind": 0, "rebaseInProgress": false },
+      "tags": [],
+      "linearIssue": \(storedJiraJSON(ref: jiraRefJSON)),
+      "createdAt": "2026-08-01T00:00:00.000Z"
+    }
+    """.utf8))
+
+    let ref = try XCTUnwrap(primaryLaneIssueRef(for: lane))
+    XCTAssertEqual(ref.provider, "jira")
+    XCTAssertEqual(ref.key, "OPS-42")
+    XCTAssertEqual(ref.providerDisplayName, "Jira")
+    XCTAssertEqual(laneLinearIssueLinkCount(for: lane), 1)
+  }
+}

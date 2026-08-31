@@ -138,7 +138,24 @@ import type {
   ReviewPublication,
   ReviewPublicationDestination,
   ReviewPublicationInlineComment,
+  IssueLinkRole,
+  LaneLinearIssue,
 } from "../../../shared/types";
+import {
+  ISSUE_PROVIDER_LINEAR,
+  issueRefIdentity,
+  issueRefsMatch,
+  issueRefToLinearIssue,
+  readLinearIssueRef,
+  type IssueRef,
+} from "../../../shared/issueRef";
+import {
+  dedupeIssueRefs,
+  ensureIssueRefPrLinkSections,
+  ensureIssueRefPrReferences,
+  issueRefUsesGenericLinkSection,
+  type IssueRefPrReference,
+} from "../../../shared/issueRefFormat";
 import { GITHUB_CREDENTIAL_STORE_UNREADABLE_COPY } from "../../../shared/types";
 import type { AdeDb } from "../state/kvDb";
 import type { Logger } from "../logging/logger";
@@ -804,33 +821,129 @@ function assertIntegrationLaneIsNotPrimary(
   }
 }
 
-function collectLinearPrIssueReferences(
+/**
+ * One issue the PR body should reference, read through the provider-neutral
+ * `IssueRef` but still carrying the legacy Linear row it came from.
+ *
+ * The row is kept because the Linear renderers below consume `LaneLinearIssue`
+ * and because a round trip through `IssueRef` is lossy for fields they read
+ * (title, url, id all survive; nothing else is guaranteed). Preferring the
+ * original object is what makes the emitted body byte-identical to today's.
+ */
+type LanePrIssueRef = {
+  issue: IssueRef;
+  linearIssue: LaneLinearIssue | null;
+  closeOnMerge: boolean;
+  role: IssueLinkRole | "primary";
+};
+
+/** The lane's primary issue on whichever tracker owns it, legacy row included. */
+function lanePrimaryIssueRef(lane: LaneSummary): IssueRef | null {
+  if (lane.primaryIssue) return lane.primaryIssue;
+  return lane.linearIssue ? readLinearIssueRef(lane.linearIssue) : null;
+}
+
+/** Index the lane's legacy Linear rows by ref identity, for lossless lookup. */
+function laneLegacyLinearIssuesByIdentity(lane: LaneSummary): Map<string, LaneLinearIssue> {
+  const byIdentity = new Map<string, LaneLinearIssue>();
+  const record = (issue: LaneLinearIssue | null | undefined): void => {
+    if (!issue) return;
+    const identity = issueRefIdentity(readLinearIssueRef(issue));
+    if (!byIdentity.has(identity)) byIdentity.set(identity, issue);
+  };
+  record(lane.linearIssue);
+  for (const link of lane.linearIssueLinks ?? []) record(link.issue);
+  return byIdentity;
+}
+
+/**
+ * Every issue the PR body should reference, across trackers.
+ *
+ * Reads the generic `lane.issueLinks` / `lane.primaryIssue`, and falls back to
+ * `lane.linearIssue` / `lane.linearIssueLinks` for a row written before those
+ * fields existed. The legacy links are also appended as stragglers when the
+ * generic projection did not carry them, so a partially-populated lane can
+ * never emit FEWER Linear references than it does today — losing a reference
+ * silently drops an issue off a PR, which is the one failure mode worth extra
+ * code to rule out.
+ */
+export function collectLanePrIssueRefs(
   lane: LaneSummary,
   closePrimaryOnMerge: boolean,
-): LinearPrIssueReference[] {
-  const refs: LinearPrIssueReference[] = [];
-  const primaryIssueId = lane.linearIssue?.id ?? null;
-  if (lane.linearIssue) {
+): LanePrIssueRef[] {
+  const legacyByIdentity = laneLegacyLinearIssuesByIdentity(lane);
+  const legacyFor = (ref: IssueRef): LaneLinearIssue | null =>
+    legacyByIdentity.get(issueRefIdentity(ref)) ?? null;
+
+  const refs: LanePrIssueRef[] = [];
+  const primary = lanePrimaryIssueRef(lane);
+  const primaryIdentity = primary ? issueRefIdentity(primary) : null;
+  if (primary) {
     refs.push({
-      issue: lane.linearIssue,
+      issue: primary,
+      linearIssue: legacyFor(primary),
       closeOnMerge: closePrimaryOnMerge,
       role: "primary",
     });
   }
+
+  const pushLink = (issue: IssueRef, closeOnMerge: boolean, role: IssueLinkRole): void => {
+    if (role === "primary") return;
+    if (primaryIdentity && issueRefIdentity(issue) === primaryIdentity) return;
+    refs.push({ issue, linearIssue: legacyFor(issue), closeOnMerge, role });
+  };
+
+  const genericLinks = lane.issueLinks ?? [];
+  for (const link of genericLinks) {
+    if (!link.includeInPr) continue;
+    pushLink(link.issue, link.closeOnMerge, link.role);
+  }
   for (const link of lane.linearIssueLinks ?? []) {
     if (!link.includeInPr) continue;
-    if (primaryIssueId && link.issue.id === primaryIssueId) continue;
-    if (link.role === "primary") continue;
-    refs.push({
-      issue: link.issue,
-      closeOnMerge: link.closeOnMerge,
-      role: link.role,
-    });
+    pushLink(readLinearIssueRef(link.issue), link.closeOnMerge, link.role);
   }
+
+  return dedupeIssueRefs(refs);
+}
+
+export function collectLinearPrIssueReferences(
+  lane: LaneSummary,
+  closePrimaryOnMerge: boolean,
+): LinearPrIssueReference[] {
+  const refs = collectLanePrIssueRefs(lane, closePrimaryOnMerge)
+    // Linear refs only: the Linear renderer owns the `ade:linear-links` section
+    // and must keep emitting its exact historical bytes. Every other provider
+    // is rendered by `collectOtherProviderPrIssueReferences` below, into its
+    // own section under its own heading.
+    .filter((entry) => entry.issue.provider === ISSUE_PROVIDER_LINEAR)
+    .map((entry): LinearPrIssueReference => ({
+      issue: entry.linearIssue ?? issueRefToLinearIssue(entry.issue),
+      closeOnMerge: entry.closeOnMerge,
+      role: entry.role,
+    }));
   return dedupeLinearPrIssueReferences(refs);
 }
 
-function applyLinearPrLinkage(
+/**
+ * Whether merging closes the lane's primary issue, per the link that records
+ * it. Generic first, legacy row second.
+ */
+export function lanePrimaryIssueClosesOnMerge(lane: LaneSummary): boolean {
+  const primary = lanePrimaryIssueRef(lane);
+  if (!primary) return false;
+  const genericLink = (lane.issueLinks ?? []).find(
+    (entry) => entry.role === "primary" && issueRefsMatch(entry.issue, primary),
+  );
+  if (genericLink) return genericLink.closeOnMerge === true;
+  const legacyPrimaryId = lane.linearIssue?.id ?? null;
+  if (!legacyPrimaryId) return false;
+  const legacyLink = (lane.linearIssueLinks ?? []).find(
+    (entry) => entry.role === "primary" && entry.issue.id === legacyPrimaryId,
+  );
+  return legacyLink?.closeOnMerge === true;
+}
+
+export function applyLinearPrLinkage(
   body: string,
   lane: LaneSummary,
   closePrimaryOnMerge: boolean,
@@ -839,6 +952,40 @@ function applyLinearPrLinkage(
   if (!refs.length) return body;
   const withMagicWords = ensureLinearPrReferences(body, refs, { preserveExisting: false });
   return ensureLinearPrIssueLinkSection(withMagicWords, refs);
+}
+
+/**
+ * The lane's issues on trackers that have no built-in renderer — a plugin's
+ * Jira, Asana, Shortcut, whatever it declares.
+ *
+ * Linear and GitHub are excluded because their own modules own their sections;
+ * see `issueRefUsesGenericLinkSection`. Nothing else is filtered, so a provider
+ * ADE has never seen reaches the PR body without being registered anywhere.
+ */
+export function collectOtherProviderPrIssueReferences(
+  lane: LaneSummary,
+  closePrimaryOnMerge: boolean,
+): IssueRefPrReference[] {
+  return collectLanePrIssueRefs(lane, closePrimaryOnMerge)
+    .filter((entry) => issueRefUsesGenericLinkSection(entry.issue))
+    .map((entry) => ({ issue: entry.issue, closeOnMerge: entry.closeOnMerge }));
+}
+
+/**
+ * The magic-word lines and the per-tracker link sections for those issues.
+ *
+ * The word comes from `issueRefPrReference`, so a provider ADE has no closure
+ * path for gets `Refs` even when the link says `closeOnMerge` — nothing would
+ * perform that close. Returns the body untouched when the lane has no such
+ * issue, which is what keeps a Linear-only lane byte-identical.
+ */
+export function applyOtherProviderPrLinkage(
+  body: string,
+  refs: IssueRefPrReference[],
+): string {
+  if (!refs.length) return body;
+  const withMagicWords = ensureIssueRefPrReferences(body, refs, { preserveExisting: false });
+  return ensureIssueRefPrLinkSections(withMagicWords, refs);
 }
 
 function applyGitHubPrLinkage(body: string, refs: GitHubPrIssueReference[]): string {
@@ -1795,6 +1942,13 @@ export function createPrService({
   // attachment on open. Mirrors source-of-truth in `lane_linear_issue_links`
   // where available, but `session_linear_issues` is authoritative for sessions
   // whose lane mirror never landed (e.g. standalone CLI attach after snapshot).
+  //
+  // These stay on the legacy row shape: `SessionLinearIssueLink` has no generic
+  // counterpart to prefer — unlike `LaneSummary`, it carries no `IssueRef`
+  // field — so there is nothing here to read generically yet. The rows are read
+  // through `readLinearIssueRef` further down the pipe: `buildLinearPrReference`
+  // derives the ref from each issue, so a session row that already carries a
+  // third-party `__issueRef` gets `Refs`, not a `Fixes` nobody honors.
   const collectLinearPrIssueReferencesForLaneSessions = (laneId: string): LinearPrIssueReference[] => {
     let links: SessionLinearIssueLink[] = [];
     try {
@@ -1834,8 +1988,19 @@ export function createPrService({
     lane: LaneSummary,
     closePrimaryOnMerge: boolean,
   ): string => {
+    // Each pass prepends its own magic-word lines, so the LAST pass ends up on
+    // top. Linear first, then plugin trackers, then GitHub — which preserves
+    // the existing Linear-below-GitHub order for every lane that has only
+    // those two.
     const withLinear = applyLinearPrLinkage(body, lane, closePrimaryOnMerge);
-    return applyGitHubPrLinkage(withLinear, collectGitHubPrIssueReferencesForLaneSessions(lane.id));
+    const withOtherProviders = applyOtherProviderPrLinkage(
+      withLinear,
+      collectOtherProviderPrIssueReferences(lane, closePrimaryOnMerge),
+    );
+    return applyGitHubPrLinkage(
+      withOtherProviders,
+      collectGitHubPrIssueReferencesForLaneSessions(lane.id),
+    );
   };
 
   const publishLinearPrCardsForLane = async (args: {
@@ -7002,7 +7167,10 @@ export function createPrService({
     const finalizeDraft = (draft: { title: string; body: string }): { title: string; body: string } => {
       const linearRefs = collectLinearPrIssueReferences(lane, closeLinearIssueOnMerge);
       const githubRefs = collectGitHubPrIssueReferencesForLaneSessions(lane.id);
-      if (!linearRefs.length && !githubRefs.length) return draft;
+      // A lane whose only issue lives on a plugin tracker still needs its
+      // section written, so this guard counts those refs too.
+      const otherRefs = collectOtherProviderPrIssueReferences(lane, closeLinearIssueOnMerge);
+      if (!linearRefs.length && !githubRefs.length && !otherRefs.length) return draft;
       const body = applyIssuePrLinkage(draft.body, lane, closeLinearIssueOnMerge);
       if (!lane.linearIssue) return { title: draft.title, body };
       const escapedIdentifier = lane.linearIssue.identifier.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -7382,12 +7550,7 @@ export function createPrService({
       normalizePrCreationStrategy(existingRow?.creation_strategy) ?? "pr_target";
 
     const currentBody = typeof pr?.body === "string" ? pr.body : "";
-    const primaryLink = lane.linearIssue
-      ? (lane.linearIssueLinks ?? []).find(
-          (entry) => entry.role === "primary" && entry.issue.id === lane.linearIssue?.id,
-        )
-      : null;
-    const closePrimaryOnMerge = primaryLink?.closeOnMerge === true;
+    const closePrimaryOnMerge = lanePrimaryIssueClosesOnMerge(lane);
     const patchedBody = ensureAdeDeeplinkFooter(applyIssuePrLinkage(currentBody, lane, closePrimaryOnMerge), {
       repoOwner: repo.owner,
       repoName: repo.name,

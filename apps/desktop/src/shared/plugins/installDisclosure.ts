@@ -26,6 +26,7 @@
  * behaves this way, and the two must not drift.
  */
 
+import { builtinSurfaceOwner } from "./builtinSurfaces";
 import { PLUGIN_SKILL_NEXT_TURN_NOTE } from "./clientRendering";
 import { PLUGIN_PROVIDER_KEY_LABELS, type PluginManifest } from "./manifest";
 import { PLUGIN_SURFACE_IDS, type PluginSocketKind, type PluginSurfaceId } from "./sockets";
@@ -225,6 +226,31 @@ export function describeManifestAdds(manifest: PluginManifest): string[] {
     lines.push(providers.length === 1
       ? `Uses your ${named} API key`
       : `Uses your ${named} API keys`);
+  }
+  // Beside the other three because it is the same kind of fact: what this
+  // package can reach that the package itself did not come with. Named rather
+  // than counted, and by PROVIDER rather than by URL — "signs you in to Linear"
+  // is a sentence a person can agree to, where "opens linear.app/oauth/authorize"
+  // asks them to recognise an OAuth endpoint before they can decide.
+  for (const session of manifest.authSessions ?? []) {
+    // The loopback listener is on the line rather than in a footnote. It is the
+    // one thing here that a reader could otherwise discover only by finding a
+    // port on their machine already taken, and a port a package binds is
+    // exactly the sort of thing an install card exists to say out loud.
+    lines.push(session.loopback
+      ? `Signs you in to ${session.provider}, and listens on port ${session.loopback.port} while you do`
+      : `Signs you in to ${session.provider}`);
+  }
+  // Then the credential the plugin asks to INHERIT, which is a different and
+  // larger fact than any of the above: everything else describes access the
+  // plugin builds for itself, and this one describes a connection the user
+  // already made with ADE. Said as "asks to use", never "uses", because the
+  // install is not the consent — a separate card is, and this line is only the
+  // warning that it is coming.
+  for (const builtin of manifest.credentialHandoff ?? []) {
+    lines.push(
+      `Asks to use the ${builtinSurfaceOwner(builtin).title} connection you already set up in ADE`,
+    );
   }
   // Last of the three, because it is the most sensitive read on the card and
   // the one a person is most likely to want to stop on. Named rather than

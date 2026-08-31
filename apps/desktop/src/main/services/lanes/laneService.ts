@@ -25,6 +25,16 @@ import {
   parseLaneGitHubIssueJson,
   parseLaneGitHubIssueValue,
 } from "../../../shared/laneGitHubIssue";
+import {
+  canPluginUnlinkIssueRef,
+  isLinkableIssueRef,
+  issueRefIdentity,
+  issueRefRowKey,
+  issueRefToStoredLinearIssue,
+  readGitHubIssueRef,
+  readLinearIssueRef,
+  type IssueRef,
+} from "../../../shared/issueRef";
 import type { createOperationService } from "../history/operationService";
 import type { Logger } from "../logging/logger";
 import { createWorktreeResidualCleanup } from "./worktreeResidualCleanup";
@@ -53,6 +63,9 @@ import type {
   LaneBranchSwitchResult,
   LaneGitHubIssue,
   LaneLinearIssue,
+  IssueLink,
+  IssueLinkRole,
+  IssueLinkSource,
   LaneLinearIssueLink,
   LaneLinearIssueLinkRole,
   LaneLinearIssueLinkSource,
@@ -365,7 +378,29 @@ function cloneLaneSummary(summary: LaneSummary): LaneSummary {
     tags: [...summary.tags],
     activeBranchProfile: summary.activeBranchProfile ? { ...summary.activeBranchProfile } : null,
     linearIssue: summary.linearIssue ? cloneLaneLinearIssue(summary.linearIssue) : null,
-    linearIssueLinks: (summary.linearIssueLinks ?? []).map(cloneLaneLinearIssueLink)
+    linearIssueLinks: (summary.linearIssueLinks ?? []).map(cloneLaneLinearIssueLink),
+    primaryIssue: summary.primaryIssue ? cloneIssueRef(summary.primaryIssue) : null,
+    issueLinks: (summary.issueLinks ?? []).map(cloneIssueLink),
+  };
+}
+
+function cloneIssueRef(ref: IssueRef): IssueRef {
+  return {
+    ...ref,
+    state: ref.state ? { ...ref.state } : ref.state,
+    container: ref.container ? { ...ref.container } : ref.container,
+    assignee: ref.assignee ? { ...ref.assignee } : ref.assignee,
+    priority: ref.priority ? { ...ref.priority } : ref.priority,
+    labels: ref.labels ? [...ref.labels] : ref.labels,
+    extra: ref.extra ? { ...ref.extra } : ref.extra,
+  };
+}
+
+function cloneIssueLink(link: IssueLink): IssueLink {
+  return {
+    ...link,
+    issue: cloneIssueRef(link.issue),
+    evidence: link.evidence ? { ...link.evidence } : null,
   };
 }
 
@@ -600,6 +635,71 @@ function parseIssueLinkEvidence(raw: string | null | undefined): LaneLinearIssue
   }
 }
 
+/**
+ * Project a lane-scoped Linear link row onto the provider-neutral shape.
+ *
+ * The row is the same row either way. `readLinearIssueRef` returns the ref the
+ * row carries under `__issueRef`, or derives one from the legacy Linear fields
+ * when the row predates that key. So a lane written by an older build reports a
+ * generic link too, and no migration or backfill runs.
+ */
+function laneLinearLinkToIssueLink(link: LaneLinearIssueLink): IssueLink {
+  return {
+    id: link.id,
+    laneId: link.laneId,
+    sessionId: null,
+    issue: readLinearIssueRef(link.issue),
+    role: link.role,
+    source: link.source,
+    includeInPr: link.includeInPr,
+    closeOnMerge: link.closeOnMerge,
+    evidence: link.evidence ?? null,
+    createdAt: link.createdAt,
+    updatedAt: link.updatedAt,
+  };
+}
+
+/**
+ * The primary issue a lane's links name, when the lane has no
+ * `lane_linear_issues` row of its own.
+ */
+function primaryIssueRefFromLinks(links: LaneLinearIssueLink[]): IssueRef | null {
+  const primary = links.find((link) => link.role === "primary");
+  return primary ? readLinearIssueRef(primary.issue) : null;
+}
+
+function sessionLinearLinkToIssueLink(link: SessionLinearIssueLink): IssueLink {
+  return {
+    id: link.id,
+    laneId: link.laneId,
+    sessionId: link.sessionId,
+    issue: readLinearIssueRef(link.issue),
+    role: link.role,
+    source: link.source,
+    includeInPr: link.includeInPr,
+    closeOnMerge: link.closeOnMerge,
+    evidence: link.evidence ?? null,
+    createdAt: link.createdAt,
+    updatedAt: link.updatedAt,
+  };
+}
+
+function sessionGitHubLinkToIssueLink(link: SessionGitHubIssueLink): IssueLink {
+  return {
+    id: link.id,
+    laneId: link.laneId,
+    sessionId: link.sessionId,
+    issue: readGitHubIssueRef(link.issue),
+    role: link.role,
+    source: link.source,
+    includeInPr: link.includeInPr,
+    closeOnMerge: link.closeOnMerge,
+    evidence: link.evidence ?? null,
+    createdAt: link.createdAt,
+    updatedAt: link.updatedAt,
+  };
+}
+
 function parseLaneLinearIssueLink(row: LaneLinearIssueLinkRow | null | undefined): LaneLinearIssueLink | null {
   if (!row) return null;
   const issue = parseLaneLinearIssueJson(row.issue_json);
@@ -733,7 +833,18 @@ function toLaneSummary(args: {
     archivedAt: row.archived_at,
     activeBranchProfile: activeBranchProfile ?? null,
     linearIssue: linearIssue ?? null,
-    linearIssueLinks
+    linearIssueLinks,
+    // The provider-neutral view of the same rows. It is derived, never stored,
+    // so it can never disagree with the legacy fields beside it.
+    //
+    // The `lane_linear_issues` row wins when there is one, because that row is
+    // what named the branch. A lane that has no such row can still have a
+    // primary link — a plugin linking with `role: "primary"` writes only the
+    // link table — so fall back to it rather than reporting no primary at all.
+    primaryIssue: linearIssue
+      ? readLinearIssueRef(linearIssue)
+      : primaryIssueRefFromLinks(linearIssueLinks),
+    issueLinks: linearIssueLinks.map(laneLinearLinkToIssueLink),
   };
 }
 
@@ -1400,8 +1511,18 @@ export function createLaneService({
     includeInPr?: boolean;
     closeOnMerge?: boolean;
     evidence?: LaneLinearIssueLink["evidence"];
+    /**
+     * The value for the `issue_id` COLUMN, when it must differ from the
+     * issue's own id. The app-layer uniqueness tuple is
+     * `(project_id, lane_id, issue_id, role)`, so a tracker other than Linear
+     * namespaces its key to keep two trackers from colliding on the same id
+     * string. A Linear link passes nothing and keeps the bare id, which leaves
+     * every existing row and every older peer untouched.
+     */
+    issueRowKey?: string;
   }): LaneLinearIssueLink => {
     const laneId = args.laneId.trim();
+    const issueRowKey = args.issueRowKey ?? args.issue.id;
     const now = new Date().toISOString();
     const includeInPr = args.includeInPr !== false;
     const closeOnMerge = args.closeOnMerge === true;
@@ -1415,7 +1536,7 @@ export function createLaneService({
             and issue_id = ?
             and role = ?
         `,
-        [projectId, laneId, args.issue.id, args.role],
+        [projectId, laneId, issueRowKey, args.role],
       );
       const id = randomUUID();
       db.run(
@@ -1430,7 +1551,7 @@ export function createLaneService({
           id,
           projectId,
           laneId,
-          args.issue.id,
+          issueRowKey,
           JSON.stringify(args.issue),
           args.role,
           args.source,
@@ -1536,9 +1657,12 @@ export function createLaneService({
     includeInPr?: boolean;
     closeOnMerge?: boolean;
     evidence?: SessionLinearIssueLink["evidence"];
+    /** See `upsertLaneLinearIssueLink`. */
+    issueRowKey?: string;
   }): SessionLinearIssueLink => {
     const sessionId = args.sessionId.trim();
     const laneId = args.laneId?.trim() || null;
+    const issueRowKey = args.issueRowKey ?? args.issue.id;
     const now = new Date().toISOString();
     const includeInPr = args.includeInPr !== false;
     const closeOnMerge = args.closeOnMerge === true;
@@ -1552,7 +1676,7 @@ export function createLaneService({
             and issue_id = ?
             and role = ?
         `,
-        [projectId, sessionId, args.issue.id, args.role],
+        [projectId, sessionId, issueRowKey, args.role],
       );
       const id = randomUUID();
       db.run(
@@ -1568,7 +1692,7 @@ export function createLaneService({
           projectId,
           sessionId,
           laneId,
-          args.issue.id,
+          issueRowKey,
           JSON.stringify(args.issue),
           args.role,
           args.source,
@@ -4579,6 +4703,160 @@ export function createLaneService({
         db.run("commit");
       } catch (err) {
         try { db.run("rollback"); } catch { /* keep original unlink error */ }
+        throw err;
+      }
+      invalidateLaneListCache();
+      return true;
+    },
+
+    /**
+     * Every issue link on a lane or a session, on whichever tracker owns it.
+     *
+     * A lane reads its lane-scoped Linear rows. A session reads both its Linear
+     * and its GitHub rows, because a session can carry either. Rows written
+     * before `IssueRef` existed project through the legacy fields, so this is
+     * never emptier than the provider-specific readers beside it.
+     */
+    listIssueLinks(args: { laneId?: string; sessionId?: string }): IssueLink[] {
+      const laneId = args.laneId?.trim() || null;
+      const sessionId = args.sessionId?.trim() || null;
+      if (laneId && sessionId) throw new Error("Pass a laneId or a sessionId, not both.");
+      if (laneId) return getLaneLinearIssueLinks(laneId).map(laneLinearLinkToIssueLink);
+      if (sessionId) {
+        return [
+          ...getSessionLinearIssueLinks(sessionId).map(sessionLinearLinkToIssueLink),
+          ...getSessionGitHubIssueLinks(sessionId).map(sessionGitHubLinkToIssueLink),
+        ];
+      }
+      throw new Error("laneId or sessionId is required.");
+    },
+
+    /**
+     * Link an issue from any tracker to a lane or a session.
+     *
+     * The row is written into the SAME tables the built-in Linear writers use.
+     * The ref rides inside `issue_json` under `__issueRef`, beside a full legacy
+     * Linear projection of itself, so a peer on an older build still parses the
+     * row and still renders the issue. Nothing about the SQL shape changes, and
+     * no peer needs a schema it does not already have.
+     */
+    linkIssueRef(args: {
+      laneId?: string;
+      sessionId?: string;
+      issue: IssueRef;
+      role?: IssueLinkRole;
+      source?: IssueLinkSource;
+      includeInPr?: boolean;
+      closeOnMerge?: boolean;
+      evidence?: IssueLink["evidence"];
+    }): IssueLink {
+      const laneId = args.laneId?.trim() || null;
+      const sessionId = args.sessionId?.trim() || null;
+      if (laneId && sessionId) throw new Error("Pass a laneId or a sessionId, not both.");
+      if (!laneId && !sessionId) throw new Error("laneId or sessionId is required.");
+      if (!isLinkableIssueRef(args.issue)) {
+        throw new Error("Issue link is missing a provider, an issue id, a key or a title.");
+      }
+      const role: IssueLinkRole = args.role ?? "referenced";
+      const source: IssueLinkSource = args.source ?? "manual";
+      const stored = issueRefToStoredLinearIssue(args.issue);
+      const issueRowKey = issueRefRowKey(args.issue);
+      if (laneId) {
+        if (!getLaneRow(laneId)) throw new Error(`Lane not found: ${laneId}`);
+        const link = upsertLaneLinearIssueLink({
+          laneId,
+          issue: stored,
+          role,
+          source,
+          includeInPr: args.includeInPr,
+          closeOnMerge: args.closeOnMerge,
+          evidence: args.evidence ?? null,
+          issueRowKey,
+        });
+        invalidateLaneListCache();
+        return laneLinearLinkToIssueLink(link);
+      }
+      const link = upsertSessionLinearIssueLink({
+        sessionId: sessionId!,
+        laneId: resolveSessionLaneId(sessionId!),
+        issue: stored,
+        role,
+        source,
+        includeInPr: args.includeInPr,
+        closeOnMerge: args.closeOnMerge,
+        evidence: args.evidence ?? null,
+        issueRowKey,
+      });
+      invalidateLaneListCache();
+      return sessionLinearLinkToIssueLink(link);
+    },
+
+    /**
+     * Remove one issue link, identified by its tracker and its issue id.
+     *
+     * `requirePluginId` is the ownership gate. A plugin passes its own id and
+     * may then remove only what it created; a link ADE itself made carries the
+     * `core` owner and refuses every plugin. The user reaches this without the
+     * argument, through the lane UI, the CLI and the TUI, and may remove any
+     * link. Answering `false` for a link that is not there is deliberate: there
+     * is no owner to check, so it is a no-op rather than a refusal.
+     */
+    unlinkIssueRef(args: {
+      laneId?: string;
+      sessionId?: string;
+      provider: string;
+      issueId: string;
+      requirePluginId?: string;
+    }): boolean {
+      const laneId = args.laneId?.trim() || null;
+      const sessionId = args.sessionId?.trim() || null;
+      if (laneId && sessionId) throw new Error("Pass a laneId or a sessionId, not both.");
+      if (!laneId && !sessionId) throw new Error("laneId or sessionId is required.");
+      const provider = args.provider.trim().toLowerCase();
+      const issueId = args.issueId.trim();
+      if (!provider || !issueId) throw new Error("provider and issueId are required.");
+      const wanted = `${provider}:${issueId}`;
+      // Each candidate carries the table it came from. A session can hold both
+      // a Linear row and a GitHub row, and the two tables share an id space
+      // only by accident, so deleting by id alone from the wrong table would
+      // either miss the row or remove an unrelated one.
+      const candidates: Array<{ table: string; link: IssueLink }> = laneId
+        ? getLaneLinearIssueLinks(laneId).map((link) => ({
+          table: "lane_linear_issue_links",
+          link: laneLinearLinkToIssueLink(link),
+        }))
+        : [
+          ...getSessionLinearIssueLinks(sessionId!).map((link) => ({
+            table: "session_linear_issues",
+            link: sessionLinearLinkToIssueLink(link),
+          })),
+          ...getSessionGitHubIssueLinks(sessionId!).map((link) => ({
+            table: "session_github_issues",
+            link: sessionGitHubLinkToIssueLink(link),
+          })),
+        ];
+      const target = candidates.filter((entry) => issueRefIdentity(entry.link.issue) === wanted);
+      if (!target.length) return false;
+      if (args.requirePluginId) {
+        for (const entry of target) {
+          if (!canPluginUnlinkIssueRef(entry.link.issue, args.requirePluginId)) {
+            throw new Error(
+              `This issue link belongs to "${entry.link.issue.pluginId}". A plugin can remove only the links it created.`,
+            );
+          }
+        }
+      }
+      db.run("begin");
+      try {
+        for (const entry of target) {
+          db.run(
+            `delete from ${entry.table} where project_id = ? and id = ?`,
+            [projectId, entry.link.id],
+          );
+        }
+        db.run("commit");
+      } catch (err) {
+        try { db.run("rollback"); } catch { /* keep the original unlink error */ }
         throw err;
       }
       invalidateLaneListCache();

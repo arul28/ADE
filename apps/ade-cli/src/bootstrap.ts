@@ -658,6 +658,21 @@ export function pluginActionRefusalMessage(
   ) {
     return "Plugins schedule through ade.schedules.*, which is owned by the plugin and removed when it is uninstalled.";
   }
+  // Same shape again, on the lane's issue links. `lane.linkLinearIssues` and
+  // `lane.unlinkLinearIssues` write the lane's issue rows with no record of who
+  // asked: a link a plugin made is indistinguishable from one the user made, so
+  // nothing lists it as the plugin's, uninstalling the plugin leaves it behind,
+  // and any plugin can unlink any other plugin's — or ADE's own — links.
+  // `ade.lanes.linkIssue` / `ade.lanes.unlinkIssue` are the supported path: the
+  // host stamps the calling plugin's id onto the `IssueRef` from the child
+  // connection that asked, and unlinking is refused for a link the plugin did
+  // not create. The two verbs stay refused rather than becoming aliases,
+  // because — exactly as with `requestSessionAttention` above — the attribution
+  // is a property of the SDK verb and an action a plugin can call directly has
+  // none. The user keeps both verbs through the lane UI, the CLI and the TUI.
+  if (domain === "lane" && (action === "linkLinearIssues" || action === "unlinkLinearIssues")) {
+    return "Plugins link issues through ade.lanes.linkIssue / ade.lanes.unlinkIssue, which record the plugin that created the link and let it remove only its own.";
+  }
   // The third scheduler, and the one that reaches furthest. A plugin that
   // can save an ENABLED rule and then trigger it has borrowed every other
   // refusal on this list: the rule's steps run as the user, so a rule whose
@@ -2808,6 +2823,11 @@ export async function createAdeRuntime(args: {
         projectRoot,
         db,
         syncMeter: pluginSyncMeter,
+        // `ade.lanes.*` lands here. The SDK server stamps the calling plugin on
+        // every link it writes and refuses an unlink of a link another plugin
+        // owns, so the lane service is lent whole rather than through the
+        // action allowlist, which records no caller.
+        lanes: laneService,
         webhookIngress: {
           ack: (webhookPluginId, deliveryId) =>
             pluginWebhookIngressService.ack(webhookPluginId, deliveryId),

@@ -13,12 +13,14 @@
 //   - parseWebPath(pathAndQuery) -> the deeplink target a live app route maps
 //     back to (used by the "Open in desktop" button to mint an ade:// URL).
 //
-// The two are inverses for lane / session / pr / branch / linear-issue, which
-// the unit tests round-trip.
+// The two are inverses for lane / session / pr / branch / linear-issue / issue,
+// which the unit tests round-trip.
 // ---------------------------------------------------------------------------
 
 import {
   ADE_DEEPLINK_HTTPS_BASE_URL,
+  isValidIssueKey,
+  isValidIssueProvider,
   parseDeeplink,
   parseDeeplinkPluginContext,
   type DeeplinkTarget,
@@ -111,6 +113,18 @@ export function targetToWebPath(target: DeeplinkTarget): string | null {
     case "linear-issue":
       params.set("linearIssue", target.issueIdentifier);
       if (target.branch) params.set("branch", target.branch);
+      return withQuery("/work", params);
+    case "issue":
+      // The provider-neutral form of the case above, on the same page and in
+      // the same param vocabulary the deeplink envelope already uses
+      // (`issueProvider` / `issueKey`), so `parseWebPath` reads back exactly
+      // what was written. The Linear alias keeps its own params rather than
+      // being folded into these: a route minted by an older client still says
+      // `linearIssue`, and it has to keep resolving.
+      params.set("issueProvider", target.provider);
+      params.set("issueKey", target.issueKey);
+      if (target.branch) params.set("branch", target.branch);
+      if (target.pluginId) params.set("plugin", target.pluginId);
       return withQuery("/work", params);
     case "plugin":
       // Byte-identical to what `resolvePluginDeeplinkRouting` produces on
@@ -219,6 +233,24 @@ export function parseWebPath(pathAndQuery: string): DeeplinkTarget | null {
     if (issueIdentifier) {
       const branch = params.get("branch");
       return { kind: "linear-issue", issueIdentifier, ...(branch ? { branch } : {}) };
+    }
+    const issueProvider = params.get("issueProvider");
+    const issueKey = params.get("issueKey");
+    if (issueProvider && issueKey) {
+      // Same authority as the plugin route below: the shared parser decides
+      // what is linkable, so a route the reader typed cannot become a target
+      // that would not parse back into a link.
+      if (!isValidIssueProvider(issueProvider) || !isValidIssueKey(issueKey)) return null;
+      const branch = params.get("branch");
+      const pluginId = params.get("plugin");
+      if (pluginId && !isValidPluginId(pluginId)) return null;
+      return {
+        kind: "issue",
+        provider: issueProvider.trim().toLowerCase(),
+        issueKey: issueKey.trim(),
+        ...(branch ? { branch } : {}),
+        ...(pluginId ? { pluginId } : {}),
+      };
     }
     return null;
   }

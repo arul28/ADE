@@ -266,8 +266,16 @@ export function createPluginBridge(deps: PluginBridgeDeps) {
       args?: Record<string, unknown>;
       /** Per-call round-trip budget; the host clamps it. See `sockets.ts`. */
       timeoutMs?: number;
-    }): Promise<unknown> =>
-      callStrictOr("invoke", args, () => invoke(IPC.pluginInvoke, args)),
+    }): Promise<unknown> => {
+      // Every plugin control in the desktop window funnels through here, so this
+      // is the one place that can tell the host which kind of client is asking.
+      // It matters for exactly one thing: a sign-in. A `loopback` flow opens a
+      // browser on THIS machine, which is right here and a dead end on a phone,
+      // and a host with no hint has to guess. A hint and never a permission —
+      // nothing is granted or refused on it.
+      const routed = { ...args, client: "desktop" as const };
+      return callStrictOr("invoke", routed, () => invoke(IPC.pluginInvoke, routed));
+    },
     restart: async (args: { pluginId: string }): Promise<void> => {
       await callStrictOr("reload", args, () => invoke(IPC.pluginReload, args));
     },

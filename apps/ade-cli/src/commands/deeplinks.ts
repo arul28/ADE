@@ -16,11 +16,15 @@ import {
   ADE_DEEPLINK_HTTPS_PATH,
   buildDeeplink,
   isAdeDeeplinkHttpsHost,
+  isValidIssueKey,
+  isValidIssueProvider,
   isValidRepoRelativePath,
   parseDeeplink,
   type DeeplinkEnvelope,
+  type DeeplinkIssueTarget,
   type DeeplinkTarget,
 } from "../../../desktop/src/shared/deeplinks";
+import { isValidPluginId } from "../../../desktop/src/shared/plugins/manifest";
 import { PLUGIN_NAVIGATE_CONTEXT_MAX_BYTES } from "../../../desktop/src/shared/plugins/sdk";
 import { WEB_CLIENT_BASE_URL, buildWebClientUrl } from "../../../desktop/src/shared/webClientUrl";
 import { copyToClipboard } from "../lib/clipboard";
@@ -47,6 +51,7 @@ const HELP_OPEN = [
   "Usage:",
   "  ade open <url>",
   "  ade open --linear-issue <id> --branch <branch>",
+  "  ade open --issue-provider <provider> --issue-key <key> [--branch <branch>] [--plugin <plugin-id>]",
   "",
   "  Opens an `ade://` or `https://ade-app.dev/open?...` URL via the OS, which",
   "  routes it back to the running ADE desktop app (or launches it cold).",
@@ -54,6 +59,10 @@ const HELP_OPEN = [
   "  The --linear-issue / --branch form is what Linear's 'Open in coding",
   "  tool' menu passes us (Linear doesn't surface the GitHub repo, so the",
   "  desktop renderer resolves it from the active project).",
+  "",
+  "  --issue-provider / --issue-key is the same hand-off for any tracker: the",
+  "  receiving ADE opens whichever plugin owns that provider, and falls back to",
+  "  the built-in Linear surface for `linear` when no plugin claims it.",
 ].join("\n");
 
 const HELP_LINK = [
@@ -66,6 +75,7 @@ const HELP_LINK = [
   "  ade link branch <owner/repo> <branch> [--pr <number>]",
   "  ade link pr <owner/repo> <number>",
   "  ade link linear-issue <ADE-123> [--branch <branch>]",
+  "  ade link issue <provider> <issue-key> [--branch <branch>] [--plugin <plugin-id>]",
   "  ade link plugin <plugin-id> <panel-id> [--ctx '<json-object>']",
   "  ade link <url>            # round-trip — parse + re-print canonical form",
   "",
@@ -136,10 +146,27 @@ export function runOpenCommand(args: string[]): DeeplinkCliResult {
   // Flag form: --linear-issue <id> --branch <branch> (Linear coding-tool entry)
   const flags = extractFlags(args, {
     booleans: [],
-    valued: ["linear-issue", "branch"],
+    valued: ["linear-issue", "branch", "issue-provider", "issue-key", "plugin"],
   });
   const linearIssue = flags.valued.get("linear-issue");
   const branch = flags.valued.get("branch");
+  const issueProvider = flags.valued.get("issue-provider");
+  const issueKey = flags.valued.get("issue-key");
+  const issuePlugin = flags.valued.get("plugin");
+
+  // Provider-neutral form. Checked before the Linear one so that
+  // `--issue-provider linear` is not read as a bare `--branch` hand-off.
+  if (issueProvider || issueKey || issuePlugin) {
+    if (!issueProvider || !issueKey) {
+      throw new CliDeeplinkUsageError(
+        "--issue-provider and --issue-key are both required for the issue form",
+      );
+    }
+    return openAndReport(buildDeeplink(
+      issueTargetOrThrow({ provider: issueProvider, issueKey, branch, pluginId: issuePlugin }),
+    ));
+  }
+
   if (linearIssue || branch) {
     if (!linearIssue) {
       throw new CliDeeplinkUsageError("--linear-issue is required when using --branch");
@@ -285,7 +312,7 @@ function buildLinkPlan(args: string[]): LinkPlan {
   }
   const flags = extractFlags(args, {
     booleans: ["ade", "web", "no-envelope", "no-clipboard"],
-    valued: ["pr", "branch", "lane", "line", "ctx"],
+    valued: ["pr", "branch", "lane", "line", "ctx", "issue-provider", "issue-key", "plugin"],
   });
   const positional = flags.positional;
   const wantsAde = flags.booleans.has("ade");
@@ -404,6 +431,21 @@ function buildLinkPlan(args: string[]): LinkPlan {
       ? { kind: "linear-issue", issueIdentifier, branch: branchHint }
       : { kind: "linear-issue", issueIdentifier });
   }
+  if (verb === "issue") {
+    const provider = positional[1] ?? flags.valued.get("issue-provider");
+    const issueKey = positional[2] ?? flags.valued.get("issue-key");
+    if (!provider || !issueKey) {
+      throw new CliDeeplinkUsageError(
+        "ade link issue <provider> <issue-key> [--branch <branch>] [--plugin <plugin-id>]",
+      );
+    }
+    return plan(issueTargetOrThrow({
+      provider,
+      issueKey,
+      branch: flags.valued.get("branch"),
+      pluginId: flags.valued.get("plugin"),
+    }));
+  }
   if (verb === "plugin") {
     const pluginId = positional[1];
     const panelId = positional[2];
@@ -465,6 +507,45 @@ function parseCtxFlag(raw: string | undefined): Record<string, unknown> | undefi
     throw new CliDeeplinkUsageError(`--ctx must be under ${PLUGIN_NAVIGATE_CONTEXT_MAX_BYTES} bytes`);
   }
   return decoded as Record<string, unknown>;
+}
+
+/**
+ * Build an `issue` target, refusing loudly what the parser would refuse.
+ *
+ * The `--ctx` rule, applied to the issue form: reading is lenient because a
+ * reader who was sent a link should still get somewhere, but MINTING that
+ * quietly dropped the plugin hint — or handed back a URL the round-trip gate
+ * then rejects with a generic message — would be worse than a refusal that
+ * names the bad value.
+ */
+function issueTargetOrThrow(input: {
+  provider: string;
+  issueKey: string;
+  branch?: string;
+  pluginId?: string;
+}): DeeplinkIssueTarget {
+  const provider = input.provider.trim().toLowerCase();
+  if (!isValidIssueProvider(provider)) {
+    throw new CliDeeplinkUsageError(
+      `Issue provider must be a short tracker name such as 'linear' or 'jira' (got ${input.provider})`,
+    );
+  }
+  const issueKey = input.issueKey.trim();
+  if (!isValidIssueKey(issueKey)) {
+    throw new CliDeeplinkUsageError(
+      "Issue key must be non-empty, contain no whitespace, and be at most 128 characters",
+    );
+  }
+  if (input.pluginId != null && !isValidPluginId(input.pluginId)) {
+    throw new CliDeeplinkUsageError(`--plugin must be a valid plugin id (got ${input.pluginId})`);
+  }
+  return {
+    kind: "issue",
+    provider,
+    issueKey,
+    ...(input.branch ? { branch: input.branch } : {}),
+    ...(input.pluginId ? { pluginId: input.pluginId } : {}),
+  };
 }
 
 function parsePositiveInteger(value: string, label: string): number {

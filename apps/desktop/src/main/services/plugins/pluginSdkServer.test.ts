@@ -4,9 +4,12 @@ import type { Logger } from "../logging/logger";
 import type { PluginManifest } from "../../../shared/plugins/manifest";
 import {
   PluginSdkError,
+  PLUGIN_LANE_SUMMARY_FIELDS,
   PLUGIN_WEBHOOK_SECRET_NAME,
   type PluginCollectionPutOptions,
 } from "../../../shared/plugins/sdk";
+import { CORE_ISSUE_PLUGIN_ID, type IssueRef } from "../../../shared/issueRef";
+import type { IssueLink, LaneSummary } from "../../../shared/types/lanes";
 import type { PluginDataStore } from "./pluginDataStore";
 import type { PluginSecretStore } from "./pluginSecretStore";
 import { createPluginSdkServer } from "./pluginSdkServer";
@@ -948,5 +951,272 @@ describe("createPluginSdkServer config.set", () => {
     await handle("config.set", {});
 
     expect(configWrites).toEqual([{}]);
+  });
+});
+
+/**
+ * `ade.lanes.*` — the seam a tracker plugin links work through.
+ *
+ * Two things are load-bearing here and both are ownership, not shape: the
+ * `pluginId` on a link is stamped from the child connection that asked and
+ * never read off the call, and a plugin unlinks only what it created. The third
+ * is a leak: a plugin that asks which lanes exist must not learn where they
+ * live on the user's disk.
+ */
+describe("createPluginSdkServer lanes", () => {
+  type LinkCall = { pluginId: string; args: Record<string, unknown> };
+
+  function laneRow(overrides: Record<string, unknown> = {}): LaneSummary {
+    return {
+      id: "lane-1",
+      name: "Fix the parser",
+      description: null,
+      laneType: "worktree",
+      baseRef: "main",
+      branchRef: "arul/fix-parser",
+      // The three fields the projection must drop. Filled deliberately: a lane
+      // row with empty ones would let the leak test pass by accident.
+      worktreePath: "/Users/arul/Projects/ADE/.ade/worktrees/fix-parser",
+      attachedRootPath: "/Users/arul/Projects/ADE",
+      devicesOpen: [{ deviceId: "d1", displayName: "Arul's iPhone", platform: "ios" }],
+      parentLaneId: null,
+      childCount: 0,
+      stackDepth: 0,
+      parentStatus: null,
+      isEditProtected: false,
+      status: { dirty: false, ahead: 0, behind: 0, remoteBehind: 0, rebaseInProgress: false },
+      color: null,
+      icon: null,
+      tags: [],
+      folder: null,
+      createdAt: "2026-08-31T00:00:00.000Z",
+      ...overrides,
+    } as LaneSummary;
+  }
+
+  function issueRef(overrides: Partial<IssueRef> = {}): IssueRef {
+    return {
+      pluginId: CORE_ISSUE_PLUGIN_ID,
+      provider: "jira",
+      issueId: "10042",
+      key: "ADE-7",
+      title: "The parser drops the last row",
+      url: null,
+      ...overrides,
+    };
+  }
+
+  function issueLink(ref: IssueRef): IssueLink {
+    return {
+      id: "link-1",
+      laneId: "lane-1",
+      sessionId: null,
+      issue: ref,
+      role: "referenced",
+      source: "plugin_link",
+      includeInPr: false,
+      closeOnMerge: false,
+      createdAt: "2026-08-31T00:00:00.000Z",
+      updatedAt: "2026-08-31T00:00:00.000Z",
+    };
+  }
+
+  function laneServer(options: { links?: IssueLink[]; lanes?: LaneSummary[] } = {}) {
+    const linkCalls: LinkCall[] = [];
+    const unlinkCalls: LinkCall[] = [];
+    const { handle } = createServer({
+      lanes: {
+        list: async () => options.lanes ?? [laneRow()],
+        get: async (_pluginId, laneId) =>
+          (options.lanes ?? [laneRow()]).find((lane) => lane.id === laneId) ?? null,
+        listIssueLinks: async () => options.links ?? [],
+        linkIssue: async (pluginId, args) => {
+          linkCalls.push({ pluginId, args: args as unknown as Record<string, unknown> });
+          return issueLink(args.issue);
+        },
+        unlinkIssue: async (pluginId, args) => {
+          unlinkCalls.push({ pluginId, args: args as unknown as Record<string, unknown> });
+          return true;
+        },
+      },
+    });
+    return { handle, linkCalls, unlinkCalls };
+  }
+
+  it("refuses every lane verb with unsupported_method on a host that binds none", async () => {
+    const { handle } = createServer();
+
+    // Not an empty list: a plugin told there are no lanes would report that to
+    // the user as a fact about their project.
+    expect(await codeOf(() => handle("lanes.list", {}))).toBe("unsupported_method");
+    expect(await codeOf(() => handle("lanes.get", { laneId: "lane-1" }))).toBe("unsupported_method");
+    expect(await codeOf(() => handle("lanes.linkIssue", {
+      input: { laneId: "lane-1", issue: issueRef() },
+    }))).toBe("unsupported_method");
+    expect(await codeOf(() => handle("lanes.unlinkIssue", {
+      input: { laneId: "lane-1", provider: "jira", issueId: "10042" },
+    }))).toBe("unsupported_method");
+  });
+
+  it("never hands a plugin a worktree path, an attached root or a device roster", async () => {
+    const { handle } = laneServer();
+
+    const listed = (await handle("lanes.list", {})) as Record<string, unknown>[];
+    const fetched = (await handle("lanes.get", { laneId: "lane-1" })) as Record<string, unknown>;
+
+    for (const projected of [listed[0], fetched]) {
+      expect(projected).toBeTruthy();
+      expect(Object.keys(projected!).sort()).toEqual([...PLUGIN_LANE_SUMMARY_FIELDS].sort());
+      expect(projected).not.toHaveProperty("worktreePath");
+      expect(projected).not.toHaveProperty("attachedRootPath");
+      expect(projected).not.toHaveProperty("devicesOpen");
+      // The value survived the projection, so the assertions above are about
+      // an allowlist and not about a lane row that happened to be empty.
+      expect(projected!.branchRef).toBe("arul/fix-parser");
+    }
+  });
+
+  it("answers null for a lane this project does not have", async () => {
+    const { handle } = laneServer();
+    expect(await handle("lanes.get", { laneId: "lane-404" })).toBeNull();
+  });
+
+  it("links an issue to a lane", async () => {
+    const { handle, linkCalls } = laneServer();
+
+    const link = await handle("lanes.linkIssue", {
+      input: { laneId: "lane-1", issue: issueRef(), role: "primary", includeInPr: true },
+    });
+
+    expect(linkCalls).toHaveLength(1);
+    expect(linkCalls[0]?.args).toMatchObject({ laneId: "lane-1", role: "primary", includeInPr: true });
+    expect(linkCalls[0]?.args).not.toHaveProperty("sessionId");
+    expect(link).toMatchObject({ role: "referenced", source: "plugin_link" });
+  });
+
+  it("links an issue to a session", async () => {
+    const { handle, linkCalls } = laneServer();
+
+    await handle("lanes.linkIssue", { input: { sessionId: "sess-9", issue: issueRef() } });
+
+    expect(linkCalls[0]?.args).toMatchObject({ sessionId: "sess-9" });
+    expect(linkCalls[0]?.args).not.toHaveProperty("laneId");
+  });
+
+  it("refuses a call that names both a lane and a session, and one that names neither", async () => {
+    const { handle, linkCalls } = laneServer();
+
+    // Resolved either way would leave the plugin unable to tell which target
+    // the host picked, so the ambiguity is refused at authoring time.
+    expect(await codeOf(() => handle("lanes.linkIssue", {
+      input: { laneId: "lane-1", sessionId: "sess-9", issue: issueRef() },
+    }))).toBe("invalid_args");
+    expect(await codeOf(() => handle("lanes.linkIssue", { input: { issue: issueRef() } })))
+      .toBe("invalid_args");
+    expect(await codeOf(() => handle("lanes.unlinkIssue", {
+      input: { laneId: "lane-1", sessionId: "sess-9", provider: "jira", issueId: "10042" },
+    }))).toBe("invalid_args");
+    expect(linkCalls).toHaveLength(0);
+  });
+
+  it("refuses a ref that nothing downstream could display or reference", async () => {
+    const { handle, linkCalls } = laneServer();
+
+    // No `title`: the PR body writer, the lane badge and the deeplink envelope
+    // all read it, so a ref without one is not repaired, it is rejected whole.
+    expect(await codeOf(() => handle("lanes.linkIssue", {
+      input: { laneId: "lane-1", issue: { provider: "jira", issueId: "10042", key: "ADE-7" } },
+    }))).toBe("invalid_args");
+    // Blank `key`, which is what the lane shows the user.
+    expect(await codeOf(() => handle("lanes.linkIssue", {
+      input: { laneId: "lane-1", issue: issueRef({ key: "   " }) },
+    }))).toBe("invalid_args");
+    expect(await codeOf(() => handle("lanes.linkIssue", {
+      input: { laneId: "lane-1", issue: "ADE-7" },
+    }))).toBe("invalid_args");
+    expect(linkCalls).toHaveLength(0);
+  });
+
+  it("refuses a role outside the vocabulary rather than flattening it to the default", async () => {
+    const { handle } = laneServer();
+    expect(await codeOf(() => handle("lanes.linkIssue", {
+      input: { laneId: "lane-1", issue: issueRef(), role: "blocks" },
+    }))).toBe("invalid_args");
+  });
+
+  it("stamps the HOST's plugin id over one the caller supplied", async () => {
+    const { handle, linkCalls } = laneServer();
+
+    await handle("lanes.linkIssue", {
+      input: {
+        laneId: "lane-1",
+        // The plugin claims the link belongs to somebody else. If this were
+        // honoured, `unlinkIssue`'s ownership check would be a check against a
+        // value the checked party wrote.
+        issue: issueRef({ pluginId: "someone-else" }),
+      },
+    });
+
+    expect((linkCalls[0]?.args.issue as IssueRef).pluginId).toBe("graph");
+    expect(linkCalls[0]?.pluginId).toBe("graph");
+  });
+
+  it("unlinks a link this plugin created", async () => {
+    const { handle, unlinkCalls } = laneServer({
+      links: [issueLink(issueRef({ pluginId: "graph" }))],
+    });
+
+    expect(await handle("lanes.unlinkIssue", {
+      input: { laneId: "lane-1", provider: "JIRA", issueId: "10042" },
+    })).toBe(true);
+    // The store gets the ownership requirement too — the check here exists for
+    // the message, not instead of the store's.
+    expect(unlinkCalls[0]?.args).toMatchObject({
+      laneId: "lane-1",
+      provider: "jira",
+      issueId: "10042",
+      requirePluginId: "graph",
+    });
+  });
+
+  it("refuses to unlink another plugin's link, and names the owner", async () => {
+    const { handle, unlinkCalls } = laneServer({
+      links: [issueLink(issueRef({ pluginId: "linear-plus" }))],
+    });
+
+    let message = "";
+    try {
+      await handle("lanes.unlinkIssue", {
+        input: { laneId: "lane-1", provider: "jira", issueId: "10042" },
+      });
+    } catch (error) {
+      expect(error).toBeInstanceOf(PluginSdkError);
+      expect((error as PluginSdkError).code).toBe("not_permitted");
+      message = (error as PluginSdkError).message;
+    }
+    expect(message).toContain("linear-plus");
+    expect(unlinkCalls).toHaveLength(0);
+  });
+
+  it("refuses to unlink a link ADE itself made", async () => {
+    const { handle, unlinkCalls } = laneServer({ links: [issueLink(issueRef())] });
+
+    // `core` is nobody's plugin id, so no plugin owns it and only the user can
+    // remove it.
+    expect(await codeOf(() => handle("lanes.unlinkIssue", {
+      input: { laneId: "lane-1", provider: "jira", issueId: "10042" },
+    }))).toBe("not_permitted");
+    expect(unlinkCalls).toHaveLength(0);
+  });
+
+  it("passes an unlink of a link that does not exist through to the store", async () => {
+    const { handle, unlinkCalls } = laneServer({ links: [] });
+
+    // Nothing to own, so nothing to refuse: "there was no such link" is the
+    // store's answer to give, not a permission failure.
+    await handle("lanes.unlinkIssue", {
+      input: { laneId: "lane-1", provider: "jira", issueId: "10042" },
+    });
+    expect(unlinkCalls).toHaveLength(1);
   });
 });

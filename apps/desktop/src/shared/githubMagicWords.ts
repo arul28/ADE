@@ -1,5 +1,7 @@
 import type { LaneGitHubIssue } from "./types";
 import { githubIssueIdentifier } from "./laneGitHubIssue";
+import { ISSUE_PROVIDER_GITHUB } from "./issueRef";
+import { issueRefPrReference } from "./issueRefFormat";
 
 function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -9,8 +11,23 @@ export function githubPrMagicWord(closeOnMerge: boolean): "Closes" | "Refs" {
   return closeOnMerge ? "Closes" : "Refs";
 }
 
+/**
+ * The reference input for a GitHub issue.
+ *
+ * Only the provider and the key matter to the generic builder, and the key is
+ * `githubIssueIdentifier` — the same string `issueRefFromGitHubIssue` puts in
+ * `IssueRef.key`. Building it here rather than deriving a whole `IssueRef`
+ * keeps this path callable with the `owner`/`repo`/`number` triple alone, which
+ * is all it has ever needed.
+ */
+function githubReferenceInput(issue: Pick<LaneGitHubIssue, "owner" | "repo" | "number">) {
+  return { provider: ISSUE_PROVIDER_GITHUB, key: githubIssueIdentifier(issue) };
+}
+
 export function buildGitHubPrReference(issue: LaneGitHubIssue, closeOnMerge: boolean): string {
-  return `${githubPrMagicWord(closeOnMerge)} ${githubIssueIdentifier(issue)}`;
+  // `Closes`/`Refs` + `owner/repo#n`, byte-identical to the previous body; the
+  // word now comes from the provider-neutral table in `issueRefFormat.ts`.
+  return issueRefPrReference(githubReferenceInput(issue), closeOnMerge);
 }
 
 export type GitHubPrIssueReference = {

@@ -493,6 +493,119 @@ deeplink envelope and sync schema read that map.
 Option 2 is what `ade-cursor-cloud` effectively did, and it works. Option 1 is
 what "100% a plugin" actually requires.
 
+**Update: option 1 was taken, without the migration.** The rest of this section
+stands as the description of the problem; this is what changed.
+
+`apps/desktop/src/shared/issueRef.ts` is the anonymous issue link the option
+called for: `IssueRef` carries `{pluginId, provider, issueId, key, title, url,
+state, container, branchName, assignee, priority, labels, description, extra}`,
+where `provider` is the tracker vocabulary (`linear`, `github`, `jira`, …) and
+`state.category` is Linear's `stateType` vocabulary reused as the neutral one.
+`IssueLink` (`shared/types/lanes.ts`) is the lane- or session-scoped link around
+it, and `LaneSummary` grows `primaryIssue` and `issueLinks` beside the existing
+`linearIssue` / `linearIssueLinks`, which stay populated.
+
+A plugin fills it through `ade.lanes.linkIssue` / `ade.lanes.unlinkIssue`
+(`shared/plugins/sdk.ts`, served in `pluginSdkServer.ts`). The host stamps the
+calling plugin's id onto the ref from the child connection that asked —
+`PluginIssueRefInput` has no `pluginId` field — and `unlinkIssue` removes only
+links that plugin created. `lane.linkLinearIssues` and `lane.unlinkLinearIssues`
+are now **refused** for plugins reaching them through `ade.actions.invoke`
+(`apps/ade-cli/src/bootstrap.ts:673`), because a link made through those verbs
+records no owner. They stay open to the user through the lane UI, the CLI and
+the TUI.
+
+**There is no migration.** This is the part that differs from the option as
+written. The ref is stored inside the EXISTING `issue_json` column of
+`lane_linear_issues`, `lane_linear_issue_links`, `session_linear_issues` and
+`session_github_issues`, under the reserved key `__issueRef`, beside a full
+legacy Linear projection of itself (`issueRefToStoredLinearIssue`). No column,
+no table, no backfill: a build that finds no `__issueRef` derives one from the
+legacy fields. A peer on an older build parses the legacy projection and drops
+the unknown key, so a Jira issue renders there with the right key, title, URL
+and state name under a Linear-labelled badge — a mislabel, not a break. The one
+lossy window is an older build re-linking an issue, which rewrites `issue_json`
+without the key; the next link from a new build restores it. The pattern and
+when to prefer it are now
+[Rule 4 of the CRDT model](../features/sync-and-multi-device/crdt-model.md).
+
+Of the four readers the option named:
+
+- **PR writer — reads the generic shape; still renders only Linear.**
+  `prService.collectLanePrIssueRefs` collects the lane's primary issue and every
+  `includeInPr` link as `IssueRef`s (generic first, legacy rows as fallback and
+  as stragglers so a PR can never emit fewer references than before), and
+  `lanePrimaryIssueClosesOnMerge` reads the generic link. The magic word comes
+  from `issueRefPrReference` in `shared/issueRefFormat.ts`, which emits a
+  closing word only for `github` (`Closes`) and `linear` (`Fixes`) — the two
+  trackers that actually perform the close — and **`Refs` for every other
+  provider regardless of `closeOnMerge`**, because `Fixes ABC-12` in a GitHub PR
+  body is inert text. But `collectLinearPrIssueReferences` then filters to
+  `provider === "linear"` (`prService.ts:912`): a Jira ref is carried that far
+  and dropped rather than rendered under a "Linked Linear issues" heading it
+  does not belong to. So the reader is generic and the renderer is not; the
+  renderer for a third-party tracker arrives with the plugin that produces it.
+- **Deeplink envelope — done.** `DeeplinkEnvelope.issue` is `{provider, key}`,
+  written as `?issueProvider=` + `?issueKey=`, which an older peer ignores. The
+  existing `?linear=` field is kept and still written for Linear issues,
+  because that is the param an older peer reads.
+- **Branch namer — generalized, not yet wired.** `issueRefBranchName` /
+  `issueRefLaneName` exist in `shared/issueRefFormat.ts` and
+  `issueRefFormat.test.ts` proves byte-identical output to
+  `linearIssueBranchName` over real identifiers, but every caller — lane
+  creation in `laneService.ts:2055`, `CreateLaneDialog`, `laneLinearIssue.ts` —
+  still calls the Linear one. A plugin cannot create a lane from an issue at all
+  today: `ade.lanes` is `list`, `get`, `linkIssue`, `unlinkIssue`.
+- **Sync schema — deliberately not touched.** See above.
+
+There is also a new provider-neutral deeplink kind:
+`ade://issue/<provider>/<issue-key>[?branch=&plugin=]`, with
+`ade link issue <provider> <key>` and `ade open --issue-provider/--issue-key`
+minting and opening it. `linear-issue` is an alias that stays forever — Linear
+links keep being minted in that spelling so an older ADE can still open them —
+and `linearIssueTargetToIssueTarget` bridges the two so resolvers handle one
+kind.
+
+**What is still Linear-specific.** The generalization is a seam, not a removal:
+
+- The built-in Linear writers, the OAuth flow, the pane, the pickers, the
+  browser and `linearLaneCardService` are all unchanged and still compiled in.
+- `lane.linkLinearIssues` / `unlinkLinearIssues` still exist as the user's verbs,
+  with the Linear-shaped payload.
+- Linear-typed consumers on the **desktop renderer** still read the legacy
+  fields directly, not the ref: the merge fan-out in `main.ts:3838`
+  (`lane.linearIssue`, `link.issue.id` / `teamKey` / `stateId`),
+  `linearLaneCardService`, and `LinearIssueBadge.tsx`, which is typed on
+  `LaneLinearIssue` and reads `identifier`, `teamKey`, `projectName`.
+  `CreatePrModal` still reads `selectedNormalLane.linearIssue`. **iOS's lane
+  badge did migrate** — `RemoteModels.swift` gained a Swift `IssueRef` mirror
+  and a `__issueRef` passthrough held as raw JSON so an unknown-shaped ref
+  cannot fail the row and a phone round-tripping `linearIssue` back to a
+  machine does not rewrite fields it does not know; `LaneComponents.swift`
+  reads `issue.issueRef`, shows a non-Linear tracker's own key/title/state, and
+  gates on the Linear plugin only when the ref IS Linear.
+- `resolveIssueDeeplinkRouting` (`renderer/components/app/pluginDeeplinkRoute.ts`)
+  can route an `issue` link to whichever plugin owns the provider, but nothing
+  supplies its `owners` list yet and `App.tsx` still dispatches only the
+  `plugin` target, so today a non-Linear `issue` link reaches a plugin by
+  `deeplinkToNavigationTarget`'s fallback — the plugin whose id equals the
+  provider, or the one the link names. **iOS does not parse the `issue` kind at
+  all**: `DeepLinkRouter.swift` knows `linear-issue` and not `issue`, so an
+  `ade://issue/jira/PROJ-9` link opens nothing on a phone.
+- `types/linearSync.ts` is untouched, so S28's desktop half is not closed; the
+  iOS half of S28 (`RemoteModels.swift`) now carries the neutral ref beside the
+  Linear records rather than instead of them.
+
+So of the six rows C2 was supposed to unblock: **S17 is closed** — a lane and a
+session take a link from any tracker, attributed to whoever made it. **S19 is
+half closed** — the collection and the magic word are provider-neutral, the
+rendering is not. **D33, D34, M41 and S28 are not closed** — `CreatePrModal`
+still reads `selectedNormalLane.linearIssue` and names its checkbox for Linear,
+the desktop PR row/timeline/merge-rail components and the iOS PR screens
+(`apps/ios/ADE/Views/PRs/`, unchanged) still read Linear fields, and
+`types/linearSync.ts` is untouched. The C2 line in the table at §3.3 is amended
+in place rather than removed, because what is left of it is still real work.
+
 ---
 
 ## 3. Verdict
@@ -503,7 +616,9 @@ what "100% a plugin" actually requires.
 
 You cannot say "Linear as it was could be built as a plugin from all surfaces
 today". Two of the seven gaps are the ones a user meets in the first minute:
-signing in from the phone, and a lane that knows which issue it is for.
+signing in from the phone, and a lane that knows which issue it is for. (The
+second of those has since been built — see the C2 update in §2.5. The verdict
+below is preserved as written, with the amendments marked.)
 
 What you CAN say today, and it is a strong claim:
 
@@ -513,6 +628,12 @@ What you CAN say today, and it is a strong claim:
 > primitives right now, on desktop, web, iOS and the terminal. What is not
 > buildable is the sign-in, the markdown, the multi-select, and the fact that
 > ADE's own lane type has a Linear field on it.
+
+The last clause has since moved. A lane and a session now take a link from any
+tracker through `ade.lanes.linkIssue`, so "a lane that knows which issue it is
+for" is buildable; the Linear-typed readers around it (the PR body renderer, the
+PR row components, the iOS PR screens, the sync models) are what is left. See
+the C2 update in §2.5.
 
 ### 3.2 The numbers
 
@@ -549,7 +670,7 @@ Seven items. Nothing else in the map is C.
 | C | What | Rows it unblocks | Why it is C |
 | --- | --- | --- | --- |
 | **C1** | A host-brokered mobile auth session. Opens the system auth view on the phone, catches a declared callback, hands the plugin the result. | M30, D38 (mobile half), S6 | No plugin OAuth broker exists. `openUrl` leaves the app with no way back. `webhookIngress` is POST-only. |
-| **C2** | Generalise the lane and session issue link so any plugin fills it, and make the PR writer, branch namer, deeplink envelope and sync schema read the generic shape. | S17, S19, S28, D33, D34, M41 | It is a migration of a replicated cr-sqlite table plus a pass over every reader. |
+| **C2** | ~~Generalise the lane and session issue link so any plugin fills it, and make the PR writer, branch namer, deeplink envelope and sync schema read the generic shape.~~ **Partly done** — `IssueRef` + `ade.lanes.linkIssue`/`unlinkIssue` ship, stored inside the existing `issue_json` column with no migration; PR collection, the deeplink envelope and a provider-neutral `issue` deeplink kind read it. **Remaining:** the PR body renderer still filters to `provider === "linear"`, the branch namer is generalized but unwired, and the PR/iOS Linear-typed consumers and `types/linearSync.ts` are untouched. | Closed: S17. Half: S19. Open: S28, D33, D34, M41 | Was "a migration of a replicated cr-sqlite table plus a pass over every reader". The migration was avoided by versioning inside the JSON column; the pass over every reader is the part still outstanding. See §2.5. |
 | **C3** | A selection primitive in the panel vocabulary: a selected set, a range anchor, and a bulk action bar. | D9, D5, D14 | The vocabulary has no concept of selection at all. |
 | **C4** | Hand ADE's existing Linear credential to the plugin once, or add `linear` to `providerKeys`. | S4b | Without it, every existing user reconnects on the day you release it. |
 | **C5** | Let a plugin inject environment variables and a context file into an agent session it launched. | S18 | `ADE_LINEAR_ISSUE_IDS` and `ADE_LINEAR_CONTEXT_FILE` are written by core session launch. No primitive is close. |
@@ -558,6 +679,10 @@ Seven items. Nothing else in the map is C.
 
 C1, C2 and C4 are the release blockers. C3 costs the batch-launch flow. C5, C6
 and C7 are each one visible feature.
+
+C2 has since been partly built — the generic link and the plugin verbs exist,
+without the migration this table assumed. What is left of it is a pass over the
+remaining Linear-typed readers, not a schema change. See §2.5.
 
 ### 3.4 The B list, ordered by leverage
 
@@ -571,7 +696,7 @@ Leverage means rows unblocked per unit of work.
 | 4 | A state control whose options bind to a collection, for sets over eight. | S | D3b, M7. |
 | 5 | Raise `maxStateKeys`, or add a disclosure-group component. | S | D6, M8. |
 | 6 | A panel-level search declaration clients draw in native chrome. | M | M4. |
-| 7 | Plugin-owned deeplink aliases, so `ade://linear-issue/<ID>` can belong to a plugin. | M | M37, and Linear's "Open in coding tool" registration. |
+| 7 | Plugin-owned deeplink aliases, so `ade://linear-issue/<ID>` can belong to a plugin. **Partly built:** `ade://issue/<provider>/<key>[?plugin=]` exists and routes to a plugin panel; `linear-issue` itself stays a permanent core alias and Linear's "Open in coding tool" registration still writes `--linear-issue`. What is missing is the provider-owner registry — `resolveIssueDeeplinkRouting` takes an `owners` list nothing populates yet. | M | M37, and Linear's "Open in coding tool" registration. |
 | 8 | Draw `settings-section` on iOS. | M | M43, plus every plugin's mobile settings. |
 | 9 | Broker a loopback port for desktop OAuth, and disclose the listener at install. | M | D38 (desktop half), S5. |
 | 10 | A per-node custom glyph, beyond icon names. | S | D28, D29, M36. |
@@ -592,15 +717,21 @@ simpler" on the four interactions that matter.
 **(i) Full fidelity. Do the C work.**
 
 Linear becomes the proof that the plugin platform can carry anything. Cost: the
-seven C items plus the top five B items. C2 is a synced-table migration and is
-the schedule risk. What you get is real: after it, no ADE feature has a
+seven C items plus the top five B items. C2 was written up as a synced-table
+migration and read as the schedule risk; it turned out not to need one — the
+generic link versions inside the existing `issue_json` column — so what is left
+of C2 is reader work, not a migration. What you get is real: after it, no ADE
+feature has a
 structural reason to stay compiled in, and the claim "an official plugin is
 indistinguishable from a built-in" is true rather than aspirational.
 
 **(ii) Desktop full, mobile native but simpler. Do A plus B.**
 
-Skip C2 by letting the plugin drive `lane.linkLinearIssues` and leaving the lane
-field where it is. Skip C3 by dropping batch launch to one-at-a-time. Do C1 and
+Skip the rest of C2 by having the plugin link through `ade.lanes.linkIssue` and
+leaving the remaining Linear-typed readers where they are. (This framing
+originally said "let the plugin drive `lane.linkLinearIssues`" — that verb is
+now refused for plugins, because a link made through it records no owner.) Skip
+C3 by dropping batch launch to one-at-a-time. Do C1 and
 C4, because sign-in is not optional. Desktop reaches parity a user would not
 notice. Mobile reaches a panel that looks like ADE, works offline the same way
 the current one does, and loses: markdown bodies, the nav-bar search, the swipe
@@ -622,3 +753,7 @@ integration on every surface; it does not yet carry the front door — signing i
 from a phone — or the fact that a lane has a Linear field, and those two, plus a
 markdown node, are what stand between the shell you have and the plugin you
 want.
+
+Amended: the lane's field is now provider-neutral and a plugin fills it
+(§2.5), so the remaining sentence is the front door, the markdown node, and the
+handful of PR and sync readers still typed on Linear.

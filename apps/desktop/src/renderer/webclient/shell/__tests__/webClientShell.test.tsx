@@ -452,6 +452,16 @@ describe("web route translation", () => {
       prNumber: 42,
     },
     { kind: "linear-issue", issueIdentifier: "ADE-123", branch: "arul/ade-123" },
+    // The provider-neutral form of the line above. Both are routable and both
+    // round-trip: the alias is permanent, so the two live side by side.
+    { kind: "issue", provider: "jira", issueKey: "PROJ-9" },
+    {
+      kind: "issue",
+      provider: "jira",
+      issueKey: "PROJ-9",
+      branch: "arul/proj-9",
+      pluginId: "ade-jira",
+    },
     { kind: "plugin", pluginId: "ade-graph", panelId: "overview" },
     {
       kind: "plugin",
@@ -487,6 +497,23 @@ describe("web route translation", () => {
       panelId: "overview",
       context: { issue: "ISS-14" },
     })).toBe("/plugin/ade-graph?panel=overview&ctx=%7B%22issue%22%3A%22ISS-14%22%7D");
+  });
+
+  it("routes an issue to the same page as the Linear alias, in the envelope's param names", () => {
+    expect(targetToWebPath({ kind: "issue", provider: "jira", issueKey: "PROJ-9" }))
+      .toBe("/work?issueProvider=jira&issueKey=PROJ-9");
+    // The alias keeps its own params: a route minted by an older client still
+    // says `linearIssue`, and it has to keep resolving.
+    expect(parseWebPath("/work?linearIssue=ADE-123"))
+      .toEqual({ kind: "linear-issue", issueIdentifier: "ADE-123" });
+  });
+
+  it("refuses an issue route whose provider, key or plugin id would not mint", () => {
+    expect(parseWebPath("/work?issueProvider=ji%20ra&issueKey=PROJ-9")).toBeNull();
+    expect(parseWebPath("/work?issueProvider=jira&issueKey=PROJ%209")).toBeNull();
+    expect(parseWebPath("/work?issueProvider=jira&issueKey=PROJ-9&plugin=Ade%20Jira")).toBeNull();
+    // Half an issue is not an issue.
+    expect(parseWebPath("/work?issueProvider=jira")).toBeNull();
   });
 
   it("refuses a plugin route whose ids the manifest grammar would not mint", () => {

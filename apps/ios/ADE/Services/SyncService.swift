@@ -9500,6 +9500,53 @@ final class SyncService: ObservableObject {
     supportsRemoteAction("plugins.presenceList")
   }
 
+  /// Whether the attached machine can take a sign-in callback back from this
+  /// phone.
+  ///
+  /// Checked BEFORE the browser opens, not after it closes. A machine that
+  /// cannot receive the callback would let the reader sign in to a provider and
+  /// then have nowhere to put the answer, which is the one outcome worse than
+  /// the affordance not being there at all.
+  var supportsPluginAuthSessions: Bool {
+    supportsRemoteAction(pluginCompleteAuthSessionRemoteAction)
+  }
+
+  /// Hand a captured sign-in callback back to the machine that began the flow.
+  ///
+  /// The phone sends ONLY what the provider returned. It names no plugin and no
+  /// session, because it must not be able to: the machine routes by the `state`
+  /// it minted and never gave out, so a caller can only ever address a flow that
+  /// machine started and that is still live. A phone that could name a session
+  /// could deliver a callback into a flow it did not start.
+  ///
+  /// Nothing here is logged. The parameters carry an authorization code.
+  func completePluginAuthSession(params: [String: String]) async throws {
+    // Same guard as the Linear pair: refuse locally rather than round-tripping a
+    // command an older brain has no handler for, so the caller can say what is
+    // missing instead of surfacing a socket-level error.
+    try requireInvokableRemoteAction(pluginCompleteAuthSessionRemoteAction)
+    let response = try await sendCommand(
+      action: pluginCompleteAuthSessionRemoteAction,
+      args: ["params": params]
+    )
+    // Read tolerantly, and treat only an EXPLICIT `ok: false` as a refusal: a
+    // host that answers in some other shape has still consumed the callback, and
+    // inventing a failure from its silence would tell the reader their sign-in
+    // failed when it did not.
+    guard let payload = response as? [String: Any],
+          payload["ok"] as? Bool == false else { return }
+    let reason = (payload["reason"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
+    throw NSError(
+      domain: "ADE",
+      code: 27,
+      userInfo: [
+        NSLocalizedDescriptionKey: reason == "expired"
+          ? "That sign-in took too long and the machine has closed it. Try again."
+          : "The machine couldn\u{2019}t match that sign-in. Start it again from the plugin."
+      ]
+    )
+  }
+
   /// Scope of a presence answer, in one cheap string: which machine, and how
   /// many times plugin rows have changed. Every surface that gates on an
   /// installed plugin refreshes off this — one definition so a top-bar button

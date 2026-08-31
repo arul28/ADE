@@ -1,6 +1,6 @@
 ---
 name: ade-deeplinks
-description: Use this skill when an agent needs to mint, share, or open ADE deeplinks (lane, work session, file, commit, artifact, branch, PR, Linear issue) so users — or the agent itself — can jump straight to a specific ADE surface from anywhere (GitHub PR description, Linear issue, Slack, email, terminal, mobile).
+description: Use this skill when an agent needs to mint, share, or open ADE deeplinks (lane, work session, file, commit, artifact, branch, PR, Linear issue, an issue on any other tracker, a plugin panel) so users — or the agent itself — can jump straight to a specific ADE surface from anywhere (GitHub PR description, Linear issue, Slack, email, terminal, mobile).
 ---
 
 # ADE deeplinks
@@ -19,6 +19,7 @@ ade://artifact/<artifact-id>                     # local proof/history artifact
 ade://repo/<owner>/<repo>/branch/<branch>        # cross-machine — find or offer-to-create lane
 ade://pr/<owner>/<repo>/<number>                 # PR detail view
 ade://linear-issue/<ADE-123>[?branch=<branch>]   # Linear handoff — opens the Linear pane
+ade://issue/<provider>/<issue-key>[?branch=<branch>&plugin=<plugin-id>]  # any tracker
 
 https://ade-app.dev/open?type=lane&id=<uuid>
 https://ade-app.dev/open?type=session&id=<id>[&lane=<lane-uuid>]
@@ -28,7 +29,40 @@ https://ade-app.dev/open?type=artifact&id=<artifact-id>
 https://ade-app.dev/open?type=branch&repo=<owner/repo>&branch=<branch>[&pr=<n>]
 https://ade-app.dev/open?type=pr&repo=<owner/repo>&number=<n>
 https://ade-app.dev/open?type=linear-issue&issue=<ADE-123>[&branch=<branch>]
+https://ade-app.dev/open?type=issue&provider=<provider>&issue=<key>[&branch=<branch>&plugin=<plugin-id>]
 ```
+
+`issue` is the provider-neutral form of `linear-issue`. It names the tracker
+vocabulary (`linear`, `github`, `jira`, …) alongside the key, so a plugin can own
+a tracker ADE has never heard of. **`linear-issue` is not deprecated by it and
+never will be** — every link already minted into a PR body, a Linear comment or
+somebody's notes says `linear-issue`, and a peer on an older build understands
+only that word. ADE keeps MINTING Linear links as `linear-issue` for exactly
+that reason. The two parse to different targets and resolve identically
+(`linearIssueTargetToIssueTarget` bridges them), and
+`ade://issue/linear/ADE-123` with no `plugin=` maps to the same navigation
+target `ade://linear-issue/ADE-123` does.
+
+Validation is deliberately asymmetric. `provider` must match
+`^[a-z0-9][a-z0-9._-]{0,63}$` — it is a path segment nobody should have to
+escape. `issue-key` is another system's identifier, so it is only checked for
+being non-empty, whitespace- and control-character-free, and at most 128
+characters: `owner/repo#42` and `PROJ-9` are both real keys, and a parser that
+thought it knew every tracker's key shape would reject links it merely does not
+recognize. `?linear=` and `ade://linear-issue/…` keep the strict Linear
+identifier rule, because they are what an older peer reads.
+
+Where an `issue` link lands: the plugin the link names, else a plugin
+registered as the owner of that provider on the receiving machine (the routing
+in `renderer/components/app/pluginDeeplinkRoute.ts` accepts an owner list, and
+nothing populates it yet), else — for `linear` only — the compiled Linear pane.
+Anything else is refused by name, the same way a link into an uninstalled plugin
+panel is, rather than redirecting to the Marketplace.
+
+**iOS does not parse `issue` yet.** `DeepLinkRouter.swift` knows `linear-issue`
+and not `issue`, so an `ade://issue/jira/PROJ-9` link falls to its `default` arm
+and opens nothing on a phone. Mint `linear-issue` for Linear (which you should
+be doing anyway) and treat the neutral form as desktop, web and CLI for now.
 
 The HTTPS form is the share-friendly variant (it gets a Vercel-rendered
 OpenGraph card in Slack/Discord/iMessage/Gmail/Linear). The web landing page
@@ -41,7 +75,12 @@ local links as query params:
 
 ```
 repo=<owner>/<repo>&branch=<branch>&pr=<number>&linear=<ADE-123>
+issueProvider=<provider>&issueKey=<key>
 ```
+
+`issueProvider` + `issueKey` is the same fallback for any tracker. `linear=`
+stays and is still written for Linear issues, because it is the one param a peer
+on an older build reads; the pair is ignored rather than choked on there.
 
 The envelope does not change the primary target; it gives receivers a portable
 fallback chain. If the local id is unknown, ADE can offer to switch to the
@@ -64,6 +103,7 @@ active project has not connected Linear.
 | Share a branch with a teammate or your other devices          | `https://ade-app.dev/open?type=branch&…` |
 | Drop into a PR's detail tab                                   | `https://ade-app.dev/open?type=pr&…`     |
 | Linear "Open in coding tool" hand-off (opens Linear pane)     | `https://ade-app.dev/open?type=linear-issue&…` |
+| Point at an issue on any other tracker (opens its plugin)     | `ade link issue jira PROJ-9`         |
 
 ## Minting a deeplink — `ade link`
 
@@ -76,6 +116,8 @@ ade link artifact <id>                                      # proof/history arti
 ade link branch <owner/repo> <branch> [--pr <number>]      # cross-machine branch
 ade link pr <owner/repo> <number>                          # PR detail
 ade link linear-issue <ADE-123> [--branch <branch>]        # Linear hand-off
+ade link issue <provider> <issue-key> [--branch <branch>] [--plugin <plugin-id>]  # any tracker
+ade link plugin <plugin-id> <panel-id> [--ctx '<json-object>']  # a plugin panel
 ade link <url>                                             # round-trip an existing link
 
 # Flags
@@ -114,7 +156,14 @@ does the same thing.
 ```bash
 ade open <url>                                             # any ade:// or https://ade-app.dev/open URL
 ade open --linear-issue <ADE-123> --branch <branch>        # Linear coding-tool entry point
+ade open --issue-provider <provider> --issue-key <key> [--branch <branch>] [--plugin <plugin-id>]
 ```
+
+`--issue-provider` and `--issue-key` must be given together; either alone is a
+usage error. Minting refuses loudly what the parser would refuse at reading — a
+provider outside `^[a-z0-9][a-z0-9._-]{0,63}$`, a key with whitespace or over
+128 characters, or a `--plugin` that is not a valid plugin id — because a link
+that silently dropped the plugin hint is worse than one that never printed.
 
 The CLI hands the URL to the OS, which routes through the registered `ade://`
 protocol back to a running ADE desktop window (or launches ADE cold). If the
@@ -167,6 +216,12 @@ existing `app/navigate` method:
     "target": { "kind": "linear-issue", "issueIdentifier": "ADE-123", "branch": "arul/ade-123-feat" }
 }}
 ```
+
+There is **no `{"kind": "issue"}` navigation target.** `issue` is a deeplink
+kind, not a navigation kind: the parser resolves it to `linear-issue` (for
+`linear` with no plugin named) or to `{"kind": "plugin", "pluginId", "panelId",
+"context": {"issue": {"provider", "key", "branch?"}}}`. Pass a URL to
+`ade open` and let the resolver pick, or name the plugin target yourself.
 
 Use `app/navigate` (not `deeplinks.open`) when you have structured fields.
 Use `ade open <url>` when you already have a stringified deeplink (e.g.
@@ -237,6 +292,7 @@ link for returning to the selected terminal/chat session on the same desktop.
 ade link branch anthropics/claude-code feat-deeplinks               # share with teammates
 ade link pr anthropics/claude-code 1234                             # PR detail
 ade link linear-issue ADE-512 --branch arul/ade-512-feat            # Linear hand-off
+ade link issue jira PROJ-9 --plugin ade-jira                        # any other tracker
 ade link file apps/desktop/src/shared/deeplinks.ts --line 12         # source location
 ade link commit abc1234 --lane <lane-uuid>                           # commit detail
 ade link artifact proof-123                                          # proof/history artifact

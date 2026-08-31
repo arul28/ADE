@@ -2492,18 +2492,17 @@ export type PluginAuthSessionStart = {
 /**
  * What became of an offer to hand a plugin a credential ADE already holds.
  *
- * `pending` is the interesting one: the card is in front of the user and the
- * answer will arrive as a normal secret appearing in the plugin's own store, so
- * a plugin that asked should draw "waiting for you to confirm" rather than
- * "not connected". Every other value is final for this install.
+ * Every value is FINAL for this install, and there is deliberately no "the card
+ * is up" state. `requestHandoff` waits for the person's answer, and a second
+ * call while one card is open joins the same wait rather than stacking another
+ * card — so there is no moment at which the honest answer is "ask me later",
+ * and a status saying so would only invite a plugin to poll for one.
  */
 export type PluginCredentialHandoffStatus =
   /** The user agreed and the secrets are in this plugin's store NOW. */
   | "accepted"
   /** The user said no. Nothing was copied and asking again does not re-prompt. */
   | "declined"
-  /** The card is up. Watch for the secret, or ask again later. */
-  | "pending"
   /** ADE holds no credential for that surface, so there is nothing to offer. */
   | "empty";
 
@@ -2513,8 +2512,8 @@ export type PluginCredentialHandoffResult = {
   /**
    * The secret names this plugin will find in its own store once accepted.
    *
-   * Always present, including while `pending` and when `declined`, because it
-   * is the plugin's documentation of what to read — and it names nothing
+   * Always present, including when `declined` and when `empty`, because it is
+   * the plugin's documentation of what to read — and it names nothing
    * sensitive: these are the keys, never the values.
    */
   secretNames: string[];

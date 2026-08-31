@@ -136,6 +136,14 @@ final class DeepLinkRouter {
     case "plugin":
       // `ade://plugin/<plugin-id>/<panel-id>[?ctx=<json-object>]` — a panel of
       // an installed plugin. Both ids are fatal when malformed; `ctx` is not.
+      //
+      // A plugin SIGN-IN callback is a different host, `ade://plugin-auth`, and
+      // it never arrives here: `ASWebAuthenticationSession` captures it inside
+      // the session that opened the browser, so it is delivered to
+      // `PluginAuthSessionRunner` and the system never hands it to the app as a
+      // URL to open. If one ever did reach this switch it would fall to
+      // `default` and be ignored, which is the right answer — a callback that
+      // arrived by any other road belongs to no session this app is waiting on.
       guard pathComponents.count == 2,
             ADEDeepLinkURLParsing.isValidPluginId(pathComponents[0]),
             ADEDeepLinkURLParsing.isValidPluginPanelId(pathComponents[1])

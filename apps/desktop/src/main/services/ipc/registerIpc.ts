@@ -6354,6 +6354,7 @@ export function registerIpc({
     args?: Record<string, unknown>;
     argv?: string[];
     timeoutMs?: number;
+    client: "desktop";
   } => {
     if (!isRecord(arg)) throw new Error("plugin invoke expects an object payload.");
     const action = typeof arg.action === "string" ? arg.action.trim() : "";
@@ -6371,6 +6372,11 @@ export function registerIpc({
       ...(isRecord(arg.args) ? { args: arg.args } : {}),
       ...(argv ? { argv } : {}),
       ...(timeoutMs ? { timeoutMs } : {}),
+      // Stamped, not read from `arg`. Only this window's own renderer reaches
+      // this channel, so the answer is known here and taking it off the payload
+      // would let a caller claim to be a phone — which would make the host offer
+      // a browser-less sign-in to the one client that has a browser right here.
+      client: "desktop",
     };
   };
 

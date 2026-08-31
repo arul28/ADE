@@ -522,6 +522,88 @@ export const PLUGIN_PROVIDER_KEY_LABELS: Readonly<Record<PluginProviderKeyId, st
 };
 
 /**
+ * One sign-in flow the HOST runs on this plugin's behalf.
+ *
+ * A plugin cannot do OAuth by itself and must not be able to. The child is a
+ * plain Node process with no window and, on a phone, no process at all — so
+ * every part of the dance that touches the user or the redirect belongs to the
+ * host: it builds the authorize URL, it mints and verifies `state`, it owns the
+ * loopback listener or the relay bounce, and it hands the plugin the callback
+ * parameters as DATA. The plugin never sees a raw URL it forged, and the host
+ * never sees the token — the exchange is the plugin's own network call against
+ * a host it declared in `network`.
+ *
+ * Declared in the manifest, like every other engine registration, because the
+ * install card has to be able to say "signs you in to Linear" before any code
+ * runs, and because `authorizeUrl` is the one thing a runtime argument must
+ * never be allowed to choose: a plugin that could pass its own authorize URL at
+ * call time could send the user's browser anywhere and call it a sign-in.
+ */
+export type PluginManifestAuthSession = {
+  /** Stable id. Named in `ade.auth.beginSession({ sessionId })`. */
+  id: string;
+  /**
+   * The third party, as a person writes it: "Linear", "Jira", "GitHub".
+   *
+   * The install card's line is derived from this and nothing else, so it is a
+   * display name and not a hostname — "Signs you in to Linear" is a sentence a
+   * reader can act on where "signs you in to linear.app" is a fact they have to
+   * translate first.
+   */
+  provider: string;
+  /**
+   * Where the host sends the browser. `https:` only, no query and no fragment.
+   *
+   * The query is the host's to build: it appends the plugin's own parameters
+   * (`client_id`, `scope`, `code_challenge`), then its own `redirect_uri` and
+   * `state`. A manifest carrying a query would let those two spellings fight,
+   * and the loser would be whichever the provider read last.
+   */
+  authorizeUrl: string;
+  /**
+   * Which callback transports this flow supports, in no particular order.
+   *
+   * A flow with only `loopback` is desktop-only, and the phone is told so
+   * rather than opening a browser it can never get back from. One with only
+   * `app` works on every client, because the relay bounce is reachable from a
+   * desktop browser too. Most real integrations declare both, because a desktop
+   * loopback avoids a round trip through ADE's relay.
+   */
+  callbacks: PluginAuthCallbackKind[];
+  /**
+   * The loopback redirect this plugin registered with its provider.
+   *
+   * Required when `callbacks` includes `loopback` and dropped otherwise. The
+   * port is DECLARED rather than allocated because every OAuth provider worth
+   * integrating matches `redirect_uri` exactly: an ephemeral port would be a
+   * redirect no provider ever accepts. Declaring it also makes the collision
+   * visible on the install card instead of at the moment the user clicks
+   * Connect.
+   */
+  loopback?: { port: number; path: string };
+};
+
+/**
+ * How the redirect gets back to the host.
+ *
+ * `loopback` — the host binds `127.0.0.1:<port>` and catches the GET itself.
+ * Desktop and any machine with a browser on it. Nothing leaves the machine.
+ *
+ * `app` — the redirect goes to ADE's relay, which is stateless and does one
+ * thing: 302 the query string to `ade://plugin-auth`. The phone's in-app auth
+ * session catches that scheme and posts the parameters back to the machine that
+ * minted the flow. This is the same shape ADE's own Linear mobile sign-in uses
+ * today, generalized so the relay route names no integration.
+ */
+export type PluginAuthCallbackKind = "loopback" | "app";
+
+export const PLUGIN_AUTH_CALLBACK_KINDS: readonly PluginAuthCallbackKind[] = ["loopback", "app"] as const;
+
+export function isPluginAuthCallbackKind(value: unknown): value is PluginAuthCallbackKind {
+  return PLUGIN_AUTH_CALLBACK_KINDS.some((kind) => kind === value);
+}
+
+/**
  * One named webhook channel this plugin receives at ADE's relay.
  *
  * A channel is a URL, not a subscription: declaring `{ id: "status" }` makes
@@ -700,6 +782,28 @@ export type PluginManifest = {
    * else the package adds, and brokered one call at a time by the host.
    */
   providerKeys?: PluginProviderKeyId[];
+  /**
+   * Sign-in flows the host runs for this plugin. See {@link PluginManifestAuthSession}.
+   *
+   * Optional, and absence is the secure reading exactly as `network`'s is: a
+   * manifest that declares no flow gets `ade.auth.beginSession` refused by
+   * name, so a plugin cannot open a browser at a URL nobody disclosed.
+   */
+  authSessions?: PluginManifestAuthSession[];
+  /**
+   * Built-in surfaces whose ADE-held credential this plugin asks to inherit.
+   *
+   * This is the release-day field. `ade-linear` supersedes ADE's compiled
+   * Linear integration, and every existing user already has a Linear token in
+   * ADE's own credential store; without this the day the plugin ships is the
+   * day all of them reconnect. Declaring it does not move anything — the host
+   * asks the user once, names exactly what is handed over, and a refusal leaves
+   * the plugin unconnected rather than broken.
+   *
+   * Optional, and absence means the plugin starts with nothing, which is what
+   * every plugin that is not replacing a built-in should want.
+   */
+  credentialHandoff?: PluginBuiltinSurfaceId[];
   /**
    * Names of THIS PROJECT's ADE secrets (the ones the user imported from a
    * `.env`) that this plugin asks to read.
@@ -1427,6 +1531,140 @@ function parseProviderKeys(raw: unknown, ctx: ParseContext): PluginProviderKeyId
 }
 
 /**
+ * The most sign-in flows one plugin may declare.
+ *
+ * Two, because a real integration has one — and the second slot exists for the
+ * plugin that talks to a product's cloud AND its self-hosted twin. A plugin
+ * asking for more is describing an auth broker rather than an integration, and
+ * every extra flow is another authorize URL on the install card.
+ */
+const PLUGIN_AUTH_SESSIONS_PER_PLUGIN = 2;
+
+/**
+ * The ports a loopback redirect may claim.
+ *
+ * Above the privileged range, because the host binds this as the user and a
+ * manifest asking for port 80 is asking for a failure. Nothing narrower is
+ * enforced: which high port an OAuth provider has on file is the provider's
+ * business, and a guess here would refuse a manifest that works.
+ */
+const PLUGIN_AUTH_LOOPBACK_PORT_MIN = 1024;
+const PLUGIN_AUTH_LOOPBACK_PORT_MAX = 65535;
+
+/** `/oauth/callback` — one leading slash, no query, no fragment, no traversal. */
+const PLUGIN_AUTH_LOOPBACK_PATH_PATTERN = /^\/[A-Za-z0-9._~\-/]{0,127}$/;
+
+/**
+ * An `https:` origin plus path, with nothing a runtime argument could hide in.
+ *
+ * Userinfo is refused outright: `https://evil.com@linear.app/oauth` reads as
+ * Linear to a person skimming the install card and resolves to `evil.com` in
+ * every browser, which is the exact confusion this field exists to prevent.
+ */
+function parseAuthorizeUrl(raw: unknown, label: string, ctx: ParseContext): string | null {
+  const text = trimmedString(raw);
+  if (!text) return ctx.drop(`${label}.authorizeUrl is required`);
+  let url: URL;
+  try {
+    url = new URL(text);
+  } catch {
+    return ctx.drop(`${label}.authorizeUrl is not a URL`);
+  }
+  if (url.protocol !== "https:") return ctx.drop(`${label}.authorizeUrl must be https`);
+  if (url.username || url.password) return ctx.drop(`${label}.authorizeUrl must not carry a username or password`);
+  if (url.search || url.hash) {
+    return ctx.drop(`${label}.authorizeUrl must not carry a query or fragment — the host builds those`);
+  }
+  return url.toString();
+}
+
+/** `authSessions: [{ id, provider, authorizeUrl, callbacks, loopback? }]`. */
+function parseAuthSessions(raw: unknown, ctx: ParseContext): PluginManifestAuthSession[] {
+  const entries = parseArray(raw, "authSessions", ctx, (entry, label) => {
+    if (!isRecord(entry)) return ctx.drop(`${label} is not an object`);
+    const id = parseIdentifier(entry.id);
+    if (!id) return ctx.drop(`${label}.id is missing or not an identifier`);
+    const provider = singleLine(entry.provider, PLUGIN_DECLARATION_LABEL_MAX);
+    if (!provider) return ctx.drop(`${label}.provider is required`);
+    const authorizeUrl = parseAuthorizeUrl(entry.authorizeUrl, label, ctx);
+    if (!authorizeUrl) return null;
+
+    const callbacks = parseArray(entry.callbacks, `${label}.callbacks`, ctx, (value, valueLabel) => (
+      isPluginAuthCallbackKind(value) ? value : ctx.drop(`${valueLabel} is not a callback kind`)
+    ));
+    const unique = [...new Set(callbacks)];
+    if (unique.length === 0) {
+      return ctx.drop(`${label}.callbacks must name at least one of "loopback" or "app"`);
+    }
+
+    let loopback: PluginManifestAuthSession["loopback"];
+    if (unique.includes("loopback")) {
+      // Dropped as a WHOLE flow rather than silently downgraded to `app`. A
+      // plugin that asked for a loopback and got a relay bounce would send its
+      // users to a redirect URI the provider has never heard of, and the only
+      // symptom would be a provider error page the plugin cannot see.
+      if (!isRecord(entry.loopback)) {
+        return ctx.drop(`${label}.loopback is required when "loopback" is a callback`);
+      }
+      const port = entry.loopback.port;
+      if (typeof port !== "number" || !Number.isInteger(port)
+        || port < PLUGIN_AUTH_LOOPBACK_PORT_MIN || port > PLUGIN_AUTH_LOOPBACK_PORT_MAX) {
+        return ctx.drop(
+          `${label}.loopback.port must be an integer between ${PLUGIN_AUTH_LOOPBACK_PORT_MIN}`
+            + ` and ${PLUGIN_AUTH_LOOPBACK_PORT_MAX}`,
+        );
+      }
+      const path = trimmedString(entry.loopback.path);
+      if (!path || !PLUGIN_AUTH_LOOPBACK_PATH_PATTERN.test(path)) {
+        return ctx.drop(`${label}.loopback.path must be an absolute path like "/oauth/callback"`);
+      }
+      loopback = { port, path };
+    }
+
+    return {
+      id,
+      provider,
+      authorizeUrl,
+      callbacks: unique,
+      ...(loopback ? { loopback } : {}),
+    };
+  });
+  return limitDeclarations(entries, "authSessions", PLUGIN_AUTH_SESSIONS_PER_PLUGIN, (entry) => entry.id, ctx);
+}
+
+/**
+ * The most built-in credentials one plugin may ask ADE to hand over.
+ *
+ * Two, and it should almost always be one: a plugin declares the credential of
+ * the surface it supersedes. There is no plugin whose honest story needs three.
+ */
+const PLUGIN_CREDENTIAL_HANDOFFS_PER_PLUGIN = 2;
+
+/**
+ * `credentialHandoff: ["linear"]`.
+ *
+ * Official-only for the same reason `surfaces[].builtin` is: this names a
+ * credential ADE already holds, and a community package that could name one
+ * would be asking the user to approve a card about a connection it had nothing
+ * to do with. WHICH official plugin may name a given surface is not decided
+ * here — the owner table lives in `builtinSurfaces.ts`, which imports this
+ * module, so the host does that check and refuses a non-owner.
+ */
+function parseCredentialHandoff(raw: unknown, ctx: ParseContext, official: boolean): PluginBuiltinSurfaceId[] {
+  const ids = parseArray(raw, "credentialHandoff", ctx, (entry, label) => {
+    const text = trimmedString(entry);
+    if (!text || !isPluginBuiltinSurfaceId(text)) {
+      return ctx.drop(`${label} is not a built-in surface id`);
+    }
+    if (!official) {
+      return ctx.drop(`${label} is honoured only for official plugins`);
+    }
+    return text;
+  });
+  return limitDeclarations(ids, "credentialHandoff", PLUGIN_CREDENTIAL_HANDOFFS_PER_PLUGIN, (id) => id, ctx);
+}
+
+/**
  * `webhookIngress: [{ id, label, verify? }]`.
  *
  * The `verify` frame is dropped rather than fatal when it is malformed, and the
@@ -1891,6 +2129,8 @@ export function parsePluginManifest(raw: unknown): PluginManifestParseResult {
   const network = parseNetwork(raw.network, ctx);
   const providerKeys = parseProviderKeys(raw.providerKeys, ctx);
   const projectSecrets = parseProjectSecrets(raw.projectSecrets, ctx);
+  const authSessions = parseAuthSessions(raw.authSessions, ctx);
+  const credentialHandoff = parseCredentialHandoff(raw.credentialHandoff, ctx, official);
 
   // Identity must be VALID here, not merely present: `manifest.name` is joined
   // into a filesystem path and a secret namespace, so a caller that ignores
@@ -1929,6 +2169,8 @@ export function parsePluginManifest(raw: unknown): PluginManifestParseResult {
       webhookIngress,
       ...(network ? { network } : {}),
       ...(providerKeys.length > 0 ? { providerKeys } : {}),
+      ...(authSessions.length > 0 ? { authSessions } : {}),
+      ...(credentialHandoff.length > 0 ? { credentialHandoff } : {}),
       ...(projectSecrets.length > 0 ? { projectSecrets } : {}),
       ...(theme ? { theme } : {}),
       official,

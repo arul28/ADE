@@ -12,6 +12,7 @@ import {
   PLUGIN_REMOTE_SOURCE_UNSUPPORTED_CODE,
   PLUGIN_SERVICE_UNAVAILABLE_CODE,
   requirePluginActionInvoker,
+  requirePluginAuthSessionCompleter,
   requirePluginInstallService,
   type SyncPluginInstallSource,
 } from "../plugins/pluginInstallServiceRef";
@@ -5918,6 +5919,19 @@ function registerPrAndDeeplinkRemoteCommands({ args, register }: RemoteCommandRe
 }
 
 /**
+ * Ceilings on one captured sign-in callback, in entries and in characters.
+ *
+ * A redirect's query string carries `code`, `state` and a few provider extras,
+ * so both numbers sit far above any real callback and neither is a limit a
+ * legitimate client can notice. They exist because the map arrives from a paired
+ * peer and is copied and carried into the plugin host: without a ceiling, one
+ * frame could hand the daemon an arbitrarily large map to hold, and the value
+ * cap keeps a single field from doing the same thing under a small entry count.
+ */
+const MAX_PLUGIN_AUTH_CALLBACK_PARAMS = 24;
+const MAX_PLUGIN_AUTH_CALLBACK_VALUE_LENGTH = 4096;
+
+/**
  * Plugin install control and presence, callable from another machine.
  *
  * Machine-scoped ("runtime"), never project-scoped: a plugin is installed on a
@@ -6051,7 +6065,17 @@ function registerPluginRemoteCommands({ args, register }: RemoteCommandRegistrat
     const invokeArgs = payload.payload && typeof payload.payload === "object" && !Array.isArray(payload.payload)
       ? payload.payload as Record<string, unknown>
       : {};
-    const result = await requirePluginActionInvoker()({ pluginId, action, args: invokeArgs });
+    // `client` is stamped here and never read off the payload. This handler is
+    // only ever reached over sync, so the daemon already KNOWS the caller is a
+    // remote client; taking the field from the wire would let a desktop caller
+    // claim to be a phone, which buys it nothing and would only make the host
+    // present a browser-less sign-in to a machine that has a browser.
+    const result = await requirePluginActionInvoker()({
+      pluginId,
+      action,
+      args: invokeArgs,
+      client: "mobile",
+    });
     // `{ok, message}` is what the phone decodes; the raw handler return rides
     // along for richer clients. A handler that answers nothing is still a
     // success — the error path is for transport and policy failures only.
@@ -6061,6 +6085,67 @@ function registerPluginRemoteCommands({ args, register }: RemoteCommandRegistrat
         ? (result as { message: string }).message
         : null);
     return { ok: true, ...(message ? { message } : {}), result: result ?? null };
+  }, "runtime");
+
+  /**
+   * The way back for a sign-in a client PRESENTED — the other half of gap C1.
+   *
+   * A plugin asks the host for a sign-in, the host stamps an instruction, and a
+   * phone opens it in an in-app browser. The redirect lands in that browser and
+   * nowhere near this machine, so without this action the authorization code
+   * reaches the device that can do nothing with it and the plugin waits forever.
+   *
+   * It names NO plugin and NO session, and that is the security property rather
+   * than an economy of arguments: the host routes by the `state` it minted
+   * itself and never handed to any caller, so a caller can address exactly one
+   * flow — the live one whose `state` it is returning. Accepting a `pluginId`
+   * here would let anyone deliver one plugin's authorization code into another
+   * plugin's flow.
+   *
+   * VIEWER POLICY — a deliberate decision, not a default. `docs/bug-ledger-web-
+   * client.md` flags `C12-sec-5` against the Linear mobile OAuth pair: a viewer
+   * there can complete an OAuth with its OWN account and replace the owner's
+   * connection. This command is not that shape and matches `plugins.invoke`'s
+   * `viewerAllowed: true` on purpose. The Linear pair is dangerous because a
+   * viewer can START a flow that binds a credential; here starting is
+   * `plugins.invoke`, and THAT is the verb whose policy governs whether a viewer
+   * may connect anything. This one only carries an answer back to a flow the
+   * HOST started, addressed by an unguessable host-minted `state` a viewer
+   * cannot forge and cannot learn for a flow it did not present. Making it
+   * stricter than the verb that starts the flow would not close a hole — it
+   * would break the phone that legitimately presented the sign-in, leaving the
+   * user staring at a completed browser page whose result nothing will collect.
+   * If `plugins.invoke` ever stops being `viewerAllowed`, this must follow it.
+   *
+   * Every refusal below is a typed `{ok:false, reason}` rather than a throw,
+   * because iOS reads an explicit `ok: false` as "the machine could not match
+   * that sign-in" and anything else — a thrown error included — as a transport
+   * problem the user is told to retry. A malformed callback is neither.
+   */
+  register("plugins.completeAuthSession", { viewerAllowed: true }, async (payload) => {
+    const raw = payload.params;
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+      return { ok: false, reason: "invalid_params" };
+    }
+    const entries = Object.entries(raw as Record<string, unknown>);
+    // Bounded before anything is copied. A redirect's query string is small —
+    // `code`, `state`, and a handful of provider extras — so these ceilings are
+    // far above any real callback and exist so a paired peer cannot hand the
+    // daemon an unbounded map to hold and hash on the way to the broker.
+    if (entries.length > MAX_PLUGIN_AUTH_CALLBACK_PARAMS) {
+      return { ok: false, reason: "invalid_params" };
+    }
+    const params: Record<string, string> = {};
+    for (const [key, value] of entries) {
+      if (typeof value !== "string" || value.length > MAX_PLUGIN_AUTH_CALLBACK_VALUE_LENGTH) {
+        return { ok: false, reason: "invalid_params" };
+      }
+      params[key] = value;
+    }
+    // Returned unchanged. The broker's `{ok, reason}` is the answer iOS decodes
+    // — `expired` gets its own sentence there — and re-wording it here would
+    // give the same failure two spellings that could drift apart.
+    return requirePluginAuthSessionCompleter()(params);
   }, "runtime");
 
   register("plugins.install", { viewerAllowed: true }, async (payload) =>

@@ -1,9 +1,12 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  PLUGIN_ISSUE_PANEL_ID,
   buildDeeplink,
   deeplinkToNavigationTarget,
   describeTarget,
+  issueDeeplinkContext,
+  linearIssueTargetToIssueTarget,
   looksLikeAdeDeeplink,
   parseDeeplink,
   type DeeplinkTarget,
@@ -115,6 +118,9 @@ describe("parseDeeplink — ade:// scheme", () => {
         branch: "feat",
         prNumber: 42,
         linearIssue: "ADE-123",
+        // A link minted before the neutral params existed still fills both
+        // fields, so a reader that only knows the new shape sees the fallback.
+        issue: { provider: "linear", key: "ADE-123" },
       },
     });
   });
@@ -534,6 +540,233 @@ describe("parseDeeplink — linear-issue", () => {
 
     const https = buildDeeplink(target);
     expect(expectOk(parseDeeplink(https))).toEqual(target);
+  });
+});
+
+describe("parseDeeplink — issue", () => {
+  it("parses ade://issue/<provider>/<key>", () => {
+    expect(expectOk(parseDeeplink("ade://issue/jira/PROJ-9"))).toEqual({
+      kind: "issue",
+      provider: "jira",
+      issueKey: "PROJ-9",
+    });
+  });
+
+  it("parses the branch and plugin hints in both forms", () => {
+    expect(expectOk(parseDeeplink("ade://issue/jira/PROJ-9?branch=arul%2Fproj-9&plugin=ade-jira"))).toEqual({
+      kind: "issue",
+      provider: "jira",
+      issueKey: "PROJ-9",
+      branch: "arul/proj-9",
+      pluginId: "ade-jira",
+    });
+    expect(expectOk(parseDeeplink(
+      "https://ade-app.dev/open?type=issue&provider=jira&issue=PROJ-9&branch=arul%2Fproj-9&plugin=ade-jira",
+    ))).toEqual({
+      kind: "issue",
+      provider: "jira",
+      issueKey: "PROJ-9",
+      branch: "arul/proj-9",
+      pluginId: "ade-jira",
+    });
+  });
+
+  it("round-trips through buildDeeplink in both forms", () => {
+    const target = {
+      kind: "issue" as const,
+      provider: "jira",
+      issueKey: "PROJ-9",
+      branch: "arul/proj-9",
+      pluginId: "ade-jira",
+    };
+    const ade = buildDeeplink(target, { form: "ade" });
+    expect(ade).toBe("ade://issue/jira/PROJ-9?branch=arul%2Fproj-9&plugin=ade-jira");
+    expect(expectOk(parseDeeplink(ade))).toEqual(target);
+
+    const https = buildDeeplink(target);
+    expect(https).toBe(
+      "https://ade-app.dev/open?type=issue&provider=jira&issue=PROJ-9&branch=arul%2Fproj-9&plugin=ade-jira",
+    );
+    expect(expectOk(parseDeeplink(https))).toEqual(target);
+  });
+
+  it("round-trips a key that carries another tracker's punctuation", () => {
+    // `owner/repo#42` is a real GitHub key. The slash and the hash must survive
+    // encoding rather than becoming a second path segment and a fragment.
+    const target = { kind: "issue" as const, provider: "github", issueKey: "owner/repo#42" };
+    for (const form of ["ade", "https"] as const) {
+      expect(expectOk(parseDeeplink(buildDeeplink(target, { form })))).toEqual(target);
+    }
+  });
+
+  it("normalizes the provider but never the key", () => {
+    expect(expectOk(parseDeeplink("ade://issue/JIRA/proj-9"))).toEqual({
+      kind: "issue",
+      provider: "jira",
+      issueKey: "proj-9",
+    });
+  });
+
+  it("rejects a provider, key, branch or plugin id it could not mint", () => {
+    expect(parseDeeplink("ade://issue/ji ra/PROJ-9").ok).toBe(false);
+    expect(parseDeeplink("ade://issue/jira/").ok).toBe(false);
+    expect(parseDeeplink("ade://issue/jira").ok).toBe(false);
+    expect(parseDeeplink(`ade://issue/jira/${"K".repeat(129)}`).ok).toBe(false);
+    expect(parseDeeplink("ade://issue/jira/PROJ-9?branch=..%2Fbad").ok).toBe(false);
+    expect(parseDeeplink("ade://issue/jira/PROJ-9?plugin=Ade%20Jira").ok).toBe(false);
+    expect(parseDeeplink("https://ade-app.dev/open?type=issue&issue=PROJ-9").ok).toBe(false);
+    expect(parseDeeplink("https://ade-app.dev/open?type=issue&provider=jira").ok).toBe(false);
+  });
+
+  it("keeps a Linear issue key loose here and strict in the envelope", () => {
+    // The generic key rule admits anything a tracker might mint; the `?linear=`
+    // envelope param keeps the strict Linear rule, because an older peer reads
+    // that param and can only interpret a real Linear identifier.
+    expect(expectOk(parseDeeplink("ade://issue/linear/not-a-linear-id"))).toEqual({
+      kind: "issue",
+      provider: "linear",
+      issueKey: "not-a-linear-id",
+    });
+    expect(expectOk(parseDeeplink(`ade://lane/${UUID}?linear=not-a-linear-id`)))
+      .toEqual({ kind: "lane", laneId: UUID });
+  });
+
+  it("maps a Linear issue to the same navigation target as the alias", () => {
+    expect(deeplinkToNavigationTarget({
+      kind: "issue",
+      provider: "linear",
+      issueKey: "ADE-123",
+      branch: "feat",
+    })).toEqual(deeplinkToNavigationTarget({
+      kind: "linear-issue",
+      issueIdentifier: "ADE-123",
+      branch: "feat",
+    }));
+  });
+
+  it("maps a plugin-owned issue to a plugin navigation target carrying the issue", () => {
+    expect(deeplinkToNavigationTarget({
+      kind: "issue",
+      provider: "jira",
+      issueKey: "PROJ-9",
+      branch: "arul/proj-9",
+      pluginId: "ade-jira",
+    })).toEqual({
+      kind: "plugin",
+      pluginId: "ade-jira",
+      panelId: PLUGIN_ISSUE_PANEL_ID,
+      context: { issue: { provider: "jira", key: "PROJ-9", branch: "arul/proj-9" } },
+    });
+  });
+
+  it("describes an issue exactly as it describes the alias", () => {
+    const alias = { kind: "linear-issue" as const, issueIdentifier: "ADE-123", branch: "feat" };
+    expect(describeTarget(linearIssueTargetToIssueTarget(alias))).toBe(describeTarget(alias));
+  });
+});
+
+describe("linear-issue stays a permanent alias", () => {
+  it("still parses to its own target on both forms", () => {
+    // The compatibility promise: every link already minted says `linear-issue`,
+    // and it must keep parsing to exactly what it parsed to before `issue`
+    // existed — not to the new kind.
+    expect(expectOk(parseDeeplink("ade://linear-issue/ADE-123?branch=feat"))).toEqual({
+      kind: "linear-issue",
+      issueIdentifier: "ADE-123",
+      branch: "feat",
+    });
+    expect(expectOk(parseDeeplink(
+      "https://ade-app.dev/open?type=linear-issue&issue=ADE-123&branch=feat",
+    ))).toEqual({ kind: "linear-issue", issueIdentifier: "ADE-123", branch: "feat" });
+  });
+
+  it("keeps minting Linear links in the old spelling, byte for byte", () => {
+    // A newer ADE must not mint links an older one cannot open, so nothing
+    // routes Linear through the `issue` grammar on the way out.
+    expect(buildDeeplink({ kind: "linear-issue", issueIdentifier: "ADE-123" }, { form: "ade" }))
+      .toBe("ade://linear-issue/ADE-123");
+    expect(buildDeeplink({ kind: "linear-issue", issueIdentifier: "ADE-123" }))
+      .toBe("https://ade-app.dev/open?type=linear-issue&issue=ADE-123");
+  });
+
+  it("converts to the generic shape resolvers use", () => {
+    expect(linearIssueTargetToIssueTarget({
+      kind: "linear-issue",
+      issueIdentifier: "ADE-123",
+      branch: "feat",
+    })).toEqual({ kind: "issue", provider: "linear", issueKey: "ADE-123", branch: "feat" });
+    expect(linearIssueTargetToIssueTarget({ kind: "linear-issue", issueIdentifier: "ADE-123" }))
+      .toEqual({ kind: "issue", provider: "linear", issueKey: "ADE-123" });
+  });
+
+  it("converts to a target that resolves to the same place", () => {
+    const alias = { kind: "linear-issue" as const, issueIdentifier: "ADE-123", branch: "feat" };
+    expect(deeplinkToNavigationTarget(linearIssueTargetToIssueTarget(alias)))
+      .toEqual(deeplinkToNavigationTarget(alias));
+  });
+
+  it("builds the panel context from an issue target", () => {
+    expect(issueDeeplinkContext({ kind: "issue", provider: "jira", issueKey: "PROJ-9" }))
+      .toEqual({ issue: { provider: "jira", key: "PROJ-9" } });
+  });
+});
+
+describe("deeplink envelope — issue fallback", () => {
+  const laneWith = (envelope: Record<string, unknown>) =>
+    buildDeeplink({ kind: "lane", laneId: UUID, envelope } as DeeplinkTarget, { form: "ade" });
+
+  it("writes ?linear= and the neutral params together for a Linear issue", () => {
+    const url = laneWith({ issue: { provider: "linear", key: "ADE-123" } });
+    // `?linear=` is what a peer on an older build reads. Dropping it in favour
+    // of the neutral params would silently lose the fallback on exactly the
+    // machines that need one.
+    expect(url).toContain("linear=ADE-123");
+    expect(url).toContain("issueProvider=linear");
+    expect(url).toContain("issueKey=ADE-123");
+    expect(expectOk(parseDeeplink(url))).toEqual({
+      kind: "lane",
+      laneId: UUID,
+      envelope: { linearIssue: "ADE-123", issue: { provider: "linear", key: "ADE-123" } },
+    });
+  });
+
+  it("reads an old-style ?linear=-only envelope into both fields", () => {
+    expect(expectOk(parseDeeplink(`ade://lane/${UUID}?linear=ADE-123`))).toEqual({
+      kind: "lane",
+      laneId: UUID,
+      envelope: { linearIssue: "ADE-123", issue: { provider: "linear", key: "ADE-123" } },
+    });
+  });
+
+  it("writes no ?linear= for a tracker an older peer could not interpret", () => {
+    const url = laneWith({ issue: { provider: "jira", key: "PROJ-9" } });
+    expect(url).not.toContain("linear=");
+    expect(expectOk(parseDeeplink(url))).toEqual({
+      kind: "lane",
+      laneId: UUID,
+      envelope: { issue: { provider: "jira", key: "PROJ-9" } },
+    });
+  });
+
+  it("round-trips a full envelope on both forms", () => {
+    const envelope = {
+      repoOwner: "a",
+      repoName: "b",
+      branch: "feat",
+      prNumber: 7,
+      linearIssue: "ADE-123",
+      issue: { provider: "linear", key: "ADE-123" },
+    };
+    const target = { kind: "commit" as const, sha: "abc1234", envelope };
+    expect(expectOk(parseDeeplink(buildDeeplink(target, { form: "ade" })))).toEqual(target);
+    expect(expectOk(parseDeeplink(buildDeeplink(target)))).toEqual(target);
+  });
+
+  it("drops a malformed issue fallback without failing the link", () => {
+    expect(expectOk(parseDeeplink(`ade://lane/${UUID}?issueProvider=ji%20ra&issueKey=PROJ-9`)))
+      .toEqual({ kind: "lane", laneId: UUID });
+    expect(expectOk(parseDeeplink(`ade://lane/${UUID}?issueProvider=jira`)))
+      .toEqual({ kind: "lane", laneId: UUID });
   });
 });
 

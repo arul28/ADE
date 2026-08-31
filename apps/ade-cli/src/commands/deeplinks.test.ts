@@ -191,6 +191,66 @@ describe("ade link", () => {
     );
   });
 
+  it("emits a provider-neutral issue link in both forms", () => {
+    const https = runLinkCommand(["issue", "jira", "PROJ-9", "--no-clipboard"]);
+    expect(https.output).toContain("https://ade-app.dev/open?type=issue");
+    expect(https.output).toContain("provider=jira");
+    expect(https.output).toContain("issue=PROJ-9");
+    const ade = runLinkCommand(["issue", "jira", "PROJ-9", "--ade", "--no-clipboard"]);
+    expect(ade.output).toContain("ade://issue/jira/PROJ-9");
+  });
+
+  it("carries the branch and plugin hints on an issue link", () => {
+    const r = runLinkCommand([
+      "issue",
+      "jira",
+      "PROJ-9",
+      "--branch",
+      "arul/proj-9",
+      "--plugin",
+      "ade-jira",
+      "--ade",
+      "--no-clipboard",
+    ]);
+    expect(r.output).toContain("ade://issue/jira/PROJ-9?branch=arul%2Fproj-9&plugin=ade-jira");
+  });
+
+  it("accepts the issue flags in place of the positionals", () => {
+    const r = runLinkCommand([
+      "issue",
+      "--issue-provider",
+      "jira",
+      "--issue-key",
+      "PROJ-9",
+      "--ade",
+      "--no-clipboard",
+    ]);
+    expect(r.output).toContain("ade://issue/jira/PROJ-9");
+  });
+
+  // The `--ctx` rule: minting refuses loudly rather than handing back a link
+  // quietly missing what was asked for.
+  it("refuses an issue provider, key or plugin id the shared parser would reject", () => {
+    expect(() => runLinkCommand(["issue", "ji ra", "PROJ-9", "--no-clipboard"]))
+      .toThrow(CliDeeplinkUsageError);
+    expect(() => runLinkCommand(["issue", "jira", "PROJ 9", "--no-clipboard"]))
+      .toThrow(CliDeeplinkUsageError);
+    expect(() => runLinkCommand(["issue", "jira", "K".repeat(129), "--no-clipboard"]))
+      .toThrow(CliDeeplinkUsageError);
+    expect(() => runLinkCommand(["issue", "jira", "PROJ-9", "--plugin", "Ade Jira", "--no-clipboard"]))
+      .toThrow(CliDeeplinkUsageError);
+    expect(() => runLinkCommand(["issue", "--no-clipboard"])).toThrow(CliDeeplinkUsageError);
+  });
+
+  // `linear-issue` is a permanent alias, not a deprecated one: the CLI keeps
+  // minting Linear links in the spelling every older ADE understands.
+  it("keeps minting linear-issue for Linear even though the issue kind exists", () => {
+    expect(runLinkCommand(["linear-issue", "ADE-123", "--ade", "--no-clipboard"]).output)
+      .toContain("ade://linear-issue/ADE-123");
+    expect(runLinkCommand(["issue", "linear", "ADE-123", "--ade", "--no-clipboard"]).output)
+      .toContain("ade://issue/linear/ADE-123");
+  });
+
   it("emits a plugin panel link in both forms", () => {
     const https = runLinkCommand(["plugin", "ade-graph", "overview", "--no-clipboard"]);
     expect(https.output).toContain("type=plugin");
@@ -318,6 +378,40 @@ describe("ade open --help", () => {
     expect(r.exitCode).toBe(0);
     expect(r.output).toContain("--linear-issue");
     expect(r.output).toContain("--branch");
+    expect(r.output).toContain("--issue-provider");
+    expect(r.output).toContain("--issue-key");
+  });
+
+  it("opens the Linear coding-tool hand-off in the alias spelling, unchanged", () => {
+    const r = runOpenCommand(["--linear-issue", "ADE-123", "--branch", "arul/ade-123"]);
+    expect(r.exitCode).toBe(0);
+    expect(r.output).toContain("type=linear-issue");
+    expect(r.output).toContain("issue=ADE-123");
+  });
+
+  it("opens a provider-neutral issue hand-off", () => {
+    const r = runOpenCommand([
+      "--issue-provider",
+      "jira",
+      "--issue-key",
+      "PROJ-9",
+      "--branch",
+      "arul/proj-9",
+      "--plugin",
+      "ade-jira",
+    ]);
+    expect(r.exitCode).toBe(0);
+    expect(r.output).toContain("type=issue");
+    expect(r.output).toContain("provider=jira");
+    expect(r.output).toContain("issue=PROJ-9");
+    expect(r.output).toContain("plugin=ade-jira");
+  });
+
+  it("refuses half an issue hand-off rather than opening the wrong thing", () => {
+    expect(() => runOpenCommand(["--issue-provider", "jira"])).toThrow(CliDeeplinkUsageError);
+    expect(() => runOpenCommand(["--issue-key", "PROJ-9"])).toThrow(CliDeeplinkUsageError);
+    expect(() => runOpenCommand(["--issue-provider", "ji ra", "--issue-key", "PROJ-9"]))
+      .toThrow(CliDeeplinkUsageError);
   });
 
   it("rejects invalid URL", () => {

@@ -37,7 +37,9 @@ Node built-ins:
 | `apps/desktop/src/shared/plugins/sockets.ts` | Socket kinds, surface ids, entity kinds, per-kind payload validation, deterministic placement ordering, row-badge overflow split |
 | `apps/desktop/src/shared/plugins/context.ts` | Read-only surface contexts (`pr`, `lane`, `session`, `file`, `surface`) and their contribution keys |
 | `apps/desktop/src/shared/plugins/sdk.ts` | SDK v0 surface, budgets, error codes, NDJSON child frames, install-registry records, the `plugin` action domain, action-response navigation (`readPluginActionNavigation`, `PLUGIN_NAVIGATE_CONTEXT_MAX_BYTES`) |
-| `apps/desktop/src/shared/deeplinks.ts` | The `plugin` deeplink target (`ade://plugin/<plugin-id>/<panel-id>[?ctx=…]`) and its lenient `ctx` reader |
+| `apps/desktop/src/shared/deeplinks.ts` | The `plugin` deeplink target (`ade://plugin/<plugin-id>/<panel-id>[?ctx=…]`) and its lenient `ctx` reader; the provider-neutral `issue` target (`ade://issue/<provider>/<issue-key>`), of which `linear-issue` is a permanent alias |
+| `apps/desktop/src/shared/issueRef.ts` | `IssueRef`: the provider-neutral issue a plugin links to a lane or a session, the `__issueRef` storage key, the legacy Linear projection, and the ownership check `unlinkIssue` runs |
+| `apps/desktop/src/shared/issueRefFormat.ts` | Lane name, branch name and PR magic word derived from an `IssueRef`. `Fixes`/`Closes` only for `linear`/`github`; every other provider gets `Refs` |
 | `apps/desktop/src/shared/plugins/registryIndex.ts` | Marketplace index contract and checksum verification |
 | `apps/desktop/src/shared/plugins/network.ts` | Declared-host rules: what a manifest may name, how a live host is matched against it, the refusal sentence |
 | `apps/desktop/src/shared/adeCliGuidance.ts` | Registers the bundled `ade-plugins` authoring skill |
@@ -234,10 +236,13 @@ user pastes the same key twice and rotating one silently breaks the other.
   schema or the sync layer, and never logged. `plugin.get` carries **presence
   only**, as `providerKeys: [{ provider, present }]`, which is what the doctor's
   **Provider keys** rung reads.
-- The remembered install approval is keyed on the declared hosts, provider keys
-  and project secrets as well as the source, so a later save that widens any of
-  the three raises the card again instead of riding an approval given for
-  something narrower.
+- The remembered install approval is keyed on the declared hosts, provider keys,
+  project secrets, sign-in flows and built-in credential handoffs as well as the
+  source, so a later save that widens any of the five raises the card again
+  instead of riding an approval given for something narrower. A sign-in flow is
+  keyed by its provider and its loopback port, not by its id: a version that
+  keeps the id and repoints it at a different provider has changed the sentence
+  the reader agreed to.
 
 ### Project secrets are declared by name, and read one at a time
 
@@ -449,6 +454,102 @@ replays into an ADE runtime like any other source — but nothing can be handed
 because only the plugin knows the external conversation the new session would
 point at. Native (thread-copying) fork is not available for one; a fork is
 always the ADE-side transcript replay.
+
+### A plugin can link an issue to a lane
+
+ADE's lane and session issue links used to be Linear-shaped fields on ADE's own
+types, which meant a tracker plugin could keep its own lane-to-issue map in a
+collection but could not make the PR body writer, the branch namer or the
+deeplink envelope read it. `apps/desktop/src/shared/issueRef.ts` is the
+provider-neutral shape those readers take instead.
+
+An `IssueRef` is `{pluginId, provider, issueId, key, title, url, state?,
+container?, branchName?, assignee?, priority?, labels?, description?,
+createdAt?, updatedAt?, extra?}`. `provider` is the tracker vocabulary
+(`linear`, `github`, `jira`, …), `key` is that tracker's human key (`ADE-123`,
+`owner/repo#42`), `container` is the group it belongs to (a Linear team, a
+GitHub repo, a Jira project), and `state.category` is one of `triage |
+backlog | unstarted | started | completed | canceled` — Linear's `stateType`
+vocabulary, reused because it is the widest of the trackers ADE reads. `extra`
+is tracker-specific residue that core stores and never interprets.
+
+`ade.lanes` on the child:
+
+| method | what it does |
+| --- | --- |
+| `list()` | Every non-archived lane in the project this plugin is bound to, as `PluginLaneSummary` |
+| `get(laneId)` | One of them, or null |
+| `linkIssue(input)` | Link an issue to a lane or a session. Answers the created `IssueLink` |
+| `unlinkIssue(input)` | Remove a link **this plugin created**. `false` when there was none |
+
+`PluginLaneSummary` is a fixed allowlist (`PLUGIN_LANE_SUMMARY_FIELDS` in
+`sdk.ts`), not `LaneSummary` with fields deleted: `worktreePath`,
+`attachedRootPath` and `devicesOpen` are an absolute path into the user's
+filesystem and a roster of the machines they have the lane open on, and a
+plugin that asked which lanes exist has no business learning either. The
+allowlist is what stays correct when a field is added to `LaneSummary` later. It
+does carry `primaryIssue: IssueRef | null` and `issueLinks: IssueLink[]`.
+
+**Ownership is host-stamped, the same way chat ownership is.**
+`PluginIssueRefInput` is `Omit<IssueRef, "pluginId">` — there is no field for a
+plugin to fill — and the host writes the id of the child connection that asked
+(`readPluginIssueRef`, an overwrite rather than a default). `source` is set by
+the host to `plugin_link` and is likewise unspellable, so a link a plugin made
+cannot claim the user made it. `unlinkIssue` then checks that stamp: another
+plugin's link is `not_permitted` with a sentence naming the owner, and a link
+ADE made itself carries the `core` owner and refuses every plugin. The user can
+still unlink anything from the lane UI, the CLI or the TUI — the restriction is
+on plugins undoing each other, not on the person.
+
+For the same reason, `lane.linkLinearIssues` and `lane.unlinkLinearIssues` are
+**refused** for a plugin reaching them through `ade.actions.invoke`
+(`apps/ade-cli/src/bootstrap.ts:673`): those verbs write the lane's issue rows
+with no record of who asked, so a link a plugin made would be indistinguishable
+from one the user made, uninstalling the plugin would leave it behind, and any
+plugin could unlink any other's. The refusal names the replacement. Both verbs
+stay open to the user.
+
+Rules on the call itself: exactly one of `laneId` and `sessionId` (both, or
+neither, is `invalid_args`); `role` defaults to `referenced` and must be one of
+`primary | worked | referenced | inferred`; `includeInPr` and `closeOnMerge`
+are optional and an absent flag reaches the store as absent so the store's
+default applies. A ref missing a non-empty `provider`, `issueId`, `key` or
+`title` is refused whole rather than repaired — nothing downstream could
+display or reference it. A host with no project bound answers
+`unsupported_method`, not an empty list.
+
+**Where it is stored, and why it is not a column.** The `IssueRef` rides inside
+the EXISTING `issue_json` column of `lane_linear_issues`,
+`lane_linear_issue_links`, `session_linear_issues` and
+`session_github_issues`, under the reserved key `__issueRef`, beside a full
+legacy Linear projection of itself. No new column, no new table, no migration
+and no backfill. This is the same rule the plugin tables state for themselves
+in [Storage](#storage-four-tables-frozen-shapes) — version inside the JSON,
+never in SQL — applied to tables that already existed, and it is written up as
+[Rule 4 of the CRDT model](../sync-and-multi-device/crdt-model.md). A peer on an
+older build parses the legacy projection and drops the unknown key, so a Jira
+issue renders there with the right key, title, URL and state name under a
+Linear-labelled badge: a mislabel, not a break. The one lossy window is an
+older build re-linking an issue, which rewrites the column without the key; the
+next link from a new build restores it. The `issue_id` COLUMN is namespaced as
+`<provider>:<issueId>` for every tracker except `linear`, which keeps the bare
+id so existing rows and older peers are untouched.
+
+**What reads it today.** `laneService.listIssueLinks / linkIssueRef /
+unlinkIssueRef` are the store; `LaneSummary.primaryIssue` and
+`LaneSummary.issueLinks` are derived on every `list`/`get` and are never
+emptier than the legacy fields, which stay populated beside them.
+`prService.collectLanePrIssueRefs` collects the PR's issues through the generic
+shape, and `shared/issueRefFormat.ts` derives the lane name, the branch name and
+the PR magic word from a ref. A deeplink can name an issue on any tracker:
+`ade://issue/<provider>/<issue-key>[?branch=&plugin=]`, with
+`ade link issue <provider> <key>` minting it and the portable envelope carrying
+`?issueProvider=` + `?issueKey=` beside the existing `?linear=`.
+
+Two limits worth knowing before you build on it, both listed under
+[Accepted v1 limitations](#accepted-v1-limitations): the PR body still renders
+Linear references only, and `issueRefPrReference` emits a closing magic word
+only for `github` and `linear`.
 
 ### Storage: four tables, frozen shapes
 
@@ -1157,11 +1258,46 @@ oversight:
   file current automatically.
 - **No `plugins.recommended` in per-project `ade.yaml`.** Installs are
   per-machine in v1.
+- **A PR body still renders Linear references only.** `collectLanePrIssueRefs`
+  is provider-neutral, but `collectLinearPrIssueReferences` filters to
+  `provider === "linear"` before writing the "Linked Linear issues" block
+  (`prService.ts:912`), so a Jira link is carried that far and dropped rather
+  than rendered under a heading it does not belong to. The renderer for a
+  third-party tracker arrives with the plugin that produces it.
+- **A closing magic word is only emitted for `github` and `linear`.** Those are
+  the two trackers that actually perform the close on merge. Every other
+  provider gets `Refs` regardless of `closeOnMerge`, because `Fixes ABC-12` in a
+  GitHub PR body is inert text and emitting it would advertise a state
+  transition that never happens.
+- **Nothing registers a plugin as the owner of a tracker yet.**
+  `resolveIssueDeeplinkRouting` takes an `owners` list so an
+  `ade://issue/jira/…` link minted on one machine can open through whichever
+  Jira plugin the receiving machine has, and no caller populates it. Today the
+  routing falls back to the plugin the link names, or to a plugin whose id
+  equals the provider; `linear` with nobody claiming it goes to the compiled
+  Linear surface, exactly where `ade://linear-issue/…` has always gone.
+- **iOS does not parse the `issue` deeplink kind.** `DeepLinkRouter.swift`
+  knows `linear-issue` and not `issue`, so `ade://issue/jira/PROJ-9` falls to
+  its `default` arm and opens nothing on a phone. Desktop, the web client and
+  the CLI all handle it. The iOS *lane badge* is migrated — it reads the ref
+  and shows a non-Linear tracker's own key, title and state — so this is a
+  routing gap, not a rendering one.
+- **A plugin cannot set a lane's primary issue.** `linkIssueRef` writes
+  `lane_linear_issue_links`; `LaneSummary.primaryIssue` is derived from the
+  lane's own `lane_linear_issues` row, which only ADE's
+  create-a-lane-from-an-issue path writes. `role: "primary"` on a plugin's link
+  is recorded and read back, but the link lands in `issueLinks`.
+- **A plugin cannot create a lane, only link to one.** `ade.lanes` is `list`,
+  `get`, `linkIssue`, `unlinkIssue`. `issueRefBranchName` / `issueRefLaneName`
+  exist and are proven byte-identical to the Linear derivation, but every lane
+  creation path still calls `linearIssueBranchName`.
 
 ## Cross-links
 
 - [Sync and multi-device](../sync-and-multi-device/README.md) — CRR tables, the
-  hello capability handshake, remote commands.
+  hello capability handshake, remote commands. The
+  [CRDT model](../sync-and-multi-device/crdt-model.md) carries Rule 4, the
+  version-inside-the-JSON rule both the plugin tables and the issue link follow.
 - [Files and editor](../files-and-editor/README.md) — the viewer registry the
   `file-viewer` socket extends.
 - [Pull requests](../pull-requests/README.md) and [Lanes](../lanes/README.md) —
@@ -1169,7 +1305,8 @@ oversight:
 - [ADE Code](../ade-code/README.md) — `/plugin-view` and the right-pane
   interpreter.
 - [Deeplinks](../deeplinks/README.md) — the `plugin` target, its `ctx`
-  parameter, and the per-client routing ladder.
+  parameter, the provider-neutral `issue` target, and the per-client routing
+  ladder.
 - [System overview](../../ARCHITECTURE.md) — IPC contract, action registry, data
   plane.
 - [registry/README.md](../../../registry/README.md) — the plugin directory, its

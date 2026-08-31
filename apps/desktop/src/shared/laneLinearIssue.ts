@@ -1,6 +1,7 @@
 import type { LinearPriorityLabel } from "./types/linearSync";
 import type { LaneLinearIssue, NormalizedLinearIssue } from "./types";
 import { linearIssueBranchName } from "./linearIssueBranch";
+import { ISSUE_REF_KEY, parseIssueRefValue } from "./issueRef";
 
 const VALID_PRIORITY_LABELS = new Set<LinearPriorityLabel>(["urgent", "high", "normal", "low", "none"]);
 
@@ -51,7 +52,18 @@ export function parseLaneLinearIssueValue(value: unknown): LaneLinearIssue | nul
   const priorityLabel: LinearPriorityLabel = VALID_PRIORITY_LABELS.has(rawPriorityLabel as LinearPriorityLabel)
     ? rawPriorityLabel as LinearPriorityLabel
     : "none";
+  // Carry the provider-neutral ref across the parse.
+  //
+  // This function builds a fresh object from named fields, so anything it does
+  // not name is dropped. That drop is exactly what makes the `__issueRef` key
+  // safe on a peer running an older build: the key is inert there. On a build
+  // that knows the key, dropping it would lose the tracker identity on every
+  // read, so it is re-attached here after validation. An unparseable ref is
+  // dropped rather than repaired, and the reader then derives one from the
+  // legacy fields.
+  const issueRef = parseIssueRefValue(issue[ISSUE_REF_KEY]);
   return {
+    ...(issueRef ? { [ISSUE_REF_KEY]: issueRef } : {}),
     id,
     identifier,
     title,

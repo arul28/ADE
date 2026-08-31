@@ -66,9 +66,17 @@ struct LaneOpenChip: View {
 
 // MARK: - Linear issue
 
-/// Gated on the Linear plugin like every other Linear affordance: the badge
-/// opens the issue, which is the same access the Work menu's Linear link row
-/// offers, and a machine without the plugin should not have either.
+/// The lane's issue badge. It reads the row's ``IssueRef`` rather than the
+/// legacy Linear fields, so a Jira or GitHub link shows its own key, title and
+/// state instead of being mislabelled as Linear. A Linear row derives a ref
+/// whose key/title/state/url ARE those legacy fields, so it renders exactly as
+/// it did before.
+///
+/// A Linear ref stays gated on the Linear plugin, like every other Linear
+/// affordance: the badge opens the issue, which is the same access the Work
+/// menu's Linear link row offers, and a machine without the plugin should have
+/// neither. A ref from another tracker is not the Linear plugin's to gate —
+/// whatever plugin wrote it owns it — so it is not hidden when Linear is absent.
 struct LaneLinearIssueBadge: View {
   @Environment(\.openURL) private var openURL
   @EnvironmentObject private var pluginGate: PluginPresenceGate
@@ -76,15 +84,17 @@ struct LaneLinearIssueBadge: View {
   let issue: LaneLinearIssue
   var compact = false
 
+  private var ref: IssueRef { issue.issueRef }
+
   var body: some View {
-    if pluginGate.owns(.linear) {
+    if !ref.isLinear || pluginGate.owns(.linear) {
       badge
     }
   }
 
   private var badge: some View {
     Button {
-      if let urlString = issue.url,
+      if let urlString = ref.url,
          let url = URL(string: urlString),
          url.scheme == "http" || url.scheme == "https" {
         openURL(url)
@@ -93,16 +103,16 @@ struct LaneLinearIssueBadge: View {
       HStack(spacing: 6) {
         Image(systemName: "link")
           .font(.system(size: compact ? 9 : 11, weight: .bold))
-        Text(issue.identifier)
+        Text(ref.key)
           .font(.caption2.monospaced().weight(.bold))
           .lineLimit(1)
         if !compact {
-          Text(issue.title)
+          Text(ref.title)
             .font(.caption.weight(.semibold))
             .lineLimit(1)
             .truncationMode(.tail)
         }
-        if let state = issue.stateName, !state.isEmpty, !compact {
+        if let state = ref.state?.name, !state.isEmpty, !compact {
           Text(state)
             .font(.caption2.weight(.semibold))
             .foregroundStyle(ADEColor.textMuted)
@@ -119,8 +129,14 @@ struct LaneLinearIssueBadge: View {
       )
     }
     .buttonStyle(.plain)
-    .disabled(issue.url?.isEmpty ?? true)
-    .accessibilityLabel("\(issue.identifier): \(issue.title)")
+    .disabled(ref.url?.isEmpty ?? true)
+    // A Linear badge keeps the label it always had. Any other tracker names
+    // itself, because "ADE-123" alone reads as Linear on this screen.
+    .accessibilityLabel(
+      ref.isLinear
+        ? "\(ref.key): \(ref.title)"
+        : "\(ref.providerDisplayName) \(ref.key): \(ref.title)"
+    )
   }
 }
 

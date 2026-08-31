@@ -2,8 +2,10 @@ import path from "node:path";
 
 import type { Logger } from "../logging/logger";
 import {
+  isPluginAuthCallbackKind,
   isPluginProviderKeyId,
   pluginPanelShowsOnMobile,
+  type PluginAuthCallbackKind,
   type PluginManifest,
   type PluginProviderKeyId,
 } from "../../../shared/plugins/manifest";
@@ -15,6 +17,11 @@ import {
   type PluginSocketKind,
 } from "../../../shared/plugins/sockets";
 import {
+  PLUGIN_AUTH_PARAMS_MAX,
+  PLUGIN_AUTH_PARAM_VALUE_MAX,
+  PLUGIN_AUTH_RESERVED_PARAMS,
+  type PluginAuthSessionStart,
+  type PluginCredentialHandoffResult,
   assertPluginCollectionKey,
   assertPluginCollectionName,
   budgetExceeded,
@@ -59,6 +66,9 @@ import {
   type PluginChatUserAppend,
   type PluginCollectionPutOptions,
   type PluginFilePickerOptions,
+  type PluginIssueLink,
+  type PluginLaneSummary,
+  toPluginLaneSummary,
   readPluginNotificationDeeplink,
   type PluginNotificationInput,
   type PluginNotificationResult,
@@ -67,6 +77,15 @@ import {
   pluginScheduleIdMissingMessage,
   readPluginScheduleId,
 } from "../../../shared/plugins/sdk";
+import {
+  canPluginUnlinkIssueRef,
+  CORE_ISSUE_PLUGIN_ID,
+  isLinkableIssueRef,
+  issueRefIdentity,
+  parseIssueRefValue,
+  type IssueRef,
+} from "../../../shared/issueRef";
+import type { IssueLink, IssueLinkRole, LaneSummary } from "../../../shared/types/lanes";
 import type { PluginDataStore } from "./pluginDataStore";
 import type { PluginSecretStore } from "./pluginSecretStore";
 
@@ -157,6 +176,23 @@ export function pluginDesktopUnavailable(): PluginSdkError {
 }
 
 /**
+ * The refusal when nothing on this machine can put a sign-in in front of a
+ * person.
+ *
+ * Its own code rather than `desktop_unavailable`, because the remedy is wider
+ * than "start the app": a paired phone can serve the `app` transport with no
+ * desktop at all, so what is missing is any client, not a specific one. A
+ * plugin that read this as "install the desktop" would tell a phone-only user
+ * to do something that is not required.
+ */
+export function pluginAuthUnavailable(): PluginSdkError {
+  return new PluginSdkError(
+    "auth_unavailable",
+    "Nothing on this machine can show a sign-in right now. Open ADE, or use a paired phone.",
+  );
+}
+
+/**
  * The refusal when this host runs no scheduler.
  *
  * `unsupported_method` here, unlike the two above: a host without a scheduler
@@ -184,6 +220,21 @@ export function pluginChatUnavailable(): PluginSdkError {
   return new PluginSdkError(
     "unsupported_method",
     "This copy of ADE cannot host plugin chat runtimes.",
+  );
+}
+
+/**
+ * The refusal when this host serves no lanes.
+ *
+ * `unsupported_method`, like chat: a host with no project bound has no lane to
+ * link an issue to and will not grow one because the plugin retried. A plugin
+ * should treat the lane surface as absent rather than read it as "that lane is
+ * somebody else's" and go looking for another.
+ */
+export function pluginLanesUnavailable(): PluginSdkError {
+  return new PluginSdkError(
+    "unsupported_method",
+    "This copy of ADE cannot serve lanes to plugins.",
   );
 }
 
@@ -330,6 +381,125 @@ function requireBranchName(value: unknown, field: string): string {
   return raw;
 }
 
+/**
+ * The link roles a plugin may ask for.
+ *
+ * The whole vocabulary, not a subset: a plugin that resolved a commit trailer
+ * to an issue is stating `"inferred"` and a plugin that opened the lane FROM an
+ * issue is stating `"primary"`, and flattening either into the default would
+ * make the lane's own issue list lie about how it learned things.
+ */
+const PLUGIN_ISSUE_LINK_ROLES = [
+  "primary",
+  "worked",
+  "referenced",
+  "inferred",
+] as const satisfies readonly IssueLinkRole[];
+
+/**
+ * Read the ONE thing a link hangs off.
+ *
+ * Both or neither is refused rather than resolved. A link with no target is not
+ * a link, and a call naming a lane AND a session would leave the plugin unable
+ * to tell which one the host picked — so the ambiguity is the plugin author's
+ * to fix, at the moment they write the call, not a coin the host flips at
+ * runtime.
+ */
+function readIssueLinkTarget(input: Record<string, unknown>): { laneId?: string; sessionId?: string } {
+  const laneId = typeof input.laneId === "string" && input.laneId.trim() ? input.laneId.trim() : null;
+  const sessionId = typeof input.sessionId === "string" && input.sessionId.trim()
+    ? input.sessionId.trim()
+    : null;
+  if (laneId && sessionId) {
+    throw new PluginSdkError("invalid_args", 'Pass "laneId" or "sessionId", not both.');
+  }
+  if (!laneId && !sessionId) {
+    throw new PluginSdkError("invalid_args", 'Pass exactly one of "laneId" and "sessionId".');
+  }
+  return laneId ? { laneId } : { sessionId: sessionId as string };
+}
+
+/**
+ * The plugin's own query parameters for an authorize URL.
+ *
+ * Two rules, and the second is the load-bearing one. Everything must be a
+ * string, because these are query parameters and a number a plugin meant as
+ * `expires_in` would reach the provider as whatever `String()` made of it.
+ * And `redirect_uri` and `state` are refused BY NAME rather than overwritten:
+ * a silent overwrite would let an author ship a plugin that looks like it
+ * chooses its own redirect, works in testing because the host quietly replaced
+ * it, and breaks the day the host's spelling changes. Told about it, the
+ * author learns the platform owns those two and why.
+ */
+function readAuthParams(raw: unknown): Record<string, string> {
+  if (raw === undefined || raw === null) return {};
+  if (!isRecord(raw)) throw new PluginSdkError("invalid_args", '"params" must be an object.');
+  const entries = Object.entries(raw);
+  if (entries.length > PLUGIN_AUTH_PARAMS_MAX) {
+    throw budgetExceeded("auth_params", PLUGIN_AUTH_PARAMS_MAX, entries.length);
+  }
+  const out: Record<string, string> = {};
+  for (const [key, value] of entries) {
+    if (PLUGIN_AUTH_RESERVED_PARAMS.includes(key)) {
+      throw new PluginSdkError(
+        "invalid_args",
+        `"${key}" is set by ADE, not by the plugin. The host owns `
+          + `${PLUGIN_AUTH_RESERVED_PARAMS.map((name) => `"${name}"`).join(" and ")}`
+          + " so that it can catch the redirect and prove it is the same sign-in.",
+      );
+    }
+    if (typeof value !== "string") {
+      throw new PluginSdkError("invalid_args", `"params.${key}" must be a string.`);
+    }
+    if (value.length > PLUGIN_AUTH_PARAM_VALUE_MAX) {
+      throw budgetExceeded("auth_param_value", PLUGIN_AUTH_PARAM_VALUE_MAX, value.length);
+    }
+    out[key] = value;
+  }
+  return out;
+}
+
+function requireAuthTransport(value: unknown): PluginAuthCallbackKind {
+  if (!isPluginAuthCallbackKind(value)) {
+    throw new PluginSdkError("invalid_args", `"transport" must be "loopback" or "app".`);
+  }
+  return value;
+}
+
+function readIssueLinkRole(value: unknown): IssueLinkRole | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (!PLUGIN_ISSUE_LINK_ROLES.some((role) => role === value)) {
+    throw new PluginSdkError(
+      "invalid_args",
+      `"role" must be one of ${PLUGIN_ISSUE_LINK_ROLES.map((role) => `"${role}"`).join(", ")}.`,
+    );
+  }
+  return value as IssueLinkRole;
+}
+
+/**
+ * Read a caller-supplied issue and stamp this plugin's id on it.
+ *
+ * The stamp is an OVERWRITE, not a default. `parseIssueRefValue` falls back to
+ * `core` for a ref that names no owner, and a plugin that named one — its own
+ * or somebody else's — gets it replaced by the id of the child connection that
+ * made the call. Ownership is what `lanes.unlinkIssue` checks, so a ref whose
+ * owner the caller could set would be a check against a value the checked party
+ * supplied.
+ */
+function readPluginIssueRef(value: unknown, pluginId: string): IssueRef {
+  if (!isRecord(value)) throw new PluginSdkError("invalid_args", '"issue" must be an object.');
+  const parsed = parseIssueRefValue(value);
+  const ref = parsed ? { ...parsed, pluginId } : null;
+  if (!ref || !isLinkableIssueRef(ref)) {
+    throw new PluginSdkError(
+      "invalid_args",
+      '"issue" must carry a non-empty "provider", "issueId", "key" and "title".',
+    );
+  }
+  return ref;
+}
+
 export function createPluginSdkServer(deps: {
   pluginId: string;
   manifest: PluginManifest;
@@ -403,6 +573,36 @@ export function createPluginSdkServer(deps: {
    */
   readProviderKey?: (provider: PluginProviderKeyId) => string | null;
   /**
+   * Start one of this plugin's declared sign-in flows.
+   *
+   * Narrow functions rather than the auth service itself, for the same reason
+   * {@link readProviderKey} is narrow: the host closes over this plugin's id
+   * and manifest, so nothing here can begin a flow for a plugin other than the
+   * one this server serves. The URL is deliberately not in the answer — see
+   * `PluginAuthSessionStart` — so a live authorize URL never enters the child.
+   *
+   * Optional and absent on a host with nowhere to show a browser, which is
+   * `auth_unavailable`: a flow that started and could never finish is worse
+   * than one that refused to start.
+   */
+  beginAuthSession?: (args: {
+    sessionId: string;
+    params: Record<string, string>;
+    transport?: PluginAuthCallbackKind;
+  }) => Promise<PluginAuthSessionStart>;
+  /** Retire a running flow. Idempotent, so it needs no "was there one" answer. */
+  cancelAuthSession?: (sessionId: string) => void;
+  /**
+   * Offer this plugin the credential ADE already holds for a built-in surface
+   * it supersedes. See `pluginCredentialHandoff.ts`.
+   *
+   * Separate from the two above even though a plugin author meets all three as
+   * `ade.auth`, because this one needs no browser and no listener — it needs
+   * only something that can put a card in front of a person. A host with a
+   * chat but no window can serve this and refuse those.
+   */
+  requestCredentialHandoff?: (builtin: string) => Promise<PluginCredentialHandoffResult>;
+  /**
    * This plugin's own schedules. Absent on a host with no scheduler, which is
    * `unsupported_method` rather than a silent success — a plugin told its
    * schedule was created would go on to rely on it firing.
@@ -461,6 +661,52 @@ export function createPluginSdkServer(deps: {
       transcript: PluginChatTranscriptEntry[],
       options?: PluginChatHydrateOptions,
     ) => Promise<PluginChatHydrateResult>;
+  };
+  /**
+   * The lanes of whichever project this plugin is bound to, for `ade.lanes.*`.
+   *
+   * `pluginId` is the FIRST argument of every call, exactly as it is on
+   * {@link chat}, and for the same reason: it is the id THIS server was built
+   * for, resolved from the supervisor that owns the child socket, so every
+   * ownership decision downstream is made against a host-derived identity and
+   * never against a field the plugin filled in.
+   *
+   * These hand back ADE's own {@link LaneSummary}; this module projects it down
+   * to {@link PluginLaneSummary} before it crosses the child boundary, so a
+   * supplier cannot leak a worktree path by forgetting to.
+   *
+   * Absent on a host with no project bound — see {@link pluginLanesUnavailable}.
+   */
+  lanes?: {
+    list: (pluginId: string) => Promise<LaneSummary[]>;
+    get: (pluginId: string, laneId: string) => Promise<LaneSummary | null>;
+    listIssueLinks: (
+      pluginId: string,
+      target: { laneId?: string; sessionId?: string },
+    ) => Promise<IssueLink[]>;
+    linkIssue: (
+      pluginId: string,
+      args: {
+        laneId?: string;
+        sessionId?: string;
+        /** Already stamped with `pluginId` by this module. */
+        issue: IssueRef;
+        role?: IssueLinkRole;
+        includeInPr?: boolean;
+        closeOnMerge?: boolean;
+      },
+    ) => Promise<IssueLink>;
+    unlinkIssue: (
+      pluginId: string,
+      args: {
+        laneId?: string;
+        sessionId?: string;
+        provider: string;
+        issueId: string;
+        /** The store enforces ownership too. Belt and braces — see the case. */
+        requirePluginId: string;
+      },
+    ) => Promise<boolean>;
   };
   /** Electron-only verbs, served over the daemon→desktop bridge. */
   desktopHost?: {
@@ -525,6 +771,11 @@ export function createPluginSdkServer(deps: {
   const requireChat = (): NonNullable<typeof deps.chat> => {
     if (!deps.chat) throw pluginChatUnavailable();
     return deps.chat;
+  };
+
+  const requireLanes = (): NonNullable<typeof deps.lanes> => {
+    if (!deps.lanes) throw pluginLanesUnavailable();
+    return deps.lanes;
   };
 
   /**
@@ -718,6 +969,34 @@ export function createPluginSdkServer(deps: {
         case "secrets.hasProviderKey": {
           const provider = requireDeclaredProvider(params);
           return (deps.readProviderKey?.(provider) ?? null) !== null;
+        }
+
+        case "auth.beginSession": {
+          if (!deps.beginAuthSession) throw pluginAuthUnavailable();
+          // Argument SHAPE is checked here and declaration is not. Whether this
+          // plugin declared the flow, and whether the transport is one of its
+          // callbacks, are the auth service's to answer: it holds the manifest
+          // and the live session table, and a second copy of the rule here
+          // would be free to drift from the one that actually gates the listen.
+          return await deps.beginAuthSession({
+            sessionId: requireString(params, "sessionId"),
+            params: readAuthParams(params.params),
+            ...(params.transport === undefined ? {} : { transport: requireAuthTransport(params.transport) }),
+          });
+        }
+
+        case "auth.cancelSession": {
+          // Absent host is a silent success rather than a refusal, and only
+          // here. There is nothing to cancel on a host that could never have
+          // started a flow, and a plugin tidying up in a `finally` should not
+          // have to catch a rejection for work that did not need doing.
+          deps.cancelAuthSession?.(requireString(params, "sessionId"));
+          return null;
+        }
+
+        case "auth.requestHandoff": {
+          if (!deps.requestCredentialHandoff) throw pluginAuthUnavailable();
+          return await deps.requestCredentialHandoff(requireString(params, "builtin"));
         }
 
         case "contributions.publish": {
@@ -1127,6 +1406,79 @@ export function createPluginSdkServer(deps: {
             : undefined;
           chargeChatWrite(sessionId);
           return await chat.hydrate(pluginId, sessionId, transcript, options);
+        }
+
+        // The lane surface. Read verbs project through `toPluginLaneSummary`
+        // rather than answering with `LaneSummary`: the internal shape carries
+        // `worktreePath`, `attachedRootPath` and `devicesOpen`, and a plugin
+        // that asked which lanes exist has no business learning where they live
+        // on disk or which of the user's machines has them open.
+        case "lanes.list": {
+          const lanes = requireLanes();
+          return (await lanes.list(pluginId)).map(toPluginLaneSummary) satisfies PluginLaneSummary[];
+        }
+
+        case "lanes.get": {
+          const lanes = requireLanes();
+          const lane = await lanes.get(pluginId, requireString(params, "laneId"));
+          return lane ? toPluginLaneSummary(lane) : null;
+        }
+
+        case "lanes.linkIssue": {
+          const lanes = requireLanes();
+          const input = optionalRecord(params.input, "input");
+          const target = readIssueLinkTarget(input);
+          // Stamped here, before anything sees it. See `readPluginIssueRef`.
+          const issue = readPluginIssueRef(input.issue, pluginId);
+          const role = readIssueLinkRole(input.role);
+          return await lanes.linkIssue(pluginId, {
+            ...target,
+            issue,
+            ...(role ? { role } : {}),
+            // Read as a strict boolean, and only when the plugin said
+            // something: an absent flag must reach the store as absent so the
+            // store's own default applies, not as `false`.
+            ...(input.includeInPr === undefined || input.includeInPr === null
+              ? {}
+              : { includeInPr: input.includeInPr === true }),
+            ...(input.closeOnMerge === undefined || input.closeOnMerge === null
+              ? {}
+              : { closeOnMerge: input.closeOnMerge === true }),
+          }) satisfies PluginIssueLink;
+        }
+
+        case "lanes.unlinkIssue": {
+          const lanes = requireLanes();
+          const input = optionalRecord(params.input, "input");
+          const target = readIssueLinkTarget(input);
+          const provider = requireString(input, "provider").trim().toLowerCase();
+          const issueId = requireString(input, "issueId").trim();
+          if (!provider || !issueId) {
+            throw new PluginSdkError("invalid_args", '"provider" and "issueId" must be non-empty.');
+          }
+          // The ownership check runs TWICE on purpose. The store enforces it as
+          // well (`requirePluginId` below), because the store is what other
+          // callers reach; this copy exists so the plugin gets a sentence that
+          // names the owner instead of a generic store refusal it cannot act
+          // on. A plugin removes only what it created — the user, through the
+          // lane UI, the CLI or the action layer, can still unlink anything.
+          const wanted = `${provider}:${issueId}`;
+          const existing = (await lanes.listIssueLinks(pluginId, target))
+            .find((link) => issueRefIdentity(link.issue) === wanted);
+          if (existing && !canPluginUnlinkIssueRef(existing.issue, pluginId)) {
+            throw new PluginSdkError(
+              "not_permitted",
+              existing.issue.pluginId === CORE_ISSUE_PLUGIN_ID
+                ? `Issue ${existing.issue.key} was linked by ADE itself, so only the user can unlink it.`
+                : `Issue ${existing.issue.key} was linked by the "${existing.issue.pluginId}" plugin, so "${pluginId}" cannot unlink it.`,
+            );
+          }
+          return await lanes.unlinkIssue(pluginId, {
+            ...target,
+            provider,
+            issueId,
+            requirePluginId: pluginId,
+          });
         }
 
         case "clipboard.read": {

@@ -1070,15 +1070,18 @@ struct WorkSessionListRow: View {
           } label: {
             Label("Branch link", systemImage: "arrow.triangle.branch")
           }
-          // Only a lane that actually carries a Linear issue URL — the copy is
-          // that URL verbatim, so there is nothing to offer without one — and
-          // only while the machine still has the Linear plugin that owns every
-          // Linear affordance in the app.
-          if laneMenu.linearLinkAvailable, primaryLaneLinearIssue(for: lane)?.url != nil {
+          // Only a lane that actually carries an issue URL — the copy is that
+          // URL verbatim, so there is nothing to offer without one. A Linear
+          // link stays gated on the Linear plugin that owns every Linear
+          // affordance in the app; a link from another tracker belongs to the
+          // plugin that wrote it, so Linear's absence does not hide it, and the
+          // row names that tracker instead of saying "Linear".
+          if let issueRef = primaryLaneIssueRef(for: lane), issueRef.url != nil,
+             !issueRef.isLinear || laneMenu.linearLinkAvailable {
             Button {
               laneMenu.onCopyLinearLink(lane)
             } label: {
-              Label("Linear issue link", systemImage: "square.on.square")
+              Label("\(issueRef.providerDisplayName) issue link", systemImage: "square.on.square")
             }
           }
           Button {

@@ -2033,12 +2033,6 @@ export type AgentChatSessionSummary = {
   recoveredFromSessionId?: string;
   importedFrom?: AgentChatImportedFrom;
   requestedCwd?: string | null;
-  /**
-   * Linear issues attached to this session (chat or CLI), independent of any
-   * lane link. Populated from `session_linear_issues`; empty/omitted when the
-   * session has no attached issues.
-   */
-  linearIssueLinks?: SessionLinearIssueLink[];
 } & OrchestrationSessionFields;
 
 export type AgentChatTranscriptEntry = {

@@ -2246,6 +2246,12 @@ export type SyncRemoteCommandAction =
   // registration without a union member compiles only until something reads the
   // union, so it belongs here beside the rest.
   | "plugins.invoke"
+  // Hands back the parameters a client captured from a sign-in redirect. The
+  // companion to `plugins.invoke`, which is what starts such a flow: a phone
+  // opens the stamped instruction in an in-app browser, and this is the only
+  // route by which the answer reaches the machine holding the flow open. It
+  // names no plugin and no session — the host routes by the `state` it minted.
+  | "plugins.completeAuthSession"
   // Host-joined `plugin_contributions` rows for one surface. PROJECT-scoped,
   // unlike its siblings here, because the table is per project — see the
   // registration for why that is correctness rather than preference.

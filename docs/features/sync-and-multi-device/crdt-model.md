@@ -303,6 +303,9 @@ column. Dropping or renaming a column on a replicated table is not
 supported by the current adapter and must be migrated through a copy
 table.
 
+"Safe" here means safe for the local adapter. It says nothing about the
+peers that will receive rows naming the new column — see Rule 4.
+
 ### Rule 3: Machine-bound state is not a CRR
 
 Do not add tables to the replicated set that only matter on one
@@ -334,6 +337,60 @@ not a property the CRR gives you: nothing stops a controller writing the
 column anyway, and the write replicates. When the value is one a host
 *decision* rests on, back the intent with the host-authoritative column
 filter described in [Merge semantics](#merge-semantics).
+
+### Rule 4: For data older peers must tolerate, version inside the JSON column
+
+Nothing in the wire protocol exchanges a schema version, and nothing
+filters an unknown column out of an inbound changeset: `applyChanges`
+checks `rawHasTable(db, rawChange.table)` and nothing else
+(`kvDb.ts:5233`), so a `cid` naming a column the receiving schema lacks
+goes straight into `insert into crsql_changes`. A column added on one
+build is therefore a column an older peer receives with no place to put
+it, and the failure mode of a bad inbound row is the one described in
+[Apply](#apply): the whole `db_version`-ordered batch rolls back and the
+sender's cursor never advances.
+
+So, for data on a replicated table that peers on older builds must
+tolerate: **put it inside an existing JSON column under a reserved key
+rather than adding a SQL column.** An unknown JSON key is inert
+everywhere — an old peer stores the column verbatim and its parser reads
+only the fields it knows.
+
+The plugin tables state this rule for themselves
+(`apps/desktop/src/main/services/state/kvDb.ts:4362` and
+`apps/ios/ADE/Resources/DatabaseBootstrap.sql:2143`: "THE SQL SHAPE OF
+`plugin_panels` AND `plugin_collections` IS FROZEN … Version inside the
+JSON, never in SQL"). The provider-neutral issue link is the same rule
+applied to tables that already existed:
+`apps/desktop/src/shared/issueRef.ts` stores an `IssueRef` inside the
+existing `issue_json` column of `lane_linear_issues`,
+`lane_linear_issue_links`, `session_linear_issues` and
+`session_github_issues`, under the reserved key `__issueRef`, beside a
+full legacy Linear projection of itself. No column, no table, no
+migration and no backfill: a new build that finds no `__issueRef` derives
+one from the legacy fields.
+
+One write covers both directions. An older peer parses the legacy
+projection and drops the unknown key — a Jira issue renders there with
+the right key, title, URL and state name under a Linear-labelled badge,
+which is a mislabel rather than a break. A newer peer reads the key and
+gets the tracker identity back. The lossy window is an older build
+*re-linking* an issue: it rewrites `issue_json` without the key, and the
+next link from a new build restores it.
+
+`ADD COLUMN` is still the right call when the table is local-only
+(`LOCAL_ONLY_CRR_EXCLUDED_TABLES`), or when every peer that can receive
+the rows already has the column — which means shipping the iOS DDL in
+`DatabaseBootstrap.sql` in the same release *and* gating outbound
+replication on a hello capability until it has, the way `plugin_*` rows
+are gated on `pluginTables:1`. Absent one of those, use the JSON key.
+
+`apps/desktop/src/main/services/lanes/laneIssueRef.test.ts` is the lock:
+one test asserts the exact column list of the three lane/session issue
+tables, another asserts no unique index besides the primary key, and the
+round-trip tests — skipped where the cr-sqlite extension is unavailable —
+apply a real changeset into a second database and read the ref back both
+with and without the reserved key.
 
 ### Local clears that must not propagate
 
@@ -509,7 +566,7 @@ After apply, ADE runs post-hooks:
 | Desktop / daemon extension loading + CRR marking | Implemented on macOS, Linux, and Windows x64; Windows package smoke proves a real CRR change |
 | iOS pure-SQL emulation | Implemented, wire-compatible |
 | Dynamic CRR discovery | Implemented |
-| `ALTER TABLE ADD COLUMN` support | Implemented (wrapped) |
+| `ALTER TABLE ADD COLUMN` support | Implemented (wrapped) locally; nothing negotiates the new column with peers — see Rule 4 |
 | Column drop/rename on replicated tables | **Not supported** — use copy-table migration |
 | Statement caching in `node:sqlite` adapter | Deferred; prepares per call today, revisit before heavier loads |
 

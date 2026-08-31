@@ -2,6 +2,20 @@ import type { LaneLinearIssue, NormalizedLinearIssue } from "./types";
 
 type BranchIssueInput = Pick<LaneLinearIssue | NormalizedLinearIssue, "identifier" | "title">;
 
+/**
+ * The Linear-shaped names. `issueRefFormat.ts` carries the provider-neutral
+ * counterparts (`issueRefLaneName`, `issueRefBranchName`) that a plugin tracker
+ * uses; `issueRefFormat.test.ts` proves the two produce byte-identical branches
+ * for a Linear issue.
+ *
+ * These two are NOT reimplemented on top of the generic ones. The generic
+ * branch namer slugifies the key, which is a no-op for a Linear identifier
+ * (`[A-Za-z0-9-]` only) but not for an identifier containing `_`, `.` or `/` —
+ * characters Linear cannot mint but which this function would pass through to
+ * the sanitizer. Delegating would therefore be a behavior change in a corner
+ * nobody asked to move, so the bodies stay as they are. Only
+ * `sanitizeLinearIssueBranchName` is shared, imported by the generic module.
+ */
 export function linearIssueLaneName(issue: BranchIssueInput): string {
   return `${issue.identifier.trim()} ${issue.title.trim()}`.trim();
 }

@@ -125,12 +125,22 @@ export function pluginApprovalGrant(manifest: PluginManifest | null): string {
   const hosts = [...(manifest.network?.hosts ?? [])].sort().join(",");
   const providers = [...(manifest.providerKeys ?? [])].sort().join(",");
   const projectSecrets = [...(manifest.projectSecrets ?? [])].sort().join(",");
-  // The overwhelming majority of manifests declare none of the three, and those
+  // A sign-in flow is in the grant by its PROVIDER and its loopback port, not
+  // by its id: those two are what the install card said out loud, and they are
+  // what a reader agreed to. A version that keeps one flow's id and quietly
+  // repoints it at a different provider, or moves it to a different port, has
+  // changed the sentence the user approved and must ask again.
+  const authSessions = [...(manifest.authSessions ?? [])]
+    .map((session) => `${session.id}@${session.provider}:${session.loopback?.port ?? ""}`)
+    .sort()
+    .join(",");
+  const credentialHandoff = [...(manifest.credentialHandoff ?? [])].sort().join(",");
+  // The overwhelming majority of manifests declare none of the five, and those
   // get the empty string — the same value a caller that omits the argument
   // passes. So the field is genuinely additive: a recorder that never heard of
   // it keeps matching for every plugin that has nothing extra to disclose.
-  if (!hosts && !providers && !projectSecrets) return "";
-  return `${hosts}|${providers}|${projectSecrets}`;
+  if (!hosts && !providers && !projectSecrets && !authSessions && !credentialHandoff) return "";
+  return `${hosts}|${providers}|${projectSecrets}|${authSessions}|${credentialHandoff}`;
 }
 
 /**

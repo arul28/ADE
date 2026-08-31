@@ -30,12 +30,16 @@ import {
   type AdePluginSdk,
   type PluginAnyEventPayload,
   type PluginAudioClip,
+  type PluginAuthSessionStart,
   type PluginChatHydrateResult,
+  type PluginCredentialHandoffResult,
   type PluginChatSessionRef,
   type PluginChildFrame,
   type PluginCollectionRow,
   type PluginEventName,
   type PluginHostFrame,
+  type PluginIssueLink,
+  type PluginLaneSummary,
   type PluginLogLevel,
   type PluginModule,
   type PluginNotificationResult,
@@ -207,6 +211,21 @@ export function runPluginChild(): void {
         await callHost("secrets.hasProviderKey", { provider })
       ) as boolean,
     },
+    auth: {
+      beginSession: async (input) => (
+        await callHost("auth.beginSession", {
+          sessionId: input.sessionId,
+          params: input.params ?? {},
+          ...(input.transport ? { transport: input.transport } : {}),
+        })
+      ) as PluginAuthSessionStart,
+      cancelSession: async (sessionId) => {
+        await callHost("auth.cancelSession", { sessionId });
+      },
+      requestHandoff: async (builtin) => (
+        await callHost("auth.requestHandoff", { builtin })
+      ) as PluginCredentialHandoffResult,
+    },
     contributions: {
       publish: async (
         entityKind: PluginEntityKind,
@@ -322,6 +341,21 @@ export function runPluginChild(): void {
           ...(options ? { options } : {}),
         }) as PluginChatHydrateResult
       ),
+    },
+    lanes: {
+      list: async () => (await callHost("lanes.list", {})) as PluginLaneSummary[],
+      get: async (laneId) => (
+        await callHost("lanes.get", { laneId })
+      ) as PluginLaneSummary | null,
+      // `input.issue` carries no `pluginId`: the host stamps the calling
+      // plugin's own id over whatever arrived, and unlinking checks against
+      // that. See `PluginIssueRefInput`.
+      linkIssue: async (input) => (
+        await callHost("lanes.linkIssue", { input })
+      ) as PluginIssueLink,
+      unlinkIssue: async (input) => (
+        await callHost("lanes.unlinkIssue", { input })
+      ) as boolean,
     },
     clipboard: {
       read: async () => (await callHost("clipboard.read", {})) as string,

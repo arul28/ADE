@@ -438,6 +438,301 @@ struct LaneLinearIssue: Codable, Identifiable, Equatable, Hashable {
   var branchName: String?
   var createdAt: String?
   var updatedAt: String?
+  /// The provider-neutral `IssueRef` a newer writer embedded in `issue_json`,
+  /// held verbatim rather than decoded.
+  ///
+  /// Two reasons it is raw JSON and not a decoded `IssueRef`:
+  ///
+  /// 1. A malformed ref must not fail the row. Synthesised `Codable` on a
+  ///    typed property throws out of `LaneLinearIssue.init(from:)` and the
+  ///    lane loses its issue entirely; `RemoteJSONValue` decodes any JSON, so
+  ///    the damage stays inside `issueRef`, which then derives from the legacy
+  ///    fields. See `issueRef` below.
+  /// 2. The phone re-encodes this struct when it sends `linearIssue` back to a
+  ///    machine (`lanes.create` / `chat.start`). Keeping the island verbatim
+  ///    round-trips fields this build does not know about — including a
+  ///    tracker's `extra` residue — instead of silently rewriting them.
+  ///
+  /// The name IS the wire key (`ISSUE_REF_KEY` in `shared/issueRef.ts`), which
+  /// is what the synthesised `CodingKeys` needs.
+  var __issueRef: RemoteJSONValue?
+}
+
+// MARK: - Provider-neutral issue ref
+//
+// Mirrors `apps/desktop/src/shared/issueRef.ts`. ADE's lane and session issue
+// links are provider-neutral so a plugin can fill them for any tracker. The ref
+// lives INSIDE `issue_json` under `__issueRef`, beside a full legacy
+// Linear-shaped projection of itself — there is no column and no table for it,
+// because a schema change on a replicated cr-sqlite table breaks peers on older
+// builds.
+//
+// Every existing row carries no `__issueRef` at all, so the derive from the
+// legacy Linear fields is the common path, not an error path.
+
+/// The tracker-neutral lifecycle position of an issue. The vocabulary is
+/// Linear's `stateType`, matching `IssueStateCategory` in `issueRef.ts`.
+enum IssueStateCategory: String, Codable, Equatable, Hashable, CaseIterable {
+  case triage
+  case backlog
+  case unstarted
+  case started
+  case completed
+  case canceled
+
+  /// Case-insensitive, whitespace-trimmed, and `nil` for anything outside the
+  /// vocabulary — the Swift twin of `issueStateCategory`.
+  init?(rawTrackerValue: String?) {
+    guard let trimmed = rawTrackerValue?.trimmingCharacters(in: .whitespacesAndNewlines),
+          !trimmed.isEmpty,
+          let category = IssueStateCategory(rawValue: trimmed.lowercased())
+    else { return nil }
+    self = category
+  }
+}
+
+struct IssueRefState: Equatable {
+  /// The tracker's own state id. A plugin needs it to move the issue back.
+  var id: String?
+  /// The state as the tracker names it, for display.
+  var name: String?
+  var category: IssueStateCategory
+}
+
+/// The group the issue belongs to. A Linear team, a GitHub repository, a Jira
+/// project. Core only displays it and never interprets it.
+struct IssueRefContainer: Equatable {
+  var id: String?
+  var key: String?
+  var name: String?
+}
+
+struct IssueRefActor: Equatable {
+  var id: String?
+  var name: String?
+}
+
+struct IssueRefPriority: Equatable {
+  /// Lower sorts first, matching Linear's own ordering.
+  var rank: Double?
+  var label: String?
+}
+
+struct IssueRef: Equatable {
+  /// The plugin that owns this link, or `IssueRef.corePluginId`.
+  var pluginId: String
+  /// The tracker vocabulary, such as `linear`, `github` or `jira`.
+  var provider: String
+  /// The tracker's stable id for the issue.
+  var issueId: String
+  /// The human key, such as `ADE-123` or `owner/repo#42`.
+  var key: String
+  var title: String
+  var url: String?
+  var state: IssueRefState?
+  var container: IssueRefContainer?
+  /// The branch ADE derives for this issue.
+  var branchName: String?
+  var assignee: IssueRefActor?
+  var priority: IssueRefPriority?
+  var labels: [String] = []
+  var description: String?
+  var createdAt: String?
+  var updatedAt: String?
+  /// Tracker-specific residue. Held opaque: core never reads a key out of it,
+  /// and keeping it as JSON is what lets the phone hand it back unchanged.
+  var extra: [String: RemoteJSONValue]?
+
+  /// The `pluginId` stamped on a link ADE itself created. No plugin owns it.
+  static let corePluginId = "core"
+  static let providerLinear = "linear"
+  static let providerGitHub = "github"
+
+  /// True when this ref names an issue on the built-in Linear integration, and
+  /// so must render and gate exactly as it did before `IssueRef` existed.
+  var isLinear: Bool { provider == IssueRef.providerLinear }
+
+  /// "Linear", "GitHub", "Jira" — the tracker name a label should say. Used
+  /// wherever the UI used to hard-code "Linear".
+  var providerDisplayName: String { issueProviderDisplayName(provider) }
+}
+
+/// Display name for a provider id. Known trackers keep their own casing;
+/// anything else is capitalised so a new plugin reads sensibly with no change
+/// here.
+func issueProviderDisplayName(_ provider: String) -> String {
+  switch provider.lowercased() {
+  case IssueRef.providerLinear: return "Linear"
+  case IssueRef.providerGitHub: return "GitHub"
+  case "jira": return "Jira"
+  case "gitlab": return "GitLab"
+  case "asana": return "Asana"
+  case "shortcut": return "Shortcut"
+  default:
+    guard let first = provider.first else { return "Issue" }
+    return String(first).uppercased() + provider.dropFirst()
+  }
+}
+
+// The three readers below mirror the TypeScript helpers of the same name:
+// a non-empty trimmed string, a string that may legitimately be empty, and a
+// finite number. Anything else reads as absent.
+private func issueRefTrimmedString(_ value: RemoteJSONValue?) -> String? {
+  guard case .string(let raw)? = value else { return nil }
+  let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+  return trimmed.isEmpty ? nil : trimmed
+}
+
+private func issueRefNullableString(_ value: RemoteJSONValue?) -> String? {
+  guard case .string(let raw)? = value else { return nil }
+  return raw
+}
+
+private func issueRefNumber(_ value: RemoteJSONValue?) -> Double? {
+  guard case .number(let raw)? = value, raw.isFinite else { return nil }
+  return raw
+}
+
+private func issueRefObject(_ value: RemoteJSONValue?) -> [String: RemoteJSONValue]? {
+  guard case .object(let object)? = value else { return nil }
+  return object
+}
+
+private func issueRefStringArray(_ value: RemoteJSONValue?) -> [String] {
+  guard case .array(let entries)? = value else { return [] }
+  return entries.compactMap { entry in
+    if case .string(let raw) = entry { return raw }
+    return nil
+  }
+}
+
+private func parseIssueRefState(_ value: RemoteJSONValue?) -> IssueRefState? {
+  guard let record = issueRefObject(value),
+        let category = IssueStateCategory(rawTrackerValue: issueRefTrimmedString(record["category"]))
+  else { return nil }
+  return IssueRefState(
+    id: issueRefNullableString(record["id"]),
+    name: issueRefNullableString(record["name"]),
+    category: category
+  )
+}
+
+private func parseIssueRefContainer(_ value: RemoteJSONValue?) -> IssueRefContainer? {
+  guard let record = issueRefObject(value) else { return nil }
+  let id = issueRefNullableString(record["id"])
+  let key = issueRefNullableString(record["key"])
+  let name = issueRefNullableString(record["name"])
+  if id == nil, key == nil, name == nil { return nil }
+  return IssueRefContainer(id: id, key: key, name: name)
+}
+
+private func parseIssueRefActor(_ value: RemoteJSONValue?) -> IssueRefActor? {
+  guard let record = issueRefObject(value) else { return nil }
+  let id = issueRefNullableString(record["id"])
+  let name = issueRefNullableString(record["name"])
+  if id == nil, name == nil { return nil }
+  return IssueRefActor(id: id, name: name)
+}
+
+private func parseIssueRefPriority(_ value: RemoteJSONValue?) -> IssueRefPriority? {
+  guard let record = issueRefObject(value) else { return nil }
+  let rank = issueRefNumber(record["rank"])
+  let label = issueRefNullableString(record["label"])
+  if rank == nil, label == nil { return nil }
+  return IssueRefPriority(rank: rank, label: label)
+}
+
+/// Parse an `IssueRef` from untrusted JSON. A ref without a provider, an issue
+/// id, a key and a title is not usable by any reader, so it is rejected whole
+/// rather than repaired — the caller then derives one. Twin of
+/// `parseIssueRefValue`.
+func parseIssueRefValue(_ value: RemoteJSONValue?) -> IssueRef? {
+  guard let record = issueRefObject(value) else { return nil }
+  guard let provider = issueRefTrimmedString(record["provider"])?.lowercased(),
+        let issueId = issueRefTrimmedString(record["issueId"]),
+        let key = issueRefTrimmedString(record["key"]),
+        let title = issueRefTrimmedString(record["title"])
+  else { return nil }
+  return IssueRef(
+    pluginId: issueRefTrimmedString(record["pluginId"]) ?? IssueRef.corePluginId,
+    provider: provider,
+    issueId: issueId,
+    key: key,
+    title: title,
+    url: issueRefNullableString(record["url"]),
+    state: parseIssueRefState(record["state"]),
+    container: parseIssueRefContainer(record["container"]),
+    branchName: issueRefNullableString(record["branchName"]),
+    assignee: parseIssueRefActor(record["assignee"]),
+    priority: parseIssueRefPriority(record["priority"]),
+    labels: issueRefStringArray(record["labels"]),
+    description: issueRefNullableString(record["description"]),
+    createdAt: issueRefNullableString(record["createdAt"]),
+    updatedAt: issueRefNullableString(record["updatedAt"]),
+    extra: issueRefObject(record["extra"])
+  )
+}
+
+extension LaneLinearIssue {
+  /// Derive an `IssueRef` from the legacy Linear fields. The twin of
+  /// `issueRefFromLinearIssue`: container from team*, state from state*,
+  /// priority from priority/priorityLabel, and the same `extra` residue.
+  ///
+  /// The iOS `LaneLinearIssue` types more fields as optional than the desktop
+  /// one does (a lane snapshot from an older host can omit them), so an absent
+  /// required string reads as `""` here where TypeScript would have had a
+  /// value. That keeps a partial row displayable instead of dropping it.
+  func derivedIssueRef(pluginId: String = IssueRef.corePluginId) -> IssueRef {
+    IssueRef(
+      pluginId: pluginId,
+      provider: IssueRef.providerLinear,
+      issueId: id,
+      key: identifier,
+      title: title,
+      url: url,
+      state: IssueRefState(
+        id: (stateId?.isEmpty ?? true) ? nil : stateId,
+        name: (stateName?.isEmpty ?? true) ? nil : stateName,
+        category: IssueStateCategory(rawTrackerValue: stateType) ?? .unstarted
+      ),
+      container: IssueRefContainer(
+        id: (teamId?.isEmpty ?? true) ? nil : teamId,
+        key: (teamKey?.isEmpty ?? true) ? nil : teamKey,
+        name: teamName
+      ),
+      branchName: branchName,
+      assignee: (assigneeId?.isEmpty == false || assigneeName?.isEmpty == false)
+        ? IssueRefActor(id: assigneeId, name: assigneeName)
+        : nil,
+      priority: IssueRefPriority(rank: priority.map(Double.init), label: priorityLabel),
+      labels: labels ?? [],
+      description: description,
+      createdAt: createdAt,
+      updatedAt: updatedAt,
+      extra: [
+        "projectId": projectId.map { RemoteJSONValue.string($0) } ?? .null,
+        "projectSlug": projectSlug.map { RemoteJSONValue.string($0) } ?? .null,
+        "projectName": projectName.map { RemoteJSONValue.string($0) } ?? .null,
+        "creatorId": creatorId.map { RemoteJSONValue.string($0) } ?? .null,
+        "creatorName": creatorName.map { RemoteJSONValue.string($0) } ?? .null,
+        "dueDate": dueDate.map { RemoteJSONValue.string($0) } ?? .null,
+        "estimate": estimate.map { RemoteJSONValue.number($0) } ?? .null,
+      ]
+    )
+  }
+
+  /// The ref this row carries, or one derived from its legacy Linear fields.
+  ///
+  /// Every reader that used to touch `identifier` / `title` / `stateName` /
+  /// `url` goes through here. An absent or unparseable `__issueRef` derives
+  /// rather than fails, so a poisoned island can never blank an issue.
+  var issueRef: IssueRef {
+    guard var embedded = parseIssueRefValue(__issueRef) else { return derivedIssueRef() }
+    // The legacy `branchName` is the live one: ADE rewrites it on every attach
+    // through `finalizeLaneLinearIssue`, which does not reach inside the ref.
+    embedded.branchName = branchName ?? embedded.branchName
+    return embedded
+  }
 }
 
 struct LaneLinearIssueLinkEvidence: Codable, Equatable, Hashable {
@@ -502,7 +797,10 @@ struct DeviceMarker: Codable, Identifiable, Equatable, Hashable {
   var id: String { deviceId }
 }
 
-enum RemoteJSONValue: Codable, Equatable {
+/// `Hashable` so a model that keeps an opaque JSON island (see
+/// `LaneLinearIssue.__issueRef`) can still synthesise `Hashable`. Every
+/// associated value is conditionally `Hashable` already, so this is synthesised.
+enum RemoteJSONValue: Codable, Equatable, Hashable {
   case string(String)
   case number(Double)
   case bool(Bool)

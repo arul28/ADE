@@ -3,6 +3,7 @@ import path from "node:path";
 
 import {
   setPluginActionInvoker,
+  setPluginAuthSessionCompleter,
   setPluginInstallService,
 } from "../../../../../ade-cli/src/services/plugins/pluginInstallServiceRef";
 import { getPluginPresenceService } from "../../../../../ade-cli/src/services/plugins/pluginPresenceService";
@@ -19,10 +20,18 @@ import {
 } from "../../../../../ade-cli/src/services/plugins/pluginRegistryService";
 import { getApiKey } from "../ai/apiKeyStore";
 import type { AgentChatRuntimeRef } from "../../../shared/types/chat";
+import type { IssueRef } from "../../../shared/issueRef";
+import type {
+  IssueLink,
+  IssueLinkRole,
+  IssueLinkSource,
+  LaneSummary,
+} from "../../../shared/types/lanes";
 import type { Logger } from "../logging/logger";
 import type { AdeDb } from "../state/kvDb";
 import {
   findPluginChatRuntime,
+  isPluginBuiltinSurfaceId,
   parsePluginManifestJson,
   pluginHasRuntimeEntry,
   pluginPanelShowsOnMobile,
@@ -68,7 +77,9 @@ import {
   type PluginWebhookIngressStatus,
   type PluginWebhookPayload,
   pluginChatDeliveryAction,
+  hasPluginActionAuthSessionRequest,
   isReservedPluginActionName,
+  readPluginActionAuthSessionRequest,
   reservedPluginActionMessage,
   type PluginChatRuntimeEventName,
   type PluginChatRuntimeEventPayload,
@@ -93,8 +104,10 @@ import { createPluginInstallServiceAdapter, toPluginPresenceRow } from "./plugin
 import {
   createPluginSdkServer,
   pluginAudioCaptureUnavailable,
+  pluginAuthUnavailable,
   pluginAutomationsUnavailable,
   pluginChatUnavailable,
+  pluginLanesUnavailable,
   pluginWebhookIngressUnavailable,
   pluginDesktopUnavailable,
   pluginNotificationUnavailable,
@@ -107,6 +120,24 @@ import {
 import { createPluginNotificationLimiter } from "./pluginNotificationLimiter";
 import { createPluginScheduleService } from "./pluginScheduleService";
 import { createPluginSecretStore, type PluginSecretStore } from "./pluginSecretStore";
+import { createPluginAuthSessionService } from "./pluginAuthSessionService";
+import {
+  createPluginCredentialHandoffService,
+  type PluginCredentialHandoffService,
+} from "./pluginCredentialHandoff";
+import { resolvePluginsRoot } from "./pluginRegistryFile";
+import type { SyncCredentialStore } from "../../../../../ade-cli/src/services/credentials/credentialStore";
+
+/**
+ * Where the host remembers whether a plugin was already offered a built-in
+ * credential.
+ *
+ * Beside the install registry rather than inside the plugin's own directory,
+ * for the reason the settings file gives below: a plugin's directory is
+ * replaced wholesale on upgrade, and an upgrade must not turn into a second
+ * consent card for a handoff the user already answered.
+ */
+const PLUGIN_CREDENTIAL_HANDOFF_STATE_FILE = "credential-handoff.json";
 
 /**
  * Machine-scoped per-plugin settings values, for every installed plugin.
@@ -222,6 +253,43 @@ export type PluginProjectBinding = {
     urlFor: (pluginId: string, channelId: string) => string | null;
     getStatus: (pluginId?: string) => Promise<PluginWebhookIngressStatus[]>;
   };
+  /**
+   * This project's lane service, for `ade.lanes.*`.
+   *
+   * Structurally the subset of `laneService` the SDK needs, so the scope owner
+   * passes the service itself. Bound per project rather than resolved here for
+   * the reason `emitAutomationTrigger` is: a lane belongs to a project, the
+   * host outlives every project that attaches to it, and a captured service
+   * would keep linking issues onto lanes in a project the user has closed.
+   *
+   * Optional. A scope that binds none answers `ade.lanes.*` with
+   * `unsupported_method` rather than a silent success — see
+   * {@link pluginLanesUnavailable}.
+   */
+  lanes?: {
+    list: (args?: { includeArchived?: boolean; includeStatus?: boolean }) => Promise<LaneSummary[]>;
+    getSummary: (
+      laneId: string,
+      options?: { includeStatus?: boolean },
+    ) => Promise<LaneSummary | null>;
+    listIssueLinks: (args: { laneId?: string; sessionId?: string }) => IssueLink[];
+    linkIssueRef: (args: {
+      laneId?: string;
+      sessionId?: string;
+      issue: IssueRef;
+      role?: IssueLinkRole;
+      source?: IssueLinkSource;
+      includeInPr?: boolean;
+      closeOnMerge?: boolean;
+    }) => IssueLink;
+    unlinkIssueRef: (args: {
+      laneId?: string;
+      sessionId?: string;
+      provider: string;
+      issueId: string;
+      requirePluginId?: string;
+    }) => boolean;
+  };
 };
 
 export type PluginHostServiceArgs = {
@@ -306,6 +374,38 @@ export type PluginMachineContext = {
     writeClipboard: (text: string) => Promise<void>;
     pickFile: (options: PluginFilePickerOptions) => Promise<string>;
   };
+  /**
+   * ADE's own machine credential store, for the one-time credential handoff.
+   *
+   * In this bag for the same reason `disconnectAccountsForPlugin` is: the
+   * credential services are built long after the host, and on a machine where
+   * they never are (a CLI with no secrets directory) the honest answer is that
+   * there is nothing to hand over. Absent makes `ade.auth.requestHandoff`
+   * answer `auth_unavailable` rather than reporting an empty connection, which
+   * are very different things to tell a plugin on release day.
+   */
+  builtinCredentials?: SyncCredentialStore;
+  /**
+   * Put the handoff consent card in front of a person, and answer yes or no.
+   *
+   * A capability rather than a call into the chat approval machinery, because
+   * a handoff is asked for by a plugin — usually from a Connect button in a
+   * panel — and there is no chat session to raise a card in. The COPY is still
+   * shared and derived (`pluginCredentialHandoff.ts` builds the title and body
+   * from the descriptor and the parsed manifest, never from plugin arguments);
+   * only the presentation is the client's.
+   *
+   * Absent means nothing here can ask, which is `auth_unavailable`. It must
+   * never default to yes: this card is the only thing standing between a
+   * plugin and a credential the user gave to ADE.
+   */
+  requestCredentialHandoffConsent?: (args: {
+    pluginId: string;
+    displayName: string;
+    builtin: string;
+    title: string;
+    body: string;
+  }) => Promise<boolean>;
 };
 
 export type PluginHostService = {
@@ -340,6 +440,17 @@ export type PluginHostService = {
    * it has no business deleting a plugin's secrets or enumerating them.
    */
   secretsForWebhookIngress(): Pick<PluginSecretStore, "get" | "set">;
+  /**
+   * The phone's door for a sign-in it presented — see
+   * `pluginAuthSessionService.completeAppCallback`.
+   *
+   * The caller passes ONLY the callback parameters. It names no plugin and no
+   * session, because the host routes by the `state` it minted itself: a caller
+   * that could name a session could address a flow it did not start, and the
+   * one thing this seam must guarantee is that an authorization code reaches
+   * the plugin that asked for it and no other.
+   */
+  completeAuthSessionCallback(params: Record<string, string>): { ok: boolean; reason?: string };
   /** Supply (or replace) the machine identity. Merged over what is already set. */
   setMachineContext(context: PluginMachineContext): void;
   /** The `plugin` action-domain service, scoped to one project (null = machine). */
@@ -682,6 +793,93 @@ function createHost(args: PluginHostServiceArgs): PluginHostService {
     registryService ??= createPluginRegistryService({ logger });
     return registryService;
   };
+
+  /**
+   * The sign-in broker. Built eagerly because it costs one empty map until a
+   * plugin begins a flow, and because the phone's completion door has to be
+   * answerable the moment the daemon is up — a callback that arrives while the
+   * host is still deciding whether to build a broker is a code that is gone.
+   */
+  const authSessions = createPluginAuthSessionService({
+    logger,
+    emitCompleted: (pluginId, payload) => {
+      const supervisor = supervisors.get(pluginId);
+      // Delivered synchronously and NOT queued behind the runtime hooks, whose
+      // contract is to drop rather than wait. This payload is the only copy of
+      // a single-use authorization code that will ever exist: if the child is
+      // gone or has stopped draining stdin there is no redelivery, so the loss
+      // is logged loudly rather than counted as a drop nobody reads.
+      if (!supervisor || supervisor.status() !== "running" || !supervisor.send({ type: "event", payload })) {
+        logger.warn("plugin.auth_completion_undelivered", {
+          pluginId,
+          sessionId: payload.sessionId,
+          ok: payload.ok,
+        });
+      }
+    },
+  });
+
+  /**
+   * The one-time credential handoff, built on first use and only when this
+   * machine actually holds ADE's credential store.
+   *
+   * Null is a real answer and not a failure to configure: a headless CLI with
+   * no secrets directory has no built-in connection to hand anyone, and the
+   * SDK verb refuses with `auth_unavailable` rather than telling a plugin the
+   * user has no Linear account.
+   */
+  /** Which client is driving the invoke currently running, per plugin. */
+  const invokingClient = new Map<string, "desktop" | "mobile">();
+
+  /**
+   * Fill in the live sign-in URL a plugin asked a client to present.
+   *
+   * This is the whole reason `authSession` is not `openUrl`. The child returns
+   * `{ authSession: { sessionId } }` and no URL at all; the host looks that id
+   * up in its own table of flows it just started and stamps the rest on. So the
+   * worst a wrong or forged result can name is one of this plugin's own
+   * declared, already-running flows — there is no path by which a URL a plugin
+   * typed reaches a browser.
+   *
+   * A request naming no live flow has its `authSession` REMOVED rather than
+   * passed through empty, so a client cannot be handed a half-built
+   * instruction, and the drop is logged because to the user it looks exactly
+   * like a Connect button that does nothing.
+   */
+  const stampAuthSessionResult = (pluginId: string, result: unknown): unknown => {
+    if (!hasPluginActionAuthSessionRequest(result)) return result;
+    const request = readPluginActionAuthSessionRequest(result);
+    const presentation = request ? authSessions.presentation(pluginId, request.sessionId) : null;
+    if (!presentation) {
+      logger.warn("plugin.auth_session_result_dropped", {
+        pluginId,
+        sessionId: request?.sessionId ?? null,
+      });
+      const { authSession: _dropped, ...rest } = result as Record<string, unknown>;
+      return rest;
+    }
+    return { ...(result as Record<string, unknown>), authSession: presentation };
+  };
+
+  let credentialHandoffService: PluginCredentialHandoffService | null = null;
+  const credentialHandoff = (): PluginCredentialHandoffService | null => {
+    const credentials = machine.builtinCredentials;
+    if (!credentials) return null;
+    credentialHandoffService ??= createPluginCredentialHandoffService({
+      logger,
+      credentials,
+      secrets,
+      statePath: path.join(resolvePluginsRoot(), PLUGIN_CREDENTIAL_HANDOFF_STATE_FILE),
+      // Read at CALL time, like every other capability in the machine bag, so a
+      // desktop that attaches after the service was built can answer the card.
+      requestConsent: async (consentArgs) => {
+        const ask = machine.requestCredentialHandoffConsent;
+        if (!ask) throw pluginAuthUnavailable();
+        return await ask(consentArgs);
+      },
+    });
+    return credentialHandoffService;
+  };
   const installs: PluginInstallService = createPluginInstallService({
     logger,
     ...(args.pluginsRoot ? { pluginsRoot: args.pluginsRoot } : {}),
@@ -858,6 +1056,19 @@ function createHost(args: PluginHostServiceArgs): PluginHostService {
         error: error instanceof Error ? error.message : String(error),
       });
     }
+    // The recorded answer to a credential-handoff card, so a reinstall asks
+    // again. `removeAll` above already deleted the copied secrets; leaving the
+    // "already answered" record behind would mean a user who reinstalled the
+    // plugin got neither the credential nor the offer, and no way to ask for
+    // either.
+    try {
+      credentialHandoff()?.forget(pluginId);
+    } catch (error) {
+      logger.warn("plugin.credential_handoff_cleanup_failed", {
+        pluginId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
     // Schedules, which are the one thing here that keeps ACTING after the
     // plugin is gone. Rows and secrets left behind are inert clutter; a
     // surviving schedule wakes a plugin that is no longer installed, on a
@@ -945,6 +1156,13 @@ function createHost(args: PluginHostServiceArgs): PluginHostService {
   // call time and runs the same domain path the desktop's `plugin.invoke` does,
   // so a handler cannot behave differently depending on which device asked.
   setPluginActionInvoker(async (invokeArgs) => domainService(null).invoke(invokeArgs));
+  // The other half of a sign-in a phone presented: the browser handed the phone
+  // a redirect, and `plugins.completeAuthSession` resolves this to hand it back.
+  // Bound here rather than left to the caller to find, because the broker is the
+  // only thing holding the `state` that says which flow the answer belongs to,
+  // and a route that reached the phone but not the broker would leave the plugin
+  // waiting on a callback that had already arrived.
+  setPluginAuthSessionCompleter((params) => authSessions.completeAppCallback({ params }));
   const projects = new Map<string, AttachedProject>();
   const supervisors = new Map<string, PluginChildSupervisor>();
   /**
@@ -1036,6 +1254,18 @@ function createHost(args: PluginHostServiceArgs): PluginHostService {
   const requireProject = (pluginId: string): AttachedProject => requireAttached(resolveProject(pluginId));
 
   /**
+   * This plugin's project's lane service, or the refusal.
+   *
+   * A scope that bound none is `unsupported_method`, not a silent empty list: a
+   * plugin told there are no lanes would report that to the user as fact.
+   */
+  const requireLanes = (pluginId: string): NonNullable<PluginProjectBinding["lanes"]> => {
+    const lanes = requireProject(pluginId).binding.lanes;
+    if (!lanes) throw pluginLanesUnavailable();
+    return lanes;
+  };
+
+  /**
    * A `PluginDataStore` that resolves its project at call time. The supervisor
    * and its SDK server are built once, but the project they write into changes
    * as the user moves between projects.
@@ -1107,6 +1337,35 @@ function createHost(args: PluginHostServiceArgs): PluginHostService {
       readConfig: () => configFor(pluginId, manifest),
       writeConfig: (values) => writeConfigFor(pluginId, manifest, values),
       readProviderKey,
+      // The plugin id and the manifest are closed over here and NOT taken from
+      // the call, which is what makes these safe to hand a child: there is no
+      // argument by which a plugin could begin a flow, or claim a credential,
+      // belonging to a different plugin.
+      beginAuthSession: (authArgs) => authSessions.begin({
+        pluginId,
+        manifest,
+        sessionId: authArgs.sessionId,
+        params: authArgs.params,
+        ...(authArgs.transport ? { transport: authArgs.transport } : {}),
+        client: invokingClient.get(pluginId) ?? null,
+      }),
+      cancelAuthSession: (sessionId) => authSessions.cancel(pluginId, sessionId),
+      requestCredentialHandoff: async (builtin) => {
+        const service = credentialHandoff();
+        if (!service) throw pluginAuthUnavailable();
+        // Narrowed here rather than in the SDK server, which validates argument
+        // SHAPES and does not know ADE's built-in surfaces. An id that is not
+        // one is `not_permitted` for the same reason an undeclared one is: the
+        // manifest is the plugin's declared surface, and there is nothing to
+        // widen it to.
+        if (!isPluginBuiltinSurfaceId(builtin)) {
+          throw new PluginSdkError(
+            "not_permitted",
+            `"${builtin}" is not one of ADE's built-in surfaces.`,
+          );
+        }
+        return await service.request({ pluginId, manifest, builtin });
+      },
       // Read through `machine` at call time rather than captured here: a
       // supervisor outlives the desktop that lends it a microphone, and a
       // captured `undefined` would keep refusing captures long after one
@@ -1204,6 +1463,33 @@ function createHost(args: PluginHostServiceArgs): PluginHostService {
           return await writer.hydrate(sessionId, transcript, options);
         },
       },
+      // The lane seam. Resolved per call through `requireProject` for the same
+      // reason the trigger emitter is: lanes belong to a project scope, and a
+      // captured service would keep writing issue links into a project the user
+      // has closed.
+      //
+      // `lanesPluginId` is the id THIS supervisor was built for — the SDK
+      // server passes it, never the child — and it is what the link is stamped
+      // with and what `requirePluginId` is checked against. A plugin therefore
+      // cannot link on another plugin's behalf, and cannot unlink what it did
+      // not create.
+      lanes: {
+        list: async (lanesPluginId) => await requireLanes(lanesPluginId)
+          .list({ includeArchived: false, includeStatus: false }),
+        get: async (lanesPluginId, laneId) => await requireLanes(lanesPluginId)
+          .getSummary(laneId, { includeStatus: false }),
+        listIssueLinks: async (lanesPluginId, target) =>
+          requireLanes(lanesPluginId).listIssueLinks(target),
+        linkIssue: async (lanesPluginId, linkArgs) => requireLanes(lanesPluginId).linkIssueRef({
+          ...linkArgs,
+          // The source is the HOST's word for how this link came to exist, so
+          // it is set here and is not a field the plugin can spell. A link a
+          // plugin made must not be able to claim the user made it.
+          source: "plugin_link",
+        }),
+        unlinkIssue: async (lanesPluginId, unlinkArgs) =>
+          requireLanes(lanesPluginId).unlinkIssueRef(unlinkArgs),
+      },
       // Read through `machine` at call time, not captured: a supervisor
       // outlives the desktop that lends it these, and a captured `undefined`
       // would keep refusing long after one attached.
@@ -1265,6 +1551,12 @@ function createHost(args: PluginHostServiceArgs): PluginHostService {
     hookSubscriptions.delete(pluginId);
     hookQueues.delete(pluginId);
     pushSubscriptions.delete(pluginId);
+    invokingClient.delete(pluginId);
+    // A live sign-in belongs to the child that began it. With that child gone
+    // there is nobody left to hand the code to, so the listener is closed now
+    // rather than left holding a declared loopback port that the plugin's next
+    // start would then find taken by its own corpse.
+    authSessions.disposePlugin(pluginId);
     await supervisor.dispose();
   };
 
@@ -1529,7 +1821,12 @@ function createHost(args: PluginHostServiceArgs): PluginHostService {
     const runInvoke = async (
       pluginId: string,
       action: string,
-      invokeArgs: { args?: Record<string, unknown>; argv?: string[]; timeoutMs?: number },
+      invokeArgs: {
+        args?: Record<string, unknown>;
+        argv?: string[];
+        timeoutMs?: number;
+        client?: "desktop" | "mobile";
+      },
     ): Promise<unknown> => {
       const installed = requireInstalled(pluginId);
       if (!installed.record.enabled) {
@@ -1560,14 +1857,26 @@ function createHost(args: PluginHostServiceArgs): PluginHostService {
       // also reached from the phone and the CLI, which do not go through the
       // desktop's preload normalizer.
       const timeoutMs = clampPluginInvokeTimeoutMs(invokeArgs.timeoutMs);
-      return await supervisor.invoke(
-        action,
-        {
-          ...(invokeArgs.args ?? {}),
-          ...(invokeArgs.argv ? { argv: invokeArgs.argv } : {}),
-        },
-        timeoutMs ? { timeoutMs } : undefined,
-      );
+      // Which client is driving, for the length of this call only. A plugin
+      // that begins a sign-in from a phone must get the transport the phone can
+      // finish, and `beginAuthSession` runs inside `supervisor.invoke` below —
+      // so the hint is set before it and cleared after, rather than kept as
+      // per-plugin state that would outlive the call and mislead the next one.
+      if (invokeArgs.client) invokingClient.set(pluginId, invokeArgs.client);
+      let result: unknown;
+      try {
+        result = await supervisor.invoke(
+          action,
+          {
+            ...(invokeArgs.args ?? {}),
+            ...(invokeArgs.argv ? { argv: invokeArgs.argv } : {}),
+          },
+          timeoutMs ? { timeoutMs } : undefined,
+        );
+      } finally {
+        invokingClient.delete(pluginId);
+      }
+      return stampAuthSessionResult(pluginId, result);
     };
 
     return {
@@ -2553,6 +2862,7 @@ function createHost(args: PluginHostServiceArgs): PluginHostService {
       get: (pluginId, name) => secrets.get(pluginId, name),
       set: (pluginId, name, value) => secrets.set(pluginId, name, value),
     }),
+    completeAuthSessionCallback: (params) => authSessions.completeAppCallback({ params }),
     domainService,
     rootFor(pluginId) {
       const installed = installs.get(pluginId);
@@ -2624,6 +2934,7 @@ function createHost(args: PluginHostServiceArgs): PluginHostService {
       hookQueues.clear();
       setPluginInstallService(null);
       setPluginActionInvoker(null);
+      setPluginAuthSessionCompleter(null);
       // Before the children go: a timer that fired during teardown would call
       // `invoke` on a supervisor map that is about to be cleared, and start a
       // child the host has no way left to stop.

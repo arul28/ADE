@@ -1,4 +1,5 @@
 import type { LaneGitHubIssue } from "./types";
+import { ISSUE_REF_KEY, parseIssueRefValue } from "./issueRef";
 
 function readRecord(value: unknown): Record<string, unknown> | null {
   return value && typeof value === "object" && !Array.isArray(value)
@@ -63,7 +64,11 @@ export function parseLaneGitHubIssueValue(value: unknown): LaneGitHubIssue | nul
   ) {
     return null;
   }
+  // Carry the provider-neutral ref across the parse, for the same reason
+  // `parseLaneLinearIssueValue` does. See `shared/issueRef.ts`.
+  const issueRef = parseIssueRefValue(issue[ISSUE_REF_KEY]);
   return {
+    ...(issueRef ? { [ISSUE_REF_KEY]: issueRef } : {}),
     id: readString(issue.id) ?? githubIssueId(owner, repo, number),
     number,
     owner,

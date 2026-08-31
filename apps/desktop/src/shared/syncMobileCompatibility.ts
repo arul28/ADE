@@ -58,6 +58,12 @@ export const MOBILE_SYNC_OPTIONAL_REMOTE_COMMAND_ACTIONS = [
   "chat.listPromptStashes",
   "chat.createPromptStash",
   "chat.deletePromptStash",
+  // The way back for a sign-in the phone presented. Optional so a phone on a
+  // newer build paired to an older brain HIDES the sign-in affordance instead of
+  // offering a flow whose answer it would then have nowhere to deliver — which
+  // is worse than no button, because the browser really does complete and the
+  // user is left believing they connected something.
+  "plugins.completeAuthSession",
 ] as const satisfies readonly SyncRemoteCommandAction[];
 
 export const MOBILE_SYNC_REQUIRED_REMOTE_COMMAND_ACTIONS = [

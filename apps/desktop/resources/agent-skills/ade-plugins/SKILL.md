@@ -554,6 +554,8 @@ Parsing is **strict on keys it knows, tolerant of keys it does not**: an unknown
 | `theme` | no | Token sets — see *Themes* |
 | `network` | no | `{"hosts": ["api.cursor.com"]}`. Hosts your plugin's process may contact. Max **8**, lowercase, no scheme, no port, no IP. One leading `*.` wildcard is allowed and matches any subdomain depth. **Omit it and your plugin reaches nothing** — see *Outbound network* |
 | `providerKeys` | no | `["cursor"]`. Providers whose ADE-stored API key you read through `ade.secrets.getProviderKey`. Max **4**, from the api-key store's own ids — see *Provider keys* |
+| `authSessions[]` | no | `{id, provider, authorizeUrl, callbacks, loopback?}`. Sign-in flows the host runs for you. Max **2**. `authorizeUrl` is `https:` with no query or fragment; `callbacks` names `"loopback"` and/or `"app"`; `loopback` is required when `"loopback"` is one of them and its `port` is **1024–65535** — see *Signing the user in* |
+| `credentialHandoff` | no | `["linear"]`. Built-in surfaces whose ADE-held credential you ask to inherit. Max **2**, official-only, and the host additionally refuses a built-in this plugin does not own — see *Inheriting a connection ADE already has* |
 | `projectSecrets` | no | `["STRIPE_API_KEY"]`. Names of **this project's** ADE secrets you read through `ade.actions.invoke("project_secret", "get", { name })`. Max **6**. **Omit it and you read none** — see *Project secrets* |
 | `webhookIngress[]` | no | `{id, label, description?, verify?}`. Webhook channels ADE receives for you at its relay. Max **4**; `id` is a URL path segment, so `^[a-z][a-z0-9-]{0,31}$` — see *Webhooks* |
 | `official` | no | **Not a trust claim.** The Official badge and the checksum rule come from the registry's curated file, never from the manifest. Locally the field does exactly one thing: a surface may carry `builtin` only on a manifest that sets it — see *What you can build* |
@@ -604,6 +606,112 @@ if (!key) return { text: "Add a Cursor API key in Settings to use this." };
 - The install card says "Uses your Cursor API key". Adding a provider in a later version asks the person again.
 
 This is the user's credential, given to ADE and lent to you. Hold it for the call that needs it. Do not copy it into `ade.secrets`, a collection, a panel schema or a log — the user rotates it in Settings, and a second copy is a copy that goes stale and a credential in a place they cannot see.
+
+### Signing the user in
+
+You cannot run OAuth by yourself, and you do not have to. The division of labour is the thing to get right. **The host** builds the authorize URL, mints and checks `state`, owns the loopback listener or the relay bounce, and hands you the callback parameters as data. **You** declare the provider before install, supply the query parameters, run PKCE if you want it — only you can hold the verifier, because only you perform the exchange — exchange the code over a host you declared in `network`, and store the token in your own `ade.secrets`. **ADE never holds the token: it brokers the authorization, not the credential.**
+
+```json
+"authSessions": [{
+  "id": "linear",
+  "provider": "Linear",
+  "authorizeUrl": "https://linear.app/oauth/authorize",
+  "callbacks": ["loopback", "app"],
+  "loopback": { "port": 19836, "path": "/oauth/callback" }
+}]
+```
+
+Two transports, and most real integrations declare both. `loopback` is a browser on this machine: the host binds `127.0.0.1:<port>`, catches the GET itself, and nothing leaves the machine. `app` goes to ADE's relay, which is stateless and does one thing — 302 the query string to `ade://plugin-auth`, which the phone's in-app auth session catches and posts back to the machine that began the flow. **A flow that declares only `loopback` is desktop-only**, and the phone says so — "Connect … on the machine — this sign-in can only finish there" — rather than opening a browser it can never get back from.
+
+**Register both redirect URIs with your provider.** For the flow above they are:
+
+- `http://127.0.0.1:19836/oauth/callback` — built from the port and path you declared.
+- `https://ade-github-webhook-relay.arulsharma1028.workers.dev/plugin/auth/callback` — ADE's relay. One route for every plugin and every flow; it names no integration and needs no deploy for yours.
+
+```js
+let verifier = null;                                  // only you can hold this
+
+// Subscribe BEFORE you call beginSession. The completion is delivered once, to
+// the child that began the flow, and it is the only copy of the code there is.
+ade.events.on("auth.completed", async (event) => {
+  if (!event.ok) {
+    // "canceled" | "expired" | "denied" | "state_mismatch"
+    if (event.reason === "denied") return draw(`Linear declined: ${event.message}`);
+    return draw(event.reason === "expired" ? "That took too long — try again." : null);
+  }
+  const token = await exchangeCode(event.params.code, verifier);   // your fetch, your declared host
+  await ade.secrets.set("LINEAR_ACCESS_TOKEN", token);
+});
+
+// The action behind your Connect button.
+async function connect() {
+  verifier = newVerifier();
+  await ade.auth.beginSession({
+    sessionId: "linear",
+    params: {
+      client_id: CLIENT_ID, response_type: "code", scope: "read,write",
+      code_challenge: challengeFor(verifier), code_challenge_method: "S256",
+    },
+  });
+  return { authSession: { sessionId: "linear" } };
+}
+```
+
+- **`beginSession` does not return the URL**, and that is deliberate: a live authorize URL, `state` and all, would then be inside the one process this design keeps it out of. You get `{sessionId, attempt, transport, redirectUri, expiresAt}`, and the host stamps the URL on the way to the client.
+- **The result is `authSession`, never `openUrl`.** A URL opened in the system browser has no way back on a phone — that is the whole gap this closes. The result kind is how the client knows to use an in-app auth session and watch for the callback scheme.
+- **`redirect_uri` and `state` are refused by name, not overwritten.** Sending either is `invalid_args`, and the refusal says which one — a silent overwrite would leave you debugging a redirect you never sent. Max **12** parameters, **512** characters each.
+- **`auth_session_busy`** — one live flow per declared id. The previous attempt is a browser window the user is looking at right now, so it is not retired under them. The same code comes back when the declared loopback port is already in use on the machine, with the port number in the message.
+- **`auth_unavailable`** — nothing on this machine can show a sign-in: a headless brain with no desktop attached and no phone paired. A flow that started and could never finish is worse than one that refused to start.
+- **A `sessionId` your manifest does not declare is `not_permitted`**, and the refusal names the `authSessions` field. A `transport` your flow does not declare is `invalid_args` rather than a quiet redirect to the other one.
+- **Ten minutes**, then the host retires the flow and you get `{ok: false, reason: "expired"}`. `cancelSession(sessionId)` is idempotent and safe in a `finally`.
+- `params` come back minus `state` — the host minted it and the host compared it. What is left is the provider's own vocabulary, passed through as data.
+- The install card says "Signs you in to Linear, and listens on port 19836 while you do". Repointing that flow at a different provider, or moving it to a different port, asks the person again.
+
+Declare one flow; two is the ceiling and the second slot is for a product's self-hosted twin, not for a second product. Declare both callbacks unless you genuinely cannot register the relay URI, because the callback list is what decides whether your Connect button works on the phone at all. And treat `auth.completed` as the only moment a token exists: persist the refresh token in `ade.secrets` and renew from it, because a plugin that re-runs the whole dance on every start is a plugin that asks the user to sign in twice a day.
+
+### Inheriting a connection ADE already has
+
+One field, for one situation: an official plugin that replaces a compiled ADE integration, on the day it ships, so that existing users do not all reconnect. **This is not for ordinary plugins.** If you are not superseding something ADE already ships, declare a sign-in above and let the user connect.
+
+```json
+"credentialHandoff": ["linear"]
+```
+
+Official-only at parse time, and the manifest is not the last word: the host also checks that the plugin **owns** the built-in it names — `ade-linear` owns `linear` — so no package can ask for a credential that is not the one it is replacing. A built-in you do not own, or one that is not a built-in surface id at all, is `not_permitted`.
+
+```js
+const { status, secretNames } = await ade.auth.requestHandoff("linear");
+if (status === "accepted") {
+  const token = await ade.secrets.get("LINEAR_ACCESS_TOKEN");
+}
+```
+
+Three statuses, and each one is a different thing to draw. `requestHandoff` waits for the person's answer, and a second call while a card is open joins that same wait rather than stacking another card — so there is no "ask me later" state to poll for:
+
+- **`accepted`** — the user agreed and the secrets are in your store now. Draw connected.
+- **`declined`** — the user said no. Draw your own sign-in; nothing was copied.
+- **`empty`** — ADE holds no credential for that surface. Indistinguishable from "the user was never connected", and it should be: draw your ordinary sign-in.
+
+On `linear`, accepting COPIES whichever of these ADE actually holds into your own secret namespace — ADE keeps its own, and the card names each one in plain words rather than by key:
+
+- `LINEAR_ACCESS_TOKEN` — the access token.
+- `LINEAR_REFRESH_TOKEN` — the refresh token that keeps it working.
+- `LINEAR_TOKEN_EXPIRES_AT` — when the access token expires.
+- `LINEAR_AUTH_MODE` — whether the user signed in with Linear or pasted an API key.
+- `LINEAR_OAUTH_CLIENT_ID` — the public OAuth client id the token was issued to.
+
+**The OAuth client secret is not on that list, and it is not gated — it is absent.** It is ADE's identity to Linear rather than the user's credential: a plugin holding it could present itself to Linear *as ADE*, on every machine the plugin is installed on. The client id is handed over because a refresh token is only ever redeemable by the client it was issued to, and ADE's bundled client is a public PKCE client that ships no secret at all. If the user configured their own confidential client you get that client's id and no secret, the refresh fails the way any client missing its secret fails, and you fall back to the sign-in above — which is the correct outcome.
+
+- **It COPIES. It never moves.** ADE keeps its own connection exactly as it was, and the card says so. ADE's compiled Linear integration keeps running until a later wave deletes it, so both need the credential during the transition: ADE's copy dies with the compiled code, yours dies with your uninstall through the secret store's own sweep.
+- **Asked once per install.** After an answer, the same call returns that answer without raising a second card. A card that re-prompted on every start would be a nag, and a nag is answered yes to make it stop.
+- **The one re-prompt: your copy is gone.** An accept is honoured only while the access token it gave you is still in your store. If you deleted it — a disconnect button, a reset, a bug — the next `requestHandoff` raises the card again, because a record saying "already answered" over an empty store is a dead end the user cannot get out of. A **decline** never re-asks whatever your store holds: nothing was copied, so there is no copy whose absence could mean anything.
+- **A decline is not an error.** It never throws; it comes back as `declined` and is remembered. Fall back to the ordinary sign-in, and do not report it as a failure.
+- **Uninstall forgets the answer**, so a reinstall asks again rather than inheriting a decision given to a package that is no longer on the machine.
+- `auth_unavailable` when there is something to hand over and nothing on this machine that can ask a person about it.
+- `secretNames` is keys, never values — it is your documentation of what to read, and it is safe to log. The values go into your secret store and nowhere else.
+- The install card says "Asks to use the Linear connection you already set up in ADE". *Asks*, because the install is not the consent — a separate card is, and this line is only the warning that it is coming.
+
+Call it once, at first run, and only when your own store is empty; everything after that reads `ade.secrets` like any other token you obtained yourself. Handle all three statuses where you draw your Connect button — `declined` and `empty` are not failures to report, they are the unconnected state you were already drawing.
 
 ### Project secrets
 
@@ -759,9 +867,9 @@ manifest with a warning, and `ade.actions.invoke` refuses it outright.
 
 ### Engine registrations
 
-Five manifest families that are **not placements**. A socket says "draw me here"; each of these says "when X happens, ask me" — a tool the agent may call, an automation trigger a rule can fire on, a step a rule can run, a provider universal search may query, a chord that invokes an action.
+Seven manifest families that are **not placements**. A socket says "draw me here"; five of them say "when X happens, ask me" — a tool the agent may call, an automation trigger a rule can fire on, a step a rule can run, a provider universal search may query, a chord that invokes an action. The last two say "run this for me": a sign-in the host performs on your behalf, and a credential ADE already holds.
 
-All five are declared in the **manifest** rather than registered by the running child, for one reason worth understanding: the rule builder, the shortcut listing, the search palette and the agent's tool list all have to describe a plugin that is installed but **not currently running**, and a list the child publishes at boot is empty exactly when the user is looking. Tool sets in particular are built synchronously at session start, so a list published after boot could never reach Claude without restarting the chat. Declaring in the manifest also makes uninstall a non-event — the declaration leaves with the install record.
+All seven are declared in the **manifest** rather than registered by the running child, for one reason worth understanding: the rule builder, the shortcut listing, the search palette and the agent's tool list all have to describe a plugin that is installed but **not currently running**, and a list the child publishes at boot is empty exactly when the user is looking. Tool sets in particular are built synchronously at session start, so a list published after boot could never reach Claude without restarting the chat. Declaring in the manifest also makes uninstall a non-event — the declaration leaves with the install record.
 
 Four of them share one shape, `{id, label, action?}`, deliberately, so an author does not learn four spellings of the same promise:
 
@@ -772,6 +880,8 @@ Four of them share one shape, `{id, label, action?}`, deliberately, so an author
 | `automationSteps[]` | 12 | `{id, label, description?, action}` | A step a rule may run. `action` defaults to `id` |
 | `searchProviders[]` | 2 | `{id, label, action}` | Invoked live with `{query}`. `action` defaults to `id` |
 | `keybindings[]` | 6 | `{binding, label, action}` | One chord, e.g. `"Mod+Shift+P"` |
+| `authSessions[]` | 2 | `{id, provider, authorizeUrl, callbacks, loopback?}` | The host runs the flow; `id` is what `ade.auth.beginSession` names. The install card reads the `provider` and the loopback port off it before any code runs — see *Signing the user in* |
+| `credentialHandoff` | 2 | `["linear"]` | Official-only, and only for the built-in this plugin owns — see *Inheriting a connection ADE already has* |
 
 **Over-cap and duplicate entries are warnings, not errors** — the offending entry drops and the plugin still installs. A manifest typo must not turn into a dead Marketplace listing.
 

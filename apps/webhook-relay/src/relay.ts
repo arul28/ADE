@@ -2696,6 +2696,92 @@ function handleLinearOAuthCallback(request: Request): Response {
   });
 }
 
+/**
+ * The four names this route decides the shape of. Everything else a provider
+ * sends is passed through untouched, so they are also the names the pass-through
+ * must skip or it would emit each of them twice.
+ */
+const PLUGIN_AUTH_RESERVED_PARAMS = new Set(["code", "state", "error", "error_description"]);
+
+/**
+ * How many parameters may reach the app, and how long the whole query may be.
+ *
+ * This route bounces a query string into a custom-scheme URL the phone opens,
+ * and it accepts parameter names it has never heard of — so without a bound
+ * anyone who can send a browser here could make ADE open an arbitrarily long
+ * `ade://` URL. Both numbers are far above any real OAuth callback: providers
+ * answer with a handful of short fields, and the largest thing that legitimately
+ * arrives is an opaque `code`.
+ */
+const PLUGIN_AUTH_CALLBACK_MAX_PARAMS = 24;
+const PLUGIN_AUTH_CALLBACK_MAX_QUERY_CHARS = 4096;
+
+/**
+ * Bounces any plugin's sign-in redirect to the ADE app's custom scheme, so
+ * `ASWebAuthenticationSession` on the phone captures it in-process.
+ *
+ * Stateless, and it names no integration on purpose: one route serves every
+ * plugin's every flow, so installing a plugin never needs a relay deploy and the
+ * relay never learns which provider a user is signing in to. The `state` is
+ * minted and validated on the machine that began the flow — this route only
+ * carries it — and the authorization `code` MUST NOT be logged.
+ *
+ * Unlike {@link handleLinearOAuthCallback}, which serves one provider and so can
+ * hardcode the fields Linear sends, this one cannot know what a plugin's
+ * provider will return: dropping a parameter it has not heard of would silently
+ * break a flow that needs it. So it copies everything, under the caps above.
+ */
+function handlePluginAuthCallback(request: Request): Response {
+  if (request.method !== "GET") return text("method not allowed", 405);
+  const params = new URL(request.url).searchParams;
+  const callback = new URLSearchParams();
+  const error = params.get("error");
+  if (error) {
+    callback.set("error", error);
+    const description = params.get("error_description");
+    if (description) callback.set("error_description", description);
+  } else {
+    callback.set("code", params.get("code") ?? "");
+  }
+  // Always, even when absent, and even on an error: `state` is the only thing
+  // the host routes on, so a callback that arrives without it must reach the app
+  // looking like what it is — unroutable — rather than looking like a different
+  // flow's callback.
+  callback.set("state", params.get("state") ?? "");
+  if (callback.toString().length > PLUGIN_AUTH_CALLBACK_MAX_QUERY_CHARS) {
+    // The fields this route must not drop already exceed the budget, so there is
+    // no honest bounce left to make. Refusing beats truncating: a shortened
+    // `code` fails at exchange with nothing to explain why.
+    return text("callback too large", 400);
+  }
+  let emitted = [...callback.keys()].length;
+  for (const [name, value] of params) {
+    if (PLUGIN_AUTH_RESERVED_PARAMS.has(name)) continue;
+    // First value wins for a repeated name. The app reads the callback with
+    // `URLComponents` and takes the first match, so emitting both would ship a
+    // value nothing can ever read.
+    if (callback.has(name)) continue;
+    if (emitted >= PLUGIN_AUTH_CALLBACK_MAX_PARAMS) break;
+    callback.append(name, value);
+    emitted += 1;
+    if (callback.toString().length > PLUGIN_AUTH_CALLBACK_MAX_QUERY_CHARS) {
+      // Dropped whole rather than clipped, and the loop stops here so a short
+      // parameter after a huge one cannot sneak past the budget.
+      callback.delete(name);
+      break;
+    }
+  }
+  // URLSearchParams serializes spaces as "+", but the iOS callback parser reads
+  // the custom-scheme URL with URLComponents, which does NOT turn "+" back into
+  // a space — so an error like "User declined" would render as "User+declined".
+  // Emit %20 for spaces to keep the provider's user-facing error text readable.
+  const query = callback.toString().replace(/\+/g, "%20");
+  return new Response(null, {
+    status: 302,
+    headers: { location: `ade://plugin-auth?${query}` },
+  });
+}
+
 async function pruneOldLinearEvents(env: RelayEnv): Promise<void> {
   const days = Number(env.EVENT_RETENTION_DAYS ?? DEFAULT_RETENTION_DAYS);
   const retentionDays = Number.isFinite(days) ? Math.max(1, Math.trunc(days)) : DEFAULT_RETENTION_DAYS;
@@ -3643,6 +3729,12 @@ export async function handleRequest(request: Request, env: RelayEnv): Promise<Re
   if (url.pathname === "/cursor/register") return await handleCursorRegister(request, env);
   if (url.pathname === "/cursor/webhook") return await handleCursorWebhook(request, env);
   if (url.pathname === "/cursor/events") return await handleListCursorEvents(request, env);
+
+  // Ahead of the per-plugin ingress below, which reads `/plugin/<id>/<leaf>`:
+  // this path is one fixed route shared by every plugin, not a plugin's own, and
+  // matching it first is what stops a plugin that called itself `auth` from
+  // shadowing the callback every other plugin's sign-in depends on.
+  if (url.pathname === "/plugin/auth/callback") return handlePluginAuthCallback(request);
 
   // Generalized per-plugin ingress. The Cursor routes above stay as they are
   // until core Cursor support moves out to a plugin of its own.

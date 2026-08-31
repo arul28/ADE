@@ -43,6 +43,14 @@ func primaryLaneLinearIssue(for lane: LaneSummary) -> LaneLinearIssue? {
     .issue
 }
 
+/// The provider-neutral ref for the lane's primary issue link, whatever tracker
+/// filled it. Readers that need a key, a title, a state or a URL use this
+/// instead of the legacy Linear fields; a Linear row derives one that carries
+/// exactly those fields.
+func primaryLaneIssueRef(for lane: LaneSummary) -> IssueRef? {
+  primaryLaneLinearIssue(for: lane)?.issueRef
+}
+
 func laneLinearIssueLinkCount(for lane: LaneSummary) -> Int {
   lane.linearIssueLinks?.count ?? (lane.linearIssue == nil ? 0 : 1)
 }
@@ -184,8 +192,19 @@ func matchesLaneToken(snapshot: LaneListSnapshot, isPinned: Bool, token: String)
     snapshot.lane.laneType,
     snapshot.lane.description ?? "",
     snapshot.lane.worktreePath,
-    primaryLaneLinearIssue(for: snapshot.lane).map { "\($0.identifier) \($0.title) \($0.projectName ?? "") \($0.teamKey ?? "") \($0.stateName ?? "")" } ?? "",
-    snapshot.lane.linearIssueLinks?.map { "\($0.issue.identifier) \($0.issue.title) \($0.role) \($0.source)" }.joined(separator: " ") ?? "",
+    // Read through the ref so a Jira or GitHub link is searchable by its own
+    // key and state. A Linear row derives a ref whose key/container/state ARE
+    // the legacy fields, so its token set is unchanged; only a non-Linear ref
+    // adds the tracker name, which no existing row can gain.
+    primaryLaneLinearIssue(for: snapshot.lane).map { issue -> String in
+      let ref = issue.issueRef
+      let base = "\(ref.key) \(ref.title) \(issue.projectName ?? "") \(ref.container?.key ?? "") \(ref.state?.name ?? "")"
+      return ref.isLinear ? base : "\(base) \(ref.providerDisplayName)"
+    } ?? "",
+    snapshot.lane.linearIssueLinks?.map { link -> String in
+      let ref = link.issue.issueRef
+      return "\(ref.key) \(ref.title) \(link.role) \(link.source)"
+    }.joined(separator: " ") ?? "",
     snapshot.lane.archivedAt == nil ? "active" : "archived",
     snapshot.lane.status.dirty ? "dirty modified changed" : "clean",
     "ahead \(snapshot.lane.status.ahead)",

@@ -823,8 +823,11 @@ extension WorkRootScreen {
   /// built once and can stay on screen across an uninstall, so the action
   /// verifies rather than trusting that the row it came from could not exist.
   func copyLaneLinearLink(_ lane: LaneSummary) {
-    guard pluginGate.owns(.linear) else { return }
-    guard let url = primaryLaneLinearIssue(for: lane)?.url, !url.isEmpty else { return }
+    guard let ref = primaryLaneIssueRef(for: lane) else { return }
+    // Only a Linear ref was ever gated on the Linear plugin; another tracker's
+    // link is owned by the plugin that wrote it. Same rule as the menu row.
+    guard !ref.isLinear || pluginGate.owns(.linear) else { return }
+    guard let url = ref.url, !url.isEmpty else { return }
     UIPasteboard.general.string = url
   }
 

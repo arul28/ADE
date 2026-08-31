@@ -17,6 +17,7 @@ import {
   PLUGIN_REMOTE_SOURCE_UNSUPPORTED_CODE,
   PLUGIN_SERVICE_UNAVAILABLE_CODE,
   setPluginActionInvoker,
+  setPluginAuthSessionCompleter,
   setPluginInstallService,
 } from "../plugins/pluginInstallServiceRef";
 import { setPluginPresenceService } from "../plugins/pluginPresenceService";
@@ -3603,6 +3604,7 @@ describe("plugin remote commands", () => {
     setPluginInstallService(null);
     setPluginPresenceService(null);
     setPluginActionInvoker(null);
+    setPluginAuthSessionCompleter(null);
   });
 
   it("registers every plugin action as machine-scoped and reachable from a paired device", () => {
@@ -4124,10 +4126,14 @@ describe("plugin remote commands", () => {
       payload: { laneId: "lane-1" },
     }));
 
+    // `client: "mobile"` is stamped by the handler, never read off the payload:
+    // this command only ever arrives over sync, and the one decision the hint
+    // feeds is which sign-in transport the host presents.
     expect(invoke).toHaveBeenCalledWith({
       pluginId: "graph",
       action: "refresh",
       args: { laneId: "lane-1" },
+      client: "mobile",
     });
     // `{ok, message}` is what the phone decodes; anything else it ignores.
     expect(result).toMatchObject({ ok: true, message: "Refreshed 3 issues" });
@@ -4145,7 +4151,12 @@ describe("plugin remote commands", () => {
       action: "refresh",
     }));
 
-    expect(invoke).toHaveBeenCalledWith({ pluginId: "graph", action: "refresh", args: {} });
+    expect(invoke).toHaveBeenCalledWith({
+      pluginId: "graph",
+      action: "refresh",
+      args: {},
+      client: "mobile",
+    });
     // A handler that returns nothing still ran. The error path is reserved for
     // transport and policy failures, which are the ones a user can act on.
     expect(result).toMatchObject({ ok: true });
@@ -4169,6 +4180,120 @@ describe("plugin remote commands", () => {
     expect(service.getDescriptor("plugins.invoke")?.policy).toEqual({ viewerAllowed: true });
     expect(service.getDescriptor("plugins.invoke")?.scope).toBe("runtime");
     expect(MOBILE_SYNC_REQUIRED_REMOTE_COMMAND_ACTIONS).not.toContain("plugins.invoke");
+  });
+
+  it("hands a captured sign-in callback to the host and returns its answer unchanged", async () => {
+    const complete = vi.fn().mockReturnValue({ ok: true });
+    setPluginAuthSessionCompleter(complete);
+    const { service } = createService({});
+
+    const result = await service.execute(makePayload("plugins.completeAuthSession", {
+      params: { code: "abc123", state: "host-minted-state" },
+    }));
+
+    expect(complete).toHaveBeenCalledWith({ code: "abc123", state: "host-minted-state" });
+    expect(result).toEqual({ ok: true });
+  });
+
+  it("returns a host refusal verbatim so an expired flow keeps its own wording", async () => {
+    // `expired` is the one reason iOS gives its own sentence. Re-wording it here
+    // would give the same failure two spellings that could drift apart.
+    setPluginAuthSessionCompleter(vi.fn().mockReturnValue({ ok: false, reason: "expired" }));
+    const { service } = createService({});
+
+    await expect(service.execute(makePayload("plugins.completeAuthSession", {
+      params: { state: "stale" },
+    }))).resolves.toEqual({ ok: false, reason: "expired" });
+  });
+
+  it("names no plugin and no session when it completes a sign-in", async () => {
+    // The security property of this seam: the host routes by the `state` it
+    // minted itself, so a caller can address only the flow whose `state` it is
+    // returning. A `pluginId` or `sessionId` reaching the host would be a door
+    // into a flow the caller did not start — the one thing that must be
+    // impossible here — so both are dropped even when a caller sends them.
+    const complete = vi.fn().mockReturnValue({ ok: true });
+    setPluginAuthSessionCompleter(complete);
+    const { service } = createService({});
+
+    await service.execute(makePayload("plugins.completeAuthSession", {
+      pluginId: "graph",
+      sessionId: "session-1",
+      params: { code: "abc123", state: "host-minted-state" },
+    }));
+
+    expect(complete).toHaveBeenCalledTimes(1);
+    expect(complete.mock.calls[0]).toEqual([{ code: "abc123", state: "host-minted-state" }]);
+  });
+
+  it("refuses a sign-in callback that is not a map of strings", async () => {
+    const complete = vi.fn().mockReturnValue({ ok: true });
+    setPluginAuthSessionCompleter(complete);
+    const { service } = createService({});
+
+    // Typed refusals rather than throws: iOS reads an explicit `ok: false` as
+    // "the machine could not match that sign-in" and a thrown error as a
+    // transport problem worth retrying. A malformed callback is neither.
+    for (const params of [undefined, "code=abc", ["code", "abc"], { code: 7 }]) {
+      await expect(service.execute(makePayload("plugins.completeAuthSession", { params })))
+        .resolves.toEqual({ ok: false, reason: "invalid_params" });
+    }
+    expect(complete).not.toHaveBeenCalled();
+  });
+
+  it("refuses a sign-in callback with too many entries or an oversized value", async () => {
+    const complete = vi.fn().mockReturnValue({ ok: true });
+    setPluginAuthSessionCompleter(complete);
+    const { service } = createService({});
+
+    // Both ceilings sit far above any real redirect. They exist so a paired peer
+    // cannot hand the daemon an unbounded map to copy and carry into the host —
+    // once by entry count, once by a single field doing it under a small one.
+    const tooMany = Object.fromEntries(
+      Array.from({ length: 25 }, (_, index) => [`k${index}`, "v"]),
+    );
+    await expect(service.execute(makePayload("plugins.completeAuthSession", { params: tooMany })))
+      .resolves.toEqual({ ok: false, reason: "invalid_params" });
+
+    await expect(service.execute(makePayload("plugins.completeAuthSession", {
+      params: { code: "x".repeat(4097) },
+    }))).resolves.toEqual({ ok: false, reason: "invalid_params" });
+
+    // The value cap is a ceiling, not an off-by-one: exactly the limit passes.
+    await expect(service.execute(makePayload("plugins.completeAuthSession", {
+      params: { code: "x".repeat(4096) },
+    }))).resolves.toEqual({ ok: true });
+    expect(complete).toHaveBeenCalledTimes(1);
+  });
+
+  it("reports an unbound host as unavailable rather than swallowing the callback", async () => {
+    const { service } = createService({});
+
+    // A build with no plugin host must not answer `{ok:true}` for a callback it
+    // never delivered: the phone would close the sheet and the plugin would wait
+    // forever on an authorization that reached nothing.
+    await expect(service.execute(makePayload("plugins.completeAuthSession", {
+      params: { code: "abc123", state: "s" },
+    }))).rejects.toMatchObject({ code: PLUGIN_SERVICE_UNAVAILABLE_CODE });
+  });
+
+  it("keeps the sign-in callback viewer-reachable and optional for older brains", () => {
+    const { service } = createService({});
+    // Matches `plugins.invoke` on purpose. That is the verb that STARTS a flow
+    // and therefore the one whose policy decides whether a viewer may connect
+    // anything; this one only carries an answer back to a flow the host already
+    // started, addressed by an unguessable host-minted `state`. A stricter policy
+    // here would close no hole and would break the phone that legitimately
+    // presented the sign-in.
+    expect(service.getDescriptor("plugins.completeAuthSession")?.policy)
+      .toEqual(service.getDescriptor("plugins.invoke")?.policy);
+    expect(service.getDescriptor("plugins.completeAuthSession")?.scope).toBe("runtime");
+    // Optional, so a phone paired to an older brain hides the affordance instead
+    // of offering a sign-in whose answer it would have nowhere to deliver.
+    expect(MOBILE_SYNC_OPTIONAL_REMOTE_COMMAND_ACTIONS)
+      .toContain("plugins.completeAuthSession");
+    expect(MOBILE_SYNC_REQUIRED_REMOTE_COMMAND_ACTIONS)
+      .not.toContain("plugins.completeAuthSession");
   });
 
   it("refuses a machine-scoped toggle when it cannot reach other machines", async () => {
