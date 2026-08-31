@@ -187,6 +187,10 @@ import {
 } from "./serviceManager/common";
 import { awaitRuntimeServiceEndpoint } from "./services/runtime/awaitRuntimeServiceEndpoint";
 import { readBrainStartupState } from "./services/runtime/brainStartupState";
+import {
+  readEmbeddedParentPid,
+  startParentDeathWatchdog,
+} from "./services/runtime/parentDeathWatchdog";
 import { connectWhileServiceStarts } from "./services/runtime/connectWhileServiceStarts";
 import { normalizeAdeRuntimeRole, resolveAdeDefaultRole } from "./runtimeRoles";
 import {
@@ -754,6 +758,9 @@ const TOP_LEVEL_HELP = `${ADE_BANNER}
     $ ade plugin list | create | install | dev      Manage this machine's ADE plugins
     $ ade brain start | stop | status               Manage the background ADE brain
     $ ade runtime run --socket <path>               Run a manual runtime for dev/test work
+    $ ade runtime run --socket <path> --profile embedded
+                                                    Run a guest runtime for an external embedder (ADE SDK):
+                                                    personal chats only, no automations, sync off
     $ ade rpc --stdio                               Speak ADE JSON-RPC over stdin/stdout
     $ ade init [path]                               Register a project with this machine brain
     $ ade projects list                             List projects registered on this machine
@@ -1968,14 +1975,25 @@ const HELP_BY_COMMAND: Record<string, string> = {
   prs: `${ADE_BANNER}
   Pull requests
 
-  PR identifiers may be ADE PR ids, GitHub PR numbers, #numbers, or full PR URLs.
-  Creating or linking a PR persists the lane mapping in ADE so the PR tab tracks it.
+  PR identifiers may be ADE PR ids, GitHub PR numbers, #numbers, full PR URLs, or
+  the 'gh:owner/repo#<n>' form that 'prs list-open' prints for a PR ADE has no row
+  for — quote that one, since most shells treat '#' as a comment.
+  Merging, closing, reopening, commenting, reviewing, labels, reviewers, checks and
+  branch cleanup all work on any PR in the repo, whether or not a lane exists for it.
+  The exceptions need one: create and link take a lane by definition, and threads,
+  deployments and ai-review-summary still resolve through ADE's own row.
 
     $ ade prs list --text                           List PRs known to ADE
     $ ade prs list-open --text                      List every open GitHub PR in the repo, keyed by head branch
-    $ ade prs create --lane <lane> --base main      Open and map a GitHub PR; prints GitHub + ADE URLs
+    $ ade prs create --lane <lane> --base main      Open a GitHub PR from a lane; prints GitHub + ADE URLs
     $ ade prs create --lane <lane> --close-linear-issue-on-merge
-    $ ade prs link --lane <lane> --url <pr-url>     Map an existing GitHub PR to a lane
+    $ ade prs land <pr> --method squash             Merge; keeps the remote branch
+    $ ade prs land <pr> --delete-remote-branch      Merge and delete the head branch on the remote
+    $ ade prs close <pr>                            Close on GitHub; the branch is kept and you can reopen it
+    $ ade prs reopen <pr>                           Reopen a closed PR
+    $ ade prs cleanup-branch <pr> --delete-remote-branch
+                                                    Delete a merged/closed PR's branch (local too, unless --keep-local)
+    $ ade prs link --lane <lane> --url <pr-url>     Point a lane at an existing GitHub PR
     $ ade prs checks <pr> --text                    Show the CI rollup + per-check rows ("not run" = nothing verified the commit)
     $ ade prs comments <pr> --text                  Show unresolved review work
     $ ade prs comment-edit <pr> --comment <id> --body "..."
@@ -2097,6 +2115,16 @@ const HELP_BY_COMMAND: Record<string, string> = {
     $ ade chat list --include-automation --no-archived --text
     $ ade chat create --lane <lane> --provider codex --model openai/gpt-5.6-sol --no-parent --reasoning-effort xhigh --no-fast --permissions full-auto
     $ ade chat create --personal --provider codex --model openai/gpt-5.6-sol --prompt "Plan my trip"
+    $ ade chat create --personal --provider claude --model anthropic/claude-opus-5 --arg-json mcpServers='{"docs":{"type":"http","url":"https://mcp.example/mcp"}}'
+                                                    Inject caller-owned MCP servers into one chat. There is no typed
+                                                    --mcp-server flag: the config is nested JSON, which --arg-json
+                                                    already carries. Add --arg strictMcpConfig=false to also load the
+                                                    user's own MCP config (personal chats withhold it by default), or
+                                                    --arg strictMcpConfig=true to withhold it on a project chat.
+                                                    Read mcpCapability on the created session (ade chat status
+                                                    <session> --personal --json) for what the provider could honor:
+                                                    only level "enforced" means the caller's servers are the whole
+                                                    surface. A server the provider cannot carry fails the create.
     $ ade chat create --lane <lane> --provider claude --model anthropic/claude-opus-5 --no-parent --prompt "fix the tests"
     $ ade chat create --from-linear-issue ENG-431 --parent <session> --type subagent
                                                     Start a child chat with an attached issue + kickoff (alias: --linear-issue-json)
@@ -2797,7 +2825,7 @@ ${CURSOR_CLOUD_HELP.cloud}`,
 
     $ ade --socket update status --text             Read AutoUpdateSnapshot (status, version, progress, last failed install)
     $ ade --socket update check --text              Trigger a background update check
-    $ ade --socket update install --text            Refresh latest, then quit and install when ready
+    $ ade --socket update install --text            Refresh latest, restore a vanished staged installer if needed, then quit and install when ready
     $ ade --socket update dismiss --text            Clear the recently-installed banner
     $ ade --socket update actions --text            List callable update actions
 
@@ -2809,10 +2837,13 @@ ${CURSOR_CLOUD_HELP.cloud}`,
   read a few slow minutes in "installing" as a hang, and do not kill the desktop
   app to "unstick" it: that is exactly what makes an install fail to land.
 
-  If quitAndInstall fails before the native handoff, status falls back to error
-  and the pending-install record is cleared. If the app quits but relaunches on
-  the OLD version, the install did not land: the next snapshot carries
-  "lastInstallFailed": { targetVersion, attempt }, which survives the restart.
+  If quitAndInstall fails before the native handoff, status returns to ready
+  with parked.reason and the pending-install record is cleared. If the staged
+  ZIP or NSIS installer is gone from the updater cache, install re-downloads it
+  before uninstalling the background service or handing off to the OS. If the
+  app quits but relaunches on the OLD version, the install did not land: the
+  next snapshot carries "lastInstallFailed": { targetVersion, attempt }, which
+  survives the restart.
   Check that field before re-offering the same update — the first failure keeps
   the downloaded archive so a retry is just another install, and only a second
   failure discards the download and forces a fresh one.
@@ -2911,6 +2942,25 @@ function setPath(target: JsonObject, key: string, value: unknown): void {
     cursor = existing;
   }
   cursor[parts[parts.length - 1]!] = value;
+}
+
+/**
+ * The one place `--profile` is interpreted.
+ *
+ * There were two: the command router rejected unknown values, and `runServe`
+ * silently coerced anything that was not exactly "embedded" back to the default
+ * full profile. Same flag, two strictnesses — so a value that slipped past the
+ * router (a different entry point, a future caller) would quietly start a FULL
+ * machine brain when the caller asked for a sandboxed guest. Throwing here
+ * makes that unrepresentable.
+ */
+function parseRuntimeProfile(value: string | null | undefined): "embedded" | undefined {
+  const trimmed = typeof value === "string" ? value.trim() : "";
+  if (!trimmed) return undefined;
+  if (trimmed === "embedded") return "embedded";
+  throw new CliUsageError(
+    `Unknown runtime profile '${trimmed}'. The only profile ade runtime run accepts is 'embedded'.`,
+  );
 }
 
 function readValue(args: string[], names: string[]): string | null {
@@ -6392,6 +6442,33 @@ function buildPrPlan(args: string[]): CliPlan {
         ),
       ],
     };
+  if (sub === "cleanup-branch" || sub === "cleanup") {
+    // Branch cleanup is now a step of its own, because merging no longer does it
+    // for you: `prs land` keeps the head branch unless `--delete-remote-branch`
+    // is passed, so the "merge now, tidy up later" path needs a command.
+    // Works on any merged or closed PR in this project's repository, whether or
+    // not a lane maps to it — pass a `gh:owner/repo#<n>` id for one that does not.
+    const id = requireValue(prId ?? firstPositional(args), "prId");
+    // Mirrors the service defaults exactly: the local branch goes unless the
+    // caller opts out, the remote branch stays unless the caller opts in.
+    // Sending `deleteLocalBranch` explicitly rather than omitting it keeps the
+    // CLI's behaviour pinned to what the flags say, not to a service default
+    // that could change under it.
+    const keepLocal = readFlag(args, ["--keep-local", "--no-delete-local-branch"]);
+    const input: JsonObject = {
+      prId: id,
+      deleteLocalBranch: !keepLocal,
+      deleteRemoteBranch: readFlag(args, ["--delete-remote-branch"]),
+    };
+    maybePut(input, "remoteName", readValue(args, ["--remote", "--remote-name"]));
+    return {
+      kind: "execute",
+      label: "PR cleanup branch",
+      steps: [
+        actionStep("result", "pr", "cleanupBranch", collectGenericObjectArgs(args, input)),
+      ],
+    };
+  }
   if (
     sub === "delete" ||
     sub === "land" ||
@@ -6405,19 +6482,25 @@ function buildPrPlan(args: string[]): CliPlan {
       close: "closePr",
       reopen: "reopenPr",
     };
+    const input: JsonObject = { prId: id };
+    if (sub === "land") {
+      // Only `land` has a merge method. `close`/`reopen`/`delete` used to be
+      // handed a `method: null` they have no field for (ClosePrArgs and
+      // ReopenPrArgs are `{ prId }`), which is noise in every log and audit of
+      // the call and reads like the action supports something it does not.
+      input.method = readValue(args, ["--method"]);
+      // Deleting the head branch on the remote is opt-in. The merge used to do
+      // it unconditionally; a branch someone may still want is not ours to drop.
+      // One spelling only. `--delete-branch` already means the LOCAL branch in
+      // `ade lanes delete`, so accepting it here for the remote one would give
+      // the same flag two opposite meanings.
+      input.deleteRemoteBranch = readFlag(args, ["--delete-remote-branch"]);
+    }
     return {
       kind: "execute",
       label: `PR ${sub}`,
       steps: [
-        actionStep(
-          "result",
-          "pr",
-          actionBySub[sub]!,
-          collectGenericObjectArgs(args, {
-            prId: id,
-            method: readValue(args, ["--method"]),
-          }),
-        ),
+        actionStep("result", "pr", actionBySub[sub]!, collectGenericObjectArgs(args, input)),
       ],
     };
   }
@@ -13084,6 +13167,11 @@ function buildCliPlan(
       if (!syncDisabled) {
         runtimeArgs.push("--no-sync");
       }
+      // Called for the throw, not the value: an unknown `--profile` must fail
+      // here, while the flag itself stays in `runtimeArgs` for runServe to
+      // consume. `readValue` splices what it reads, hence the copy — reading it
+      // off `runtimeArgs` directly would strip the flag before it is forwarded.
+      void parseRuntimeProfile(readValue([...runtimeArgs], ["--profile"]));
       return { kind: "serve", rest: runtimeArgs };
     }
     return { kind: "runtime", rest: args };
@@ -17538,6 +17626,11 @@ async function runServe(
     : path.resolve(rawSocketPath);
   const port = parseOptionalPort(readValue(args, ["--port"]), "--port");
   const syncEnabled = !readFlag(args, ["--no-sync"]);
+  // `--profile embedded` marks this runtime as a guest inside an external
+  // embedder's process (the ADE SDK). It only reshapes the machine chat scope:
+  // project scopes are still built on demand exactly as before, because an
+  // embedder that registers a project still expects that project to work.
+  const runtimeProfile = parseRuntimeProfile(readValue(args, ["--profile"]));
   const projectRegistry = new ProjectRegistry(layout);
   const brainAccountAuthService = getSharedAccountAuthService({
     secretsDir: layout.secretsDir,
@@ -17548,7 +17641,9 @@ async function runServe(
     brainAccountAuthService.getStatus(),
     brainProductAnalytics,
   );
-  const personalChatScope = createPersonalChatScope();
+  const personalChatScope = createPersonalChatScope(
+    runtimeProfile ? { runtimeProfile } : undefined,
+  );
   let preferredSyncProjectId: string | null = null;
   const preferredSyncProjectRoot = process.env.ADE_PROJECT_ROOT?.trim();
   if (preferredSyncProjectRoot) {
@@ -18079,6 +18174,9 @@ async function runServe(
   });
   const previousRole = process.env.ADE_DEFAULT_ROLE;
   let clearSyncRuntimeRpcHandlerFactory: (() => void) | null = null;
+  // Declared out here, beside clearSyncRuntimeRpcHandlerFactory, because the
+  // `finally` that tears it down sits outside the try block below.
+  let stopParentDeathWatchdog: (() => void) | null = null;
   process.env.ADE_DEFAULT_ROLE = options.role;
   try {
 
@@ -18132,12 +18230,21 @@ async function runServe(
         accountRetainsMachineOwnership: () =>
           accountSessionRetainsMachineOwnership(brainAccountAuthService.getStatus()),
       }),
-      machineUpdateControls: createMachineUpdateControls({
-        version: VERSION,
-        logger: headlessProjectLogger,
-        requestRestart: requestBrainServiceRestartFromServe,
-      }),
-      reportMachinePowerTransition: reportDesktopMachinePowerTransition,
+      // An embedded runtime is a guest inside an external process. Updating and
+      // restarting the MACHINE's ADE from inside it would reach far outside the
+      // embedder's lifecycle — it is the same "never claim machine authority"
+      // invariant that forces sync off, so it belongs to the profile rather
+      // than to whatever the caller's role default happens to be.
+      ...(runtimeProfile === "embedded"
+        ? {}
+        : {
+          machineUpdateControls: createMachineUpdateControls({
+            version: VERSION,
+            logger: headlessProjectLogger,
+            requestRestart: requestBrainServiceRestartFromServe,
+          }),
+          reportMachinePowerTransition: reportDesktopMachinePowerTransition,
+        }),
       getRuntimeStatus: () => {
         const publishHealth = getAccountDirectoryHealth();
         return {
@@ -18154,6 +18261,45 @@ async function runServe(
       onShutdown: finish,
     });
   clearSyncRuntimeRpcHandlerFactory = setSyncRuntimeRpcHandlerFactory(createHandler);
+  // An embedded runtime belongs to the process that spawned it. On POSIX an
+  // orphaned child is reparented to init and keeps running, so a host that dies
+  // without unwinding — SIGKILL, a crashed renderer, `kill -9` from a harness —
+  // leaks a runtime holding an isolated ADE home and a live socket. The SDK's
+  // dispose() and exit hooks cover every *graceful* exit; this covers the rest.
+  // Gated to the embedded profile: no other runtime has an owner, and exiting
+  // because an unrelated pid vanished would be far worse than the leak.
+  if (runtimeProfile === "embedded") {
+    const parentPid = readEmbeddedParentPid(process.env.ADE_EMBEDDED_PARENT_PID);
+    if (parentPid == null) {
+      headlessProjectLogger.info("runtime.embedded_parent_watchdog_absent", {
+        reason: process.env.ADE_EMBEDDED_PARENT_PID ? "unparseable" : "unset",
+      });
+    } else {
+      stopParentDeathWatchdog = startParentDeathWatchdog({
+        parentPid,
+        onParentGone: () => {
+          // `warn`, not `info`: brainLogger mirrors warn/error to stderr, and
+          // the SDK pipes our stderr into the embedder's logger. An info-level
+          // line goes to the log file only, and a fast exit can drop it before
+          // it flushes — leaving an operator asking "why did my runtime exit?"
+          // with no answer anywhere. This is the answer.
+          headlessProjectLogger.warn("runtime.embedded_parent_gone_shutting_down", {
+            parentPid,
+            detail: "The process that spawned this embedded runtime is gone; shutting down.",
+          });
+          // Graceful: the same path a `shutdown` RPC takes, so sockets close,
+          // pending work settles, and teardown runs. A bare process.exit here
+          // would leave the socket file and the db mid-write.
+          finish();
+        },
+        onInvalidParent: (reason) => {
+          // The runtime keeps running: a bad pid is the spawner's bug, and
+          // refusing to boot would turn a leak into an outage.
+          headlessProjectLogger.warn("runtime.embedded_parent_watchdog_invalid", { parentPid, reason });
+        },
+      });
+    }
+  }
   // A machine that hosts sync without a project must still be reachable off the
   // LAN. `createAdeRuntime` builds the relay tunnel per project scope, so with
   // no scope nothing ever dialled it and the target user for this path — a
@@ -18895,6 +19041,10 @@ async function runServe(
   return null;
   } finally {
     clearSyncRuntimeRpcHandlerFactory?.();
+    // Idempotent, and the timer is unref'd anyway — this is here so a runServe
+    // that returns for any other reason does not leave a live interval behind
+    // in a host process that embeds the CLI rather than spawning it.
+    stopParentDeathWatchdog?.();
     removeRuntimeProcessErrorBoundary();
     if (previousRole == null) delete process.env.ADE_DEFAULT_ROLE;
     else process.env.ADE_DEFAULT_ROLE = previousRole;
@@ -20209,19 +20359,16 @@ function formatLaneDetail(value: unknown): string {
 }
 
 /**
- * Lane cell for a PR row.
+ * Lane cell for a PR row: the local worktree you can work in, when there is one.
  *
- * PR rows are soft-detached rather than deleted when their lane is removed or moves to
- * another branch, and their `lane_id` intentionally keeps pointing at the gone lane. So
- * printing `laneId` alone would present dead history as a live mapping. Detached rows
- * render as `was <lane>` instead.
+ * An empty cell means exactly that — no local worktree — and never that the PR
+ * is off-limits; every `ade prs` subcommand runs against GitHub either way.
+ * PR rows are soft-detached rather than deleted when their lane is removed or
+ * moves to another branch, and their `lane_id` keeps pointing at the gone lane,
+ * so detached rows print nothing rather than a path that is not there.
  */
 function prLaneCell(pr: JsonObject): unknown {
-  const detached = isRecord(pr.detached) ? pr.detached : null;
-  if (detached) {
-    const name = asString(detached.laneName) ?? asString(pr.laneName);
-    return `was ${name ?? "deleted lane"}`;
-  }
+  if (isRecord(pr.detached)) return null;
   return pr.laneId ?? pr.laneName;
 }
 

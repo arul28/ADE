@@ -79,6 +79,9 @@ package-lock.json
 !/apps/push-relay/package-lock.json
 !/apps/tunnel-relay/package-lock.json
 !/apps/account-directory/package-lock.json
+!/packages/sdk/package-lock.json
+!/packages/chat-ui/package-lock.json
+!/packages/demo/package-lock.json
 /apps/desktop/release-alpha
 /apps/desktop/release-beta
 apps/desktop/resources/runtime/ade-*

@@ -12323,7 +12323,10 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
           setRightPane({
             kind: "details",
             title: "PR",
-            body: `No PR is linked to this lane yet.\n${ahead > 0 ? `${ahead} commit${ahead === 1 ? "" : "s"} ahead of base.\n` : ""}Run /pr open to create a pull request.`,
+            // "linked" is gone on purpose: nothing about a PR requires a lane
+            // mapping any more, and this pane is simply reporting that *this*
+            // lane has no PR of its own yet.
+            body: `This lane has no pull request yet.\n${ahead > 0 ? `${ahead} commit${ahead === 1 ? "" : "s"} ahead of base.\n` : ""}Run /pr open to create a pull request.`,
           });
           return;
         }
@@ -12341,7 +12344,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
           ...(status ? ["", formatPrMergeState(status)] : []),
           ...(checks ? ["", formatPrChecks(checks)] : []),
           "",
-          "More: /pr checks · /pr review · /pr comments · /pr land",
+          "More: /pr checks · /pr review · /pr comments · /pr land · /pr close",
         ];
         setRightPane({ kind: "details", title: "PR", body: sections.join("\n") });
         return;
@@ -12387,7 +12390,14 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
         return;
       }
       if (!prId) {
-        setRightPane({ kind: "details", title: name.slice(1), body: "No PR is linked to this lane yet." });
+        // The /pr commands act on the active lane's PR, so this is about the
+        // lane, not about permission: any other PR is reachable from
+        // `ade prs <subcommand> <pr>` with no lane involved at all.
+        setRightPane({
+          kind: "details",
+          title: name.slice(1),
+          body: "This lane has no pull request yet.\nRun /pr open to create one, or use  ade prs <subcommand> <pr>  for any other PR in the repo.",
+        });
         return;
       }
       if (name === "/pr checks") {
@@ -12402,10 +12412,11 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       }
       const prRef = typeof activePr?.number === "number" ? `PR #${activePr.number}` : "the PR";
       if (name === "/pr land") {
-        // Tokens: an optional leading `confirm`, a merge method, and an optional
-        // `bypass`/`admin` token (order-independent after `confirm`). e.g.
+        // Tokens: an optional leading `confirm`, a merge method, and optional
+        // `bypass`/`admin` and `delete-remote-branch` tokens (order-independent
+        // after `confirm`). e.g.
         //   /pr land squash
-        //   /pr land confirm squash bypass
+        //   /pr land confirm squash bypass delete-remote-branch
         const parts = args.trim().split(/\s+/).filter(Boolean);
         const tokens = parts.map((token) => token.toLowerCase());
         const confirmed = tokens[0] === "confirm";
@@ -12413,6 +12424,13 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
         const methodArg = rest.find((token) => ["merge", "squash", "rebase"].includes(token));
         const method = (methodArg ?? "squash") as "merge" | "squash" | "rebase";
         const bypassRules = rest.some((token) => ["bypass", "admin", "--admin"].includes(token));
+        // Opt-in, off by default: merging does not delete anyone's branch unless
+        // they ask for it.
+        // Same one spelling the CLI takes: `--delete-branch` means the LOCAL
+        // branch elsewhere in ADE, so it is not accepted here.
+        const deleteRemoteBranch = rest.some((token) =>
+          ["delete-remote-branch", "--delete-remote-branch"].includes(token),
+        );
 
         // Pull the authoritative merge state so the confirm step shows the same
         // blockers the desktop merge box does (and explains why bypass is needed).
@@ -12438,9 +12456,12 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
               `About to merge ${prRef} using the "${method}" method.`,
               ...blockerLines,
               "",
-              "This merges on GitHub and runs post-merge cleanup (branch delete, child rebase). It cannot be undone.",
+              "This merges on GitHub and rebases child lanes. It cannot be undone.",
+              deleteRemoteBranch
+                ? "The head branch is deleted on the remote after the merge."
+                : "The remote branch is kept. Add  delete-remote-branch  to remove it after the merge.",
               "",
-              `Run  /pr land confirm ${method}${bypassRules ? " bypass" : ""}  to proceed.`,
+              `Run  /pr land confirm ${method}${bypassRules ? " bypass" : ""}${deleteRemoteBranch ? " delete-remote-branch" : ""}  to proceed.`,
               "Choose a method:  /pr land confirm merge | squash | rebase",
               ...(bypassHint ? [bypassHint] : []),
             ].join("\n"),
@@ -12448,9 +12469,51 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
           return;
         }
         try {
-          const landed = await conn.action("pr", "land", { prId, method, ...(bypassRules ? { bypassRules: true } : {}) });
-          addNotice(`Merged ${prRef} (${method}${bypassRules ? ", bypass" : ""}).`, "success");
+          const landed = await conn.action("pr", "land", {
+            prId,
+            method,
+            ...(bypassRules ? { bypassRules: true } : {}),
+            ...(deleteRemoteBranch ? { deleteRemoteBranch: true } : {}),
+          });
+          addNotice(
+            `Merged ${prRef} (${method}${bypassRules ? ", bypass" : ""}${deleteRemoteBranch ? ", branch deleted" : ""}).`,
+            "success",
+          );
           setRightPane({ kind: "details", title: "PR landed", body: renderObject(landed, 24) });
+          await refreshState();
+        } catch (err) {
+          addNotice(err instanceof Error ? err.message : String(err), "error");
+        }
+        return;
+      }
+      if (name === "/pr close" || name === "/pr reopen") {
+        const closing = name === "/pr close";
+        if (closing) {
+          // Closing is undoable (`/pr reopen`) but it is still a state change
+          // other people see, so it takes the same explicit confirm step
+          // `/pr land` does. Reopening restores the prior state, so it does not.
+          const confirmed = args.trim().toLowerCase() === "confirm";
+          if (!confirmed) {
+            const headBranch = typeof activePr?.headBranch === "string" ? activePr.headBranch : null;
+            setRightPane({
+              kind: "details",
+              title: "Close PR",
+              body: [
+                `About to close ${prRef} on GitHub.`,
+                "",
+                headBranch
+                  ? `The branch  ${headBranch}  is kept, and /pr reopen reopens the PR.`
+                  : "The branch is kept, and /pr reopen reopens the PR.",
+                "",
+                "Run  /pr close confirm  to proceed.",
+              ].join("\n"),
+            });
+            return;
+          }
+        }
+        try {
+          await conn.action("pr", closing ? "closePr" : "reopenPr", { prId });
+          addNotice(closing ? `Closed ${prRef}.` : `Reopened ${prRef}.`, "success");
           await refreshState();
         } catch (err) {
           addNotice(err instanceof Error ? err.message : String(err), "error");
@@ -12459,9 +12522,9 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       }
       if (name === "/pr update-branch") {
         // Sync the PR branch with its base. `merge` uses GitHub's update-branch
-        // API (no local lane needed); `rebase` reuses ADE's local rebase + push
-        // and therefore requires a mapped lane. Mirrors the desktop merge box's
-        // "Update branch" control, including the stale-head guard.
+        // API and needs nothing local; `rebase` reuses ADE's local rebase + push
+        // and therefore needs a local checkout of the head branch. Mirrors the
+        // desktop merge box's "Update branch" control, stale-head guard included.
         const strategyArg = args.trim().toLowerCase();
         const strategy = (strategyArg === "rebase" ? "rebase" : "merge") as "merge" | "rebase";
         // Pass the current head as the expected SHA so an update is rejected if
@@ -12483,7 +12546,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
             addNotice(`Updated ${prRef} branch (${strategy}).`, "success");
           } else if (record.hasConflicts === true) {
             addNotice(
-              `Updating ${prRef} (${strategy}) hit conflicts — resolve them in the lane, then retry.`,
+              `Updating ${prRef} (${strategy}) hit conflicts — resolve them in a local checkout of the branch, then retry.`,
               "error",
             );
           } else {

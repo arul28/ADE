@@ -1,0 +1,208 @@
+/* DataDesk's own chrome. `@ade-dev/chat-ui` injects its own stylesheet and reads
+   only CSS custom properties, so nothing here reaches inside the components. */
+
+:root {
+  color-scheme: dark;
+  --dd-bg: #0b0b0f;
+  --dd-panel: #131319;
+  --dd-line: #26262f;
+  --dd-fg: #e9e9f0;
+  --dd-muted: #8d8da0;
+  --dd-accent: #6d5efc;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  background: var(--dd-bg);
+  color: var(--dd-fg);
+  font: 14px/1.5 ui-sans-serif, -apple-system, "Segoe UI", system-ui, sans-serif;
+}
+
+.datadesk {
+  display: grid;
+  grid-template-columns: 300px minmax(0, 1fr);
+  height: 100%;
+}
+
+/* ---- sidebar ------------------------------------------------------------ */
+
+.datadesk-sidebar {
+  display: flex;
+  flex-direction: column;
+  gap: 22px;
+  padding: 22px 18px;
+  border-right: 1px solid var(--dd-line);
+  background: var(--dd-panel);
+  overflow-y: auto;
+}
+
+.datadesk-brand {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.datadesk-brand p {
+  margin: 2px 0 0;
+  color: var(--dd-muted);
+  font-size: 12px;
+}
+
+.datadesk-mark {
+  width: 30px;
+  height: 30px;
+  border-radius: 9px;
+  background: linear-gradient(135deg, var(--dd-accent), #b06dfc);
+}
+
+.datadesk-nav {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.datadesk-nav a {
+  padding: 7px 10px;
+  border-radius: 8px;
+  color: var(--dd-muted);
+  text-decoration: none;
+}
+
+.datadesk-nav a.is-active {
+  background: rgba(109, 94, 252, 0.16);
+  color: var(--dd-fg);
+}
+
+.datadesk-panel h2 {
+  margin: 0 0 10px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--dd-muted);
+}
+
+.datadesk-status {
+  margin-top: auto;
+  font-size: 12px;
+}
+
+.datadesk-status.is-online {
+  color: #64d3a0;
+}
+
+.datadesk-status.is-offline {
+  color: #f2a08a;
+}
+
+/* ---- main --------------------------------------------------------------- */
+
+.datadesk-main {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  padding: 26px 28px;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.datadesk-header h1 {
+  margin: 0;
+  font-size: 21px;
+}
+
+.datadesk-muted {
+  margin: 4px 0 0;
+  color: var(--dd-muted);
+  font-size: 13px;
+}
+
+.datadesk-error {
+  color: #ff8f7a;
+}
+
+.datadesk-table {
+  width: 100%;
+  border-collapse: collapse;
+  background: var(--dd-panel);
+  border: 1px solid var(--dd-line);
+  border-radius: 12px;
+  overflow: hidden;
+}
+
+.datadesk-table th,
+.datadesk-table td {
+  padding: 10px 14px;
+  text-align: left;
+  border-bottom: 1px solid var(--dd-line);
+}
+
+.datadesk-table th {
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--dd-muted);
+}
+
+.datadesk-table tr:last-child td {
+  border-bottom: none;
+}
+
+.datadesk-pill {
+  padding: 2px 9px;
+  border-radius: 999px;
+  font-size: 12px;
+  background: rgba(255, 255, 255, 0.07);
+}
+
+.datadesk-pill.is-overdue {
+  background: rgba(255, 122, 96, 0.16);
+  color: #ff9d86;
+}
+
+.datadesk-pill.is-paid {
+  background: rgba(100, 211, 160, 0.16);
+  color: #71dcab;
+}
+
+/* ---- chat --------------------------------------------------------------- */
+
+.datadesk-chat {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  flex: 1;
+  min-height: 0;
+}
+
+.datadesk-chat h2 {
+  margin: 0;
+  font-size: 13px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--dd-muted);
+}
+
+/* The one hook the host needs: give the chat root a box to fill. */
+.datadesk-chat .adechat-root {
+  flex: 1;
+  min-height: 0;
+  border: 1px solid var(--dd-line);
+  border-radius: 12px;
+  overflow: hidden;
+}
+
+.datadesk-empty {
+  padding: 22px;
+  text-align: center;
+}

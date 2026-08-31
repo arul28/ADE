@@ -563,6 +563,53 @@ final class PrMergeMergeStateTests: XCTestCase {
     XCTAssertEqual(coords?.githubPrNumber, 849)
   }
 
+  /// The host's `parseSyntheticGithubPrId` is now a strict regex because every
+  /// PR mutation resolves through it. The iOS parser decides whether this client
+  /// treats a route id as actionable at all, so it has to reject the same ids —
+  /// otherwise the detail screen offers Merge and Close for a target the host
+  /// will refuse, and a crafted deep link becomes a live-looking action row.
+  func testSyntheticGitHubRouteRejectsIdsThatEscapeTheRepoSegment() {
+    // The traversal payload the host regex was tightened for: a permissive repo
+    // group let this resolve to a caller-chosen API path.
+    XCTAssertNil(prGitHubCoordinates(fromRouteId: "gh:x/../../user/repos#999#1"))
+    XCTAssertNil(prGitHubCoordinates(fromRouteId: "gh:owner/repo/extra#1"))
+    XCTAssertNil(prGitHubCoordinates(fromRouteId: "gh:owner/re#po#1"))
+  }
+
+  func testSyntheticGitHubRouteRejectsMalformedSegments() {
+    XCTAssertNil(prGitHubCoordinates(fromRouteId: "gh:/repo#1"), "empty owner")
+    XCTAssertNil(prGitHubCoordinates(fromRouteId: "gh:owner/#1"), "empty repo")
+    XCTAssertNil(prGitHubCoordinates(fromRouteId: "gh:-owner/repo#1"), "leading hyphen owner")
+    XCTAssertNil(prGitHubCoordinates(fromRouteId: "gh:own er/repo#1"), "space in owner")
+    XCTAssertNil(prGitHubCoordinates(fromRouteId: "gh:owner/repo#0"), "zero PR number")
+    XCTAssertNil(prGitHubCoordinates(fromRouteId: "gh:owner/repo#+1"), "signed PR number")
+    XCTAssertNil(prGitHubCoordinates(fromRouteId: "gh:owner/repo#-1"), "negative PR number")
+    XCTAssertNil(prGitHubCoordinates(fromRouteId: "gh:owner/repo#"), "missing PR number")
+    XCTAssertNil(prGitHubCoordinates(fromRouteId: "owner/repo#1"), "missing gh: prefix")
+  }
+
+  func testSyntheticGitHubRouteAcceptsRealGitHubNameGrammar() {
+    let dotted = prGitHubCoordinates(fromRouteId: "gh:my-org/my.repo_name-2#12")
+    XCTAssertEqual(dotted?.repoOwner, "my-org")
+    XCTAssertEqual(dotted?.repoName, "my.repo_name-2")
+    XCTAssertEqual(dotted?.githubPrNumber, 12)
+  }
+
+  /// Merging no longer deletes the head branch (`LandPrArgs.deleteRemoteBranch`
+  /// defaults to false) and closing never did, so the confirmation has to say
+  /// the branch survives rather than leave the user guessing.
+  func testCloseConfirmationCopyPromisesTheBranchIsKept() {
+    XCTAssertEqual(prCloseConfirmationTitle(prNumber: 849), "Close pull request #849?")
+    XCTAssertEqual(prCloseConfirmationTitle(prNumber: nil), "Close pull request?")
+    XCTAssertEqual(prCloseConfirmationTitle(prNumber: 0), "Close pull request?")
+
+    let message = prCloseConfirmationMessage(headBranch: "ade/prs-tab-ux-ledger")
+    XCTAssertTrue(message.contains("ade/prs-tab-ux-ledger"))
+    XCTAssertTrue(message.contains("kept"))
+    XCTAssertTrue(message.contains("reopen"))
+    XCTAssertFalse(prCloseConfirmationMessage(headBranch: "   ").contains("The branch  "))
+  }
+
   func testPartialMobileDetailRetainsLastGoodSidecars() {
     let previous = PullRequestSnapshot(
       detail: nil,

@@ -7,6 +7,7 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { GitHubPrSnapshot, LaneSummary, MergeMethod } from "../../../../shared/types";
 import type { PrRouteSelectionTarget } from "../prsRouteState";
+import { useGitHubTargetHistory } from "./useGitHubTargetHistory";
 
 vi.mock("react-resizable-panels", async () => {
   const harness = await import("./GitHubTab.testHarness");
@@ -28,7 +29,11 @@ vi.mock("../detail/PrDetailPane", async () => {
 });
 
 import { GitHubTab } from "./GitHubTab";
-import { GITHUB_TAB_SNAPSHOT_FRESH_MS } from "./githubTabModel";
+import {
+  GITHUB_TAB_SNAPSHOT_FRESH_MS,
+  OPTIMISTIC_TERMINAL_TTL_MS,
+  applyOptimisticTerminalState,
+} from "./githubTabModel";
 import {
   cleanupGitHubTabTest,
   mockUsePrs,
@@ -913,5 +918,370 @@ describe("GitHubTab snapshot lifecycle", () => {
     await waitFor(() => {
       expect(screen.getByText("Stale open snapshot")).toBeTruthy();
     });
+  });
+});
+
+/* -- Folded in from `GitHubTabDeepLinks.test.tsx` --------------------------
+   Same component, same mocks, a different angle: how a deep link resolves to a
+   selection. It was a separate file only because it was written separately. */
+
+describe("GitHubTab explicit coordinate targets", () => {
+  beforeEach(() => {
+    setupGitHubTabTest();
+  });
+
+  afterEach(() => {
+    cleanupGitHubTabTest();
+  });
+
+  function renderTab(overrides: Partial<{
+    selectedPrId: string | null;
+    selectedPrTarget: PrRouteSelectionTarget | null;
+    onSelectPr: ReturnType<typeof vi.fn>;
+    onRefreshAll: ReturnType<typeof vi.fn>;
+    lanes: LaneSummary[];
+  }> = {}) {
+    return renderGitHubTab(GitHubTab, overrides);
+  }
+
+  it("renders a coordinate deep link before the GitHub snapshot arrives", async () => {
+    const user = userEvent.setup();
+    const deferredSnapshot = createDeferred<GitHubPrSnapshot>();
+    vi.mocked(window.ade.prs.getGitHubSnapshot).mockReturnValueOnce(deferredSnapshot.promise);
+
+    renderTab({
+      selectedPrId: "pr-merged",
+      selectedPrTarget: {
+        prId: null,
+        prNumber: 200,
+        repoOwner: "ade-dev",
+        repoName: "ade",
+      },
+    });
+
+    expect(screen.getByTestId("pr-detail-pane").textContent).toContain("gh:ade-dev/ade#200");
+    await act(async () => {
+      deferredSnapshot.resolve(snapshot);
+      await deferredSnapshot.promise;
+    });
+
+    await user.click(screen.getByRole("button", { name: /^merged/i }));
+    expect(screen.queryByRole("button", { name: /Show in/i })).toBeNull();
+  });
+
+  it("does not auto-select the first row after clearing an unresolved coordinate target", async () => {
+    const user = userEvent.setup();
+    const onSelectPr = vi.fn();
+    const target: PrRouteSelectionTarget = {
+      prId: null,
+      prNumber: 200,
+      repoOwner: "ade-dev",
+      repoName: "ade",
+    };
+    function Harness() {
+      const [selection, setSelection] = React.useState<{
+        id: string | null;
+        target: PrRouteSelectionTarget | null;
+      }>({ id: null, target });
+      return (
+        <MemoryRouter>
+          <GitHubTab
+            lanes={[]}
+            mergeMethod="squash"
+            selectedPrId={selection.id}
+            selectedPrTarget={selection.target}
+            onSelectPr={(id, nextTarget) => {
+              onSelectPr(id, nextTarget ?? null);
+              setSelection({ id, target: nextTarget ?? null });
+            }}
+            onRefreshAll={vi.fn().mockResolvedValue(undefined)}
+          />
+        </MemoryRouter>
+      );
+    }
+
+    render(<Harness />);
+    expect((await screen.findByTestId("pr-detail-pane")).textContent).toContain("gh:ade-dev/ade#200");
+
+    await user.click(screen.getByRole("button", { name: /^merged/i }));
+
+    await waitFor(() => expect(onSelectPr).toHaveBeenLastCalledWith(null, null));
+    expect(screen.queryByTestId("pr-detail-pane")).toBeNull();
+  });
+
+  it("widens history for an unresolved closed coordinate target without blocking its shell", async () => {
+    const deferredHistory = createDeferred<GitHubPrSnapshot>();
+    const openOnlySnapshot: GitHubPrSnapshot = {
+      ...snapshot,
+      repoPullRequests: [makeGitHubPr()],
+    };
+    vi.mocked(window.ade.prs.getGitHubSnapshot)
+      .mockResolvedValueOnce(openOnlySnapshot)
+      .mockReturnValueOnce(deferredHistory.promise);
+
+    renderTab({
+      selectedPrId: null,
+      selectedPrTarget: {
+        prId: null,
+        prNumber: 200,
+        repoOwner: "ade-dev",
+        repoName: "ade",
+      },
+    });
+
+    expect(screen.getByTestId("pr-detail-pane").textContent).toContain("gh:ade-dev/ade#200");
+    await waitFor(() => {
+      expect(window.ade.prs.getGitHubSnapshot).toHaveBeenCalledWith({
+        force: false,
+        includeExternalClosed: true,
+        historyPageLimit: 2,
+      });
+    });
+    await act(async () => {
+      deferredHistory.resolve({
+        ...snapshot,
+        repoPullRequests: [makeGitHubPr({
+          id: "repo-closed-target",
+          githubPrNumber: 200,
+          state: "merged",
+          linkedPrId: null,
+          linkedLaneId: null,
+          linkedLaneName: null,
+        })],
+      });
+      await deferredHistory.promise;
+    });
+  });
+
+  it("uses a local coordinate match when the snapshot link id is foreign", async () => {
+    const user = userEvent.setup();
+    const targetSnapshot: GitHubPrSnapshot = {
+      ...snapshot,
+      repoPullRequests: [makeGitHubPr({ linkedPrId: "foreign-machine-pr" })],
+    };
+    vi.mocked(window.ade.prs.getGitHubSnapshot).mockResolvedValue(targetSnapshot);
+    mockUsePrs.mockReturnValue(makePrsContext([{
+      id: "local-pr",
+      githubPrNumber: 101,
+      repoOwner: "ade-dev",
+      repoName: "ade",
+      state: "open",
+    }]));
+
+    renderTab({
+      selectedPrId: null,
+      selectedPrTarget: {
+        prId: "foreign-machine-pr",
+        prNumber: 101,
+        repoOwner: "ade-dev",
+        repoName: "ade",
+      },
+    });
+
+    // The assertion that used to follow — clicking "Unmap from lane" — went
+    // with the button. Unmapping is not a user task any more, so what is left
+    // to prove is the resolution itself: a foreign `linkedPrId` must not stop
+    // the coordinates from finding this machine's row.
+    await waitFor(() => {
+      expect(screen.getByTestId("pr-detail-pane").textContent).toContain("local-pr");
+      expect(screen.getByTestId("pr-detail-pane").getAttribute("data-unmapped")).toBe("false");
+    });
+    expect(window.ade.prs.delete).not.toHaveBeenCalled();
+  });
+
+  it("reconciles local PR state when snapshot repository casing differs", async () => {
+    const user = userEvent.setup();
+    vi.mocked(window.ade.prs.getGitHubSnapshot).mockResolvedValue({
+      ...snapshot,
+      repoPullRequests: [makeGitHubPr({
+        repoOwner: "ADE-DEV",
+        repoName: "ADE",
+        linkedPrId: null,
+        linkedLaneId: null,
+        linkedLaneName: null,
+        title: "Cached open title",
+        state: "open",
+      })],
+      externalPullRequests: [],
+    });
+    mockUsePrs.mockReturnValue(makePrsContext([{
+      id: "local-pr",
+      githubPrNumber: 101,
+      repoOwner: "ade-dev",
+      repoName: "ade",
+      title: "Local merged title",
+      state: "merged",
+      updatedAt: "2026-03-13T12:30:00.000Z",
+    }]));
+
+    renderTab();
+    await user.click(await screen.findByRole("button", { name: /^merged/i }));
+
+    await waitFor(() => {
+      expect(screen.getByText("Local merged title")).not.toBeNull();
+    });
+    expect(screen.queryByText("Cached open title")).toBeNull();
+    expect(screen.getByTestId("pr-detail-pane").getAttribute("data-unmapped")).toBe("false");
+  });
+
+  it("resolves a coordinate deep link when the ADE row is not local", async () => {
+    const targetSnapshot: GitHubPrSnapshot = {
+      ...snapshot,
+      repoPullRequests: [
+        makeGitHubPr({
+          id: "repo-unmapped",
+          githubPrNumber: 200,
+          title: "Unmapped target",
+          linkedPrId: null,
+          linkedLaneId: null,
+          linkedLaneName: null,
+          adeKind: null,
+        }),
+        makeGitHubPr(),
+      ],
+    };
+    vi.mocked(window.ade.prs.getGitHubSnapshot).mockResolvedValue(targetSnapshot);
+    mockUsePrs.mockReturnValue(makePrsContext([]));
+
+    renderTab({
+      selectedPrId: null,
+      selectedPrTarget: {
+        prId: "pr-from-another-machine",
+        prNumber: 200,
+        repoOwner: "ade-dev",
+        repoName: "ade",
+      },
+    });
+
+    await waitFor(() => {
+      expect(screen.getByTestId("pr-detail-pane").textContent).toContain("gh:ade-dev/ade#200");
+    });
+    // The unresolved explicit target must not be replaced by the first row.
+    expect(screen.getByTestId("pr-detail-pane").textContent).not.toContain("gh:ade-dev/ade#101");
+  });
+});
+
+/* -- Folded in from `useGitHubTargetHistory.test.tsx` ----------------------
+   A hook this tab is the only consumer of. */
+
+const targetHistory_target: PrRouteSelectionTarget = {
+  prId: null,
+  prNumber: 224,
+  repoOwner: "ade-dev",
+  repoName: "ade",
+};
+
+const staleSnapshot: GitHubPrSnapshot = {
+  repo: { owner: "ade-dev", name: "ade" },
+  viewerLogin: "octocat",
+  repoPullRequests: [],
+  externalPullRequests: [],
+  syncedAt: "2026-03-13T12:00:00.000Z",
+  history: {
+    includeExternalClosed: true,
+    pageLimit: 2,
+    repoPullRequestsLoaded: 2,
+    repoPullRequestsMayHaveMore: true,
+    repoPullRequestCounts: null,
+  },
+};
+
+function TargetHistoryHarness({
+  loadSnapshot,
+  snapshot,
+}: {
+  loadSnapshot: (options?: {
+    force?: boolean;
+    silent?: boolean;
+    includeExternalClosed?: boolean;
+    historyPageLimit?: number;
+  }) => Promise<GitHubPrSnapshot | null>;
+  snapshot: GitHubPrSnapshot;
+}) {
+  useGitHubTargetHistory({
+    displayedItems: [],
+    loadSnapshot,
+    selectedPrId: null,
+    selectedPrTarget: targetHistory_target,
+    snapshot,
+  });
+  return null;
+}
+
+describe("useGitHubTargetHistory", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("backs off when a forced history fetch returns the same page limit", async () => {
+    const loadSnapshot = vi.fn().mockResolvedValue(staleSnapshot);
+    render(<TargetHistoryHarness loadSnapshot={loadSnapshot} snapshot={staleSnapshot} />);
+
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(loadSnapshot).toHaveBeenCalledTimes(1);
+    expect(loadSnapshot).toHaveBeenCalledWith(expect.objectContaining({
+      force: true,
+      includeExternalClosed: true,
+      historyPageLimit: 4,
+      silent: true,
+    }));
+
+    await act(async () => {
+      vi.advanceTimersByTime(29_999);
+      await Promise.resolve();
+    });
+    expect(loadSnapshot).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      vi.advanceTimersByTime(1);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(loadSnapshot).toHaveBeenCalledTimes(3);
+  });
+});
+
+/**
+ * The local override that moves a just-merged or just-closed PR out of Open
+ * before the next snapshot agrees. It is a lie with a deadline, and both halves
+ * matter: without the override the row sits in Open and the action reads as a
+ * no-op, and without the deadline a reopened PR is pinned Closed for the rest
+ * of the session because nothing in the snapshot can ever contradict it.
+ */
+describe("applyOptimisticTerminalState", () => {
+  const row = makeGitHubPr({ state: "open", isDraft: false });
+  const key = `${row.repoOwner}/${row.repoName}#${row.githubPrNumber}`.toLowerCase();
+  const at = "2026-08-30T12:00:00.000Z";
+  const now = Date.parse(at);
+  const pending = new Map([[key, { state: "closed" as const, at }]]);
+
+  it("moves a row the snapshot still calls open into the terminal bucket", () => {
+    const applied = applyOptimisticTerminalState(row, pending, now + 1_000);
+    expect(applied.state).toBe("closed");
+    expect(applied.isDraft).toBe(false);
+  });
+
+  it("stops overriding once the entry is older than the TTL", () => {
+    const stale = applyOptimisticTerminalState(row, pending, now + OPTIMISTIC_TERMINAL_TTL_MS + 1);
+    expect(stale.state).toBe("open");
+    expect(stale).toBe(row);
+  });
+
+  it("never drags a row back out of a terminal state the snapshot reported", () => {
+    const merged = { ...row, state: "merged" as const };
+    expect(applyOptimisticTerminalState(merged, pending, now + 1_000)).toBe(merged);
+  });
+
+  it("leaves rows it holds no entry for exactly as they came", () => {
+    const other = makeGitHubPr({ githubPrNumber: 9_999, state: "open" });
+    expect(applyOptimisticTerminalState(other, pending, now + 1_000)).toBe(other);
+    expect(applyOptimisticTerminalState(row, null, now)).toBe(row);
   });
 });

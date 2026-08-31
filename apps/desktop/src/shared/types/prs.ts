@@ -637,6 +637,14 @@ export type LandPrArgs = {
   prId: string;
   method: MergeMethod;
   archiveLane?: boolean;
+  /**
+   * Delete the PR's head branch on the remote after a successful merge.
+   *
+   * Defaults to **false**. ADE used to delete it unconditionally, with no flag
+   * and no prompt — destroying a branch the user may still want. Deleting
+   * someone's branch is their call, so the caller has to ask for it.
+   */
+  deleteRemoteBranch?: boolean;
   /** When true, retry blocked merges with `gh pr merge --admin`. */
   bypassRules?: boolean;
   /** Custom merge commit title (`commit_title`). Ignored for the `rebase` method. */
@@ -1200,11 +1208,40 @@ export function syntheticGithubPrId(coords: PrGithubCoords): string {
   return `gh:${coords.repoOwner}/${coords.repoName}#${coords.githubPrNumber}`;
 }
 
-/** Reverse of `syntheticGithubPrId`: "gh:owner/repo#num" → coords (else null). */
+/**
+ * Reverse of `syntheticGithubPrId`: "gh:owner/repo#num" → coords (else null).
+ *
+ * The owner and repo groups match GitHub's OWN name grammar, and that strictness
+ * is load-bearing, not cosmetic. A permissive `(.+)` repo group let a caller
+ * smuggle path segments into the API URL: `gh:x/../../user/repos#999#1` parsed
+ * to repo `../../user/repos#999`, which `new URL()` normalises
+ * `/repos/x/../../user/repos#999/pulls/1` down to `/user/repos` — a
+ * caller-chosen endpoint, with this call site's HTTP method and body, on the
+ * user's token. Harmless while these ids only keyed reads; every PR mutation now
+ * resolves through here, so the id is an authorization-relevant input.
+ *
+ * Owner: alphanumeric + hyphen, 1-39 chars, no leading hyphen.
+ * Repo: alphanumeric plus `.`, `_`, `-`, 1-100 chars — so it can never contain
+ * `/` or `#`, and it can never be a run of dots long enough to climb a path.
+ * The two dot segments the character class still admits, `.` and `..`, are
+ * rejected below: `new URL()` collapses them, so `gh:owner/.#1` would address
+ * `/repos/owner/pulls/1` rather than the repo it names. GitHub allows neither
+ * as a repository name, so no valid id is lost.
+ */
+const SYNTHETIC_GITHUB_PR_ID =
+  /^gh:([A-Za-z0-9][A-Za-z0-9-]{0,38})\/([A-Za-z0-9._-]{1,100})#(\d+)$/;
+
+/** Repository names that `new URL()` would resolve away instead of requesting. */
+const DOT_SEGMENT_REPO_NAMES = new Set([".", ".."]);
+
 export function parseSyntheticGithubPrId(prId: string): PrGithubCoords | null {
-  const m = /^gh:([^/]+)\/(.+)#(\d+)$/.exec(prId);
+  const m = SYNTHETIC_GITHUB_PR_ID.exec(prId);
   if (!m) return null;
-  return { repoOwner: m[1]!, repoName: m[2]!, githubPrNumber: Number(m[3]!) };
+  const repoName = m[2]!;
+  if (DOT_SEGMENT_REPO_NAMES.has(repoName)) return null;
+  const githubPrNumber = Number(m[3]!);
+  if (!Number.isSafeInteger(githubPrNumber) || githubPrNumber <= 0) return null;
+  return { repoOwner: m[1]!, repoName, githubPrNumber };
 }
 
 /** Full PR detail fetched from GitHub API with body, labels, assignees, etc. */
@@ -1418,27 +1455,90 @@ export type GetPrWorkflowGraphArgs = {
   force?: boolean;
 };
 
-/** An extracted excerpt of a failing job's log. */
+/**
+ * Why an excerpt's `lines` are what they are.
+ *
+ * The three cases are deliberately distinct. An empty `lines` array used to mean
+ * all three at once, which is the ambiguity that let "we could not read the log"
+ * masquerade as "there is nothing to read" — the shape of failure that keeps a
+ * caller retrying against a quota it is already out of.
+ */
+export type PrCheckLogStatus =
+  /** `lines` is a real tail of the job's log. */
+  | "excerpt"
+  /** No log was requested: the job did not fail and nobody asked for one. */
+  | "not-fetched"
+  /** ADE tried to read the log and could not. `logUnavailableReason` says why. */
+  | "unavailable";
+
+/** Which part of the log `lines` was taken from. */
+export type PrCheckLogScope =
+  /** The step GitHub marked as the failure. */
+  | "failing-step"
+  /**
+   * A single step was isolated, but it is not the job's failure — the log of a
+   * job that did not fail, where the only handle was an `##[error]` line. Never
+   * label this one "the failing step".
+   */
+  | "named-step"
+  /** No step could be isolated, so this is the tail of the whole job log. */
+  | "whole-log";
+
+/**
+ * What ADE knows about one Actions job, plus a log excerpt when one was
+ * warranted.
+ *
+ * Everything below `htmlUrl` is optional so an older runtime (or the browser
+ * mock) can answer with the original shape and the drawer still renders — it
+ * falls back to the graph node's own state and steps.
+ */
 export type PrCheckLogExcerpt = {
   jobId: number;
-  jobName: string;
-  /** The step the job failed on, when identifiable. */
+  /**
+   * GitHub's name for the job. Optional, and ABSENT rather than `""` on a
+   * degraded read: the caller already knows the name from the graph node it
+   * opened, and an empty string is a defined value that would replace that real
+   * name with nothing ("CI failure — "). Same rule as `jobState` below.
+   */
+  jobName?: string;
+  /** The step the job failed on, when identifiable. Null whenever it did not fail. */
   failingStepName: string | null;
   failingStepNumber: number | null;
   stepTotal: number | null;
   /** Framework summary line lifted to the top (vitest/jest/pytest/go), if found. */
   headline: string | null;
-  /** Tail of the failing step's output, newest last. */
+  /** Tail of the selected step's output, newest last. Empty unless `logStatus` is `excerpt`. */
   lines: string[];
   truncated: boolean;
   htmlUrl: string | null;
+  /** Rolled-up job state, so the UI never narrates failure for a green job. */
+  jobState?: PrPipelineState;
+  jobStatus?: PrActionJob["status"];
+  jobConclusion?: PrActionJob["conclusion"];
+  /** Every step with its own timings — the breakdown a passed job should show. */
+  steps?: PrActionStep[];
+  /** The step in flight, for a running job. */
+  currentStepName?: string | null;
+  currentStepNumber?: number | null;
+  logStatus?: PrCheckLogStatus;
+  logUnavailableReason?: string | null;
+  logScope?: PrCheckLogScope | null;
+  startedAt?: string | null;
+  completedAt?: string | null;
 };
 
 export type GetPrCheckLogArgs = {
   prId: string;
   jobId: number;
-  /** Max lines to return from the tail of the failing step. Defaults to 200. */
+  /** Max lines to return from the tail of the selected step. Defaults to 200. */
   maxLines?: number;
+  /**
+   * Download the log even though the job did not fail.
+   *
+   * Off by default on purpose: a job log is a redirect plus a multi-megabyte
+   * blob, and most jobs pass. Only a user action should ever set this.
+   */
+  includeLog?: boolean;
 };
 
 /** Unified activity event for the PR timeline. */

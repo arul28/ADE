@@ -7,7 +7,7 @@
 The `ade` binary has three operating modes:
 
 - **Attached brain** — the ADE brain listens on `$ADE_HOME/sock/ade.sock` (POSIX) or `\\.\pipe\ade-runtime` (Windows). All other CLI commands and clients open that local endpoint and speak ADE JSON-RPC.
-- **Manual runtime** (`ade runtime run`) — a foreground execution process on an explicit endpoint. Sync is always off; use this for dev/test work when you do not want to use the automated stable/beta/alpha brain service.
+- **Manual runtime** (`ade runtime run`) — a foreground execution process on an explicit endpoint. Sync is always off; use this for dev/test work when you do not want to use the automated stable/beta/alpha brain service. Add `--profile embedded` to run it as a guest of an external embedder (`@ade-dev/sdk`) — see [Internal process command](#internal-process-command).
 - **Headless** (`--headless` or `ade code --embedded`) — the CLI builds an in-process `AdeRuntime` for one project and answers the same JSON-RPC surface directly. Used for one-shot commands and as a fallback when no machine brain is available.
 - **`ade rpc --stdio`** — attaches to the local machine brain and bridges its JSON-RPC over stdio. This is the transport the desktop's remote runtime feature spawns over SSH.
 
@@ -194,6 +194,13 @@ ade --socket /tmp/ade-dev-runtime.sock projects list --text
 ade code --socket /tmp/ade-dev-runtime.sock
 ```
 
+`--profile embedded` marks the runtime a guest inside an external embedder's process — it is what `@ade-dev/sdk` spawns. `embedded` is the only profile the flag accepts; anything else is a usage error rather than a silent fall back to the full runtime. The profile reshapes the machine chat scope (personal chats only, no automations, sync off) and withholds machine-update/power controls, because a guest must never restart the machine's ADE out from under its host. Project scopes still build on demand, so an embedder that registers a project keeps a working project surface. Set `ADE_EMBEDDED_PARENT_PID` to the host's pid and the runtime shuts itself down if that process dies without unwinding (`SIGKILL`, a crashed host); without it the runtime logs `runtime.embedded_parent_watchdog_absent` and runs on.
+
+```bash
+ADE_HOME=/tmp/ade-embedded ADE_EMBEDDED_PARENT_PID=$$ \
+  ade runtime run --socket /tmp/ade-embedded.sock --profile embedded
+```
+
 ## Brain lifecycle
 
 Prefer `ade brain start`, `ade brain stop`, `ade brain status`, and `ade brain restart` for user-facing lifecycle control. Use `ade brain pin ...` for phone pairing:
@@ -313,6 +320,10 @@ though the product surface is now called Activity. Agents on a desktop endpoint
 reach the same operations through `ade actions run attention.<action>`.
 
 `runtimeEvents.subscribe` returns `eventEpoch`, `nextCursor`, `hasMore`, `gap`, and `oldestCursor`; when `gap` is true, the caller's cursor predates the retained buffer and it should refresh state before resuming from `oldestCursor` / `nextCursor`.
+
+`personalChats.subscribeEvents` / `personalChats.unsubscribeEvents` are machine-scoped RPC methods, not entries in the `personalChats.call` action registry, so they are absent from `ade chat actions --personal` and `ade chat action --personal <action>` rejects them by design. They push `runtime/event` notifications (`scope: "personal"`, `projectId: null`) to a client holding the connection open; the CLI does not use them, because every `ade chat` command is a one-shot plan that polls. `capabilities.personalChats` advertises `pushEvents` and `mcpServers` so a client can tell a runtime that supports these from an older one that would ignore them — both optional, both absent on older runtimes. `personalChats.streamEvents` cursor draining is unchanged and stays the path for clients that cannot hold a socket.
+
+`personalChats.call create` accepts caller-injected `mcpServers` and a tristate `strictMcpConfig`, reached from the CLI through `--arg-json mcpServers=...` / `--arg strictMcpConfig=<bool>` (see the chat examples below). There are deliberately no typed `--mcp-server` / `--strict-mcp` flags in v1: an MCP server config is nested JSON, which is exactly what the existing `--arg-json` escape hatch carries, and a second spelling for it would add no capability. The create refuses `interactionMode: "orchestrator-lead"` (and `orchestrationRole: "lead"`) outright — a projectless chat that led a run would report `strictRequested: false` while running under locked, always-strict lead isolation. The created session carries `mcpCapability`; branch on its `level` (only `"enforced"` means the caller's servers are the whole tool surface), never on the object's presence.
 
 `personalChats.call` dispatches the machine action registry advertised as
 `capabilities.personalChats` during initialization. It owns chats outside every
@@ -505,6 +516,7 @@ ade chat attach-linear-issue <session> --issue-id ENG-431
 ade chat create --from-linear-issue ENG-431 --no-parent
 ade chat list --personal --text
 ade chat create --personal --provider codex --model openai/gpt-5.5 --prompt "Plan a trip"
+ade chat create --personal --provider claude --model anthropic/claude-opus-5 --arg-json mcpServers='{"docs":{"type":"http","url":"https://mcp.example/mcp"}}' --arg strictMcpConfig=false
 ade chat steer personal-session-id --personal --text "focus on the tradeoffs"   # add --dispatch inline|interrupt for atomic active-turn delivery
 ade chat interrupt personal-session-id --personal --keep-queue
 ade chat restore-queue personal-session-id recovery-id --personal
@@ -541,6 +553,12 @@ ade prs github-snapshot --include-external-closed --history-page-limit 4
 ade prs github-snapshot --include-state-counts --no-revalidate
 ade prs checks pr-id --text                                 # header carries the canonical rollup (checksStatus/checksCounts); "not run" means nothing verified the commit, whatever the rows say
 ade prs comments pr-id --text
+ade prs land pr-id --method squash                          # merges and KEEPS the head branch on the remote
+ade prs land pr-id --method squash --delete-remote-branch   # opt in to deleting the head branch after the merge
+ade prs close pr-id                                         # close on GitHub; the branch is kept and `ade prs reopen pr-id` undoes it
+ade prs cleanup-branch pr-id --delete-remote-branch         # delete a merged/closed PR's branch (local too, unless --keep-local)
+ade prs land 'gh:owner/repo#42' --method squash             # id form for a PR ADE has no row for; quote it, '#' starts a shell comment
+                                                            # works for land/close/reopen/cleanup-branch/checks/comments/review; threads, deployments and ai-review-summary still need an ADE row
 ade shell start --lane lane-id -- npm test
 ade terminal list --lane lane-id --text
 ade terminal resume --terminal session-id --text

@@ -296,17 +296,66 @@ func prSyntheticGitHubId(for item: GitHubPrListItem) -> String {
   )
 }
 
+/// Owner grammar GitHub itself enforces: alphanumerics and hyphens, 1-39
+/// characters, no leading hyphen.
+private func prIsValidGitHubOwner(_ owner: String) -> Bool {
+  guard (1...39).contains(owner.count) else { return false }
+  guard owner.first != "-" else { return false }
+  return owner.allSatisfy { $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "-") }
+}
+
+/// Repo grammar GitHub itself enforces: alphanumerics plus `.`, `_`, `-`.
+private func prIsValidGitHubRepo(_ repo: String) -> Bool {
+  guard (1...100).contains(repo.count) else { return false }
+  return repo.allSatisfy { $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "." || $0 == "_" || $0 == "-") }
+}
+
+/// Reverse of `prSyntheticGitHubId`: `gh:owner/repo#number` → coordinates.
+///
+/// The grammar is deliberately as strict as the host's `parseSyntheticGithubPrId`
+/// (apps/desktop/src/shared/types/prs.ts). Every PR mutation on this screen now
+/// resolves through this id, so a route id this function accepts is a route id
+/// the detail screen will offer Merge and Close for. A looser parse here — one
+/// that let a repo segment carry `/`, `..` or a second `#` — would have iOS
+/// present live destructive actions for a target the host is going to reject,
+/// and would make this client the loose end of a path-traversal chain the host
+/// side just closed.
 func prGitHubCoordinates(fromRouteId routeId: String) -> (repoOwner: String, repoName: String, githubPrNumber: Int)? {
   guard routeId.hasPrefix("gh:") else { return nil }
   let locator = routeId.dropFirst(3)
-  guard let hashIndex = locator.lastIndex(of: "#"),
-    let slashIndex = locator[..<hashIndex].firstIndex(of: "/"),
-    let number = Int(locator[locator.index(after: hashIndex)...])
-  else { return nil }
+  // `firstIndex` on both separators, not `lastIndex`: exactly one `/` and one
+  // `#` are legal, and anything past them belongs to no valid segment.
+  guard let slashIndex = locator.firstIndex(of: "/") else { return nil }
+  let afterSlash = locator[locator.index(after: slashIndex)...]
+  guard let hashIndex = afterSlash.firstIndex(of: "#") else { return nil }
   let owner = String(locator[..<slashIndex])
-  let repo = String(locator[locator.index(after: slashIndex)..<hashIndex])
-  guard !owner.isEmpty, !repo.isEmpty, number > 0 else { return nil }
+  let repo = String(afterSlash[..<hashIndex])
+  let numberText = afterSlash[afterSlash.index(after: hashIndex)...]
+  guard prIsValidGitHubOwner(owner), prIsValidGitHubRepo(repo) else { return nil }
+  // `Int(_:)` accepts a leading `+`/`-`; require plain digits so `#+1` and
+  // `#-1` cannot round-trip into a positive PR number.
+  guard !numberText.isEmpty, numberText.allSatisfy({ $0.isASCII && $0.isNumber }) else { return nil }
+  guard let number = Int(numberText), number > 0 else { return nil }
   return (owner, repo, number)
+}
+
+/// Title for the close-PR confirmation, matching the desktop dialog.
+func prCloseConfirmationTitle(prNumber: Int?) -> String {
+  guard let prNumber, prNumber > 0 else { return "Close pull request?" }
+  return "Close pull request #\(prNumber)?"
+}
+
+/// Body for the close-PR confirmation.
+///
+/// Says the branch survives, because it does: merging no longer deletes the head
+/// branch either (`LandPrArgs.deleteRemoteBranch` defaults to false), so nothing
+/// ADE does from this screen destroys the user's branch behind their back.
+func prCloseConfirmationMessage(headBranch: String) -> String {
+  let branch = headBranch.trimmingCharacters(in: .whitespacesAndNewlines)
+  if branch.isEmpty {
+    return "Closes this pull request on GitHub. The branch is kept, and you can reopen it later."
+  }
+  return "Closes this pull request on GitHub. The branch \(branch) is kept, and you can reopen it later."
 }
 
 private func prGitHubIdentityKey(repoOwner: String, repoName: String, githubPrNumber: Int) -> String {

@@ -23,31 +23,66 @@ import type {
   UpdateBranchStrategy,
 } from "../../../../shared/types";
 import { PrTimeline, type PrTimelineFilters, type PrTimelineRef } from "../shared/PrTimeline";
-import { PrCommitRail, type PrCommitRailCommit } from "../shared/PrCommitRail";
+import { PrCommitTickPill } from "../shared/PrCommitTickPill";
+import { type PrCommitTick } from "../shared/prCommitTickPill.logic";
 import { PrDetailMergeRail } from "../shared/PrDetailMergeRail";
 import { PrDetailRightMetadataRail, type ReviewerRequest } from "../shared/PrDetailRightMetadataRail";
 import { PrFilesChangedCard } from "../shared/PrFilesChangedCard";
 import { PrCommentComposer } from "../shared/PrCommentComposer";
 import { PrCommandPalettes, type PaletteKind } from "../shared/PrCommandPalettes";
 import type { PrReviewEvent } from "../shared/PrReviewSubmitModal";
-import { COLORS, RADII, SANS_FONT, SPACING, floatingPane, primaryButton } from "../../lanes/laneDesignTokens";
+import { COLORS, RADII, SANS_FONT, SPACING, primaryButton } from "../../lanes/laneDesignTokens";
 
-/* ── Resizable rails ──────────────────────────────────────────────────────
- * Both rails drag-resize and persist per project, using the same localStorage
- * idiom `GitHubTab` uses for its list/detail split. Widths are per project
- * because a repo's PR shape (long check lists vs. long commit lists) is what
- * decides how you want the space split, and that's a per-project constant.
+/* ── The rail ─────────────────────────────────────────────────────────────
+ * One resizable rail, on the right. It drag-resizes and persists per project,
+ * using the same localStorage idiom `GitHubTab` uses for its list/detail split.
+ * The width is per project because a repo's PR shape (long check lists vs. long
+ * file lists) is what decides how you want the space split.
+ *
+ * There used to be a left rail as well, holding commits and files-changed. It
+ * spent a whole column on a handful of short commit lines and squeezed the
+ * thread — the actual content — into the middle. Commits are now a small
+ * floating tick pill in the thread's top-left corner, files-changed moved right,
+ * and its persisted width key (`ade.prs.overviewLeftRailWidth`) is retired.
  */
-const OVERVIEW_LEFT_RAIL_WIDTH_KEY = "ade.prs.overviewLeftRailWidth";
-const OVERVIEW_RIGHT_RAIL_WIDTH_KEY = "ade.prs.overviewRightRailWidth";
-const LEFT_RAIL_MIN_PX = 176;
-const LEFT_RAIL_MAX_PX = 420;
-const LEFT_RAIL_DEFAULT_PX = 232;
-const RIGHT_RAIL_MIN_PX = 232;
-const RIGHT_RAIL_MAX_PX = 480;
-const RIGHT_RAIL_DEFAULT_PX = 288;
-/** The center thread can never be squeezed below this. */
-const CENTER_MIN_PX = 320;
+/**
+ * VERSIONED KEY. A stored width always beats a new default, so bumping the
+ * default alone would change nothing for anyone who has ever dragged this
+ * separator — the split would look untouched. `.v2` retires those saved values
+ * once so the wider rail below actually lands; drags from here persist under v2.
+ */
+const OVERVIEW_RIGHT_RAIL_WIDTH_KEY = "ade.prs.overviewRightRailWidth.v2";
+/**
+ * The right rail carries files-changed as well as reviewers/checks/merge, so it
+ * gets a little more room and the thread gives a little back — a deliberate
+ * nudge, not a rebalance. The thread is still the primary content by a wide
+ * margin at any usable window size.
+ */
+/**
+ * The floor is the DEFAULT, not something smaller.
+ *
+ * At 280 the rail could be dragged — or squeezed by the PR-list separator — down
+ * to a width where reviewers, checks, files and the merge box all truncate into
+ * uselessness. A pane you can shrink until it hides its own content is a pane
+ * that will get shrunk by accident. The rail can grow; it cannot go below the
+ * width that shows everything intact.
+ */
+export const PR_OVERVIEW_RIGHT_RAIL_MIN_PX = 390;
+const RIGHT_RAIL_MIN_PX = PR_OVERVIEW_RIGHT_RAIL_MIN_PX;
+const RIGHT_RAIL_MAX_PX = 560;
+const RIGHT_RAIL_DEFAULT_PX = 390;
+/** The thread can never be squeezed below this. */
+export const PR_OVERVIEW_CENTER_MIN_PX = 360;
+const CENTER_MIN_PX = PR_OVERVIEW_CENTER_MIN_PX;
+
+/** Width of the drag gutter between the two panes (`SPACING.sm`). */
+export const PR_OVERVIEW_SEPARATOR_PX = 8;
+/**
+ * Where the commit tick pill floats inside the thread panel. It is out of flow,
+ * so the thread keeps its full width; the previous rail reserved a permanent
+ * 22px left gutter and that gutter is gone.
+ */
+const COMMIT_TICK_PILL_INSET_PX = 3;
 
 function railWidthKey(base: string, projectId: string | null | undefined): string {
   return projectId ? `${base}:${projectId}` : base;
@@ -83,6 +118,8 @@ function RailSeparator({ id }: { id: string }) {
       className="group relative flex items-center justify-center"
       style={{ width: SPACING.sm, cursor: "col-resize" }}
     >
+      {/* Invisible at rest, by request: the grip appears only on hover, so the
+          boundary is discoverable without drawing a permanent line. */}
       <span
         aria-hidden
         className="opacity-0 transition-opacity group-hover:opacity-100"
@@ -193,6 +230,8 @@ type Props = {
   onClose?: () => void;
   onReopen?: () => void;
   onSubmitReview: (event: PrReviewEvent, body: string) => void;
+  /** Check the PR branch out as a lane; ADE review needs a working tree. */
+  onOpenAsLane?: () => void;
 };
 
 function shortenSha(sha: string): string {
@@ -637,8 +676,8 @@ export function buildCommitRailCommits(
   activity: PrActivityEvent[],
   commitSnapshots: PrCommit[],
   reviewThreads: PrReviewThread[],
-): PrCommitRailCommit[] {
-  const commits: PrCommitRailCommit[] = [];
+): PrCommitTick[] {
+  const commits: PrCommitTick[] = [];
   for (const act of activity) {
     if (act.type !== "commit" && act.type !== "force_push") continue;
     const forcePushed = act.type === "force_push";
@@ -676,11 +715,18 @@ export function buildCommitRailCommits(
   // Best-effort: attribute resolved/unresolved thread counts to the latest commit
   // touching the relevant file. Without commit<->file diff history, bucket them
   // into the most recent commit.
+  // Attribute to the newest *commit*, not the newest entry: force-push entries
+  // share this array but the tick pill filters them out, so counts bucketed
+  // onto one would never be shown.
+  const lastCommitIndex = (() => {
+    for (let i = commits.length - 1; i >= 0; i -= 1) if (!commits[i]!.forcePushed) return i;
+    return commits.length - 1;
+  })();
   if (commits.length > 0) {
-    const last = commits[commits.length - 1]!;
+    const last = commits[lastCommitIndex]!;
     for (const thread of reviewThreads) {
-      last.threadCount += 1;
-      if (thread.isResolved) last.resolvedCount += 1;
+      last.threadCount = (last.threadCount ?? 0) + 1;
+      if (thread.isResolved) last.resolvedCount = (last.resolvedCount ?? 0) + 1;
     }
   }
   return commits;
@@ -740,6 +786,7 @@ export const PrDetailTimelineRails = forwardRef<PrDetailTimelineRailsRef, Props>
       onClose,
       onReopen,
       onSubmitReview,
+      onOpenAsLane,
     } = props;
 
     const timelineRef = useRef<PrTimelineRef | null>(null);
@@ -767,6 +814,23 @@ export const PrDetailTimelineRails = forwardRef<PrDetailTimelineRailsRef, Props>
     const commits = useMemo(
       () => buildCommitRailCommits(activity, commitSnapshots, reviewThreads),
       [activity, commitSnapshots, reviewThreads],
+    );
+
+    // Force-pushes are branch actions, not commits, and they are not rare: a
+    // dependabot PR rebased for a month produces one per rebase. Left in, they
+    // were 14 of 15 ticks on a 1-commit PR — a rail of amber warnings that says
+    // nothing about the code. The timeline still renders each one with its
+    // before/after SHAs, which is where that history belongs.
+    const tickCommits = useMemo(
+      // Newest first. `buildCommitRailCommits` emits oldest→newest to match the
+      // timeline's chronological order, but the pill is a corner index you
+      // glance at, and the commit you care about is almost always the newest —
+      // so it belongs at the top of the strip, nearest the pill's anchor.
+      // Reversing HERE rather than in the pill keeps index 0 = top for the
+      // pill's position, pointer, keyboard and preview logic alike; they all
+      // read the same array and cannot disagree about which tick is which.
+      () => commits.filter((commit) => !commit.forcePushed).reverse(),
+      [commits],
     );
 
     const handleSelectCommit = useCallback(
@@ -881,15 +945,13 @@ export const PrDetailTimelineRails = forwardRef<PrDetailTimelineRailsRef, Props>
 
     const summaryForTimeline = aiSummaryDismissed ? null : aiSummary ?? null;
 
+    // The tick pill sizes itself from the commit count alone, so the thread no
+    // longer needs a ResizeObserver to hand it a measured column height.
+
     // Per-project persisted rail widths. Read once per project — the Group is
     // keyed on projectId below so switching projects remounts with its own
     // remembered layout rather than carrying the previous one over.
-    const leftWidthKey = railWidthKey(OVERVIEW_LEFT_RAIL_WIDTH_KEY, pr.projectId);
     const rightWidthKey = railWidthKey(OVERVIEW_RIGHT_RAIL_WIDTH_KEY, pr.projectId);
-    const defaultLeftPx = useMemo(
-      () => readPersistedRailPx(leftWidthKey, LEFT_RAIL_MIN_PX, LEFT_RAIL_MAX_PX, LEFT_RAIL_DEFAULT_PX),
-      [leftWidthKey],
-    );
     const defaultRightPx = useMemo(
       () => readPersistedRailPx(rightWidthKey, RIGHT_RAIL_MIN_PX, RIGHT_RAIL_MAX_PX, RIGHT_RAIL_DEFAULT_PX),
       [rightWidthKey],
@@ -902,37 +964,23 @@ export const PrDetailTimelineRails = forwardRef<PrDetailTimelineRailsRef, Props>
         id="pr-overview-rails"
         orientation="horizontal"
         className="flex h-full min-h-0 w-full"
-        style={{ padding: SPACING.sm, background: COLORS.prSurface }}
+        // No left padding: the thread's own viewport already pads (`px-3`), so an
+        // outer pad here was doubling it into a visible empty strip down the left
+        // edge. The right and vertical padding stay — only the left was doubled.
+        style={{ padding: SPACING.sm, paddingLeft: 0, background: COLORS.prSurface }}
         data-testid="pr-detail-timeline-rails"
       >
-        {/* LEFT — "what changed": commits (grows) + files changed (capped). */}
+        {/* The thread is the surface now. Commits used to own a whole column;
+            they are a small floating pill over its top-left corner instead, and
+            files-changed moved to the right rail beside the rest of "can this
+            land". */}
         <Panel
-          id="pr-overview-left-rail"
-          defaultSize={defaultLeftPx}
-          minSize={LEFT_RAIL_MIN_PX}
-          maxSize={LEFT_RAIL_MAX_PX}
-          groupResizeBehavior="preserve-pixel-size"
-          onResize={(size) => persistRailPx(leftWidthKey, size.inPixels)}
-          className="flex min-h-0 min-w-0 flex-col gap-2 overflow-hidden"
-          data-testid="pr-detail-left-rail"
+          id="pr-overview-thread"
+          minSize={CENTER_MIN_PX}
+          className="relative flex min-h-0 min-w-0 flex-col"
+          data-testid="pr-detail-thread-panel"
         >
-          <div
-            className="flex min-h-0 flex-1 flex-col overflow-hidden"
-            style={floatingPane({ padding: 0 })}
-          >
-            <PrCommitRail
-              layout="pane"
-              commits={commits}
-              activeSha={activeCommitSha}
-              onSelectCommit={handleSelectCommit}
-            />
-          </div>
-          <PrFilesChangedCard files={files} onOpenFilesTab={onOpenFilesTab} maxHeight="38%" />
-        </Panel>
-
-        <RailSeparator id="pr-overview-left-separator" />
-
-        <Panel id="pr-overview-thread" minSize={CENTER_MIN_PX} className="flex min-h-0 min-w-0 flex-col">
+          <div className="flex min-h-0 flex-1 flex-col">
           <PrTimeline
             ref={timelineRef}
             events={events}
@@ -956,9 +1004,18 @@ export const PrDetailTimelineRails = forwardRef<PrDetailTimelineRailsRef, Props>
                 repoName={pr.repoName}
                 busy={actionBusy}
                 onSubmit={onAddComment}
-                lockedMessage={pr.laneId ? undefined : "Map this PR to a lane to comment"}
               />
             }
+          />
+          </div>
+          {/* Floats over the thread's top-left corner. `absolute` here is load
+              bearing: the pill's hover preview hangs off it with `top-full`. */}
+          <PrCommitTickPill
+            commits={tickCommits}
+            activeSha={activeCommitSha}
+            onSelectCommit={handleSelectCommit}
+            className="absolute z-20"
+            style={{ top: COMMIT_TICK_PILL_INSET_PX, left: COMMIT_TICK_PILL_INSET_PX }}
           />
         </Panel>
 
@@ -997,18 +1054,26 @@ export const PrDetailTimelineRails = forwardRef<PrDetailTimelineRailsRef, Props>
               onSetLabels={onSetLabels}
               actionBusy={actionBusy}
               onSubmitReview={onSubmitReview}
+              onOpenAsLane={onOpenAsLane}
               onSelectCheck={onSelectCheck}
               onOpenChecksTab={onOpenChecksTab}
               onRerunChecks={onRerunChecks}
             />
+            <PrFilesChangedCard files={files} onOpenFilesTab={onOpenFilesTab} maxHeight="34%" />
           </div>
 
           <div
             className="flex shrink-0 flex-col overflow-hidden"
-            style={floatingPane({ padding: 0, maxHeight: "52%" })}
+            // Content-height, so it never grows into empty space — but capped,
+            // so the inner scroller has a bounded parent. Without the cap a
+            // conflicted, behind-base PR with failing required checks pushes the
+            // Merge button past the pane edge with no scrollbar anywhere.
+            style={{ maxHeight: "52%" }}
             data-testid="pr-detail-merge-pane"
           >
-            <div className="min-h-0 overflow-y-auto">
+            {/* Flex column so the frame's width resolves against the full pane
+                rather than losing the scrollbar gutter. */}
+            <div className="flex min-h-0 flex-col overflow-y-auto">
               {pr.stack ? (
                 <div style={{ display: "grid", gap: 10, padding: 14 }}>
                   <div style={{ display: "flex", alignItems: "center", gap: 8, color: "#C4B5FD" }}>

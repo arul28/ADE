@@ -50,6 +50,14 @@ struct PrDetailView: View {
   @State private var editorSheet: PrDetailEditorSheet?
   @State private var mergeMethodSheetPresented: Bool = false
   @State private var actionsSheetPresented: Bool = false
+  /// Closing a PR from the actions sheet asks first, matching desktop. The
+  /// inline merge rail has its own two-tap confirm; this covers the other entry
+  /// point, which used to fire the moment the row was tapped.
+  @State private var closeConfirmationPresented = false
+  /// Raised while the actions sheet is still dismissing. Presenting the dialog
+  /// in the same pass as the sheet teardown is the case SwiftUI drops on the
+  /// floor, which would leave this path with no way to close a PR at all.
+  @State private var closeConfirmationPending = false
   @State private var hasLoadedLiveSidecars = false
   @State private var hasAttemptedInitialLoad = false
   @State private var hasSeededFromWarmCache = false
@@ -107,7 +115,7 @@ struct PrDetailView: View {
   }
   private var isDetailBusy: Bool { detailBusyLabel != nil }
 
-  private var unmappedBannerExpanded: Binding<Bool> {
+  private var localLaneOfferExpanded: Binding<Bool> {
     Binding(
       get: { expandedUnmappedPrIds.contains(prId) },
       set: { expanded in
@@ -163,6 +171,14 @@ struct PrDetailView: View {
     canRunPrActions && shouldShowCloseAction
   }
 
+  private var closeConfirmationTitle: String {
+    prCloseConfirmationTitle(prNumber: displayedPrNumber)
+  }
+
+  private var closeConfirmationMessage: String {
+    prCloseConfirmationMessage(headBranch: currentPr.headBranch)
+  }
+
   private var canReopenCurrentPr: Bool {
     canRunPrActions && shouldShowReopenAction
   }
@@ -191,12 +207,33 @@ struct PrDetailView: View {
     pr != nil || githubItem != nil || snapshot != nil
   }
 
+  /// The id every PR mutation is sent with, or nil when this screen cannot name
+  /// a PR to act on at all.
+  ///
+  /// A PR that ADE holds no local row for still has one: the host resolves the
+  /// synthetic `gh:owner/repo#number` form straight to the GitHub API. Merge,
+  /// close, reopen, comment, labels, reviewers and re-run are all plain GitHub
+  /// calls, so a local lane link is not a precondition for any of them.
+  private var actionablePrId: String? {
+    if let pr { return pr.id }
+    if let linked = githubItem?.linkedPrId { return linked }
+    if routedGitHubCoordinates != nil { return prId }
+    if let githubItem,
+      !githubItem.repoOwner.isEmpty,
+      !githubItem.repoName.isEmpty,
+      githubItem.githubPrNumber > 0
+    {
+      return prSyntheticGitHubId(for: githubItem)
+    }
+    return nil
+  }
+
   private var effectivePrId: String {
-    pr?.id ?? githubItem?.linkedPrId ?? prId
+    actionablePrId ?? prId
   }
 
   private var hasActionablePrId: Bool {
-    pr != nil || githubItem?.linkedPrId != nil
+    actionablePrId != nil
   }
 
   private var isAwaitingInitialPrDetail: Bool {
@@ -230,10 +267,10 @@ struct PrDetailView: View {
 
   private var detailHeaderMetaText: String {
     let number = displayedPrNumber.map { "#\($0)" }
+    // A lane name when there is one, and nothing at all when there is not — the
+    // absence of a lane is not a state worth naming in the header.
     let lane = currentPr.laneName?.trimmingCharacters(in: .whitespacesAndNewlines)
-    let laneLabel = lane?.isEmpty == false
-      ? lane
-      : (currentPr.laneId.isEmpty ? "Unmapped" : currentPr.laneId)
+    let laneLabel = lane?.isEmpty == false ? lane : nil
     let branchLabel = currentPr.headBranch.isEmpty ? nil : currentPr.headBranch
     return [number, laneLabel, branchLabel]
       .compactMap { $0 }
@@ -394,9 +431,9 @@ struct PrDetailView: View {
     hasPrDetailData && selectedTab != .overview && selectedTab != .activity
   }
 
-  /// Whether the current PR is mapped to an ADE lane. Drives the unmapped
-  /// banner + locked composer in the unified Overview thread.
-  private var isCurrentPrMapped: Bool {
+  /// Whether a local lane already tracks this PR's branch. Only decides whether
+  /// the "start local work" offer is worth showing — it gates no PR action.
+  private var hasLocalLane: Bool {
     !currentPr.laneId.isEmpty
   }
 
@@ -762,11 +799,27 @@ struct PrDetailView: View {
       .presentationDragIndicator(.hidden)
       .presentationBackground(.clear)
     }
-    .sheet(isPresented: $actionsSheetPresented) {
+    .sheet(isPresented: $actionsSheetPresented, onDismiss: {
+      guard closeConfirmationPending else { return }
+      closeConfirmationPending = false
+      closeConfirmationPresented = true
+    }) {
       prActionsSheet
         .presentationDetents([.height(560)])
         .presentationDragIndicator(.hidden)
         .presentationBackground(.clear)
+    }
+    .confirmationDialog(
+      closeConfirmationTitle,
+      isPresented: $closeConfirmationPresented,
+      titleVisibility: .visible
+    ) {
+      Button("Close pull request", role: .destructive) {
+        closeCurrentPr()
+      }
+      Button("Cancel", role: .cancel) {}
+    } message: {
+      Text(closeConfirmationMessage)
     }
     .sheet(item: $editorSheet) { sheet in
       switch sheet {
@@ -914,8 +967,8 @@ struct PrDetailView: View {
         editorSheet = .review
       },
       onClose: {
+        closeConfirmationPending = true
         actionsSheetPresented = false
-        closeCurrentPr()
       },
       onReopen: {
         actionsSheetPresented = false
@@ -1026,11 +1079,11 @@ struct PrDetailView: View {
   // its own List row.
   @ViewBuilder
   private func overviewThreadRows(scrollProxy: ScrollViewProxy) -> some View {
-    if !isCurrentPrMapped {
-      PrUnmappedThreadBanner(
+    if !hasLocalLane {
+      PrLocalLaneOfferBanner(
         canAutoMap: canAutoMapCurrentPr,
         canMap: canMapCurrentPr,
-        isExpanded: unmappedBannerExpanded,
+        isExpanded: localLaneOfferExpanded,
         onAutoMap: autoMapCurrentPr,
         onMap: {
           if let githubItem {
@@ -1101,34 +1154,30 @@ struct PrDetailView: View {
       .prListRow()
     }
 
-    // Comment composer — locked when the PR is unmapped.
-    if isCurrentPrMapped {
-      VStack(alignment: .leading, spacing: 6) {
-        PrReplyComposer(
-          text: $commentInput,
-          placeholder: focusedThreadId != nil ? "Reply…" : "Comment on PR…",
-          isLive: canRunPrActions && canAddComment,
-          onSend: {
-            if let focusedThreadId {
-              replyToThread(threadId: focusedThreadId, body: commentInput)
-              commentInput = ""
-            } else {
-              submitComment()
-            }
-          },
-          onClearFocus: focusedThreadId != nil ? { focusedThreadId = nil } : nil
-        )
-        if !canAddComment {
-          Text("Posting comments requires a machine that exposes PR comment actions to mobile.")
-            .font(.caption)
-            .foregroundStyle(ADEColor.textSecondary)
-        }
+    // Comment composer. Commenting is a GitHub API call, so it is offered on
+    // every PR — a local lane has nothing to do with it.
+    VStack(alignment: .leading, spacing: 6) {
+      PrReplyComposer(
+        text: $commentInput,
+        placeholder: focusedThreadId != nil ? "Reply…" : "Comment on PR…",
+        isLive: canRunPrActions && canAddComment,
+        onSend: {
+          if let focusedThreadId {
+            replyToThread(threadId: focusedThreadId, body: commentInput)
+            commentInput = ""
+          } else {
+            submitComment()
+          }
+        },
+        onClearFocus: focusedThreadId != nil ? { focusedThreadId = nil } : nil
+      )
+      if !canAddComment {
+        Text("Posting comments requires a machine that exposes PR comment actions to mobile.")
+          .font(.caption)
+          .foregroundStyle(ADEColor.textSecondary)
       }
-      .prListRow()
-    } else {
-      PrLockedComposerBar()
-        .prListRow()
     }
+    .prListRow()
 
     // GitHub owns stack-wide review, rebase, and merge semantics. Keep ADE's
     // native stack context visible, then hand the final action to GitHub.

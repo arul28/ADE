@@ -22,6 +22,30 @@ verified against the installed `electron-updater` 6.8.3 source and the official
 6. Squirrel/ShipIt stages, expands, replaces, and relaunches the application on
    the installed application's volume.
 
+A `ready` snapshot is not proof the ZIP still exists. ADE stores the archive
+under `~/Library/Caches/ade-desktop-updater` (Windows: `%LOCALAPPDATA%\ade-desktop-updater`),
+which the OS may purge while ADE stays running. `MacUpdater` also starts the
+loopback HTTP server at download time, not at install time, so a days-old
+`ready` state can hand Squirrel a dead pipe. Root `update.zip` is only the
+differential cache copy — Squirrel pipes the pending ZIP recorded as
+`downloadedFile`. ADE therefore:
+
+- Re-downloads the staged archive **before** uninstalling the background
+  service or calling native `quitAndInstall`, whenever the recorded
+  `downloadedFile` or updater-cache ZIP/EXE is gone.
+- Re-downloads on the periodic ready check so a vanished cache does not sit
+  on the Install button until the user clicks it.
+- Treats install-phase `The network connection was lost` / `Cannot pipe` /
+  `ENOENT` as a vanished local archive: restore the ZIP (which recreates the
+  loopback server) and retry native handoff once. A second failure parks as
+  `handoff_failed`. Leftover updater `error` / cancelled / not-available events
+  during that restore do not wipe the archive or take the download-error path;
+  `downloadUpdate()` resolving with a present ZIP is the source of truth.
+
+The same `quitAndInstall()` path serves the desktop pill, the orange Restart
+banner, Settings, `ade update install`, the TUI action, and idle auto-apply.
+There is no per-surface installer.
+
 The practical volume checks are therefore:
 
 - Before download: ADE's resolved updater cache path.
@@ -43,7 +67,9 @@ Windows x64 uses electron-builder's per-user NSIS target and
 3. `downloadUpdate()` writes the NSIS installer and blockmap into the updater
    cache. `quitAndInstall()` hands off to the external NSIS updater, so Windows
    uses the 60-second hard quit bound and has no in-process Squirrel staging
-   signal.
+   signal. If that installer file is gone from `%LOCALAPPDATA%\ade-desktop-updater`
+   when Install runs, ADE re-downloads it first — the same vanished-archive
+   restore used on macOS — then hands off to NSIS.
 4. The packaged-artifact smoke test requires the generated update authority
    to match `ADE_RELEASE_REPOSITORY`, preventing a fork build from silently
    checking a different repository.
@@ -121,6 +147,7 @@ labels this value as an estimate rather than an exact installer requirement.
 | Checksum/signature | Rejected verification or updater `error` event | `verification` / `signature` | Clear unsafe cached data |
 | Permission | Synchronous throw or updater `error` event | `permission` | Preserve only a previously verified download |
 | Installer handoff | Synchronous throw, async updater `error`, or watchdog expiry | `installer` | Preserve the verified download |
+| Vanished staged archive | Missing ZIP/EXE at install or periodic ready check; Squirrel `network connection was lost` / `Cannot pipe` during install | Re-download, then continue the same consented install | Clear the empty cache and fetch again; leftover updater errors during restore do not wipe a restored ZIP; park as `refresh_failed` or `handoff_failed` only if restore or the retry still fails |
 
 The service tests reproduce each feasible boundary deterministically by
 injecting disk measurements and updater errors. Preparation has a 30-second
@@ -206,8 +233,10 @@ user sees the version they will get after the next restart rather than a stale
 
 `quitAndInstall()` is transactional. Before flipping the snapshot to
 `installing` it re-runs `updater.checkForUpdates({ allowReady: true })` to
-confirm the staged installer is still the latest, then persists
-`pendingInstallUpdate` and calls `updater.quitAndInstall(false, true)`. A
+confirm the staged installer is still the latest, verifies the staged ZIP or
+NSIS installer is still on disk (and re-downloads it if macOS or Windows
+removed it), and only then uninstalls the background service, persists
+`pendingInstallUpdate`, and calls `updater.quitAndInstall(false, true)`. A
 consent that aborts before the native updater can take over does not silently
 vanish: the snapshot records `parked: { reason, at }` where `reason` is a typed
 `AutoUpdateInstallAbortReason` — `refresh_failed`, `install_preflight_failed`,

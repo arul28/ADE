@@ -22768,6 +22768,14 @@ extension SyncService {
       ?? chatSummaryCache[sessionId]
   }
 
+  /// Creates a projectless (machine-scope) chat on the paired host.
+  ///
+  /// `interactionMode` is forwarded verbatim, and the host REFUSES the create
+  /// when it is `"orchestrator-lead"` (a personal chat is never an orchestration
+  /// lead — see `personalChatScope.ts`). Every value iOS can produce comes from
+  /// `workRuntimeWireFields`, which only ever emits `"default"` or `"plan"`, so
+  /// this path cannot trip the refusal today. Keep it that way: if a caller ever
+  /// needs a lead-mode chat, create it inside a project instead.
   func createPersonalChat(
     provider: String,
     model: String,

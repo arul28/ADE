@@ -225,6 +225,13 @@ export type ChatInfoSnapshot = {
   /** Droid AGI mission snapshot (null for non-AGI sessions). */
   mission: MissionSnapshot | null;
   /**
+   * One-line report of caller-injected MCP for chats an SDK embedder created
+   * (`AgentChatSessionSummary.mcpCapability`). Null for every chat `ade code`
+   * itself starts — the TUI never injects servers, so this only ever appears on
+   * an SDK/personal chat that happens to live on a lane the TUI is viewing.
+   */
+  mcpNote?: string | null;
+  /**
    * True when the active session is a CLOSED/CRASHED but resumable Claude
    * terminal session (isTerminalSessionResumable in app.tsx). Renders the
    * orange resume row at the top of the chat-info pane.

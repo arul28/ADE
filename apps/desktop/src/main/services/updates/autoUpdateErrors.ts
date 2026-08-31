@@ -86,6 +86,50 @@ export function estimateUpdateRequiredBytes(
     : (archiveBytes * 5) + UPDATE_SPACE_HEADROOM_BYTES;
 }
 
+const STAGED_UPDATE_ARCHIVE_EXTENSIONS = new Set([".zip", ".exe", ".7z"]);
+
+export function isNonemptyUpdateFile(filePath: string): boolean {
+  try {
+    const stats = fs.statSync(filePath);
+    return stats.isFile() && stats.size > 0;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * electron-updater stages a macOS ZIP or Windows NSIS installer under the
+ * updater cache root and/or `pending/`. A `ready` snapshot is not proof that
+ * file still exists: macOS may purge `~/Library/Caches`, and Windows may
+ * delete the installer after a failed NSIS launch.
+ */
+export function downloadedUpdateArchivePresent(cacheDir: string): boolean {
+  const root = path.resolve(cacheDir);
+  if (!fs.existsSync(root)) return false;
+
+  const scan = (dir: string): boolean => {
+    let entries: fs.Dirent[];
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return false;
+    }
+    for (const entry of entries) {
+      if (!entry.isFile()) continue;
+      const ext = path.extname(entry.name).toLowerCase();
+      if (
+        STAGED_UPDATE_ARCHIVE_EXTENSIONS.has(ext)
+        && isNonemptyUpdateFile(path.join(dir, entry.name))
+      ) {
+        return true;
+      }
+    }
+    return false;
+  };
+
+  return scan(root) || scan(path.join(root, "pending"));
+}
+
 function errorCode(error: unknown): string {
   if (!error || typeof error !== "object") return "";
   const code = (error as { code?: unknown }).code;
@@ -94,6 +138,28 @@ function errorCode(error: unknown): string {
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error ?? "unknown");
+}
+
+/**
+ * macOS Squirrel.Mac fetches the staged ZIP from a loopback HTTP server that
+ * electron-updater starts at download time. If the ZIP or that server is gone,
+ * native reports `The network connection was lost` / `Cannot pipe` — not a
+ * live feed failure. Treat those as a vanished local archive, not a park-and-
+ * wait network error. Generic "network unavailable" / airplane-mode strings
+ * stay out so a real feed or connectivity failure is not retried as a
+ * re-download that wipes a still-valid archive.
+ */
+export function isStaleHandoffError(error: unknown): boolean {
+  const code = errorCode(error);
+  const message = errorMessage(error).toLowerCase();
+  if (code === "ENOENT" || code === "ECONNREFUSED" || code === "EPIPE") {
+    return true;
+  }
+  return (
+    /network connection was lost/.test(message)
+    || /cannot pipe/.test(message)
+    || /no such file or directory/.test(message)
+  );
 }
 
 export function classifyUpdateError(

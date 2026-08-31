@@ -20,6 +20,8 @@ import type {
   CloneProjectInput,
   CreateProjectInput,
   ListMyGitHubReposInput,
+  PersonalChatSubscribeEventsArgs,
+  PersonalChatSubscribeEventsResult,
   ProjectBrowseInput,
   RuntimeActivityCounts,
   RuntimeActivitySummary,
@@ -97,7 +99,13 @@ type RuntimeEventCategory = BufferedEvent["category"];
 type JsonRpcNotifier = (method: string, params?: unknown) => void;
 type RuntimeEventSubscription = {
   id: string;
-  projectId: ProjectId;
+  /**
+   * Null for the machine-scoped personal-chat stream, which has no project.
+   * `disposeProjectRuntimeCaches` compares against a real project id, so a
+   * personal subscription is never torn down by a project scope being disposed
+   * — it lives and dies with the connection.
+   */
+  projectId: ProjectId | null;
   unsubscribe: () => void;
 };
 
@@ -187,7 +195,7 @@ export type MultiProjectRpcHandlerOptions = {
   personalChatScope?: Pick<
     PersonalChatScope,
     "capabilities" | "call" | "streamEvents" | "dispose"
-  > & Partial<Pick<PersonalChatScope, "activitySummary">>;
+  > & Partial<Pick<PersonalChatScope, "activitySummary" | "subscribeEvents">>;
   accountAuthService?: AccountAuthService;
   productAnalyticsService?: AccountAnalyticsIdentity;
   getAccountDirectoryHealth?: () => SyncAccountDirectoryHealth;
@@ -346,6 +354,8 @@ const RUNTIME_METHODS = new Set([
   "attention.call",
   "personalChats.call",
   "personalChats.streamEvents",
+  "personalChats.subscribeEvents",
+  "personalChats.unsubscribeEvents",
   "machineInfo.get",
   "machine.updateAndRestart",
   "machine.reportPowerTransition",
@@ -910,6 +920,12 @@ export function createMultiProjectRpcRequestHandler(
   const personalChatScope = options.personalChatScope ?? createPersonalChatScope();
   const handlers = new Map<ProjectId, Promise<HandlerEntry>>();
   const eventSubscriptions = new Map<string, RuntimeEventSubscription>();
+  /**
+   * Set by `handler.dispose`. Both subscribe paths await before registering, so
+   * without this a subscription created during teardown would be registered
+   * into an already-drained map and never cleaned up.
+   */
+  let disposed = false;
   const disposeProjectRuntimeCaches = (projectId: ProjectId): void => {
     const cached = handlers.get(projectId);
     handlers.delete(projectId);
@@ -949,15 +965,21 @@ export function createMultiProjectRpcRequestHandler(
     });
   };
 
+  /**
+   * One notification shape for both scopes. `scope` is the discriminator and
+   * `projectId` is null for the personal scope — a client keyed only on
+   * `projectId` would otherwise have to guess what a missing one meant.
+   */
   const emitRuntimeEvent = (
     subscriptionId: string,
-    projectId: ProjectId,
+    projectId: ProjectId | null,
     event: BufferedEvent,
     eventEpoch: string,
   ): void => {
     notifier?.("runtime/event", {
       subscriptionId,
       projectId,
+      scope: projectId == null ? "personal" : "project",
       event,
       eventEpoch,
     });
@@ -1175,6 +1197,17 @@ export function createMultiProjectRpcRequestHandler(
       if (shouldForward(event))
         emitRuntimeEvent(subscriptionId, projectId, event, eventEpoch);
     });
+    // Same race as the personal path below: `scopeRegistry.get` is awaited
+    // above, and a connection that closed during it has already drained the
+    // subscription map. Pre-existing, but identical in shape and in touched
+    // code, so it is fixed rather than left as the one that still leaks.
+    if (disposed) {
+      unsubscribe();
+      throw new JsonRpcError(
+        JsonRpcErrorCode.invalidRequest,
+        "The connection closed before the runtime event subscription was ready.",
+      );
+    }
     eventSubscriptions.set(subscriptionId, {
       id: subscriptionId,
       projectId,
@@ -1202,6 +1235,75 @@ export function createMultiProjectRpcRequestHandler(
       eventEpoch: replayResult.eventEpoch,
       gap: replayResult.gap === true,
       oldestCursor: replayResult.oldestCursor ?? null,
+    };
+  };
+
+  /**
+   * Machine-scoped push stream for personal chats.
+   *
+   * `runtimeEvents.subscribe` requires a projectId, and personal chats have no
+   * project by design — the scope stays out of ProjectRegistry so it can never
+   * leak into project pickers. This is the same contract on the machine scope:
+   * identical `runtime/event` notifications, identical epoch/gap semantics, and
+   * `personalChats.streamEvents` stays untouched for clients that poll.
+   */
+  const subscribePersonalChatEvents = async (
+    params: Record<string, unknown>,
+  ): Promise<PersonalChatSubscribeEventsResult> => {
+    const category = readEventCategory(params.category);
+    if (params.category != null && !category) {
+      throw new JsonRpcError(
+        JsonRpcErrorCode.invalidParams,
+        "personalChats.subscribeEvents category is invalid.",
+      );
+    }
+    // The wire params narrowed to the scope's actual contract, so an unknown
+    // key on the request can never reach the subscription.
+    const args: PersonalChatSubscribeEventsArgs = {
+      ...(category ? { category } : {}),
+      ...(typeof params.cursor === "number" ? { cursor: params.cursor } : {}),
+      ...(typeof params.limit === "number" ? { limit: params.limit } : {}),
+      ...(params.replay === false ? { replay: false } : {}),
+    };
+    if (typeof personalChatScope.subscribeEvents !== "function") {
+      throw new JsonRpcError(
+        JsonRpcErrorCode.methodNotFound,
+        "This runtime does not support personal chat event push. Poll personalChats.streamEvents instead.",
+      );
+    }
+    const subscriptionId = `personal-chat-events-${nextSubscriptionId++}`;
+    // The listener carries its own epoch: an event can be published while
+    // subscribeEvents is still awaiting, before the result is assigned here.
+    const subscribed = await personalChatScope.subscribeEvents(
+      args,
+      (event, eventEpoch) => emitRuntimeEvent(subscriptionId, null, event, eventEpoch),
+    );
+    // The connection can close during that await. `handler.dispose` has then
+    // already drained the subscription map, so registering now would leak a
+    // listener that nothing will ever unsubscribe — it would keep emitting into
+    // a dead notifier for the life of the process.
+    if (disposed) {
+      subscribed.unsubscribe();
+      throw new JsonRpcError(
+        JsonRpcErrorCode.invalidRequest,
+        "The connection closed before the personal chat subscription was ready.",
+      );
+    }
+    eventSubscriptions.set(subscriptionId, {
+      id: subscriptionId,
+      projectId: null,
+      unsubscribe: subscribed.unsubscribe,
+    });
+    for (const event of subscribed.replay.events) {
+      emitRuntimeEvent(subscriptionId, null, event, subscribed.replay.eventEpoch);
+    }
+    return {
+      subscriptionId,
+      nextCursor: subscribed.replay.nextCursor,
+      hasMore: subscribed.replay.hasMore,
+      eventEpoch: subscribed.replay.eventEpoch,
+      gap: subscribed.replay.gap === true,
+      oldestCursor: subscribed.replay.oldestCursor ?? null,
     };
   };
 
@@ -1840,6 +1942,16 @@ export function createMultiProjectRpcRequestHandler(
       return await personalChatScope.streamEvents(params);
     }
 
+    if (method === "personalChats.subscribeEvents") {
+      return await subscribePersonalChatEvents(params);
+    }
+
+    // Shares the subscription map with runtimeEvents, so it accepts either id
+    // and there is exactly one teardown path for both scopes.
+    if (method === "personalChats.unsubscribeEvents") {
+      return unsubscribeRuntimeEvents(params);
+    }
+
     if (method === "runtime.activitySummary") {
       return await readMachineRuntimeActivitySummary({
         projectRegistry,
@@ -2298,6 +2410,7 @@ export function createMultiProjectRpcRequestHandler(
   };
 
   handler.dispose = () => {
+    disposed = true;
     for (const subscription of eventSubscriptions.values()) {
       subscription.unsubscribe();
     }
@@ -2320,8 +2433,10 @@ export function createMultiProjectRpcRequestHandler(
   return handler;
 }
 
-export function createPersonalChatScope(): PersonalChatScope {
-  const scope = new PersonalChatScope();
+export function createPersonalChatScope(
+  options?: { runtimeProfile?: "chat" | "embedded" },
+): PersonalChatScope {
+  const scope = new PersonalChatScope(options ?? {});
   void scope.warmExisting().catch(() => {
     // The first explicit personal-chat call retries runtime creation and
     // returns the actionable error to the caller.

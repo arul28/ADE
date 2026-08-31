@@ -1,9 +1,9 @@
 // @vitest-environment jsdom
 
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 
-import type { PrWithConflicts } from "../../../../shared/types/prs";
+import type { PrDetail, PrWithConflicts } from "../../../../shared/types/prs";
 
 vi.mock("./PrRequestAiReviewDialog", () => ({
   PrRequestAiReviewDialog: () => null,
@@ -29,12 +29,22 @@ const pr = {
   state: "open",
 } as unknown as PrWithConflicts;
 
-function renderRail() {
+function section(title: string): HTMLElement {
+  const found = screen.getByText(title).closest("section");
+  if (!found) throw new Error(`no section for ${title}`);
+  return found as HTMLElement;
+}
+
+function renderRail(
+  detail: PrDetail | null = null,
+  onOpenAsLane?: () => void,
+  prOverride: PrWithConflicts = pr,
+) {
   return render(
     <PrDetailRightMetadataRail
-      pr={pr}
+      pr={prOverride}
       lane={null}
-      detail={null}
+      detail={detail}
       status={null}
       reviews={[]}
       checks={[{ name: "build", status: "completed", conclusion: "success", detailsUrl: null, startedAt: null, completedAt: null }]}
@@ -51,11 +61,36 @@ function renderRail() {
       onSetLabels={() => {}}
       actionBusy={false}
       onSubmitReview={() => {}}
+      onOpenAsLane={onOpenAsLane}
     />,
   );
 }
 
 describe("PrDetailRightMetadataRail — can-this-land column", () => {
+
+  // ADE review diffs a working tree, so a PR with no lane genuinely cannot run
+  // it. The button used to go dead and say nothing, which read as "broken" — it
+  // now offers the checkout that unblocks it. Without a way to make that lane it
+  // falls back to disabled, rather than promising something it cannot do.
+  it("offers the lane checkout instead of a dead ADE review button", () => {
+    // This is about the LANE gate, so it describes a machine that has the Review
+    // plugin — without it the button is gone for a different reason entirely.
+    seedBuiltinSurfacePlugins(["review"]);
+    const onOpenAsLane = vi.fn();
+    renderRail(null, onOpenAsLane);
+    const button = screen.getByRole("button", { name: /open as lane to review/i });
+    expect((button as HTMLButtonElement).disabled).toBe(false);
+    fireEvent.click(button);
+    expect(onOpenAsLane).toHaveBeenCalledTimes(1);
+  });
+
+  it("falls back to a disabled ADE review button when no lane can be created", () => {
+    seedBuiltinSurfacePlugins(["review"]);
+    renderRail(null);
+    const button = screen.getByRole("button", { name: /ADE review/i });
+    expect((button as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.queryByRole("button", { name: /open as lane to review/i })).toBeNull();
+  });
   it("folds the review actions into the Reviewers section instead of a standalone pane", () => {
     // A machine that HAS the Review plugin: the ADE review button is an entry
     // point to the Review tab, so it only exists where that tab does.
@@ -88,5 +123,54 @@ describe("PrDetailRightMetadataRail — can-this-land column", () => {
     expect(rail.lastElementChild).toBe(checks);
     // Files moved to the left "what changed" rail.
     expect(screen.queryByTestId("pr-files-changed-card")).toBeNull();
+  });
+
+  // Three empty people sections used to cost a header line, a body gap and a
+  // "None yet" line each — ~65px apiece — to say nothing at all.
+  it("collapses an empty people section onto its header line, action intact", () => {
+    renderRail();
+    const reviewers = section("Reviewers");
+    const header = reviewers.querySelector("header");
+    // "None" rides in the header row. If it were still a body line, the header
+    // would not contain it.
+    expect(header?.textContent).toContain("None");
+    expect(reviewers.textContent).not.toContain("None yet");
+    // The whole point of collapsing is that the action survives it.
+    expect(header?.textContent).toContain("Request");
+    expect(reviewers.dataset.empty).toBe("true");
+  });
+
+  // Requesting reviewers and setting labels are plain GitHub API calls that
+  // resolve a synthetic `gh:` id. Gating them on a lane left a PR the user could
+  // read, comment on and merge but not label.
+  it("offers Request and Edit for a PR with no lane", () => {
+    renderRail(null, undefined, { ...pr, laneId: null } as unknown as PrWithConflicts);
+    expect(section("Reviewers").querySelector("header")?.textContent).toContain("Request");
+    expect(section("Labels").querySelector("header")?.textContent).toContain("Edit");
+  });
+
+  it("collapses labels and assignees too, and spends no hairline between the three", () => {
+    renderRail();
+    for (const title of ["Labels", "Assignees"]) {
+      const el = section(title);
+      expect(el.querySelector("header")?.textContent).toContain("None");
+      expect(el.dataset.empty).toBe("true");
+      // `divided` is what pays the 18/18 rhythm; the people group is one group
+      // and no longer buys rules between its members.
+      expect(el.style.marginTop).toBe("");
+      expect(el.style.paddingTop).toBe("");
+    }
+  });
+
+  it("expands a section the moment it has something to list", () => {
+    renderRail({
+      labels: [{ name: "bug", color: "d73a4a" }],
+      assignees: [{ login: "alice", avatarUrl: null }],
+    } as unknown as PrDetail);
+    const labels = section("Labels");
+    expect(labels.dataset.empty).toBeUndefined();
+    expect(labels.textContent).toContain("bug");
+    expect(labels.querySelector("header")?.textContent).not.toContain("None");
+    expect(section("Assignees").textContent).toContain("alice");
   });
 });

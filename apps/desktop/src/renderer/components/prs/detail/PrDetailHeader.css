@@ -1,0 +1,114 @@
+/*
+ * The PR detail header's layout rules.
+ *
+ * Two things cannot be expressed inline. The narrowing order is keyed on the
+ * header's own width rather than the window's — the PR list column is
+ * drag-resizable, so the window tells you nothing about how much room this row
+ * actually has — and that needs a container query. The hover/focus reveal of the
+ * edit pencil needs `:hover` and `:focus-within` on an ancestor.
+ *
+ * It lives here rather than in `index.css` so the rules sit next to the markup
+ * they describe, the same way the Activity pane and the PR list row
+ * (`shared/prListRow.css`) keep their own sheets.
+ *
+ * ── Why `display` lives here and not in a `style={{}}` ──────────────────────
+ * An inline style beats a stylesheet rule. The first version of this file set
+ * `display: none` in a container query while the markup set `display: flex`
+ * inline, so the rule never applied: the branch group shrank to zero width but
+ * kept `overflow: visible`, and its contents spilled out and painted on top of
+ * the tab row. Anything the ladder below can hide therefore takes its `display`
+ * from here, never from the element's own style attribute.
+ */
+
+.ade-pr-detail-header {
+  container-type: inline-size;
+  container-name: pr-detail-header;
+}
+
+.ade-pr-detail-header-identity,
+.ade-pr-detail-header-branches {
+  display: flex;
+}
+
+.ade-pr-detail-header-badge,
+.ade-pr-detail-header-tab-label {
+  display: inline-flex;
+}
+
+/*
+ * The branch group must CLIP, not spill. It is the only shrinkable group here
+ * (`flex: 0 100 auto`), so it is the one that reaches zero width first — and a
+ * zero-width box with visible overflow paints its contents straight over its
+ * neighbours. This is the belt to the ladder's braces: it holds even at a width
+ * no rule below matches.
+ */
+.ade-pr-detail-header-branches {
+  overflow: hidden;
+}
+
+/* Reserved in the flow at all times, so revealing it never shifts the title.
+   Transparent rather than removed: the button stays in the tab order, so a
+   keyboard user reaches it and the :focus-within rule below reveals it. */
+.ade-pr-detail-header-edit {
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 120ms ease;
+}
+
+.ade-pr-detail-header-identity:hover .ade-pr-detail-header-edit,
+.ade-pr-detail-header-identity:focus-within .ade-pr-detail-header-edit {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+/*
+ * ── The narrowing ladder ───────────────────────────────────────────────────
+ * In the order the owner asked for. Each rung buys room for the one below it,
+ * so the things that identify the PR outlive the things that decorate it.
+ *
+ * 1. 1100px — the state badge. Merged/Open/Closed is also carried by the merge
+ *    rail and by the list row this PR was opened from, so it is the cheapest
+ *    thing on the row to lose.
+ * 2. 980px  — the branch pair truncates. It is already `flex: 0 100 auto`, so
+ *    it has been giving up pixels since long before this; here it starts
+ *    ellipsing rather than merely narrowing.
+ * 3. 860px  — the branch pair and its leading rule go entirely. Below this a
+ *    truncated branch name is a stub, not information.
+ * 4. 700px  — the title's floor drops, so it ellipses sooner rather than
+ *    pushing the tabs.
+ * 5. 560px  — last resort: the tab words go, icon plus count carries each tab.
+ *    Every tab keeps its `aria-label`, so they stay named for assistive tech.
+ *
+ * The PR number, the title and the tabs never disappear.
+ */
+
+@container pr-detail-header (max-width: 1100px) {
+  .ade-pr-detail-header-badge {
+    display: none;
+  }
+}
+
+@container pr-detail-header (max-width: 980px) {
+  .ade-pr-detail-header-branch-name {
+    max-width: 140px;
+  }
+}
+
+@container pr-detail-header (max-width: 860px) {
+  .ade-pr-detail-header-branches,
+  .ade-pr-detail-header-rule-lead {
+    display: none;
+  }
+}
+
+@container pr-detail-header (max-width: 700px) {
+  .ade-pr-detail-header-title {
+    max-width: 320px;
+  }
+}
+
+@container pr-detail-header (max-width: 560px) {
+  .ade-pr-detail-header-tab-label {
+    display: none;
+  }
+}

@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 
 import { PrDetailMergeRail } from "./PrDetailMergeRail";
+import { formatTimestampShort } from "./prFormatters";
 import type { PrStatus, PrWithConflicts } from "../../../../shared/types/prs";
 
 afterEach(cleanup);
@@ -164,11 +165,47 @@ describe("PrDetailMergeRail", () => {
       />,
     );
 
+    // How it merged rides with the outcome headline, not the fact list.
+    expect(screen.getByTestId("pr-merge-merged-banner").textContent).toContain("squash merge");
+
     const summary = screen.getByTestId("pr-shipped-summary");
-    expect(summary.textContent).toContain("by arul · squash");
-    expect(summary.textContent).toContain("12 commits · 9 files · open 2d 4h");
-    // The lane is gone, but what happened in it is not.
-    expect(summary.textContent).toContain("was: auto-naming · 3 chats · 2 proof");
+    // Attribution: who merged it, and when.
+    expect(summary.textContent).toContain("arul");
+    expect(summary.textContent).toContain(formatTimestampShort("2026-01-03T04:00:00.000Z"));
+    // Figures: each fact keeps its own value + noun rather than a run-on line.
+    expect(summary.textContent).toContain("12 commits");
+    expect(summary.textContent).toContain("9 files");
+    expect(summary.textContent).toContain("2d 4h open");
+    // The lane is gone, but what happened in it is not — and it is marked as ADE's.
+    const lane = screen.getByTestId("pr-shipped-lane");
+    expect(lane.textContent).toContain("ADE lane");
+    expect(lane.textContent).toContain("auto-naming");
+    expect(lane.textContent).toContain("3 chats · 2 proof");
+  });
+
+  it("renders the merged branch pair as chips that keep the full name on hover", () => {
+    render(
+      <PrDetailMergeRail
+        pr={makePr({
+          state: "merged",
+          headBranch: "ade/a-very-long-lane-branch-name-that-must-truncate-7f6566e2",
+          baseBranch: "main",
+          mergedAt: "2026-01-03T04:00:00.000Z",
+        })}
+        status={makeStatus({ state: "merged" })}
+        checks={[]}
+        reviews={[]}
+        mergeMethod="squash"
+        actionBusy={false}
+        onMerge={() => {}}
+      />,
+    );
+
+    // The rail is ~390px wide, so the head chip ellipsises rather than wrapping
+    // the layout — the untruncated name stays reachable as the chip's title.
+    const head = screen.getByTitle("ade/a-very-long-lane-branch-name-that-must-truncate-7f6566e2");
+    expect(head.style.overflow).toBe("hidden");
+    expect(screen.getByTitle("main")).toBeTruthy();
   });
 
   it("omits shipped facts that were never recorded rather than showing blanks", () => {
@@ -204,9 +241,35 @@ describe("PrDetailMergeRail", () => {
       />,
     );
 
-    fireEvent.click(screen.getByRole("button", { name: /Close pull request/i }));
+    // The rail's narrow "Close" button only opens the confirmation dialog.
+    fireEvent.click(screen.getByTestId("pr-close-open-dialog-button"));
     expect(onClose).not.toHaveBeenCalled();
-    fireEvent.click(screen.getByRole("button", { name: /Click again to close PR/i }));
+
+    // Confirming inside the portaled dialog is what actually closes the PR.
+    fireEvent.click(screen.getByTestId("pr-close-confirm-button"));
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  // Draft is not a terminal state: an abandoned draft is exactly the PR you
+  // want to close, and gating on `state === "open"` left it with no way out.
+  it("opens close confirmation for draft pull requests", () => {
+    const onClose = vi.fn();
+    render(
+      <PrDetailMergeRail
+        pr={makePr({ state: "draft" })}
+        status={makeStatus({ state: "draft" })}
+        checks={[]}
+        reviews={[]}
+        mergeMethod="squash"
+        actionBusy={false}
+        onMerge={() => {}}
+        onClose={onClose}
+      />,
+    );
+
+    fireEvent.click(screen.getByTestId("pr-close-open-dialog-button"));
+    expect(onClose).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByTestId("pr-close-confirm-button"));
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 });

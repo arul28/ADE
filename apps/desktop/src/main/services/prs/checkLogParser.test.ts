@@ -3,6 +3,7 @@ import {
   extractHeadline,
   findStepSection,
   parseCheckLog,
+  selectStepSection,
   splitLogIntoSections,
   stripTimestamp,
 } from "./checkLogParser";
@@ -86,6 +87,24 @@ describe("splitLogIntoSections", () => {
   });
 });
 
+/**
+ * A job that passed. No `##[error]` anywhere, and the last group is the cleanup
+ * step GitHub appends to every run — which is exactly what the old
+ * "last section" fallback used to hand back as the "failing step".
+ */
+const GREEN_ACTIONS_LOG = [
+  "2026-07-27T11:00:01.0000000Z ##[group]Run actions/checkout@v4",
+  "2026-07-27T11:00:02.0000000Z Syncing repository: acme/repo",
+  "2026-07-27T11:00:03.0000000Z ##[endgroup]",
+  "2026-07-27T11:01:00.0000000Z ##[group]Run npm test",
+  "2026-07-27T11:01:40.0000000Z  Tests  413 passed (413)",
+  "2026-07-27T11:01:41.0000000Z ##[endgroup]",
+  "2026-07-27T11:02:00.0000000Z ##[group]Post Run actions/checkout@v4",
+  "2026-07-27T11:02:00.0000001Z /usr/bin/git version",
+  "2026-07-27T11:02:00.0000002Z git version 2.43.0",
+  "2026-07-27T11:02:01.0000000Z ##[endgroup]",
+].join("\n");
+
 describe("findStepSection", () => {
   const sections = splitLogIntoSections(ACTIONS_LOG);
 
@@ -104,6 +123,22 @@ describe("findStepSection", () => {
 
   it("returns null for an empty log", () => {
     expect(findStepSection([], "anything")).toBeNull();
+  });
+
+  // Regression: a green job has no failing step name and no `##[error]`, and the
+  // selector used to answer with the *last* section anyway — the `Post Run …`
+  // cleanup group. That is where "clicked something green, got random output"
+  // came from. No identified section must now mean no section.
+  it("returns no section for a passed job rather than the cleanup group", () => {
+    const green = splitLogIntoSections(GREEN_ACTIONS_LOG);
+    expect(green[green.length - 1]!.title).toBe("Post Run actions/checkout@v4");
+    expect(selectStepSection(green, null)).toEqual({ section: null, scope: "whole-log" });
+    expect(findStepSection(green, null)).toBeNull();
+  });
+
+  it("reports how it chose the section", () => {
+    expect(selectStepSection(sections, "npm test").scope).toBe("named-step");
+    expect(selectStepSection(sections, null).scope).toBe("errored-step");
   });
 });
 
@@ -146,6 +181,7 @@ describe("parseCheckLog", () => {
   it("returns only the failing step, with the framework headline lifted", () => {
     const parsed = parseCheckLog({ rawLog: ACTIONS_LOG, failingStepName: "npm test", maxLines: 200 });
     expect(parsed.sectionTitle).toBe("Run npm test");
+    expect(parsed.scope).toBe("named-step");
     expect(parsed.headline).toBe("Tests  3 failed | 42 passed (45)");
     // The checkout / npm ci steps are not in the excerpt.
     expect(parsed.lines.join("\n")).not.toContain("Syncing repository");
@@ -170,6 +206,19 @@ describe("parseCheckLog", () => {
     });
     expect(parsed.lines).toEqual(["boom", "--- FAIL: TestX (0.01s)"]);
     expect(parsed.headline).toBe("--- FAIL: TestX (0.01s)");
+  });
+
+  // Regression for the "green job showed random output" defect: with no failing
+  // step and no error marker the parse must not present the cleanup group as a
+  // step. It falls back to the whole-log tail and says so, so the caller can
+  // label it honestly (`prService` only ever reaches this path when a user
+  // explicitly asks for a passed job's log).
+  it("degrades to a labelled whole-log tail on a passed job instead of the cleanup group", () => {
+    const parsed = parseCheckLog({ rawLog: GREEN_ACTIONS_LOG, failingStepName: null, maxLines: 200 });
+    expect(parsed.scope).toBe("whole-log");
+    expect(parsed.sectionTitle).toBeNull();
+    // The whole-log tail still contains the real work, not only the cleanup.
+    expect(parsed.lines.join("\n")).toContain("Tests  413 passed (413)");
   });
 
   it("never throws on empty or unrecognized input", () => {

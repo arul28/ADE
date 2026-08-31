@@ -1,0 +1,64 @@
+---
+title: "Runtime"
+description: "The embedded ADE sidecar: isolated home, --profile embedded, parent-death watchdog, pidfile reclaim, and doctor()."
+icon: "server"
+---
+
+The SDK does not embed ADE as a library. It **spawns** `ade runtime run --socket <path> --profile embedded` as a child.
+
+```
+your process
+  └─ @ade-dev/sdk
+        └─ ade runtime run --socket … --profile embedded
+              ADE_HOME=<your home>
+              ADE_EMBEDDED_PARENT_PID=<your pid>
+              ADE_DEFAULT_ROLE=agent
+```
+
+`--profile embedded` is the only profile `ade runtime run` accepts. Anything else is a usage error, not a silent fall back to a full brain.
+
+## Guest rules
+
+- **Isolated `home`.** Never `~/.ade`.
+- **Sync is forced off.** The sidecar is not a machine peer.
+- **No machine authority.** `machine.updateAndRestart` and power transitions are withheld, not merely role-gated.
+- **Parent-death watchdog.** POSIX does not kill orphans on parent death. The runtime polls `ADE_EMBEDDED_PARENT_PID` and shuts itself down if the host is gone.
+- **Host `ADE_*` env is scrubbed** before spawn so a developer ADE install cannot leak into the guest.
+
+## Pidfile reclaim
+
+`<home>/runtime.pid` records the child. If a previous host died without unwinding, the next `createAdeChat` reclaims:
+
+- A healthy runtime already bound to this home is **reused**.
+- A confirmed-stale child is ended, then a new one is spawned.
+- A pid that cannot be corroborated (recycling, start-time mismatch, pid 0) is **left alone** and start fails. Spawning a second writer on the same SQLite root is worse.
+
+## Events
+
+The client prefers push (`personalChats.subscribeEvents`). If the runtime omits that capability, it drains `personalChats.streamEvents` by cursor. `doctor().events.mode` is `"push"`, `"drain"`, or `"unavailable"`.
+
+## `doctor()`
+
+```ts
+const report = await ade.doctor();
+```
+
+Use this as the first check when an embedder chat misbehaves. `sdkVersion` is this package; `socket.runtimeVersion` is the sidecar binary. They ship on separate cadences.
+
+| Field | What it tells you |
+|---|---|
+| `ok` | Overall health |
+| `sdkVersion` | `@ade-dev/sdk` version in *this* build |
+| `binary.path` / `binary.version` / `binary.source` | Where `ade` came from (`option`, `path`, `download`, `cache`) |
+| `binary.checksumVerified` | Whether *this* client checked `SHA256SUMS` (false for a pinned `binaryPath` is expected) |
+| `socket.connected` / `socket.runtimeVersion` | Sidecar handshake |
+| `events.mode` | Push vs drain |
+| `providers` | Installed / authenticated per provider |
+| `threads` | Tracked keys vs live sessions |
+| `recentErrors` | Newest last, capped |
+
+See [Reference](/sdk/reference#doctor) for the full shape.
+
+## Windows
+
+Parity is required. Named pipes, `GLOBALROOT` System32 tools, `ComSpec` for `.cmd` / `.bat`, and file-lock retries are all in the client. See [Install](/sdk/install#windows).

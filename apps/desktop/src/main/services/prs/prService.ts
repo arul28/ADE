@@ -201,6 +201,7 @@ import { extractFirstJsonObject } from "../ai/utils";
 import { buildIntegrationPreflight } from "./integrationPlanning";
 import { createWorkflowGraph, type WorkflowFileSource } from "./workflowGraph";
 import { parseCheckLog } from "./checkLogParser";
+import { pipelineStateOf } from "../../../shared/prPipelineState";
 import { hasMergeConflictMarkers, parseGitStatusPorcelain } from "./integrationValidation";
 import { fetchRemoteTrackingBranch } from "../shared/remoteTrackingBranch";
 import { asNumber, asString, getErrorMessage, isRecord, normalizeBranchName, nowIso, resolvePathWithinRoot } from "../shared/utils";
@@ -2271,15 +2272,74 @@ export function createPrService({
     name: row.repo_name
   });
 
-  // Repo + PR number for a review-thread mutation, from either a real DB row
-  // (mapped PR) or a synthetic "gh:owner/repo#num" id (unmapped GitHub-tab PR).
-  // The mutations key on the global thread/comment node id, so they work for
-  // both — this only locates the repo for the ownership check.
-  const resolvePrThreadTarget = (prId: string): { repo: GitHubRepoRef; prNumber: number } => {
+  /**
+   * Repo + PR number for any PR mutation, from either a real DB row (mapped PR)
+   * or a synthetic "gh:owner/repo#num" id (unmapped GitHub-tab PR).
+   *
+   * A lane mapping is a convenience link, not an authorization: every mutation
+   * below reaches GitHub over the GitHub API, and GitHub does not care whether
+   * ADE holds a local row. So resolution never requires one — `row` is null for
+   * an unmapped PR and callers make only their *local bookkeeping* conditional
+   * on it (see `refreshAfterMutation`).
+   *
+   * A synthetic id says *which* PR, not whether ADE holds a row for it: the
+   * GitHub tab keys every row it renders that way, mapped or not. So the
+   * coordinates still get looked up locally. Returning `row: null` for every
+   * `gh:` id made a land or cleanup issued from that tab skip the bookkeeping
+   * the same PR gets when it is addressed by row id — merge outcome, child-lane
+   * auto-rebase, lane archive, row refresh. The parsed coordinates stay
+   * authoritative; the row only supplies the local half.
+   */
+  const resolvePrTarget = (
+    prId: string,
+  ): { repo: GitHubRepoRef; prNumber: number; row: PullRequestRow | null } => {
     const coords = parseSyntheticGithubPrId(prId);
-    if (coords) return { repo: { owner: coords.repoOwner, name: coords.repoName }, prNumber: coords.githubPrNumber };
+    if (coords) {
+      return {
+        repo: { owner: coords.repoOwner, name: coords.repoName },
+        prNumber: coords.githubPrNumber,
+        // LIVE rows only. A detached row's lane is gone, so it supplies no
+        // usable local half — and its stale `lane_id` is worse than nothing:
+        // `attemptAdminMerge` would hand it to `getLaneBaseAndBranch` and fail
+        // with "the lane worktree is unavailable" instead of falling back to
+        // `projectRoot`, which is exactly what a PR with no lane should do.
+        row: getLiveRowForRepoPr(coords.repoOwner, coords.repoName, coords.githubPrNumber),
+      };
+    }
     const row = requireRow(prId);
-    return { repo: repoFromRow(row), prNumber: Number(row.github_pr_number) };
+    return { repo: repoFromRow(row), prNumber: Number(row.github_pr_number), row };
+  };
+
+  const coordsFromTarget = (target: {
+    repo: GitHubRepoRef;
+    prNumber: number;
+  }): PrGithubCoords => ({
+    repoOwner: target.repo.owner,
+    repoName: target.repo.name,
+    githubPrNumber: target.prNumber,
+  });
+
+  /**
+   * Post-mutation bookkeeping. A mapped PR re-reads its row and opens a hot
+   * refresh window; an unmapped PR has no row to refresh, so it drops the read
+   * memos and invalidates the GitHub snapshot cache instead — that is what makes
+   * the next list read show the mutation.
+   *
+   * Keyed on the resolved row's own id, never on the caller's `prId`: the caller
+   * may have addressed the PR by a synthetic `gh:` id or a locator, and neither
+   * is something `refreshOne`/`markHotRefresh` can look a row up by.
+   */
+  const refreshAfterMutation = async (
+    target: { repo: GitHubRepoRef; prNumber: number; row: PullRequestRow | null },
+    options: { hot?: boolean } = {},
+  ): Promise<void> => {
+    if (!target.row) {
+      forgetActivityInputs(target.repo, target.prNumber);
+      invalidateGithubSnapshotCache();
+      return;
+    }
+    if (options.hot !== false) markHotRefresh([target.row.id]);
+    await refreshOne(target.row.id);
   };
 
   const resolveWriteViewerLogin = async (): Promise<string | null> => {
@@ -2293,7 +2353,7 @@ export function createPrService({
     prId: string,
     threadId: string,
   ): Promise<{ repo: GitHubRepoRef; prNumber: number }> => {
-    const target = resolvePrThreadTarget(prId);
+    const target = resolvePrTarget(prId);
     const threads = await fetchReviewThreads(target.repo, target.prNumber);
     if (!threads.some((t) => t.id === threadId)) {
       throw new Error(`Thread ${threadId} does not belong to PR ${prId}`);
@@ -4488,6 +4548,14 @@ export function createPrService({
   };
 
   const forgetActivityInputsForPr = (prId: string): void => {
+    // Resolves synthetic `gh:` ids too — an unmapped PR's activity memo has to
+    // drop on mutation exactly like a mapped one's, or the timeline keeps
+    // answering from data captured before the comment was posted.
+    const coords = parseSyntheticGithubPrId(prId);
+    if (coords) {
+      forgetActivityInputs({ owner: coords.repoOwner, name: coords.repoName }, coords.githubPrNumber);
+      return;
+    }
     const row = getRow(prId);
     if (!row) return;
     forgetActivityInputs(
@@ -6386,8 +6454,8 @@ export function createPrService({
       commitSha?: string | null;
     } = {},
   ): Promise<SubmitPrReviewResult> => {
-    const row = requireRow(args.prId);
-    const repo = repoFromRow(row);
+    const target = resolvePrTarget(args.prId);
+    const repo = target.repo;
     const inlineComments = Array.isArray(args.comments)
       ? args.comments.filter((comment) => {
           const path = asString(comment?.path).trim();
@@ -6399,7 +6467,11 @@ export function createPrService({
 
     let commitSha = asString(options.commitSha).trim() || null;
     if (inlineComments.length > 0 && !commitSha) {
-      commitSha = (await getReviewSnapshot(args.prId)).headSha;
+      // `getReviewSnapshot` is row-based (it folds in the local summary). An
+      // unmapped PR only needs the head SHA, so read it straight from GitHub.
+      commitSha = target.row
+        ? (await getReviewSnapshot(target.row.id)).headSha
+        : asString((await fetchPr(repo, target.prNumber))?.head?.sha) || null;
     }
     if (inlineComments.length > 0 && !commitSha) {
       throw new Error("PR head commit is unavailable for inline review comments.");
@@ -6407,7 +6479,7 @@ export function createPrService({
 
     const { data } = await githubService.apiRequest<any>({
       method: "POST",
-      path: `/repos/${repo.owner}/${repo.name}/pulls/${Number(row.github_pr_number)}/reviews`,
+      path: `/repos/${repo.owner}/${repo.name}/pulls/${target.prNumber}/reviews`,
       body: {
         event: args.event,
         body: args.body ?? "",
@@ -6424,8 +6496,7 @@ export function createPrService({
       },
     });
 
-    markHotRefresh([args.prId]);
-    await refreshOne(args.prId);
+    await refreshAfterMutation(target);
 
     return {
       id: Number.isFinite(Number(data?.id)) ? String(Number(data.id)) : null,
@@ -6783,19 +6854,41 @@ export function createPrService({
     },
   });
 
-  const getWorkflowGraphForRow = async (
-    row: PullRequestRow,
-    args: { force?: boolean },
+  const getWorkflowGraphForCoords = async (
+    coords: PrGithubCoords,
+    args: { force?: boolean; cachedHeadSha?: string | null; worktreePath?: string | null },
   ): Promise<PrWorkflowGraph> => {
-    const coords = coordsFromRow(row);
-    const repo = repoFromRow(row);
-    const [runs, checks] = await Promise.all([
-      getActionRunsByCoords(coords).catch(() => [] as PrActionRun[]),
-      getChecksByCoords(coords).catch(() => [] as PrCheck[]),
+    const repo: GitHubRepoRef = { owner: coords.repoOwner, name: coords.repoName };
+    // Both reads used to swallow their failure into an empty array. That made an
+    // unreachable GitHub indistinguishable from "this repo has no workflow
+    // file": the builder saw no runs, answered `source: "none"`, and the UI told
+    // the user there was nothing to chart. Empty-looks-like-settled is the shape
+    // that once kept a poll running unbraked for an hour, so the run read now
+    // fails loudly and the renderer shows "couldn't reach GitHub" with a retry.
+    //
+    // A checks failure is still tolerated: checks decorate the graph, runs are
+    // what the graph IS.
+    const [runsResult, checksResult] = await Promise.allSettled([
+      getActionRunsByCoords(coords),
+      getChecksByCoords(coords),
     ]);
-    let headSha = asString(row.head_sha);
+    if (runsResult.status === "rejected") {
+      throw new Error(
+        `Couldn't read this PR's Actions runs from GitHub: ${getErrorMessage(runsResult.reason)}`,
+      );
+    }
+    const runs = runsResult.value;
+    const checks = checksResult.status === "fulfilled" ? checksResult.value : ([] as PrCheck[]);
+    if (checksResult.status === "rejected") {
+      logger.warn("prs.workflow_graph_checks_read_failed", {
+        repo: `${coords.repoOwner}/${coords.repoName}`,
+        prNumber: coords.githubPrNumber,
+        error: getErrorMessage(checksResult.reason),
+      });
+    }
+    let headSha = asString(args.cachedHeadSha);
     if (!headSha) {
-      const pr = await fetchPr(repo, Number(row.github_pr_number)).catch(() => null);
+      const pr = await fetchPr(repo, coords.githubPrNumber).catch(() => null);
       headSha = asString(pr?.head?.sha);
     }
     // Fall back to the newest run's SHA so a graph still renders when the PR row
@@ -6806,7 +6899,7 @@ export function createPrService({
       repoOwner: coords.repoOwner,
       repoName: coords.repoName,
       headSha,
-      worktreePath: laneWorktreePathForRow(row),
+      worktreePath: args.worktreePath ?? null,
       runs,
       checks,
       force: args.force,
@@ -6901,21 +6994,27 @@ export function createPrService({
     return { text: tail, truncated };
   };
 
-  const getCheckLogForRow = async (
-    row: PullRequestRow,
+  const getCheckLogForCoords = async (
+    coords: PrGithubCoords,
     args: GetPrCheckLogArgs,
   ): Promise<PrCheckLogExcerpt> => {
-    const repo = repoFromRow(row);
+    const repo: GitHubRepoRef = { owner: coords.repoOwner, name: coords.repoName };
     const maxLines =
       Number.isFinite(args.maxLines) && Number(args.maxLines) > 0
         ? Math.min(2000, Math.floor(Number(args.maxLines)))
         : CHECK_LOG_DEFAULT_MAX_LINES;
 
-    // Degrade exactly like `ghOpenPrLookup` does: an empty excerpt with a link,
-    // never a throw that blanks the drawer.
-    const empty = (extra: Partial<PrCheckLogExcerpt> = {}): PrCheckLogExcerpt => ({
+    // Degrade exactly like `ghOpenPrLookup` does: an excerpt with no lines and a
+    // link, never a throw that blanks the drawer. `logStatus` carries *why*
+    // there are no lines, so "ADE could not read the log" is never mistaken for
+    // "this job has no log worth reading".
+    const base = (extra: Partial<PrCheckLogExcerpt> = {}): PrCheckLogExcerpt => ({
       jobId: args.jobId,
-      jobName: "",
+      // jobName/steps are deliberately ABSENT here, for the same reason
+      // jobState is (see below). `jobName: ""` and `steps: []` are *defined*
+      // values: they beat the real name and step list the caller already has
+      // from the graph node, so a degraded read renders "CI failure — " and an
+      // empty breakdown for a job whose name and steps were never in doubt.
       failingStepName: null,
       failingStepNumber: null,
       stepTotal: null,
@@ -6923,14 +7022,33 @@ export function createPrService({
       lines: [],
       truncated: false,
       htmlUrl: null,
+      // jobState/jobStatus/jobConclusion are deliberately ABSENT here.
+      // The renderer merges with `??`, so a hard-coded "unknown" is a defined
+      // value that BEATS the state it already knows from the graph node: a
+      // failed job read while GitHub was unreachable flipped its chip from
+      // "Failed" to "Unknown". A degraded read must not overwrite a fact with a
+      // placeholder — that is the exact ambiguity this surface exists to remove.
+      // The real values are set on the populated job object below.
+      currentStepName: null,
+      currentStepNumber: null,
+      logStatus: "unavailable",
+      logUnavailableReason: null,
+      logScope: null,
+      startedAt: null,
+      completedAt: null,
       ...extra,
     });
-    if (!Number.isSafeInteger(args.jobId) || args.jobId <= 0) return empty();
+    const unreadable = (reason: string, extra: Partial<PrCheckLogExcerpt> = {}) =>
+      base({ logStatus: "unavailable", logUnavailableReason: reason, ...extra });
+
+    if (!Number.isSafeInteger(args.jobId) || args.jobId <= 0) {
+      return unreadable("ADE didn't get a usable GitHub job id for this check.");
+    }
 
     let matchedRun: PrActionRun | null = null;
     let matchedJob: PrActionJob | null = null;
     try {
-      const runs = await getActionRunsByCoords(coordsFromRow(row));
+      const runs = await getActionRunsByCoords(coords);
       for (const run of runs) {
         const job = run.jobs.find((entry) => entry.id === args.jobId);
         if (!job) continue;
@@ -6943,14 +7061,14 @@ export function createPrService({
         jobId: args.jobId,
         error: getErrorMessage(error),
       });
-      return empty();
+      return unreadable("ADE couldn't reach GitHub to look this job up. Try again in a moment.");
     }
     if (!matchedRun || !matchedJob) {
       logger.warn("prs.check_log_job_outside_pr", {
-        prId: row.id,
+        prId: args.prId,
         jobId: args.jobId,
       });
-      return empty();
+      return unreadable("ADE couldn't find this job in the runs for this pull request.");
     }
 
     const jobName = matchedJob.name;
@@ -6970,6 +7088,39 @@ export function createPrService({
     const failingStepName = failingStep?.name || null;
     const failingStepNumber = failingStep?.number || null;
     const stepTotal = steps.length > 0 ? steps.length : null;
+    const currentStep = steps.find((step) => step.status === "in_progress") ?? null;
+    const jobState = pipelineStateOf({
+      status: matchedJob.status,
+      conclusion: matchedJob.conclusion,
+    });
+
+    // Everything above is already-fetched job metadata. Everything below is a
+    // redirect plus a multi-megabyte blob download.
+    const job = base({
+      jobName,
+      failingStepName,
+      failingStepNumber,
+      stepTotal,
+      htmlUrl,
+      jobState,
+      jobStatus: matchedJob.status,
+      jobConclusion: matchedJob.conclusion,
+      steps,
+      currentStepName: currentStep?.name || null,
+      currentStepNumber: currentStep?.number || null,
+      startedAt: matchedJob.startedAt,
+      completedAt: matchedJob.completedAt,
+    });
+
+    // A job that did not fail has no failing step to tail, and the parser would
+    // land on whatever section happened to come last — on a green job that is
+    // the `Post Run …` cleanup group. Do not spend a log download to render
+    // that. The step breakdown above is the real answer, and `includeLog` lets a
+    // user action ask for the log anyway.
+    const wantsLog = args.includeLog === true || jobState === "failed";
+    if (!wantsLog) {
+      return { ...job, logStatus: "not-fetched" };
+    }
 
     let downloaded: { text: string; truncated: boolean } | null = null;
     try {
@@ -6981,7 +7132,11 @@ export function createPrService({
       });
     }
     if (!downloaded) {
-      return empty({ jobName, failingStepName, failingStepNumber, stepTotal, htmlUrl });
+      return {
+        ...job,
+        logUnavailableReason:
+          "ADE couldn't download this job's log from GitHub. The full log is still on GitHub.",
+      };
     }
 
     let parsed: ReturnType<typeof parseCheckLog>;
@@ -6992,19 +7147,31 @@ export function createPrService({
         jobId: args.jobId,
         error: getErrorMessage(error),
       });
-      return empty({ jobName, failingStepName, failingStepNumber, stepTotal, htmlUrl, truncated: true });
+      return {
+        ...job,
+        truncated: true,
+        logUnavailableReason: "ADE downloaded this job's log but couldn't read it.",
+      };
     }
 
     return {
-      jobId: args.jobId,
-      jobName,
-      failingStepName,
-      failingStepNumber,
-      stepTotal,
+      ...job,
       headline: parsed.headline,
       lines: parsed.lines,
       truncated: downloaded.truncated,
-      htmlUrl,
+      logStatus: "excerpt",
+      // All three scopes are reachable, and collapsing them lies about a green
+      // job. `failingStepName` is only ever GitHub's own failing step, so a
+      // name match IS the failure. An `##[error]` match is a step ADE picked
+      // itself: the failure when the job failed, but on a passed job read via
+      // `includeLog` it is just a step that logged an error line — calling that
+      // "the failing step" is the ambiguity `logScope` exists to remove.
+      logScope:
+        parsed.scope === "whole-log"
+          ? "whole-log"
+          : parsed.scope === "named-step" || jobState === "failed"
+            ? "failing-step"
+            : "named-step",
     };
   };
 
@@ -7647,13 +7814,46 @@ export function createPrService({
   };
 
   const cleanupBranch = async (args: CleanupPrBranchArgs): Promise<CleanupPrBranchResult> => {
-    const row = getRow(args.prId);
-    if (!row) throw new Error(`PR not found: ${args.prId}`);
-    if (row.state !== "merged" && row.state !== "closed") {
+    // Works without a local row: state and head branch come from GitHub when
+    // ADE has no row of its own. The local half of the cleanup is already
+    // guarded by a `show-ref` check, so a PR with no local branch simply
+    // deletes nothing locally.
+    const target = resolvePrTarget(args.prId);
+    const row = target.row;
+    // Everything below runs `git` inside `projectRoot` and against its `origin`,
+    // keyed only on a branch *name*. A synthetic id can name any repository, so
+    // without this a PR from an unrelated repo whose head is `fix/typo` would
+    // force-delete *this* project's `fix/typo`, locally and on the remote.
+    const projectRepo = await githubService.getRepoOrThrow();
+    if (
+      target.repo.owner.toLowerCase() !== projectRepo.owner.toLowerCase()
+      || target.repo.name.toLowerCase() !== projectRepo.name.toLowerCase()
+    ) {
+      throw new Error("Branch cleanup only works on pull requests in this project's repository.");
+    }
+    let state = row?.state ?? "";
+    let headBranchRef = row?.head_branch ?? "";
+    if (!row) {
+      const pull = await fetchPr(target.repo, target.prNumber, { fresh: true }).catch(() => null);
+      if (!pull) throw new Error(`Couldn't read PR #${target.prNumber} from GitHub.`);
+      // A fork PR's head branch lives in someone else's repository. `target.repo`
+      // is the *base* repo, so deleting that branch name here would delete an
+      // unrelated same-named branch out of this repository instead.
+      if (!rawPullHasSameRepoHead(pull, target.repo)) {
+        throw new Error("This PR is from a fork, so its branch can't be cleaned up from here.");
+      }
+      state = toPrState({
+        state: asString(pull?.state) || "open",
+        draft: Boolean(pull?.draft),
+        mergedAt: asString(pull?.merged_at) || null,
+      });
+      headBranchRef = asString(pull?.head?.ref);
+    }
+    if (state !== "merged" && state !== "closed") {
       throw new Error("Branch cleanup is only available after a PR is merged or closed.");
     }
 
-    const branchName = branchNameFromRef(row.head_branch);
+    const branchName = branchNameFromRef(headBranchRef);
     if (!branchName || branchName === "HEAD") {
       throw new Error("PR head branch is missing.");
     }
@@ -7687,7 +7887,7 @@ export function createPrService({
         // Only force-delete when the PR is merged. For closed (non-merged) PRs
         // the branch may still hold unintegrated work, so use the safe `-d`
         // variant which refuses to drop unmerged commits.
-        const deleteFlag = row.state === "merged" ? "-D" : "-d";
+        const deleteFlag = state === "merged" ? "-D" : "-d";
         const deleted = await runGit(["branch", deleteFlag, branchName], { cwd: projectRoot, timeoutMs: 30_000 });
         if (deleted.exitCode === 0) result.localDeleted = true;
         else result.localError = deleted.stderr || deleted.stdout || `Failed to delete local branch ${branchName}`;
@@ -7731,6 +7931,13 @@ export function createPrService({
     prId: string;
     mergeCommitSha: string | null;
     archiveLane: boolean;
+    /**
+     * Opt-in. Previously this ran unconditionally on every successful merge:
+     * ADE deleted the head branch on the remote with no flag, no prompt, and no
+     * UI for it. Deleting a branch is destructive and belongs to the user, so
+     * the caller now has to ask.
+     */
+    deleteRemoteBranch?: boolean;
     operationId?: string | null;
   }): Promise<{
     branchDeleted: boolean;
@@ -7792,20 +7999,22 @@ export function createPrService({
       childAutoRebaseBlockedCleanup = childAdvanceResult.blockCleanup;
 
       if (!childAutoRebaseBlockedCleanup) {
-        try {
-          await githubService.apiRequest({
-            method: "DELETE",
-            path: `/repos/${repo.owner}/${repo.name}/git/refs/heads/${headBranch}`
-          });
-          branchDeleted = true;
-        } catch (error) {
-          // 404-tolerant: if the branch was already deleted (e.g. by gh pr
-          // merge --delete-branch on a previous attempt), treat as success.
-          const msg = getErrorMessage(error);
-          if (msg.includes("404") || msg.toLowerCase().includes("not found")) {
+        if (args.deleteRemoteBranch) {
+          try {
+            await githubService.apiRequest({
+              method: "DELETE",
+              path: `/repos/${repo.owner}/${repo.name}/git/refs/heads/${headBranch}`
+            });
             branchDeleted = true;
-          } else {
-            logger.warn("prs.delete_branch_failed", { prId: row.id, headBranch, error: msg });
+          } catch (error) {
+            // 404-tolerant: if the branch was already deleted (e.g. by gh pr
+            // merge --delete-branch on a previous attempt), treat as success.
+            const msg = getErrorMessage(error);
+            if (msg.includes("404") || msg.toLowerCase().includes("not found")) {
+              branchDeleted = true;
+            } else {
+              logger.warn("prs.delete_branch_failed", { prId: row.id, headBranch, error: msg });
+            }
           }
         }
 
@@ -7929,21 +8138,27 @@ export function createPrService({
   };
 
   const attemptAdminMerge = async (args: {
-    row: PullRequestRow;
+    target: { repo: GitHubRepoRef; prNumber: number; row: PullRequestRow | null };
     method: MergeMethod;
     commitTitle?: string;
     commitBody?: string;
     expectedHeadSha?: string;
   }): Promise<{ success: true; mergeCommitSha: string | null } | { success: false; error: string }> => {
-    let laneWorktreePath: string;
-    try {
-      laneWorktreePath = laneService.getLaneBaseAndBranch(args.row.lane_id).worktreePath;
-    } catch (error) {
-      return {
-        success: false,
-        error: `Admin merge failed because the lane worktree is unavailable: ${getErrorMessage(error)}`,
-      };
+    // `gh` needs a repo context. A lane gives one through its worktree; without a
+    // lane, run from the project root and name the repo explicitly, which also
+    // keeps a PR in a different repository addressable.
+    let cwd = projectRoot;
+    if (args.target.row) {
+      try {
+        cwd = laneService.getLaneBaseAndBranch(args.target.row.lane_id).worktreePath;
+      } catch (error) {
+        return {
+          success: false,
+          error: `Admin merge failed because the lane worktree is unavailable: ${getErrorMessage(error)}`,
+        };
+      }
     }
+    const repoArgs = ["--repo", `${args.target.repo.owner}/${args.target.repo.name}`];
 
     // `--subject`/`--body` only apply to merge/squash commits — rebase has no
     // merge commit to title. Pass as separate argv entries (never shell-interpolated).
@@ -7962,8 +8177,8 @@ export function createPrService({
       ? ["--match-head-commit", asString(args.expectedHeadSha).trim()]
       : [];
     const adminRes = await runGh(
-      ["pr", "merge", String(Number(args.row.github_pr_number)), `--${args.method}`, "--admin", ...matchHeadArgs, ...messageArgs],
-      { cwd: laneWorktreePath, timeoutMs: 90_000 },
+      ["pr", "merge", String(args.target.prNumber), ...repoArgs, `--${args.method}`, "--admin", ...matchHeadArgs, ...messageArgs],
+      { cwd, timeoutMs: 90_000 },
     );
     if (adminRes.exitCode !== 0) {
       const adminErr = adminRes.stderr.trim() || adminRes.stdout.trim() || `exit ${adminRes.exitCode}`;
@@ -7973,17 +8188,101 @@ export function createPrService({
     return { success: true, mergeCommitSha: null };
   };
 
+  /**
+   * Shared tail of both merge paths (REST and the `gh --admin` fallback): record
+   * how the PR shipped, then run the local bookkeeping.
+   *
+   * An unmapped PR has no row to record against and nothing local to clean up,
+   * so it only drops the read memos and invalidates the snapshot cache — that is
+   * what makes the next list read show it as merged.
+   */
+  /**
+   * Delete a just-merged PR's head branch on the remote, for a PR ADE holds no
+   * row for. Guarded on a same-repo head: a fork PR's branch name belongs to
+   * someone else's repository, and deleting it here would delete an unrelated
+   * same-named branch out of the base repo.
+   */
+  const deleteMergedHeadBranchByCoords = async (
+    repo: GitHubRepoRef,
+    prNumber: number,
+  ): Promise<boolean> => {
+    const pull = await fetchPr(repo, prNumber, { fresh: true }).catch(() => null);
+    if (!pull || !rawPullHasSameRepoHead(pull, repo)) return false;
+    const headBranch = branchNameFromRef(asString(pull?.head?.ref));
+    if (!headBranch || headBranch === "HEAD") return false;
+    try {
+      await githubService.apiRequest({
+        method: "DELETE",
+        path: `/repos/${repo.owner}/${repo.name}/git/refs/heads/${headBranch}`,
+      });
+      return true;
+    } catch (error) {
+      // Already gone counts as done — GitHub's own "delete branch on merge"
+      // setting may have won the race.
+      const msg = getErrorMessage(error);
+      if (msg.includes("404") || msg.toLowerCase().includes("not found")) return true;
+      logger.warn("prs.delete_branch_failed", { repo: `${repo.owner}/${repo.name}`, prNumber, headBranch, error: msg });
+      return false;
+    }
+  };
+
+  const finishSuccessfulMerge = async (
+    target: { repo: GitHubRepoRef; prNumber: number; row: PullRequestRow | null },
+    args: LandPrArgs,
+    mergeCommitSha: string | null,
+    operationId: string,
+  ): Promise<{ branchDeleted: boolean; laneArchived: boolean }> => {
+    if (!target.row) {
+      forgetActivityInputs(target.repo, target.prNumber);
+      invalidateGithubSnapshotCache();
+      // A PR with no local row has no lane to archive, but the head branch is
+      // still deletable — and the CLI, TUI and mobile all offer it. Reporting
+      // `branchDeleted: false` unconditionally made that opt-in a silent no-op
+      // for exactly the PRs this branch exists to support.
+      const branchDeleted = args.deleteRemoteBranch
+        ? await deleteMergedHeadBranchByCoords(target.repo, target.prNumber)
+        : false;
+      try {
+        operationService.finish({
+          operationId,
+          status: "succeeded",
+          metadataPatch: { mergeCommitSha, branchDeleted, laneArchived: false },
+        });
+      } catch { /* already finished -- ignore */ }
+      return { branchDeleted, laneArchived: false };
+    }
+
+    // GitHub's merge response does not name the actor, but we merged as the
+    // authenticated viewer, so that is who merged it. Without this the merged
+    // view could never say more than "merged at <time>".
+    recordMergeOutcome(target.row.id, {
+      method: args.method,
+      mergedByLogin: await resolveViewerLoginForMerge(),
+    });
+
+    const cleanup = await runPostMergeCleanup({
+      prId: target.row.id,
+      mergeCommitSha,
+      archiveLane: Boolean(args.archiveLane),
+      deleteRemoteBranch: Boolean(args.deleteRemoteBranch),
+      operationId,
+    });
+    return { branchDeleted: cleanup.branchDeleted, laneArchived: cleanup.laneArchived };
+  };
+
   const land = async (args: LandPrArgs): Promise<LandResult> => {
-    const row = getRow(args.prId);
-    if (!row) throw new Error(`PR not found: ${args.prId}`);
-    const repo: GitHubRepoRef = { owner: row.repo_owner, name: row.repo_name };
+    // A merge is a GitHub API call. It never needed a local row, so this
+    // resolves a synthetic `gh:owner/repo#num` id too. Only the *local*
+    // bookkeeping below stays conditional on `row`.
+    const target = resolvePrTarget(args.prId);
+    const { repo, prNumber, row } = target;
 
     const op = operationService.start({
-      laneId: row.lane_id,
+      laneId: row?.lane_id ?? null,
       kind: "pr_land",
       metadata: {
-        prId: row.id,
-        prNumber: Number(row.github_pr_number),
+        prId: args.prId,
+        prNumber,
         method: args.method,
         bypassRules: Boolean(args.bypassRules),
       }
@@ -7996,8 +8295,8 @@ export function createPrService({
         metadataPatch: { error: rawMsg }
       });
       return {
-        prId: row.id,
-        prNumber: Number(row.github_pr_number),
+        prId: args.prId,
+        prNumber,
         success: false,
         mergeCommitSha: null,
         branchDeleted: false,
@@ -8005,14 +8304,11 @@ export function createPrService({
         error: userMsg
       };
     };
-    const githubStackNumber = githubStackStore.knownStackNumberForPr(
-      repo,
-      Number(row.github_pr_number),
-    );
+    const githubStackNumber = githubStackStore.knownStackNumberForPr(repo, prNumber);
     if (githubStackNumber) {
       return finishFailure(
         "github_stack_requires_github_merge",
-        `PR #${row.github_pr_number} is in GitHub Stack #${githubStackNumber}. Review and merge the stack on GitHub.`,
+        `PR #${prNumber} is in GitHub Stack #${githubStackNumber}. Review and merge the stack on GitHub.`,
       );
     }
 
@@ -8036,9 +8332,9 @@ export function createPrService({
     };
 
     try {
-      const latestPull = await fetchPr(repo, Number(row.github_pr_number), { waitForKnownMergeability: true });
+      const latestPull = await fetchPr(repo, prNumber, { waitForKnownMergeability: true });
       const latestState = toPrState({
-        state: asString(latestPull?.state) || row.state || "open",
+        state: asString(latestPull?.state) || row?.state || "open",
         draft: Boolean(latestPull?.draft),
         mergedAt: asString(latestPull?.merged_at) || null,
       });
@@ -8072,30 +8368,16 @@ export function createPrService({
 
       const merge = await githubService.apiRequest<any>({
         method: "PUT",
-        path: `/repos/${repo.owner}/${repo.name}/pulls/${Number(row.github_pr_number)}/merge`,
+        path: `/repos/${repo.owner}/${repo.name}/pulls/${prNumber}/merge`,
         body: mergeBody
       });
 
       const mergeCommitSha = asString(merge.data?.sha) || null;
-
-      // Record how this shipped. GitHub's merge response does not name the actor, but
-      // we merged as the authenticated viewer, so that is who merged it. Without this
-      // the merged view could never say more than "merged at <time>".
-      recordMergeOutcome(row.id, {
-        method: args.method,
-        mergedByLogin: await resolveViewerLoginForMerge(),
-      });
-
-      const cleanup = await runPostMergeCleanup({
-        prId: row.id,
-        mergeCommitSha,
-        archiveLane: Boolean(args.archiveLane),
-        operationId: op.operationId,
-      });
+      const cleanup = await finishSuccessfulMerge(target, args, mergeCommitSha, op.operationId);
 
       return {
-        prId: row.id,
-        prNumber: Number(row.github_pr_number),
+        prId: args.prId,
+        prNumber,
         success: true,
         mergeCommitSha,
         branchDeleted: cleanup.branchDeleted,
@@ -8108,22 +8390,22 @@ export function createPrService({
 
       if (args.bypassRules && shouldAttemptAdminMergeForRestError(rawMsg, { allowForceMerge: true })) {
         const adminAttempt = await attemptAdminMerge({
-          row,
+          target,
           method: args.method,
           commitTitle: args.commitTitle,
           commitBody: args.commitBody,
           expectedHeadSha: args.expectedHeadSha,
         });
         if (adminAttempt.success) {
-          const cleanup = await runPostMergeCleanup({
-            prId: row.id,
-            mergeCommitSha: adminAttempt.mergeCommitSha,
-            archiveLane: Boolean(args.archiveLane),
-            operationId: op.operationId,
-          });
+          const cleanup = await finishSuccessfulMerge(
+            target,
+            args,
+            adminAttempt.mergeCommitSha,
+            op.operationId,
+          );
           return {
-            prId: row.id,
-            prNumber: Number(row.github_pr_number),
+            prId: args.prId,
+            prNumber,
             success: true,
             mergeCommitSha: adminAttempt.mergeCommitSha,
             branchDeleted: cleanup.branchDeleted,
@@ -8159,10 +8441,11 @@ export function createPrService({
    *              can launch the existing resolver.
    */
   const updateBranch = async (args: UpdateBranchArgs): Promise<UpdateBranchResult> => {
-    const row = getRow(args.prId);
-    if (!row) throw new Error(`PR not found: ${args.prId}`);
-    const repo: GitHubRepoRef = { owner: row.repo_owner, name: row.repo_name };
-    const prNumber = Number(row.github_pr_number);
+    // `merge` is a GitHub API call and works for any PR. `rebase` rewrites and
+    // force-pushes a local checkout, so that one genuinely needs a lane — see
+    // the guard further down.
+    const target = resolvePrTarget(args.prId);
+    const { repo, prNumber, row } = target;
     const baseResult = (
       success: boolean,
       extra: Partial<UpdateBranchResult> = {},
@@ -8190,7 +8473,7 @@ export function createPrService({
         const refreshed = await fetchPr(repo, prNumber, { fresh: true }).catch(() => null);
         const headSha = asString(refreshed?.head?.sha).trim() || null;
         invalidateGithubSnapshotCache();
-        await refreshOne(args.prId).catch(() => null);
+        if (row) await refreshOne(row.id).catch(() => null);
         return baseResult(true, { headSha });
       } catch (error) {
         const rawMsg = getErrorMessage(error);
@@ -8204,11 +8487,13 @@ export function createPrService({
     }
 
     // strategy === "rebase": reuse the lane rebase pipeline (rebase onto
-    // origin/<base>, then force-with-lease push). Requires a local lane.
-    const laneId = asString(row.lane_id).trim();
-    if (!laneId) {
+    // origin/<base>, then force-with-lease push). This one really does need a
+    // local checkout of the branch — say that, rather than talking about a
+    // mapping the user never asked for.
+    const laneId = asString(row?.lane_id).trim();
+    if (!row || !laneId) {
       return baseResult(false, {
-        error: "This PR is not mapped to an ADE lane, so it can't be rebased locally. Update via merge instead.",
+        error: `Rebasing rewrites the branch locally, and there is no local checkout of ${target.row?.head_branch ?? "this branch"}. Open it as a lane first, or update by merge.`,
       });
     }
 
@@ -11858,7 +12143,18 @@ export function createPrService({
      * advance, group cleanup, cache refresh). Used when a `gh pr merge --admin`
      * call lands the PR outside of `land`.
      */
-    async runPostMergeCleanup(args: { prId: string; mergeCommitSha?: string | null; archiveLane?: boolean }): Promise<{
+    async runPostMergeCleanup(args: {
+      prId: string;
+      mergeCommitSha?: string | null;
+      archiveLane?: boolean;
+      /**
+       * Opt-in, exactly as on `land`. Dropping it here made the doc above a
+       * lie: branch deletion is listed as part of this cleanup, but the flag
+       * never reached the implementation, so this entry point could not delete
+       * a branch at all.
+       */
+      deleteRemoteBranch?: boolean;
+    }): Promise<{
       branchDeleted: boolean;
       laneArchived: boolean;
       childAutoRebaseBlockedCleanup: boolean;
@@ -11867,6 +12163,7 @@ export function createPrService({
         prId: args.prId,
         mergeCommitSha: args.mergeCommitSha ?? null,
         archiveLane: Boolean(args.archiveLane),
+        deleteRemoteBranch: Boolean(args.deleteRemoteBranch),
         operationId: null,
       });
     },
@@ -12119,17 +12416,30 @@ export function createPrService({
      * `unavailableReason` so the UI can degrade to flat swimlanes honestly.
      */
     async getWorkflowGraph(args: GetPrWorkflowGraphArgs): Promise<PrWorkflowGraph> {
-      const row = requireRow(args.prId);
-      return await getWorkflowGraphForRow(row, { force: args.force });
+      const target = resolvePrTarget(args.prId);
+      // The graph reads workflow YAML at the head SHA out of the object database
+      // (`git show <sha>:<path>`), so any checkout holding that SHA works. Prefer
+      // the lane worktree; fall back to the project root when no lane tracks this
+      // PR. If the SHA is not present either way, the builder degrades to
+      // `source: "none"` on its own — it never throws.
+      return await getWorkflowGraphForCoords(coordsFromTarget(target), {
+        force: args.force,
+        cachedHeadSha: target.row?.head_sha ?? null,
+        worktreePath: laneWorktreePathForRow(target.row) ?? projectRoot,
+      });
     },
 
     /**
-     * Tail of the failing step's log for one Actions job. Degrades to an empty
-     * `lines` array with `htmlUrl` set on any network/auth failure.
+     * What one Actions job did: its state, its steps and their timings, and —
+     * only when the job failed, or when `includeLog` asks — the tail of the
+     * failing step's log.
+     *
+     * A job that passed does not pay for a log download. Never throws: any
+     * network/auth failure comes back as `logStatus: "unavailable"` with a
+     * reason, which is deliberately distinct from `"not-fetched"`.
      */
     async getCheckLog(args: GetPrCheckLogArgs): Promise<PrCheckLogExcerpt> {
-      const row = requireRow(args.prId);
-      return await getCheckLogForRow(row, args);
+      return await getCheckLogForCoords(coordsFromTarget(resolvePrTarget(args.prId)), args);
     },
 
     async getActivity(prId: string): Promise<PrActivityEvent[]> {
@@ -12194,14 +12504,13 @@ export function createPrService({
 
 
     async addComment(args: AddPrCommentArgs): Promise<PrComment> {
-      const row = requireRow(args.prId);
-      const repo = repoFromRow(row);
+      const { repo, prNumber } = resolvePrTarget(args.prId);
       const { data } = await githubService.apiRequest<Record<string, unknown>>({
         method: "POST",
-        path: `/repos/${repo.owner}/${repo.name}/issues/${Number(row.github_pr_number)}/comments`,
+        path: `/repos/${repo.owner}/${repo.name}/issues/${prNumber}/comments`,
         body: { body: args.body }
       });
-      forgetActivityInputs(repo, Number(row.github_pr_number));
+      forgetActivityInputs(repo, prNumber);
       return toPrComment("issue", data);
     },
 
@@ -12419,7 +12728,7 @@ export function createPrService({
     async reactToComment(args: ReactToPrCommentArgs): Promise<void> {
       // Node ids are global, but the repository context lets GitHub credential
       // failover skip tokens that cannot write to this PR's repository.
-      const { repo, prNumber } = resolvePrThreadTarget(args.prId);
+      const { repo, prNumber } = resolvePrTarget(args.prId);
       const subjectId = await resolveReactableSubjectId({
         githubService,
         repo,
@@ -12498,50 +12807,45 @@ export function createPrService({
     },
 
     async updateTitle(args: UpdatePrTitleArgs): Promise<void> {
-      const row = requireRow(args.prId);
-      const repo = repoFromRow(row);
+      const target = resolvePrTarget(args.prId);
       await githubService.apiRequest({
         method: "PATCH",
-        path: `/repos/${repo.owner}/${repo.name}/pulls/${Number(row.github_pr_number)}`,
+        path: `/repos/${target.repo.owner}/${target.repo.name}/pulls/${target.prNumber}`,
         body: { title: args.title }
       });
-      await refreshOne(args.prId);
+      await refreshAfterMutation(target, { hot: false });
     },
 
     async updateBody(args: UpdatePrBodyArgs): Promise<void> {
-      const row = requireRow(args.prId);
-      const repo = repoFromRow(row);
+      const target = resolvePrTarget(args.prId);
       await githubService.apiRequest({
         method: "PATCH",
-        path: `/repos/${repo.owner}/${repo.name}/pulls/${Number(row.github_pr_number)}`,
+        path: `/repos/${target.repo.owner}/${target.repo.name}/pulls/${target.prNumber}`,
         body: { body: args.body }
       });
-      await refreshOne(args.prId);
+      await refreshAfterMutation(target, { hot: false });
     },
 
     async setLabels(args: SetPrLabelsArgs): Promise<void> {
-      const row = requireRow(args.prId);
-      const repo = repoFromRow(row);
+      const target = resolvePrTarget(args.prId);
       await githubService.apiRequest({
         method: "PUT",
-        path: `/repos/${repo.owner}/${repo.name}/issues/${Number(row.github_pr_number)}/labels`,
+        path: `/repos/${target.repo.owner}/${target.repo.name}/issues/${target.prNumber}/labels`,
         body: { labels: args.labels }
       });
-      await refreshOne(args.prId);
+      await refreshAfterMutation(target, { hot: false });
     },
 
     async requestReviewers(args: RequestPrReviewersArgs): Promise<void> {
-      const row = requireRow(args.prId);
-      const repo = repoFromRow(row);
+      const target = resolvePrTarget(args.prId);
       const body = buildReviewerRequestBody(args);
       if (!body) throw new Error("At least one reviewer or team reviewer is required.");
       await githubService.apiRequest({
         method: "POST",
-        path: `/repos/${repo.owner}/${repo.name}/pulls/${Number(row.github_pr_number)}/requested_reviewers`,
+        path: `/repos/${target.repo.owner}/${target.repo.name}/pulls/${target.prNumber}/requested_reviewers`,
         body
       });
-      markHotRefresh([args.prId]);
-      await refreshOne(args.prId);
+      await refreshAfterMutation(target);
     },
 
     async submitReview(args: SubmitPrReviewArgs): Promise<SubmitPrReviewResult> {
@@ -12671,40 +12975,40 @@ export function createPrService({
     },
 
     async closePr(args: ClosePrArgs): Promise<void> {
-      const row = requireRow(args.prId);
-      const repo = repoFromRow(row);
+      const target = resolvePrTarget(args.prId);
       await githubService.apiRequest({
         method: "PATCH",
-        path: `/repos/${repo.owner}/${repo.name}/pulls/${Number(row.github_pr_number)}`,
+        path: `/repos/${target.repo.owner}/${target.repo.name}/pulls/${target.prNumber}`,
         body: { state: "closed" }
       });
-      db.run(
-        `update pull_requests set state = ?, updated_at = ? where id = ? and project_id = ?`,
-        ["closed", nowIso(), row.id, projectId]
-      );
-      markHotRefresh([args.prId]);
-      await refreshOne(args.prId);
+      if (target.row) {
+        db.run(
+          `update pull_requests set state = ?, updated_at = ? where id = ? and project_id = ?`,
+          ["closed", nowIso(), target.row.id, projectId]
+        );
+      }
+      await refreshAfterMutation(target);
     },
 
     async reopenPr(args: ReopenPrArgs): Promise<void> {
-      const row = requireRow(args.prId);
-      const repo = repoFromRow(row);
+      const target = resolvePrTarget(args.prId);
       await githubService.apiRequest({
         method: "PATCH",
-        path: `/repos/${repo.owner}/${repo.name}/pulls/${Number(row.github_pr_number)}`,
+        path: `/repos/${target.repo.owner}/${target.repo.name}/pulls/${target.prNumber}`,
         body: { state: "open" }
       });
-      db.run(
-        `update pull_requests set state = ?, updated_at = ? where id = ? and project_id = ?`,
-        ["open", nowIso(), row.id, projectId]
-      );
-      markHotRefresh([args.prId]);
-      await refreshOne(args.prId);
+      if (target.row) {
+        db.run(
+          `update pull_requests set state = ?, updated_at = ? where id = ? and project_id = ?`,
+          ["open", nowIso(), target.row.id, projectId]
+        );
+      }
+      await refreshAfterMutation(target);
     },
 
     async rerunChecks(args: RerunPrChecksArgs): Promise<void> {
-      const row = requireRow(args.prId);
-      const repo = repoFromRow(row);
+      const target = resolvePrTarget(args.prId);
+      const repo = target.repo;
       const validIds = (ids: number[] | undefined, label: string): number[] => {
         if (!ids) return [];
         if (ids.some((id) => !Number.isSafeInteger(id) || id <= 0)) {
@@ -12734,7 +13038,7 @@ export function createPrService({
         }
       } else {
         // Rerun all failed runs: get action runs and rerun failed ones
-        const pr = await fetchPr(repo, Number(row.github_pr_number));
+        const pr = await fetchPr(repo, target.prNumber);
         const headSha = asString(pr?.head?.sha);
         if (!headSha) return;
         const { data: runsData } = await githubService.apiRequest<any>({
@@ -12758,8 +13062,7 @@ export function createPrService({
           }
         }
       }
-      markHotRefresh([args.prId]);
-      await refreshOne(args.prId);
+      await refreshAfterMutation(target);
     },
 
     async aiReviewSummary(args: AiReviewSummaryArgs): Promise<AiReviewSummary> {

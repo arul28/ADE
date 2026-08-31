@@ -1,11 +1,15 @@
-import { memo, useState, type ReactNode } from "react";
+import { memo, useState } from "react";
 import {
   CheckCircle,
   ChatCircle,
   Clock,
+  LinkSimple,
   PencilSimple,
   Prohibit,
   Sparkle,
+  Tag,
+  UserCircle,
+  Users,
   UsersThree,
 } from "@phosphor-icons/react";
 
@@ -23,7 +27,8 @@ import type {
 } from "../../../../shared/types/prs";
 import { PrRequestAiReviewDialog } from "./PrRequestAiReviewDialog";
 import { PrReviewSubmitModal, type PrReviewEvent } from "./PrReviewSubmitModal";
-import { COLORS, MONO_FONT, SANS_FONT, floatingPane } from "../../lanes/laneDesignTokens";
+import { COLORS, MONO_FONT, SANS_FONT } from "../../lanes/laneDesignTokens";
+import { PrSection, PR_SECTION_GAP_COMPACT, prFlatButton, prSectionAction } from "./prSection";
 import { PrUserAvatar } from "./PrUserAvatar";
 import { PrChecksCard } from "./PrChecksCard";
 import { isBotLogin, reviewStateForLogin } from "./prMergeRailUtils";
@@ -49,6 +54,12 @@ export type PrDetailRightMetadataRailProps = {
   onSetLabels: (labels: string[]) => void;
   actionBusy: boolean;
   onSubmitReview: (event: PrReviewEvent, body: string) => void;
+  /**
+   * Check this PR's branch out into a lane. ADE review needs a working tree to
+   * diff, so with no lane the button offers the missing step instead of sitting
+   * greyed out with a tooltip nobody hovers.
+   */
+  onOpenAsLane?: () => void;
   onSelectCheck?: (check: PrCheck) => void;
   onOpenChecksTab?: () => void;
   onRerunChecks?: (target?: PrRerunChecksTarget) => void;
@@ -59,73 +70,21 @@ export type ReviewerRequest = {
   teamReviewers: string[];
 };
 
-/** Neutral floating card used for every right-rail section. */
-function RightCard({
-  title,
-  action,
-  children,
-  padded = true,
-  testId,
-}: {
-  title?: string;
-  action?: ReactNode;
-  children: ReactNode;
-  padded?: boolean;
-  testId?: string;
-}) {
-  return (
-    <section
-      style={floatingPane({ padding: 0, overflow: "hidden" })}
-      data-testid={testId ?? (title ? `pr-metadata-section-${title.toLowerCase().replace(/\s+/g, "-")}` : undefined)}
-    >
-      {title ? (
-        <div className="flex items-center justify-between px-3 pt-2.5 pb-1">
-          <span
-            className="text-[11px] font-medium"
-            style={{ color: COLORS.textMuted, fontFamily: SANS_FONT }}
-          >
-            {title}
-          </span>
-          {action}
-        </div>
-      ) : null}
-      <div className={padded ? "px-3 pb-3 pt-1" : undefined}>{children}</div>
-    </section>
-  );
-}
-
-/** Header row for a sub-section nested inside a shared metadata box. */
-function MetaSectionHeader({ title, action }: { title: string; action?: ReactNode }) {
-  return (
-    <div className="flex items-center justify-between px-3 pt-2.5 pb-1">
-      <span className="text-[11px] font-medium" style={{ color: COLORS.textMuted, fontFamily: SANS_FONT }}>
-        {title}
-      </span>
-      {action}
-    </div>
-  );
-}
-
-/** Hairline divider separating sub-sections inside a shared metadata box. */
-function MetaSectionDivider() {
-  return <div style={{ height: 1, background: COLORS.border, opacity: 0.6 }} />;
-}
-
-function EmptyValue({ children }: { children: ReactNode }) {
-  return (
-    <span className="text-[12px]" style={{ color: COLORS.textDim, fontFamily: SANS_FONT }}>
-      {children}
-    </span>
-  );
-}
+/**
+ * How many check rows the rail previews before folding the rest behind
+ * "+N more". The rail is a summary, not the CI tab: five rows is enough to show
+ * the failures and the in-flight jobs (`buildUnifiedChecks` already orders
+ * failure → running → done) without letting a 37-check PR own the column.
+ */
+const CHECKS_PREVIEW_LIMIT = 5;
 
 function EditLink({ active, label, onClick }: { active: boolean; label: string; onClick: () => void }) {
   return (
     <button
       type="button"
       onClick={onClick}
-      className="inline-flex items-center gap-1 text-[11px]"
-      style={{ color: COLORS.accent, fontFamily: SANS_FONT, background: "none", border: "none", cursor: "pointer" }}
+      className="inline-flex items-center gap-1"
+      style={prSectionAction()}
     >
       {active ? <PencilSimple size={12} /> : null}
       {label}
@@ -232,6 +191,7 @@ export const PrDetailRightMetadataRail = memo(function PrDetailRightMetadataRail
   onSetLabels,
   actionBusy,
   onSubmitReview,
+  onOpenAsLane,
   onSelectCheck,
   onOpenChecksTab,
   onRerunChecks,
@@ -246,9 +206,17 @@ export const PrDetailRightMetadataRail = memo(function PrDetailRightMetadataRail
   // that tab goes: on a machine without the plugin that owns it, starting a run
   // would send findings to a page this ADE does not have.
   const reviewSurfaceVisible = useBuiltinSurfaceVisible("review");
+  // ADE review starts an agent inside the lane's worktree, so this one really
+  // does need a local checkout. A disabled button that explains itself beats a
+  // button that silently does nothing when clicked.
   const requestReviewEnabled = Boolean(pr.laneId && lane && isOpenOrDraft);
+  const canOfferOpenAsLane = Boolean(!requestReviewEnabled && isOpenOrDraft && onOpenAsLane);
+  const requestReviewBlockedReason = isOpenOrDraft && !requestReviewEnabled
+    ? "ADE review runs an agent on a local checkout of this branch. Open it as a lane first."
+    : undefined;
   const requestedReviewers = detail?.requestedReviewers ?? [];
   const requestedTeams = detail?.requestedTeams ?? [];
+  const reviewerCount = requestedReviewers.length + requestedTeams.length;
   const requestReviewers = () => {
     const request = parseReviewerRequestInput(reviewerInput);
     if (request.reviewers.length || request.teamReviewers.length) onRequestReviewers(request);
@@ -265,21 +233,28 @@ export const PrDetailRightMetadataRail = memo(function PrDetailRightMetadataRail
       // itself no longer scrolls — the Checks card is the single growth target
       // (`flex-1 min-h-0`) and scrolls its own list, so the rail can't end in a
       // band of dead air under a stack of intrinsic-height cards.
-      className="flex h-full min-h-0 w-full flex-col gap-2 overflow-hidden"
+      className="flex h-full min-h-0 w-full flex-col overflow-hidden"
     >
-      {/* Combined people box: Reviewers, Labels, Assignees — one card, three
-          headers separated by hairline dividers. */}
-      <section
-        style={floatingPane({ padding: 0, overflow: "hidden" })}
-        className="shrink-0"
+      {/* People: Reviewers, Labels, Assignees — one group, so no hairlines
+          between them. Their labelled headers already carry the grouping, and on
+          the common PR all three are empty one-liners: two rules through a
+          three-line list is noise that costs 74px. The hairlines in this rail
+          are spent where a real boundary is: Checks and Files changed. */}
+      <div
+        className="flex shrink-0 flex-col"
+        style={{ gap: PR_SECTION_GAP_COMPACT }}
         data-testid="pr-metadata-section-people"
       >
-        {/* Reviewers */}
-        <MetaSectionHeader
+        <PrSection
+          icon={Users}
           title="Reviewers"
-          action={pr.laneId ? <EditLink active={showReviewerEditor} label="Request" onClick={() => setShowReviewerEditor(!showReviewerEditor)} /> : undefined}
-        />
-        <div className="px-3 pb-3 pt-1">
+          meta={reviewerCount || undefined}
+          inlineEmpty={reviewerCount ? undefined : "None"}
+          // No lane gate: requesting a reviewer is a GitHub API call and
+          // `requestReviewers` resolves a synthetic `gh:` id like every other
+          // mutation. A lane is a convenience link, not an authorization.
+          action={<EditLink active={showReviewerEditor} label="Request" onClick={() => setShowReviewerEditor(!showReviewerEditor)} />}
+        >
           {requestedReviewers.length || requestedTeams.length ? (
             <>
               {requestedReviewers.map((reviewer) => (
@@ -289,9 +264,7 @@ export const PrDetailRightMetadataRail = memo(function PrDetailRightMetadataRail
                 <TeamReviewerRow key={team.slug || team.name} team={team} />
               ))}
             </>
-          ) : (
-            <EmptyValue>None yet</EmptyValue>
-          )}
+          ) : null}
           {showReviewerEditor ? (
             <div className="mt-2">
               <input
@@ -313,57 +286,61 @@ export const PrDetailRightMetadataRail = memo(function PrDetailRightMetadataRail
             </div>
           ) : null}
 
-          {/* Review actions fold in here as a compact two-up row. A standalone
-              pane holding nothing but these two buttons used to be the last card
-              in the rail — i.e. the thing that absorbed all the column's slack. */}
+          {/* Review actions fold in here as a compact two-up row. Both are flat
+              outlines: the merge button on the neighbouring rail is the one
+              filled control on this surface. */}
           {isOpenOrDraft ? (
             <div className="mt-2 flex gap-1.5" data-testid="pr-detail-metadata-actions">
+              {/* With no lane the button does not go dead — it offers the step
+                  that unblocks it. ADE review diffs a working tree, so checking
+                  the branch out IS the prerequisite; making the user find that
+                  themselves is what turned this into a button that "does
+                  nothing". */}
               {reviewSurfaceVisible ? (
               <button
                 type="button"
-                onClick={() => setReviewDialogOpen(true)}
-                disabled={!requestReviewEnabled}
-                className="inline-flex h-6 min-w-0 flex-1 items-center justify-center gap-1 rounded-md text-[10.5px] font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-60"
-                style={{
-                  fontFamily: SANS_FONT,
-                  color: COLORS.accent,
-                  background: "color-mix(in srgb, var(--color-accent) 10%, transparent)",
-                  border: `1px solid ${COLORS.accentBorder}`,
-                }}
+                onClick={() => (requestReviewEnabled ? setReviewDialogOpen(true) : onOpenAsLane?.())}
+                disabled={!requestReviewEnabled && !canOfferOpenAsLane}
+                title={
+                  requestReviewEnabled
+                    ? undefined
+                    : canOfferOpenAsLane
+                      ? "ADE review diffs a local checkout. This opens the branch as a lane first."
+                      : requestReviewBlockedReason
+                }
+                className="min-w-0 flex-1 transition-colors disabled:cursor-not-allowed disabled:opacity-60"
+                style={prFlatButton({ tone: COLORS.accent, height: 26, fontSize: 10.5 })}
                 data-tour="prs.requestAiReview"
               >
                 <Sparkle size={11} weight="fill" />
-                ADE review
+                {canOfferOpenAsLane ? "Open as lane to review" : "ADE review"}
               </button>
               ) : null}
               <button
                 type="button"
                 onClick={() => setSubmitReviewOpen(true)}
-                disabled={actionBusy || !pr.laneId}
-                title={!pr.laneId ? "Map this PR to a lane to review" : undefined}
-                className="inline-flex h-6 min-w-0 flex-1 items-center justify-center gap-1 rounded-md text-[10.5px] font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-60"
-                style={{
-                  fontFamily: SANS_FONT,
-                  color: COLORS.textSecondary,
-                  background: COLORS.recessedBg,
-                  border: `1px solid ${COLORS.outlineBorder}`,
-                }}
+                // No lane gate: submitting a review is a GitHub API call, and
+                // `submitReview` resolves a synthetic `gh:` id like every other
+                // mutation. This was the last survivor of the mapping sweep.
+                disabled={actionBusy}
+                className="min-w-0 flex-1 transition-colors disabled:cursor-not-allowed disabled:opacity-60"
+                style={prFlatButton({ color: COLORS.textSecondary, height: 26, fontSize: 10.5 })}
               >
                 <CheckCircle size={11} weight="bold" />
                 Submit review
               </button>
             </div>
           ) : null}
-        </div>
+        </PrSection>
 
-        <MetaSectionDivider />
-
-        {/* Labels */}
-        <MetaSectionHeader
+        <PrSection
+          icon={Tag}
           title="Labels"
-          action={pr.laneId ? <EditLink active={showLabelEditor} label="Edit" onClick={() => setShowLabelEditor(!showLabelEditor)} /> : undefined}
-        />
-        <div className="px-3 pb-3 pt-1">
+          meta={detail?.labels?.length || undefined}
+          inlineEmpty={detail?.labels?.length ? undefined : "None"}
+          // Same as Reviewers above: `setLabels` is a plain GitHub mutation.
+          action={<EditLink active={showLabelEditor} label="Edit" onClick={() => setShowLabelEditor(!showLabelEditor)} />}
+        >
           {detail?.labels?.length ? (
             <div className="flex flex-wrap gap-1.5">
               {detail.labels.map((label) => (
@@ -385,9 +362,7 @@ export const PrDetailRightMetadataRail = memo(function PrDetailRightMetadataRail
                 </span>
               ))}
             </div>
-          ) : (
-            <EmptyValue>None yet</EmptyValue>
-          )}
+          ) : null}
           {showLabelEditor ? (
             <div className="mt-2">
               <input
@@ -408,46 +383,53 @@ export const PrDetailRightMetadataRail = memo(function PrDetailRightMetadataRail
               />
             </div>
           ) : null}
-        </div>
+        </PrSection>
 
-        <MetaSectionDivider />
-
-        {/* Assignees */}
-        <MetaSectionHeader title="Assignees" />
-        <div className="px-3 pb-3 pt-1">
-          {detail?.assignees?.length ? (
-            detail.assignees.map((assignee) => (
-              <div key={assignee.login} className="flex items-center gap-2 py-1">
-                <PrUserAvatar user={assignee} size={22} />
-                <span className="text-[12px] font-medium" style={{ color: COLORS.textPrimary, fontFamily: SANS_FONT }}>
-                  {assignee.login}
-                </span>
-              </div>
-            ))
-          ) : (
-            <EmptyValue>None yet</EmptyValue>
-          )}
-        </div>
-      </section>
+        <PrSection
+          icon={UserCircle}
+          title="Assignees"
+          meta={detail?.assignees?.length || undefined}
+          inlineEmpty={detail?.assignees?.length ? undefined : "None"}
+        >
+          {detail?.assignees?.length
+            ? detail.assignees.map((assignee) => (
+                <div key={assignee.login} className="flex items-center gap-2 py-1">
+                  <PrUserAvatar user={assignee} size={22} />
+                  <span className="text-[12px] font-medium" style={{ color: COLORS.textPrimary, fontFamily: SANS_FONT }}>
+                    {assignee.login}
+                  </span>
+                </div>
+              ))
+            : null}
+        </PrSection>
+      </div>
 
       {detail?.linkedIssues?.length ? (
-        <div className="shrink-0">
-          <RightCard title="Development">
-            <div className="flex flex-col gap-1">
-              {detail.linkedIssues.map((issue) => (
-                <span key={issue.number} className="text-[12px]" style={{ color: COLORS.textPrimary, fontFamily: SANS_FONT }}>
-                  #{issue.number} {issue.title}
-                </span>
-              ))}
-            </div>
-          </RightCard>
-        </div>
+        <PrSection
+          divided
+          icon={LinkSimple}
+          title="Linked issues"
+          meta={detail.linkedIssues.length}
+          className="shrink-0"
+          data-testid="pr-metadata-section-development"
+        >
+          <div className="flex flex-col gap-1">
+            {detail.linkedIssues.map((issue) => (
+              <span key={issue.number} className="truncate text-[12px]" style={{ color: COLORS.textPrimary, fontFamily: SANS_FONT }}>
+                #{issue.number} {issue.title}
+              </span>
+            ))}
+          </div>
+        </PrSection>
       ) : null}
 
-      {/* THE growth target: checks are the one genuinely variable-length list in
-          this column, so they take the slack and scroll internally. */}
+      {/* Checks take the column's slack (`fill`) so the rail never ends in dead
+          air, but the LIST is capped: the rail previews the top five and sends
+          the rest to the CI tab. */}
       <PrChecksCard
         fill
+        autoFillPreview
+        previewLimit={CHECKS_PREVIEW_LIMIT}
         missingRequired={pr.checksMissingRequired}
         checksStatus={pr.checksStatus}
         checks={checks}

@@ -56,7 +56,6 @@ import {
   upsertLaneSummary,
 } from "./GitHubTabCreateLaneDialog";
 import { GitHubTabView } from "./GitHubTabView";
-import { branchNameFromRef } from "./githubPrBranch";
 import { useGitHubTabListModel } from "./useGitHubTabListModel";
 import { useGitHubTabSelection } from "./useGitHubTabSelection";
 import { useGitHubTargetHistory } from "./useGitHubTargetHistory";
@@ -129,6 +128,7 @@ export function GitHubTab({
     loading: prsContextLoading,
     setViewerLogin: setContextViewerLogin,
     setWriteViewerLogin: setContextWriteViewerLogin,
+    optimisticTerminalStates = {},
   } = usePrs();
   const projectRoot = useAppStore(selectActiveProjectRoot);
   const refreshLanes = useAppStore((s) => s.refreshLanes);
@@ -147,9 +147,6 @@ export function GitHubTab({
   const [selectedItemIdsByFilter, setSelectedItemIdsByFilter] = React.useState<GitHubFilterSelectionMap>(
     () => initialGitHubFilterSelections(initialWarmCacheRef.current),
   );
-  const [linkLaneId, setLinkLaneId] = React.useState("");
-  const [linkingItemId, setLinkingItemId] = React.useState<string | null>(null);
-  const [unlinkingPrId, setUnlinkingPrId] = React.useState<string | null>(null);
   const [createLaneItem, setCreateLaneItem] = React.useState<GitHubPrListItem | null>(null);
   const [createLanePreflight, setCreateLanePreflight] = React.useState<CreateLaneFromPrBranchPreflightResult | null>(null);
   const [createLaneLoading, setCreateLaneLoading] = React.useState(false);
@@ -185,6 +182,13 @@ export function GitHubTab({
   snapshotRef.current = snapshot;
   filterRef.current = filter;
   externalHistoryLoadedRef.current = externalHistoryLoaded;
+
+  // Merges/closes GitHub has confirmed, keyed the same way list rows are, so a
+  // row moves buckets on the spot instead of waiting for the snapshot refetch.
+  const optimisticTerminalByCoord = React.useMemo(
+    () => new Map(Object.entries(optimisticTerminalStates)),
+    [optimisticTerminalStates],
+  );
 
   const currentHistoryPageLimit = React.useCallback(() => {
     const current = snapshotRef.current?.history?.pageLimit;
@@ -442,6 +446,7 @@ export function GitHubTab({
     lastSeenRowByCoordRef,
     currentHistoryPageLimit,
     prsByCoordinateMap,
+    optimisticTerminalByCoord,
   });
   useGitHubTargetHistory({
     displayedItems,
@@ -504,7 +509,6 @@ export function GitHubTab({
   // local row arrives, treat it as coordinate-backed rather than manufacturing
   // a row-backed PR id that cannot be read from this machine.
   const selectedIsUnmapped = Boolean(selectedItem && !selectedLocalPr);
-  const selectedMappedPrId = selectedLocalPr?.id ?? selectedItem?.linkedPrId ?? null;
   const missingLinkedPrId = selectedItem?.linkedPrId && !selectedLocalPr
     ? selectedItem.linkedPrId
     : null;
@@ -542,23 +546,6 @@ export function GitHubTab({
           }
         : null,
     [selectedItem],
-  );
-
-  // Lanes whose branch matches the unmapped PR's head branch (the same gate the
-  // legacy read-only pane used) — offered in the in-pane "Map to lane" select.
-  const linkableLanesForSelected = React.useMemo(
-    () => {
-      if (!selectedItem) return [] as Array<{ id: string; name: string }>;
-      const headBranch = branchNameFromRef(selectedItem.headBranch);
-      return lanes
-        .filter((lane) => {
-          if (lane.archivedAt || lane.laneType === "primary") return false;
-          if (!headBranch) return true;
-          return branchNameFromRef(lane.branchRef) === headBranch;
-        })
-        .map((lane) => ({ id: lane.id, name: lane.name }));
-    },
-    [lanes, selectedItem],
   );
 
   const selectedStack = React.useMemo(() => {
@@ -660,7 +647,6 @@ export function GitHubTab({
     setSelectedItemIdsByFilter((prev) => ({ ...prev, [filter]: item.id }));
     pendingRestoredSelectedItemIdRef.current = null;
     onSelectPr(item.linkedPrId ?? null, selectionTargetForItem(item));
-    setLinkLaneId("");
   }, [filter, onSelectPr]);
 
   const handleFilterChange = React.useCallback((state: GitHubFilter) => {
@@ -698,55 +684,7 @@ export function GitHubTab({
       if (nextSelectedItem) onSelectPr(nextSelectedItem.linkedPrId ?? null, selectionTargetForItem(nextSelectedItem));
       else onSelectPr(null, null);
     }
-    setLinkLaneId("");
   }, [displayedItems, filter, onSelectPr, selectedItemId, selectedItemIdsByFilter, selectedPrId, selectedPrTarget]);
-
-  const handleLink = React.useCallback(async () => {
-    if (!selectedItem || !linkLaneId) return;
-    setLinkingItemId(selectedItem.id);
-    setError(null);
-    try {
-      await window.ade.prs.linkToLane({ laneId: linkLaneId, prUrlOrNumber: selectedItem.githubUrl });
-      await handleSync();
-      setLinkLaneId("");
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setLinkingItemId(null);
-    }
-  }, [handleSync, linkLaneId, selectedItem]);
-
-  const handleUnlink = React.useCallback(async (item: GitHubPrListItem | null = selectedItem) => {
-    if (!item?.linkedPrId) return;
-    const confirmed = typeof window.confirm !== "function"
-      ? true
-      : window.confirm(`Unmap PR #${item.githubPrNumber} from its ADE lane? ADE will keep the GitHub PR open and remember not to relink it automatically.`);
-    if (!confirmed) return;
-    setUnlinkingPrId(item.linkedPrId);
-    setError(null);
-    try {
-      await window.ade.prs.delete({
-        prId: item.linkedPrId,
-        closeOnGitHub: false,
-        archiveLane: false,
-      });
-      onSelectPr(null, selectionTargetForItem(item));
-      setSelectedItemId(item.id);
-      setSelectedItemIdsByFilter((prev) => ({ ...prev, [filterRef.current]: item.id }));
-      await Promise.all([
-        onRefreshAll().catch(() => {}),
-        loadSnapshot({
-          force: true,
-          silent: true,
-          ...(externalHistoryLoadedRef.current || filterRef.current !== "open" ? { includeExternalClosed: true } : {}),
-        }).catch(() => null),
-      ]);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setUnlinkingPrId(null);
-    }
-  }, [loadSnapshot, onRefreshAll, onSelectPr, selectedItem]);
 
   const handleOpenCreateLaneFromPrBranch = React.useCallback((item: GitHubPrListItem | null = selectedItem) => {
     if (!item) return;
@@ -846,28 +784,16 @@ export function GitHubTab({
     }
   }, [appStore, createLaneItem, loadSnapshot, onRefreshAll, onSelectPr, projectRoot, refreshLanes, selectLane]);
 
-  // Create/map controls surfaced inside PrDetailPane for an unmapped selected PR.
+  // The "open as lane" offer surfaced inside PrDetailPane. This used to also
+  // carry a lane picker and a Map button; mapping is no longer something the
+  // user resolves, so only the lane-creation action remains.
   const unmappedAffordance = React.useMemo((): UnmappedAffordance | null => {
     if (!selectedItem || selectedItem.linkedPrId) return null;
     return {
-      linkableLanes: linkableLanesForSelected,
-      selectedLaneId: linkLaneId,
-      onSelectLane: setLinkLaneId,
-      onLink: () => { void handleLink(); },
-      linkBusy: linkingItemId === selectedItem.id,
       canCreateLane: canCreateLaneFromPrBranch(selectedItem, lanes),
       onCreateLane: () => handleOpenCreateLaneFromPrBranch(selectedItem),
-      scope: selectedItem.scope,
     };
-  }, [
-    handleLink,
-    handleOpenCreateLaneFromPrBranch,
-    lanes,
-    linkLaneId,
-    linkableLanesForSelected,
-    linkingItemId,
-    selectedItem,
-  ]);
+  }, [handleOpenCreateLaneFromPrBranch, lanes, selectedItem]);
 
   const detailPaneProps = selectedItem && selectedDisplayPr ? {
     pr: selectedDisplayPr,
@@ -890,10 +816,9 @@ export function GitHubTab({
     onOpenRebaseTab,
     initialDetailTab: selectedDetailTab,
     onDetailTabChange,
-    onUnmap: !selectedIsUnmapped && selectedMappedPrId
-      ? () => handleUnlink({ ...selectedItem, linkedPrId: selectedMappedPrId })
-      : undefined,
-    unmapBusy: !selectedIsUnmapped && Boolean(selectedMappedPrId) && unlinkingPrId === selectedMappedPrId,
+    // No Unmap button: unmapping is not a user task. The link is plumbing that
+    // ADE maintains itself, and breaking it by hand only loses the chat and
+    // proof provenance attached to the PR.
     unmapped: selectedIsUnmapped,
     provisional: Boolean(selectedPrTarget && !selectedTargetResolved),
     githubCoords: selectedIsUnmapped ? selectedGithubCoords : null,

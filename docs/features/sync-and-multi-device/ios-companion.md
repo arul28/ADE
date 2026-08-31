@@ -506,7 +506,7 @@ apps/ios/
 │   │   │                            # PrDetailActivityTab (timeline builder +
 │   │   │                            #   commit-group folding), PrDetailOverviewTab,
 │   │   │                            # PrDetailHeaderComponents (compact summary,
-│   │   │                            #   collapsible unmapped notice, description),
+│   │   │                            #   collapsible local-lane offer, description),
 │   │   │                            # PrGitHubDescriptionParser (safe embedded
 │   │   │                            #   HTML → Markdown/native disclosures),
 │   │   │                            # PrMergeGateCard (PrGlassPalette tokens),
@@ -2737,9 +2737,14 @@ would otherwise put the same PR in "This week" on the phone and "Last week" on
 desktop.
 
 `PrRowCard` keeps scroll-time rendering deliberately compact: a fixed state
-symbol, two-line title with age, one identity line with a non-wrapping
-`Unmapped` capsule or lane label, then a branch line whose trailing checks /
-reviews / comments remain horizontal. It does not fetch author avatars from
+symbol, two-line title with age, one identity line carrying a lane label when a
+lane exists and nothing at all when one does not, then a branch line whose
+trailing checks / reviews / comments remain horizontal. There is no `Unmapped`
+capsule: the absence of a lane chip already says there is no lane, and every
+action on the row works either way (see
+[A lane link is not a permission](../pull-requests/README.md#a-lane-link-is-not-a-permission)).
+The `External` section header is a plain label for the same reason — it no
+longer counts unmapped PRs. It does not fetch author avatars from
 the network. In the terminal buckets it drops the queue signals — the identity
 line becomes the dim `was: <lane>` ghost chip when the PR is detached, or
 nothing at all when the PR simply never had a lane, and the branch line is
@@ -2773,11 +2778,13 @@ Reading order (desktop parity, folded to one column):
 1. a compact summary section (`PrDetailSummarySection`) with a state/approval
    line and three metrics: Checks, Changes, and Commits. Commits expand inline
    from their metric and jump to the matching timeline anchor;
-2. a collapsed-by-default unmapped-PR notice (`PrUnmappedThreadBanner`) when
-   the PR has no ADE lane. Its expanded state is remembered per PR for the
-   current scene; expanded actions offer auto-map
-   (`prs.createLaneFromPrBranch`), map to an existing lane
-   (`prs.linkToLane`), or Open in GitHub;
+2. a collapsed-by-default local-lane offer (`PrLocalLaneOfferBanner`) when no
+   local lane tracks this PR's branch — "Create a lane from this branch, or link
+   one you already have, to edit the code on your machine". It is an offer to
+   start local work, never a warning: nothing on the screen is gated on it. Its
+   expanded state is remembered per PR for the current scene; expanded actions
+   are Create lane from branch (`prs.createLaneFromPrBranch`), Link an existing
+   lane (`prs.linkToLane`), or Open in GitHub;
 3. the PR description (`PrThreadDescriptionCard`). GitHub's embedded HTML is
    normalized into safe Markdown, while `<details>/<summary>` regions become
    native `DisclosureGroup` rows instead of visible raw tags;
@@ -2790,7 +2797,8 @@ Reading order (desktop parity, folded to one column):
    section). Individual thread/comment cards are also collapsible on mobile:
    folded rows use cheap inline preview text, while expanded rows render the
    full normalized markdown body through `WorkMarkdownRenderer`;
-6. the comment composer (locked for unmapped PRs);
+6. the comment composer — shown for every PR. Commenting is a GitHub call, so a
+   local lane is not a precondition and there is no locked-composer state;
 7. the inline merge rail (`PrOverviewMergeRail`) carrying the desktop
    GitHub-style requirement checklist (`PrMergeChecklist` —
    conflicts / behind-base / checks / review), the merge-method sheet, and
@@ -2806,13 +2814,14 @@ display items, the unresolved/resolved thread split, and the synthesized
 fallback PR — are precomputed once per data change in
 `recomputeDerivedModels()`, never inside `body`.
 
-Unmapped rows navigate to this full screen with a synthetic
-`gh:owner/repo#number` route instead of opening the old metadata-only sheet.
-The warm cache seeds the row title immediately, then
+A PR with no local `pull_requests` row navigates to this same full screen with a
+synthetic `gh:owner/repo#number` route instead of opening the old metadata-only
+sheet. The warm cache seeds the row title immediately, then
 `prs.getMobileGithubDetail` loads detail/status/checks/reviews/comments/files,
-commits, review threads, action runs, and activity in one sync command. The
-description, files, checks, and timeline therefore remain readable before lane
-mapping; lane-dependent mutation controls stay locked. Optional sub-read
+commits, review threads, action runs, and activity in one sync command. Both the
+read surface *and* the mutations are the same as for a PR with a lane — close,
+reopen, comment, labels, reviewers and re-run are plain GitHub calls, so
+`hasLocalLane` decides only whether to offer the lane banner. Optional sub-read
 failures are returned in `unavailableParts`; the phone preserves the previous
 successful field values, displays a partial-data retry notice, and uses the
 normal 25 s freshness window as retry backoff. An explicit retry bypasses that

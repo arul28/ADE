@@ -453,29 +453,6 @@ struct PrsEyebrowLabel: View {
   }
 }
 
-// MARK: - Section header used to group external (un-mapped) PRs in the root list.
-//
-// Used between ADE-linked rows and external rows so the list still reads as
-// two pools without a wrapper card. The root screen decides when to show it.
-struct PrsExternalSectionHeader: View {
-  let unmappedCount: Int
-
-  var body: some View {
-    HStack(spacing: 8) {
-      PrsEyebrowLabel(
-        text: "External · \(unmappedCount) unmapped",
-        tint: PrsGlass.externalTop
-      )
-      Rectangle()
-        .fill(Color.white.opacity(0.06))
-        .frame(height: 0.5)
-    }
-    .padding(.horizontal, 4)
-    .padding(.top, 12)
-    .padding(.bottom, 4)
-  }
-}
-
 /// Period header for the merged/closed log — `THIS WEEK · 4 merged · +1.2k −380`.
 ///
 /// Mirrors the desktop PRs tab. The aggregate is the point: it turns a scroll through

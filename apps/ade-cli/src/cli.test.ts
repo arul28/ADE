@@ -993,6 +993,23 @@ describe("ADE CLI", () => {
     expect(() => buildCliPlan(["runtime", "run"])).toThrow(
       "ade runtime run requires --socket <path>.",
     );
+    // One parser for --profile. There used to be two with different
+    // strictness: the router rejected unknown values while runServe silently
+    // coerced them back to the FULL profile — so a value reaching runServe by
+    // any other route started a full machine brain when a sandboxed guest was
+    // asked for.
+    expect(() =>
+      buildCliPlan(["runtime", "run", "--socket", "/tmp/ade.sock", "--profile", "full"]),
+    ).toThrow(/Unknown runtime profile 'full'/);
+    expect(() =>
+      buildCliPlan(["runtime", "run", "--socket", "/tmp/ade.sock", "--profile", "Embedded"]),
+    ).toThrow(/Unknown runtime profile/);
+    expect(
+      buildCliPlan(["runtime", "run", "--socket", "/tmp/ade.sock", "--profile", "embedded"]),
+    ).toEqual({
+      kind: "serve",
+      rest: ["--socket", "/tmp/ade.sock", "--profile", "embedded", "--no-sync"],
+    });
     expect(
       buildCliPlan(["runtime", "run", "--socket", "/tmp/ade.sock"]),
     ).toEqual({
@@ -7207,6 +7224,93 @@ describe("ADE CLI", () => {
     expect(() =>
       buildCliPlan(["prs", "comment-edit", "pr-1", "--comment", "1", "--body", "x", "--source", "gist"]),
     ).toThrow(/--source must be issue or review/);
+  });
+
+  it("keeps the remote branch on prs land unless --delete-remote-branch is passed", () => {
+    const kept = buildCliPlan(["prs", "land", "gh:acme/ade#42", "--method", "squash"]);
+    expect(kept.kind).toBe("execute");
+    if (kept.kind !== "execute") throw new Error("Expected prs land to produce an execute plan");
+    expect(kept.steps[0]?.params).toEqual({
+      name: "run_ade_action",
+      arguments: {
+        domain: "pr",
+        action: "land",
+        args: { prId: "gh:acme/ade#42", method: "squash", deleteRemoteBranch: false },
+      },
+    });
+
+    const deleted = buildCliPlan([
+      "prs",
+      "land",
+      "pr-1",
+      "--method",
+      "squash",
+      "--delete-remote-branch",
+    ]);
+    expect(deleted.kind).toBe("execute");
+    if (deleted.kind !== "execute") throw new Error("Expected prs land to produce an execute plan");
+    expect(deleted.steps[0]?.params).toEqual({
+      name: "run_ade_action",
+      arguments: {
+        domain: "pr",
+        action: "land",
+        args: { prId: "pr-1", method: "squash", deleteRemoteBranch: true },
+      },
+    });
+  });
+
+  it("routes prs close/reopen/cleanup-branch to pr actions with a synthetic GitHub id", () => {
+    // Merging no longer deletes the head branch, so cleanup has to be reachable
+    // on its own — and all three run on a PR that has no ADE row.
+    const closed = buildCliPlan(["prs", "close", "gh:acme/ade#42"]);
+    if (closed.kind !== "execute") throw new Error("Expected prs close to produce an execute plan");
+    expect(closed.steps[0]?.params).toEqual({
+      name: "run_ade_action",
+      arguments: { domain: "pr", action: "closePr", args: { prId: "gh:acme/ade#42" } },
+    });
+
+    const reopened = buildCliPlan(["prs", "reopen", "gh:acme/ade#42"]);
+    if (reopened.kind !== "execute") throw new Error("Expected prs reopen to produce an execute plan");
+    expect(reopened.steps[0]?.params).toEqual({
+      name: "run_ade_action",
+      arguments: { domain: "pr", action: "reopenPr", args: { prId: "gh:acme/ade#42" } },
+    });
+
+    // Service defaults, made explicit: local branch goes, remote branch stays.
+    const cleanup = buildCliPlan(["prs", "cleanup-branch", "gh:acme/ade#42"]);
+    if (cleanup.kind !== "execute") throw new Error("Expected prs cleanup-branch to produce an execute plan");
+    expect(cleanup.steps[0]?.params).toEqual({
+      name: "run_ade_action",
+      arguments: {
+        domain: "pr",
+        action: "cleanupBranch",
+        args: { prId: "gh:acme/ade#42", deleteLocalBranch: true, deleteRemoteBranch: false },
+      },
+    });
+
+    const cleanupBoth = buildCliPlan([
+      "prs",
+      "cleanup-branch",
+      "pr-1",
+      "--delete-remote-branch",
+      "--keep-local",
+      "--remote",
+      "upstream",
+    ]);
+    if (cleanupBoth.kind !== "execute") throw new Error("Expected prs cleanup-branch to produce an execute plan");
+    expect(cleanupBoth.steps[0]?.params).toEqual({
+      name: "run_ade_action",
+      arguments: {
+        domain: "pr",
+        action: "cleanupBranch",
+        args: {
+          prId: "pr-1",
+          deleteLocalBranch: false,
+          deleteRemoteBranch: true,
+          remoteName: "upstream",
+        },
+      },
+    });
   });
 
   it("maps git user-identity and prs list-open to typed RPC tools", () => {

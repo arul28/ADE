@@ -906,7 +906,22 @@ export async function createAdeRuntime(args: {
   workspaceRoot?: string;
   primaryWorktreePath?: string;
   chatRuntime?: "headless-stub" | "agent";
-  runtimeProfile?: "full" | "chat";
+  /**
+   * How much of the runtime to build.
+   *
+   * - "full": everything (the machine brain / project daemon).
+   * - "chat": the TUI + personal-chat runtime. Drops iOS-sim, app-control, and
+   *   the built-in browser bridge, all of which need a desktop host.
+   * - "embedded": "chat" minus everything an external embedder must not get.
+   *   Automations, their ingress rule dispatch, and auto-update are off, and
+   *   sync is forced off no matter what the caller passed — an embedded runtime
+   *   is a guest inside somebody else's process and must never take machine
+   *   brain authority or restart the machine's ADE.
+   *
+   * Personal chats work identically under all three: nothing personal chats
+   * needs is trimmed by any profile.
+   */
+  runtimeProfile?: "full" | "chat" | "embedded";
   /** Disable project-oriented push/deep-link events for machine-scoped runtimes. */
   publishPushEvents?: boolean;
   syncRuntime?: AdeRuntimeSyncOptions;
@@ -917,7 +932,11 @@ export async function createAdeRuntime(args: {
   const projectRoot = path.resolve(resolvedArgs.projectRoot);
   const workspaceRoot = path.resolve(resolvedArgs.workspaceRoot ?? resolvedArgs.projectRoot);
   const primaryWorktreePath = path.resolve(resolvedArgs.primaryWorktreePath ?? resolvedArgs.projectRoot);
-  const chatOnlyRuntime = resolvedArgs.runtimeProfile === "chat";
+  const embeddedRuntime = resolvedArgs.runtimeProfile === "embedded";
+  // "embedded" is a strict subset of "chat", so every chat-profile trim applies
+  // to it too rather than being re-listed at each site.
+  const chatOnlyRuntime = resolvedArgs.runtimeProfile === "chat" || embeddedRuntime;
+  const runtimeProfileLabel = embeddedRuntime ? "embedded" : chatOnlyRuntime ? "chat" : "full";
   const publishPushEvents = resolvedArgs.publishPushEvents !== false;
   if (!fs.existsSync(projectRoot) || !fs.statSync(projectRoot).isDirectory()) {
     throw new Error(`Project root does not exist: ${projectRoot}`);
@@ -937,9 +956,14 @@ export async function createAdeRuntime(args: {
   const diskPressureMonitor = createDiskPressureMonitor({
     roots: [projectRoot, resolveMachineAdeLayout().adeDir],
   });
+  // An embedded runtime is a guest inside an external process. It must never
+  // take machine-brain authority, host a sync listener, or answer for the
+  // machine's devices, so sync options are dropped here rather than at each of
+  // the twenty read sites below — one place to check the invariant holds.
+  const syncRuntimeOptions = embeddedRuntime ? undefined : resolvedArgs.syncRuntime;
   let syncService: ReturnType<typeof createSyncService> | null = null;
   const hasSyncPeers = createRegisteredSyncPeerGate({
-    syncEnabled: resolvedArgs.syncRuntime?.enabled === true,
+    syncEnabled: syncRuntimeOptions?.enabled === true,
     getSyncService: () => syncService,
   });
   let db: AdeDb;
@@ -1037,7 +1061,7 @@ export async function createAdeRuntime(args: {
         stateFilePath: productAnalyticsStateFile,
         logger,
         appVersion: process.env.ADE_CLI_VERSION?.trim() || BUNDLED_ADE_VERSION || "0.0.0",
-        runtimeMode: resolvedArgs.syncRuntime?.runtimeKind ?? (chatOnlyRuntime ? "chat_runtime" : "project_runtime"),
+        runtimeMode: syncRuntimeOptions?.runtimeKind ?? (chatOnlyRuntime ? "chat_runtime" : "project_runtime"),
       }));
     const usageProductAnalyticsExporter = createUsageProductAnalyticsExporter({
       db,
@@ -1258,7 +1282,7 @@ export async function createAdeRuntime(args: {
       if (reconciledSessions > 0) {
         logger.warn("sessions.reconciled_stale_running", {
           count: reconciledSessions,
-          runtimeProfile: chatOnlyRuntime ? "chat" : "full",
+          runtimeProfile: runtimeProfileLabel,
           reason,
         });
       }
@@ -1841,7 +1865,12 @@ export async function createAdeRuntime(args: {
         onEvent: (event) => pushEvent("runtime", { type: "review_event", event }),
       })
       : null;
-    const automationFeatureEnabled = automationsEnabledForHeadlessRuntime();
+    // Automations are unattended work the machine's own ADE schedules and owns.
+    // An embedded runtime runs inside somebody else's process on somebody
+    // else's lifecycle, so it must not start rules, fire ingress dispatches, or
+    // compete with the real brain for them. The ingress service itself still
+    // builds (it is the shared webhook plumbing and no-ops without rules).
+    const automationFeatureEnabled = !embeddedRuntime && automationsEnabledForHeadlessRuntime();
     const automationService = automationFeatureEnabled
       ? createAutomationService({
         db,
@@ -2180,7 +2209,7 @@ export async function createAdeRuntime(args: {
     const { createSyncCloudRelayStore } = await import("./services/sync/syncCloudRelayStore");
     const { resolveDeviceDisplayName } = await import("./services/sync/deviceRegistryService");
     const cloudRelayFilePath = path.join(
-      resolvedArgs.syncRuntime?.phonePairingStateDir ?? resolveMachineAdeLayout().secretsDir,
+      syncRuntimeOptions?.phonePairingStateDir ?? resolveMachineAdeLayout().secretsDir,
       "sync-cloud-relay.json",
     );
     const cloudRelayStore = createSyncCloudRelayStore({ filePath: cloudRelayFilePath });
@@ -2296,7 +2325,7 @@ export async function createAdeRuntime(args: {
       },
     });
     const syncDeviceIdPath = path.join(
-      resolvedArgs.syncRuntime?.phonePairingStateDir ?? resolveMachineAdeLayout().secretsDir,
+      syncRuntimeOptions?.phonePairingStateDir ?? resolveMachineAdeLayout().secretsDir,
       "sync-device-id",
     );
 
@@ -2380,11 +2409,11 @@ export async function createAdeRuntime(args: {
           }
           return { machineKey, deviceId };
         },
-        activityRosterProvider: resolvedArgs.syncRuntime?.activityRosterProvider,
+        activityRosterProvider: syncRuntimeOptions?.activityRosterProvider,
       };
     });
     pushPublisherService.setActivityRosterProvider(
-      resolvedArgs.syncRuntime?.activityRosterProvider ?? null,
+      syncRuntimeOptions?.activityRosterProvider ?? null,
     );
     const detachPushSources = publishPushEvents
       ? pushPublisherService.attachSources(projectId, {
@@ -2535,13 +2564,13 @@ export async function createAdeRuntime(args: {
       configStore: cloudRelayStore,
       configPath: cloudRelayFilePath,
       accountAuthService,
-      hostListener: resolvedArgs.syncRuntime?.sharedSyncListener ?? null,
+      hostListener: syncRuntimeOptions?.sharedSyncListener ?? null,
       onPublicationStateChanged: () => {
         // Relay state changes are machine-level; without this nudge an idle
         // machine emits no sync-status snapshot and the desktop relay banner
         // never appears (or never clears).
         syncService?.notifyRouteStateChanged();
-        resolvedArgs.syncRuntime?.requestAccountMachinePublish?.();
+        syncRuntimeOptions?.requestAccountMachinePublish?.();
       },
       captureAnalytics: (input) => {
         productAnalyticsService.captureInternal(input);
@@ -2558,23 +2587,23 @@ export async function createAdeRuntime(args: {
     teardown.push(() => syncService?.dispose());
 
     let externalSessionsService: ReturnType<typeof createExternalSessionsService> | null = null;
-    if (resolvedArgs.syncRuntime?.enabled && agentChatService) {
+    if (syncRuntimeOptions?.enabled && agentChatService) {
       const { createSyncService } = await import("./services/sync/syncService");
       syncService = createSyncService({
         db,
         usageTrackingService,
         productAnalyticsService,
         logger,
-        getAccountDirectoryHealth: resolvedArgs.syncRuntime.getAccountDirectoryHealth,
-        requestAccountMachinePublish: resolvedArgs.syncRuntime.requestAccountMachinePublish,
+        getAccountDirectoryHealth: syncRuntimeOptions.getAccountDirectoryHealth,
+        requestAccountMachinePublish: syncRuntimeOptions.requestAccountMachinePublish,
         accountAuthService,
-        projectId: resolvedArgs.syncRuntime.registryProjectId ?? projectId,
+        projectId: syncRuntimeOptions.registryProjectId ?? projectId,
         runtimeProjectId: projectId,
         projectRoot,
-        appVersion: resolvedArgs.syncRuntime.appVersion ?? "ade-cli",
-        runtimeKind: resolvedArgs.syncRuntime.runtimeKind ?? "headless",
-        localDeviceIdPath: resolvedArgs.syncRuntime.localDeviceIdPath,
-        phonePairingStateDir: resolvedArgs.syncRuntime.phonePairingStateDir,
+        appVersion: syncRuntimeOptions.appVersion ?? "ade-cli",
+        runtimeKind: syncRuntimeOptions.runtimeKind ?? "headless",
+        localDeviceIdPath: syncRuntimeOptions.localDeviceIdPath,
+        phonePairingStateDir: syncRuntimeOptions.phonePairingStateDir,
         fileService: headlessLinearServices.fileService,
         laneService,
         gitService,
@@ -2605,15 +2634,15 @@ export async function createAdeRuntime(args: {
         linearOAuthService,
         getLinearIssueTracker: () => headlessLinearServices.linearIssueTracker,
         getExternalSessionsService: () => externalSessionsService,
-        sharedSyncListener: resolvedArgs.syncRuntime.sharedSyncListener ?? null,
-        hostStartupEnabled: resolvedArgs.syncRuntime.hostStartupEnabled ?? true,
-        hostDiscoveryEnabled: resolvedArgs.syncRuntime.hostDiscoveryEnabled ?? true,
-        forceHostRole: resolvedArgs.syncRuntime.forceHostRole ?? false,
-        projectCatalogProvider: resolvedArgs.syncRuntime.projectCatalogProvider,
-        rosterProvider: resolvedArgs.syncRuntime.rosterProvider,
-        foreignChatProvider: resolvedArgs.syncRuntime.foreignChatProvider,
-        personalChatScope: resolvedArgs.syncRuntime.personalChatScope,
-        remoteCommandExecutor: resolvedArgs.syncRuntime.remoteCommandExecutor,
+        sharedSyncListener: syncRuntimeOptions.sharedSyncListener ?? null,
+        hostStartupEnabled: syncRuntimeOptions.hostStartupEnabled ?? true,
+        hostDiscoveryEnabled: syncRuntimeOptions.hostDiscoveryEnabled ?? true,
+        forceHostRole: syncRuntimeOptions.forceHostRole ?? false,
+        projectCatalogProvider: syncRuntimeOptions.projectCatalogProvider,
+        rosterProvider: syncRuntimeOptions.rosterProvider,
+        foreignChatProvider: syncRuntimeOptions.foreignChatProvider,
+        personalChatScope: syncRuntimeOptions.personalChatScope,
+        remoteCommandExecutor: syncRuntimeOptions.remoteCommandExecutor,
         getModelPickerStore: () => getSharedModelPickerStore(db),
         // The same instance `plugin.usageSummary` reads: the host writes frame
         // counts into it, and a host restart must not swap it for another.
@@ -2638,7 +2667,7 @@ export async function createAdeRuntime(args: {
           });
         }
       };
-      if (resolvedArgs.syncRuntime?.initializeInBackground === true) {
+      if (syncRuntimeOptions?.initializeInBackground === true) {
         void initializeSyncService();
       } else {
         await initializeSyncService();

@@ -1,17 +1,15 @@
 // @vitest-environment jsdom
 
-import { beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { PrActionStep, PrWorkflowGraph, PrWorkflowGraphNode } from "../../../../shared/types";
 import {
-  buildGraphColumns,
+  buildCheckDetailPlan,
   buildLogExcerptMarkdown,
   deriveFallbackGraph,
   graphBuckets,
   graphUnavailableCopy,
-  groupByWorkflow,
   hydrateWorkflowGraph,
-  isEdgeLive,
   matrixLegCaption,
   nodeElapsedMs,
   readStoredChecksView,
@@ -20,6 +18,7 @@ import {
   writeStoredChecksView,
 } from "./prChecksModel";
 import type { UnifiedCheckItem } from "../shared/prUnifiedChecks";
+import { fetchCheckLogForState, isCheckLogFetchWorthwhile } from "./prChecksApi";
 
 function node(overrides: Partial<PrWorkflowGraphNode> & Pick<PrWorkflowGraphNode, "jobId">): PrWorkflowGraphNode {
   return {
@@ -114,45 +113,6 @@ describe("prChecksModel — buckets", () => {
   });
 });
 
-describe("prChecksModel — layout", () => {
-  it("groups nodes into ordered tier columns and labels the ends", () => {
-    const columns = buildGraphColumns([
-      node({ jobId: "install", tier: 0 }),
-      node({ jobId: "test", tier: 1 }),
-      node({ jobId: "lint", tier: 1 }),
-      node({ jobId: "ci-pass", tier: 2 }),
-    ]);
-    expect(columns.map((c) => c.label)).toEqual(["Setup", "Parallel · 2", "Gate"]);
-    expect(columns[1]!.nodes.map((n) => n.jobId)).toEqual(["test", "lint"]);
-  });
-
-  it("marks a connector live only when it feeds a node that is actually running", () => {
-    const columns = buildGraphColumns([
-      node({ jobId: "install", tier: 0 }),
-      node({ jobId: "test", tier: 1, state: "queued" }),
-      node({ jobId: "ci-pass", tier: 2, state: "queued" }),
-    ]);
-    const queued = graph({
-      nodes: columns.flatMap((c) => c.nodes),
-      edges: [{ from: "install", to: "test" }, { from: "test", to: "ci-pass" }],
-    });
-    expect(isEdgeLive(queued, columns, 0)).toBe(false);
-
-    const runningColumns = buildGraphColumns([
-      node({ jobId: "install", tier: 0 }),
-      node({ jobId: "test", tier: 1, state: "running" }),
-      node({ jobId: "ci-pass", tier: 2, state: "queued" }),
-    ]);
-    const running = graph({
-      nodes: runningColumns.flatMap((c) => c.nodes),
-      edges: [{ from: "install", to: "test" }, { from: "test", to: "ci-pass" }],
-    });
-    // install → test feeds a running node; test → ci-pass feeds a queued one.
-    expect(isEdgeLive(running, runningColumns, 0)).toBe(true);
-    expect(isEdgeLive(running, runningColumns, 1)).toBe(false);
-  });
-});
-
 describe("prChecksModel — node presentation", () => {
   it("measures a running node against now and a finished one against its end", () => {
     const now = Date.parse("2026-07-27T12:00:00.000Z");
@@ -235,21 +195,6 @@ describe("prChecksModel — fallback graph", () => {
     ...o,
   });
 
-  it("splits Actions jobs into flat tier-0 nodes and non-Actions checks into the external lane", () => {
-    const fallback = deriveFallbackGraph([
-      item({ id: "job-1", name: "CI / build", workflowName: "CI" }),
-      item({ id: "job-2", name: "Docs / lint", workflowName: "Docs" }),
-      item({ id: "check-1", name: "CodeRabbit", source: "check", status: "in_progress", conclusion: null }),
-    ], { headSha: "abc1234", reason: "reusable-workflow" });
-
-    expect(fallback.source).toBe("none");
-    expect(fallback.edges).toEqual([]);
-    expect(fallback.nodes.map((n) => n.jobId)).toEqual(["job-1", "job-2"]);
-    expect(fallback.nodes.every((n) => n.tier === 0)).toBe(true);
-    expect(fallback.externalChecks.map((c) => c.name)).toEqual(["CodeRabbit"]);
-    expect(groupByWorkflow(fallback.nodes).map((l) => l.workflowName)).toEqual(["CI", "Docs"]);
-  });
-
   it("explains a reusable workflow in plain language", () => {
     expect(graphUnavailableCopy("reusable-workflow")).toContain("calls another workflow");
     expect(graphUnavailableCopy("no-workflow-file")).toContain("couldn't find the workflow file");
@@ -307,6 +252,118 @@ describe("prChecksModel — live graph hydration", () => {
   });
 });
 
+describe("prChecksModel — job detail plan", () => {
+  const step = (
+    number: number,
+    name: string,
+    overrides: Partial<PrActionStep> = {},
+  ): PrActionStep => ({
+    name,
+    number,
+    status: "completed",
+    conclusion: "success",
+    startedAt: `2026-07-27T11:0${number}:00.000Z`,
+    completedAt: `2026-07-27T11:0${number}:30.000Z`,
+    ...overrides,
+  });
+
+  // The defect: clicking a green job produced failure copy and a log fetch that
+  // returned the tail of `Post Run actions/checkout`. A passed job must narrate
+  // no failure at all, and must not ask for a log excerpt.
+  it("shows a passed job's step timings and never asks for a log", () => {
+    const plan = buildCheckDetailPlan(
+      node({
+        jobId: "test-desktop",
+        state: "passed",
+        steps: [step(1, "Set up job"), step(2, "Run npm ci"), step(3, "Run vitest")],
+      }),
+      null,
+    );
+
+    expect(plan.wantsLogExcerpt).toBe(false);
+    expect(plan.outcomeLabel).toBe("Passed");
+    expect(plan.summary).toBe("3 steps, all passed");
+    expect(plan.summary.toLowerCase()).not.toContain("fail");
+    expect(plan.failedStep).toBeNull();
+    expect(plan.steps.map((s) => [s.number, s.name, s.outcomeLabel, s.durationMs])).toEqual([
+      [1, "Set up job", "Passed", 30_000],
+      [2, "Run npm ci", "Passed", 30_000],
+      [3, "Run vitest", "Passed", 30_000],
+    ]);
+    expect(plan.stepsTotalMs).toBe(90_000);
+  });
+
+  it("names the failing step and does want the log for a failed job", () => {
+    const plan = buildCheckDetailPlan(
+      node({
+        jobId: "test-desktop",
+        state: "failed",
+        steps: [step(1, "Set up job"), step(2, "Run vitest", { conclusion: "failure" })],
+      }),
+      null,
+    );
+    expect(plan.wantsLogExcerpt).toBe(true);
+    expect(plan.outcomeLabel).toBe("Failed");
+    expect(plan.summary).toBe("Failed at step 2 of 2 · Run vitest");
+    expect(plan.failedStep?.name).toBe("Run vitest");
+  });
+
+  it("names the step in flight for a running job and still wants no log", () => {
+    const plan = buildCheckDetailPlan(
+      node({
+        jobId: "build",
+        state: "running",
+        steps: [
+          step(1, "Set up job"),
+          step(2, "Build", { status: "in_progress", conclusion: null, completedAt: null }),
+          step(3, "Upload", { status: "queued", conclusion: null, startedAt: null, completedAt: null }),
+        ],
+      }),
+      null,
+      Date.parse("2026-07-27T11:02:45.000Z"),
+    );
+    expect(plan.wantsLogExcerpt).toBe(false);
+    expect(plan.outcomeLabel).toBe("Running");
+    expect(plan.summary).toBe("Running step 2 of 3 · Build");
+    expect(plan.currentStep?.durationMs).toBe(45_000);
+  });
+
+  it("states a queued job plainly with no failure narrative", () => {
+    const plan = buildCheckDetailPlan(node({ jobId: "gate", state: "queued", steps: [] }), null);
+    expect(plan.wantsLogExcerpt).toBe(false);
+    expect(plan.summary).toBe("Queued. GitHub hasn't started this job yet.");
+    expect(plan.summary.toLowerCase()).not.toContain("fail");
+  });
+
+  // `pipelineStateOf` folds cancelled into `failed` so it counts as red. The
+  // narration must not: telling a user a cancelled job "failed" sends them
+  // hunting for a test failure that never happened.
+  it("keeps cancelled and timed-out distinct from failed in the outcome word", () => {
+    const cancelled = buildCheckDetailPlan(
+      node({ jobId: "build", state: "failed" }),
+      {
+        jobId: 7, jobName: "build", failingStepName: null, failingStepNumber: null,
+        stepTotal: null, headline: null, lines: [], truncated: false, htmlUrl: null,
+        jobState: "failed", jobStatus: "completed", jobConclusion: "cancelled",
+      },
+    );
+    expect(cancelled.outcomeLabel).toBe("Cancelled");
+  });
+
+  it("prefers the excerpt's steps once one has loaded", () => {
+    const plan = buildCheckDetailPlan(
+      node({ jobId: "build", state: "passed", steps: [] }),
+      {
+        jobId: 7, jobName: "build", failingStepName: null, failingStepNumber: null,
+        stepTotal: 1, headline: null, lines: [], truncated: false, htmlUrl: null,
+        jobState: "passed", jobStatus: "completed", jobConclusion: "success",
+        steps: [step(1, "Run npm ci")], logStatus: "not-fetched",
+      },
+    );
+    expect(plan.steps.map((s) => s.name)).toEqual(["Run npm ci"]);
+  });
+});
+
 describe("prChecksModel — copy excerpt", () => {
   it("writes job, step, elapsed, a fenced excerpt and an ADE deeplink", () => {
     const markdown = buildLogExcerptMarkdown({
@@ -350,5 +407,132 @@ describe("prChecksModel — copy excerpt", () => {
       pr: { repoOwner: "ade", repoName: "desktop", githubPrNumber: 7 },
     });
     expect(markdown).toContain("````\ngenerated ```markdown\nstill inside the log\n````");
+  });
+
+  // Pasting "CI failure — build" for a job that passed is the same lie the
+  // drawer used to tell, and it is the one an agent reading the paste acts on.
+  it("does not call a passed job a failure, and says the log was not fetched", () => {
+    const markdown = buildLogExcerptMarkdown({
+      excerpt: {
+        jobId: 42,
+        jobName: "build",
+        failingStepName: null,
+        failingStepNumber: null,
+        stepTotal: 9,
+        headline: null,
+        lines: [],
+        truncated: false,
+        htmlUrl: "https://github.com/o/r/actions/runs/1/job/42",
+        jobState: "passed",
+        jobStatus: "completed",
+        jobConclusion: "success",
+        logStatus: "not-fetched",
+      },
+      elapsedLabel: "4m 2s",
+      pr: { repoOwner: "ade-dev", repoName: "ade", githubPrNumber: 910 },
+    });
+
+    expect(markdown).toContain("**CI job passed — build**");
+    expect(markdown).not.toContain("CI failure");
+    expect(markdown).not.toContain("unknown step");
+    expect(markdown).toContain("- Steps: 9");
+    expect(markdown).toContain("_No log excerpt was fetched");
+    // An empty fenced block would claim the job produced no output.
+    expect(markdown).not.toContain("```\n```");
+  });
+
+  it("distinguishes an unreadable log from an unfetched one", () => {
+    const markdown = buildLogExcerptMarkdown({
+      excerpt: {
+        jobId: 42,
+        jobName: "build",
+        failingStepName: "Run vitest",
+        failingStepNumber: 3,
+        stepTotal: 9,
+        headline: null,
+        lines: [],
+        truncated: false,
+        htmlUrl: null,
+        jobState: "failed",
+        jobStatus: "completed",
+        jobConclusion: "failure",
+        logStatus: "unavailable",
+        logUnavailableReason: "ADE couldn't download this job's log from GitHub.",
+      },
+      elapsedLabel: null,
+      pr: { repoOwner: "ade-dev", repoName: "ade", githubPrNumber: 910 },
+    });
+    expect(markdown).toContain("**CI failure — build**");
+    expect(markdown).toContain("_ADE couldn't read this job's log: ADE couldn't download");
+  });
+});
+
+
+/* -- Folded in from `prChecksApi.test.ts` --
+   The fetch policy the model feeds; both decide what a check state is worth reading. */
+
+function installGetCheckLog(getCheckLog?: ReturnType<typeof vi.fn>) {
+  Object.assign(window, { ade: { prs: getCheckLog ? { getCheckLog } : {} } });
+}
+
+afterEach(() => {
+  vi.restoreAllMocks();
+  Object.assign(window, { ade: undefined });
+});
+
+describe("prChecksApi — the automatic log fetch budget", () => {
+  /**
+   * A job log is a redirect plus a multi-megabyte blob, and most jobs pass. The
+   * drawer used to fetch one for every job it opened — including green ones,
+   * where the service then returned the tail of `Post Run actions/checkout`. The
+   * common case must now cost zero GitHub calls.
+   */
+  it.each(["passed", "running", "queued", "skipped"] as const)(
+    "does not call GitHub for a %s job",
+    async (state) => {
+      const getCheckLog = vi.fn();
+      installGetCheckLog(getCheckLog);
+
+      const result = await fetchCheckLogForState({ prId: "pr-1", jobId: 42, state });
+
+      expect(getCheckLog).not.toHaveBeenCalled();
+      // "skipped" is not "the fetch came back empty" — the caller must be able
+      // to tell a deliberate no-op from a failed read.
+      expect(result).toEqual({ resolution: "skipped", excerpt: null });
+      expect(isCheckLogFetchWorthwhile(state)).toBe(false);
+    },
+  );
+
+  it("fetches for a failed job, which is the one state a log explains", async () => {
+    const getCheckLog = vi.fn().mockResolvedValue(null);
+    installGetCheckLog(getCheckLog);
+
+    const result = await fetchCheckLogForState({ prId: "pr-1", jobId: 42, state: "failed" });
+
+    expect(getCheckLog).toHaveBeenCalledWith({ prId: "pr-1", jobId: 42 });
+    expect(result.resolution).toBe("fetched");
+  });
+
+  it("fetches for an unknown job, because there is nothing local to render", async () => {
+    const getCheckLog = vi.fn().mockResolvedValue(null);
+    installGetCheckLog(getCheckLog);
+    await fetchCheckLogForState({ prId: "pr-1", jobId: 42, state: "unknown" });
+    expect(getCheckLog).toHaveBeenCalledTimes(1);
+  });
+
+  // User-initiated reads are exempt from the automatic budget on purpose.
+  it("fetches a passed job's log when the user forces it, and asks for the log explicitly", async () => {
+    const getCheckLog = vi.fn().mockResolvedValue(null);
+    installGetCheckLog(getCheckLog);
+
+    await fetchCheckLogForState({ prId: "pr-1", jobId: 42, state: "passed", force: true });
+
+    expect(getCheckLog).toHaveBeenCalledWith({ prId: "pr-1", jobId: 42, includeLog: true });
+  });
+
+  it("reports a runtime with no log API distinctly from a skipped fetch", async () => {
+    installGetCheckLog();
+    const result = await fetchCheckLogForState({ prId: "pr-1", jobId: 42, state: "failed" });
+    expect(result).toEqual({ resolution: "no-api", excerpt: null });
   });
 });

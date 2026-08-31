@@ -651,8 +651,8 @@ export const PrReviewThreadCard = memo(
                 View file diff
               </button>
             ) : null}
-            {/* Reply / Resolve / Ask-AI mutate the PR through row-based
-                endpoints; hidden for unmapped PRs (no lane row). */}
+            {/* Reply / Resolve / Ask-AI key on the global GraphQL thread/comment
+                node id, so they work whether or not a lane tracks this PR. */}
             {canMutate ? (
               <>
                 <button

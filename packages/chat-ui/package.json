@@ -1,0 +1,77 @@
+{
+  "name": "@ade-dev/chat-ui",
+  "version": "0.1.2",
+  "description": "Embeddable React chat components for the ADE SDK.",
+  "license": "AGPL-3.0-only",
+  "type": "module",
+  "sideEffects": false,
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/arul28/ADE.git",
+    "directory": "packages/chat-ui"
+  },
+  "homepage": "https://github.com/arul28/ADE/tree/main/packages/chat-ui",
+  "bugs": {
+    "url": "https://github.com/arul28/ADE/issues"
+  },
+  "keywords": [
+    "ade",
+    "chat",
+    "react",
+    "ui",
+    "mcp",
+    "agent"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "build": "tsup",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "prepack": "npm run build"
+  },
+  "peerDependencies": {
+    "react": "^18.0.0 || ^19.0.0",
+    "react-dom": "^18.0.0 || ^19.0.0",
+    "@ade-dev/sdk": ">=0.1.0"
+  },
+  "peerDependenciesMeta": {
+    "@ade-dev/sdk": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@ade-dev/sdk": "file:../sdk",
+    "@testing-library/react": "^16.3.2",
+    "@testing-library/user-event": "^14.5.2",
+    "@types/react": "^18.2.74",
+    "@types/react-dom": "^18.2.24",
+    "jsdom": "^22.1.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "tsup": "^8.3.5",
+    "typescript": "^5.7.3",
+    "vitest": "^2.1.9"
+  },
+  "engines": {
+    "node": ">=22.13.0"
+  }
+}
