@@ -189,6 +189,62 @@ describe("threads", () => {
     expect(runtime.sessions.has(thread.id)).toBe(true);
   });
 
+  it("recreates a lost session with the stored MCP servers, not a tool-less twin", async () => {
+    const runtime = await startRuntime({ mcpServers: true });
+    const home = makeHome();
+    const client = await createAdeChat({
+      home,
+      attach: true,
+      socketPath: runtime.socketPath,
+      pollIntervalMs: 10,
+    } as InternalAdeChatOptions);
+    clients.push(client);
+    const original = await client.threads.open("k", {
+      provider: "claude",
+      model: "m",
+      mcpServers: { docs: { type: "http", url: "https://example.test/mcp" } },
+    });
+    runtime.sessions.clear();
+    const reopened = await createAdeChat({
+      home,
+      attach: true,
+      socketPath: runtime.socketPath,
+      pollIntervalMs: 10,
+    } as InternalAdeChatOptions);
+    clients.push(reopened);
+    const thread = await reopened.threads.open("k");
+    expect(thread.id).not.toBe(original.id);
+    expect(runtime.sessions.get(thread.id)?.createArgs).toMatchObject({
+      mcpServers: { docs: { type: "http", url: "https://example.test/mcp" } },
+      strictMcpConfig: true,
+    });
+    expect(thread.mcpCapability).toMatchObject({ level: "enforced", strictRequested: true });
+  });
+
+  it("does not recreate a durable key when getSummary times out", async () => {
+    const runtime = await startRuntime();
+    const home = makeHome();
+    const first = await createAdeChat({
+      home,
+      attach: true,
+      socketPath: runtime.socketPath,
+      pollIntervalMs: 10,
+    } as InternalAdeChatOptions);
+    clients.push(first);
+    const original = await first.threads.open("k", { provider: "claude", model: "m" });
+    runtime.failNextGetSummary = "request timed out";
+    const second = await createAdeChat({
+      home,
+      attach: true,
+      socketPath: runtime.socketPath,
+      pollIntervalMs: 10,
+    } as InternalAdeChatOptions);
+    clients.push(second);
+    await expect(second.threads.open("k")).rejects.toMatchObject({ code: "rpc_error" });
+    expect(runtime.sessions.size).toBe(1);
+    expect(runtime.sessions.has(original.id)).toBe(true);
+  });
+
   it("maps always-allow to each provider's full-auto create args", async () => {
     const runtime = await startRuntime();
     const client = await connect(runtime);
@@ -1006,6 +1062,37 @@ describe("thread.setModel", () => {
     // engine cannot resolve has to fail loudly, or the user sees the new name
     // in the UI while the old model keeps answering.
     await expect(thread.setModel("not-a-real-model")).rejects.toThrow(/not-a-real-model/);
+  });
+
+  it("refreshes mcpCapability after a cross-provider switch", async () => {
+    const runtime = await startRuntime({ mcpServers: true });
+    const client = await connect(runtime);
+    const thread = await client.threads.open("switch-mcp", {
+      provider: "claude",
+      model: "claude-sonnet-4-5",
+      mcpServers: { docs: { type: "stdio", command: "node" } },
+    });
+    expect(thread.mcpCapability).toMatchObject({ level: "enforced", strictRequested: true });
+
+    await thread.setModel("gpt-5-codex");
+
+    expect(thread.mcpCapability).toMatchObject({
+      level: "best-effort",
+      strictRequested: true,
+    });
+    expect(thread.mcpCapability?.residual).toContain("plugin-contributed");
+  });
+
+  it("refuses setModel when status cannot be read, unless forced", async () => {
+    const runtime = await startRuntime();
+    const client = await connect(runtime);
+    const thread = await client.threads.open("opaque", { provider: "claude", model: "m" });
+    runtime.failNextGetSummary = "socket hung";
+    await expect(thread.setModel("gpt-5-codex")).rejects.toMatchObject({ code: "rpc_error" });
+    expect(runtime.sessions.get(thread.id)!.model).toBe("m");
+    runtime.failNextGetSummary = "socket hung";
+    const selection = await thread.setModel("gpt-5-codex", { force: true });
+    expect(selection.modelId).toBe("gpt-5-codex");
   });
 });
 

@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { errorMessage } from "./errors.js";
+import type { McpServerConfig } from "./types.js";
 
 /**
  * Durable `key -> sessionId` map at `<home>/threads.json`.
@@ -31,6 +32,13 @@ export type ThreadRecord = {
    * SDK did not create — those fall back to trusting the runtime.
    */
   requestedMcp?: boolean;
+  /**
+   * The MCP request this key was created with. Stored so a recreate after the
+   * runtime loses the session can rebuild the same tool surface instead of
+   * opening a silent tool-less thread under the same name.
+   */
+  mcpServers?: Record<string, McpServerConfig>;
+  loadUserMcpServers?: boolean;
 };
 
 type ThreadStoreFile = {
@@ -147,6 +155,12 @@ function normalize(value: unknown): ThreadStoreFile {
       // rather than defaulting to false, which would wrongly suppress a real
       // capability report for every thread written before this field existed.
       ...(typeof record.requestedMcp === "boolean" ? { requestedMcp: record.requestedMcp } : {}),
+      ...(record.mcpServers && typeof record.mcpServers === "object"
+        ? { mcpServers: record.mcpServers as Record<string, McpServerConfig> }
+        : {}),
+      ...(typeof record.loadUserMcpServers === "boolean"
+        ? { loadUserMcpServers: record.loadUserMcpServers }
+        : {}),
     };
   }
   return { version: 1, threads };

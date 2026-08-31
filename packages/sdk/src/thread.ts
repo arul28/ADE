@@ -1,11 +1,13 @@
 import { AdeError } from "./errors.js";
 import type { ChatEventStream } from "./eventStream.js";
+import { normalizeMcpCapability } from "./mcpCapability.js";
 import type { PersonalChatsApi } from "./personalChats.js";
 import {
   STATUS_EVENT_TYPES,
   USAGE_EVENT_TYPES,
   type AgentChatEventEnvelope,
   type AgentChatFileRef,
+  type AgentChatSessionSummary,
   type McpCapabilityReport,
   type Unsubscribe,
 } from "./types.js";
@@ -119,10 +121,16 @@ const STATUS = new Set<string>(STATUS_EVENT_TYPES);
  * runtime subscription rather than twenty.
  */
 export class Thread implements AdeThread {
+  /**
+   * Written after `setModel` from the runtime's new report. A Claude thread
+   * that later lands on Codex must not keep advertising `level: "enforced"`.
+   */
+  mcpCapability: McpCapabilityReport | null;
+
   constructor(
     readonly id: string,
     readonly key: string,
-    readonly mcpCapability: McpCapabilityReport | null,
+    mcpCapability: McpCapabilityReport | null,
     private readonly chats: PersonalChatsApi,
     private readonly events: ChatEventStream,
     private readonly assertUsable: () => void,
@@ -132,7 +140,9 @@ export class Thread implements AdeThread {
      * undoing the switch on the next app start.
      */
     private readonly onModelChanged: (selection: ThreadModelSelection) => Promise<void> = async () => {},
-  ) {}
+  ) {
+    this.mcpCapability = mcpCapability;
+  }
 
   async send(text: string, opts: SendOptions = {}): Promise<void> {
     this.assertUsable();
@@ -182,7 +192,17 @@ export class Thread implements AdeThread {
     // sees events stop. A silently truncated answer is the worst outcome
     // available here, so it takes an explicit `force` to choose it.
     if (!opts.force) {
-      const summary = await this.chats.getSummary(this.id).catch(() => null);
+      let summary: AgentChatSessionSummary | null;
+      try {
+        summary = await this.chats.getSummary(this.id);
+      } catch (error) {
+        throw new AdeError(
+          "rpc_error",
+          `Cannot switch models for "${this.key}": failed to read whether a turn is in flight. ` +
+            `Await the turn, call interrupt() first, or pass { force: true } to accept losing it.`,
+          { cause: error },
+        );
+      }
       const turnActive =
         summary?.status === "active" || typeof summary?.currentTurnStartedAt === "string";
       if (turnActive) {
@@ -194,7 +214,10 @@ export class Thread implements AdeThread {
       }
     }
 
-    const updated = await this.chats.updateSession({ sessionId: this.id, modelId: trimmed });
+    const updated = (await this.chats.updateSession({
+      sessionId: this.id,
+      modelId: trimmed,
+    })) as AgentChatSessionSummary | null;
     const record = (updated ?? {}) as { provider?: unknown; model?: unknown; modelId?: unknown };
     const selection: ThreadModelSelection = {
       // The runtime's answer wins over the requested id: it resolves aliases
@@ -203,6 +226,9 @@ export class Thread implements AdeThread {
       provider: typeof record.provider === "string" ? record.provider : "",
       model: typeof record.model === "string" ? record.model : trimmed,
     };
+    // Always replace. Keeping the open-time snapshot after a cross-provider
+    // switch would let a Claude `enforced` report outlive a Codex residual.
+    this.mcpCapability = normalizeMcpCapability(updated?.mcpCapability);
     await this.onModelChanged(selection);
     return selection;
   }

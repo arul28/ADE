@@ -67,6 +67,8 @@ export class MockRuntime {
   forceUnsupportedCapability = false;
   /** Reproduces a runtime that predates `strictRequested` and omits the field. */
   omitStrictRequested = false;
+  /** Next `getSummary` throws this message, then clears. Empty means behave normally. */
+  failNextGetSummary = "";
 
   constructor(options: MockRuntimeOptions = {}) {
     this.options = {
@@ -279,6 +281,11 @@ export class MockRuntime {
         return toSummary(session);
       }
       case "getSummary": {
+        if (this.failNextGetSummary) {
+          const message = this.failNextGetSummary;
+          this.failNextGetSummary = "";
+          throw new Error(message);
+        }
         const session = this.sessions.get(String(args.sessionId ?? ""));
         if (!session) throw new Error("Personal chat session not found.");
         return toSummary(session);
@@ -314,6 +321,9 @@ export class MockRuntime {
           session.provider = resolved.provider;
           session.model = resolved.model;
           session.modelId = resolved.modelId;
+          session.mcpCapability = this.suppressMcpCapability
+            ? null
+            : this.capabilityReport({ ...session.createArgs, provider: session.provider });
         }
         if (typeof args.title === "string") session.title = args.title;
         return toSummary(session);

@@ -478,6 +478,33 @@ describe("reclaim: owner liveness (A5)", () => {
     expect(kill).not.toHaveBeenCalled();
   });
 
+  it("does not treat a missing parent pid as alive", async () => {
+    const home = makeHome();
+    await writeRuntimePidfile(home, {
+      pid: 4242,
+      socketPath: "/tmp/x.sock",
+      parentPid: 0,
+      startedAt: new Date().toISOString(),
+    });
+    const kill = vi.fn();
+    const probed: number[] = [];
+    const outcome = await reclaimStaleRuntime({
+      home,
+      socketPath: "/tmp/x.sock",
+      isAlive: (pid) => {
+        probed.push(pid);
+        return pid === 4242 || pid === 0;
+      },
+      kill,
+      probeEndpoint: async () => true,
+      terminateGraceMs: 0,
+      sleep: noSleep,
+      processStartedAt: recentStart,
+    });
+    expect(probed).not.toContain(0);
+    expect(outcome).toMatchObject({ action: "killed", pid: 4242 });
+  });
+
   it("adopts a runtime this very process owns", async () => {
     const home = makeHome();
     await writeRuntimePidfile(home, {

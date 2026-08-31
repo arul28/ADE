@@ -72,11 +72,14 @@ export async function readRuntimePidfile(home: string): Promise<RuntimePidRecord
     // addresses a process GROUP, and this value flows into process.kill.
     if (!Number.isInteger(pid) || pid <= 0) return null;
     if (typeof parsed.socketPath !== "string" || !parsed.socketPath.length) return null;
+    const parentPid = typeof parsed.parentPid === "number" ? parsed.parentPid : 0;
     return {
       version: 1,
       pid,
       socketPath: parsed.socketPath,
-      parentPid: typeof parsed.parentPid === "number" ? parsed.parentPid : 0,
+      // A missing parent is stored as 0, and 0 must NEVER be treated as alive:
+      // POSIX `kill(0)` probes the whole process group and typically succeeds.
+      parentPid: Number.isInteger(parentPid) && parentPid > 0 ? parentPid : 0,
       startedAt: typeof parsed.startedAt === "string" ? parsed.startedAt : "",
     };
   } catch {
@@ -133,6 +136,7 @@ const START_TIME_TOLERANCE_MS = 120_000;
 const DEFAULT_TERMINATE_GRACE_MS = 3_000;
 
 function defaultIsAlive(pid: number): boolean {
+  if (!Number.isInteger(pid) || pid <= 0) return false;
   try {
     process.kill(pid, 0);
     return true;
@@ -210,7 +214,9 @@ export async function reclaimStaleRuntime(options: ReclaimOptions): Promise<Recl
       // regardless — reusing it hands the caller a connection that drops
       // moments later, with no way to tell why. Only adopt a runtime whose
       // owner is this process or still alive.
-      const ownerAlive = record.parentPid === process.pid || isAlive(record.parentPid);
+      const ownerAlive =
+        record.parentPid === process.pid ||
+        (record.parentPid > 0 && isAlive(record.parentPid));
       if (ownerAlive) {
         logger(`ade sdk: reusing the runtime already listening on ${socketPath} (pid ${record.pid})`);
         return { action: "reused", pid: record.pid };

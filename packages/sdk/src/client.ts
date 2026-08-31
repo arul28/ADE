@@ -5,6 +5,7 @@ import { DEFAULT_RELEASE_REPO, type RuntimeDownloader } from "./download.js";
 import { AdeError, errorMessage } from "./errors.js";
 import { ChatEventStream } from "./eventStream.js";
 import { JsonRpcConnection } from "./jsonRpc.js";
+import { normalizeMcpCapability } from "./mcpCapability.js";
 import { isSupportedProvider, permissionArgs, type PermissionPreset } from "./permissions.js";
 import { PersonalChatsApi } from "./personalChats.js";
 import {
@@ -23,7 +24,6 @@ import type {
   AgentChatModelCatalog,
   AgentChatSessionSummary,
   DoctorReport,
-  McpCapabilityReport,
   McpServerConfig,
   ModelCatalogEntry,
   ProviderStatus,
@@ -189,36 +189,14 @@ export interface AdeChatClient {
   dispose(): Promise<void>;
 }
 
-/**
- * Validates the runtime's MCP capability report before it reaches the public
- * API. An unrecognised `level` is dropped rather than widened: a caller
- * branching on "enforced" must never be handed a value the SDK cannot vouch for.
- */
-function normalizeMcpCapability(value: unknown): McpCapabilityReport | null {
-  if (!value || typeof value !== "object") return null;
-  const source = value as Partial<McpCapabilityReport>;
-  if (
-    source.level !== "enforced" &&
-    source.level !== "best-effort" &&
-    source.level !== "unsupported"
-  ) {
-    return null;
-  }
-  const strictRequested = source.strictRequested === true;
-  return {
-    level: source.level,
-    mechanism: typeof source.mechanism === "string" ? source.mechanism : "",
-    // Null whenever strict mode was not requested: `residual` names what strict
-    // mode could not exclude, and a delivery-only thread excluded nothing by
-    // design. A runtime that volunteered one anyway would be describing an
-    // isolation ADE was never asked to perform.
-    residual: strictRequested && typeof source.residual === "string" ? source.residual : null,
-    delivered: source.delivered === true,
-    // Absent on a runtime that predates the field. False is the conservative
-    // reading: it understates isolation rather than promising one nothing
-    // verified.
-    strictRequested,
-  };
+function isAbsentSessionError(error: unknown): boolean {
+  if (!(error instanceof AdeError)) return false;
+  if (error.code === "thread_not_found") return true;
+  // Timeouts and a closed socket are not "the session is gone": recreating
+  // would drop injected MCP under the same key. Only a not-found RPC is a
+  // genuine wipe.
+  if (error.code !== "rpc_error") return false;
+  return /not found/i.test(error.message);
 }
 
 const PROTOCOL_VERSION = "2025-06-18";
@@ -504,10 +482,13 @@ export async function createAdeChat(
       // Resume: the mapping is only trustworthy if the runtime still has the
       // session. A home copied between machines, a deleted chat, or a wiped
       // state root all leave a dangling key — recreate rather than fail.
-      const summary = await chats.getSummary(record.sessionId).catch((error) => {
+      let summary: AgentChatSessionSummary | null = null;
+      try {
+        summary = await chats.getSummary(record.sessionId);
+      } catch (error) {
+        if (!isAbsentSessionError(error)) throw error;
         recordError("getSummary", error);
-        return null;
-      });
+      }
       if (summary?.sessionId) {
         await store.touch(trimmedKey, { title: summary.title ?? record.title ?? null });
         // A capability report is only meaningful for a thread that asked for
@@ -539,8 +520,9 @@ export async function createAdeChat(
     }
 
     // ---- create ------------------------------------------------------------
-    // Recreating a dangling key falls back to the record's own provider/model,
-    // so a resume that has to rebuild still lands on the right agent.
+    // Recreating a dangling key falls back to the record's own provider/model
+    // AND its stored MCP request, so a resume that has to rebuild still lands
+    // on the same tool surface. `opts` win when the caller re-supplies them.
     const provider = (opts.provider ?? record?.provider) as AdeProvider | undefined;
     const model = opts.model ?? record?.model;
     if (!provider || !isSupportedProvider(provider)) {
@@ -558,14 +540,23 @@ export async function createAdeChat(
       );
     }
 
+    const mcpServers =
+      opts.mcpServers !== undefined && Object.keys(opts.mcpServers).length > 0
+        ? opts.mcpServers
+        : record?.mcpServers;
+    const loadUserMcpServers =
+      opts.loadUserMcpServers !== undefined
+        ? opts.loadUserMcpServers
+        : record?.loadUserMcpServers;
+
     // Two distinct questions, and conflating them is a bug: "did the caller
     // supply servers" gates the drop warning, while "did the caller make any
     // MCP request at all" (servers OR strict mode) gates the capability
     // bookkeeping. A strict-only request supplies no servers but is still a
     // request, and it succeeds.
     const suppliedServers =
-      opts.mcpServers !== undefined && Object.keys(opts.mcpServers).length > 0;
-    const askedForMcp = suppliedServers || opts.loadUserMcpServers !== undefined;
+      mcpServers !== undefined && Object.keys(mcpServers).length > 0;
+    const askedForMcp = suppliedServers || loadUserMcpServers !== undefined;
 
     if (suppliedServers && !mcpSupported && capabilities) {
       // Never silently drop MCP config: an app that asked for a tool server and
@@ -589,7 +580,7 @@ export async function createAdeChat(
       // it as "nothing supplied". A caller who passed `{}` got silent
       // strictness plus a stored record that would later discard the runtime's
       // own capability report.
-      ...(suppliedServers ? { mcpServers: opts.mcpServers } : {}),
+      ...(suppliedServers ? { mcpServers } : {}),
       // `strictMcpConfig` is the wire spelling of "do not load the user's own
       // MCP config", and it is a TRISTATE: absent lets the session profile
       // decide (strict, for the profile SDK threads run), true withholds, and
@@ -599,7 +590,7 @@ export async function createAdeChat(
       //
       // Gated on the same `askedForMcp` the bookkeeping below uses: one
       // question, one answer, so the wire and the record can never disagree.
-      ...(askedForMcp ? { strictMcpConfig: opts.loadUserMcpServers !== true } : {}),
+      ...(askedForMcp ? { strictMcpConfig: loadUserMcpServers !== true } : {}),
     });
     if (!created?.sessionId) {
       throw new AdeError("protocol_error", "The ADE runtime created a chat with no session id.");
@@ -615,6 +606,8 @@ export async function createAdeChat(
       lastOpenedAt: now,
       title: created.title ?? opts.title ?? null,
       requestedMcp: askedForMcp,
+      ...(suppliedServers ? { mcpServers } : {}),
+      ...(loadUserMcpServers !== undefined ? { loadUserMcpServers } : {}),
     });
     const capability = normalizeMcpCapability(created.mcpCapability);
     // Scoped to requests the runtime actually reports on: supplied servers, or
@@ -623,7 +616,7 @@ export async function createAdeChat(
     // emits no capability report BY DESIGN — warning there would cry wolf on
     // every correct delivery-only thread, and a warning that fires when nothing
     // is wrong stops being read when something is.
-    const expectsCapabilityReport = suppliedServers || opts.loadUserMcpServers === false;
+    const expectsCapabilityReport = suppliedServers || loadUserMcpServers === false;
     if (expectsCapabilityReport && !capability) {
       // The caller asked and the runtime said nothing. Silence here would read
       // downstream as "no MCP was requested", which is the one wrong conclusion
