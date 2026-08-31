@@ -18,6 +18,7 @@ import { DEFAULT_ADE_ROLE, startSidecar, type Sidecar } from "./sidecar.js";
 import { resolveRuntimeSocketPath } from "./socketPath.js";
 import { Thread, type AdeThread } from "./thread.js";
 import { ThreadStore } from "./threadStore.js";
+import { SDK_VERSION } from "./version.js";
 import type {
   AdeInitializeResult,
   AdeProvider,
@@ -735,6 +736,7 @@ export async function createAdeChat(
       const providersOk = Object.values(providerStatus).some((entry) => entry.available);
       return {
         ok: socketConnected && events.transport !== "unavailable" && providersOk,
+        sdkVersion: SDK_VERSION,
         binary: {
           path: binary.binaryPath || "(attached)",
           version: version ?? null,

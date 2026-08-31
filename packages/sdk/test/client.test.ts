@@ -4,6 +4,7 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createAdeChat, type InternalAdeChatOptions } from "../src/client.js";
 import type { AdeChatClient } from "../src/client.js";
+import { SDK_VERSION } from "../src/version.js";
 import type { AgentChatEventEnvelope } from "../src/types.js";
 import { MockRuntime } from "./mockRuntime.js";
 
@@ -852,6 +853,10 @@ describe("providers, models and doctor", () => {
     expect(report.threads).toEqual({ tracked: 1, live: 1 });
     expect(Object.keys(report.providers).sort()).toEqual(["claude", "codex"]);
     expect(Array.isArray(report.recentErrors)).toBe(true);
+    // The SDK half of the version pair. It must be the real package version,
+    // not a placeholder, or a support report says nothing.
+    expect(report.sdkVersion).toBe(SDK_VERSION);
+    expect(report.sdkVersion).toMatch(/^\d+\.\d+\.\d+/);
   });
 
   it("records a failing RPC in the doctor report instead of throwing it away", async () => {

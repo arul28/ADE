@@ -49,6 +49,7 @@ export type {
   ThreadModelSelection,
 } from "./thread.js";
 export { AdeError, type AdeErrorCode } from "./errors.js";
+export { SDK_VERSION } from "./version.js";
 export type { PermissionPreset } from "./permissions.js";
 export { SUPPORTED_PROVIDERS } from "./permissions.js";
 
