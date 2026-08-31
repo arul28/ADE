@@ -250,10 +250,24 @@ final class PluginPaneStore: ObservableObject {
   /// A live read that failed. Not cached, and not retried on its own: the pane
   /// says so and offers the gesture.
   private var panelFetchFailed = false
+  /// A live COLLECTION read that failed on a pane allowed to make one.
+  ///
+  /// The list on screen is still drawn — the mirror's rows are real rows — but
+  /// this pane could not check them against the machine, so it must not present
+  /// them as current. A plausible, well-formed, silently out-of-date list is
+  /// worse than a blank one, because nothing about it looks wrong.
+  @Published private(set) var collectionsMayBeStale = false
   /// Collection reads to run after this pass, keyed the way the cache is.
   private var pendingCollectionFetches: [String: (collection: String, keyPrefix: String?, limit: Int)] = [:]
   private var attemptedCollectionKeys: Set<String> = []
   private var collectionFetchTask: Task<Void, Never>?
+  /// Read every bound collection again on this pass, cache or no cache.
+  ///
+  /// Set by the two gestures that invalidate a cached answer: an explicit
+  /// refresh, and an action that just ran on the machine. Without it the pane
+  /// answers a refresh from the copy it fetched the first time, which is the
+  /// same staleness the mirror had.
+  private var refetchesCollections = false
   /// How the `{openUrl}` verb reaches the system browser.
   ///
   /// Injected so a test can assert what a plugin asked to open without Safari
@@ -323,7 +337,9 @@ final class PluginPaneStore: ObservableObject {
   /// "Try again" button, and the only thing that clears a failed read.
   func retryFetch() {
     panelFetchFailed = false
+    collectionsMayBeStale = false
     attemptedCollectionKeys.removeAll()
+    refetchesCollections = true
     load()
   }
 
@@ -396,25 +412,39 @@ final class PluginPaneStore: ObservableObject {
     let scope = sync.pluginFallbackScope
     let requests = pendingCollectionFetches
     pendingCollectionFetches = [:]
+    // Consumed here, so the forced pass runs exactly once and the redraw it
+    // causes does not queue the same reads again.
+    refetchesCollections = false
     // Marked attempted before the reads run, so a collection that is genuinely
     // empty on the machine costs one round trip per pane rather than one per
     // redraw.
     attemptedCollectionKeys.formUnion(requests.keys)
     collectionFetchTask = Task { [weak self] in
       guard let self else { return }
-      var landed = false
+      var answered = false
+      var failed = false
       for (key, request) in requests {
-        guard let rows = try? await self.sync.fetchPluginCollectionEntries(
-          pluginId: self.pluginId,
-          collection: request.collection,
-          keyPrefix: request.keyPrefix,
-          limit: request.limit
-        ) else { continue }
-        self.fallbackCache.store(scope: scope, key: key, entries: rows)
-        landed = landed || !rows.isEmpty
+        do {
+          let rows = try await self.sync.fetchPluginCollectionEntries(
+            pluginId: self.pluginId,
+            collection: request.collection,
+            keyPrefix: request.keyPrefix,
+            limit: request.limit
+          )
+          self.fallbackCache.store(scope: scope, key: key, entries: rows)
+          answered = true
+        } catch {
+          // Never cached: the rows may well be there and the socket blinked.
+          // The list keeps drawing the mirror and says it could not be checked.
+          failed = true
+        }
       }
+      self.collectionsMayBeStale = failed
       self.collectionFetchTask = nil
-      if landed { self.load() }
+      // Any answer can change the list now that the two are reconciled — an
+      // updated row wins on `updatedAt` without adding a row — so the redraw
+      // follows a successful read rather than a non-empty one.
+      if answered { self.load() }
     }
   }
 
@@ -428,6 +458,14 @@ final class PluginPaneStore: ObservableObject {
   /// drops, which resets the reader's scroll position for no reason.
   var refreshAction: String? { selectedPanel?.refreshAction }
 
+  /// Whether a pull gesture has anything to do.
+  ///
+  /// Two ways it does: the panel declared a refresh action, or this pane may ask
+  /// the machine for rows — in which case the pull re-reads a mirror that is
+  /// behind instead of redrawing the same list. A pane with neither shows no
+  /// spinner, because a refresh that changes nothing is a promise not kept.
+  var canRefresh: Bool { refreshAction != nil || fetchesMissingRows }
+
   /// Run the declared refresh action, then re-read the mirror.
   ///
   /// Awaited rather than fired, so SwiftUI's `.refreshable` holds its spinner
@@ -436,9 +474,25 @@ final class PluginPaneStore: ObservableObject {
   /// whatever the mirror holds now, and the failure says so in the banner.
   func refresh() async {
     if let actionId = refreshAction, canInvoke {
+      // The action already invalidated what this pane had fetched, so the load
+      // here is only what a FAILED action still owes the reader: the mirror as
+      // it stands now.
       await runAction(PluginVocabAction(action: actionId), extraArgs: [:], label: nil)
+      load()
+      return
     }
+    // A refresh that answered from the copy fetched on first open would be the
+    // same stale answer the mirror gave. The gesture means "ask again".
+    invalidateFetchedCollections()
     load()
+  }
+
+  /// Drop what this pane believes about the machine's rows, so the next pass
+  /// asks again. The mirror is untouched — it is a replica, not a cache.
+  private func invalidateFetchedCollections() {
+    guard fetchesMissingRows else { return }
+    attemptedCollectionKeys.removeAll()
+    refetchesCollections = true
   }
 
   func selectPanel(_ panelId: String) {
@@ -650,27 +704,75 @@ final class PluginPaneStore: ObservableObject {
     return Array(kept.prefix(cap))
   }
 
-  /// Mirror rows, falling back to what the machine can be asked for.
+  /// The mirror's rows and the machine's, reconciled — not one or the other.
   ///
-  /// The same split the panel gets and in the same order: the replicated rows
-  /// are the answer whenever there are any, and a live read only fills a
-  /// collection the mirror has nothing for. A panel that renders while its list
-  /// is empty is the shape this closes — the sync bug drops `plugin_panels` and
-  /// `plugin_collections` together, so a fetched panel with an unfetched list
-  /// would still be a blank pane.
+  /// This used to live-read only when the mirror was ENTIRELY empty, and that
+  /// one word was the whole bug: a single replicated row made the mirror
+  /// authoritative for ever, so a collection mid-replication drew as a complete
+  /// list, and the panel's own refresh was powerless against it. It is sharpest
+  /// on a write-then-read from the same phone — the confirmation card appears in
+  /// the transcript at once (a different path) while the list still does not
+  /// carry the row, which reads as the plugin losing the write.
+  ///
+  /// So both sources are consulted on a pane allowed to ask, and merged by key
+  /// with the newer `updatedAt` winning. Mirror order is kept and rows only the
+  /// machine has are appended, the way a fetched panel is appended to the
+  /// mirror's panel list.
+  ///
+  /// DISPLAY ONLY. Nothing fetched is written back: `plugin_collections` is a
+  /// cr-sqlite CRR, so a row this phone inserted would be exported to the
+  /// machine on the next changeset and fight the host's own writer under
+  /// last-writer-wins. The live copy lives in the forgettable fallback cache and
+  /// nowhere else.
   private func mirrorOrFetchedEntries(binding: PluginVocabBinding, limit: Int) -> [PluginCollectionEntry] {
     let local = sync.pluginCollectionEntries(binding: binding, pluginId: pluginId, limit: limit)
-    guard local.isEmpty, fetchesMissingRows else { return local }
+    guard fetchesMissingRows else { return local }
     let key = PluginPanelFallbackCache.collectionKey(
       pluginId: pluginId,
       collection: binding.collection,
       keyPrefix: binding.keyPrefix
     )
-    if let cached = fallbackCache.entries(scope: sync.pluginFallbackScope, key: key) { return cached }
-    if !attemptedCollectionKeys.contains(key) {
+    if refetchesCollections || !attemptedCollectionKeys.contains(key) {
       pendingCollectionFetches[key] = (collection: binding.collection, keyPrefix: binding.keyPrefix, limit: limit)
     }
-    return []
+    guard let fetched = fallbackCache.entries(scope: sync.pluginFallbackScope, key: key) else { return local }
+    return Self.reconcile(mirror: local, live: fetched, limit: limit)
+  }
+
+  /// Merge two views of one collection by key, newest write winning.
+  ///
+  /// A key the machine did not answer for keeps its mirror row rather than
+  /// disappearing: the live read is capped and may be filtered, so its silence
+  /// about a key is not a claim that the key is gone. A genuine delete reaches
+  /// the phone as a cr-sqlite delete on the mirror, which is where a row leaving
+  /// belongs.
+  ///
+  /// `updatedAt` is an ISO-8601 UTC string from one writer on the machine, so
+  /// string order is time order, and an equal or missing timestamp keeps the
+  /// mirror's row — the CRR copy is the one that converges.
+  static func reconcile(
+    mirror: [PluginCollectionEntry],
+    live: [PluginCollectionEntry],
+    limit: Int
+  ) -> [PluginCollectionEntry] {
+    var liveByKey: [String: PluginCollectionEntry] = [:]
+    for entry in live { liveByKey[entry.key] = entry }
+    var merged: [PluginCollectionEntry] = []
+    merged.reserveCapacity(mirror.count + live.count)
+    var seen: Set<String> = []
+    for entry in mirror {
+      seen.insert(entry.key)
+      if let candidate = liveByKey[entry.key], candidate.updatedAt > entry.updatedAt {
+        merged.append(candidate)
+      } else {
+        merged.append(entry)
+      }
+    }
+    for entry in live where !seen.contains(entry.key) {
+      merged.append(entry)
+    }
+    guard merged.count > limit else { return merged }
+    return Array(merged.prefix(limit))
   }
 
   /// Rows for a binding ADE answers itself, or `nil` when the plugin owns it.
@@ -865,6 +967,12 @@ final class PluginPaneStore: ObservableObject {
         text: result.message ?? "Done",
         isFailure: !result.ok
       )
+      // An action that reached the machine may have written there. The mirror
+      // will carry that write when replication catches up; until then only a
+      // live read can show it, and answering from the copy fetched before the
+      // action is what made a logged decision look lost on the phone that
+      // logged it.
+      invalidateFetchedCollections()
       // Before the navigation, the way desktop orders the two verbs: an
       // action that opens a link and then moves the pane should do both.
       // `https:` only — `PluginInvokeResult` refuses every other scheme, so
@@ -899,6 +1007,10 @@ final class PluginPaneStore: ObservableObject {
           isFailure: true
         )
       }
+      // Last: re-read the pane so the invalidation above turns into an actual
+      // ask. A navigation already loaded, and a second load costs one mirror
+      // read — the same thing a projection bump does.
+      load()
     } catch {
       actionMessage = PluginActionMessage(
         text: (error as NSError).localizedDescription,

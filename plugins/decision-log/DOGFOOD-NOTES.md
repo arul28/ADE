@@ -60,6 +60,81 @@ session ended before anyone looked at the phone.
 
 ---
 
+#### THE ANSWER, from code and from this project's own database
+
+**Yes — a delete reaches the phone by exactly the path an insert does, and the
+P0 above is why neither reached it during this run.** The gate is closed by the
+P0 fix, not by separate work. Written 2026-08-30.
+
+**What uninstall writes.** `deleteAllPluginRows`
+(`apps/ade-cli/src/services/plugins/pluginTableWriters.ts:417-419`) runs three
+ordinary `delete from plugin_collections | plugin_contributions |
+plugin_panels where plugin_id = ?` statements, and
+`deletePluginPresenceForPlugin` (`:675-682`) deletes the machine's
+`plugin_presence` row. All four are cr-sqlite CRR tables, so each delete fires
+the table's delete trigger.
+
+**A cr-sqlite delete is a row, not an absence.** Measured against this repo's own
+extension (`apps/desktop/vendor/crsqlite/darwin-arm64/crsqlite.dylib`) on a copy
+of this project's live database: one insert into `plugin_collections` leaves 2
+clock rows, 1 pks row and 2 `crsql_changes` rows; the delete that follows leaves
+a clock row with `col_name = '-1'` and `cl = 2`, and `crsql_changes` returns it
+as `{cid: "-1", cl: 2}`. So `exportChangesSince` carries deletes, the outbound
+plugin filter passes them to any peer that advertised `pluginTables`, and iOS
+applies them through the same `applyChanges` that applied the inserts. Nothing
+about a delete is special on the wire.
+
+**Why the phone still saw nothing.** The P0 was never the catch-up. In this
+project's database all four plugin tables have ZERO rows in their `__crsql_clock`
+AND `__crsql_pks` shadow tables — a state an insert-then-delete cycle cannot
+produce, because the delete keeps the pks row and adds a tombstone. No plugin
+write in this database ever entered `crsql_changes` at all. The cause:
+`createPluginDataStore` creates the three tables with `create table if not
+exists` and never registers them as CRRs
+(`apps/desktop/src/main/services/plugins/pluginDataStore.ts:166`), while
+`ensureCrrTables` runs exactly once, inside `openKvDb`, before any project is
+attached. On a database whose migration predates the plugin platform — the case
+`PLUGIN_TABLE_DDL`'s own comment says this DDL exists for — the tables are born
+PLAIN, and a plain table has no cr-sqlite triggers. Every write in that session
+is invisible to every export path at once: the ordinary changeset pump, the
+mobile reseed, and `sendPluginTablesCatchUp` alike. Fixed by registering them at
+creation; `crsql_as_crr` backfills, so a database that already collected plain
+rows puts them on the wire on the next attach.
+
+**Is there an orphan sweep for a phone holding a dead plugin's rows?** No, and
+there must not be one keyed on an install registry — see the warning on
+`prunePluginRowsForAbsentPlugins` (`dbMaintenanceApi.ts:147-163`): a
+presence-keyed delete against a CRR table replicates back and destroys another
+machine's data, and a machine with no plugins installed would wipe the account.
+Replicated deletes are the whole mechanism, which is what makes the P0 fix the
+gate's answer.
+
+**Can a tombstone be lost while the phone is offline?** Not by anything ADE
+does. `compactCrsqlTombstones` only ever rebuilds `operations`, and it refuses to
+run while the project has sync peers (`dbMaintenanceApi.ts:101-105`), so plugin
+tombstones are never compacted away. A phone that reconnects a week later gets
+the delete from the ordinary backlog; a phone whose reseed dropped the plugin
+tables gets it from the catch-up, which windows from each table's clock floor and
+carries the tombstone like any other row.
+
+**Retest on a device (the observation this run did not take).** With the fix in a
+build on both ends:
+
+1. Log two decisions on the machine. Confirm both appear in the phone's
+   Decisions panel *without* pressing refresh — that alone proves the P0 fix,
+   since nothing reached the phone before.
+2. Reverse one from the phone. Confirm the row changes ON THE PHONE, not only on
+   the desktop.
+3. Uninstall the plugin on the machine and approve the card.
+4. On the phone: the ⋯ entry must be gone, and the panel must not list rows the
+   machine no longer has. Check with the phone awake AND once with the phone
+   backgrounded during step 3 and reopened afterwards, which is the offline path.
+5. Confirm in `.ade/ade.db` that `plugin_collections__crsql_clock` holds
+   `col_name = '-1'` rows after the uninstall. If it does not, the writes were
+   plain again and the fix regressed.
+
+---
+
 ## Checklist results, in the order given
 
 | # | Item | Result |

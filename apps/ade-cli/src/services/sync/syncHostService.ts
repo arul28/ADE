@@ -5058,6 +5058,8 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     }
   }
 
+  let loggedPluginWatermarkWriteFailure = false;
+
   function writePersistedPluginTablesWatermark(
     deviceId: string,
     throughDbVersion: number,
@@ -5070,10 +5072,19 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     } catch (error) {
       // A watermark that fails to persist costs one repeated sweep on the next
       // connection, which is idempotent. It must never fail the send.
+      //
+      // Said ONCE per host, not once per write. A database missing the table
+      // fails every single write, and the dogfood database was exactly that —
+      // a per-write warning would have buried the one line that mattered under
+      // thousands of copies of itself, which is why nobody noticed the debt was
+      // never durable.
+      if (loggedPluginWatermarkWriteFailure) return;
+      loggedPluginWatermarkWriteFailure = true;
       args.logger.warn("sync_host.plugin_watermark_write_failed", {
         peerDeviceId: deviceId,
         throughDbVersion,
         error: error instanceof Error ? error.message : String(error),
+        note: "Reported once per host process; later failures are silent.",
       });
     }
   }

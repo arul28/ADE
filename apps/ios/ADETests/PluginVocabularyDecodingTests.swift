@@ -583,6 +583,85 @@ final class PluginVocabularyDecodingTests: XCTestCase {
     XCTAssertEqual(form.fields[1].initialFlag, true)
   }
 
+  /// "No restart and no Apply button" was not expressible with `form` while
+  /// `submit` was required, so a settings panel had to be rebuilt out of
+  /// `segmented` controls and lost the labels, help text and validation a form
+  /// gives for free. Mirrors the desktop cases in `vocabulary.test.ts`.
+  func testFormAppliesOnChangeWithNoSubmitAtAll() throws {
+    let schema = try panel(parse(#"""
+    {
+      "v": 1,
+      "fallback": { "title": "T", "text": "t" },
+      "body": [{
+        "component": "form",
+        "fields": [{ "kind": "toggle", "id": "digest", "label": "Weekly digest" }],
+        "applyOnChange": { "action": "applySettings" }
+      }]
+    }
+    """#))
+    guard case let .form(form) = schema.body[0] else { return XCTFail("expected a form") }
+    XCTAssertEqual(form.applyOnChange?.action, "applySettings")
+    XCTAssertNil(form.submit, "a form that applies on change draws no button")
+    XCTAssertNil(form.submitLabel)
+  }
+
+  func testFormKeepsBothASubmitAndAnApplyOnChange() throws {
+    let schema = try panel(parse(#"""
+    {
+      "v": 1,
+      "fallback": { "title": "T", "text": "t" },
+      "body": [{
+        "component": "form",
+        "fields": [{ "kind": "text", "id": "note", "label": "Note" }],
+        "submit": { "label": "Save", "onPress": { "action": "save" } },
+        "applyOnChange": { "action": "applySettings" }
+      }]
+    }
+    """#))
+    guard case let .form(form) = schema.body[0] else { return XCTFail("expected a form") }
+    XCTAssertEqual(form.submit?.action, "save")
+    XCTAssertEqual(form.submitLabel, "Save")
+    XCTAssertEqual(form.applyOnChange?.action, "applySettings")
+  }
+
+  func testFormWithNeitherSubmitNorApplyOnChangeIsInvalid() throws {
+    let schema = try panel(parse(#"""
+    {
+      "v": 1,
+      "fallback": { "title": "T", "text": "t" },
+      "body": [{
+        "component": "form",
+        "fields": [{ "kind": "text", "id": "note", "label": "Note" }]
+      }]
+    }
+    """#))
+    guard case let .invalid(name, _) = schema.body[0] else {
+      return XCTFail("expected an invalid node")
+    }
+    XCTAssertEqual(name, "form")
+  }
+
+  func testFormWithAMalformedSubmitIsInvalidEvenWhenApplyOnChangeCouldCarryIt() throws {
+    // The author asked for a button. Dropping it silently would ship a form
+    // missing a control they declared.
+    let schema = try panel(parse(#"""
+    {
+      "v": 1,
+      "fallback": { "title": "T", "text": "t" },
+      "body": [{
+        "component": "form",
+        "fields": [{ "kind": "text", "id": "note", "label": "Note" }],
+        "submit": { "label": "Save" },
+        "applyOnChange": { "action": "applySettings" }
+      }]
+    }
+    """#))
+    guard case let .invalid(name, _) = schema.body[0] else {
+      return XCTFail("expected an invalid node")
+    }
+    XCTAssertEqual(name, "form")
+  }
+
   // MARK: - Media and fallback deeplinks
 
   func testMediaLoadsOnlyFromSchemesAPanelIsAllowedToPointAt() {
@@ -3426,7 +3505,13 @@ final class PluginPaneFallbackTests: XCTestCase {
     return list.items
   }
 
-  func testMirrorRowsWinAndNoCollectionIsAskedFor() async {
+  /// The mirror draws first and the machine is still asked.
+  ///
+  /// The pane used to live-read ONLY when the mirror was entirely empty, so one
+  /// replicated row made the mirror authoritative for ever and a collection
+  /// mid-replication rendered as a complete list. The mirror is still what the
+  /// reader sees immediately; it is no longer the last word.
+  func testMirrorRowsDrawImmediatelyAndTheMachineIsStillAsked() async {
     let sync = FakePaneSync()
     sync.localPanels = [record()]
     sync.localEntries = [
@@ -3435,16 +3520,129 @@ final class PluginPaneFallbackTests: XCTestCase {
         collection: "stories",
         key: "1",
         valueJSON: #"{"title":"From the mirror"}"#,
-        updatedAt: ""
+        updatedAt: "2026-08-30T10:00:00Z"
       ),
     ]
     let pane = store(sync, cache: PluginPanelFallbackCache())
 
     pane.load()
-    await settle(pane)
+    XCTAssertEqual(
+      boundItems(of: pane)?.first?.title,
+      "From the mirror",
+      "Nothing waits on a socket: the replicated rows are on screen at once."
+    )
+    await settle(until: { sync.collectionFetchCount == 1 })
+    XCTAssertEqual(sync.collectionFetchCount, 1, "A mirror that has rows can still be behind.")
+  }
 
-    XCTAssertEqual(boundItems(of: pane)?.first?.title, "From the mirror")
-    XCTAssertEqual(sync.collectionFetchCount, 0, "The mirror answered; the socket must not be touched.")
+  /// The write-then-read the dogfood hit: a row changed on the machine, the
+  /// phone already had the OLD copy mirrored, and the pane went on drawing it.
+  func testANewerRowFromTheMachineReplacesTheMirrorsCopy() async {
+    let sync = FakePaneSync()
+    sync.localPanels = [record()]
+    sync.localEntries = [
+      PluginCollectionEntry(
+        pluginId: "hn",
+        collection: "stories",
+        key: "1",
+        valueJSON: #"{"title":"Open"}"#,
+        updatedAt: "2026-08-30T10:00:00Z"
+      ),
+    ]
+    sync.collectionReply = .success([
+      PluginCollectionEntry(
+        pluginId: "hn",
+        collection: "stories",
+        key: "1",
+        valueJSON: #"{"title":"Reversed"}"#,
+        updatedAt: "2026-08-30T11:00:00Z"
+      ),
+      PluginCollectionEntry(
+        pluginId: "hn",
+        collection: "stories",
+        key: "2",
+        valueJSON: #"{"title":"Only on the machine"}"#,
+        updatedAt: "2026-08-30T11:05:00Z"
+      ),
+    ])
+    let pane = store(sync, cache: PluginPanelFallbackCache())
+
+    pane.load()
+    await settle(until: { (boundItems(of: pane)?.count ?? 0) == 2 })
+
+    XCTAssertEqual(boundItems(of: pane)?.count, 2)
+    XCTAssertEqual(
+      boundItems(of: pane)?.first?.title,
+      "Reversed",
+      "The newer updatedAt wins for display; the mirror's position is kept."
+    )
+    XCTAssertEqual(boundItems(of: pane)?.last?.title, "Only on the machine")
+    XCTAssertFalse(pane.collectionsMayBeStale, "A read that answered is not a stale list.")
+  }
+
+  /// A read that failed keeps the rows and admits it could not check them. A
+  /// plausible, well-formed, silently out-of-date list is the worse failure.
+  func testAFailedCollectionReadKeepsTheMirrorRowsAndMarksThemStale() async {
+    let sync = FakePaneSync()
+    sync.localPanels = [record()]
+    sync.localEntries = [
+      PluginCollectionEntry(
+        pluginId: "hn",
+        collection: "stories",
+        key: "1",
+        valueJSON: #"{"title":"From the mirror"}"#,
+        updatedAt: "2026-08-30T10:00:00Z"
+      ),
+    ]
+    sync.collectionReply = .failure(URLError(.notConnectedToInternet))
+    let pane = store(sync, cache: PluginPanelFallbackCache())
+
+    pane.load()
+    await settle(until: { pane.collectionsMayBeStale })
+
+    XCTAssertTrue(pane.collectionsMayBeStale)
+    XCTAssertEqual(boundItems(of: pane)?.first?.title, "From the mirror", "The rows are real; only their currency is not.")
+  }
+
+  /// An action that reached the machine may have written there, and the mirror
+  /// will not carry that write until replication catches up. The pane asks
+  /// again rather than answering from the copy it fetched before the action.
+  func testAnActionMakesThePaneReadTheCollectionAgain() async {
+    let sync = FakePaneSync()
+    sync.localPanels = [record()]
+    sync.collectionReply = .success([
+      PluginCollectionEntry(
+        pluginId: "hn",
+        collection: "stories",
+        key: "1",
+        valueJSON: #"{"title":"Logged"}"#,
+        updatedAt: "2026-08-30T10:00:00Z"
+      ),
+    ])
+    let pane = store(sync, cache: PluginPanelFallbackCache())
+
+    pane.load()
+    await settle(until: { sync.collectionFetchCount == 1 })
+
+    pane.perform(PluginVocabAction(action: "journal.log"), label: "Log it")
+    await settle(until: { sync.collectionFetchCount == 2 })
+    XCTAssertEqual(sync.collectionFetchCount, 2, "A write on the machine invalidates what this pane fetched.")
+  }
+
+  /// The gesture the ledger called powerless. It re-asks now, on any pane that
+  /// may ask at all — a panel with no declared refresh action included.
+  func testPullToRefreshReReadsTheCollection() async {
+    let sync = FakePaneSync()
+    sync.localPanels = [record()]
+    let pane = store(sync, cache: PluginPanelFallbackCache())
+
+    pane.load()
+    await settle(until: { sync.collectionFetchCount == 1 })
+    XCTAssertTrue(pane.canRefresh, "A pane that can ask the machine has something to refresh.")
+
+    await pane.refresh()
+    await settle(until: { sync.collectionFetchCount == 2 })
+    XCTAssertEqual(sync.collectionFetchCount, 2)
   }
 
   // MARK: - Wire shape

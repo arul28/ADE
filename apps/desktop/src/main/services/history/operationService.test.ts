@@ -88,6 +88,7 @@ function createInMemoryAdeDb(): { db: AdeDb; raw: Database } {
         }),
         discardUnpublishedChangesForTables: () => {},
         minDbVersionForTables: () => null,
+        ensureTablesAreCrr: () => {},
         getPluginTablesWatermark: () => 0,
         setPluginTablesWatermark: () => {},
         setRemoteSettleTupleHandler: () => {},

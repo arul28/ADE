@@ -1421,6 +1421,16 @@ struct PluginChatCardPanel: View {
     // is not overruled by the session's.
     var merged = PluginSocketContextValues.remoteJSON(.session(id: sessionId))
     for (key, value) in context { merged[key] = value }
+    // MIRROR-ONLY, on purpose. `fetchesMissingRows` is left at its default, so
+    // this card draws the replicated rows and never asks the machine: a chat
+    // transcript can hold many cards, and one round trip per card on every
+    // scroll is a cost the reader pays for a surface they did not open. The
+    // full pane (`PluginPaneSheet`) is the surface that reconciles the mirror
+    // against a live read, and it is one tap away from every card.
+    //
+    // The consequence is worth stating plainly rather than hiding: a card bound
+    // to a collection shows what has REPLICATED to this phone, so a row written
+    // on the machine seconds ago may not be in it yet.
     _store = StateObject(wrappedValue: PluginPaneStore(
       pluginId: pluginId,
       panelId: panelId,

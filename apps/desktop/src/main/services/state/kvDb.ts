@@ -157,6 +157,35 @@ export type AdeDbSyncApi = {
    * error.
    */
   minDbVersionForTables: (tables: readonly string[]) => number | null;
+  /**
+   * Register these tables as cr-sqlite CRRs, if they exist and are not already.
+   *
+   * `openKvDb` converts every eligible table once, at open, before any service
+   * has run. A table created AFTER that — `pluginDataStore` creates the plugin
+   * tables itself, because it runs against databases whose migration predates
+   * the plugin platform — is a plain SQLite table for the rest of the process's
+   * life. Plain tables have no cr-sqlite triggers, so nothing written to them
+   * enters `crsql_changes`, and a row that is not in the change log cannot be
+   * exported by ANY path: not the ordinary changeset pump, not the mobile
+   * reseed, not `sendPluginTablesCatchUp`. The machine shows the row and every
+   * other device shows nothing, for ever.
+   *
+   * Idempotent, and it repairs as well as prevents. Two shapes of damage, both
+   * measured against the vendored extension rather than assumed:
+   *
+   * - No clock table. `crsql_as_crr` converts AND backfills, so rows written
+   *   while the table was plain go on the wire at the current db_version.
+   * - A clock table with no rows while the table has some. `crsql_as_crr` is a
+   *   no-op here (cr-sqlite already considers the table a CRR) and so is
+   *   touching a column with the value it already holds, so this one goes
+   *   through `rebuildCrrTableWithBackfill` — the same stage-drop-convert-
+   *   reinsert kvDb already uses to repair phone-critical tables.
+   *
+   * Never throws. A conversion that fails costs replication for that table,
+   * which is what the caller already had; failing the caller's write instead
+   * would turn a sync bug into a data-loss bug.
+   */
+  ensureTablesAreCrr: (tableNames: readonly string[]) => void;
   applyChanges: (changes: CrsqlChangeRow[]) => ApplyRemoteChangesResult;
   /**
    * Claim inbound settle-tuple writes so they are reconciled through the settle
@@ -4839,6 +4868,44 @@ export async function openKvDb(
     ),
   };
 
+  /**
+   * Create the plugin watermark table if this database does not have it.
+   *
+   * It is created by `migrate()`, which every open runs — but not every process
+   * that reaches these accessors opened the database through this module's full
+   * path, and a database last migrated by a build that predates the table has
+   * none. The accessors then threw on every call, the sync host swallowed the
+   * failure by design (a watermark that cannot persist must never fail a send),
+   * and the debt each peer was owed lived only as long as its connection. One
+   * `create table if not exists` on first use is what makes it durable
+   * everywhere instead.
+   *
+   * The DDL is a copy of migrate's on purpose and must stay identical to it;
+   * both are `if not exists`, so whichever runs first wins and the other is a
+   * no-op.
+   */
+  let pluginTablesWatermarkTableReady = false;
+  const ensurePluginTablesWatermarkTable = (): void => {
+    if (pluginTablesWatermarkTableReady) return;
+    try {
+      runStatement(db, `
+        create table if not exists sync_peer_plugin_watermarks (
+          device_id text not null,
+          through_db_version integer not null default 0,
+          updated_at text not null default '',
+          primary key (device_id)
+        )
+      `);
+      pluginTablesWatermarkTableReady = true;
+    } catch (error) {
+      // A read-only database is the ordinary reason. The accessors below fail
+      // the same way they did before, and the caller already tolerates that.
+      logger.warn("db.plugin_watermark_table_create_failed", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  };
+
   // Registered by the session layer once the settle chokepoint exists.
   let remoteSettleTupleHandler: ((changes: RemoteSettleTupleChange[]) => void) | null = null;
   const sync: AdeDbSyncApi = {
@@ -4923,6 +4990,16 @@ export async function openKvDb(
         ? Math.max(1, Math.floor(options.maxRows))
         : null;
       const survivesExportFilters = (row: ExportedChangeRow): boolean => {
+        // A local-only table never leaves this machine, whatever its CRR
+        // metadata says. Normally there is nothing to filter — the declaration
+        // makes `removeExcludedCrrMetadata` un-CRR the table at open — but a
+        // database converted by a build that predates the declaration still has
+        // live clock tables and keeps producing changes until the next open.
+        // `plugin_wire_meter_daily` is exactly that case in the wild, and the
+        // cost of shipping one is not a stale row: a desktop peer whose schema
+        // lacks the table throws `unknown_sync_table` inside applyChanges,
+        // rolls the batch back, and never advances its cursor again.
+        if (LOCAL_ONLY_CRR_EXCLUDED_TABLES.has(row.table_name)) return false;
         const suppressedThroughVersion = suppressions.get(row.table_name);
         if (suppressedThroughVersion == null || Number(row.db_version) > suppressedThroughVersion) {
           return true;
@@ -5045,9 +5122,62 @@ export async function openKvDb(
       }
       return lowest;
     },
+    ensureTablesAreCrr: (tableNames: readonly string[]) => {
+      if (!crsqliteLoaded) return;
+      for (const rawName of tableNames) {
+        const tableName = rawName.trim();
+        // The clock table's name is derived, so a stray character would be an
+        // identifier here. Every caller passes a compile-time constant; this
+        // keeps that true rather than trusting it.
+        if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(tableName)) continue;
+        if (LOCAL_ONLY_CRR_EXCLUDED_TABLES.has(tableName)) continue;
+        if (!rawHasTable(db, tableName)) continue;
+        const clockTableName = `${tableName}__crsql_clock`;
+        try {
+          if (!rawHasTable(db, clockTableName)) {
+            // Never registered. `crsql_as_crr` converts AND backfills the rows
+            // the table already holds — measured against the vendored
+            // extension: two rows written while the table was plain come back
+            // as four clock rows and four exportable changes. So this one call
+            // both closes the hole and empties it.
+            getRow(db, "select crsql_as_crr(?) as ok", [tableName]);
+            logger.info("db.crr_registered_late", {
+              tableName,
+              backfilledRows: countTableRows(db, tableName),
+            });
+            continue;
+          }
+          // Registered, and the clock says so. Nothing to do.
+          if (countTableRows(db, clockTableName) > 0) continue;
+          // Registered with an EMPTY clock while the table holds rows: those
+          // rows are on this machine and in no changeset, and re-running
+          // `crsql_as_crr` will NOT fix it — measured: on a table cr-sqlite
+          // already considers a CRR the call is a no-op, and so is rewriting a
+          // column with the value it already has (the update trigger compares
+          // before it writes). The rebuild is what works, and kvDb already owns
+          // it: stage the rows, drop the table and both shadows, recreate,
+          // convert, re-insert through the triggers.
+          const rowCount = countTableRows(db, tableName);
+          if (rowCount === 0) continue;
+          rebuildCrrTableWithBackfill(db, tableName);
+          // Said at warn because it is not free: every row is re-stamped at the
+          // current db_version, so this machine's copy wins last-writer-wins
+          // everywhere. That is the right trade only because an empty clock
+          // means the table has never replicated a single row, so there is no
+          // other machine's newer value to lose.
+          logger.warn("db.crr_clock_backfilled", { tableName, rowCount });
+        } catch (error) {
+          logger.warn("db.crr_registration_failed", {
+            tableName,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+      }
+    },
     getPluginTablesWatermark: (deviceId: string) => {
       const key = deviceId.trim();
       if (!key) return 0;
+      ensurePluginTablesWatermarkTable();
       const row = get<{ through_db_version: number }>(
         "select through_db_version from sync_peer_plugin_watermarks where device_id = ?",
         [key],
@@ -5062,6 +5192,7 @@ export async function openKvDb(
     ) => {
       const key = deviceId.trim();
       if (!key || !Number.isFinite(throughDbVersion)) return;
+      ensurePluginTablesWatermarkTable();
       const version = Math.max(0, Math.floor(throughDbVersion));
       run(
         `insert into sync_peer_plugin_watermarks(device_id, through_db_version, updated_at)

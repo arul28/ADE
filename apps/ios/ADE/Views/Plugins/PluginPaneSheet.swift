@@ -70,19 +70,16 @@ struct PluginPaneSheet: View {
 
   @ViewBuilder
   private var content: some View {
-    // Pull-to-refresh, but only for a panel whose manifest declared a refresh
-    // action. A panel backed by the plugin's own collections is already live —
-    // the host republishes and the mirror follows — so a pull there would be a
-    // gesture that promises something it cannot do. The built-in Cursor Cloud
-    // list had this and a plugin pane did not, which is the gap it closes.
-    //
-    // Branching on the declaration rather than passing an optional action: a
-    // `.refreshable` that is present and does nothing still draws the spinner,
-    // which is exactly the empty promise this avoids.
-    if store.refreshAction == nil {
-      scrollingContent
-    } else {
+    // Pull-to-refresh whenever the pull has something to do: a panel whose
+    // manifest declared a refresh action, or any pane that may ask the machine
+    // for rows — which is what makes the gesture answer a mirror that is behind
+    // rather than redraw the same stale list. A pane with neither keeps no
+    // spinner, because a `.refreshable` that is present and does nothing is the
+    // empty promise this avoids.
+    if store.canRefresh {
       scrollingContent.refreshable { await store.refresh() }
+    } else {
+      scrollingContent
     }
   }
 
@@ -95,6 +92,11 @@ struct PluginPaneSheet: View {
         }
         if !store.canInvoke {
           PluginReadOnlyNotice()
+        }
+        // Said before the list, not after it: a reader who takes the rows at
+        // face value has already been misled by the time a footnote arrives.
+        if store.collectionsMayBeStale {
+          PluginStaleListNotice()
         }
         panelBody
         if let message = store.actionMessage {
@@ -215,6 +217,25 @@ struct PluginPaneSheet: View {
 /// or an offline phone. The panel still renders: reading what a plugin last
 /// published is useful on its own, and hiding it would make a temporary
 /// condition look like an uninstall.
+/// Shown when the pane drew the mirror's rows but could not check them against
+/// the machine. The list is real; its currency is not, and saying so is the
+/// difference between a stale list and a lying one.
+struct PluginStaleListNotice: View {
+  var body: some View {
+    HStack(spacing: 8) {
+      Image(systemName: "clock.arrow.circlepath")
+        .font(.system(size: 11, weight: .semibold))
+      Text("Showing what reached this phone. ADE couldn't check with your computer.")
+        .font(.caption)
+        .fixedSize(horizontal: false, vertical: true)
+    }
+    .foregroundStyle(ADEColor.textSecondary)
+    .frame(maxWidth: .infinity, alignment: .leading)
+    .padding(12)
+    .background(ADEColor.surfaceBackground.opacity(0.5), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+  }
+}
+
 struct PluginReadOnlyNotice: View {
   var body: some View {
     HStack(spacing: 8) {

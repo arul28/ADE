@@ -34,6 +34,7 @@ function createInMemoryAdeDb(): AdeDb {
       applyChanges: () => ({ appliedCount: 0, dbVersion: 0, touchedTables: [], rebuiltFts: false }),
       discardUnpublishedChangesForTables: () => {},
       minDbVersionForTables: () => null,
+      ensureTablesAreCrr: () => {},
       getPluginTablesWatermark: () => 0,
       setPluginTablesWatermark: () => {},
       setRemoteSettleTupleHandler: () => {},

@@ -4,6 +4,7 @@ import path from "node:path";
 import { createRequire } from "node:module";
 import { describe, expect, it } from "vitest";
 import { CRSQL_EXPORT_VERSION_GROUP_TOO_LARGE_CODE } from "../../../shared/types/sync";
+import { createPluginDataStore } from "../plugins/pluginDataStore";
 import { openKvDb } from "./kvDb";
 import { isCrsqliteAvailable } from "./crsqliteExtension";
 
@@ -248,6 +249,203 @@ describe.skipIf(!isCrsqliteAvailable())("kvDb sync foundation", () => {
 
     // Local-only: the watermark describes this host's own link, so it must
     // never appear in a changeset bound for a peer.
+    expect(db.sync.exportChangesSince(0).some(
+      (change) => change.table === "sync_peer_plugin_watermarks",
+    )).toBe(false);
+
+    db.close();
+  });
+
+  it("keeps plugin writes replicable when the data store creates the tables itself", async () => {
+    // The dogfood P0, reduced to its mechanism. `createPluginDataStore` creates
+    // the three plugin tables itself because it "runs against a database whose
+    // migration predates the plugin platform" (PLUGIN_TABLE_DDL's own comment).
+    // `ensureCrrTables` runs ONCE, inside `openKvDb`, so a table born after that
+    // is a plain SQLite table: writes to it never enter `crsql_changes`, and no
+    // export path — ordinary, reseed, or `sendPluginTablesCatchUp` — can see a
+    // row that is not in the change log. The phone then receives nothing, for
+    // ever, while every write on the machine appears to succeed.
+    const db = await openKvDb(makeDbPath("ade-kvdb-sync-plugin-plain-"), createLogger() as any);
+
+    // Model the pre-plugin-platform database: the tables the data store has to
+    // create are absent, along with the CRR metadata `openKvDb` gave them.
+    for (const table of ["plugin_collections", "plugin_contributions", "plugin_panels"]) {
+      db.run(`drop table if exists "${table}"`);
+      db.run(`drop table if exists "${table}__crsql_clock"`);
+      db.run(`drop table if exists "${table}__crsql_pks"`);
+    }
+
+    const store = createPluginDataStore({ db });
+    store.putCollection("decision-log", "decisions", "d1", { state: "open" });
+
+    expect(db.get<{ count: number }>("select count(*) as count from plugin_collections")?.count).toBe(1);
+    // The row is on the machine. The question the phone cares about is whether
+    // it is on the WIRE.
+    const exported = db.sync.exportChangesSince(0, { includeTables: ["plugin_collections"] });
+    expect(exported.length).toBeGreaterThan(0);
+    expect(db.sync.minDbVersionForTables(["plugin_collections"])).not.toBeNull();
+
+    // A delete has to reach the phone too — that is what makes uninstall's
+    // promise ("deletes its synced copies on your other devices") true. A
+    // cr-sqlite delete is a sentinel row, not an absence, so it exports.
+    store.deleteCollection("decision-log", "decisions", "d1");
+    const afterDelete = db.sync.exportChangesSince(0, { includeTables: ["plugin_collections"] });
+    expect(afterDelete.some((change) => change.cid === "-1")).toBe(true);
+
+    db.close();
+  });
+
+  it("never lets a local-only CRR reach a changeset", async () => {
+    // `plugin_wire_meter_daily` is local-only by declaration, and a database
+    // converted by a build that predates that declaration still has live clock
+    // tables for it — the dogfood machine's does. Shipping one of its rows does
+    // not merely leak a stale number: a desktop peer whose schema lacks the
+    // table throws `unknown_sync_table` inside applyChanges, rolls the batch
+    // back, and never advances its cursor again.
+    const db = await openKvDb(makeDbPath("ade-kvdb-sync-local-only-"), createLogger() as any);
+    // Force the pre-declaration shape: a local-only table that IS a CRR.
+    db.run(`drop table if exists "plugin_wire_meter_daily__crsql_clock"`);
+    db.run(`drop table if exists "plugin_wire_meter_daily__crsql_pks"`);
+    db.get<{ ok: number }>("select crsql_as_crr(?) as ok", ["plugin_wire_meter_daily"]);
+    db.run(
+      `insert into plugin_wire_meter_daily(day, plugin_id, direction, bytes, frames)
+       values (?, ?, ?, ?, ?)`,
+      ["2026-08-30", "decision-log", "outbound", 1024, 4],
+    );
+
+    // It is in the local change log — this machine's own bookkeeping — and in
+    // no changeset bound anywhere.
+    expect(
+      db.get<{ count: number }>(
+        "select count(*) as count from plugin_wire_meter_daily__crsql_clock",
+      )?.count,
+    ).toBeGreaterThan(0);
+    expect(db.sync.exportChangesSince(0).some((change) => change.table === "plugin_wire_meter_daily")).toBe(false);
+    expect(db.sync.exportChangesSince(0, { includeTables: ["plugin_wire_meter_daily"] })).toEqual([]);
+
+    db.close();
+  });
+
+  it("puts rows a plain plugin table already collected back on the wire", async () => {
+    // The repair half. A database that ran the broken build has real rows in a
+    // plain `plugin_collections` and nothing in `crsql_changes` for them, so
+    // preventing new losses is not enough — those rows are on the machine and on
+    // no other device. `crsql_as_crr` backfills what a table already holds, so
+    // the registration that closes the hole also empties it.
+    const db = await openKvDb(makeDbPath("ade-kvdb-sync-plugin-backfill-"), createLogger() as any);
+    db.run(`drop table if exists "plugin_collections"`);
+    db.run(`drop table if exists "plugin_collections__crsql_clock"`);
+    db.run(`drop table if exists "plugin_collections__crsql_pks"`);
+    db.run(`create table plugin_collections (
+      plugin_id text not null,
+      collection text not null,
+      key text not null,
+      value_json text not null default 'null',
+      updated_at text not null default '',
+      primary key (plugin_id, collection, key)
+    )`);
+    db.run(
+      "insert into plugin_collections(plugin_id, collection, key, value_json, updated_at) values (?, ?, ?, ?, ?)",
+      ["decision-log", "decisions", "d1", '{"state":"open"}', "2026-08-30T00:00:00.000Z"],
+    );
+    expect(db.sync.exportChangesSince(0, { includeTables: ["plugin_collections"] })).toEqual([]);
+
+    createPluginDataStore({ db });
+
+    const exported = db.sync.exportChangesSince(0, { includeTables: ["plugin_collections"] });
+    expect(exported.length).toBeGreaterThan(0);
+    db.close();
+  });
+
+  it("repairs a registered plugin table whose clock lost every row", async () => {
+    // The other shape of the same damage: the table IS a CRR and holds rows,
+    // but its clock is empty, so nothing about those rows is exportable.
+    // Re-running `crsql_as_crr` cannot fix this (cr-sqlite already considers
+    // the table converted) and neither can touching a column with the value it
+    // already holds — both measured against the vendored extension. The rebuild
+    // is what works, and it has to leave the table able to replicate DELETES
+    // too, which is what the uninstall promise rests on.
+    const db = await openKvDb(makeDbPath("ade-kvdb-sync-plugin-clockloss-"), createLogger() as any);
+    db.run(
+      `insert into plugin_collections(plugin_id, collection, key, value_json, updated_at)
+       values (?, ?, ?, ?, ?)`,
+      ["decision-log", "decisions", "d1", '{"state":"open"}', "2026-08-30T00:00:00.000Z"],
+    );
+    db.run(
+      `insert into plugin_collections(plugin_id, collection, key, value_json, updated_at)
+       values (?, ?, ?, ?, ?)`,
+      ["decision-log", "decisions", "d2", '{"state":"open"}', "2026-08-30T00:01:00.000Z"],
+    );
+    db.run(`delete from plugin_collections__crsql_clock`);
+    expect(db.sync.exportChangesSince(0, { includeTables: ["plugin_collections"] })).toEqual([]);
+
+    db.sync.ensureTablesAreCrr(["plugin_collections"]);
+
+    expect(
+      db.get<{ count: number }>("select count(*) as count from plugin_collections")?.count,
+    ).toBe(2);
+    const exported = db.sync.exportChangesSince(0, { includeTables: ["plugin_collections"] });
+    expect(exported.length).toBeGreaterThan(0);
+
+    // And the repaired table replicates a delete as a sentinel, not as an
+    // absence — the uninstall path depends on it.
+    const store = createPluginDataStore({ db, ensureTables: false });
+    store.deleteCollection("decision-log", "decisions", "d1");
+    expect(
+      db.sync
+        .exportChangesSince(0, { includeTables: ["plugin_collections"] })
+        .some((change) => change.cid === "-1"),
+    ).toBe(true);
+
+    db.close();
+  });
+
+  it("skips a local-only table and survives one cr-sqlite refuses", async () => {
+    // The two ways `ensureTablesAreCrr` must decline, both reachable from real
+    // callers. A local-only table is declined by DECLARATION — converting it
+    // would put a table about this machine's own bookkeeping on the wire.
+    // A table with a nullable primary key is declined by CR-SQLITE, which is
+    // every `id text primary key` in `automationService` (SQLite leaves such a
+    // column nullable); those are converted at open by the retrofit pass
+    // instead. Neither may throw: the caller is a service constructor, and
+    // failing it would take down a feature over a replication detail.
+    const db = await openKvDb(makeDbPath("ade-kvdb-sync-late-tables-"), createLogger() as any);
+    db.run(`drop table if exists "plugin_wire_meter_daily__crsql_clock"`);
+    db.run(`drop table if exists "plugin_wire_meter_daily__crsql_pks"`);
+    db.run(`create table if not exists zz_nullable_pk_probe (id text primary key, project_id text not null)`);
+
+    expect(() => db.sync.ensureTablesAreCrr([
+      "plugin_wire_meter_daily",
+      "zz_nullable_pk_probe",
+      "zz_table_that_does_not_exist",
+    ])).not.toThrow();
+
+    for (const table of ["plugin_wire_meter_daily", "zz_nullable_pk_probe"]) {
+      expect(
+        db.get<{ count: number }>(
+          "select count(*) as count from sqlite_master where name = ?",
+          [`${table}__crsql_clock`],
+        )?.count,
+      ).toBe(0);
+    }
+
+    db.close();
+  });
+
+  it("keeps a peer's plugin watermark durable on a database that never migrated the table", async () => {
+    // The dogfood database has no `sync_peer_plugin_watermarks` at all — it was
+    // added by the watermark fix, and that database was last migrated before
+    // it. Every persist threw, the sync host swallowed it by design, and the
+    // debt each peer was owed lived only as long as its connection.
+    const db = await openKvDb(makeDbPath("ade-kvdb-sync-watermark-table-"), createLogger() as any);
+    db.run("drop table if exists sync_peer_plugin_watermarks");
+
+    expect(db.sync.getPluginTablesWatermark("phone-1")).toBe(0);
+    db.sync.setPluginTablesWatermark("phone-1", 4321);
+    expect(db.sync.getPluginTablesWatermark("phone-1")).toBe(4321);
+
+    // Recreated local-only, the way migrate creates it: a table about this
+    // host's own outbound link must never ride a changeset.
     expect(db.sync.exportChangesSince(0).some(
       (change) => change.table === "sync_peer_plugin_watermarks",
     )).toBe(false);

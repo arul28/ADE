@@ -1477,6 +1477,36 @@ export function createAutomationService({
     // delete completed before the crash, the missing-lane path records success.
     db.run("update automation_scheduled_cleanups set status = 'scheduled' where status = 'executing' and project_id = ?", [projectId]);
 
+    // A NOTE ON CRR REGISTRATION, so nobody repeats the attempt.
+    //
+    // Every table above is created HERE rather than by kvDb's `migrate()`, and
+    // `ensureCrrTables` runs once inside `openKvDb`, before this service exists.
+    // So on the first launch that creates one, it is a plain SQLite table with
+    // no cr-sqlite triggers for the rest of the process and nothing written to
+    // it reaches a changeset. That is the same shape as the plugin-table defect
+    // that made plugin data write-only from the phone.
+    //
+    // It cannot be closed the same way. `db.sync.ensureTablesAreCrr` fixes the
+    // plugin tables because their PK columns are `text not null`; every PK
+    // above is a bare `id text primary key`, which SQLite treats as NULLABLE,
+    // and cr-sqlite refuses it outright: "Table automation_queue_items has no
+    // primary key or primary key is nullable. CRRs must have a non nullable
+    // primary key" (measured against the vendored extension with this exact
+    // DDL). Calling it here would log a refusal on every boot and convert
+    // nothing.
+    //
+    // What actually converts them is `retrofitLegacyPrimaryKeyNotNullSchema`,
+    // which rebuilds the table with a NOT NULL primary key and forces a
+    // database REOPEN before `ensureCrrTables` runs — an open-time pass, not
+    // something a service can invoke mid-session. That is why the live database
+    // holds `automation_queue_items` as `id text not null primary key default
+    // ''`. The window is therefore one process lifetime, and it closes itself:
+    // the next launch retrofits, converts, and `crsql_as_crr` backfills the rows
+    // written in between.
+    //
+    // The real fix is to move this DDL into `migrate()`, where the retrofit and
+    // the CRR pass both see it before any writer runs.
+
     // A one-time reclaim failure must never block service construction: the
     // service still functions with the legacy payloads in place (they are only
     // dead weight), and the next boot retries the reclaim.

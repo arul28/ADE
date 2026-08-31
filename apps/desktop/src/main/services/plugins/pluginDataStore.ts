@@ -23,6 +23,7 @@ import {
   type PluginPanelRecord,
   type PluginUsageSummary,
 } from "../../../shared/plugins/sdk";
+import { SYNC_PLUGIN_TABLES } from "../../../shared/types/sync";
 import { PLUGIN_TABLE_DDL, type AdeDb } from "../state/kvDb";
 import { emitPluginChange } from "./pluginEvents";
 
@@ -165,6 +166,15 @@ export function createPluginDataStore(deps: {
   const { db } = deps;
   if (deps.ensureTables !== false) {
     for (const statement of PLUGIN_TABLE_DDL) db.run(statement);
+    // A table this store creates is born PLAIN. `openKvDb` registers CRRs once,
+    // at open, long before any project is attached, so a table created here has
+    // no cr-sqlite triggers and nothing written to it enters `crsql_changes` —
+    // and a row that is not in the change log cannot be exported by any path,
+    // including the plugin catch-up. That is a plugin whose data is visible on
+    // the machine that wrote it and on no other device, for ever. Registering
+    // them here is idempotent, and it repairs a database that already collected
+    // plain rows: `crsql_as_crr` backfills what the table already holds.
+    db.sync?.ensureTablesAreCrr?.(SYNC_PLUGIN_TABLES);
   }
 
   const nowIso = (): string => new Date().toISOString();
