@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { findOnPath, resolveBinary } from "../src/binary.js";
 import {
@@ -19,6 +20,7 @@ import {
 } from "../src/download.js";
 import { chatEnvelopeFromBufferedEvent, isBufferedEvent } from "../src/eventStream.js";
 import { permissionArgs } from "../src/permissions.js";
+import { SDK_VERSION } from "../src/version.js";
 import {
   createExitHooks,
   DEFAULT_ADE_ROLE,
@@ -856,5 +858,22 @@ describe("stopChild teardown per platform (B3-4, B3-5)", () => {
     await stopping;
     expect(child.signals).toEqual(["SIGTERM"]);
     expect(hardKills).toBe(0);
+  });
+});
+
+describe("SDK_VERSION", () => {
+  // A published build gets this value from tsup's `define`, reading
+  // package.json at build time. The source literal is what a repo-local
+  // consumer (this suite, tsx, the demo app) sees, so it has to be pinned to
+  // the same package.json or the two answers to "which SDK is this?" diverge
+  // the moment someone bumps one and forgets the other.
+  it("matches the version in package.json", () => {
+    const manifestPath = fileURLToPath(new URL("../package.json", import.meta.url));
+    const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8")) as { version: string };
+    expect(SDK_VERSION).toBe(manifest.version);
+  });
+
+  it("is a plain semver string, not a placeholder", () => {
+    expect(SDK_VERSION).toMatch(/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/);
   });
 });

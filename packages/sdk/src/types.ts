@@ -355,6 +355,13 @@ export type ThreadSummary = {
 
 export type DoctorReport = {
   ok: boolean;
+  /**
+   * Version of this SDK package. Reported alongside the runtime version
+   * because a mismatched pair is the first thing to check when an embedder's
+   * chat misbehaves: the two ship on separate cadences, and the SDK is the
+   * half that lives inside the embedder's own build.
+   */
+  sdkVersion: string;
   binary: {
     path: string;
     /** Version string reported by `<binary> --version`, when it answered. */
