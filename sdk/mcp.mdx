@@ -41,10 +41,12 @@ Strict mode is **enforced only on Claude**. Codex, Cursor, Droid, and OpenCode a
 
 ## `mcpCapability`
 
-Every thread that requested MCP reports what it actually got:
+Every thread that requested MCP reports what it actually got. `null` means one of two things: this thread never asked for MCP, **or** it asked and an older runtime omitted the report. The SDK logs the second case (`requested MCP but the runtime reported no capability`). Do not read `null` as "no MCP was requested" when you passed `mcpServers` or `loadUserMcpServers: false` — treat the guarantee as unverified.
 
 ```ts
-if (thread.mcpCapability?.strictRequested && thread.mcpCapability.level !== "enforced") {
+if (!thread.mcpCapability) {
+  console.warn("runtime reported no MCP capability; treat the tool-surface guarantee as unverified");
+} else if (thread.mcpCapability.strictRequested && thread.mcpCapability.level !== "enforced") {
   console.warn(thread.mcpCapability.residual);
 }
 ```

@@ -47,7 +47,7 @@ function createAdeChat(options: CreateAdeChatOptions): Promise<AdeChatClient>
 | Member | |
 |---|---|
 | `id` / `key` | Runtime session id and caller key. |
-| `mcpCapability` | Honesty report. `null` when MCP was not requested. |
+| `mcpCapability` | Honesty report. `null` when MCP was not requested, **or** when an older runtime omitted the report — treat the latter as unverified if you asked. |
 | `send(text, opts?)` | Dispatch a turn. Resolves when accepted, not when finished. |
 | `steer(text)` | Mid-turn follow-up. Does not start a turn. |
 | `interrupt()` | Stop the in-flight turn. |

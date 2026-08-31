@@ -308,7 +308,8 @@ docs/
     ├── files-and-editor/
     ├── history/
     ├── lanes/
-    └── linear-integration/
+    ├── linear-integration/
+    └── sdk/
 ```
 
 Each `features/<name>/` contains a `README.md` (overview + source file map at top) plus 1–4 detail `*.md` files.

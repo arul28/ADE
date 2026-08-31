@@ -67,7 +67,7 @@ Every piece is importable without `<AdeChat>`:
 
 | Component | Role |
 |---|---|
-| `<Composer>` | Draft, send / steer, stop, attachments. Enter sends; Shift+Enter is a newline. |
+| `<Composer>` | Draft, send / steer, stop, attachments. Enter sends by default (Shift+Enter is a newline). `sendOnEnter={false}` inverts that: Enter is a newline and Cmd/Ctrl+Enter submits. |
 | `<Transcript>` | Rows, tool chips, reasoning, empty state. |
 | `<ModelPicker>` | Grouped catalog; disabled when the provider is not authenticated. |
 | `<ProviderCard>` / `<ProviderCards>` | Install / login copy for providers that need attention. |

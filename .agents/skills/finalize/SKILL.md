@@ -40,7 +40,7 @@ Outputs are exactly two things: the Phase 4 summary, and fatal-error messages (t
 
 ## Guardrails (read once, apply everywhere)
 
-- Do NOT touch the public Mintlify site: `docs.json` and any root-level `*.mdx`, plus the root-level dirs `chat/`, `tools/`, `changelog/`, `configuration/`, `computer-use/`, `context-packs/`, `getting-started/`, `guides/`, `automations/`, `lanes/`, `cto/`. Exception: the SDK tab (`sdk/*.mdx` and the SDK entries in `docs.json`) is in scope when the branch changed `packages/sdk`, `packages/chat-ui`, or MCP honesty — keep those pages aligned, do not rewrite other Mintlify product pages. Internal docs under `docs/` are in scope.
+- Do NOT touch the public Mintlify site: `docs.json` and any root-level `*.mdx`, plus the root-level dirs `chat/`, `tools/`, `changelog/`, `configuration/`, `computer-use/`, `context-packs/`, `getting-started/`, `guides/`, `automations/`, `lanes/`, `cto/`. Exception: the SDK tab (`sdk/*.mdx` and the SDK entries in `docs.json`) is in scope when the branch changed `packages/sdk`, `packages/chat-ui`, MCP honesty, or the `apps/ade-cli` embedded profile / `parentDeathWatchdog` — keep those pages aligned, do not rewrite other Mintlify product pages. Internal docs under `docs/` are in scope.
 - Do NOT modify `docs/OPTIMIZATION_OPPORTUNITIES.md` — append-only, human-curated.
 - Do NOT run `apps/mcp-server` checks; the MCP server was removed. The agent surface is `apps/ade-cli`.
 - Do NOT skip the sharded test run or substitute project-subset runs for it. `/finalize` is the gate that runs the full suite.

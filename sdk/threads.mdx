@@ -13,7 +13,9 @@ const thread = await ade.threads.open("support", {
 });
 ```
 
-`open(key)` is **open-or-resume**. The first call creates; later calls with the same key return a handle onto the same conversation. Resume does not require provider/model — those come from the stored record:
+`open(key)` is **open-or-resume**. The first call creates; later calls with the same key return a handle onto the same conversation. Resume does not require provider/model — those come from the stored record.
+
+If the stored session is gone (wiped home, copied machine, deleted chat), the SDK drops the stale key and **creates a new conversation** under that key. Reusing a key is not proof the old transcript is still there.
 
 ```ts
 const again = await ade.threads.open("support");

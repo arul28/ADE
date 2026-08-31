@@ -16,7 +16,7 @@ thread.on("event", (envelope) => console.log(envelope.event.type));
 await thread.send("Summarise today's incidents");
 ```
 
-Reopening `"support"` after a restart resumes the same conversation. Call `ade.dispose()` when the host shuts down.
+Reopening `"support"` after a restart resumes the same conversation. `send()` resolves when the runtime accepts the turn, **not** when the reply finishes — watch `thread.on("status")` / `thread.on("event")` before treating the thread as idle. Call `ade.dispose()` when the host shuts down.
 
 ## Check the machine
 
@@ -66,7 +66,9 @@ const thread = await ade.threads.open("ops", {
   },
 });
 
-if (thread.mcpCapability?.strictRequested && thread.mcpCapability.level !== "enforced") {
+if (!thread.mcpCapability) {
+  console.warn("runtime reported no MCP capability; treat the tool-surface guarantee as unverified");
+} else if (thread.mcpCapability.strictRequested && thread.mcpCapability.level !== "enforced") {
   console.warn(thread.mcpCapability.residual);
 }
 ```
