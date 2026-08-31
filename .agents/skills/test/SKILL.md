@@ -1,6 +1,6 @@
 ---
 name: test
-description: 'Prove the new code works: enforce the logging/PostHog ground truth, prune dead tests, consolidate fragments, add only tests that prove new contracts, turn accepted /quality correctness findings into named regression tests, then run CI-mirrored shards. Also keeps docs/mobile/CLI/TUI parity in lockstep.'
+description: 'Prove the new code works: enforce the logging/PostHog ground truth, prune dead tests, consolidate fragments, add only tests that prove new contracts, turn accepted /quality correctness findings into named regression tests, then run CI-mirrored shards. Also keeps docs/mobile/CLI/TUI parity in lockstep, and syncs the published @ade-dev SDK packages when a mirrored ADE surface changes (mirror-sync only, never scope expansion).'
 ---
 
 # /test — Test Suite Steward
@@ -279,11 +279,11 @@ Fix until passing before moving to the next.
 
 ---
 
-## Parity Passes (4–7)
+## Parity Passes (4–8)
 
-After the test-suite work above, run four parity reviewers that keep docs, iOS, the CLI, and the TUI in lockstep with the desktop changes on this branch. They are independent of one another and of Passes 1–3.
+After the test-suite work above, run five parity reviewers that keep docs, iOS, the CLI, the TUI, and the published SDK packages in lockstep with the desktop changes on this branch. They are independent of one another and of Passes 1–3.
 
-**Preferred: TeamCreate** for these four passes so progress is tracked and a single completion event surfaces the batch. Per the global git-worktrees policy, do not pass worktree isolation. Fallback: parallel `Agent` calls in a single tool-call round if TeamCreate is unavailable.
+**Preferred: TeamCreate** for these five passes so progress is tracked and a single completion event surfaces the batch. Per the global git-worktrees policy, do not pass worktree isolation. Fallback: parallel `Agent` calls in a single tool-call round if TeamCreate is unavailable.
 
 ---
 
@@ -588,7 +588,85 @@ Report:
 - typecheck and test results
 ```
 
-Wait for all four parity agents to complete before moving to Verification.
+---
+
+## Pass 8: SDK parity (mirror-sync only — never scope expansion)
+
+`packages/sdk` (`@ade-dev/sdk`) and `packages/chat-ui` (`@ade-dev/chat-ui`) are
+published npm packages that MIRROR a deliberately small subset of real ADE.
+The SDK's scope is frozen by design: when ADE changes something the SDK
+already mirrors, the SDK must be updated to match in the same PR; when ADE
+adds something new, the SDK does NOT grow to cover it. "Sync what exists,
+never add what doesn't" is the whole rule.
+
+Spawn a general-purpose agent with this prompt:
+
+```
+You are the ADE SDK parity reviewer.
+
+packages/sdk (@ade-dev/sdk) and packages/chat-ui (@ade-dev/chat-ui) are
+published npm packages that mirror a FROZEN subset of real ADE. Your job:
+if this branch touched anything that subset mirrors, update the packages to
+match. You must NOT expand the SDK's surface to cover new ADE features —
+scope expansion is a product decision, not a parity fix. If the branch adds
+a brand-new capability with no existing SDK mirror, report "not mirrored —
+out of SDK scope" and move on.
+
+Step 1: Get branch context
+  git diff "$TEST_REVIEW_BASE" --name-only
+  git status --short
+  git log "$TEST_REVIEW_BASE"..HEAD --oneline
+
+Step 2: The mirrored surfaces (the complete inventory — check each against
+the branch diff; most files carry "source of truth" / "mirrored in"
+provenance comments at both ends, grep for those markers too):
+
+| Real ADE source of truth | SDK mirror |
+|---|---|
+| apps/desktop/src/shared/types/chat.ts — AgentChatEventEnvelope/AgentChatEvent, AgentChatCreateArgs (mcpServers, strictMcpConfig), AgentChatSessionSummary (mcpServers/strictMcpConfig/mcpCapability), AgentChatMcpCapability, AgentChatMcpServerConfig | packages/sdk/src/types.ts (hand-copied subset) + normalizers in client.ts |
+| apps/desktop/src/shared/types/personalChats.ts — action list, capability flags, PersonalChatSubscribeEventsArgs/Result | packages/sdk/src/types.ts + personalChats.ts wrapper |
+| apps/desktop/src/shared/callerMcpServers.ts — CALLER_MCP_SUPPORT per-provider levels/residuals, validation rules (name charset, URL schemes, caps, reserved names, unsupported transports) | packages/sdk/src/client.ts TSDoc provider table + test/mockRuntime.ts PROVIDER_MCP_VERDICTS (pins claude/pi) |
+| apps/ade-cli/src/multiProjectRpcServer.ts — ade/initialize handshake, protocolVersion, personalChats.call/subscribeEvents/unsubscribeEvents wire shapes, runtime/event notification shape (scope, projectId:null, eventEpoch/gap) | packages/sdk/src/jsonRpc.ts + eventStream.ts + client.ts |
+| apps/ade-cli embedded profile contract — `ade runtime run --socket <p> --profile embedded` flags, ADE_EMBEDDED_PARENT_PID, sync-off guarantee, withheld machine-authority methods | packages/sdk/src/sidecar.ts + test/live.integration.test.ts |
+| apps/ade-cli/src/lib/trustedWindowsTools.ts — GLOBALROOT alias + canonical/escape checks (byte-identical security logic) | packages/sdk/src/windowsSystemTools.ts |
+| apps/desktop/src/shared/types/chat.ts event envelope semantics consumed by the transcript | packages/chat-ui/src/sdkTypes.ts (view contract) + transcript/transcriptRows.ts (port of chatTranscriptRows.ts) |
+| Binary release URL scheme / SHA256SUMS layout (apps/ade-cli/scripts/install-runtime.sh, apps/web/api/install.ts) | packages/sdk/src/download.ts |
+
+Step 3: For each mirrored surface the branch touched, apply the matching
+update in packages/sdk and/or packages/chat-ui: sync the copied types,
+normalizers, tables, TSDoc provider tables, the mock fixture's pinned rows,
+and the chat-ui view mapping. Keep both ends' provenance comments accurate.
+Additive-optional wire fields the SDK does not consume may be deliberately
+skipped — note the decision instead of copying blindly.
+
+Step 4: Versioning — this drives auto-publish. If you changed ANY published
+package content (src/, README, LICENSE, package.json), bump BOTH package
+versions to the same next patch (or minor for a behavior change) — the two
+packages version in lockstep and publish-sdk-packages.yml requires equal
+versions. A merge to main with a bumped version auto-publishes; an unbumped
+content change is a CI-visible mistake. If you changed nothing, bump
+nothing.
+
+Step 5: Validate
+  npm run typecheck:sdk && npm run test:sdk
+  npm run typecheck:chat-ui && npm run test:chat-ui
+  cd packages/demo && npm run e2e:preflight   # no live provider turns
+
+Out of scope:
+- Do NOT add new methods, options, events, or components for new ADE
+  features. Report them as "not mirrored — out of SDK scope".
+- Do NOT touch apps/** or docs/ (other passes own those).
+- Do NOT run npm publish or the live token-spending e2e.
+
+Report:
+- packages/* files changed (or "no SDK changes required")
+- For each branch change: mirrored surface → sync applied, or "not
+  mirrored — out of SDK scope", or "not SDK-relevant"
+- Version bump decision and reasoning
+- typecheck/test/preflight results
+```
+
+Wait for all five parity agents to complete before moving to Verification.
 
 ### Windows parity and Computer Use evidence
 
@@ -717,6 +795,7 @@ Parity:
 - Mobile: <iOS files changed, or "none required"> — validation PASS / blocked
 - CLI: <apps/ade-cli files changed, or "none required"> — typecheck + tests PASS / blocked
 - TUI: <apps/ade-cli/src/tuiClient files changed, or "none required"> — typecheck + tests PASS / blocked
+- SDK: <packages/sdk + packages/chat-ui files changed + version bump, or "no mirrored surface touched", with any "not mirrored — out of SDK scope" items listed> — typecheck + tests + preflight PASS / blocked
 - Breaking flag/command/slash renames: <list, or "none">
 
 Verification:
