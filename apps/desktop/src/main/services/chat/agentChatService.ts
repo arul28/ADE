@@ -363,6 +363,8 @@ import type {
   AgentChatCursorConfigOption,
   AgentChatCursorConfigValue,
   AgentChatCursorModeSnapshot,
+  AgentChatMcpCapability,
+  AgentChatMcpServerConfig,
   AgentChatOpenCodePermissionMode,
   AgentChatPermissionMode,
   CodexPlanState,
@@ -765,6 +767,21 @@ import {
   orchestrationInteractionModeForRole,
   orchestrationRoleForInteractionMode,
 } from "../../../shared/orchestrationRuntimePolicy";
+import {
+  CALLER_MCP_CAPABLE_PROVIDERS,
+  callerMcpServersToCodexConfig,
+  callerMcpServersToDroidList,
+  callerMcpServersToInlineRecord,
+  callerMcpServersToOpenCodeConfig,
+  callerMcpSupport,
+  callerMcpUnsupportedTransport,
+  normalizeCallerMcpCapability,
+  normalizeCallerMcpServers,
+  parseCallerMcpServers,
+  providerAcceptsCallerMcpServers,
+  resolveCallerMcpCapability,
+  type CallerMcpServers,
+} from "../../../shared/callerMcpServers";
 import type { ProcessRegistryService } from "../runtime/processRegistryService";
 
 const requireFromRuntime = createRequire(
@@ -1080,6 +1097,9 @@ type PersistedChatState = {
   cursorModeSnapshot?: AgentChatCursorModeSnapshot;
   cursorModeId?: string | null;
   cursorConfigValues?: Record<string, AgentChatCursorConfigValue>;
+  mcpServers?: Record<string, AgentChatMcpServerConfig>;
+  strictMcpConfig?: boolean;
+  mcpCapability?: AgentChatMcpCapability;
   runtimeTitleAdopted?: boolean;
   permissionMode?: AgentChatSession["permissionMode"];
   identityKey?: AgentChatIdentityKey;
@@ -3892,9 +3912,9 @@ function codexServiceTierArgs(session: AgentChatSession): { serviceTier?: CodexS
   return {};
 }
 
-function codexThreadConfigArgs(
-  reasoningEffort: string | null | undefined,
-  computerUse: CodexComputerUseMcpConfig | null = null,
+type CodexThreadConfigOptions = {
+  reasoningEffort?: string | null;
+  computerUse?: CodexComputerUseMcpConfig | null;
   /**
    * Orchestrator leads plan and delegate — they get no MCP at all. Codex merges
    * this overlay into the user's config.toml instead of replacing it, so the
@@ -3902,15 +3922,56 @@ function codexThreadConfigArgs(
    * ORCHESTRATION_LEAD_MCP_ISOLATION.codex). Computer Use is an MCP server too,
    * so a lead does not receive it either.
    */
-  leadConfiguredMcpServerNames: readonly string[] | null = null,
+  leadConfiguredMcpServerNames?: readonly string[] | null;
+  /**
+   * Servers an external embedder injected for this chat, plus the names of the
+   * user's configured servers when the caller asked for strict mode. Codex
+   * merges this overlay into config.toml rather than replacing it, so strict
+   * mode is expressed the same way a lead's isolation is: an explicit
+   * `enabled = false` per enumerated server. A server contributed by a Codex
+   * *plugin* is not in config.toml's mcp_servers table, cannot be enumerated,
+   * and therefore survives — reported as the `residual` in
+   * CALLER_MCP_SUPPORT.codex rather than papered over.
+   */
+  callerServers?: CallerMcpServers | null;
+  callerStrictAgainstConfiguredServerNames?: readonly string[] | null;
+};
+
+function codexThreadConfigArgs(
+  options: CodexThreadConfigOptions = {},
 ): { config?: Record<string, unknown> } {
+  const {
+    reasoningEffort,
+    computerUse = null,
+    leadConfiguredMcpServerNames = null,
+    callerServers = null,
+    callerStrictAgainstConfiguredServerNames = null,
+  } = options;
   const effort = typeof reasoningEffort === "string" ? reasoningEffort.trim() : "";
   const leadMcpOverrides = leadConfiguredMcpServerNames
     ? orchestrationLeadCodexMcpOverrides(leadConfiguredMcpServerNames)
     : null;
-  const mcpServers = leadMcpOverrides
+  const baseMcpServers = leadMcpOverrides
     ? (Object.keys(leadMcpOverrides).length ? leadMcpOverrides : null)
     : (computerUse ? { computer_use: computerUse } : null);
+  const callerStrictOverrides = callerStrictAgainstConfiguredServerNames?.length
+    ? orchestrationLeadCodexMcpOverrides(callerStrictAgainstConfiguredServerNames)
+    : null;
+  const callerCodexServers = callerServers ? callerMcpServersToCodexConfig(callerServers) : null;
+  // Order is load-bearing, and it was wrong: with ADE's servers first, a caller
+  // server named `computer_use` shadowed Computer Use, and — worse — strict
+  // mode disabled it outright, because `computer_use` IS one of the names
+  // enumerated from the user's config.toml. Caller servers still beat strict
+  // overrides so a server the caller explicitly asked for is never disabled,
+  // but ADE-managed servers now win over both. That matches every other
+  // adapter, where the ADE lease is spread last.
+  const mcpServers = baseMcpServers || callerStrictOverrides || callerCodexServers
+    ? {
+      ...(callerStrictOverrides ?? {}),
+      ...(callerCodexServers ?? {}),
+      ...(baseMcpServers ?? {}),
+    }
+    : null;
   if (!effort && !mcpServers) return {};
   return {
     config: {
@@ -7744,6 +7805,27 @@ function isLightweightSession(session: Pick<AgentChatSession, "sessionProfile">)
   return session.sessionProfile === "light";
 }
 
+/**
+ * Whether a Claude query runs with the SDK's `strictMcpConfig` (no on-disk
+ * `.mcp.json`, no user MCP).
+ *
+ * Precedence, highest first:
+ *  1. Orchestration lead — isolation is policy, not preference. Always strict.
+ *  2. The caller's explicit `strictMcpConfig`, either value. `false` is the
+ *     only way to get the user's MCP config into a lightweight session, and
+ *     every SDK/personal chat is lightweight; without this the SDK's
+ *     `loadUserMcpServers: true` was accepted on the wire and then discarded.
+ *  3. The session profile: lightweight side-jobs (auto-title, lane naming)
+ *     stay lean.
+ */
+function resolveClaudeStrictMcpConfig(
+  session: Pick<AgentChatSession, "sessionProfile" | "strictMcpConfig" | "interactionMode" | "orchestrationRole">,
+  lightweight: boolean,
+): boolean {
+  if (isOrchestrationLeadSession(session)) return true;
+  return session.strictMcpConfig ?? lightweight;
+}
+
 const PERSONAL_CHAT_SYSTEM_PROMPT = [
   "You are a general-purpose AI assistant in an ADE personal chat.",
   "This conversation is not attached to a software project, repository, branch, lane, or pull request.",
@@ -7967,16 +8049,29 @@ export function createAgentChatService(args: {
   /**
    * Thread-level Codex config for one session. Orchestrator leads never get MCP
    * (user servers are switched off one by one and Computer Use is skipped);
-   * every other session keeps the user's Codex config untouched.
+   * every other session keeps the user's Codex config untouched unless an
+   * external embedder injected servers or asked for strict mode.
    */
   const codexThreadConfigArgsFor = async (
     managed: ManagedChatSession,
     reasoningEffort: string | null | undefined,
   ): Promise<{ config?: Record<string, unknown> }> => {
     if (isOrchestrationLeadSession(managed.session)) {
-      return codexThreadConfigArgs(reasoningEffort, null, await resolveCodexConfiguredMcpServerNames());
+      return codexThreadConfigArgs({
+        reasoningEffort,
+        leadConfiguredMcpServerNames: await resolveCodexConfiguredMcpServerNames(),
+      });
     }
-    return codexThreadConfigArgs(reasoningEffort, await resolveCodexComputerUseMcp());
+    const callerServers = managed.session.mcpServers ?? null;
+    const callerStrict = managed.session.strictMcpConfig === true;
+    return codexThreadConfigArgs({
+      reasoningEffort,
+      computerUse: await resolveCodexComputerUseMcp(),
+      callerServers,
+      callerStrictAgainstConfiguredServerNames: callerStrict
+        ? await resolveCodexConfiguredMcpServerNames()
+        : null,
+    });
   };
   const notifiedSettledTurns = new Set<string>();
   const cancelledQueueRecoveries = new Map<string, {
@@ -12610,16 +12705,31 @@ export function createAgentChatService(args: {
       }
     }
     const openCodeOrchestrationLead = isOrchestrationLeadSession(managed.session);
+    // A caller-requested strict MCP surface needs the same isolation a lead
+    // gets, and for the same reason: OpenCode has no per-server switch, so the
+    // only way to withhold the user's servers is a dedicated server with an
+    // ADE-authored config and the project config layer disabled.
+    const openCodeIsolatedConfig = openCodeOrchestrationLead
+      || managed.session.strictMcpConfig === true;
     const opencodeMcpLeases = await ensureHttpMcpLeases(managed);
     // Ordinary chats and orchestrator workers inherit the user's OpenCode
     // config and MCP servers. A lead gets a dedicated server with ADE-owned
     // config only, because a user MCP server can reintroduce edit/shell access
     // through a different door (see ORCHESTRATION_LEAD_MCP_ISOLATION.opencode).
-    const opencodeOrchestrationMcp = opencodeMcpLeases.length
-      ? Object.fromEntries(opencodeMcpLeases.map((lease) => [
+    // Caller-injected servers (ADE SDK embedders) join the same map, ADE leases
+    // last so a caller cannot displace one by reusing its name. OpenCode's
+    // config calls an HTTP/SSE server "remote" and a stdio server "local".
+    const opencodeCallerMcpServers = managed.session.mcpServers ?? null;
+    const opencodeOrchestrationMcp = opencodeMcpLeases.length || opencodeCallerMcpServers
+      ? {
+        ...(opencodeCallerMcpServers
+          ? callerMcpServersToOpenCodeConfig(opencodeCallerMcpServers)
+          : {}),
+        ...Object.fromEntries(opencodeMcpLeases.map((lease) => [
           lease.serverName,
           { type: "remote" as const, url: lease.url, enabled: true, timeout: 10_000 },
-        ]))
+        ])),
+      }
       : undefined;
     let handle: OpenCodeSessionHandle;
     try {
@@ -12633,8 +12743,8 @@ export function createAgentChatService(args: {
         ownerKind: "chat",
         ownerId: managed.session.id,
         ownerKey: `chat:${managed.session.id}`,
-        leaseKind: openCodeOrchestrationLead ? "dedicated" : "shared",
-        isolatedConfig: openCodeOrchestrationLead,
+        leaseKind: openCodeIsolatedConfig ? "dedicated" : "shared",
+        isolatedConfig: openCodeIsolatedConfig,
         logger,
       });
     } catch (error) {
@@ -13420,6 +13530,14 @@ export function createAgentChatService(args: {
       ...(managed.session.cursorModeSnapshot ? { cursorModeSnapshot: managed.session.cursorModeSnapshot } : {}),
       ...(managed.session.cursorModeId !== undefined ? { cursorModeId: managed.session.cursorModeId } : {}),
       ...(managed.session.cursorConfigValues ? { cursorConfigValues: managed.session.cursorConfigValues } : {}),
+      ...(managed.session.mcpServers ? { mcpServers: managed.session.mcpServers } : {}),
+      // Explicit `false` is persisted, not collapsed to absent: on the lightweight
+      // profile every SDK chat uses, absent means strict and false means the
+      // caller asked for the user's MCP config back.
+      ...(typeof managed.session.strictMcpConfig === "boolean"
+        ? { strictMcpConfig: managed.session.strictMcpConfig }
+        : {}),
+      ...(managed.session.mcpCapability ? { mcpCapability: managed.session.mcpCapability } : {}),
       ...(managed.runtimeTitleAdopted ? { runtimeTitleAdopted: true } : {}),
       ...(managed.session.permissionMode ? { permissionMode: managed.session.permissionMode } : {}),
       ...(managed.session.identityKey ? { identityKey: managed.session.identityKey } : {}),
@@ -13716,6 +13834,11 @@ export function createAgentChatService(args: {
           ? null
           : undefined;
       const cursorConfigValues = normalizeCursorConfigValueRecord(record.cursorConfigValues);
+      const callerMcpServers = normalizeCallerMcpServers(record.mcpServers);
+      const strictMcpConfig = typeof record.strictMcpConfig === "boolean"
+        ? record.strictMcpConfig
+        : undefined;
+      const mcpCapability = normalizeCallerMcpCapability(record.mcpCapability, strictMcpConfig === true);
       const identityKey = normalizeIdentityKey(record.identityKey);
       const surface = record.surface === "automation" || record.surface === "personal"
         ? record.surface
@@ -13872,6 +13995,9 @@ export function createAgentChatService(args: {
         ...(cursorModeSnapshot ? { cursorModeSnapshot } : {}),
         ...(cursorModeId !== undefined ? { cursorModeId } : {}),
         ...(cursorConfigValues ? { cursorConfigValues } : {}),
+        ...(callerMcpServers ? { mcpServers: callerMcpServers } : {}),
+        ...(strictMcpConfig !== undefined ? { strictMcpConfig } : {}),
+        ...(mcpCapability ? { mcpCapability } : {}),
         ...(permissionMode ? { permissionMode } : {}),
         ...(identityKey ? { identityKey } : {}),
         surface,
@@ -30424,7 +30550,17 @@ export function createAgentChatService(args: {
       // hand a draft lead (no bundle yet → orchestration block skipped) tool capability
       // back. Workers/validators do real work and keep user MCP. strictMcpConfig still
       // permits the programmatic orchestration MCP server added below for bundled leads.
-      ...((lightweight || isOrchestrationLeadSession(managed.session)) ? { strictMcpConfig: true } : {}),
+      // An external embedder's stated preference joins the same condition
+      // rather than assigning the option after the fact — one place decides
+      // whether this query ignores the user's on-disk MCP config. That
+      // preference is the only thing that can turn the lightweight shortcut
+      // OFF: every SDK/personal chat runs on the "light" profile, so without
+      // this an embedder asking for the user's MCP servers was silently
+      // overridden and got none. A lead's isolation is policy, not preference,
+      // so it stays strict either way.
+      ...(resolveClaudeStrictMcpConfig(managed.session, lightweight)
+        ? { strictMcpConfig: true }
+        : {}),
       // ADE's settings land at flag tier, above every settings.json the SDK reads.
       // Only name a key ADE actually owns; anything else must stay absent so the
       // SDK's own local > project > user precedence resolves it. `enabledPlugins`
@@ -30470,6 +30606,18 @@ export function createAgentChatService(args: {
     const ctoMcpServer = buildClaudeSdkMcpServer(managed, "cto");
     if (ctoMcpServer) {
       opts.mcpServers = { ...(opts.mcpServers ?? {}), [CTO_MCP_SERVER_NAME]: ctoMcpServer };
+    }
+    // Caller-injected servers (ADE SDK embedders) are additive and land first,
+    // so an ADE-managed server can never be shadowed by a caller reusing its
+    // name. The user's own MCP config still loads unless the caller asked for
+    // strictMcpConfig, which the SDK honors by ignoring ~/.claude.json and
+    // project .mcp.json while leaving programmatic servers — these — in place.
+    const callerClaudeMcpServers = managed.session.mcpServers;
+    if (callerClaudeMcpServers) {
+      opts.mcpServers = {
+        ...callerMcpServersToInlineRecord(callerClaudeMcpServers),
+        ...(opts.mcpServers ?? {}),
+      };
     }
     const orchestrationMcpServer = buildClaudeSdkMcpServer(managed, "orchestration");
     if (orchestrationMcpServer) {
@@ -32332,6 +32480,8 @@ export function createAgentChatService(args: {
     droidPermissionMode: requestedDroidPermissionModeArg,
     cursorModeId: requestedCursorModeId,
     cursorConfigValues: requestedCursorConfigValues,
+    mcpServers: requestedMcpServers,
+    strictMcpConfig: requestedStrictMcpConfig,
     permissionMode: requestedPermMode,
     identityKey,
     surface,
@@ -32407,6 +32557,52 @@ export function createAgentChatService(args: {
     const resolvedModelId = requestedModelDescriptor?.id
       ?? resolveModelIdFromStoredValue(normalizedInputModel, provider);
 
+    // Refusing beats delivering a chat that quietly lacks the tools it was
+    // asked for. A caller that wired an MCP server into a thread depends on it;
+    // a chat that runs without it produces confidently wrong answers with no
+    // signal anywhere. Checked twice, on the requested provider here and on the
+    // resolved provider below, because a model can remap the provider group —
+    // the caller's own words deserve the clearer error, and the group it
+    // actually lands in is what must be able to honor the request.
+    //
+    // Only "unsupported" refuses. A best-effort provider DOES receive the
+    // servers; only its isolation is partial, which is a caveat carried on
+    // `mcpCapability`, not a missing capability.
+    //
+    // Parsed up front, not from raw truthiness: `mcpServers: {}` is a request
+    // for no servers, and gating the refusal on the raw object refused an empty
+    // map on Pi — a chat that asks for nothing is not under-delivered.
+    // Strict here for the same reason the refusal exists: a dropped server
+    // hands the caller a chat quietly missing tools it asked for. Rehydration
+    // elsewhere stays lenient — a corrupt persisted field must not make an
+    // existing chat unloadable.
+    const callerMcpServers = parseCallerMcpServers(requestedMcpServers);
+    const requireProviderAcceptsCallerMcpServers = (candidate: AgentChatProvider): void => {
+      if (!callerMcpServers) return;
+      if (!providerAcceptsCallerMcpServers(candidate)) {
+        throw new Error(
+          `Provider '${candidate}' cannot accept injected MCP servers: `
+          + `${callerMcpSupport(candidate)?.mechanism ?? "no MCP support"}. `
+          + "Create this chat without mcpServers, or pick a provider that supports "
+          + `them (${CALLER_MCP_CAPABLE_PROVIDERS.join(", ")}).`,
+        );
+      }
+      // A provider that accepts servers can still lack a transport. Codex has
+      // no SSE client — its config treats every `url` as streamable HTTP — so
+      // an SSE server handed to it connects over the wrong protocol and fails
+      // at first use with a transport error nobody can trace back to here.
+      const unsupported = callerMcpUnsupportedTransport(candidate, callerMcpServers);
+      if (unsupported) {
+        throw new Error(
+          `Provider '${candidate}' has no '${unsupported.transport}' MCP transport, so `
+          + `${unsupported.names.map((name) => `'${name}'`).join(", ")} cannot be delivered. `
+          + `Use a supported transport for ${unsupported.names.length > 1 ? "those servers" : "that server"}, `
+          + "or pick a provider that speaks it.",
+        );
+      }
+    };
+    requireProviderAcceptsCallerMcpServers(provider);
+
     if (provider === "opencode" && !resolvedModelId && !modelId?.endsWith("/auto")) {
       throw new Error("OpenCode chat requires a known model ID. Select a model from the registry.");
     }
@@ -32445,6 +32641,7 @@ export function createAgentChatService(args: {
       }
       effectiveProvider = resolved;
       normalizedModel = resolvedDescriptor.isCliWrapped ? resolvedDescriptor.providerModelId : resolvedDescriptor.id;
+      requireProviderAcceptsCallerMcpServers(effectiveProvider);
     }
 
     if (normalizedIdempotencyKey && sessionService.get(sessionId)) {
@@ -32483,6 +32680,23 @@ export function createAgentChatService(args: {
         ? null
         : undefined;
     const normalizedCursorConfigValues = normalizeCursorConfigValueRecord(requestedCursorConfigValues);
+    // Caller-injected MCP servers arrive only from an external embedder (the
+    // ADE SDK). A chat that asks for none keeps its persisted state and every
+    // provider option byte-for-byte identical to before this feature existed.
+    // The servers themselves are parsed and refused far above, before any
+    // session row is written.
+    //
+    // The gate stays "servers, or strict explicitly requested": an explicit
+    // `strictMcpConfig: false` with no servers intentionally emits NO report.
+    // That caller asked for the default MCP surface, and an absent report is
+    // how every consumer tells "no MCP was requested" from "here is what ADE
+    // did with your request".
+    const callerMcpCapability = callerMcpServers || requestedStrictMcpConfig === true
+      ? resolveCallerMcpCapability(effectiveProvider, {
+        hasServers: callerMcpServers != null,
+        strictRequested: requestedStrictMcpConfig === true,
+      })
+      : null;
     const capabilityMode = inferCapabilityMode(effectiveProvider);
     // Identity-pinned sessions (CTO + worker agents) are locked to full-auto.
     // Discard the native provider permission overrides supplied by callers so
@@ -32650,6 +32864,11 @@ export function createAgentChatService(args: {
             : {}),
           ...(initialClaudeOutputStyle ? { claudeOutputStyle: initialClaudeOutputStyle } : {}),
           ...(effectivePermissionMode ? { permissionMode: effectivePermissionMode } : {}),
+        ...(callerMcpServers ? { mcpServers: callerMcpServers } : {}),
+        ...(typeof requestedStrictMcpConfig === "boolean"
+          ? { strictMcpConfig: requestedStrictMcpConfig }
+          : {}),
+        ...(callerMcpCapability ? { mcpCapability: callerMcpCapability } : {}),
         ...(identityKey ? { identityKey } : {}),
         surface: surface ?? "work",
         automationId: automationId?.trim() ? automationId.trim() : null,
@@ -37238,11 +37457,19 @@ export function createAgentChatService(args: {
     // MCP servers rides on `policy.orchestrationLead`, which the worker turns
     // into a trimmed `local.settingSources` (cursorSdkSettingSources) — see
     // ORCHESTRATION_LEAD_MCP_ISOLATION.cursor.
-    const cursorOrchestrationMcpServers = cursorMcpLeases.length
-      ? Object.fromEntries(cursorMcpLeases.map((lease) => [
+    // Caller-injected servers (ADE SDK embedders) are additive too, and land
+    // first so an ADE lease can never be shadowed by a caller reusing its name.
+    // Strict mode rides the same trimmed `local.settingSources` a lead uses;
+    // see CALLER_MCP_SUPPORT.cursor for the residual (user-layer servers).
+    const cursorCallerMcpServers = managed.session.mcpServers ?? null;
+    const cursorOrchestrationMcpServers = cursorMcpLeases.length || cursorCallerMcpServers
+      ? {
+        ...(cursorCallerMcpServers ? callerMcpServersToInlineRecord(cursorCallerMcpServers) : {}),
+        ...Object.fromEntries(cursorMcpLeases.map((lease) => [
           lease.serverName,
           { type: "http" as const, url: lease.url },
-        ]))
+        ])),
+      }
       : undefined;
 
     const throwIfCursorSetupInterrupted = (): void => {
@@ -39486,8 +39713,15 @@ export function createAgentChatService(args: {
       // ADE's inline lease and disables every other live MCP tool through the
       // session-scoped toggleMcpTool RPC before each lead turn (see
       // ORCHESTRATION_LEAD_MCP_ISOLATION.droid).
-      const droidOrchestrationMcpServers = droidMcpLeases.length
-        ? droidMcpLeases.map((lease) => lease.config)
+      // Caller-injected servers (ADE SDK embedders) ride the same list. Droid's
+      // config shape is `{ name, ...transport }`, and the ADE leases go last so
+      // a caller reusing an ADE server name cannot displace the lease.
+      const droidCallerMcpServers = managed.session.mcpServers ?? null;
+      const droidOrchestrationMcpServers = droidMcpLeases.length || droidCallerMcpServers
+        ? [
+          ...(droidCallerMcpServers ? callerMcpServersToDroidList(droidCallerMcpServers) : []),
+          ...droidMcpLeases.map((lease) => lease.config),
+        ]
         : undefined;
       const persisted = readPersistedState(managed.session.id);
       const acquired = await acquireDroidSdkConnection({
@@ -39498,8 +39732,19 @@ export function createAgentChatService(args: {
         resumeSessionId: persisted?.droidSdkSessionId ?? null,
         settings: buildDroidSdkSessionSettings(managed, launchModelId),
         ...(droidOrchestrationMcpServers ? { mcpServers: droidOrchestrationMcpServers } : {}),
-        ...(isOrchestrationLeadSession(managed.session)
-          ? { allowedMcpServerNames: droidMcpLeases.map((lease) => lease.serverName) }
+        // Droid's only MCP knob is the session-scoped toggleMcpTool sweep the
+        // worker runs over everything outside this allow-list. Strict mode
+        // reuses it, with the caller's own servers added so the servers the
+        // embedder asked for survive the sweep.
+        ...(isOrchestrationLeadSession(managed.session) || managed.session.strictMcpConfig === true
+          ? {
+            allowedMcpServerNames: [
+              ...droidMcpLeases.map((lease) => lease.serverName),
+              ...(managed.session.strictMcpConfig === true && droidCallerMcpServers
+                ? Object.keys(droidCallerMcpServers)
+                : []),
+            ],
+          }
           : {}),
         baseEnv: buildAgentRuntimeEnv(managed),
         logger,
@@ -43389,6 +43634,20 @@ export function createAgentChatService(args: {
       ...(liveSession?.cursorConfigValues || persisted?.cursorConfigValues
         ? { cursorConfigValues: liveSession?.cursorConfigValues ?? persisted?.cursorConfigValues }
         : {}),
+      // The summary is the only view of a chat an external embedder ever sees:
+      // `personalChats.call` create/getSummary/list all return this, never the
+      // live session object. Omitting the MCP fields here persisted the
+      // capability report and then dropped it on the way out, so a caller could
+      // not tell "strict mode is enforced" from "the runtime ignored me".
+      ...(liveSession?.mcpServers || persisted?.mcpServers
+        ? { mcpServers: liveSession?.mcpServers ?? persisted?.mcpServers }
+        : {}),
+      ...(typeof (liveSession?.strictMcpConfig ?? persisted?.strictMcpConfig) === "boolean"
+        ? { strictMcpConfig: liveSession?.strictMcpConfig ?? persisted?.strictMcpConfig }
+        : {}),
+      ...(liveSession?.mcpCapability || persisted?.mcpCapability
+        ? { mcpCapability: liveSession?.mcpCapability ?? persisted?.mcpCapability }
+        : {}),
       ...(liveSession?.cursorCloudAgentId || persisted?.cursorCloudAgentId
         ? { cursorCloudAgentId: liveSession?.cursorCloudAgentId ?? persisted?.cursorCloudAgentId }
         : {}),
@@ -45976,6 +46235,42 @@ export function createAgentChatService(args: {
         });
       }
       const previousProvider = managed.session.provider;
+
+      // A model switch can cross providers, which means it can move a chat onto
+      // a provider that cannot honor the MCP request the chat was created with.
+      // Create-time refuses that; without the same check here the switch was a
+      // way around it, landing a chat on Pi with its injected servers silently
+      // gone. Refuse for the same reason and with the same shape.
+      if (managed.session.mcpServers && !providerAcceptsCallerMcpServers(nextProvider)) {
+        throw new Error(
+          `Cannot switch this chat to '${nextProvider}': it has injected MCP servers and `
+          + `${callerMcpSupport(nextProvider)?.mechanism ?? "that provider has no MCP support"}. `
+          + "Start a new chat on that provider instead.",
+        );
+      }
+      // Same reasoning one level down: a provider that accepts servers can
+      // still lack the transport one of them speaks, and switching onto it
+      // would connect that server over the wrong protocol.
+      const unsupportedTransport = managed.session.mcpServers
+        ? callerMcpUnsupportedTransport(nextProvider, managed.session.mcpServers)
+        : null;
+      if (unsupportedTransport) {
+        throw new Error(
+          `Cannot switch this chat to '${nextProvider}': it has no '${unsupportedTransport.transport}' `
+          + `MCP transport for ${unsupportedTransport.names.map((name) => `'${name}'`).join(", ")}. `
+          + "Start a new chat on that provider instead.",
+        );
+      }
+      // The report describes THIS provider's enforcement. Carrying the old one
+      // across a switch would claim Claude's "enforced" on a Codex session —
+      // a guarantee ADE is no longer keeping. Recomputed whenever the session
+      // carries an MCP request at all, including strict-mode-only.
+      if (managed.session.mcpServers || managed.session.strictMcpConfig === true) {
+        managed.session.mcpCapability = resolveCallerMcpCapability(nextProvider, {
+          hasServers: managed.session.mcpServers != null,
+          strictRequested: managed.session.strictMcpConfig === true,
+        });
+      }
 
       const modelChanged =
         previousProvider !== nextProvider

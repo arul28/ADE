@@ -181,6 +181,10 @@ import {
 } from "./serviceManager/common";
 import { awaitRuntimeServiceEndpoint } from "./services/runtime/awaitRuntimeServiceEndpoint";
 import { readBrainStartupState } from "./services/runtime/brainStartupState";
+import {
+  readEmbeddedParentPid,
+  startParentDeathWatchdog,
+} from "./services/runtime/parentDeathWatchdog";
 import { connectWhileServiceStarts } from "./services/runtime/connectWhileServiceStarts";
 import { normalizeAdeRuntimeRole, resolveAdeDefaultRole } from "./runtimeRoles";
 import {
@@ -746,6 +750,9 @@ const TOP_LEVEL_HELP = `${ADE_BANNER}
     $ ade skill list | show <name>                  Browse ADE's bundled agent skills (local)
     $ ade brain start | stop | status               Manage the background ADE brain
     $ ade runtime run --socket <path>               Run a manual runtime for dev/test work
+    $ ade runtime run --socket <path> --profile embedded
+                                                    Run a guest runtime for an external embedder (ADE SDK):
+                                                    personal chats only, no automations, sync off
     $ ade rpc --stdio                               Speak ADE JSON-RPC over stdin/stdout
     $ ade init [path]                               Register a project with this machine brain
     $ ade projects list                             List projects registered on this machine
@@ -2075,6 +2082,16 @@ const HELP_BY_COMMAND: Record<string, string> = {
     $ ade chat list --include-automation --no-archived --text
     $ ade chat create --lane <lane> --provider codex --model openai/gpt-5.6-sol --no-parent --reasoning-effort xhigh --no-fast --permissions full-auto
     $ ade chat create --personal --provider codex --model openai/gpt-5.6-sol --prompt "Plan my trip"
+    $ ade chat create --personal --provider claude --model anthropic/claude-opus-5 --arg-json mcpServers='{"docs":{"type":"http","url":"https://mcp.example/mcp"}}'
+                                                    Inject caller-owned MCP servers into one chat. There is no typed
+                                                    --mcp-server flag: the config is nested JSON, which --arg-json
+                                                    already carries. Add --arg strictMcpConfig=false to also load the
+                                                    user's own MCP config (personal chats withhold it by default), or
+                                                    --arg strictMcpConfig=true to withhold it on a project chat.
+                                                    Read mcpCapability on the created session (ade chat status
+                                                    <session> --personal --json) for what the provider could honor:
+                                                    only level "enforced" means the caller's servers are the whole
+                                                    surface. A server the provider cannot carry fails the create.
     $ ade chat create --lane <lane> --provider claude --model anthropic/claude-opus-5 --no-parent --prompt "fix the tests"
     $ ade chat create --from-linear-issue ENG-431 --parent <session> --type subagent
                                                     Start a child chat with an attached issue + kickoff (alias: --linear-issue-json)
@@ -2889,6 +2906,25 @@ function setPath(target: JsonObject, key: string, value: unknown): void {
     cursor = existing;
   }
   cursor[parts[parts.length - 1]!] = value;
+}
+
+/**
+ * The one place `--profile` is interpreted.
+ *
+ * There were two: the command router rejected unknown values, and `runServe`
+ * silently coerced anything that was not exactly "embedded" back to the default
+ * full profile. Same flag, two strictnesses — so a value that slipped past the
+ * router (a different entry point, a future caller) would quietly start a FULL
+ * machine brain when the caller asked for a sandboxed guest. Throwing here
+ * makes that unrepresentable.
+ */
+function parseRuntimeProfile(value: string | null | undefined): "embedded" | undefined {
+  const trimmed = typeof value === "string" ? value.trim() : "";
+  if (!trimmed) return undefined;
+  if (trimmed === "embedded") return "embedded";
+  throw new CliUsageError(
+    `Unknown runtime profile '${trimmed}'. The only profile ade runtime run accepts is 'embedded'.`,
+  );
 }
 
 function readValue(args: string[], names: string[]): string | null {
@@ -13089,6 +13125,11 @@ function buildCliPlan(
       if (!syncDisabled) {
         runtimeArgs.push("--no-sync");
       }
+      // Called for the throw, not the value: an unknown `--profile` must fail
+      // here, while the flag itself stays in `runtimeArgs` for runServe to
+      // consume. `readValue` splices what it reads, hence the copy — reading it
+      // off `runtimeArgs` directly would strip the flag before it is forwarded.
+      void parseRuntimeProfile(readValue([...runtimeArgs], ["--profile"]));
       return { kind: "serve", rest: runtimeArgs };
     }
     return { kind: "runtime", rest: args };
@@ -17484,6 +17525,11 @@ async function runServe(
     : path.resolve(rawSocketPath);
   const port = parseOptionalPort(readValue(args, ["--port"]), "--port");
   const syncEnabled = !readFlag(args, ["--no-sync"]);
+  // `--profile embedded` marks this runtime as a guest inside an external
+  // embedder's process (the ADE SDK). It only reshapes the machine chat scope:
+  // project scopes are still built on demand exactly as before, because an
+  // embedder that registers a project still expects that project to work.
+  const runtimeProfile = parseRuntimeProfile(readValue(args, ["--profile"]));
   const projectRegistry = new ProjectRegistry(layout);
   const brainAccountAuthService = getSharedAccountAuthService({
     secretsDir: layout.secretsDir,
@@ -17494,7 +17540,9 @@ async function runServe(
     brainAccountAuthService.getStatus(),
     brainProductAnalytics,
   );
-  const personalChatScope = createPersonalChatScope();
+  const personalChatScope = createPersonalChatScope(
+    runtimeProfile ? { runtimeProfile } : undefined,
+  );
   let preferredSyncProjectId: string | null = null;
   const preferredSyncProjectRoot = process.env.ADE_PROJECT_ROOT?.trim();
   if (preferredSyncProjectRoot) {
@@ -18025,6 +18073,9 @@ async function runServe(
   });
   const previousRole = process.env.ADE_DEFAULT_ROLE;
   let clearSyncRuntimeRpcHandlerFactory: (() => void) | null = null;
+  // Declared out here, beside clearSyncRuntimeRpcHandlerFactory, because the
+  // `finally` that tears it down sits outside the try block below.
+  let stopParentDeathWatchdog: (() => void) | null = null;
   process.env.ADE_DEFAULT_ROLE = options.role;
   try {
 
@@ -18078,12 +18129,21 @@ async function runServe(
         accountRetainsMachineOwnership: () =>
           accountSessionRetainsMachineOwnership(brainAccountAuthService.getStatus()),
       }),
-      machineUpdateControls: createMachineUpdateControls({
-        version: VERSION,
-        logger: headlessProjectLogger,
-        requestRestart: requestBrainServiceRestartFromServe,
-      }),
-      reportMachinePowerTransition: reportDesktopMachinePowerTransition,
+      // An embedded runtime is a guest inside an external process. Updating and
+      // restarting the MACHINE's ADE from inside it would reach far outside the
+      // embedder's lifecycle — it is the same "never claim machine authority"
+      // invariant that forces sync off, so it belongs to the profile rather
+      // than to whatever the caller's role default happens to be.
+      ...(runtimeProfile === "embedded"
+        ? {}
+        : {
+          machineUpdateControls: createMachineUpdateControls({
+            version: VERSION,
+            logger: headlessProjectLogger,
+            requestRestart: requestBrainServiceRestartFromServe,
+          }),
+          reportMachinePowerTransition: reportDesktopMachinePowerTransition,
+        }),
       getRuntimeStatus: () => {
         const publishHealth = getAccountDirectoryHealth();
         return {
@@ -18100,6 +18160,45 @@ async function runServe(
       onShutdown: finish,
     });
   clearSyncRuntimeRpcHandlerFactory = setSyncRuntimeRpcHandlerFactory(createHandler);
+  // An embedded runtime belongs to the process that spawned it. On POSIX an
+  // orphaned child is reparented to init and keeps running, so a host that dies
+  // without unwinding — SIGKILL, a crashed renderer, `kill -9` from a harness —
+  // leaks a runtime holding an isolated ADE home and a live socket. The SDK's
+  // dispose() and exit hooks cover every *graceful* exit; this covers the rest.
+  // Gated to the embedded profile: no other runtime has an owner, and exiting
+  // because an unrelated pid vanished would be far worse than the leak.
+  if (runtimeProfile === "embedded") {
+    const parentPid = readEmbeddedParentPid(process.env.ADE_EMBEDDED_PARENT_PID);
+    if (parentPid == null) {
+      headlessProjectLogger.info("runtime.embedded_parent_watchdog_absent", {
+        reason: process.env.ADE_EMBEDDED_PARENT_PID ? "unparseable" : "unset",
+      });
+    } else {
+      stopParentDeathWatchdog = startParentDeathWatchdog({
+        parentPid,
+        onParentGone: () => {
+          // `warn`, not `info`: brainLogger mirrors warn/error to stderr, and
+          // the SDK pipes our stderr into the embedder's logger. An info-level
+          // line goes to the log file only, and a fast exit can drop it before
+          // it flushes — leaving an operator asking "why did my runtime exit?"
+          // with no answer anywhere. This is the answer.
+          headlessProjectLogger.warn("runtime.embedded_parent_gone_shutting_down", {
+            parentPid,
+            detail: "The process that spawned this embedded runtime is gone; shutting down.",
+          });
+          // Graceful: the same path a `shutdown` RPC takes, so sockets close,
+          // pending work settles, and teardown runs. A bare process.exit here
+          // would leave the socket file and the db mid-write.
+          finish();
+        },
+        onInvalidParent: (reason) => {
+          // The runtime keeps running: a bad pid is the spawner's bug, and
+          // refusing to boot would turn a leak into an outage.
+          headlessProjectLogger.warn("runtime.embedded_parent_watchdog_invalid", { parentPid, reason });
+        },
+      });
+    }
+  }
   // A machine that hosts sync without a project must still be reachable off the
   // LAN. `createAdeRuntime` builds the relay tunnel per project scope, so with
   // no scope nothing ever dialled it and the target user for this path — a
@@ -18828,6 +18927,10 @@ async function runServe(
   return null;
   } finally {
     clearSyncRuntimeRpcHandlerFactory?.();
+    // Idempotent, and the timer is unref'd anyway — this is here so a runServe
+    // that returns for any other reason does not leave a live interval behind
+    // in a host process that embeds the CLI rather than spawning it.
+    stopParentDeathWatchdog?.();
     removeRuntimeProcessErrorBoundary();
     if (previousRole == null) delete process.env.ADE_DEFAULT_ROLE;
     else process.env.ADE_DEFAULT_ROLE = previousRole;

@@ -963,7 +963,9 @@ import { makeLinearIssueContextAttachment } from "../../../shared/chatContextAtt
 import { stableStringify } from "../shared/utils";
 import {
   createDynamicOpenCodeModelDescriptor,
+  createDynamicPiModelDescriptor,
   replaceDynamicOpenCodeModelDescriptors,
+  replaceDynamicPiModelDescriptors,
 } from "../../../shared/modelRegistry";
 
 // ---------------------------------------------------------------------------
@@ -3950,6 +3952,463 @@ describe("createAgentChatService", () => {
       // Inverse of the lightweight test: strictMcpConfig must NOT leak into normal
       // chats, or it would silently re-block the user's MCP servers we just enabled.
       expect(opts?.strictMcpConfig).toBeUndefined();
+    });
+
+    // The ADE SDK's whole per-thread MCP feature lands here: a caller's servers
+    // have to reach the Claude query, and reach it *alongside* whatever ADE
+    // already injects rather than replacing it.
+    it("passes caller-injected MCP servers to the Claude query", async () => {
+      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+        send: vi.fn(),
+        stream: vi.fn(async function* () {
+          return;
+        }),
+        close: vi.fn(),
+        sessionId: "sdk-session-caller-mcp",
+      } as any);
+
+      const { service } = createService();
+      await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+        mcpServers: {
+          embedderHttp: { type: "http", url: "https://example.test/mcp", headers: { "x-key": "v" } },
+          embedderStdio: { type: "stdio", command: "node", args: ["server.js"], env: { A: "1" } },
+        },
+      });
+
+      await vi.waitFor(() => {
+        expect(claudeSdkCreateSessionCompat).toHaveBeenCalled();
+      });
+
+      const opts = vi.mocked(claudeSdkCreateSessionCompat).mock.calls[0]?.[0] as {
+        mcpServers?: Record<string, unknown>;
+        strictMcpConfig?: boolean;
+        settingSources?: string[];
+      } | undefined;
+      expect(opts?.mcpServers).toEqual({
+        embedderHttp: { type: "http", url: "https://example.test/mcp", headers: { "x-key": "v" } },
+        embedderStdio: { type: "stdio", command: "node", args: ["server.js"], env: { A: "1" } },
+      });
+      // Injecting servers is not the same as isolating the chat: without the
+      // explicit flag the user's own MCP config must still load.
+      expect(opts?.strictMcpConfig).toBeUndefined();
+      expect(opts?.settingSources).toEqual(expect.arrayContaining(["project"]));
+    });
+
+    it("sets strictMcpConfig when the caller asks to exclude the user's MCP config", async () => {
+      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+        send: vi.fn(),
+        stream: vi.fn(async function* () {
+          return;
+        }),
+        close: vi.fn(),
+        sessionId: "sdk-session-strict-mcp",
+      } as any);
+
+      const { service } = createService();
+      await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+        mcpServers: { embedder: { type: "http", url: "https://example.test/mcp" } },
+        strictMcpConfig: true,
+      });
+
+      await vi.waitFor(() => {
+        expect(claudeSdkCreateSessionCompat).toHaveBeenCalled();
+      });
+
+      const opts = vi.mocked(claudeSdkCreateSessionCompat).mock.calls[0]?.[0] as {
+        mcpServers?: Record<string, unknown>;
+        strictMcpConfig?: boolean;
+        settingSources?: string[];
+      } | undefined;
+      expect(opts?.strictMcpConfig).toBe(true);
+      // strictMcpConfig is what withholds ~/.claude.json and .mcp.json. The
+      // caller's own server must survive it, and settingSources must NOT be
+      // trimmed — the user's rules, commands, and output styles are not MCP and
+      // are not what the caller asked to exclude.
+      expect(opts?.mcpServers).toHaveProperty("embedder");
+      expect(opts?.settingSources).toEqual(expect.arrayContaining(["project"]));
+    });
+
+    it("hands Droid the exact server shapes its strict schema accepts", async () => {
+      const { service } = createService();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "droid",
+        model: "custom:claude-sonnet-5-thinking-32000",
+        modelId: "droid/custom:claude-sonnet-5-thinking-32000",
+        mcpServers: {
+          embedderStdio: { type: "stdio", command: "node", args: ["server.js"], env: { A: "1" } },
+          embedderHttp: { type: "http", url: "https://example.test/mcp", headers: { "x-key": "v" } },
+        },
+      });
+      await service.warmupModel({
+        sessionId: session.id,
+        modelId: "droid/custom:claude-sonnet-5-thinking-32000",
+      });
+
+      // Droid validates InitializeSessionRequestParams with a STRICT zod union:
+      // the stdio variant has no `type` key and http headers are an array of
+      // { name, value } pairs. ADE spread its own shape in, so every injected
+      // server failed validation and the chat never started.
+      expect(mockState.droidAcquireCalls.at(-1)?.mcpServers).toEqual([
+        { name: "embedderStdio", command: "node", args: ["server.js"], env: { A: "1" } },
+        {
+          type: "http",
+          name: "embedderHttp",
+          url: "https://example.test/mcp",
+          headers: [{ name: "x-key", value: "v" }],
+        },
+      ]);
+    });
+
+    it("refuses a Codex chat carrying an sse server it has no client for", async () => {
+      const { service } = createService();
+      // Codex's config table has `command` and `url`, and `url` is streamable
+      // HTTP. Handing it an sse server connects over the wrong protocol — the
+      // same silent under-delivery the Pi refusal exists to prevent.
+      await expect(service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.4",
+        mcpServers: {
+          events: { type: "sse", url: "https://example.test/sse" },
+          fine: { type: "http", url: "https://example.test/mcp" },
+        },
+      })).rejects.toThrow(/'events'/);
+      expect(await service.listSessions("lane-1")).toEqual([]);
+
+      // The same server on a provider that speaks SSE is untouched.
+      const ok = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+        mcpServers: { events: { type: "sse", url: "https://example.test/sse" } },
+      });
+      expect(ok.mcpServers).toEqual({ events: { type: "sse", url: "https://example.test/sse" } });
+    });
+
+    it("treats an empty mcpServers map as no request at all", async () => {
+      const { service } = createService();
+      // The refusal used to gate on raw truthiness, and `{}` is truthy — so a
+      // caller asking for no servers was refused on Pi for under-delivering
+      // nothing.
+      const piDescriptor = createDynamicPiModelDescriptor("local", "empty-mcp");
+      replaceDynamicPiModelDescriptors([piDescriptor]);
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "pi",
+        model: piDescriptor.id,
+        modelId: piDescriptor.id as never,
+        mcpServers: {},
+      });
+      expect(session).not.toHaveProperty("mcpServers");
+      expect(session).not.toHaveProperty("mcpCapability");
+    });
+
+    it("reports delivery without claiming strict mode when strict was never requested", async () => {
+      const { service } = createService();
+      const created = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.4",
+        mcpServers: { embedder: { type: "http", url: "https://example.test/mcp" } },
+      });
+      // Reporting Codex's strict residual here described an enforcement ADE was
+      // never asked to perform: the user's own MCP config loads by design.
+      const summary = await service.getSessionSummary(created.id);
+      expect(summary?.mcpCapability).toMatchObject({
+        strictRequested: false,
+        residual: null,
+        delivered: true,
+      });
+      expect(summary?.mcpCapability?.mechanism).not.toContain("enabled = false");
+      expect(summary).not.toHaveProperty("strictMcpConfig");
+    });
+
+    it("lets an embedder keep the user's MCP config on a lightweight personal chat", async () => {
+      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+        send: vi.fn(),
+        stream: vi.fn(async function* () {
+          return;
+        }),
+        close: vi.fn(),
+        sessionId: "sdk-session-strict-false",
+      } as any);
+
+      const { service } = createService();
+      const created = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+        // Every SDK/personal chat runs on this profile, and the profile forces
+        // strictMcpConfig — so the SDK's `loadUserMcpServers: true` (wire:
+        // strictMcpConfig false) was accepted and then silently overridden.
+        sessionProfile: "light",
+        surface: "personal",
+        strictMcpConfig: false,
+      });
+
+      await vi.waitFor(() => {
+        expect(claudeSdkCreateSessionCompat).toHaveBeenCalled();
+      });
+      const opts = vi.mocked(claudeSdkCreateSessionCompat).mock.calls[0]?.[0] as {
+        strictMcpConfig?: boolean;
+      } | undefined;
+      expect(opts?.strictMcpConfig).toBeUndefined();
+
+      // The preference is persisted, so a resumed chat rebuilds the same
+      // surface. Collapsing `false` to absent would silently re-strict it.
+      const summary = await service.getSessionSummary(created.id);
+      expect(summary?.strictMcpConfig).toBe(false);
+      const { service: restarted } = createService();
+      expect((await restarted.getSessionSummary(created.id))?.strictMcpConfig).toBe(false);
+    });
+
+    it("keeps a lightweight chat strict when the caller states no preference", async () => {
+      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+        send: vi.fn(),
+        stream: vi.fn(async function* () {
+          return;
+        }),
+        close: vi.fn(),
+        sessionId: "sdk-session-strict-default",
+      } as any);
+
+      const { service } = createService();
+      await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+        sessionProfile: "light",
+        surface: "personal",
+      });
+
+      await vi.waitFor(() => {
+        expect(claudeSdkCreateSessionCompat).toHaveBeenCalled();
+      });
+      const opts = vi.mocked(claudeSdkCreateSessionCompat).mock.calls[0]?.[0] as {
+        strictMcpConfig?: boolean;
+      } | undefined;
+      // Absent is not `false`: the profile still decides, and it decides strict.
+      expect(opts?.strictMcpConfig).toBe(true);
+    });
+
+    it("reports the MCP capability on the session summary, not just in memory", async () => {
+      const { service } = createService();
+      const created = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+        mcpServers: { embedder: { type: "http", url: "https://example.test/mcp" } },
+        strictMcpConfig: true,
+      });
+      const expected = {
+        level: "enforced",
+        mechanism: expect.stringContaining("strictMcpConfig"),
+        residual: null,
+        delivered: true,
+        strictRequested: true,
+      };
+      // The report is what an embedder reads to learn whether its request was
+      // honored in full. Claude's strictMcpConfig is a real switch, so this is
+      // the one provider that may claim "enforced".
+      expect(created.mcpCapability).toEqual(expected);
+
+      // Asserting only on the live session object is what let this ship broken:
+      // every external caller (personalChats.call create/getSummary/list, the
+      // renderer, mobile) reads the SUMMARY, which is built by a different
+      // builder. A field that reaches one and not the other is invisible on the
+      // wire, so the summary is the assertion that actually protects the SDK.
+      const summary = await service.getSessionSummary(created.id);
+      expect(summary?.mcpCapability).toEqual(expected);
+      expect(summary?.strictMcpConfig).toBe(true);
+      expect(summary?.mcpServers).toEqual({
+        embedder: { type: "http", url: "https://example.test/mcp" },
+      });
+
+      const listed = (await service.listSessions("lane-1")).find((row) => row.sessionId === created.id);
+      expect(listed?.mcpCapability).toEqual(expected);
+    });
+
+    it("reports a strict-only request as delivered — there was nothing to drop", async () => {
+      const { service } = createService();
+      const created = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+        // Strict mode with no servers of its own is a legitimate request:
+        // isolate this chat from the user's MCP config. Gating `delivered` on
+        // the presence of servers reported `false` here, which reads to a
+        // caller as "your request failed" on a perfectly enforced session.
+        strictMcpConfig: true,
+      });
+      const summary = await service.getSessionSummary(created.id);
+      expect(summary?.mcpCapability).toEqual({
+        level: "enforced",
+        mechanism: expect.stringContaining("strictMcpConfig"),
+        residual: null,
+        delivered: true,
+        strictRequested: true,
+      });
+      expect(summary?.strictMcpConfig).toBe(true);
+      expect(summary).not.toHaveProperty("mcpServers");
+    });
+
+    it("recomputes the MCP report when a model switch crosses providers", async () => {
+      const { service } = createService();
+      const created = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+        mcpServers: { embedder: { type: "http", url: "https://example.test/mcp" } },
+        strictMcpConfig: true,
+      });
+      expect(created.mcpCapability).toMatchObject({ level: "enforced" });
+
+      await service.updateSession({ sessionId: created.id, modelId: "gpt-5.4" as never });
+
+      // Carrying Claude's "enforced" onto a Codex session would claim a
+      // guarantee ADE is no longer keeping — Codex strict mode is best-effort
+      // and has a residual the embedder must be told about.
+      const summary = await service.getSessionSummary(created.id);
+      expect(summary?.provider).toBe("codex");
+      expect(summary?.mcpCapability).toMatchObject({
+        level: "best-effort",
+        delivered: true,
+      });
+      expect(summary?.mcpCapability?.residual).toBeTruthy();
+    });
+
+    it("refuses a model switch onto a provider that cannot carry the injected servers", async () => {
+      const { service } = createService();
+      const created = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+        mcpServers: { embedder: { type: "http", url: "https://example.test/mcp" } },
+      });
+      // Registers a Pi model so the switch has a real cross-provider target;
+      // Pi is the only provider with no MCP surface at all.
+      // Uses the registry's own factory: `replaceDynamicPiModelDescriptors`
+      // silently ignores anything whose providerRoute is not "pi-sdk", so a
+      // hand-rolled descriptor would register as nothing and the assertion
+      // below would pass for the wrong reason.
+      const piDescriptor = createDynamicPiModelDescriptor("local", "test");
+      replaceDynamicPiModelDescriptors([piDescriptor]);
+
+      // Without this the switch was a way around the create-time refusal:
+      // the chat would land on Pi with its injected servers silently gone.
+      await expect(service.updateSession({
+        sessionId: created.id,
+        modelId: piDescriptor.id as never,
+      })).rejects.toThrow(/injected MCP servers/);
+      const summary = await service.getSessionSummary(created.id);
+      expect(summary?.provider).toBe("claude");
+    });
+
+    it("leaves a plain chat's model switch untouched by MCP logic", async () => {
+      const { service } = createService();
+      const created = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+      });
+      await service.updateSession({ sessionId: created.id, modelId: "gpt-5.4" as never });
+      const summary = await service.getSessionSummary(created.id);
+      expect(summary?.provider).toBe("codex");
+      // A chat that never asked for MCP must not acquire a report by switching.
+      expect(summary).not.toHaveProperty("mcpCapability");
+    });
+
+    it("carries the MCP report across a restart, rebuilt from persisted state", async () => {
+      const { service } = createService();
+      const created = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+        mcpServers: { embedder: { type: "stdio", command: "node", args: ["s.js"] } },
+        strictMcpConfig: true,
+      });
+
+      // A reopened thread must report the same guarantee it was created with.
+      // Without persistence the summary would fall back to "no MCP requested",
+      // which reads to a caller as a silently weakened isolation promise.
+      const { service: restarted } = createService();
+      const summary = await restarted.getSessionSummary(created.id);
+      expect(summary?.strictMcpConfig).toBe(true);
+      expect(summary?.mcpServers).toEqual({
+        embedder: { type: "stdio", command: "node", args: ["s.js"] },
+      });
+      expect(summary?.mcpCapability).toMatchObject({ level: "enforced", delivered: true });
+    });
+
+    it("refuses to create a chat whose provider cannot accept the injected MCP servers", async () => {
+      const { service } = createService();
+      // Pi's SDK exposes no MCP configuration at all. Creating the chat anyway
+      // hands the caller a thread that silently lacks the tools it asked for —
+      // a confidently-wrong-answer bug with no signal. Refusing is the honest
+      // outcome, and it happens before any session row is written.
+      await expect(service.createSession({
+        laneId: "lane-1",
+        provider: "pi",
+        model: "pi-model",
+        mcpServers: { embedder: { type: "http", url: "https://example.test/mcp" } },
+      })).rejects.toThrow(/cannot accept injected MCP servers/);
+      expect(await service.listSessions("lane-1")).toEqual([]);
+    });
+
+    it("refuses a create whose mcpServers are partly invalid, rather than under-delivering", async () => {
+      const { service } = createService();
+      // Silently dropping the bad entry would hand back a chat missing a tool
+      // the caller believes it has — the same silent under-delivery the Pi
+      // refusal exists to prevent, one layer down.
+      await expect(service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+        mcpServers: {
+          good: { type: "http", url: "https://example.test/mcp" },
+          bad: { type: "http", url: "not-a-url" },
+        },
+      } as never)).rejects.toThrow(/bad/);
+      expect(await service.listSessions("lane-1")).toEqual([]);
+    });
+
+    it("refuses a caller server whose name collides with an ADE-managed one", async () => {
+      const { service } = createService();
+      await expect(service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+        mcpServers: { "ade-cto": { type: "http", url: "https://example.test/mcp" } },
+      } as never)).rejects.toThrow(/reserved/);
+    });
+
+    it("leaves a chat that requests no MCP servers completely untouched", async () => {
+      const { service } = createService();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+      });
+      // A chat that never asked for injected MCP must not gain a single field,
+      // or every existing chat's persisted state and provider options drift.
+      expect(session).not.toHaveProperty("mcpServers");
+      expect(session).not.toHaveProperty("strictMcpConfig");
+      expect(session).not.toHaveProperty("mcpCapability");
+
+      // Same invariant on the wire: an absent report is how a caller knows no
+      // MCP was requested, so an empty-but-present field would be a false
+      // positive for every chat ADE has ever created.
+      const summary = await service.getSessionSummary(session.id);
+      expect(summary).not.toHaveProperty("mcpServers");
+      expect(summary).not.toHaveProperty("strictMcpConfig");
+      expect(summary).not.toHaveProperty("mcpCapability");
     });
 
     // The CTO's operator tools used to exist only in the prompt manifest and the
@@ -45473,6 +45932,104 @@ describe("orchestrator-lead MCP isolation", () => {
     } finally {
       await orchestrationService.dispose();
     }
+  });
+
+  // Same overlay, different caller: the ADE SDK injects servers into an
+  // ordinary chat. Codex has no "replace the config" mode, so both the caller's
+  // servers and strict mode's per-server disables ride the same table.
+  it("Codex: merges caller-injected MCP servers into the thread config overlay", async () => {
+    const signedClient = codexComputerUseClientCandidates(path.join(tmpHomeRoot, ".codex"))[0]!;
+    const { service } = createService({
+      resolveCodexComputerUseMcp: async () => ({ command: signedClient, args: ["mcp"], enabled: true }),
+      resolveCodexConfiguredMcpServerNames: () => ["filesystem"],
+    });
+
+    const chat = await service.createSession({
+      laneId: "lane-1",
+      provider: "codex",
+      model: "gpt-5.4",
+      mcpServers: {
+        embedderHttp: { type: "http", url: "https://example.test/mcp", headers: { "x-key": "v" } },
+        embedderStdio: { type: "stdio", command: "node", args: ["server.js"] },
+      },
+    });
+    await service.sendMessage({ sessionId: chat.id, text: "Do the work." });
+    await vi.waitFor(() => {
+      expect(mockState.codexRequestPayloads.some((p) => p.method === "thread/start")).toBe(true);
+    });
+
+    const start = mockState.codexRequestPayloads.find((p) => p.method === "thread/start") as any;
+    // Without strict mode, `filesystem` is untouched: the user's own Codex
+    // config keeps loading exactly as it did before this feature.
+    expect(start?.params?.config?.mcp_servers).toEqual({
+      computer_use: { command: signedClient, args: ["mcp"], enabled: true },
+      embedderHttp: { url: "https://example.test/mcp", http_headers: { "x-key": "v" }, enabled: true },
+      embedderStdio: { command: "node", args: ["server.js"], enabled: true },
+    });
+  });
+
+  it("Codex: strict mode disables the user's configured servers but not the caller's", async () => {
+    const signedClient = codexComputerUseClientCandidates(path.join(tmpHomeRoot, ".codex"))[0]!;
+    const { service } = createService({
+      resolveCodexComputerUseMcp: async () => ({ command: signedClient, args: ["mcp"], enabled: true }),
+      resolveCodexConfiguredMcpServerNames: () => ["filesystem", "embedder"],
+    });
+
+    const chat = await service.createSession({
+      laneId: "lane-1",
+      provider: "codex",
+      model: "gpt-5.4",
+      mcpServers: { embedder: { type: "http", url: "https://example.test/mcp" } },
+      strictMcpConfig: true,
+    });
+    await service.sendMessage({ sessionId: chat.id, text: "Do the work." });
+    await vi.waitFor(() => {
+      expect(mockState.codexRequestPayloads.some((p) => p.method === "thread/start")).toBe(true);
+    });
+
+    const start = mockState.codexRequestPayloads.find((p) => p.method === "thread/start") as any;
+    // `embedder` is in BOTH lists — the user configured a server by that name
+    // and the caller injected one. The caller's definition has to win, or
+    // strict mode would disable the very server it was asked to add.
+    expect(start?.params?.config?.mcp_servers).toEqual({
+      computer_use: { command: signedClient, args: ["mcp"], enabled: true },
+      filesystem: { enabled: false },
+      embedder: { url: "https://example.test/mcp", enabled: true },
+    });
+  });
+
+  // `computer_use` is BOTH an ADE-managed server and a name that appears in the
+  // user's config.toml mcp_servers table. That made it the one name where merge
+  // order mattered, and the order was wrong: strict mode disabled ADE's own
+  // Computer Use, because the strict overrides were spread after it.
+  it("Codex: ADE's computer_use survives strict mode and a colliding caller name", async () => {
+    const signedClient = codexComputerUseClientCandidates(path.join(tmpHomeRoot, ".codex"))[0]!;
+    const { service } = createService({
+      resolveCodexComputerUseMcp: async () => ({ command: signedClient, args: ["mcp"], enabled: true }),
+      // The user's config.toml declares computer_use, so strict mode would
+      // otherwise emit `computer_use: { enabled: false }`.
+      resolveCodexConfiguredMcpServerNames: () => ["filesystem", "computer_use"],
+    });
+
+    const chat = await service.createSession({
+      laneId: "lane-1",
+      provider: "codex",
+      model: "gpt-5.4",
+      mcpServers: { embedder: { type: "http", url: "https://example.test/mcp" } },
+      strictMcpConfig: true,
+    });
+    await service.sendMessage({ sessionId: chat.id, text: "Do the work." });
+    await vi.waitFor(() => {
+      expect(mockState.codexRequestPayloads.some((p) => p.method === "thread/start")).toBe(true);
+    });
+
+    const start = mockState.codexRequestPayloads.find((p) => p.method === "thread/start") as any;
+    const servers = start?.params?.config?.mcp_servers;
+    // ADE's own server wins over both the strict override and any caller entry.
+    expect(servers.computer_use).toEqual({ command: signedClient, args: ["mcp"], enabled: true });
+    // The user's other servers are still disabled — strict mode still works.
+    expect(servers.filesystem).toEqual({ enabled: false });
+    expect(servers.embedder).toMatchObject({ enabled: true });
   });
 
   it("Cursor: runs a lead without the MCP-carrying setting layers, and denies MCP calls", async () => {

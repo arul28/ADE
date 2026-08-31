@@ -22,6 +22,14 @@ const TRUSTED_TOOL_RELATIVE_PATHS: Record<TrustedWindowsTool, string> = {
   taskkill: "taskkill.exe",
 };
 
+/**
+ * Mirrored in `packages/sdk/src/windowsSystemTools.ts`, which resolves the
+ * three tools that package shells out to. Deliberately a copy rather than an
+ * import: `@ade-dev/sdk` ships standalone to npm and cannot depend on this repo, so
+ * a shared module would have to be published too. The kernel alias below, the
+ * canonical-path check, and the escape check are the parts that must stay
+ * identical — if you change any of them here, change them there.
+ */
 export const TRUSTED_WINDOWS_SYSTEM32_KERNEL_ROOT = String.raw`\\?\GLOBALROOT\SystemRoot\System32`;
 
 /**

@@ -1,0 +1,31 @@
+{
+  "name": "@ade-dev/demo",
+  "version": "0.0.0",
+  "private": true,
+  "description": "DataDesk — a reference third-party app built on @ade-dev/sdk + @ade-dev/chat-ui, plus the live end-to-end proof for both.",
+  "type": "module",
+  "scripts": {
+    "mcp": "node mcp-server.mjs --port 4319 --log ./artifacts/mcp-calls.jsonl",
+    "e2e:preflight": "node e2e/preflight.mjs",
+    "e2e:live": "node e2e/live.mjs",
+    "app:host": "node app/host.mjs",
+    "app:web": "vite --config app/vite.config.mjs",
+    "app": "node app/start.mjs"
+  },
+  "dependencies": {
+    "@ade-dev/chat-ui": "file:../chat-ui",
+    "@ade-dev/sdk": "file:../sdk"
+  },
+  "devDependencies": {
+    "@types/react": "^18.2.74",
+    "@types/react-dom": "^18.2.24",
+    "@vitejs/plugin-react": "^4.3.4",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "vite": "^5.4.11",
+    "ws": "^8.20.0"
+  },
+  "engines": {
+    "node": ">=22.13.0"
+  }
+}

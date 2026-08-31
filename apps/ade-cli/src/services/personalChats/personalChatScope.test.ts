@@ -4,6 +4,7 @@ import path from "node:path";
 import { gzipSync } from "node:zlib";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AdeRuntime } from "../../bootstrap";
+import { createEventBuffer } from "../../eventBuffer";
 import { PersonalChatScope } from "./personalChatScope";
 
 describe("PersonalChatScope", () => {
@@ -123,7 +124,10 @@ describe("PersonalChatScope", () => {
         dispose: vi.fn(() => ({ disposed: true, reason: "disposed" as const })),
       },
       sessionService: { get: vi.fn(() => ({ transcriptPath: "/tmp/chat-1.jsonl" })) },
-      eventBuffer: { drain: vi.fn(() => ({ events: [], nextCursor: 0, hasMore: false, eventEpoch: "epoch", gap: false, oldestCursor: null })) },
+      // A real buffer, not a drain stub: the push path needs subscribe/epoch/
+      // latestCursor, and the epoch and cursor contract is the whole point of
+      // the gap detection a client relies on.
+      eventBuffer: createEventBuffer(),
       dispose: vi.fn(),
     } as unknown as AdeRuntime;
     const createRuntime = vi.fn(async (
@@ -193,6 +197,195 @@ describe("PersonalChatScope", () => {
     expect(runtimeArgs?.projectRoot).not.toBe(runtimeArgs?.primaryWorktreePath);
     expect(runtimeArgs.runtimeProfile).toBe("chat");
     expect(runtimeArgs.publishPushEvents).toBe(false);
+  });
+
+  it("forwards caller-injected MCP servers and the strict flag to the chat service", async () => {
+    const { service, createRuntime } = fixture();
+    const scope = new PersonalChatScope({ createRuntime });
+
+    await scope.call("create", {
+      provider: "claude",
+      model: "sonnet",
+      mcpServers: { embedder: { type: "http", url: "https://example.test/mcp" } },
+      strictMcpConfig: true,
+    });
+
+    // These two fields are the ADE SDK's contract. The scope must not strip
+    // them the way it strips requestedCwd, laneId, and surface.
+    expect(service.createSession).toHaveBeenCalledWith(expect.objectContaining({
+      mcpServers: { embedder: { type: "http", url: "https://example.test/mcp" } },
+      strictMcpConfig: true,
+    }));
+    await scope.dispose();
+  });
+
+  it("forwards an explicit strictMcpConfig: false rather than collapsing it to absent", async () => {
+    const { service, createRuntime } = fixture();
+    const scope = new PersonalChatScope({ createRuntime });
+
+    await scope.call("create", {
+      provider: "claude",
+      model: "sonnet",
+      strictMcpConfig: false,
+    });
+
+    // Personal chats are created on the "light" session profile, which is
+    // strict by default. Forwarding only `true` meant the SDK's
+    // `loadUserMcpServers: true` reached the runtime as "no preference" and the
+    // chat was silently isolated from the user's MCP config anyway.
+    expect(service.createSession).toHaveBeenCalledWith(expect.objectContaining({
+      strictMcpConfig: false,
+    }));
+    await scope.dispose();
+  });
+
+  it("refuses to create a personal chat as an orchestration lead", async () => {
+    const { service, createRuntime } = fixture();
+    const scope = new PersonalChatScope({ createRuntime });
+
+    // `interactionMode` is forwarded (the orchestration fields are stripped),
+    // and "orchestrator-lead" alone makes the runtime treat the session as a
+    // lead: always-strict MCP isolation. The chat would run strict while its
+    // capability report said strictRequested: false.
+    await expect(scope.call("create", {
+      provider: "claude",
+      model: "sonnet",
+      interactionMode: "orchestrator-lead",
+    })).rejects.toThrow(/orchestration leads/i);
+    await expect(scope.call("create", {
+      provider: "claude",
+      model: "sonnet",
+      orchestrationRole: "lead",
+    })).rejects.toThrow(/orchestration leads/i);
+    expect(service.createSession).not.toHaveBeenCalled();
+    await scope.dispose();
+  });
+
+  it("advertises push events and MCP injection in its capabilities", async () => {
+    // The SDK reads these flags to choose push over polling and to know whether
+    // its mcpServers argument will be honored rather than silently dropped.
+    const scope = new PersonalChatScope();
+    expect(scope.capabilities()).toMatchObject({ pushEvents: true, mcpServers: true });
+  });
+
+  it("builds the embedded runtime profile when asked, and 'chat' by default", async () => {
+    const embedded = fixture();
+    const scope = new PersonalChatScope({
+      createRuntime: embedded.createRuntime,
+      runtimeProfile: "embedded",
+    });
+    await scope.call("list", {});
+    const args = embedded.createRuntime.mock.calls[0]?.[0];
+    if (!args || typeof args === "string") throw new Error("Expected structured runtime args");
+    expect(args.runtimeProfile).toBe("embedded");
+    // Sync is off for the personal scope under every profile; the embedded
+    // profile additionally forces it off inside the bootstrap itself.
+    expect(args.syncRuntime).toEqual({ enabled: false });
+    await scope.dispose();
+  });
+
+  it("pushes live events to a subscriber and replays the buffer first", async () => {
+    const { runtime, createRuntime } = fixture();
+    const scope = new PersonalChatScope({ createRuntime });
+    // Buffered before anyone subscribed: a client that connects mid-conversation
+    // must still receive it, or its transcript starts with a hole.
+    runtime.eventBuffer.push({
+      timestamp: "2026-01-01T00:00:00.000Z",
+      category: "runtime",
+      payload: { type: "before_subscribe" },
+    });
+
+    const received: Array<Record<string, unknown>> = [];
+    const subscribed = await scope.subscribeEvents({}, (event) => {
+      received.push(event.payload);
+    });
+
+    expect(subscribed.replay.events.map((event) => event.payload)).toEqual([
+      { type: "before_subscribe" },
+    ]);
+    expect(subscribed.replay.eventEpoch).toBeTruthy();
+    expect(subscribed.replay.gap).toBe(false);
+
+    runtime.eventBuffer.push({
+      timestamp: "2026-01-01T00:00:01.000Z",
+      category: "runtime",
+      payload: { type: "after_subscribe" },
+    });
+    expect(received).toEqual([{ type: "after_subscribe" }]);
+
+    // Unsubscribing has to actually detach, or a disconnected client keeps
+    // costing the runtime a notification per event forever.
+    subscribed.unsubscribe();
+    runtime.eventBuffer.push({
+      timestamp: "2026-01-01T00:00:02.000Z",
+      category: "runtime",
+      payload: { type: "after_unsubscribe" },
+    });
+    expect(received).toEqual([{ type: "after_subscribe" }]);
+    await scope.dispose();
+  });
+
+  it("filters a subscription by category and can skip replay", async () => {
+    const { runtime, createRuntime } = fixture();
+    const scope = new PersonalChatScope({ createRuntime });
+    runtime.eventBuffer.push({
+      timestamp: "2026-01-01T00:00:00.000Z",
+      category: "runtime",
+      payload: { type: "buffered" },
+    });
+
+    const received: Array<Record<string, unknown>> = [];
+    const subscribed = await scope.subscribeEvents(
+      { category: "pty", replay: false },
+      (event) => {
+        received.push(event.payload);
+      },
+    );
+    // replay:false must still report a usable cursor, or a client that opts out
+    // of history has no anchor to reconnect from.
+    expect(subscribed.replay.events).toEqual([]);
+    expect(subscribed.replay.nextCursor).toBe(runtime.eventBuffer.latestCursor());
+
+    runtime.eventBuffer.push({
+      timestamp: "2026-01-01T00:00:01.000Z",
+      category: "runtime",
+      payload: { type: "wrong_category" },
+    });
+    runtime.eventBuffer.push({
+      timestamp: "2026-01-01T00:00:02.000Z",
+      category: "pty",
+      payload: { type: "right_category" },
+    });
+    expect(received).toEqual([{ type: "right_category" }]);
+    subscribed.unsubscribe();
+    await scope.dispose();
+  });
+
+  it("applies the category filter to the replayed buffer, not just the live stream", async () => {
+    const { runtime, createRuntime } = fixture();
+    const scope = new PersonalChatScope({ createRuntime });
+    runtime.eventBuffer.push({
+      timestamp: "2026-01-01T00:00:00.000Z",
+      category: "runtime",
+      payload: { type: "wrong_category_buffered" },
+    });
+    runtime.eventBuffer.push({
+      timestamp: "2026-01-01T00:00:01.000Z",
+      category: "pty",
+      payload: { type: "right_category_buffered" },
+    });
+
+    const subscribed = await scope.subscribeEvents({ category: "pty" }, () => {});
+    // Filtering only the live stream meant a subscriber asking for one category
+    // still received every buffered event of every other category on connect.
+    expect(subscribed.replay.events.map((event) => event.payload)).toEqual([
+      { type: "right_category_buffered" },
+    ]);
+    // Cursor still describes the raw page that was read, matching the project
+    // path — otherwise a client would re-read filtered events forever.
+    expect(subscribed.replay.nextCursor).toBe(runtime.eventBuffer.latestCursor());
+    subscribed.unsubscribe();
+    await scope.dispose();
   });
 
   it("repairs legacy surface metadata while listing the hidden scope", async () => {

@@ -36,6 +36,13 @@ export type CursorSdkPermissionPolicy = {
    */
   orchestrationLead: boolean;
   /**
+   * An external embedder asked to withhold the user's own MCP configuration
+   * from this chat. Cursor has no "managed servers only" switch, so this rides
+   * the same trimmed `local.settingSources` an orchestrator lead uses. Optional
+   * so every existing policy literal stays valid and unchanged.
+   */
+  strictMcpConfig?: boolean;
+  /**
    * Cursor Auto-review for local tool calls (`local.autoReview`). Backs ADE's
    * middle-trust `agent` mode. This is a boolean on `local`, not an SDK `mode`
    * value — never pass `"auto"` as `AgentOptions.mode` (only `"agent"` | `"plan"`).

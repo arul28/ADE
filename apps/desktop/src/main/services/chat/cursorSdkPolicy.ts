@@ -17,7 +17,7 @@ import type {
 } from "./cursorSdkProtocol";
 
 type CursorSessionModeInput = Pick<AgentChatSession, "cursorModeId" | "opencodePermissionMode" | "permissionMode">
-  & Partial<Pick<AgentChatSession, "interactionMode" | "orchestrationRole">>;
+  & Partial<Pick<AgentChatSession, "interactionMode" | "orchestrationRole" | "strictMcpConfig">>;
 
 /** Mirrors `SettingSource` from `@cursor/sdk` (`local.settingSources`). */
 export type CursorSdkSettingSource = "project" | "user" | "team" | "mdm" | "plugins" | "all";
@@ -140,6 +140,10 @@ export function resolveCursorSdkPolicy(session: CursorSessionModeInput): CursorS
   // design; their protection is the risk gate in `evaluateCursorSdkHook`, which
   // this flag switches on.
   const orchestrationLead = isOrchestrationLeadSession(session);
+  // Only set when an external embedder asked for it, so every chat that does
+  // not use the SDK's strict mode produces the exact policy object it did
+  // before this flag existed.
+  const strictMcp = session.strictMcpConfig === true ? { strictMcpConfig: true } : {};
   const explicit = typeof session.cursorModeId === "string" ? session.cursorModeId.trim().toLowerCase() : "";
   const legacyFullAuto =
     !explicit.length
@@ -152,6 +156,7 @@ export function resolveCursorSdkPolicy(session: CursorSessionModeInput): CursorS
       fullAuto: true,
       hardGuards: true,
       orchestrationLead,
+      ...strictMcp,
       autoReview: false,
     };
   }
@@ -165,6 +170,7 @@ export function resolveCursorSdkPolicy(session: CursorSessionModeInput): CursorS
       fullAuto: false,
       hardGuards: true,
       orchestrationLead,
+      ...strictMcp,
       autoReview: false,
       tools: CURSOR_SDK_READONLY_TOOLS,
     };
@@ -177,6 +183,7 @@ export function resolveCursorSdkPolicy(session: CursorSessionModeInput): CursorS
     fullAuto: false,
     hardGuards: true,
     orchestrationLead,
+    ...strictMcp,
     autoReview: true,
   };
 }
@@ -191,11 +198,16 @@ export function resolveCursorSdkPolicy(session: CursorSessionModeInput): CursorS
  * is the enforcement point for every Cursor lead denial (an MCP call arrives at
  * the gate as `MCP:<tool>`, classifies as risk `unknown`, and fails closed).
  * See ORCHESTRATION_LEAD_MCP_ISOLATION.cursor.
+ *
+ * A chat whose external embedder asked for `strictMcpConfig` needs the same
+ * withholding for the same reason, so it takes the same trimmed list. The
+ * residual is identical and recorded in CALLER_MCP_SUPPORT.cursor: user
+ * layer servers still load, because the `user` layer cannot be dropped.
  */
 export function cursorSdkSettingSources(
-  policy: Pick<CursorSdkPermissionPolicy, "orchestrationLead">,
+  policy: Pick<CursorSdkPermissionPolicy, "orchestrationLead" | "strictMcpConfig">,
 ): CursorSdkSettingSource[] {
-  if (!policy.orchestrationLead) return ["all"];
+  if (!policy.orchestrationLead && policy.strictMcpConfig !== true) return ["all"];
   return [...ORCHESTRATION_LEAD_CURSOR_SETTING_SOURCES];
 }
 

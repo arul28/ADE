@@ -12,12 +12,20 @@ import { PERSONAL_CHAT_ACTIONS } from "../../../../desktop/src/shared/types";
 import { resolveAdeLayout } from "../../../../desktop/src/shared/adeLayout";
 import { resolveReadableHistoryPath } from "../../../../desktop/src/main/services/storage/historyCompression";
 import type { AdeRuntime } from "../../bootstrap";
+import type { BufferedEvent, EventBufferDrainResult } from "../../eventBuffer";
 import { resolveMachineAdeLayout } from "../projects/machineLayout";
 import { readImageFileAndSniffMime, saveImageTempAttachment } from "../imageAttachment";
 import { projectAttachmentsDir } from "../../../../desktop/src/shared/chatAttachmentStagingFs";
 
 type PersonalChatScopeOptions = {
   createRuntime?: typeof import("../../bootstrap").createAdeRuntime;
+  /**
+   * Runtime profile for the hidden machine-chat runtime. "chat" is the default
+   * and what the desktop, TUI, and brain all use. "embedded" is for a runtime
+   * an external embedder started (`ade runtime run --profile embedded`): same
+   * personal-chat surface, no automations, and sync forced off.
+   */
+  runtimeProfile?: "chat" | "embedded";
 };
 
 type ObjectArgs = Record<string, unknown>;
@@ -84,7 +92,12 @@ export class PersonalChatScope {
   constructor(private readonly options: PersonalChatScopeOptions = {}) {}
 
   capabilities(): PersonalChatCapabilities {
-    return { version: 1, actions: [...PERSONAL_CHAT_ACTIONS] };
+    return {
+      version: 1,
+      actions: [...PERSONAL_CHAT_ACTIONS],
+      pushEvents: true,
+      mcpServers: true,
+    };
   }
 
   /**
@@ -153,6 +166,20 @@ export class PersonalChatScope {
         const provider = requiredString(args.provider, "provider") as AgentChatCreateArgs["provider"];
         const model = requiredString(args.model, "model");
         const laneId = await this.getInternalLaneId(runtime);
+        // A personal chat is never an orchestration lead. The orchestration
+        // fields below are stripped, but `interactionMode` is forwarded, and
+        // "orchestrator-lead" alone makes the runtime treat the session as a
+        // lead: locked permissions, and MCP isolation that is always strict.
+        // The chat would then run strict while its capability report said
+        // strictRequested: false — a report contradicting the session it
+        // describes. Refusing is the only outcome that keeps the report honest,
+        // and no legitimate embedder asks a projectless chat to lead a run.
+        if (args.interactionMode === "orchestrator-lead" || args.orchestrationRole === "lead") {
+          throw new Error(
+            "Personal chats cannot be orchestration leads. Create this chat without "
+            + "interactionMode 'orchestrator-lead', or start it in a project.",
+          );
+        }
         const kickoffText = typeof args.kickoffText === "string" ? args.kickoffText.trim() : "";
         const {
           laneId: _laneId,
@@ -173,6 +200,23 @@ export class PersonalChatScope {
         } = args;
         const created = await service.createSession({
           ...forwarded,
+          // Named explicitly rather than left to `...forwarded`: these are the
+          // ADE SDK's contract with an external embedder, and adding either one
+          // to the strip-list above must be a deliberate act, not a side effect
+          // of someone else editing that list. The chat service validates both
+          // and REFUSES the create when a server is unusable or the provider
+          // cannot carry it — nothing is dropped silently, here or there.
+          ...(args.mcpServers !== undefined
+            ? { mcpServers: args.mcpServers as AgentChatCreateArgs["mcpServers"] }
+            : {}),
+          // Both values forwarded, not just `true`. Personal chats are created
+          // on the "light" session profile, which is strict by default, so an
+          // explicit `false` (the SDK's `loadUserMcpServers: true`) is the only
+          // way an embedder can ask for the user's own MCP config — collapsing
+          // it to absent silently ignored the request.
+          ...(typeof args.strictMcpConfig === "boolean"
+            ? { strictMcpConfig: args.strictMcpConfig }
+            : {}),
           laneId,
           provider,
           model,
@@ -410,6 +454,76 @@ export class PersonalChatScope {
     return runtime.eventBuffer.drain(cursor, limit);
   }
 
+  /**
+   * Live event stream for the machine chat scope.
+   *
+   * `streamEvents` above is a cursor drain, which costs an RPC round trip per
+   * poll and adds latency to every streamed token. This is the same event
+   * buffer wired to a listener instead, so the RPC server can forward each
+   * event as a `runtime/event` notification. The drain stays exactly as it was
+   * — the web client uses it, and a client that cannot hold a socket open still
+   * needs it.
+   *
+   * The caller owns the returned `unsubscribe`. Booting the runtime here is
+   * deliberate: a subscriber wants events from now on, and a lazily-created
+   * runtime that boots later would silently miss everything before it.
+   */
+  async subscribeEvents(
+    argsValue: unknown,
+    listener: (event: BufferedEvent, eventEpoch: string) => void,
+  ): Promise<{
+    unsubscribe: () => void;
+    /**
+     * Buffered events, already category-filtered. `replay.eventEpoch` is the
+     * epoch every caller reads — there is deliberately no second copy of it on
+     * this object, because two fields that must agree eventually will not.
+     */
+    replay: EventBufferDrainResult;
+  }> {
+    const args = asObject(argsValue);
+    const runtime = await this.getRuntime();
+    const category = typeof args.category === "string" ? args.category.trim() : "";
+    const cursor = typeof args.cursor === "number" && Number.isFinite(args.cursor)
+      ? Math.max(0, Math.floor(args.cursor))
+      : 0;
+    const limit = typeof args.limit === "number" && Number.isFinite(args.limit)
+      ? Math.max(1, Math.min(1000, Math.floor(args.limit)))
+      : 100;
+    const shouldForward = (event: BufferedEvent): boolean =>
+      !category || event.category === category;
+    const eventEpoch = runtime.eventBuffer.epoch();
+    // Subscribe before draining, matching runtimeEvents.subscribe. The reverse
+    // order drops every event published between the drain and the listener
+    // attaching — the exact window a busy chat fills. The cost is that an event
+    // landing inside that window can arrive twice; `BufferedEvent.id` is
+    // monotonic, so a client dedupes on it. A duplicate is recoverable, a gap
+    // is not.
+    const unsubscribe = runtime.eventBuffer.subscribe((event) => {
+      if (shouldForward(event)) listener(event, eventEpoch);
+    });
+    const drained = args.replay === false
+      ? {
+        events: [],
+        nextCursor: runtime.eventBuffer.latestCursor(),
+        hasMore: false,
+        eventEpoch,
+        gap: false,
+        oldestCursor: null,
+      }
+      : runtime.eventBuffer.drain(cursor, limit);
+    // The category filter has to apply to the replay too. Filtering only the
+    // live stream meant a subscriber asking for one category still received
+    // every buffered event of every other category on connect — the project
+    // path filters its replay at emit time and this did not.
+    //
+    // Cursor and hasMore stay as the raw drain reports them, matching the
+    // project path: they describe the buffer page that was read, not the
+    // subset forwarded, so a client's next cursor still advances past filtered
+    // events instead of re-reading them forever.
+    const replay = { ...drained, events: drained.events.filter(shouldForward) };
+    return { unsubscribe, replay };
+  }
+
   async transcriptPath(sessionIdValue: unknown): Promise<string | null> {
     const sessionId = requiredString(sessionIdValue, "sessionId");
     const runtime = await this.getRuntime();
@@ -465,7 +579,7 @@ export class PersonalChatScope {
       workspaceRoot,
       primaryWorktreePath: workspaceRoot,
       chatRuntime: "agent",
-      runtimeProfile: "chat",
+      runtimeProfile: this.options.runtimeProfile ?? "chat",
       publishPushEvents: false,
       syncRuntime: { enabled: false },
     });

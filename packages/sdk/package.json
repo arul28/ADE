@@ -1,0 +1,60 @@
+{
+  "name": "@ade-dev/sdk",
+  "version": "0.1.0",
+  "description": "Typed Node/Electron-main client that owns a slim ADE runtime and exposes chat as durable named threads.",
+  "license": "AGPL-3.0-only",
+  "type": "module",
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/arul28/ADE.git",
+    "directory": "packages/sdk"
+  },
+  "homepage": "https://github.com/arul28/ADE/tree/main/packages/sdk",
+  "bugs": {
+    "url": "https://github.com/arul28/ADE/issues"
+  },
+  "keywords": [
+    "ade",
+    "sdk",
+    "agent",
+    "chat",
+    "mcp",
+    "claude",
+    "electron"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "engines": {
+    "node": ">=22.13.0"
+  },
+  "scripts": {
+    "build": "tsup",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "test:live": "vitest run test/live.integration.test.ts",
+    "prepack": "npm run build"
+  },
+  "dependencies": {},
+  "devDependencies": {
+    "@types/node": "^20.11.30",
+    "tsup": "^8.3.5",
+    "typescript": "^5.7.3",
+    "vitest": "^0.34.6"
+  }
+}

@@ -911,6 +911,23 @@ describe("ADE CLI", () => {
     expect(() => buildCliPlan(["runtime", "run"])).toThrow(
       "ade runtime run requires --socket <path>.",
     );
+    // One parser for --profile. There used to be two with different
+    // strictness: the router rejected unknown values while runServe silently
+    // coerced them back to the FULL profile — so a value reaching runServe by
+    // any other route started a full machine brain when a sandboxed guest was
+    // asked for.
+    expect(() =>
+      buildCliPlan(["runtime", "run", "--socket", "/tmp/ade.sock", "--profile", "full"]),
+    ).toThrow(/Unknown runtime profile 'full'/);
+    expect(() =>
+      buildCliPlan(["runtime", "run", "--socket", "/tmp/ade.sock", "--profile", "Embedded"]),
+    ).toThrow(/Unknown runtime profile/);
+    expect(
+      buildCliPlan(["runtime", "run", "--socket", "/tmp/ade.sock", "--profile", "embedded"]),
+    ).toEqual({
+      kind: "serve",
+      rest: ["--socket", "/tmp/ade.sock", "--profile", "embedded", "--no-sync"],
+    });
     expect(
       buildCliPlan(["runtime", "run", "--socket", "/tmp/ade.sock"]),
     ).toEqual({
