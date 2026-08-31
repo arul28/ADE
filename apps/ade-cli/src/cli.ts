@@ -2792,7 +2792,7 @@ ${CURSOR_CLOUD_HELP.cloud}`,
 
     $ ade --socket update status --text             Read AutoUpdateSnapshot (status, version, progress, last failed install)
     $ ade --socket update check --text              Trigger a background update check
-    $ ade --socket update install --text            Refresh latest, then quit and install when ready
+    $ ade --socket update install --text            Refresh latest, restore a vanished staged installer if needed, then quit and install when ready
     $ ade --socket update dismiss --text            Clear the recently-installed banner
     $ ade --socket update actions --text            List callable update actions
 
@@ -2804,10 +2804,13 @@ ${CURSOR_CLOUD_HELP.cloud}`,
   read a few slow minutes in "installing" as a hang, and do not kill the desktop
   app to "unstick" it: that is exactly what makes an install fail to land.
 
-  If quitAndInstall fails before the native handoff, status falls back to error
-  and the pending-install record is cleared. If the app quits but relaunches on
-  the OLD version, the install did not land: the next snapshot carries
-  "lastInstallFailed": { targetVersion, attempt }, which survives the restart.
+  If quitAndInstall fails before the native handoff, status returns to ready
+  with parked.reason and the pending-install record is cleared. If the staged
+  ZIP or NSIS installer is gone from the updater cache, install re-downloads it
+  before uninstalling the background service or handing off to the OS. If the
+  app quits but relaunches on the OLD version, the install did not land: the
+  next snapshot carries "lastInstallFailed": { targetVersion, attempt }, which
+  survives the restart.
   Check that field before re-offering the same update — the first failure keeps
   the downloaded archive so a retry is just another install, and only a second
   failure discards the download and forces a fresh one.

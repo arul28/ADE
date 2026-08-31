@@ -19,9 +19,12 @@ import type { ProductAnalyticsService } from "../analytics/productAnalyticsServi
 import { readGlobalState, writeGlobalState, type GlobalState } from "../state/globalState";
 import {
   classifyUpdateError,
+  downloadedUpdateArchivePresent,
   estimateUpdateRequiredBytes,
   exceedsMacUpdateArtifactLimit,
   finitePositive,
+  isNonemptyUpdateFile,
+  isStaleHandoffError,
   MAC_UPDATE_ARTIFACT_MAX_BYTES,
   MAC_UPDATE_ARTIFACT_TOO_LARGE_MESSAGE,
   readDiskSpace,
@@ -81,6 +84,7 @@ type AutoUpdaterLike = {
   checkForUpdates: () => Promise<unknown>;
   downloadUpdate?: () => Promise<unknown>;
   quitAndInstall: (isSilent?: boolean, isForceRunAfter?: boolean) => void;
+  quitAndInstallCalled?: boolean;
   on: (event: string, listener: (...args: any[]) => void) => unknown;
   removeListener: (event: string, listener: (...args: any[]) => void) => unknown;
 };
@@ -154,6 +158,8 @@ type ProgressInfo = {
   transferred: number;
   total: number;
 };
+
+type UpdateDownloadedInfo = UpdateInfo & { downloadedFile?: string };
 
 type PreservedDownloadRetry = {
   version: string;
@@ -248,6 +254,13 @@ function cloneSnapshot(snapshot: AutoUpdateSnapshot): AutoUpdateSnapshot {
 
 function formatErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error ?? "unknown");
+}
+
+function updateDownloadedFilePath(info: UpdateDownloadedInfo): string | null {
+  const candidate = info.downloadedFile;
+  if (typeof candidate !== "string") return null;
+  const trimmed = candidate.trim();
+  return trimmed.length > 0 ? path.resolve(trimmed) : null;
 }
 
 function cleanupUpdaterCacheDir(args: {
@@ -537,6 +550,10 @@ export function createAutoUpdateService({
   let installQuitArmed = false;
   let activityCheckFailed = false;
   let activityCheckInProgress = false;
+  let downloadedFilePath: string | null = null;
+  let restorePromise: Promise<boolean> | null = null;
+  let staleHandoffRecoveriesThisInstall = 0;
+  let staleHandoffRecoveryInProgress = false;
   const listeners = new Set<(snapshot: AutoUpdateSnapshot) => void>();
 
   function emit(): void {
@@ -671,6 +688,7 @@ export function createAutoUpdateService({
       preservesDownload,
     };
     if (!preservesDownload) {
+      downloadedFilePath = null;
       cleanupUpdaterCacheDir({
         updaterCacheDir,
         logger,
@@ -836,6 +854,7 @@ export function createAutoUpdateService({
         return;
       }
       if (!readyRefreshInProgress) {
+        downloadedFilePath = null;
         cleanupUpdaterCacheDir({
           updaterCacheDir,
           logger,
@@ -873,7 +892,7 @@ export function createAutoUpdateService({
     });
   };
 
-  const onUpdateDownloaded = (info: UpdateInfo) => {
+  const onUpdateDownloaded = (info: UpdateDownloadedInfo) => {
     logger.info("autoUpdate.update_downloaded", { version: info.version });
     if (snapshot.version && compareUpdateVersions(info.version, snapshot.version) < 0) {
       logger.info("autoUpdate.update_downloaded_ignored", {
@@ -895,6 +914,7 @@ export function createAutoUpdateService({
       return;
     }
     rememberUpdateSize(info);
+    downloadedFilePath = updateDownloadedFilePath(info);
     patchSnapshot({
       status: "ready",
       parked: null,
@@ -915,6 +935,7 @@ export function createAutoUpdateService({
     if (!isTerminalSnapshotStatus()) {
       compressedUpdateBytes = null;
       compressedUpdateVersion = null;
+      downloadedFilePath = null;
       cleanupUpdaterCacheDir({
         updaterCacheDir,
         logger,
@@ -929,6 +950,7 @@ export function createAutoUpdateService({
     ignoredDownloadVersion = null;
     compressedUpdateBytes = null;
     compressedUpdateVersion = null;
+    downloadedFilePath = null;
     cleanupUpdaterCacheDir({
       updaterCacheDir,
       logger,
@@ -953,6 +975,7 @@ export function createAutoUpdateService({
       phase: classified.phase,
     });
     ignoredDownloadVersion = null;
+    if (staleHandoffRecoveryInProgress && isStaleHandoffError(err)) return;
     if (readyMetadataRefreshInProgress) {
       // The user asked what the newest version is and the feed did not answer.
       // That is a reason to tell them nothing new, not a reason to throw away
@@ -974,9 +997,15 @@ export function createAutoUpdateService({
       return;
     }
     if (snapshot.status === "installing") {
-      clearPendingInstallUpdate();
-      clearQuitDeadline();
-      installQuitArmed = false;
+      if (
+        isStaleHandoffError(err)
+        && staleHandoffRecoveriesThisInstall < 1
+      ) {
+        staleHandoffRecoveriesThisInstall += 1;
+        staleHandoffRecoveryInProgress = true;
+        void recoverStaleInstallHandoff();
+        return;
+      }
       void abortInstall("handoff_failed", installReadySnapshot ?? snapshot);
       return;
     }
@@ -1008,8 +1037,13 @@ export function createAutoUpdateService({
       snapshot.status === "checking"
       || snapshot.status === "downloading"
       || snapshot.status === "installing"
-      || (!args.allowReady && snapshot.status === "ready")
     ) {
+      return;
+    }
+    if (!args.allowReady && snapshot.status === "ready") {
+      if (!stagedArchiveStillPresent()) {
+        void restoreStagedArchiveIfMissing("periodic_ready_check");
+      }
       return;
     }
     const reusableDownloadedVersion = snapshot.status === "error"
@@ -1371,22 +1405,150 @@ export function createAutoUpdateService({
     }
   }
 
-  async function abortInstall(
-    reason: AutoUpdateInstallAbortReason,
-    readySnapshot: AutoUpdateSnapshot,
-  ): Promise<false> {
+  function stagedArchiveStillPresent(): boolean {
+    // The recorded pending file is what Squirrel.Mac / NSIS actually consume.
+    // Root `update.zip` is only electron-updater's differential cache copy — a
+    // leftover there must not count as the staged installer.
+    if (downloadedFilePath) return isNonemptyUpdateFile(downloadedFilePath);
+    if (updaterCacheDir?.trim()) return downloadedUpdateArchivePresent(updaterCacheDir);
+    return true;
+  }
+
+  async function restoreStagedArchiveIfMissing(reason: string): Promise<boolean> {
+    if (stagedArchiveStillPresent()) return true;
+    return redownloadStagedArchive(reason);
+  }
+
+  async function redownloadStagedArchive(reason: string): Promise<boolean> {
+    if (restorePromise) return restorePromise;
+    restorePromise = (async () => {
+      if (!updater.downloadUpdate) {
+        logger.warn("autoUpdate.staged_archive_restore_unavailable", {
+          reason,
+          version: snapshot.version,
+        });
+        return false;
+      }
+      logger.warn("autoUpdate.staged_archive_missing", {
+        reason,
+        version: snapshot.version,
+        archivePresent: stagedArchiveStillPresent(),
+      });
+      if (!stagedArchiveStillPresent()) {
+        downloadedFilePath = null;
+        cleanupUpdaterCacheDir({
+          updaterCacheDir,
+          logger,
+          reason: "staged_archive_missing",
+        });
+      }
+      const downloadTarget = updaterCacheDir ?? path.dirname(globalStatePath);
+      if (!preflightArtifactSize()) return false;
+      if (!preflightSpace("download", downloadTarget)) return false;
+      currentPhase = "download";
+      patchSnapshot({
+        status: "downloading",
+        parked: null,
+        progressPercent: 0,
+        totalBytes: compressedUpdateBytes,
+        error: null,
+        errorDetails: null,
+      });
+      try {
+        await updater.downloadUpdate();
+      } catch (error) {
+        if (snapshot.status !== "error") {
+          setErrorSnapshot({
+            error,
+            fallbackPhase: "download",
+          });
+        }
+        logger.warn("autoUpdate.staged_archive_restore_failed", {
+          reason,
+          version: snapshot.version,
+          message: formatErrorMessage(error),
+        });
+        return false;
+      }
+      const restored = snapshot.status === "ready"
+        && Boolean(snapshot.version)
+        && stagedArchiveStillPresent();
+      if (restored) {
+        logger.info("autoUpdate.staged_archive_restored", {
+          reason,
+          version: snapshot.version,
+        });
+      } else {
+        logger.warn("autoUpdate.staged_archive_restore_failed", {
+          reason,
+          version: snapshot.version,
+          status: snapshot.status,
+        });
+      }
+      return restored;
+    })().finally(() => {
+      restorePromise = null;
+    });
+    return restorePromise;
+  }
+
+  async function unwindArmedInstall(rollbackReason: string): Promise<void> {
     clearQuitDeadline();
     installQuitArmed = false;
     clearPendingInstallUpdate();
     resetAutoApplyTracking(true);
     try {
-      await rollbackQuitAndInstall?.(reason);
+      await rollbackQuitAndInstall?.(rollbackReason);
     } catch (error) {
       logger.error("autoUpdate.install_rollback_failed", {
-        reason,
+        reason: rollbackReason,
         message: formatErrorMessage(error),
       });
     }
+  }
+
+  async function recoverStaleInstallHandoff(): Promise<void> {
+    const readySnapshot = installReadySnapshot ?? cloneSnapshot(snapshot);
+    logger.warn("autoUpdate.stale_handoff_recovering", {
+      version: readySnapshot.version,
+    });
+    await unwindArmedInstall("handoff_stale_archive");
+    patchSnapshot({
+      ...readySnapshot,
+      status: "ready",
+      latestKnownVersion: snapshot.latestKnownVersion ?? readySnapshot.latestKnownVersion,
+      progressPercent: 100,
+      bytesPerSecond: null,
+      transferredBytes: null,
+      totalBytes: null,
+      error: null,
+      errorDetails: null,
+      parked: null,
+      lastInstallFailed: null,
+      autoApplyPending: null,
+    });
+    installReadySnapshot = null;
+    try {
+      const restored = await redownloadStagedArchive("stale_handoff");
+      if (!restored || snapshot.status !== "ready") {
+        parkReadyInstall("handoff_failed", readySnapshot);
+        return;
+      }
+      if (quitAndInstallPromise) {
+        await quitAndInstallPromise;
+        return;
+      }
+      if (installQuitArmed) return;
+      await quitAndInstall();
+    } finally {
+      staleHandoffRecoveryInProgress = false;
+    }
+  }
+
+  function parkReadyInstall(
+    reason: AutoUpdateInstallAbortReason,
+    readySnapshot: AutoUpdateSnapshot,
+  ): false {
     logger.warn("autoUpdate.install_aborted", {
       reason,
       version: readySnapshot.version,
@@ -1412,6 +1574,14 @@ export function createAutoUpdateService({
     installReadySnapshot = null;
     scheduleAutoApply(0);
     return false;
+  }
+
+  async function abortInstall(
+    reason: AutoUpdateInstallAbortReason,
+    readySnapshot: AutoUpdateSnapshot,
+  ): Promise<false> {
+    await unwindArmedInstall(reason);
+    return parkReadyInstall(reason, readySnapshot);
   }
 
   function escalateQuit(reason: "hard_deadline" | "post_staging"): void {
@@ -1509,10 +1679,31 @@ export function createAutoUpdateService({
     // Mirrors checkPromise: collapse concurrent IPC/idle-timer calls onto one
     // transaction so cleanup, rollback, and native handoff cannot race.
     if (quitAndInstallPromise) return quitAndInstallPromise;
-    if (snapshot.status !== "ready" || !snapshot.version) return false;
-    const originalReadySnapshot = cloneSnapshot(snapshot);
+    const waitingForRestore = restorePromise != null
+      && (snapshot.status === "ready" || snapshot.status === "downloading");
+    if (!waitingForRestore && (snapshot.status !== "ready" || !snapshot.version)) {
+      return false;
+    }
+    const originalReadySnapshot = snapshot.status === "ready"
+      ? cloneSnapshot(snapshot)
+      : cloneSnapshot({
+          ...snapshot,
+          status: "ready",
+          progressPercent: 100,
+        });
+    if (!originalReadySnapshot.version) return false;
     resetAutoApplyTracking(true);
     const run = async (): Promise<boolean> => {
+      if (!staleHandoffRecoveryInProgress) {
+        staleHandoffRecoveriesThisInstall = 0;
+      }
+      if (restorePromise) {
+        const restored = await restorePromise;
+        if (!restored || snapshot.status !== "ready" || !snapshot.version) {
+          return await abortInstall("refresh_failed", originalReadySnapshot);
+        }
+      }
+      if (snapshot.status !== "ready" || !snapshot.version) return false;
       currentPhase = "verification";
       const refreshSucceeded = await refreshReadyUpdateBeforeInstall();
       if (!refreshSucceeded) {
@@ -1521,6 +1712,12 @@ export function createAutoUpdateService({
       const installVersion = snapshot.version;
       if (!installVersion) {
         return await abortInstall("refresh_failed", originalReadySnapshot);
+      }
+      if (!stagedArchiveStillPresent()) {
+        const restored = await restoreStagedArchiveIfMissing("install_preflight");
+        if (!restored || snapshot.status !== "ready" || !snapshot.version) {
+          return await abortInstall("refresh_failed", originalReadySnapshot);
+        }
       }
       installReadySnapshot = cloneSnapshot(snapshot);
       currentPhase = "staging";
@@ -1548,13 +1745,13 @@ export function createAutoUpdateService({
         ...readGlobalState(globalStatePath),
         pendingInstallUpdate: {
           fromVersion: currentVersion,
-          targetVersion: installVersion,
+          targetVersion: snapshot.version ?? installVersion,
           releaseNotesUrl: snapshot.releaseNotesUrl,
           requestedAt: now(),
         },
         recentlyInstalledUpdate: undefined,
       });
-      logger.info("autoUpdate.quit_and_install", { version: installVersion });
+      logger.info("autoUpdate.quit_and_install", { version: snapshot.version ?? installVersion });
       patchSnapshot({
         status: "installing",
         progressPercent: 100,
@@ -1571,12 +1768,16 @@ export function createAutoUpdateService({
         // synchronously, and ADE's before-quit handler must recognize this
         // consented path instead of opening the normal quit confirmation.
         armQuitDeadline();
+        // NSIS BaseUpdater latches quitAndInstallCalled on the first call and
+        // silently ignores later ones. A parked retry or stale-handoff recovery
+        // must clear that latch or Windows never launches the installer again.
+        updater.quitAndInstallCalled = false;
         updater.quitAndInstall(false, true);
         return true;
       } catch (error) {
         const message = formatErrorMessage(error);
         logger.warn("autoUpdate.quit_and_install_failed", {
-          version: installVersion,
+          version: snapshot.version ?? installVersion,
           message,
         });
         return await abortInstall("handoff_failed", installReadySnapshot);
