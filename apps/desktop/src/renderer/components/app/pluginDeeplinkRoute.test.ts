@@ -2,7 +2,11 @@ import { describe, expect, it } from "vitest";
 
 import { PLUGIN_NAVIGATE_CONTEXT_MAX_BYTES } from "../../../shared/plugins/sdk";
 import type { BuiltinGateInput } from "../plugins/builtinTabs";
-import { resolveIssueDeeplinkRouting, resolvePluginDeeplinkRouting } from "./pluginDeeplinkRoute";
+import {
+  issueTargetFromPluginDeeplink,
+  resolveIssueDeeplinkRouting,
+  resolvePluginDeeplinkRouting,
+} from "./pluginDeeplinkRoute";
 
 function gateInput(overrides: Partial<BuiltinGateInput> = {}): BuiltinGateInput {
   return {
@@ -248,5 +252,116 @@ describe("resolveIssueDeeplinkRouting", () => {
     expect(searchOf(routing as never).get("panel")).toBe("issue");
     expect(JSON.parse(searchOf(routing as never).get("ctx") ?? "null"))
       .toEqual({ issue: { provider: "jira", key: "PROJ-9" } });
+  });
+});
+
+/**
+ * Tracker ownership, which was the missing half of `resolveIssueDeeplinkRouting`.
+ *
+ * The `owners` argument existed and defaulted to an empty list that nothing ever
+ * filled, so step 2 of the resolution order was unreachable and a link into a
+ * plugin's tracker resolved only when it happened to name that plugin's exact
+ * id. It now defaults to the ownership the installed plugins' `urlMatchers`
+ * declare — the same declarations that draw the tracker's smart-link chips.
+ */
+describe("tracker ownership from urlMatchers", () => {
+  const jiraMatcher = {
+    id: "issue",
+    hosts: ["acme.atlassian.net"],
+    pathPattern: "/browse/{key}",
+    chip: { label: "JIRA {key}" },
+    entity: { kind: "issue", provider: "jira", keyFrom: "key" },
+  };
+
+  function jiraOwner(overrides: Record<string, unknown> = {}) {
+    return jira({ urlMatchers: [jiraMatcher], ...overrides });
+  }
+
+  it("routes a provider nobody names to the plugin that declares it", () => {
+    // The link says `jira`; no plugin is called `jira`. Before this, the
+    // candidate list held only the provider name and the link was refused.
+    const routing = resolveIssueDeeplinkRouting(
+      { kind: "issue", provider: "jira", issueKey: "ACME-12" },
+      gateInput({ plugins: [jiraOwner()] }),
+    );
+    expect(routing.kind).toBe("open");
+    expect(searchOf(routing as never).get("panel")).toBe("issue");
+    expect(String((routing as { path: string }).path)).toContain("/plugin/ade-jira");
+  });
+
+  it("honours the local owner when the link names a plugin this machine lacks", () => {
+    // A link minted on a machine whose Jira plugin has a different id. The local
+    // owner is the second candidate, which is what makes such a link open at all.
+    const routing = resolveIssueDeeplinkRouting(
+      { kind: "issue", provider: "jira", issueKey: "ACME-12", pluginId: "someone-elses-jira" },
+      gateInput({ plugins: [jiraOwner()] }),
+    );
+    expect(routing.kind).toBe("open");
+    expect(String((routing as { path: string }).path)).toContain("/plugin/ade-jira");
+  });
+
+  it("refuses once the owning plugin is disabled", () => {
+    expect(
+      resolveIssueDeeplinkRouting(
+        { kind: "issue", provider: "jira", issueKey: "ACME-12" },
+        gateInput({ plugins: [jiraOwner({ enabled: false })] }),
+      ),
+    ).toEqual({ kind: "refuse", title: "Jira" });
+  });
+
+  it("leaves Linear to the compiled surface, which no plugin may claim", () => {
+    // `urlMatchers` refuses `linear` as a provider at parse, so no registry can
+    // produce an owner for it and step 3 stays reachable.
+    expect(
+      resolveIssueDeeplinkRouting(
+        { kind: "issue", provider: "linear", issueKey: "ADE-1" },
+        gateInput({ plugins: [jiraOwner()] }),
+      ),
+    ).toEqual({ kind: "builtin-linear", issueIdentifier: "ADE-1", branch: null });
+  });
+
+  it("still lets an explicit owners argument override the derived one", () => {
+    const routing = resolveIssueDeeplinkRouting(
+      { kind: "issue", provider: "jira", issueKey: "ACME-12" },
+      gateInput({ plugins: [jiraOwner(), installed({ pluginId: "other", tabs: [tab("x")] })] }),
+      [{ provider: "jira", pluginId: "other", panelId: "x" }],
+    );
+    expect(String((routing as { path: string }).path)).toContain("/plugin/other");
+  });
+});
+
+describe("issueTargetFromPluginDeeplink", () => {
+  it("reads back the issue that deeplinks.ts collapsed into a plugin target", () => {
+    expect(
+      issueTargetFromPluginDeeplink({
+        pluginId: "jira",
+        panelId: "issue",
+        context: { issue: { provider: "jira", key: "ACME-12", branch: "feat/x" } },
+      }),
+    ).toEqual({
+      kind: "issue",
+      provider: "jira",
+      issueKey: "ACME-12",
+      branch: "feat/x",
+      pluginId: "jira",
+    });
+  });
+
+  it("leaves an ordinary panel link alone", () => {
+    // Only the shape the collapse mints is recovered. A plugin link to some
+    // other panel, or one carrying no issue, stays an ordinary plugin link.
+    expect(
+      issueTargetFromPluginDeeplink({ pluginId: "graph", panelId: "overview", context: null }),
+    ).toBeNull();
+    expect(
+      issueTargetFromPluginDeeplink({ pluginId: "graph", panelId: "issue", context: {} }),
+    ).toBeNull();
+    expect(
+      issueTargetFromPluginDeeplink({
+        pluginId: "graph",
+        panelId: "issue",
+        context: { issue: { provider: "jira" } },
+      }),
+    ).toBeNull();
   });
 });

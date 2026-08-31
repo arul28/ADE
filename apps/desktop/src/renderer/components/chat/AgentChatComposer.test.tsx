@@ -22,6 +22,8 @@ import {
   resetBuiltinSurfacePlugins,
   seedBuiltinSurfacePlugins,
 } from "../../../test/builtinSurfaces";
+import { rootAppStoreApi } from "../../state/appStore";
+import type { PluginClientInstalled } from "../../../shared/plugins/sdk";
 import { formatChatOutputContextBlock } from "../../../shared/chatOutputContext";
 
 function installMatchMediaMock(): void {
@@ -329,6 +331,79 @@ describe("AgentChatComposer", () => {
     // A real logo SVG, never the "GH" fallback monogram.
     expect(icon.querySelector("svg")).toBeTruthy();
     expect(icon.textContent ?? "").not.toContain("GH");
+  });
+
+  it("draws a plugin's declared URL matcher as a chip, without asking the runtime", async () => {
+    // The whole point of C6: a tracker plugin declares the URL shape, and its
+    // links get chips the way GitHub's and Linear's already do.
+    const url = "https://acme.atlassian.net/browse/ACME-12";
+    const resolveSmartLinkPreview = vi.fn().mockResolvedValue({
+      url,
+      provider: "generic",
+      kind: "web_page",
+      label: url,
+    });
+    (window as any).ade = { agentChat: { resolveSmartLinkPreview } };
+    rootAppStoreApi.setState({
+      pluginsLoaded: true,
+      installedPlugins: [{
+        pluginId: "acme-jira",
+        displayName: "Acme Jira",
+        version: "1.0.0",
+        enabled: true,
+        icon: null,
+        accent: null,
+        status: "none",
+        tabs: [{ id: "issue", title: "Issue", panelId: "issue" }],
+        theme: null,
+        urlMatchers: [{
+          id: "issue",
+          hosts: ["acme.atlassian.net"],
+          pathPattern: "/browse/{key}",
+          chip: { label: "JIRA {key}", icon: "JR" },
+          entity: { kind: "issue", provider: "jira", keyFrom: "key" },
+        }],
+      } as unknown as PluginClientInstalled],
+    });
+
+    const props = buildComposerProps({ draft: url, turnActive: false });
+    const view = render(<AgentChatComposer {...props} />);
+
+    const label = await waitFor(() => {
+      const el = view.container.querySelector<HTMLElement>("[data-smart-link-label]");
+      if (!el) throw new Error("smart-link chip not rendered yet");
+      return el;
+    });
+    // The matcher's template, rendered over its own capture.
+    expect(label.textContent).toBe("JIRA ACME-12");
+
+    const icon = view.container.querySelector<HTMLElement>("[data-smart-link-icon]");
+    // The declared glyph, drawn as TEXT. A manifest field must never reach the
+    // `innerHTML` path the compiled brand marks use.
+    expect(icon?.textContent).toBe("JR");
+    expect(icon?.querySelector("svg")).toBeNull();
+
+    // Never asked. The resolver parses with CORE matchers only, so its answer
+    // would be `generic` and it would overwrite the chip with the bare URL.
+    expect(resolveSmartLinkPreview).not.toHaveBeenCalled();
+  });
+
+  it("leaves a URL no installed plugin claims to the generic path", async () => {
+    const url = "https://unclaimed.example.com/browse/ACME-12";
+    const resolveSmartLinkPreview = vi.fn().mockResolvedValue({
+      url,
+      provider: "generic",
+      kind: "web_page",
+      label: url,
+      title: "Unclaimed",
+    });
+    (window as any).ade = { agentChat: { resolveSmartLinkPreview } };
+    rootAppStoreApi.setState({ pluginsLoaded: true, installedPlugins: [] });
+
+    const props = buildComposerProps({ draft: url, turnActive: false });
+    render(<AgentChatComposer {...props} />);
+
+    await waitFor(() => expect(resolveSmartLinkPreview).toHaveBeenCalledTimes(1));
   });
 
   it("keeps the rich smart-link editor left-aligned so a pasted link never centers the composer", () => {
