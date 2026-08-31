@@ -1,0 +1,91 @@
+---
+title: "Threads"
+description: "Durable named threads: open-or-resume by key, send, steer, interrupt, setModel, history, and export."
+icon: "comments"
+---
+
+A thread is one conversation, keyed by a string you choose. Keys are stored under `home` and survive host restarts.
+
+```ts
+const thread = await ade.threads.open("support", {
+  provider: "claude",
+  model: "claude-sonnet-4-5",
+});
+```
+
+`open(key)` is **open-or-resume**. The first call creates; later calls with the same key return a handle onto the same conversation. Resume does not require provider/model — those come from the stored record.
+
+If the stored session is gone (wiped home, copied machine, deleted chat), the SDK drops the stale key and **creates a new conversation** under that key. Reusing a key is not proof the old transcript is still there.
+
+```ts
+const again = await ade.threads.open("support");
+```
+
+`ade.threads.list()` returns every tracked key for this home.
+
+## Send, steer, interrupt
+
+```ts
+await thread.send("What changed?");
+await thread.steer("Focus on the outage"); // mid-turn follow-up
+await thread.interrupt();
+```
+
+`send()` dispatches the turn and resolves when the runtime accepts it, **not** when the reply finishes. Watch `thread.on("status")` / `thread.on("event")` for the rest.
+
+Submitting during a running turn is a **steer**, not a second send. `steer()` must be safe to call while the turn is live. It does not start a new turn.
+
+## Events
+
+```ts
+const off = thread.on("event", (envelope) => {
+  // envelope.event.type — assistant text, tool_call, tool_result, …
+});
+thread.on("status", (envelope) => { /* running | idle */ });
+thread.on("usage", (envelope) => { /* token usage */ });
+```
+
+Each `on` returns an unsubscribe function. Unknown event types are ignored, not rendered — the runtime can add kinds without breaking listeners.
+
+`history({ limit })` returns envelopes in transcript order (`sequence`, then `timestamp`). Provider clocks are not trusted.
+
+## Switch models
+
+```ts
+await thread.interrupt();
+const next = await thread.setModel("claude-opus-4");
+// next.provider / next.model — what the runtime actually resolved
+```
+
+Crossing providers is supported: the engine tears down the old provider thread and replays the transcript into the new one.
+
+`setModel` **refuses while a turn is in flight** (`invalid_option`) unless you pass `{ force: true }`. A forced switch ends that turn without `error` or `done` — subscribers just stop receiving. Interrupt first if you need a clean handoff.
+
+After a switch, `thread.mcpCapability` is refreshed. A Claude thread that later lands on Codex must not keep advertising `level: "enforced"`.
+
+## Export and dispose
+
+```ts
+const jsonl = await ade.exportThread("support"); // one JSON envelope per line
+await ade.dispose();
+```
+
+`dispose()` stops the child runtime. It is idempotent. Unlike `setModel`, dispose is **not** refused mid-turn: a shutdown that can refuse is worse than a truncated reply. The transcript is durable either way — `exportThread` still returns what was persisted.
+
+Do not call `dispose()` on every page unmount if the host process is staying up. One client per home, disposed when the host actually exits.
+
+## Attachments
+
+```ts
+await thread.send("Look at this screenshot", {
+  attachments: [{ /* ChatAttachment */ }],
+});
+```
+
+`send()` requires text or at least one attachment.
+
+## Next
+
+<Card title="MCP servers" href="/sdk/mcp" icon="plug" horizontal>
+  Inject tools and read the strict-mode honesty table.
+</Card>

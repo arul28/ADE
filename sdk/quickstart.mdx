@@ -1,0 +1,87 @@
+---
+title: "Quickstart"
+description: "Ten lines to an ADE chat sidecar: createAdeChat, open a durable thread, send, listen, dispose."
+icon: "rocket"
+---
+
+```ts
+import { createAdeChat } from "@ade-dev/sdk";
+
+const ade = await createAdeChat({ home: "./.ade-embed" });
+const thread = await ade.threads.open("support", {
+  provider: "claude",
+  model: "claude-sonnet-4-5",
+});
+thread.on("event", (envelope) => console.log(envelope.event.type));
+await thread.send("Summarise today's incidents");
+```
+
+Reopening `"support"` after a restart resumes the same conversation. `send()` resolves when the runtime accepts the turn, **not** when the reply finishes — watch `thread.on("status")` / `thread.on("event")` before treating the thread as idle. Call `ade.dispose()` when the host shuts down.
+
+## Check the machine
+
+```ts
+const report = await ade.doctor();
+if (!report.ok) console.error(report);
+
+const status = await ade.providers.status();
+```
+
+`doctor()` reports `sdkVersion` (this package) and the runtime binary version separately — they ship on different cadences. `providers.status()` lists which CLIs are installed and authenticated. Provider credentials live in the provider's own config (`~/.claude`, `~/.codex`, `~/.cursor`, …), not under `home`.
+
+## Permissions
+
+```ts
+const thread = await ade.threads.open("ops", {
+  provider: "claude",
+  model: "claude-sonnet-4-5",
+  permissions: "always-allow",
+});
+```
+
+`"always-allow"` maps to each provider's full-auto create args. `"default"` leaves the provider's usual approval prompts in place.
+
+## React UI
+
+```tsx
+import { AdeChat, createTheme, adaptSdkClient } from "@ade-dev/chat-ui";
+
+<AdeChat
+  client={adaptSdkClient(ade)}
+  threadKey="support"
+  theme={createTheme({ accent: "#7c5cff", background: "#0e0f13" })}
+/>;
+```
+
+See [Chat UI](/sdk/chat-ui) for labels, theming, and the standalone components.
+
+## Inject your tools
+
+```ts
+const thread = await ade.threads.open("ops", {
+  provider: "claude",
+  model: "claude-sonnet-4-5",
+  mcpServers: {
+    docs: { type: "http", url: "https://mcp.example/mcp" },
+  },
+});
+
+if (!thread.mcpCapability) {
+  console.warn("runtime reported no MCP capability; treat the tool-surface guarantee as unverified");
+} else if (thread.mcpCapability.strictRequested && thread.mcpCapability.level !== "enforced") {
+  console.warn(thread.mcpCapability.residual);
+}
+```
+
+**Read [MCP servers](/sdk/mcp) before you tell users that only your tools are loaded.** Strict isolation is enforced only on Claude.
+
+## Next
+
+<Columns cols={2}>
+  <Card title="Threads" href="/sdk/threads" icon="comments" horizontal>
+    Steer, interrupt, switch models, export.
+  </Card>
+  <Card title="Runtime" href="/sdk/runtime" icon="server" horizontal>
+    Embedded profile, watchdog, pidfile reclaim.
+  </Card>
+</Columns>

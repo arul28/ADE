@@ -1,0 +1,85 @@
+---
+title: "MCP servers"
+description: "Inject caller-owned MCP servers into an SDK thread. Strict isolation is enforced only on Claude — mcpCapability is the honesty report."
+icon: "plug"
+---
+
+Pass `mcpServers` when you open a thread. Those servers are attached to **this thread only**.
+
+```ts
+const thread = await ade.threads.open("ops", {
+  provider: "claude",
+  model: "claude-sonnet-4-5",
+  mcpServers: {
+    docs: { type: "http", url: "https://mcp.example/mcp" },
+    local: { type: "stdio", command: "my-mcp", args: ["--stdio"] },
+  },
+});
+```
+
+Supported shapes:
+
+- `{ type: "http" | "sse", url, headers? }`
+- `{ type: "stdio", command, args?, env? }`
+
+Supplying `mcpServers` turns on **strict mode** unless you set `loadUserMcpServers: true`. Strict means: withhold the user's and project's own MCP config, and try to load only the servers you supplied.
+
+<Warning>
+Strict mode is **enforced only on Claude**. Codex, Cursor, Droid, and OpenCode are best-effort with a named residual. Pi has no MCP surface — injected servers are refused rather than opening a tool-less thread. Do not tell your users "only your tools are loaded" without checking `thread.mcpCapability`.
+</Warning>
+
+## Honesty table
+
+| Provider | Strict mode | What still loads under strict |
+|---|---|---|
+| claude | **enforced** | nothing MCP-wise (user rules, commands, and output styles still load — they are not MCP) |
+| codex | best-effort | servers contributed by a Codex *plugin* |
+| cursor | best-effort | user-layer servers (`~/.cursor`) |
+| droid | best-effort | tools that appear only after the first disable pass |
+| opencode | best-effort | the global OpenCode config directory (for auth) |
+| pi | unsupported | n/a — create refuses injected servers |
+
+## `mcpCapability`
+
+Every thread that requested MCP reports what it actually got. `null` means one of two things: this thread never asked for MCP, **or** it asked and an older runtime omitted the report. The SDK logs the second case (`requested MCP but the runtime reported no capability`). Do not read `null` as "no MCP was requested" when you passed `mcpServers` or `loadUserMcpServers: false` — treat the guarantee as unverified.
+
+```ts
+if (!thread.mcpCapability) {
+  console.warn("runtime reported no MCP capability; treat the tool-surface guarantee as unverified");
+} else if (thread.mcpCapability.strictRequested && thread.mcpCapability.level !== "enforced") {
+  console.warn(thread.mcpCapability.residual);
+}
+```
+
+| Field | Meaning |
+|---|---|
+| `strictRequested` | **Read this first.** `true` when you asked to withhold the user's MCP (`mcpServers` without opting back in, or `loadUserMcpServers: false`). |
+| `level` | `"enforced"` \| `"best-effort"` \| `"unsupported"`. Meaningful only when `strictRequested` is true. `"enforced"` is the only value that means "nothing but the servers I supplied". |
+| `residual` | What strict mode could not exclude, or `null`. Surface this to your users when it is non-null. |
+| `mechanism` | How the provider implemented the request (logs / support). |
+| `delivered` | Prefer `level`. Retained as part of the published shape. |
+
+On a **delivery-only** thread (`loadUserMcpServers: true`) the user's own MCP loads by design. `strictRequested` is false, `residual` is null, and `level` makes **no** isolation claim. Treating `level === "enforced"` as "only my tools" on that thread would be backwards.
+
+Presence of the `mcpCapability` object is not a guarantee. Read `strictRequested`, then branch on `level`.
+
+After `setModel`, the report is refreshed. A Claude thread switched to Codex will not keep advertising `enforced`.
+
+## Opt back in
+
+```ts
+await ade.threads.open("ops", {
+  provider: "claude",
+  model: "claude-sonnet-4-5",
+  mcpServers: { docs: { type: "http", url: "https://mcp.example/mcp" } },
+  loadUserMcpServers: true, // user's MCP loads too
+});
+```
+
+An explicit `false` is not the same as omitting the field. Omitting both `mcpServers` and `loadUserMcpServers` lets the embedded session profile decide (SDK threads are strict by default).
+
+## Next
+
+<Card title="Chat UI" href="/sdk/chat-ui" icon="comments" horizontal>
+  Show tool activity to your users as labels, not raw tool names.
+</Card>

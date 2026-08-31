@@ -131,6 +131,7 @@ Native `windows-latest` CI still has to repeat the Windows-sensitive files; para
 
 ## Related docs
 
+- Public Mintlify: [ADE SDK](https://www.ade-app.dev/docs/sdk/overview) — user-facing install, threads, MCP honesty, chat-ui, runtime, reference. Keep `sdk/*.mdx` in lockstep with this page when the contract changes.
 - [Chat](../chat/README.md#caller-injected-mcp) — engine-side injection, tristate, capability report.
 - [Personal chats](../personal-chats/README.md) — the machine RPC the sidecar actually calls.
 - [ARCHITECTURE.md](../../ARCHITECTURE.md) §2.1 — embedded runtime profile and parent-death watchdog.

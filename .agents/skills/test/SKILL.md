@@ -308,7 +308,8 @@ docs/
     ├── files-and-editor/
     ├── history/
     ├── lanes/
-    └── linear-integration/
+    ├── linear-integration/
+    └── sdk/
 ```
 
 Each `features/<name>/` contains a `README.md` (overview + source file map at top) plus 1–4 detail `*.md` files.
@@ -320,7 +321,13 @@ You are the documentation updater for the ADE project.
 
 Analyze all changes on the current branch vs the resolved review base and update relevant internal
 docs under `docs/`. The public Mintlify site (docs.json + root-level .mdx files)
-is out of scope — do NOT touch it.
+is out of scope **except the SDK tab**: if the branch touches `packages/sdk`,
+`packages/chat-ui`, `apps/desktop/src/shared/callerMcpServers.ts`, or the
+embedded runtime profile / parent-death watchdog, also update `sdk/*.mdx` and
+the SDK entries in `docs.json`. Keep the MCP honesty table aligned across
+`sdk/mcp.mdx`, `packages/sdk/README.md`, and `docs/features/sdk/README.md`.
+Both npm READMEs must link to https://www.ade-app.dev/docs/sdk/overview.
+Do not rewrite unrelated Mintlify product pages (chat/, tools/, changelog/, …).
 
 Step 1: Get changed files
   git diff "$TEST_REVIEW_BASE" --name-only
@@ -362,6 +369,9 @@ Step 2: Map changed source to internal docs
 | .github/workflows/                                 | docs/ARCHITECTURE.md (Build/Test/Deploy)           |
 | apps/ios/                                          | docs/features/sync-and-multi-device/ios-companion.md |
 | apps/web/                                          | docs/ARCHITECTURE.md (Apps & Processes)            |
+| packages/sdk/                                      | sdk/*.mdx + packages/sdk/README.md + docs/features/sdk/ |
+| packages/chat-ui/                                  | sdk/chat-ui.mdx + packages/chat-ui/README.md + docs/features/sdk/ |
+| apps/desktop/src/shared/callerMcpServers.ts        | sdk/mcp.mdx + packages/sdk/README.md + docs/features/sdk/ (honesty table) |
 
 Step 3: Update docs in place
 - Prefer editing existing docs over creating new ones.
@@ -647,23 +657,32 @@ versions. A merge to main with a bumped version auto-publishes; an unbumped
 content change is a CI-visible mistake. If you changed nothing, bump
 nothing.
 
+Also update the public Mintlify SDK tab (`sdk/*.mdx`, `docs.json` SDK
+navigation) so it matches the published contract. npm READMEs must link to
+https://www.ade-app.dev/docs/sdk/overview. The MCP honesty table in
+sdk/mcp.mdx, packages/sdk/README.md, and docs/features/sdk/README.md must
+stay aligned (enforced only on Claude).
+
 Step 5: Validate
   npm run typecheck:sdk && npm run test:sdk
   npm run typecheck:chat-ui && npm run test:chat-ui
   cd packages/demo && npm run e2e:preflight   # no live provider turns
+  node scripts/validate-docs.mjs              # Mintlify routes, including sdk/*
 
 Out of scope:
 - Do NOT add new methods, options, events, or components for new ADE
   features. Report them as "not mirrored — out of SDK scope".
-- Do NOT touch apps/** or docs/ (other passes own those).
+- Do NOT touch apps/** (other passes own those). Internal docs under
+  docs/features/sdk/ are in scope when the mirrored contract changed.
 - Do NOT run npm publish or the live token-spending e2e.
 
 Report:
 - packages/* files changed (or "no SDK changes required")
+- Mintlify `sdk/*.mdx` / `docs.json` updates (or "public docs already current")
 - For each branch change: mirrored surface → sync applied, or "not
   mirrored — out of SDK scope", or "not SDK-relevant"
 - Version bump decision and reasoning
-- typecheck/test/preflight results
+- typecheck/test/preflight/validate-docs results
 ```
 
 Wait for all five parity agents to complete before moving to Verification.

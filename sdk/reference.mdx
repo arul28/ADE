@@ -1,0 +1,109 @@
+---
+title: "Reference"
+description: "createAdeChat options, AdeChatClient, AdeThread, doctor(), errors, and the MCP capability report."
+icon: "code"
+---
+
+Published packages: [`@ade-dev/sdk`](https://www.npmjs.com/package/@ade-dev/sdk), [`@ade-dev/chat-ui`](https://www.npmjs.com/package/@ade-dev/chat-ui). Full narrative docs start at [ADE SDK](/sdk/overview).
+
+## `createAdeChat(options)`
+
+```ts
+function createAdeChat(options: CreateAdeChatOptions): Promise<AdeChatClient>
+```
+
+| Option | Type | |
+|---|---|---|
+| `home` | `string` | Required. Isolated state root. Created if missing. |
+| `binaryPath` | `string` | Pin an `ade` binary. Skips PATH and download. |
+| `channel` | `string` | Downloader channel: `latest` (default) or a release tag. |
+| `logger` | `(line: string) => void` | Sidecar / client log sink. |
+
+## `AdeChatClient`
+
+| Member | |
+|---|---|
+| `threads.open(key, opts?)` | Open-or-resume. Create requires `provider` + `model`. Resume reads the stored record. |
+| `threads.list()` | Tracked threads for this home. |
+| `providers.status()` | Map of provider id → `{ installed, authenticated, … }`. |
+| `providers.onChange(cb)` | Full status list on each change. Returns unsubscribe. |
+| `models.list()` | Catalog. `providerId` must match a status entry to be selectable in chat-ui. |
+| `doctor()` | Structured health check. |
+| `exportThread(key)` | Transcript as JSONL. |
+| `dispose()` | Stop the runtime. Idempotent. Ends in-flight turns without `error`/`done`. |
+
+## `threads.open` options
+
+| Option | |
+|---|---|
+| `provider` | `claude` \| `codex` \| `cursor` \| `droid` \| `opencode` \| `pi` |
+| `model` | Catalog id (aliases resolved by the runtime). |
+| `permissions` | `"always-allow"` \| `"default"` |
+| `mcpServers` | Caller-owned servers for this thread. See [MCP](/sdk/mcp). |
+| `loadUserMcpServers` | Opt the user's MCP back in. Explicit `false` ≠ omitting the field. |
+
+## `AdeThread`
+
+| Member | |
+|---|---|
+| `id` / `key` | Runtime session id and caller key. |
+| `mcpCapability` | Honesty report. `null` when MCP was not requested, **or** when an older runtime omitted the report — treat the latter as unverified if you asked. |
+| `send(text, opts?)` | Dispatch a turn. Resolves when accepted, not when finished. |
+| `steer(text)` | Mid-turn follow-up. Does not start a turn. |
+| `interrupt()` | Stop the in-flight turn. |
+| `setModel(id, opts?)` | Switch model/provider. Refused mid-turn unless `{ force: true }`. |
+| `history({ limit }?)` | Envelopes in transcript order. |
+| `on("event" \| "status" \| "usage", cb)` | Subscribe. Returns unsubscribe. |
+
+## `doctor()` {#doctor}
+
+```ts
+type DoctorReport = {
+  ok: boolean;
+  sdkVersion: string;
+  binary: {
+    path: string;
+    version: string | null;
+    source: "option" | "path" | "download" | "cache";
+    checksumVerified: boolean;
+  };
+  socket: {
+    path: string;
+    connected: boolean;
+    runtimeVersion: string | null;
+    pid: number | null;
+  };
+  events: {
+    mode: "push" | "drain" | "unavailable";
+    epoch: string | null;
+    gapsRecovered: number;
+  };
+  providers: Record<string, ProviderStatus>;
+  threads: { tracked: number; live: number };
+  recentErrors: Array<{ at: string; scope: string; message: string }>;
+};
+```
+
+`sdkVersion` is injected at package build time from `package.json`. Compare it to `socket.runtimeVersion` when versions disagree.
+
+## Errors
+
+`AdeError` with `code`:
+
+`binary_not_found` · `download_failed` · `checksum_mismatch` · `spawn_failed` · `connect_failed` · `handshake_failed` · `rpc_error` · `rpc_timeout` · `transport_closed` · `protocol_error` · `thread_not_found` · `invalid_option` · `disposed`
+
+`setModel` mid-turn without `{ force: true }` throws `invalid_option`.
+
+## MCP capability
+
+See [MCP servers](/sdk/mcp). Shape:
+
+```ts
+type McpCapabilityReport = {
+  strictRequested: boolean;
+  level: "enforced" | "best-effort" | "unsupported";
+  residual: string | null;
+  mechanism: string;
+  delivered: boolean;
+};
+```

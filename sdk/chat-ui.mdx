@@ -1,0 +1,81 @@
+---
+title: "Chat UI"
+description: "Embeddable React chat for @ade-dev/sdk: AdeChat, Composer, Transcript, ModelPicker, CSS-token theming, and activity labels."
+icon: "window-restore"
+---
+
+`@ade-dev/chat-ui` renders an agent conversation for **your** users. There are no lanes, projects, repos, or worktrees in any prop or any string it can display.
+
+```bash
+npm install @ade-dev/chat-ui
+```
+
+React and React DOM are peers (`^18` or `^19`). `@ade-dev/sdk` is an optional peer used for types only.
+
+```tsx
+import { AdeChat, createTheme, adaptSdkClient } from "@ade-dev/chat-ui";
+
+<AdeChat
+  client={adaptSdkClient(ade)}
+  threadKey="support-42"
+  labels={{ map: { "server.*": "Looking that up…" } }}
+  theme={createTheme({ accent: "#7c5cff", background: "#0e0f13" })}
+/>;
+```
+
+`<AdeChat>` is transcript above, composer with the model rail below. No header bar. Changing `threadKey` opens a different conversation.
+
+`adaptSdkClient` maps a real `@ade-dev/sdk` client onto the view contract. Any SDK-shaped proxy works — for example a renderer that talks to main over a WebSocket.
+
+## Activity labels
+
+Tool names stay in the agent transcript. Your users should see a sentence.
+
+```ts
+labels={{
+  map: {
+    "server.tool": { running: "Searching…", done: "Searched", error: "Search failed" },
+    "server.*": "Talking to your account…",
+    "*": "Working…",
+  },
+  resolve: (source) => source.tool === "x" ? "Custom" : null,
+  elapsedAfterMs: 3000,
+}}
+```
+
+Resolution order: `resolve()` → exact key → longest wildcard prefix → `*` → the raw tool name. A bare string labels the **running** phase only, so a finished chip never keeps saying "Searching…".
+
+## Theming
+
+CSS custom properties only. No Tailwind, no class overrides.
+
+`createTheme({ accent, background, foreground, muted, danger, success, radius, fontFamily, monoFontFamily, fontSize, space, scheme })` returns the full token set. Light/dark is inferred from background luminance unless you set `scheme`.
+
+| Token | Role |
+|---|---|
+| `--adechat-bg` / `--adechat-fg` | Surface and text |
+| `--adechat-accent` | Send button, selection, links |
+| `--adechat-muted` | Secondary text |
+| `--adechat-danger` / `--adechat-success` | Errors and completed chips |
+| `--adechat-radius` / `--adechat-font` | Shape and type |
+
+Pass `disableStyles` if you inject the stylesheet yourself.
+
+## Standalone components
+
+Every piece is importable without `<AdeChat>`:
+
+| Component | Role |
+|---|---|
+| `<Composer>` | Draft, send / steer, stop, attachments. Enter sends by default (Shift+Enter is a newline). `sendOnEnter={false}` inverts that: Enter is a newline and Cmd/Ctrl+Enter submits. |
+| `<Transcript>` | Rows, tool chips, reasoning, empty state. |
+| `<ModelPicker>` | Grouped catalog; disabled when the provider is not authenticated. |
+| `<ProviderCard>` / `<ProviderCards>` | Install / login copy for providers that need attention. |
+
+Composer rule: submitting during a running turn dispatches `onSteer`, never a second `onSend`. A failed send restores the draft.
+
+## Next
+
+<Card title="Runtime" href="/sdk/runtime" icon="server" horizontal>
+  What the sidecar actually is, and what `doctor()` checks.
+</Card>
