@@ -1,0 +1,35 @@
+---
+title: "v1.2.69"
+description: "Release notes for ADE v1.2.69 - August 31, 2026"
+---
+
+The PRs tab is rebuilt around the pull request. Chat recovers from usage limits, keeps pending questions visible, and streams assistant text more smoothly. Attachments, `ade triage`, in-app updates, and a public ADE SDK land in the same cut.
+
+---
+
+## Pull requests
+
+- **The PRs tab is about the PR, not the lane.** GitHub rows, checks, merge state, and the detail pane stay keyed to the pull request so a stacked or reused lane no longer swaps the review surface out from under you.
+- **Checks and merge metadata spend less GitHub quota.** Relay caching, poller backoff, and merge-box GraphQL brakes cut repeated list/status calls that were burning the hourly budget.
+
+## Chat recovery
+
+- **Usage-limit recovery can resume automatically.** Claude and Codex sessions can schedule a durable, cancellable resume when a provider reports a reset time, with a cap on consecutive retries and clear status in the recovery card and Chat info.
+- **Pending questions stay visible until they are resolved.** A question can outlive the turn that raised it without wedging the chat or disappearing from the Work surface. Answering a question whose caller has gone away records the resolution consistently across runtimes and iOS.
+- **Settled chat activity is quieter.** Completion notices fold together and settled sessions file consistently across local and paired runtimes.
+
+## Chat streaming and attachments
+
+- **Assistant text reveals at a paced rate** instead of dumping a whole buffered burst at once, with stream-smoothness instrumentation behind it.
+- **Attachments work across local and remote sessions.** ADE stages files up to 50 MB, uses a path-copy route locally and a ticketed upload route remotely, and provides composer chips plus a shared preview modal.
+- **Metadata refreshes use focused context.** Title, lane, and status regeneration sends only the requested identity and recent assistant context, while Work surfaces show which fields are being refreshed.
+
+## Updates, triage, and iOS
+
+- **macOS in-app update re-downloads vanished archives** before handing off to Squirrel, so a cache that was cleaned out no longer fails the install with a missing zip.
+- **`ade triage` creates a safe handoff for broken installations.** It gathers redacted context, maintains a troubleshooting playbook, and can hand the result to the user's own agent CLI or print it for an already-running agent.
+- **iOS follows the pending-input recovery rules** and the PR-centric review surface. The companion app keeps unresolved questions visible, applies the first receipt only, and avoids duplicate resolution notices.
+
+## ADE SDK
+
+- **`@ade-dev/sdk` and `@ade-dev/chat-ui` are on npm** as an embeddable chat sidecar. Public docs are the Mintlify **SDK** tab. Strict MCP isolation is enforced only on Claude; read `mcpCapability` (`strictRequested`, then `level === "enforced"`) before telling users that only their tools are loaded.

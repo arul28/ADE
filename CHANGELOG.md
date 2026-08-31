@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.69] - 2026-08-31
+
+### Pull requests
+
+- The PRs tab is about the PR, not the lane. GitHub rows, checks, merge state, and the detail pane stay keyed to the pull request so a stacked or reused lane no longer swaps the review surface out from under you (#1186).
+- Checks and merge metadata spend less GitHub quota. Relay caching, poller backoff, and merge-box GraphQL brakes cut repeated list/status calls that were burning the hourly budget (#1183).
+
+### Chat recovery
+
+- Usage-limit recovery can resume automatically. Claude and Codex sessions can schedule a durable, cancellable resume when a provider reports a reset time, with a cap on consecutive retries and clear status in the recovery card and Chat info (#1182).
+- Pending questions stay visible until they are resolved. A question can outlive the turn that raised it without wedging the chat or disappearing from the Work surface (#1184).
+- Settled chat activity is quieter. Completion notices fold together and settled sessions file consistently across local and paired runtimes (#1182).
+
+### Chat streaming and attachments
+
+- Assistant text reveals at a paced rate instead of dumping a whole buffered burst at once (#1185).
+- Attachments work across local and remote sessions. ADE stages files up to 50 MB, uses a path-copy route locally and a ticketed upload route remotely, and provides composer chips plus a shared preview modal (#1182).
+- Metadata refreshes use focused context. Title, lane, and status regeneration sends only the requested identity and recent assistant context (#1181).
+
+### Updates, triage, and iOS
+
+- macOS in-app update re-downloads vanished archives before handing off to Squirrel (#1189).
+- `ade triage` creates a safe handoff for broken installations (#1182).
+- iOS follows the pending-input recovery rules and the PR-centric review surface (#1184, #1186).
+
+### ADE SDK
+
+- `@ade-dev/sdk` and `@ade-dev/chat-ui` are on npm as an embeddable chat sidecar. Public docs are the Mintlify SDK tab. Strict MCP isolation is enforced only on Claude; read `mcpCapability` before telling users that only their tools are loaded (#1187, #1188, #1190, #1191).
+
 ## [1.2.68] - 2026-08-29
 
 ### Agent reliability
@@ -1819,7 +1848,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Initial public release.
 
-[Unreleased]: https://github.com/arul28/ADE/compare/v1.2.68...HEAD
+[Unreleased]: https://github.com/arul28/ADE/compare/v1.2.69...HEAD
+[1.2.69]: https://github.com/arul28/ADE/compare/v1.2.68...v1.2.69
 [1.2.68]: https://github.com/arul28/ADE/compare/v1.2.67...v1.2.68
 [1.2.67]: https://github.com/arul28/ADE/compare/v1.2.66...v1.2.67
 [1.2.66]: https://github.com/arul28/ADE/compare/v1.2.65...v1.2.66
