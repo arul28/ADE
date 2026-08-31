@@ -137,6 +137,13 @@ import { resolveProviderSlashCommandPrompt } from "./slashCommandPromptExpansion
 import { resolveSmartLinkPreview } from "./smartLinkPreviewService";
 import { buildCanonicalAgentChatRuntimeEvent } from "./runtimeEvents";
 import { createPluginRuntimeHookObserver } from "./pluginRuntimeHookObserver";
+import { readTrustedPluginSessionOwner } from "./pluginSessionSetupProvenance";
+import {
+  clearPluginSessionSetup,
+  filterPluginSessionEnv,
+  readPluginSessionSetupEnv,
+  writePluginSessionSetup,
+} from "../plugins/pluginSessionSetupStore";
 import { classifyAgentCliError } from "../../../../../ade-cli/src/services/agentRegistry";
 import type {
   RuntimeFilePart as FilePart,
@@ -8318,6 +8325,15 @@ export function createAgentChatService(args: {
       env.ADE_LINEAR_ISSUE_IDS = linearContext.identifiers;
       env.ADE_LINEAR_CONTEXT_FILE = linearContext.filePath;
     }
+    // The generic form of the two lines above: whatever a plugin injected when
+    // it launched this session, re-read from disk so a resume after a restart
+    // gets the same variables. Filtered against the env built above, so a
+    // plugin variable can never replace one ADE set — the key policy already
+    // forbids it, this is the second lock on the same door.
+    Object.assign(env, filterPluginSessionEnv(env, readPluginSessionSetupEnv({
+      projectRoot,
+      sessionId: managed.session.id,
+    })));
     return env;
   };
 
@@ -32670,6 +32686,12 @@ export function createAgentChatService(args: {
 
   type AgentChatCreateInternalArgs = AgentChatCreateArgs & {
     idempotencyKey?: string;
+    /**
+     * Host-established owner of `sessionSetup`, never a caller-supplied field:
+     * `createSession` reads it off the trusted symbol and overwrites whatever
+     * the arguments said. See `pluginSessionSetupProvenance.ts`.
+     */
+    pluginSessionOwnerId?: string | null;
   };
 
   const createSessionInternal = async ({
@@ -32716,6 +32738,8 @@ export function createAgentChatService(args: {
     orchestrationTag: requestedOrchestrationTag,
     orchestrationStepId: requestedOrchestrationStepId,
     orchestrationBundlePath: requestedOrchestrationBundlePath,
+    sessionSetup: requestedPluginSessionSetup,
+    pluginSessionOwnerId: requestedPluginSessionOwnerId,
     idempotencyKey,
   }: AgentChatCreateInternalArgs): Promise<AgentChatSession> => {
     const requestedFastMode = requestedFastModeArg ?? requestedLegacyFastModeArg;
@@ -32747,6 +32771,20 @@ export function createAgentChatService(args: {
     const startedAt = nowIso();
     const transcriptPath = path.join(transcriptsDir, `${sessionId}.chat.jsonl`);
     const metadataPath = metadataPathFor(sessionId);
+
+    // Persist any plugin-supplied env/context file before the session exists,
+    // for the same reason the MCP-server refusal sits above this line: a caller
+    // whose injected context was dropped gets an agent that is confidently
+    // missing what it was told it has. An invalid request throws here and no
+    // session is created. Written now, not at spawn, so a resume after an app
+    // restart re-injects the same variables (`buildAgentRuntimeEnv` re-reads).
+    writePluginSessionSetup({
+      projectRoot,
+      sessionId,
+      setup: requestedPluginSessionSetup,
+      pluginId: requestedPluginSessionOwnerId ?? null,
+      now: startedAt,
+    });
 
     fs.mkdirSync(path.dirname(transcriptPath), { recursive: true });
 
@@ -33216,7 +33254,13 @@ export function createAgentChatService(args: {
   };
 
   const createSession = async (args: AgentChatCreateArgs): Promise<AgentChatSession> =>
-    createSessionInternal(args);
+    // The owner is read here and stamped last, so a caller that put
+    // `pluginSessionOwnerId` in its own JSON has it overwritten with the truth
+    // (null, for every caller that is not a plugin child).
+    createSessionInternal({
+      ...args,
+      pluginSessionOwnerId: readTrustedPluginSessionOwner(args),
+    });
 
   /**
    * Escape hatch for a claude chat wedged mid-turn with no live query — the
@@ -47254,6 +47298,10 @@ export function createAgentChatService(args: {
     for (const filePath of transcriptPaths) {
       deletePersistedChatFile(filePath);
     }
+    // A plugin's injected variables and context file must not outlive the
+    // session that carried them: they can hold an issue key, a ticket body, or
+    // whatever else the plugin decided the agent needed.
+    clearPluginSessionSetup({ projectRoot, sessionId: trimmedSessionId });
 
     sessionService.deleteSession(trimmedSessionId);
     notifyChatSessionEnded(trimmedSessionId);

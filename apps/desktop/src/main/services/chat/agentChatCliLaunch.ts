@@ -13,6 +13,7 @@ import type { createLaneService } from "../lanes/laneService";
 import type { createPtyService } from "../pty/ptyService";
 import { resolveCodexComputerUseMcpConfig } from "../../utils/codexComputerUse";
 import { readInstalledBuiltinSurfaces } from "../plugins/builtinSurfaceInstalls";
+import { readTrustedPluginSessionOwner } from "./pluginSessionSetupProvenance";
 
 type LaneServiceForCliLaunch = Pick<
   ReturnType<typeof createLaneService>,
@@ -118,6 +119,15 @@ export async function launchAgentChatCli(
     toolType: LAUNCH_PROFILE_TOOL_TYPE[provider],
     startupCommand: launch.startupCommand,
     ...(issues.length ? { linearIssues: issues } : {}),
+    // The generic twin of `linearIssues` above: a plugin's own env + context
+    // file for this spawn. The owner is read off the trusted symbol, never off
+    // the arguments, so only a plugin child can be named as the source.
+    ...(arg.sessionSetup != null
+      ? {
+          pluginSessionSetup: arg.sessionSetup,
+          pluginSessionOwnerId: readTrustedPluginSessionOwner(arg),
+        }
+      : {}),
     ...(launch.command !== undefined ? { command: launch.command } : {}),
     ...(launch.args !== undefined ? { args: launch.args } : {}),
     ...(launch.initialInput !== undefined

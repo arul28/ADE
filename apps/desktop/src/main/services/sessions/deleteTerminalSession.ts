@@ -69,5 +69,10 @@ export function deleteTerminalSessionWithRuntimeCleanup({
     }
   }
 
+  // An injected plugin environment must not outlive the session it was written
+  // for: it can carry an issue key, a ticket body, or whatever else the plugin
+  // decided the agent needed.
+  ptyService.forgetPluginSessionSetup?.(trimmedSessionId);
+
   return sessionService.deleteSession(trimmedSessionId);
 }

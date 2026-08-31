@@ -15,6 +15,7 @@ import type {
 } from "./chat";
 import type { LaneLinearIssue } from "./lanes";
 import type { OrchestrationRole } from "./orchestration";
+import type { PluginSessionSetup } from "../plugins/sessionSetup";
 import type { SessionBackgroundWork } from "../sessionCanonicalState";
 
 /**
@@ -402,6 +403,19 @@ export type PtyCreateArgs = {
    * can read/update its issue through `ade linear` (no Linear MCP/creds needed).
    */
   linearIssues?: LaneLinearIssue[];
+  /**
+   * Plugin-supplied environment and one context file for this spawned process —
+   * the generic form of the Linear seam above. Validated and persisted by the
+   * host before the process starts, so a resume re-injects the same variables.
+   * See `shared/plugins/sessionSetup.ts`.
+   */
+  pluginSessionSetup?: PluginSessionSetup;
+  /**
+   * Owning plugin for {@link PtyCreateArgs.pluginSessionSetup}, established by
+   * the host from the trusted call provenance — never from a caller's JSON. It
+   * becomes `ADE_PLUGIN_SOURCE_ID` inside the spawned process.
+   */
+  pluginSessionOwnerId?: string | null;
 };
 
 export type PtyCreateResult = {

@@ -8,6 +8,7 @@ import type { CtoCapabilityMode } from "./cto";
 import type { FileDiff } from "./git";
 import type { LaneGitHubIssue, LaneLinearIssue } from "./lanes";
 import type { OrchestrationContextItem, OrchestrationRole } from "./orchestration";
+import type { PluginSessionSetup } from "../plugins/sessionSetup";
 import type { AdeRecoveryErrorCode } from "./recovery";
 import type { SessionBackgroundWork } from "../sessionCanonicalState";
 import type { RuntimeProcessSummary } from "./sessions";
@@ -2540,6 +2541,19 @@ export type AgentChatCreateArgs = {
    * policy, not a preference.
    */
   strictMcpConfig?: boolean;
+  /**
+   * Environment variables and one context file a plugin injects into the agent
+   * process this chat launches — the generic form of the built-in Linear
+   * integration's `ADE_LINEAR_ISSUE_IDS` / `ADE_LINEAR_CONTEXT_FILE`, so a Jira
+   * plugin reaches as far as Linear does.
+   *
+   * Host-validated: keys must match `ADE_PLUGIN_[A-Z0-9_]`, a plugin can never
+   * override a variable ADE sets, and both the variables and the file are
+   * capped. An invalid request refuses the create rather than launching a chat
+   * quietly missing the context it was given. See
+   * `shared/plugins/sessionSetup.ts` for the exact policy and its reasoning.
+   */
+  sessionSetup?: PluginSessionSetup;
 };
 
 export type AgentChatImportExternalSessionArgs = {
@@ -2619,6 +2633,11 @@ export type AgentChatLaunchCliArgs = {
   title?: string;
   /** Foreground opens/focuses the session; background leaves focus alone. */
   disposition?: "foreground" | "background";
+  /**
+   * Plugin-supplied environment and context file for the spawned CLI process.
+   * Same host-validated policy as {@link AgentChatCreateArgs.sessionSetup}.
+   */
+  sessionSetup?: PluginSessionSetup;
 };
 
 export type AgentChatLaunchCliResult = {

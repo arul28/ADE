@@ -15,6 +15,7 @@ vi.mock("../../utils/codexComputerUse", () => ({
 }));
 
 import { launchAgentChatCli, type AgentChatCliLaunchDeps } from "./agentChatCliLaunch";
+import { withTrustedPluginSessionOwner } from "./pluginSessionSetupProvenance";
 
 type LaneBaseAndBranch =
   AgentChatCliLaunchDeps["laneService"]["getLaneBaseAndBranch"] extends (
@@ -307,5 +308,42 @@ describe("launchAgentChatCli attached issue ids", () => {
     // pty so persistence can decide; only the returned id summary is filtered.
     const createArg = deps.create.mock.calls[0]?.[0] as { linearIssues: unknown[] };
     expect(createArg.linearIssues).toHaveLength(4);
+  });
+
+  it("forwards a plugin's session setup to the spawn", async () => {
+    const deps = makeDeps();
+    const sessionSetup = {
+      env: { ADE_PLUGIN_JIRA_ISSUE_KEYS: "ENG-1" },
+      contextFile: { name: "jira.json", content: "{}" },
+    };
+    await launchAgentChatCli(makeArgs({ sessionSetup }), deps);
+
+    const createArg = deps.create.mock.calls[0]?.[0] as PtyCreateArgs;
+    expect(createArg.pluginSessionSetup).toEqual(sessionSetup);
+    // No plugin bridge stamped this call, so the spawn has no owner to name.
+    expect(createArg.pluginSessionOwnerId).toBeNull();
+  });
+
+  it("names the owning plugin only when the host bridge stamped the call", async () => {
+    const deps = makeDeps();
+    await launchAgentChatCli(
+      withTrustedPluginSessionOwner(
+        makeArgs({ sessionSetup: { env: { ADE_PLUGIN_X: "1" } } }) as unknown as Record<string, unknown>,
+        "ade-jira",
+      ) as unknown as AgentChatLaunchCliArgs,
+      deps,
+    );
+
+    const createArg = deps.create.mock.calls[0]?.[0] as PtyCreateArgs;
+    expect(createArg.pluginSessionOwnerId).toBe("ade-jira");
+  });
+
+  it("leaves the spawn untouched when no plugin setup was asked for", async () => {
+    const deps = makeDeps();
+    await launchAgentChatCli(makeArgs(), deps);
+
+    const createArg = deps.create.mock.calls[0]?.[0] as PtyCreateArgs;
+    expect(createArg).not.toHaveProperty("pluginSessionSetup");
+    expect(createArg).not.toHaveProperty("pluginSessionOwnerId");
   });
 });

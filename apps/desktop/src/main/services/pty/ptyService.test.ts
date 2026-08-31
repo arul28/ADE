@@ -30,6 +30,12 @@ const mocks = vi.hoisted(() => {
     fileContents,
     fileStats,
     openFiles,
+    // The plugin session-setup store owns real filesystem work and is unit
+    // tested against a real temp dir; here the interest is only that the pty
+    // path calls it and spreads what it returns into the spawn env.
+    writePluginSessionSetup: vi.fn(() => null as Record<string, string> | null),
+    readPluginSessionSetupEnv: vi.fn(() => null as Record<string, string> | null),
+    clearPluginSessionSetup: vi.fn(),
     mkdirSync: vi.fn(),
     existsSync: vi.fn((p: string) => existsSyncResults.get(p) ?? true),
     lstatSync: vi.fn((p: string) => {
@@ -252,6 +258,18 @@ vi.mock("node:os", async () => {
     ...actual,
     homedir,
     default: { ...actual, homedir },
+  };
+});
+
+vi.mock("../plugins/pluginSessionSetupStore", async () => {
+  const actual = await vi.importActual<typeof import("../plugins/pluginSessionSetupStore")>(
+    "../plugins/pluginSessionSetupStore",
+  );
+  return {
+    ...actual,
+    writePluginSessionSetup: mocks.writePluginSessionSetup,
+    readPluginSessionSetupEnv: mocks.readPluginSessionSetupEnv,
+    clearPluginSessionSetup: mocks.clearPluginSessionSetup,
   };
 });
 
@@ -1007,6 +1025,64 @@ describe("ptyService", () => {
           issues: [issue],
         }),
       );
+    });
+
+    it("persists a plugin's session setup and spreads it into the spawn env", async () => {
+      mocks.writePluginSessionSetup.mockReturnValueOnce({ ADE_PLUGIN_JIRA_ISSUE_KEYS: "ENG-1" });
+      mocks.readPluginSessionSetupEnv.mockReturnValueOnce({ ADE_PLUGIN_JIRA_ISSUE_KEYS: "ENG-1" });
+      const { service, loadPty } = createHarness();
+
+      const result = await service.create({
+        laneId: "lane-1",
+        title: "Codex CLI",
+        cols: 80,
+        rows: 24,
+        tracked: true,
+        toolType: "codex",
+        command: "codex",
+        pluginSessionSetup: { env: { ADE_PLUGIN_JIRA_ISSUE_KEYS: "ENG-1" } },
+        pluginSessionOwnerId: "ade-jira",
+      });
+
+      expect(mocks.writePluginSessionSetup).toHaveBeenCalledWith(expect.objectContaining({
+        projectRoot: "/tmp/test-project",
+        sessionId: result.sessionId,
+        pluginId: "ade-jira",
+      }));
+      const ptyLib = loadPty.mock.results.at(-1)?.value as { spawn: ReturnType<typeof vi.fn> };
+      const opts = ptyLib.spawn.mock.calls.at(-1)?.[2] as { env?: NodeJS.ProcessEnv } | undefined;
+      expect(opts?.env?.ADE_PLUGIN_JIRA_ISSUE_KEYS).toBe("ENG-1");
+    });
+
+    it("never lets a stored plugin variable replace one ADE set", async () => {
+      // Belt and braces on the `ADE_PLUGIN_` key policy: even a stored value
+      // that somehow names a host variable loses at the merge.
+      mocks.readPluginSessionSetupEnv.mockReturnValueOnce({
+        ADE_LANE_ID: "lane-evil",
+        ADE_PLUGIN_OK: "kept",
+      });
+      const { service, loadPty } = createHarness();
+
+      await service.create({
+        laneId: "lane-1",
+        title: "Codex CLI",
+        cols: 80,
+        rows: 24,
+        tracked: true,
+        toolType: "codex",
+        command: "codex",
+      });
+
+      const ptyLib = loadPty.mock.results.at(-1)?.value as { spawn: ReturnType<typeof vi.fn> };
+      const opts = ptyLib.spawn.mock.calls.at(-1)?.[2] as { env?: NodeJS.ProcessEnv } | undefined;
+      expect(opts?.env?.ADE_LANE_ID).toBe("lane-1");
+      expect(opts?.env?.ADE_PLUGIN_OK).toBe("kept");
+    });
+
+    it("does not touch the plugin setup store when no plugin asked for anything", async () => {
+      const { service } = createHarness();
+      await service.create({ laneId: "lane-1", title: "Plain shell", cols: 80, rows: 24, tracked: true });
+      expect(mocks.writePluginSessionSetup).not.toHaveBeenCalled();
     });
 
     it("does not attach Linear issues when none are requested", async () => {

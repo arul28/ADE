@@ -100,6 +100,12 @@ import {
 } from "../../../shared/types";
 import { isProviderSlashCommandInput } from "../../../shared/chatSlashCommands";
 import { readInstalledBuiltinSurfaces } from "../plugins/builtinSurfaceInstalls";
+import {
+  clearPluginSessionSetup,
+  filterPluginSessionEnv,
+  readPluginSessionSetupEnv,
+  writePluginSessionSetup,
+} from "../plugins/pluginSessionSetupStore";
 import { CURSOR_CLI_EXECUTABLES } from "../../../shared/providerCliExecutables";
 import {
   buildOpenCodeReplayResumeLaunchCommand,
@@ -5749,6 +5755,25 @@ export function createPtyService({
         });
         setRuntimeState(sessionId, "running");
 
+        // The generic form of the Linear attach below: a plugin's own env and
+        // context file for this spawn, persisted BEFORE env is built so the
+        // read below resolves them — and so a later resume, which re-enters
+        // create() with no setup argument, re-injects the same variables.
+        //
+        // NOT best-effort: an invalid setup throws and the spawn is refused,
+        // because a CLI agent silently missing the context a plugin told it it
+        // has produces confidently wrong work. The session row already exists,
+        // and the caller destroys it the same way any failed launch is cleaned
+        // up — which is preferable to launching the wrong agent.
+        if (args.pluginSessionSetup != null) {
+          writePluginSessionSetup({
+            projectRoot,
+            sessionId,
+            setup: args.pluginSessionSetup,
+            pluginId: args.pluginSessionOwnerId ?? null,
+          });
+        }
+
         // Attach any requested Linear issues to the freshly-created session row
         // BEFORE env is built below, so getSessionLinearEnv resolves them and the
         // spawned CLI agent inherits ADE_LINEAR_* (and the lane-mirror link lands
@@ -5790,6 +5815,9 @@ export function createPtyService({
 
       const laneRuntimeEnv = (await getLaneRuntimeEnv?.(laneId)) ?? {};
       const sessionLinearEnv = getSessionLinearEnv?.({ sessionId, chatSessionId }) ?? {};
+      // Keyed on this terminal's own session id, the same id the setup was
+      // written under, so a resume re-injects it without the caller resending.
+      const sessionPluginEnv = readPluginSessionSetupEnv({ projectRoot, sessionId }) ?? {};
       const explicitNoColor = hasEnvKey(effectiveArgs.env ?? {}, "NO_COLOR") || hasEnvKey(laneRuntimeEnv, "NO_COLOR");
       const explicitForceColor = hasEnvKey(effectiveArgs.env ?? {}, "FORCE_COLOR") || hasEnvKey(laneRuntimeEnv, "FORCE_COLOR");
       const inheritedProcessEnv = { ...process.env };
@@ -5797,11 +5825,19 @@ export function createPtyService({
       // leak that host role into an ordinary terminal; tracked agent CLIs set
       // their role explicitly below.
       delete inheritedProcessEnv.ADE_DEFAULT_ROLE;
-      const baseLaunchEnv = {
+      const hostLaunchEnv = {
         ...inheritedProcessEnv,
         ...laneRuntimeEnv,
         ...sessionLinearEnv,
         ...(effectiveArgs.env ?? {})
+      };
+      // Last, and filtered against everything ADE just set: a plugin variable
+      // may only occupy a name the host left empty. The `ADE_PLUGIN_` key
+      // policy already guarantees that; the filter keeps it true even if a
+      // future host variable moves into that prefix.
+      const baseLaunchEnv = {
+        ...hostLaunchEnv,
+        ...filterPluginSessionEnv(hostLaunchEnv, sessionPluginEnv),
       };
       if (explicitNoColor && !explicitForceColor) {
         delete baseLaunchEnv.FORCE_COLOR;
@@ -7576,6 +7612,18 @@ export function createPtyService({
       ownerProcessStartedAt?: string | null;
     }): boolean {
       return isOwnedByLivePeerRuntime(session);
+    },
+
+    /**
+     * Drop the plugin-injected env and context file this session carried.
+     * Called by the terminal delete flow, which owns the session's lifetime but
+     * not the project layout — the injected values must not outlive the session
+     * they were written for.
+     */
+    forgetPluginSessionSetup(sessionId: string): void {
+      const trimmed = typeof sessionId === "string" ? sessionId.trim() : "";
+      if (!trimmed) return;
+      clearPluginSessionSetup({ projectRoot, sessionId: trimmed });
     },
 
     list(args: Parameters<typeof sessionService.list>[0] = {}): TerminalSessionSummary[] {

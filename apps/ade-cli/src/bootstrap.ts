@@ -132,6 +132,7 @@ import {
 import { builtinSurfaceOwner } from "../../desktop/src/shared/plugins/builtinSurfaces";
 import { stripHostAuthoredMessageProvenance } from "../../desktop/src/main/services/chat/spawnMissionOwnership";
 import { withTrustedAdeCardAuthor } from "../../desktop/src/main/services/chat/adeCardProvenance";
+import { withTrustedPluginSessionOwner } from "../../desktop/src/main/services/chat/pluginSessionSetupProvenance";
 import {
   PluginSdkError,
   type PluginFilePickerOptions,
@@ -562,9 +563,10 @@ export function withoutPluginAuthoredProvenance(
  * child socket, so it names the package whose code is running and not whatever
  * the call said about itself.
  *
- * The stamp rides on a module-private symbol (see `adeCardProvenance.ts`), so
- * the same argument object arriving from an agent or an automation — both of
- * which cross a JSON boundary — cannot carry one.
+ * The stamp rides on a module-private symbol (see `adeCardProvenance.ts` and
+ * `pluginSessionSetupProvenance.ts`), so the same argument object arriving from
+ * an agent or an automation — both of which cross a JSON boundary — cannot
+ * carry one.
  */
 export function withPluginCallerProvenance(
   domain: AdeActionDomain,
@@ -572,11 +574,20 @@ export function withPluginCallerProvenance(
   args: Record<string, unknown>,
   caller: { pluginId: string; displayName?: string | null },
 ): Record<string, unknown> {
-  if (domain !== "chat" || action !== "emitAdeCard") return args;
-  return withTrustedAdeCardAuthor(args, {
-    pluginId: caller.pluginId,
-    ...(caller.displayName ? { displayName: caller.displayName } : {}),
-  });
+  if (domain !== "chat") return args;
+  if (action === "emitAdeCard") {
+    return withTrustedAdeCardAuthor(args, {
+      pluginId: caller.pluginId,
+      ...(caller.displayName ? { displayName: caller.displayName } : {}),
+    });
+  }
+  // A session launched with plugin-supplied environment carries
+  // `ADE_PLUGIN_SOURCE_ID` naming the package that supplied it. Stamped only
+  // when there is something to attribute, so an ordinary launch is untouched.
+  if ((action === "createSession" || action === "launchCli") && args.sessionSetup != null) {
+    return withTrustedPluginSessionOwner(args, caller.pluginId);
+  }
+  return args;
 }
 
 /**

@@ -39,12 +39,14 @@ function makeServices(session: TerminalSessionSummary | null) {
     get: vi.fn().mockReturnValue(session),
     deleteSession,
   } as unknown as ReturnType<typeof createSessionService>;
+  const forgetPluginSessionSetup = vi.fn();
   const ptyService = {
     enrichSessions: vi.fn((sessions: TerminalSessionSummary[]) => sessions),
     isSessionOwnedByLivePeerRuntime: vi.fn().mockReturnValue(false),
     dispose: vi.fn(),
+    forgetPluginSessionSetup,
   } as unknown as ReturnType<typeof createPtyService>;
-  return { deleteSession, ptyService, sessionService };
+  return { deleteSession, forgetPluginSessionSetup, ptyService, sessionService };
 }
 
 describe("deleteTerminalSessionWithRuntimeCleanup", () => {
@@ -57,6 +59,21 @@ describe("deleteTerminalSessionWithRuntimeCleanup", () => {
       ptyService,
     })).toBe(true);
     expect(deleteSession).toHaveBeenCalledWith("session-1");
+  });
+
+  it("drops any plugin-injected environment with the session", () => {
+    // An injected issue key or ticket body must not outlive the session.
+    const { forgetPluginSessionSetup, ptyService, sessionService } = makeServices(makeSession());
+
+    deleteTerminalSessionWithRuntimeCleanup({ sessionId: "session-1", sessionService, ptyService });
+    expect(forgetPluginSessionSetup).toHaveBeenCalledWith("session-1");
+  });
+
+  it("does not reach for the plugin setup of a session it never had", () => {
+    const { forgetPluginSessionSetup, ptyService, sessionService } = makeServices(null);
+
+    deleteTerminalSessionWithRuntimeCleanup({ sessionId: "missing", sessionService, ptyService });
+    expect(forgetPluginSessionSetup).not.toHaveBeenCalled();
   });
 
   it("treats a session this runtime does not have as already deleted", () => {

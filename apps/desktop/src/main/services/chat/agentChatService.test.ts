@@ -947,6 +947,7 @@ import {
   CURSOR_SDK_FIRST_EVENT_WATCHDOG_MS,
   CURSOR_SDK_RECYCLE_CANCEL_TIMEOUT_MS,
 } from "./agentChatService";
+import { withTrustedPluginSessionOwner } from "./pluginSessionSetupProvenance";
 import { createChatRuntimeBudget } from "./chatRuntimeBudget";
 import { readThreadPointerLedger } from "./threadPointerLedger";
 import { SESSION_STALE_AFTER_MS } from "../../../shared/sessionCanonicalState";
@@ -5339,6 +5340,148 @@ describe("createAgentChatService", () => {
           chatSessionId: session.id,
         }),
       );
+    });
+  });
+
+  // --------------------------------------------------------------------------
+  // Plugin session setup — the generic form of the built-in Linear env seam
+  // --------------------------------------------------------------------------
+
+  describe("plugin session setup", () => {
+    // Cursor is the provider whose acquired base env these tests read.
+    beforeEach(() => {
+      process.env.CURSOR_API_KEY = "cursor-test-key";
+    });
+    afterEach(() => {
+      delete process.env.CURSOR_API_KEY;
+    });
+
+    async function launchCursorSessionWithSetup(sessionSetup: unknown) {
+      const { service } = createService();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "cursor",
+        model: "composer-2",
+        modelId: "cursor/composer-2",
+        sessionSetup,
+      } as any);
+      await service.sendMessage({ sessionId: session.id, text: "Go." }, { awaitDispatch: true });
+      return {
+        service,
+        session,
+        env: mockState.cursorSdkAcquireCalls.at(-1)?.baseEnv as NodeJS.ProcessEnv,
+      };
+    }
+
+    it("injects a plugin's variables and context file into the launched agent", async () => {
+      const { session, env } = await launchCursorSessionWithSetup({
+        env: { ADE_PLUGIN_JIRA_ISSUE_KEYS: "ENG-1,ENG-2" },
+        contextFile: { name: "jira-issues.json", content: '{"issues":["ENG-1"]}' },
+      });
+
+      expect(env?.ADE_PLUGIN_JIRA_ISSUE_KEYS).toBe("ENG-1,ENG-2");
+      const contextPath = env?.ADE_PLUGIN_CONTEXT_FILE;
+      expect(contextPath).toContain(path.join(session.id, "plugin", "context", "jira-issues.json"));
+      expect(fs.readFileSync(contextPath as string, "utf8")).toBe('{"issues":["ENG-1"]}');
+      // No plugin bridge stamped this call, so ADE has nobody to name.
+      expect(env?.ADE_PLUGIN_SOURCE_ID).toBeUndefined();
+    });
+
+    it("re-injects the same variables when the session's runtime restarts", async () => {
+      const { service, session, env } = await launchCursorSessionWithSetup({
+        env: { ADE_PLUGIN_JIRA_ISSUE_KEYS: "ENG-1" },
+        contextFile: { name: "jira.json", content: "{}" },
+      });
+      await service.dispose({ sessionId: session.id });
+      await service.sendMessage({ sessionId: session.id, text: "Again." }, { awaitDispatch: true });
+
+      const resumed = mockState.cursorSdkAcquireCalls.at(-1)?.baseEnv as NodeJS.ProcessEnv;
+      expect(resumed?.ADE_PLUGIN_JIRA_ISSUE_KEYS).toBe("ENG-1");
+      expect(resumed?.ADE_PLUGIN_CONTEXT_FILE).toBe(env?.ADE_PLUGIN_CONTEXT_FILE);
+    });
+
+    it("refuses the create when a variable would shadow one ADE sets", async () => {
+      const { service } = createService();
+      await expect(service.createSession({
+        laneId: "lane-1",
+        provider: "cursor",
+        model: "composer-2",
+        modelId: "cursor/composer-2",
+        sessionSetup: { env: { PATH: "/evil/bin" } },
+      } as any)).rejects.toThrow(/is not allowed/u);
+    });
+
+    it("refuses the create when a variable claims an ADE_PLUGIN_* name ADE owns", async () => {
+      const { service } = createService();
+      await expect(service.createSession({
+        laneId: "lane-1",
+        provider: "cursor",
+        model: "composer-2",
+        modelId: "cursor/composer-2",
+        sessionSetup: { env: { ADE_PLUGIN_CONTEXT_FILE: "/evil/context.json" } },
+      } as any)).rejects.toThrow(/cannot be overridden/u);
+    });
+
+    it("cannot be named as a plugin's by a caller that is not one", async () => {
+      // `pluginId` in the arguments is ignored: attribution rides a host-stamped
+      // symbol, so an agent cannot label its own env as a plugin's.
+      const { env } = await launchCursorSessionWithSetup({
+        env: { ADE_PLUGIN_X: "1" },
+        pluginId: "ade-linear",
+      });
+      expect(env?.ADE_PLUGIN_SOURCE_ID).toBeUndefined();
+    });
+
+    it("names the plugin when the host bridge stamped the call", async () => {
+      const { service } = createService();
+      const session = await service.createSession(withTrustedPluginSessionOwner({
+        laneId: "lane-1",
+        provider: "cursor",
+        model: "composer-2",
+        modelId: "cursor/composer-2",
+        sessionSetup: { env: { ADE_PLUGIN_JIRA_ISSUE_KEYS: "ENG-1" } },
+      } as Record<string, unknown>, "ade-jira") as any);
+      await service.sendMessage({ sessionId: session.id, text: "Go." }, { awaitDispatch: true });
+
+      const env = mockState.cursorSdkAcquireCalls.at(-1)?.baseEnv as NodeJS.ProcessEnv;
+      expect(env?.ADE_PLUGIN_SOURCE_ID).toBe("ade-jira");
+    });
+
+    it("drops the injected env and context file when the session is deleted", async () => {
+      const { service, session, env } = await launchCursorSessionWithSetup({
+        env: { ADE_PLUGIN_X: "1" },
+        contextFile: { name: "a.json", content: "secret" },
+      });
+      const contextPath = env?.ADE_PLUGIN_CONTEXT_FILE as string;
+      expect(fs.existsSync(contextPath)).toBe(true);
+
+      await service.deleteSession({ sessionId: session.id });
+      expect(fs.existsSync(contextPath)).toBe(false);
+    });
+
+    it("leaves the built-in Linear injection exactly as it was", async () => {
+      // The pin: a Linear-attached session gets its two variables and nothing
+      // from the plugin seam, so wave 3 moving Linear onto the generic path is
+      // a visible change rather than a silent one.
+      const { service, laneService } = createService();
+      const issue = makeLaneLinearIssue();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "cursor",
+        model: "composer-2",
+        modelId: "cursor/composer-2",
+      });
+      laneService.attachLinearIssueToSession({ chatSessionId: session.id, issues: [issue] });
+      await service.sendMessage({ sessionId: session.id, text: "Go." }, { awaitDispatch: true });
+
+      const env = mockState.cursorSdkAcquireCalls.at(-1)?.baseEnv as NodeJS.ProcessEnv;
+      expect(env?.ADE_LINEAR_ISSUE_IDS).toBe(issue.identifier);
+      expect(env?.ADE_LINEAR_CONTEXT_FILE).toBe(
+        path.join(tmpRoot, ".ade", "context", session.id, "linear-issues.json"),
+      );
+      expect(
+        Object.keys(env ?? {}).filter((key) => key.startsWith("ADE_PLUGIN_")),
+      ).toEqual([]);
     });
   });
 

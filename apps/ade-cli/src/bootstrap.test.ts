@@ -15,6 +15,7 @@ import {
   withPluginCallerProvenance,
 } from "./bootstrap";
 import { readTrustedAdeCardAuthor } from "../../desktop/src/main/services/chat/adeCardProvenance";
+import { readTrustedPluginSessionOwner } from "../../desktop/src/main/services/chat/pluginSessionSetupProvenance";
 import { IPC } from "../../desktop/src/shared/ipc";
 import {
   ADE_ACTION_ALLOWLIST,
@@ -726,6 +727,34 @@ describe("plugin action bridge provenance", () => {
     expect(withPluginCallerProvenance("chat", "sendMessage", args, { pluginId: "ade-lint" })).toBe(args);
     expect(withPluginCallerProvenance("lane", "emitAdeCard", args, { pluginId: "ade-lint" })).toBe(args);
     expect(readTrustedAdeCardAuthor(args)).toBeNull();
+  });
+
+  it.each(["createSession", "launchCli"])(
+    "names the session-setup owner from the CALLER on chat.%s",
+    (action) => {
+      const stamped = withPluginCallerProvenance(
+        "chat",
+        action,
+        { laneId: "lane-1", sessionSetup: { env: { ADE_PLUGIN_X: "1" }, pluginId: "ade-linear" } },
+        { pluginId: "ade-lint" },
+      );
+
+      expect(readTrustedPluginSessionOwner(stamped)).toBe("ade-lint");
+    },
+  );
+
+  it("names no session-setup owner when the launch injects nothing", () => {
+    const args = { laneId: "lane-1", provider: "codex" };
+    expect(withPluginCallerProvenance("chat", "createSession", args, { pluginId: "ade-lint" })).toBe(args);
+    expect(readTrustedPluginSessionOwner(args)).toBeNull();
+  });
+
+  it("cannot have the session-setup owner forged through the arguments", () => {
+    // The owner is a symbol a JSON payload cannot carry, which is the whole
+    // point: an agent calling the same action gets no owner at all.
+    expect(readTrustedPluginSessionOwner(
+      JSON.parse(JSON.stringify({ sessionSetup: { env: {} }, pluginId: "ade-linear" })),
+    )).toBeNull();
   });
 });
 
