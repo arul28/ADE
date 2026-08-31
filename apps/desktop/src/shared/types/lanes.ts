@@ -258,19 +258,6 @@ export type LaneGitHubIssue = {
   updatedAt: string;
 };
 
-export type LaneGitHubIssueLink = {
-  id: string;
-  laneId: string;
-  issue: LaneGitHubIssue;
-  role: LaneLinearIssueLinkRole;
-  source: LaneLinearIssueLinkSource;
-  includeInPr: boolean;
-  closeOnMerge: boolean;
-  evidence?: SessionLinearIssueLink["evidence"] | null;
-  createdAt: string;
-  updatedAt: string;
-};
-
 export type SessionGitHubIssueLink = {
   id: string;
   sessionId: string;

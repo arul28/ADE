@@ -15,6 +15,7 @@ import {
   withPluginCallerProvenance,
 } from "./bootstrap";
 import { readTrustedAdeCardAuthor } from "../../desktop/src/main/services/chat/adeCardProvenance";
+import { IPC } from "../../desktop/src/shared/ipc";
 import {
   ADE_ACTION_ALLOWLIST,
   isAutomationAllowedAdeAction,
@@ -785,6 +786,55 @@ describe("plugin action bridge refusals", () => {
     expect(pluginActionRefusalMessage("chat", "sendMessage")).toBeNull();
     expect(pluginActionRefusalMessage("lane", "list")).toBeNull();
     expect(pluginActionRefusalMessage("session", "list")).toBeNull();
+  });
+
+  it("refuses the raw lane issue-link verbs in favour of the attributed SDK verbs", () => {
+    expect(pluginActionRefusalMessage("lane", "linkLinearIssues")).toMatch(
+      /ade\.lanes\.linkIssue/,
+    );
+    expect(pluginActionRefusalMessage("lane", "unlinkLinearIssues")).toMatch(
+      /ade\.lanes\.unlinkIssue/,
+    );
+  });
+
+  it("refuses only the two issue-link verbs, not the rest of the lane domain", () => {
+    // A blanket refusal on `lane` would take the plugin's read of its own
+    // lanes with it, which is the reach `ade.lanes.list` depends on.
+    for (const action of ["list", "getSummary", "create", "archive", "rename"]) {
+      expect(pluginActionRefusalMessage("lane", action), action).toBeNull();
+    }
+  });
+
+  /**
+   * The refusal must key on PLUGIN ORIGIN, not on the verb being unavailable.
+   *
+   * `pluginActionRefusalMessage` is consulted in exactly one place —
+   * `PluginProjectBinding.invokeAdeAction` in `bootstrap.ts` — which is the door
+   * a plugin child's `ade.actions.invoke` comes through and nothing else does.
+   * Every other caller class reaches the same verbs by a path that never asks
+   * this function, so these tests pin the paths rather than the message.
+   */
+  describe("the raw lane verbs stay open to every non-plugin caller", () => {
+    it("keeps them on the ade action allowlist, which the agent chat and automations layers key on", () => {
+      // Those layers gate on `isAutomationAllowedAdeAction`, never on
+      // `pluginActionRefusalMessage`. Dropping the verbs from the allowlist
+      // would have taken the agent and the user's automations down with the
+      // plugins, so the allowlist is the thing worth asserting.
+      expect(isAutomationAllowedAdeAction("lane", "linkLinearIssues")).toBe(true);
+      expect(isAutomationAllowedAdeAction("lane", "unlinkLinearIssues")).toBe(true);
+    });
+
+    it("keeps them in the lane domain's allowlist, which the built-in Linear pane and the CTO reach", () => {
+      const laneVerbs = ADE_ACTION_ALLOWLIST.lane ?? [];
+      expect(laneVerbs).toContain("linkLinearIssues");
+      expect(laneVerbs).toContain("unlinkLinearIssues");
+    });
+
+    it("keeps the IPC channel the desktop UI unlinks through", () => {
+      // The user's own unlink, from the lane UI, goes over IPC and never
+      // touches the plugin bridge.
+      expect(IPC.lanesUnlinkLinearIssues).toBe("ade.lanes.unlinkLinearIssues");
+    });
   });
 
   /**

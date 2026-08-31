@@ -6,7 +6,7 @@ import type { AdeCardPayload } from "../adeCard";
 import type { ModelId } from "./core";
 import type { CtoCapabilityMode } from "./cto";
 import type { FileDiff } from "./git";
-import type { LaneGitHubIssue, LaneLinearIssue, SessionLinearIssueLink } from "./lanes";
+import type { LaneGitHubIssue, LaneLinearIssue } from "./lanes";
 import type { OrchestrationContextItem, OrchestrationRole } from "./orchestration";
 import type { AdeRecoveryErrorCode } from "./recovery";
 import type { SessionBackgroundWork } from "../sessionCanonicalState";
