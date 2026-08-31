@@ -277,6 +277,7 @@ Do **not** count these as product changes by themselves:
 
 - `changelog/**`
 - `docs/**`
+- `sdk/**` (Mintlify SDK tab — handled under SDK / public docs scope)
 - `docs.json`
 - `CHANGELOG.md`
 - pure website/docs assets
@@ -307,17 +308,42 @@ iOS release is needed if any changed file since `IOS_LAST_TAG` matches:
 
 Do not use desktop tags to decide iOS scope once iOS shipped tags exist.
 
+### SDK / public docs scope
+
+This does **not** trigger a desktop GitHub release by itself. npm publish is
+`publish-sdk-packages.yml` on merge to `main` (OIDC), not this conductor.
+
+SDK Mintlify pages (`sdk/*.mdx`) and the two npm READMEs need an update if
+since `$DESKTOP_LAST_TAG` (when desktop is in scope) — or, when checking an
+SDK-only window, since the last commit that already shipped those docs — any
+of:
+
+- `packages/sdk/**`
+- `packages/chat-ui/**`
+- `apps/desktop/src/shared/callerMcpServers.ts` (honesty table)
+- `apps/ade-cli` embedded profile / `parentDeathWatchdog`
+- `sdk/*.mdx` already in the diff (verify they still match the code)
+
+Print `SDK docs: <yes|no>` with that decision. User-visible contract changes
+(install, threads, MCP residuals, chat-ui props, `doctor()` fields) are `yes`.
+Internal-only test or comment churn is `no`.
+
 ### Scope outcomes
 
 Print one concise decision:
 
 ```text
-Scope: desktop=<yes|no> ios=<yes|no>
+Scope: desktop=<yes|no> ios=<yes|no> sdk-docs=<yes|no>
 Desktop since: <DESKTOP_LAST_TAG>
 iOS since: <IOS_LAST_TAG or bootstrap-needed>
 ```
 
-If both are `no`, write state `phase=done` and stop.
+If desktop and iOS are both `no`:
+
+- If `sdk-docs` is `yes`, **do not tag a desktop release**. Land or require the
+  Mintlify/README updates on the SDK PR (or a docs-only follow-up). This
+  conductor does not `npm publish`.
+- If `sdk-docs` is also `no`, write state `phase=done` and stop.
 
 ## Phase 2: Resolve Versions
 
@@ -353,15 +379,35 @@ If iOS is in scope:
 
 ## Phase 3: Release Notes and Docs
 
-Only create public docs/changelog entries when desktop is in scope. A mobile-only
-TestFlight build does not need a public desktop changelog unless the user asks.
+Only create public **desktop changelog** entries when desktop is in scope. A
+mobile-only TestFlight build does not need a public desktop changelog unless
+the user asks.
 
 For desktop releases, update all release-doc surfaces:
 
 - `changelog/v<VERSION>.mdx`
-- `docs.json`
+- `docs.json` (changelog page list)
 - `changelog/index.mdx`
 - root `CHANGELOG.md`
+
+**Additionally, when `sdk-docs` is `yes`** (whether or not desktop is in
+scope):
+
+- Update the Mintlify **SDK** tab: `sdk/overview.mdx`, `sdk/install.mdx`,
+  `sdk/quickstart.mdx`, `sdk/threads.mdx`, `sdk/mcp.mdx`, `sdk/chat-ui.mdx`,
+  `sdk/runtime.mdx`, `sdk/reference.mdx`, and the `docs.json` SDK tab /
+  footer links if pages were added or renamed.
+- Keep the MCP honesty table aligned across `sdk/mcp.mdx`,
+  `packages/sdk/README.md`, and `docs/features/sdk/README.md`. Strict MCP is
+  **enforced only on Claude**; never market it as uniform. `mcpCapability`
+  (`strictRequested` first, then `level === "enforced"`) is the honesty
+  mechanism.
+- Both npm READMEs (`packages/sdk/README.md`, `packages/chat-ui/README.md`)
+  must link to `https://www.ade-app.dev/docs/sdk/overview` as the full docs.
+  README edits publish on the **next** `@ade-dev/sdk` / `@ade-dev/chat-ui`
+  version bump (`publish-sdk-packages.yml`). Do not `npm publish` from this
+  skill.
+- Register new Mintlify pages in `docs.json` before validating.
 
 Then run:
 
@@ -371,7 +417,7 @@ node scripts/validate-docs.mjs
 
 Commit and land the docs/release metadata on `main` before tagging. The desktop
 release tag must point at the final `main` commit that includes the
-changelog.
+changelog. An SDK-docs-only commit does not get a `v*` tag.
 
 ## Phase 4: Desktop GitHub Workflow Release
 

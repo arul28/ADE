@@ -1,0 +1,76 @@
+---
+title: "Install"
+description: "Install @ade-dev/sdk and @ade-dev/chat-ui. Node 22, an isolated home directory, and how the sidecar finds an ade binary."
+icon: "download"
+---
+
+```bash
+npm install @ade-dev/sdk
+```
+
+Optional UI:
+
+```bash
+npm install @ade-dev/chat-ui
+```
+
+Requires **Node 22**. The packages ship ESM + CJS.
+
+## Isolated home
+
+Pass a directory your app owns. The sidecar stores thread keys and runtime state there. Never point it at the developer's `~/.ade` or at ADE's default machine socket.
+
+```ts
+import { createAdeChat } from "@ade-dev/sdk";
+
+const ade = await createAdeChat({
+  home: "./.ade-embed", // created if missing, mode 0700
+});
+```
+
+In Electron, use the main process and a path under `userData`:
+
+```ts
+import path from "node:path";
+import { app } from "electron";
+import { createAdeChat } from "@ade-dev/sdk";
+
+const ade = await createAdeChat({
+  home: path.join(app.getPath("userData"), "ade"),
+});
+```
+
+Two clients on one `home` fight over the same socket and SQLite root. Open **one** client per isolated home.
+
+## Where `ade` comes from
+
+Resolution order:
+
+1. `binaryPath` — pin a specific build; skips PATH and download.
+2. A previously downloaded binary in the home cache.
+3. `ade` on `PATH` (optional; tests can disable this).
+4. Download from the ADE GitHub release, fail-closed against that release's `SHA256SUMS`.
+
+```ts
+const ade = await createAdeChat({
+  home: "./.ade-embed",
+  binaryPath: "/usr/local/bin/ade", // skip download
+  channel: "latest",                // or a release tag
+});
+```
+
+Downloads verify checksums before the binary is used. A mismatch is a hard error (`checksum_mismatch`), not a warning.
+
+## Electron
+
+Run `@ade-dev/sdk` from the **main process**, not the renderer. Spawn owns a child process and a Unix socket (or a Windows named pipe). Bridge events to the renderer yourself, or put [`@ade-dev/chat-ui`](/sdk/chat-ui) behind a preload that talks to main.
+
+## Windows
+
+The sidecar is a supported host. Named pipes are hashed from home + user identity. `taskkill` / `tar` are resolved through the kernel `GLOBALROOT` System32 alias, never from `PATH`. `.cmd` / `.bat` wrappers spawn through `ComSpec`.
+
+## Next
+
+<Card title="Quickstart" href="/sdk/quickstart" icon="rocket" horizontal>
+  Open a thread and send the first message.
+</Card>

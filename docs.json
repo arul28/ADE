@@ -137,6 +137,39 @@
         ]
       },
       {
+        "tab": "SDK",
+        "icon": "cube",
+        "groups": [
+          {
+            "group": "Start here",
+            "icon": "hand-wave",
+            "expanded": true,
+            "pages": [
+              "sdk/overview",
+              "sdk/install",
+              "sdk/quickstart"
+            ]
+          },
+          {
+            "group": "Guides",
+            "icon": "book",
+            "pages": [
+              "sdk/threads",
+              "sdk/mcp",
+              "sdk/chat-ui",
+              "sdk/runtime"
+            ]
+          },
+          {
+            "group": "Reference",
+            "icon": "code",
+            "pages": [
+              "sdk/reference"
+            ]
+          }
+        ]
+      },
+      {
         "tab": "Settings & dev guide",
         "icon": "sliders",
         "groups": [
@@ -336,6 +369,7 @@
           { "label": "Download", "href": "https://ade-app.dev" },
           { "label": "Download for iOS", "href": "https://testflight.apple.com/join/ZSdJGKPy" },
           { "label": "Lanes", "href": "/lanes/overview" },
+          { "label": "SDK", "href": "/sdk/overview" },
           { "label": "Changelog", "href": "/changelog" }
         ]
       },
@@ -344,7 +378,8 @@
         "items": [
           { "label": "Welcome", "href": "/welcome" },
           { "label": "Quickstart", "href": "/quickstart" },
-          { "label": "Key concepts", "href": "/key-concepts" }
+          { "label": "Key concepts", "href": "/key-concepts" },
+          { "label": "Embed ADE chat", "href": "/sdk/overview" }
         ]
       },
       {

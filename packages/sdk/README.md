@@ -3,6 +3,8 @@
 Typed Node / Electron-main client that spawns a slim ADE runtime as a sidecar
 and exposes chat as durable named threads.
 
+**Docs:** [ADE SDK](https://www.ade-app.dev/docs/sdk/overview) — install, threads, MCP honesty table, chat UI, runtime, and API reference.
+
 ```bash
 npm install @ade-dev/sdk
 ```
@@ -99,7 +101,7 @@ refused rather than opening a tool-less thread):
 |---|---|---|
 | claude | **enforced** | nothing MCP-wise (user rules/commands/output styles still load — they are not MCP) |
 | codex | best-effort | servers contributed by a Codex *plugin* |
-| cursor | best-effort | user-layer servers |
+| cursor | best-effort | user-layer servers (`~/.cursor`) |
 | droid | best-effort | tools that appear only after the first disable pass |
 | opencode | best-effort | the global OpenCode config directory (for auth) |
 | pi | unsupported | n/a — create refuses injected servers |

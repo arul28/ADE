@@ -76,6 +76,6 @@ docs/
 
 ## Relationship to the public (Mintlify) docs
 
-`docs.json` at the repo root configures the public-facing Mintlify docs site (`.mdx` files under `./chat/`, `./tools/`, `./cto/`, etc.). That site is user-facing and separate.
+`docs.json` at the repo root configures the public-facing Mintlify docs site (`.mdx` files under `./chat/`, `./tools/`, `./cto/`, `./sdk/`, etc.). That site is user-facing and separate. The **SDK** tab (`sdk/*.mdx`) is the public embedder docs for `@ade-dev/sdk` and `@ade-dev/chat-ui`; keep it in lockstep with `docs/features/sdk/` and the package READMEs when the contract changes.
 
 **This folder (`docs/`) is internal-only** — for engineers and AI agents working on ADE itself.
