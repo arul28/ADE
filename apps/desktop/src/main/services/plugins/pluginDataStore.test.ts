@@ -165,6 +165,41 @@ describe("pluginDataStore", () => {
   });
 
   /**
+   * One node per lane, per plugin — a promise the SKILL now makes to authors.
+   *
+   * It is a consequence of the row's primary key
+   * (`entity_kind, entity_id, plugin_id, socket`) rather than a policy anyone
+   * chose, which is exactly why it needs a test: nothing in the publish call
+   * signature hints at it, and an author who assumed a second publish ADDED a
+   * node would watch their first one silently disappear. The skill tells them to
+   * design with it; this is what holds that sentence true.
+   */
+  it("replaces a plugin's graph node for a lane rather than adding a second", async () => {
+    const { db, store } = await openStore();
+
+    store.publishContribution("graph", "lane", "lane-1", "graph-node", { label: "ADE-1", tone: "neutral" });
+    store.publishContribution("graph", "lane", "lane-1", "graph-node", { label: "ADE-2", tone: "accent" });
+
+    const stored = db.all<{ payload_json: string }>(
+      "select payload_json from plugin_contributions where entity_id = ? and socket = ?",
+      ["lane-1", "graph-node"],
+    );
+    expect(stored).toHaveLength(1);
+    expect(JSON.parse(stored[0]!.payload_json)).toMatchObject({ label: "ADE-2" });
+
+    // A different lane is a different row, so the limit really is per lane and
+    // not per plugin — the half of the rule that makes the socket usable at all.
+    store.publishContribution("graph", "lane", "lane-2", "graph-node", { label: "ADE-3", tone: "neutral" });
+    expect(db.all("select 1 from plugin_contributions where socket = ?", ["graph-node"])).toHaveLength(2);
+
+    // And a badge on the SAME lane is a different socket, so it coexists: the
+    // key includes the kind, which is what lets one plugin annotate a lane on
+    // two surfaces at once.
+    store.publishContribution("graph", "lane", "lane-1", "row-badge", { text: "ADE-2", tone: "accent" });
+    expect(db.all("select 1 from plugin_contributions where entity_id = ?", ["lane-1"])).toHaveLength(2);
+  });
+
+  /**
    * Goes THROUGH publish, not around it.
    *
    * The filter-chip regression that made this test necessary was invisible to
