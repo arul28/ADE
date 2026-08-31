@@ -441,7 +441,7 @@ enum PluginVocabMarkdownParser {
 
       // `<https://…>` — the one autolink form, because its bounds are written
       // down rather than guessed at by a detector.
-      if char == "<", style.href == nil, let close = index(of: ">", in: source, from: index + 1) {
+      if char == "<", style.href == nil, let close = Self.index(of: ">", in: source, from: index + 1) {
         let inner = String(source[(index + 1)..<close])
         if !inner.contains(" "), let url = PluginInvokeResult.parseOpenURL(inner) {
           flush()
