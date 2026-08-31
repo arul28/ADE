@@ -1,21 +1,32 @@
-# Publish `@ade-dev/sdk` then `@ade-dev/chat-ui` from a dedicated tag.
+# Publish `@ade-dev/sdk` then `@ade-dev/chat-ui`.
 #
 # Desktop/runtime releases stay on `v*` (see release.yml). These packages use
 # `ade-sdk-v*` so a desktop tag cannot publish an npm version by accident.
 #
-# The first 0.1.0 publish is from a maintainer machine after this workflow
-# lands on main. Later versions: bump both package.json versions, land on
-# main, tag `ade-sdk-vX.Y.Z` (X.Y.Z must match both package.json versions),
-# push the tag.
+# Two publish routes, one job:
+# - Auto: a push to `main` that touches either package publishes any version
+#   that is not on the registry yet. A version that already exists is skipped,
+#   so merges that touch package code WITHOUT bumping versions are a no-op
+#   here. The /test skill's SDK-parity pass owns the bump decision.
+# - Manual: an `ade-sdk-vX.Y.Z` tag (must match both package.json versions)
+#   or workflow_dispatch with confirm=publish. On these routes an
+#   already-published version is an error, not a skip.
 #
 # Required repo secret: NPM_TOKEN — an automation token for the `ade-dev` org
 # with permission to publish `@ade-dev/sdk` and `@ade-dev/chat-ui` only.
+# Until the secret exists, runs end early with a notice instead of failing.
 # Provenance needs `id-token: write` on GitHub-hosted runners.
 
 name: Publish ADE SDK packages
 
 on:
   push:
+    branches:
+      - main
+    paths:
+      - "packages/sdk/**"
+      - "packages/chat-ui/**"
+      - ".github/workflows/publish-sdk-packages.yml"
     tags:
       - "ade-sdk-v*"
   workflow_dispatch:
@@ -29,6 +40,10 @@ permissions:
   contents: read
   id-token: write
 
+concurrency:
+  group: publish-sdk-packages
+  cancel-in-progress: false
+
 jobs:
   publish:
     if: ${{ github.event_name != 'workflow_dispatch' || inputs.confirm == 'publish' }}
@@ -40,7 +55,19 @@ jobs:
           node-version: 22
           registry-url: https://registry.npmjs.org
 
+      - name: Require NPM_TOKEN
+        id: token
+        run: |
+          if [ -z "${{ secrets.NPM_TOKEN }}" ]; then
+            echo "NPM_TOKEN is not configured; skipping publish." >> "$GITHUB_STEP_SUMMARY"
+            echo "present=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Require matching package versions
+        if: steps.token.outputs.present == 'true'
+        id: versions
         run: |
           SDK_VER=$(node -p "require('./packages/sdk/package.json').version")
           UI_VER=$(node -p "require('./packages/chat-ui/package.json').version")
@@ -48,16 +75,39 @@ jobs:
             echo "package versions differ: sdk=$SDK_VER chat-ui=$UI_VER"
             exit 1
           fi
-          if [ "${{ github.event_name }}" = "push" ]; then
+          if [ "${{ github.ref_type }}" = "tag" ]; then
             TAG="${GITHUB_REF_NAME#ade-sdk-v}"
             if [ "$TAG" != "$SDK_VER" ]; then
               echo "tag $GITHUB_REF_NAME does not match package version $SDK_VER"
               exit 1
             fi
           fi
-          echo "publishing $SDK_VER"
+          echo "version=$SDK_VER" >> "$GITHUB_OUTPUT"
+
+      - name: Decide what to publish
+        if: steps.token.outputs.present == 'true'
+        id: plan
+        run: |
+          VER="${{ steps.versions.outputs.version }}"
+          AUTO="false"
+          if [ "${{ github.ref_type }}" = "branch" ]; then AUTO="true"; fi
+          for PKG in "@ade-dev/sdk" "@ade-dev/chat-ui"; do
+            KEY=$( [ "$PKG" = "@ade-dev/sdk" ] && echo sdk || echo ui )
+            if npm view "$PKG@$VER" version >/dev/null 2>&1; then
+              if [ "$AUTO" = "true" ]; then
+                echo "$PKG@$VER already published; skipping." >> "$GITHUB_STEP_SUMMARY"
+                echo "$KEY=skip" >> "$GITHUB_OUTPUT"
+              else
+                echo "$PKG@$VER already exists on the registry; a tag/dispatch publish must use a new version."
+                exit 1
+              fi
+            else
+              echo "$KEY=publish" >> "$GITHUB_OUTPUT"
+            fi
+          done
 
       - name: Install and build @ade-dev/sdk
+        if: steps.plan.outputs.sdk == 'publish'
         run: |
           cd packages/sdk
           npm ci
@@ -66,12 +116,14 @@ jobs:
           npm run build
 
       - name: Publish @ade-dev/sdk
+        if: steps.plan.outputs.sdk == 'publish'
         working-directory: packages/sdk
         run: npm publish --access public --provenance
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
       - name: Install and build @ade-dev/chat-ui
+        if: steps.plan.outputs.ui == 'publish'
         run: |
           cd packages/chat-ui
           npm ci
@@ -80,6 +132,7 @@ jobs:
           npm run build
 
       - name: Publish @ade-dev/chat-ui
+        if: steps.plan.outputs.ui == 'publish'
         working-directory: packages/chat-ui
         run: npm publish --access public --provenance
         env:
