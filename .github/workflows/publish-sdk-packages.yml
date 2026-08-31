@@ -57,8 +57,13 @@ jobs:
 
       - name: Require NPM_TOKEN
         id: token
+        # The secret arrives through env, never interpolated into the script
+        # body: `${{ secrets.* }}` inside `run:` puts the value in the rendered
+        # command line, where a `set -x` or a crash dump can echo it.
+        env:
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
-          if [ -z "${{ secrets.NPM_TOKEN }}" ]; then
+          if [ -z "$NPM_TOKEN" ]; then
             echo "NPM_TOKEN is not configured; skipping publish." >> "$GITHUB_STEP_SUMMARY"
             echo "present=false" >> "$GITHUB_OUTPUT"
           else
