@@ -2077,7 +2077,7 @@ describe("createAutoUpdateService", () => {
     const leftoverZip = path.join(updaterCacheDir, "update.zip");
     const beforeQuitAndInstall = vi.fn(async () => {});
     const updater = Object.assign(new FakeAutoUpdater(), {
-      downloadUpdate: vi.fn(async () => {
+      downloadUpdate: vi.fn(async (): Promise<void> => {
         fs.writeFileSync(leftoverZip, "partial", "utf8");
         throw new Error("The network connection was lost.");
       }),
@@ -2103,7 +2103,7 @@ describe("createAutoUpdateService", () => {
     expect(fs.existsSync(leftoverZip)).toBe(false);
     expect(beforeQuitAndInstall).not.toHaveBeenCalled();
 
-    updater.downloadUpdate.mockImplementation(async () => {
+    updater.downloadUpdate.mockImplementation(async (): Promise<void> => {
       fs.mkdirSync(path.join(updaterCacheDir, "pending"), { recursive: true });
       const pendingZip = path.join(updaterCacheDir, "pending", "ADE-1.2.3-universal-mac.zip");
       fs.writeFileSync(pendingZip, "restored", "utf8");
