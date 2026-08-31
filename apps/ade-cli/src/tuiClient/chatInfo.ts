@@ -94,6 +94,36 @@ export function mergeSubagentSnapshots(
   return [...byId.values()];
 }
 
+/**
+ * Renders `mcpCapability` honestly, per its contract: `level`/`residual` only
+ * make a claim when the caller asked for strict mode, so a delivery-only
+ * request reports delivery rather than an isolation ADE was never asked for.
+ * `delivered: false` wins over both — the provider has no MCP surface at all.
+ */
+export function formatMcpCapabilityNote(
+  capability: AgentChatSessionSummary["mcpCapability"],
+): string | null {
+  if (!capability) return null;
+  if (!capability.delivered) return "MCP: unsupported by this provider";
+  if (!capability.strictRequested) return "MCP: caller servers injected";
+  switch (capability.level) {
+    case "enforced":
+      return "MCP: enforced";
+    case "best-effort": {
+      const residual = capability.residual?.trim();
+      if (!residual) return "MCP: best-effort";
+      const clipped = residual.length > 60 ? `${residual.slice(0, 57).trimEnd()}…` : residual;
+      return `MCP: best-effort · ${clipped}`;
+    }
+    case "unsupported":
+      return "MCP: unsupported by this provider";
+    default: {
+      const _exhaustive: never = capability.level;
+      return _exhaustive;
+    }
+  }
+}
+
 export function deriveChatInfoSnapshot(args: {
   events: AgentChatEventEnvelope[];
   activeSession: AgentChatSessionSummary | null;
@@ -153,6 +183,7 @@ export function deriveChatInfoSnapshot(args: {
     // session summary, and the 4 shared runtimes map 1:1 from provider).
     capability: resolveSubagentCapability(provider),
     mission: deriveMissionSnapshot(args.events),
+    mcpNote: formatMcpCapabilityNote(args.activeSession?.mcpCapability),
     resumableTerminal: args.resumableTerminal ?? false,
   };
 }

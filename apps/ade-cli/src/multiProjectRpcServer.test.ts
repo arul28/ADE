@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { createEventBuffer } from "./eventBuffer";
+import { createEventBuffer, type BufferedEvent } from "./eventBuffer";
 import {
   createMultiProjectRpcRequestHandler,
   createPersonalChatScope,
@@ -1170,6 +1170,227 @@ describe("multi-project RPC server", () => {
     });
     handler.dispose();
     expect(personalChatScope.dispose).not.toHaveBeenCalled();
+  });
+
+  it("pushes machine personal chat events over the connection and unsubscribes", async () => {
+    const { registry } = createRegistry();
+    const buffer = createEventBuffer();
+    const personalChatScope = {
+      capabilities: vi.fn(() => ({
+        version: 1 as const,
+        actions: ["list" as const],
+        pushEvents: true,
+      })),
+      call: vi.fn(async () => ({ action: "list" as const, result: [] })),
+      streamEvents: vi.fn(async () => buffer.drain(0)),
+      subscribeEvents: vi.fn(async (
+        _args: unknown,
+        listener: (event: BufferedEvent, eventEpoch: string) => void,
+      ) => {
+        const epoch = buffer.epoch();
+        const unsubscribe = buffer.subscribe((event) => listener(event, epoch));
+        return { unsubscribe, replay: buffer.drain(0), eventEpoch: epoch };
+      }),
+      transcriptPath: vi.fn(async () => null),
+      isTurnActive: vi.fn(async () => false),
+      dispose: vi.fn(async () => undefined),
+    };
+    const handler = createMultiProjectRpcRequestHandler({
+      serverVersion: "test",
+      projectRegistry: registry,
+      personalChatScope,
+    });
+    const notifications: Array<{ method: string; params: unknown }> = [];
+    handler.setNotifier((method, params) => {
+      notifications.push({ method, params });
+    });
+
+    const initialized = await handler({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "ade/initialize",
+      params: {},
+    });
+    // The flag is how an SDK client decides to push instead of poll.
+    expect(initialized).toMatchObject({
+      capabilities: { personalChats: { pushEvents: true } },
+    });
+
+    const subscribed = await handler({
+      jsonrpc: "2.0",
+      id: 2,
+      method: "personalChats.subscribeEvents",
+      params: {},
+    }) as { subscriptionId: string; eventEpoch: string };
+    expect(subscribed.subscriptionId).toMatch(/^personal-chat-events-/);
+
+    buffer.push({
+      timestamp: "2026-01-01T00:00:00.000Z",
+      category: "runtime",
+      payload: { type: "chat_event" },
+    });
+
+    expect(notifications).toEqual([{
+      method: "runtime/event",
+      params: {
+        subscriptionId: subscribed.subscriptionId,
+        // Personal chats have no project. `scope` is the discriminator so a
+        // client never has to infer meaning from a missing projectId.
+        projectId: null,
+        scope: "personal",
+        event: expect.objectContaining({ payload: { type: "chat_event" } }),
+        eventEpoch: subscribed.eventEpoch,
+      },
+    }]);
+
+    await expect(handler({
+      jsonrpc: "2.0",
+      id: 3,
+      method: "personalChats.unsubscribeEvents",
+      params: { subscriptionId: subscribed.subscriptionId },
+    })).resolves.toEqual({ removed: true });
+
+    notifications.length = 0;
+    buffer.push({
+      timestamp: "2026-01-01T00:00:01.000Z",
+      category: "runtime",
+      payload: { type: "after_unsubscribe" },
+    });
+    expect(notifications).toEqual([]);
+    handler.dispose();
+  });
+
+  it("refuses machine update on a runtime built without update controls", async () => {
+    // What the embedded profile relies on. `runServe` omits
+    // machineUpdateControls for that profile, so updating and restarting the
+    // MACHINE's ADE from inside somebody else's process is unreachable rather
+    // than merely discouraged by the caller's role default.
+    const { registry } = createRegistry();
+    // A role that CAN request the update, so the assertion below is about the
+    // missing controls and not about the role gate rejecting first.
+    const previousRole = process.env.ADE_DEFAULT_ROLE;
+    process.env.ADE_DEFAULT_ROLE = "cto";
+    try {
+      const handler = createMultiProjectRpcRequestHandler({
+        serverVersion: "test",
+        projectRegistry: registry,
+      });
+      await handler({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "ade/initialize",
+        params: { identity: { role: "cto" } },
+      });
+      await expect(handler({
+        jsonrpc: "2.0",
+        id: 2,
+        method: "machine.updateAndRestart",
+        params: {},
+      })).rejects.toThrow(/cannot update itself/);
+      handler.dispose();
+    } finally {
+      if (previousRole == null) delete process.env.ADE_DEFAULT_ROLE;
+      else process.env.ADE_DEFAULT_ROLE = previousRole;
+    }
+  });
+
+  it("does not register a subscription for a connection that closed mid-setup", async () => {
+    const { registry } = createRegistry();
+    const buffer = createEventBuffer();
+    let unsubscribed = 0;
+    let releaseSubscribe: (() => void) | null = null;
+    const personalChatScope = {
+      capabilities: vi.fn(() => ({ version: 1 as const, actions: ["list" as const], pushEvents: true })),
+      call: vi.fn(async () => ({ action: "list" as const, result: [] })),
+      streamEvents: vi.fn(async () => buffer.drain(0)),
+      subscribeEvents: vi.fn(async (
+        _args: unknown,
+        listener: (event: BufferedEvent, eventEpoch: string) => void,
+      ) => {
+        // Hold the await open so the test can dispose the handler mid-flight —
+        // the exact window where the subscription map has already been drained.
+        await new Promise<void>((resolve) => {
+          releaseSubscribe = resolve;
+        });
+        const epoch = buffer.epoch();
+        const inner = buffer.subscribe((event) => listener(event, epoch));
+        return {
+          unsubscribe: () => {
+            unsubscribed += 1;
+            inner();
+          },
+          replay: buffer.drain(0),
+        };
+      }),
+      transcriptPath: vi.fn(async () => null),
+      isTurnActive: vi.fn(async () => false),
+      dispose: vi.fn(async () => undefined),
+    };
+    const handler = createMultiProjectRpcRequestHandler({
+      serverVersion: "test",
+      projectRegistry: registry,
+      personalChatScope,
+    });
+    const notifications: unknown[] = [];
+    handler.setNotifier((method, params) => notifications.push({ method, params }));
+    await handler({ jsonrpc: "2.0", id: 1, method: "ade/initialize", params: {} });
+
+    const pending = handler({
+      jsonrpc: "2.0",
+      id: 2,
+      method: "personalChats.subscribeEvents",
+      params: {},
+    });
+    await vi.waitFor(() => expect(releaseSubscribe).not.toBeNull());
+    handler.dispose();
+    releaseSubscribe!();
+
+    await expect(pending).rejects.toThrow(/connection closed/i);
+    // Registering it now would leak a listener nothing will ever unsubscribe:
+    // it would keep emitting into a dead notifier for the life of the process.
+    expect(unsubscribed).toBe(1);
+    notifications.length = 0;
+    buffer.push({
+      timestamp: "2026-01-01T00:00:00.000Z",
+      category: "runtime",
+      payload: { type: "after_dispose" },
+    });
+    expect(notifications).toEqual([]);
+  });
+
+  it("refuses personal chat push on a runtime that does not implement it", async () => {
+    // The drain API is the documented fallback, so the refusal has to name it
+    // rather than failing as an unknown method.
+    const { registry } = createRegistry();
+    const personalChatScope = {
+      capabilities: vi.fn(() => ({ version: 1 as const, actions: ["list" as const] })),
+      call: vi.fn(async () => ({ action: "list" as const, result: [] })),
+      streamEvents: vi.fn(async () => ({
+        events: [],
+        nextCursor: 0,
+        hasMore: false,
+        eventEpoch: "epoch",
+        gap: false,
+        oldestCursor: null,
+      })),
+      transcriptPath: vi.fn(async () => null),
+      isTurnActive: vi.fn(async () => false),
+      dispose: vi.fn(async () => undefined),
+    };
+    const handler = createMultiProjectRpcRequestHandler({
+      serverVersion: "test",
+      projectRegistry: registry,
+      personalChatScope,
+    });
+
+    await handler({ jsonrpc: "2.0", id: 1, method: "ade/initialize", params: {} });
+    await expect(handler({
+      jsonrpc: "2.0",
+      id: 2,
+      method: "personalChats.subscribeEvents",
+      params: {},
+    })).rejects.toThrow(/personalChats\.streamEvents/);
+    handler.dispose();
   });
 
   it("exposes runtime-scoped project registry methods", async () => {
@@ -2486,6 +2707,9 @@ describe("multi-project RPC server", () => {
     expect(notify).toHaveBeenCalledWith("runtime/event", {
       subscriptionId: subscribed.subscriptionId,
       projectId: added.projectId,
+      // Discriminates this from the machine-scoped personal chat stream, which
+      // sends the same notification with a null projectId.
+      scope: "project",
       eventEpoch: eventBuffer.epoch(),
       event: expect.objectContaining({
         category: "runtime",

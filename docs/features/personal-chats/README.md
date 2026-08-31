@@ -9,10 +9,13 @@ desktop, the hosted web client, mobile, and the ADE CLI.
 
 | Path | Role |
 |---|---|
-| `apps/ade-cli/src/services/personalChats/personalChatScope.ts` | Machine-owned chat runtime, existing-state background prewarm, hidden persistence/scratch roots, personal-surface recovery for legacy session rows, action allowlist (including scheduled-work create/cancel/pause), attachment confinement, terminal ownership, and event stream. |
+| `apps/ade-cli/src/services/personalChats/personalChatScope.ts` | Machine-owned chat runtime, existing-state background prewarm, hidden persistence/scratch roots, personal-surface recovery for legacy session rows, action allowlist (including scheduled-work create/cancel/pause), attachment confinement, terminal ownership, event stream, push `subscribeEvents`, caller MCP forwarding, orchestrator-lead refusal, and the `chat` / `embedded` runtime profile. |
+| `apps/ade-cli/src/services/runtime/parentDeathWatchdog.ts` | Embedded-profile parent-death poll. An SDK sidecar sets `ADE_EMBEDDED_PARENT_PID`; if that process vanishes without unwinding, this guest runtime shuts itself down. |
+| `apps/desktop/src/shared/callerMcpServers.ts` | Shared caller-MCP validation and per-provider honesty table. Personal create forwards `mcpServers` / `strictMcpConfig` into the chat service; Pi and invalid payloads fail closed. |
+| `packages/sdk/` | Embeddable sidecar that speaks this machine RPC. See [ADE SDK](../sdk/README.md). |
 | `apps/ade-cli/src/services/imageAttachment.ts` | Shared image validation, MIME sniffing, and bounded temporary-attachment persistence used by project and personal chat ingress. |
 | `apps/ade-cli/src/services/projects/machineLayout.ts` | Resolves the channel-local `$ADE_HOME/personal-chats/{state,workspaces}` roots. |
-| `apps/ade-cli/src/multiProjectRpcServer.ts` | Project-independent `personalChats.call` and `personalChats.streamEvents` machine RPC methods plus capability advertisement. |
+| `apps/ade-cli/src/multiProjectRpcServer.ts` | Project-independent `personalChats.call`, `personalChats.streamEvents`, and `personalChats.subscribeEvents` / `unsubscribeEvents` machine RPC methods plus capability advertisement (`pushEvents`, `mcpServers`). |
 | `apps/ade-cli/src/cli.ts` | Typed `ade chat ... --personal` commands; they require the machine brain and never fall back to a project/headless runtime. |
 | `apps/ade-cli/src/services/sync/` | Runtime-scoped personal-chat commands, feature advertisement, policy descriptors, and personal transcript subscriptions for controllers. Primary files: `syncService.ts`, `syncHostService.ts`, and `syncRemoteCommandService.ts`. |
 | `apps/desktop/src/shared/types/personalChats.ts` | Cross-process action, result, capability, queue-policy, scope, and event contracts, including the scheduled-work create/cancel/pause actions shared with project chat. |
@@ -62,15 +65,36 @@ agent-visible project context.
 
 ## Protocol and capabilities
 
-The machine RPC exposes two methods outside project dispatch:
+The machine RPC exposes four methods outside project dispatch:
 
 - `personalChats.call({ action, args })` executes one allowlisted action;
 - `personalChats.streamEvents({ cursor, limit })` drains the personal runtime's
-  bounded chat/PTY event buffer.
+  bounded chat/PTY event buffer;
+- `personalChats.subscribeEvents` / `personalChats.unsubscribeEvents` push
+  `runtime/event` notifications (`scope: "personal"`, `projectId: null`) to a
+  client holding the connection open. They are machine RPC methods, not entries
+  in the `personalChats.call` action registry, so they are absent from
+  `ade chat actions --personal`. The one-shot CLI still polls via
+  `streamEvents`.
 
-`runtime/info.capabilities.personalChats` advertises version 1 and the exact
-action set. Clients must capability-gate the surface; an older runtime is an
-unsupported host, not an invitation to create a normal project chat.
+`runtime/info.capabilities.personalChats` advertises version 1, the exact
+action set, and two optional flags: `pushEvents` and `mcpServers`. An older
+runtime omits both; a client must keep draining and must not send MCP fields
+it would silently ignore. Clients must capability-gate the surface; an older
+runtime is an unsupported host, not an invitation to create a normal project
+chat.
+
+`create` accepts caller-injected `mcpServers` and a tristate `strictMcpConfig`
+(see [Caller-injected MCP](../chat/README.md#caller-injected-mcp)). There are
+no typed `--mcp-servers` / `--strict-mcp` CLI flags in v1 — nested JSON is
+what `--arg-json` already carries, and the ADE SDK is the intended embedder
+API. The created session carries `mcpCapability`; branch on `level ===
+"enforced"`, never on the object's presence.
+
+Create refuses `interactionMode: "orchestrator-lead"` and
+`orchestrationRole: "lead"`. A projectless chat that led a run would report
+`strictRequested: false` while running under locked, always-strict lead
+isolation. Start a lead inside a project instead.
 
 The action family covers list/create/read/send and interactive turn controls,
 session metadata/lifecycle, scheduled-work create/cancel/pause, model inventory,
@@ -139,6 +163,8 @@ commands, for example:
 ```bash
 ade chat list --personal --text
 ade chat create --personal --provider codex --model openai/gpt-5.5 --prompt "Help me plan a trip"
+ade chat create --personal --provider claude --model anthropic/claude-opus-5 \
+  --arg-json mcpServers='{"docs":{"type":"http","url":"https://mcp.example/mcp"}}'
 ade chat read <session-id> --personal --text
 ade chat send <session-id> --personal --text "Make it a three-day itinerary"
 ```
@@ -161,9 +187,16 @@ transcript from the conversation rail.
 
 Personal chat creation strips or overrides project-only fields such as a
 caller-supplied lane/cwd, orchestration metadata, automation ownership, and
-persistent project identity. The CLI separately rejects Linear attachment
-flags. Machine RPC actions are allowlisted rather than forwarding arbitrary ADE
-domains into the hidden runtime.
+persistent project identity. It also refuses orchestrator-lead markers
+outright rather than stripping them and opening a mis-isolated chat. The CLI
+separately rejects Linear attachment flags. Machine RPC actions are
+allowlisted rather than forwarding arbitrary ADE domains into the hidden
+runtime.
+
+An embedded sidecar (`ade runtime run --profile embedded`) uses this same
+personal scope. The profile withholds machine-update and power controls and
+forces sync off so a guest cannot restart the machine's ADE. Personal chats
+themselves are not trimmed.
 
 ## Surface contract
 
@@ -214,3 +247,9 @@ domains into the hidden runtime.
   prompts or message bodies in machine RPC/sync diagnostics.
 - Do not enable project push notifications for the hidden runtime until push
   links and notification actions have an explicit personal-chat route.
+- Never create a personal chat as an orchestration lead. The create refuses
+  those markers; do not strip them and continue.
+- Treat `capabilities.personalChats.mcpServers` / `pushEvents` as optional.
+  An older runtime omitting them would ignore the fields rather than error.
+- Strict MCP on this surface is Claude-only as a guarantee. Read
+  `mcpCapability.level`, not the object's presence. See [ADE SDK](../sdk/README.md#strict-mcp-honesty).

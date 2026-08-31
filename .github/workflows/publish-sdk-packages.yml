@@ -1,0 +1,86 @@
+# Publish `@ade-dev/sdk` then `@ade-dev/chat-ui` from a dedicated tag.
+#
+# Desktop/runtime releases stay on `v*` (see release.yml). These packages use
+# `ade-sdk-v*` so a desktop tag cannot publish an npm version by accident.
+#
+# The first 0.1.0 publish is from a maintainer machine after this workflow
+# lands on main. Later versions: bump both package.json versions, land on
+# main, tag `ade-sdk-vX.Y.Z` (X.Y.Z must match both package.json versions),
+# push the tag.
+#
+# Required repo secret: NPM_TOKEN — an automation token for the `ade-dev` org
+# with permission to publish `@ade-dev/sdk` and `@ade-dev/chat-ui` only.
+# Provenance needs `id-token: write` on GitHub-hosted runners.
+
+name: Publish ADE SDK packages
+
+on:
+  push:
+    tags:
+      - "ade-sdk-v*"
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: Type "publish" to publish the versions in this commit's package.json files
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  publish:
+    if: ${{ github.event_name != 'workflow_dispatch' || inputs.confirm == 'publish' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+
+      - name: Require matching package versions
+        run: |
+          SDK_VER=$(node -p "require('./packages/sdk/package.json').version")
+          UI_VER=$(node -p "require('./packages/chat-ui/package.json').version")
+          if [ "$SDK_VER" != "$UI_VER" ]; then
+            echo "package versions differ: sdk=$SDK_VER chat-ui=$UI_VER"
+            exit 1
+          fi
+          if [ "${{ github.event_name }}" = "push" ]; then
+            TAG="${GITHUB_REF_NAME#ade-sdk-v}"
+            if [ "$TAG" != "$SDK_VER" ]; then
+              echo "tag $GITHUB_REF_NAME does not match package version $SDK_VER"
+              exit 1
+            fi
+          fi
+          echo "publishing $SDK_VER"
+
+      - name: Install and build @ade-dev/sdk
+        run: |
+          cd packages/sdk
+          npm ci
+          npm run typecheck
+          npm test
+          npm run build
+
+      - name: Publish @ade-dev/sdk
+        working-directory: packages/sdk
+        run: npm publish --access public --provenance
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Install and build @ade-dev/chat-ui
+        run: |
+          cd packages/chat-ui
+          npm ci
+          npm run typecheck
+          npm test
+          npm run build
+
+      - name: Publish @ade-dev/chat-ui
+        working-directory: packages/chat-ui
+        run: npm publish --access public --provenance
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

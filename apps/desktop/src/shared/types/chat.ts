@@ -1694,6 +1694,24 @@ export type AgentChatSession = {
   cursorModeSnapshot?: AgentChatCursorModeSnapshot;
   cursorModeId?: string | null;
   cursorConfigValues?: Record<string, AgentChatCursorConfigValue>;
+  /**
+   * MCP servers injected by an external embedder at chat creation. Persisted so
+   * a resumed chat rebuilds the same tool surface it started with — an SDK
+   * caller that reconnects to an existing chat does not resend them.
+   */
+  mcpServers?: Record<string, AgentChatMcpServerConfig>;
+  /**
+   * Set only when the caller stated a preference: `true` withholds the user's
+   * own MCP config, `false` asks for it even on a lightweight session that
+   * would otherwise be strict. Absent means the session profile decides.
+   */
+  strictMcpConfig?: boolean;
+  /**
+   * What this chat's provider could actually do with the caller's MCP request.
+   * Present only when a caller asked for injected servers or strict mode, so an
+   * embedder learns "Pi ignored your servers" instead of assuming they landed.
+   */
+  mcpCapability?: AgentChatMcpCapability;
   /** Durable Cursor Cloud agent id once this session has been promoted to cloud. */
   cursorCloudAgentId?: string;
   /** Default runtime for new turns in this session (set on promotion). */
@@ -1757,6 +1775,11 @@ export type AgentChatSessionSummary = {
   cursorModeSnapshot?: AgentChatCursorModeSnapshot;
   cursorModeId?: string | null;
   cursorConfigValues?: Record<string, AgentChatCursorConfigValue> | null;
+  /** Caller-injected MCP servers, echoed back so an embedder can confirm them. */
+  mcpServers?: Record<string, AgentChatMcpServerConfig>;
+  strictMcpConfig?: boolean;
+  /** What the provider could actually honor. Absent when no MCP was requested. */
+  mcpCapability?: AgentChatMcpCapability;
   cursorCloudAgentId?: string;
   cursorRuntime?: AgentChatRuntime;
   cursorPromotedTurnId?: string;
@@ -2170,6 +2193,63 @@ export type AgentChatModelCatalogArgs = {
   cursorSource?: AgentChatCursorModelSource;
 };
 
+/**
+ * An MCP server an external embedder injects into a single chat.
+ *
+ * This is ADE's own provider-neutral shape, not a re-export of any one SDK's
+ * type: every provider adapter translates it into that provider's native
+ * config (Claude SDK `mcpServers`, Codex `config.mcp_servers`, Cursor inline
+ * servers, Droid server list, OpenCode `mcp`). Keep it to the fields every
+ * adapter can actually express — a field only one provider honors belongs on
+ * that provider's own args, not here.
+ */
+export type AgentChatMcpServerConfig =
+  | {
+    type: "http" | "sse";
+    url: string;
+    headers?: Record<string, string>;
+  }
+  | {
+    type: "stdio";
+    command: string;
+    args?: string[];
+    env?: Record<string, string>;
+  };
+
+/**
+ * Honest report of what a provider did with a caller's MCP request. `level` and
+ * `residual` mirror `CALLER_MCP_SUPPORT`.
+ *
+ * Branch on `level`, never on the presence of this object. `"enforced"` is the
+ * ONLY level that means "the caller's servers plus ADE's are the whole surface";
+ * `"best-effort"` means the servers were delivered but something of the user's
+ * still loads, and `residual` says what. Treating any report as success
+ * overpromises on four of six providers.
+ *
+ * `level` and `residual` describe strict mode, so they only make a claim when
+ * `strictRequested` is true. Read `strictRequested` first: when it is false the
+ * caller asked for delivery only, the user's own MCP config loads by design,
+ * `residual` is null, and `mechanism` describes how the servers were delivered
+ * rather than any enforcement — reporting a strict mechanism there would
+ * describe an isolation ADE was never asked to perform.
+ *
+ * `delivered` means "nothing the caller asked for was dropped". It is false only
+ * for a provider with no MCP surface. `createSession` refuses that combination
+ * when servers were injected, rather than handing back a chat missing the tools
+ * it was asked for — but a strict-mode request with NO servers is reported, not
+ * refused, so a live session can carry `delivered: false` (strict mode asked of
+ * a provider that has nothing to enforce it on). Check `delivered`, then branch
+ * on `level`.
+ */
+export type AgentChatMcpCapability = {
+  level: "enforced" | "best-effort" | "unsupported";
+  mechanism: string;
+  residual: string | null;
+  delivered: boolean;
+  /** Whether the caller asked ADE to withhold the user's own MCP config. */
+  strictRequested: boolean;
+};
+
 export type AgentChatCreateArgs = {
   laneId: string;
   provider: AgentChatProvider;
@@ -2219,6 +2299,47 @@ export type AgentChatCreateArgs = {
   orchestrationTag?: string;
   orchestrationStepId?: string;
   orchestrationBundlePath?: string;
+  /**
+   * MCP servers injected by the caller for this chat only. Merged with (never
+   * replacing) the ADE-managed servers a session already receives — the CTO and
+   * orchestration leases keep working alongside them. Providers that cannot
+   * accept injected servers report it through `mcpCapability` on the session
+   * rather than dropping them silently.
+   */
+  mcpServers?: Record<string, AgentChatMcpServerConfig>;
+  /**
+   * Ask ADE to withhold the user's own MCP configuration from this chat.
+   *
+   * This is a request, not a guarantee, and it is fully honored on exactly one
+   * provider. Only Claude has a real switch; everywhere else ADE applies the
+   * strongest mechanism the provider exposes and something still gets through:
+   *
+   * | provider | strict mode | what still loads anyway                    |
+   * |----------|-------------|--------------------------------------------|
+   * | claude   | enforced    | nothing (MCP-wise)                         |
+   * | codex    | best-effort | servers contributed by a Codex *plugin*    |
+   * | cursor   | best-effort | user-layer servers                         |
+   * | droid    | best-effort | tools appearing only after the first sweep |
+   * | opencode | best-effort | the global OpenCode config dir (for auth)  |
+   * | pi       | unsupported | n/a — no MCP surface at all                |
+   *
+   * Even on Claude, "enforced" scopes to MCP only: the user's rules, commands,
+   * and output styles still load. That is deliberate — they are not MCP, and
+   * withholding them is not what this flag asks for.
+   *
+   * Read `mcpCapability` on the created session for the machine-readable
+   * version, including each provider's exact residual. `CALLER_MCP_SUPPORT`
+   * in `shared/callerMcpServers.ts` is the source of truth this table mirrors.
+   *
+   * Absent means today's behavior: the user's MCP config loads as it always has,
+   * except on the lightweight session profile every SDK/personal chat uses,
+   * which is strict by default to stay lean. An explicit `false` is not the same
+   * as absent — it overrides that default and asks for the user's MCP config,
+   * which is how an embedder gets `loadUserMcpServers: true` on a personal chat.
+   * Orchestration-lead sessions stay strict regardless; their isolation is a
+   * policy, not a preference.
+   */
+  strictMcpConfig?: boolean;
 };
 
 export type AgentChatImportExternalSessionArgs = {

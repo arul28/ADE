@@ -55,6 +55,7 @@ docs/
     ├── linear-integration/                # issue reads, lane/PR flow, live-status round-trip
     ├── onboarding-and-settings/           # first-run, schema, settings tabs
     ├── personal-chats/                    # machine-owned projectless AI conversations
+    ├── sdk/                               # embeddable @ade-dev/sdk + @ade-dev/chat-ui sidecar
     ├── pull-requests/                     # stacking, queue, conflict simulation
     ├── remote-runtime/                    # local runtime + SSH remote machines
     ├── search/                            # universal FTS5 index + ⌘K/TUI/CLI search

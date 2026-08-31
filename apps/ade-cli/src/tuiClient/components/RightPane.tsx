@@ -798,12 +798,19 @@ function ChatInfoIdentity({ info, width }: { info: ChatInfoSnapshot; width: numb
           {endTruncate(`${attribution.label}${inheritedSuffix}`, inner)}
         </Text>
       ) : null}
+      {info.mcpNote ? (
+        <Text color={theme.color.t4} dimColor wrap="truncate-end">
+          {endTruncate(info.mcpNote, inner)}
+        </Text>
+      ) : null}
     </Box>
   );
 }
 
 function chatInfoIdentityLines(info: ChatInfoSnapshot): number {
-  return (info.laneLabel?.trim() ? 2 : 1) + (info.inspectedSubagentId ? 1 : 0);
+  return (info.laneLabel?.trim() ? 2 : 1)
+    + (info.inspectedSubagentId ? 1 : 0)
+    + (info.mcpNote ? 1 : 0);
 }
 
 function chatInfoPlanLines(info: ChatInfoSnapshot): number {

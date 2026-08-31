@@ -8664,6 +8664,7 @@ describe("per-chat runtime routing", () => {
 
   it("tears down a pinned PTY pump and frees its sender-filter state after the last listener", async () => {
     vi.useFakeTimers();
+    vi.clearAllTimers();
     try {
       const { bridge, invoke, on } = await mountBridge(machineA);
       await bridge.app.getWindowSession();

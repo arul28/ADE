@@ -31,24 +31,30 @@ const APPS = [
   "account-directory",
 ];
 
+const PACKAGES = ["sdk", "chat-ui"];
+
 const npm = process.platform === "win32" ? "npm.cmd" : "npm";
 const passthrough = process.argv.slice(2);
 
-for (const app of APPS) {
-  const cwd = path.join(repoRoot, "apps", app);
-  if (!fs.existsSync(path.join(cwd, "package.json"))) {
-    throw new Error(`[install:apps] apps/${app} has no package.json`);
+const targets = [
+  ...APPS.map((app) => ({ label: `apps/${app}`, cwd: path.join(repoRoot, "apps", app) })),
+  ...PACKAGES.map((pkg) => ({ label: `packages/${pkg}`, cwd: path.join(repoRoot, "packages", pkg) })),
+];
+
+for (const target of targets) {
+  if (!fs.existsSync(path.join(target.cwd, "package.json"))) {
+    throw new Error(`[install:apps] ${target.label} has no package.json`);
   }
-  console.log(`[install:apps] npm install (cwd apps/${app})`);
+  console.log(`[install:apps] npm install (cwd ${target.label})`);
   const result = spawnSync(npm, ["install", ...passthrough], {
-    cwd,
+    cwd: target.cwd,
     stdio: "inherit",
     shell: process.platform === "win32",
   });
   if (result.error) throw result.error;
   if (result.status !== 0) {
-    throw new Error(`[install:apps] apps/${app} install failed with exit code ${result.status}`);
+    throw new Error(`[install:apps] ${target.label} install failed with exit code ${result.status}`);
   }
 }
 
-console.log(`[install:apps] installed ${APPS.length} app(s)`);
+console.log(`[install:apps] installed ${targets.length} package(s)`);

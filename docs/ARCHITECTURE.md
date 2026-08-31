@@ -115,7 +115,7 @@ Product positioning and workflows live in [`docs/PRD.md`](../docs/PRD.md). This 
 **Run modes:**
 
 - **Brain** — the normal mode. Boots the multi-project JSON-RPC server, hosts the per-project services on demand, serves sync, and listens on the channel's local endpoint (POSIX: `$ADE_HOME/sock/ade.sock`; Windows: `\\.\pipe\ade-runtime-<channel>-<hash>`). `machineLayout.ts` derives the Windows hash from the canonical ADE home, runtime channel/service identity, and current Windows user identity (SID when available), so users and Stable/Beta/Alpha installs cannot collide. On POSIX the headless RPC socket directory is created `0700` and the socket itself chmodded `0600` so only the owning user can connect (named pipes skip the chmod). Installable / removable as a login service with `ade brain start` / `ade brain stop` (per-platform installers in `apps/ade-cli/src/serviceManager/`).
-- **Manual runtime (`ade runtime run`)** — starts a foreground runtime process on an explicit endpoint. Sync is always off so it cannot claim brain authority; use a separate `ADE_HOME` when you also want full machine-state isolation.
+- **Manual runtime (`ade runtime run`)** — starts a foreground runtime process on an explicit endpoint. Sync is always off so it cannot claim brain authority; use a separate `ADE_HOME` when you also want full machine-state isolation. `--profile embedded` is the only accepted profile value and marks the process a guest of an external embedder (`@ade-dev/sdk`): personal-chat scope, no automations, sync forced off, machine-update and power controls withheld, and a parent-death watchdog (`parentDeathWatchdog.ts`) that exits if `ADE_EMBEDDED_PARENT_PID` dies without unwinding. Unknown profile values are a usage error, not a silent fall back to a full brain. See [ADE SDK](./features/sdk/README.md).
 - **Single-session CLI** — `ade <command>` connects to the local brain over the machine endpoint, dispatches one project-scoped action, and exits. With `--headless`, the CLI bootstraps a project's services directly from the repository instead of going through the machine brain — used in CI and for one-off scripts.
 - **SSH stdio bridge (`ade rpc --stdio`)** — runs a single-session JSON-RPC runtime over stdin/stdout. This is what desktop's `RemoteConnectionPool` execs over SSH after `bootstrapRemoteRuntime` has uploaded a matching `ade-<platform-arch>` binary. Exits when the SSH channel closes.
 - **Terminal client (`ade code`)** — launches the Ink + React Work chat (`apps/ade-cli/src/tuiClient/`). Defaults to attaching to the machine brain and will start it if the endpoint is missing. `ade --socket /path code` requires a specific endpoint; `ade code --embedded` keeps the in-process runtime fallback explicit.
@@ -126,14 +126,15 @@ Product positioning and workflows live in [`docs/PRD.md`](../docs/PRD.md). This 
 
 **A project that cannot boot must not be retried at full speed.** `ProjectScopeRegistry` records a failed scope boot and, inside a backoff window (`min(30 s, 1 s × 2^attempts)`, capped by `FAILED_SCOPE_BACKOFF_MAX_MS`), rethrows the recorded error verbatim instead of booting again — one field machine performed 41 full boots in 49 seconds, each re-opening the project database. Success clears the record and failure increments it only when the settling promise still owns the cache entry, so a late-settling abandoned boot can neither clear a backoff nor impose one. `dispose(projectId)` drops the record first, because a repair is explicitly a request for a clean slate.
 
-**Machine and multi-project RPC.** The runtime exposes runtime-scoped methods (`projects.list/add/remove/touch`, `sync.*`, `runtime/info`, `machineInfo.get`, `machine.updateAndRestart`, `machine.reportPowerTransition`, `runtimeEvents.subscribe/unsubscribe`) directly. `sync.*` is answered by the project-scoped sync service when a project owns sync and by machine-level `ProjectlessSyncControls` when none does, so a machine that has never opened a project can still set its pairing PIN — previously it could not be paired at all. Project-scoped operations dispatch through `ade/actions/call` with a `projectId`. Personal chats use the separate machine methods `personalChats.call` and `personalChats.streamEvents`; they never enter project dispatch and their capability/version is advertised by `runtime/info`. Per-project services are spun up lazily by `ProjectScopeRegistry` (`apps/ade-cli/src/services/projects/projectScope.ts`) which calls `createAdeRuntime({ projectRoot, ... })` the first time a project is touched. `PersonalChatScope` (`apps/ade-cli/src/services/personalChats/personalChatScope.ts`) lazily boots a chat-only runtime under `$ADE_HOME/personal-chats`, with distinct state and scratch roots and no project-registry entry. The project registry (`projectRegistry.ts`) is the durable list of known projects; `machineLayout.ts` resolves machine-wide paths under `$ADE_HOME`. Wire formats live in `apps/ade-cli/src/multiProjectRpcServer.ts`. Runtime-event replay is backed by `apps/ade-cli/src/eventBuffer.ts`, a bounded buffer (10k events, 16 MB total, 1 MB per retained event by default) that returns `eventEpoch`, `gap`, and `oldestCursor` so clients can detect daemon restarts or evicted history. `projects.list` resolves at most 24 host-side project icons within 750 ms, with 128 KiB per-icon and 512 KiB aggregate wire caps; records outside those budgets get a null icon instead of blocking connection setup.
+**Machine and multi-project RPC.** The runtime exposes runtime-scoped methods (`projects.list/add/remove/touch`, `sync.*`, `runtime/info`, `machineInfo.get`, `machine.updateAndRestart`, `machine.reportPowerTransition`, `runtimeEvents.subscribe/unsubscribe`) directly. `sync.*` is answered by the project-scoped sync service when a project owns sync and by machine-level `ProjectlessSyncControls` when none does, so a machine that has never opened a project can still set its pairing PIN — previously it could not be paired at all. Project-scoped operations dispatch through `ade/actions/call` with a `projectId`. Personal chats use the separate machine methods `personalChats.call`, `personalChats.streamEvents`, and `personalChats.subscribeEvents` / `unsubscribeEvents`; they never enter project dispatch and their capability/version (including optional `pushEvents` and `mcpServers`) is advertised by `runtime/info`. Create forwards caller-injected MCP and refuses orchestrator-lead markers. Per-project services are spun up lazily by `ProjectScopeRegistry` (`apps/ade-cli/src/services/projects/projectScope.ts`) which calls `createAdeRuntime({ projectRoot, ... })` the first time a project is touched. `PersonalChatScope` (`apps/ade-cli/src/services/personalChats/personalChatScope.ts`) lazily boots a chat-only runtime under `$ADE_HOME/personal-chats`, with distinct state and scratch roots and no project-registry entry. The project registry (`projectRegistry.ts`) is the durable list of known projects; `machineLayout.ts` resolves machine-wide paths under `$ADE_HOME`. Wire formats live in `apps/ade-cli/src/multiProjectRpcServer.ts`. Runtime-event replay is backed by `apps/ade-cli/src/eventBuffer.ts`, a bounded buffer (10k events, 16 MB total, 1 MB per retained event by default) that returns `eventEpoch`, `gap`, and `oldestCursor` so clients can detect daemon restarts or evicted history. `projects.list` resolves at most 24 host-side project icons within 750 ms, with 128 KiB per-icon and 512 KiB aggregate wire caps; records outside those budgets get a null icon instead of blocking connection setup.
 
 **Runtime-side services** (under `apps/ade-cli/src/services/`):
 
 | Directory | Role |
 |-----------|------|
 | `projects/` | Project registry, project scope (per-project runtime), machine layout. |
-| `personalChats/` | Lazy machine-owned personal-chat runtime, allowlisted action/terminal/attachment ingress, and durable transcript/event access outside the project registry. |
+| `personalChats/` | Lazy machine-owned personal-chat runtime, allowlisted action/terminal/attachment ingress, durable transcript/event access outside the project registry, push event subscriptions, and caller-MCP forwarding. Under `runtimeProfile: "embedded"` the same scope runs as an SDK guest. |
+| `runtime/parentDeathWatchdog.ts` | Embedded-profile poll of `ADE_EMBEDDED_PARENT_PID`. POSIX reparents orphans to init rather than killing them; without this, a SIGKILL'd host leaks runtimes. |
 | `sync/` | Sync service, peer client, device registry, pairing store, PIN store, sync protocol, remote command service, Tailscale CLI resolver. The sync service now lives here; desktop's old in-process sync host is disabled by default (env-gated `ADE_ENABLE_DESKTOP_SYNC_HOST=1` for diagnostics only). |
 | `account/` | Optional ADE account authentication. The machine brain owns loopback OAuth, the account-directory device-code bridge for SSH/display-less hosts, `account.session.v1` refresh storage, and in-memory `ADE_ACCOUNT_TOKEN` credentials for agents and CI. Interactive and token-provisioning actions are CTO-only, including `repairMachinePairing`, which re-pairs this machine after it was removed from the account and lifts the durable push gate only once the directory accepts. The device-code flow also carries the machine key so the directory can mint the single-use, 10-minute pairing grant that re-pair requires. |
 | `credentials/` | Per-machine credential store. `credentialStore.ts` holds the encrypted stores themselves; `credentialStoreRouting.ts` holds the two stores that stand in front of them (the per-key router and the store that refuses every call with the reason it cannot work); `credentialStoreAdoption.ts` is the one-way migration that moves file-backed credentials out of the Electron-only store; `updateCredentialKey.ts` is the shared ladder for "change one credential key"; `credentialChangeRelayRepair.ts` watches the shared file so the brain reacts to a repaired GitHub App credential. |
@@ -1827,6 +1828,10 @@ ADE/
 │   ├── tunnel-relay/   # Cloudflare Worker + Durable Object: off-LAN sync tunnel
 │   ├── account-directory/ # Cloudflare Worker + D1: account machines + device login
 │   └── webhook-relay/  # Cloudflare Worker: GitHub webhook relay
+├── packages/
+│   ├── sdk/            # `@ade-dev/sdk` embeddable sidecar client
+│   ├── chat-ui/        # `@ade-dev/chat-ui` React chat components
+│   └── demo/           # DataDesk reference app + live e2e (not in root `npm test`)
 ├── docs/
 │   ├── PRD.md
 │   ├── features/
@@ -1852,7 +1857,7 @@ ADE/
 └── .ade/               # Self-hosted ADE project state (ignored subset)
 ```
 
-Root `package.json` is a thin aggregator: `npm test` and `npm run test:ci` run the desktop suite in CI-style shards plus the ade-cli suite. `npm run test:coverage` runs desktop coverage plus the ade-cli suite.
+Root `package.json` is a thin aggregator: `npm test` and `npm run test:ci` run the desktop suite in CI-style shards, the ade-cli suite, then `test:sdk` and `test:chat-ui`. `packages/demo` is deliberately excluded — its live e2e spends provider tokens; `e2e:preflight` is the CI-safe check. `npm run install:apps` covers `apps/*` plus `packages/sdk` and `packages/chat-ui`. `npm run test:coverage` runs desktop coverage plus the ade-cli suite.
 
 Per-app scripts:
 
@@ -1860,6 +1865,8 @@ Per-app scripts:
 |-----|-------------|
 | `apps/desktop` | `dev`, `build` (tsup + vite), `typecheck`, `test` (vitest), `lint` (ESLint), `dist:mac`, `dist:mac:universal:signed:zip`, `notarize:mac:dmg`, `validate:mac:artifacts`, `rebuild:native`, `version:ci`, `version:release`, `ade:dev`, `ade:build`, `ade:test`. |
 | `apps/ade-cli` | `dev`, `build`, `typecheck`, `test` (typed CLI commands, headless runtime, and Ink Work chat TUI). |
+| `packages/sdk` | `build`, `typecheck`, `test` (hermetic). Live fixture is `test:live` / `ADE_SDK_LIVE_BINARY`. |
+| `packages/chat-ui` | `build`, `typecheck`, `test`. CI builds `packages/sdk` first because `dist/` is gitignored. |
 | `apps/web` | `dev`, `build`, `preview`, `typecheck`. |
 | `apps/ios` | Xcode project; tests via `xcodebuild test` / Xcode. |
 | `apps/push-relay`, `apps/tunnel-relay`, `apps/account-directory`, `apps/webhook-relay` | Cloudflare Workers: `typecheck`, `test` (vitest), `deploy` (wrangler). |
@@ -1868,7 +1875,7 @@ Per-app scripts:
 
 Stages:
 
-1. **Install** (`install` job) — checkout, setup Node 22, parallel `npm ci` across desktop, ade-cli, web, webhook-relay, and push-relay with a shared cache keyed on those lockfiles. (`apps/tunnel-relay` and `apps/account-directory` have independent Worker jobs that run `npm ci` inline.)
+1. **Install** (`install` job) — checkout, setup Node 22, parallel `npm ci` across desktop, ade-cli, web, webhook-relay, push-relay, `packages/sdk`, and `packages/chat-ui` with a shared cache keyed `nm-v3-` on those lockfiles (including the two package lockfiles). (`apps/tunnel-relay` and `apps/account-directory` have independent Worker jobs that run `npm ci` inline.)
 2. **Parallel checks**:
    - `secret-scan` — gitleaks on full history.
    - `typecheck-desktop` — `cd apps/desktop && npm run typecheck`.
@@ -1878,6 +1885,8 @@ Stages:
    - `lint-desktop` — ESLint on `src/**/*.{ts,tsx}`.
    - `test-desktop` — **8-way shard matrix**: `npx vitest run --shard=${{ matrix.shard }}/8` across shards 1–8.
    - `test-ade-cli` — full ade-cli vitest (covers the brain push publisher and tunnel client under `services/push/` + `services/sync/`).
+   - `test-sdk` — hermetic `@ade-dev/sdk` typecheck + test + build. The live fixture (`test/live.integration.test.ts`) skips unless `ADE_SDK_LIVE_BINARY` is set.
+   - `test-chat-ui` — builds `packages/sdk` first (`dist/` is gitignored and chat-ui's `file:../sdk` exports point at it), then typecheck + test + build `@ade-dev/chat-ui`.
    - `test-webhook-relay`, `test-push-relay`, `test-tunnel-relay`, `test-account-directory` — the four Cloudflare Workers.
    - `build` — desktop, ade-cli, and web built sequentially after install.
    - `validate-docs` — `node scripts/validate-docs.mjs`.
@@ -2000,6 +2009,7 @@ The normative privacy, consent, taxonomy, quota, configuration, and instrumentat
 - Lanes and Git isolation · [Lanes](./features/lanes/README.md)
 - Agent chat · [Chat](./features/chat/README.md)
 - Projectless AI conversations · [Personal chats](./features/personal-chats/README.md)
+- Embeddable sidecar · [ADE SDK](./features/sdk/README.md)
 - Pull requests and queues · [Pull Requests](./features/pull-requests/README.md)
 - Multi-device sync and iOS · [Sync and Multi-device](./features/sync-and-multi-device/README.md)
 - Cross-machine Work chat continuation · [Cross-machine session handoff](./features/sync-and-multi-device/cross-machine-session-handoff.md)

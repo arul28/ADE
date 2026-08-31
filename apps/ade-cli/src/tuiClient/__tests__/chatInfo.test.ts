@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { deriveChatInfoSnapshot } from "../chatInfo";
+import { deriveChatInfoSnapshot, formatMcpCapabilityNote } from "../chatInfo";
 import type { AgentChatEventEnvelope, AgentChatSessionSummary } from "../../../../desktop/src/shared/types/chat";
 import type { TokenStats } from "../adeApi";
 
@@ -450,5 +450,64 @@ describe("deriveChatInfoSnapshot", () => {
     expect(snapshot.title).toBe("Subagent Takeover Ownership UX");
     expect(snapshot.laneIcon).toBe("star");
     expect(snapshot.snapshots).toHaveLength(1);
+  });
+});
+
+describe("formatMcpCapabilityNote", () => {
+  it("reports delivery, not enforcement, when strict mode was never requested", () => {
+    expect(formatMcpCapabilityNote({
+      level: "best-effort",
+      mechanism: "inline servers",
+      residual: null,
+      delivered: true,
+      strictRequested: false,
+    })).toBe("MCP: caller servers injected");
+  });
+
+  it("reports an enforced strict request without a residual", () => {
+    expect(formatMcpCapabilityNote({
+      level: "enforced",
+      mechanism: "Agent SDK option strictMcpConfig",
+      residual: null,
+      delivered: true,
+      strictRequested: true,
+    })).toBe("MCP: enforced");
+  });
+
+  it("clips a long best-effort residual so Chat Info stays one line", () => {
+    const residual =
+      "The Cursor SDK derives includeProjectMcp from settingSources, so dropping those layers drops their servers.";
+    expect(formatMcpCapabilityNote({
+      level: "best-effort",
+      mechanism: "config overlay",
+      residual,
+      delivered: true,
+      strictRequested: true,
+    })).toBe(`MCP: best-effort · ${residual.slice(0, 57).trimEnd()}…`);
+  });
+
+  it("reports an undelivered request as unsupported regardless of level", () => {
+    expect(formatMcpCapabilityNote({
+      level: "unsupported",
+      mechanism: "none",
+      residual: null,
+      delivered: false,
+      strictRequested: true,
+    })).toBe("MCP: unsupported by this provider");
+  });
+
+  it("is absent on a chat the TUI created (no caller MCP request)", () => {
+    expect(formatMcpCapabilityNote(undefined)).toBeNull();
+    expect(deriveChatInfoSnapshot({
+      events: [],
+      activeSession: session(),
+      provider: "claude",
+      modelLabel: "opus",
+      laneLabel: null,
+      snapshots: [],
+      tokenStats: null,
+      goal: null,
+      streaming: false,
+    }).mcpNote).toBeNull();
   });
 });

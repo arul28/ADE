@@ -171,11 +171,40 @@ export type PersonalChatCallResponse = {
 export type PersonalChatCapabilities = {
   version: 1;
   actions: PersonalChatAction[];
+  /**
+   * The runtime supports `personalChats.subscribeEvents` push notifications on
+   * this connection, so a client can stop polling `streamEvents`. Optional: an
+   * older runtime omits it and the client keeps draining.
+   */
+  pushEvents?: boolean;
+  /**
+   * `create` accepts `mcpServers` / `strictMcpConfig` (caller-injected MCP).
+   * Optional for the same reason — absent means an older runtime that would
+   * silently ignore them.
+   */
+  mcpServers?: boolean;
 };
 
 export type PersonalChatStreamEventsArgs = {
   cursor?: number;
   limit?: number;
+};
+
+export type PersonalChatSubscribeEventsArgs = {
+  category?: string;
+  cursor?: number;
+  limit?: number;
+  /** Replay buffered events before the live stream. Defaults to true. */
+  replay?: boolean;
+};
+
+export type PersonalChatSubscribeEventsResult = {
+  subscriptionId: string;
+  nextCursor: number;
+  hasMore: boolean;
+  eventEpoch: string;
+  gap: boolean;
+  oldestCursor: number | null;
 };
 
 export type PersonalChatStreamEventsResult = RemoteRuntimeStreamEventsResult;

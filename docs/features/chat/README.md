@@ -45,7 +45,9 @@ for its separate RPC, sync, storage, and UI contracts.
 | `apps/desktop/src/shared/modelRegistry.ts`, `apps/desktop/src/renderer/components/shared/ModelPicker/modelCatalog.ts` | Shared static model descriptors plus renderer merge of host-advertised catalogs. GPT-5.6 Sol/Terra/Luna stay first, Sol remains the Codex default, and runtime reasoning ladders pass through in provider order: Max precedes Ultra for Sol/Terra, while Luna ends at Max. |
 | `apps/desktop/src/main/services/builtInBrowser/` | Main-process broker and security boundary for the in-app browser. `builtInBrowserService.ts` uses the single persistent `persist:ade-browser` profile for every remote-content tab while keeping visible tab collections independent by ADE window plus project/personal collection. `builtInBrowserProfileMigration.ts` performs one bounded, idempotent migration of unexpired persistent cookies from this channel's legacy project partitions; global cookies win, session cookies are excluded, and legacy directories remain because DOM storage, IndexedDB, service-worker state, and WebAuthn credentials cannot be safely merged. `builtInBrowserStateStore.ts` restores bounded HTTP(S)/blank tab URLs and active-tab selection, but never agent ownership, lightweight sessions, or synthesized session cookies. The service caps each collection at 10 tabs, routes global-session network events by webContents id, preserves OAuth opener relationships, sanitizes download names, captures observations/traces/selections, and tracks per-tab owner/lease metadata. `builtInBrowserAuthentication.ts` owns non-persisted HTTP/proxy credential prompts and explicit client-certificate choice. `builtInBrowserPermissions.ts` persists deny-by-default decisions per requesting/embedding origin. `builtInBrowserAgentAccess.ts` requires a non-persistent human grant for every agent-used non-local origin and for local origins with an allowed privileged permission; it intercepts cross-origin navigation/redirects and blocks sensitive popups until approved. `builtInBrowserActorCapabilities.ts` binds ADE-launched chats to their trusted collection; `desktopBridgeServer.ts` validates those opaque tokens in the issuing Electron process, restores only their bound scope, and separately authenticates the runtime with a rotating desktop-launch token. Unbound/elevated callers cannot force takeovers, forge scope, read another agent's tab status, inspect cookie-domain diagnostics, or administer permissions. `builtInBrowserNavigation.ts` owns protocol policy and `builtInBrowserWebAuthn.ts` resolves credential account selection. Project scratch observations live under `.ade/cache/browser-observations/`; personal observations use the channel user-data `browser-observations/personal/` root. Both can be promoted through the proof broker's narrow import allowlist. The service backs `ade.builtInBrowser.*` and is consumed by `ChatBuiltInBrowserPanel` and `openExternal.ts`. |
 | `apps/desktop/src/shared/types/builtInBrowser.ts` | Cross-process types for the built-in browser: `BuiltInBrowserStatus`, `BuiltInBrowserTab` (including per-tab owner/lease metadata), `BuiltInBrowserSession`, `BuiltInBrowserContextItem` (`kind: "built_in_browser_element" | "built_in_browser_capture"`), `BuiltInBrowserSelectResult`, `BuiltInBrowserScreenshot`, `BuiltInBrowserObservation` / `BuiltInBrowserDomSnapshot` / `BuiltInBrowserObservationElementMap`, browser diagnostics/action trace DTOs, agent action args for click/type/key/scroll/fill/clear/wait, `BuiltInBrowserOpenPanelArgs`, and the `BuiltInBrowserEventPayload` union (`status`, `open-request`, `selection`, `selection-cleared`, `error`). Navigate / create-tab / switch-tab args carry an optional `openPanel: boolean` so callers can ask for the Work sidebar Browser tab to flip open atomically with the navigation. |
-| `apps/desktop/src/shared/types/personalChats.ts` | Machine-scope personal-chat action, capability, result, queue-policy, and event-stream contract layered over the same `AgentChatSession` DTOs. |
+| `apps/desktop/src/shared/types/personalChats.ts` | Machine-scope personal-chat action, capability, result, queue-policy, and event-stream contract layered over the same `AgentChatSession` DTOs. `PersonalChatCapabilities` optionally advertises `pushEvents` and `mcpServers` so a client can tell a runtime that supports push subscribe and caller-injected MCP from an older one that would ignore them. |
+| `apps/desktop/src/shared/callerMcpServers.ts` | Caller-injected MCP: validation (name/url/transport/reserved ADE names/`MAX_CALLER_MCP_SERVERS`), per-provider `CALLER_MCP_SUPPORT` (level / mechanism / residual / delivery), and `resolveCallerMcpCapability` — the one report `createSession` and model-switch both emit. Shared by desktop, ade-cli, and summarized by `@ade-dev/sdk`. |
+| `packages/sdk/` | Embeddable sidecar client. See [ADE SDK](../sdk/README.md). |
 | `apps/desktop/src/main/services/chat/buildClaudeV2Message.ts` | Builds Claude SDK user messages for the `query()` input stream. Handles base64 image content blocks and MIME inference. |
 | `apps/desktop/src/main/services/chat/claudeInputPump.ts` | Async iterable input pump that feeds live user turns into the Claude Agent SDK `query()` stream. |
 | `apps/desktop/src/main/services/ai/tools/systemPrompt.ts` | Provider-runtime system-prompt assembly, including runtime-specific native-subagent versus ADE-child routing guidance and the shared scheduled-work contract. |
@@ -190,6 +192,45 @@ surface), again as a client.
 This is the framing to internalise: chat sessions are runtime-owned,
 not desktop-owned. The renderer can render them, and the iOS app can
 render them, but neither one *runs* them.
+
+## Caller-injected MCP
+
+An external embedder (the ADE SDK, or `ade chat create --arg-json`) can hand
+ADE a set of MCP servers when it creates a chat, plus a tristate
+`strictMcpConfig` that asks ADE to withhold the *user's* own MCP configuration
+from that chat. The servers merge with (never replace) ADE-managed servers
+the session already receives — CTO and orchestration leases keep working
+alongside them.
+
+`strictMcpConfig` is a request, not a uniform guarantee:
+
+| Provider | Strict level | Residual under strict |
+|---|---|---|
+| claude | enforced | none (MCP-wise; user rules/commands/output styles still load) |
+| codex | best-effort | Codex *plugin* servers, which never appear in `config.toml`'s `mcp_servers` table |
+| cursor | best-effort | user-layer servers (`~/.cursor`; ADE's preToolUse hook lives there, so that layer cannot be dropped) |
+| droid | best-effort | tools that appear only after the first session-scoped disable pass |
+| opencode | best-effort | the global OpenCode config directory, still resolved for auth |
+| pi | unsupported | n/a — create refuses injected servers rather than opening a tool-less chat |
+
+Absent `strictMcpConfig` means today's behavior, except on the lightweight
+session profile every SDK/personal chat uses, which is strict by default to
+stay lean. An explicit `false` overrides that default and loads the user's
+MCP — that is how an embedder sets `loadUserMcpServers: true`. Orchestration
+leads stay strict regardless; their isolation is a policy, not a preference.
+
+The created session carries `mcpCapability` (`level`, `mechanism`, `residual`,
+`delivered`, `strictRequested`). Read `strictRequested` first, then branch on
+`level`. Only `"enforced"` means the caller's servers are the whole MCP
+surface. `CALLER_MCP_SUPPORT` in `shared/callerMcpServers.ts` is the source of
+truth; the table above is a summary. See [ADE SDK](../sdk/README.md#strict-mcp-honesty).
+
+Create refuses a payload it cannot honor: an invalid server, a reserved ADE
+name (`computer_use`, `ade-cto`, `ade-orchestration`), a transport the
+provider cannot express (Codex has no SSE client), more than 32 servers, or
+injected servers on Pi. An empty `mcpServers` map is not a request — it is
+omitted entirely so a capability report is not invented for a chat that asked
+for nothing.
 
 ## Durable scheduled work
 
@@ -1656,7 +1697,7 @@ handlers live in `apps/desktop/src/main/services/ipc/registerIpc.ts`.
 | `ade.agentChat.setScheduledWorkPaused` | invoke | Pause or resume every durable wakeup/cron/loop schedule for one eligible session. Returns the resulting pause state and recomputed `nextWakeAt`; overdue work follows the one-late-fire rule after resume. |
 | `ade.agentChat.getEventHistory` | invoke | Return `AgentChatEventHistorySnapshot` for a session. Runtime clients use one object argument (`{ sessionId, maxEvents?, maxBytes? }`); the registry temporarily accepts the legacy positional call for packaged-client compatibility. `sessionFound: false` is the explicit stale-session signal used by renderer surfaces to clear dead locked panes; `unavailable: true` means the bound runtime could not be reached and is **not** an authoritative miss (clients keep what they have). `hasOlderHistory` is the authoritative "there is more to scroll back to" bit — derived from the tail read, not from cursor bookkeeping — and `tailStartOffset` is the `beforeOffset` cursor for paging older. See [History snapshots, scroll-back, and misses](transcript-and-turns.md#history-snapshots-scroll-back-and-misses). |
 | `ade.agentChat.getEventHistoryPage` | invoke | Page older transcript events with one object argument (`{ sessionId, beforeOffset, maxBytes? }`), returning `AgentChatEventHistoryPage`. `startOffset` strictly decreases while `hasMore` is true, which is what makes client paging loops terminate; a non-decreasing cursor is a retryable protocol failure rather than exhaustion. Carries the same `sessionFound` / `unavailable` distinction as the snapshot; an unreachable-runtime page echoes the caller's cursor back as `startOffset` so it does not also claim the head of the transcript was reached. |
-| `ade.agentChat.create` | invoke | Create a new session; returns the `AgentChatSession`. Accepts `codexFastMode?: boolean` as the legacy-named Fast Mode bit for any provider/model descriptor that advertises `serviceTiers: ["fast"]`. |
+| `ade.agentChat.create` | invoke | Create a new session; returns the `AgentChatSession`. Accepts `codexFastMode?: boolean` as the legacy-named Fast Mode bit for any provider/model descriptor that advertises `serviceTiers: ["fast"]`. Also accepts caller-injected `mcpServers` and tristate `strictMcpConfig`; the created session reports what the provider could honor as `mcpCapability`. See [Caller-injected MCP](#caller-injected-mcp). |
 | `ade.agentChat.suggestLaneName` | invoke | Derive a slug-safe lane name from a Work launch prompt using the session-intelligence title prompt, with a prompt-slug + optional unique temporary fallback. |
 | `ade.agentChat.parallelLaunchState.get` / `.set` | invoke | Read/write crash-recovery state for renderer-orchestrated parallel launches. State is scoped by project root and parent lane id. |
 | `ade.agentChat.handoff` | invoke | Create a handoff session. `mode: "brief"` sends a compact summarized hidden first message and may use `targetLaneId` to move the new chat to any active lane in the project; unknown, unavailable, and archived lanes are rejected. `mode: "fork"` requires the same provider on both sides while allowing the target model to change within that provider, and always keeps the new chat in the source lane (a differing `targetLaneId` is rejected). Local forks also seed the source ADE transcript into the new chat with fork provenance. `handoffNote` is an optional user-authored addition: brief mode appends it to the hidden handoff prompt, while fork mode sends it as the first user turn. Claude forks through the SDK session pointer; Codex forks the app-server thread with `thread/fork`; OpenCode calls SDK `session.fork` (`POST /session/{id}/fork`); Droid calls SDK `forkSession()` (`droid.fork_session`). Cursor has no provider fork surface at all and a Cursor thread cannot be resumed twice, so ADE forks it at the ADE layer: the new chat carries no `cursorSdkAgentId`, so its first send opens a brand-new Cursor agent and prefixes that send with the full source transcript replayed verbatim (the same `buildFittedTranscriptReplay` path a cross-provider fork uses, and the same replay an agent rotation stages), trimmed oldest-first only if it exceeds the target model's context window — in which case the handoff result carries `replayFork` and the chat shows a truncation notice. OpenCode and Droid persist the forked provider session as the new chat's resume pointer (`providerSessionId` / `droidSdkSessionId`). Codex targets do not inherit ADE session goals or seed app-server goals during handoff, and forked Codex threads are goal-cleared before any optional note is sent. Cross-machine fork additionally transports and rematerializes provider-native history for Claude, Codex, and OpenCode; cross-machine Cursor and Droid handoffs remain brief-only, Cursor because a replay fork has no provider artifact to send. Forwards `codexFastMode` when the target model supports Fast Mode. |
@@ -1715,6 +1756,16 @@ Provider connection management lives on the `ade.ai.*` surface (handled in `regi
 
 ## Fragile and tricky wiring
 
+- **Caller MCP strict mode is Claude-only as a guarantee.** `strictMcpConfig:
+  true` is a real isolation switch on the Claude Agent SDK
+  (`opts.strictMcpConfig`). Every other provider is best-effort with a named
+  residual in `CALLER_MCP_SUPPORT`. Do not infer isolation from
+  `mcpCapability` being present, from `delivered: true`, or from a
+  best-effort `level`. Read `strictRequested`, then branch on `level ===
+  "enforced"`. An explicit `strictMcpConfig: false` on a lightweight/personal
+  session must survive create and persist — collapsing it to absent re-imposes
+  the profile default and silently withholds the user's MCP after the embedder
+  asked to load it.
 - **The in-memory chat-event ring is live-tail only, LRU-capped at 64 sessions.**
   `eventHistoryBySession` exists so a snapshot can merge events that have not
   reached disk yet. It is **not** a transcript cache. Writing the merged
@@ -2391,6 +2442,8 @@ config service):
 - [Cross-machine session handoff](../sync-and-multi-device/cross-machine-session-handoff.md) -- clean/published Git, bounded context, destination setup, transport security, and retry semantics for **Send to machine**.
 - [Personal chats](../personal-chats/README.md) -- projectless sessions that
   reuse the chat engine behind a machine-scoped isolation boundary.
+- [ADE SDK](../sdk/README.md) -- embeddable sidecar (`@ade-dev/sdk`, `@ade-dev/chat-ui`)
+  that creates chats on this engine through the personal-chat machine RPC.
 - [Agents README](../agents/README.md) -- the CTO identity, persona
   overlays, and tool policy.
 - [History README](../history/README.md) -- chat sessions are not

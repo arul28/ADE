@@ -79,7 +79,10 @@ Related: pass `windowsHide: true` on **every** `spawn` / `spawnSync` /
 incident in `WINDOWS_PORT.md` — visible PowerShell console windows piling up and
 outliving the Electron window. Resolve system tools by absolute System32 path
 via `apps/ade-cli/src/lib/trustedWindowsTools.ts` (`powershell`, `reg`,
-`schtasks`, `taskkill`) so a poisoned PATH cannot hijack the kill.
+`schtasks`, `taskkill`) so a poisoned PATH cannot hijack the kill. That resolver
+is mirrored in `packages/sdk/src/windowsSystemTools.ts` — `@ade-dev/sdk` ships
+standalone to npm and cannot import from this repo — so a change to the kernel
+alias, the canonical-path check, or the escape check has to land in both files.
 
 ## 4. No `LSEnvironment` equivalent — an installed app inherits nothing
 
