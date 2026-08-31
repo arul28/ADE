@@ -39,9 +39,13 @@ import type {
   PluginManifestKeybinding,
   PluginManifestSearchProvider,
   PluginManifestSetting,
+  PluginManifestUrlMatcher,
   PluginSurfaceKind,
 } from "./manifest";
 import type { PluginRegistryEntry } from "./registryIndex";
+// Re-exported below so a plugin author types `sessionSetup` from the SDK entry
+// point rather than reaching into a host module path.
+import type { PluginSessionContextFile, PluginSessionSetup } from "./sessionSetup";
 import type { IssueRef } from "../issueRef";
 import type {
   IssueLink,
@@ -62,6 +66,8 @@ import type {
 
 /** SDK surface version announced to the child in `hello`. */
 export const PLUGIN_SDK_VERSION = 0;
+
+export type { PluginSessionContextFile, PluginSessionSetup };
 
 // ---------------------------------------------------------------------------
 // Budgets (writer-enforced — see the module header)
@@ -1189,6 +1195,16 @@ export type AdePluginSdk = {
      * Invoke an ADE action. The plugin authenticates at `agent` role, so
      * CTO-only actions are refused — a plugin is not the operator.
      * Project-scoped domains require `projectId`.
+     *
+     * `chat.createSession` and `chat.launchCli` additionally accept
+     * `sessionSetup: `{@link PluginSessionSetup}, which injects environment
+     * variables and one context file into the agent process the call starts —
+     * the generic form of the reach the built-in Linear integration has through
+     * `ADE_LINEAR_ISSUE_IDS` / `ADE_LINEAR_CONTEXT_FILE`. The host validates it
+     * (see `sessionSetup.ts`), writes the file, hands the child its path in
+     * `ADE_PLUGIN_CONTEXT_FILE`, and names the calling plugin in
+     * `ADE_PLUGIN_SOURCE_ID`. No new consent card: launching a session is
+     * already gated on the agent permission the plugin holds.
      */
     invoke(domain: string, action: string, args?: Record<string, unknown>): Promise<unknown>;
   };
@@ -3162,6 +3178,7 @@ export type PluginSummary = {
   automationSteps?: PluginManifestAutomationStep[];
   searchProviders?: PluginManifestSearchProvider[];
   keybindings?: PluginManifestKeybinding[];
+  urlMatchers?: PluginManifestUrlMatcher[];
   restartCount: number;
   lastCrashAt: string | null;
 };
@@ -3861,6 +3878,21 @@ export type PluginClientInstalled = {
    * reads had landed by then, so the answer would change between renders.
    */
   keybindings?: readonly PluginManifestKeybinding[];
+  /**
+   * URL matchers this plugin declares, carried straight off
+   * {@link PluginSummary} for a reason the three fields above only imply.
+   *
+   * A smart-link chip is drawn from a pasted URL alone, inside the composer's
+   * keystroke handler, with no plugin running and no time to ask one anything.
+   * The renderer therefore needs every installed plugin's matchers compiled and
+   * in hand BEFORE the first character is typed — and it needs them for plugins
+   * whose child is not started, which is most of them most of the time.
+   *
+   * Optional for the usual reason: a host that predates the field reports the
+   * plugin without it, and absent means "this plugin claims no URLs", which is
+   * the right answer rather than merely the safe one.
+   */
+  urlMatchers?: readonly PluginManifestUrlMatcher[];
   /**
    * ISO install timestamp from the machine registry — what makes the matrix's
    * "first installed wins" decidable rather than a coin flip on load order.

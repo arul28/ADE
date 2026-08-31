@@ -115,10 +115,11 @@ import {
   deriveSmartLinkPreview,
   findSmartLinks,
   smartLinkDisplayLabel,
-  smartLinkProviderGlyph,
+  smartLinkGlyph,
   shouldReconcileSmartLinkDraft,
   type SmartLinkPreview,
 } from "../../../shared/smartLinks";
+import { usePluginSmartLinkOptions } from "../plugins/usePluginRegistry";
 import { hasChatOutputContext } from "../../../shared/chatOutputContext";
 import { hydrateChatOutputContextChipsInEditor } from "./composerChatOutputContext";
 import { SmartTooltip } from "../ui/SmartTooltip";
@@ -1968,8 +1969,17 @@ export function AgentChatComposer({
   const [selectedIosContextId, setSelectedIosContextId] = useState<string | null>(null);
   const [selectedAppControlContextId, setSelectedAppControlContextId] = useState<string | null>(null);
   const [selectedBuiltInBrowserContextId, setSelectedBuiltInBrowserContextId] = useState<string | null>(null);
+  // Installed plugins' URL matchers, compiled once per registry change. Passed
+  // to every parse below so a tracker plugin's links become chips the same way
+  // GitHub's and Linear's do. Empty — and therefore exactly today's behaviour —
+  // when nothing installed claims a URL.
+  const smartLinkOptions = usePluginSmartLinkOptions();
+  const smartLinkOptionsRef = useRef(smartLinkOptions);
+  smartLinkOptionsRef.current = smartLinkOptions;
   const [smartLinkEditorEnabled, setSmartLinkEditorEnabled] = useState(
-    () => findSmartLinks(draft).length > 0 || hasChatOutputContext(draft) || parseChatMentions(draft).length > 0,
+    () => findSmartLinks(draft, undefined, smartLinkOptions).length > 0
+      || hasChatOutputContext(draft)
+      || parseChatMentions(draft).length > 0,
   );
   const [selectedSmartLinkNode, setSelectedSmartLinkNode] = useState<HTMLElement | null>(null);
   const activeTurnSendCapability = useMemo(
@@ -2983,8 +2993,11 @@ export function AgentChatComposer({
       icon.innerHTML = markSvg;
       return;
     }
+    // A plugin provider has no compiled-in mark, so it lands here and draws the
+    // one or two characters its matcher declared. Set as TEXT: the mark path
+    // above assigns `innerHTML`, and a manifest field must never reach it.
     icon.className = SMART_LINK_ICON_GLYPH_CLASS;
-    icon.textContent = smartLinkProviderGlyph(preview.provider);
+    icon.textContent = smartLinkGlyph(preview);
   }, []);
 
   const createSmartLinkChipNode = useCallback((initial: SmartLinkPreview): HTMLElement => {
@@ -3007,6 +3020,13 @@ export function AgentChatComposer({
     label.className = "max-w-[238px] truncate";
     chip.appendChild(label);
     updateSmartLinkChipNode(chip, initial);
+
+    // A plugin match is already final: the label came from the matcher's own
+    // template over its own captures, and matching declares no network. Asking
+    // the runtime to enrich it would be worse than pointless — the resolver
+    // parses the URL with CORE matchers only, so it would answer `generic` and
+    // overwrite the plugin's chip with the bare URL.
+    if (initial.plugin) return chip;
 
     const cacheable = initial.provider === "generic" || initial.provider === "ade";
     let request = cacheable ? smartLinkPreviewCacheRef.current.get(initial.url) : undefined;
@@ -3075,7 +3095,9 @@ export function AgentChatComposer({
         if (!parent || parent.closest("[data-composer-chip], [data-ios-context-id], [data-app-control-context-id], [data-built-in-browser-context-id]")) {
           return NodeFilter.FILTER_REJECT;
         }
-        return findSmartLinks(node.textContent ?? "").length ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_REJECT;
+        return findSmartLinks(node.textContent ?? "", undefined, smartLinkOptionsRef.current).length
+          ? NodeFilter.FILTER_ACCEPT
+          : NodeFilter.FILTER_REJECT;
       },
     });
     const nodes: Text[] = [];
@@ -3087,7 +3109,7 @@ export function AgentChatComposer({
     if (!nodes.length) return false;
     for (const node of nodes) {
       const text = node.textContent ?? "";
-      const links = findSmartLinks(text);
+      const links = findSmartLinks(text, undefined, smartLinkOptionsRef.current);
       if (!links.length) continue;
       const fragment = document.createDocumentFragment();
       let offset = 0;
@@ -4745,7 +4767,7 @@ export function AgentChatComposer({
         return;
       }
       const pastedText = event.clipboardData.getData("text/plain");
-      if (pastedText && findSmartLinks(pastedText).length > 0) {
+      if (pastedText && findSmartLinks(pastedText, undefined, smartLinkOptionsRef.current).length > 0) {
         if (event.currentTarget instanceof HTMLTextAreaElement) {
           const node = event.currentTarget;
           // Let the browser perform the canonical textarea paste so clipboard
@@ -6533,7 +6555,7 @@ export function AgentChatComposer({
                   const val = event.target.value;
                   clearPromptHistory();
                   onDraftChange(val);
-                  if (/\s$/.test(val) && findSmartLinks(val).length > 0) {
+                  if (/\s$/.test(val) && findSmartLinks(val, undefined, smartLinkOptionsRef.current).length > 0) {
                     setSmartLinkEditorEnabled(true);
                   }
                   const cursorPos = event.target.selectionStart ?? val.length;

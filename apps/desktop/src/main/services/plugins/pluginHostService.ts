@@ -733,6 +733,9 @@ function toSummary(
     automationSteps: manifest?.automationSteps ?? [],
     searchProviders: manifest?.searchProviders ?? [],
     keybindings: manifest?.keybindings ?? [],
+    // Smart-link matchers ride the summary for the same reason: the composer
+    // draws a chip from a pasted URL with no plugin running to ask.
+    urlMatchers: manifest?.urlMatchers ?? [],
     restartCount: runtime.restartCount,
     lastCrashAt: runtime.lastCrashAt,
   };

@@ -4,6 +4,12 @@ import { rootAppStoreApi, useRootAppStore } from "../../state/appStore";
 import { subscribeToPluginChanges, type InstalledPlugin } from "../../lib/pluginRuntimeBridge";
 import { isPluginRegistrationDisabled } from "../../../shared/plugins/disabledContributions";
 import {
+  compileSmartLinkMatchers,
+  issueProviderOwnersFromMatchers,
+  smartLinkPluginMatcher,
+} from "../../../shared/plugins/smartLinkMatchers";
+import type { SmartLinkParseOptions } from "../../../shared/smartLinks";
+import {
   appliedPluginTheme,
   applyPluginTheme,
   isPreviewingPluginTheme,
@@ -235,6 +241,41 @@ export function usePluginAutomationSteps(): PluginAutomationOption[] {
         ),
     [plugins],
   );
+}
+
+/**
+ * The parse options every smart-link caller in the renderer passes.
+ *
+ * Memoized on the registry array, so matchers are compiled once per install,
+ * enable or disable — never on a keystroke. Install and enable already refresh
+ * `installedPlugins` through {@link usePluginRegistrySync}, so a plugin becomes
+ * able to draw chips the moment its registry row lands, with nothing to reload.
+ *
+ * The options object is stable while the registry is, which matters: it is a
+ * dependency of the composer's tokenizer, and a new object each render would
+ * retokenize the editor on every keystroke.
+ */
+export function usePluginSmartLinkOptions(): SmartLinkParseOptions {
+  const plugins = useRootAppStore((state) => state.installedPlugins);
+  return React.useMemo(() => {
+    const matchers = compileSmartLinkMatchers(plugins);
+    // No matchers means no callback at all, so the parser takes exactly the path
+    // it took before plugins could claim a URL.
+    return matchers.length > 0 ? { matchPlugin: smartLinkPluginMatcher(matchers) } : {};
+  }, [plugins]);
+}
+
+/**
+ * Which plugin speaks for which tracker on this machine.
+ *
+ * Derived from the same `urlMatchers` declarations that draw the chips, which
+ * is what makes `ade://issue/<provider>/<key>` resolve to the plugin that
+ * actually owns the tracker rather than to a plugin id guessed from the
+ * provider name.
+ */
+export function usePluginIssueProviderOwners() {
+  const plugins = useRootAppStore((state) => state.installedPlugins);
+  return React.useMemo(() => issueProviderOwnersFromMatchers(plugins), [plugins]);
 }
 
 /** The applied theme's definition, or null. Shared by Appearance and the sync hook. */

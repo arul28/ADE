@@ -8,8 +8,9 @@ import type { PluginManifest } from "./manifest";
  * exactly one kind of id — a manifest SOCKET id — and every reader spelled the
  * check as `new Set(record.disabledContributions).has(socket.id)`.
  *
- * That spelling does not extend to the four engine registrations
- * (`searchProviders`, `keybindings`, `automationTriggers`, `automationSteps`),
+ * That spelling does not extend to the five engine registrations
+ * (`searchProviders`, `keybindings`, `automationTriggers`, `automationSteps`,
+ * `urlMatchers`),
  * because their ids live in their own namespaces: a plugin may legitimately
  * declare a search provider `issues` and a lane-badge socket `issues`, and
  * folding them into one flat set would turn "hide the badge" into "stop
@@ -30,7 +31,8 @@ export type PluginRegistrationKind =
   | "search"
   | "keybinding"
   | "automationTrigger"
-  | "automationStep";
+  | "automationStep"
+  | "urlMatcher";
 
 /**
  * The `disabledContributions` entry for one engine registration.

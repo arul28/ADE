@@ -212,6 +212,16 @@ export function describeManifestAdds(manifest: PluginManifest): string[] {
       : `${manifest.skills.length} agent skills`);
   }
   if (manifest.theme) lines.push("A colour theme");
+  // Named by HOST, not counted. A matcher changes what the reader's own pasted
+  // links look like, and "two URL matchers" is not a fact anyone can decide
+  // with — "turns acme.atlassian.net links into chips" is. Deduplicated across
+  // matchers because the reader is agreeing to the domains, not the rules.
+  const matcherHosts = [
+    ...new Set((manifest.urlMatchers ?? []).flatMap((matcher) => matcher.hosts)),
+  ];
+  if (matcherHosts.length > 0) {
+    lines.push(`Turns ${joinSurfaceNames(matcherHosts)} links into chips`);
+  }
   if (Object.keys(manifest.collections).length > 0) {
     const synced = Object.values(manifest.collections).filter((collection) => collection.sync).length;
     lines.push(synced > 0 ? "Stores data, and syncs it to your other devices" : "Stores data on this machine");

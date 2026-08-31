@@ -41,7 +41,11 @@ import {
   isBuiltinTabVisible,
   type BuiltinGateInput,
 } from "../plugins/builtinTabs";
-import { resolvePluginDeeplinkRouting } from "./pluginDeeplinkRoute";
+import {
+  issueTargetFromPluginDeeplink,
+  resolveIssueDeeplinkRouting,
+  resolvePluginDeeplinkRouting,
+} from "./pluginDeeplinkRoute";
 import { BuiltinRouteGuard } from "../plugins/BuiltinRouteGuard";
 import { showToast } from "./toast/toastStore";
 
@@ -1340,8 +1344,30 @@ function AppNavigationBridge() {
     }
 
     if (target.kind === "plugin") {
-      const routing = resolvePluginDeeplinkRouting(target, builtinGateInputRef.current);
+      // An `ade://issue/…` link arrives here already collapsed into a plugin
+      // target (`AppNavigationTarget` has no `issue` kind), which is why the
+      // issue is read back out rather than switched on. Only the machine that
+      // opens the link knows who owns the tracker, so that question is answered
+      // here and not by whoever minted the link.
+      const issue = issueTargetFromPluginDeeplink(target);
+      const routing = issue
+        ? resolveIssueDeeplinkRouting(issue, builtinGateInputRef.current)
+        : resolvePluginDeeplinkRouting(target, builtinGateInputRef.current);
       if (routing.kind === "refuse") return refuseGatedTarget(routing.title);
+      if (routing.kind === "builtin-linear") {
+        // Nobody here owns `linear`, so the compiled Linear surface does —
+        // exactly where `ade://linear-issue/…` has always gone. The gate is the
+        // same one that arm asks.
+        if (!isBuiltinSurfaceVisible("linear", builtinGateInputRef.current)) {
+          return refuseGatedTarget("Linear");
+        }
+        requestLinearIssueQuickView({
+          issueIdentifier: routing.issueIdentifier,
+          branch: routing.branch,
+          source: "deeplink",
+        });
+        return true;
+      }
       navigate(routing.path);
       return true;
     }

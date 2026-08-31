@@ -1,4 +1,18 @@
-export type SmartLinkProvider = "github" | "linear" | "ade" | "generic";
+/**
+ * A provider a plugin's URL matcher speaks for, namespaced by its plugin id.
+ *
+ * Namespaced rather than bare so a plugin can never be mistaken for a core
+ * provider by a reader that only string-compares: every switch in this system
+ * has a `default`, and `plugin:acme-jira` takes it.
+ */
+export type PluginSmartLinkProvider = `plugin:${string}`;
+
+export type SmartLinkProvider =
+  | "github"
+  | "linear"
+  | "ade"
+  | "generic"
+  | PluginSmartLinkProvider;
 
 export type SmartLinkKind =
   | "github_pr"
@@ -8,7 +22,25 @@ export type SmartLinkKind =
   | "github_actions_run"
   | "linear_issue"
   | "ade_deeplink"
+  | "plugin_entity"
   | "web_page";
+
+/**
+ * What a plugin's URL matcher produced, carried on the preview it made.
+ *
+ * Every field is data the matcher declared or captured. Nothing here is a
+ * handle to the plugin: drawing a chip runs no plugin code, and a client that
+ * does not know what to do with a binding still draws the label.
+ */
+export type SmartLinkPluginBinding = {
+  pluginId: string;
+  /** The `urlMatchers[].id` that won. */
+  matcherId: string;
+  /** `ade://plugin/<id>/<panel>` for the panel that draws this record. */
+  deeplink: string;
+  /** Present when the matcher declares an `entity`. Provider is the matcher's. */
+  issue?: { provider: string; key: string } | null;
+};
 
 export type SmartLinkPreview = {
   url: string;
@@ -20,6 +52,31 @@ export type SmartLinkPreview = {
   title?: string | null;
   /** Sanitized, bounded image payload returned by the ADE runtime. */
   iconDataUrl?: string | null;
+  /**
+   * One or two characters for the chip's mark slot, when the provider has no
+   * compiled-in mark. Text, never markup — see `smartLinkGlyph`.
+   */
+  glyph?: string | null;
+  /** Set when a plugin's declared URL matcher produced this preview. */
+  plugin?: SmartLinkPluginBinding | null;
+};
+
+/**
+ * How a caller offers plugin matchers to the parser.
+ *
+ * A callback rather than the compiled matchers themselves, so this module stays
+ * dependency-free. It is imported by main, preload, the renderer, the web
+ * adapter, the browser mock and the CLI's TUI, and only one of those has a
+ * plugin registry to read; the rest pass nothing and get exactly today's
+ * behaviour.
+ */
+export type SmartLinkParseOptions = {
+  /**
+   * Asked once per URL, AFTER every core parser has declined and BEFORE the
+   * generic fallback. Must be synchronous and must not fetch: it runs on every
+   * keystroke that ends a word in the composer.
+   */
+  matchPlugin?: (url: URL, rawUrl: string) => SmartLinkPreview | null;
 };
 
 export type SmartLinkMatch = SmartLinkPreview & {
@@ -102,7 +159,20 @@ function parseLinearLink(url: URL, rawUrl: string): SmartLinkPreview | null {
   };
 }
 
-export function deriveSmartLinkPreview(rawValue: string): SmartLinkPreview | null {
+/**
+ * The preview for one URL.
+ *
+ * Tiering, and it is the whole ordering rule: core parsers first, then the
+ * caller's plugin matchers, then the generic web page. Core is first so a
+ * plugin cannot draw over ADE's own GitHub and Linear links — the manifest
+ * parser already refuses those hosts, and this is the second half of the same
+ * guarantee, enforced where the match actually happens. Generic is last because
+ * it never declines, so anything after it would be dead.
+ */
+export function deriveSmartLinkPreview(
+  rawValue: string,
+  options?: SmartLinkParseOptions,
+): SmartLinkPreview | null {
   const rawUrl = trimTrailingUrlPunctuation(rawValue.trim());
   if (!rawUrl) return null;
   if (/^ade:\/\//i.test(rawUrl)) {
@@ -130,6 +200,7 @@ export function deriveSmartLinkPreview(rawValue: string): SmartLinkPreview | nul
 
   return parseGithubLink(parsed, rawUrl)
     ?? parseLinearLink(parsed, rawUrl)
+    ?? matchPluginSmartLink(parsed, rawUrl, options)
     ?? {
       url: rawUrl,
       provider: "generic",
@@ -138,13 +209,35 @@ export function deriveSmartLinkPreview(rawValue: string): SmartLinkPreview | nul
     };
 }
 
-export function findSmartLinks(text: string, limit = 12): SmartLinkMatch[] {
+/**
+ * The plugin tier, kept behind a guard so a throwing matcher cannot take the
+ * composer down. A matcher is compiled from an untrusted manifest, and a chip
+ * is drawn inside a keystroke handler.
+ */
+function matchPluginSmartLink(
+  url: URL,
+  rawUrl: string,
+  options: SmartLinkParseOptions | undefined,
+): SmartLinkPreview | null {
+  if (!options?.matchPlugin) return null;
+  try {
+    return options.matchPlugin(url, rawUrl) ?? null;
+  } catch {
+    return null;
+  }
+}
+
+export function findSmartLinks(
+  text: string,
+  limit = 12,
+  options?: SmartLinkParseOptions,
+): SmartLinkMatch[] {
   if (!text || limit <= 0) return [];
   const matches: SmartLinkMatch[] = [];
   URL_CANDIDATE_RE.lastIndex = 0;
   let candidate: RegExpExecArray | null;
   while ((candidate = URL_CANDIDATE_RE.exec(text)) && matches.length < limit) {
-    const preview = deriveSmartLinkPreview(candidate[0]);
+    const preview = deriveSmartLinkPreview(candidate[0], options);
     if (!preview) continue;
     matches.push({
       ...preview,
@@ -165,6 +258,21 @@ export function smartLinkProviderGlyph(provider: SmartLinkProvider): string {
   if (provider === "linear") return "L";
   if (provider === "ade") return "A";
   return "↗";
+}
+
+/**
+ * The text mark for a chip.
+ *
+ * A plugin's declared glyph wins over the provider default, because a plugin
+ * provider has no default worth showing — `smartLinkProviderGlyph` answers "↗"
+ * for it, which is the generic web arrow and says nothing about the tracker.
+ * Prefer this over `smartLinkProviderGlyph` on any surface that can see a
+ * plugin match; the bare provider form stays for callers that only ever hold a
+ * provider, such as the TUI's prompt strip.
+ */
+export function smartLinkGlyph(preview: SmartLinkPreview): string {
+  const declared = preview.glyph?.trim();
+  return declared || smartLinkProviderGlyph(preview.provider);
 }
 
 export function shouldReconcileSmartLinkDraft(

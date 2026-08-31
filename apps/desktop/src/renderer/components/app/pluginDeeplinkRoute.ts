@@ -23,6 +23,7 @@ import {
   type DeeplinkIssueTarget,
 } from "../../../shared/deeplinks";
 import { CORE_ISSUE_PLUGIN_ID, ISSUE_PROVIDER_LINEAR } from "../../../shared/issueRef";
+import { issueProviderOwnersFromMatchers } from "../../../shared/plugins/smartLinkMatchers";
 import {
   PLUGIN_NAVIGATE_CONTEXT_MAX_BYTES,
   pluginUtf8ByteLength,
@@ -89,15 +90,61 @@ export function resolvePluginDeeplinkRouting(
 /**
  * Which plugin, if any, speaks for a tracker on this machine.
  *
- * Supplied by the caller rather than looked up here, so the resolver stays a
- * pure function of facts the caller already has. `panelId` is optional: a plugin
- * that registers no issue panel falls back to the one it actually publishes.
+ * Derived by default from the same `urlMatchers` declarations that draw a
+ * tracker's smart-link chips — see {@link issueProviderOwnersFromMatchers}. A
+ * plugin that can recognise a tracker's URLs is a plugin that can draw that
+ * tracker's issues, and asking it to declare ownership a second time would let
+ * the two answers disagree.
+ *
+ * Still a parameter, so the resolver stays a pure function of facts the caller
+ * hands it and a test can state ownership without building a registry.
+ * `panelId` is optional: a plugin that registers no issue panel falls back to
+ * the one it actually publishes.
  */
 export type IssueProviderOwner = {
   provider: string;
   pluginId: string;
   panelId?: string | null;
 };
+
+/**
+ * Recover the issue a `plugin` navigation target was built from.
+ *
+ * `deeplinks.ts` collapses `ade://issue/<provider>/<key>` into a `plugin`
+ * target before the renderer ever sees it, because `AppNavigationTarget` has no
+ * `issue` kind — the collapse names the CONVENTIONAL panel and leaves the
+ * question of who owns the tracker to the machine that opens the link. This
+ * reads that question back out, so {@link resolveIssueDeeplinkRouting} can
+ * answer it.
+ *
+ * Deliberately shaped to match only what that collapse mints: the conventional
+ * issue panel, plus an `issue` context carrying a provider and a key. A
+ * hand-written `ade://plugin/<id>/issue?ctx={"issue":…}` matches too, and
+ * should — it is asking for the same thing.
+ */
+export function issueTargetFromPluginDeeplink(
+  target: PluginDeeplinkTarget,
+): DeeplinkIssueTarget | null {
+  if (target.panelId !== PLUGIN_ISSUE_PANEL_ID) return null;
+  const issue = target.context?.issue;
+  if (!issue || typeof issue !== "object") return null;
+  const record = issue as Record<string, unknown>;
+  const provider = typeof record.provider === "string" ? record.provider.trim() : "";
+  const issueKey = typeof record.key === "string" ? record.key.trim() : "";
+  if (!provider || !issueKey) return null;
+  const branch = typeof record.branch === "string" ? record.branch.trim() : "";
+  return {
+    kind: "issue",
+    provider,
+    issueKey,
+    ...(branch ? { branch } : {}),
+    // The collapse writes the link's own plugin into `pluginId`, falling back to
+    // the provider name. Either way it is the first candidate, and the local
+    // owner is the second — which is what makes a link minted on one machine
+    // open on another whose plugin for the same tracker has a different id.
+    pluginId: target.pluginId,
+  };
+}
 
 export type IssueDeeplinkRouting =
   | PluginDeeplinkRouting
@@ -130,7 +177,7 @@ export type IssueDeeplinkRouting =
 export function resolveIssueDeeplinkRouting(
   target: DeeplinkIssueTarget,
   input: BuiltinGateInput,
-  owners: readonly IssueProviderOwner[] = [],
+  owners: readonly IssueProviderOwner[] = issueProviderOwnersFromMatchers(input.plugins),
 ): IssueDeeplinkRouting {
   const provider = target.provider.trim().toLowerCase();
   const named = target.pluginId?.trim() || "";

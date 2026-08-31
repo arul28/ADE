@@ -148,6 +148,13 @@ export function toInstalledPlugin(summary: PluginSummary): PluginClientInstalled
     ...(summary.keybindings && summary.keybindings.length > 0
       ? { keybindings: summary.keybindings }
       : {}),
+    // URL matchers ride the list because a smart-link chip is drawn inside a
+    // keystroke handler from the pasted URL alone. There is no moment at which
+    // the composer could afford to ask each plugin whether it claims this link,
+    // and the plugins that claim one are mostly not running when it is pasted.
+    ...(summary.urlMatchers && summary.urlMatchers.length > 0
+      ? { urlMatchers: summary.urlMatchers }
+      : {}),
     installedAt: summary.installedAt,
   };
 }

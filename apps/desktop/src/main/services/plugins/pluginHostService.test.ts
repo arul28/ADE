@@ -1540,6 +1540,19 @@ describe("plugin.listContributions", () => {
     expect(lanes[0]).toMatchObject({ entityKind: "lane", entityId: "lane-1" });
   });
 
+  it("refuses to serve a graph node the plugin never declared", async () => {
+    // The writer gate for the Graph canvas, and it is this read rather than the
+    // publish call. `contributions.publish` deliberately does not check the
+    // manifest — a plugin may publish ahead of a manifest change — so the
+    // declaration join here is what keeps the install-disclosure sentence
+    // ("Graph node in Lanes") true. The fixture declares a `row-badge` only.
+    const { plugins, store } = await hostWithProject();
+    store.publishContribution("hello-plugin", "lane", "lane-1", "graph-node", { label: "ADE-142", tone: "accent" });
+
+    const lanes = await plugins.listContributions({ surface: "lanes" });
+    expect(lanes.some((row) => row.socket === "graph-node")).toBe(false);
+  });
+
   it("drops rows whose socket the user switched off, and restores them when re-enabled", async () => {
     const { plugins, store } = await hostWithProject();
     store.publishContribution("hello-plugin", "lane", "lane-1", "row-badge", { text: "ok", tone: "success" });

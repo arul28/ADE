@@ -44,6 +44,22 @@ import {
 import { isValidPluginKeybinding } from "./keybindings";
 import { isValidPluginNetworkHost, PLUGIN_NETWORK_HOSTS_MAX } from "./network";
 import { isRecord, oneOf, trimmed as trimmedString } from "./parse";
+import {
+  compilePluginUrlMatcherPattern,
+  coreSmartLinkHostOwner,
+  isValidPluginUrlMatcherGlyph,
+  isValidPluginUrlMatcherProvider,
+  parsePluginUrlMatcherLabelTemplate,
+  PLUGIN_URL_MATCHER_HOSTS_MAX,
+  PLUGIN_URL_MATCHERS_PER_PLUGIN,
+  type PluginManifestUrlMatcher,
+} from "./urlMatchers";
+
+export type {
+  PluginManifestUrlMatcher,
+  PluginManifestUrlMatcherChip,
+  PluginManifestUrlMatcherEntity,
+} from "./urlMatchers";
 import { isValidProjectSecretName } from "../types/projectSecrets";
 
 /**
@@ -743,6 +759,14 @@ export type PluginManifest = {
   searchProviders: PluginManifestSearchProvider[];
   /** Keyboard shortcuts invoking this plugin's actions. */
   keybindings: PluginManifestKeybinding[];
+  /**
+   * URL shapes that become smart-link chips. See `shared/plugins/urlMatchers.ts`.
+   *
+   * Always an array from the parser, optional on the type for the same reason
+   * `chatRuntimes` is: a manifest literal written before the field existed still
+   * satisfies the type, and every reader spells it `?? []`.
+   */
+  urlMatchers?: PluginManifestUrlMatcher[];
   /**
    * Conversation sources this plugin owns. See {@link PluginManifestChatRuntime}.
    *
@@ -1749,6 +1773,110 @@ function parseKeybindings(raw: unknown, ctx: ParseContext): PluginManifestKeybin
   return limitDeclarations(entries, "keybindings", PLUGIN_KEYBINDINGS_PER_PLUGIN, (e) => e.action, ctx);
 }
 
+/**
+ * URL matchers, in the grammar `shared/plugins/urlMatchers.ts` defines.
+ *
+ * Policy lives there for the reason `network` and `keybindings` put theirs in a
+ * sibling: the parser validates a declaration, the renderer compiles the same
+ * declaration into a regex, and a second spelling of either would mean a matcher
+ * the parser accepted never fires.
+ *
+ * Two refusals are worth reading as product decisions rather than validation:
+ *
+ * - A host core already parses is refused BY NAME. A plugin claiming
+ *   `linear.app` would draw its chip over ADE's own Linear links on every
+ *   machine that installed it, so the author is told who owns it instead of
+ *   shipping a matcher that silently never wins.
+ * - A label template naming a capture the pattern does not declare is refused
+ *   rather than rendered. A chip that reads `{key}` because nothing filled it is
+ *   a bug the user sees and the author does not.
+ */
+function parseUrlMatchers(raw: unknown, ctx: ParseContext): PluginManifestUrlMatcher[] {
+  const entries = parseArray(raw, "urlMatchers", ctx, (entry, label) => {
+    if (!isRecord(entry)) return ctx.drop(`${label} is not an object`);
+    const id = parseIdentifier(entry.id);
+    if (!id) return ctx.drop(`${label}.id is missing or not an identifier`);
+
+    const declaredHosts = parseStringList(entry.hosts, `${label}.hosts`, ctx, isValidPluginNetworkHost);
+    const hosts: string[] = [];
+    for (const host of declaredHosts) {
+      const owner = coreSmartLinkHostOwner(host);
+      if (owner) {
+        ctx.warnings.push(
+          `${label}.hosts declares "${host}", which ADE already parses as ${owner}.`
+            + ` A plugin cannot claim it — remove the host.`,
+        );
+        continue;
+      }
+      hosts.push(host);
+    }
+    if (hosts.length === 0) return ctx.drop(`${label}.hosts declares no host a plugin may claim`);
+    const limitedHosts = limitDeclarations(
+      hosts,
+      `${label}.hosts`,
+      PLUGIN_URL_MATCHER_HOSTS_MAX,
+      (host) => host,
+      ctx,
+    );
+
+    const pattern = compilePluginUrlMatcherPattern(entry.pathPattern);
+    if (!pattern.ok) return ctx.drop(`${label}.pathPattern ${pattern.reason}`);
+    const { captureNames } = pattern.compiled;
+
+    if (!isRecord(entry.chip)) return ctx.drop(`${label}.chip is missing or not an object`);
+    const template = parsePluginUrlMatcherLabelTemplate(entry.chip.label, captureNames);
+    if (!template.ok) return ctx.drop(`${label}.chip.label ${template.reason}`);
+    const icon = entry.chip.icon === undefined ? null : trimmedString(entry.chip.icon);
+    if (icon !== null && !isValidPluginUrlMatcherGlyph(icon)) {
+      // Dropped rather than refusing the matcher: the chip has a monogram to
+      // fall back to, and losing the whole link over its badge is the worse
+      // trade. Named so the author can see which glyph was refused.
+      ctx.warnings.push(`${label}.chip.icon "${String(entry.chip.icon)}" is not one or two plain characters`);
+    }
+    const chip: PluginManifestUrlMatcher["chip"] = {
+      label: trimmedString(entry.chip.label) ?? "",
+      ...(icon && isValidPluginUrlMatcherGlyph(icon) ? { icon } : {}),
+    };
+
+    const panelId = entry.panelId === undefined ? null : parseIdentifier(entry.panelId);
+    if (entry.panelId !== undefined && !panelId) {
+      return ctx.drop(`${label}.panelId is not an identifier`);
+    }
+
+    let entity: PluginManifestUrlMatcher["entity"];
+    if (entry.entity !== undefined) {
+      if (!isRecord(entry.entity)) return ctx.drop(`${label}.entity is not an object`);
+      if (entry.entity.kind !== "issue") {
+        return ctx.drop(`${label}.entity.kind must be "issue"`);
+      }
+      // Not lowercased on the way in: a provider has one spelling, and folding
+      // `Jira` to `jira` here would accept a manifest the CLI's own validator
+      // refuses.
+      const provider = trimmedString(entry.entity.provider) ?? "";
+      if (!isValidPluginUrlMatcherProvider(provider)) {
+        return ctx.drop(
+          `${label}.entity.provider "${provider}" is missing, malformed, or a provider ADE speaks for`,
+        );
+      }
+      const keyFrom = trimmedString(entry.entity.keyFrom) ?? "";
+      if (!captureNames.includes(keyFrom)) {
+        return ctx.drop(`${label}.entity.keyFrom "${keyFrom}" is not a capture the pathPattern declares`);
+      }
+      entity = { kind: "issue", provider, keyFrom };
+    }
+
+    return {
+      id,
+      hosts: limitedHosts,
+      pathPattern: trimmedString(entry.pathPattern) ?? "",
+      chip,
+      ...(panelId ? { panelId } : {}),
+      ...(entity ? { entity } : {}),
+    };
+  });
+  return limitDeclarations(entries, "urlMatchers", PLUGIN_URL_MATCHERS_PER_PLUGIN, (e) => e.id, ctx);
+}
+
 // ------------------------ end engine registrations -------------------------
 
 /**
@@ -2124,6 +2252,7 @@ export function parsePluginManifest(raw: unknown): PluginManifestParseResult {
   const automationSteps = parseAutomationSteps(raw.automationSteps, ctx);
   const searchProviders = parseSearchProviders(raw.searchProviders, ctx);
   const keybindings = parseKeybindings(raw.keybindings, ctx);
+  const urlMatchers = parseUrlMatchers(raw.urlMatchers, ctx);
   const chatRuntimes = parseChatRuntimes(raw.chatRuntimes, ctx);
   const webhookIngress = parseWebhookIngress(raw.webhookIngress, ctx);
   const network = parseNetwork(raw.network, ctx);
@@ -2165,6 +2294,7 @@ export function parsePluginManifest(raw: unknown): PluginManifestParseResult {
       automationSteps,
       searchProviders,
       keybindings,
+      urlMatchers,
       chatRuntimes,
       webhookIngress,
       ...(network ? { network } : {}),
