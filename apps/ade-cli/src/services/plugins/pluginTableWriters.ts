@@ -13,6 +13,8 @@ import {
   PLUGIN_COLLECTION_MAX_EVICTIONS_PER_PUT,
   type PluginCollectionIfFull,
 } from "../../../../desktop/src/shared/plugins/sdk";
+import { countRawVocabComponents, parsePluginPanel } from "../../../../desktop/src/shared/plugins/vocabulary";
+import { VOCAB_LIMITS } from "../../../../desktop/src/shared/plugins/vocabularyNodes";
 import type { AdeDb } from "../../../../desktop/src/main/services/state/kvDb";
 
 /**
@@ -347,6 +349,50 @@ function withPanelHostKeys(
   });
 }
 
+/**
+ * Refuse a panel whose schema is over a `VOCAB_LIMITS` ceiling.
+ *
+ * The byte cap above is not the whole budget. A schema can sit well inside
+ * 64 KiB and still carry 400 nodes, and an over-`maxNodes` schema is
+ * PANEL-FATAL at render on every client — so the row stored fine, replicated
+ * fine, and then drew as the fallback card on desktop, iOS and the web with
+ * nothing anywhere saying why, while `ade plugin doctor` still counted it as
+ * published. Collections refuse at the write with a precise message; panels
+ * used to accept silently and fail later on four clients.
+ *
+ * Only the two COUNTING ceilings are refused here. The degradation ladder is
+ * deliberately left alone: an unknown component and a malformed known one are
+ * meant to be accepted at the write and become markers at render, and they
+ * come back as `warnings` with `ok: true`, so they never reach this branch. The
+ * structural failures (`not_json`, `fallback_missing`, a `v` this build does
+ * not render) are a different class than a budget and are not this cap's to
+ * judge — refusing them here would reject a panel written for a NEWER
+ * vocabulary that an updated client would render correctly.
+ */
+function assertPanelWithinVocabLimits(schemaJson: string): void {
+  let source: unknown;
+  try {
+    source = JSON.parse(schemaJson) as unknown;
+  } catch {
+    // Unreadable JSON is `not_json` to the parser below, which is a structural
+    // failure this function does not judge. Nothing to measure either.
+    return;
+  }
+  const parsed = parsePluginPanel(source);
+  if (parsed.ok) return;
+  for (const error of parsed.errors) {
+    if (error.code === "too_many_nodes") {
+      throw budgetExceeded(
+        `A panel may contain at most ${VOCAB_LIMITS.maxNodes} nodes `
+        + `(this one has ${countRawVocabComponents(source)}).`,
+      );
+    }
+    if (error.code === "too_deep") {
+      throw budgetExceeded(`A panel may nest at most ${VOCAB_LIMITS.maxDepth} levels.`);
+    }
+  }
+}
+
 export function putPluginPanel(db: PluginWriterDb, args: PutPluginPanelArgs): void {
   const schemaJson = withPanelHostKeys(args.schemaJson, {
     mobile: args.mobile ?? true,
@@ -360,6 +406,7 @@ export function putPluginPanel(db: PluginWriterDb, args: PutPluginPanelArgs): vo
       `A panel schema may be at most ${PLUGIN_PANEL_SCHEMA_MAX_BYTES} bytes (this one is ${schemaBytes}).`,
     );
   }
+  assertPanelWithinVocabLimits(schemaJson);
   inWriteTransaction(db, () => {
     const existing = db.get<{ present: number }>(
       "select 1 as present from plugin_panels where plugin_id = ? and panel_id = ? limit 1",

@@ -183,7 +183,8 @@ extension WorkChatSessionView {
             : nil,
           sessionId: session.id,
           pluginContributions: pluginContributions,
-          pluginSyncService: pluginSyncService
+          pluginSyncService: pluginSyncService,
+          pluginIconToken: workAdeCardPluginIconToken(card)
         )
         .equatable()
       }
@@ -575,6 +576,22 @@ struct WorkAssistantMonospacedRow: View, Equatable {
           "itemId": model.itemId ?? ""
         ]
       )
+  }
+
+  /// The authoring plugin's manifest `icon` for a card's byline, or nil.
+  ///
+  /// Read off the presence catalogue, which is where the plugin menu and the
+  /// plugin list already resolve their glyphs from, so one plugin draws one icon
+  /// everywhere on this client. Nil for an ADE card, for a plugin this phone has
+  /// no presence row for, and for a plugin that named no icon — all three keep
+  /// the puzzle piece, which is then a real fallback rather than the only answer
+  /// the byline could give.
+  func workAdeCardPluginIconToken(_ card: WorkAdeCardModel) -> String? {
+    guard let pluginId = card.author?.pluginId, let sync = pluginSyncService else { return nil }
+    guard let icon = sync.pluginPresenceCatalog().record(for: pluginId)?.icon, !icon.isEmpty else {
+      return nil
+    }
+    return icon
   }
 }
 

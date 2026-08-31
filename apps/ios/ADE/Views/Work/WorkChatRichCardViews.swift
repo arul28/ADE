@@ -4308,6 +4308,11 @@ struct WorkAdeCardView: View, Equatable {
     lhs.card == rhs.card
       && lhs.isExpanded == rhs.isExpanded
       && lhs.declaredPanel == rhs.declaredPanel
+      // The byline's glyph, which arrives with the plugin's presence row and so
+      // can land a round trip after the card. Without it the equality gate holds
+      // the pre-answer render and the puzzle piece never becomes the plugin's
+      // own icon.
+      && lhs.pluginIconToken == rhs.pluginIconToken
   }
 
   let card: WorkAdeCardModel
@@ -4332,6 +4337,14 @@ struct WorkAdeCardView: View, Equatable {
   /// `PluginPaneStore` in its `init`, where `@EnvironmentObject` is not yet
   /// populated. Nil in previews, which is also where there is no panel to draw.
   var pluginSyncService: SyncService? = nil
+  /// The authoring plugin's manifest `icon`, for the byline glyph.
+  ///
+  /// Resolved by the caller off the presence catalogue — the same manifest
+  /// token the plugin menu and the plugin list draw — rather than read here, so
+  /// this view stays a pure function of its inputs and `==` can compare it. Nil
+  /// for an ADE card, for a plugin with no presence row on this phone, and for a
+  /// plugin that named no icon; all three keep the puzzle piece.
+  var pluginIconToken: String? = nil
 
   private var deeplink: URL? { workAdeCardDeeplink(card.navTarget) }
   private var availableActions: [WorkAdeCardAction] {
@@ -4382,7 +4395,7 @@ struct WorkAdeCardView: View, Equatable {
     VStack(alignment: .leading, spacing: 0) {
       if isExpanded {
         progressBar
-        if card.isKnownVariant {
+        if drawsRichBody {
           richBody
         } else {
           fallbackBody
@@ -4419,12 +4432,26 @@ struct WorkAdeCardView: View, Equatable {
 
   private var expandedPeekBody: some View {
     VStack(alignment: .leading, spacing: 0) {
-      if card.isKnownVariant {
+      if drawsRichBody {
         richBody
       } else {
         fallbackBody
       }
     }
+  }
+
+  /// Whether the card draws its full frame rather than one line of fallback text.
+  ///
+  /// A variant this build does not know degrades to `fallbackText`, which is
+  /// what lets one wire contract ship across three release trains. A card
+  /// hosting a plugin's declared panel is the exception, and it has to be:
+  /// `variant` is the PLUGIN's vocabulary on a plugin card, so a decision log's
+  /// `decision_logged` is unknown here by definition. Degrading it took the
+  /// card's own `rows` with it — observed on a device as a decision whose lane
+  /// and date were in the payload and on no screen — while the panel below drew
+  /// normally. Mirrors `AdeCard.tsx`, which exempts the same case.
+  private var drawsRichBody: Bool {
+    card.isKnownVariant || declaredPanel != nil
   }
 
   /// The plugin's panel and its byline, under the card's own body.
@@ -4453,10 +4480,18 @@ struct WorkAdeCardView: View, Equatable {
             sessionId: sessionId,
             syncService: syncService
           )
+          // The panel builds its `PluginPaneStore` in `init`, and a `@StateObject`
+          // keeps the FIRST instance for the view's whole life — so a re-emit
+          // that changes only `panel.context` would keep rendering `$context`
+          // from the context the row first appeared with. Identity keyed on the
+          // context rebuilds the store when, and only when, it really changed.
+          .id("\(author.pluginId)|\(panel.panelId)|\(PluginPanelContext.json(panel.context) ?? "")")
         }
         HStack(spacing: 4) {
-          Image(systemName: "puzzlepiece.extension")
-            .font(.system(size: 9, weight: .semibold))
+          // The plugin's own glyph. `PluginSymbol` is the one token map on this
+          // client, so a brand mark works here and an unknown token degrades to
+          // the puzzle piece — which is the only case that should ever draw one.
+          PluginSymbol.glyph(pluginIconToken, fallback: "puzzlepiece.extension", pointSize: 9)
           Text("via \(author.label)")
             .font(.caption2)
             .lineLimit(1)

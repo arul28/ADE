@@ -304,6 +304,91 @@ describe("ade plugin dispatch", () => {
     expect(asJson.output).not.toContain("next turn");
   });
 
+  /**
+   * How the install was authorized, for the reader who cannot see the chat.
+   *
+   * The card is raised in a conversation the terminal has no window onto, so
+   * `ade plugin install` printed the same line whether a person had just said
+   * yes, whether an earlier yes was reused, or whether nobody was ever asked.
+   * An agent reading its own output had nothing to go on but how long the
+   * command took.
+   */
+  it("says how an install was approved, in the words that fit each way", async () => {
+    const install = async (approval: unknown) => runPluginCommandAsync(["install", "/src/graph", "--text"], {
+      invokeAction: async () => ({
+        pluginId: "graph",
+        version: "1.0.0",
+        displayName: "Graph",
+        enabled: true,
+        ...(approval === undefined ? {} : { approval }),
+      }),
+    });
+
+    const onACard = await install({ required: true, decidedBy: "card" });
+    expect(onACard.output).toContain("Approved on a card in the chat.");
+
+    const remembered = await install({ required: false, decidedBy: "card" });
+    expect(remembered.output).toContain("Approved earlier in this ADE run");
+    // Remembered consent is still consent someone gave: it must not read as
+    // the operator path, which nobody was ever asked about.
+    expect(remembered.output).not.toContain("operator");
+
+    const operator = await install({ required: false, decidedBy: "operator" });
+    expect(operator.output).toContain("operator");
+    expect(operator.output).toContain("no card was needed");
+
+    // A host that predates the field says nothing, and the CLI must not
+    // invent an answer on its behalf.
+    const silent = await install(undefined);
+    expect(silent.output).toBe("graph 1.0.0 — Graph (enabled)\n");
+  });
+
+  it("says how a removal was approved, beside the line that says it happened", async () => {
+    const result = await runPluginCommandAsync(["remove", "graph", "--text"], {
+      invokeAction: async () => ({ removed: true, approval: { required: true, decidedBy: "card" } }),
+    });
+    expect(result.output).toBe("Removed graph.\nApproved on a card in the chat.\n");
+
+    const enabled = await runPluginCommandAsync(["enable", "graph", "--text"], {
+      invokeAction: async () => ({
+        pluginId: "graph",
+        version: "1.0.0",
+        displayName: "Graph",
+        enabled: true,
+        approval: { required: true, decidedBy: "card" },
+      }),
+    });
+    expect(enabled.output).toContain("Approved on a card in the chat.");
+  });
+
+  it("leaves JSON — the default — the action result verbatim, approval included", async () => {
+    const approval = { required: false, decidedBy: "card" };
+    const invokeAction = async () => ({
+      pluginId: "graph",
+      version: "1.0.0",
+      displayName: "Graph",
+      enabled: true,
+      approval,
+    });
+
+    // No format flag at all: JSON is the default, and the text-only helper must
+    // not reach it.
+    const asDefault = await runPluginCommandAsync(["install", "/src/graph"], { invokeAction });
+    expect(JSON.parse(asDefault.output)).toEqual({
+      pluginId: "graph",
+      version: "1.0.0",
+      displayName: "Graph",
+      enabled: true,
+      approval,
+    });
+    expect(asDefault.output).not.toContain("Approved");
+
+    const asJson = await runPluginCommandAsync(["remove", "graph", "--json"], {
+      invokeAction: async () => ({ removed: true, approval }),
+    });
+    expect(JSON.parse(asJson.output)).toEqual({ removed: true, approval });
+  });
+
   it("walks the state ladder for one plugin, and degrades where ADE cannot answer", async () => {
     writePlugin("tipsy", manifestFixture("tipsy", {
       sockets: [

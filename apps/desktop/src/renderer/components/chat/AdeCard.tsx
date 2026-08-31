@@ -151,14 +151,22 @@ function trackedSpanText(card: AdeCardPayload): string | null {
  * whole field exists to prevent. The value is host-stamped
  * (`main/services/chat/adeCardProvenance.ts`), so it names the package whose
  * code ran and not whatever the payload claimed.
+ *
+ * The glyph is the PLUGIN's, resolved by the caller and passed in. It arrives as
+ * a component rather than as an icon token so this file never imports the
+ * plugin icon map — the whole Phosphor subset would then ride in the chat chunk
+ * for every transcript, plugins installed or not. The puzzle piece is the
+ * fallback for a plugin that named no icon or named one this build lacks, which
+ * is the same rule `pluginIcon` applies everywhere else.
  */
-function AdeCardAttribution({ label }: { label: string }) {
+function AdeCardAttribution({ label, icon }: { label: string; icon?: PhosphorIcon }) {
+  const Glyph = icon ?? PuzzlePiece;
   return (
     <div
       data-testid="ade-card-attribution"
       className={cn("mt-1.5 flex items-center gap-1 text-fg/35", CHAT_CARD_MICRO_TEXT)}
     >
-      <PuzzlePiece size={10} weight="bold" aria-hidden />
+      <Glyph size={10} weight="bold" aria-hidden />
       <span className="truncate">via {label}</span>
     </div>
   );
@@ -168,9 +176,16 @@ export function AdeCard({
   card,
   onAction,
   panel,
+  authorIcon,
   pendingActionId = null,
 }: {
   card: AdeCardPayload;
+  /**
+   * The authoring plugin's glyph for the byline, resolved by the caller from the
+   * installed summary or the manifest. Absent — an ADE card, or a plugin that
+   * named no icon — leaves the puzzle piece.
+   */
+  authorIcon?: PhosphorIcon;
   /** Host-specific dispatcher. The reserved `open` action is handled locally. */
   onAction?: (actionId: string) => void;
   /**
@@ -241,7 +256,7 @@ export function AdeCard({
             {deeplink ?? "Open"}
           </button>
         ) : null}
-        {author ? <AdeCardAttribution label={adeCardAuthorLabel(author)} /> : null}
+        {author ? <AdeCardAttribution label={adeCardAuthorLabel(author)} icon={authorIcon} /> : null}
       </div>
     );
   }
@@ -262,7 +277,7 @@ export function AdeCard({
     return (
       <div className={CHAT_CARD_WIDTH_CLASS}>
         {installCard}
-        <AdeCardAttribution label={adeCardAuthorLabel(author)} />
+        <AdeCardAttribution label={adeCardAuthorLabel(author)} icon={authorIcon} />
       </div>
     );
   }
@@ -290,8 +305,16 @@ export function AdeCard({
 
   // A card only earns a box when it has something to put in one. A passing
   // result collapses to a single hairline row.
+  //
+  // A PLUGIN's card is the exception, and for the same reason its variant is
+  // exempt from the unknown-variant gate above: the shape-follows-the-state
+  // rules here are read off variants this build knows, and a plugin's variant is
+  // unknown by definition, so every plugin card scored "quiet success" and its
+  // `rows` never drew. `rows` is the documented way to make a card about THIS
+  // thing, so a card whose author sent rows shows them.
   const detailRows = hasWarning ? warnRows : rows;
-  const showDetail = detailRows.length > 0 && (hasWarning || isLive || card.variant === "proof_artifact");
+  const showDetail = detailRows.length > 0
+    && (hasWarning || isLive || card.variant === "proof_artifact" || author != null);
   // A hosted panel always earns a box: a hairline row with a rendered panel
   // hanging off it has no frame to say where the plugin's content ends.
   const skin = isSessionQuota || hasWarning
@@ -408,7 +431,7 @@ export function AdeCard({
         </div>
       ) : null}
 
-      {author ? <AdeCardAttribution label={adeCardAuthorLabel(author)} /> : null}
+      {author ? <AdeCardAttribution label={adeCardAuthorLabel(author)} icon={authorIcon} /> : null}
     </>
   );
 

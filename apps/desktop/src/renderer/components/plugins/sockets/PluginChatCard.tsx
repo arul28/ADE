@@ -2,6 +2,8 @@ import React from "react";
 
 import { AdeCard } from "../../chat/AdeCard";
 import { PluginPanelHost } from "../PluginPanelHost";
+import { pluginIdentity } from "../pluginIcons";
+import { useRootAppStore } from "../../../state/appStore";
 import { SocketBoundary } from "./SocketBoundary";
 import { useSurfaceContributions } from "./useSurfaceContributions";
 import { pluginSessionContext } from "./surfaceContexts";
@@ -57,6 +59,25 @@ export function PluginChatCard({
   const author = readAdeCardAuthor(card);
   const panel = readAdeCardPanel(card);
   const pluginId = author?.pluginId ?? null;
+
+  /**
+   * The byline's glyph: the plugin's own, not a puzzle piece.
+   *
+   * Read off the installed summary — the same manifest `icon` the approval card,
+   * the tab rail and the Marketplace draw — and resolved through
+   * `pluginIdentity`, so a brand token works here too and a plugin that named no
+   * icon gets the glyph it is drawn as everywhere else rather than a fallback
+   * this one surface invented. A card from a plugin no longer installed keeps
+   * the puzzle piece, which is the honest answer: nothing left to read an icon
+   * from.
+   */
+  const installed = useRootAppStore((state) => state.installedPlugins);
+  const authorIcon = React.useMemo(() => {
+    if (!pluginId) return undefined;
+    const summary = installed.find((entry) => entry.pluginId === pluginId);
+    if (!summary) return undefined;
+    return pluginIdentity({ pluginId, icon: summary.icon, accent: summary.accent }).Icon;
+  }, [installed, pluginId]);
 
   /**
    * Which of this card's buttons is running, so the pressed one can say so and
@@ -135,7 +156,14 @@ export function PluginChatCard({
   );
 
   if (!pluginId || !panel || !declared) {
-    return <AdeCard card={card} onAction={handleAction} pendingActionId={pendingActionId} />;
+    return (
+      <AdeCard
+        card={card}
+        onAction={handleAction}
+        pendingActionId={pendingActionId}
+        {...(authorIcon ? { authorIcon } : {})}
+      />
+    );
   }
 
   return (
@@ -143,6 +171,7 @@ export function PluginChatCard({
       card={card}
       onAction={handleAction}
       pendingActionId={pendingActionId}
+      {...(authorIcon ? { authorIcon } : {})}
       panel={(
         <SocketBoundary>
           <PluginPanelHost

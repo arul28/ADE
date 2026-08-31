@@ -31,6 +31,7 @@ import {
 import {
   invokePluginAction,
   listInstalledPlugins,
+  loadInstalledPlugins,
   readPluginContributionRows,
   readPluginManifest,
 } from "../../../lib/pluginRuntimeBridge";
@@ -131,8 +132,32 @@ export function clearPluginManifestCache(): void {
  * installed", which is also the difference between a contribution that should
  * come back when the switch flips and one that never existed.
  */
+/**
+ * {@link readPluginSocketSources}, keeping "the host could not answer" apart
+ * from "the host answered, and there are none".
+ *
+ * The two are opposite facts and they used to arrive as the same empty array.
+ * On a cold launch the plugin host lives in the daemon and is not bound yet, so
+ * the first read refuses with a typed `plugins_unavailable` — which
+ * `listInstalledPlugins` collapses to `[]`. The store above then committed that
+ * as a settled, successful "no plugins" and stopped asking. Menu rows drawn
+ * from a *cached* earlier read stayed on screen while the store believed there
+ * was nothing to load, and nothing retried until an unrelated plugin event
+ * happened to arrive.
+ */
+export async function loadPluginSocketSources(): Promise<
+  { ok: true; sources: PluginSocketSource[] } | { ok: false }
+> {
+  const load = await loadInstalledPlugins();
+  if (!load.ok) return { ok: false };
+  return { ok: true, sources: await sourcesFromInstalled(load.plugins) };
+}
+
 export async function readPluginSocketSources(): Promise<PluginSocketSource[]> {
-  const installed = await listInstalledPlugins();
+  return await sourcesFromInstalled(await listInstalledPlugins());
+}
+
+async function sourcesFromInstalled(installed: readonly unknown[]): Promise<PluginSocketSource[]> {
   const sources: Omit<PluginSocketSource, "manifest">[] = [];
   for (const entry of installed) {
     if (!isRecord(entry)) continue;

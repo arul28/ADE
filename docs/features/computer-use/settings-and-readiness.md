@@ -138,7 +138,7 @@ The inline monitor renders `buildComputerUseOwnerSnapshot({ broker, owner: { kin
 
 ### ADE local fallback
 
-1. `getLocalComputerUseCapabilities()` runs CLI detection for `screencapture`, `open`, `swift`, `osascript`.
+1. `getLocalComputerUseCapabilities()` runs CLI detection for `screencapture`, `open`, `swift`, `osascript`, plus a one-per-process Screen Recording permission probe (a 1x1 `screencapture` into the temp dir) that gates the screenshot and video capabilities.
 2. UI shows per-capability state and per-proof-kind availability.
 3. On non-macOS: the panel shows `"blocked_by_capability"` and explains the macOS-only limitation.
 

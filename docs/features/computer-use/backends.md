@@ -122,6 +122,8 @@ artifact store before persisting the row.
 | --- | --- | --- |
 | screenshot | `screencapture` | macOS built-in, required for screenshots. |
 | videoRecording | `screencapture -v` | macOS built-in, records screen video. |
+
+The `screencapture` binary ships with every macOS install, so its presence proves nothing. Both screen capabilities are additionally gated on a real Screen Recording (TCC) probe: one memoized 1x1 `screencapture -R 0,0,1,1` into the OS temp dir per process, deleted immediately. Without the grant, `screenshot` and `videoRecording` report `missing` with a detail pointing at System Settings > Privacy & Security > Screen Recording, and `localFallback.available` is false — previously status claimed `present` and the next capture died with `could not create image from display`. The grant belongs to whichever process answers, so a status call served by Electron main describes ADE.app's grant, while a headless `ade` capture describes the CLI's.
 | appLaunch | `open` | macOS built-in, launches and focuses apps. |
 | guiInteraction | `swift` (preferred) or `osascript` | Native click automation (Swift) or AppleScript fallback. |
 | environmentInfo | `osascript` | AppleScript inspection of frontmost app. |

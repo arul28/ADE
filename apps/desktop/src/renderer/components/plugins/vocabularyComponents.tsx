@@ -36,6 +36,7 @@ import type {
 import {
   VOCAB_LIMITS,
   bindingKey,
+  boundRowEntries,
   boundRowValues,
   coerceBoundKeyValueRow,
   coerceBoundListItem,
@@ -346,6 +347,19 @@ export function VocabSegmented({
 function boundRows(node: { bind?: VocabBinding }, context: VocabRenderContext): unknown[] | null {
   if (!node.bind) return null;
   return boundRowValues(node.bind, context.rowsByBinding.get(bindingKey(node.bind)), context.state);
+}
+
+/**
+ * The same rows for `keyValue`, which needs each row's primary key: that key is
+ * what makes a scalar-valued row — every `$context` row, and any collection
+ * storing plain text — a row rather than a value with no label.
+ */
+function boundKeyedRows(
+  node: { bind?: VocabBinding },
+  context: VocabRenderContext,
+): { key?: string; value: unknown }[] | null {
+  if (!node.bind) return null;
+  return boundRowEntries(node.bind, context.rowsByBinding.get(bindingKey(node.bind)), context.state);
 }
 
 /* ── List ───────────────────────────────────────────────────────────────── */
@@ -810,9 +824,11 @@ export function VocabKeyValue({
   node: VocabKeyValueNode;
   context: VocabRenderContext;
 }) {
-  const bound = boundRows(node, context);
+  const bound = boundKeyedRows(node, context);
   const rows = bound
-    ? bound.map(coerceBoundKeyValueRow).filter((row): row is VocabKeyValueRow => row !== null)
+    ? bound
+        .map((entry) => coerceBoundKeyValueRow(entry.value, entry.key))
+        .filter((row): row is VocabKeyValueRow => row !== null)
     : (node.rows ?? []);
 
   if (rows.length === 0) return <EmptyLine text={node.emptyText ?? "No details."} />;

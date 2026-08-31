@@ -2,6 +2,28 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+// getBackendStatus() asks the real capability probe, which is platform- and
+// TCC-dependent. Pin both inputs so the Screen Recording contract is provable
+// on any host: the module stays real, only its two injection seams are fixed.
+const capabilityProbe = vi.hoisted(() => ({
+  platform: "darwin" as NodeJS.Platform,
+  screenCapturePermitted: true,
+}));
+
+vi.mock("./localComputerUse", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./localComputerUse")>();
+  return {
+    ...actual,
+    getLocalComputerUseCapabilities: () =>
+      actual.getLocalComputerUseCapabilities(
+        capabilityProbe.platform,
+        () => true,
+        () => capabilityProbe.screenCapturePermitted,
+      ),
+  };
+});
+
 import { openKvDb, type AdeDb } from "../state/kvDb";
 import { createComputerUseArtifactBrokerService } from "./computerUseArtifactBrokerService";
 
@@ -1065,5 +1087,45 @@ describe("computerUseArtifactBrokerService", () => {
     } finally {
       fs.rmSync(outsideDir, { recursive: true, force: true });
     }
+  });
+
+  describe("getBackendStatus local fallback", () => {
+    const makeBroker = () =>
+      createComputerUseArtifactBrokerService({
+        db,
+        projectId: "project-1",
+        projectRoot,
+        logger: createLogger(),
+        onEvent: () => {},
+      });
+
+    afterEach(() => {
+      capabilityProbe.platform = "darwin";
+      capabilityProbe.screenCapturePermitted = true;
+    });
+
+    it("reports the local fallback as available when Screen Recording is granted", () => {
+      capabilityProbe.screenCapturePermitted = true;
+
+      const status = makeBroker().getBackendStatus();
+
+      expect(status.localFallback.available).toBe(true);
+      expect(status.localFallback.state).toBe("present");
+      expect(status.localFallback.supportedKinds).toContain("screenshot");
+    });
+
+    it("does not claim a local fallback when Screen Recording permission is denied", () => {
+      capabilityProbe.screenCapturePermitted = false;
+
+      const status = makeBroker().getBackendStatus();
+
+      // The bug: status said `available: true, state: "present"` off a binary
+      // check, and the very next capture died with "could not create image
+      // from display".
+      expect(status.localFallback.available).toBe(false);
+      expect(status.localFallback.state).not.toBe("present");
+      expect(status.localFallback.supportedKinds).not.toContain("screenshot");
+      expect(status.localFallback.supportedKinds).not.toContain("video_recording");
+    });
   });
 });

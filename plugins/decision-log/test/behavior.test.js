@@ -343,7 +343,7 @@ test("past the control's ceiling the page says what it left out", async () => {
 
 test("saving the digest writes the config AND the schedule, in the same press", async () => {
   const harness = await start();
-  const result = await plugin.actions.applyDigestSettings({ state: { digestEnabled: "on", digestDay: "3" } });
+  const result = await plugin.actions.applyDigestSettings({ digestEnabled: true, digestDay: "3" });
 
   assert.equal(harness.config.digestEnabled, true);
   assert.equal(harness.config.digestDay, "3");
@@ -359,8 +359,8 @@ test("changing the day replaces the schedule rather than stacking a second one",
   // id field is `id` — so every save left the previous schedule alive and
   // walked toward the 8-live ceiling one day change at a time.
   const harness = await start();
-  await plugin.actions.applyDigestSettings({ state: { digestEnabled: "on", digestDay: "1" } });
-  const result = await plugin.actions.applyDigestSettings({ state: { digestEnabled: "on", digestDay: "5" } });
+  await plugin.actions.applyDigestSettings({ digestEnabled: true, digestDay: "1" });
+  const result = await plugin.actions.applyDigestSettings({ digestEnabled: true, digestDay: "5" });
 
   assert.match(result.message, /Friday/, "the save must succeed, not refuse on a bad id");
   assert.equal(harness.schedules.length, 1, "8 live schedules is the ceiling; do not leak them");
@@ -371,58 +371,76 @@ test("changing the day replaces the schedule rather than stacking a second one",
 test("eight saves in a row still leave exactly one schedule", async () => {
   const harness = await start();
   for (const day of ["1", "2", "3", "4", "5", "6", "0", "1"]) {
-    await plugin.actions.applyDigestSettings({ state: { digestEnabled: "on", digestDay: day } });
+    await plugin.actions.applyDigestSettings({ digestEnabled: true, digestDay: day });
   }
   assert.equal(harness.schedules.length, 1);
 });
 
 test("turning the digest off removes the standing claim on the clock", async () => {
   const harness = await start();
-  await plugin.actions.applyDigestSettings({ state: { digestEnabled: "on", digestDay: "1" } });
-  await plugin.actions.applyDigestSettings({ state: { digestEnabled: "off" } });
+  await plugin.actions.applyDigestSettings({ digestEnabled: true, digestDay: "1" });
+  await plugin.actions.applyDigestSettings({ digestEnabled: false });
   assert.equal(harness.schedules.length, 0);
 });
 
-test("the settings section applies on change — no Apply button anywhere in it", async () => {
+test("the settings section is a form that applies on change, with no Apply button", async () => {
   const harness = await start();
-  await plugin.actions.applyDigestSettings({ state: { digestEnabled: "on", digestDay: "4" } });
+  await plugin.actions.applyDigestSettings({ digestEnabled: true, digestDay: "4" });
 
   const published = harness.calls.panels.filter((call) => call.panelId === "settings").pop();
   const children = published.schema.body[0].children;
+  const form = children.find((node) => node.component === "form");
 
-  // The checklist item is "no restart AND no Apply button". `form` cannot do
-  // this — its `submit` is required — so the section is built from `segmented`
-  // controls that report their own change.
+  // The checklist item is "no restart AND no Apply button", and a `form` is what
+  // should express it: labels, help text and a real boolean, none of which the
+  // two `segmented` controls this section used to be could carry.
+  assert.ok(form, "the settings section is a form");
+  assert.equal(form.applyOnChange.action, "applyDigestSettings");
+  assert.equal(form.submit, undefined, "a form that applies on change draws no button");
   assert.equal(
-    children.some((node) => node.component === "form" || node.component === "button"),
+    children.some((node) => node.component === "button"),
     false,
     "a settings section that applies on change must have no button to press",
   );
-  const toggle = children.find((node) => node.stateKey === "digestEnabled");
-  assert.equal(toggle.default, "on", "it reopens on the value it just wrote");
-  assert.equal(toggle.onChange.action, "applyDigestSettings");
-  const day = children.find((node) => node.stateKey === "digestDay");
-  assert.equal(day.default, "4");
-  assert.equal(day.onChange.action, "applyDigestSettings");
+
+  const toggle = form.fields.find((field) => field.id === "digestEnabled");
+  assert.equal(toggle.kind, "toggle");
+  assert.equal(toggle.value, true, "it reopens on the value it just wrote");
+  assert.ok(toggle.help, "the help text a form gives for free");
+  const day = form.fields.find((field) => field.id === "digestDay");
+  assert.equal(day.kind, "select");
+  assert.equal(day.value, "4");
+  assert.equal(day.options.find((option) => option.value === "4").label, "Thursday");
 });
 
 test("the day picker is hidden while the digest is off", async () => {
   const harness = await start();
-  await plugin.actions.applyDigestSettings({ state: { digestEnabled: "off" } });
+  await plugin.actions.applyDigestSettings({ digestEnabled: false });
   const published = harness.calls.panels.filter((call) => call.panelId === "settings").pop();
-  const children = published.schema.body[0].children;
-  assert.equal(children.some((node) => node.stateKey === "digestDay"), false);
+  const form = published.schema.body[0].children.find((node) => node.component === "form");
+  assert.equal(form.fields.some((field) => field.id === "digestDay"), false);
 });
 
 test("turning the digest back on keeps the day it was last set to", async () => {
   const harness = await start();
-  await plugin.actions.applyDigestSettings({ state: { digestEnabled: "on", digestDay: "6" } });
-  await plugin.actions.applyDigestSettings({ state: { digestEnabled: "off" } });
-  // The day control is not on screen while off, so the change carries no
+  await plugin.actions.applyDigestSettings({ digestEnabled: true, digestDay: "6" });
+  await plugin.actions.applyDigestSettings({ digestEnabled: false });
+  // The day field is not on screen while off, so the change carries no
   // `digestDay` — the stored value has to survive that.
-  const result = await plugin.actions.applyDigestSettings({ state: { digestEnabled: "on" } });
+  const result = await plugin.actions.applyDigestSettings({ digestEnabled: true });
   assert.match(result.message, /Saturday/);
   assert.equal(harness.config.digestDay, "6");
+});
+
+test("a panel published before the form still applies, reading `state`", async () => {
+  // A reader can be looking at a `segmented`-built settings panel published by
+  // an older copy of this plugin when the code reloads under them. Their next
+  // tap arrives as `state: {digestEnabled: "on"}` and must not read as Off.
+  const harness = await start();
+  const result = await plugin.actions.applyDigestSettings({ state: { digestEnabled: "on", digestDay: "2" } });
+  assert.equal(harness.config.digestEnabled, true);
+  assert.equal(harness.config.digestDay, "2");
+  assert.match(result.message, /Tuesday/);
 });
 
 // ---------------------------------------------------------------------------

@@ -2,7 +2,11 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { createComputerUseArtifactPath, getLocalComputerUseCapabilities } from "./localComputerUse";
+import {
+  __setScreenCapturePermissionProbeForTests,
+  createComputerUseArtifactPath,
+  getLocalComputerUseCapabilities,
+} from "./localComputerUse";
 
 describe("createComputerUseArtifactPath", () => {
   let projectRoot: string;
@@ -28,9 +32,15 @@ describe("getLocalComputerUseCapabilities", () => {
   it.each(["win32", "linux"] as const)(
     "blocks native OS control on %s without disabling Electron Control or proof ingestion",
     (platform) => {
-      const capabilities = getLocalComputerUseCapabilities(platform, () => {
-        throw new Error("non-macOS capability checks must not probe macOS executables");
-      });
+      const capabilities = getLocalComputerUseCapabilities(
+        platform,
+        () => {
+          throw new Error("non-macOS capability checks must not probe macOS executables");
+        },
+        () => {
+          throw new Error("non-macOS capability checks must not probe Screen Recording permission");
+        },
+      );
 
       expect(capabilities).toMatchObject({
         platform,
@@ -44,8 +54,8 @@ describe("getLocalComputerUseCapabilities", () => {
     },
   );
 
-  it("preserves native macOS capability detection", () => {
-    const capabilities = getLocalComputerUseCapabilities("darwin", () => true);
+  it("preserves native macOS capability detection when Screen Recording is granted", () => {
+    const capabilities = getLocalComputerUseCapabilities("darwin", () => true, () => true);
 
     expect(capabilities.platform).toBe("darwin");
     expect(capabilities.overallState).toBe("present");
@@ -56,5 +66,49 @@ describe("getLocalComputerUseCapabilities", () => {
     });
     expect(capabilities.guiInteraction.available).toBe(true);
     expect(capabilities.proofRequirements.console_logs.available).toBe(true);
+  });
+
+  it("reports screenshot and video as missing when Screen Recording permission is denied", () => {
+    const capabilities = getLocalComputerUseCapabilities("darwin", () => true, () => false);
+
+    expect(capabilities.screenshot).toMatchObject({ state: "missing", available: false, command: "screencapture" });
+    expect(capabilities.videoRecording).toMatchObject({ state: "missing", available: false, command: "screencapture" });
+    expect(capabilities.overallState).not.toBe("present");
+    for (const detail of [capabilities.screenshot.detail, capabilities.videoRecording.detail]) {
+      expect(detail).toContain("Screen Recording");
+      expect(detail).toContain("System Settings > Privacy & Security > Screen Recording");
+    }
+    // Capabilities that do not read the display stay untouched.
+    expect(capabilities.appLaunch.available).toBe(true);
+    expect(capabilities.guiInteraction.available).toBe(true);
+    expect(capabilities.environmentInfo.available).toBe(true);
+    expect(capabilities.proofRequirements.screenshot.available).toBe(false);
+    expect(capabilities.proofRequirements.video_recording.available).toBe(false);
+  });
+
+  it("does not probe Screen Recording permission when the screencapture binary is absent", () => {
+    const capabilities = getLocalComputerUseCapabilities("darwin", (command) => command !== "screencapture", () => {
+      throw new Error("permission must not be probed without the screencapture binary");
+    });
+
+    expect(capabilities.screenshot).toMatchObject({ state: "missing", available: false });
+    expect(capabilities.screenshot.detail).toContain("macOS screencapture is required");
+    expect(capabilities.overallState).toBe("missing");
+  });
+
+  it("probes the Screen Recording permission once per process", () => {
+    let probes = 0;
+    __setScreenCapturePermissionProbeForTests(() => {
+      probes += 1;
+      return true;
+    });
+    try {
+      for (let i = 0; i < 5; i++) {
+        expect(getLocalComputerUseCapabilities("darwin", () => true).screenshot.available).toBe(true);
+      }
+      expect(probes).toBe(1);
+    } finally {
+      __setScreenCapturePermissionProbeForTests(null);
+    }
   });
 });

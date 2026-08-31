@@ -580,6 +580,18 @@ It exists because the alternative was a `form`, a submit button, a
 trip per filter change, with the selection surviving the re-render only if the
 plugin baked it back into `field.value`. A fleet list is unusable that way.
 
+The reverse pressure produced `form`'s **`applyOnChange`**. `submit` used to be
+required, so a settings section that had to take effect with no Apply button was
+not expressible as a form at all, and the only way to build one was out of
+`segmented` controls — which cost the field labels, the help text and the
+validation a form carries, and spelled a boolean as `"on"`/`"off"`.
+`applyOnChange` is an action beside `submit`, dispatched on every committed edit
+with the same full values map a submit sends; a form declaring it needs no
+`submit` and draws no button when it has none. "Committed" means the change
+itself for a `toggle` or `select`, and blur or Enter for a typed field, so a
+plugin is not invoked once per keystroke. A form declaring neither is refused at
+parse and degrades to a marker, on all four clients.
+
 Rule 3 ("data, never code") is intact. A predicate is a fixed grammar of four
 comparisons (`equals`, `notEquals`, `in`, `notIn`) over three composers (`and`,
 `or`, `not`), with no functions, no regular expressions, no arithmetic, no

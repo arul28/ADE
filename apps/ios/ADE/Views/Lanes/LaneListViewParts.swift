@@ -487,12 +487,33 @@ extension LanesTabView {
         errorMessage = nil
       }
     } catch {
+      // A cancelled load is not a failed one. `reload` runs from `.task(id:)`,
+      // which SwiftUI cancels whenever the reload key changes or the tab goes
+      // away — so switching to Lanes and back raised "Lane view error: The
+      // operation couldn't be completed. (Swift.CancellationError error 1.)"
+      // with a Retry button, for a load nothing had gone wrong with. There is
+      // nothing to tell the reader and nothing to retry: the task that replaced
+      // this one is already loading the same lanes.
+      guard laneReloadFailureIsMeaningful(error) else { return }
       ADEHaptics.error()
       let message = error.localizedDescription
       if errorMessage != message {
         errorMessage = message
       }
     }
+  }
+
+  /// Whether a lane load failure is worth showing. Cancellation is not.
+  ///
+  /// Both spellings, because both reach here: `CancellationError` from a
+  /// structured task and `NSURLErrorCancelled` from a URLSession request torn
+  /// down with it. Mirrors `syncEndpointFailureIsMeaningful` in
+  /// `SyncService.swift`, which draws the same line for the same reason.
+  private func laneReloadFailureIsMeaningful(_ error: Error) -> Bool {
+    if error is CancellationError { return false }
+    let nsError = error as NSError
+    if nsError.domain == NSURLErrorDomain, nsError.code == NSURLErrorCancelled { return false }
+    return true
   }
 
   func toggleOpenLane(_ laneId: String) {

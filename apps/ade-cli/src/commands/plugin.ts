@@ -552,6 +552,32 @@ function daemonResult(value: unknown, format: OutputFormat): PluginCliResult {
   return jsonOutput(value ?? null);
 }
 
+/**
+ * One line saying how a lifecycle call was authorized, or `null` when the host
+ * did not report it.
+ *
+ * The reader of `ade plugin install` cannot see the chat the card was raised
+ * in, and an agent reading this output used to have nothing at all to go on —
+ * it inferred consent from how long the command took. `--json` carries the
+ * whole `approval` object; this is the same fact for a person.
+ */
+function approvalLine(value: unknown): string | null {
+  if (!isRecord(value) || !isRecord(value.approval)) return null;
+  const { required, decidedBy } = value.approval;
+  if (decidedBy === "operator") return "Approved as this computer's operator; no card was needed.";
+  if (decidedBy !== "card") return null;
+  return required === true
+    ? "Approved on a card in the chat."
+    : "Approved earlier in this ADE run; the card was not shown again.";
+}
+
+/** Append {@link approvalLine} to a text result, leaving JSON untouched. */
+function withApprovalLine(result: PluginCliResult, value: unknown, format: OutputFormat): PluginCliResult {
+  if (format !== "text") return result;
+  const line = approvalLine(value);
+  return line ? { ...result, output: `${result.output}${line}\n` } : result;
+}
+
 async function runPluginInstall(
   args: string[],
   format: OutputFormat,
@@ -569,7 +595,7 @@ async function runPluginInstall(
     ...(ref ? { ref } : {}),
     enable: !noEnable,
   });
-  const installed = daemonResult(result, format);
+  const installed = withApprovalLine(daemonResult(result, format), result, format);
   if (format !== "text") return installed;
   // A skill arriving is the one thing an install changes that the reader
   // cannot see, and the moment they will test it is the turn already running.
@@ -597,12 +623,12 @@ async function runPluginLifecycle(
   const result = await invoke(action, { pluginId });
   if (action === "uninstall" && format === "text") {
     const removed = isRecord(result) && result.removed === true;
-    return {
+    return withApprovalLine({
       output: removed ? `Removed ${pluginId}.\n` : `${pluginId} was not installed.\n`,
       exitCode: 0,
-    };
+    }, result, format);
   }
-  const summary = daemonResult(result, format);
+  const summary = withApprovalLine(daemonResult(result, format), result, format);
   if (action !== "reload" || format !== "text") return summary;
   // A reload re-copies a local source before it restarts the child, and the one
   // thing the reader must never miss is a resync that was REFUSED — the whole

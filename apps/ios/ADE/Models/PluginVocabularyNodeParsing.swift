@@ -303,12 +303,25 @@ extension PluginPanelParser {
     guard !fields.isEmpty else {
       return invalid("form", "no usable fields", path: path, context: &context)
     }
-    guard let submit = object["submit"] as? [String: Any],
-          let label = cleanString(submit["label"], max: PluginVocabLimits.maxLabelChars),
-          let action = parseAction(submit["onPress"]) else {
+    let submit = object["submit"] as? [String: Any]
+    let submitLabel = submit.flatMap { cleanString($0["label"], max: PluginVocabLimits.maxLabelChars) }
+    let submitAction = submit.flatMap { parseAction($0["onPress"]) }
+    let applyOnChange = parseAction(object["applyOnChange"])
+    // A `submit` that was WRITTEN and is malformed stays an error even when
+    // `applyOnChange` would carry the form: the author asked for a button, and
+    // silently dropping it would ship a form missing the control they declared.
+    if submit != nil, submitLabel == nil || submitAction == nil {
       return invalid("form", "`submit` needs a `label` and an `onPress` action", path: path, context: &context)
     }
-    return .form(PluginVocabForm(fields: fields, submitLabel: label, submit: action))
+    if submitAction == nil, applyOnChange == nil {
+      return invalid("form", "needs a `submit`, or an `applyOnChange` action", path: path, context: &context)
+    }
+    return .form(PluginVocabForm(
+      fields: fields,
+      submitLabel: submitLabel,
+      submit: submitAction,
+      applyOnChange: applyOnChange
+    ))
   }
 
   static func parseField(_ raw: Any?) -> PluginVocabField? {

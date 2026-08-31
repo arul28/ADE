@@ -372,50 +372,38 @@ async function republishLogPanel() {
 /**
  * The settings section, with no Apply button.
  *
- * `form` cannot do this: its `submit` is required, so every form-shaped
- * settings panel grows a button the user has to press before anything happens.
- * `segmented` is the one control that owns state and can report a change, so
- * the section is built from two of them and `onChange` applies the change on
- * the spot — the config write AND the reschedule, in the same round trip.
+ * A `form` with `applyOnChange`: every edit dispatches the action with the whole
+ * values map, and no button is drawn. This section spent a while built out of
+ * two `segmented` controls instead, because `submit` used to be required — which
+ * worked, and cost the field labels, the help text and the validation a form
+ * gives for free, and made a boolean into the strings "on" and "off".
  */
 async function republishSettingsPanel() {
   const config = await sdk.config.get();
   const enabled = config.digestEnabled === true;
   const day = typeof config.digestDay === "string" && DAY_LABELS[config.digestDay] ? config.digestDay : "1";
 
-  const children = [
+  const fields = [
     {
-      component: "segmented",
-      stateKey: "digestEnabled",
+      kind: "toggle",
+      id: "digestEnabled",
       label: "Weekly digest",
-      style: "toggle",
-      default: enabled ? "on" : "off",
-      options: [
-        { value: "off", label: "Off" },
-        { value: "on", label: "On" },
-      ],
-      onChange: { action: "applyDigestSettings" },
+      help: "A notification each week summarizing what you logged.",
+      value: enabled,
     },
   ];
   // Only ask which day once there is a digest to send — a day picker under an
   // Off switch is a control with no effect.
   if (enabled) {
-    children.push({
-      component: "segmented",
-      stateKey: "digestDay",
+    fields.push({
+      kind: "select",
+      id: "digestDay",
       label: "Send it on",
-      default: day,
-      options: Object.keys(DAY_LABELS).map((value) => ({ value, label: DAY_LABELS[value].slice(0, 3) })),
-      onChange: { action: "applyDigestSettings" },
+      help: "The digest goes out at 09:13 on the day you pick.",
+      options: Object.keys(DAY_LABELS).map((value) => ({ value, label: DAY_LABELS[value] })),
+      value: day,
     });
   }
-  children.push({
-    component: "text",
-    variant: "caption",
-    text: enabled
-      ? `Sending every ${DAY_LABELS[day]} at 09:13. Changes apply immediately.`
-      : "Turn this on for a weekly notification summarizing what you logged.",
-  });
 
   await sdk.panels.update("settings", {
     v: 1,
@@ -425,7 +413,27 @@ async function republishSettingsPanel() {
       text: "Open ADE on a computer to change the weekly digest.",
       deeplink: "ade://plugin/decision-log/log",
     },
-    body: [{ component: "stack", direction: "vertical", gap: "md", children }],
+    body: [
+      {
+        component: "stack",
+        direction: "vertical",
+        gap: "md",
+        children: [
+          {
+            component: "form",
+            fields,
+            applyOnChange: { action: "applyDigestSettings" },
+          },
+          {
+            component: "text",
+            variant: "caption",
+            text: enabled
+              ? `Sending every ${DAY_LABELS[day]} at 09:13. Changes apply immediately.`
+              : "Changes apply immediately — there is nothing to save.",
+          },
+        ],
+      },
+    ],
   });
 }
 
@@ -653,16 +661,25 @@ exports.actions = {
   },
 
   /**
-   * The settings section, applied on change. There is no Save press: the
-   * control writes its own state, then this runs, and it is what makes the
-   * change take effect with no restart and no Apply button.
+   * The settings section, applied on change. There is no Save press: the form
+   * declares `applyOnChange`, so each edit arrives here with the whole values
+   * map, and this is what makes the change take effect with no restart and no
+   * Apply button.
+   *
+   * A form's field values arrive as top-level args keyed by field id, so a
+   * `toggle` is a real boolean here. `args.state` is still read as a fallback
+   * because a panel published by an older copy of this plugin used `segmented`
+   * controls, whose selections ride under `state` as the strings "on"/"off" — a
+   * reader with that panel still on screen when the code reloads must not have
+   * their next tap silently read as Off.
    */
   async applyDigestSettings(args) {
     const state = (args && args.state) || {};
-    // `state` carries the option VALUES the reader selected, so this reads the
-    // control rather than a form payload.
-    const enabled = state.digestEnabled === "on";
-    const day = typeof state.digestDay === "string" && DAY_LABELS[state.digestDay] ? state.digestDay : null;
+    const enabled = typeof args?.digestEnabled === "boolean"
+      ? args.digestEnabled
+      : state.digestEnabled === "on";
+    const rawDay = typeof args?.digestDay === "string" ? args.digestDay : state.digestDay;
+    const day = typeof rawDay === "string" && DAY_LABELS[rawDay] ? rawDay : null;
     const current = await sdk.config.get();
     const nextDay = day ?? (DAY_LABELS[current.digestDay] ? current.digestDay : "1");
     await sdk.config.set({ digestEnabled: enabled, digestDay: nextDay });

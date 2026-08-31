@@ -32,7 +32,11 @@ import {
   isValidPluginManifestIdentifier,
   type PluginManifest,
 } from "../../desktop/src/shared/plugins/manifest";
-import { PLUGIN_NAVIGATE_CONTEXT_MAX_BYTES, PluginSdkError } from "../../desktop/src/shared/plugins/sdk";
+import {
+  PLUGIN_NAVIGATE_CONTEXT_MAX_BYTES,
+  type PluginApprovalOutcome,
+  PluginSdkError,
+} from "../../desktop/src/shared/plugins/sdk";
 import { rollupPrChecks } from "../../desktop/src/shared/prChecksRollup";
 import {
   ADE_AGENT_SKILLS_DIRS_ENV,
@@ -3957,6 +3961,11 @@ async function runTool(args: {
       throw new JsonRpcError(JsonRpcErrorCode.invalidParams, `Action '${domain}.${action}' is not exposed through ADE actions.`);
     }
     let pluginLifecycleApproved = false;
+    // How this lifecycle call was authorized, reported back on its own result.
+    // This function is the only place that knows both — the gate below sees the
+    // decision and never the result, and the service that produces the result
+    // is never told a card happened. See `PluginApprovalOutcome`.
+    let pluginApproval: PluginApprovalOutcome | null = null;
     if (isCtoOnlyAdeAction(domain, action) && !callerHasRoleAtLeast(callerCtx.role, "cto")) {
       // The whole plugin lifecycle is a group whose refusal became a QUESTION.
       // An agent that has just written a plugin should not have to hand its
@@ -4022,6 +4031,12 @@ async function runTool(args: {
             grant: approval.grant,
           });
         }
+        // `preapproved` means a person answered a card for this exact plugin,
+        // source and grant earlier in this run, so no card was raised now.
+        pluginApproval = {
+          required: approval.reason !== "preapproved",
+          decidedBy: "card",
+        };
         pluginLifecycleApproved = true;
       } else if (domain === "plugin" && PLUGIN_REMOVAL_ACTIONS.has(action)
         && callerCtx.chatSessionId && approvalChat) {
@@ -4067,6 +4082,9 @@ async function runTool(args: {
             method: `${domain}.${action}`,
           });
         }
+        // Removal, disable and enable are never remembered, so reaching here
+        // always means a card was raised for this call and answered.
+        pluginApproval = { required: true, decidedBy: "card" };
         pluginLifecycleApproved = true;
       }
       if (pluginLifecycleApproved) {
@@ -4362,6 +4380,14 @@ async function runTool(args: {
     }
     if (domain === "account" && action === "status") {
       result = scopeAccountStatusForRole(result, callerCtx.role);
+    }
+    if (isPluginApprovalAction(domain, action)) {
+      // Still null here means the gate above was never entered, which for a
+      // lifecycle action means exactly one thing: the caller connected at `cto`
+      // from their own terminal, so no card was ever needed. Saying so is the
+      // point — "no card" and "a card you did not see" must not read alike.
+      pluginApproval ??= { required: false, decidedBy: "operator" };
+      if (isRecord(result)) result = { ...result, approval: pluginApproval };
     }
     const record = isRecord(result) ? result : null;
     const statusHints = {

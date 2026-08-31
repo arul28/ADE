@@ -8,7 +8,8 @@ import { PluginPanelView, VocabularyBoundary } from "./VocabularyRenderer";
 import type { VocabRenderContext } from "./vocabularyComponents";
 import { PLUGIN_FIXTURES, pluginFixtureRows } from "./pluginFixtures";
 import type { PluginCollectionRow } from "../../lib/pluginRuntimeBridge";
-import { bindingKey } from "../../../shared/plugins/vocabulary";
+import { bindingKey, type VocabAction } from "../../../shared/plugins/vocabulary";
+import type { VocabActionArgs } from "./vocabularyPrimitives";
 
 /**
  * These cover the one promise the renderer makes that a type system cannot:
@@ -120,7 +121,7 @@ describe("PluginPanelView", () => {
   it("asks before running a list row's action, the way a button already does", async () => {
     // A row used to dispatch straight through, so the same destructive action
     // prompted behind a button and ran silently behind a row.
-    const dispatch = vi.fn(async () => {});
+    const dispatch = vi.fn(async (_action: VocabAction, _args?: VocabActionArgs) => {});
     const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
     const row = {
       title: "bc-1",
@@ -147,7 +148,7 @@ describe("PluginPanelView", () => {
   });
 
   it("makes a collection-driven row pressable only for an action its binding allowed", async () => {
-    const dispatch = vi.fn(async () => {});
+    const dispatch = vi.fn(async (_action: VocabAction, _args?: VocabActionArgs) => {});
     const rowsByBinding = new Map<string, PluginCollectionRow[]>([
       [bindingKey({ collection: "fleet" }), [
         { key: "1", value: { title: "allowed row", onPress: { action: "open-agent" } } } as PluginCollectionRow,
@@ -175,7 +176,7 @@ describe("PluginPanelView", () => {
   });
 
   it("draws a rich row and keeps its trailing buttons out of the row's own press", async () => {
-    const dispatch = vi.fn(async () => {});
+    const dispatch = vi.fn(async (_action: VocabAction, _args?: VocabActionArgs) => {});
     render(
       <PluginPanelView
         schema={{
@@ -216,7 +217,7 @@ describe("PluginPanelView", () => {
   });
 
   it("asks before running a row's trailing action, the way the row's own press does", async () => {
-    const dispatch = vi.fn(async () => {});
+    const dispatch = vi.fn(async (_action: VocabAction, _args?: VocabActionArgs) => {});
     const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
     render(
       <PluginPanelView
@@ -245,7 +246,7 @@ describe("PluginPanelView", () => {
   });
 
   it("keeps a row's overflow actions behind a menu until it is opened", async () => {
-    const dispatch = vi.fn(async () => {});
+    const dispatch = vi.fn(async (_action: VocabAction, _args?: VocabActionArgs) => {});
     render(
       <PluginPanelView
         schema={{
@@ -309,6 +310,104 @@ describe("PluginPanelView", () => {
       expect(view.container.textContent).toContain("A screenshot");
       view.unmount();
     }
+  });
+
+  /**
+   * `$context` as bindable rows. Each row is a key and a scalar, so this is the
+   * case that broke when the shared reader dropped the row key: the node drew
+   * its `emptyText` beside a context that was right there.
+   */
+  it("draws a keyValue bound to `$context` from the context's own keys", () => {
+    const schema = {
+      v: 1,
+      fallback: { title: "Decision", text: "Open ADE." },
+      body: [{ component: "keyValue", emptyText: "Nothing logged.", bind: { collection: "$context" } }],
+    };
+    const rowsByBinding = new Map<string, PluginCollectionRow[]>([
+      [bindingKey({ collection: "$context" }), [
+        { key: "Lane", value: "alpha-build" } as PluginCollectionRow,
+        { key: "Logged", value: "Aug 30, 2026" } as PluginCollectionRow,
+      ]],
+    ]);
+
+    const { container } = render(
+      <PluginPanelView schema={schema} context={makeContext({ rowsByBinding })} />,
+    );
+
+    expect(container.textContent).toContain("Lane");
+    expect(container.textContent).toContain("alpha-build");
+    expect(container.textContent).not.toContain("Nothing logged.");
+  });
+
+  /**
+   * A settings form: no Apply button, and every committed edit dispatches. A
+   * toggle and a select commit on the change itself; a text field commits on
+   * blur or Enter, never per keystroke.
+   */
+  describe("a form that applies on change", () => {
+    const applySchema = {
+      v: 1,
+      fallback: { title: "Settings", text: "Open ADE." },
+      body: [{
+        component: "form",
+        applyOnChange: { action: "applySettings" },
+        fields: [
+          { kind: "toggle", id: "digest", label: "Weekly digest" },
+          { kind: "text", id: "note", label: "Note" },
+        ],
+      }],
+    };
+
+    it("draws no submit button, and dispatches the whole form on a toggle", async () => {
+      const dispatch = vi.fn(async (_action: VocabAction, _args?: VocabActionArgs) => {});
+      render(<PluginPanelView schema={applySchema} context={makeContext({ dispatch })} />);
+
+      expect(screen.queryByRole("button", { name: /save|apply/i })).toBeNull();
+
+      fireEvent.click(screen.getByLabelText("Weekly digest"));
+
+      await waitFor(() => expect(dispatch).toHaveBeenCalledTimes(1));
+      expect(dispatch.mock.calls[0]?.[0]).toMatchObject({ action: "applySettings" });
+      // The WHOLE map, not just the field that moved — the same payload a submit
+      // would have sent, so the plugin reads one shape either way.
+      expect(dispatch.mock.calls[0]?.[1]).toEqual({ digest: true, note: "" });
+    });
+
+    it("does not dispatch a text field per keystroke, only when it commits", async () => {
+      const dispatch = vi.fn(async (_action: VocabAction, _args?: VocabActionArgs) => {});
+      render(<PluginPanelView schema={applySchema} context={makeContext({ dispatch })} />);
+      const note = screen.getByLabelText("Note");
+
+      fireEvent.change(note, { target: { value: "ke" } });
+      fireEvent.change(note, { target: { value: "kept" } });
+      expect(dispatch).not.toHaveBeenCalled();
+
+      fireEvent.blur(note);
+      await waitFor(() => expect(dispatch).toHaveBeenCalledTimes(1));
+      expect(dispatch.mock.calls[0]?.[1]).toEqual({ digest: false, note: "kept" });
+    });
+  });
+
+  it("keeps the submit button, and Enter's ordinary meaning, on a form without applyOnChange", async () => {
+    const dispatch = vi.fn(async (_action: VocabAction, _args?: VocabActionArgs) => {});
+    const schema = {
+      v: 1,
+      fallback: { title: "Settings", text: "Open ADE." },
+      body: [{
+        component: "form",
+        fields: [{ kind: "text", id: "note", label: "Note" }],
+        submit: { label: "Save", onPress: { action: "save" } },
+      }],
+    };
+    render(<PluginPanelView schema={schema} context={makeContext({ dispatch })} />);
+
+    fireEvent.change(screen.getByLabelText("Note"), { target: { value: "hi" } });
+    fireEvent.blur(screen.getByLabelText("Note"));
+    expect(dispatch).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByText("Save"));
+    await waitFor(() => expect(dispatch).toHaveBeenCalledTimes(1));
+    expect(dispatch.mock.calls[0]?.[1]).toEqual({ note: "hi" });
   });
 });
 

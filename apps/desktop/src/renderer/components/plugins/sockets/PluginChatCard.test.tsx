@@ -5,6 +5,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 
 import { PluginChatCard } from "./PluginChatCard";
+import { rootAppStoreApi } from "../../../state/appStore";
 import type { AdeCardPayload } from "../../../../shared/adeCard";
 import type { PluginChangeEvent } from "../../../../main/services/plugins/pluginEvents";
 
@@ -19,6 +20,8 @@ import type { PluginChangeEvent } from "../../../../main/services/plugins/plugin
  */
 
 let panelTitle = "0 problems";
+/** Swaps the stub panel for one whose only node is bound to `$context`. */
+let contextPanel = false;
 const changeListeners: ((event: PluginChangeEvent) => void)[] = [];
 const invoked: { pluginId: string; action: string; args?: Record<string, unknown> }[] = [];
 /** Set to a promise a test resolves itself, to hold an invoke in flight. */
@@ -53,7 +56,9 @@ beforeAll(() => {
           v: 1,
           title: "Lint",
           fallback: { title: "Lint", text: "Lint report" },
-          body: [{ component: "text", text: panelTitle }],
+          body: contextPanel
+            ? [{ component: "keyValue", emptyText: "Nothing logged.", bind: { collection: "$context" } }]
+            : [{ component: "text", text: panelTitle }],
         },
         vocabVersion: 1,
         updatedAt: "2026-08-13T00:00:00.000Z",
@@ -76,8 +81,12 @@ beforeAll(() => {
 
 beforeEach(() => {
   panelTitle = "0 problems";
+  contextPanel = false;
   invoked.length = 0;
   pendingInvoke = null;
+  // No installed summary by default, which is the "plugin named no icon" case
+  // and therefore the puzzle piece.
+  rootAppStoreApi.setState({ installedPlugins: [] });
 });
 
 afterEach(() => {
@@ -140,6 +149,88 @@ describe("chat-card socket", () => {
     await waitFor(() => expect(screen.getByText("Lint clean — 0 problems")).toBeTruthy());
     expect(screen.queryByTestId("ade-card-attribution")).toBeNull();
     expect(screen.queryByText("0 problems")).toBeNull();
+  });
+
+  /**
+   * The exact payload from the plugin-platform dogfood ledger, which a real
+   * device drew as four lines: title, subtitle, the panel's `emptyText`, and the
+   * byline. The card's own `rows` and the panel's `$context` were both in the
+   * stored payload and neither reached the screen, so `title`, `subtitle` and
+   * `fallbackText` were the only per-card content a plugin could show.
+   *
+   * Two independent causes met here, which is why one test names both: the rows
+   * gate in `AdeCard.tsx` only drew detail rows for a warning, a live card or a
+   * `proof_artifact` — and a plugin's variant is none of those by definition —
+   * while `boundRowValues` dropped each collection row's own KEY, so every
+   * `$context` row (a key and a scalar) failed `coerceBoundKeyValueRow`.
+   */
+  describe("a plugin card's own rows and its panel's $context", () => {
+    const ledgerCard = card({
+      cardId: "decision-dec:1",
+      variant: "decision_logged",
+      title: "Decision logged",
+      subtitle: "Hi",
+      fallbackText: "Decision logged — Hi",
+      panel: {
+        panelId: "report",
+        context: { Decision: "Hi", Lane: "alpha-build", Logged: "Aug 30, 2026" },
+      },
+      rows: [
+        { icon: "info", text: "Lane", detail: "alpha-build" },
+        { icon: "info", text: "Logged", detail: "Aug 30, 2026" },
+      ],
+    });
+
+    it("draws the card's rows, which an unknown plugin variant used to swallow", async () => {
+      render(<PluginChatCard card={ledgerCard} sessionId="chat-1" />);
+
+      await waitFor(() => expect(screen.getByTestId("ade-card-attribution")).toBeTruthy());
+      expect(screen.getByText("Lane")).toBeTruthy();
+      expect(screen.getByText("alpha-build")).toBeTruthy();
+      expect(screen.getByText("Logged")).toBeTruthy();
+    });
+
+    it("draws the panel's `$context` rows instead of its emptyText", async () => {
+      contextPanel = true;
+      render(<PluginChatCard card={ledgerCard} sessionId="chat-1" />);
+
+      // `Decision` is a `$context` key that is NOT one of the card's rows, so it
+      // can only have come through the binding.
+      await waitFor(() => expect(screen.getByText("Decision")).toBeTruthy());
+      expect(screen.queryByText("Nothing logged.")).toBeNull();
+    });
+  });
+
+  /**
+   * The byline names the plugin, so it should look like the plugin. It drew a
+   * hardcoded puzzle piece regardless of the manifest `icon`, which made every
+   * plugin card on the platform read as an unfinished plugin.
+   */
+  it("draws the plugin's own icon in the byline, not the puzzle piece", async () => {
+    // The fallback glyph first, from a card whose plugin has no installed
+    // summary to read an icon off.
+    const fallback = render(<PluginChatCard card={card()} sessionId="chat-1" />);
+    const puzzle = (await screen.findByTestId("ade-card-attribution")).querySelector("svg")?.innerHTML;
+    expect(puzzle).toBeTruthy();
+    fallback.unmount();
+
+    rootAppStoreApi.setState({
+      installedPlugins: [{
+        pluginId: "lint",
+        displayName: "Lint",
+        enabled: true,
+        accent: null,
+        // `bug` is a token `pluginIcon` knows. An unknown token would degrade to
+        // the puzzle piece, and the difference between those two is the bug: the
+        // byline read NEITHER, because it took no icon parameter at all.
+        icon: "bug",
+        disabledContributions: [],
+      }] as never,
+    });
+    render(<PluginChatCard card={card()} sessionId="chat-1" />);
+
+    const byline = await screen.findByTestId("ade-card-attribution");
+    expect(byline.querySelector("svg")?.innerHTML).not.toEqual(puzzle);
   });
 
   /**

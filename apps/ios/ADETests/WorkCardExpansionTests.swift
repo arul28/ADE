@@ -382,6 +382,86 @@ final class WorkCardExpansionTests: XCTestCase {
     XCTAssertEqual(workChatInfoItemCount(subagents: [], scheduledWork: []), 0)
   }
 
+  // MARK: - Card content fingerprint
+
+  /// The bug this closes: the fingerprint ignored `panel`, so a re-emit of the
+  /// same `cardId` that changed ONLY `panel.context` was byte-identical, got
+  /// deduped away before `buildWorkAdeCards` could fold it in, and left the
+  /// hosted panel rendering `$context` from the first emit.
+  func testARepeatEmitThatChangesOnlyThePanelContextIsNotDedupedAway() throws {
+    let card = { (lane: String) in
+      """
+      {
+        "cardId": "decision-1", "variant": "decision_logged", "state": "terminal",
+        "title": "Decision logged", "fallbackText": "Decision logged",
+        "authoredBy": { "pluginId": "decision-log", "displayName": "Decision Log" },
+        "panel": { "panelId": "card", "context": { "Lane": "\(lane)" } }
+      }
+      """
+    }
+
+    let before = try workAdeCardContentMergeKey(adeCard(card("1b4714f3")))
+    let after = try workAdeCardContentMergeKey(adeCard(card("alpha-build")))
+
+    XCTAssertNotEqual(before, after, "a changed panel context is a changed card")
+  }
+
+  func testTheSamePanelContextStillFingerprintsIdentically() throws {
+    // Key order inside the context is the JSON reader's, not the plugin's, so
+    // the same context read twice must not look like a change.
+    let json = """
+    {
+      "cardId": "decision-1", "variant": "decision_logged", "state": "terminal",
+      "title": "Decision logged", "fallbackText": "Decision logged",
+      "authoredBy": { "pluginId": "decision-log" },
+      "panel": { "panelId": "card", "context": { "Lane": "alpha-build", "Logged": "Aug 30" } }
+    }
+    """
+
+    XCTAssertEqual(
+      try workAdeCardContentMergeKey(adeCard(json)),
+      try workAdeCardContentMergeKey(adeCard(json))
+    )
+  }
+
+  func testTwoCardsFromDifferentPluginsDoNotShareAFingerprint() throws {
+    let card = { (pluginId: String) in
+      """
+      {
+        "cardId": "x", "variant": "x", "state": "terminal",
+        "title": "T", "fallbackText": "T",
+        "authoredBy": { "pluginId": "\(pluginId)" }
+      }
+      """
+    }
+
+    XCTAssertNotEqual(
+      try workAdeCardContentMergeKey(adeCard(card("decision-log"))),
+      try workAdeCardContentMergeKey(adeCard(card("journal")))
+    )
+  }
+
+  /// The blast-radius pin. This fingerprint governs transcript dedupe for EVERY
+  /// `ade_card`, not just plugin ones, so a card with no author and no panel —
+  /// which is every card ADE itself emits — must keep the exact key it had
+  /// before `author` and `panel` were added to it. The literal is spelled out
+  /// rather than recomputed so that reordering an existing field, or appending
+  /// one unconditionally, fails here instead of silently re-keying the
+  /// transcript.
+  func testAPlainAdeCardKeepsItsOriginalFingerprintByteForByte() throws {
+    let card = try adeCard("""
+    {
+      "cardId": "ci-1", "variant": "pr_ci", "state": "terminal",
+      "title": "CI", "fallbackText": "CI is green"
+    }
+    """)
+
+    XCTAssertEqual(
+      workAdeCardContentMergeKey(card),
+      "pr_ci|terminal|CI||||||CI is green|||||nil"
+    )
+  }
+
   // MARK: - Fixtures
 
   private func entry(_ id: String) -> WorkTimelineEntry {

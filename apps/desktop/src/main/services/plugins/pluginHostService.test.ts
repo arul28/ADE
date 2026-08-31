@@ -15,6 +15,7 @@ import {
   type PluginRuntimeStatus,
   type PluginSdkMethod,
 } from "../../../shared/plugins/sdk";
+import { PLUGIN_SURFACE_IDS } from "../../../shared/plugins/sockets";
 import { openKvDb, type AdeDb } from "../state/kvDb";
 import { requirePluginInstallService } from "../../../../../ade-cli/src/services/plugins/pluginInstallServiceRef";
 import {
@@ -1671,6 +1672,30 @@ describe("plugin.listContributions", () => {
     expect(lanes).toHaveLength(1);
     expect(lanes[0]).toMatchObject({ socketId: "greeting", entityId: "lane-1" });
     expect(warnings.filter((entry) => entry.event === "plugin.contribution_id_ambiguous")).toEqual([]);
+  });
+
+  /**
+   * The surface ids are a closed set, so listing them costs one line and saves
+   * the reader a round trip to the source. `"surface" is required.` on its own
+   * left them to guess the vocabulary — and "show me those rows" is the natural
+   * next call after the doctor's Places rung counts them.
+   */
+  it("names the surface parameter AND its options when it is missing", async () => {
+    const { plugins } = await hostWithProject();
+    let thrown: unknown;
+    try {
+      await plugins.listContributions({} as never);
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect(thrown).toBeInstanceOf(PluginSdkError);
+    expect((thrown as PluginSdkError).code).toBe("invalid_args");
+    const message = (thrown as PluginSdkError).message;
+    expect(message).toContain("surface");
+    // Real ids off the closed list, not a hand-copied sample that can drift.
+    expect(message).toContain(PLUGIN_SURFACE_IDS[0]);
+    expect(PLUGIN_SURFACE_IDS.every((surface) => message.includes(surface))).toBe(true);
   });
 
   it("drops rows from a disabled plugin and narrows by entity kind", async () => {

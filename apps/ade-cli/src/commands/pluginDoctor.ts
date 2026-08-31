@@ -32,6 +32,11 @@ import {
   formatPluginClientRendering,
   type PluginClientRenderAnswer,
 } from "../../../desktop/src/shared/plugins/clientRendering";
+import { KEYBINDING_DEFINITIONS } from "../../../desktop/src/shared/keybindings";
+import {
+  buildCoreChordIndex,
+  resolvePluginKeybindings,
+} from "../../../desktop/src/shared/plugins/keybindings";
 import {
   PLUGIN_PROVIDER_KEY_LABELS,
   type PluginManifest,
@@ -108,6 +113,7 @@ export type PluginDoctorLayerKey =
   | "places"
   | "customPage"
   | "lastRun"
+  | "shortcuts"
   | "ingress"
   | "panels"
   | "panelReach"
@@ -542,10 +548,23 @@ function lastRunLayer(
     return { key: "lastRun", label, state: "na", detail: "this plugin runs no code of its own" };
   }
   if (!snapshot.live) return { key: "lastRun", label, state: "unknown", detail: UNREACHABLE };
+  // A plugin this host does not have answers `plugin.get` with null, which is a
+  // DIFFERENT degradation from the old-host one below — the same distinction
+  // `runningLayer` already draws. Conflating them sent a reader who had just
+  // uninstalled a plugin off to check their ADE version instead of their
+  // install, while every other rung on the same output said "not installed".
+  if (!snapshot.live.detail) {
+    return {
+      key: "lastRun",
+      label,
+      state: "no",
+      detail: "ADE does not have this plugin installed",
+    };
+  }
   // An older host answers `plugin.get` without the field at all, which is not
   // the same as answering "nothing has run" — saying so is the whole reason
   // this rung is worth having.
-  if (!snapshot.live.detail || snapshot.live.detail.lastInvokes === undefined) {
+  if (snapshot.live.detail.lastInvokes === undefined) {
     return {
       key: "lastRun",
       label,
@@ -579,6 +598,61 @@ function lastRunLayer(
     state: record.ok ? "ok" : "no",
     detail: `${newest.action} ${outcome}${neverNote}`,
   };
+}
+
+/**
+ * Do the plugin's declared keyboard shortcuts actually bind?
+ *
+ * A manifest chord passes the parse if it is *shaped* like a chord a plugin may
+ * bind — a modifier, not a reserved key. It is a separate question whether ADE
+ * has already claimed it, and until this rung existed nothing answered it
+ * anywhere an author could see. `Mod+K` parsed cleanly, `plugin.get` reported
+ * it as a live binding, and the renderer refused it at bind time against the
+ * core chord index with a message that reached a `console.warn` and nothing
+ * else. The author saw a declared shortcut that silently never fired.
+ *
+ * This reruns the renderer's OWN resolver rather than restating its rules, so
+ * the sentence here is the sentence the app produces — `resolvePluginKeybindings`
+ * is shared and pure, and `KEYBINDING_DEFINITIONS` is plain data the CLI can
+ * import with ADE closed.
+ *
+ * The honest limit, and it is stated in the detail rather than hidden: this
+ * sees ADE's SHIPPED chords, not chords the user has personally rebound onto.
+ * A rebind lives in the app's keybindings store, which a doctor run with ADE
+ * closed cannot read. So a clean rung means "nothing collides with stock ADE",
+ * which is the answer for every user who has not rebound anything.
+ */
+function shortcutsLayer(snapshot: PluginDoctorSnapshot): PluginDoctorLayer {
+  const label = "Shortcuts";
+  const declared = snapshot.manifest?.keybindings ?? [];
+  if (declared.length === 0) {
+    return { key: "shortcuts", label, state: "na", detail: "this plugin declares no keyboard shortcut" };
+  }
+  const pluginName = snapshot.manifest?.displayName ?? snapshot.pluginId;
+  const { bindings, refusals } = resolvePluginKeybindings(
+    declared.map((entry) => ({
+      pluginId: snapshot.pluginId,
+      pluginName,
+      // One plugin resolved alone, so the install order that breaks ties
+      // between plugins never applies and any value would do.
+      installedAt: snapshot.record?.installedAt ?? "",
+      action: entry.action,
+      binding: entry.binding,
+      label: entry.label,
+    })),
+    buildCoreChordIndex(KEYBINDING_DEFINITIONS.map((entry) => [entry.id, entry.defaultBinding] as const)),
+  );
+  if (refusals.length === 0) {
+    return {
+      key: "shortcuts",
+      label,
+      state: "ok",
+      detail: `${plural(bindings.length, "shortcut")} bound — ${bindings.map((entry) => entry.binding).join(", ")}`,
+    };
+  }
+  const first = refusals[0]!;
+  const others = refusals.length > 1 ? ` (+${refusals.length - 1} more)` : "";
+  return { key: "shortcuts", label, state: "no", detail: `${first.message}${others}` };
 }
 
 /**
@@ -971,6 +1045,7 @@ export function buildPluginDoctorReport(
       placesLayer(snapshot),
       customPageLayer(snapshot),
       lastRunLayer(snapshot, actions, now),
+      shortcutsLayer(snapshot),
       ingressLayer(snapshot, now),
       panelsLayer(snapshot),
       panelReachLayer(snapshot),

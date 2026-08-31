@@ -367,6 +367,35 @@ export function countVocabNodes(nodes: readonly VocabNode[]): number {
   return total;
 }
 
+/**
+ * Count the component nodes in an UNPARSED schema, with no ceiling.
+ *
+ * {@link parsePluginPanel} stops counting the moment it passes
+ * `VOCAB_LIMITS.maxNodes`, so its state can report "at least 200" and never
+ * "400" — which is the number an author needs to know how far over they are.
+ * This walks the raw JSON instead and answers the true total.
+ *
+ * Deliberately structural rather than a second parser: it counts every object
+ * carrying a string `component`, wherever it sits. A node can only ever be such
+ * an object, so this cannot drift when a new component gains children under a
+ * key this function has never heard of — the case a hand-written mirror of
+ * {@link parseVocabNode}'s recursion would get wrong.
+ */
+export function countRawVocabComponents(raw: unknown): number {
+  let total = 0;
+  const visit = (value: unknown): void => {
+    if (Array.isArray(value)) {
+      for (const entry of value) visit(entry);
+      return;
+    }
+    if (!isRecord(value)) return;
+    if (typeof value.component === "string" && value.component.trim().length > 0) total += 1;
+    for (const entry of Object.values(value)) visit(entry);
+  };
+  visit(raw);
+  return total;
+}
+
 /** Every binding a panel references, so a host can fetch exactly what it needs. */
 export function collectVocabBindings(nodes: readonly VocabNode[]): VocabBinding[] {
   const found: VocabBinding[] = [];

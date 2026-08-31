@@ -1,7 +1,8 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { PluginSocketSource } from "./contributionBridge";
 import type { PluginContributionRow } from "./contributionBridge";
+import type { PluginSurfaceContext } from "../../../../shared/plugins/context";
 
 /**
  * The wiring between a plugin's answer and the place it opens.
@@ -21,6 +22,15 @@ const registry = { plugins: [] as unknown[], loaded: true };
 const navigateToAppTarget = vi.fn();
 const revealPluginWorkRailPane = vi.fn();
 const showToast = vi.fn();
+const invokePluginSocketAction = vi.fn();
+
+vi.mock("./contributionBridge", async () => {
+  const actual = await vi.importActual<typeof import("./contributionBridge")>("./contributionBridge");
+  return {
+    ...actual,
+    invokePluginSocketAction: (...args: unknown[]) => invokePluginSocketAction(...args),
+  };
+});
 
 vi.mock("./contributionStores", async () => {
   const actual = await vi.importActual<typeof import("./contributionStores")>("./contributionStores");
@@ -44,7 +54,11 @@ vi.mock("../../../lib/openExternal", () => ({
 
 vi.mock("../../app/toast/toastStore", () => ({ showToast }));
 
-const { applyPluginActionNavigation } = await import("./pluginActionDispatch");
+const {
+  applyPluginActionNavigation,
+  runPluginSocketAction,
+  PLUGIN_ACTION_SLOW_NOTICE_MS,
+} = await import("./pluginActionDispatch");
 
 const MANIFEST = {
   name: "hn",
@@ -89,6 +103,7 @@ afterEach(() => {
   navigateToAppTarget.mockReset();
   revealPluginWorkRailPane.mockReset();
   showToast.mockReset();
+  invokePluginSocketAction.mockReset();
 });
 
 describe("a chat-header press that navigates", () => {
@@ -189,5 +204,85 @@ describe("a navigation that cannot mount", () => {
 
     expect(showToast).not.toHaveBeenCalled();
     expect(navigateToAppTarget).toHaveBeenCalled();
+  });
+});
+
+/**
+ * The other half of the cold-launch P1: a press that is going to take a while.
+ *
+ * On a cold launch the plugin host is still coming up in the daemon, so the
+ * invoke sits there. The row was drawn, the press was real, and the app said
+ * nothing at all — no spinner, no toast — which is indistinguishable from a
+ * dead button. A notice on a timer is the smallest honest answer: it only
+ * appears when the press has actually been slow, and it says the press landed
+ * rather than pretending the action finished.
+ */
+const ACTION_CONTEXT: PluginSurfaceContext = {
+  kind: "session",
+  id: "chat-1",
+  title: "A chat",
+  provider: "claude",
+  status: null,
+};
+
+describe("a press while the plugin is still starting", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("says nothing for a warm plugin that answers straight away", async () => {
+    invokePluginSocketAction.mockResolvedValue({});
+
+    await runPluginSocketAction("journal", "logIt", ACTION_CONTEXT);
+    vi.advanceTimersByTime(PLUGIN_ACTION_SLOW_NOTICE_MS * 4);
+
+    // The notice is for a press that is still waiting. Toasting after the work
+    // is already done would be noise on every button in the app.
+    expect(showToast).not.toHaveBeenCalled();
+  });
+
+  it("tells the reader the press landed once the wait gets long", async () => {
+    invokePluginSocketAction.mockReturnValue(new Promise(() => {}));
+
+    void runPluginSocketAction("journal", "logIt", ACTION_CONTEXT);
+    vi.advanceTimersByTime(PLUGIN_ACTION_SLOW_NOTICE_MS);
+
+    expect(showToast).toHaveBeenCalledTimes(1);
+    const notice = showToast.mock.calls[0]?.[0] as { title: string; message: string };
+    // Named, because a machine with four plugins installed gives the reader no
+    // way to tell which one they are waiting on.
+    expect(notice.title).toContain("journal");
+    expect(notice.title).toContain("is starting");
+    expect(notice.message).toContain("as soon as the plugin is ready");
+  });
+
+  it("still reports the failure when the slow press finally fails", async () => {
+    let fail!: (cause: unknown) => void;
+    invokePluginSocketAction.mockReturnValue(new Promise((_resolve, reject) => {
+      fail = reject;
+    }));
+
+    const settled = runPluginSocketAction("journal", "logIt", ACTION_CONTEXT);
+    vi.advanceTimersByTime(PLUGIN_ACTION_SLOW_NOTICE_MS);
+    expect(showToast).toHaveBeenCalledTimes(1);
+
+    fail(new Error("the plugin crashed on start"));
+    await settled;
+
+    // Clearing the notice on the error path must not clear the error with it:
+    // "it is starting" followed by silence is the original bug wearing a hat.
+    expect(showToast).toHaveBeenCalledTimes(2);
+    const failure = showToast.mock.calls[1]?.[0] as {
+      title: string;
+      message: string;
+      tone: string;
+    };
+    expect(failure.title).toBe("Plugin action failed");
+    expect(failure.message).toContain("the plugin crashed on start");
+    expect(failure.tone).toBe("error");
   });
 });

@@ -64,6 +64,8 @@ import {
   type PluginNotificationResult,
   type PluginSchedule,
   type PluginSdkMethod,
+  pluginScheduleIdMissingMessage,
+  readPluginScheduleId,
 } from "../../../shared/plugins/sdk";
 import type { PluginDataStore } from "./pluginDataStore";
 import type { PluginSecretStore } from "./pluginSecretStore";
@@ -865,7 +867,14 @@ export function createPluginSdkServer(deps: {
 
         case "schedules.delete": {
           if (!deps.schedules) throw pluginSchedulesUnavailable();
-          deps.schedules.delete(pluginId, requireString(params, "scheduleId"));
+          // Either spelling, for the reason `plugin.invoke` takes either
+          // `action` or `actionId`: the parameter and the row disagree, and the
+          // author only ever sees the parameter's name.
+          const scheduleId = readPluginScheduleId(params);
+          if (!scheduleId) {
+            throw new PluginSdkError("invalid_args", pluginScheduleIdMissingMessage());
+          }
+          deps.schedules.delete(pluginId, scheduleId);
           return null;
         }
 

@@ -11022,31 +11022,61 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
    * plugin, a typed field takes over the composer, a select or toggle changes
    * in place, and a submit sends the form's values as the action's args.
    */
-  const activatePluginInteractive = useCallback(async (index: number): Promise<void> => {
+  const activatePluginInteractive = useCallback(async (
+    index: number,
+    /**
+     * A typed field that the composer just committed, and the value it
+     * committed. Present only on that path: without it a typed field takes the
+     * composer over instead of dispatching, which is what pressing its row
+     * means. The value is passed rather than read back because the pane state
+     * write that carries it has not re-rendered yet.
+     */
+    options?: { commitValue?: string },
+  ): Promise<void> => {
     const current = rightPaneRef.current;
     if (current.kind !== "plugin-panel") return;
     const interactive = current.model.interactives[index];
     if (!interactive) return;
     const conn = connectionRef.current;
+    /**
+     * The form's values including the edit being applied right now.
+     *
+     * A committed field dispatches in the same tick as its own local write, and
+     * `current.state.values` is the snapshot from BEFORE that write — so an
+     * apply-on-change form read from it would send the plugin the value the
+     * reader just replaced. Null for every other kind of press, which reads the
+     * pane state as usual.
+     */
+    let committedFieldValues: Record<string, string> | null = null;
 
     if (interactive.kind === "field") {
       const field = interactive.field;
-      if (pluginFieldUsesComposer(field.kind)) {
-        // Hand the field to the shared composer: panes in this client never own
-        // a text input, so typed values always come through the prompt line.
+      const valueKey = pluginFormValueKey(interactive.formKey, field.id);
+      let committed = options?.commitValue ?? null;
+      if (committed === null) {
+        if (pluginFieldUsesComposer(field.kind)) {
+          // Hand the field to the shared composer: panes in this client never own
+          // a text input, so typed values always come through the prompt line.
+          const raw = pluginFieldRawValue(field, interactive.formKey, current.state.values);
+          stashActiveInput();
+          setPromptValue(raw);
+          updatePluginPaneState((state) => ({ ...state, editing: index }));
+          return;
+        }
         const raw = pluginFieldRawValue(field, interactive.formKey, current.state.values);
-        stashActiveInput();
-        setPromptValue(raw);
-        updatePluginPaneState((state) => ({ ...state, editing: index }));
-        return;
+        committed = cyclePluginFieldValue(field, raw, 1);
+        updatePluginPaneState((state) => ({
+          ...state,
+          values: { ...state.values, [valueKey]: committed as string },
+        }));
       }
-      const raw = pluginFieldRawValue(field, interactive.formKey, current.state.values);
-      const next = cyclePluginFieldValue(field, raw, 1);
-      updatePluginPaneState((state) => ({
-        ...state,
-        values: { ...state.values, [pluginFormValueKey(interactive.formKey, field.id)]: next },
-      }));
-      return;
+      // A form declaring `applyOnChange` has no submit row to press: the edit IS
+      // the press, and it sends the same full values map a submit would have.
+      // The local write already happened — here, or in the caller that supplied
+      // `commitValue` — so a failing plugin cannot leave the control showing the
+      // old value.
+      if (!interactive.applyOnChange) return;
+      committedFieldValues = { ...current.state.values, [valueKey]: committed };
     }
 
     // A `segmented` option. The write is local and immediate — that is the whole
@@ -11063,8 +11093,13 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       return;
     }
 
-    const action = interactive.kind === "state" ? interactive.onChange : interactive.action;
+    const action = interactive.kind === "state"
+      ? interactive.onChange
+      : interactive.kind === "field" ? interactive.applyOnChange : interactive.action;
     if (!action) return;
+    // A field row has no label of its own; the field's is what the notice and
+    // the prompt anchor should say.
+    const label = interactive.kind === "field" ? interactive.field.label : interactive.label;
     const armKey = pluginInteractiveKey(current.model, interactive);
     if (action.confirm && pluginConfirmArmedRef.current !== armKey) {
       pluginConfirmArmedRef.current = armKey;
@@ -11081,9 +11116,12 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     // surface context uses, so a button pressed on a context-carrying panel
     // reaches the plugin knowing what it was looking at.
     if (current.state.context) args.context = current.state.context;
-    if (interactive.kind === "submit") {
+    // A submit and an apply-on-change send the same thing: the whole form, so a
+    // plugin reads one shape whichever way the values reached it.
+    if (interactive.kind === "submit" || interactive.kind === "field") {
+      const values = committedFieldValues ?? current.state.values;
       for (const field of interactive.fields) {
-        const raw = pluginFieldRawValue(field, interactive.formKey, current.state.values);
+        const raw = pluginFieldRawValue(field, interactive.formKey, values);
         if (field.kind === "toggle") args[field.id] = raw === "true";
         else if (field.kind === "number") {
           const parsed = Number(raw);
@@ -11104,7 +11142,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
 
     updatePluginPaneState((state) => ({ ...state, editing: null }));
     const follow = async (result: unknown): Promise<void> => {
-      applyPluginOpenUrl(result, interactive.label);
+      applyPluginOpenUrl(result, label);
       // A plugin may put the reader back on a filter that still has rows: after
       // archiving everything "Active" was showing, an empty list is a puzzle and
       // "All" is an answer. Queued before the refetch below, so the reload reads
@@ -11129,7 +11167,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     };
     try {
       const result = await invokePluginAction(conn, current.state.pluginId, action.action, args);
-      addNotice(`${interactive.label} ran.`, "success");
+      addNotice(`${label} ran.`, "success");
       // The question comes first and stops here: the button has not finished,
       // so a refetch now would redraw the panel around an action still waiting
       // on the reader.
@@ -11139,7 +11177,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
         displayName: current.state.displayName,
         actionId: action.action,
         args,
-        label: interactive.label,
+        label,
         follow,
       })) return;
       await follow(result);
@@ -13952,6 +13990,13 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
             editing: null,
           }));
           setPromptValue("");
+          // A typed field commits on Enter, which is where an apply-on-change
+          // form applies it — never per keystroke, so a plugin is not invoked
+          // once per letter. `activatePluginInteractive` reads the value back
+          // out of pane state, which the write above has already updated.
+          if (interactive.applyOnChange) {
+            void activatePluginInteractive(pluginFieldIndex, { commitValue: submittedValue });
+          }
           // Land on the next thing to do — usually the next field, then submit.
           setRightSelectionIndex(movePluginPaneSelection(rightPane.model, pluginFieldIndex, 1));
           return;
@@ -17406,6 +17451,12 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
               ...state,
               values: { ...state.values, [pluginFormValueKey(selected.formKey, selected.field.id)]: next },
             }));
+            // ←/→ finishes the value the same way a direct press does, so an
+            // apply-on-change form applies it here too rather than only on the
+            // gesture the reader happened not to use.
+            if (selected.applyOnChange) {
+              void activatePluginInteractive(rightSelectionIndex, { commitValue: next });
+            }
             return;
           }
         }

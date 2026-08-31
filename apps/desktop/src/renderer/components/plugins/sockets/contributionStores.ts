@@ -31,8 +31,8 @@ import { subscribeToPluginChanges } from "../../../lib/pluginRuntimeBridge";
 import type { PluginSurfaceId } from "../../../../shared/plugins/sockets";
 import {
   clearPluginManifestCache,
+  loadPluginSocketSources,
   pluginSocketsAvailable,
-  readPluginSocketSources,
   readSurfaceContributionRows,
   type PluginContributionRow,
   type PluginSocketSource,
@@ -90,23 +90,42 @@ class SourcesStore extends Store<SourcesSnapshot> {
     super(EMPTY_SOURCES);
   }
 
-  /** Called by every visible surface; collapses into one read. */
+  /**
+   * Called by every visible surface; collapses into one read.
+   *
+   * A read that could not reach the host leaves `stale` SET, so the next render
+   * of any visible surface asks again. That is the whole repair for menu rows
+   * that stayed dead after a cold launch: the plugin host lives in the daemon
+   * and is not bound for the first stretch of a launch, and this store used to
+   * bank that first refusal as a successful "no plugins", clear `stale`, and
+   * never ask again — leaving recovery to whatever unrelated plugin event
+   * happened along next. Only an answer the host actually gave settles it.
+   */
   ensureLoaded(): void {
     this.listenForChanges();
     if (!this.stale || this.inflight) return;
     if (!pluginSocketsAvailable()) {
+      // The namespace itself is missing. That is a fact about the BUILD (the
+      // hosted web client, an older host), not a runtime that has yet to bind,
+      // so it settles — nothing is coming later to change it.
       this.stale = false;
       this.set({ status: "ready", sources: [] });
       return;
     }
-    this.stale = false;
     this.set({ ...this.getSnapshot(), status: "loading" });
-    this.inflight = readPluginSocketSources()
-      .then((sources) => {
-        this.set({ status: "ready", sources });
+    this.inflight = loadPluginSocketSources()
+      .then((load) => {
+        if (!load.ok) {
+          // Left stale on purpose. `status` still goes to `ready` so a surface
+          // renders its empty state rather than a spinner that never stops.
+          this.set({ status: "ready", sources: this.getSnapshot().sources });
+          return;
+        }
+        this.stale = false;
+        this.set({ status: "ready", sources: load.sources });
       })
       .catch(() => {
-        this.set({ status: "ready", sources: [] });
+        this.set({ status: "ready", sources: this.getSnapshot().sources });
       })
       .finally(() => {
         this.inflight = null;

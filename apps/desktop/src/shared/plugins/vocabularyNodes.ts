@@ -352,10 +352,35 @@ export type VocabField = {
   value?: string | number | boolean;
 };
 
+/**
+ * A form: labelled fields, and how their values reach the plugin.
+ *
+ * Two ways, and a form needs at least one of them:
+ *
+ * - `submit` draws a button. The reader fills the form in, presses it once, and
+ *   the whole values map goes over in one call. This is the right shape for
+ *   anything with a cost — a credential, a deploy, a rename.
+ * - `applyOnChange` dispatches on every edit, with the same full values map, and
+ *   no button at all. This is the settings shape: "no restart and no Apply
+ *   button" was not expressible with `form` before it existed, so a settings
+ *   panel had to be rebuilt out of `segmented` controls and lost the field
+ *   labels, the help text and the validation a form gives for free.
+ *
+ * Both together is legal and means what it reads as: changes apply as they are
+ * made AND the button is there to re-run the action.
+ *
+ * `applyOnChange` is an action, not a flag, for the same reason
+ * {@link VocabSegmentedNode.onChange} is: one parser idiom, and a form with no
+ * button still has to name what to call. A text field applies on COMMIT — blur
+ * or Enter — never per keystroke, so a plugin is not invoked once per letter.
+ */
 export type VocabFormNode = {
   component: "form";
   fields: VocabField[];
-  submit: { label: string; onPress: VocabAction };
+  /** The Apply button. Optional only when {@link applyOnChange} is set. */
+  submit?: { label: string; onPress: VocabAction };
+  /** Dispatched on every committed field change, with the full values map. */
+  applyOnChange?: VocabAction;
 };
 
 export type VocabChartPoint = { x: string | number; y: number };
@@ -603,17 +628,39 @@ export function boundRowValues(
   state?: VocabPanelState,
   now?: number,
 ): unknown[] | null {
+  const entries = boundRowEntries(binding, rows, state, now);
+  return entries === null ? null : entries.map((entry) => entry.value);
+}
+
+/**
+ * The same rows, with each row's primary KEY kept beside its value.
+ *
+ * `keyValue` is the one node that needs it. A collection row is `{key, value}`
+ * and a `$context` row is `{key: "Lane", value: "alpha-build"}` — so dropping
+ * the key left every scalar-valued row as a bare string, which
+ * {@link coerceBoundKeyValueRow} correctly refuses because a row with no key is
+ * not a row. The visible result was a `keyValue` bound to `$context` rendering
+ * its `emptyText` while the context was right there, on desktop and in the TUI.
+ * iOS never had the bug: it merges the entry's key in before coercing, and this
+ * is that rule moved into the shared module so all three read one contract.
+ */
+export function boundRowEntries(
+  binding: VocabBinding | undefined,
+  rows: readonly { key?: string; value: unknown }[] | undefined,
+  state?: VocabPanelState,
+  now?: number,
+): { key?: string; value: unknown }[] | null {
   if (!binding || !rows) return null;
-  let values = rows.map((row) => row.value);
+  let entries = rows.map((row) => ({ ...(row.key !== undefined ? { key: row.key } : {}), value: row.value }));
   if (binding.where && binding.where.length > 0) {
     const current = state ?? {};
     // One clock for the whole pass, so a `since` boundary cannot fall between
     // two rows of the same render. Callers pass `now` only in tests.
     const instant = now ?? Date.now();
-    values = values.filter((value) => evaluateVocabWhere(binding.where, value, current, instant));
+    entries = entries.filter((entry) => evaluateVocabWhere(binding.where, entry.value, current, instant));
   }
   const limit = binding.limit;
-  return typeof limit === "number" && limit > 0 ? values.slice(0, limit) : values;
+  return typeof limit === "number" && limit > 0 ? entries.slice(0, limit) : entries;
 }
 
 /**
@@ -670,10 +717,25 @@ export function coerceBoundListItem(
   return readListItem(value, (raw) => boundRowAction(raw, allowActions));
 }
 
-/** A bound row as a `keyValue` row. A row with no key is not a row. */
-export function coerceBoundKeyValueRow(value: unknown): VocabKeyValueRow | null {
-  if (!isRecord(value)) return null;
-  const key = vocabString(value.key, VOCAB_LIMITS.maxLabelChars);
+/**
+ * A bound row as a `keyValue` row. A row with no key is not a row.
+ *
+ * `rowKey` is the collection row's own primary key, which is a key the row
+ * already has: a stored value of `"alpha-build"` under the key `Lane` is a
+ * usable row, and so is an object value that names no `key` field of its own.
+ * Pass it and a scalar-valued collection renders; omit it and only values that
+ * carry their own `key` do.
+ */
+export function coerceBoundKeyValueRow(value: unknown, rowKey?: string): VocabKeyValueRow | null {
+  const fallbackKey = vocabString(rowKey, VOCAB_LIMITS.maxLabelChars);
+  if (!isRecord(value)) {
+    // Arrays and `null` have no text form, so they stay refused: a row reading
+    // `Lane —` says less than no row at all.
+    if (fallbackKey === undefined || value === null || Array.isArray(value)) return null;
+    const text = vocabCellText(value);
+    return text.length > 0 ? { key: fallbackKey, value: text } : null;
+  }
+  const key = vocabString(value.key, VOCAB_LIMITS.maxLabelChars) ?? fallbackKey;
   if (key === undefined) return null;
   return {
     key,
@@ -1073,10 +1135,23 @@ export const NODE_PARSERS: Record<string, VocabNodeParser> = {
     const submit = isRecord(raw.submit) ? raw.submit : null;
     const submitLabel = submit ? vocabString(submit.label, VOCAB_LIMITS.maxLabelChars) : undefined;
     const submitAction = submit ? parseAction(submit.onPress) : null;
-    if (submitLabel === undefined || submitAction === null) {
+    const applyOnChange = parseAction(raw.applyOnChange);
+    const hasSubmit = submitLabel !== undefined && submitAction !== null;
+    // A `submit` that was WRITTEN and is malformed stays an error even when
+    // `applyOnChange` would carry the form: the author asked for a button, and
+    // silently dropping it would ship a form missing the control they declared.
+    if (submit && !hasSubmit) {
       return ctx.invalid("`submit` needs a `label` and an `onPress` action");
     }
-    return { component: "form", fields, submit: { label: submitLabel, onPress: submitAction } };
+    if (!hasSubmit && applyOnChange === null) {
+      return ctx.invalid("needs a `submit`, or an `applyOnChange` action");
+    }
+    return {
+      component: "form",
+      fields,
+      ...(hasSubmit ? { submit: { label: submitLabel!, onPress: submitAction! } } : {}),
+      ...(applyOnChange !== null ? { applyOnChange } : {}),
+    };
   },
 
   chart: (raw, ctx) => {

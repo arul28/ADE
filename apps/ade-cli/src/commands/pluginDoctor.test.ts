@@ -303,9 +303,10 @@ describe("buildPluginDoctorReport", () => {
     });
     expect(report.displayName).toBe("ade-tipsy");
     expect(report.version).toBeNull();
-    // Last run reads "unknown", not "no": ADE answered, but it has no plugin
-    // to have run anything, and claiming "nothing ran" would be an assertion
-    // about code that is not on this computer.
+    // Last run reads "no", the same answer `running` gives: ADE answered and
+    // said it has no such plugin. It used to read "unknown" with the OLD-HOST
+    // sentence, which sent a reader who had just uninstalled off to check
+    // their ADE version while every other rung said "not installed".
     // Keyed rather than positional, and `toMatchObject` rather than `toEqual`:
     // this case is about what each rung ANSWERS, and a new rung on the ladder
     // should not fail a test that says nothing about it.
@@ -316,7 +317,7 @@ describe("buildPluginDoctorReport", () => {
         running: "no",
         places: "na",
         customPage: "na",
-        lastRun: "unknown",
+        lastRun: "no",
         panels: "na",
         synced: "no",
         skills: "na",
@@ -364,6 +365,31 @@ describe("buildPluginDoctorReport", () => {
     );
     expect(older.state).toBe("unknown");
     expect(older.detail).toContain("does not keep track");
+  });
+
+  /**
+   * Two degradations that wore one sentence.
+   *
+   * ADE answering `plugin.get` with null means it does not have the plugin; a
+   * host that answers WITHOUT `lastInvokes` means it cannot track runs at all.
+   * The first used to print the second's sentence, so an uninstall read as
+   * "your ADE is too old" on a line whose neighbours all said "not installed".
+   */
+  it("says NOT INSTALLED, never 'this ADE cannot track runs', when ADE has no such plugin", () => {
+    const absent = layer(healthy({ live: { ...healthy().live!, detail: null } }), "lastRun");
+    expect(absent.state).toBe("no");
+    expect(absent.detail).toContain("does not have this plugin installed");
+    expect(absent.detail).not.toContain("does not keep track");
+    // The rung answers the same way `running` does, which is the whole point:
+    // one uninstalled plugin, one reading down the ladder.
+    expect(layer(healthy({ live: { ...healthy().live!, detail: null } }), "running").state).toBe("no");
+  });
+
+  it("keeps the UNREACHABLE wording when ADE is not answering at all", () => {
+    const offline = layer(healthy({ live: null }), "lastRun");
+    expect(offline.state).toBe("unknown");
+    expect(offline.detail).toContain("could not ask ADE");
+    expect(offline.detail).not.toContain("does not have this plugin installed");
   });
 
   it("counts every declared route to an action, not only sockets", () => {
@@ -822,5 +848,78 @@ describe("buildPluginDoctorReport webhooks rung", () => {
   it("says nobody could check when ADE is not answering at all", () => {
     const snapshot = healthy({ manifest: manifest({ webhookIngress: channels }), live: null });
     expect(layer(snapshot, "ingress").state).toBe("unknown");
+  });
+});
+
+/**
+ * The rung the dogfood run needed: a chord ADE already owns.
+ *
+ * `Mod+K` is the command palette. A manifest declaring it PARSES — it is
+ * shaped like a chord a plugin may bind — and `plugin.get` reported it back as
+ * a live binding, while the renderer refused it at bind time against the core
+ * chord index and said so to a `console.warn` nobody reads. The author was
+ * left with a shortcut that was declared, listed, accepted, and dead.
+ */
+describe("buildPluginDoctorReport shortcuts rung", () => {
+  const shortcut = (binding: string, action = "drink") => ({
+    action,
+    binding,
+    label: `Tipsy: ${action}`,
+  });
+
+  it("FAILS a chord ADE has already claimed, and names who holds it", () => {
+    const found = layer(healthy({ manifest: manifest({ keybindings: [shortcut("Mod+K")] }) }), "shortcuts");
+    expect(found.state).toBe("no");
+    expect(found.detail).toContain("Mod+K");
+    expect(found.detail).toContain("commandPalette.open");
+    // The refusal has to say ADE holds it — "invalid chord" would send the
+    // author off to fix a manifest that is not wrong.
+    expect(found.detail).toContain("ADE already uses");
+    // And it names the way the action is still reachable, so the answer is not
+    // just "no".
+    expect(found.detail).toContain("command palette");
+  });
+
+  it("passes a chord nothing has claimed, and names the chord it bound", () => {
+    // Free in both directions: absent from KEYBINDING_DEFINITIONS, and not one
+    // of the window/OS chords RESERVED_PLUGIN_CHORD_BINDINGS refuses.
+    const found = layer(healthy({ manifest: manifest({ keybindings: [shortcut("Mod+Shift+P")] }) }), "shortcuts");
+    expect(found.state).toBe("ok");
+    expect(found.detail).toContain("Mod+Shift+P");
+  });
+
+  it("does not apply to a plugin that declares no shortcut", () => {
+    const found = layer(healthy(), "shortcuts");
+    expect(found.state).toBe("na");
+    expect(found.detail).toContain("no keyboard shortcut");
+  });
+
+  it("shows the first refusal and says there are more", () => {
+    const found = layer(
+      healthy({
+        manifest: manifest({
+          keybindings: [shortcut("Mod+K", "drink"), shortcut("Mod+F", "sober")],
+        }),
+      }),
+      "shortcuts",
+    );
+    expect(found.state).toBe("no");
+    expect(found.detail).toContain("Mod+K");
+    expect(found.detail).toContain("(+1 more)");
+    // One line, not a list: the second refusal is counted, never printed.
+    expect(found.detail).not.toContain("Mod+F");
+  });
+
+  it("sits on the ladder between the last run and what arrives from outside", () => {
+    const keys = buildPluginDoctorReport(healthy(), NOW).layers.map((entry) => entry.key);
+    expect(keys.indexOf("shortcuts")).toBe(keys.indexOf("lastRun") + 1);
+    expect(keys.indexOf("ingress")).toBe(keys.indexOf("shortcuts") + 1);
+  });
+
+  it("prints as its own rung, with a label of its own", () => {
+    const text = formatPluginDoctorReport(buildPluginDoctorReport(healthy({
+      manifest: manifest({ keybindings: [shortcut("Mod+K")] }),
+    })));
+    expect(text).toContain("✗ Shortcuts");
   });
 });

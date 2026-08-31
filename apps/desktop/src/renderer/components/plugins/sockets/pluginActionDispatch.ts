@@ -1,4 +1,13 @@
 import { showToast } from "../../app/toast/toastStore";
+
+/**
+ * How long a press may produce nothing before the reader is told it landed.
+ *
+ * Long enough that a warm plugin — which answers in milliseconds — never draws
+ * a toast for an action that already finished, short enough to beat a person's
+ * second press.
+ */
+export const PLUGIN_ACTION_SLOW_NOTICE_MS = 1_200;
 import { navigateToAppTarget, revealPluginWorkRailPane } from "../../../lib/openExternal";
 import {
   buildPluginActionPromptAnswer,
@@ -82,6 +91,20 @@ export function runPluginSocketAction(
   // was pressed, and by the time the plugin answers, the menu that control
   // lived in may have closed and taken the focus with it.
   const anchor = readPluginPromptAnchor();
+  // A press right after launch can legitimately block for a long time with
+  // nothing on screen: the menu closes on select, a row menu entry carries no
+  // busy state, and the host waits up to PLUGIN_CHILD_READY_TIMEOUT_MS for the
+  // child to spawn before the invoke's own budget even begins. A drawn control
+  // that silently does nothing is indistinguishable from a broken plugin, and
+  // spamming it is the rational response — which is exactly what a dogfood run
+  // did for two minutes. This says the press landed.
+  const slowNotice = setTimeout(() => {
+    showToast({
+      title: `${pluginId} is starting`,
+      message: "The action runs as soon as the plugin is ready.",
+    });
+  }, PLUGIN_ACTION_SLOW_NOTICE_MS);
+  const clearSlowNotice = (): void => clearTimeout(slowNotice);
   return invokePluginSocketAction(
     pluginId,
     actionId,
@@ -89,6 +112,7 @@ export function runPluginSocketAction(
     { timeoutMs: options?.timeoutMs ?? pluginSocketInvokeTimeoutMs(options?.socket) },
   )
     .then((result) => {
+      clearSlowNotice();
       // Applied before navigation, which may take the composer off screen: an
       // action that writes a draft and then opens its own panel should do both,
       // in the order the plugin can predict.
@@ -181,6 +205,7 @@ export function runPluginSocketAction(
       });
     })
     .catch((cause: unknown) => {
+      clearSlowNotice();
       showToast({
         title: "Plugin action failed",
         message: cause instanceof Error ? cause.message : `${pluginId} couldn’t run ${actionId}.`,

@@ -2547,6 +2547,34 @@ export type PluginRuntimeStatus =
   | "stopped"
   | "no-entry";
 
+/**
+ * How a plugin lifecycle call (install, uninstall, enable, disable) was
+ * authorized, reported back on the call's own result.
+ *
+ * It exists because an agent could not tell. Everything an agent could query —
+ * `plugin.get`, `plugin.list`, the doctor, the transcript's card rows — showed
+ * that an install had SUCCEEDED and said nothing about how it was allowed to.
+ * A dogfood run inferred consent from wall-clock time (a ten-second install
+ * "must" have been a person reading a card) and filed a false P0 saying
+ * third-party code had installed with no consent surface. The card had worked
+ * correctly the whole time.
+ *
+ * `decidedBy` is who authorized it, `required` is whether THIS call had to ask:
+ *
+ * - `{required: true, decidedBy: "card"}` — a card was raised for this call and
+ *   a person answered it.
+ * - `{required: false, decidedBy: "card"}` — a person already answered a card
+ *   for this exact plugin, source and grant earlier in this ADE run, so the
+ *   host did not ask twice. Consent is human, and it is remembered.
+ * - `{required: false, decidedBy: "operator"}` — the caller was the machine
+ *   operator, running from their own terminal at `cto`. No card was ever needed
+ *   and none was raised.
+ */
+export type PluginApprovalOutcome = {
+  required: boolean;
+  decidedBy: "card" | "operator";
+};
+
 export type PluginSummary = {
   pluginId: string;
   version: string;
@@ -2560,6 +2588,13 @@ export type PluginSummary = {
   warnings: string[];
   /** Fatal manifest problems: the plugin is installed but cannot load. */
   errors: string[];
+  /**
+   * Present only on the result of a lifecycle call that went through the
+   * approval gate — never on a `list` or `get` row, which describe an installed
+   * plugin rather than a decision. Optional so a host that predates the field
+   * simply omits it and a reader learns nothing false.
+   */
+  approval?: PluginApprovalOutcome;
   source: PluginInstallSource;
   installedAt: string;
   hasEntry: boolean;
@@ -2891,6 +2926,33 @@ export function pluginInvokeActionMissingMessage(): string {
   return '"action" is required (its alias "actionId" is accepted too).';
 }
 
+/**
+ * Read a schedule id from `schedules.delete` params under either spelling.
+ *
+ * The same trap as {@link readPluginInvokeAction}, one API over. The parameter
+ * is called `scheduleId`, so that is the only spelling an author ever sees —
+ * but a row of {@link PluginSchedule} names the field `id`. Iterating
+ * `schedules.list()` and passing `row.scheduleId` therefore deletes
+ * `undefined`, and the old refusal (`"scheduleId" must be a non-empty string`)
+ * read as though the ARGUMENT was malformed rather than as though the wrong
+ * field had been read. Unnoticed, the stale schedule survives every settings
+ * save and walks into the live-schedule ceiling one change at a time.
+ */
+export function readPluginScheduleId(params: unknown): string | null {
+  if (!isRecord(params)) return null;
+  for (const key of ["scheduleId", "id"]) {
+    const value = params[key];
+    if (typeof value === "string" && value.trim().length > 0) return value;
+  }
+  return null;
+}
+
+/** The refusal, naming the row's field so the reader looks at the right one. */
+export function pluginScheduleIdMissingMessage(): string {
+  return '"scheduleId" is required (a schedule row spells this field "id", '
+    + "and that spelling is accepted here too).";
+}
+
 export type PluginDomainService = {
   /**
    * Call a plugin's own named handler. Treated as MUTATING by the renderer.
@@ -2983,7 +3045,7 @@ export type PluginDomainService = {
     enabled: boolean;
   }): Promise<PluginSummary>;
   install(args: { source: string; ref?: string; enable?: boolean }): Promise<PluginSummary>;
-  uninstall(args: { pluginId: string }): Promise<{ removed: boolean }>;
+  uninstall(args: { pluginId: string }): Promise<{ removed: boolean; approval?: PluginApprovalOutcome }>;
   enable(args: { pluginId: string }): Promise<PluginSummary>;
   disable(args: { pluginId: string }): Promise<PluginSummary>;
   usageSummary(args?: { pluginId?: string }): Promise<PluginUsageSummary>;

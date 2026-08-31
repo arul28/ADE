@@ -1043,6 +1043,20 @@ function parseSockets(raw: unknown, ctx: ParseContext): PluginManifestSocket[] {
     // a legible button tint is, so a declared colour and a published one are
     // accepted or refused identically.
     const color = sanitizePluginActionColor(entry.color);
+    // Warned rather than dropped in silence. The gate is right to refuse an
+    // illegible tint and right to fall back to the platform's own tone — but
+    // the manifest still parses clean, so an author who picked a colour that
+    // failed the contrast check saw no log line, no doctor rung and no
+    // difference they could account for. `accent` already errors on a bad hex;
+    // this is the same fact one field over, at the severity that matches a
+    // field the plugin can lose without losing the socket.
+    if (entry.color !== undefined && !color) {
+      ctx.warnings.push(
+        `${label}.color "${String(entry.color)}" is not a legible button tint —`
+        + " it must be a hex colour with enough contrast on both the light and dark"
+        + " backdrop; the platform's own tone is used instead",
+      );
+    }
     // Read for every entry, meaningful to one kind each. A malformed value is
     // dropped to null here and then refused below by the same requirement loop
     // the four core fields go through, so `command: "Fix It!"` fails with the

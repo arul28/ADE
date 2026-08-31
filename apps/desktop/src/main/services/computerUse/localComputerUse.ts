@@ -1,5 +1,7 @@
+import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { resolveAdeLayout } from "../../../shared/adeLayout";
 import type { ComputerUseArtifactKind } from "../../../shared/types";
@@ -43,9 +45,75 @@ function blocked(detail: string): LocalComputerUseCapability {
   return { state: "blocked_by_capability", available: false, command: null, detail };
 }
 
+const SCREEN_RECORDING_DENIED_SCREENSHOT_DETAIL =
+  "macOS Screen Recording permission is not granted, so screencapture cannot read the display. Grant Screen Recording to the app running ADE in System Settings > Privacy & Security > Screen Recording, then restart it.";
+const SCREEN_RECORDING_DENIED_VIDEO_DETAIL =
+  "macOS Screen Recording permission is not granted, so screencapture cannot record the display. Grant Screen Recording to the app running ADE in System Settings > Privacy & Security > Screen Recording, then restart it.";
+
+/** Stderr macOS emits when the capture ran but TCC withheld the display. */
+const SCREEN_RECORDING_DENIED_STDERR = /could not create image from display/i;
+
+/**
+ * Presence of the `screencapture` binary says nothing: it ships with every
+ * macOS install, so a binary check reports "present" on a machine where the
+ * very next capture dies with "could not create image from display". The only
+ * honest probe is to actually take a capture, so this runs the cheapest one
+ * there is — a 1x1 rectangle into the OS temp dir, deleted immediately.
+ *
+ * Denial shows up as a non-zero exit; the stderr signature and a zero-byte
+ * output file are belt-and-braces for macOS versions that exit 0 after
+ * writing nothing.
+ */
+function probeScreenCapturePermission(): boolean {
+  const probePath = path.join(os.tmpdir(), `ade-screencapture-probe-${randomUUID().slice(0, 8)}.png`);
+  try {
+    const result = spawnSync("screencapture", ["-x", "-t", "png", "-R", "0,0,1,1", probePath], {
+      encoding: "utf8",
+      windowsHide: true,
+      timeout: 10_000,
+    });
+    if (result.error || result.status !== 0) return false;
+    const stderr = typeof result.stderr === "string" ? result.stderr : "";
+    if (SCREEN_RECORDING_DENIED_STDERR.test(stderr)) return false;
+    const stat = fs.statSync(probePath, { throwIfNoEntry: false });
+    return Boolean(stat && stat.size > 0);
+  } catch {
+    return false;
+  } finally {
+    try {
+      fs.rmSync(probePath, { force: true });
+    } catch {
+      // Best effort: a leftover 1x1 png in the temp dir is not worth a throw.
+    }
+  }
+}
+
+let screenCapturePermissionProbe: () => boolean = probeScreenCapturePermission;
+let screenCapturePermissionCache: boolean | null = null;
+
+/**
+ * One probe per process. `getBackendStatus()` is called often enough that a
+ * spawn per call would be a real cost, and repeatedly poking TCC is worse than
+ * pointless. A permission grant requires restarting the granted app anyway, so
+ * the answer cannot usefully change inside one process lifetime.
+ */
+function isScreenCapturePermitted(): boolean {
+  if (screenCapturePermissionCache === null) {
+    screenCapturePermissionCache = screenCapturePermissionProbe();
+  }
+  return screenCapturePermissionCache;
+}
+
+/** Test-only seam: override the memoized probe (pass null to restore the real one). */
+export function __setScreenCapturePermissionProbeForTests(probe: (() => boolean) | null): void {
+  screenCapturePermissionProbe = probe ?? probeScreenCapturePermission;
+  screenCapturePermissionCache = null;
+}
+
 export function getLocalComputerUseCapabilities(
   platform: NodeJS.Platform = process.platform,
   commandAvailable: (command: string) => boolean = commandExists,
+  screenCapturePermitted: () => boolean = isScreenCapturePermitted,
 ): LocalComputerUseCapabilities {
   if (platform !== "darwin") {
     const blockedCapability = blocked(NATIVE_COMPUTER_USE_BLOCKED_DETAIL);
@@ -67,12 +135,22 @@ export function getLocalComputerUseCapabilities(
     };
   }
 
-  const screenshot = commandAvailable("screencapture")
-    ? present("screencapture", "macOS screencapture is available for screenshots.")
-    : missing("screencapture", "macOS screencapture is required for screenshots.");
-  const videoRecording = commandAvailable("screencapture")
-    ? present("screencapture", "macOS screencapture can record screen video with the -v flag.")
-    : missing("screencapture", "macOS screencapture is required for local video capture.");
+  // The binary is always there on macOS; the Screen Recording grant is what
+  // actually decides whether a capture produces an image, so only probe once
+  // the binary check has passed.
+  const screenCaptureInstalled = commandAvailable("screencapture");
+  const screenCaptureAllowed = screenCaptureInstalled ? screenCapturePermitted() : false;
+
+  const screenshot = !screenCaptureInstalled
+    ? missing("screencapture", "macOS screencapture is required for screenshots.")
+    : screenCaptureAllowed
+      ? present("screencapture", "macOS screencapture is available for screenshots.")
+      : missing("screencapture", SCREEN_RECORDING_DENIED_SCREENSHOT_DETAIL);
+  const videoRecording = !screenCaptureInstalled
+    ? missing("screencapture", "macOS screencapture is required for local video capture.")
+    : screenCaptureAllowed
+      ? present("screencapture", "macOS screencapture can record screen video with the -v flag.")
+      : missing("screencapture", SCREEN_RECORDING_DENIED_VIDEO_DETAIL);
   const appLaunch = commandAvailable("open")
     ? present("open", "macOS open is available for launching and focusing apps.")
     : missing("open", "macOS open is required for launching apps.");

@@ -456,6 +456,65 @@ describe("plugin pane forms", () => {
     expect(pluginFieldRawValue(field, "body[0]", { [pluginFormValueKey("body[0]", "name")]: "typed" }))
       .toBe("typed");
   });
+
+  /**
+   * A settings form: no submit row to draw, and each field carries the action a
+   * committed edit dispatches. The `field` interactive has to carry BOTH the
+   * action and the form's whole field list, because an apply sends the same full
+   * values map a submit would and there is no submit row to read it off.
+   */
+  it("draws no submit row for a form that applies on change, and arms each field", () => {
+    const model = build(panel([
+      {
+        component: "form",
+        fields: [
+          { kind: "toggle", id: "digest", label: "Weekly digest" },
+          { kind: "select", id: "day", label: "Day", options: [{ value: "1" }, { value: "2" }], value: "1" },
+        ],
+        applyOnChange: { action: "applySettings" },
+      },
+    ]));
+
+    expect(model.rows.map((row) => row.kind)).toEqual(["field", "field"]);
+    expect(model.interactives.map((entry) => entry.kind)).toEqual(["field", "field"]);
+    for (const entry of model.interactives) {
+      expect(entry.kind).toBe("field");
+      if (entry.kind !== "field") continue;
+      expect(entry.applyOnChange).toEqual({ action: "applySettings" });
+      expect(entry.fields.map((field) => field.id)).toEqual(["digest", "day"]);
+    }
+  });
+
+  it("leaves a submit-only form's fields unarmed, so pressing one still just edits it", () => {
+    const model = build(formPanel);
+    for (const entry of model.interactives) {
+      if (entry.kind !== "field") continue;
+      expect(entry.applyOnChange).toBeUndefined();
+    }
+  });
+});
+
+/**
+ * `$context` rows are a key and a scalar, so the key has to survive the read.
+ * Dropping it left a `keyValue` bound to `$context` drawing its `emptyText`.
+ */
+describe("plugin pane keyValue bindings", () => {
+  it("labels a bound row with the collection row's own key", () => {
+    const model = build(
+      panel([{ component: "keyValue", emptyText: "Nothing here.", bind: { collection: "meta" } }]),
+      {
+        collections: new Map([[bindingKey({ collection: "meta" }), [
+          { key: "Lane", value: "alpha-build" },
+          { key: "Logged", value: "Aug 30, 2026" },
+        ]]]),
+      },
+    );
+
+    expect(model.rows.map((row) => (row.kind === "keyValue" ? [row.label, row.value] : row.kind))).toEqual([
+      ["Lane", "alpha-build"],
+      ["Logged", "Aug 30, 2026"],
+    ]);
+  });
 });
 
 /* ── Client-evaluated panel state ─────────────────────────────────────────── */

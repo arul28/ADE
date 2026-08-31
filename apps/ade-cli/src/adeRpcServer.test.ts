@@ -6647,6 +6647,10 @@ describe("run_ade_action plugin domain", () => {
       expect(calls[0]!.operatorOnly).toBe(true);
       expect(service.install).toHaveBeenCalledTimes(1);
       expect(service.install).toHaveBeenCalledWith({ source });
+      // The result says how it was authorized. Nothing else on this call can:
+      // the gate sees the decision and never the result, and the host service
+      // that produced the result was never told a card happened.
+      expect(result.result).toMatchObject({ approval: { required: true, decidedBy: "card" } });
     });
 
     it("writes the card from the manifest it parsed, never from the caller's arguments", async () => {
@@ -6717,6 +6721,12 @@ describe("run_ade_action plugin domain", () => {
       expect(second?.isError).toBeUndefined();
       expect(calls).toHaveLength(1);
       expect(service.install).toHaveBeenCalledTimes(2);
+      // The second install rode a remembered yes, so no card was REQUIRED —
+      // but a person still gave it, so it is decided by card, not by the
+      // operator. Collapsing those two would let a reader read "nobody was
+      // asked" off a call whose consent someone actually gave.
+      expect(first.result).toMatchObject({ approval: { required: true, decidedBy: "card" } });
+      expect(second.result).toMatchObject({ approval: { required: false, decidedBy: "card" } });
     });
 
     it("asks again for a different directory", async () => {
@@ -6897,6 +6907,10 @@ describe("run_ade_action plugin domain", () => {
 
         expect(result?.isError).toBeUndefined();
         expect(service.install).toHaveBeenCalledWith({ source });
+        // Nobody was asked, and the result says so in its own words rather
+        // than leaving the field off: "no card" and "a card you did not see"
+        // must not read alike.
+        expect(result.result).toMatchObject({ approval: { required: false, decidedBy: "operator" } });
       });
     });
 
@@ -6948,6 +6962,12 @@ describe("run_ade_action plugin domain", () => {
         // anything the caller passed.
         expect(String(calls[0]!.title)).toBe("Remove Hello 1.2.0?");
         expect(service.uninstall).toHaveBeenCalledWith({ pluginId: "hello" });
+        // The removal answer rides ALONGSIDE the host's own result rather than
+        // replacing it: a reader still learns whether anything was removed.
+        expect(result.result).toEqual({
+          removed: true,
+          approval: { required: true, decidedBy: "card" },
+        });
       });
 
       it("refuses with a verb-specific denial and does not touch the plugin", async () => {
@@ -7034,6 +7054,29 @@ describe("run_ade_action plugin domain", () => {
         expect(result?.isError).toBeUndefined();
         expect(calls).toHaveLength(0);
         expect(service.uninstall).toHaveBeenCalledTimes(1);
+        expect(result.result).toMatchObject({ approval: { required: false, decidedBy: "operator" } });
+      });
+
+      /**
+       * `approval` describes a DECISION, so it belongs only on the calls that
+       * make one. A `list` or `get` row describes an installed plugin, and a
+       * reader who found `approval` there would read a decision into a
+       * listing that never had one.
+       */
+      it("says nothing about approval on a read", async () => {
+        const { host } = pluginHostMock({
+          get: vi.fn(async () => ({ pluginId: "hello", displayName: "Hello" })),
+        });
+        const fixture = withPluginHost(host);
+        const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+        await initialize(handler, { callerId: "operator", role: "cto" });
+
+        const read = await callTool(handler, "run_ade_action", {
+          domain: "plugin", action: "get", args: { pluginId: "hello" },
+        });
+
+        expect(read?.isError).toBeUndefined();
+        expect(read.result).toEqual({ pluginId: "hello", displayName: "Hello" });
       });
 
       it("refuses a removal with no pluginId before it asks anybody anything", async () => {

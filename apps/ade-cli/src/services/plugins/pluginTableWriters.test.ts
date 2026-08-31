@@ -10,6 +10,7 @@ import {
   PLUGIN_CONTRIBUTION_PAYLOAD_MAX_BYTES,
   PLUGIN_PANELS_MAX_PER_PLUGIN,
 } from "../../../../desktop/src/main/services/state/dbMaintenanceApi";
+import { VOCAB_LIMITS } from "../../../../desktop/src/shared/plugins/vocabularyNodes";
 import {
   deletePluginCollectionValue,
   deletePluginPresenceForPlugin,
@@ -491,6 +492,159 @@ describe("plugin table writers", () => {
       "select schema_json from plugin_panels where plugin_id = ? and panel_id = ?",
       ["graph", "array"],
     )?.schema_json).toBe("[1,2]");
+  });
+
+  /**
+   * The vocabulary ceilings, enforced where the row is written.
+   *
+   * A schema can sit well inside the 64 KiB byte cap and still carry 400 nodes,
+   * and an over-`maxNodes` schema is PANEL-FATAL at render on every client — so
+   * before this the row stored fine, replicated fine and then drew as the
+   * fallback card on desktop, iOS and the web with nothing anywhere saying why.
+   * Only the two COUNTING ceilings are refused: the degradation ladder and the
+   * structural failures are deliberately still accepted, which is what the last
+   * two cases guard.
+   */
+  describe("panel vocabulary ceilings", () => {
+    const panelSchema = (body: unknown[]): string => JSON.stringify({
+      v: 1,
+      fallback: { title: "Fleet", text: "Open the plugin to read this." },
+      body,
+    });
+
+    /** `depth` levels of `stack`, with a leaf at the bottom. Root `body` is depth 1. */
+    const nested = (depth: number): Record<string, unknown> => (depth <= 1
+      ? { component: "divider" }
+      : { component: "stack", children: [nested(depth - 1)] });
+
+    const put = (panelId: string, schemaJson: string): void => putPluginPanel(db, {
+      pluginId: "graph",
+      panelId,
+      title: "Panel",
+      icon: "graph",
+      surface: "work",
+      schemaJson,
+      vocabVersion: 1,
+      nowIso: NOW,
+    });
+
+    const stored = (panelId: string): string | null => db.get<{ schema_json: string }>(
+      "select schema_json from plugin_panels where plugin_id = ? and panel_id = ?",
+      ["graph", panelId],
+    )?.schema_json ?? null;
+
+    const refusalFrom = (panelId: string, schemaJson: string): Error => {
+      try {
+        put(panelId, schemaJson);
+      } catch (error) {
+        return error as Error;
+      }
+      throw new Error("Expected the writer to refuse this panel.");
+    };
+
+    it("refuses a schema past maxNodes, naming the ceiling and the real count", () => {
+      const body = Array.from({ length: 400 }, () => ({ component: "divider" }));
+      const thrown = refusalFrom("huge", panelSchema(body));
+
+      expect(isPluginBudgetExceeded(thrown)).toBe(true);
+      expect((thrown as { code?: string }).code).toBe(PLUGIN_BUDGET_EXCEEDED_CODE);
+      // Both numbers, because the parser stops counting at the ceiling and
+      // "at least 200" is not what an author needs to know how far over it is.
+      expect(thrown.message).toContain(String(VOCAB_LIMITS.maxNodes));
+      expect(thrown.message).toContain("400");
+      // Refused, not accepted-then-repaired: on a CRR an accepted row leaves
+      // clock and pks shadows behind that no later prune reclaims.
+      expect(stored("huge")).toBeNull();
+    });
+
+    it("refuses a schema nested past maxDepth, naming the depth ceiling", () => {
+      const thrown = refusalFrom("deep", panelSchema([nested(VOCAB_LIMITS.maxDepth + 1)]));
+
+      expect(isPluginBudgetExceeded(thrown)).toBe(true);
+      expect(thrown.message).toContain(String(VOCAB_LIMITS.maxDepth));
+      expect(stored("deep")).toBeNull();
+    });
+
+    it("accepts a schema at the ceilings rather than one node inside them", () => {
+      const body = Array.from({ length: VOCAB_LIMITS.maxNodes }, () => ({ component: "divider" }));
+      put("at-cap", panelSchema(body));
+      expect(stored("at-cap")).not.toBeNull();
+
+      // The deepest legal tree: the leaf sits exactly at `maxDepth`.
+      put("at-depth", panelSchema([nested(VOCAB_LIMITS.maxDepth)]));
+      expect(stored("at-depth")).not.toBeNull();
+    });
+
+    /**
+     * The degradation ladder, which this cap must not have swallowed.
+     *
+     * An unknown component and a malformed known one come back from
+     * `parsePluginPanel` as `warnings` with `ok: true` — they are meant to
+     * become render-time markers on every client, and refusing them at the
+     * write would reject a panel authored for a NEWER vocabulary.
+     */
+    it("still stores an unknown component and a malformed known one", () => {
+      put("forward", panelSchema([{ component: "hologram", spin: true }]));
+      expect(JSON.parse(stored("forward") ?? "null")).toMatchObject({
+        body: [{ component: "hologram" }],
+      });
+
+      // `text` is known, and this one is missing the field it cannot render
+      // without: node-local damage, not a budget.
+      put("malformed", panelSchema([{ component: "text" }]));
+      expect(JSON.parse(stored("malformed") ?? "null")).toMatchObject({
+        body: [{ component: "text" }],
+      });
+    });
+
+    /**
+     * Structural failure is a different class than a budget. A `v` this build
+     * does not render is exactly what a panel written for a newer vocabulary
+     * looks like from here, and refusing it would stop an updated client ever
+     * seeing the panel it could have drawn.
+     */
+    it("still stores a schema that is not JSON, names a newer v, or has no fallback", () => {
+      put("garbage", "this is not json");
+      expect(stored("garbage")).toBe("this is not json");
+
+      put("newer", JSON.stringify({ v: 99, fallback: { title: "T", text: "t" }, body: [] }));
+      expect(JSON.parse(stored("newer") ?? "null")).toMatchObject({ v: 99 });
+
+      put("no-fallback", JSON.stringify({ v: 1, body: [{ component: "divider" }] }));
+      expect(JSON.parse(stored("no-fallback") ?? "null")).toMatchObject({ v: 1 });
+    });
+  });
+
+  /**
+   * The contribution payload cap, locked in.
+   *
+   * A dogfood report filed this as missing. It is enforced here, before the
+   * transaction, and this test is what makes the claim un-refileable.
+   */
+  it("refuses a contribution payload past the byte cap, naming both numbers", () => {
+    const payloadJson = JSON.stringify("x".repeat(PLUGIN_CONTRIBUTION_PAYLOAD_MAX_BYTES));
+    let thrown: unknown;
+    try {
+      publishPluginContribution(db, {
+        entityKind: "lane",
+        entityId: "lane-1",
+        pluginId: "graph",
+        socket: "row-badge",
+        payloadJson,
+        nowIso: NOW,
+      });
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect(isPluginBudgetExceeded(thrown)).toBe(true);
+    expect((thrown as { code?: string }).code).toBe(PLUGIN_BUDGET_EXCEEDED_CODE);
+    expect((thrown as Error).message).toContain(String(PLUGIN_CONTRIBUTION_PAYLOAD_MAX_BYTES));
+    expect((thrown as Error).message).toContain(String(Buffer.byteLength(payloadJson, "utf8")));
+    expect(Number(db.get<{ count: number }>(
+      "select count(*) as count from plugin_contributions where plugin_id = ?",
+      ["graph"],
+    )?.count)).toBe(0);
   });
 
   it("skips unchanged presence rows and removes ones that are gone", () => {

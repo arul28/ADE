@@ -424,7 +424,7 @@ Three shapes that fit the platform well:
 
 **Churning synced values spends the user's relay allowance.** Per-machine daily relay ceilings exist and a machine past one loses relay transport until midnight UTC — numbers and the rule in *Budgets*. Direct and LAN sync are never counted. Read it as etiquette rather than a limit you will hit: publish when something changed, not on a loop.
 
-**The vocabulary is fourteen components with hard ceilings** — 200 nodes, depth 8, 64 KiB per schema, plus the per-component caps in *Vocabulary limits*. No expressions, conditionals, formatting strings or callbacks. A component this build has never heard of renders a marker naming it, and a panel over any ceiling renders its required `fallback` instead — which is why `fallback` is mandatory rather than nice to have. What draws where differs per surface: *Per-surface support* is the authority, and worth reading before you design a panel around a `chart`.
+**The vocabulary is fourteen components with hard ceilings** — 200 nodes, depth 8, 64 KiB per schema, plus the per-component caps in *Vocabulary limits*. No expressions, conditionals, formatting strings or callbacks. A component this build has never heard of renders a marker naming it, and a panel over any ceiling renders its required `fallback` instead — which is why `fallback` is mandatory rather than nice to have. **`panels.update` refuses a schema past `maxNodes` or `maxDepth` at the write**, with `plugin_budget_exceeded` naming the ceiling and your actual count, exactly as a collection value over 64 KiB is refused. That is deliberate: an over-ceiling schema is fatal to the panel on *every* client, so storing it would buy you a blank fallback card on desktop, iOS, web and the TUI at once with nothing anywhere saying why. Note this is the ceiling check only — an unknown component and a malformed known one are still accepted at the write and still become markers at render. What draws where differs per surface: *Per-surface support* is the authority, and worth reading before you design a panel around a `chart`.
 
 **A `webview` page is desktop-only and sandboxed.** Its own origin, `script-src 'self'`, no Node, no `require`, no raw IPC, and no `window.ade` — the `window.adePlugin` bridge is the entire capability, and even `collections.put` through it is refused on the desktop app (write through `invoke` instead). iOS, the web client and the TUI render the surface's `panelId` panel in its place. **There is no custom native UI on iOS or the TUI at all**; declarative panels are the only cross-device UI that exists.
 
@@ -435,6 +435,15 @@ Three shapes that fit the platform well:
 **You cannot declare yourself Official.** The directory decides: an entry is official only when ADE's curated `official.json` lists it *and* both its repo and its install source sit in ADE's own GitHub organizations — otherwise it lists as community with a warning. Official entries carry a per-version sha256 the installer checks against the fetched tree; community plugins are not checksummed by the directory and install as unverified. Being listed in the Marketplace is not an endorsement.
 
 **Sockets and action domains are closed sets.** You fill the seventeen slots above on those eight surfaces; there is no way to inject UI anywhere else, and placement is host-controlled and always after core content, so a contribution never reorders or interleaves with the product's own rows. `ade.actions.invoke` reaches ADE's existing action domains at **agent** role — CTO-only actions are refused — and a plugin cannot define a domain of its own.
+
+**A borrowed action runs against ONE project, and you do not pick which.** The host resolves a project for you at call time — the project your call arrived through, or, when nothing pins one, an arbitrary attached project. Two consequences, both of which have cost an author a day:
+
+- **A project-scoped read can answer `[]` truthfully and uselessly.** `ade.actions.invoke("lane", "list")` takes no `projectId` and cannot be given one; it lists the lanes of whichever project the host resolved. An empty array means "that project has no lanes", which is not the same as "you asked the wrong project", and nothing in the answer tells the two apart. If you have a `laneId` already, prefer `lane.getSummary({laneId})` — it takes the id you hold instead of depending on the resolution.
+- **Nothing hands you a `projectId` at `activate`.** There is no project namespace on the SDK and no activate context that carries one. The first place a real `projectId` reaches you is a **change event** — `lane.changed`, `pr.changed`, `session.changed` and `install.changed` all carry `{event, ids[], projectId, overflow?}`. So a plugin that needs to know its project waits for one, rather than assuming the one it read at startup.
+
+If a project-scoped call comes back empty at `activate` and you expected rows, this is the first thing to suspect — not your query.
+
+**Treat `activate` as a fresh host, and clear your own caches there.** `plugin.reload` restarts the child, but module-level state is not guaranteed to be gone with it: a cache you populated at import time can survive into the next `activate` and keep answering with data the reload was supposed to invalidate. A renamed lane that stayed renamed only in ADE, and a settings change that "did not take", are both this. Initialize every module-level map, memo and cached lookup inside `activate` rather than at import, so a reload really is a clean start.
 
 **Plugins cannot see each other.** The SDK server is constructed per plugin and answers every call against that plugin's id; the child never puts an id on the wire. Collections must be declared in your own manifest (an undeclared name is refused, not created), secrets are namespaced `plugin:<id>:<NAME>`, and `config.get()` returns your own settings. There is no cross-plugin read of any kind.
 
@@ -825,7 +834,7 @@ A panel is a JSON document. `v` is the vocabulary version, `fallback` is **requi
 | `button` | **`label`**, **`onPress`** (a `VocabAction`), `kind` (`primary`\|`default`\|`quiet`), `icon`, `disabled` |
 | `list` | **`items[]` or `bind`**, `emptyText`. Item: **`title`**, `subtitle`, `meta`, `tone`, `icon`, `onPress`, `badge` `{text, tone?, icon?}`, `mono`, `actions[]` (≤3), `overflow[]` (≤6) |
 | `table` | **`columns[]`** and **`rows[]` or `bind`**, `emptyText`. Column: **`key`**, **`label`**, `align` |
-| `form` | **`fields[]`**, **`submit`** `{label, onPress}`. Field kinds: `text`, `secret`, `select`, `toggle`, `number` |
+| `form` | **`fields[]`**, and **`submit` `{label, onPress}` or `applyOnChange` (a `VocabAction`)** — at least one, both allowed. Field kinds: `text`, `secret`, `select`, `toggle`, `number`. See *A form with no Apply button* |
 | `chart` | **`kind`** (`line`\|`bar`), **`series[]`** of `{id, label?, tone?, points:[{x,y}]}`, `title`, `emptyText` |
 | `video` | **`src`**, `poster`, `title` |
 | `image` | **`src`**, **`alt`**, `maxHeight` |
@@ -864,6 +873,31 @@ Per-client: desktop, the web client and iOS draw all of it, with `overflow` behi
 ```
 
 A row naming anything outside that list still renders; it is simply not pressable. Max **16** ids, deduplicated. An empty `allowActions` means the same as none.
+
+### A form with no Apply button
+
+A settings section should take effect as it is edited. `submit` used to be required, so every form-shaped settings panel grew a button the reader had to press — and the way around it was to rebuild the section out of `segmented` controls, which works and costs you the field labels, the help text and the validation a form gives for free, and turns a boolean into the strings `"on"` and `"off"`.
+
+**`applyOnChange`** is that shape. It is an action, like `submit.onPress`, and it fires on every committed edit with the same full values map a submit sends — so your handler reads one payload however the values arrived. A form that declares it needs no `submit` at all, and draws no button when it has none.
+
+```json
+{
+  "component": "form",
+  "applyOnChange": { "action": "applySettings" },
+  "fields": [
+    { "kind": "toggle", "id": "digestEnabled", "label": "Weekly digest",
+      "help": "A notification each week summarizing what you logged.", "value": true },
+    { "kind": "select", "id": "digestDay", "label": "Send it on",
+      "options": [{ "value": "1", "label": "Monday" }], "value": "1" }
+  ]
+}
+```
+
+Three things to hold onto:
+
+- **A field's values arrive as top-level args, keyed by field id** — `args.digestEnabled` is a real boolean, not `"on"`. `args.state` is still the reader's `segmented` selections, and is a different thing.
+- **"Committed" is not "changed".** A `toggle` and a `select` commit the moment they move. A `text`, `secret` or `number` field commits when the reader finishes with it — blur or Enter on desktop, blur or Return on iOS, Enter in the TUI — so your plugin is not invoked once per letter.
+- **Declaring both is legal** and means what it reads as: edits apply as they are made, and the button re-runs the action. Declaring neither is refused at parse, and the node degrades to a marker.
 
 ### A filter with no round trip
 
@@ -1416,10 +1450,13 @@ await ade.actions.invoke("chat", "emitAdeCard", {
 ```
 
 - `cardId` is identity, not content: emit it again with the same id and the row you already placed updates in place, rather than a second card stacking under the first. Mint one per thing (`standup-2026-08-30`), never one per press.
-- `variant` is an open string, and no client knows yours. Name it after the thing (`journal_standup`), and expect every client to take the unknown-variant path — which is the panel plus `fallbackText`, not an error.
+- `variant` is an open string, and no client knows yours. Name it after the thing (`journal_standup`), and expect every client to take the unknown-variant path.
+- **The panel is what buys you a card. Without one you get `fallbackText` and nothing else.** This is the rule to plan around, because it is not obvious: a variant no client knows degrades to one line of `fallbackText`, and the exemption that restores the full frame — `title`, `subtitle`, `rows`, `metrics`, the byline — is a DECLARED panel. So the natural first implementation, title plus subtitle plus `rows` with no panel, renders as one grey line on every client. Add the panel, or put the answer in `fallbackText`.
+- With a panel, `rows` and the panel's `$context` both draw. They did not always: a card whose payload carried both rendered neither, so `title`, `subtitle` and `fallbackText` were the only per-card content a plugin could show. If you are reading a card that behaves that way, you are on a build from before ADE 1.2.66.
 - `fallbackText` is required and is what a client draws when it cannot draw the panel. Write it as a whole sentence, never a label.
 - `panel.panelId` must name a panel your manifest declares AND a `chat-card` socket must name it. Miss either and the card still draws — as an ordinary card with its title and fallback text — but your panel does not.
-- `authoredBy` is stamped by the host from the invoking plugin. You cannot set it, and you cannot emit a card attributed to anyone else.
+- `authoredBy` is stamped by the host from the invoking plugin. You cannot set it, and you cannot emit a card attributed to anyone else. The byline draws your manifest `icon`, so name one: an unknown token, or none, is what the puzzle piece means.
+- **A card is a snapshot, not a live view.** The card's own `title`, `subtitle`, `rows` and `metrics` are the words you emitted, and they stay those words: fix a bug that put a wrong lane name in a subtitle and the row already in the transcript still says the wrong name, because a chronological row records what was true when it was written. Only the PANEL follows your data — it re-reads its collections whenever they change, with no new emit. Put anything that must stay current in the panel, and re-emit the same `cardId` when you want the card's own text to change.
 
 ### A declared badge marks no rows
 
@@ -1618,7 +1655,7 @@ exports.actions = {
 | `ade.memory.get/set/delete(key)` / `list({keyPrefix?, limit?})` | Your own durable memory: a reserved slice of your collections, no manifest declaration needed. Shares the collection budget and is dropped on uninstall. **Not** ADE's CTO memory — nothing you write here reaches any agent's prompt. `ade.memory` is refused as a `collections` name in both directions, so this slice has exactly one door |
 | `ade.notifications.post({title, body?, target?, deeplink?})` | Tell the user outside ADE's window. `target` is `"desktop"`, `"mobile"` or `"both"` (default). Your **display name is stamped on by the host** and cannot be set, spoofed or omitted. `deeplink` decides where a tap lands and must be `ade://plugin/<your-own-id>/<panel-id>[?ctx=…]`, max 1,024 chars — anything else costs the destination, not the notification, and the tap opens your plugin as before. It reaches the phone; the desktop notification has no destination field. Resolves `{delivered: [...]}` with what actually landed; rejects `notification_unavailable` only when nothing was reached. Rate-limited — see *Budgets* |
 | `ade.schedules.create({action, cron\|runAt\|delaySeconds, args?, note?})` | Ask ADE to call one of **your own** actions later. `cron` is five-field local time and recurs; `runAt`/`delaySeconds` fire once and are then dropped. Rejects `plugin_budget_exceeded` past the quota |
-| `ade.schedules.list()` / `delete(scheduleId)` | Your schedules, never another plugin's. `delete` is idempotent |
+| `ade.schedules.list()` / `delete(scheduleId)` | Your schedules, never another plugin's. `delete` is idempotent. **Mind the two spellings:** the parameter is `scheduleId`, but a row from `list()` names the field **`id`** — so it is `delete(row.id)`, not `delete(row.scheduleId)`. Both spellings are accepted, and passing neither refuses with a message naming the row's field. Get this wrong and you delete `undefined`: the old schedule survives every settings save and walks into the live-schedule ceiling one change at a time |
 | `ade.clipboard.read()` / `write(text)` | Machine clipboard, text only. A read returns whatever the user last copied — often a password they were moving between apps — so read it in response to something the user just did, never on a timer |
 | `ade.dialogs.pickFile({title?, defaultPath?, directory?, filters?})` | Native picker; resolves the chosen path. Rejects `dialog_cancelled` when the user dismisses it — a dismissal is an answer, not a fault |
 | `ade.log(level, message, fields?)` | `debug`/`info`/`warn`/`error` into the ring buffer `ade plugin logs` reads |

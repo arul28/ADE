@@ -74,6 +74,7 @@ import {
   type PluginChatRuntimeEventPayload,
 } from "../../../shared/plugins/sdk";
 import {
+  PLUGIN_SURFACE_IDS,
   clampPluginInvokeTimeoutMs,
   isPluginEntityKind,
   isPluginSocketKind,
@@ -1666,7 +1667,19 @@ function createHost(args: PluginHostServiceArgs): PluginHostService {
       },
 
       async listContributions(contributionArgs): Promise<PluginContributionRecord[]> {
-        const surfaceInput = requireId(contributionArgs?.surface, "surface");
+        // Named with its options rather than through the bare `requireId`.
+        // "Show me those rows" is the natural next call after the doctor's
+        // Places rung counts them, and `"surface" is required.` left the reader
+        // to guess the vocabulary — the ids are a closed set, so listing them
+        // costs one line and saves a round trip to the source.
+        const surfaceInput = contributionArgs?.surface;
+        if (typeof surfaceInput !== "string" || !surfaceInput.trim()) {
+          throw new PluginSdkError(
+            "invalid_args",
+            `"surface" is required — contributions are listed one surface at a time.`
+            + ` Pass one of: ${PLUGIN_SURFACE_IDS.join(", ")}.`,
+          );
+        }
         // Every socket a manifest declares is already restricted to
         // `PLUGIN_SURFACE_IDS` by the manifest parser, so an unrecognized
         // `surface` here can never match one and `declared` would end up

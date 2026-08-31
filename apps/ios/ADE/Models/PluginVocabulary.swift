@@ -282,10 +282,22 @@ struct PluginVocabField: Equatable, Identifiable {
   var initialFlag: Bool?
 }
 
+/// A form: labelled fields, and how their values reach the plugin.
+///
+/// Two ways, and a form needs at least one of them. `submit` draws a button and
+/// sends the whole values map on one press. `applyOnChange` dispatches on every
+/// committed edit with the same map and no button at all — the settings shape,
+/// which was not expressible before it existed. Both together is legal.
+///
+/// Mirrors `VocabFormNode` in
+/// `apps/desktop/src/shared/plugins/vocabularyNodes.ts`.
 struct PluginVocabForm: Equatable {
   var fields: [PluginVocabField]
-  var submitLabel: String
-  var submit: PluginVocabAction
+  /// The Apply button. Nil only when ``applyOnChange`` is set.
+  var submitLabel: String?
+  var submit: PluginVocabAction?
+  /// Dispatched on every committed field change, with the full values map.
+  var applyOnChange: PluginVocabAction?
 }
 
 struct PluginVocabChartPoint: Equatable {

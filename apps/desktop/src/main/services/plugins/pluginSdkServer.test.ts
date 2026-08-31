@@ -373,6 +373,70 @@ describe("createPluginSdkServer host capabilities", () => {
   });
 });
 
+/**
+ * `schedules.delete` — the parameter and the row disagree about the field name.
+ *
+ * The parameter is `scheduleId`, so that is the only spelling an author ever
+ * reads; a `PluginSchedule` row spells the same field `id`. Iterating
+ * `schedules.list()` and passing `row.scheduleId` therefore deleted `undefined`,
+ * and the stale schedule survived every settings save.
+ */
+describe("createPluginSdkServer schedules.delete", () => {
+  function withSchedules(): {
+    handle: ReturnType<typeof createServer>["handle"];
+    deleted: string[];
+  } {
+    const deleted: string[] = [];
+    const { handle } = createServer({
+      schedules: {
+        create: () => ({} as never),
+        list: () => [],
+        delete: (_pluginId, scheduleId) => {
+          deleted.push(scheduleId);
+        },
+      },
+    });
+    return { handle, deleted };
+  }
+
+  it("deletes under the parameter's own spelling", async () => {
+    const { handle, deleted } = withSchedules();
+
+    await handle("schedules.delete", { scheduleId: "s1" });
+
+    expect(deleted).toEqual(["s1"]);
+  });
+
+  it("deletes under the spelling a schedule row uses", async () => {
+    const { handle, deleted } = withSchedules();
+
+    // The fix: `row.id` is what `schedules.list()` hands back, so passing it
+    // straight through has to reach the same schedule.
+    await handle("schedules.delete", { id: "s1" });
+
+    expect(deleted).toEqual(["s1"]);
+  });
+
+  it("refuses with neither spelling present, and names both", async () => {
+    const { handle, deleted } = withSchedules();
+    let thrown: unknown;
+    try {
+      await handle("schedules.delete", {});
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect(thrown).toBeInstanceOf(PluginSdkError);
+    expect((thrown as PluginSdkError).code).toBe("invalid_args");
+    // Naming the row's field is the whole point — the old refusal read as
+    // though the argument was malformed rather than as though the wrong field
+    // had been read.
+    expect((thrown as PluginSdkError).message).toContain("scheduleId");
+    expect((thrown as PluginSdkError).message).toContain('"id"');
+    expect(deleted).toEqual([]);
+  });
+});
+
 describe("createPluginSdkServer automations.emitTrigger", () => {
   const declaring = (): PluginManifest => ({
     ...MANIFEST,

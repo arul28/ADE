@@ -77,7 +77,17 @@ struct MobileAccessGateView: View {
               }
 
               Button {
-                if hasPairedHost {
+                if credentialUnreadable {
+                  // "Pair again" has to pair again. This branch used to fall
+                  // through to `hasPairedHost`, which is TRUE for exactly this
+                  // state — a saved pairing whose key cannot be read — so the
+                  // button re-presented the connect sheet the user had just
+                  // completed and left them in the dead end the label exists to
+                  // get them out of. The stale credential has to go first: a
+                  // fresh pairing cannot be saved over a key nothing can read.
+                  syncService.disconnect(clearCredentials: true)
+                  presentedSheet = .pairMachine
+                } else if hasPairedHost {
                   onContinue()
                 } else {
                   presentedSheet = .pairMachine

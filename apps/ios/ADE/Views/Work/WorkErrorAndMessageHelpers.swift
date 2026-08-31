@@ -2512,7 +2512,39 @@ func workAdeCardContentMergeKey(_ card: WorkAdeCardModel) -> String {
   }
   parts.append(card.actions.map { "\($0.id)\t\($0.label)\t\($0.isPrimary ? "primary" : "default")" }.joined(separator: "\n"))
   parts.append(String(describing: card.navTarget))
+  // Appended, never reordered, and only when there is something to say — see
+  // `workAdeCardPluginMergeKey`.
+  if let plugin = workAdeCardPluginMergeKey(card) {
+    parts.append(plugin)
+  }
   return parts.joined(separator: "|")
+}
+
+/// The plugin half of an `ade_card` fingerprint, or nil when the card has none.
+///
+/// Two fields the content key used to ignore: `author` and `panel`. Ignoring
+/// `panel` was a bug with a visible symptom — a re-emit of the same `cardId`
+/// that changed ONLY `panel.context` produced a byte-identical key, so the
+/// envelope was deduped away before `buildWorkAdeCards` could fold it in, and
+/// the hosted panel kept rendering `$context` from the first emit forever.
+///
+/// **Nil-stable by construction.** A card with neither an author nor a panel
+/// appends nothing, so every card ADE itself emits keeps the exact key it has
+/// always had. That matters because this fingerprint governs transcript dedupe
+/// generally, not just for plugin cards.
+///
+/// The context is rendered through ``PluginPanelContext/json(_:)``, which sorts
+/// its keys — so the same context always mints the same text, and a dictionary
+/// whose iteration order changed between two reads is not read as a change.
+private func workAdeCardPluginMergeKey(_ card: WorkAdeCardModel) -> String? {
+  var parts: [String] = []
+  if let author = card.author {
+    parts.append("author\t\(author.pluginId)\t\(author.displayName ?? "")")
+  }
+  if let panel = card.panel {
+    parts.append("panel\t\(panel.panelId)\t\(PluginPanelContext.json(panel.context) ?? "")")
+  }
+  return parts.isEmpty ? nil : parts.joined(separator: "\n")
 }
 
 func workUsageSummaryMergeKey(_ usage: WorkUsageSummary?) -> String {

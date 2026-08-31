@@ -14,7 +14,7 @@ struct PluginVocabFormView: View {
 
   @State private var values: [String: PluginFormValue] = [:]
 
-  private var isBusy: Bool { store.isInFlight(form.submit) }
+  private var isBusy: Bool { form.submit.map(store.isInFlight) ?? false }
 
   var body: some View {
     VStack(alignment: .leading, spacing: 14) {
@@ -22,33 +22,50 @@ struct PluginVocabFormView: View {
         PluginVocabFieldView(
           field: field,
           value: binding(for: field),
-          isEnabled: store.canInvoke && !isBusy
+          isEnabled: store.canInvoke && !isBusy,
+          onCommit: form.applyOnChange == nil ? nil : { apply() }
         )
       }
 
-      Button {
-        ADEHaptics.light()
-        store.perform(form.submit, extraArgs: payload, label: form.submitLabel)
-      } label: {
-        HStack(spacing: 6) {
-          if isBusy {
-            ProgressView().controlSize(.mini)
+      // A form that applies as it is edited has no button to draw, and drawing
+      // one would say the opposite of what it does.
+      if let submit = form.submit, let submitLabel = form.submitLabel {
+        Button {
+          ADEHaptics.light()
+          store.perform(submit, extraArgs: payload, label: submitLabel)
+        } label: {
+          HStack(spacing: 6) {
+            if isBusy {
+              ProgressView().controlSize(.mini)
+            }
+            Text(submitLabel)
+              .font(.subheadline.weight(.semibold))
           }
-          Text(form.submitLabel)
-            .font(.subheadline.weight(.semibold))
+          .foregroundStyle(ADEColor.accent)
+          .frame(maxWidth: .infinity, minHeight: 44)
+          .background(ADEColor.accent.opacity(0.14), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+          .glassEffect(in: .rect(cornerRadius: 12))
         }
-        .foregroundStyle(ADEColor.accent)
-        .frame(maxWidth: .infinity, minHeight: 44)
-        .background(ADEColor.accent.opacity(0.14), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-        .glassEffect(in: .rect(cornerRadius: 12))
+        .buttonStyle(ADEScaleButtonStyle())
+        .disabled(!store.canInvoke || isBusy)
+        .opacity(store.canInvoke ? 1 : 0.5)
       }
-      .buttonStyle(ADEScaleButtonStyle())
-      .disabled(!store.canInvoke || isBusy)
-      .opacity(store.canInvoke ? 1 : 0.5)
     }
     .task(id: form.fields.map(\.id).joined(separator: "|")) {
       seedValues()
     }
+  }
+
+  /// Send the whole form without a button press.
+  ///
+  /// The same full values map a submit sends, so a plugin reads one shape
+  /// whichever way the values reached it. The edit is already on screen — the
+  /// binding wrote it before this ran — so a plugin that refuses cannot leave
+  /// the control showing the old value; the store's own message line carries
+  /// the refusal, exactly as it does for a `segmented` `onChange`.
+  private func apply() {
+    guard let action = form.applyOnChange else { return }
+    store.perform(action, extraArgs: payload, label: form.submitLabel ?? "Settings")
   }
 
   /// Field values merged into the action's declared args. Named by field id, so
@@ -119,6 +136,17 @@ private struct PluginVocabFieldView: View {
   let field: PluginVocabField
   @Binding var value: PluginFormValue
   let isEnabled: Bool
+  /// The form applying this field, or nil when it has no `applyOnChange`.
+  ///
+  /// A toggle and a select commit on the change itself. A text, secret or number
+  /// field commits when editing ENDS — otherwise the plugin is invoked once per
+  /// keystroke, which for a settings write is once per letter.
+  var onCommit: (() -> Void)? = nil
+
+  /// Whether this field's text control holds the keyboard. Losing it is what
+  /// "the reader finished with this field" means for a number, whose decimal pad
+  /// has no return key to submit from.
+  @FocusState private var isFocused: Bool
 
   var body: some View {
     VStack(alignment: .leading, spacing: 6) {
@@ -137,6 +165,9 @@ private struct PluginVocabFieldView: View {
     }
     .disabled(!isEnabled)
     .opacity(isEnabled ? 1 : 0.6)
+    .onChange(of: isFocused) { wasFocused, focused in
+      if wasFocused, !focused { onCommit?() }
+    }
   }
 
   @ViewBuilder
@@ -144,6 +175,8 @@ private struct PluginVocabFieldView: View {
     switch field.kind {
     case .text:
       LaneTextField(field.placeholder ?? field.label, text: $value.text)
+        .focused($isFocused)
+        .onSubmit { onCommit?() }
 
     case .secret:
       // A secret is write-only on this surface: the host redacts stored values
@@ -163,13 +196,24 @@ private struct PluginVocabFieldView: View {
             .stroke(ADEColor.glassBorder, lineWidth: 0.5)
         )
         .accessibilityLabel(field.label)
+        .focused($isFocused)
+        .onSubmit { onCommit?() }
 
     case .number:
+      // A decimal pad has no return key, so this field only ever commits on the
+      // focus change above.
       LaneTextField(field.placeholder ?? field.label, text: $value.number)
         .keyboardType(.decimalPad)
+        .focused($isFocused)
 
     case .toggle:
-      Toggle(isOn: $value.flag) {
+      Toggle(isOn: Binding(
+        get: { value.flag },
+        set: { flag in
+          value.flag = flag
+          onCommit?()
+        }
+      )) {
         Text(field.label)
           .font(.subheadline.weight(.medium))
           .foregroundStyle(ADEColor.textPrimary)
@@ -184,6 +228,7 @@ private struct PluginVocabFieldView: View {
             isSelected: value.text == option.value
           ) {
             value.text = option.value
+            onCommit?()
           }
         }
       }

@@ -10,6 +10,7 @@ import {
   pluginHasRuntimeEntry,
   pluginPanelShowsOnMobile,
 } from "./manifest";
+import { sanitizePluginActionColor } from "./sockets";
 import {
   isReservedPluginActionName,
   PLUGIN_RESERVED_ACTION_PREFIX,
@@ -211,6 +212,64 @@ describe("parsePluginManifest", () => {
     }));
     expect(result.manifest?.sockets).toHaveLength(1);
     expect(result.manifest?.sockets[0]).not.toHaveProperty("description");
+  });
+
+  /**
+   * A refused button tint is a fact the author has to be able to find.
+   *
+   * The contrast gate is right to drop an illegible colour and right to fall
+   * back to the platform's own tone — but the manifest still parses clean, so
+   * before this an author who picked a failing colour saw no log line, no
+   * doctor rung and no difference they could account for. A warning, not a
+   * drop: the socket survives losing the field.
+   */
+  describe("a socket's declared colour", () => {
+    // Verified against the gate itself rather than assumed: the band is
+    // mid-tone, so near-white, near-black and the saturated primaries at its
+    // ends are what fail, and ADE's own accent is the calibrated pass.
+    const illegible = "#0000ff";
+    const legible = "#7C6FF0";
+
+    const socketsWith = (color?: string) => [{
+      socket: "row-badge",
+      surface: "lanes",
+      id: "drift",
+      label: "Drift",
+      ...(color === undefined ? {} : { color }),
+    }];
+
+    it("warns and keeps the socket when the colour fails the contrast gate", () => {
+      expect(sanitizePluginActionColor(illegible)).toBeNull();
+
+      const result = parsePluginManifest(validManifest({ sockets: socketsWith(illegible) }));
+
+      expect(result.errors).toEqual([]);
+      // The socket is not the casualty — only the tint is.
+      expect(result.manifest?.sockets.map((socket) => socket.id)).toEqual(["drift"]);
+      expect(result.manifest?.sockets[0]).not.toHaveProperty("color");
+      expect(result.warnings).toHaveLength(1);
+      expect(result.warnings[0]).toContain(".color");
+      expect(result.warnings[0]).toContain(illegible);
+    });
+
+    it("says nothing about a colour that passes, and keeps it", () => {
+      expect(sanitizePluginActionColor(legible)).toBe(legible.toLowerCase());
+
+      const result = parsePluginManifest(validManifest({ sockets: socketsWith(legible) }));
+
+      expect(result.warnings).toEqual([]);
+      expect(result.manifest?.sockets[0]?.color).toBe(legible.toLowerCase());
+    });
+
+    it("says nothing when no colour was declared at all", () => {
+      // The warning fires on a REFUSED colour, never on an absent one — every
+      // shipped socket declares none, and warning about all of them would bury
+      // the one author who needs to read it.
+      const result = parsePluginManifest(validManifest({ sockets: socketsWith() }));
+
+      expect(result.warnings).toEqual([]);
+      expect(result.manifest?.sockets[0]).not.toHaveProperty("color");
+    });
   });
 
   it("keeps only allowlisted theme tokens", () => {

@@ -5,6 +5,7 @@ import {
   VOCAB_LIMITS,
   VOCAB_VERSION,
   bindingKey,
+  boundRowEntries,
   boundRowValues,
   coerceBoundKeyValueRow,
   coerceBoundListItem,
@@ -255,6 +256,66 @@ describe("parsePluginPanel — node-local degradation", () => {
     if (!result.ok) return;
     expect(result.panel.body[0]).toMatchObject({ component: "__invalid", name: "form" });
   });
+
+  /**
+   * "No restart and no Apply button" was not expressible with `form` while
+   * `submit` was required, so a settings panel had to be rebuilt out of
+   * `segmented` controls and lost the labels, help text and validation a form
+   * gives for free. `applyOnChange` is the settings shape.
+   */
+  describe("a form that applies on change", () => {
+    const withApply = (over: Record<string, unknown>) => parsePluginPanel(
+      panel([{
+        component: "form",
+        fields: [{ kind: "toggle", id: "digest", label: "Weekly digest" }],
+        ...over,
+      }]),
+    );
+
+    it("parses with no submit at all", () => {
+      const result = withApply({ applyOnChange: { action: "apply" } });
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.panel.body[0]).toMatchObject({
+        component: "form",
+        applyOnChange: { action: "apply" },
+      });
+      expect((result.panel.body[0] as { submit?: unknown }).submit).toBeUndefined();
+    });
+
+    it("allows both, which means changes apply AND the button re-runs the action", () => {
+      const result = withApply({
+        submit: { label: "Save", onPress: { action: "save" } },
+        applyOnChange: { action: "apply" },
+      });
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.panel.body[0]).toMatchObject({
+        component: "form",
+        submit: { label: "Save", onPress: { action: "save" } },
+        applyOnChange: { action: "apply" },
+      });
+    });
+
+    it("still refuses a form that offers neither way to send its values", () => {
+      const result = withApply({});
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.panel.body[0]).toMatchObject({ component: "__invalid", name: "form" });
+    });
+
+    it("refuses a malformed submit even when applyOnChange could carry the form", () => {
+      // The author asked for a button. Dropping it silently would ship a form
+      // missing a control they declared.
+      const result = withApply({
+        submit: { label: "Save" },
+        applyOnChange: { action: "apply" },
+      });
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.panel.body[0]).toMatchObject({ component: "__invalid", name: "form" });
+    });
+  });
 });
 
 describe("fallback helpers", () => {
@@ -327,6 +388,36 @@ describe("bound rows", () => {
     expect(coerceBoundKeyValueRow({ key: "Passing", value: true })).toEqual({ key: "Passing", value: "Yes" });
     expect(coerceBoundKeyValueRow({ key: "Note", value: { nested: 1 } })).toEqual({ key: "Note", value: "" });
     expect(coerceBoundKeyValueRow({ value: "orphan" })).toBeNull();
+  });
+
+  /**
+   * A collection row is `{key, value}`, so a row whose stored value is plain
+   * text has a key already — it is the row's own. Reading only the value threw
+   * it away, which made every `$context` row unrenderable: a `keyValue` bound to
+   * `$context` drew its `emptyText` beside a context that was right there, on
+   * desktop and in the TUI. iOS merged the key in and was the only client that
+   * got this right.
+   */
+  it("uses the collection row's own key when the value carries none", () => {
+    expect(coerceBoundKeyValueRow("alpha-build", "Lane")).toEqual({ key: "Lane", value: "alpha-build" });
+    expect(coerceBoundKeyValueRow(42, "Open")).toEqual({ key: "Open", value: "42" });
+    expect(coerceBoundKeyValueRow({ value: "alpha-build" }, "Lane")).toEqual({ key: "Lane", value: "alpha-build" });
+    // The value's own key still wins: a row that named itself is not renamed.
+    expect(coerceBoundKeyValueRow({ key: "Branch", value: "main" }, "Lane"))
+      .toEqual({ key: "Branch", value: "main" });
+    // No key from either side, or nothing with a text form, is still not a row.
+    expect(coerceBoundKeyValueRow("alpha-build")).toBeNull();
+    expect(coerceBoundKeyValueRow(null, "Lane")).toBeNull();
+    expect(coerceBoundKeyValueRow(["a"], "Lane")).toBeNull();
+  });
+
+  it("carries each row's key through the filter and the cap", () => {
+    const rows = [{ key: "Lane", value: "a" }, { key: "Logged", value: "b" }, { key: "By", value: "c" }];
+    expect(boundRowEntries({ collection: "$context", limit: 2 }, rows))
+      .toEqual([{ key: "Lane", value: "a" }, { key: "Logged", value: "b" }]);
+    expect(boundRowEntries({ collection: "$context" }, undefined)).toBeNull();
+    // The value-only reader is the same walk, so the two can never disagree.
+    expect(boundRowValues({ collection: "$context", limit: 2 }, rows)).toEqual(["a", "b"]);
   });
 
   it("keeps a list row's icon and refuses to mint an action from stored data", () => {

@@ -25,6 +25,7 @@ import {
   VOCAB_LIMITS,
   VOCAB_STATE_COLLECTION,
   bindingKey,
+  boundRowEntries,
   boundRowValues,
   coerceBoundKeyValueRow,
   coerceBoundListItem,
@@ -219,7 +220,19 @@ export type PluginPaneRow =
 
 export type PluginPaneInteractive =
   | { kind: "action"; label: string; action: VocabAction }
-  | { kind: "field"; formKey: string; field: VocabField }
+  /**
+   * One field of a form. `applyOnChange` and `fields` ride along so a committed
+   * edit can dispatch without the form's submit row — a form declaring
+   * `applyOnChange` need not have one, and even when it does the change applies
+   * before anybody presses it.
+   */
+  | {
+      kind: "field";
+      formKey: string;
+      field: VocabField;
+      applyOnChange?: VocabAction;
+      fields: VocabField[];
+    }
   | { kind: "submit"; formKey: string; label: string; action: VocabAction; fields: VocabField[] }
   /**
    * One option of a `segmented` control. Selecting it writes one string into
@@ -348,6 +361,25 @@ function boundValues(bind: VocabBinding | undefined, ctx: WalkContext): unknown[
   // so the terminal cannot keep a row the app drops from the same schema and the
   // same data.
   return boundRowValues(bind, reserved ?? ctx.collections.get(bindingKey(bind)), ctx.state);
+}
+
+/**
+ * The same rows for `keyValue`, which needs each row's own key.
+ *
+ * A collection row is `{key, value}`, so a row whose stored value is plain text
+ * — every `$context` row is one — has a key already. Reading only the value
+ * threw it away and left the node drawing its `emptyText` beside a context that
+ * was right there. iOS keeps the key; this is the terminal doing the same.
+ */
+function boundKeyedValues(
+  bind: VocabBinding | undefined,
+  ctx: WalkContext,
+): { key?: string; value: unknown }[] | null {
+  if (!bind) return null;
+  const reserved = bind.collection === VOCAB_STATE_COLLECTION
+    ? vocabStateRows(ctx.declarations, ctx.state).map((row) => ({ value: row }))
+    : null;
+  return boundRowEntries(bind, reserved ?? ctx.collections.get(bindingKey(bind)), ctx.state);
 }
 
 /* ── Field display ──────────────────────────────────────────────────────── */
@@ -609,9 +641,11 @@ function walkNode(node: VocabNode, key: string, indent: number, ctx: WalkContext
       return;
     }
     case "keyValue": {
-      const bound = boundValues(node.bind, ctx);
+      const bound = boundKeyedValues(node.bind, ctx);
       const rows = bound
-        ? bound.map(coerceBoundKeyValueRow).filter((row): row is VocabKeyValueRow => row !== null)
+        ? bound
+            .map((entry) => coerceBoundKeyValueRow(entry.value, entry.key))
+            .filter((row): row is VocabKeyValueRow => row !== null)
         : (node.rows ?? []);
       if (rows.length === 0) {
         push(ctx, { kind: "note", key, indent, text: node.emptyText ?? "Nothing to show." });
@@ -634,7 +668,13 @@ function walkNode(node: VocabNode, key: string, indent: number, ctx: WalkContext
       // row shows its value and the shared bottom composer edits whichever field
       // is live. One live field at a time, Enter commits and advances.
       node.fields.forEach((field, index) => {
-        const selection = addInteractive(ctx, { kind: "field", formKey: key, field });
+        const selection = addInteractive(ctx, {
+          kind: "field",
+          formKey: key,
+          field,
+          fields: node.fields,
+          ...(node.applyOnChange ? { applyOnChange: node.applyOnChange } : {}),
+        });
         const raw = pluginFieldRawValue(field, key, ctx.values);
         push(ctx, {
           kind: "field",
@@ -648,14 +688,18 @@ function walkNode(node: VocabNode, key: string, indent: number, ctx: WalkContext
         });
         if (field.help) push(ctx, { kind: "note", key: `${key}.help[${index}]`, indent: indent + 1, text: field.help });
       });
-      const submit = addInteractive(ctx, {
-        kind: "submit",
-        formKey: key,
-        label: node.submit.label,
-        action: node.submit.onPress,
-        fields: node.fields,
-      });
-      push(ctx, { kind: "submit", key: `${key}.submit`, indent, label: node.submit.label, selection: submit });
+      // A form that applies on change has no button to draw. Drawing one anyway
+      // would offer a control the schema never declared an action for.
+      if (node.submit) {
+        const submit = addInteractive(ctx, {
+          kind: "submit",
+          formKey: key,
+          label: node.submit.label,
+          action: node.submit.onPress,
+          fields: node.fields,
+        });
+        push(ctx, { kind: "submit", key: `${key}.submit`, indent, label: node.submit.label, selection: submit });
+      }
       return;
     }
     case "segmented": {
