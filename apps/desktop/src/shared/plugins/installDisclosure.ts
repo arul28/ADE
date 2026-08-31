@@ -76,6 +76,10 @@ export const PLUGIN_SOCKET_KIND_LABELS: Record<PluginSocketKind, string> = {
   "work-rail-pane": "Work tools pane",
   "drawer-tab": "Chat drawer tab",
   "activity-entry": "Activity entry",
+  // "Graph node", not "Graph shape" or "Canvas node": the Graph tab calls the
+  // things on it nodes in its own empty state and its own tooltips, so a reader
+  // who has opened that tab already has the word.
+  "graph-node": "Graph node",
   "dialog-section": "Dialog section",
 };
 

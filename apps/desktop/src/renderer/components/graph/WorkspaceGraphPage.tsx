@@ -82,6 +82,7 @@ import type {
   IntegrationDialogState,
   RebasePublishOutcome
 } from "./graphTypes";
+import { isSyntheticGraphNode } from "./graphTypes";
 import {
   VIEW_MODES,
   VIEW_MODE_META,
@@ -116,6 +117,18 @@ import {
 } from "./graphLayout";
 import { GraphLaneNode } from "./graphNodes/LaneNode";
 import { GraphProposalNode } from "./graphNodes/ProposalNode";
+import { GraphPluginNode } from "./graphNodes/PluginNode";
+import {
+  EMPTY_PLUGIN_GRAPH_OVERLAY,
+  PLUGIN_GRAPH_NODE_TYPE,
+  buildPluginGraphOverlay,
+  describePluginGraphOverflow,
+} from "./pluginGraphNodes";
+import {
+  pluginLaneContext,
+  usePluginSocketInvoke,
+  usePluginSurfaceContributions,
+} from "../plugins/sockets";
 import { ConflictPanel as GraphConflictPanel } from "./graphDialogs/ConflictPanel";
 import { RiskEdge } from "./graphEdges/RiskEdge";
 import { ConfirmDialog, useConfirmDialog } from "../shared/InlineDialogs";
@@ -125,8 +138,28 @@ import { buildGraphPrOverlay } from "./graphPrData";
 import { getPrChecksBadge, getPrReviewsBadge, InlinePrBadge } from "../prs/shared/prVisuals";
 import { NO_CI_REASON } from "../../../shared/prChecksRollup";
 
-const nodeTypes = { lane: GraphLaneNode, proposal: GraphProposalNode };
+const nodeTypes = {
+  lane: GraphLaneNode,
+  proposal: GraphProposalNode,
+  [PLUGIN_GRAPH_NODE_TYPE]: GraphPluginNode,
+};
 const edgeTypes = { custom: RiskEdge };
+
+/**
+ * Where a plugin node sits relative to the lane it annotates.
+ *
+ * To the RIGHT and slightly below, because the auto layout stacks lanes
+ * vertically and fans children downward — a node placed under its lane would
+ * land on the lane's own children. The vertical step separates two plugins
+ * annotating the same lane.
+ */
+const PLUGIN_NODE_OFFSET_X = 300;
+const PLUGIN_NODE_OFFSET_Y = 24;
+const PLUGIN_NODE_STACK_Y = 88;
+
+/** Free-floating plugin nodes get their own column, left of every lane. */
+const PLUGIN_FLOATING_ORIGIN_X = -320;
+const PLUGIN_FLOATING_STEP_Y = 88;
 const MERGE_SUCCESS_ANIMATION_MS = 1200;
 const GRAPH_ACTIVITY_SESSION_LIMIT = 150;
 const GRAPH_ACTIVITY_OPERATION_LIMIT = 150;
@@ -1288,6 +1321,35 @@ function GraphInner({ active = true }: { active?: boolean }) {
     };
   }, [active, projectRoot, refreshLaneSyncStatuses, refreshGraphLanes, refreshRiskBatch, refreshAutoRebaseStatuses, reportGraphIssue, scheduleRefreshActivity, scheduleRefreshPrs]);
 
+  /**
+   * The Graph's plugin contributions ride the `lanes` surface.
+   *
+   * There is no `graph` surface id and there should not be: the canvas is a
+   * second VIEW of the same lanes the Lanes tab lists, so both read one set,
+   * one `RowsStore` and one set of published rows. The socket KIND says the
+   * placement (`graph-node`), the surface says the data domain — the same split
+   * `dialog-section` uses to put two dialogs on `lanes`.
+   *
+   * `active` keeps a Graph tab that is mounted-but-hidden from costing anything,
+   * which is the same law every other socket surface obeys.
+   */
+  const pluginContributions = usePluginSurfaceContributions("lanes", active);
+  const invokePluginSocket = usePluginSocketInvoke();
+
+  const pressPluginNode = React.useCallback(
+    (pluginId: string, actionId: string, anchorLaneId: string | null) => {
+      // The lane the node hangs from is what the plugin gets. A free-floating
+      // node has no lane, and `{kind: "surface"}` is the honest answer rather
+      // than inventing one — a plugin told the subject is the tab can say so.
+      const lane = anchorLaneId ? laneById.get(anchorLaneId) : null;
+      const context = lane
+        ? pluginLaneContext(lane)
+        : ({ kind: "surface", surface: "lanes" } as const);
+      void invokePluginSocket(pluginId, actionId, context, { socket: "graph-node" });
+    },
+    [invokePluginSocket, laneById],
+  );
+
   const baseGraph = React.useMemo(() => {
     if (!loadedGraphPreferences) {
       return {
@@ -1622,6 +1684,174 @@ function GraphInner({ active = true }: { active?: boolean }) {
     handleOpenAgent
   ]);
 
+  /**
+   * Plugin nodes, hung off the canvas `baseGraph` has already finished building.
+   *
+   * Deliberately a SECOND memo rather than more work inside `baseGraph`, and the
+   * order is the guarantee: every lane node exists, positioned, before a single
+   * plugin node is considered, so no cap and no failure in here can cost the
+   * canvas one of the product's own nodes. It also means a machine with no
+   * plugins pays one `Map` lookup and re-uses `baseGraph` unchanged.
+   */
+  const pluginOverlay = React.useMemo(() => {
+    if (!active || baseGraph.nodes.length === 0) return EMPTY_PLUGIN_GRAPH_OVERLAY;
+    const laneNodeIds = new Set<string>();
+    for (const node of baseGraph.nodes) {
+      if (node.type === "lane") laneNodeIds.add(node.id);
+    }
+    const laneNodeIdByPrId = new Map<string, string>();
+    for (const [laneId, overlay] of prOverlayByLaneId) {
+      // A `pr` entity is keyed by its NUMBER as a string — see
+      // `pluginContributionKeyForContext` — so that is what a plugin's edge
+      // names, not the internal PR id.
+      if (laneNodeIds.has(laneId)) laneNodeIdByPrId.set(String(overlay.number), laneId);
+    }
+    return buildPluginGraphOverlay({ set: pluginContributions, laneNodeIds, laneNodeIdByPrId });
+  }, [active, baseGraph.nodes, prOverlayByLaneId, pluginContributions]);
+
+  const graphWithPlugins = React.useMemo(() => {
+    if (pluginOverlay.entries.length === 0) return baseGraph;
+    const positionByNodeId = new Map<string, { x: number; y: number }>();
+    for (const node of baseGraph.nodes) positionByNodeId.set(node.id, node.position);
+    const savedPositions = activeSnapshot.nodePositions;
+    // How many nodes already hang off each anchor, so two plugins annotating one
+    // lane stack instead of overlapping.
+    const perAnchor = new Map<string, number>();
+    let floatingIndex = 0;
+
+    const nodes = [...baseGraph.nodes];
+    const edges = [...baseGraph.edges];
+    const visibleNodeIds = new Set(baseGraph.visibleNodeIds);
+
+    for (const entry of pluginOverlay.entries) {
+      const anchorPosition = entry.anchorNodeId ? positionByNodeId.get(entry.anchorNodeId) : null;
+      const stackIndex = entry.anchorNodeId
+        ? (perAnchor.get(entry.anchorNodeId) ?? 0)
+        : floatingIndex;
+      if (entry.anchorNodeId) perAnchor.set(entry.anchorNodeId, stackIndex + 1);
+      else floatingIndex += 1;
+      const derived = anchorPosition
+        ? {
+            x: anchorPosition.x + PLUGIN_NODE_OFFSET_X,
+            y: anchorPosition.y + PLUGIN_NODE_OFFSET_Y + stackIndex * PLUGIN_NODE_STACK_Y,
+          }
+        : { x: PLUGIN_FLOATING_ORIGIN_X, y: stackIndex * PLUGIN_FLOATING_STEP_Y };
+      // A saved position still wins, exactly as it does for a lane: the snapshot
+      // is keyed by node id and a user who tidied the canvas before installing a
+      // second plugin should not have their arrangement recomputed.
+      const position = savedPositions[entry.nodeId] ?? derived;
+
+      // Visible when its anchor is. A free-floating node has no anchor to
+      // inherit from and is always visible: it is not about any one lane, so a
+      // lane filter has no opinion about it.
+      const visible = entry.anchorNodeId ? visibleNodeIds.has(entry.anchorNodeId) : true;
+      if (visible) visibleNodeIds.add(entry.nodeId);
+
+      nodes.push({
+        id: entry.nodeId,
+        type: PLUGIN_GRAPH_NODE_TYPE,
+        position,
+        data: {
+          // The synthetic lane every handler on this canvas is typed for. No
+          // guard that would act on a real lane is reachable with one: they all
+          // refuse a synthetic node first (`isSyntheticGraphNode`).
+          lane: {
+            id: entry.nodeId,
+            name: entry.payload.label,
+            description: entry.identity.displayName,
+            laneType: "attached",
+            baseRef: "",
+            branchRef: "",
+            worktreePath: "",
+            attachedRootPath: null,
+            parentLaneId: null,
+            childCount: 0,
+            stackDepth: 0,
+            parentStatus: null,
+            isEditProtected: true,
+            status: { dirty: false, ahead: 0, behind: 0, remoteBehind: -1, rebaseInProgress: false },
+            color: entry.identity.accent,
+            icon: null,
+            tags: [],
+            createdAt: "",
+            archivedAt: null,
+          },
+          status: "unknown",
+          remoteSync: null,
+          autoRebaseStatus: null,
+          activeSessions: 0,
+          collapsedChildCount: 0,
+          hierarchyDepth: 0,
+          parentLaneName: null,
+          dimmed: false,
+          activityBucket: "medium",
+          viewMode,
+          lastActivityAt: null,
+          environment: null,
+          highlight: false,
+          rebaseFailed: false,
+          rebasePulse: false,
+          mergeInProgress: false,
+          mergeDisappearing: false,
+          isIntegration: false,
+          focusGlow: false,
+          isVirtualProposal: false,
+          integrationSources: [],
+          pr: null,
+          pluginNode: entry,
+          ...(entry.payload.actionId
+            ? { onPressPluginNode: () => pressPluginNode(entry.pluginId, entry.payload.actionId!, entry.anchorNodeId) }
+            : {}),
+        },
+        selected: false,
+        // Not draggable, exactly like a virtual proposal. A drag on this canvas
+        // means reparent-or-open-a-PR, and every one of those handlers refuses a
+        // synthetic node — so a draggable plugin node would be a control that
+        // moves and then silently does nothing.
+        draggable: false,
+      });
+
+      const pluginEdge = (
+        id: string,
+        source: string,
+        kind: (typeof entry.edges)[number]["kind"],
+        label?: string,
+      ) => ({
+        id,
+        source,
+        target: entry.nodeId,
+        sourceHandle: "source",
+        targetHandle: "target",
+        type: "custom" as const,
+        data: {
+          edgeType: "plugin" as const,
+          pluginEdgeKind: kind,
+          pluginAccent: entry.identity.accent,
+          ...(label ? { pluginEdgeLabel: label } : {}),
+        },
+        animated: false,
+        selected: false,
+      });
+
+      // The anchor's own edge. Drawn only when both ends are visible, the same
+      // rule every core edge above follows.
+      if (entry.anchorNodeId && visible) {
+        edges.push(pluginEdge(`plugin:${entry.nodeId}:anchor`, entry.anchorNodeId, "link"));
+      }
+      for (const edge of entry.edges) {
+        if (!visibleNodeIds.has(edge.toNodeId) || !visible) continue;
+        edges.push(pluginEdge(
+          `plugin:${entry.nodeId}:${edge.toNodeId}`,
+          edge.toNodeId,
+          edge.kind,
+          edge.label ?? (edge.kind === "link" ? undefined : edge.kind),
+        ));
+      }
+    }
+
+    return { nodes, edges, visibleNodeIds };
+  }, [activeSnapshot.nodePositions, baseGraph, pluginOverlay, pressPluginNode, viewMode]);
+
   React.useEffect(() => {
     if (!active) return;
     if (!loadedGraphPreferences) return;
@@ -1639,26 +1869,26 @@ function GraphInner({ active = true }: { active?: boolean }) {
       };
     };
 
-    setNodes(baseGraph.nodes.map((node) => {
+    setNodes(graphWithPlugins.nodes.map((node) => {
       const connectedToHover = hoveredNodeId ? connectedToHoveredNode.has(node.id) : false;
       const dimmedByHover = Boolean(hoveredNodeId) && !connectedToHover;
       return {
         ...node,
         data: {
           ...node.data,
-          dimmed: !baseGraph.visibleNodeIds.has(node.id) || dimmedByHover,
+          dimmed: !graphWithPlugins.visibleNodeIds.has(node.id) || dimmedByHover,
           highlight: Boolean(hoveredNodeId) && connectedToHover,
-          rebaseFailed: !node.data.isVirtualProposal && rebaseFailedLaneId === node.id,
-          rebasePulse: !node.data.isVirtualProposal && rebaseFailedLaneId === node.id && rebaseFailedPulse,
-          mergeInProgress: !node.data.isVirtualProposal && Boolean(mergeInProgressByLaneId[node.id]),
-          mergeDisappearing: !node.data.isVirtualProposal && Boolean(mergeDisappearingAtByLaneId[node.id]),
+          rebaseFailed: !isSyntheticGraphNode(node.data) && rebaseFailedLaneId === node.id,
+          rebasePulse: !isSyntheticGraphNode(node.data) && rebaseFailedLaneId === node.id && rebaseFailedPulse,
+          mergeInProgress: !isSyntheticGraphNode(node.data) && Boolean(mergeInProgressByLaneId[node.id]),
+          mergeDisappearing: !isSyntheticGraphNode(node.data) && Boolean(mergeDisappearingAtByLaneId[node.id]),
           focusGlow: focusLaneId === node.id
         },
         selected: selectedLaneIds.includes(node.id)
       };
     }));
 
-    setEdges(baseGraph.edges.map((edge) => {
+    setEdges(graphWithPlugins.edges.map((edge) => {
       const visual = edgeVisualState(edge.id, edge.source, edge.target);
       return {
         ...edge,
@@ -1668,7 +1898,7 @@ function GraphInner({ active = true }: { active?: boolean }) {
     }));
   }, [
     active,
-    baseGraph,
+    graphWithPlugins,
     connectedToHoveredNode,
     focusLaneId,
     hoveredEdgeId,
@@ -1705,9 +1935,9 @@ function GraphInner({ active = true }: { active?: boolean }) {
 
   const findDropTarget = React.useCallback(
     (node: Node<GraphNodeData>): Node<GraphNodeData> | null => {
-      if (node.data.isVirtualProposal) return null;
+      if (isSyntheticGraphNode(node.data)) return null;
       const targetCandidates = nodes.filter(
-        (candidate) => candidate.id !== node.id && !candidate.data.isVirtualProposal && !hiddenByCollapse.has(candidate.id)
+        (candidate) => candidate.id !== node.id && !isSyntheticGraphNode(candidate.data) && !hiddenByCollapse.has(candidate.id)
       );
       const nodeDims = nodeDimensions(node.data.lane, node.data.activityBucket, viewMode);
       const nodeCenter = { x: node.position.x + nodeDims.width / 2, y: node.position.y + nodeDims.height / 2 };
@@ -1757,7 +1987,7 @@ function GraphInner({ active = true }: { active?: boolean }) {
   );
 
   const onNodeDragStart = React.useCallback((_event: React.MouseEvent, node: Node<GraphNodeData>) => {
-    if (node.data.isVirtualProposal) return;
+    if (isSyntheticGraphNode(node.data)) return;
     nodeDragActiveRef.current = true;
     dragOriginRef.current.set(node.id, { x: node.position.x, y: node.position.y });
     if (dropPreviewTimerRef.current != null) {
@@ -1779,7 +2009,7 @@ function GraphInner({ active = true }: { active?: boolean }) {
 
   const onNodeDrag = React.useCallback(
     (_event: React.MouseEvent, node: Node<GraphNodeData>) => {
-      if (node.data.isVirtualProposal) return;
+      if (isSyntheticGraphNode(node.data)) return;
       const origin = dragOriginRef.current.get(node.id);
       if (!origin) return;
       setDragTrail({ laneId: node.id, from: origin, to: { x: node.position.x, y: node.position.y } });
@@ -2144,7 +2374,7 @@ function GraphInner({ active = true }: { active?: boolean }) {
 
   const onNodeDragStop = React.useCallback(
     (_event: React.MouseEvent, node: Node<GraphNodeData>) => {
-      if (node.data.isVirtualProposal) return;
+      if (isSyntheticGraphNode(node.data)) return;
       nodeDragActiveRef.current = false;
       const origin = dragOriginRef.current.get(node.id);
       setDragTrail(null);
@@ -3139,6 +3369,17 @@ function GraphInner({ active = true }: { active?: boolean }) {
           </Button>
         </div>
         <div className="mt-1 text-[11px] text-muted-fg">{activeViewMeta.helper}</div>
+        {/*
+          Said on the canvas, not only in a log. A plugin node that hit the cap
+          is invisible in exactly the way a broken plugin is, and the person
+          looking at the tab is the one who can decide whether they want it —
+          `ade plugin doctor` says the same thing to the author.
+        */}
+        {pluginOverlay.droppedCount > 0 ? (
+          <div className="mt-0.5 text-[11px] text-muted-fg" data-tour="plugin:lanes.graph-node-overflow">
+            {describePluginGraphOverflow(pluginOverlay)}
+          </div>
+        ) : null}
       </div>
 
       <div className="absolute inset-0 pt-[74px]">
@@ -3155,6 +3396,15 @@ function GraphInner({ active = true }: { active?: boolean }) {
           onNodeDrag={onNodeDrag}
           onNodeDragStop={onNodeDragStop}
           onNodeClick={(_event, node) => {
+            // A plugin node selects visually and invokes; it is never a lane
+            // selection, so `selectedLaneIds` — which every batch operation
+            // reads — must not learn about it.
+            if (node.data.pluginNode) {
+              setSelectedLaneIds([]);
+              setNodes((prev) => prev.map((entry) => ({ ...entry, selected: entry.id === node.id })));
+              node.data.onPressPluginNode?.();
+              return;
+            }
             if (node.data.isVirtualProposal) {
               setSelectedLaneIds([]);
               setNodes((prev) => prev.map((entry) => ({ ...entry, selected: entry.id === node.id })));
@@ -3176,7 +3426,7 @@ function GraphInner({ active = true }: { active?: boolean }) {
             // Suppress hover highlights while a drag is active to prevent
             // stale hoveredNodeId from dimming nodes after drag ends.
             if (nodeDragActiveRef.current) return;
-            if (node.data.isVirtualProposal) {
+            if (isSyntheticGraphNode(node.data)) {
               setHoveredNodeId(null);
               setNodeTooltip(null);
               if (nodeHoverTimerRef.current != null) {
@@ -3195,7 +3445,7 @@ function GraphInner({ active = true }: { active?: boolean }) {
           }}
           onNodeMouseMove={(event, node) => {
             if (nodeDragActiveRef.current) return;
-            if (node.data.isVirtualProposal) return;
+            if (isSyntheticGraphNode(node.data)) return;
             if (nodeTooltip?.laneId !== node.id) return;
             setNodeTooltip({ x: event.clientX + 12, y: event.clientY + 12, laneId: node.id });
           }}
@@ -3209,11 +3459,11 @@ function GraphInner({ active = true }: { active?: boolean }) {
             setNodeTooltip(null);
           }}
           onSelectionChange={(selection) => {
-            const selected = selection.nodes.filter((node) => !node.data.isVirtualProposal).map((node) => node.id);
+            const selected = selection.nodes.filter((node) => !isSyntheticGraphNode(node.data)).map((node) => node.id);
             setSelectedLaneIds((prev) => (sameIdSet(prev, selected) ? prev : selected));
           }}
           onNodeContextMenu={(event, node) => {
-            if (node.data.isVirtualProposal) {
+            if (isSyntheticGraphNode(node.data)) {
               event.preventDefault();
               setContextMenu(null);
               return;
@@ -3226,7 +3476,7 @@ function GraphInner({ active = true }: { active?: boolean }) {
             });
           }}
           onNodeDoubleClick={(_event, node) => {
-            if (node.data.isVirtualProposal) return;
+            if (isSyntheticGraphNode(node.data)) return;
             if (collapsedLaneIds.has(node.id)) {
               updateGraphSnapshot((snapshot) => ({
                 ...snapshot,
@@ -3373,6 +3623,9 @@ function GraphInner({ active = true }: { active?: boolean }) {
             nodeStrokeWidth={2}
             nodeColor={(node) => {
               const data = node.data as GraphNodeData | undefined;
+              // The plugin's own accent, so the minimap tells two plugins'
+              // annotations apart the same way the canvas does.
+              if (data?.pluginNode) return data.pluginNode.identity.accent ?? "#8B8B94";
               if (data?.isVirtualProposal) return "#A78BFA";
               return data?.environment?.color ?? data?.lane?.color ?? "var(--color-muted-fg)";
             }}

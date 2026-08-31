@@ -17,6 +17,8 @@ import type {
   PrWithConflicts
 } from "../../../shared/types";
 import type { PrActivityState } from "../prs/shared/prVisuals";
+import type { PluginGraphEdgeKind } from "../../../shared/plugins/sockets";
+import type { PluginGraphNodeEntry } from "./pluginGraphNodes";
 
 export type GraphNodeData = {
   lane: LaneSummary;
@@ -52,7 +54,34 @@ export type GraphNodeData = {
   onOpenAgent?: (agent: import("../lanes/laneAgents").LaneAgent) => void;
   proposalOutcome?: "clean" | "conflict" | "blocked";
   proposalId?: string;
+  /**
+   * Set only on a node a plugin contributed. Its presence is what makes the node
+   * synthetic — see `isSyntheticGraphNode`.
+   *
+   * A plugin node carries a synthetic `lane` for the same reason a virtual
+   * proposal does: every handler on this canvas is typed `Node<GraphNodeData>`,
+   * and a second data shape would fork thirty call sites to express "this one
+   * has no branch". The synthetic lane is never read by the plugin renderer, and
+   * no handler that would act on a real lane is reached with one — the guards
+   * refuse a synthetic node before any of them.
+   */
+  pluginNode?: PluginGraphNodeEntry;
+  /** Invokes the plugin node's action. Absent when the payload declares none. */
+  onPressPluginNode?: () => void;
 };
+
+/**
+ * Nodes that are not lanes: virtual integration proposals and plugin nodes.
+ *
+ * One predicate rather than a widening `isVirtualProposal` check at each guard.
+ * Every one of them exists to answer the same question — may this node be
+ * dragged, reparented, dropped onto, or opened as a lane — and the answer for
+ * both kinds is no. Written here beside the type so a third synthetic node kind
+ * is one line rather than a hunt through `WorkspaceGraphPage`.
+ */
+export function isSyntheticGraphNode(data: GraphNodeData): boolean {
+  return data.isVirtualProposal || data.pluginNode !== undefined;
+}
 
 export type RebasePublishOutcome =
   | { status: "done"; message?: string }
@@ -86,7 +115,7 @@ export type GraphPrOverlay = {
 };
 
 export type GraphEdgeData = {
-  edgeType: "topology" | "stack" | "risk" | "integration" | "proposal";
+  edgeType: "topology" | "stack" | "risk" | "integration" | "proposal" | "plugin";
   riskLevel?: "none" | "low" | "medium" | "high";
   overlapCount?: number;
   stale?: boolean;
@@ -94,6 +123,17 @@ export type GraphEdgeData = {
   highlight?: boolean;
   proposalConflict?: boolean;
   pr?: GraphPrOverlay;
+  /**
+   * `edgeType: "plugin"` only: what the plugin's line asserts, and whose it is.
+   *
+   * Both are carried on the edge rather than looked up from the node it leaves,
+   * because `RiskEdge` draws from edge data alone and reaching back into the
+   * node store to colour a line would make every edge re-render on any node
+   * change.
+   */
+  pluginEdgeKind?: PluginGraphEdgeKind;
+  pluginEdgeLabel?: string;
+  pluginAccent?: string | null;
 };
 
 export type BatchStepStatus = "pending" | "running" | "done" | "failed" | "skipped";

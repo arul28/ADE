@@ -43,6 +43,7 @@ import {
 } from "../../../desktop/src/shared/plugins/manifest";
 import { PLUGIN_NETWORK_REFUSAL_LOG_CODE } from "../../../desktop/src/shared/plugins/network";
 import { PLUGIN_WEBHOOK_DELIVERY_ATTEMPTS_MAX } from "../../../desktop/src/shared/plugins/sdk";
+import { PLUGIN_GRAPH_NODES_PER_PLUGIN_LIMIT } from "../../../desktop/src/shared/plugins/sockets";
 import type {
   PluginActionInvokeRecord,
   PluginContributionRecord,
@@ -384,6 +385,24 @@ function placesLayer(snapshot: PluginDoctorSnapshot): PluginDoctorLayer {
   const published = snapshot.live
     ? `; ${plural(snapshot.live.contributions.length, "row")} published right now`
     : "; published rows unknown (ADE is not answering)";
+  // The one cap whose effect a plugin author cannot see from their own side.
+  // Every other ceiling on this platform refuses the WRITE — the payload parser
+  // rejects a bad payload, the row budget throws — so the plugin learns at the
+  // moment it publishes. The graph cap is different: the rows store fine and the
+  // canvas withholds the surplus at draw time, on a machine the author may not
+  // be sitting at. Counted from the same published rows this rung already reads,
+  // so it needs nothing new on the wire.
+  const overCapGraphNodes = snapshot.live
+    ? Math.max(
+      0,
+      snapshot.live.contributions.filter((row) => row.socket === "graph-node").length
+        - PLUGIN_GRAPH_NODES_PER_PLUGIN_LIMIT,
+    )
+    : 0;
+  const graphNote = overCapGraphNodes > 0
+    ? `; ${plural(overCapGraphNodes, "graph node")} past the ${PLUGIN_GRAPH_NODES_PER_PLUGIN_LIMIT}-node`
+      + " canvas cap and not drawn"
+    : "";
 
   // Every declared socket is switched off, so nothing this plugin asks for can
   // draw anywhere. That reads as ✗ rather than ✓, because the reader is here
@@ -392,7 +411,7 @@ function placesLayer(snapshot: PluginDoctorSnapshot): PluginDoctorLayer {
   const state: PluginDoctorState = sockets.length > 0 && switchedOff >= sockets.length && rails.length === 0
     ? "no"
     : "ok";
-  return { key: "places", label, state, detail: `${declared}${offNote}${published}` };
+  return { key: "places", label, state, detail: `${declared}${offNote}${published}${graphNote}` };
 }
 
 /**

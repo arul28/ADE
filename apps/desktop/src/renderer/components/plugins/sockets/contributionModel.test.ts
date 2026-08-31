@@ -85,6 +85,94 @@ function laneMenuRow(pluginId: string, payload: Record<string, unknown>): Plugin
   };
 }
 
+/**
+ * A `graph-node` on the `lanes` surface.
+ *
+ * The Graph has no surface id of its own — it is a second view of the lanes the
+ * Lanes tab lists — so a node is selected out of the SAME set the Lanes rows
+ * read. These pin the two rules that makes safe: the declaration draws nothing,
+ * and a published node follows the plugin's enabled state exactly.
+ */
+describe("graph nodes on the lanes surface", () => {
+  const declaration = {
+    socket: "graph-node",
+    surface: "lanes",
+    id: "issue",
+    label: "Issue",
+    icon: "kanban",
+    actionId: "openIssue",
+  };
+
+  function laneGraphNodeRow(pluginId: string, payload: Record<string, unknown>): PluginContributionRow {
+    return {
+      entityKind: "lane",
+      entityId: "lane-1",
+      pluginId,
+      socket: "graph-node",
+      surface: "lanes",
+      socketId: "issue",
+      payload,
+      updatedAt: "2026-08-31T00:00:00.000Z",
+    };
+  }
+
+  it("draws nothing from the declaration alone", () => {
+    // A declaration has no lane, so drawing it would put one identical card
+    // beside every lane on the canvas — the `row-badge` mistake with a bigger
+    // footprint.
+    const set = buildContributionSet([source("tracker", [declaration])], [], "lanes");
+    expect(set.staticContributions.map((entry) => entry.socket)).toEqual(["graph-node"]);
+    expect(selectContributions(set, "graph-node", LANE_CONTEXT)).toEqual([]);
+  });
+
+  it("draws the published node for the lane it was filed against", () => {
+    const set = buildContributionSet(
+      [source("tracker", [declaration])],
+      [laneGraphNodeRow("tracker", { label: "ADE-142", detail: "In review", id: "issue" })],
+      "lanes",
+    );
+    const selected = selectContributions(set, "graph-node", LANE_CONTEXT);
+    expect(selected).toHaveLength(1);
+    expect(selected[0]?.payload).toMatchObject({ label: "ADE-142", detail: "In review" });
+    // And nowhere else: another lane's canvas position must stay empty.
+    expect(selectContributions(set, "graph-node", { ...LANE_CONTEXT, id: "lane-2" })).toEqual([]);
+  });
+
+  it("stops drawing the moment the plugin is switched off", () => {
+    // Liveness, and it is the whole reason a node is a contribution rather than
+    // something the canvas caches: disabling a plugin has to take its shapes off
+    // the diagram, not leave them until the next refresh.
+    const rows = [laneGraphNodeRow("tracker", { label: "ADE-142", id: "issue" })];
+    const off = buildContributionSet(
+      [source("tracker", [declaration], { enabled: false })],
+      rows,
+      "lanes",
+    );
+    expect(selectContributions(off, "graph-node", LANE_CONTEXT)).toEqual([]);
+  });
+
+  it("stops drawing when the user switches that one contribution off", () => {
+    const set = buildContributionSet(
+      [source("tracker", [declaration], { disabledContributions: ["issue"] })],
+      [laneGraphNodeRow("tracker", { label: "ADE-142", id: "issue" })],
+      "lanes",
+    );
+    expect(selectContributions(set, "graph-node", LANE_CONTEXT)).toEqual([]);
+  });
+
+  it("does not leak onto the Lanes tab's own sockets", () => {
+    // One set feeds two views. A node must not become a badge or a menu row
+    // because both read the same rows.
+    const set = buildContributionSet(
+      [source("tracker", [declaration])],
+      [laneGraphNodeRow("tracker", { label: "ADE-142", id: "issue" })],
+      "lanes",
+    );
+    expect(selectContributions(set, "row-badge", LANE_CONTEXT)).toEqual([]);
+    expect(selectContributions(set, "row-menu-item", LANE_CONTEXT)).toEqual([]);
+  });
+});
+
 describe("manifest sockets → contributions", () => {
   it("translates each socket kind into its payload shape", () => {
     const contributions = contributionsFromSource(

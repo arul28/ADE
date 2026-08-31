@@ -184,6 +184,12 @@ export function payloadFromManifestSocket(socket: PluginManifestSocket): unknown
     // rather than defaulted to the label, which would print the title twice.
     case "activity-entry":
       return { title: socket.label, tone: "neutral", actionId: socket.actionId };
+    // A declaration, exactly like a row badge: the node's subject is the lane
+    // the row is published against, and the manifest has no lane. `edges` is
+    // absent for the same reason — an edge needs two endpoints and a
+    // declaration has neither.
+    case "graph-node":
+      return { label: socket.label, tone: "neutral", icon: socket.icon, actionId: socket.actionId };
     // `dialog` rides the payload rather than being implied by the surface:
     // create-lane and manage-lane are both `lanes`, and a section that could
     // not tell them apart would be wrong on one of them every time.
@@ -402,6 +408,27 @@ export function entityMatchesPluginFilters(
   return selectedKeys.some((selected) => keys.has(selected));
 }
 
+/**
+ * Kinds whose manifest entry RESERVES a slot instead of filling one.
+ *
+ * Every other kind is a control the plugin owns — a button, a section, a chip —
+ * and drawing it from the manifest is how a plugin that publishes nothing still
+ * appears. These two are not that: each is a per-entity VALUE, and a manifest
+ * declaration has no entity. Drawing a declared `row-badge` put the same chip on
+ * every row of the surface forever; the journal plugin's `"0"` on all six lanes
+ * is what that looked like to a user. A declared `graph-node` is the same
+ * mistake with a bigger footprint — one identical card beside every lane on the
+ * canvas.
+ *
+ * The declaration still counts. It is what the install sheet describes, what
+ * `listContributions` joins a published row against, and what the per-contribution
+ * switch turns off — it just reserves the slot rather than filling it.
+ */
+const DECLARATION_ONLY_SOCKETS: ReadonlySet<PluginSocketKind> = new Set([
+  "row-badge",
+  "graph-node",
+]);
+
 /** Cap per plugin per slot, preserving the host's order within each plugin. */
 function capPerPlugin(contributions: readonly PluginContribution[]): PluginContribution[] {
   const counts = new Map<string, number>();
@@ -462,20 +489,12 @@ export function selectContributions<K extends PluginSocketKind>(
     if (entry.id === entry.socket) overriddenPlugins.add(entry.pluginId);
     else overriddenIds.add(`${entry.pluginId} ${entry.id}`);
   }
-  // A DECLARED badge draws nothing. Every other kind is a control the plugin
-  // owns — a button, a section, a chip — and drawing it from the manifest is
-  // how a plugin that publishes nothing still appears. A badge is not that: it
-  // is a per-entity VALUE, and a manifest declaration has no entity, so drawing
-  // it put the same chip on every row of the surface forever. The journal
-  // plugin's `"0"` on all six lanes is what that looks like to a user.
-  //
-  // The declaration still counts. It is what the install sheet describes, and
-  // what a published row is matched against for override and ordering — it just
-  // reserves the slot rather than filling it.
+  // A DECLARED badge draws nothing, and neither does a declared graph node —
+  // see {@link DECLARATION_ONLY_SOCKETS}.
   //
   // Dropped BEFORE the per-plugin cap rather than filtered after: a placeholder
-  // counted against the cap would take a slot a real published badge needed.
-  const statics = socket === "row-badge" ? [] : set.staticContributions.filter(
+  // counted against the cap would take a slot a real published row needed.
+  const statics = DECLARATION_ONLY_SOCKETS.has(socket) ? [] : set.staticContributions.filter(
     (entry) => entry.socket === socket
       && !overriddenPlugins.has(entry.pluginId)
       && !overriddenIds.has(`${entry.pluginId} ${entry.id}`),

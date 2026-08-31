@@ -18,7 +18,14 @@ export function RiskEdge(props: EdgeProps<Edge<GraphEdgeData>>) {
   const edgeType = data?.edgeType;
 
   let color: string;
-  if (edgeType === "proposal") {
+  if (edgeType === "plugin") {
+    // The plugin's own accent when it has one, so its node and its line read as
+    // one object. `blocks` overrides that with amber — the one thing a plugin
+    // edge says that the reader must not miss under a brand colour — and amber
+    // rather than red, the same ceiling `PluginBadgeTone` puts on every other
+    // plugin surface: a plugin does not get to paint a lane as failed.
+    color = data?.pluginEdgeKind === "blocks" ? "#F59E0B" : data?.pluginAccent || "#8B8B94";
+  } else if (edgeType === "proposal") {
     color = data?.proposalConflict ? "#F59E0B" : "#22C55E";
   } else if (edgeType === "integration") {
     color = "#A78BFA";
@@ -33,14 +40,21 @@ export function RiskEdge(props: EdgeProps<Edge<GraphEdgeData>>) {
   }
 
   let width: number;
-  if (edgeType === "proposal") width = 2.2;
+  // Thinner than every one of ADE's own lines, on purpose. A plugin's edge is an
+  // annotation over the topology, not part of it, and the hierarchy has to be
+  // visible before the colour is read.
+  if (edgeType === "plugin") width = 1.4;
+  else if (edgeType === "proposal") width = 2.2;
   else if (edgeType === "integration") width = 2.4;
   else if (pr && edgeType !== "risk") width = 2.6;
   else if (edgeType === "stack") width = 3;
   else width = 1.8;
 
   let dash: string | undefined;
-  if (edgeType === "proposal") dash = "6 4";
+  // Every plugin edge is dashed, whatever it asserts. Solid is how this canvas
+  // says "git says so", and nothing a plugin publishes has earned that.
+  if (edgeType === "plugin") dash = "3 3";
+  else if (edgeType === "proposal") dash = "6 4";
   else if (edgeType === "risk") dash = "5 3";
   else if (edgeType === "integration") dash = "8 4";
   const effectiveWidth = (selected ? width + 1 : width) + (data?.highlight ? 0.5 : 0);
@@ -52,6 +66,7 @@ export function RiskEdge(props: EdgeProps<Edge<GraphEdgeData>>) {
   const badgeWidth = Math.max(74, (badgeText.length + badgeMeta.length) * 6 + 40);
   const badgeHeight = 18;
   const showIntegrationBadge = edgeType === "integration";
+  const pluginEdgeLabel = edgeType === "plugin" ? data?.pluginEdgeLabel : undefined;
   return (
     <g>
       <path
@@ -91,6 +106,20 @@ export function RiskEdge(props: EdgeProps<Edge<GraphEdgeData>>) {
             feeds
           </text>
         </g>
+      ) : null}
+      {pluginEdgeLabel ? (
+        <text
+          x={labelX}
+          y={labelY + 3}
+          textAnchor="middle"
+          fontSize={9}
+          fill={color}
+          fontFamily={APP_FONT_STACK}
+          opacity={effectiveOpacity}
+          style={{ letterSpacing: "0.06em" }}
+        >
+          {pluginEdgeLabel}
+        </text>
       ) : null}
       {pr ? (
         <g

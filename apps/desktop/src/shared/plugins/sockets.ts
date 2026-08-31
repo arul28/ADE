@@ -4,9 +4,9 @@
  * Pure types and pure helpers, shared by the daemon, the desktop renderer, the
  * `ade code` TUI and (transcribed) iOS. No React, no Electron, no Node.
  *
- * The taxonomy is deliberately CLOSED and small. Seventeen kinds across eight
+ * The taxonomy is deliberately CLOSED and small. Eighteen kinds across eight
  * surfaces is the whole vocabulary, and a plugin author learns the shape once
- * while iOS implements it exhaustively at compile time. Adding an eighteenth
+ * while iOS implements it exhaustively at compile time. Adding a nineteenth
  * kind is a platform change with a parity cost on four clients — not something
  * a plugin can invent at runtime.
  *
@@ -58,6 +58,10 @@ export const PLUGIN_SOCKET_KINDS = [
   "work-rail-pane",
   "drawer-tab",
   "activity-entry",
+  // The canvas. Its own group because it is the one placement that is not a
+  // row, a control or a panel: it is a shape on a diagram, with a position and
+  // an edge, and nothing else in the taxonomy has either.
+  "graph-node",
   // Dialogs.
   "dialog-section",
 ] as const;
@@ -172,6 +176,12 @@ export const PLUGIN_SOCKET_REQUIREMENTS: Record<PluginSocketKind, PluginSocketRe
   "work-rail-pane": { manifest: ["label", "panelId"], payload: ["label", "panelId"] },
   "drawer-tab": { manifest: ["label", "panelId"], payload: ["label", "panelId"] },
   "activity-entry": { manifest: ["label"], payload: ["title"] },
+  // A label and nothing more, like a badge, and for the same reason: a node is
+  // a per-ENTITY value, so the manifest entry reserves the slot and a published
+  // row supplies the node. `actionId` is deliberately not required — a node that
+  // only labels something is a legitimate node, and demanding a press would make
+  // every purely informational one undeclarable.
+  "graph-node": { manifest: ["label"], payload: ["label"] },
   "dialog-section": { manifest: ["panelId"], manifestExtra: ["dialog"], payload: ["dialog", "panelId"] },
 };
 
@@ -315,6 +325,16 @@ export const PLUGIN_SOCKET_CLIENT_SUPPORT: Record<PluginSocketKind, PluginSocket
   "work-rail-pane": { desktop: true, web: true, ios: false, tui: false },
   "drawer-tab": { desktop: true, web: true, ios: false, tui: false },
   "activity-entry": { desktop: true, web: true, ios: true, tui: false },
+  // The one kind whose absence is a fact about a WHOLE TAB rather than about a
+  // missing renderer arm. The Graph canvas is compiled into the desktop
+  // renderer, which the hosted web client builds and mounts at the same
+  // `/graph` route, so those two agree by construction. The phone ships no
+  // Graph at all — `PLUGIN_BUILTIN_SURFACE_MOBILE.graph` is `false` and has
+  // always been — and the terminal draws no canvas, so neither can grow an arm
+  // for this kind without first growing the tab. iOS decodes the row and drops
+  // it (`PluginSocketKind(rawValue:)` falls to `.unsupported`), which is the
+  // absent-not-half-drawn behaviour this table promises.
+  "graph-node": { desktop: true, web: true, ios: false, tui: false },
   "dialog-section": { desktop: true, web: true, ios: false, tui: false },
 };
 
@@ -810,6 +830,156 @@ export type PluginActivityEntryPayload = {
 };
 
 /**
+ * What a plugin's edge ASSERTS, in three words the canvas already has a visual
+ * for.
+ *
+ * Closed and short, because an edge on this canvas is read as a claim about
+ * work: ADE's own edges mean "this branch descends from that one", "these two
+ * touch the same files", "this proposal feeds that lane". A plugin's edge has
+ * to be readable in the same glance without being mistaken for one of those, so
+ * it gets a word rather than a free-text label, and every one of them is drawn
+ * dashed in the plugin's own accent.
+ *
+ * No destructive word here, and no red anywhere, for the same reason
+ * {@link PluginBadgeTone} has none: `blocks` is amber. A plugin cannot paint a
+ * lane as failed.
+ */
+export const PLUGIN_GRAPH_EDGE_KINDS = ["link", "tracks", "blocks"] as const;
+
+export type PluginGraphEdgeKind = (typeof PLUGIN_GRAPH_EDGE_KINDS)[number];
+
+/**
+ * The entities a plugin edge may point AT.
+ *
+ * A strict subset of {@link PLUGIN_ENTITY_KINDS}, and the subset is the whole
+ * point: these are the two the canvas can resolve to a node it is already
+ * drawing. A session, a file or an automation has no shape on this diagram, so
+ * an edge naming one would resolve to nothing and the honest place to say so is
+ * the type rather than a silent drop three layers down.
+ */
+export const PLUGIN_GRAPH_EDGE_TARGET_KINDS = ["lane", "pr"] as const;
+
+export type PluginGraphEdgeTargetKind = (typeof PLUGIN_GRAPH_EDGE_TARGET_KINDS)[number];
+
+/**
+ * One edge from a plugin's node to something ADE already draws.
+ *
+ * Note what this shape CANNOT express: an edge between two of ADE's own nodes.
+ * One endpoint is always the plugin's own node — the payload names the other —
+ * and that asymmetry is a safety property rather than a simplification. An edge
+ * between two lane nodes reads as a git relationship, and a plugin that could
+ * draw one would be asserting a topology it does not own, in a place where the
+ * user has no way to tell it apart from ADE's own.
+ */
+export type PluginGraphNodeEdge = {
+  to: { kind: PluginGraphEdgeTargetKind; id: string };
+  kind: PluginGraphEdgeKind;
+  /** One word on the edge. Absent draws the edge with no caption. */
+  label?: string;
+};
+
+/**
+ * A shape a plugin adds to the Graph canvas.
+ *
+ * The last structural surface that had no plugin reach, and the one kind that is
+ * not a row, a control or a panel. What makes it expressible at all is that the
+ * canvas already knows where every lane sits: the ANCHOR is the published row's
+ * entity, so a node published against a lane hangs beside that lane's card and
+ * needs no coordinates from the plugin. A plugin never positions anything —
+ * placement stays the host's here exactly as it is on a row.
+ *
+ * `edges` is the surplus over the anchor. The anchor already draws one edge; a
+ * plugin needs this only when its node relates to more than the lane it is
+ * filed against — one issue tracked by three lanes, say.
+ */
+export type PluginGraphNodePayload = {
+  label: string;
+  /** One line under the label: an id, a state, a count. */
+  detail?: string;
+  tone: PluginBadgeTone;
+  icon?: string;
+  /**
+   * Pressed, this invokes the plugin. Optional: a node that only labels
+   * something is a legitimate node.
+   *
+   * There is no separate deeplink field, and there does not need to be — the
+   * ordinary socket-action dispatch already answers `{navigate}` and `{openUrl}`
+   * response verbs, so a plugin that wants a press to go somewhere returns one
+   * from its handler and gets it for free.
+   */
+  actionId?: string;
+  edges?: PluginGraphNodeEdge[];
+};
+
+/**
+ * Edges one node may carry beyond its anchor.
+ *
+ * Four, because the node is a glance. A plugin whose node relates to more than
+ * four lanes is describing a list, and a list belongs in a panel where it can be
+ * scrolled and read — not as a fan of lines across a canvas whose whole value is
+ * that the shape of the work is legible at a distance.
+ */
+export const PLUGIN_GRAPH_NODE_EDGE_LIMIT = 4;
+
+/**
+ * Nodes one plugin may draw on the canvas, and nodes every plugin may draw
+ * between them.
+ *
+ * Two caps rather than one, because they refuse two different failures. The
+ * per-plugin cap stops ONE plugin from burying the topology under its own
+ * annotations; the total stops three well-behaved plugins from doing it
+ * collectively, which no per-plugin number can prevent.
+ *
+ * Both are enforced AFTER the canvas has built every core node, so the thing
+ * that gets dropped is always a plugin's. A lane never loses its node to a
+ * plugin's, whatever these are set to.
+ *
+ * The storage layer already caps harder in one direction and it is worth
+ * knowing: `plugin_contributions` is keyed on
+ * `(entity_kind, entity_id, plugin_id, socket)`, so a plugin gets at most one
+ * node per lane and exactly one free-floating node however many times it
+ * publishes.
+ */
+export const PLUGIN_GRAPH_NODES_PER_PLUGIN_LIMIT = 24;
+
+export const PLUGIN_GRAPH_NODES_TOTAL_LIMIT = 48;
+
+/**
+ * Narrow a node's extra edges. Always an array — `[]` means "anchor only".
+ *
+ * Tolerant per entry and strict per field, the bargain
+ * {@link parsePluginActionButtonMenu} already makes: an edge missing a target or
+ * naming an unknown kind is dropped while the ones beside it still draw, and a
+ * malformed `edges` degrades the contribution to a plain anchored node rather
+ * than deleting it. The node is what the plugin asked for; the extra lines are
+ * the bonus.
+ */
+export function parsePluginGraphNodeEdges(raw: unknown): PluginGraphNodeEdge[] {
+  if (!Array.isArray(raw)) return [];
+  const edges: PluginGraphNodeEdge[] = [];
+  for (const entry of raw) {
+    if (edges.length >= PLUGIN_GRAPH_NODE_EDGE_LIMIT) break;
+    if (!isRecord(entry)) continue;
+    const kind = oneOf(entry.kind, PLUGIN_GRAPH_EDGE_KINDS);
+    if (!kind) continue;
+    if (!isRecord(entry.to)) continue;
+    const targetKind = oneOf(entry.to.kind, PLUGIN_GRAPH_EDGE_TARGET_KINDS);
+    // The same 512 the data store allows an entity id, since that is exactly
+    // what this is: a foreign key into one of ADE's own tables.
+    const targetId = bounded(entry.to.id, 512);
+    if (!targetKind || !targetId) continue;
+    // Short enough to sit on a line without becoming a second label.
+    const label = bounded(entry.label, 24);
+    edges.push({
+      to: { kind: targetKind, id: targetId },
+      kind,
+      ...(label ? { label } : {}),
+    });
+  }
+  return edges;
+}
+
+/**
  * A section inside one of ADE's own dialogs.
  *
  * `dialog` is part of the payload rather than implied by the surface because
@@ -910,6 +1080,7 @@ type PluginContributionPayloadByKindBase = {
   "work-rail-pane": PluginPanelHostPayload;
   "drawer-tab": PluginPanelHostPayload;
   "activity-entry": PluginActivityEntryPayload;
+  "graph-node": PluginGraphNodePayload;
   "dialog-section": PluginDialogSectionPayload;
 };
 
@@ -1105,6 +1276,26 @@ export function parsePluginContributionPayload<K extends PluginSocketKind>(
           ...(bounded(raw.body, 240) ? { body: bounded(raw.body, 240)! } : {}),
           ...(bounded(raw.actionId, 64) ? { actionId: bounded(raw.actionId, 64)! } : {}),
           ...(bounded(raw.actionLabel, 40) ? { actionLabel: bounded(raw.actionLabel, 40)! } : {}),
+        };
+      }
+      case "graph-node": {
+        // The same 40 a button's label takes. A node card is about as wide as a
+        // toolbar button and sits over a diagram, so a longer one would push
+        // the lane cards it is meant to annotate.
+        const label = bounded(raw.label, 40);
+        if (!label) return null;
+        return {
+          label,
+          tone: normalizeVocabTone(raw.tone),
+          // Longer than the label because it carries the identifier a reader
+          // matches against something outside ADE — an issue key, a run id.
+          ...(bounded(raw.detail, 80) ? { detail: bounded(raw.detail, 80)! } : {}),
+          ...(bounded(raw.icon, 40) ? { icon: bounded(raw.icon, 40)! } : {}),
+          ...(bounded(raw.actionId, 64) ? { actionId: bounded(raw.actionId, 64)! } : {}),
+          ...((): { edges?: PluginGraphNodeEdge[] } => {
+            const edges = parsePluginGraphNodeEdges(raw.edges);
+            return edges.length > 0 ? { edges } : {};
+          })(),
         };
       }
       case "dialog-section": {

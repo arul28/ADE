@@ -331,9 +331,15 @@ enum PluginSocketKind: Equatable {
   case chatCard
   case activityEntry
   /// A kind the wire defines and this build does not draw — slash commands,
-  /// palette actions, settings sections, rail panes, drawer tabs and dialog
-  /// sections, none of which the phone has a host for. Their rows decode to
-  /// nothing rather than half a control.
+  /// palette actions, settings sections, rail panes, drawer tabs, dialog
+  /// sections and graph nodes, none of which the phone has a host for. Their
+  /// rows decode to nothing rather than half a control.
+  ///
+  /// `graph-node` is the one whose absence is a fact about a whole TAB rather
+  /// than a missing renderer arm: the phone ships no Graph canvas at all
+  /// (`PLUGIN_BUILTIN_SURFACE_MOBILE.graph` is `false`), so there is no place
+  /// for such a node to be drawn until that tab is ported. Growing an arm here
+  /// without the tab would be the half-drawn state this enum exists to prevent.
   case unsupported(String)
 
   init(rawValue: String) {

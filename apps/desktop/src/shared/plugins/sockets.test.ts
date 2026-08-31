@@ -20,6 +20,7 @@ import {
   PLUGIN_COMPOSER_ACTION_INVOKE_TIMEOUT_MS,
   PLUGIN_DIALOG_FIELDS,
   PLUGIN_DIALOG_KINDS,
+  PLUGIN_GRAPH_NODE_EDGE_LIMIT,
   PLUGIN_SOCKET_CLIENT_SUPPORT,
   PLUGIN_SOCKET_INVOKE_TIMEOUT_DEFAULT_MS,
   PLUGIN_SOCKET_INVOKE_TIMEOUT_MAX_MS,
@@ -872,6 +873,71 @@ describe("contexts the new kinds hand a plugin", () => {
   });
 });
 
+describe("graph-node payloads", () => {
+  it("needs only a label, and normalizes the tone like every other kind", () => {
+    expect(parsePluginContributionPayload("graph-node", { label: "ADE-142" }))
+      .toEqual({ label: "ADE-142", tone: "neutral" });
+    expect(parsePluginContributionPayload("graph-node", { label: "ADE-142", tone: "Warning" }))
+      .toEqual({ label: "ADE-142", tone: "warning" });
+    expect(parsePluginContributionPayload("graph-node", { detail: "In review" })).toBeNull();
+  });
+
+  it("keeps the node when its edges are malformed", () => {
+    // The same bargain a split button's menu gets: the node is what the plugin
+    // asked for and the extra lines are the bonus, so a bad `edges` degrades to
+    // an anchored node rather than deleting the annotation.
+    const parsed = parsePluginContributionPayload("graph-node", {
+      label: "ADE-142",
+      edges: "not-an-array",
+    });
+    expect(parsed).toEqual({ label: "ADE-142", tone: "neutral" });
+  });
+
+  it("drops one bad edge and keeps the good ones beside it", () => {
+    const parsed = parsePluginContributionPayload("graph-node", {
+      label: "ADE-142",
+      edges: [
+        { to: { kind: "lane", id: "lane-a" }, kind: "tracks" },
+        // No target kind the canvas can resolve — a session has no shape there.
+        { to: { kind: "session", id: "chat-1" }, kind: "link" },
+        // A word this build has never heard of. Refused rather than defaulted:
+        // an edge that says something other than what the author wrote is worse
+        // than no edge.
+        { to: { kind: "lane", id: "lane-b" }, kind: "supersedes" },
+        { to: { kind: "pr", id: "42" }, kind: "blocks", label: "waits" },
+      ],
+    });
+    expect(parsed?.edges).toEqual([
+      { to: { kind: "lane", id: "lane-a" }, kind: "tracks" },
+      { to: { kind: "pr", id: "42" }, kind: "blocks", label: "waits" },
+    ]);
+  });
+
+  it("truncates a node's edges at the cap rather than dropping the node", () => {
+    const parsed = parsePluginContributionPayload("graph-node", {
+      label: "ADE-142",
+      edges: Array.from({ length: PLUGIN_GRAPH_NODE_EDGE_LIMIT + 3 }, (_unused, index) => ({
+        to: { kind: "lane", id: `lane-${index}` },
+        kind: "link",
+      })),
+    });
+    expect(parsed?.edges).toHaveLength(PLUGIN_GRAPH_NODE_EDGE_LIMIT);
+  });
+
+  it("carries the cross-kind tag like every other kind", () => {
+    // `id` names WHICH declaration a published node fills, and it is what
+    // `listContributions` joins the row against — a graph node that lost it
+    // would be dropped as undeclared.
+    const parsed = parsePluginContributionPayload("graph-node", {
+      label: "ADE-142",
+      id: "issue",
+      order: 2,
+      filterKey: "mine",
+    });
+    expect(parsed).toMatchObject({ id: "issue", order: 2, filterKey: "mine" });
+  });
+});
+
 describe("per-client socket support", () => {
   it("answers for every kind on every client", () => {
     for (const kind of PLUGIN_SOCKET_KINDS) {
@@ -1084,6 +1150,7 @@ describe("payload arm coverage", () => {
     "work-rail-pane": { label: "Ports", panelId: "ports" },
     "drawer-tab": { label: "Issues", panelId: "issues" },
     "activity-entry": { title: "2 checks failed" },
+    "graph-node": { label: "ADE-142" },
     "dialog-section": { dialog: "create-lane", panelId: "issues" },
   };
 
