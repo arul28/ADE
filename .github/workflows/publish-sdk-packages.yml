@@ -12,10 +12,26 @@
 #   or workflow_dispatch with confirm=publish. On these routes an
 #   already-published version is an error, not a skip.
 #
-# Required repo secret: NPM_TOKEN — an automation token for the `ade-dev` org
-# with permission to publish `@ade-dev/sdk` and `@ade-dev/chat-ui` only.
-# Until the secret exists, runs end early with a notice instead of failing.
-# Provenance needs `id-token: write` on GitHub-hosted runners.
+# Credentials — two supported modes, in order of preference:
+#
+# 1. Trusted publishing (OIDC, no secret at all). npm mints a short-lived
+#    credential from this workflow's identity. Configure it per package on
+#    npmjs.com → Settings → Trusted Publisher: repository `arul28/ADE`,
+#    workflow `publish-sdk-packages.yml`. npm requires the PACKAGE TO ALREADY
+#    EXIST to configure it, so the first version of each package ships by mode
+#    2 (or from a maintainer machine); everything after can be token-free.
+#    Then set repo variable `SDK_TRUSTED_PUBLISHING=true` to tell this workflow
+#    the trusted publisher is live, and delete the NPM_TOKEN secret.
+# 2. `NPM_TOKEN` secret — a GRANULAR access token limited to the two
+#    `@ade-dev` packages, with an expiry. Not a classic token, and never a
+#    reason to turn off account 2FA: granular tokens are the supported way to
+#    publish from CI with 2FA on.
+#
+# With neither configured, runs end early with a notice instead of failing.
+# Both modes produce provenance; OIDC needs `id-token: write` on a
+# GitHub-hosted runner (self-hosted runners are not eligible), and npm CLI
+# >= 11.5.1, which is newer than the npm bundled with Node 22 — hence the
+# explicit npm upgrade step below.
 
 name: Publish ADE SDK packages
 
@@ -55,19 +71,32 @@ jobs:
           node-version: 22
           registry-url: https://registry.npmjs.org
 
-      - name: Require NPM_TOKEN
+      - name: Upgrade npm for trusted publishing
+        # Node 22 bundles npm 10.x; OIDC needs >= 11.5.1. Harmless for the
+        # token path, so it runs unconditionally rather than being another
+        # branch to get wrong.
+        run: npm install -g npm@latest && npm --version
+
+      - name: Resolve publish credentials
         id: token
         # The secret arrives through env, never interpolated into the script
         # body: `${{ secrets.* }}` inside `run:` puts the value in the rendered
         # command line, where a `set -x` or a crash dump can echo it.
         env:
           NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+          TRUSTED: ${{ vars.SDK_TRUSTED_PUBLISHING }}
         run: |
-          if [ -z "$NPM_TOKEN" ]; then
-            echo "NPM_TOKEN is not configured; skipping publish." >> "$GITHUB_STEP_SUMMARY"
-            echo "present=false" >> "$GITHUB_OUTPUT"
-          else
+          if [ "$TRUSTED" = "true" ]; then
+            echo "Publishing via trusted publisher (OIDC); no token used." >> "$GITHUB_STEP_SUMMARY"
             echo "present=true" >> "$GITHUB_OUTPUT"
+            echo "mode=oidc" >> "$GITHUB_OUTPUT"
+          elif [ -n "$NPM_TOKEN" ]; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+            echo "mode=token" >> "$GITHUB_OUTPUT"
+          else
+            echo "Neither SDK_TRUSTED_PUBLISHING nor NPM_TOKEN is configured; skipping publish." >> "$GITHUB_STEP_SUMMARY"
+            echo "present=false" >> "$GITHUB_OUTPUT"
+            echo "mode=none" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Require matching package versions
@@ -123,9 +152,12 @@ jobs:
       - name: Publish @ade-dev/sdk
         if: steps.plan.outputs.sdk == 'publish'
         working-directory: packages/sdk
+        # In OIDC mode NODE_AUTH_TOKEN is deliberately empty: npm then mints a
+        # short-lived credential from this workflow's identity. --provenance is
+        # implied there, and harmless to state.
         run: npm publish --access public --provenance
         env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          NODE_AUTH_TOKEN: ${{ steps.token.outputs.mode == 'token' && secrets.NPM_TOKEN || '' }}
 
       - name: Install and build @ade-dev/chat-ui
         if: steps.plan.outputs.ui == 'publish'
@@ -141,4 +173,4 @@ jobs:
         working-directory: packages/chat-ui
         run: npm publish --access public --provenance
         env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          NODE_AUTH_TOKEN: ${{ steps.token.outputs.mode == 'token' && secrets.NPM_TOKEN || '' }}
