@@ -38,7 +38,9 @@ differential cache copy — Squirrel pipes the pending ZIP recorded as
 - Treats install-phase `The network connection was lost` / `Cannot pipe` /
   `ENOENT` as a vanished local archive: restore the ZIP (which recreates the
   loopback server) and retry native handoff once. A second failure parks as
-  `handoff_failed`.
+  `handoff_failed`. Leftover updater `error` / cancelled / not-available events
+  during that restore do not wipe the archive or take the download-error path;
+  `downloadUpdate()` resolving with a present ZIP is the source of truth.
 
 The same `quitAndInstall()` path serves the desktop pill, the orange Restart
 banner, Settings, `ade update install`, the TUI action, and idle auto-apply.
@@ -145,7 +147,7 @@ labels this value as an estimate rather than an exact installer requirement.
 | Checksum/signature | Rejected verification or updater `error` event | `verification` / `signature` | Clear unsafe cached data |
 | Permission | Synchronous throw or updater `error` event | `permission` | Preserve only a previously verified download |
 | Installer handoff | Synchronous throw, async updater `error`, or watchdog expiry | `installer` | Preserve the verified download |
-| Vanished staged archive | Missing ZIP/EXE at install or periodic ready check; Squirrel `network connection was lost` / `Cannot pipe` during install | Re-download, then continue the same consented install | Clear the empty cache and fetch again; park as `refresh_failed` or `handoff_failed` only if restore or the retry still fails |
+| Vanished staged archive | Missing ZIP/EXE at install or periodic ready check; Squirrel `network connection was lost` / `Cannot pipe` during install | Re-download, then continue the same consented install | Clear the empty cache and fetch again; leftover updater errors during restore do not wipe a restored ZIP; park as `refresh_failed` or `handoff_failed` only if restore or the retry still fails |
 
 The service tests reproduce each feasible boundary deterministically by
 injecting disk measurements and updater errors. Preparation has a 30-second

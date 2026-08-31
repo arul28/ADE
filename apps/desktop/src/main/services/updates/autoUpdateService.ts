@@ -552,6 +552,7 @@ export function createAutoUpdateService({
   let activityCheckInProgress = false;
   let downloadedFilePath: string | null = null;
   let restorePromise: Promise<boolean> | null = null;
+  let archiveRestoreInProgress = false;
   let staleHandoffRecoveriesThisInstall = 0;
   let staleHandoffRecoveryInProgress = false;
   const listeners = new Set<(snapshot: AutoUpdateSnapshot) => void>();
@@ -928,6 +929,13 @@ export function createAutoUpdateService({
   };
 
   const onUpdateNotAvailable = (info?: UpdateInfo) => {
+    if (archiveRestoreInProgress) {
+      logger.info("autoUpdate.update_not_available_ignored_during_archive_restore");
+      if (info?.version) {
+        patchSnapshot({ latestKnownVersion: info.version });
+      }
+      return;
+    }
     logger.info("autoUpdate.update_not_available");
     if (info?.version) {
       patchSnapshot({ latestKnownVersion: info.version });
@@ -946,6 +954,12 @@ export function createAutoUpdateService({
   };
 
   const onUpdateCancelled = (info: UpdateInfo) => {
+    if (archiveRestoreInProgress) {
+      logger.warn("autoUpdate.update_cancelled_ignored_during_archive_restore", {
+        version: info.version,
+      });
+      return;
+    }
     logger.warn("autoUpdate.update_cancelled", { version: info.version });
     ignoredDownloadVersion = null;
     compressedUpdateBytes = null;
@@ -974,6 +988,20 @@ export function createAutoUpdateService({
       kind: classified.kind,
       phase: classified.phase,
     });
+    // Restore's downloadUpdate() catch / update-downloaded is the source of
+    // truth. A leftover native error is often not stale-shaped (checksum,
+    // cancelled, generic download failure) and setErrorSnapshot(phase=download)
+    // would wipe the ZIP this path just restored. Guard with a sync flag:
+    // downloadUpdate can emit before restorePromise is assigned, because the
+    // async IIFE runs until its first await.
+    if (archiveRestoreInProgress) {
+      logger.warn("autoUpdate.error_ignored_during_archive_restore", {
+        message,
+        kind: classified.kind,
+        phase: classified.phase,
+      });
+      return;
+    }
     ignoredDownloadVersion = null;
     if (staleHandoffRecoveryInProgress && isStaleHandoffError(err)) return;
     if (readyMetadataRefreshInProgress) {
@@ -1414,6 +1442,32 @@ export function createAutoUpdateService({
     return true;
   }
 
+  function stagedArchiveRestoreSucceeded(): boolean {
+    return snapshot.status === "ready"
+      && Boolean(snapshot.version)
+      && stagedArchiveStillPresent();
+  }
+
+  function revertStagedArchiveRestore(readySnapshot: AutoUpdateSnapshot): void {
+    // A failed restore must not leave a partial ZIP that looks like a staged
+    // payload when downloadedFile was never recorded. Keep a still-present
+    // recorded file (rebind / cache-hit) so recovery can retry native handoff.
+    if (!downloadedFilePath || !isNonemptyUpdateFile(downloadedFilePath)) {
+      downloadedFilePath = null;
+      cleanupUpdaterCacheDir({
+        updaterCacheDir,
+        logger,
+        reason: "staged_archive_restore_failed",
+      });
+    }
+    patchSnapshot({
+      ...readySnapshot,
+      status: "ready",
+      error: null,
+      errorDetails: null,
+    });
+  }
+
   async function restoreStagedArchiveIfMissing(reason: string): Promise<boolean> {
     if (stagedArchiveStillPresent()) return true;
     return redownloadStagedArchive(reason);
@@ -1421,6 +1475,7 @@ export function createAutoUpdateService({
 
   async function redownloadStagedArchive(reason: string): Promise<boolean> {
     if (restorePromise) return restorePromise;
+    archiveRestoreInProgress = true;
     restorePromise = (async () => {
       if (!updater.downloadUpdate) {
         logger.warn("autoUpdate.staged_archive_restore_unavailable", {
@@ -1433,6 +1488,11 @@ export function createAutoUpdateService({
         reason,
         version: snapshot.version,
         archivePresent: stagedArchiveStillPresent(),
+      });
+      const restoreReadySnapshot = cloneSnapshot({
+        ...snapshot,
+        status: "ready",
+        progressPercent: 100,
       });
       if (!stagedArchiveStillPresent()) {
         downloadedFilePath = null;
@@ -1457,22 +1517,19 @@ export function createAutoUpdateService({
       try {
         await updater.downloadUpdate();
       } catch (error) {
-        if (snapshot.status !== "error") {
-          setErrorSnapshot({
-            error,
-            fallbackPhase: "download",
-          });
-        }
         logger.warn("autoUpdate.staged_archive_restore_failed", {
           reason,
           version: snapshot.version,
           message: formatErrorMessage(error),
         });
+        // Leftover Squirrel errors often reject downloadUpdate after
+        // update-downloaded already restored the archive. Wiping here would
+        // delete the ZIP the consented retry needs.
+        if (stagedArchiveRestoreSucceeded()) return true;
+        revertStagedArchiveRestore(restoreReadySnapshot);
         return false;
       }
-      const restored = snapshot.status === "ready"
-        && Boolean(snapshot.version)
-        && stagedArchiveStillPresent();
+      const restored = stagedArchiveRestoreSucceeded();
       if (restored) {
         logger.info("autoUpdate.staged_archive_restored", {
           reason,
@@ -1484,10 +1541,12 @@ export function createAutoUpdateService({
           version: snapshot.version,
           status: snapshot.status,
         });
+        revertStagedArchiveRestore(restoreReadySnapshot);
       }
       return restored;
     })().finally(() => {
       restorePromise = null;
+      archiveRestoreInProgress = false;
     });
     return restorePromise;
   }

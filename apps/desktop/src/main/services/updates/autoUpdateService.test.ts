@@ -1943,6 +1943,182 @@ describe("createAutoUpdateService", () => {
     service.dispose();
   });
 
+  it("does not wipe a restored archive on leftover non-stale updater errors", async () => {
+    const updaterCacheDir = makeUpdaterCacheDir();
+    const pendingZip = path.join(updaterCacheDir, "pending", "ADE-1.2.3-universal-mac.zip");
+    const updater = Object.assign(new FakeAutoUpdater(), {
+      downloadUpdate: vi.fn(async () => {
+        fs.mkdirSync(path.dirname(pendingZip), { recursive: true });
+        fs.writeFileSync(pendingZip, "rebound", "utf8");
+        updater.emit("update-downloaded", {
+          version: "1.2.3",
+          downloadedFile: pendingZip,
+        });
+        updater.emit("error", new Error("SHA512 checksum mismatch"));
+      }),
+    });
+    const service = createAutoUpdateService({
+      logger: makeLogger(),
+      currentVersion: "1.2.2",
+      globalStatePath: makeStatePath(),
+      updaterCacheDir,
+      getDiskSpace: plentyOfDisk,
+      autoCheckEnabled: false,
+      updater,
+    });
+    updater.emit("update-downloaded", {
+      version: "1.2.3",
+      downloadedFile: pendingZip,
+    });
+    fs.rmSync(pendingZip);
+
+    await expect(service.quitAndInstall()).resolves.toBe(true);
+    updater.emit("error", new Error("The network connection was lost."));
+    await vi.waitFor(() => expect(updater.quitAndInstall).toHaveBeenCalledTimes(2));
+    expect(service.getSnapshot()).toMatchObject({
+      status: "installing",
+      version: "1.2.3",
+      parked: null,
+      error: null,
+    });
+    expect(fs.readFileSync(pendingZip, "utf8")).toBe("rebound");
+
+    service.dispose();
+  });
+
+  it("treats downloadUpdate rejection as success when the archive already restored", async () => {
+    const updaterCacheDir = makeUpdaterCacheDir();
+    const pendingZip = path.join(updaterCacheDir, "pending", "ADE-1.2.3-universal-mac.zip");
+    const updater = Object.assign(new FakeAutoUpdater(), {
+      downloadUpdate: vi.fn(async () => {
+        fs.mkdirSync(path.dirname(pendingZip), { recursive: true });
+        fs.writeFileSync(pendingZip, "rebound", "utf8");
+        updater.emit("update-downloaded", {
+          version: "1.2.3",
+          downloadedFile: pendingZip,
+        });
+        throw new Error("SHA512 checksum mismatch");
+      }),
+    });
+    const service = createAutoUpdateService({
+      logger: makeLogger(),
+      currentVersion: "1.2.2",
+      globalStatePath: makeStatePath(),
+      updaterCacheDir,
+      getDiskSpace: plentyOfDisk,
+      autoCheckEnabled: false,
+      updater,
+    });
+    updater.emit("update-downloaded", {
+      version: "1.2.3",
+      downloadedFile: pendingZip,
+    });
+    fs.rmSync(pendingZip);
+
+    await expect(service.quitAndInstall()).resolves.toBe(true);
+    updater.emit("error", new Error("The network connection was lost."));
+    await vi.waitFor(() => expect(updater.quitAndInstall).toHaveBeenCalledTimes(2));
+    expect(service.getSnapshot()).toMatchObject({
+      status: "installing",
+      version: "1.2.3",
+      parked: null,
+      error: null,
+    });
+    expect(fs.readFileSync(pendingZip, "utf8")).toBe("rebound");
+
+    service.dispose();
+  });
+
+  it("does not wipe a restored archive on leftover not-available during restore", async () => {
+    const updaterCacheDir = makeUpdaterCacheDir();
+    const pendingZip = path.join(updaterCacheDir, "pending", "ADE-1.2.3-universal-mac.zip");
+    const updater = Object.assign(new FakeAutoUpdater(), {
+      downloadUpdate: vi.fn(async () => {
+        fs.mkdirSync(path.dirname(pendingZip), { recursive: true });
+        fs.writeFileSync(pendingZip, "rebound", "utf8");
+        updater.emit("update-downloaded", {
+          version: "1.2.3",
+          downloadedFile: pendingZip,
+        });
+        updater.emit("update-not-available", { version: "1.2.3" });
+      }),
+    });
+    const service = createAutoUpdateService({
+      logger: makeLogger(),
+      currentVersion: "1.2.2",
+      globalStatePath: makeStatePath(),
+      updaterCacheDir,
+      getDiskSpace: plentyOfDisk,
+      autoCheckEnabled: false,
+      updater,
+    });
+    updater.emit("update-downloaded", {
+      version: "1.2.3",
+      downloadedFile: pendingZip,
+    });
+    fs.rmSync(pendingZip);
+
+    await expect(service.quitAndInstall()).resolves.toBe(true);
+    updater.emit("error", new Error("The network connection was lost."));
+    await vi.waitFor(() => expect(updater.quitAndInstall).toHaveBeenCalledTimes(2));
+    expect(service.getSnapshot()).toMatchObject({
+      status: "installing",
+      version: "1.2.3",
+      parked: null,
+      error: null,
+    });
+    expect(fs.readFileSync(pendingZip, "utf8")).toBe("rebound");
+
+    service.dispose();
+  });
+
+  it("does not treat a failed restore's leftover file as a staged archive", async () => {
+    const updaterCacheDir = makeEmptyUpdaterCacheDir();
+    const leftoverZip = path.join(updaterCacheDir, "update.zip");
+    const beforeQuitAndInstall = vi.fn(async () => {});
+    const updater = Object.assign(new FakeAutoUpdater(), {
+      downloadUpdate: vi.fn(async () => {
+        fs.writeFileSync(leftoverZip, "partial", "utf8");
+        throw new Error("The network connection was lost.");
+      }),
+    });
+    const service = createAutoUpdateService({
+      logger: makeLogger(),
+      currentVersion: "1.2.2",
+      globalStatePath: makeStatePath(),
+      updaterCacheDir,
+      getDiskSpace: plentyOfDisk,
+      autoCheckEnabled: false,
+      beforeQuitAndInstall,
+      updater,
+    });
+    updater.emit("update-downloaded", { version: "1.2.3" });
+
+    await expect(service.quitAndInstall()).resolves.toBe(false);
+    expect(service.getSnapshot()).toMatchObject({
+      status: "ready",
+      version: "1.2.3",
+      parked: { reason: "refresh_failed" },
+    });
+    expect(fs.existsSync(leftoverZip)).toBe(false);
+    expect(beforeQuitAndInstall).not.toHaveBeenCalled();
+
+    updater.downloadUpdate.mockImplementation(async () => {
+      fs.mkdirSync(path.join(updaterCacheDir, "pending"), { recursive: true });
+      const pendingZip = path.join(updaterCacheDir, "pending", "ADE-1.2.3-universal-mac.zip");
+      fs.writeFileSync(pendingZip, "restored", "utf8");
+      updater.emit("update-downloaded", {
+        version: "1.2.3",
+        downloadedFile: pendingZip,
+      });
+    });
+    await expect(service.quitAndInstall()).resolves.toBe(true);
+    expect(updater.downloadUpdate).toHaveBeenCalledTimes(2);
+    expect(beforeQuitAndInstall).toHaveBeenCalledTimes(1);
+
+    service.dispose();
+  });
+
   it("auto-applies a ready update after two continuously idle minutes and the countdown", async () => {
     vi.useFakeTimers();
     const updater = new FakeAutoUpdater();
