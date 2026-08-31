@@ -477,6 +477,7 @@ import {
   pluginPaneStateCycle,
   pluginPaneStatePayload,
   pluginPaneStateReset,
+  pluginPaneShowMore,
   pluginPaneToggleGroup,
   pluginPaneToggleRow,
   PLUGIN_PANE_TOO_NARROW,
@@ -10619,6 +10620,11 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
         ...(samePanel && current.state.openGroups !== undefined
           ? { openGroups: current.state.openGroups }
           : {}),
+        // And the pages. A reader who walked a list down to 250 rows must not
+        // be put back on the first hundred every ten seconds.
+        ...(samePanel && current.state.listPages !== undefined
+          ? { listPages: current.state.listPages }
+          : {}),
         editing: samePanel ? current.state.editing ?? null : null,
         width: prospectiveRightPaneWidth,
       });
@@ -11084,6 +11090,16 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     if (interactive.kind === "group") {
       const openGroups = pluginPaneToggleGroup(current.model, interactive.groupKey);
       updatePluginPaneState((state) => ({ ...state, openGroups }));
+      return;
+    }
+
+    // A list's "Show more". Client-local like the disclosure above it: it draws
+    // one more page of rows the pane already fetched, and invokes nothing.
+    if (interactive.kind === "listPage") {
+      const listPages = pluginPaneShowMore(current.model, interactive.listKey, interactive.total);
+      if (listPages !== current.model.listPages) {
+        updatePluginPaneState((state) => ({ ...state, listPages }));
+      }
       return;
     }
 

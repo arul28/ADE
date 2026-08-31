@@ -28,6 +28,7 @@
 import {
   VOCAB_CONTEXT_COLLECTION,
   VOCAB_LIMITS,
+  VOCAB_LIST_SHOW_MORE_LABEL,
   VOCAB_STATE_COLLECTION,
   bindingKey,
   boundRowEntries,
@@ -48,6 +49,10 @@ import {
   vocabGroupKey,
   vocabInitialPanelSelection,
   vocabInitialPanelState,
+  vocabListKey,
+  vocabListNextPage,
+  vocabListPage,
+  vocabListPageLabel,
   vocabNormalizePanelSelection,
   vocabNormalizePanelState,
   vocabResetPanelSelection,
@@ -335,6 +340,24 @@ export type PluginPaneRow =
       variant: "title" | "subtitle" | "body" | "code";
       parts: VocabMarkdownSpan[];
     }
+  /**
+   * What a `list` says when it is not drawing every row it holds.
+   *
+   * A numbered row rather than a note, because in a terminal the only way to
+   * ask for more rows is to select something — but it is drawn with no
+   * `selection` when there is nothing more to ask for, which is the case a
+   * bigger ceiling alone would not have fixed: a list stopped at 250 used to
+   * look exactly like a complete one.
+   */
+  | {
+      kind: "listPage";
+      key: string;
+      indent: number;
+      /** `Showing 100 of 143`, or `Showing the first 250`. */
+      label: string;
+      /** Index into {@link PluginPaneModel.interactives}, or null at the end. */
+      selection: number | null;
+    }
   /** Dim explanatory line: an `emptyText`, a help string, a truncation notice. */
   | { kind: "note"; key: string; indent: number; text: string }
   /** A component this surface does not draw. Names it and says where it lives. */
@@ -390,7 +413,17 @@ export type PluginPaneInteractive =
    * thing that differs — whether a plugin is invoked — is exactly what its
    * absence says.
    */
-  | { kind: "bulk"; stateKey: string; label: string; action?: VocabListItemAction };
+  | { kind: "bulk"; stateKey: string; label: string; action?: VocabListItemAction }
+  /**
+   * A list's "Show more". Pressing it draws one more page and does nothing
+   * else: no dispatch, no state write, no socket — the same shape as a group's
+   * disclosure, and client-local for the same reason.
+   *
+   * `total` is the row count AFTER the binding's `where` has run, carried here
+   * so the press can be clamped against the rows the reader can actually see
+   * rather than against the rows the pane fetched.
+   */
+  | { kind: "listPage"; listKey: string; label: string; total: number };
 
 /**
  * What an interactive *is*, independent of where it currently sits.
@@ -431,6 +464,12 @@ export function pluginInteractiveKey(
   // reader just closed.
   if (interactive.kind === "group") {
     return JSON.stringify([...owner, "group", interactive.groupKey]);
+  }
+  // A page control is the LIST, never its label: the label carries a count that
+  // changes with every row the plugin publishes, and an armed confirm keyed by
+  // it would re-ask on the next poll.
+  if (interactive.kind === "listPage") {
+    return JSON.stringify([...owner, "listPage", interactive.listKey]);
   }
   // A tick is the ROW, not its title. A plugin that renamed an issue between
   // two polls has not turned it into a different row, and the reader's tick
@@ -525,6 +564,14 @@ export type PluginPaneModel = {
    * open.
    */
   openGroups: Readonly<Record<string, boolean>>;
+  /**
+   * How many pages of each `list` the reader has walked, by `vocabListKey`.
+   *
+   * Beside {@link openGroups} and held on the same terms — client-local, never
+   * signed, never in a `where`, never on an action payload. How far down a list
+   * a reader has read is a statement about this terminal.
+   */
+  listPages: Readonly<Record<string, number>>;
   /** Non-fatal parse warnings, shown as one summary line. */
   warnings: string[];
   fallback: VocabFallback | null;
@@ -697,6 +744,8 @@ type WalkContext = {
   selection: VocabPanelSelection;
   /** Client-local open/closed overrides, by `vocabGroupKey`. */
   openGroups: Readonly<Record<string, boolean>>;
+  /** Client-local page counts, by `vocabListKey`. Absent means the first page. */
+  listPages: Readonly<Record<string, number>>;
   values: Record<string, string>;
   /** Interactive index currently taking typed input, so its row reads as live. */
   editing: number | null;
@@ -958,7 +1007,12 @@ function walkNode(node: VocabNode, key: string, indent: number, ctx: WalkContext
         : [];
       /** The keys of the rows this list actually drew, in draw order. */
       const drawnKeys: string[] = [];
-      items.slice(0, VOCAB_LIMITS.maxListItems).forEach((item, index) => {
+      // Filter first, page second. `items` has already been through the
+      // binding's `where`, so the page covers what the reader can see — paging
+      // a pre-filter window would offer rows the filter had rejected.
+      const listKey = vocabListKey(node);
+      const page = vocabListPage(items.length, ctx.listPages[listKey] ?? 1);
+      items.slice(0, page.drawn).forEach((item, index) => {
         // The box is registered BEFORE the row's own press, so ↑↓ walks a row
         // left to right the way the eye reads it.
         let tick: { checked: boolean; selection: number } | null = null;
@@ -1004,6 +1058,26 @@ function walkNode(node: VocabNode, key: string, indent: number, ctx: WalkContext
           ctx,
         );
       });
+      // The page line, above the bar and below the rows: it belongs to the list
+      // it counts, and a reader who has just been told there are 43 more rows
+      // should read that before they read what they may do to the ones ticked.
+      const pageLabel = vocabListPageLabel(page);
+      if (pageLabel !== null) {
+        push(ctx, {
+          kind: "listPage",
+          key: `${key}.page`,
+          indent,
+          label: page.hasMore ? `${pageLabel} · ${VOCAB_LIST_SHOW_MORE_LABEL}` : pageLabel,
+          selection: page.hasMore
+            ? addInteractive(ctx, {
+              kind: "listPage",
+              listKey,
+              label: VOCAB_LIST_SHOW_MORE_LABEL,
+              total: items.length,
+            })
+            : null,
+        });
+      }
       // The bar, and only once there is a batch to spend. `vocabSelectedRowKeys`
       // against the keys this list actually DREW, never against the stored set:
       // a reader who ticks four rows and then moves a filter that hides two of
@@ -1347,6 +1421,15 @@ export type PluginPaneInput = {
    * belonging to a group the schema no longer declares simply never matches.
    */
   openGroups?: Readonly<Record<string, boolean>>;
+  /**
+   * How many pages of each `list` the reader has asked for, by `vocabListKey`.
+   *
+   * Carried straight through with no reconciliation, for the same reason
+   * {@link openGroups} is: it is client-local, it is not panel state, and a key
+   * belonging to a list the schema no longer declares simply never matches. An
+   * absent key means one page, which is the first draw.
+   */
+  listPages?: Readonly<Record<string, number>>;
   /** Interactive index that currently owns the composer, if any. */
   editing?: number | null;
   /** Pane content width in columns. */
@@ -1382,6 +1465,8 @@ export function buildPluginPaneModel(input: PluginPaneInput): PluginPaneModel {
     selectionSignature: vocabSelectionSignature([]),
     // And no `group` to have folded, so the card remembers nothing.
     openGroups: {} as Readonly<Record<string, boolean>>,
+    // And no `list` to have paged, for the same reason.
+    listPages: {} as Readonly<Record<string, number>>,
     // No row means no schema to read a declaration off, so `r` stays the plain
     // refetch it has always been.
     refreshAction: null as string | null,
@@ -1453,6 +1538,7 @@ export function buildPluginPaneModel(input: PluginPaneInput): PluginPaneModel {
       ? input.selection
       : vocabNormalizePanelSelection(input.selection, selectionDeclarations);
   const openGroups = input.openGroups ?? {};
+  const listPages = input.listPages ?? {};
 
   const ctx: WalkContext = {
     rows: [],
@@ -1463,6 +1549,7 @@ export function buildPluginPaneModel(input: PluginPaneInput): PluginPaneModel {
     selectionDeclarations,
     selection,
     openGroups,
+    listPages,
     values: input.values,
     editing: input.editing ?? null,
     inner,
@@ -1486,6 +1573,7 @@ export function buildPluginPaneModel(input: PluginPaneInput): PluginPaneModel {
     selection,
     selectionSignature,
     openGroups,
+    listPages,
     warnings: parsed.warnings.map((warning) => warning.message),
     fallback: parsed.panel.fallback,
     status: "ok",
@@ -1647,6 +1735,27 @@ export function pluginPaneToggleGroup(
   const row = model.rows.find((entry) => entry.kind === "group" && entry.groupKey === groupKey);
   const open = row?.kind === "group" ? row.open : true;
   return { ...model.openGroups, [groupKey]: !open };
+}
+
+/* ── Paging ─────────────────────────────────────────────────────────────── */
+
+/**
+ * Draw one more page of a `list`, as the client-local map the next build reads.
+ *
+ * `total` comes off the interactive rather than being recounted here, for the
+ * same reason the bulk payload is read off the interactives: it is the count
+ * the row the reader pressed was drawn from, so the clamp cannot disagree with
+ * the sentence they just read. A press with nothing left to show returns the
+ * map unchanged, so the caller can skip the rebuild.
+ */
+export function pluginPaneShowMore(
+  model: PluginPaneModel,
+  listKey: string,
+  total: number,
+): Readonly<Record<string, number>> {
+  const pages = model.listPages[listKey] ?? 1;
+  const next = vocabListNextPage(total, pages);
+  return next === pages ? model.listPages : { ...model.listPages, [listKey]: next };
 }
 
 /* ── Windowing ──────────────────────────────────────────────────────────── */

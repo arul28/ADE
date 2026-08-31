@@ -1,7 +1,7 @@
 import React from "react";
 import * as Dialog from "@radix-ui/react-dialog";
 import { AnimatePresence, motion } from "motion/react";
-import { X } from "@phosphor-icons/react";
+import { CaretLeft, X } from "@phosphor-icons/react";
 
 import { COLORS, SANS_FONT } from "../../lanes/laneDesignTokens";
 import { fadeScale } from "../../../lib/motion";
@@ -61,6 +61,7 @@ export function PluginWebviewOverlayHost() {
 
   const open = Boolean(request && resolved);
   const Icon = pluginIcon(resolved?.icon ?? undefined);
+  const stack = usePluginOverlayStack(resolved?.panelId ?? null, resolved?.title ?? null);
 
   return (
     <Dialog.Root open={open} onOpenChange={(next) => (next ? undefined : closePluginWebviewOverlay())}>
@@ -96,6 +97,33 @@ export function PluginWebviewOverlayHost() {
                   className="flex items-center gap-2 border-b px-4 py-3"
                   style={{ borderColor: COLORS.borderMuted }}
                 >
+                  {/* The way back out of a panel the plugin navigated into.
+                      Before the stack existed the `{navigate}` verb was DROPPED
+                      here — the overlay passed no `onNavigate` at all — so a
+                      panel that sent the reader to a detail view did nothing
+                      visible and the plugin had no way to learn why. */}
+                  {stack.canGoBack ? (
+                    <button
+                      type="button"
+                      onClick={stack.goBack}
+                      aria-label={`Back to ${stack.previousTitle}`}
+                      title={`Back to ${stack.previousTitle}`}
+                      className="inline-flex h-7 items-center gap-1 rounded-md px-1.5 text-[var(--color-muted-fg)] transition-colors hover:bg-white/10 hover:text-fg"
+                      style={{ fontFamily: SANS_FONT, fontSize: 12 }}
+                    >
+                      <CaretLeft size={13} weight="regular" aria-hidden />
+                      <span
+                        style={{
+                          maxWidth: 160,
+                          overflow: "hidden",
+                          textOverflow: "ellipsis",
+                          whiteSpace: "nowrap",
+                        }}
+                      >
+                        {stack.previousTitle}
+                      </span>
+                    </button>
+                  ) : null}
                   <Icon size={15} weight="regular" color={COLORS.textMuted} aria-hidden />
                   <Dialog.Title
                     style={{
@@ -109,7 +137,7 @@ export function PluginWebviewOverlayHost() {
                       whiteSpace: "nowrap",
                     }}
                   >
-                    {resolved.title}
+                    {stack.title ?? resolved.title}
                   </Dialog.Title>
                   <span
                     style={{
@@ -150,9 +178,11 @@ export function PluginWebviewOverlayHost() {
                     <div style={{ flex: 1, minWidth: 0, overflow: "auto", padding: 20 }}>
                       <PluginPanelHost
                         pluginId={resolved.pluginId}
-                        panelId={resolved.panelId}
+                        panelId={stack.panelId ?? resolved.panelId}
                         active
+                        {...(stack.context ? { renderContext: stack.context } : {})}
                         {...(request.subject ? { surfaceContext: request.subject } : {})}
+                        onNavigate={stack.push}
                       />
                     </div>
                   )}
@@ -165,5 +195,121 @@ export function PluginWebviewOverlayHost() {
     </Dialog.Root>
   );
 }
+
+/**
+ * One entry of the overlay's own back stack.
+ *
+ * The title is carried rather than looked up: a panel reached by `{navigate}` is
+ * not a declared surface, so the manifest has no title for it, and the honest
+ * label for the way back is the title of the panel the reader came FROM — which
+ * this entry is.
+ */
+export type PluginOverlayFrame = {
+  panelId: string;
+  title: string;
+  context?: Record<string, unknown>;
+};
+
+/**
+ * The push half of the stack, as a pure function.
+ *
+ * Out of the hook so it can be tested as what it is — four rules about an array
+ * — rather than through a modal that needs the app store, a Radix portal and a
+ * motion runtime to say anything at all.
+ */
+export function pushPluginOverlayFrame(
+  frames: readonly PluginOverlayFrame[],
+  navigation: { panelId: string; context?: Record<string, unknown> },
+  root: { panelId: string | null; title: string | null },
+): readonly PluginOverlayFrame[] {
+  const currentId = frames[frames.length - 1]?.panelId ?? root.panelId;
+  // A navigation to the panel already on top REPLACES it. The plugin is
+  // re-addressing the screen the reader is on — usually with a new context —
+  // and pushing would leave a Back that goes nowhere visible.
+  if (navigation.panelId === currentId) {
+    if (frames.length === 0) return frames;
+    const replaced: PluginOverlayFrame = {
+      panelId: navigation.panelId,
+      title: frames[frames.length - 1]?.title ?? root.title ?? navigation.panelId,
+      ...(navigation.context ? { context: navigation.context } : {}),
+    };
+    return [...frames.slice(0, -1), replaced];
+  }
+  const next = [
+    ...frames,
+    {
+      panelId: navigation.panelId,
+      title: navigation.panelId,
+      ...(navigation.context ? { context: navigation.context } : {}),
+    },
+  ];
+  // Capped, oldest dropped. A plugin that navigates in a loop must not be able
+  // to grow this without bound; the reader keeps the eight screens they can
+  // plausibly remember walking through.
+  return next.length > PLUGIN_OVERLAY_STACK_MAX
+    ? next.slice(next.length - PLUGIN_OVERLAY_STACK_MAX)
+    : next;
+}
+
+/**
+ * The panel stack inside the plugin overlay.
+ *
+ * A tab has the router: `PluginTabPage` writes `?panel=` with `replace: false`,
+ * so Back is the browser's and costs nothing. The overlay has no address — it is
+ * a modal over whatever the reader was doing — so it needs its own, and this is
+ * it: the same push/pop/replace/cap rules the phone's pane sheet follows, so a
+ * plugin's navigation behaves the same in both places.
+ *
+ * Panel STATE is not restored here, unlike on the phone. `PluginPanelHost` drops
+ * its filters, ticks and folds whenever `panelId` changes, and threading a
+ * snapshot back through it would mean giving the host a second way to be told
+ * what its state is. Named as the deferred half rather than half-built.
+ */
+function usePluginOverlayStack(rootPanelId: string | null, rootTitle: string | null) {
+  const [frames, setFrames] = React.useState<readonly PluginOverlayFrame[]>([]);
+
+  // A different overlay is a different stack. Cleared on the ROOT panel rather
+  // than on every render, so a republish of the surface the reader is inside
+  // does not throw away the way back.
+  React.useEffect(() => {
+    setFrames([]);
+  }, [rootPanelId]);
+
+  const push = React.useCallback(
+    (navigation: { panelId: string; context?: Record<string, unknown> }) => {
+      setFrames((previous) => pushPluginOverlayFrame(
+        previous,
+        navigation,
+        { panelId: rootPanelId, title: rootTitle },
+      ));
+    },
+    [rootPanelId, rootTitle],
+  );
+
+  const goBack = React.useCallback(() => {
+    setFrames((previous) => (previous.length === 0 ? previous : previous.slice(0, -1)));
+  }, []);
+
+  const top = frames[frames.length - 1] ?? null;
+  const beneath = frames[frames.length - 2] ?? null;
+  return {
+    panelId: top?.panelId ?? null,
+    context: top?.context ?? null,
+    title: top?.title ?? null,
+    canGoBack: frames.length > 0,
+    previousTitle: beneath?.title ?? rootTitle ?? "back",
+    push,
+    goBack,
+  };
+}
+
+/**
+ * How deep the overlay's back stack goes.
+ *
+ * Eight, the same number the phone's pane uses. It is a bound on a plugin's
+ * ability to grow the stack, not a design target: nobody walks eight panels
+ * deep in a modal, and a plugin that tries has already lost the reader.
+ */
+export const PLUGIN_OVERLAY_STACK_MAX = 8;
 
 export default PluginWebviewOverlayHost;

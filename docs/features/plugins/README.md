@@ -640,7 +640,10 @@ action is a `VocabAction` plus a required `label`, `kind` and `icon`. The reason
 is the node budget: a row hand-assembled out of `stack`, `badge`, `text` and
 `button` nodes cost about seven nodes, so `maxNodes: 200` capped a panel near 27
 rows. A list is one node however rich its rows are, which makes `maxListItems`
-(100) the ceiling that actually applies. The caps on `actions` and `overflow`
+(250) the ceiling that actually applies — of which a client draws
+`listPageSize` (100) at a time, with a "Showing 100 of 143 · Show more" row
+under them that extends the local cap a page at a time. That page count is
+client-local: it never enters panel state, a `where` or an action payload. The caps on `actions` and `overflow`
 count what survived parsing rather than what was offered, so a refused entry does
 not spend a slot a valid one needed — and every client counts the same way.
 Desktop, web and iOS draw the overflow behind a menu; the TUI draws `actions` and

@@ -449,9 +449,21 @@ private struct PluginVocabListView: View {
   /// The keys of the rows currently ON SCREEN, in draw order.
   ///
   /// Both the bar's count and its dispatch read the selection through these, so
-  /// a batch can never contain a row a filter is hiding.
+  /// a batch can never contain a row a filter is hiding — and now also never a
+  /// row a page has not reached, which is the same rule for the same reason.
   private var visibleRowKeys: [String] {
-    (list.items ?? []).compactMap(\.key)
+    drawn.compactMap(\.key)
+  }
+
+  /// Filter first, page second. The store already ran the binding's `where`
+  /// when it materialized these, so the page covers what the reader can see —
+  /// paging a pre-filter window would offer rows the filter had rejected.
+  private var page: PluginVocabListPage {
+    PluginVocabPaging.page(total: (list.items ?? []).count, pages: store.listPage(for: list))
+  }
+
+  private var drawn: [PluginVocabListItem] {
+    Array((list.items ?? []).prefix(page.drawn))
   }
 
   var body: some View {
@@ -459,12 +471,16 @@ private struct PluginVocabListView: View {
     if items.isEmpty {
       PluginInlineEmptyText(text: list.emptyText ?? "Nothing here yet.")
     } else {
+      let rows = drawn
       VStack(alignment: .leading, spacing: 0) {
-        ForEach(Array(items.enumerated()), id: \.offset) { index, item in
+        ForEach(Array(rows.enumerated()), id: \.offset) { index, item in
           if index > 0 {
             Divider().overlay(ADEColor.border.opacity(0.4))
           }
           PluginVocabListRow(item: item, selectable: selectable, store: store)
+        }
+        if let label = PluginVocabPaging.label(page) {
+          PluginVocabListPageRow(label: label, page: page, list: list, store: store)
         }
         if let selectable {
           PluginVocabBulkBar(
@@ -475,6 +491,40 @@ private struct PluginVocabListView: View {
         }
       }
     }
+  }
+}
+
+/// What a list says when it is not drawing every row it holds.
+///
+/// Drawn even when there is no button — a list stopped at the vocabulary
+/// ceiling has nothing more to offer and every reason to say so. Silence there
+/// is what made a truncated list read as a complete one, which is the half of
+/// M9 a bigger number alone would not have fixed.
+private struct PluginVocabListPageRow: View {
+  let label: String
+  let page: PluginVocabListPage
+  let list: PluginVocabList
+  @ObservedObject var store: PluginPaneStore
+
+  var body: some View {
+    HStack(spacing: 10) {
+      Text(label)
+        .font(.caption)
+        .monospacedDigit()
+        .foregroundStyle(ADEColor.textSecondary)
+      if page.hasMore {
+        Spacer(minLength: 8)
+        Button(PluginVocabPaging.showMoreLabel) {
+          ADEHaptics.light()
+          store.showMoreRows(in: list)
+        }
+        .font(.caption.weight(.semibold))
+        .foregroundStyle(store.accent)
+        .buttonStyle(.plain)
+      }
+    }
+    .frame(maxWidth: .infinity, alignment: .leading)
+    .padding(.top, 10)
   }
 }
 

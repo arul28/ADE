@@ -81,6 +81,7 @@ import {
   isUnsupportedRecoveryActionError,
   LEGACY_RECOVERY_ACTION_BY_NEUTRAL,
 } from "../chatRecovery";
+import { VOCAB_PANEL_READ_LIMIT } from "../../../desktop/src/shared/plugins/vocabulary";
 import type { PluginContributionRecord, PluginSummary } from "../../../desktop/src/shared/plugins/sdk";
 import type { PluginEntityKind, PluginSurfaceId } from "../../../desktop/src/shared/plugins/sockets";
 import type { PluginPaneCollectionRow, PluginPanelFetch, PluginPanelRecord } from "./pluginPane";
@@ -1517,7 +1518,11 @@ export async function readPluginCollection(
       pluginId,
       collection: binding.collection,
       ...(binding.keyPrefix ? { keyPrefix: binding.keyPrefix } : {}),
-      ...(binding.limit ? { limit: binding.limit } : {}),
+      // A binding with no `limit` reads up to the vocabulary's own ceiling
+      // rather than falling through to the host's default of 200. The two used
+      // to agree by accident; now a list may draw 250, and a pane that fetched
+      // 200 of them would stop the reader 50 rows short and say nothing.
+      limit: binding.limit ?? VOCAB_PANEL_READ_LIMIT,
     });
     return Array.isArray(rows) ? rows : [];
   } catch {

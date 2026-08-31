@@ -71,7 +71,27 @@ enum PluginVocabLimits {
   static let maxSelectOptions = 40
   static let maxTableRows = 100
   static let maxTableColumns = 8
-  static let maxListItems = 100
+  /// Rows one `list` may hold, and the ceiling this phone reads a bound
+  /// collection up to. Mirrors `maxListItems`.
+  ///
+  /// 250 rather than 100, because 100 was the number that made a plugin's list
+  /// visibly poorer than the built-in it replaced. The byte budget does not
+  /// object: a BOUND row lives in `plugin_collections` and never touches
+  /// ``maxSchemaBytes``, so 250 bound rows cost the schema one node. An INLINE
+  /// list is the only one that spends bytes, and there ``maxSchemaBytes`` was
+  /// always the real ceiling — a fully dressed row measures 580 bytes, so 112
+  /// of them fill the whole 64 KiB budget and the writer refuses the panel long
+  /// before 250.
+  ///
+  /// A panel does not draw all 250 at once — see ``listPageSize``.
+  static let maxListItems = 250
+  /// How many rows a `list` draws before the reader asks for more, and how many
+  /// one "Show more" adds. Mirrors `listPageSize`.
+  ///
+  /// Client-local, per list, and never panel state: how far down a list a
+  /// reader has walked is a statement about their screen, not about which rows
+  /// the panel is showing — the same terms a folded `group` is held on.
+  static let listPageSize = 100
   static let maxKeyValueRows = 60
   static let maxChartSeries = 3
   static let maxChartPoints = 200
@@ -354,6 +374,97 @@ struct PluginVocabList: Equatable {
   var emptyText: String?
   /// Ticks on every keyed row, and a bulk bar once any of them is ticked.
   var selectable: PluginVocabSelectable?
+
+  /// What a client remembers this list's page count under.
+  ///
+  /// Content-derived, never positional, for the reason ``PluginVocabGroup/key``
+  /// is: a plugin republishing its panel with one more node above the list has
+  /// not put the reader back on page one. A bound list is identified by what it
+  /// reads, a selectable one by the key its ticks live under, and a literal one
+  /// by its first row — the most identity a hand-written list has. Mirrors
+  /// `vocabListKey`.
+  var pageKey: String {
+    if let bind {
+      // The same NUL join `bindingKey` uses, so a key minted here reads the
+      // same as one minted on any other client.
+      return "bind:\(bind.collection)\u{0}\(bind.keyPrefix ?? "")"
+    }
+    if let selectable { return "sel:\(selectable.stateKey)" }
+    let first = items?.first
+    return "items:\(first?.key ?? first?.title ?? "")"
+  }
+}
+
+/// How many rows a list draws right now, and what it must say about that.
+///
+/// Mirrors `VocabListPage` in `vocabularyPaging.ts`. The reduction it closes is
+/// M9 in the parity map: a plugin list stopped dead at 100 rows while the
+/// built-in it replaced paged to 500, and it stopped SILENTLY — the reader saw
+/// a complete-looking list that was not one.
+struct PluginVocabListPage: Equatable {
+  /// Rows to draw, filters already applied.
+  var drawn: Int
+  /// Rows this phone is holding, filters already applied.
+  var total: Int
+  /// More rows are held than are drawn: the reader may ask for another page.
+  var hasMore: Bool
+  /// ``total`` is a floor rather than a count.
+  ///
+  /// True when this phone holds as many rows as it is allowed to hold, which
+  /// means the collection may have more and this phone cannot know. There is no
+  /// count read in the host's data store, so the honest move is to stop
+  /// claiming a total rather than to invent one.
+  var totalIsFloor: Bool
+}
+
+/// The paging arithmetic and the one sentence that describes it.
+///
+/// Mirrors `vocabularyPaging.ts` line for line, because four clients each
+/// inventing their own wording for "there are more rows" is exactly the drift
+/// the shared contract exists to stop.
+enum PluginVocabPaging {
+  /// Resolve one list's page. `pages` is the reader's own count and starts at 1;
+  /// a value below 1 draws the first page rather than nothing.
+  static func page(total: Int, pages: Int) -> PluginVocabListPage {
+    let held = max(0, total)
+    let step = max(1, pages)
+    // What the list may EVER draw, which is not the same as what it holds: a
+    // node that combines literal `items` with a `bind` can hold more rows than
+    // the ceiling allows. Without this, the last page would offer a "Show more"
+    // that drew nothing.
+    let drawable = min(held, PluginVocabLimits.maxListItems)
+    let drawn = min(drawable, step * PluginVocabLimits.listPageSize)
+    return PluginVocabListPage(
+      drawn: drawn,
+      total: held,
+      hasMore: drawn < drawable,
+      totalIsFloor: held >= PluginVocabLimits.maxListItems
+    )
+  }
+
+  /// The next page count, clamped so a press past the end is inert.
+  static func nextPage(total: Int, pages: Int) -> Int {
+    page(total: total, pages: pages).hasMore ? max(1, pages) + 1 : max(1, pages)
+  }
+
+  /// The one sentence above the control, or `nil` when a list is drawing
+  /// everything it holds and has nothing to explain.
+  ///
+  /// - `Showing 100 of 143` — 143 rows are held and that is the true total.
+  /// - `Showing 100` — as many rows are held as may be, so a total would be a
+  ///   guess dressed as a fact.
+  /// - `Showing the first 250` — everything held is drawn and the ceiling is
+  ///   why there is no more. Silence here is what made a truncated list look
+  ///   complete.
+  static func label(_ page: PluginVocabListPage) -> String? {
+    if page.hasMore {
+      return page.totalIsFloor ? "Showing \(page.drawn)" : "Showing \(page.drawn) of \(page.total)"
+    }
+    return page.totalIsFloor ? "Showing the first \(page.drawn)" : nil
+  }
+
+  /// The words on the control itself. Mirrors `VOCAB_LIST_SHOW_MORE_LABEL`.
+  static let showMoreLabel = "Show more"
 }
 
 struct PluginVocabTableColumn: Equatable, Identifiable {

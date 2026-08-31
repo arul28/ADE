@@ -17,6 +17,7 @@ import {
 import type { PluginSurfaceContext } from "../../../shared/plugins/context";
 import {
   VOCAB_CONTEXT_COLLECTION,
+  VOCAB_PANEL_READ_LIMIT,
   VOCAB_STATE_COLLECTION,
   bindingKey,
   collectVocabSelectionDeclarations,
@@ -29,6 +30,8 @@ import {
   vocabContextRows,
   vocabGroupKey,
   vocabInitialPanelSelection,
+  vocabListKey,
+  vocabListNextPage,
   vocabInitialPanelState,
   vocabNormalizePanelSelection,
   vocabNormalizePanelState,
@@ -45,6 +48,7 @@ import {
   vocabToggleRowSelection,
   type VocabAction,
   type VocabGroupNode,
+  type VocabListNode,
   type VocabPanelSelection,
   type VocabPanelState,
   type VocabSelectionDeclaration,
@@ -144,6 +148,12 @@ const NO_SELECTION_DECLARATIONS: readonly VocabSelectionDeclaration[] = [];
 /** Which `group` sections the reader has folded, against the author's default. */
 const NO_GROUP_OVERRIDES: Readonly<Record<string, boolean>> = {};
 
+/**
+ * How many pages of each `list` the reader has asked for, by
+ * {@link vocabListKey}. An absent key means one page, which is the first draw.
+ */
+const NO_LIST_PAGES: Readonly<Record<string, number>> = {};
+
 export function PluginPanelHost({
   pluginId,
   panelId,
@@ -198,6 +208,9 @@ export function PluginPanelHost({
   const [groupOverrides, setGroupOverrides] = React.useState<Readonly<Record<string, boolean>>>(
     NO_GROUP_OVERRIDES,
   );
+  // How far down each list the reader has walked. Beside the folds because it is
+  // the same kind of thing: client-local, per panel, and never the plugin's.
+  const [listPages, setListPages] = React.useState<Readonly<Record<string, number>>>(NO_LIST_PAGES);
   const activeRef = React.useRef(active);
   activeRef.current = active;
   const contextRef = React.useRef(renderContext ?? null);
@@ -213,6 +226,9 @@ export function PluginPanelHost({
     setPanelState(EMPTY_STATE_HOLDER);
     setPanelSelection(EMPTY_SELECTION_HOLDER);
     setGroupOverrides(NO_GROUP_OVERRIDES);
+    // And the pages, for the same reason: a reader who walked one panel's list
+    // down to 250 rows has not asked anything of the next panel's list.
+    setListPages(NO_LIST_PAGES);
   }, [pluginId, panelId]);
 
   /**
@@ -362,6 +378,27 @@ export function PluginPanelHost({
     }));
   }, []);
 
+  const listPage = React.useCallback(
+    (node: VocabListNode) => listPages[vocabListKey(node)] ?? 1,
+    [listPages],
+  );
+
+  /**
+   * Draw one more page of a list.
+   *
+   * The clamp lives in `vocabListNextPage` rather than here, so a press past the
+   * end changes nothing instead of growing a number the list can never spend.
+   * The row count it clamps against is the list's own — the host does not know
+   * how many rows survived a `where`, so the list passes it in.
+   */
+  const showMoreListRows = React.useCallback((node: VocabListNode, total: number) => {
+    const key = vocabListKey(node);
+    setListPages((previous) => {
+      const next = vocabListNextPage(total, previous[key] ?? 1);
+      return next === (previous[key] ?? 1) ? previous : { ...previous, [key]: next };
+    });
+  }, []);
+
   // Auto-dismiss. An outcome is worth reading once; left up it becomes part of
   // the panel and starts describing a press nobody remembers making. The next
   // dispatch clears it sooner, and a message that arrives while one is showing
@@ -417,7 +454,12 @@ export function PluginPanelHost({
               }
               const fetched = await readPluginCollection(pluginId, panelId, binding.collection, {
                 ...(binding.keyPrefix !== undefined ? { keyPrefix: binding.keyPrefix } : {}),
-                ...(binding.limit !== undefined ? { limit: binding.limit } : {}),
+                // A binding with no `limit` reads up to the vocabulary's own
+                // ceiling rather than falling through to the host's default of
+                // 200. The two used to agree by accident; now a list may draw
+                // 250, and a client that fetched 200 of them would stop the
+                // reader 50 rows short with nothing on screen to say why.
+                limit: binding.limit ?? VOCAB_PANEL_READ_LIMIT,
               });
               return [bindingKey(binding), fetched] as const;
             }),
@@ -609,6 +651,8 @@ export function PluginPanelHost({
       clearSelection,
       groupOpen,
       toggleGroup,
+      listPage,
+      showMoreListRows,
     }),
     [
       active,
@@ -616,12 +660,14 @@ export function PluginPanelHost({
       declarations,
       dispatch,
       groupOpen,
+      listPage,
       panelSelection.values,
       panelState.values,
       pluginId,
       rowsByBinding,
       selectionDeclarations,
       setStateValue,
+      showMoreListRows,
       toggleGroup,
       toggleRow,
     ],

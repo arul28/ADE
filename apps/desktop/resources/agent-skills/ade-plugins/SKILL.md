@@ -104,6 +104,7 @@ Nobody asks for a `composer-action`. They ask for "a button next to where I type
 | "a section in Settings" | `settings-section`, surface `settings` | Desktop and web only |
 | "something in the Create lane / Create PR dialog" | `dialog-section`, surfaces `lanes` / `prs` | Inside that dialog, and it can fill the dialog's fields |
 | "show it in the activity feed" | `activity-entry`, surface `app` | A row in the activity pane |
+| "a shape on the Graph canvas" | `graph-node`, surface `lanes` | A card beside the lane it is published against, with an edge to it. Desktop and web only — the phone and the terminal ship no Graph |
 | "open my file type with my own viewer" | `file-viewer`, surface `files` | Files tab, for the extensions you declare |
 | "a whole new tab" | a `tab` surface | The tab rail, all four clients |
 | "an `ade` command for it" | a `cli` word | `ade <pluginId> <word>` |
@@ -133,7 +134,7 @@ Rule of thumb for anything not in the table: **if it is rows of things with butt
 
 Say which clients will draw the thing, in the same message as the placement. Two facts do most of the damage when they are left out:
 
-- **A kind absent on a client is absent, not degraded.** `slash-command`, `command-palette-action`, `settings-section`, `work-rail-pane`, `drawer-tab` and `dialog-section` do not draw on iOS at all. The TUI draws exactly three kinds: `row-badge`, `row-menu-item` and `toolbar-action`. Composer actions draw on desktop, web and iOS — iOS's compact layout draws them labeled — and the TUI draws none. Never read this list from memory: `PLUGIN_SOCKET_CLIENT_SUPPORT` is one boolean per client per kind and it moves as parity lands, so read it at the moment you write the claim.
+- **A kind absent on a client is absent, not degraded.** `slash-command`, `command-palette-action`, `settings-section`, `work-rail-pane`, `drawer-tab`, `dialog-section` and `graph-node` do not draw on iOS at all. The TUI draws exactly three kinds: `row-badge`, `row-menu-item` and `toolbar-action`. Composer actions draw on desktop, web and iOS — iOS's compact layout draws them labeled — and the TUI draws none. Never read this list from memory: `PLUGIN_SOCKET_CLIENT_SUPPORT` is one boolean per client per kind and it moves as parity lands, so read it at the moment you write the claim.
 - **`icon` is a token, and the token list is the whole namespace.** Both clients resolve it against the same 69 tokens (64 generic plus 5 brand marks) — desktop to a Phosphor glyph or a vendor mark, iOS to an SF Symbol or a bundled logo asset — and anything not on the list draws the puzzle piece on **both**. So an icon that renders anywhere renders everywhere, and an unrecognised string is unrecognised identically. There is no per-client escape hatch: naming a raw SF Symbol does not work on the phone, and never portably did. The generic tokens:
 
   `beer` `bell` `bookmark` `brain` `bug` `calendar` `chart` `chart-bar` `chat` `clock` `clock-counter-clockwise` `cloud` `code` `compass` `cube` `currency` `database` `desktop` `device-mobile` `envelope` `eye` `file` `flag` `folder` `gear` `git-branch` `git-commit` `git-pull-request` `globe` `graph` `heart` `image` `kanban` `key` `lightning` `link` `list` `list-checks` `lock` `magic` `microphone` `music` `note` `package` `palette` `play` `plug` `puzzle` `robot` `rocket` `rows` `shield` `sparkle` `star` `storefront` `table` `tag` `terminal` `timer` `toolbox` `trend` `users` `video` `wrench`
@@ -406,7 +407,7 @@ Say the consequence out loud when you ship one: **installing a plugin is trustin
 
 - **Whole surfaces** — a `tab` rendering a panel schema, and on the desktop a `webview` drawing your own HTML page. (A `pane` surface is reserved for official plugins gating a compiled ADE pane; yours belongs in the Work rail as a `work-rail-pane` socket.)
 - **Declarative panels**, which desktop, web, iOS and the `ade code` TUI each render with their own native widgets from one JSON document.
-- **Sockets on eight surfaces** — the six tabs `work`, `lanes`, `files`, `prs`, `automations`, `cto`, plus `app` (top bar, ⌘K palette, activity pane) and `settings` — in seventeen shapes: `toolbar-action`, `row-badge`, `row-menu-item`, `detail-section`, `empty-state`, `filter-chip`, `file-viewer`, `composer-action`, `chat-header-action`, `chat-card`, `slash-command`, `command-palette-action`, `settings-section`, `work-rail-pane`, `drawer-tab`, `activity-entry`, `dialog-section`. Dynamic ones attach to a `lane`, `pr`, `session`, `file`, `automation` or `surface`.
+- **Sockets on eight surfaces** — the six tabs `work`, `lanes`, `files`, `prs`, `automations`, `cto`, plus `app` (top bar, ⌘K palette, activity pane) and `settings` — in eighteen shapes: `toolbar-action`, `row-badge`, `row-menu-item`, `detail-section`, `empty-state`, `filter-chip`, `file-viewer`, `composer-action`, `chat-header-action`, `chat-card`, `slash-command`, `command-palette-action`, `settings-section`, `work-rail-pane`, `drawer-tab`, `activity-entry`, `graph-node`, `dialog-section`. Dynamic ones attach to a `lane`, `pr`, `session`, `file`, `automation` or `surface`.
 - **Themes** (token sets, no code at all), **`ade` CLI subcommands**, **agent skills** that load only where the plugin is installed, **deeplinks** into your own panels, **cross-surface navigation** — an action returns `{navigate: {…}}` and the client moves the user to another of your panels — and **draft edits**, where an action returns `{composer: {…}}` and writes into the chat prompt the user is typing.
 - **Engine registrations**, which are not placements at all — **agent tools** the coding agent can call, **automation triggers and steps** the rule builder offers, **search providers** ⌘K queries live, and **keyboard shortcuts**. Each says "when X happens, ask me" rather than "draw me here"; see *Engine registrations*.
 
@@ -867,9 +868,9 @@ manifest with a warning, and `ade.actions.invoke` refuses it outright.
 
 ### Engine registrations
 
-Seven manifest families that are **not placements**. A socket says "draw me here"; five of them say "when X happens, ask me" — a tool the agent may call, an automation trigger a rule can fire on, a step a rule can run, a provider universal search may query, a chord that invokes an action. The last two say "run this for me": a sign-in the host performs on your behalf, and a credential ADE already holds.
+Eight manifest families that are **not placements**. A socket says "draw me here"; six of them say "when X happens, ask me" — a tool the agent may call, an automation trigger a rule can fire on, a step a rule can run, a provider universal search may query, a chord that invokes an action, a URL shape that becomes a chip. The last two say "run this for me": a sign-in the host performs on your behalf, and a credential ADE already holds.
 
-All seven are declared in the **manifest** rather than registered by the running child, for one reason worth understanding: the rule builder, the shortcut listing, the search palette and the agent's tool list all have to describe a plugin that is installed but **not currently running**, and a list the child publishes at boot is empty exactly when the user is looking. Tool sets in particular are built synchronously at session start, so a list published after boot could never reach Claude without restarting the chat. Declaring in the manifest also makes uninstall a non-event — the declaration leaves with the install record.
+All eight are declared in the **manifest** rather than registered by the running child, for one reason worth understanding: the rule builder, the shortcut listing, the search palette and the agent's tool list all have to describe a plugin that is installed but **not currently running**, and a list the child publishes at boot is empty exactly when the user is looking. Tool sets in particular are built synchronously at session start, so a list published after boot could never reach Claude without restarting the chat. Declaring in the manifest also makes uninstall a non-event — the declaration leaves with the install record.
 
 Four of them share one shape, `{id, label, action?}`, deliberately, so an author does not learn four spellings of the same promise:
 
@@ -880,6 +881,7 @@ Four of them share one shape, `{id, label, action?}`, deliberately, so an author
 | `automationSteps[]` | 12 | `{id, label, description?, action}` | A step a rule may run. `action` defaults to `id` |
 | `searchProviders[]` | 2 | `{id, label, action}` | Invoked live with `{query}`. `action` defaults to `id` |
 | `keybindings[]` | 6 | `{binding, label, action}` | One chord, e.g. `"Mod+Shift+P"` |
+| `urlMatchers[]` | 8 | `{id, hosts, pathPattern, chip, panelId?, entity?}` | A URL shape that becomes a smart-link chip — see *Smart-link chips for your tracker* |
 | `authSessions[]` | 2 | `{id, provider, authorizeUrl, callbacks, loopback?}` | The host runs the flow; `id` is what `ade.auth.beginSession` names. The install card reads the `provider` and the loopback port off it before any code runs — see *Signing the user in* |
 | `credentialHandoff` | 2 | `["linear"]` | Official-only, and only for the built-in this plugin owns — see *Inheriting a connection ADE already has* |
 
@@ -911,6 +913,52 @@ Some chords are refused outright whatever the manifest says:
 `mod` is Cmd on macOS and Ctrl elsewhere, so a plugin's `"Ctrl+K"` and core's `"Mod+K"` are the same keystroke on Windows — collisions are resolved against both spellings on every platform, so an author sees the refusal on whichever machine they own.
 
 **A refused binding is not a failed install.** The action stays reachable from the command palette, and the refusal carries a written sentence naming who holds the chord (`core-conflict`, `plugin-conflict`, `invalid`, or `duplicate-action` when one plugin declares two chords for the same action — only the first binds).
+
+#### Smart-link chips for your tracker
+
+Paste a Linear or GitHub URL into the composer and ADE replaces it with a compact chip — `ADE-123`, `arul28/ADE#835`. `urlMatchers` is how your tracker's links get the same treatment.
+
+```json
+"urlMatchers": [{
+  "id": "issue",
+  "hosts": ["acme.atlassian.net"],
+  "pathPattern": "/browse/{key}/**",
+  "chip": { "label": "JIRA {key}", "icon": "JR" },
+  "panelId": "issue",
+  "entity": { "kind": "issue", "provider": "jira", "keyFrom": "key" }
+}]
+```
+
+Pasting `https://acme.atlassian.net/browse/ACME-12/fix-the-login` now draws a chip reading **JIRA ACME-12**, and clicking it opens your `issue` panel with `{issue: {provider: "jira", key: "ACME-12"}}` as its context.
+
+**A matcher is data, and matching runs no code of yours.** No callback, no child process, no fetch. That is what lets ADE run it inside the composer's keystroke handler. It buys you three things and nothing else: the chip's text, a deeplink into a panel you already publish, and an issue reference.
+
+**`pathPattern` is not a regular expression.** A plugin that could ship a regex could ship a catastrophically backtracking one, and it would run on every keystroke. The language is a restricted subset:
+
+| Piece | Matches |
+|---|---|
+| `browse` | that exact path segment. `.` and `+` are literal characters, never syntax |
+| `{key}` | exactly one non-empty segment, captured under that name |
+| `*` | exactly one non-empty segment, captured nowhere |
+| `**` | zero or more remaining segments. **Last segment only** — this is how you make a trailing slug optional |
+
+It must start with `/`; a trailing slash in the URL is ignored; and it is anchored at both ends, so `/browse/{key}` does not claim `/browse/ACME-12/attachments`. Capture names are `[a-z][A-Za-z0-9_]*`, at most 6 per pattern, at most 12 segments, at most 200 characters.
+
+**`chip.label` is a template over your own captures**, and nothing else. A `{name}` that the pattern does not capture is refused at parse rather than rendered — a chip reading `{key}` because nothing filled it is a bug the user sees and you do not. Captured values are percent-decoded, stripped of invisible characters, and clamped; the whole label is capped at 80 characters.
+
+**`chip.icon` is one or two plain characters**, drawn as text in the chip's mark slot. Not an image, not SVG, not a URL. A brand mark for a plugin's chip is not available yet.
+
+**Hosts use the same grammar as `network.hosts`** — exact names or one `*.` wildcard, lowercase, no scheme, no port, no IP literals. Four per matcher.
+
+**You cannot claim a host ADE already parses.** `github.com` and `linear.app` — and any wildcard covering either domain — are refused at parse, by name, telling you who owns it. Core's parsers also run ahead of every plugin's, so this holds even for a manifest that predates the refusal. Within the plugin tier the first match wins, over a stable sort by plugin id, so a link reads the same on every machine the user owns.
+
+**`entity` is what makes your plugin the tracker's owner.** Declaring `{kind: "issue", provider: "jira", keyFrom: "key"}` says two things: chips from this matcher carry a `jira` issue reference, and `ade://issue/jira/ACME-12` opens **your** panel on any machine where your plugin is installed — even when the link was minted on a machine whose Jira plugin had a different id. `provider` is fixed in the manifest, so a match can never mint a reference for someone else's tracker, and `linear`, `github` and `core` are refused. `keyFrom` must name a capture the pattern declares.
+
+`panelId` is optional; without it the chip opens your `issue` panel, or the first panel you publish.
+
+**Where chips are drawn.** The chat composer, on desktop and in the web client. The transcript, the TUI's prompt strip and iOS draw smart links from core's parsers only today — your matcher is invisible there, and the link renders as an ordinary URL rather than incorrectly.
+
+**Over-cap and duplicate entries are warnings**, like every other registration. A malformed `pathPattern`, an unfillable label, or a provider ADE speaks for drops that one matcher; a bad `chip.icon` drops only the glyph and keeps the chip.
 
 ## Panel schemas — the UI vocabulary
 
@@ -973,7 +1021,14 @@ Tones are `neutral`, `accent`, `success`, `warning`. **There is no red.** Any re
   "overflow": [{ "action": "archive", "label": "Archive" }] }] }
 ```
 
-Build the row this way rather than hand-assembling one out of `stack`, `badge`, `text` and `button` nodes. A hand-built row costs about seven nodes, and `maxNodes` is 200 — so the panel caps out near 27 rows. **A list is one node however rich its rows are**, which makes `maxListItems` (100) the real ceiling. The cap on `actions` counts what survived parsing, so a malformed entry does not spend a slot.
+Build the row this way rather than hand-assembling one out of `stack`, `badge`, `text` and `button` nodes. A hand-built row costs about seven nodes, and `maxNodes` is 200 — so the panel caps out near 27 rows. **A list is one node however rich its rows are**, which makes `maxListItems` (250) the real ceiling. The cap on `actions` counts what survived parsing, so a malformed entry does not spend a slot.
+
+**How many rows a reader sees, and when.** A list draws **100** and then offers the rest: under the rows sits a line reading `Showing 100 of 143` with a **Show more** beside it, which adds another 100 up to the 250 ceiling. A desktop and web reader presses a button, an iOS reader taps a row (pull-to-refresh still works), a terminal reader selects a numbered row. The page count is the CLIENT's — it never reaches your handler, never enters a `where`, and never rides on an action payload, exactly like a folded `group`. Two consequences worth designing around:
+
+- **Filters run before the page.** A binding's `where` is evaluated first and the page is taken from what survived, so `Showing 100 of 143` always counts rows the reader can actually reach. Paging never widens a filter.
+- **A truncated list says so.** At the ceiling the line reads `Showing the first 250` with no button. Before, a list simply stopped and looked complete — so if your collection can exceed 250 rows, give the reader a `segmented` filter to narrow it rather than relying on the page.
+
+**The 250 applies to bound rows.** Rows in a collection never enter `schema_json`, so 250 of them cost one node and no bytes. Rows written **inline** in `items` do spend bytes, and there `maxSchemaBytes` (65,536) is the real ceiling: a fully dressed row measures around 400–600 bytes, so an inline rich list runs out of budget somewhere under 200 rows and the writer refuses the whole panel. If your list is long, bind it.
 
 Per-client: desktop, the web client and iOS draw all of it, with `overflow` behind a menu. The TUI draws the badge bracketed after the title (`bc-1 [Running]`), the mono line under the subtitle, and `actions` **and** `overflow` together as one numbered key list — a terminal has no menu, and showing what a row can do beats hiding half of it.
 
@@ -1239,7 +1294,7 @@ sdk.actions.register("launch-lanes", async ({ selection, state, context }) => {
 - **The batch is what the reader can SEE.** Tick four rows, move a filter that hides two, press the button: the two on screen are the batch. The other two keep their ticks and come back when the filter does. Acting on a row nobody can see is the one outcome a selection must never produce.
 - **`confirm` works on a bulk verb exactly as on a row**, and matters more — a mistake here costs eleven lanes.
 - **Answer with `{resetState: true}`** when you have acted on the whole batch. The same verb that puts the reader back on "All" empties the ticks, because leaving them offers to do it again to rows that have moved on.
-- **Ceilings.** 100 rows ticked at once (raise nothing; that is `maxListItems`), 4 bulk actions, and 2 selectable lists in one panel. At the cap a further tick is refused rather than quietly evicting an earlier one. A `selectable` naming no usable action is dropped whole — a tick the reader cannot spend is a checkbox over an empty bar.
+- **Ceilings.** 100 rows ticked at once (raise nothing; that is `maxSelectedRows`), 4 bulk actions, and 2 selectable lists in one panel. At the cap a further tick is refused rather than quietly evicting an earlier one. A `selectable` naming no usable action is dropped whole — a tick the reader cannot spend is a checkbox over an empty bar.
 
 Per-client: desktop and the web draw a checkbox, with **shift-click extending from the last row you ticked**. iOS and the TUI have no shift, so both toggle one row at a time — the gesture degrades, the batch does not.
 
@@ -1300,7 +1355,7 @@ Two consequences worth designing around: **put a `deeplink` in every `fallback`*
 
 ### Vocabulary limits
 
-`maxNodes` 200 · `maxDepth` 8 · `maxSchemaBytes` 65,536 · `maxSelectOptions` 40 · `maxTableRows` 100 · `maxTableColumns` 8 · `maxListItems` 100 · `maxKeyValueRows` 60 · `maxChartSeries` 3 · `maxChartPoints` 200 · `maxFormFields` 24 · `maxTextChars` 4,000 · `maxLabelChars` 200 · `maxValueChars` 1,000 · `maxSrcChars` 8,192 · `maxBindingAllowActions` 16 · `maxStateKeys` 8 · `maxStateOptions` 8 · `maxBoundStateOptions` 50 · `maxSelectionKeys` 2 · `maxSelectedRows` 100 · `maxBulkActions` 4 · `maxWhereClauses` 4 · `maxWhereDepth` 3 · `maxWhereNodes` 24 · `maxWhereValues` 20 · `maxMarkdownChars` 4,000 · `maxMarkdownBlocks` 100 · `maxMarkdownDepth` 3 · `maxMarkdownSpans` 200.
+`maxNodes` 200 · `maxDepth` 8 · `maxSchemaBytes` 65,536 · `maxSelectOptions` 40 · `maxTableRows` 100 · `maxTableColumns` 8 · `maxListItems` 250 · `listPageSize` 100 · `maxKeyValueRows` 60 · `maxChartSeries` 3 · `maxChartPoints` 200 · `maxFormFields` 24 · `maxTextChars` 4,000 · `maxLabelChars` 200 · `maxValueChars` 1,000 · `maxSrcChars` 8,192 · `maxBindingAllowActions` 16 · `maxStateKeys` 8 · `maxStateOptions` 8 · `maxBoundStateOptions` 50 · `maxSelectionKeys` 2 · `maxSelectedRows` 100 · `maxBulkActions` 4 · `maxWhereClauses` 4 · `maxWhereDepth` 3 · `maxWhereNodes` 24 · `maxWhereValues` 20 · `maxMarkdownChars` 4,000 · `maxMarkdownBlocks` 100 · `maxMarkdownDepth` 3 · `maxMarkdownSpans` 200.
 
 These are part of the contract, not a client's private defence — a schema over any of them is invalid everywhere, identically.
 
@@ -1323,6 +1378,15 @@ exports.actions = {
 ```
 
 `panelId` must be a panel of the same plugin — anything else is ignored, and a return value with no `navigate` key behaves exactly as before. The context is capped at **2 KiB**; over the cap the navigation still happens and the context is dropped, so keep it a pointer ("the issue is ISS-14") and read the rest from your own collections.
+
+**A navigation PUSHES, so design the destination as a screen the reader will leave.** Each client gives them the way back its own furniture already provides: desktop and the web write `?panel=` into the address, so Back is the browser's; the iOS pane sheet grows a chevron naming the panel beneath, plus a left-edge swipe; the plugin overlay grows the same chevron. The `ade code` pane is the one client with no back gesture yet — a navigation there still replaces the pane in place.
+
+**What the reader gets back is what they left.** On a return, the client restores everything client-local about the previous panel: the value of every `segmented` filter, the rows ticked in every `selectable` list, which `group` sections were folded, how far down each list had been paged, and — on iOS — the scroll position. None of it was ever yours to see, and none of it is rebuilt from your schema's defaults. Two rules follow from this:
+
+- **Navigating to the panel already on top replaces it rather than pushing.** Re-addressing the screen the reader is on — usually with a fresh context — must not leave a Back that goes nowhere visible, so it does not.
+- **The stack is capped at 8 and drops the oldest.** A plugin that navigates in a loop cannot grow it without bound. Do not build a wizard out of `navigate`; a wizard past eight steps has already lost the reader, and `{prompt}` exists for the one-question case.
+
+`{resetState}` is scoped to the panel the action ran on and never reaches a stacked one: a reader put back on "All" after archiving keeps whatever filter they left two screens up.
 
 ### What else an action may answer with
 
@@ -1545,6 +1609,7 @@ Eight surfaces: the six list-shaped tabs — `work`, `lanes`, `files`, `prs`, `a
 | `work-rail-pane` | `work` | `{label, panelId, icon?}` | A pane in the Work tools rail, beside Terminal / Git / Files |
 | `drawer-tab` | `work` | `{label, panelId, icon?}` | A tab in the chat actions drawer, beside Sources / Agents / Proof |
 | `activity-entry` | `app` | `{title, tone, body?, actionId?, actionLabel?}` | A row in the activity pane |
+| `graph-node` | `lanes` | `{label, tone, detail?, icon?, actionId?, edges?}` | A card on the Graph canvas, anchored to the lane you publish it against. **Declaration only** — like `row-badge`, the manifest entry reserves the slot and the published row is the node. See *A node on the Graph* |
 | `dialog-section` | `lanes`, `prs` | `{dialog, panelId, title?}` | Your panel as a section inside Create lane / Manage lane / Create PR — see *Writing into a dialog* |
 
 ### The three button kinds, and the split button
@@ -1743,6 +1808,47 @@ await ade.contributions.publish("lane", lane.id, "row-badge", {
 
 To take a badge back off a row, publish `null` for it. Do that rather than leaving a stale count on screen — a badge nobody updated is a wrong badge, and a reader cannot tell the difference.
 
+### A node on the Graph
+
+The Graph tab is a canvas, not a list, and `graph-node` is the one socket kind that puts a shape on it. Use it when your plugin knows about something that has a POSITION in the work — an issue two lanes are both touching, a deploy a branch is waiting on — and would be lost as a badge on a row.
+
+**It is declared once and published per lane, exactly like `row-badge`.** The manifest entry reserves the slot; the published row is the node. A declaration has no lane to sit beside, so drawing it would put an identical card next to every lane on the canvas.
+
+```json
+{ "socket": "graph-node", "surface": "lanes", "id": "issue", "label": "Issue", "icon": "kanban" }
+```
+
+```js
+await ade.contributions.publish("lane", lane.id, "graph-node", {
+  label: issue.identifier,          // "ADE-142"
+  detail: issue.state,              // one line under it
+  tone: issue.blocked ? "warning" : "neutral",
+  icon: "kanban",
+  actionId: "openIssue",            // pressed, this invokes you
+  id: "issue",
+});
+```
+
+The **surface is `lanes`, not `graph`** — there is no `graph` surface id. The Graph is a second view of the same lanes the Lanes tab lists, so both read the same published rows. The socket kind says where it draws; the surface says what it is about.
+
+**The anchor is the row's entity, and it draws the edge for you.** Publish against a lane and your node hangs beside that lane's card with a dashed line to it. Publish against the surface (`ade.contributions.publish("surface", "lanes", "graph-node", {...})`) for one free-floating node that belongs to no lane. Nothing else anchors: a session, a file and an automation have no shape on this canvas, and a PR is drawn as an overlay ON a lane card rather than as a node of its own.
+
+`edges` adds up to four more lines when your node relates to more than the lane it is filed against:
+
+```js
+edges: [{ to: { kind: "lane", id: otherLaneId }, kind: "tracks", label: "also" }]
+```
+
+Each edge names only the OTHER end — your own node is always the first. **You cannot draw an edge between two of ADE's lanes**, and that is deliberate: a line between two lane cards reads as a git relationship, and a plugin asserting one would be indistinguishable from the topology ADE computed itself. Every plugin edge is dashed and thinner than ADE's own for the same reason. `blocks` draws amber; there is no red here, as there is nowhere else a plugin reaches.
+
+**One node per lane, per plugin.** This is not a policy you can raise — a contribution row is keyed on `(entityKind, entityId, pluginId, socket)`, so publishing a second `graph-node` against the same lane REPLACES the first rather than adding one. The same rule gives you exactly one free-floating node, since every surface-anchored row shares the entity id `lanes`.
+
+Design with it rather than against it. If you have two things to say about one lane, say them in one node — `label` for the identifier and `detail` for the state — or hang the second thing off a different lane it also concerns. If you genuinely have a list, the canvas is the wrong surface for it: a `detail-section` or a `work-rail-pane` gives you a panel you own and can scroll.
+
+Two caps you will not learn about from your own side, because the rows store fine and the canvas withholds the surplus at draw time: **24 nodes per plugin and 48 across all plugins**. Past either, the extra nodes are not drawn, the canvas says how many it withheld, and `ade plugin doctor <id>` names the overage on its **Places** rung. Core lane nodes are built before any of this runs, so a plugin never costs the canvas one of them.
+
+**Desktop and web only.** The phone ships no Graph tab and the terminal draws no canvas, so a `graph-node` row decodes on those clients and is dropped. If a fact matters on a phone, publish a `row-badge` for it as well.
+
 ### What a palette entry is looking at
 
 A `command-palette-action` fires from ⌘K, which belongs to the window rather than to a row, so its `context` is `{kind: "surface", surface: "app"}` and always will be — that context is what selects which entries the palette shows.
@@ -1767,6 +1873,7 @@ They are the same projections every other socket hands out, so a palette entry r
 | `chat-card`, `activity-entry` | yes | yes | yes | no |
 | `chat-header-action` | yes | yes | yes — as a row in the chat's overflow menu, not a header button | no |
 | `slash-command`, `command-palette-action`, `settings-section`, `work-rail-pane`, `drawer-tab`, `dialog-section` | yes | yes | no — dropped where the row decodes, so it is simply absent | no |
+| `graph-node` | yes | yes | no — the phone ships no Graph tab at all | no — the terminal draws no canvas |
 
 **A `yes` in this table promises the contribution and its context, never the pixels.** `chat-header-action` is the clearest case: desktop and web draw a button in the chat header, and the phone draws the same contribution as rows in the chat's existing three-dot overflow menu, because a nav bar holds a title and about two controls. Same declaration, same `session` context, same actions reachable — different chrome. Tell a user which shape they will see on which client rather than implying one control in one place.
 
@@ -1938,6 +2045,15 @@ The last four need a host that can perform them. `notifications`, `clipboard` an
 **Three things you may no longer borrow through `ade.actions.invoke`, because these verbs replace them:** `session.requestSessionAttention` (its push arrived unlabelled and unlimited, and it lied about a chat session waiting on the user), `chat.createScheduledWork` (its cron carried no owner, so nothing listed it as yours and uninstalling you left it firing forever), and `lane.linkLinearIssues` / `lane.unlinkLinearIssues` (they write the lane's issue rows with no record of who asked, so your link is indistinguishable from the user's, uninstalling you leaves it behind, and any plugin can unlink any other plugin's — or ADE's own). All are refused for plugins and name their replacement in the refusal. The user keeps every one of them through the UI, the CLI and the TUI; the refusal is about attribution, not about the act.
 
 **And one thing you may only borrow by name:** the `project_secret` domain. `get` needs the name in your manifest's `projectSecrets`; every other verb in the domain is refused outright — see *Project secrets*.
+
+**Giving a session you launch your own context.** `ade.actions.invoke("chat", "createSession", …)` and `("chat", "launchCli", …)` accept one extra field, `sessionSetup: {env?, contextFile?}`, which puts your variables and one file inside the agent process the call starts. It is the same reach ADE's built-in Linear integration has through `ADE_LINEAR_ISSUE_IDS` and `ADE_LINEAR_CONTEXT_FILE`, so a tracker plugin gives its agent the ticket without shipping credentials into it. The host validates every part of it:
+
+- **Keys must match `ADE_PLUGIN_[A-Z0-9_]`**, up to 64 characters after the prefix. That is what makes shadowing impossible rather than merely unlikely: nothing ADE sets on an agent — `PATH`, `HOME`, `ADE_LANE_ID`, `ANTHROPIC_*` — begins with that prefix. Put your own name in the **suffix** (`ADE_PLUGIN_JIRA_ISSUE_KEYS`); there is no per-plugin namespace, because the action bridge carries no plugin identity a namespace could be derived from.
+- **A name ADE owns is refused**, including `ADE_PLUGIN_ID`, `ADE_PLUGIN_ROOT`, `ADE_PLUGIN_CONTEXT_FILE` and `ADE_PLUGIN_SOURCE_ID`.
+- **Caps:** 16 variables, 4 KiB per value, one context file of at most 256 KiB whose `name` is a single plain file name. Anything larger belongs in the file, not in a variable.
+- **The host writes the file and names the variable.** You supply `{name, content}`; the agent reads the path from `ADE_PLUGIN_CONTEXT_FILE`. ADE also stamps `ADE_PLUGIN_SOURCE_ID` with **your** id, taken from the connection that asked and not from anything you sent.
+- **It is refused, not trimmed.** A setup that breaks a rule fails the launch, because an agent quietly missing the context you told it it has is worse than no agent.
+- The variables and the file live as long as the session and are deleted with it. There is no new consent card: launching a session is already gated on the agent permission you hold.
 
 `PLUGIN_SDK_VERSION` is **0** and the handshake is additive: methods get added, never removed or re-shaped. Anything that would break a shipped plugin gets a new method name.
 

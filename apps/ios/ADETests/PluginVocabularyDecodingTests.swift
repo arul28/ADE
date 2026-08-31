@@ -4369,3 +4369,428 @@ final class PluginVocabGroupSelectionTests: XCTestCase {
     XCTAssertEqual(PluginVocabLimits.maxBulkActions, 4)
   }
 }
+
+/// The panel back stack and list paging — the two reductions B2 and B3 close.
+///
+/// Both are CLIENT-LOCAL state, which is what makes them testable without a
+/// socket and what makes them worth pinning: nothing here reaches the plugin,
+/// so the only thing that can prove the contract is a test that walks the same
+/// gestures a reader would.
+@MainActor
+final class PluginPaneNavigationTests: XCTestCase {
+  /// A list panel with a filter over it, so a test can leave real state behind
+  /// before it navigates away.
+  private static let listSchema = #"""
+  {
+    "v": 1,
+    "title": "Stories",
+    "fallback": { "title": "Stories", "text": "Open on the machine." },
+    "body": [
+      { "component": "segmented", "stateKey": "status", "options": [
+        { "value": "all", "label": "All" }, { "value": "open", "label": "Open" }] },
+      { "component": "list", "bind": { "collection": "stories" },
+        "selectable": { "stateKey": "picked", "actions": [
+          { "label": "Archive", "action": "archive" }] } }
+    ]
+  }
+  """#
+
+  private static let detailSchema = #"""
+  {
+    "v": 1,
+    "title": "Story",
+    "fallback": { "title": "Story", "text": "Open on the machine." },
+    "body": [{ "component": "text", "text": "One story." }]
+  }
+  """#
+
+  private final class FakeSync: PluginPaneSyncing {
+    var canInvokePluginActions = true
+    var canFetchPluginPanelsRemotely = false
+    var pluginFallbackScope = "machine-a"
+    var supportsPluginAuthSessions = false
+
+    var localPanels: [PluginPanelRecord] = []
+    var localEntries: [PluginCollectionEntry] = []
+
+    func pluginPresenceCatalog() -> PluginPresenceCatalog { PluginPresenceCatalog() }
+
+    func pluginPanels(pluginId: String?) -> [PluginPanelRecord] { localPanels }
+
+    func pluginCollectionEntries(
+      binding: PluginVocabBinding,
+      pluginId: String,
+      limit: Int
+    ) -> [PluginCollectionEntry] {
+      Array(localEntries.filter { $0.collection == binding.collection }.prefix(limit))
+    }
+
+    /// Scripted answers, oldest first. An empty queue answers with a bare
+    /// success, which is what every test that does not care about the reply
+    /// wants.
+    var invokeReplies: [PluginInvokeResult] = []
+
+    func invokePluginAction(
+      pluginId: String,
+      actionId: String,
+      payload: [String: Any]
+    ) async throws -> PluginInvokeResult {
+      invokeReplies.isEmpty ? PluginInvokeResult() : invokeReplies.removeFirst()
+    }
+
+    func fetchPluginPanel(pluginId: String, panelId: String) async throws -> PluginPanelRecord? { nil }
+
+    func fetchPluginCollectionEntries(
+      pluginId: String,
+      collection: String,
+      keyPrefix: String?,
+      limit: Int
+    ) async throws -> [PluginCollectionEntry] { [] }
+
+    func completePluginAuthSession(params: [String: String]) async throws {}
+  }
+
+  private func record(panelId: String, title: String, schemaJSON: String) -> PluginPanelRecord {
+    PluginPanelRecord(
+      pluginId: "hn",
+      panelId: panelId,
+      title: title,
+      icon: "",
+      surface: "work",
+      schemaJSON: schemaJSON,
+      vocabVersion: 1,
+      updatedAt: "2026-08-31T10:00:00Z",
+      mobile: PluginPanelRecord.mobileFlag(inSchemaJSON: schemaJSON),
+      refreshAction: nil
+    )
+  }
+
+  private func entries(_ count: Int) -> [PluginCollectionEntry] {
+    (0..<count).map { index in
+      PluginCollectionEntry(
+        pluginId: "hn",
+        collection: "stories",
+        key: String(format: "%04d", index),
+        valueJSON: #"{"title":"Story \#(index)","key":"\#(String(format: "%04d", index))"}"#,
+        updatedAt: "2026-08-31T10:00:00Z"
+      )
+    }
+  }
+
+  private func makeStore(_ sync: FakeSync) -> PluginPaneStore {
+    PluginPaneStore(
+      pluginId: "hn",
+      panelId: "stories",
+      sync: sync,
+      fetchesMissingRows: false,
+      fallbackCache: PluginPanelFallbackCache(),
+      openExternalURL: { _ in }
+    )
+  }
+
+  /// The first node of the pane, when it is the segmented control.
+  private func list(of store: PluginPaneStore) -> PluginVocabList? {
+    guard case let .panel(schema) = store.presentation else { return nil }
+    for node in schema.body {
+      if case let .list(list) = node { return list }
+    }
+    return nil
+  }
+
+  private func segmented(of store: PluginPaneStore) -> PluginVocabSegmented? {
+    guard case let .panel(schema) = store.presentation else { return nil }
+    for node in schema.body {
+      if case let .segmented(control) = node { return control }
+    }
+    return nil
+  }
+
+  // MARK: - B2: the back stack
+
+  /// A `navigate` PUSHES, and a return hands back everything the reader left.
+  ///
+  /// This is the whole of M1. Before the stack, `navigate` replaced the pane and
+  /// called `clearPanelState`, so the filter, the ticks and the scroll were gone
+  /// the moment a plugin opened a detail screen — and there was no way back to
+  /// notice.
+  func testNavigatePushesAndBackRestoresWhatTheReaderLeft() {
+    let sync = FakeSync()
+    sync.localPanels = [
+      record(panelId: "stories", title: "Stories", schemaJSON: Self.listSchema),
+      record(panelId: "story", title: "Story", schemaJSON: Self.detailSchema),
+    ]
+    sync.localEntries = entries(3)
+    let store = makeStore(sync)
+    store.load()
+
+    let control = try? XCTUnwrap(segmented(of: store))
+    if let control {
+      store.select(PluginVocabStateOption(value: "open", label: "Open"), in: control)
+    }
+    let listNode = try? XCTUnwrap(list(of: store))
+    if let listNode, let selectable = listNode.selectable {
+      store.toggle(rowKey: "0001", in: selectable)
+    }
+    store.scrollOffset = 420
+
+    XCTAssertEqual(store.panelState["status"], "open")
+    XCTAssertEqual(store.panelSelection["picked"], ["0001"])
+    XCTAssertFalse(store.canGoBack)
+
+    store.navigate(to: PluginInvokeNavigation(panelId: "story", context: ["id": .string("1")]))
+
+    XCTAssertTrue(store.canGoBack)
+    XCTAssertEqual(store.backTitle, "Stories")
+    XCTAssertEqual(store.selectedPanelId, "story")
+    // The destination is a fresh panel: the previous one's filter and ticks
+    // belong to the panel they were made on, not to this one.
+    XCTAssertTrue(store.panelState.isEmpty)
+    XCTAssertTrue(store.panelSelection.isEmpty)
+
+    store.goBack()
+
+    XCTAssertFalse(store.canGoBack)
+    XCTAssertEqual(store.selectedPanelId, "stories")
+    XCTAssertEqual(store.panelState["status"], "open")
+    XCTAssertEqual(store.panelSelection["picked"], ["0001"])
+    XCTAssertEqual(store.pendingScrollOffset, 420)
+  }
+
+  /// A `navigate` to the panel already on top REPLACES it rather than pushing a
+  /// second copy. A plugin re-addressing the screen the reader is on — usually
+  /// with a new context — must not leave a back chevron that goes nowhere.
+  func testNavigateToThePanelOnTopReplacesRatherThanPushes() {
+    let sync = FakeSync()
+    sync.localPanels = [record(panelId: "stories", title: "Stories", schemaJSON: Self.listSchema)]
+    let store = makeStore(sync)
+    store.load()
+
+    store.navigate(to: PluginInvokeNavigation(panelId: "stories", context: ["id": .string("2")]))
+
+    XCTAssertFalse(store.canGoBack)
+    XCTAssertEqual(store.selectedPanelId, "stories")
+    XCTAssertEqual(store.context["id"], .string("2"))
+  }
+
+  /// The stack is capped and drops the OLDEST. A plugin that navigates in a loop
+  /// cannot grow it without bound, and the reader keeps the eight screens they
+  /// could plausibly remember walking through.
+  func testTheStackIsCappedAndDropsTheOldestEntry() {
+    let sync = FakeSync()
+    sync.localPanels = [record(panelId: "stories", title: "Stories", schemaJSON: Self.listSchema)]
+    let store = makeStore(sync)
+    store.load()
+
+    for index in 0..<20 {
+      store.navigate(to: PluginInvokeNavigation(panelId: "panel-\(index)"))
+    }
+
+    XCTAssertEqual(store.backStack.count, PluginPaneStore.maxBackStackDepth)
+    // The oldest entry left is the one eight hops back, never the root.
+    XCTAssertEqual(store.backStack.first?.panelId, "panel-11")
+    XCTAssertEqual(store.backStack.last?.panelId, "panel-18")
+  }
+
+  /// The panel picker is a LATERAL move, so it empties the stack. A back chevron
+  /// offering a detail screen the reader reached from a different tab would be a
+  /// promise about somewhere they did not come from.
+  func testSelectingAPanelFromThePickerEmptiesTheStack() {
+    let sync = FakeSync()
+    sync.localPanels = [
+      record(panelId: "stories", title: "Stories", schemaJSON: Self.listSchema),
+      record(panelId: "story", title: "Story", schemaJSON: Self.detailSchema),
+    ]
+    let store = makeStore(sync)
+    store.load()
+    store.navigate(to: PluginInvokeNavigation(panelId: "story"))
+    XCTAssertTrue(store.canGoBack)
+
+    store.selectPanel("stories")
+
+    XCTAssertFalse(store.canGoBack)
+  }
+
+  /// `resetState` clears the CURRENT panel and never a stacked one.
+  ///
+  /// A plugin that put the reader back on "All" after archiving has said nothing
+  /// about the filter they left on a panel two screens up. Before the stack
+  /// there was nothing else a reset COULD have reached; now there is, and this
+  /// is what keeps the verb's scope where the vocabulary says it is.
+  func testResetStateClearsTheCurrentPanelAndNeverAStackedOne() async {
+    let sync = FakeSync()
+    sync.localPanels = [
+      record(panelId: "stories", title: "Stories", schemaJSON: Self.listSchema),
+      record(panelId: "detail", title: "Detail", schemaJSON: Self.listSchema),
+    ]
+    sync.localEntries = entries(3)
+    let store = makeStore(sync)
+    store.load()
+    guard let control = segmented(of: store) else { return XCTFail("expected a filter") }
+    store.select(PluginVocabStateOption(value: "open", label: "Open"), in: control)
+    XCTAssertEqual(store.panelState["status"], "open")
+
+    // The second panel declares the same controls, so a reset here would be
+    // indistinguishable from one that walked the stack if the two shared a map.
+    store.navigate(to: PluginInvokeNavigation(panelId: "detail"))
+    guard let destination = segmented(of: store) else { return XCTFail("expected a filter") }
+    store.select(PluginVocabStateOption(value: "open", label: "Open"), in: destination)
+    XCTAssertEqual(store.panelState["status"], "open")
+
+    sync.invokeReplies = [PluginInvokeResult(resetState: .all)]
+    store.perform(PluginVocabAction(action: "archive"))
+    await settle(until: { store.panelState["status"] != "open" })
+
+    XCTAssertEqual(store.panelState["status"], "all", "the panel the action ran on resets")
+    XCTAssertEqual(
+      store.backStack.last?.panelState["status"],
+      "open",
+      "the panel underneath is not the one the action ran on"
+    )
+
+    store.goBack()
+    XCTAssertEqual(store.panelState["status"], "open")
+  }
+
+  /// Let a dispatched action land. `perform` fires a detached task, so a test
+  /// has to give it a turn rather than sleep on it.
+  private func settle(until reached: () -> Bool) async {
+    for _ in 0..<200 {
+      if reached() { return }
+      await Task.yield()
+    }
+  }
+
+  // MARK: - B3: paging
+
+  /// A bound list draws one page and says how many of how many. The count is the
+  /// half a bigger ceiling alone would not have fixed: a list that stopped at 100
+  /// and said nothing looked exactly like a complete one.
+  func testAListDrawsOnePageAndSaysHowManyOfHowMany() {
+    let page = PluginVocabPaging.page(total: 143, pages: 1)
+    XCTAssertEqual(page.drawn, PluginVocabLimits.listPageSize)
+    XCTAssertTrue(page.hasMore)
+    XCTAssertFalse(page.totalIsFloor)
+    XCTAssertEqual(PluginVocabPaging.label(page), "Showing 100 of 143")
+
+    let second = PluginVocabPaging.page(total: 143, pages: 2)
+    XCTAssertEqual(second.drawn, 143)
+    XCTAssertFalse(second.hasMore)
+    XCTAssertNil(PluginVocabPaging.label(second), "a list drawing everything it holds explains nothing")
+  }
+
+  /// A saturated read stops claiming a total, and a list at the ceiling says so
+  /// rather than stopping in silence.
+  func testASaturatedReadStopsClaimingATotal() {
+    let first = PluginVocabPaging.page(total: PluginVocabLimits.maxListItems, pages: 1)
+    XCTAssertTrue(first.totalIsFloor)
+    XCTAssertEqual(PluginVocabPaging.label(first), "Showing 100")
+
+    let last = PluginVocabPaging.page(total: PluginVocabLimits.maxListItems, pages: 3)
+    XCTAssertEqual(last.drawn, PluginVocabLimits.maxListItems)
+    XCTAssertFalse(last.hasMore)
+    XCTAssertEqual(PluginVocabPaging.label(last), "Showing the first 250")
+  }
+
+  /// A node combining literal `items` with a `bind` holds more rows than the
+  /// ceiling allows — the store appends the bound rows to the declared ones.
+  /// Offering a "Show more" there would be a control that does nothing.
+  func testTheCeilingStopsTheOfferHoweverManyRowsAreHeld() {
+    let page = PluginVocabPaging.page(total: 500, pages: 3)
+    XCTAssertEqual(page.drawn, PluginVocabLimits.maxListItems)
+    XCTAssertFalse(page.hasMore)
+    XCTAssertEqual(PluginVocabPaging.label(page), "Showing the first 250")
+    XCTAssertEqual(PluginVocabPaging.nextPage(total: 500, pages: 3), 3)
+  }
+
+  /// "Show more" extends by one page and is inert at the end.
+  func testShowMoreExtendsByOnePageAndIsInertAtTheEnd() {
+    let sync = FakeSync()
+    sync.localPanels = [record(panelId: "stories", title: "Stories", schemaJSON: Self.listSchema)]
+    sync.localEntries = entries(143)
+    let store = makeStore(sync)
+    store.load()
+
+    let listNode = try? XCTUnwrap(list(of: store))
+    guard let listNode else { return XCTFail("expected a bound list") }
+    XCTAssertEqual(listNode.items?.count, 143, "the store holds every fetched row; the view pages them")
+    XCTAssertEqual(store.listPage(for: listNode), 1)
+
+    store.showMoreRows(in: listNode)
+    XCTAssertEqual(store.listPage(for: listNode), 2)
+    // Nothing left to draw, so the press changes nothing rather than growing a
+    // number the list can never spend.
+    store.showMoreRows(in: listNode)
+    XCTAssertEqual(store.listPage(for: listNode), 2)
+  }
+
+  /// The page count is per LIST and survives a republish, exactly as a folded
+  /// section does — a plugin refreshing its rows every ten seconds must not put
+  /// the reader back on the first hundred.
+  func testThePageCountSurvivesARepublishAndResetsOnAPanelChange() {
+    let sync = FakeSync()
+    sync.localPanels = [
+      record(panelId: "stories", title: "Stories", schemaJSON: Self.listSchema),
+      record(panelId: "story", title: "Story", schemaJSON: Self.detailSchema),
+    ]
+    sync.localEntries = entries(143)
+    let store = makeStore(sync)
+    store.load()
+    guard let listNode = list(of: store) else { return XCTFail("expected a bound list") }
+    store.showMoreRows(in: listNode)
+    XCTAssertEqual(store.listPage(for: listNode), 2)
+
+    store.load()
+    XCTAssertEqual(store.listPage(for: listNode), 2, "a republish is not a reason to start over")
+
+    store.selectPanel("story")
+    store.selectPanel("stories")
+    XCTAssertEqual(store.listPage(for: listNode), 1, "a different panel's list is a different list")
+  }
+
+  /// Filter first, page second. Paging extends the CAP; it never reaches back
+  /// past the binding's `where` for rows the filter rejected.
+  func testFilterRunsBeforeThePage() {
+    let schema = #"""
+    {
+      "v": 1,
+      "fallback": { "title": "Stories", "text": "Open on the machine." },
+      "body": [
+        { "component": "segmented", "stateKey": "status", "default": "open", "options": [
+          { "value": "all", "label": "All" }, { "value": "open", "label": "Open" }] },
+        { "component": "list", "bind": { "collection": "stories",
+          "where": [{ "field": "status", "equals": { "$state": "status" } }] } }
+      ]
+    }
+    """#
+    let sync = FakeSync()
+    sync.localPanels = [record(panelId: "stories", title: "Stories", schemaJSON: schema)]
+    sync.localEntries = (0..<200).map { index in
+      PluginCollectionEntry(
+        pluginId: "hn",
+        collection: "stories",
+        key: String(format: "%04d", index),
+        valueJSON: #"{"title":"Story \#(index)","status":"\#(index < 30 ? "open" : "closed")"}"#,
+        updatedAt: "2026-08-31T10:00:00Z"
+      )
+    }
+    let store = makeStore(sync)
+    store.load()
+
+    guard let listNode = list(of: store) else { return XCTFail("expected a bound list") }
+    // 30 rows survived the filter, so the page is over 30 and not over 200.
+    XCTAssertEqual(listNode.items?.count, 30)
+    let page = PluginVocabPaging.page(
+      total: listNode.items?.count ?? 0,
+      pages: store.listPage(for: listNode)
+    )
+    XCTAssertEqual(page.drawn, 30)
+    XCTAssertFalse(page.hasMore)
+    XCTAssertNil(PluginVocabPaging.label(page))
+  }
+
+  /// The ceiling itself, and the page step under it.
+  func testTheListCeilingAndItsPageStep() {
+    XCTAssertEqual(PluginVocabLimits.maxListItems, 250)
+    XCTAssertEqual(PluginVocabLimits.listPageSize, 100)
+  }
+}

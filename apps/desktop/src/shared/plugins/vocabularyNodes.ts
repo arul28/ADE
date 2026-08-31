@@ -87,7 +87,36 @@ export const VOCAB_LIMITS = {
   maxSelectOptions: 40,
   maxTableRows: 100,
   maxTableColumns: 8,
-  maxListItems: 100,
+  /**
+   * Rows one `list` may hold, and the ceiling a client reads a bound
+   * collection up to.
+   *
+   * 250 rather than 100, because 100 was the number that made a plugin's list
+   * visibly poorer than the built-in it replaced: the desktop issue browser
+   * pages to 500. The byte budget does not object. A BOUND row lives in
+   * `plugin_collections` and never touches `maxSchemaBytes`, so 250 bound rows
+   * cost the schema one node. An INLINE list is the only one that spends
+   * bytes, and there `maxSchemaBytes` was always the real ceiling and still is:
+   * a fully dressed row — key, title, subtitle, meta, badge, mono, a press and
+   * three trailing actions — measures 580 bytes, so 112 of them fill the whole
+   * 64 KiB budget and the writer refuses the panel long before 250. A plain
+   * inline row measures 82 bytes, so 250 of those spend 20,750 bytes, under a
+   * third of the budget, and leave the rest of the panel room to exist.
+   *
+   * A client does not draw all 250 at once — see
+   * {@link VOCAB_LIMITS.listPageSize}.
+   */
+  maxListItems: 250,
+  /**
+   * How many rows a `list` draws before the reader asks for more, and how many
+   * one "Show more" adds.
+   *
+   * Client-local, per list, and never panel state: how far a reader has scrolled
+   * a list is a statement about their screen, not about which rows the panel is
+   * showing, so it never reaches a `where`, a signature or an action payload —
+   * the same terms a folded `group` is held on.
+   */
+  listPageSize: 100,
   /**
    * Trailing buttons on one list row.
    *
@@ -376,7 +405,7 @@ export type VocabListItemAction = VocabAction & {
  * row out of `stack`, `badge`, `text` and `button` nodes spent about seven nodes
  * a row, which meant `maxNodes: 200` capped the panel at roughly 27 rows. As one
  * item it is one node's worth of budget for the whole list, so `maxListItems`
- * (100) becomes the real ceiling — see {@link VOCAB_LIMITS.maxListItemActions}.
+ * (250) becomes the real ceiling — see {@link VOCAB_LIMITS.maxListItemActions}.
  *
  * Every field past `title` is optional, so a row written before any of them
  * existed still parses to exactly what it always did.

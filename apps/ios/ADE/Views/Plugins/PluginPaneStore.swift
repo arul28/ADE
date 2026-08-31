@@ -148,6 +148,37 @@ final class PluginPanelFallbackCache {
   }
 }
 
+/// One panel the reader has walked away from, and everything they left on it.
+///
+/// The reduction this closes is M1 in the parity map. `navigate` used to REPLACE
+/// the pane in place and clear its state, so a plugin that sent a reader from a
+/// list into a detail screen gave them no way back and, if they found one,
+/// handed back a panel with its filters reset, its ticks gone, its sections
+/// re-opened and its scroll at the top. A detail screen a reader cannot leave is
+/// not a detail screen.
+///
+/// It carries the SIGNATURES beside the values on purpose. Restoring the values
+/// alone would put them in front of ``PluginPaneStore/adoptStateControls(from:)``
+/// with an empty signature, which reads as a fresh open and rebuilds them from
+/// the schema's defaults — the restore would silently undo itself.
+struct PluginPanelStackEntry: Equatable {
+  var panelId: String
+  var title: String
+  var context: [String: RemoteJSONValue]
+  var panelState: PluginVocabPanelState
+  var stateSignature: String
+  var panelSelection: PluginVocabPanelSelection
+  var selectionSignature: String
+  var groupOverrides: Set<String>
+  var listPages: [String: Int]
+  /// Where the reader had scrolled to, in points from the top of the pane.
+  ///
+  /// Restored rather than reset because the whole complaint is about coming
+  /// back: a reader who opened the fortieth issue and pressed back belongs at
+  /// the fortieth issue, not at the first.
+  var scrollOffset: CGFloat
+}
+
 /// Which components this build draws richly.
 ///
 /// The skew split from `ade_card`, applied to the vocabulary: the PARSER accepts
@@ -246,6 +277,15 @@ final class PluginPaneStore: ObservableObject {
   /// from a `where`, a signature or an action payload: collapsing a section is a
   /// statement about this screen, not about which rows the panel is showing.
   @Published private var groupOverrides: Set<String> = []
+
+  /// How many pages of each `list` the reader has asked for, by
+  /// ``PluginVocabList/pageKey``. An absent key means one page, the first draw.
+  ///
+  /// Beside ``groupOverrides`` and held on exactly the same terms: client-local,
+  /// per panel, never in a signature, never reachable from a `where`, and never
+  /// on an action payload. How far down a list a reader has walked is a
+  /// statement about this screen, not about which rows the panel is showing.
+  @Published private var listPages: [String: Int] = [:]
 
   /// The controls the current schema declares, in reading order.
   private(set) var stateDeclarations: [PluginVocabStateDeclaration] = []
@@ -567,6 +607,13 @@ final class PluginPaneStore: ObservableObject {
     selectedPanelId = panelId
     requestedPanelId = panelId
     clearPanelState()
+    // The picker is a LATERAL move between the plugin's top-level panels, not a
+    // drill-down, so it empties the stack rather than pushing onto it. A back
+    // chevron offering to return to a detail screen the reader reached from a
+    // different tab would be a promise about a place they did not come from.
+    backStack = []
+    scrollOffset = 0
+    pendingScrollOffset = 0
     // A new panel gets its own read: the last one's failure is not this one's.
     panelFetchFailed = false
     load()
@@ -579,17 +626,118 @@ final class PluginPaneStore: ObservableObject {
   /// bury the way back. A navigation carrying no context clears the one the
   /// pane had, which is what replacing the address does on desktop — the
   /// destination is not still about what the previous panel was about.
+  ///
+  /// It PUSHES. What the reader was looking at goes on ``backStack`` with
+  /// everything they had done to it, so ``goBack()`` can hand it back rather
+  /// than rebuild it from the schema's defaults. A navigation naming the panel
+  /// already on top replaces it instead — the plugin is re-addressing the screen
+  /// the reader is on, usually with a new context, and pushing would leave a
+  /// back chevron that goes nowhere visible.
   func navigate(to navigation: PluginInvokeNavigation) {
+    if navigation.panelId != selectedPanelId {
+      pushCurrentPanel()
+    }
     context = navigation.context ?? [:]
     selectedPanelId = navigation.panelId
     requestedPanelId = navigation.panelId
     clearPanelState()
+    scrollOffset = 0
     panelFetchFailed = false
     // Re-reads the mirror and, on a pane allowed to ask, goes and gets the
     // destination panel when the mirror has no row for it. The navigation
     // itself never waits on that — it lands here and the pane fills in.
     load()
   }
+
+  // MARK: - Navigation stack
+
+  /// The panels the reader has walked away from, oldest first.
+  ///
+  /// Published so the sheet's chevron and title follow it. Read-only from
+  /// outside: pushing is what ``navigate(to:)`` does and popping is what
+  /// ``goBack()`` does, so there is exactly one definition of each.
+  @Published private(set) var backStack: [PluginPanelStackEntry] = []
+
+  /// Where the pane is scrolled right now, reported by the sheet.
+  ///
+  /// Held here rather than in the view because it is part of what a stack entry
+  /// has to carry, and a view that owned it would have nothing to hand the store
+  /// at the moment a plugin navigates away.
+  var scrollOffset: CGFloat = 0
+
+  /// The offset the sheet should scroll to, set by a pop and cleared once the
+  /// sheet has honoured it. `nil` means "leave the scroll alone", which is what
+  /// every other redraw wants.
+  @Published var pendingScrollOffset: CGFloat?
+
+  var canGoBack: Bool { !backStack.isEmpty }
+
+  /// The title of the panel a back gesture would return to, for the chevron.
+  var backTitle: String? {
+    backStack.last?.title
+  }
+
+  /// The panel on top, by the title the mirror knows it under.
+  ///
+  /// Falls back to the plugin's own name, which is what the sheet showed before
+  /// a stack existed: a panel reached by `navigate` may have no mirror row yet,
+  /// and a blank navigation bar is worse than a slightly generic one.
+  var currentTitle: String {
+    selectedPanel?.displayTitle ?? displayName
+  }
+
+  private func pushCurrentPanel() {
+    guard let panelId = selectedPanelId, !panelId.isEmpty else { return }
+    backStack.append(PluginPanelStackEntry(
+      panelId: panelId,
+      title: currentTitle,
+      context: context,
+      panelState: panelState,
+      stateSignature: stateSignature,
+      panelSelection: panelSelection,
+      selectionSignature: selectionSignature,
+      groupOverrides: groupOverrides,
+      listPages: listPages,
+      scrollOffset: scrollOffset
+    ))
+    // Capped, oldest dropped. A plugin that navigates in a loop must not be able
+    // to grow this without bound; the reader keeps the eight screens they can
+    // plausibly remember walking through.
+    if backStack.count > Self.maxBackStackDepth {
+      backStack.removeFirst(backStack.count - Self.maxBackStackDepth)
+    }
+  }
+
+  /// Return to the panel beneath this one, with what the reader left on it.
+  ///
+  /// Everything client-local comes back together — the filters, the ticks, the
+  /// folded sections, how far down each list they had read, and where they were
+  /// scrolled — because restoring half of them is what makes a back gesture feel
+  /// like a reload rather than a return.
+  func goBack() {
+    guard let entry = backStack.popLast() else { return }
+    context = entry.context
+    selectedPanelId = entry.panelId
+    requestedPanelId = entry.panelId
+    panelState = entry.panelState
+    stateSignature = entry.stateSignature
+    panelSelection = entry.panelSelection
+    selectionSignature = entry.selectionSignature
+    groupOverrides = entry.groupOverrides
+    listPages = entry.listPages
+    // The declarations are deliberately NOT restored: `load()` re-derives them
+    // from the schema as it stands NOW, and the signatures above are what decide
+    // whether the restored values survive that. A panel whose controls changed
+    // while the reader was away reconciles, exactly as a republish does.
+    panelFetchFailed = false
+    scrollOffset = entry.scrollOffset
+    pendingScrollOffset = entry.scrollOffset
+    load()
+  }
+
+  /// How deep the stack goes. Eight — a bound on a plugin's ability to grow it,
+  /// not a design target: nobody walks eight panels deep in a sheet.
+  static let maxBackStackDepth = 8
 
   private func resolvePresentation() -> PluginPanelPresentation {
     pendingCollectionFetches = [:]
@@ -711,6 +859,11 @@ final class PluginPaneStore: ObservableObject {
     selectionDeclarations = []
     selectionSignature = ""
     groupOverrides = []
+    // And the pages, for the same reason: a reader who walked one panel's list
+    // down to 250 rows has asked nothing of the next panel's list. The entry
+    // pushed onto the back stack keeps its own copy, so this clears the LIVE
+    // map and never the one a return will restore.
+    listPages = [:]
   }
 
   // MARK: - Groups
@@ -731,6 +884,26 @@ final class PluginPaneStore: ObservableObject {
     } else {
       groupOverrides.insert(group.key)
     }
+  }
+
+  // MARK: - Paging
+
+  /// How many pages of one list the reader has asked for. 1 is the first draw.
+  func listPage(for list: PluginVocabList) -> Int {
+    listPages[list.pageKey] ?? 1
+  }
+
+  /// Draw one more page of a list.
+  ///
+  /// The row count comes off the list the view is holding, which the store
+  /// already filtered and capped at the read ceiling — so the clamp inside
+  /// ``PluginVocabPaging/nextPage(total:pages:)`` is against the rows the reader
+  /// can actually reach, and a press past the end changes nothing.
+  func showMoreRows(in list: PluginVocabList) {
+    let key = list.pageKey
+    let next = PluginVocabPaging.nextPage(total: (list.items ?? []).count, pages: listPages[key] ?? 1)
+    guard next != listPages[key] ?? 1 else { return }
+    listPages[key] = next
   }
 
   // MARK: - Selection

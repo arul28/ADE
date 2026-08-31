@@ -13,6 +13,7 @@ import {
   pluginPaneClearSelection,
   pluginPaneSelectionPayload,
   pluginPaneSelectionReset,
+  pluginPaneShowMore,
   pluginPaneToggleGroup,
   pluginPaneToggleRow,
   pluginPaneStateChange,
@@ -41,6 +42,7 @@ import {
   readPluginActionNavigation,
   type PluginSummary,
 } from "../../../../desktop/src/shared/plugins/sdk";
+import { VOCAB_LIMITS } from "../../../../desktop/src/shared/plugins/vocabulary";
 import type { VocabField } from "../../../../desktop/src/shared/plugins/vocabulary";
 
 const FALLBACK = { title: "Graph", text: "Open ADE to see the graph.", deeplink: "ade://lane/lane-1" };
@@ -70,6 +72,7 @@ function build(
     selection?: Record<string, readonly string[]>;
     selectionSignature?: string;
     openGroups?: Record<string, boolean>;
+    listPages?: Record<string, number>;
   } = {},
 ): PluginPaneModel {
   const input: PluginPaneInput = {
@@ -87,6 +90,7 @@ function build(
       ? { selectionSignature: options.selectionSignature }
       : {}),
     ...(options.openGroups !== undefined ? { openGroups: options.openGroups } : {}),
+    ...(options.listPages !== undefined ? { listPages: options.listPages } : {}),
     width: 40,
   };
   return buildPluginPaneModel(input);
@@ -1746,5 +1750,139 @@ describe("collection-bound segmented options in the terminal", () => {
       },
     ]), { collections, state: { project: "p1" } });
     expect(listTitles(model)).toEqual(["In p1"]);
+  });
+});
+
+/**
+ * List paging in the pane — the terminal's half of B3.
+ *
+ * A terminal has no scrollbar and no pull, so the only way to ask for more rows
+ * is to select something. What is drawn when there is nothing left to ask for
+ * matters just as much: a list that stopped at the ceiling and said nothing is
+ * indistinguishable from a complete one, which is the half of D7 a bigger
+ * number alone would not have fixed.
+ */
+describe("plugin pane list paging", () => {
+  const listPanel = (count: number) =>
+    panel([{
+      component: "list",
+      items: Array.from({ length: count }, (_, index) => ({
+        title: `row-${index}`,
+        key: `k${index}`,
+      })),
+    }]);
+
+  const listRows = (model: PluginPaneModel) =>
+    model.rows.filter((row) => row.kind === "listItem");
+
+  const pageRow = (model: PluginPaneModel) =>
+    model.rows.find((row) => row.kind === "listPage");
+
+  it("draws one page and offers the rest as a numbered row", () => {
+    const model = build(listPanel(143));
+    expect(listRows(model)).toHaveLength(VOCAB_LIMITS.listPageSize);
+    const row = pageRow(model);
+    expect(row?.kind).toBe("listPage");
+    if (row?.kind !== "listPage") return;
+    expect(row.label).toBe("Showing 100 of 143 · Show more");
+    expect(row.selection).not.toBeNull();
+    expect(model.interactives[row.selection ?? -1]).toMatchObject({
+      kind: "listPage",
+      total: 143,
+    });
+  });
+
+  it("extends by one page and then has nothing left to offer", () => {
+    const first = build(listPanel(143));
+    const row = pageRow(first);
+    if (row?.kind !== "listPage" || row.selection === null) return expect.fail("expected a control");
+    const interactive = first.interactives[row.selection];
+    if (interactive?.kind !== "listPage") return expect.fail("expected a page control");
+
+    const listPages = pluginPaneShowMore(first, interactive.listKey, interactive.total);
+    expect(listPages[interactive.listKey]).toBe(2);
+
+    const second = build(listPanel(143), { listPages });
+    expect(listRows(second)).toHaveLength(143);
+    expect(pageRow(second)).toBeUndefined();
+    // A press with nothing left to draw returns the map unchanged, so the caller
+    // can skip the rebuild rather than growing a number the list cannot spend.
+    expect(pluginPaneShowMore(second, interactive.listKey, 143)).toBe(second.listPages);
+  });
+
+  it("says a list stopped at the ceiling, with no control beside it", () => {
+    const model = build(listPanel(VOCAB_LIMITS.maxListItems), {
+      listPages: { "items:k0": 3 },
+    });
+    const row = pageRow(model);
+    if (row?.kind !== "listPage") return expect.fail("expected a page row");
+    expect(row.label).toBe("Showing the first 250");
+    expect(row.selection).toBeNull();
+  });
+
+  it("says nothing at all about a list that fits on one page", () => {
+    expect(pageRow(build(listPanel(12)))).toBeUndefined();
+  });
+
+  it("filters before it pages, so a page never reaches a rejected row", () => {
+    const rows = Array.from({ length: 200 }, (_, index) => ({
+      key: `k${index}`,
+      value: { title: `row-${index}`, status: index < 30 ? "open" : "closed" },
+    }));
+    const collections: PluginPaneCollectionMap = new Map([
+      [bindingKey({ collection: "issues" }), rows],
+    ]);
+    const model = build(
+      panel([
+        {
+          component: "segmented",
+          stateKey: "status",
+          default: "open",
+          options: [{ value: "all", label: "All" }, { value: "open", label: "Open" }],
+        },
+        {
+          component: "list",
+          bind: {
+            collection: "issues",
+            where: [{ field: "status", equals: { $state: "status" } }],
+          },
+        },
+      ]),
+      { collections },
+    );
+    // Thirty rows survived the filter, so the page is over thirty and not over
+    // two hundred — and there is nothing left to page to.
+    expect(listRows(model)).toHaveLength(30);
+    expect(pageRow(model)).toBeUndefined();
+  });
+
+  it("keys a page control by its list, never by the count in its label", () => {
+    // The label carries a number that moves with every row the plugin
+    // publishes; an armed confirm keyed by it would re-ask on the next poll.
+    const model = build(listPanel(143));
+    const row = pageRow(model);
+    if (row?.kind !== "listPage" || row.selection === null) return expect.fail("expected a control");
+    const interactive = model.interactives[row.selection];
+    if (!interactive) return expect.fail("expected an interactive");
+    const key = pluginInteractiveKey(model, interactive);
+
+    const grown = build(listPanel(190));
+    const grownRow = pageRow(grown);
+    if (grownRow?.kind !== "listPage" || grownRow.selection === null) {
+      return expect.fail("expected a control");
+    }
+    const grownInteractive = grown.interactives[grownRow.selection];
+    if (!grownInteractive) return expect.fail("expected an interactive");
+    expect(pluginInteractiveKey(grown, grownInteractive)).toBe(key);
+  });
+
+  it("carries the reader's pages across a republish and drops them on a new panel", () => {
+    // The same terms a folded section is held on: a plugin republishing its rows
+    // every ten seconds must not put the reader back on the first hundred.
+    const listPages = { "items:k0": 2 };
+    expect(listRows(build(listPanel(143), { listPages }))).toHaveLength(143);
+    // A panel that never asked for a page draws its first one, whatever some
+    // other panel's map happens to hold.
+    expect(listRows(build(listPanel(143)))).toHaveLength(VOCAB_LIMITS.listPageSize);
   });
 });

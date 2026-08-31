@@ -16,6 +16,8 @@ import {
   vocabGroupKey,
   vocabInitialPanelSelection,
   vocabInitialPanelState,
+  vocabListKey,
+  vocabListNextPage,
   vocabResolveStateOptions,
   vocabRowRange,
   vocabSelectRowRange,
@@ -23,6 +25,7 @@ import {
   vocabStateRows,
   vocabToggleRowSelection,
   type VocabGroupNode,
+  type VocabListNode,
   type VocabPanelSelection,
   type VocabPanelState,
 } from "../../../shared/plugins/vocabulary";
@@ -175,6 +178,7 @@ function FixturePanel({
   );
   const [anchor, setAnchor] = React.useState<Record<string, string>>({});
   const [groupOverrides, setGroupOverrides] = React.useState<Record<string, boolean>>({});
+  const [listPages, setListPages] = React.useState<Record<string, number>>({});
 
   const setStateValue = React.useCallback((stateKey: string, value: string) => {
     const declaration = declarations.find((entry) => entry.stateKey === stateKey);
@@ -217,6 +221,19 @@ function FixturePanel({
     }));
   }, []);
 
+  const listPage = React.useCallback(
+    (node: VocabListNode) => listPages[vocabListKey(node)] ?? 1,
+    [listPages],
+  );
+
+  const showMoreListRows = React.useCallback((node: VocabListNode, total: number) => {
+    const key = vocabListKey(node);
+    setListPages((previous) => {
+      const next = vocabListNextPage(total, previous[key] ?? 1);
+      return next === (previous[key] ?? 1) ? previous : { ...previous, [key]: next };
+    });
+  }, []);
+
   const rowsByBinding = React.useMemo(() => {
     const rows = new Map(fixtureRows);
     if (declarations.length > 0) {
@@ -248,17 +265,21 @@ function FixturePanel({
       clearSelection,
       groupOpen,
       toggleGroup,
+      listPage,
+      showMoreListRows,
     }),
     [
       clearSelection,
       declarations,
       dispatch,
       groupOpen,
+      listPage,
       panelState,
       rowsByBinding,
       selection,
       selectionDeclarations,
       setStateValue,
+      showMoreListRows,
       toggleGroup,
       toggleRow,
     ],

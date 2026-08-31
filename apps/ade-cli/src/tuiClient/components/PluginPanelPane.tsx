@@ -383,6 +383,29 @@ function PluginRow({
         </Text>
       );
     }
+    // What the list is drawing, and the way to ask for more of it. A pill when
+    // there is more to draw, a dim line when the list has hit the vocabulary's
+    // ceiling — because a list that stopped and said nothing is what made a
+    // truncated list read as a complete one.
+    case "listPage": {
+      if (row.selection === null) {
+        return (
+          <Text color={theme.color.t4} dimColor wrap="truncate-end">
+            {`${lead}${endTruncate(row.label, Math.max(4, inner))}`}
+          </Text>
+        );
+      }
+      return (
+        <Text wrap="truncate-end">
+          {lead}
+          <Pill
+            label={endTruncate(row.label, Math.max(4, inner - 2))}
+            active={row.selection === selectionIndex}
+            disabled={false}
+          />
+        </Text>
+      );
+    }
     case "note": {
       return (
         <Text color={theme.color.t4} dimColor wrap="wrap">

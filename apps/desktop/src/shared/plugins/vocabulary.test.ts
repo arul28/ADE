@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   VOCAB_COMPONENTS_V1,
   VOCAB_LIMITS,
+  VOCAB_PANEL_READ_LIMIT,
   VOCAB_VERSION,
   bindingKey,
   boundRowEntries,
@@ -22,6 +23,10 @@ import {
   vocabChildNodes,
   vocabFallbackText,
   vocabGroupKey,
+  vocabListKey,
+  vocabListNextPage,
+  vocabListPage,
+  vocabListPageLabel,
   type VocabNode,
 } from "./vocabulary";
 
@@ -580,30 +585,74 @@ describe("bound rows", () => {
     expect(node.items?.[0]?.overflow).toHaveLength(VOCAB_LIMITS.maxListItemOverflow);
   });
 
+  /**
+   * Which ceiling actually binds a list, and where.
+   *
+   * The row widening exists so a list is ONE node: hand-built out of stack,
+   * badge, text and button nodes each of these rows was about seven, so
+   * `maxNodes` (200) capped the panel near 27 rows. That part is unchanged. What
+   * changed with `maxListItems: 250` is which ceiling a full list meets first,
+   * and the two halves are genuinely different:
+   *
+   * - A BOUND list holds its rows in `plugin_collections`, so 250 of them cost
+   *   the schema one node and no bytes at all. This is the case D7 and M9 are
+   *   about, and it is why 250 is safe.
+   * - An INLINE list is the only one that spends bytes, and there
+   *   `maxSchemaBytes` was always the real ceiling and still is. A rich row of
+   *   this shape measures about 375 bytes, so the budget runs out somewhere
+   *   under 200 rows and the writer refuses the panel — which is the correct
+   *   answer, not a regression: the row data belongs in a collection.
+   */
+  const richRow = (index: number) => ({
+    title: `bc-${index}`,
+    subtitle: "Fix the login redirect on the marketing site",
+    mono: `origin/agent-${index}`,
+    badge: { text: "Running", tone: "accent" },
+    actions: [
+      { action: "open", label: "Open", args: { id: `bc-${index}` } },
+      { action: "pull", label: "Pull" },
+      { action: "stop", label: "Stop", confirm: "Stop this agent?" },
+    ],
+    overflow: [{ action: "archive", label: "Archive", args: { id: `bc-${index}` } }],
+  });
+
   it("holds a hundred rich rows in one node and under the schema budget", () => {
-    // The acceptance the widening exists for. Hand-built out of stack, badge,
-    // text and button nodes this row was about seven nodes, so `maxNodes` (200)
-    // capped the panel near 27 rows.
-    const rows = Array.from({ length: VOCAB_LIMITS.maxListItems }, (_, index) => ({
-      title: `bc-${index}`,
-      subtitle: "Fix the login redirect on the marketing site",
-      mono: `origin/agent-${index}`,
-      badge: { text: "Running", tone: "accent" },
-      actions: [
-        { action: "open", label: "Open", args: { id: `bc-${index}` } },
-        { action: "pull", label: "Pull" },
-        { action: "stop", label: "Stop", confirm: "Stop this agent?" },
-      ],
-      overflow: [{ action: "archive", label: "Archive", args: { id: `bc-${index}` } }],
-    }));
+    const rows = Array.from({ length: VOCAB_LIMITS.listPageSize }, (_, index) => richRow(index));
     const schema = panel([{ component: "list", items: rows }]);
     const parsed = parsePluginPanel(schema);
     expect(parsed.ok).toBe(true);
     if (!parsed.ok) return;
     const node = parsed.panel.body[0];
     if (node.component !== "list") return expect.fail("expected a list");
-    expect(node.items).toHaveLength(VOCAB_LIMITS.maxListItems);
+    expect(node.items).toHaveLength(VOCAB_LIMITS.listPageSize);
     expect(countVocabNodes(parsed.panel.body)).toBe(1);
+    expect(Buffer.byteLength(JSON.stringify(schema), "utf8"))
+      .toBeLessThan(VOCAB_LIMITS.maxSchemaBytes);
+  });
+
+  it("lets the byte budget, not `maxListItems`, stop an inline list of rich rows", () => {
+    const rows = Array.from({ length: VOCAB_LIMITS.maxListItems }, (_, index) => richRow(index));
+    const schema = panel([{ component: "list", items: rows }]);
+    expect(Buffer.byteLength(JSON.stringify(schema), "utf8"))
+      .toBeGreaterThan(VOCAB_LIMITS.maxSchemaBytes);
+    const parsed = parsePluginPanel(JSON.stringify(schema));
+    expect(parsed.ok).toBe(false);
+    if (parsed.ok) return;
+    expect(parsed.errors[0]?.code).toBe("schema_too_large");
+  });
+
+  it("costs one node and no bytes to bind two hundred and fifty rows", () => {
+    const schema = panel([{ component: "list", bind: { collection: "agents" } }]);
+    const parsed = parsePluginPanel(schema);
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) return;
+    expect(countVocabNodes(parsed.panel.body)).toBe(1);
+    // The rows the binding will carry never enter the schema, which is the
+    // whole reason the ceiling could be raised at all.
+    const rows = Array.from({ length: VOCAB_LIMITS.maxListItems }, (_, index) => ({
+      value: richRow(index),
+    }));
+    expect(boundRowValues({ collection: "agents" }, rows)).toHaveLength(VOCAB_LIMITS.maxListItems);
     expect(Buffer.byteLength(JSON.stringify(schema), "utf8"))
       .toBeLessThan(VOCAB_LIMITS.maxSchemaBytes);
   });
@@ -871,5 +920,120 @@ describe("a selectable list", () => {
     // own identity when it has said what it is.
     expect(coerceBoundListItem({ ...row, key: "own" }, undefined, "issue-14")?.key).toBe("own");
     expect(coerceBoundListItem(row)?.key).toBeUndefined();
+  });
+});
+
+/**
+ * List paging — the B3 half of D7/M9.
+ *
+ * The arithmetic and the wording both live in `vocabularyPaging.ts` so four
+ * clients cannot disagree about how many rows are on screen or what to call the
+ * rest of them, which makes this the one place either can be pinned.
+ */
+describe("list paging", () => {
+  it("draws one page first and says how many of how many", () => {
+    const page = vocabListPage(143, 1);
+    expect(page.drawn).toBe(VOCAB_LIMITS.listPageSize);
+    expect(page.total).toBe(143);
+    expect(page.hasMore).toBe(true);
+    expect(page.totalIsFloor).toBe(false);
+    expect(vocabListPageLabel(page)).toBe("Showing 100 of 143");
+  });
+
+  it("extends by exactly one page and stops at the rows it holds", () => {
+    const second = vocabListPage(143, 2);
+    expect(second.drawn).toBe(143);
+    expect(second.hasMore).toBe(false);
+    // Nothing left to explain: a list drawing everything it holds says nothing.
+    expect(vocabListPageLabel(second)).toBeNull();
+    expect(vocabListNextPage(143, 2)).toBe(2);
+    expect(vocabListNextPage(143, 1)).toBe(2);
+  });
+
+  it("stops claiming a total once the read came back saturated", () => {
+    // The client holds as many rows as it may, so the collection may have more
+    // and there is no count read to ask. A number here would be a guess dressed
+    // as a fact.
+    const page = vocabListPage(VOCAB_LIMITS.maxListItems, 1);
+    expect(page.totalIsFloor).toBe(true);
+    expect(vocabListPageLabel(page)).toBe("Showing 100");
+  });
+
+  it("says a list stopped at the ceiling rather than stopping in silence", () => {
+    // The half a bigger number alone would not have fixed: a truncated list
+    // that says nothing is indistinguishable from a complete one.
+    const page = vocabListPage(VOCAB_LIMITS.maxListItems, 3);
+    expect(page.drawn).toBe(VOCAB_LIMITS.maxListItems);
+    expect(page.hasMore).toBe(false);
+    expect(vocabListPageLabel(page)).toBe("Showing the first 250");
+  });
+
+  it("never draws past the ceiling however many pages are asked for", () => {
+    expect(vocabListPage(10_000, 99).drawn).toBe(VOCAB_LIMITS.maxListItems);
+  });
+
+  it("stops offering more once the ceiling is drawn, however many rows are held", () => {
+    // A node combining literal `items` with a `bind` holds more rows than the
+    // ceiling allows. Offering a "Show more" there would be a control that does
+    // nothing, and `vocabListNextPage` would keep growing a number the list
+    // cannot spend.
+    const page = vocabListPage(500, 3);
+    expect(page.drawn).toBe(VOCAB_LIMITS.maxListItems);
+    expect(page.hasMore).toBe(false);
+    expect(vocabListPageLabel(page)).toBe("Showing the first 250");
+    expect(vocabListNextPage(500, 3)).toBe(3);
+  });
+
+  it("reads a lost or nonsense page count as the first page", () => {
+    expect(vocabListPage(143, 0).drawn).toBe(VOCAB_LIMITS.listPageSize);
+    expect(vocabListPage(143, -4).drawn).toBe(VOCAB_LIMITS.listPageSize);
+    expect(vocabListPage(-1, 1).drawn).toBe(0);
+  });
+
+  it("filters before it pages, so a page never reaches a rejected row", () => {
+    // The ordering rule every client shares. `boundRowEntries` has already run
+    // the `where` by the time a page is computed, so the count the reader is
+    // shown is a count of rows they can actually see.
+    const rows = Array.from({ length: 200 }, (_, index) => ({
+      key: `k${index}`,
+      value: { title: `row ${index}`, status: index < 30 ? "open" : "closed" },
+    }));
+    const kept = boundRowEntries(
+      {
+        collection: "issues",
+        where: [{ kind: "compare", op: "in", field: "status", stateKey: "status" }],
+      },
+      rows,
+      { status: "open" },
+    );
+    expect(kept).toHaveLength(30);
+    const page = vocabListPage(kept?.length ?? 0, 1);
+    expect(page.drawn).toBe(30);
+    expect(page.hasMore).toBe(false);
+    expect(vocabListPageLabel(page)).toBeNull();
+  });
+
+  it("keys a list by what it reads, never by where it sits", () => {
+    // Same reason `vocabGroupKey` is content-derived: a plugin republishing its
+    // panel with one more node above the list has not put the reader back on
+    // page one.
+    const bound = vocabListPage(1, 1);
+    expect(bound).toBeDefined();
+    expect(vocabListKey({ component: "list", bind: { collection: "issues" } }))
+      .toBe(vocabListKey({ component: "list", bind: { collection: "issues" } }));
+    expect(vocabListKey({ component: "list", bind: { collection: "issues", keyPrefix: "ade/" } }))
+      .not.toBe(vocabListKey({ component: "list", bind: { collection: "issues" } }));
+    expect(vocabListKey({
+      component: "list",
+      selectable: { stateKey: "picked", actions: [], max: VOCAB_LIMITS.maxSelectedRows },
+    })).toBe("sel:picked");
+    expect(vocabListKey({ component: "list", items: [{ title: "One", key: "a" }] }))
+      .toBe("items:a");
+  });
+
+  it("reads a bound collection up to the same ceiling a list may draw", () => {
+    // A client that drew 250 but fetched 200 would page into rows it does not
+    // have and stop early with nothing on screen to say why.
+    expect(VOCAB_PANEL_READ_LIMIT).toBe(VOCAB_LIMITS.maxListItems);
   });
 });

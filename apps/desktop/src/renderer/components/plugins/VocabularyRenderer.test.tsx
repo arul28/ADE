@@ -35,6 +35,10 @@ function makeContext(overrides: Partial<VocabRenderContext> = {}): VocabRenderCo
     // is what an untouched section does in the real host too.
     groupOpen: (node) => node.defaultOpen ?? true,
     toggleGroup: vi.fn(),
+    // A list with no host opinion is on its first page, which is what an
+    // untouched list draws in the real host too.
+    listPage: () => 1,
+    showMoreListRows: vi.fn(),
     ...overrides,
   };
 }
@@ -807,5 +811,65 @@ describe("groups, selection and the menu form", () => {
 
     fireEvent.change(menu, { target: { value: "p3" } });
     expect(setStateValue).toHaveBeenCalledWith("project", "p3");
+  });
+});
+
+describe("VocabList — paging", () => {
+  const rows = (count: number) =>
+    Array.from({ length: count }, (_, index) => ({ title: `row-${index}`, key: `k${index}` }));
+
+  function renderList(count: number, overrides: Partial<VocabRenderContext> = {}) {
+    return render(
+      <PluginPanelView
+        schema={{
+          v: 1,
+          fallback: { title: "T", text: "B" },
+          body: [{ component: "list", items: rows(count) }],
+        }}
+        context={makeContext(overrides)}
+      />,
+    );
+  }
+
+  it("draws one page and offers the rest, counting only what it can see", () => {
+    renderList(143);
+    expect(screen.getByText("row-0")).toBeTruthy();
+    expect(screen.getByText("row-99")).toBeTruthy();
+    expect(screen.queryByText("row-100")).toBeNull();
+    expect(screen.getByText("Showing 100 of 143")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Show more" })).toBeTruthy();
+  });
+
+  it("hands the list's own row count to the host, not the rows it fetched", () => {
+    // The host holds the fetched rows and not the filtered ones, so a clamp
+    // computed there would let a filtered list page past its own end.
+    const showMoreListRows = vi.fn();
+    renderList(143, { showMoreListRows });
+    fireEvent.click(screen.getByRole("button", { name: "Show more" }));
+    expect(showMoreListRows).toHaveBeenCalledWith(
+      expect.objectContaining({ component: "list" }),
+      143,
+    );
+  });
+
+  it("draws the second page when the host says the reader asked for one", () => {
+    renderList(143, { listPage: () => 2 });
+    expect(screen.getByText("row-142")).toBeTruthy();
+    // Nothing left to explain, so the row goes rather than sitting there saying
+    // the list is complete — which it can already be seen to be.
+    expect(screen.queryByText(/^Showing /)).toBeNull();
+    expect(screen.queryByRole("button", { name: "Show more" })).toBeNull();
+  });
+
+  it("says a list stopped at the ceiling instead of stopping in silence", () => {
+    renderList(VOCAB_LIMITS.maxListItems, { listPage: () => 3 });
+    expect(screen.getByText("Showing the first 250")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Show more" })).toBeNull();
+  });
+
+  it("says nothing at all about a list that fits on one page", () => {
+    renderList(12);
+    expect(screen.queryByText(/^Showing /)).toBeNull();
+    expect(screen.queryByRole("button", { name: "Show more" })).toBeNull();
   });
 });

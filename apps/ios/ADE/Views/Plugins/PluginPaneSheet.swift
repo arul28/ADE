@@ -12,6 +12,11 @@ struct PluginPaneSheet: View {
 
   @EnvironmentObject private var syncService: SyncService
   @StateObject private var store: PluginPaneStore
+  /// The scroll view's own position, so a return can put the reader back where
+  /// they were. The store holds the VALUE — see ``PluginPaneStore/scrollOffset``
+  /// — because a snapshot has to be takeable at the moment a plugin navigates,
+  /// which is not a moment this view is involved in.
+  @State private var scrollPosition = ScrollPosition()
 
   init(request: PluginPaneRequest, syncService: SyncService) {
     self.request = request
@@ -33,14 +38,25 @@ struct PluginPaneSheet: View {
       content
         .scrollContentBackground(.hidden)
         .background(ADEColor.pageBackground)
-        .navigationTitle(store.phase == .loaded ? store.displayName : request.title)
+        // The panel on top, not the plugin: once a plugin can send the reader
+        // two screens deep, a bar that always said "Linear" stopped telling them
+        // where they were. The plugin's own name is still the fallback for a
+        // panel the mirror has no row for.
+        .navigationTitle(store.phase == .loaded ? store.currentTitle : request.title)
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
           ToolbarItem(placement: .topBarLeading) {
-            Button { close() } label: {
-              Image(systemName: "xmark").font(.system(size: 13, weight: .semibold))
+            if store.canGoBack {
+              backButton
+            } else {
+              closeButton
             }
-            .accessibilityLabel("Close \(store.displayName)")
+          }
+          // Close moves to the trailing edge only while Back owns the leading
+          // one. Both gestures stay reachable at every depth, and neither ever
+          // sits where the other was a moment ago.
+          if store.canGoBack {
+            ToolbarItem(placement: .topBarTrailing) { closeButton }
           }
         }
     }
@@ -66,6 +82,33 @@ struct PluginPaneSheet: View {
     }
     // The `{prompt}` verb, asked inside the pane the button was pressed in.
     .pluginPromptAlert(store: store)
+  }
+
+  private var closeButton: some View {
+    Button { close() } label: {
+      Image(systemName: "xmark").font(.system(size: 13, weight: .semibold))
+    }
+    .accessibilityLabel("Close \(store.displayName)")
+  }
+
+  /// The chevron back to the panel beneath this one.
+  ///
+  /// It names the destination rather than saying "Back", which is what the
+  /// system bar does for a real push and what tells the reader whether the way
+  /// back is the list they came from or something else.
+  @ViewBuilder
+  private var backButton: some View {
+    let title = store.backTitle ?? "Back"
+    Button {
+      ADEHaptics.light()
+      store.goBack()
+    } label: {
+      HStack(spacing: 3) {
+        Image(systemName: "chevron.left").font(.system(size: 13, weight: .semibold))
+        Text(title).font(.subheadline).lineLimit(1)
+      }
+    }
+    .accessibilityLabel("Back to \(title)")
   }
 
   @ViewBuilder
@@ -107,7 +150,51 @@ struct PluginPaneSheet: View {
       .frame(maxWidth: .infinity, alignment: .leading)
     }
     .animation(.easeOut(duration: 0.18), value: store.actionMessage)
+    .scrollPosition($scrollPosition)
+    // Reported continuously so the store always holds a current offset: a
+    // plugin's `navigate` can land at any moment, and a snapshot taken then must
+    // carry where the reader actually was, not where they were when they last
+    // pressed something.
+    .onScrollGeometryChange(for: CGFloat.self) { geometry in
+      geometry.contentOffset.y
+    } action: { _, offset in
+      store.scrollOffset = offset
+    }
+    // The other half of a return. Honoured once and then cleared, so an
+    // ordinary redraw — a poll, a filter, an action's banner — never yanks the
+    // reader back to an offset from a screen they have already left.
+    .onChange(of: store.pendingScrollOffset) { _, pending in
+      guard let pending else { return }
+      scrollPosition.scrollTo(y: pending)
+      store.pendingScrollOffset = nil
+    }
+    // The swipe back, approximated.
+    //
+    // A real interactive pop belongs to `NavigationStack`, and this pane is not
+    // one: the store holds ONE panel at a time and the sheet draws it, so there
+    // is no second destination view for the system to drag in from the edge.
+    // What is reproducible without that is the gesture itself — a drag that
+    // starts at the left edge and travels right pops the stack — which is the
+    // part a reader's hand already knows. Simultaneous, so it costs the scroll
+    // view nothing: a vertical drag never satisfies the horizontal test.
+    .simultaneousGesture(
+      DragGesture(minimumDistance: 20)
+        .onEnded { value in
+          guard store.canGoBack,
+                value.startLocation.x <= PluginPaneSheet.backSwipeEdge,
+                value.translation.width >= PluginPaneSheet.backSwipeDistance,
+                abs(value.translation.height) <= abs(value.translation.width) else { return }
+          ADEHaptics.light()
+          store.goBack()
+        }
+    )
   }
+
+  /// How far from the left edge a back swipe must start, in points. The system's
+  /// own edge-pop region is about this wide.
+  private static let backSwipeEdge: CGFloat = 32
+  /// How far it must travel before it counts as a pop rather than a stray drag.
+  private static let backSwipeDistance: CGFloat = 64
 
   @ViewBuilder
   private var panelBody: some View {

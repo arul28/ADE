@@ -5,6 +5,7 @@ import type { PluginCollectionRow } from "../../lib/pluginRuntimeBridge";
 import type {
   VocabAction,
   VocabGroupNode,
+  VocabListNode,
   VocabPanelSelection,
   VocabPanelState,
   VocabSelectionDeclaration,
@@ -98,6 +99,24 @@ export type VocabRenderContext = {
    */
   groupOpen: (node: VocabGroupNode) => boolean;
   toggleGroup: (node: VocabGroupNode) => void;
+  /**
+   * How many pages of one `list` the reader has asked for. 1 is the first draw.
+   *
+   * Held on the host rather than in the list's own React state for the reason
+   * {@link groupOpen} is: the node tree is rebuilt on every republish, and
+   * component state keyed by position would put a reader back on page one the
+   * moment the plugin inserted a node above the list. Client-local — it is not
+   * panel state and never reaches the plugin.
+   */
+  listPage: (node: VocabListNode) => number;
+  /**
+   * Draw one more page of a list. Inert once the list is drawing everything.
+   *
+   * `total` is the row count AFTER the binding's `where` has run, which only the
+   * list knows: the host holds the fetched rows, not the filtered ones, so a
+   * clamp computed here would let a filtered list page past its own end.
+   */
+  showMoreListRows: (node: VocabListNode, total: number) => void;
   /**
    * False while the hosting surface is mounted but not visible. Media does not
    * load and animation does not run when false — the hidden-but-mounted perf law.

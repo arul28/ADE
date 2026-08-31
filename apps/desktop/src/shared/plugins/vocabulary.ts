@@ -81,6 +81,7 @@ import { VOCAB_STATE_COLLECTION, vocabStateRows } from "./vocabularyState";
 import { isRecord } from "./parse";
 
 export * from "./vocabularyNodes";
+export * from "./vocabularyPaging";
 
 /**
  * REQUIRED on every panel. Rule 2: this is what a client renders when it cannot

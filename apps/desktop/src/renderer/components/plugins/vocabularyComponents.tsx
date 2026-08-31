@@ -37,12 +37,15 @@ import type {
 } from "../../../shared/plugins/vocabulary";
 import {
   VOCAB_LIMITS,
+  VOCAB_LIST_SHOW_MORE_LABEL,
   bindingKey,
   boundRowEntries,
   boundRowValues,
   coerceBoundKeyValueRow,
   coerceBoundListItem,
   coerceBoundTableRow,
+  vocabListPage,
+  vocabListPageLabel,
   vocabSelectedRowKeys,
   vocabStateControlStyle,
 } from "../../../shared/plugins/vocabulary";
@@ -486,7 +489,12 @@ export function VocabList({
     return <EmptyLine text={node.emptyText ?? "Nothing here yet."} />;
   }
 
-  const drawn = items.slice(0, VOCAB_LIMITS.maxListItems);
+  // Filter first, page second. `items` has already been through the binding's
+  // `where`, so the page is computed over what the reader can actually see —
+  // paging a pre-filter window would hand them rows the filter had rejected.
+  const page = vocabListPage(items.length, context.listPage(node));
+  const drawn = items.slice(0, page.drawn);
+  const pageLabel = vocabListPageLabel(page);
   // The list draws its own rows, so it is the only thing that knows which keys
   // are on screen and in what order — which is what both the range gesture and
   // the batch are computed against.
@@ -526,12 +534,69 @@ export function VocabList({
           />
         ))}
       </ul>
+      {pageLabel ? (
+        <VocabListPageRow
+          label={pageLabel}
+          {...(page.hasMore
+            ? { onShowMore: () => context.showMoreListRows(node, items.length) }
+            : {})}
+        />
+      ) : null}
       {ticking && ticked.length > 0 ? (
         <VocabBulkBar
           selectable={selectable}
           keys={ticked}
           context={context}
         />
+      ) : null}
+    </div>
+  );
+}
+
+/**
+ * What a list says when it is not drawing everything it holds.
+ *
+ * Drawn even when there is no button — a list stopped at the vocabulary ceiling
+ * has nothing more to offer and every reason to say so. Silence there is what
+ * made a truncated list look like a complete one, which is the half of D7 that
+ * a bigger number alone would not have fixed.
+ *
+ * `aria-live` is deliberately absent: the count changes because the reader
+ * pressed the button beside it, and announcing a result they asked for reads as
+ * noise. The button's own label moves the focus ring nowhere, so the rows that
+ * appear are the next thing under it.
+ */
+function VocabListPageRow({
+  label,
+  onShowMore,
+}: {
+  label: string;
+  onShowMore?: () => void;
+}) {
+  return (
+    <div
+      style={{
+        display: "flex",
+        alignItems: "center",
+        gap: 8,
+        fontFamily: SANS_FONT,
+        fontSize: 11,
+        color: COLORS.textDim,
+        minWidth: 0,
+      }}
+    >
+      <span>{label}</span>
+      {onShowMore ? (
+        <button
+          type="button"
+          onClick={onShowMore}
+          style={{
+            ...outlineButton({ height: 22, padding: "0 8px", fontSize: 11 }),
+            background: "transparent",
+          }}
+        >
+          {VOCAB_LIST_SHOW_MORE_LABEL}
+        </button>
       ) : null}
     </div>
   );
