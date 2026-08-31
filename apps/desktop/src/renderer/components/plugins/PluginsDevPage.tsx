@@ -8,11 +8,22 @@ import { PLUGIN_FIXTURES, pluginFixtureRows, type PluginFixture } from "./plugin
 import {
   VOCAB_STATE_COLLECTION,
   bindingKey,
+  collectVocabSelectionDeclarations,
   collectVocabStateDeclarations,
   parsePluginPanel,
   vocabApplyStateChange,
+  vocabClearRowSelection,
+  vocabGroupKey,
+  vocabInitialPanelSelection,
   vocabInitialPanelState,
+  vocabResolveStateOptions,
+  vocabRowRange,
+  vocabSelectRowRange,
+  vocabStateOptionsBindingKey,
   vocabStateRows,
+  vocabToggleRowSelection,
+  type VocabGroupNode,
+  type VocabPanelSelection,
   type VocabPanelState,
 } from "../../../shared/plugins/vocabulary";
 
@@ -133,13 +144,37 @@ function FixturePanel({
   fixture: PluginFixture;
   dispatch: VocabRenderContext["dispatch"];
 }) {
-  const declarations = React.useMemo(() => {
+  const body = React.useMemo(() => {
     const parsed = parsePluginPanel(fixture.schema);
-    return parsed.ok ? collectVocabStateDeclarations(parsed.panel.body) : [];
+    return parsed.ok ? parsed.panel.body : null;
   }, [fixture.schema]);
+
+  // The fixture rows are static, so an `optionsFrom` resolves once here rather
+  // than per render — but through the same shared resolver the real host uses,
+  // so a bound control looks the same on this page as it does in a panel.
+  const fixtureRows = React.useMemo(() => pluginFixtureRows(fixture), [fixture]);
+
+  const declarations = React.useMemo(() => {
+    if (!body) return [];
+    return collectVocabStateDeclarations(body, (binding) => vocabResolveStateOptions(
+      binding,
+      fixtureRows.get(vocabStateOptionsBindingKey(binding)),
+    ));
+  }, [body, fixtureRows]);
+
+  const selectionDeclarations = React.useMemo(
+    () => (body ? collectVocabSelectionDeclarations(body) : []),
+    [body],
+  );
+
   const [panelState, setPanelState] = React.useState<VocabPanelState>(
     () => vocabInitialPanelState(declarations),
   );
+  const [selection, setSelection] = React.useState<VocabPanelSelection>(
+    () => vocabInitialPanelSelection(selectionDeclarations),
+  );
+  const [anchor, setAnchor] = React.useState<Record<string, string>>({});
+  const [groupOverrides, setGroupOverrides] = React.useState<Record<string, boolean>>({});
 
   const setStateValue = React.useCallback((stateKey: string, value: string) => {
     const declaration = declarations.find((entry) => entry.stateKey === stateKey);
@@ -147,8 +182,43 @@ function FixturePanel({
     setPanelState((previous) => vocabApplyStateChange(previous, declaration, value));
   }, [declarations]);
 
+  const toggleRow = React.useCallback((
+    stateKey: string,
+    rowKey: string,
+    visibleKeys?: readonly string[],
+  ) => {
+    const declaration = selectionDeclarations.find((entry) => entry.stateKey === stateKey);
+    if (!declaration) return;
+    if (visibleKeys) {
+      const range = vocabRowRange(visibleKeys, anchor[stateKey], rowKey);
+      setSelection((previous) => vocabSelectRowRange(previous, declaration, range));
+      return;
+    }
+    setSelection((previous) => vocabToggleRowSelection(previous, declaration, rowKey));
+    setAnchor((previous) => ({ ...previous, [stateKey]: rowKey }));
+  }, [anchor, selectionDeclarations]);
+
+  const clearSelection = React.useCallback((stateKey: string) => {
+    const declaration = selectionDeclarations.find((entry) => entry.stateKey === stateKey);
+    if (!declaration) return;
+    setSelection((previous) => vocabClearRowSelection(previous, declaration));
+  }, [selectionDeclarations]);
+
+  const groupOpen = React.useCallback(
+    (node: VocabGroupNode) => groupOverrides[vocabGroupKey(node)] ?? node.defaultOpen ?? true,
+    [groupOverrides],
+  );
+
+  const toggleGroup = React.useCallback((node: VocabGroupNode) => {
+    const key = vocabGroupKey(node);
+    setGroupOverrides((previous) => ({
+      ...previous,
+      [key]: !(previous[key] ?? node.defaultOpen ?? true),
+    }));
+  }, []);
+
   const rowsByBinding = React.useMemo(() => {
-    const rows = pluginFixtureRows(fixture);
+    const rows = new Map(fixtureRows);
     if (declarations.length > 0) {
       rows.set(
         bindingKey({ collection: VOCAB_STATE_COLLECTION }),
@@ -161,7 +231,7 @@ function FixturePanel({
       );
     }
     return rows;
-  }, [declarations, fixture, panelState]);
+  }, [declarations, fixtureRows, panelState]);
 
   const context = React.useMemo<VocabRenderContext>(
     () => ({
@@ -171,8 +241,27 @@ function FixturePanel({
       active: true,
       state: panelState,
       setStateValue,
+      declarations,
+      selection,
+      selectionDeclarations,
+      toggleRow,
+      clearSelection,
+      groupOpen,
+      toggleGroup,
     }),
-    [dispatch, panelState, rowsByBinding, setStateValue],
+    [
+      clearSelection,
+      declarations,
+      dispatch,
+      groupOpen,
+      panelState,
+      rowsByBinding,
+      selection,
+      selectionDeclarations,
+      setStateValue,
+      toggleGroup,
+      toggleRow,
+    ],
   );
 
   return <PluginPanelView schema={fixture.schema} context={context} />;

@@ -12,12 +12,17 @@
 // without rendering, and the view stays a memoizable stateless component whose
 // only state (the selected index) lives in app.tsx like every other pane's.
 //
-// Terminal subset (design decision D8). Rendered richly: stack, text, badge,
-// button, list, table, keyValue, divider, emptyState, and form via the composer
-// funnel. Rendered as a labeled placeholder line: video, image, chart, and any
-// component name a future vocabulary version adds. A placeholder is deliberate,
-// not a failure — it names what is there and how to see it, because a blank gap
-// is indistinguishable from a broken plugin.
+// Terminal subset (design decision D8). Rendered richly: stack, group, text,
+// badge, button, list, table, keyValue, divider, emptyState, markdown, and form
+// via the composer funnel. Rendered as a labeled placeholder line: video, image, chart,
+// and any component name a future vocabulary version adds. A placeholder is
+// deliberate, not a failure — it names what is there and how to see it, because
+// a blank gap is indistinguishable from a broken plugin.
+//
+// `markdown` is drawn rather than placeheld, and that is not an exception to the
+// rule above: prose with structure is the one thing a terminal draws as well as
+// any client. A picture becomes a placeholder because a terminal cannot show it;
+// a heading, a bullet and a fenced block lose nothing here but their pixels.
 // ---------------------------------------------------------------------------
 
 import {
@@ -30,19 +35,32 @@ import {
   coerceBoundKeyValueRow,
   coerceBoundListItem,
   coerceBoundTableRow,
+  collectVocabSelectionDeclarations,
   collectVocabStateDeclarations,
   distinctBindings,
   parsePluginPanel,
+  parseVocabMarkdown,
   readPluginActionResetState,
   vocabApplyStateChange,
+  vocabClearRowSelection,
   vocabContextRows,
   vocabCycleStateValue,
+  vocabGroupKey,
+  vocabInitialPanelSelection,
   vocabInitialPanelState,
+  vocabNormalizePanelSelection,
   vocabNormalizePanelState,
+  vocabResetPanelSelection,
   vocabResetPanelState,
+  vocabResolveStateOptions,
+  vocabSelectedRowKeys,
+  vocabSelectionSignature,
+  vocabStateControlStyle,
+  vocabStateOptionsBindingKey,
   vocabStatePayload,
   vocabStateRows,
   vocabStateSignature,
+  vocabToggleRowSelection,
   type VocabAction,
   type VocabBinding,
   type VocabFallback,
@@ -51,9 +69,15 @@ import {
   type VocabKeyValueRow,
   type VocabListItem,
   type VocabListItemAction,
+  type VocabMarkdownBlock,
+  type VocabMarkdownSpan,
   type VocabNode,
+  type VocabPanelSelection,
   type VocabPanelState,
+  type VocabSelectionDeclaration,
   type VocabStateDeclaration,
+  type VocabStateOption,
+  type VocabStateOptionsBinding,
   type VocabTableColumn,
   type VocabTone,
 } from "../../../desktop/src/shared/plugins/vocabulary";
@@ -82,6 +106,12 @@ export type PluginPaneCollectionMap = Map<string, PluginPaneCollectionRow[]>;
  * `app.tsx` reaches for the pane rather than into the desktop tree.
  */
 export { bindingKey, distinctBindings };
+
+/**
+ * The inline run a `markdown` row carries, re-exported for the same reason: the
+ * Ink view reaches for the pane rather than into the desktop tree.
+ */
+export type { VocabMarkdownSpan };
 
 /**
  * Rows for one binding of a panel about to be drawn.
@@ -162,6 +192,18 @@ export type PluginPaneRow =
       tone: VocabTone;
       selection: number | null;
       /**
+       * The tick box a `selectable` list draws before the title, and the
+       * interactive that toggles it.
+       *
+       * `null` on every row of a plain list, and on a row of a selectable list
+       * that carries no `key` — a title is not an identity, so such a row draws
+       * no box at all rather than one that would put an empty string in a batch.
+       * Separate from {@link selection}, which is the row's own press: a row can
+       * be both ticked and pressed, and folding the two into one index would
+       * make ticking a row open it.
+       */
+      tick: { checked: boolean; selection: number } | null;
+      /**
        * The row's status chip, bracketed after the title. No icon: a terminal
        * has no glyph set to promise, and a chip that said `[● Running]` on one
        * font and `[? Running]` on another is worse than one that says
@@ -178,6 +220,40 @@ export type PluginPaneRow =
   | { kind: "tableHead"; key: string; indent: number; cells: string[]; widths: number[]; aligns: ("left" | "right")[] }
   | { kind: "tableRow"; key: string; indent: number; cells: string[]; widths: number[]; aligns: ("left" | "right")[] }
   | { kind: "buttons"; key: string; indent: number; buttons: PluginPaneButton[] }
+  /**
+   * A `group`'s header: the disclosure line the reader presses to fold the
+   * section away.
+   *
+   * Carries `groupKey` rather than only its title because open/closed is
+   * remembered under that key — CLIENT-LOCAL, never panel state, so it never
+   * signs, never reaches a `where` and never rides on an action.
+   */
+  | {
+      kind: "group";
+      key: string;
+      indent: number;
+      groupKey: string;
+      title: string;
+      badge: string | null;
+      open: boolean;
+      selection: number;
+    }
+  /**
+   * A selectable list's bulk bar: the count, the declared verbs, and Clear.
+   *
+   * Not a plain `buttons` row, because the count is the half of this bar that
+   * is not a button — "3 selected" is what tells the reader which batch they
+   * are about to spend, and a bar of pills with no number is a row of verbs
+   * over an invisible set.
+   */
+  | {
+      kind: "bulkBar";
+      key: string;
+      indent: number;
+      /** Ticked rows that are actually on screen — what a verb here acts on. */
+      count: number;
+      buttons: PluginPaneButton[];
+    }
   | {
       kind: "field";
       key: string;
@@ -210,6 +286,54 @@ export type PluginPaneRow =
         selected: boolean;
         selection: number;
       }[];
+    }
+  /**
+   * The same control once `vocabStateControlStyle` answers `"menu"`.
+   *
+   * A strip of pills is the right picture for three states and the wrong one
+   * for thirty projects, and a terminal cannot fall back to a real menu — so it
+   * falls back to the one line it can draw honestly: the option in force, how
+   * many there are, and the ←/→ gesture that moves between them. ONE
+   * interactive, not one per option: fifty numbered pills would push the list
+   * the control filters off the bottom of the pane, and ↑↓ would take fifty
+   * presses to get past the control.
+   */
+  | {
+      kind: "menu";
+      key: string;
+      indent: number;
+      label: string | null;
+      /** The current option's label — its words, never its raw value. */
+      value: string;
+      badge: string | null;
+      /** 1-based position of the current option, so `3/12` reads as a place. */
+      position: number;
+      count: number;
+      selection: number;
+    }
+  /**
+   * One line of a `markdown` node's document.
+   *
+   * A markdown document flattens to lines rather than degrading to a
+   * placeholder, because prose IS what a terminal is good at — the structure is
+   * what needed carrying, not the pixels. A heading is a bold line, a bullet is
+   * a bullet, a fenced block is its own lines, and a link is its words followed
+   * by its URL, because a terminal cannot hide a destination behind a word.
+   *
+   * `parts` are the shared inline runs, so the terminal draws emphasis from the
+   * same data the phone builds an `AttributedString` from. `firstPrefix` /
+   * `restPrefix` follow `wrapText`'s convention in `ChatView.tsx`: the marker
+   * goes on the row that starts the item, and its width is held open on the
+   * rows that continue it.
+   */
+  | {
+      kind: "markdown";
+      key: string;
+      indent: number;
+      /** Bullet, number, checkbox or quote rail. Empty for plain prose. */
+      prefix: string;
+      variant: "title" | "subtitle" | "body" | "code";
+      parts: VocabMarkdownSpan[];
     }
   /** Dim explanatory line: an `emptyText`, a help string, a truncation notice. */
   | { kind: "note"; key: string; indent: number; text: string }
@@ -245,7 +369,28 @@ export type PluginPaneInteractive =
       label: string;
       value: string;
       onChange?: VocabAction;
-    };
+    }
+  /**
+   * A `group`'s disclosure. Pressing it folds the section and does nothing
+   * else: no dispatch, no state write, no socket. Open/closed is a statement
+   * about the reader's screen, not about which rows the panel is showing.
+   */
+  | { kind: "group"; groupKey: string; label: string }
+  /**
+   * One tick box on a selectable list's row. Pressing it toggles that row in
+   * the panel's selection and dispatches nothing — the verbs live on the bar.
+   */
+  | { kind: "selection"; stateKey: string; rowKey: string; label: string }
+  /**
+   * One button on a selectable list's bulk bar.
+   *
+   * `action` absent is the bar's own Clear, which unticks the list and
+   * dispatches nothing. It rides on this kind rather than a fourth one because
+   * it is the same button in the same bar over the same state key, and the one
+   * thing that differs — whether a plugin is invoked — is exactly what its
+   * absence says.
+   */
+  | { kind: "bulk"; stateKey: string; label: string; action?: VocabListItemAction };
 
 /**
  * What an interactive *is*, independent of where it currently sits.
@@ -280,6 +425,31 @@ export function pluginInteractiveKey(
   // a different option, and an armed confirm must survive that.
   if (interactive.kind === "state") {
     return JSON.stringify([...owner, "state", interactive.stateKey, interactive.value]);
+  }
+  // A section is what it is called, never where it sits: a plugin republishing
+  // its panel with one more group above this one has not opened the section the
+  // reader just closed.
+  if (interactive.kind === "group") {
+    return JSON.stringify([...owner, "group", interactive.groupKey]);
+  }
+  // A tick is the ROW, not its title. A plugin that renamed an issue between
+  // two polls has not turned it into a different row, and the reader's tick
+  // must survive that exactly as an armed confirm does.
+  if (interactive.kind === "selection") {
+    return JSON.stringify([...owner, "selection", interactive.stateKey, interactive.rowKey]);
+  }
+  // A bulk verb is identified by the list it spends and the action it runs —
+  // never by the selection, which is the reader's and changes with every tick.
+  // Arming "Archive 3 issues" and then ticking a fourth must not re-ask.
+  if (interactive.kind === "bulk") {
+    const bulkArgs = interactive.action?.args;
+    return JSON.stringify([
+      ...owner,
+      "bulk",
+      interactive.stateKey,
+      interactive.action?.action ?? "",
+      Object.keys(bulkArgs ?? {}).sort().map((name) => [name, bulkArgs?.[name]]),
+    ]);
   }
   const { action, args } = interactive.action;
   const argIdentity = Object.keys(args ?? {})
@@ -319,6 +489,42 @@ export type PluginPaneModel = {
    * reconciled instead of trusted.
    */
   stateSignature: string;
+  /**
+   * The `selectable` lists this schema declares, in reading order.
+   *
+   * The selection half of {@link declarations} and held for the same reasons:
+   * it is what builds the empty selection, what validates a tick, what the bulk
+   * bar reads its cap from, and what an action's `{resetState}` clears.
+   */
+  selectionDeclarations: VocabSelectionDeclaration[];
+  /**
+   * The rows ticked in every selectable list right now, already reconciled
+   * against the lists above.
+   *
+   * Kept apart from {@link state} rather than folded into it, exactly as the
+   * shared module keeps the two maps apart: one holds a string per control, the
+   * other an open set of row keys, and a hundred issue ids have no business in
+   * `$state` or in an action's `state` payload.
+   */
+  selection: VocabPanelSelection;
+  /**
+   * Identity of the selectable LISTS, not of their rows — see
+   * `vocabSelectionSignature`. Row keys are deliberately absent: a plugin
+   * republishing its rows every ten seconds would otherwise empty a batch the
+   * reader is still assembling.
+   */
+  selectionSignature: string;
+  /**
+   * Which `group` sections the reader has opened or closed, by
+   * {@link vocabGroupKey}.
+   *
+   * CLIENT-LOCAL and nothing more. It never enters {@link state}, never signs,
+   * never reaches a `where` and never rides on an action — a folded section is
+   * a statement about this terminal, not about which rows the panel is showing.
+   * A key absent here means the group's own `defaultOpen`, which defaults to
+   * open.
+   */
+  openGroups: Readonly<Record<string, boolean>>;
   /** Non-fatal parse warnings, shown as one summary line. */
   warnings: string[];
   fallback: VocabFallback | null;
@@ -486,6 +692,11 @@ type WalkContext = {
   /** The `segmented` controls the panel declared, and their live values. */
   declarations: VocabStateDeclaration[];
   state: VocabPanelState;
+  /** The `selectable` lists the panel declared, and the rows ticked in each. */
+  selectionDeclarations: VocabSelectionDeclaration[];
+  selection: VocabPanelSelection;
+  /** Client-local open/closed overrides, by `vocabGroupKey`. */
+  openGroups: Readonly<Record<string, boolean>>;
   values: Record<string, string>;
   /** Interactive index currently taking typed input, so its row reads as live. */
   editing: number | null;
@@ -511,6 +722,103 @@ function inlinePart(node: VocabNode): PluginPaneInlinePart | null {
     return { text: node.text, tone: node.tone ?? "neutral", badge: true };
   }
   return null;
+}
+
+/**
+ * A markdown document as terminal rows.
+ *
+ * The block tree is the shared parse — this only chooses a marker and a weight
+ * per block, which is the whole of the terminal's opinion about a document.
+ *
+ * `firstPrefix` is what starts the block and `restPrefix` is what continues it,
+ * so a two-paragraph list row shows its bullet once and stays aligned under it.
+ * A nested list or quote appends to both, which is how `> > ` and `  • ` build
+ * up without this function knowing how deep it is.
+ */
+function walkMarkdown(
+  blocks: readonly VocabMarkdownBlock[],
+  key: string,
+  indent: number,
+  firstPrefix: string,
+  restPrefix: string,
+  ctx: WalkContext,
+): void {
+  let lead = firstPrefix;
+  /** The marker for the next row, after which every row continues the block. */
+  const take = (): string => {
+    const value = lead;
+    lead = restPrefix;
+    return value;
+  };
+
+  blocks.forEach((block, index) => {
+    const blockKey = `${key}.md[${index}]`;
+    switch (block.kind) {
+      case "heading":
+        push(ctx, {
+          kind: "markdown",
+          key: blockKey,
+          indent,
+          prefix: take(),
+          variant: block.level <= 2 ? "title" : "subtitle",
+          parts: block.spans,
+        });
+        return;
+      case "paragraph":
+        push(ctx, {
+          kind: "markdown",
+          key: blockKey,
+          indent,
+          prefix: take(),
+          variant: "body",
+          parts: block.spans,
+        });
+        return;
+      case "code": {
+        // One row per line: a fenced block wrapped as prose would re-flow the
+        // one kind of content whose line breaks are the content.
+        const lines = block.text.split("\n");
+        lines.forEach((line, lineIndex) => {
+          push(ctx, {
+            kind: "markdown",
+            key: `${blockKey}.line[${lineIndex}]`,
+            indent,
+            prefix: take(),
+            variant: "code",
+            parts: [{ text: line }],
+          });
+        });
+        return;
+      }
+      case "quote":
+        walkMarkdown(block.blocks, blockKey, indent, `${take()}> `, `${restPrefix}> `, ctx);
+        return;
+      case "list":
+        block.items.forEach((item, itemIndex) => {
+          // A checkbox replaces the bullet rather than joining it: `[x]` already
+          // marks the row, and a terminal has no inert control to draw beside
+          // one. It is text, which is the honest shape for something that does
+          // not respond to a keystroke.
+          const marker = item.task !== undefined
+            ? (item.task === "checked" ? "[x] " : "[ ] ")
+            : block.ordered
+              ? `${block.start + itemIndex}. `
+              : "• ";
+          walkMarkdown(
+            item.blocks,
+            `${blockKey}.item[${itemIndex}]`,
+            indent,
+            `${take()}${marker}`,
+            `${restPrefix}${" ".repeat(marker.length)}`,
+            ctx,
+          );
+        });
+        return;
+      case "rule":
+        push(ctx, { kind: "divider", key: blockKey, indent, label: null });
+        return;
+    }
+  });
 }
 
 function walkNodes(nodes: readonly VocabNode[], path: string, indent: number, ctx: WalkContext): void {
@@ -542,6 +850,32 @@ function walkNode(node: VocabNode, key: string, indent: number, ctx: WalkContext
       walkNodes(node.children, `${key}.children`, indent, ctx);
       return;
     }
+    case "group": {
+      // A closed group hides its CHILDREN, never its declarations: the state
+      // keys its controls own and the collections its lists bind are collected
+      // by `collectVocabStateDeclarations` and `collectVocabBindings`, which
+      // walk the PARSED tree through `vocabChildNodes` and never consult this
+      // render walk. So a `segmented` inside a folded section still filters the
+      // list outside it, and folding a section fetches nothing and drops
+      // nothing.
+      const groupKey = vocabGroupKey(node);
+      const open = ctx.openGroups[groupKey] ?? node.defaultOpen ?? true;
+      const selection = addInteractive(ctx, { kind: "group", groupKey, label: node.title });
+      push(ctx, {
+        kind: "group",
+        key,
+        indent,
+        groupKey,
+        title: node.title,
+        badge: node.badge ?? null,
+        open,
+        selection,
+      });
+      // Indented one level, so the fold reads as a fold rather than as a title
+      // that happens to sit above some rows.
+      if (open) walkNodes(node.children, `${key}.children`, indent + 1, ctx);
+      return;
+    }
     case "text": {
       push(ctx, {
         kind: "text",
@@ -551,6 +885,32 @@ function walkNode(node: VocabNode, key: string, indent: number, ctx: WalkContext
         variant: node.variant ?? "body",
         tone: node.tone ?? "neutral",
       });
+      return;
+    }
+    case "markdown": {
+      if (node.truncated) {
+        // Clamped at the node ceiling. The cut lands wherever it lands, so the
+        // markdown of this string is not the document's markdown — the source,
+        // as written, plus the line that says why.
+        push(ctx, { kind: "text", key, indent, text: node.text, variant: "code", tone: "neutral" });
+        push(ctx, {
+          kind: "note",
+          key: `${key}.truncated`,
+          indent,
+          text: "This text was too long to format, so it is shown as written.",
+        });
+        return;
+      }
+      const document = parseVocabMarkdown(node.text);
+      walkMarkdown(document.blocks, key, indent, "", "", ctx);
+      if (document.truncated) {
+        push(ctx, {
+          kind: "note",
+          key: `${key}.more`,
+          indent,
+          text: "The rest of this text is not shown.",
+        });
+      }
       return;
     }
     case "badge": {
@@ -571,17 +931,49 @@ function walkNode(node: VocabNode, key: string, indent: number, ctx: WalkContext
       return;
     }
     case "list": {
-      const bound = boundValues(node.bind, ctx);
+      // `boundRowEntries`, not `boundRowValues`: a bound row's identity is its
+      // COLLECTION row's primary key, and dropping it here would leave a
+      // plugin's own rows unselectable unless it repeated the key inside the
+      // value — a second identity that can disagree with the first.
+      const bound = boundKeyedValues(node.bind, ctx);
       const items = bound
         ? bound
-            .map((row) => coerceBoundListItem(row, node.bind?.allowActions))
+            .map((entry) => coerceBoundListItem(entry.value, node.bind?.allowActions, entry.key))
             .filter((item): item is VocabListItem => item !== null)
         : (node.items ?? []);
       if (items.length === 0) {
         push(ctx, { kind: "note", key, indent, text: node.emptyText ?? "Nothing here yet." });
         return;
       }
+      // Only a list whose `selectable` survived the panel's ceiling draws ticks.
+      // A third selectable list still draws its rows — it simply draws no boxes
+      // and no bar, which is the honest failure for a panel that asked for one
+      // batch too many.
+      const selectable = node.selectable;
+      const selectionDeclaration = selectable
+        ? ctx.selectionDeclarations.find((entry) => entry.stateKey === selectable.stateKey)
+        : undefined;
+      const ticked = selectionDeclaration
+        ? (ctx.selection[selectionDeclaration.stateKey] ?? [])
+        : [];
+      /** The keys of the rows this list actually drew, in draw order. */
+      const drawnKeys: string[] = [];
       items.slice(0, VOCAB_LIMITS.maxListItems).forEach((item, index) => {
+        // The box is registered BEFORE the row's own press, so ↑↓ walks a row
+        // left to right the way the eye reads it.
+        let tick: { checked: boolean; selection: number } | null = null;
+        if (selectionDeclaration && item.key !== undefined) {
+          drawnKeys.push(item.key);
+          tick = {
+            checked: ticked.includes(item.key),
+            selection: addInteractive(ctx, {
+              kind: "selection",
+              stateKey: selectionDeclaration.stateKey,
+              rowKey: item.key,
+              label: item.title,
+            }),
+          };
+        }
         const selection = item.onPress
           ? addInteractive(ctx, { kind: "action", label: item.title, action: item.onPress })
           : null;
@@ -594,6 +986,7 @@ function walkNode(node: VocabNode, key: string, indent: number, ctx: WalkContext
           meta: item.meta ?? null,
           tone: item.tone ?? "neutral",
           selection,
+          tick,
           badge: item.badge ? { text: item.badge.text, tone: item.badge.tone ?? "neutral" } : null,
           mono: item.mono ?? null,
         });
@@ -611,6 +1004,48 @@ function walkNode(node: VocabNode, key: string, indent: number, ctx: WalkContext
           ctx,
         );
       });
+      // The bar, and only once there is a batch to spend. `vocabSelectedRowKeys`
+      // against the keys this list actually DREW, never against the stored set:
+      // a reader who ticks four rows and then moves a filter that hides two of
+      // them is offering a batch of two, because acting on a row nobody can see
+      // is the one outcome a selection must never produce. The two hidden ticks
+      // are kept, not pruned, so moving the filter back brings them with it.
+      if (selectable && selectionDeclaration) {
+        const visible = vocabSelectedRowKeys(ctx.selection, selectionDeclaration.stateKey, drawnKeys);
+        if (visible.length > 0) {
+          const buttons: PluginPaneButton[] = selectable.actions.map((action) => ({
+            label: action.label,
+            kind: action.kind ?? "default",
+            disabled: false,
+            selection: addInteractive(ctx, {
+              kind: "bulk",
+              stateKey: selectionDeclaration.stateKey,
+              label: action.label,
+              action,
+            }),
+          }));
+          // Clear last, and drawn by the bar itself rather than declared by the
+          // plugin: a reader who ticked the wrong eleven rows needs one gesture
+          // out, and no schema should have to remember to offer it.
+          buttons.push({
+            label: "Clear",
+            kind: "quiet",
+            disabled: false,
+            selection: addInteractive(ctx, {
+              kind: "bulk",
+              stateKey: selectionDeclaration.stateKey,
+              label: "Clear",
+            }),
+          });
+          push(ctx, {
+            kind: "bulkBar",
+            key: `${key}.bulk`,
+            indent,
+            count: visible.length,
+            buttons,
+          });
+        }
+      }
       return;
     }
     case "table": {
@@ -713,6 +1148,39 @@ function walkNode(node: VocabNode, key: string, indent: number, ctx: WalkContext
         ?? node.default
         ?? options[0]?.value
         ?? "";
+      // Over the literal-option ceiling the shared module answers `"menu"`, and
+      // a terminal has no menu — so it draws the one line it can draw honestly
+      // rather than fifty numbered pills that would push the list this control
+      // filters off the bottom of the pane.
+      const style = vocabStateControlStyle(declaration ?? { options, ...(node.style ? { style: node.style } : {}) });
+      if (style === "menu") {
+        const index = options.findIndex((option) => option.value === current);
+        const chosen = index < 0 ? undefined : options[index];
+        // Enter advances, exactly as it does on a `select` field; ←/→ moves
+        // either way through `pluginPaneStateCycle`. So the one interactive
+        // registered here names the NEXT option, which is what pressing it sets.
+        const next = options.length > 0
+          ? options[(((index < 0 ? 0 : index) + 1) % options.length)]
+          : undefined;
+        push(ctx, {
+          kind: "menu",
+          key,
+          indent,
+          label: node.label ?? null,
+          value: chosen?.label ?? (current || "—"),
+          badge: chosen?.badge ?? null,
+          position: index < 0 ? 0 : index + 1,
+          count: options.length,
+          selection: addInteractive(ctx, {
+            kind: "state",
+            stateKey: node.stateKey,
+            label: chosen?.label ?? node.label ?? node.stateKey,
+            value: next?.value ?? current,
+            ...(node.onChange ? { onChange: node.onChange } : {}),
+          }),
+        });
+        return;
+      }
       const drawn = options.map((option) => ({
         label: option.label,
         badge: option.badge ?? null,
@@ -859,6 +1327,26 @@ export type PluginPaneInput = {
    */
   state?: VocabPanelState;
   stateSignature?: string;
+  /**
+   * The reader's ticks carried across a rebuild, and the signature of the
+   * selectable lists they were made against.
+   *
+   * Reconciled exactly the way {@link state} is, and for the same reason: the
+   * plugin republishes the whole panel every ten seconds, so a batch that
+   * emptied on each of those would be impossible to assemble. The signature
+   * holds the LISTS and never their rows, so only a control that actually
+   * changed — a different key, cap or verb set — resets the ticks.
+   */
+  selection?: VocabPanelSelection;
+  selectionSignature?: string;
+  /**
+   * Which `group` sections the reader has folded, by `vocabGroupKey`.
+   *
+   * Carried straight through with no reconciliation, because there is nothing
+   * to reconcile against: it is client-local, it is not panel state, and a key
+   * belonging to a group the schema no longer declares simply never matches.
+   */
+  openGroups?: Readonly<Record<string, boolean>>;
   /** Interactive index that currently owns the composer, if any. */
   editing?: number | null;
   /** Pane content width in columns. */
@@ -886,6 +1374,14 @@ export function buildPluginPaneModel(input: PluginPaneInput): PluginPaneModel {
     declarations: [] as VocabStateDeclaration[],
     state: {} as VocabPanelState,
     stateSignature: vocabStateSignature([]),
+    // The selection half of the same statement: no parsed body means no
+    // selectable list, so nothing is ticked and `vocabSelectionSignature([])` is
+    // what a later parse of a panel with no selection produces too.
+    selectionDeclarations: [] as VocabSelectionDeclaration[],
+    selection: {} as VocabPanelSelection,
+    selectionSignature: vocabSelectionSignature([]),
+    // And no `group` to have folded, so the card remembers nothing.
+    openGroups: {} as Readonly<Record<string, boolean>>,
     // No row means no schema to read a declaration off, so `r` stays the plain
     // refetch it has always been.
     refreshAction: null as string | null,
@@ -933,7 +1429,15 @@ export function buildPluginPaneModel(input: PluginPaneInput): PluginPaneModel {
     };
   }
 
-  const declarations = collectVocabStateDeclarations(parsed.panel.body);
+  // A control's `optionsFrom` reads a collection like any other node binding —
+  // `collectVocabBindings` already asked the host to fetch it — so the resolver
+  // is a lookup in the map that fetch landed in. A binding whose rows have not
+  // arrived resolves to nothing, which merges to the control's literal options:
+  // a working control on its "All", never an empty one. The signature does not
+  // move when the rows do land, so the reader's filter survives that.
+  const resolveStateOptions = (binding: VocabStateOptionsBinding): readonly VocabStateOption[] =>
+    vocabResolveStateOptions(binding, input.collections.get(vocabStateOptionsBindingKey(binding)));
+  const declarations = collectVocabStateDeclarations(parsed.panel.body, resolveStateOptions);
   const stateSignature = vocabStateSignature(declarations);
   const state = input.state === undefined
     ? vocabInitialPanelState(declarations)
@@ -941,12 +1445,24 @@ export function buildPluginPaneModel(input: PluginPaneInput): PluginPaneModel {
       ? input.state
       : vocabNormalizePanelState(input.state, declarations);
 
+  const selectionDeclarations = collectVocabSelectionDeclarations(parsed.panel.body);
+  const selectionSignature = vocabSelectionSignature(selectionDeclarations);
+  const selection = input.selection === undefined
+    ? vocabInitialPanelSelection(selectionDeclarations)
+    : input.selectionSignature === selectionSignature
+      ? input.selection
+      : vocabNormalizePanelSelection(input.selection, selectionDeclarations);
+  const openGroups = input.openGroups ?? {};
+
   const ctx: WalkContext = {
     rows: [],
     interactives: [],
     collections: input.collections,
     declarations,
     state,
+    selectionDeclarations,
+    selection,
+    openGroups,
     values: input.values,
     editing: input.editing ?? null,
     inner,
@@ -966,6 +1482,10 @@ export function buildPluginPaneModel(input: PluginPaneInput): PluginPaneModel {
     declarations,
     state,
     stateSignature,
+    selectionDeclarations,
+    selection,
+    selectionSignature,
+    openGroups,
     warnings: parsed.warnings.map((warning) => warning.message),
     fallback: parsed.panel.fallback,
     status: "ok",
@@ -1043,6 +1563,92 @@ export function pluginPaneStatePayload(state: VocabPanelState | undefined): Reco
   return vocabStatePayload(state);
 }
 
+/* ── Selection ──────────────────────────────────────────────────────────── */
+
+/**
+ * Tick or untick one row of a selectable list.
+ *
+ * Validated against the list's own declaration, so a key belonging to a list
+ * past the `maxSelectionKeys` ceiling — which declares nothing — changes
+ * nothing. At the cap the shared verb REFUSES a new tick rather than evicting
+ * an old one: a row vanishing from a batch the reader believes they assembled
+ * is not a gesture they have.
+ */
+export function pluginPaneToggleRow(
+  model: PluginPaneModel,
+  stateKey: string,
+  rowKey: string,
+): VocabPanelSelection {
+  const declaration = model.selectionDeclarations.find((entry) => entry.stateKey === stateKey);
+  if (!declaration) return model.selection;
+  return vocabToggleRowSelection(model.selection, declaration, rowKey);
+}
+
+/** Untick everything in one list. What the bar's own Clear does. */
+export function pluginPaneClearSelection(
+  model: PluginPaneModel,
+  stateKey: string,
+): VocabPanelSelection {
+  const declaration = model.selectionDeclarations.find((entry) => entry.stateKey === stateKey);
+  if (!declaration) return model.selection;
+  return vocabClearRowSelection(model.selection, declaration);
+}
+
+/**
+ * The `{resetState}` an action asked for, applied to the SELECTION — or `null`
+ * when it asked for nothing.
+ *
+ * One verb for both maps, exactly as the shared module defines it. A plugin
+ * answering a bulk action with `{resetState: true}` has almost always just
+ * acted on every ticked row, and leaving them ticked would offer to do it again
+ * to rows that have moved on.
+ */
+export function pluginPaneSelectionReset(
+  model: PluginPaneModel,
+  result: unknown,
+): VocabPanelSelection | null {
+  const reset = readPluginActionResetState(result);
+  if (!reset) return null;
+  return vocabResetPanelSelection(model.selection, model.selectionDeclarations, reset);
+}
+
+/**
+ * What rides on a bulk invoke as `args.selection`: the ticked rows that are
+ * actually on screen, in the order they were drawn.
+ *
+ * Read back off the interactives rather than off a second list kept beside
+ * them, because the tick interactives ARE the rows this panel drew, registered
+ * in draw order — so the payload cannot disagree with the boxes the reader was
+ * looking at. A row ticked and then filtered out registers no interactive, so
+ * it is not in the batch; its tick survives in {@link PluginPaneModel.selection}
+ * and comes back when the filter does.
+ */
+export function pluginPaneSelectionPayload(model: PluginPaneModel, stateKey: string): string[] {
+  const drawn = model.interactives.flatMap((entry) =>
+    entry.kind === "selection" && entry.stateKey === stateKey ? [entry.rowKey] : [],
+  );
+  return vocabSelectedRowKeys(model.selection, stateKey, drawn);
+}
+
+/* ── Groups ─────────────────────────────────────────────────────────────── */
+
+/**
+ * Fold or unfold one `group`, as the client-local map the next build reads.
+ *
+ * The current answer comes from the drawn row rather than from the map, because
+ * an untouched group is absent from the map and its state is its own
+ * `defaultOpen` — reading `openGroups[key]` alone would make the first press on
+ * a `defaultOpen: false` section do nothing visible.
+ */
+export function pluginPaneToggleGroup(
+  model: PluginPaneModel,
+  groupKey: string,
+): Record<string, boolean> {
+  const row = model.rows.find((entry) => entry.kind === "group" && entry.groupKey === groupKey);
+  const open = row?.kind === "group" ? row.open : true;
+  return { ...model.openGroups, [groupKey]: !open };
+}
+
 /* ── Windowing ──────────────────────────────────────────────────────────── */
 
 export type PluginPaneWindow = {
@@ -1076,11 +1682,16 @@ export function pluginPaneWindow(
   const nestedAnchor = anchor >= 0
     ? anchor
     : model.rows.findIndex((row) => (
-      row.kind === "buttons"
+      row.kind === "buttons" || row.kind === "bulkBar"
         ? row.buttons.some((button) => button.selection === selectionIndex)
         : row.kind === "segmented"
           ? row.options.some((option) => option.selection === selectionIndex)
-          : false
+          : row.kind === "listItem"
+            // A row's tick box is its second interactive, so a reader standing
+            // on the box rather than on the row itself is still standing on
+            // this row — missing it would scroll it off the top of the pane.
+            ? row.tick?.selection === selectionIndex
+            : false
     ));
   const focus = nestedAnchor >= 0 ? nestedAnchor : 0;
   // Keep a row of context above the selection so the user can see what they are

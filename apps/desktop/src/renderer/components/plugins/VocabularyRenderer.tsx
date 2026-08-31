@@ -1,5 +1,5 @@
 import React from "react";
-import { ArrowSquareOut, WarningCircle } from "@phosphor-icons/react";
+import { ArrowSquareOut, CaretRight, WarningCircle } from "@phosphor-icons/react";
 
 import { COLORS, RADII, SANS_FONT, outlineButton } from "../lanes/laneDesignTokens";
 import { openAdeDeeplink } from "../../lib/openExternal";
@@ -14,6 +14,7 @@ import {
   VocabInvalid,
   VocabKeyValue,
   VocabList,
+  VocabMarkdown,
   VocabSegmented,
   VocabTable,
   VocabText,
@@ -27,6 +28,7 @@ import {
   readVocabFallback,
   type VocabError,
   type VocabFallback,
+  type VocabGroupNode,
   type VocabNode,
   type VocabPanel,
 } from "../../../shared/plugins/vocabulary";
@@ -84,8 +86,18 @@ function VocabNodeView({
         </div>
       );
     }
+    case "group":
+      return (
+        <VocabGroupSection node={node} context={context}>
+          {node.children.map((child, index) => (
+            <VocabNodeView key={index} node={child} context={context} />
+          ))}
+        </VocabGroupSection>
+      );
     case "text":
       return <VocabText node={node} />;
+    case "markdown":
+      return <VocabMarkdown node={node} context={context} />;
     case "badge":
       return <VocabBadge node={node} />;
     case "button":
@@ -120,6 +132,92 @@ function VocabNodeView({
       // not render nothing.
       return <VocabUnknown node={{ component: "__unknown", name: "unknown" }} />;
   }
+}
+
+/**
+ * A `group`, drawn as the disclosure it is.
+ *
+ * The children are built by the CALLER and passed in, rather than walked here,
+ * so the recursion stays in one place — `VocabNodeView` is the only thing in
+ * this file that knows how a node becomes React, and a second walker would be a
+ * second answer to that question.
+ *
+ * The closed body is unmounted, not hidden. A section a reader has folded away
+ * should cost nothing: an image inside it must not load, and a hundred rows
+ * inside it must not lay out. That is the same reasoning behind `active` on the
+ * render context, applied one level down.
+ */
+function VocabGroupSection({
+  node,
+  context,
+  children,
+}: {
+  node: VocabGroupNode;
+  context: VocabRenderContext;
+  children: React.ReactNode;
+}) {
+  const open = context.groupOpen(node);
+  return (
+    <section style={{ display: "grid", gap: 8, minWidth: 0 }}>
+      <button
+        type="button"
+        aria-expanded={open}
+        onClick={() => context.toggleGroup(node)}
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 6,
+          padding: "3px 4px",
+          background: "transparent",
+          border: "none",
+          borderRadius: RADII.sm,
+          cursor: "pointer",
+          textAlign: "left",
+          minWidth: 0,
+        }}
+      >
+        <CaretRight
+          size={11}
+          weight="bold"
+          color={COLORS.textMuted}
+          aria-hidden
+          style={{
+            flexShrink: 0,
+            transform: open ? "rotate(90deg)" : "none",
+            transition: "transform 120ms ease",
+          }}
+        />
+        <span
+          style={{
+            fontFamily: SANS_FONT,
+            fontSize: 11.5,
+            fontWeight: 600,
+            color: COLORS.textSecondary,
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+            whiteSpace: "nowrap",
+          }}
+        >
+          {node.title}
+        </span>
+        {node.badge ? (
+          <span
+            style={{
+              fontFamily: SANS_FONT,
+              fontSize: 11,
+              color: COLORS.textDim,
+              fontVariantNumeric: "tabular-nums",
+            }}
+          >
+            {node.badge}
+          </span>
+        ) : null}
+      </button>
+      {open ? (
+        <div style={{ display: "grid", gap: 12, paddingLeft: 16, minWidth: 0 }}>{children}</div>
+      ) : null}
+    </section>
+  );
 }
 
 /** Render a parsed panel's body. Assumes validation already happened. */

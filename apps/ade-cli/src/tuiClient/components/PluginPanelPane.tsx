@@ -2,7 +2,7 @@ import React from "react";
 import { Box, Text } from "ink";
 
 import { Chip, Pill, Rail, Rule, StatusDot } from "./designKit";
-import type { PluginPaneRow } from "../pluginPane";
+import type { PluginPaneRow, VocabMarkdownSpan } from "../pluginPane";
 import { pluginPaneWindow } from "../pluginPane";
 import { theme } from "../theme";
 import type { RightPaneContent } from "../types";
@@ -45,6 +45,35 @@ function endTruncate(value: string, max: number): string {
  * window. Three lines is what the sibling panes allow.
  */
 const WRAPPED_ROW_LINES = 3;
+
+/**
+ * {@link endTruncate} across a run list, cutting the run the budget lands in and
+ * dropping the rest.
+ *
+ * A markdown row is many `Text` elements, so the row's line budget has to be
+ * spent across them rather than applied to any one — truncating each run
+ * separately would let a paragraph of twenty runs draw twenty times the budget.
+ */
+function truncateSpans(
+  parts: readonly VocabMarkdownSpan[],
+  max: number,
+): VocabMarkdownSpan[] {
+  const budget = Math.max(1, max);
+  const kept: VocabMarkdownSpan[] = [];
+  let used = 0;
+  for (const span of parts) {
+    const cost = span.text.length + (span.href !== undefined ? span.href.length + 3 : 0);
+    if (used + cost <= budget) {
+      kept.push(span);
+      used += cost;
+      continue;
+    }
+    const room = budget - used;
+    if (room > 1) kept.push({ ...span, text: endTruncate(span.text, room) });
+    break;
+  }
+  return kept.length > 0 ? kept : [{ text: endTruncate(parts[0]?.text ?? "", budget) }];
+}
 
 function pad(value: string, width: number, align: "left" | "right"): string {
   const clipped = endTruncate(value, width);
@@ -120,11 +149,20 @@ function PluginRow({
     }
     case "listItem": {
       const selected = row.selection !== null && row.selection === selectionIndex;
+      // The tick box is its own cursor stop, so a reader can stand on the box
+      // without standing on the row's press. Only the box lights up then — the
+      // title stays in its own tone, because the thing under the cursor is the
+      // batch, not the row.
+      const ticking = row.tick !== null && row.tick.selection === selectionIndex;
       const meta = row.meta ? ` · ${row.meta}` : "";
       // The badge is bracketed rather than coloured on its own, because the
       // title line is already one `Text` and splitting it would cost the
       // truncation that keeps a long title from wrapping the pane.
       const badge = row.badge ? ` [${row.badge.text}]` : "";
+      // ASCII, deliberately: `☑` is a double-width glyph in some terminals and
+      // a missing one in others, and a checkbox that shifts the whole line by a
+      // column as it is ticked is worse than one that never moves.
+      const box = row.tick ? `${row.tick.checked ? "[x]" : "[ ]"} ` : "";
       return (
         <Box flexDirection="column">
           <Text
@@ -133,8 +171,13 @@ function PluginRow({
             wrap="truncate-end"
           >
             {lead}
-            <Rail on={selected} />
-            {` ${endTruncate(`${row.title}${badge}${meta}`, Math.max(4, inner - 2))}`}
+            <Rail on={selected || ticking} />
+            {box ? (
+              <Text color={ticking ? theme.color.violet : row.tick?.checked ? theme.color.t1 : theme.color.t4} bold={ticking || row.tick?.checked}>
+                {` ${box}`}
+              </Text>
+            ) : null}
+            {`${box ? "" : " "}${endTruncate(`${row.title}${badge}${meta}`, Math.max(4, inner - 2 - box.length))}`}
           </Text>
           {row.subtitle ? (
             <Text color={theme.color.t4} dimColor wrap="truncate-end">
@@ -162,6 +205,44 @@ function PluginRow({
         <Text color={theme.color.t2} wrap="truncate-end">
           {lead}
           {row.cells.map((cell, index) => pad(cell, row.widths[index] ?? 3, row.aligns[index] ?? "left")).join(" ")}
+        </Text>
+      );
+    }
+    case "group": {
+      // The house disclosure glyph, the same one the chats and activity panes
+      // fold their sections with, so one triangle means one thing everywhere in
+      // this client.
+      const focused = row.selection === selectionIndex;
+      return (
+        <Text
+          color={focused ? theme.color.violet : theme.color.t1}
+          bold
+          wrap="truncate-end"
+        >
+          {lead}
+          <Rail on={focused} />
+          {` ${row.open ? "▾" : "▸"} ${endTruncate(row.title, Math.max(4, inner - 4))}`}
+          {row.badge ? <Text color={theme.color.t4} dimColor>{`  ${row.badge}`}</Text> : null}
+        </Text>
+      );
+    }
+    case "bulkBar": {
+      // The count leads, because it is the half of this bar that is not a
+      // button: it names the batch the verbs beside it would spend.
+      return (
+        <Text wrap="truncate-end">
+          {lead}
+          <Text color={theme.color.violet} bold>{`${row.count} selected  `}</Text>
+          {row.buttons.map((button, index) => (
+            <Text key={`${button.label}:${index}`}>
+              {index > 0 ? <Text>{" "}</Text> : null}
+              <Pill
+                label={button.label}
+                active={button.selection !== null && button.selection === selectionIndex}
+                disabled={button.disabled}
+              />
+            </Text>
+          ))}
         </Text>
       );
     }
@@ -234,6 +315,27 @@ function PluginRow({
         </Text>
       );
     }
+    case "menu": {
+      // A collection-bound control with thirty options. One line, not thirty
+      // pills: the option in force, its place in the list so the reader knows
+      // there are others, and the ←/→ gesture that reaches them.
+      const focused = row.selection === selectionIndex;
+      const place = row.count > 0 ? `${row.position}/${row.count}` : "";
+      return (
+        <Text wrap="truncate-end">
+          {lead}
+          <Rail on={focused} />
+          {row.label ? <Text color={theme.color.t4} dimColor>{` ${row.label}  `}</Text> : " "}
+          <Text color={focused ? theme.color.violet : theme.color.t1} bold>
+            {endTruncate(row.value, Math.max(6, inner - 14))}
+          </Text>
+          {row.badge ? <Text color={theme.color.t4} dimColor>{` ${row.badge}`}</Text> : null}
+          <Text color={theme.color.t4} dimColor>
+            {`  ${place}${focused ? " ←→" : ""}`}
+          </Text>
+        </Text>
+      );
+    }
     case "submit": {
       return (
         <Box marginTop={1}>
@@ -242,6 +344,43 @@ function PluginRow({
             <Pill label={row.label} active={row.selection === selectionIndex} />
           </Text>
         </Box>
+      );
+    }
+    case "markdown": {
+      const bold = row.variant === "title" || row.variant === "subtitle";
+      const base = row.variant === "code" ? theme.color.t1 : theme.color.t2;
+      // Same budget as a `text` row, applied across the runs rather than to one
+      // string: a paragraph may wrap to three lines and no further, or a long
+      // issue body would push the pane's own footer off the window.
+      const parts = truncateSpans(row.parts, inner * WRAPPED_ROW_LINES - row.prefix.length);
+      return (
+        <Text color={base} bold={bold} wrap="wrap">
+          {lead}
+          {row.prefix ? <Text color={theme.color.t4} dimColor>{row.prefix}</Text> : null}
+          {parts.map((span, index) => (
+            <Text key={`${index}:${span.text.length}`}>
+              <Text
+                bold={bold || span.bold === true}
+                italic={span.italic === true}
+                strikethrough={span.strike === true}
+                underline={span.href !== undefined}
+                color={span.href !== undefined
+                  ? theme.color.violet
+                  : span.code === true
+                    ? theme.color.t1
+                    : base}
+              >
+                {span.text}
+              </Text>
+              {/* A terminal cannot hide a destination behind a word, and should
+                  not try: the URL is printed beside the words it belongs to, so
+                  the reader can see and copy where a link goes. */}
+              {span.href !== undefined ? (
+                <Text color={theme.color.t4} dimColor>{` (${span.href})`}</Text>
+              ) : null}
+            </Text>
+          ))}
+        </Text>
       );
     }
     case "note": {

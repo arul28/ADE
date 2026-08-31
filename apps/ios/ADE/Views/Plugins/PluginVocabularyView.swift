@@ -31,8 +31,12 @@ struct PluginVocabularyNodeView: View {
     switch node {
     case let .stack(stack):
       PluginVocabStackView(stack: stack, store: store)
+    case let .group(group):
+      PluginVocabGroupView(group: group, store: store)
     case let .text(text):
       PluginVocabTextView(text: text)
+    case let .markdown(markdown):
+      PluginVocabMarkdownView(markdown: markdown, store: store)
     case let .badge(badge):
       PluginVocabBadgeView(badge: badge)
     case let .button(button):
@@ -143,6 +147,74 @@ private struct PluginVocabStackView: View {
   }
 }
 
+/// A titled section the reader can collapse.
+///
+/// A native disclosure, drawn by hand rather than with `DisclosureGroup`,
+/// because the open/closed bit is the STORE's and not this view's: it has to
+/// survive a republish of the panel, and a `@State` inside a view SwiftUI is
+/// free to rebuild would not. The header is one button over the whole row —
+/// title, badge and chevron — so the tap target is the width of the section
+/// rather than a triangle.
+///
+/// Nothing here is panel state. The section's open/closed is client-local: it
+/// never signs, never reaches a `where`, and never rides on an action.
+private struct PluginVocabGroupView: View {
+  let group: PluginVocabGroup
+  @ObservedObject var store: PluginPaneStore
+
+  private var isOpen: Bool { store.groupIsOpen(group) }
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 8) {
+      Button {
+        ADEHaptics.light()
+        withAnimation(.easeInOut(duration: 0.18)) {
+          store.toggleGroup(group)
+        }
+      } label: {
+        HStack(spacing: 8) {
+          Image(systemName: "chevron.right")
+            .font(.system(size: 10, weight: .semibold))
+            .foregroundStyle(ADEColor.textMuted)
+            .rotationEffect(.degrees(isOpen ? 90 : 0))
+          Text(group.title)
+            .font(.subheadline.weight(.semibold))
+            .foregroundStyle(ADEColor.textPrimary)
+            .lineLimit(1)
+          if let badge = group.badge {
+            Text(badge)
+              .font(.caption2.weight(.medium))
+              .monospacedDigit()
+              .foregroundStyle(ADEColor.textSecondary)
+              .padding(.horizontal, 6)
+              .padding(.vertical, 2)
+              .background(ADEColor.surfaceBackground.opacity(0.6), in: Capsule())
+          }
+          Spacer(minLength: 0)
+        }
+        .contentShape(Rectangle())
+      }
+      .buttonStyle(.plain)
+      .accessibilityLabel(group.title)
+      .accessibilityValue(isOpen ? "Expanded" : "Collapsed")
+      .accessibilityHint("Shows or hides this section")
+
+      if isOpen {
+        VStack(alignment: .leading, spacing: 12) {
+          ForEach(Array(group.children.enumerated()), id: \.offset) { _, child in
+            PluginVocabularyNodeView(node: child, store: store)
+          }
+        }
+        // Indented under the chevron, so a nested section reads as belonging to
+        // the one above it rather than as a sibling of it.
+        .padding(.leading, 18)
+        .frame(maxWidth: .infinity, alignment: .leading)
+      }
+    }
+    .frame(maxWidth: .infinity, alignment: .leading)
+  }
+}
+
 private struct PluginVocabDividerView: View {
   let label: String?
 
@@ -246,9 +318,19 @@ private struct PluginVocabKeyValueView: View {
 /// segmented picker would squeeze all of that into unreadable slivers. The
 /// capsules scroll horizontally instead, which is what the row actions beside
 /// them already do.
+/// Over ``PluginVocabLimits/maxStateOptions`` resolved options it stops being a
+/// strip and becomes a menu naming the current choice. Fifty capsules in a
+/// horizontal scroller is not a control — and a collection-bound list is exactly
+/// where fifty comes from, since the row count is the reader's workspace rather
+/// than anything the schema could have known. The decision is
+/// ``PluginVocabState/controlStyle(_:)``, shared with every other client.
 private struct PluginVocabSegmentedView: View {
   let segmented: PluginVocabSegmented
   @ObservedObject var store: PluginPaneStore
+
+  /// The store's resolved control — literal options plus whatever `optionsFrom`
+  /// pulled out of the collection.
+  private var declaration: PluginVocabStateDeclaration { store.declaration(for: segmented) }
 
   var body: some View {
     VStack(alignment: .leading, spacing: 6) {
@@ -257,20 +339,68 @@ private struct PluginVocabSegmentedView: View {
           .font(.caption)
           .foregroundStyle(ADEColor.textSecondary)
       }
-      ScrollView(.horizontal, showsIndicators: false) {
-        HStack(spacing: 6) {
-          ForEach(segmented.options) { option in
-            optionButton(option)
-          }
-        }
-        .padding(.vertical, 1)
+      if PluginVocabState.controlStyle(declaration) == .menu {
+        menu
+      } else {
+        strip
       }
-      // Radio semantics, not tabs: the options change what a list CONTAINS
-      // rather than which panel is showing.
-      .accessibilityElement(children: .contain)
-      .accessibilityLabel(segmented.label ?? "Filter")
     }
     .frame(maxWidth: .infinity, alignment: .leading)
+  }
+
+  private var strip: some View {
+    ScrollView(.horizontal, showsIndicators: false) {
+      HStack(spacing: 6) {
+        ForEach(declaration.options) { option in
+          optionButton(option)
+        }
+      }
+      .padding(.vertical, 1)
+    }
+    // Radio semantics, not tabs: the options change what a list CONTAINS
+    // rather than which panel is showing.
+    .accessibilityElement(children: .contain)
+    .accessibilityLabel(segmented.label ?? "Filter")
+  }
+
+  private var menu: some View {
+    let current = store.selectedValue(in: segmented)
+    let chosen = declaration.options.first { $0.value == current }
+    return Menu {
+      ForEach(declaration.options) { option in
+        Button {
+          store.select(option, in: segmented)
+        } label: {
+          if option.value == current {
+            Label(option.label, systemImage: "checkmark")
+          } else {
+            Text(option.label)
+          }
+        }
+      }
+    } label: {
+      HStack(spacing: 6) {
+        Text(chosen?.label ?? current)
+          .font(.caption.weight(.medium))
+          .foregroundStyle(ADEColor.textPrimary)
+          .lineLimit(1)
+        if let badge = chosen?.badge {
+          Text(badge)
+            .font(.caption2)
+            .monospacedDigit()
+            .foregroundStyle(ADEColor.textMuted)
+        }
+        Image(systemName: "chevron.up.chevron.down")
+          .font(.system(size: 9, weight: .semibold))
+          .foregroundStyle(ADEColor.textMuted)
+      }
+      .padding(.horizontal, 10)
+      .padding(.vertical, 6)
+      .background(ADEColor.surfaceBackground.opacity(0.5), in: Capsule())
+      .overlay(Capsule().stroke(ADEColor.border.opacity(0.18), lineWidth: 0.5))
+    }
+    .accessibilityLabel(segmented.label ?? "Filter")
+    .accessibilityValue(chosen?.label ?? current)
   }
 
   private func optionButton(_ option: PluginVocabStateOption) -> some View {
@@ -304,20 +434,146 @@ private struct PluginVocabListView: View {
   let list: PluginVocabList
   @ObservedObject var store: PluginPaneStore
 
+  /// The list's `selectable`, but only once the store has actually declared it.
+  ///
+  /// A list past ``PluginVocabLimits/maxSelectionKeys`` parses its `selectable`
+  /// and gets no declaration, so it draws its rows and no ticks — the honest
+  /// failure for a panel that asked for three selections, rather than
+  /// checkboxes that write into a set nothing reads.
+  private var selectable: PluginVocabSelectable? {
+    guard let selectable = list.selectable,
+          store.selectionDeclaration(for: selectable) != nil else { return nil }
+    return selectable
+  }
+
+  /// The keys of the rows currently ON SCREEN, in draw order.
+  ///
+  /// Both the bar's count and its dispatch read the selection through these, so
+  /// a batch can never contain a row a filter is hiding.
+  private var visibleRowKeys: [String] {
+    (list.items ?? []).compactMap(\.key)
+  }
+
   var body: some View {
     let items = list.items ?? []
     if items.isEmpty {
       PluginInlineEmptyText(text: list.emptyText ?? "Nothing here yet.")
     } else {
-      VStack(spacing: 0) {
+      VStack(alignment: .leading, spacing: 0) {
         ForEach(Array(items.enumerated()), id: \.offset) { index, item in
           if index > 0 {
             Divider().overlay(ADEColor.border.opacity(0.4))
           }
-          PluginVocabListRow(item: item, store: store)
+          PluginVocabListRow(item: item, selectable: selectable, store: store)
+        }
+        if let selectable {
+          PluginVocabBulkBar(
+            selectable: selectable,
+            visibleRowKeys: visibleRowKeys,
+            store: store
+          )
         }
       }
     }
+  }
+}
+
+/// The bar a selection earns: how many rows, the declared verbs, and a Clear.
+///
+/// Drawn only while the VISIBLE selection is non-empty, from the same helper the
+/// dispatch uses — a bar reading "3 selected" that sent four keys would be
+/// acting on a row nobody can see, which is the one thing a selection must never
+/// do. Every verb goes through the store's ordinary action path, so a bulk
+/// `confirm` asks first exactly as a row's does.
+private struct PluginVocabBulkBar: View {
+  let selectable: PluginVocabSelectable
+  let visibleRowKeys: [String]
+  @ObservedObject var store: PluginPaneStore
+
+  private var selected: [String] {
+    store.selectedKeys(in: selectable, visibleRowKeys: visibleRowKeys)
+  }
+
+  var body: some View {
+    let keys = selected
+    if !keys.isEmpty {
+      VStack(alignment: .leading, spacing: 8) {
+        Divider().overlay(ADEColor.border.opacity(0.4))
+        HStack(spacing: 8) {
+          Text("\(keys.count) selected")
+            .font(.caption.weight(.semibold))
+            .monospacedDigit()
+            .foregroundStyle(ADEColor.textPrimary)
+          Spacer(minLength: 8)
+          Button("Clear") {
+            ADEHaptics.light()
+            store.clearSelection(in: selectable)
+          }
+          .font(.caption2.weight(.semibold))
+          .foregroundStyle(ADEColor.textSecondary)
+          .buttonStyle(.plain)
+        }
+        ScrollView(.horizontal, showsIndicators: false) {
+          HStack(spacing: 8) {
+            ForEach(selectable.actions) { entry in
+              PluginVocabBulkActionButton(
+                entry: entry,
+                selectable: selectable,
+                visibleRowKeys: visibleRowKeys,
+                store: store
+              )
+            }
+          }
+          .padding(.vertical, 1)
+        }
+      }
+      .padding(.top, 8)
+      .padding(.bottom, 4)
+      .accessibilityElement(children: .contain)
+      .accessibilityLabel("\(keys.count) rows selected")
+    }
+  }
+}
+
+/// One verb on the bulk bar. The same weight as a row's trailing button,
+/// because it is the same shape parsed by the same reader.
+private struct PluginVocabBulkActionButton: View {
+  let entry: PluginVocabListItemAction
+  let selectable: PluginVocabSelectable
+  let visibleRowKeys: [String]
+  @ObservedObject var store: PluginPaneStore
+
+  private var isBusy: Bool { store.isInFlight(entry.action) }
+  private var isDisabled: Bool { isBusy || !store.canInvoke }
+
+  var body: some View {
+    Button {
+      ADEHaptics.light()
+      store.performBulk(entry, in: selectable, visibleRowKeys: visibleRowKeys)
+    } label: {
+      HStack(spacing: 5) {
+        if isBusy {
+          ProgressView().controlSize(.mini)
+        } else if PluginSymbol.drawsIcon(entry.icon) {
+          PluginSymbol.glyph(entry.icon, fallback: "puzzlepiece.extension", pointSize: 10)
+        }
+        Text(entry.label)
+          .font(.caption2.weight(.semibold))
+      }
+      .foregroundStyle(entry.kind == .primary ? ADEColor.accent : ADEColor.textPrimary)
+      .padding(.horizontal, 10)
+      .padding(.vertical, 5)
+      .background(
+        entry.kind == .primary
+          ? ADEColor.accent.opacity(0.14)
+          : ADEColor.surfaceBackground.opacity(0.5),
+        in: Capsule()
+      )
+      .overlay(Capsule().stroke(ADEColor.border.opacity(0.18), lineWidth: 0.5))
+    }
+    .buttonStyle(ADEScaleButtonStyle())
+    .disabled(isDisabled)
+    .opacity(isDisabled && !isBusy ? 0.5 : 1)
   }
 }
 
@@ -328,21 +584,38 @@ private struct PluginVocabListView: View {
 /// button inside a button would swallow the taps meant for the inner one.
 private struct PluginVocabListRow: View {
   let item: PluginVocabListItem
+  /// Set when this list declared a selection the store actually holds.
+  var selectable: PluginVocabSelectable?
   @ObservedObject var store: PluginPaneStore
+
+  /// The tick is drawn only for a row that HAS an identity.
+  ///
+  /// A row with no `key` draws no affordance at all rather than one that would
+  /// put an empty string into a batch: a title is not an identity and two issues
+  /// can share one.
+  private var tickKey: String? {
+    guard selectable != nil, let key = item.key, !key.isEmpty else { return nil }
+    return key
+  }
 
   var body: some View {
     VStack(alignment: .leading, spacing: 0) {
-      if let action = item.onPress {
-        Button {
-          ADEHaptics.light()
-          store.perform(action)
-        } label: {
+      HStack(spacing: 10) {
+        if let tickKey, let selectable {
+          tick(rowKey: tickKey, selectable: selectable)
+        }
+        if let action = item.onPress {
+          Button {
+            ADEHaptics.light()
+            store.perform(action)
+          } label: {
+            content
+          }
+          .buttonStyle(.plain)
+          .disabled(!store.canInvoke || store.isInFlight(action))
+        } else {
           content
         }
-        .buttonStyle(.plain)
-        .disabled(!store.canInvoke || store.isInFlight(action))
-      } else {
-        content
       }
       if !item.actions.isEmpty || !item.overflow.isEmpty {
         HStack(spacing: 8) {
@@ -357,6 +630,37 @@ private struct PluginVocabListRow: View {
         .padding(.bottom, 9)
       }
     }
+  }
+
+  /// The row's tick.
+  ///
+  /// A DISTINCT control beside the row, never a mode over it: the row's own
+  /// `onPress` still works while a selection is being assembled, so a reader can
+  /// open an issue and go back to ticking without leaving some "selection mode"
+  /// first — and a row with no key draws nothing here at all.
+  ///
+  /// There is deliberately NO range gesture. Shift-click is a desktop pointer
+  /// idiom with no honest phone equivalent: a long press already belongs to the
+  /// system's own menu and a drag belongs to the scroll view, so
+  /// ``PluginVocabState/rowRange(_:anchor:target:)`` is mirrored and tested but
+  /// unused here. Ticking one row at a time is the degradation, and it is the
+  /// right one — slower, never wrong.
+  private func tick(rowKey: String, selectable: PluginVocabSelectable) -> some View {
+    let isTicked = store.isSelected(rowKey: rowKey, in: selectable)
+    return Button {
+      ADEHaptics.light()
+      store.toggle(rowKey: rowKey, in: selectable)
+    } label: {
+      Image(systemName: isTicked ? "checkmark.circle.fill" : "circle")
+        .font(.system(size: 17, weight: .regular))
+        .foregroundStyle(isTicked ? store.accent : ADEColor.textMuted)
+        .frame(width: 26, height: 34)
+        .contentShape(Rectangle())
+    }
+    .buttonStyle(.plain)
+    .accessibilityLabel(item.title)
+    .accessibilityValue(isTicked ? "Selected" : "Not selected")
+    .accessibilityAddTraits(isTicked ? [.isButton, .isSelected] : .isButton)
   }
 
   private var content: some View {

@@ -72,9 +72,47 @@ extension PluginVocabulary {
 /// out of a panel schema.
 extension PluginVocabLimits {
   /// Distinct `segmented` state keys in one panel.
-  static let maxStateKeys = 4
-  /// Options on one `segmented` control.
+  ///
+  /// Eight rather than four, because four was one filter axis short of the
+  /// panels people actually write: an issue browser wants state, project,
+  /// assignee, priority, sort and a text search, and the `group` node
+  /// deliberately does NOT spend a key, so a panel with seven collapsible
+  /// groups still has its whole filter budget. Eight is still small enough that
+  /// every key fits in one `$state` `keyValue` node without scrolling.
+  static let maxStateKeys = 8
+  /// Literal options written into one `segmented` control's `options`.
   static let maxStateOptions = 8
+  /// Options one control may hold once `optionsFrom` has resolved.
+  ///
+  /// Higher than ``maxStateOptions`` because the two are different objects. A
+  /// literal list is read at a glance and drawn as a strip of pills, so eight is
+  /// where a strip stops fitting; a collection-bound list is a workspace's
+  /// projects or labels, drawn as a menu, and a real workspace has thirty. Fifty
+  /// is where a flat menu stops being findable and the honest answer becomes a
+  /// search field the vocabulary does not have yet — and it sits under
+  /// ``maxKeyValueRows`` (60), so no client draws a longer list than one it
+  /// already draws.
+  static let maxBoundStateOptions = 50
+  /// `list` nodes in one panel that may declare `selectable`.
+  ///
+  /// Two, not eight. A selection owns a bar across the panel and one word —
+  /// "3 selected" — and two lists both claiming that bar is already a panel that
+  /// needs splitting. Two covers the one shape that is not a mistake: a detail
+  /// panel offering a batch over its issues and a batch over its pull requests.
+  static let maxSelectionKeys = 2
+  /// Rows selectable at once in one list.
+  ///
+  /// The same number as ``maxListItems``, on purpose: the ceiling on a selection
+  /// is the ceiling on what a list can draw, so "select everything on screen" is
+  /// always expressible and never silently drops the tail.
+  static let maxSelectedRows = 100
+  /// Buttons on one list's bulk-action bar.
+  ///
+  /// Four, where a row's own trailing actions stop at three: a row shares its
+  /// width with its title, subtitle and chip, while the bar has the whole panel
+  /// and draws the count and Clear itself. A fifth verb over a selection is a
+  /// menu, and the vocabulary has no menu.
+  static let maxBulkActions = 4
   /// Top-level clauses on one binding's `where`. They are ANDed.
   static let maxWhereClauses = 4
   /// Nesting depth of `and`/`or`/`not`. A top-level clause is depth 1.
@@ -109,15 +147,94 @@ struct PluginVocabStateOption: Equatable, Identifiable {
   var badge: String?
 }
 
+/// Where a control's options come from, when they are not written in the schema.
+///
+/// A literal option list caps at ``PluginVocabLimits/maxStateOptions``, which is
+/// right for "All / Active / Failed" and useless for "project", because a real
+/// workspace has thirty of those and the plugin cannot know their names when it
+/// writes the schema. The plugin already materializes them — it is writing them
+/// into a collection for the list beside the control — so this points the
+/// control at that collection instead of asking the author to inline a list they
+/// do not have.
+///
+/// It is a ``PluginVocabBinding`` minus the parts that would make it a second
+/// query language: no `limit` (the ceiling is the ceiling), no `where` (a filter
+/// over a filter's own options is a puzzle), no `allowActions` (an option
+/// presses nothing). The plugin decides which rows are options by which rows it
+/// writes. Mirrors `VocabStateOptionsBinding`.
+struct PluginVocabStateOptionsBinding: Equatable {
+  var collection: String
+  /// Restricts to keys with this prefix, exactly as a node binding's does.
+  var keyPrefix: String?
+  /// Top-level field of the row holding the option's value.
+  var valueField: String
+  /// Top-level field holding the label. Falls back to the value.
+  var labelField: String?
+}
+
 /// What a `segmented` node contributes to the panel's state, lifted out of the
 /// node tree so the store can build the initial state without walking it twice.
 struct PluginVocabStateDeclaration: Equatable, Identifiable {
   var id: String { stateKey }
   var stateKey: String
   var label: String?
+  /// Every option the control offers: the literal ones first, then whatever
+  /// ``optionsFrom`` resolved to. Literals first because that is where the "All"
+  /// sentinel is written, and a reader looks for it at the top.
   var options: [PluginVocabStateOption]
   /// The option selected when the panel first renders. Always a declared value.
   var initial: String
+  /// How the author asked for it to be drawn. See
+  /// ``PluginVocabState/controlStyle(_:)``.
+  var style: PluginVocabSegmented.Style?
+  /// Set when the options came from a collection rather than from the schema.
+  var optionsFrom: PluginVocabStateOptionsBinding?
+}
+
+/// What a `list` node's `selectable` contributes, in the shape the store holds.
+///
+/// The bulk actions are named by id only. The buttons themselves are node data;
+/// the ids are all the lifecycle needs, because they are what decides whether a
+/// re-published panel is offering the same control. Mirrors
+/// `VocabSelectionDeclaration`.
+struct PluginVocabSelectionDeclaration: Equatable, Identifiable {
+  var id: String { stateKey }
+  var stateKey: String
+  /// Most rows selectable at once, already clamped to the ceiling.
+  var max: Int
+  /// The bulk action ids, in the order they are drawn.
+  var actionIds: [String]
+}
+
+/// The rows a reader has ticked, per `selectable` list.
+///
+/// A second map beside ``PluginVocabPanelState`` rather than a value inside it,
+/// because the two hold different shapes — one string against a closed option
+/// list, versus an open set of row keys — and folding a set into a delimited
+/// string would put a parser between the reader's tick and the panel's redraw,
+/// and would leak into `$state` and into the `state` payload, neither of which
+/// wants a hundred issue ids in it.
+///
+/// Everything else about the two is deliberately identical: same per-panel,
+/// per-viewer, session-only lifetime; same signature/normalize pair; same reset
+/// verb. Mirrors `VocabPanelSelection`.
+typealias PluginVocabPanelSelection = [String: [String]]
+
+/// What a client actually draws for a state control, including the one form an
+/// author cannot ask for.
+///
+/// `menu` is computed, never declared. A strip of pills is the right picture for
+/// three states and the wrong one for thirty projects, and the author of a
+/// collection-bound control cannot know which they will get — the row count is
+/// the reader's workspace, not the schema. So the decision is made from the
+/// resolved list, once, and every surface reads it: over
+/// ``PluginVocabLimits/maxStateOptions`` the control is a menu that names the
+/// current choice, under it the strip it has always been. Mirrors
+/// `VocabStateControlStyle`.
+enum PluginVocabStateControlStyle: String, Equatable {
+  case segmented
+  case toggle
+  case menu
 }
 
 /// A closed set of options with one selected, owning a named piece of CLIENT
@@ -141,9 +258,24 @@ struct PluginVocabSegmented: Equatable {
   /// Shown beside the control, and used as the `$state` row's key.
   var label: String?
   var options: [PluginVocabStateOption]
-  /// Selected on first render, already resolved from the schema's `default`.
+  /// Selected on first render.
+  ///
+  /// For a literal control this is already resolved from the schema's `default`
+  /// against the option list. For a BOUND control it is the author's `default`
+  /// VERBATIM: resolving it against the literal options — which is right for a
+  /// literal control, where that list is the whole control — would throw away a
+  /// default naming a row nobody has fetched yet, every time. The resolution
+  /// moves to ``declaration(resolved:)``, which runs where the rows are.
   var initial: String
   var style: Style = .segmented
+  /// Take the rest of the options from a collection the plugin already writes.
+  ///
+  /// For the option list an author cannot inline because they do not know it: a
+  /// workspace's projects, its labels, its assignees. The literal ``options``
+  /// are still drawn, first, which is where the "All" sentinel goes — so a bound
+  /// control declaring `[{value: "", label: "All projects"}]` reads the same as
+  /// a literal one and needs no second concept for "no filter".
+  var optionsFrom: PluginVocabStateOptionsBinding?
   /// Also dispatch this action on change, for a plugin that wants to know.
   var onChange: PluginVocabAction?
 
@@ -151,9 +283,41 @@ struct PluginVocabSegmented: Equatable {
   ///
   /// The node is what renders and the declaration is what the store holds, and
   /// they are deliberately different shapes: the store needs the key, the
-  /// options and the initial value with nothing optional left to resolve.
-  var declaration: PluginVocabStateDeclaration {
-    PluginVocabStateDeclaration(stateKey: stateKey, label: label, options: options, initial: initial)
+  /// options and the initial value with nothing optional left to resolve, so
+  /// that ``PluginVocabState/initialState(_:)`` and
+  /// ``PluginVocabState/signature(_:)`` never have to repeat the `default`
+  /// fallback and never disagree about it. Mirrors `vocabSegmentedDeclaration`.
+  ///
+  /// - Parameter resolved: the options ``optionsFrom`` resolved to, when the
+  ///   caller has the rows. A store that has not fetched them yet passes
+  ///   nothing and gets the literal options, which is a working control on its
+  ///   "All" — never a control with no options at all.
+  func declaration(resolved: [PluginVocabStateOption]? = nil) -> PluginVocabStateDeclaration {
+    let merged: [PluginVocabStateOption]
+    if optionsFrom != nil, let resolved {
+      merged = PluginVocabState.mergeStateOptions(options, resolved)
+    } else {
+      merged = options
+    }
+    // A bound control opens on the unset "All" unless its declared default is
+    // already among the resolved options. Falling back to the first option the
+    // way a literal control does would open it on whichever project the
+    // collection happened to yield first, which is a filter the reader did not
+    // ask for and a different one on every machine.
+    let start: String
+    if optionsFrom != nil {
+      start = merged.contains { $0.value == initial } ? initial : ""
+    } else {
+      start = initial
+    }
+    return PluginVocabStateDeclaration(
+      stateKey: stateKey,
+      label: label,
+      options: merged,
+      initial: start,
+      style: style,
+      optionsFrom: optionsFrom
+    )
   }
 }
 
@@ -426,22 +590,34 @@ enum PluginVocabState {
   /// force. Over ``PluginVocabLimits/maxStateKeys`` the extras are dropped: their
   /// controls still render and still set state, they simply share nothing with a
   /// `where`, which is the honest failure for a panel that declared too many.
-  static func declarations(in body: [PluginVocabNode]) -> [PluginVocabStateDeclaration] {
+  /// - Parameter resolveOptions: the options a control's `optionsFrom` resolves
+  ///   to, from rows the store has already fetched. A caller with no rows yet
+  ///   omits it and gets each control's literal options, which is a working
+  ///   control on its "All" rather than an empty one — and the signature does
+  ///   not move when the rows do land, so the reader's selection survives that
+  ///   transition. See ``signature(_:)``.
+  static func declarations(
+    in body: [PluginVocabNode],
+    resolveOptions: (PluginVocabStateOptionsBinding) -> [PluginVocabStateOption] = { _ in [] }
+  ) -> [PluginVocabStateDeclaration] {
     var found: [PluginVocabStateDeclaration] = []
     var seen = Set<String>()
 
     func walk(_ nodes: [PluginVocabNode]) {
       for node in nodes {
-        switch node {
-        case let .stack(stack):
-          walk(stack.children)
-        case let .segmented(segmented):
-          guard !seen.contains(segmented.stateKey), found.count < PluginVocabLimits.maxStateKeys else { continue }
-          seen.insert(segmented.stateKey)
-          found.append(segmented.declaration)
-        default:
+        guard case let .segmented(segmented) = node else {
+          // Every container, through the one accessor — a `segmented` inside a
+          // `group` declares its key exactly as one inside a `stack` does.
+          walk(node.childNodes)
           continue
         }
+        guard !seen.contains(segmented.stateKey), found.count < PluginVocabLimits.maxStateKeys else { continue }
+        seen.insert(segmented.stateKey)
+        // A caller with no rows leaves the default resolver in place and gets
+        // the empty list, which merges to exactly the literal options — the
+        // same answer TypeScript gives for an absent resolver.
+        let resolved = segmented.optionsFrom.map { resolveOptions($0) }
+        found.append(segmented.declaration(resolved: resolved))
       }
     }
 
@@ -456,6 +632,76 @@ enum PluginVocabState {
     return state
   }
 
+  // MARK: Collection-bound options
+
+  /// A collection's rows as a control's options.
+  ///
+  /// Reads exactly two top-level fields of each row and coerces them the way a
+  /// predicate reads a field, not the way a cell is displayed — an option's
+  /// value is compared against a row's field by `where`, and `true` must compare
+  /// as `"true"` on both sides rather than as `"Yes"` on one of them.
+  ///
+  /// A row with no readable value is dropped rather than becoming a blank
+  /// option: the empty value is the "All" sentinel and a collection cannot be
+  /// allowed to mint a second one. Duplicates collapse, first row winning,
+  /// exactly as a literal list's do. Mirrors `vocabResolveStateOptions`.
+  ///
+  /// - Parameter rows: the stored VALUE of each collection row, in the order the
+  ///   store read them.
+  static func resolveStateOptions(
+    _ binding: PluginVocabStateOptionsBinding,
+    rows: [Any?]
+  ) -> [PluginVocabStateOption] {
+    var options: [PluginVocabStateOption] = []
+    var seen = Set<String>()
+    for row in rows {
+      guard let object = row as? [String: Any] else { continue }
+      let value = String(fieldText(object[binding.valueField]).prefix(PluginVocabLimits.maxStateIdChars))
+      if value.isEmpty || seen.contains(value) { continue }
+      let label = binding.labelField.flatMap { PluginPanelParser.stateText(object[$0]) } ?? value
+      seen.insert(value)
+      options.append(PluginVocabStateOption(
+        value: value,
+        label: label,
+        badge: PluginPanelParser.parseStateBadge(object["badge"])
+      ))
+      if options.count >= PluginVocabLimits.maxBoundStateOptions { break }
+    }
+    return options
+  }
+
+  /// The literal options and the resolved ones as one list, capped.
+  ///
+  /// Literals first because that is where the "All" sentinel lives and a reader
+  /// looks for it at the top; a resolved value that repeats a literal one loses,
+  /// because the literal is the option the author wrote a label for. Mirrors
+  /// `vocabMergeStateOptions`.
+  static func mergeStateOptions(
+    _ literal: [PluginVocabStateOption],
+    _ resolved: [PluginVocabStateOption]
+  ) -> [PluginVocabStateOption] {
+    var options = literal
+    var seen = Set(literal.map(\.value))
+    for option in resolved {
+      if seen.contains(option.value) { continue }
+      seen.insert(option.value)
+      options.append(option)
+      if options.count >= PluginVocabLimits.maxBoundStateOptions { break }
+    }
+    return options
+  }
+
+  /// How this control is actually drawn. See ``PluginVocabStateControlStyle``:
+  /// `menu` is computed from the resolved option count and is the one form an
+  /// author cannot ask for. Mirrors `vocabStateControlStyle`.
+  static func controlStyle(_ declaration: PluginVocabStateDeclaration) -> PluginVocabStateControlStyle {
+    if declaration.options.count > PluginVocabLimits.maxStateOptions { return .menu }
+    switch declaration.style ?? .segmented {
+    case .segmented: return .segmented
+    case .toggle: return .toggle
+    }
+  }
+
   /// Identity of a panel's CONTROLS, not of its data.
   ///
   /// State is session-scoped and must survive a re-publish: a plugin that
@@ -464,8 +710,31 @@ enum PluginVocabState {
   /// NOT survive a change to the controls themselves, because an option that no
   /// longer exists cannot stay selected. The signature is exactly the controls —
   /// keys, option values, and their order.
+  ///
+  /// A control whose options came from a collection signs its BINDING instead of
+  /// its resolved values, and that difference is the whole reason `optionsFrom`
+  /// is usable. Its options are data: a project created in another window, or
+  /// the second page of a fetch landing, would otherwise change the signature
+  /// and drop the reader's filter — an unusable control, for a change they did
+  /// not make and cannot see. The binding is what the author declared, so it
+  /// moves only when the schema does. The fine reconciliation still applies: a
+  /// value that is no longer an option falls back through
+  /// ``normalize(_:declarations:)``.
+  ///
+  /// The two signatures never travel between clients — this one is compared only
+  /// against itself, one panel and one process at a time — so what matters is
+  /// that the same schema change moves it here and in TypeScript alike, not that
+  /// the two spell the same string.
   static func signature(_ declarations: [PluginVocabStateDeclaration]) -> String {
-    let shape: [[Any]] = declarations.map { [$0.stateKey, $0.initial, $0.options.map(\.value)] }
+    let shape: [[Any]] = declarations.map { declaration -> [Any] in
+      guard let binding = declaration.optionsFrom else {
+        return [declaration.stateKey, declaration.initial, declaration.options.map(\.value)]
+      }
+      return [
+        declaration.stateKey,
+        ["$from", binding.collection, binding.keyPrefix ?? "", binding.valueField, binding.labelField ?? ""],
+      ]
+    }
     guard let data = try? JSONSerialization.data(withJSONObject: shape),
           let text = String(data: data, encoding: .utf8) else {
       // Unreachable for arrays of strings, and a distinct value rather than "" so
@@ -557,6 +826,225 @@ enum PluginVocabState {
       return next
     }
   }
+
+  // MARK: - Selection lifecycle
+
+  /// Every selectable list a parsed panel declares, in reading order, first
+  /// declaration winning.
+  ///
+  /// The same rule and the same reason as ``declarations(in:resolveOptions:)``:
+  /// the first one is the list the reader sees highest on the page, and a list
+  /// past ``PluginVocabLimits/maxSelectionKeys`` still draws its rows — it
+  /// simply draws no ticks and no bar, which is the honest failure for a panel
+  /// that asked for three selections. Mirrors
+  /// `collectVocabSelectionDeclarations`.
+  static func selectionDeclarations(in body: [PluginVocabNode]) -> [PluginVocabSelectionDeclaration] {
+    var found: [PluginVocabSelectionDeclaration] = []
+    var seen = Set<String>()
+
+    func walk(_ nodes: [PluginVocabNode]) {
+      for node in nodes {
+        if case let .list(list) = node, let selectable = list.selectable {
+          if !seen.contains(selectable.stateKey), found.count < PluginVocabLimits.maxSelectionKeys {
+            seen.insert(selectable.stateKey)
+            found.append(PluginVocabSelectionDeclaration(
+              stateKey: selectable.stateKey,
+              max: selectable.max,
+              actionIds: selectable.actions.map(\.action.action)
+            ))
+          }
+        }
+        walk(node.childNodes)
+      }
+    }
+
+    walk(body)
+    return found
+  }
+
+  /// The selection a freshly opened panel starts in: every list, nothing ticked.
+  static func initialSelection(
+    _ declarations: [PluginVocabSelectionDeclaration]
+  ) -> PluginVocabPanelSelection {
+    var selection: PluginVocabPanelSelection = [:]
+    for declaration in declarations { selection[declaration.stateKey] = [] }
+    return selection
+  }
+
+  /// Identity of a panel's selectable LISTS, not of their rows.
+  ///
+  /// Row keys are deliberately absent. A plugin republishing its rows every few
+  /// seconds changes which rows exist constantly, and a selection that emptied
+  /// on each of those would make a batch impossible to assemble — the same
+  /// argument that keeps ``signature(_:)`` off the data. What resets a selection
+  /// is the CONTROL changing: a different state key, a different cap, or a
+  /// different set of bulk actions, all of which mean the panel is offering
+  /// something other than what the reader ticked rows for. Mirrors
+  /// `vocabSelectionSignature`.
+  static func selectionSignature(_ declarations: [PluginVocabSelectionDeclaration]) -> String {
+    let shape: [[Any]] = declarations.map { [$0.stateKey, $0.max, $0.actionIds] }
+    guard let data = try? JSONSerialization.data(withJSONObject: shape),
+          let text = String(data: data, encoding: .utf8) else {
+      // Unreachable for strings and ints, and a distinct value rather than ""
+      // so a failure reads as "these lists changed", not "fresh panel".
+      return declarations.map(\.stateKey).joined(separator: "\u{1}")
+    }
+    return text
+  }
+
+  /// Carry a reader's ticks onto a newly parsed panel.
+  ///
+  /// Keys the new schema does not declare are dropped and the cap is re-applied,
+  /// so a republish that lowered `max` cannot leave more rows ticked than the
+  /// control now allows. Row keys the panel no longer holds are NOT pruned here
+  /// — see ``selectedRowKeys(_:stateKey:rowKeys:)``, which is where a selection
+  /// meets the rows that actually rendered. Mirrors
+  /// `vocabNormalizePanelSelection`.
+  static func normalizeSelection(
+    _ selection: PluginVocabPanelSelection,
+    declarations: [PluginVocabSelectionDeclaration]
+  ) -> PluginVocabPanelSelection {
+    var next: PluginVocabPanelSelection = [:]
+    for declaration in declarations {
+      var kept: [String] = []
+      for key in selection[declaration.stateKey] ?? [] {
+        if key.isEmpty || kept.contains(key) { continue }
+        kept.append(key)
+        if kept.count >= declaration.max { break }
+      }
+      next[declaration.stateKey] = kept
+    }
+    return next
+  }
+
+  /// Tick or untick one row.
+  ///
+  /// At the cap, ticking a new row is REFUSED rather than evicting the oldest
+  /// one. A silent eviction would take a row out of a batch the reader believes
+  /// they assembled, and the count on the bar is the only thing that could have
+  /// told them — untick is a gesture they have, a row vanishing from under them
+  /// is not. Unticking always works, cap or no cap. Mirrors
+  /// `vocabToggleRowSelection`.
+  static func toggleRow(
+    _ selection: PluginVocabPanelSelection,
+    declaration: PluginVocabSelectionDeclaration,
+    rowKey: String
+  ) -> PluginVocabPanelSelection {
+    guard !rowKey.isEmpty else { return selection }
+    var next = selection
+    var current = selection[declaration.stateKey] ?? []
+    if let index = current.firstIndex(of: rowKey) {
+      current.remove(at: index)
+      next[declaration.stateKey] = current
+      return next
+    }
+    guard current.count < declaration.max else { return selection }
+    current.append(rowKey)
+    next[declaration.stateKey] = current
+    return next
+  }
+
+  /// Tick every row of a range, keeping what was already ticked.
+  ///
+  /// A union rather than a replacement: extending a second range must not throw
+  /// away the first one, which is what a reader assembling a batch out of two
+  /// clusters is doing. Fills to the cap and stops there, for the same reason
+  /// ``toggleRow(_:declaration:rowKey:)`` refuses — the rows it could not take
+  /// are the tail of the range the reader can see, not rows it silently swapped
+  /// out. Mirrors `vocabSelectRowRange`.
+  static func selectRange(
+    _ selection: PluginVocabPanelSelection,
+    declaration: PluginVocabSelectionDeclaration,
+    rowKeys: [String]
+  ) -> PluginVocabPanelSelection {
+    let current = selection[declaration.stateKey] ?? []
+    var next = current
+    for key in rowKeys {
+      if key.isEmpty || next.contains(key) { continue }
+      if next.count >= declaration.max { break }
+      next.append(key)
+    }
+    guard next.count != current.count else { return selection }
+    var updated = selection
+    updated[declaration.stateKey] = next
+    return updated
+  }
+
+  /// Untick everything in one list. What the bar's own Clear does.
+  static func clearSelection(
+    _ selection: PluginVocabPanelSelection,
+    declaration: PluginVocabSelectionDeclaration
+  ) -> PluginVocabPanelSelection {
+    guard !(selection[declaration.stateKey] ?? []).isEmpty else { return selection }
+    var next = selection
+    next[declaration.stateKey] = []
+    return next
+  }
+
+  /// The inclusive slice between two rows, in the order they are drawn.
+  ///
+  /// The range-anchor half of shift-click, shared rather than left to each
+  /// client, because "between" has two answers when the reader drags upwards and
+  /// a client that picked the other one would tick a different set from the same
+  /// gesture. An anchor or a target that is not on screen yields just the
+  /// target, which is what a plain click does — the honest reading of "extend
+  /// from a row that is no longer there".
+  ///
+  /// iOS declares no gesture that produces one (see ``PluginVocabListView``);
+  /// it is mirrored here anyway so the rule has one definition and a phone that
+  /// grows a keyboard-modifier gesture inherits the desktop answer rather than
+  /// inventing a second one. Mirrors `vocabRowRange`.
+  static func rowRange(_ rowKeys: [String], anchor: String?, target: String) -> [String] {
+    guard let targetIndex = rowKeys.firstIndex(of: target) else { return [] }
+    guard let anchor, let anchorIndex = rowKeys.firstIndex(of: anchor) else { return [target] }
+    let from = min(anchorIndex, targetIndex)
+    let to = max(anchorIndex, targetIndex)
+    return Array(rowKeys[from...to])
+  }
+
+  /// The ticked rows that are actually on screen, in the order they are drawn.
+  ///
+  /// What the bar counts and what a bulk action is handed, and the reason the
+  /// stored set is allowed to keep a key whose row is gone. A reader ticks four
+  /// rows, moves a filter that hides two of them, and presses "Create lanes":
+  /// the two they can see are the batch, because acting on a row nobody can see
+  /// is the one outcome a selection must never produce. Moving the filter back
+  /// brings the other two — and their ticks — with it, which a prune at filter
+  /// time would not. Mirrors `vocabSelectedRowKeys`.
+  static func selectedRowKeys(
+    _ selection: PluginVocabPanelSelection,
+    stateKey: String,
+    rowKeys: [String]
+  ) -> [String] {
+    let ticked = selection[stateKey] ?? []
+    guard !ticked.isEmpty else { return [] }
+    let wanted = Set(ticked)
+    return rowKeys.filter { wanted.contains($0) }
+  }
+
+  /// Apply a `{resetState}` to the selection.
+  ///
+  /// One verb for both maps. A plugin answering a bulk action with
+  /// `{resetState: true}` has almost always just acted on every ticked row, and
+  /// leaving them ticked would offer to do it again to rows that have moved on.
+  /// A named list resets only that key, exactly as a named state key does.
+  /// Mirrors `vocabResetPanelSelection`.
+  static func resetSelection(
+    _ selection: PluginVocabPanelSelection,
+    declarations: [PluginVocabSelectionDeclaration],
+    reset: PluginInvokeStateReset
+  ) -> PluginVocabPanelSelection {
+    switch reset {
+    case .all:
+      return initialSelection(declarations)
+    case let .keys(keys):
+      var next = selection
+      for key in keys where declarations.contains(where: { $0.stateKey == key }) {
+        next[key] = []
+      }
+      return next
+    }
+  }
 }
 
 // MARK: - Parsing
@@ -633,6 +1121,28 @@ extension PluginPanelParser {
     return options.first?.value ?? ""
   }
 
+  /// A control's `optionsFrom`, or `nil` when it is not a usable binding.
+  ///
+  /// `collection` and `valueField` are both required: without the first there is
+  /// nothing to read and without the second every row would resolve to the same
+  /// empty value, which is one option, not thirty. A malformed binding degrades
+  /// to "this control has only its literal options", which is a control that
+  /// still works — the same direction a broken `where` degrades in. Mirrors
+  /// `parseVocabStateOptionsBinding`.
+  static func parseStateOptionsBinding(_ raw: Any?) -> PluginVocabStateOptionsBinding? {
+    guard let object = raw as? [String: Any],
+          let collection = stateText(object["collection"]),
+          let valueField = stateText(object["valueField"]) else {
+      return nil
+    }
+    return PluginVocabStateOptionsBinding(
+      collection: collection,
+      keyPrefix: stateText(object["keyPrefix"]),
+      valueField: valueField,
+      labelField: stateText(object["labelField"])
+    )
+  }
+
   static func parseSegmented(
     _ object: [String: Any],
     path: String,
@@ -642,17 +1152,28 @@ extension PluginPanelParser {
       return invalid("segmented", "`stateKey` is required and may not start with `$`", path: path, context: &context)
     }
     let options = parseStateOptions(object["options"])
+    let optionsFrom = parseStateOptionsBinding(object["optionsFrom"])
     // One option is not a choice, and a control the reader cannot change is a
-    // filter permanently stuck wherever the author left it. Two is the floor.
-    guard options.count >= 2 else {
+    // filter permanently stuck wherever the author left it. Two is the floor —
+    // but only for a control whose options are all in the schema. A bound
+    // control's second option is a row that has not arrived yet, and failing it
+    // at parse would make "the collection is empty right now" a broken node.
+    guard optionsFrom != nil || options.count >= 2 else {
       return invalid("segmented", "`options` needs at least two distinct values", path: path, context: &context)
     }
+    // A bound control keeps the author's `default` VERBATIM; a literal one
+    // resolves it against the option list here. See
+    // ``PluginVocabSegmented/declaration(resolved:)`` for why the two differ.
+    let initial = optionsFrom == nil
+      ? stateInitial(options, declared: object["default"])
+      : stateText(object["default"], max: PluginVocabLimits.maxStateIdChars) ?? ""
     var node = PluginVocabSegmented(
       stateKey: stateKey,
       label: cleanString(object["label"], max: PluginVocabLimits.maxLabelChars),
       options: options,
-      initial: stateInitial(options, declared: object["default"])
+      initial: initial
     )
+    node.optionsFrom = optionsFrom
     // A "toggle" with three options is a segmented control the author
     // mislabelled. Drawing it as a switch would hide an option, so the
     // declaration loses.

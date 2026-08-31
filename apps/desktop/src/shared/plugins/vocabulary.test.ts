@@ -11,13 +11,17 @@ import {
   coerceBoundListItem,
   coerceBoundTableRow,
   collectVocabBindings,
+  collectVocabSelectionDeclarations,
+  collectVocabStateDeclarations,
   countVocabNodes,
   distinctBindings,
   isKnownVocabComponent,
   normalizeVocabTone,
   parsePluginPanel,
   readVocabFallback,
+  vocabChildNodes,
   vocabFallbackText,
+  vocabGroupKey,
   type VocabNode,
 } from "./vocabulary";
 
@@ -651,5 +655,221 @@ describe("bound rows", () => {
     expect(boundRowValues(bind, [])).toEqual([]);
     expect(boundRowValues(bind, [{ value: 1 }, { value: 2 }, { value: 3 }])).toEqual([1, 2]);
     expect(boundRowValues({ collection: "issues" }, [{ value: 1 }, { value: 2 }])).toEqual([1, 2]);
+  });
+});
+
+/* ── Groups ─────────────────────────────────────────────────────────────── */
+
+/**
+ * The `group` node, and the invariant that pays for it: a container the walkers
+ * do not know about is a container whose controls declare nothing and whose
+ * bindings nobody fetches. Every case here is mirrored in
+ * `PluginVocabGroupSelectionTests` on iOS and in "the group node in the
+ * terminal" in `pluginPane.test.ts`.
+ */
+describe("the group node", () => {
+  it("a group parses and its children count against the node budget", () => {
+    const result = parsePluginPanel(panel([
+      {
+        component: "group",
+        title: "In Progress",
+        groupKey: "started",
+        badge: 4,
+        defaultOpen: false,
+        children: [
+          { component: "text", text: "inside" },
+          { component: "list", items: [{ title: "bc-1" }] },
+        ],
+      },
+    ]));
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const group = result.panel.body[0];
+    expect(group).toMatchObject({
+      component: "group",
+      title: "In Progress",
+      groupKey: "started",
+      badge: "4",
+      defaultOpen: false,
+    });
+    // One for the group and one for each child: a folded section is cheap to
+    // draw, never cheap to declare.
+    expect(countVocabNodes(result.panel.body)).toBe(3);
+  });
+
+  it("refuses a group with no title and keeps its siblings", () => {
+    const result = parsePluginPanel(panel([
+      { component: "group", children: [{ component: "text", text: "orphan" }] },
+      { component: "text", text: "after" },
+    ]));
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.panel.body[0]).toMatchObject({ component: "__invalid", name: "group" });
+    expect(result.panel.body[1]).toMatchObject({ component: "text", text: "after" });
+  });
+
+  it("a segmented inside a group still declares its state key", () => {
+    const result = parsePluginPanel(panel([
+      {
+        component: "group",
+        title: "Filters",
+        defaultOpen: false,
+        children: [{
+          component: "segmented",
+          stateKey: "statusFilter",
+          options: [{ value: "", label: "All" }, { value: "active", label: "Active" }],
+        }],
+      },
+    ]));
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    // Declared off the parsed tree, not off whatever a client chose to draw —
+    // which is what lets a folded section hold a working filter.
+    expect(collectVocabStateDeclarations(result.panel.body).map((entry) => entry.stateKey))
+      .toEqual(["statusFilter"]);
+  });
+
+  it("fetches a collection a group holds, folded or not", () => {
+    const schema = panel([
+      {
+        component: "group",
+        title: "Backlog",
+        defaultOpen: false,
+        children: [{ component: "list", bind: { collection: "issues", keyPrefix: "backlog:" } }],
+      },
+    ]);
+    expect(distinctBindings(schema)).toEqual([{ collection: "issues", keyPrefix: "backlog:" }]);
+  });
+
+  it("remembers a section by its key, never by where it sits", () => {
+    const result = parsePluginPanel(panel([
+      { component: "group", title: "In Progress", groupKey: "started", children: [] },
+      { component: "group", title: "Done", children: [] },
+    ]));
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const [first, second] = result.panel.body;
+    expect(first?.component === "group" ? vocabGroupKey(first) : null).toBe("started");
+    // No `groupKey` falls back to the title, which is still an identity a
+    // republish that inserted a section above it cannot move.
+    expect(second?.component === "group" ? vocabGroupKey(second) : null).toBe("Done");
+  });
+
+  it("names the children of every container in one place", () => {
+    const result = parsePluginPanel(panel([
+      { component: "group", title: "G", children: [{ component: "text", text: "a" }] },
+      { component: "stack", children: [{ component: "text", text: "b" }] },
+      { component: "text", text: "c" },
+    ]));
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.panel.body.map((node) => vocabChildNodes(node).length)).toEqual([1, 1, 0]);
+  });
+});
+
+/* ── Selection ──────────────────────────────────────────────────────────── */
+
+describe("a selectable list", () => {
+  const bulk = { action: "create-lanes", label: "Create lanes" };
+
+  it("parses a selectable and caps its bulk actions", () => {
+    const result = parsePluginPanel(panel([{
+      component: "list",
+      items: [{ title: "bc-1", key: "1" }],
+      selectable: {
+        stateKey: "issues",
+        max: 40,
+        actions: [
+          bulk,
+          { action: "b", label: "B" },
+          { action: "c", label: "C" },
+          { action: "d", label: "D" },
+          { action: "e", label: "E" },
+        ],
+      },
+    }]));
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const list = result.panel.body[0];
+    expect(list?.component === "list" ? list.selectable : null).toMatchObject({
+      stateKey: "issues",
+      max: 40,
+    });
+    expect(list?.component === "list" ? list.selectable?.actions.length : null)
+      .toBe(VOCAB_LIMITS.maxBulkActions);
+  });
+
+  it("clamps a declared cap to the ceiling and falls back to it", () => {
+    const read = (max: unknown) => {
+      const result = parsePluginPanel(panel([{
+        component: "list",
+        items: [{ title: "t" }],
+        selectable: { stateKey: "issues", actions: [bulk], max },
+      }]));
+      if (!result.ok) return null;
+      const list = result.panel.body[0];
+      return list?.component === "list" ? list.selectable?.max ?? null : null;
+    };
+    expect(read(9_000)).toBe(VOCAB_LIMITS.maxSelectedRows);
+    expect(read(undefined)).toBe(VOCAB_LIMITS.maxSelectedRows);
+    expect(read(0)).toBe(VOCAB_LIMITS.maxSelectedRows);
+    expect(read(12)).toBe(12);
+  });
+
+  it("a selectable with no usable action is dropped", () => {
+    const result = parsePluginPanel(panel([{
+      component: "list",
+      items: [{ title: "t" }],
+      // A tick the reader cannot spend is a checkbox over an empty bar.
+      selectable: { stateKey: "issues", actions: [{ action: "go" }] },
+    }]));
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const list = result.panel.body[0];
+    expect(list?.component).toBe("list");
+    expect(list?.component === "list" ? list.selectable : "unset").toBeUndefined();
+  });
+
+  it("only two lists in one panel may claim the bar", () => {
+    const list = (stateKey: string) => ({
+      component: "list",
+      items: [{ title: stateKey }],
+      selectable: { stateKey, actions: [bulk] },
+    });
+    const result = parsePluginPanel(panel([
+      list("a"),
+      { component: "group", title: "G", children: [list("b")] },
+      list("c"),
+    ]));
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(collectVocabSelectionDeclarations(result.panel.body).map((entry) => entry.stateKey))
+      .toEqual(["a", "b"]);
+  });
+
+  it("an over-long item key is refused rather than truncated", () => {
+    const long = "x".repeat(VOCAB_LIMITS.maxIdChars + 1);
+    const result = parsePluginPanel(panel([{
+      component: "list",
+      items: [{ title: "kept", key: long }, { title: "keyed", key: "bc-1" }],
+    }]));
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const list = result.panel.body[0];
+    const items = list?.component === "list" ? list.items ?? [] : [];
+    // The row still renders; it simply cannot be ticked, because an identity cut
+    // at the ceiling names nothing.
+    expect(items[0]).toMatchObject({ title: "kept" });
+    expect(items[0]?.key).toBeUndefined();
+    expect(items[1]?.key).toBe("bc-1");
+  });
+
+  it("a bound list's rows inherit their collection key", () => {
+    const row = { title: "bc-1", subtitle: "Fix the login redirect" };
+    expect(coerceBoundListItem(row, undefined, "issue-14")?.key).toBe("issue-14");
+    // A value that names its own key keeps it: the row is the authority on its
+    // own identity when it has said what it is.
+    expect(coerceBoundListItem({ ...row, key: "own" }, undefined, "issue-14")?.key).toBe("own");
+    expect(coerceBoundListItem(row)?.key).toBeUndefined();
   });
 });

@@ -34,6 +34,71 @@ extension PluginPanelParser {
     return .stack(stack)
   }
 
+  /// A string REFUSED when it is too long, rather than shortened.
+  ///
+  /// ``cleanString`` appends an ellipsis when it truncates, which is right for a
+  /// title and wrong for an identity: a row key cut at the ceiling — with or
+  /// without the ellipsis — names no row and no plugin record, and it would ride
+  /// into a batch pointing at nothing. So an over-long key is refused, which
+  /// leaves the row unselectable and visibly so. Mirrors `bounded` in
+  /// `parse.ts`, the reader `readListItem` uses for exactly this field.
+  static func boundedString(_ raw: Any?, max: Int) -> String? {
+    guard let text = raw as? String else { return nil }
+    let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmed.isEmpty, trimmed.count <= max else { return nil }
+    return trimmed
+  }
+
+  /// A media source, refused when it is too long rather than shortened.
+  ///
+  /// The one field where ``cleanString`` was actively harmful, and the phone had
+  /// it wrong in both directions: it read a `src` at ``PluginVocabLimits/maxValueChars``
+  /// (1,000) where the contract says 8,192, and it TRUNCATED where the contract
+  /// refuses. A `data:` thumbnail between those two numbers therefore drew on
+  /// desktop and silently broke here — cut at 1,000 it still begins
+  /// `data:image/png`, so it passes the renderer's scheme check and then decodes
+  /// to nothing, and the appended ellipsis corrupts the base64 even where the
+  /// cut happened to land on a byte boundary.
+  ///
+  /// So this draws the opposite conclusion from the same fact: a source over the
+  /// ceiling is not a long source, it is an unusable one, and the node parsers
+  /// turn `nil` here into their own honest empty state. Mirrors `vocabMediaSrc`
+  /// in `vocabularyNodes.ts`.
+  static func mediaSrc(_ raw: Any?) -> String? {
+    boundedString(raw, max: PluginVocabLimits.maxSrcChars)
+  }
+
+  /// A titled section the reader can collapse.
+  ///
+  /// A `stack` with a disclosure and a title, and the title is the one required
+  /// field: a disclosure with no word on it is a triangle the reader has to open
+  /// to find out what they opened. Its children are parsed exactly as a stack's
+  /// are and count against the same node budget, because they are nodes.
+  ///
+  /// Nothing here touches panel state — see ``PluginVocabGroup`` for why
+  /// open/closed is client-local. Mirrors the `group` arm of `NODE_PARSERS`.
+  static func parseGroup(
+    _ object: [String: Any],
+    path: String,
+    depth: Int,
+    context: inout ParseContext
+  ) -> PluginVocabNode {
+    guard let title = cleanString(object["title"], max: PluginVocabLimits.maxLabelChars) else {
+      return invalid("group", "`title` is required", path: path, context: &context)
+    }
+    var group = PluginVocabGroup(title: title)
+    group.groupKey = cleanString(object["groupKey"], max: PluginVocabLimits.maxIdChars)
+    group.badge = parseStateBadge(object["badge"])
+    group.defaultOpen = boolValue(object["defaultOpen"]) ?? true
+    for (index, child) in (object["children"] as? [Any] ?? []).enumerated() {
+      guard let node = parseNode(child, path: "\(path).children[\(index)]", depth: depth + 1, context: &context) else {
+        break
+      }
+      group.children.append(node)
+    }
+    return .group(group)
+  }
+
   static func parseText(
     _ object: [String: Any],
     path: String,
@@ -48,6 +113,32 @@ extension PluginPanelParser {
     }
     node.tone = PluginVocabTone.normalize(object["tone"])
     return .text(node)
+  }
+
+  /// Mirrors the `markdown` arm of `NODE_PARSERS`.
+  ///
+  /// NOT ``cleanString``: its ellipsis would be appended INSIDE the document, so
+  /// a cut that landed in a fence would render `…` as code and the marker the
+  /// reader needs would be invisible. Over the ceiling the node keeps the text
+  /// it can and says so in a field, which is what the view reads to decide
+  /// between drawing prose and drawing the source.
+  static func parseMarkdown(
+    _ object: [String: Any],
+    path: String,
+    context: inout ParseContext
+  ) -> PluginVocabNode {
+    guard let raw = object["text"] as? String else {
+      return invalid("markdown", "`text` is required", path: path, context: &context)
+    }
+    let source = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !source.isEmpty else {
+      return invalid("markdown", "`text` is required", path: path, context: &context)
+    }
+    let truncated = source.count > PluginVocabLimits.maxMarkdownChars
+    return .markdown(PluginVocabMarkdown(
+      text: truncated ? String(source.prefix(PluginVocabLimits.maxMarkdownChars)) : source,
+      truncated: truncated
+    ))
   }
 
   static func parseBadge(
@@ -101,8 +192,37 @@ extension PluginPanelParser {
     return .list(PluginVocabList(
       items: items,
       bind: bind,
-      emptyText: cleanString(object["emptyText"], max: PluginVocabLimits.maxValueChars)
+      emptyText: cleanString(object["emptyText"], max: PluginVocabLimits.maxValueChars),
+      selectable: parseSelectable(object["selectable"])
     ))
+  }
+
+  /// A `list` node's `selectable`, or `nil`.
+  ///
+  /// A selection with no verb is a set of ticks the reader cannot spend, so a
+  /// `selectable` declaring no usable action is dropped whole rather than
+  /// drawing checkboxes over an empty bar. The bulk buttons go through the SAME
+  /// reader a row's trailing buttons do — ``parseAction``, not
+  /// ``boundRowAction`` — because they are the panel author's own words: a bulk
+  /// verb is declared on the node, never supplied by a collection row, which is
+  /// exactly what keeps stored data from minting an action over a hundred rows
+  /// at once. Mirrors `parseSelectable` in `vocabularyNodes.ts`.
+  static func parseSelectable(_ raw: Any?) -> PluginVocabSelectable? {
+    guard let object = raw as? [String: Any],
+          let stateKey = parseStateKey(object["stateKey"]) else {
+      return nil
+    }
+    let actions = parseListItemActions(
+      object["actions"],
+      max: PluginVocabLimits.maxBulkActions,
+      gate: { parseAction($0) }
+    )
+    guard !actions.isEmpty else { return nil }
+    let declared = numberValue(object["max"]).flatMap(pluginVocabInt)
+    let max = (declared ?? 0) >= 1
+      ? Swift.min(declared ?? 0, PluginVocabLimits.maxSelectedRows)
+      : PluginVocabLimits.maxSelectedRows
+    return PluginVocabSelectable(stateKey: stateKey, actions: actions, max: max)
   }
 
   /// How a list row's actions are admitted.
@@ -165,13 +285,24 @@ extension PluginPanelParser {
   /// One list row, however it arrived. Shared by ``parseListItem`` and
   /// ``parseBoundListItem`` so a declared row and a bound row read every field
   /// the same way and differ only in `gate`.
-  static func readListItem(_ raw: Any?, gate: ActionGate) -> PluginVocabListItem? {
+  ///
+  /// - Parameter fallbackKey: the collection row's own primary key, used as the
+  ///   row's identity when the stored value declares no `key` of its own. The
+  ///   same rule ``parseKeyValueRow`` and the store's binding resolution already
+  ///   apply for the same reason: a collection row HAS a key, and making a
+  ///   plugin repeat it inside the value just to make its rows selectable would
+  ///   be a second identity that can disagree with the first.
+  static func readListItem(_ raw: Any?, gate: ActionGate, fallbackKey: String? = nil) -> PluginVocabListItem? {
     guard let object = raw as? [String: Any],
           let title = cleanString(object["title"], max: PluginVocabLimits.maxLabelChars) else {
       return nil
     }
     return PluginVocabListItem(
       title: title,
+      // `boundedString`, never `cleanString`: an over-long key is REFUSED, not
+      // ellipsized — see ``boundedString(_:max:)``.
+      key: boundedString(object["key"], max: PluginVocabLimits.maxIdChars)
+        ?? boundedString(fallbackKey, max: PluginVocabLimits.maxIdChars),
       subtitle: cleanString(object["subtitle"], max: PluginVocabLimits.maxValueChars),
       meta: cleanString(object["meta"], max: PluginVocabLimits.maxLabelChars),
       tone: PluginVocabTone.normalize(object["tone"]),
@@ -215,8 +346,12 @@ extension PluginPanelParser {
   /// Every action on the row — `onPress`, `actions` and `overflow` alike —
   /// passes through ``boundRowAction``, so a row can press exactly the ids the
   /// panel's binding allowed and nothing else.
-  static func parseBoundListItem(_ raw: Any?, allowActions: [String]?) -> PluginVocabListItem? {
-    readListItem(raw, gate: { boundRowAction($0, allowActions: allowActions) })
+  static func parseBoundListItem(
+    _ raw: Any?,
+    allowActions: [String]?,
+    rowKey: String? = nil
+  ) -> PluginVocabListItem? {
+    readListItem(raw, gate: { boundRowAction($0, allowActions: allowActions) }, fallbackKey: rowKey)
   }
 
   static func parseTable(
@@ -436,12 +571,12 @@ extension PluginPanelParser {
     path: String,
     context: inout ParseContext
   ) -> PluginVocabNode {
-    guard let src = cleanString(object["src"], max: PluginVocabLimits.maxValueChars) else {
+    guard let src = mediaSrc(object["src"]) else {
       return invalid("video", "`src` is required", path: path, context: &context)
     }
     return .video(PluginVocabVideo(
       src: src,
-      poster: cleanString(object["poster"], max: PluginVocabLimits.maxValueChars),
+      poster: mediaSrc(object["poster"]),
       title: cleanString(object["title"], max: PluginVocabLimits.maxLabelChars)
     ))
   }
@@ -451,7 +586,7 @@ extension PluginPanelParser {
     path: String,
     context: inout ParseContext
   ) -> PluginVocabNode {
-    guard let src = cleanString(object["src"], max: PluginVocabLimits.maxValueChars) else {
+    guard let src = mediaSrc(object["src"]) else {
       return invalid("image", "`src` is required", path: path, context: &context)
     }
     guard let alt = cleanString(object["alt"], max: PluginVocabLimits.maxLabelChars) else {

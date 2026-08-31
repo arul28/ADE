@@ -10,6 +10,11 @@ import {
   pluginFormValueKey,
   pluginInteractiveKey,
   pluginPaneBindingRows,
+  pluginPaneClearSelection,
+  pluginPaneSelectionPayload,
+  pluginPaneSelectionReset,
+  pluginPaneToggleGroup,
+  pluginPaneToggleRow,
   pluginPaneStateChange,
   pluginPaneStateCycle,
   pluginPaneStatePayload,
@@ -62,6 +67,9 @@ function build(
     editing?: number | null;
     state?: Record<string, string>;
     stateSignature?: string;
+    selection?: Record<string, readonly string[]>;
+    selectionSignature?: string;
+    openGroups?: Record<string, boolean>;
   } = {},
 ): PluginPaneModel {
   const input: PluginPaneInput = {
@@ -74,6 +82,11 @@ function build(
     editing: options.editing ?? null,
     ...(options.state !== undefined ? { state: options.state } : {}),
     ...(options.stateSignature !== undefined ? { stateSignature: options.stateSignature } : {}),
+    ...(options.selection !== undefined ? { selection: options.selection } : {}),
+    ...(options.selectionSignature !== undefined
+      ? { selectionSignature: options.selectionSignature }
+      : {}),
+    ...(options.openGroups !== undefined ? { openGroups: options.openGroups } : {}),
     width: 40,
   };
   return buildPluginPaneModel(input);
@@ -1213,5 +1226,525 @@ describe("the plugin action prompt", () => {
     expect(pluginPromptTitle(bare.request)).toBe("Log it");
     expect(pluginPromptPlaceholder(bare.request)).toBe("");
     expect(pluginPromptHint(bare.request)).toBe("↵ Submit · esc cancel");
+  });
+});
+
+describe("the markdown node in the terminal", () => {
+  /** Every markdown row of a model, as `prefix + text`, in reading order. */
+  function lines(model: PluginPaneModel): string[] {
+    return model.rows.flatMap((row) =>
+      row.kind === "markdown"
+        ? [`${row.prefix}${row.parts.map((span) => span.text).join("")}`]
+        : []);
+  }
+
+  function markdown(text: string): PluginPaneModel {
+    return build(panel([{ component: "markdown", text }]));
+  }
+
+  it("keeps a document's structure legible rather than degrading to a placeholder", () => {
+    const model = markdown([
+      "## Fix the login redirect",
+      "",
+      "Drops `next` when the session is **stale**.",
+      "",
+      "- [x] Reproduce on main",
+      "- [ ] Add a test",
+      "",
+      "> Reviewer: ready.",
+      "",
+      "```ts",
+      "const next = 1;",
+      "```",
+      "",
+      "---",
+    ].join("\n"));
+
+    // A placeholder is what `image` and `chart` get. Prose is the one thing a
+    // terminal draws as well as anything else, so it is drawn.
+    expect(model.rows.some((row) => row.kind === "placeholder")).toBe(false);
+    expect(lines(model)).toEqual([
+      "Fix the login redirect",
+      "Drops next when the session is stale.",
+      "[x] Reproduce on main",
+      "[ ] Add a test",
+      "> Reviewer: ready.",
+      "const next = 1;",
+    ]);
+    // The rule reuses the pane's own divider rather than inventing a second one.
+    expect(model.rows[model.rows.length - 1]?.kind).toBe("divider");
+  });
+
+  it("carries emphasis as run flags, so the view can bold what the desktop bolds", () => {
+    const model = markdown("A **bold** and _italic_ and ~~gone~~ line.");
+    const row = model.rows.find((entry) => entry.kind === "markdown");
+    if (row?.kind !== "markdown") throw new Error("expected a markdown row");
+    expect(row.parts.find((span) => span.text === "bold")?.bold).toBe(true);
+    expect(row.parts.find((span) => span.text === "italic")?.italic).toBe(true);
+    expect(row.parts.find((span) => span.text === "gone")?.strike).toBe(true);
+  });
+
+  it("keeps an https link's destination beside its words", () => {
+    const model = markdown("See [ADE-122](https://linear.app/ade/issue/ADE-122).");
+    const row = model.rows.find((entry) => entry.kind === "markdown");
+    if (row?.kind !== "markdown") throw new Error("expected a markdown row");
+    const link = row.parts.find((span) => span.href !== undefined);
+    expect([link?.text, link?.href]).toEqual(["ADE-122", "https://linear.app/ade/issue/ADE-122"]);
+  });
+
+  it("refuses a javascript: link and keeps its words, exactly as the app does", () => {
+    const model = markdown("[Click me](javascript:alert(1))");
+    const row = model.rows.find((entry) => entry.kind === "markdown");
+    if (row?.kind !== "markdown") throw new Error("expected a markdown row");
+    expect(row.parts.every((span) => span.href === undefined)).toBe(true);
+    expect(lines(model)).toEqual(["Click me"]);
+  });
+
+  it("draws a script tag as text and never as a row of its own", () => {
+    expect(lines(markdown("<script>alert(1)</script>"))).toEqual(["<script>alert(1)</script>"]);
+  });
+
+  it("keeps a task checkbox inert — it is text, and nothing selects it", () => {
+    const model = markdown("- [x] done\n- [ ] not done");
+    expect(lines(model)).toEqual(["[x] done", "[ ] not done"]);
+    expect(model.interactives).toEqual([]);
+  });
+
+  it("numbers an ordered list from its own start and indents a nested item", () => {
+    expect(lines(markdown("3. three\n4. four"))).toEqual(["3. three", "4. four"]);
+    // The nested bullet sits under the parent's marker, not beside it: the
+    // continuation prefix holds the outer marker's width open.
+    expect(lines(markdown("- one\n  - nested"))).toEqual(["• one", "  • nested"]);
+  });
+
+  it("shows an over-long document as its source, with the line that says why", () => {
+    const model = build(panel([
+      { component: "markdown", text: `# Heading\n\n${"a".repeat(4_000)}` },
+    ]));
+    const first = model.rows[0];
+    expect(first?.kind === "text" && first.variant).toBe("code");
+    expect(first?.kind === "text" && first.text.startsWith("# Heading")).toBe(true);
+    expect(model.rows.some((row) => row.kind === "note" && row.text.includes("shown as written")))
+      .toBe(true);
+  });
+
+  it("says so when a document has more blocks than a panel draws", () => {
+    const model = markdown(Array.from({ length: 140 }, (_u, i) => `p${i}`).join("\n\n"));
+    expect(model.rows.some((row) => row.kind === "note" && row.text.includes("rest of this text")))
+      .toBe(true);
+  });
+});
+
+describe("the group node in the terminal", () => {
+  const GROUP = panel([
+    {
+      component: "group",
+      title: "Backlog",
+      badge: 3,
+      children: [{ component: "text", text: "ISS-1" }],
+    },
+  ]);
+
+  it("draws a header row and hides its children when it is closed", () => {
+    // Absent `defaultOpen` means open — a section nobody has touched shows its
+    // contents — and the reader's own close is a client-local override.
+    const open = build(GROUP);
+    expect(open.rows.map((row) => row.kind)).toEqual(["group", "text"]);
+    const header = open.rows[0];
+    expect(header?.kind === "group" && header.title).toBe("Backlog");
+    expect(header?.kind === "group" && header.badge).toBe("3");
+    expect(header?.kind === "group" && header.open).toBe(true);
+    // Children sit one level in, so the fold reads as a fold.
+    expect(open.rows[1]?.indent).toBe(1);
+
+    const closed = build(GROUP, { openGroups: { Backlog: false } });
+    expect(closed.rows.map((row) => row.kind)).toEqual(["group"]);
+    expect(closed.rows[0]?.kind === "group" && closed.rows[0].open).toBe(false);
+  });
+
+  it("opens on the author's `defaultOpen` until the reader says otherwise", () => {
+    const shut = panel([
+      { component: "group", title: "Done", defaultOpen: false, children: [{ component: "text", text: "old" }] },
+    ]);
+    expect(build(shut).rows.map((row) => row.kind)).toEqual(["group"]);
+    expect(build(shut, { openGroups: { Done: true } }).rows.map((row) => row.kind))
+      .toEqual(["group", "text"]);
+  });
+
+  it("remembers a section by its key, never by where it sits", () => {
+    const model = build(panel([
+      {
+        component: "group",
+        title: "Backlog",
+        groupKey: "backlog",
+        children: [{ component: "text", text: "ISS-1" }],
+      },
+    ]));
+    // The first press folds a section that was open; a `defaultOpen: false`
+    // section reads its answer off the drawn row, so its first press opens it.
+    expect(pluginPaneToggleGroup(model, "backlog")).toEqual({ backlog: false });
+    const folded = build(panel([
+      { component: "text", text: "a new row above" },
+      {
+        component: "group",
+        title: "Backlog",
+        groupKey: "backlog",
+        children: [{ component: "text", text: "ISS-1" }],
+      },
+    ]), { openGroups: { backlog: false } });
+    // The group moved down the panel and stayed closed: identity is the key,
+    // not the position a republish shifted.
+    expect(folded.rows.map((row) => row.kind)).toEqual(["text", "group"]);
+    expect(pluginPaneToggleGroup(folded, "backlog")).toEqual({ backlog: true });
+  });
+
+  it("keeps a group's disclosure a client-local press that dispatches nothing", () => {
+    const model = build(GROUP);
+    expect(model.interactives).toEqual([{ kind: "group", groupKey: "Backlog", label: "Backlog" }]);
+    // Open/closed is not panel state: it never enters the state map, never
+    // signs, and never reaches the `state` payload an action carries.
+    expect(model.state).toEqual({});
+    expect(model.stateSignature).toBe(build(panel([])).stateSignature);
+    expect(pluginPaneStatePayload(model.state)).toBeNull();
+  });
+
+  it("declares a segmented control inside a closed group, and still filters with it", () => {
+    // The load-bearing case for `vocabChildNodes`: declarations and bindings are
+    // collected off the PARSED tree, not off this render walk, so folding a
+    // section cannot silently drop a filter or a fetch.
+    const collections: PluginPaneCollectionMap = new Map([
+      [
+        bindingKey({ collection: "issues" }),
+        [
+          { key: "1", value: { title: "Open one", status: "open" } },
+          { key: "2", value: { title: "Done one", status: "done" } },
+        ],
+      ],
+    ]);
+    const model = build(panel([
+      {
+        component: "group",
+        title: "Filters",
+        defaultOpen: false,
+        children: [
+          {
+            component: "segmented",
+            stateKey: "status",
+            options: [{ value: "", label: "All" }, { value: "open", label: "Open" }],
+            default: "open",
+          },
+        ],
+      },
+      {
+        component: "list",
+        bind: { collection: "issues", where: [{ field: "status", equals: { $state: "status" } }] },
+      },
+    ]), { collections });
+
+    expect(model.declarations.map((entry) => entry.stateKey)).toEqual(["status"]);
+    expect(model.state).toEqual({ status: "open" });
+    // The control is not drawn — that is what closed means — and the list it
+    // filters is.
+    expect(model.rows.some((row) => row.kind === "segmented")).toBe(false);
+    expect(listTitles(model)).toEqual(["Open one"]);
+  });
+});
+
+describe("a selectable list in the terminal", () => {
+  const BATCH = panel([
+    {
+      component: "list",
+      selectable: {
+        stateKey: "batch",
+        actions: [{ action: "createLanes", label: "Create lanes" }],
+      },
+      items: [
+        { title: "ISS-1", key: "iss-1" },
+        { title: "ISS-2", key: "iss-2" },
+        // No key: a title is not an identity and two issues can share one.
+        { title: "Untitled row" },
+      ],
+    },
+  ]);
+
+  it("ticks only the rows that have a key", () => {
+    const model = build(BATCH);
+    expect(model.rows.flatMap((row) => (row.kind === "listItem" ? [[row.title, row.tick !== null]] : [])))
+      .toEqual([["ISS-1", true], ["ISS-2", true], ["Untitled row", false]]);
+    expect(model.interactives.flatMap((entry) => (entry.kind === "selection" ? [entry.rowKey] : [])))
+      .toEqual(["iss-1", "iss-2"]);
+    expect(model.selectionDeclarations)
+      .toEqual([{ stateKey: "batch", max: 100, actionIds: ["createLanes"] }]);
+  });
+
+  it("draws no bulk bar until something visible is ticked", () => {
+    const empty = build(BATCH);
+    expect(empty.selection).toEqual({ batch: [] });
+    expect(empty.rows.some((row) => row.kind === "bulkBar")).toBe(false);
+
+    const ticked = build(BATCH, {
+      selection: { batch: ["iss-2"] },
+      selectionSignature: empty.selectionSignature,
+    });
+    const bar = ticked.rows.find((row) => row.kind === "bulkBar");
+    expect(bar?.kind === "bulkBar" && bar.count).toBe(1);
+    // The plugin's verbs, then the bar's own Clear — which no schema should
+    // have to remember to offer.
+    expect(bar?.kind === "bulkBar" && bar.buttons.map((button) => button.label))
+      .toEqual(["Create lanes", "Clear"]);
+    expect(ticked.rows.flatMap((row) => (row.kind === "listItem" ? [row.tick?.checked ?? null] : [])))
+      .toEqual([false, true, null]);
+  });
+
+  it("leaves a ticked row the filter hid out of the batch, without unticking it", () => {
+    const collections: PluginPaneCollectionMap = new Map([
+      [
+        bindingKey({ collection: "issues" }),
+        [
+          { key: "1", value: { title: "Open one", status: "open" } },
+          { key: "2", value: { title: "Done one", status: "done" } },
+        ],
+      ],
+    ]);
+    const schema = panel([
+      {
+        component: "segmented",
+        stateKey: "status",
+        options: [{ value: "", label: "All" }, { value: "open", label: "Open" }],
+      },
+      {
+        component: "list",
+        bind: { collection: "issues", where: [{ field: "status", equals: { $state: "status" } }] },
+        selectable: { stateKey: "batch", actions: [{ action: "archive", label: "Archive" }] },
+      },
+    ]);
+    const both = build(schema, { collections, selection: { batch: ["1", "2"] } });
+    expect(pluginPaneSelectionPayload(both, "batch")).toEqual(["1", "2"]);
+
+    const filtered = build(schema, {
+      collections,
+      selection: { batch: ["1", "2"] },
+      state: { status: "open" },
+      stateSignature: both.stateSignature,
+    });
+    // Acting on a row nobody can see is the one outcome a selection must never
+    // produce, so the batch is what the reader is looking at…
+    expect(listTitles(filtered)).toEqual(["Open one"]);
+    expect(pluginPaneSelectionPayload(filtered, "batch")).toEqual(["1"]);
+    expect(filtered.rows.find((row) => row.kind === "bulkBar"))
+      .toMatchObject({ kind: "bulkBar", count: 1 });
+    // …and the hidden tick is kept, so moving the filter back brings it with it.
+    expect(filtered.selection).toEqual({ batch: ["1", "2"] });
+  });
+
+  it("inherits a bound row's identity from the collection row's own key", () => {
+    const collections: PluginPaneCollectionMap = new Map([
+      [bindingKey({ collection: "issues" }), [{ key: "iss-9", value: { title: "Ship it" } }]],
+    ]);
+    const model = build(panel([
+      {
+        component: "list",
+        bind: { collection: "issues" },
+        selectable: { stateKey: "batch", actions: [{ action: "archive", label: "Archive" }] },
+      },
+    ]), { collections });
+    // A plugin that already writes `{title}` rows gets selection for free —
+    // repeating the key inside the value would be a second identity that can
+    // disagree with the first.
+    expect(model.interactives).toEqual([
+      { kind: "selection", stateKey: "batch", rowKey: "iss-9", label: "Ship it" },
+    ]);
+  });
+
+  it("toggles one row, refuses a tick past the cap, and clears from the bar", () => {
+    const model = build(panel([
+      {
+        component: "list",
+        selectable: {
+          stateKey: "batch",
+          max: 1,
+          actions: [{ action: "archive", label: "Archive" }],
+        },
+        items: [{ title: "ISS-1", key: "iss-1" }, { title: "ISS-2", key: "iss-2" }],
+      },
+    ]));
+    expect(pluginPaneToggleRow(model, "batch", "iss-1")).toEqual({ batch: ["iss-1"] });
+    // A key belonging to no declared list changes nothing.
+    expect(pluginPaneToggleRow(model, "nope", "iss-1")).toBe(model.selection);
+
+    const full = build(panel([
+      {
+        component: "list",
+        selectable: {
+          stateKey: "batch",
+          max: 1,
+          actions: [{ action: "archive", label: "Archive" }],
+        },
+        items: [{ title: "ISS-1", key: "iss-1" }, { title: "ISS-2", key: "iss-2" }],
+      },
+    ]), { selection: { batch: ["iss-1"] } });
+    // At the cap a new tick is REFUSED rather than evicting the oldest: a row
+    // vanishing from a batch the reader believes they assembled is not a
+    // gesture they have. Unticking always works.
+    expect(pluginPaneToggleRow(full, "batch", "iss-2")).toBe(full.selection);
+    expect(pluginPaneToggleRow(full, "batch", "iss-1")).toEqual({ batch: [] });
+    expect(pluginPaneClearSelection(full, "batch")).toEqual({ batch: [] });
+  });
+
+  it("carries the ticks across a republish and drops a list the schema no longer declares", () => {
+    const first = build(BATCH, { selection: { batch: ["iss-1"] } });
+    expect(first.selection).toEqual({ batch: ["iss-1"] });
+    // Row keys are deliberately absent from the signature: a plugin
+    // republishing its rows every ten seconds must not empty a batch the reader
+    // is still assembling.
+    const republished = build(BATCH, {
+      selection: first.selection,
+      selectionSignature: first.selectionSignature,
+    });
+    expect(republished.selection).toEqual({ batch: ["iss-1"] });
+
+    const renamed = build(panel([
+      {
+        component: "list",
+        selectable: { stateKey: "other", actions: [{ action: "createLanes", label: "Create lanes" }] },
+        items: [{ title: "ISS-1", key: "iss-1" }],
+      },
+    ]), { selection: first.selection, selectionSignature: first.selectionSignature });
+    expect(renamed.selection).toEqual({ other: [] });
+  });
+
+  it("puts the batch back to nothing when an action asks for a reset", () => {
+    const ticked = build(BATCH, { selection: { batch: ["iss-1", "iss-2"] } });
+    expect(pluginPaneSelectionReset(ticked, { resetState: true })).toEqual({ batch: [] });
+    expect(pluginPaneSelectionReset(ticked, { resetState: ["batch"] })).toEqual({ batch: [] });
+    expect(pluginPaneSelectionReset(ticked, { ok: true })).toBeNull();
+  });
+
+  it("identifies a tick by its row and a bulk verb by its action, not by their labels", () => {
+    const ticked = build(BATCH, { selection: { batch: ["iss-1"] } });
+    const tick = ticked.interactives.find((entry) => entry.kind === "selection");
+    const verbs = ticked.interactives.filter((entry) => entry.kind === "bulk");
+    if (!tick) throw new Error("expected a tick interactive");
+    expect(pluginInteractiveKey(ticked, tick))
+      .toBe(JSON.stringify(["graph", "main", "selection", "batch", "iss-1"]));
+    expect(verbs.map((verb) => pluginInteractiveKey(ticked, verb))).toEqual([
+      JSON.stringify(["graph", "main", "bulk", "batch", "createLanes", []]),
+      // Clear carries no action, and says so rather than borrowing one.
+      JSON.stringify(["graph", "main", "bulk", "batch", "", []]),
+    ]);
+    // Ticking a second row must not re-ask a confirm armed on the first: the
+    // verb is the same verb over the same list.
+    const more = build(BATCH, {
+      selection: { batch: ["iss-1", "iss-2"] },
+      selectionSignature: ticked.selectionSignature,
+    });
+    const again = more.interactives.find((entry) => entry.kind === "bulk");
+    if (!again || !verbs[0]) throw new Error("expected a bulk interactive");
+    expect(pluginInteractiveKey(more, again)).toBe(pluginInteractiveKey(ticked, verbs[0]));
+  });
+});
+
+describe("collection-bound segmented options in the terminal", () => {
+  function projects(count: number): PluginPaneCollectionMap {
+    return new Map([
+      [
+        bindingKey({ collection: "projects" }),
+        Array.from({ length: count }, (_unused, index) => ({
+          key: `row-${index}`,
+          value: { id: `p${index}`, name: `Project ${index}` },
+        })),
+      ],
+    ]);
+  }
+
+  const BOUND = (extra: Record<string, unknown> = {}) => panel([
+    {
+      component: "segmented",
+      stateKey: "project",
+      label: "Project",
+      options: [{ value: "", label: "All projects" }],
+      optionsFrom: { collection: "projects", valueField: "id", labelField: "name" },
+      ...extra,
+    },
+  ]);
+
+  it("resolves the options from the collection, keeping the literal All first", () => {
+    const model = build(BOUND(), { collections: projects(3) });
+    expect(model.declarations[0]?.options).toEqual([
+      { value: "", label: "All projects" },
+      { value: "p0", label: "Project 0" },
+      { value: "p1", label: "Project 1" },
+      { value: "p2", label: "Project 2" },
+    ]);
+    // A bound control opens on the unset "All" rather than on whichever project
+    // the collection happened to yield first.
+    expect(model.state).toEqual({ project: "" });
+    // Four options is still a strip.
+    const row = model.rows[0];
+    expect(row?.kind).toBe("segmented");
+    expect(row?.kind === "segmented" && row.options.map((option) => option.label))
+      .toEqual(["All projects", "Project 0", "Project 1", "Project 2"]);
+  });
+
+  it("is a working control on its All when the rows have not landed", () => {
+    const model = build(BOUND());
+    expect(model.declarations[0]?.options).toEqual([{ value: "", label: "All projects" }]);
+    // And the signature does not move when they do, so the reader's filter
+    // survives that transition.
+    expect(model.stateSignature).toBe(build(BOUND(), { collections: projects(3) }).stateSignature);
+  });
+
+  it("draws a menu-styled control as one line, registering one interactive and not fifty", () => {
+    const model = build(BOUND(), { collections: projects(12) });
+    expect(model.declarations[0]?.options).toHaveLength(13);
+
+    const row = model.rows[0];
+    expect(row?.kind).toBe("menu");
+    expect(row?.kind === "menu" && row.label).toBe("Project");
+    expect(row?.kind === "menu" && row.value).toBe("All projects");
+    expect(row?.kind === "menu" && [row.position, row.count]).toEqual([1, 13]);
+    // ONE stop, not thirteen: fifty numbered pills would push the list this
+    // control filters off the bottom of the pane.
+    expect(model.interactives).toEqual([
+      { kind: "state", stateKey: "project", label: "All projects", value: "p0" },
+    ]);
+
+    // The single interactive names the NEXT option, so Enter advances exactly
+    // as it does on a `select` field, and ←/→ still moves either way.
+    const moved = build(BOUND(), {
+      collections: projects(12),
+      state: { project: "p0" },
+      stateSignature: model.stateSignature,
+    });
+    expect(moved.rows[0]?.kind === "menu" && moved.rows[0].value).toBe("Project 0");
+    expect(moved.rows[0]?.kind === "menu" && moved.rows[0].position).toBe(2);
+    expect(moved.interactives[0]).toEqual({
+      kind: "state",
+      stateKey: "project",
+      label: "Project 0",
+      value: "p1",
+    });
+    expect(pluginPaneStateCycle(moved, "project", -1)).toEqual({ project: "" });
+  });
+
+  it("filters a list against an option the collection supplied", () => {
+    const collections = projects(12);
+    collections.set(bindingKey({ collection: "issues" }), [
+      { key: "1", value: { title: "In p0", project: "p0" } },
+      { key: "2", value: { title: "In p1", project: "p1" } },
+    ]);
+    const model = build(panel([
+      {
+        component: "segmented",
+        stateKey: "project",
+        options: [{ value: "", label: "All projects" }],
+        optionsFrom: { collection: "projects", valueField: "id", labelField: "name" },
+      },
+      {
+        component: "list",
+        bind: { collection: "issues", where: [{ field: "project", equals: { $state: "project" } }] },
+      },
+    ]), { collections, state: { project: "p1" } });
+    expect(listTitles(model)).toEqual(["In p1"]);
   });
 });

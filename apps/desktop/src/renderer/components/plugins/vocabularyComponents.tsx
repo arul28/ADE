@@ -28,6 +28,8 @@ import type {
   VocabListItemAction,
   VocabListNode,
   VocabSegmentedNode,
+  VocabSelectable,
+  VocabStateOption,
   VocabTableNode,
   VocabTextNode,
   VocabUnknownNode,
@@ -41,6 +43,8 @@ import {
   coerceBoundKeyValueRow,
   coerceBoundListItem,
   coerceBoundTableRow,
+  vocabSelectedRowKeys,
+  vocabStateControlStyle,
 } from "../../../shared/plugins/vocabulary";
 
 /**
@@ -71,6 +75,7 @@ export type {
 } from "./vocabularyPrimitives";
 export { VocabChart } from "./vocabularyChart";
 export { VocabForm, initialFormValues } from "./vocabularyForm";
+export { VocabMarkdown } from "./vocabularyMarkdownView";
 
 const GAP_PX = { none: 0, sm: 6, md: 12, lg: 20 } as const;
 
@@ -166,12 +171,19 @@ function useVocabActionRunner(context: VocabRenderContext) {
   const [error, setError] = React.useState<string | null>(null);
 
   const run = React.useCallback(
-    async (action: VocabAction) => {
+    // `extraArgs` is what a control adds to the action the schema declared: a
+    // form's field values, and a bulk bar's ticked row keys. Wider than a
+    // node's own `args`, which is flat scalars — the host adds the one array,
+    // and it adds it last.
+    async (action: VocabAction, extraArgs?: Record<string, unknown>) => {
       if (action.confirm && !window.confirm(action.confirm)) return;
       setPending(true);
       setError(null);
       try {
-        await context.dispatch(action);
+        // The second argument is omitted rather than passed as `undefined` when
+        // a control adds nothing, so a plain button still calls exactly what it
+        // has always called.
+        await (extraArgs ? context.dispatch(action, extraArgs) : context.dispatch(action));
       } catch (cause) {
         setError(cause instanceof Error ? cause.message : "That action failed.");
       } finally {
@@ -257,7 +269,16 @@ export function VocabSegmented({
   node: VocabSegmentedNode;
   context: VocabRenderContext;
 }) {
-  const current = context.state[node.stateKey] ?? node.default ?? node.options[0]?.value ?? "";
+  // The host's declaration first: it is the only thing that has resolved an
+  // `optionsFrom`, and a control drawn from its node alone would show a
+  // workspace's thirty projects as the one "All" the schema happened to inline.
+  const declaration = context.declarations.find((entry) => entry.stateKey === node.stateKey);
+  const options = declaration?.options ?? node.options;
+  const current = context.state[node.stateKey]
+    ?? declaration?.initial
+    ?? node.default
+    ?? options[0]?.value
+    ?? "";
   const select = (value: string) => {
     if (value !== current) context.setStateValue(node.stateKey, value);
     // Dispatched even when the value did not change, because pressing the option
@@ -271,6 +292,27 @@ export function VocabSegmented({
       });
     }
   };
+
+  // A strip of pills is the right picture for three states and the wrong one for
+  // thirty projects, and the author of a collection-bound control cannot know
+  // which they will get. The shared rule decides from the resolved list, so
+  // every surface changes shape at the same count.
+  const style = vocabStateControlStyle({
+    options,
+    ...(node.style !== undefined ? { style: node.style } : {}),
+  });
+  if (style === "menu") {
+    return (
+      <VocabStateMenu
+        stateKey={node.stateKey}
+        pluginId={context.pluginId}
+        options={options}
+        current={current}
+        onSelect={select}
+        {...(node.label !== undefined ? { label: node.label } : {})}
+      />
+    );
+  }
 
   return (
     <div
@@ -294,7 +336,7 @@ export function VocabSegmented({
           minWidth: 0,
         }}
       >
-        {node.options.map((option) => {
+        {options.map((option) => {
           const selected = option.value === current;
           return (
             <button
@@ -330,6 +372,65 @@ export function VocabSegmented({
           );
         })}
       </div>
+    </div>
+  );
+}
+
+/**
+ * The same control, once its option list is longer than a strip.
+ *
+ * A native `<select>`, not a bespoke popover. It is a one-of-many choice over a
+ * closed list, which is exactly what the element is for — and it brings the
+ * keyboard, the type-to-find and the platform's own long-list scrolling, all of
+ * which a hand-built menu over thirty projects would have to reimplement badly.
+ * The badge a strip draws beside a label folds into the option's text, since an
+ * `<option>` holds words and nothing else.
+ */
+function VocabStateMenu({
+  stateKey,
+  pluginId,
+  label,
+  options,
+  current,
+  onSelect,
+}: {
+  stateKey: string;
+  pluginId: string;
+  label?: string;
+  options: readonly VocabStateOption[];
+  current: string;
+  onSelect: (value: string) => void;
+}) {
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", minWidth: 0 }}>
+      {label ? (
+        <span style={{ fontFamily: SANS_FONT, fontSize: 11, color: COLORS.textMuted }}>
+          {label}
+        </span>
+      ) : null}
+      <select
+        value={current}
+        aria-label={label ?? stateKey}
+        onChange={(event) => onSelect(event.target.value)}
+        data-tour={`plugin:${pluginId}.state-${stateKey}`}
+        style={{
+          fontFamily: SANS_FONT,
+          fontSize: 11,
+          color: COLORS.textPrimary,
+          background: COLORS.recessedBg,
+          border: `1px solid ${COLORS.borderMuted}`,
+          borderRadius: RADII.sm,
+          padding: "3px 6px",
+          maxWidth: 240,
+          cursor: "pointer",
+        }}
+      >
+        {options.map((option) => (
+          <option key={option.value} value={option.value}>
+            {option.badge ? `${option.label} · ${option.badge}` : option.label}
+          </option>
+        ))}
+      </select>
     </div>
   );
 }
@@ -371,10 +472,13 @@ export function VocabList({
   node: VocabListNode;
   context: VocabRenderContext;
 }) {
-  const bound = boundRows(node, context);
+  // Keyed rows, not bare values: a bound row's identity is its collection row's
+  // own primary key, and a list that read only the values could draw a
+  // checkbox but never say which row it had ticked.
+  const bound = boundKeyedRows(node, context);
   const items = bound
     ? bound
-        .map((row) => coerceBoundListItem(row, node.bind?.allowActions))
+        .map((entry) => coerceBoundListItem(entry.value, node.bind?.allowActions, entry.key))
         .filter((item): item is VocabListItem => item !== null)
     : (node.items ?? []);
 
@@ -382,16 +486,133 @@ export function VocabList({
     return <EmptyLine text={node.emptyText ?? "Nothing here yet."} />;
   }
 
+  const drawn = items.slice(0, VOCAB_LIMITS.maxListItems);
+  // The list draws its own rows, so it is the only thing that knows which keys
+  // are on screen and in what order — which is what both the range gesture and
+  // the batch are computed against.
+  const visibleKeys = drawn
+    .map((item) => item.key)
+    .filter((key): key is string => key !== undefined);
+  const selectable = node.selectable;
+  const declaration = selectable
+    ? context.selectionDeclarations.find((entry) => entry.stateKey === selectable.stateKey)
+    : undefined;
+  // A `selectable` past the panel's ceiling declares nothing, and a list whose
+  // declaration the host did not admit draws as the plain list it was before
+  // ticks existed. Never half of one: checkboxes over a bar that cannot dispatch
+  // would be a control that does nothing.
+  const ticking = selectable !== undefined && declaration !== undefined;
+  const ticked = ticking
+    ? vocabSelectedRowKeys(context.selection, selectable.stateKey, visibleKeys)
+    : [];
+
   return (
-    <ul style={{ margin: 0, padding: 0, listStyle: "none", display: "grid", gap: 1 }}>
-      {items.slice(0, VOCAB_LIMITS.maxListItems).map((item, index) => (
-        <VocabListRow
-          key={`${item.title}:${index}`}
-          item={item}
+    <div style={{ display: "grid", gap: 8, minWidth: 0 }}>
+      <ul style={{ margin: 0, padding: 0, listStyle: "none", display: "grid", gap: 1 }}>
+        {drawn.map((item, index) => (
+          <VocabListRow
+            key={`${item.key ?? item.title}:${index}`}
+            item={item}
+            context={context}
+            {...(ticking
+              ? {
+                  selection: {
+                    stateKey: selectable.stateKey,
+                    checked: item.key !== undefined && ticked.includes(item.key),
+                    visibleKeys,
+                  },
+                }
+              : {})}
+          />
+        ))}
+      </ul>
+      {ticking && ticked.length > 0 ? (
+        <VocabBulkBar
+          selectable={selectable}
+          keys={ticked}
           context={context}
         />
-      ))}
-    </ul>
+      ) : null}
+    </div>
+  );
+}
+
+/**
+ * The bar a selection earns.
+ *
+ * Drawn under the list rather than over it, where the outcome banner and the
+ * row's own error already are: it belongs to the rows it will act on, and a bar
+ * that pushed the list down the moment a reader ticked the first row would move
+ * the second row out from under their pointer.
+ *
+ * It counts and dispatches {@link vocabSelectedRowKeys}, never the stored set —
+ * see that function for why the two differ and why the visible answer is the
+ * right one.
+ */
+function VocabBulkBar({
+  selectable,
+  keys,
+  context,
+}: {
+  selectable: VocabSelectable;
+  keys: readonly string[];
+  context: VocabRenderContext;
+}) {
+  const { pending, error, run } = useVocabActionRunner(context);
+  return (
+    <div style={{ display: "grid", gap: 4, minWidth: 0 }}>
+      <div
+        role="toolbar"
+        aria-label={`${keys.length} selected`}
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 8,
+          flexWrap: "wrap",
+          padding: "6px 10px",
+          background: COLORS.recessedBg,
+          border: `1px solid ${COLORS.borderMuted}`,
+          borderRadius: RADII.md,
+          minWidth: 0,
+        }}
+      >
+        <span
+          aria-live="polite"
+          style={{ fontFamily: SANS_FONT, fontSize: 11, fontWeight: 600, color: COLORS.textPrimary }}
+        >
+          {keys.length} selected
+        </span>
+        {selectable.actions.map((action, index) => (
+          <VocabRowAction
+            key={`${action.action}:${index}`}
+            action={action}
+            context={context}
+            disabled={pending}
+            // The selection rides as an extra arg, which the host merges after
+            // the node's own `args` — so a schema naming `selection` cannot
+            // replace the rows the reader actually ticked. Same button component
+            // a row's trailing action uses, because a bulk verb IS one: same
+            // shape, same parser, same `confirm` gate — which matters more here,
+            // where a mistake costs eleven rows.
+            onRun={(entry) => run(entry, { selection: [...keys] })}
+          />
+        ))}
+        <button
+          type="button"
+          onClick={() => context.clearSelection(selectable.stateKey)}
+          style={{
+            ...outlineButton({ height: 22, padding: "0 8px", fontSize: 11 }),
+            background: "transparent",
+            border: "1px solid transparent",
+            color: COLORS.textMuted,
+            marginLeft: "auto",
+          }}
+        >
+          Clear
+        </button>
+      </div>
+      {error ? <InlineError message={error} /> : null}
+    </div>
   );
 }
 
@@ -408,7 +629,16 @@ export function VocabList({
  * what went wrong. Two runners would let a reader start a second action against
  * data the first one is already changing.
  */
-function VocabListRow({ item, context }: { item: VocabListItem; context: VocabRenderContext }) {
+function VocabListRow({
+  item,
+  context,
+  selection,
+}: {
+  item: VocabListItem;
+  context: VocabRenderContext;
+  /** Present only on a selectable list the host admitted. */
+  selection?: { stateKey: string; checked: boolean; visibleKeys: readonly string[] };
+}) {
   const [hovered, setHovered] = React.useState(false);
   const { pending, error, run } = useVocabActionRunner(context);
   const Icon = item.icon ? pluginIcon(item.icon) : null;
@@ -521,6 +751,17 @@ function VocabListRow({ item, context }: { item: VocabListItem; context: VocabRe
   return (
     <li style={{ display: "grid", gap: 2, minWidth: 0 }}>
       <div style={{ display: "flex", alignItems: "center", gap: 4, width: "100%", minWidth: 0 }}>
+        {selection && item.key !== undefined ? (
+          <VocabRowTick
+            checked={selection.checked}
+            label={item.title}
+            onToggle={(range) => context.toggleRow(
+              selection.stateKey,
+              item.key as string,
+              range ? selection.visibleKeys : undefined,
+            )}
+          />
+        ) : null}
         {interactive ? (
           <button
             type="button"
@@ -560,6 +801,49 @@ function VocabListRow({ item, context }: { item: VocabListItem; context: VocabRe
       </div>
       {error ? <InlineError message={error} /> : null}
     </li>
+  );
+}
+
+/**
+ * The tick at the head of a selectable row.
+ *
+ * A real `<input type="checkbox">` rather than a styled span: it is a checkbox,
+ * so it should arrive at the reader with the keyboard behaviour, the screen
+ * reader announcement and the indeterminate-free semantics the platform already
+ * has. Its own control, beside the row's press area rather than inside it — a
+ * row that toggled when tapped would have two meanings and no way to tell them
+ * apart, and a button inside a button is not something a browser will render.
+ *
+ * Shift extends. It is read off the event rather than from a modifier the
+ * vocabulary knows about, because the range gesture belongs to the pointer, and
+ * the surfaces that have no pointer degrade to the plain toggle without needing
+ * to know it exists.
+ */
+function VocabRowTick({
+  checked,
+  label,
+  onToggle,
+}: {
+  checked: boolean;
+  label: string;
+  onToggle: (range: boolean) => void;
+}) {
+  return (
+    <input
+      type="checkbox"
+      checked={checked}
+      aria-label={`Select ${label}`}
+      onChange={() => {}}
+      onClick={(event) => onToggle(event.shiftKey)}
+      style={{
+        flexShrink: 0,
+        margin: "0 2px 0 6px",
+        width: 13,
+        height: 13,
+        accentColor: COLORS.accent,
+        cursor: "pointer",
+      }}
+    />
   );
 }
 

@@ -29,9 +29,10 @@
  * for it, and the data-owning machine computes every contribution.
  */
 
-import { bounded, isRecord, oneOf } from "./parse";
+import { PLUGIN_URL_MAX_CHARS, bounded, httpsUrl, isRecord, oneOf } from "./parse";
 import { isValidPluginManifestIdentifier } from "./manifest";
 import type {
+  PluginAuthCallbackKind,
   PluginManifest,
   PluginManifestAutomationStep,
   PluginManifestAutomationTrigger,
@@ -41,6 +42,15 @@ import type {
   PluginSurfaceKind,
 } from "./manifest";
 import type { PluginRegistryEntry } from "./registryIndex";
+import type { IssueRef } from "../issueRef";
+import type {
+  IssueLink,
+  IssueLinkRole,
+  LaneIcon,
+  LaneStatus,
+  LaneSummary,
+  LaneType,
+} from "../types/lanes";
 import { isPluginDialogField } from "./sockets";
 import type {
   PluginDialogField,
@@ -579,17 +589,35 @@ export function readPluginChatDeliveryAction(action: string): "chat.turn" | "cha
   return isPluginChatReliableEventName(event) ? event : null;
 }
 
+/**
+ * The one event a sign-in the host ran delivers back.
+ *
+ * A FOURTH delivery class, and it earns the separation the same way the chat
+ * runtime's did. A change event is a coalesced hint and a runtime hook may be
+ * dropped; neither contract is acceptable here, because this payload is the
+ * only copy of an authorization code that exists and it is single-use. It is
+ * delivered to the one child that began the flow, exactly once, and a child
+ * that is not draining its stdin holds it in the queue rather than losing it.
+ */
+export type PluginAuthEventName = "auth.completed";
+
+export function isPluginAuthEventName(value: unknown): value is PluginAuthEventName {
+  return value === "auth.completed";
+}
+
 export type PluginEventName =
   | PluginChangeEventName
   | PluginRuntimeHookName
   | PluginPushEventName
-  | PluginChatRuntimeEventName;
+  | PluginChatRuntimeEventName
+  | PluginAuthEventName;
 
 export function isPluginEventName(value: unknown): value is PluginEventName {
   return value === "lane.changed"
     || value === "pr.changed"
     || value === "session.changed"
     || value === "install.changed"
+    || isPluginAuthEventName(value)
     || isPluginRuntimeHookName(value)
     || isPluginPushEventName(value)
     || isPluginChatRuntimeEventName(value);
@@ -765,19 +793,61 @@ export type PluginChatRuntimeEventPayload =
     watching: false;
   });
 
+/**
+ * Why a sign-in ended without a code.
+ *
+ * Named outcomes rather than a message, because a plugin acts differently on
+ * each: `canceled` is silent (the user closed the window and knows they did),
+ * `expired` is worth an "it took too long, try again", and `denied` is the
+ * provider's own refusal, which is the only one where the plugin's own
+ * configuration is likely at fault. `state_mismatch` is the host refusing a
+ * callback whose `state` it did not mint — a plugin can do nothing about it and
+ * should say so plainly rather than retry into the same wall.
+ */
+export type PluginAuthFailureReason = "canceled" | "expired" | "denied" | "state_mismatch";
+
+/**
+ * The result of one sign-in, delivered to the child that began it.
+ *
+ * `params` is what came back on the redirect, MINUS `state`. The plugin does
+ * not get `state` because it has nothing to do with it: the host minted it, the
+ * host compared it, and a copy in the child would only invite a second,
+ * weaker check that disagrees with the host's. What is left is the provider's
+ * own vocabulary — `code` for a standard OAuth flow, whatever else that
+ * provider sends — passed through as data with no interpretation.
+ */
+export type PluginAuthCompletedPayload = {
+  event: PluginAuthEventName;
+  /** The `authSessions[].id` this completion answers. */
+  sessionId: string;
+  /**
+   * Which begin this answers.
+   *
+   * A plugin that cancels and starts again must not act on the first flow's
+   * late callback. One live attempt per flow makes that rare; the field makes
+   * it impossible.
+   */
+  attempt: string;
+} & (
+  | { ok: true; params: Record<string, string> }
+  | { ok: false; reason: PluginAuthFailureReason; message?: string }
+);
+
 /** Everything an `event` frame can carry. */
 export type PluginAnyEventPayload =
   | PluginEventPayload
   | PluginRuntimeHookPayload
   | PluginWebhookPayload
-  | PluginChatRuntimeEventPayload;
+  | PluginChatRuntimeEventPayload
+  | PluginAuthCompletedPayload;
 
 /** The payload shape one event name delivers. */
 export type PluginEventPayloadFor<E extends PluginEventName> =
   E extends PluginRuntimeHookName ? Extract<PluginRuntimeHookPayload, { event: E }>
-    : E extends PluginPushEventName ? PluginWebhookPayload
-      : E extends PluginChatRuntimeEventName ? Extract<PluginChatRuntimeEventPayload, { event: E }>
-        : PluginEventPayload;
+    : E extends PluginAuthEventName ? PluginAuthCompletedPayload
+      : E extends PluginPushEventName ? PluginWebhookPayload
+        : E extends PluginChatRuntimeEventName ? Extract<PluginChatRuntimeEventPayload, { event: E }>
+          : PluginEventPayload;
 
 // ---------------------------------------------------------------------------
 // Chat runtime — what a plugin writes back
@@ -986,6 +1056,122 @@ export type PluginChatSessionRef = {
   created: boolean;
 };
 
+// ---------------------------------------------------------------------------
+// Lanes
+// ---------------------------------------------------------------------------
+
+/**
+ * A lane as a PLUGIN sees it.
+ *
+ * Deliberately not `LaneSummary`. The internal shape carries `worktreePath`,
+ * `attachedRootPath` and `devicesOpen` — an absolute path into the user's
+ * filesystem and a roster of the machines they have the lane open on. None of
+ * that is needed to link an issue, and all of it would be read by any plugin
+ * that ever called `lanes.list()`. So the projection is a fixed allowlist
+ * ({@link toPluginLaneSummary}) rather than a delete-list, which is the version
+ * that stays correct when a field is added to `LaneSummary` later.
+ *
+ * A plugin that genuinely needs the worktree already has the filesystem and
+ * knows where it put its own files; it does not need ADE to hand it a path.
+ */
+export type PluginLaneSummary = {
+  id: string;
+  name: string;
+  laneType: LaneType;
+  baseRef: string;
+  branchRef: string;
+  parentLaneId: string | null;
+  status: LaneStatus;
+  color: string | null;
+  icon: LaneIcon;
+  tags: string[];
+  folder: string | null;
+  createdAt: string;
+  archivedAt: string | null;
+  /** The lane's primary issue, on whichever tracker owns it. */
+  primaryIssue: IssueRef | null;
+  /** Every issue link on the lane, across trackers. */
+  issueLinks: IssueLink[];
+};
+
+/**
+ * The lane fields a plugin may see, as a list rather than as a set of
+ * exclusions. Exported so the host, the child and the tests all agree on it.
+ */
+export const PLUGIN_LANE_SUMMARY_FIELDS = [
+  "id",
+  "name",
+  "laneType",
+  "baseRef",
+  "branchRef",
+  "parentLaneId",
+  "status",
+  "color",
+  "icon",
+  "tags",
+  "folder",
+  "createdAt",
+  "archivedAt",
+  "primaryIssue",
+  "issueLinks",
+] as const satisfies readonly (keyof PluginLaneSummary)[];
+
+/** Project a lane down to what a plugin may see. See {@link PluginLaneSummary}. */
+export function toPluginLaneSummary(lane: LaneSummary): PluginLaneSummary {
+  return {
+    id: lane.id,
+    name: lane.name,
+    laneType: lane.laneType,
+    baseRef: lane.baseRef,
+    branchRef: lane.branchRef,
+    parentLaneId: lane.parentLaneId,
+    status: lane.status,
+    color: lane.color,
+    icon: lane.icon,
+    tags: lane.tags ?? [],
+    folder: lane.folder ?? null,
+    createdAt: lane.createdAt,
+    archivedAt: lane.archivedAt ?? null,
+    primaryIssue: lane.primaryIssue ?? null,
+    issueLinks: lane.issueLinks ?? [],
+  };
+}
+
+/**
+ * The issue a plugin hands to {@link AdePluginSdk.lanes.linkIssue}.
+ *
+ * `pluginId` is absent on purpose and always will be, exactly as it is on
+ * {@link PluginChatSessionCreateInput}: the host stamps it from the child
+ * connection that asked. It is also what `lanes.unlinkIssue` checks ownership
+ * against, and a plugin naming its own owner would make that check a check
+ * against a value the checked party supplied.
+ */
+export type PluginIssueRefInput = Omit<IssueRef, "pluginId">;
+
+/** A link as it comes back from the host. `issue.pluginId` is host-stamped. */
+export type PluginIssueLink = IssueLink;
+
+/** Where a link hangs: exactly one of the two. */
+export type PluginIssueLinkTarget = {
+  laneId?: string;
+  sessionId?: string;
+};
+
+export type PluginIssueLinkInput = PluginIssueLinkTarget & {
+  issue: PluginIssueRefInput;
+  /** Defaults to `"referenced"`. */
+  role?: IssueLinkRole;
+  /** Mention the issue in the PR body this lane opens. */
+  includeInPr?: boolean;
+  /** Ask the tracker to close the issue when that PR merges. */
+  closeOnMerge?: boolean;
+};
+
+export type PluginIssueUnlinkInput = PluginIssueLinkTarget & {
+  provider: string;
+  issueId: string;
+};
+
 /**
  * The `ade` global inside a plugin child process.
  *
@@ -1055,6 +1241,88 @@ export type AdePluginSdk = {
      * {@link getProviderKey}.
      */
     hasProviderKey(provider: string): Promise<boolean>;
+  };
+
+  /**
+   * Signing the user in, and inheriting a connection ADE already has.
+   *
+   * The division of labour is the whole design. The HOST opens the browser or
+   * the phone's in-app auth view, owns the loopback listener or the relay
+   * bounce, mints and checks `state`, and hands back the callback parameters as
+   * data. The PLUGIN chooses the provider (in its manifest, before install),
+   * supplies the query parameters, exchanges the code for a token over a host
+   * it declared in `network`, and stores that token in its own
+   * {@link AdePluginSdk.secrets}.
+   *
+   * ADE therefore never holds a token it brokered: it brokers the
+   * AUTHORIZATION, and the credential is the plugin's from the moment it
+   * exists. That is not a limitation to work around — a host that held the
+   * token would have to refresh it, and refreshing a grant it cannot use is a
+   * responsibility with no matching capability.
+   */
+  auth: {
+    /**
+     * Start one declared sign-in flow, and get back everything except the URL.
+     *
+     * Return `{ authSession: { sessionId } }` from the action handler that
+     * calls this: the host fills in the live URL on the way to whichever client
+     * the user is on, and that client presents it — the system browser on
+     * desktop, an in-app auth session on the phone. A plugin cannot open a
+     * browser itself and should not try; `openUrl` leaves the app with no way
+     * back, which is the gap this verb exists to close.
+     *
+     * `params` are appended to the manifest's `authorizeUrl` — `client_id`,
+     * `scope`, `code_challenge` and anything else the provider wants. PKCE is
+     * the plugin's to run, because only the plugin performs the exchange and so
+     * only the plugin can hold the verifier. `redirect_uri` and `state` are
+     * refused by name ({@link PLUGIN_AUTH_RESERVED_PARAMS}) — they are the
+     * host's.
+     *
+     * Rejects with `not_permitted` for a `sessionId` the manifest does not
+     * declare, `auth_session_busy` when a flow of that id is already running,
+     * and `auth_unavailable` when nothing on this machine can show a window.
+     * The result arrives later as an `auth.completed` event; subscribe BEFORE
+     * calling this.
+     */
+    beginSession(input: {
+      sessionId: string;
+      params?: Record<string, string>;
+      /**
+       * Force one transport instead of letting the host pick.
+       *
+       * Almost never wanted. The host chooses `loopback` when it has a browser
+       * on this machine and `app` when the request came from a phone, which is
+       * the right answer in both cases. Naming one the manifest does not
+       * declare is `invalid_args`.
+       */
+      transport?: PluginAuthCallbackKind;
+    }): Promise<PluginAuthSessionStart>;
+
+    /**
+     * Give up on a running flow. Idempotent, and safe for a flow that already
+     * finished — there is nothing to cancel and nothing to report.
+     *
+     * The host stops listening and retires the `state`, so a callback that
+     * arrives afterwards is refused rather than delivered late.
+     */
+    cancelSession(sessionId: string): Promise<void>;
+
+    /**
+     * Ask for the credential ADE holds for a built-in surface this plugin
+     * supersedes. See {@link PluginManifest.credentialHandoff}.
+     *
+     * This is the release-day verb: on the day an official plugin replaces a
+     * compiled integration, every existing user already has a working
+     * connection, and without this every one of them reconnects. The host shows
+     * a card naming exactly which secrets move, and only the user's yes copies
+     * anything.
+     *
+     * Asked ONCE per install: after an answer the same call returns that
+     * answer without showing a card again. A `declined` is not an error and
+     * must not be reported as one — the plugin is simply unconnected, and the
+     * ordinary sign-in flow is still there.
+     */
+    requestHandoff(builtin: string): Promise<PluginCredentialHandoffResult>;
   };
 
   contributions: {
@@ -1314,6 +1582,44 @@ export type AdePluginSdk = {
       transcript: PluginChatTranscriptEntry[],
       options?: PluginChatHydrateOptions,
     ): Promise<PluginChatHydrateResult>;
+  };
+
+  /**
+   * The user's lanes, and the issue links on them.
+   *
+   * This is the seam that makes a tracker plugin a first-class one. ADE's own
+   * Linear integration links an issue to a lane so the branch namer, the PR
+   * body writer and the deeplink envelope all know what the work is about; a
+   * plugin for Jira, Shortcut or anything else reaches the same machinery
+   * through {@link IssueRef} instead of getting a second, parallel one.
+   *
+   * Two ownership rules, both enforced host-side:
+   *
+   * - The link records the plugin that created it, from the child connection
+   *   that asked. `input.issue` has no `pluginId` field to fill in.
+   * - `unlinkIssue` removes only links THIS plugin created. Another plugin's
+   *   link, or one ADE made itself, is `not_permitted`. The user can still
+   *   unlink anything from the lane UI, the CLI or the action layer — the
+   *   restriction is on plugins undoing each other, not on the person.
+   */
+  lanes: {
+    /** Every open lane in the project this plugin is bound to. */
+    list(): Promise<PluginLaneSummary[]>;
+    get(laneId: string): Promise<PluginLaneSummary | null>;
+    /**
+     * Link an issue to a lane or to a chat/CLI session.
+     *
+     * Exactly one of `laneId` and `sessionId`. Both, or neither, is
+     * `invalid_args` — a link with no target is not a link, and a call naming
+     * two would leave the plugin guessing which one the host picked.
+     */
+    linkIssue(input: PluginIssueLinkInput): Promise<PluginIssueLink>;
+    /**
+     * Remove a link this plugin created. `false` when there was none to
+     * remove, which is not an error; `not_permitted` when the link belongs to
+     * somebody else.
+     */
+    unlinkIssue(input: PluginIssueUnlinkInput): Promise<boolean>;
   };
 
   clipboard: {
@@ -1713,11 +2019,12 @@ export function readPluginActionMessage(result: unknown): PluginActionMessage | 
 /**
  * Longest external URL an action may ask a client to open.
  *
- * A liveness bound rather than a permission. Real links are far shorter; a
- * value this long is a payload wearing a URL, and every client would have to
- * carry it through a system API that has its own, unstated ceiling.
+ * The same number as a `markdown` node's links, because it is the same number:
+ * both read {@link PLUGIN_URL_MAX_CHARS} in `parse.ts` rather than declaring a
+ * ceiling of their own. A link a plugin may open from a button and a link it may
+ * write into prose are one capability.
  */
-export const PLUGIN_OPEN_URL_MAX_CHARS = 2_048;
+export const PLUGIN_OPEN_URL_MAX_CHARS = PLUGIN_URL_MAX_CHARS;
 
 /**
  * Where a plugin action asks the client to send the reader on the open web.
@@ -1748,24 +2055,16 @@ export type PluginActionOpenUrl = { url: string };
  *
  * Case is not a way in: `URL` lowercases the protocol it parses, so `HTTPS:`
  * reads as `https:` and `JavaScript:` reads as `javascript:`.
+ *
+ * The scheme test itself is {@link httpsUrl} in `parse.ts`, shared with the
+ * `markdown` node so a link refused on a button cannot be accepted in prose.
  */
 export function readPluginActionOpenUrl(result: unknown): PluginActionOpenUrl | null {
   if (!isRecord(result)) return null;
   const request = result.openUrl;
   const raw = typeof request === "string" ? request : isRecord(request) ? request.url : undefined;
-  if (typeof raw !== "string") return null;
-  const trimmed = raw.trim();
-  if (!trimmed || trimmed.length > PLUGIN_OPEN_URL_MAX_CHARS) return null;
-  let parsed: URL;
-  try {
-    parsed = new URL(trimmed);
-  } catch {
-    return null;
-  }
-  if (parsed.protocol !== "https:" || !parsed.hostname) return null;
-  // `href` rather than the caller's string: the client opens exactly what was
-  // validated, not a value that could re-parse differently.
-  return { url: parsed.href };
+  const url = httpsUrl(raw, PLUGIN_OPEN_URL_MAX_CHARS);
+  return url === null ? null : { url };
 }
 
 /**
@@ -1776,6 +2075,94 @@ export function readPluginActionOpenUrl(result: unknown): PluginActionOpenUrl | 
 export function hasPluginActionOpenUrlRequest(result: unknown): boolean {
   if (!isRecord(result)) return false;
   return typeof result.openUrl === "string" || isRecord(result.openUrl);
+}
+
+// ---------------------------------------------------------------------------
+// Action-response sign-in
+// ---------------------------------------------------------------------------
+
+/**
+ * "Present this sign-in", as a client reads it.
+ *
+ * The eighth action result, and the only one whose payload the HOST writes. A
+ * plugin returns `{ authSession: { sessionId } }` and nothing else; the host
+ * looks that id up in its own table of live flows and stamps `url`,
+ * `transport` and `callbackScheme` on the way out. So the worst a forged
+ * result can do is present one of this plugin's own declared, already-running
+ * flows — it cannot name a URL, and there is no path by which a URL a plugin
+ * typed reaches a browser.
+ *
+ * This is deliberately NOT `openUrl`. A URL opened in the system browser has no
+ * way back on a phone, which is the whole of gap C1: the client has to know
+ * this is a sign-in so it can use an in-app auth session and catch the
+ * callback, and a result kind is how it knows.
+ */
+export type PluginActionAuthSession = {
+  sessionId: string;
+  /** Host-stamped. `https:`, and always the origin the manifest declared. */
+  url: string;
+  transport: PluginAuthCallbackKind;
+  /**
+   * The scheme the client's in-app auth session must watch for, on the `app`
+   * transport. Absent for `loopback`, where the host catches the redirect
+   * itself and the client's only job is to open a browser.
+   */
+  callbackScheme?: string;
+};
+
+/**
+ * What a plugin may put in the result, before the host fills the rest in.
+ *
+ * A separate type from {@link PluginActionAuthSession} because the two shapes
+ * are genuinely different: this one is a request naming a flow, and that one is
+ * an instruction carrying a URL. Collapsing them would put a `url` field in
+ * front of every plugin author, and a field a plugin can write is a field the
+ * host has to be careful about forever.
+ */
+export type PluginActionAuthSessionRequest = { sessionId: string };
+
+/** The plugin's half: a declared flow id, and nothing the host would trust. */
+export function readPluginActionAuthSessionRequest(result: unknown): PluginActionAuthSessionRequest | null {
+  if (!isRecord(result)) return null;
+  const request = result.authSession;
+  if (!isRecord(request)) return null;
+  const sessionId = request.sessionId;
+  return isValidPluginManifestIdentifier(sessionId) ? { sessionId } : null;
+}
+
+/**
+ * The host's half: the stamped instruction a client presents.
+ *
+ * Tolerant like every other reader here — a client talking to an older host
+ * that never stamped one sees `null` and draws nothing, rather than throwing on
+ * a field it was not sent.
+ */
+export function readPluginActionAuthSession(result: unknown): PluginActionAuthSession | null {
+  if (!isRecord(result)) return null;
+  const request = result.authSession;
+  if (!isRecord(request)) return null;
+  const sessionId = request.sessionId;
+  if (!isValidPluginManifestIdentifier(sessionId)) return null;
+  const url = httpsUrl(request.url, PLUGIN_OPEN_URL_MAX_CHARS);
+  if (url === null) return null;
+  const transport = request.transport;
+  if (transport !== "loopback" && transport !== "app") return null;
+  const callbackScheme = typeof request.callbackScheme === "string" && request.callbackScheme
+    ? request.callbackScheme
+    : undefined;
+  return { sessionId, url, transport, ...(callbackScheme ? { callbackScheme } : {}) };
+}
+
+/**
+ * Whether a result asked for a sign-in at all, however malformed.
+ *
+ * The warning half of the pair, and it matters more here than for `openUrl`: a
+ * sign-in that silently does nothing looks to the user exactly like a Connect
+ * button that is broken, and the plugin author needs the logged line to find
+ * out that the host retired the flow before the result reached the client.
+ */
+export function hasPluginActionAuthSessionRequest(result: unknown): boolean {
+  return isRecord(result) && isRecord(result.authSession);
 }
 
 // ---------------------------------------------------------------------------
@@ -2030,7 +2417,108 @@ export const PLUGIN_HOST_CAPABILITY_ERROR_CODES = [
    * network error the user might retry. See `shared/plugins/network.ts`.
    */
   "network_host_not_declared",
+  /**
+   * A sign-in for this flow is already running.
+   *
+   * Its own code because the remedy is neither "declare something" nor "try
+   * again later" but "the user is already looking at a browser window you
+   * opened". One live attempt per declared flow is the whole safety property:
+   * two would race for one loopback port, and the second callback would arrive
+   * carrying a `state` the host had already retired.
+   */
+  "auth_session_busy",
+  /**
+   * No client on this machine can present a sign-in right now.
+   *
+   * A headless brain with no desktop attached and no phone paired cannot open a
+   * browser, and the honest answer is that the flow cannot start — not that it
+   * started and will never finish. Same shape as `desktop_unavailable`: ask
+   * again when something that can show a window is there.
+   */
+  "auth_unavailable",
 ] as const;
+
+/**
+ * The most parameters a plugin may add to an authorize URL, and the most bytes
+ * each may carry.
+ *
+ * A real flow adds four or five — `client_id`, `scope`, `response_type`,
+ * `code_challenge`, `code_challenge_method`. The ceiling is here because these
+ * become the query string of a URL the host puts in front of the user, and a
+ * plugin that could write an unbounded one could bury the origin off the end of
+ * a phone's address bar.
+ */
+export const PLUGIN_AUTH_PARAMS_MAX = 12;
+export const PLUGIN_AUTH_PARAM_VALUE_MAX = 512;
+
+/**
+ * The parameter names the HOST owns, which a plugin may not send.
+ *
+ * `redirect_uri` and `state` are the two halves of the safety property: the
+ * host decides where the browser comes back to and what proves it is the same
+ * flow. A plugin that could set either could point the redirect at its own
+ * server or replay a `state` the host had retired, and the refusal is by name
+ * rather than by silent overwrite so the author learns which of the two the
+ * platform is holding.
+ */
+export const PLUGIN_AUTH_RESERVED_PARAMS: readonly string[] = ["redirect_uri", "state"] as const;
+
+/**
+ * What `ade.auth.beginSession` answers with.
+ *
+ * Note what is NOT here: the URL. The plugin does not need it — the host puts
+ * it in front of the user — and giving it to the child would put a live
+ * authorize URL, `state` and all, inside the one process this design keeps it
+ * out of. A plugin returns `{ authSession: { sessionId } }` from its action and
+ * the host fills the URL in on the way to the client.
+ */
+export type PluginAuthSessionStart = {
+  sessionId: string;
+  /** Ties a later `auth.completed` to THIS begin. Opaque; compare, never parse. */
+  attempt: string;
+  /** Which transport the host chose for the client that asked. */
+  transport: PluginAuthCallbackKind;
+  /**
+   * The redirect the provider must have on file, so a plugin can say which one
+   * to register — and so `ade plugin doctor` can print it for a plugin that is
+   * installed and not running, which is exactly when the user is setting the
+   * integration up.
+   */
+  redirectUri: string;
+  /** ISO. After this the host answers a callback with `expired` and stops listening. */
+  expiresAt: string;
+};
+
+/**
+ * What became of an offer to hand a plugin a credential ADE already holds.
+ *
+ * `pending` is the interesting one: the card is in front of the user and the
+ * answer will arrive as a normal secret appearing in the plugin's own store, so
+ * a plugin that asked should draw "waiting for you to confirm" rather than
+ * "not connected". Every other value is final for this install.
+ */
+export type PluginCredentialHandoffStatus =
+  /** The user agreed and the secrets are in this plugin's store NOW. */
+  | "accepted"
+  /** The user said no. Nothing was copied and asking again does not re-prompt. */
+  | "declined"
+  /** The card is up. Watch for the secret, or ask again later. */
+  | "pending"
+  /** ADE holds no credential for that surface, so there is nothing to offer. */
+  | "empty";
+
+export type PluginCredentialHandoffResult = {
+  builtin: string;
+  status: PluginCredentialHandoffStatus;
+  /**
+   * The secret names this plugin will find in its own store once accepted.
+   *
+   * Always present, including while `pending` and when `declined`, because it
+   * is the plugin's documentation of what to read — and it names nothing
+   * sensitive: these are the keys, never the values.
+   */
+  secretNames: string[];
+};
 
 export type PluginHostCapabilityErrorCode = (typeof PLUGIN_HOST_CAPABILITY_ERROR_CODES)[number];
 
@@ -2446,6 +2934,9 @@ export type PluginSdkMethod =
   | "secrets.delete"
   | "secrets.getProviderKey"
   | "secrets.hasProviderKey"
+  | "auth.beginSession"
+  | "auth.cancelSession"
+  | "auth.requestHandoff"
   | "contributions.publish"
   | "panels.update"
   | "config.get"
@@ -2465,6 +2956,10 @@ export type PluginSdkMethod =
   | "chat.setArtifacts"
   | "chat.attachBranch"
   | "chat.hydrate"
+  | "lanes.list"
+  | "lanes.get"
+  | "lanes.linkIssue"
+  | "lanes.unlinkIssue"
   | "clipboard.read"
   | "clipboard.write"
   | "dialogs.pickFile"
@@ -2981,6 +3476,20 @@ export type PluginDomainService = {
     args?: Record<string, unknown>;
     argv?: string[];
     timeoutMs?: number;
+    /**
+     * Which kind of client is driving this call, when the caller knows.
+     *
+     * A hint, and it exists for exactly one decision: a sign-in the host has to
+     * present. A `loopback` flow opens a browser on THIS machine, which is the
+     * right answer for a desktop and a dead end for a phone — the user would
+     * watch a window they cannot see finish a flow they cannot return from. The
+     * phone's remote command sets `"mobile"`, the desktop's preload sets
+     * `"desktop"`, and a caller that says nothing gets the host's default.
+     *
+     * A hint and never a permission: nothing is granted or refused on it, so a
+     * caller that lies about it gains nothing.
+     */
+    client?: "desktop" | "mobile";
   }): Promise<unknown>;
   list(args?: { includeDisabled?: boolean }): Promise<PluginSummary[]>;
   get(args: { pluginId: string }): Promise<PluginDetail | null>;

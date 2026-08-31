@@ -470,10 +470,15 @@ import {
   pluginFormValueKey,
   pluginInteractiveKey,
   pluginPaneBindingRows,
+  pluginPaneClearSelection,
+  pluginPaneSelectionPayload,
+  pluginPaneSelectionReset,
   pluginPaneStateChange,
   pluginPaneStateCycle,
   pluginPaneStatePayload,
   pluginPaneStateReset,
+  pluginPaneToggleGroup,
+  pluginPaneToggleRow,
   PLUGIN_PANE_TOO_NARROW,
   type PluginPaneCollectionMap,
   type PluginPaneInput,
@@ -10513,7 +10518,18 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       // controls the schema actually declares, so the inputs take its answer
       // back: one place decides what the panel state is, and the next rebuild
       // starts from that rather than from a value the schema has since dropped.
-      state: { ...state, state: model.state, stateSignature: model.stateSignature },
+      state: {
+        ...state,
+        state: model.state,
+        stateSignature: model.stateSignature,
+        // The selection is reconciled by the same rule and taken back the same
+        // way, so a tick and a filter cannot end up disagreeing about which
+        // rebuild they belong to. `openGroups` rides along because it is the
+        // model that resolved each group's `defaultOpen` into an answer.
+        selection: model.selection,
+        selectionSignature: model.selectionSignature,
+        openGroups: model.openGroups,
+      },
       model,
       ...extra,
     };
@@ -10589,6 +10605,19 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
         ...(samePanel && current.state.state !== undefined ? { state: current.state.state } : {}),
         ...(samePanel && current.state.stateSignature !== undefined
           ? { stateSignature: current.state.stateSignature }
+          : {}),
+        // And the ticks, for the same reason: a plugin republishing its rows
+        // every ten seconds would otherwise empty a batch the reader is still
+        // assembling. Folded sections survive the poll too — a section that
+        // re-opened itself every ten seconds is a section nobody can close.
+        ...(samePanel && current.state.selection !== undefined
+          ? { selection: current.state.selection }
+          : {}),
+        ...(samePanel && current.state.selectionSignature !== undefined
+          ? { selectionSignature: current.state.selectionSignature }
+          : {}),
+        ...(samePanel && current.state.openGroups !== undefined
+          ? { openGroups: current.state.openGroups }
           : {}),
         editing: samePanel ? current.state.editing ?? null : null,
         width: prospectiveRightPaneWidth,
@@ -11049,6 +11078,31 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
      */
     let committedFieldValues: Record<string, string> | null = null;
 
+    // A `group`'s disclosure. Client-local and nothing else: no dispatch, no
+    // panel state, no socket. Folding a section is a statement about this
+    // terminal, not about which rows the panel is showing.
+    if (interactive.kind === "group") {
+      const openGroups = pluginPaneToggleGroup(current.model, interactive.groupKey);
+      updatePluginPaneState((state) => ({ ...state, openGroups }));
+      return;
+    }
+
+    // A tick box. Local and immediate, like a `segmented` option — the verbs
+    // live on the bar, and ticking a row must never invoke a plugin.
+    if (interactive.kind === "selection") {
+      const selection = pluginPaneToggleRow(current.model, interactive.stateKey, interactive.rowKey);
+      updatePluginPaneState((state) => ({ ...state, selection }));
+      return;
+    }
+
+    // The bar's own Clear: one gesture out of a batch the reader ticked by
+    // mistake. It carries no action, so there is nothing to dispatch.
+    if (interactive.kind === "bulk" && !interactive.action) {
+      const selection = pluginPaneClearSelection(current.model, interactive.stateKey);
+      updatePluginPaneState((state) => ({ ...state, selection }));
+      return;
+    }
+
     if (interactive.kind === "field") {
       const field = interactive.field;
       const valueKey = pluginFormValueKey(interactive.formKey, field.id);
@@ -11139,6 +11193,14 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
         : current.model.state,
     );
     if (statePayload) args.state = statePayload;
+    // The batch, LAST of all — after the schema's own args, after the context
+    // and after the state payload — so a schema cannot name an argument that
+    // would quietly replace the rows the reader ticked. It is the only array in
+    // an args object that is otherwise flat scalars, and every key in it is one
+    // the plugin itself wrote.
+    if (interactive.kind === "bulk") {
+      args.selection = pluginPaneSelectionPayload(current.model, interactive.stateKey);
+    }
 
     updatePluginPaneState((state) => ({ ...state, editing: null }));
     const follow = async (result: unknown): Promise<void> => {
@@ -11149,6 +11211,12 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       // the reset selections rather than the ones they replaced.
       const reset = pluginPaneStateReset(current.model, result);
       if (reset) updatePluginPaneState((state) => ({ ...state, state: reset }));
+      // One verb, both maps. A plugin answering a bulk action with
+      // `{resetState}` has almost always just acted on every ticked row, and
+      // leaving them ticked would offer to do it again to rows that have moved
+      // on.
+      const resetSelection = pluginPaneSelectionReset(current.model, result);
+      if (resetSelection) updatePluginPaneState((state) => ({ ...state, selection: resetSelection }));
       // An action may ask to be followed to another panel of its own plugin.
       // Reload rather than refresh: the destination is a different panel, and
       // it arrives with the context the action handed us.

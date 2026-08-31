@@ -61,7 +61,10 @@ import {
   VOCAB_VERSION,
   bindingKey,
   parseVocabNode,
+  vocabChildNodes,
   vocabSegmentedDeclaration,
+  vocabSelectableDeclaration,
+  vocabSelectionDeclarations,
   vocabStateDeclarations,
   vocabString,
   type VocabBinding,
@@ -69,7 +72,10 @@ import {
   type VocabNode,
   type VocabParseState,
   type VocabPanelState,
+  type VocabSelectionDeclaration,
   type VocabStateDeclaration,
+  type VocabStateOption,
+  type VocabStateOptionsBinding,
 } from "./vocabularyNodes";
 import { VOCAB_STATE_COLLECTION, vocabStateRows } from "./vocabularyState";
 import { isRecord } from "./parse";
@@ -194,16 +200,55 @@ export function vocabReservedRows(
  */
 export function collectVocabStateDeclarations(
   nodes: readonly VocabNode[],
+  /**
+   * The options a control's `optionsFrom` resolves to, from rows the host has
+   * already fetched. A host with no rows yet omits it and gets each control's
+   * literal options, which is a working control on its "All" rather than an
+   * empty one — and the signature does not move when the rows do land, so the
+   * reader's selection survives that transition. See {@link vocabStateSignature}.
+   */
+  resolveOptions?: (binding: VocabStateOptionsBinding) => readonly VocabStateOption[],
 ): VocabStateDeclaration[] {
   const found: VocabStateDeclaration[] = [];
   const walk = (list: readonly VocabNode[]) => {
     for (const node of list) {
-      if (node.component === "stack") walk(node.children);
-      else if (node.component === "segmented") found.push(vocabSegmentedDeclaration(node));
+      if (node.component === "segmented") {
+        found.push(vocabSegmentedDeclaration(
+          node,
+          node.optionsFrom !== undefined ? resolveOptions?.(node.optionsFrom) : undefined,
+        ));
+        continue;
+      }
+      walk(vocabChildNodes(node));
     }
   };
   walk(nodes);
   return vocabStateDeclarations(found);
+}
+
+/**
+ * Every selectable list a parsed panel declares, in reading order.
+ *
+ * The selection half of {@link collectVocabStateDeclarations}, and held the
+ * same way: a host calls it once per parse and keeps the result beside the
+ * panel, because it is what builds the empty selection, what validates a tick,
+ * what the bulk bar reads its verbs from, and what decides whether a
+ * re-published schema may keep the reader's ticks.
+ */
+export function collectVocabSelectionDeclarations(
+  nodes: readonly VocabNode[],
+): VocabSelectionDeclaration[] {
+  const found: VocabSelectionDeclaration[] = [];
+  const walk = (list: readonly VocabNode[]) => {
+    for (const node of list) {
+      if (node.component === "list" && node.selectable) {
+        found.push(vocabSelectableDeclaration(node.selectable));
+      }
+      walk(vocabChildNodes(node));
+    }
+  };
+  walk(nodes);
+  return vocabSelectionDeclarations(found);
 }
 
 /* ── Parsing ────────────────────────────────────────────────────────────── */
@@ -362,7 +407,7 @@ export function countVocabNodes(nodes: readonly VocabNode[]): number {
   let total = 0;
   for (const node of nodes) {
     total += 1;
-    if (node.component === "stack") total += countVocabNodes(node.children);
+    total += countVocabNodes(vocabChildNodes(node));
   }
   return total;
 }
@@ -402,21 +447,44 @@ export function collectVocabBindings(nodes: readonly VocabNode[]): VocabBinding[
   const walk = (list: readonly VocabNode[]) => {
     for (const node of list) {
       switch (node.component) {
-        case "stack":
-          walk(node.children);
-          break;
         case "list":
         case "table":
         case "keyValue":
           if (node.bind) found.push(node.bind);
           break;
+        case "segmented":
+          // A control's `optionsFrom` is a fetch like any other: the rows it
+          // reads are the reader's projects, and a host that collected only
+          // node bindings would resolve the control against a collection
+          // nobody asked for and draw it with nothing but its "All".
+          if (node.optionsFrom) {
+            found.push({
+              collection: node.optionsFrom.collection,
+              ...(node.optionsFrom.keyPrefix !== undefined
+                ? { keyPrefix: node.optionsFrom.keyPrefix }
+                : {}),
+            });
+          }
+          break;
         default:
           break;
       }
+      walk(vocabChildNodes(node));
     }
   };
   walk(nodes);
   return found;
+}
+
+/**
+ * The rows a control's `optionsFrom` reads, keyed the way every other binding
+ * is, so a host resolves one from the same map it fetched into.
+ */
+export function vocabStateOptionsBindingKey(binding: VocabStateOptionsBinding): string {
+  return bindingKey({
+    collection: binding.collection,
+    ...(binding.keyPrefix !== undefined ? { keyPrefix: binding.keyPrefix } : {}),
+  });
 }
 
 /**

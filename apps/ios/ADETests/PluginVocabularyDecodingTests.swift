@@ -679,6 +679,53 @@ final class PluginVocabularyDecodingTests: XCTestCase {
     }
   }
 
+  func testAnInlineThumbnailSurvivesTheSchemaAndAnOverLongSourceIsRefused() throws {
+    // The drift this closes: `src` and `poster` were read at `maxValueChars`
+    // (1,000) and TRUNCATED, while the contract is `maxSrcChars` (8,192) and
+    // REFUSES. A `data:` thumbnail between the two drew on desktop and broke
+    // here — cut at 1,000 it still begins `data:image/png`, so it passes the
+    // scheme check and then decodes to nothing.
+    let payload = String(repeating: "A", count: 2_000)
+    let thumbnail = "data:image/png;base64,\(payload)"
+    XCTAssertGreaterThan(thumbnail.count, PluginVocabLimits.maxValueChars)
+    XCTAssertLessThan(thumbnail.count, PluginVocabLimits.maxSrcChars)
+
+    let parsed = try panel(parse("""
+    {"v":1,"fallback":{"title":"T","text":"B"},"body":[
+      {"component":"image","src":"\(thumbnail)","alt":"Screenshot"},
+      {"component":"video","src":"https://cdn.example.com/clip.mp4","poster":"\(thumbnail)"}
+    ]}
+    """))
+    guard case let .image(image) = parsed.body[0], case let .video(video) = parsed.body[1] else {
+      return XCTFail("expected an image and a video")
+    }
+    // Whole, and with no ellipsis: an ellipsized base64 is a broken image with
+    // no error, from a payload that was fine.
+    XCTAssertEqual(image.src, thumbnail)
+    XCTAssertEqual(video.poster, thumbnail)
+
+    // Over the ceiling the source is unusable rather than long, so the node
+    // becomes an honest marker instead of a silent blank.
+    let tooLong = "data:image/png;base64,"
+      + String(repeating: "A", count: PluginVocabLimits.maxSrcChars)
+    let refused = try panel(parse("""
+    {"v":1,"fallback":{"title":"T","text":"B"},"body":[
+      {"component":"image","src":"\(tooLong)","alt":"Screenshot"},
+      {"component":"video","src":"https://cdn.example.com/clip.mp4","poster":"\(tooLong)"}
+    ]}
+    """))
+    guard case let .invalid(name, _) = refused.body[0] else {
+      return XCTFail("expected an invalid image node")
+    }
+    XCTAssertEqual(name, "image")
+    // A refused POSTER costs the poster, never the video it belongs to.
+    guard case let .video(stillPlays) = refused.body[1] else {
+      return XCTFail("expected the video to survive its poster")
+    }
+    XCTAssertNil(stillPlays.poster)
+    XCTAssertEqual(stillPlays.src, "https://cdn.example.com/clip.mp4")
+  }
+
   func testOnlyAdeAndHttpsDeeplinksResolve() {
     XCTAssertNotNil(PluginDeeplinkURL.resolve("ade://lane/abc"))
     XCTAssertNotNil(PluginDeeplinkURL.resolve("https://example.com/report"))
@@ -2618,15 +2665,27 @@ final class PluginVocabPanelStateTests: XCTestCase {
       { "component": "segmented", "stateKey": "d", "options": [
         { "value": "", "label": "All" }, { "value": "x", "label": "X" }] },
       { "component": "segmented", "stateKey": "e", "options": [
+        { "value": "", "label": "All" }, { "value": "x", "label": "X" }] },
+      { "component": "segmented", "stateKey": "f", "options": [
+        { "value": "", "label": "All" }, { "value": "x", "label": "X" }] },
+      { "component": "segmented", "stateKey": "g", "options": [
+        { "value": "", "label": "All" }, { "value": "x", "label": "X" }] },
+      { "component": "segmented", "stateKey": "h", "options": [
+        { "value": "", "label": "All" }, { "value": "x", "label": "X" }] },
+      { "component": "segmented", "stateKey": "i", "options": [
         { "value": "", "label": "All" }, { "value": "x", "label": "X" }] }
     ]
     """#)
 
     // First declaration wins — it is the control highest on the page, and its
-    // default is the one a reader assumes is in force. Four is the ceiling.
-    XCTAssertEqual(found.map(\.stateKey), ["a", "b", "c", "d"])
+    // default is the one a reader assumes is in force. Eight is the ceiling,
+    // and the ninth key declares nothing.
+    XCTAssertEqual(found.map(\.stateKey), ["a", "b", "c", "d", "e", "f", "g", "h"])
     XCTAssertEqual(found.first?.options.map(\.value), ["", "x"])
-    XCTAssertEqual(PluginVocabState.initialState(found), ["a": "", "b": "", "c": "", "d": ""])
+    XCTAssertEqual(
+      PluginVocabState.initialState(found),
+      ["a": "", "b": "", "c": "", "d": "", "e": "", "f": "", "g": "", "h": ""]
+    )
   }
 
   func testTheSignatureFollowsTheControlsAndNotTheData() throws {
@@ -3148,6 +3207,18 @@ final class PluginPaneFallbackTests: XCTestCase {
     ) async throws -> [PluginCollectionEntry] {
       collectionFetchCount += 1
       return try collectionReply.get()
+    }
+
+    var supportsPluginAuthSessions = true
+    /// Every set of callback parameters the store handed back, so a test can
+    /// check that the phone forwarded the provider's fields untouched and named
+    /// no session of its own.
+    private(set) var completedAuthParams: [[String: String]] = []
+    var completeAuthSessionError: Error?
+
+    func completePluginAuthSession(params: [String: String]) async throws {
+      completedAuthParams.append(params)
+      if let completeAuthSessionError { throw completeAuthSessionError }
     }
   }
 
@@ -3713,5 +3784,588 @@ final class PluginPaneFallbackTests: XCTestCase {
     XCTAssertNil(PluginCollectionEntry.remote(payload: noCollection, pluginId: "hn"))
     XCTAssertNil(PluginCollectionEntry.remote(payload: noKey, pluginId: "hn"))
     XCTAssertNil(PluginCollectionEntry.remote(payload: complete, pluginId: ""))
+  }
+}
+
+/// Groups, collection-bound options, and the row selection lifecycle.
+///
+/// The three capabilities the shared vocabulary gained together, held to the
+/// same rule as every case above it: one schema and one set of rows must
+/// produce the same visible panel on the phone, the desktop, the web client and
+/// the terminal. The names follow the TypeScript suites for
+/// `vocabularyNodes.ts` and `vocabularyState.ts` so the two read side by side.
+final class PluginVocabGroupSelectionTests: XCTestCase {
+  private func parse(_ json: String) -> PluginPanelParseResult {
+    PluginPanelParser.parse(json)
+  }
+
+  private func panel(_ result: PluginPanelParseResult) throws -> PluginPanelSchema {
+    guard case let .ok(schema, _) = result else {
+      throw XCTSkip("Expected a parsed panel, got \(result)")
+    }
+    return schema
+  }
+
+  private func body(_ json: String) throws -> [PluginVocabNode] {
+    try panel(parse(#"{ "v": 1, "fallback": { "title": "F", "text": "f" }, "body": \#(json) }"#)).body
+  }
+
+  // MARK: - The group node
+
+  func testAGroupParsesAndItsChildrenCountAgainstTheNodeBudget() throws {
+    let nodes = try body(#"""
+    [
+      {
+        "component": "group",
+        "title": "In progress",
+        "groupKey": "state:started",
+        "badge": 12,
+        "defaultOpen": false,
+        "children": [
+          { "component": "text", "text": "one" },
+          { "component": "text", "text": "two" }
+        ]
+      },
+      { "component": "group", "children": [] }
+    ]
+    """#)
+
+    guard case let .group(group) = nodes[0] else { return XCTFail("expected a group node") }
+    XCTAssertEqual(group.title, "In progress")
+    XCTAssertEqual(group.groupKey, "state:started")
+    // A numeric badge reads as its digits, exactly as an option's does.
+    XCTAssertEqual(group.badge, "12")
+    XCTAssertFalse(group.defaultOpen)
+    XCTAssertEqual(group.children.count, 2)
+    XCTAssertEqual(group.key, "state:started")
+    XCTAssertTrue(PluginRenderSupport.isRenderable(nodes[0]))
+    // A disclosure with no word on it is a triangle the reader has to open to
+    // find out what they opened, so the title is the one required field — and
+    // node-local, so the panel keeps everything else.
+    if case .invalid = nodes[1] {} else { XCTFail("a group with no title must not parse") }
+
+    // Children are nodes and spend the panel's node budget like any other.
+    let children = (0..<PluginVocabLimits.maxNodes)
+      .map { _ in #"{ "component": "text", "text": "x" }"# }
+      .joined(separator: ",")
+    let overflowed = parse(#"""
+    { "v": 1, "fallback": { "title": "F", "text": "f" },
+      "body": [{ "component": "group", "title": "Big", "children": [\#(children)] }] }
+    """#)
+    guard case let .failed(failure, _) = overflowed else { return XCTFail("expected a panel failure") }
+    XCTAssertEqual(failure, .tooManyNodes)
+  }
+
+  func testAGroupsOpenStateIsNeverPanelState() throws {
+    let nodes = try body(#"""
+    [
+      { "component": "group", "title": "One", "defaultOpen": false, "children": [
+        { "component": "text", "text": "a" }] },
+      { "component": "group", "title": "Two", "children": [
+        { "component": "text", "text": "b" }] }
+    ]
+    """#)
+
+    // Seven collapsible sections used to cost seven `segmented` controls. A
+    // group spends no state key at all, which is what leaves the whole filter
+    // budget for filters — and what keeps a `where` from reading a section the
+    // reader merely closed.
+    XCTAssertTrue(PluginVocabState.declarations(in: nodes).isEmpty)
+    XCTAssertTrue(PluginVocabState.selectionDeclarations(in: nodes).isEmpty)
+    // Identity for the open/closed memory falls back to the title, never to the
+    // node's position: a plugin republishing with one more group above yours has
+    // not opened the section you closed.
+    guard case let .group(second) = nodes[1] else { return XCTFail("expected a group node") }
+    XCTAssertEqual(second.key, "Two")
+    XCTAssertTrue(second.defaultOpen)
+  }
+
+  func testASegmentedInsideAGroupStillDeclaresItsStateKey() throws {
+    let nodes = try body(#"""
+    [
+      { "component": "group", "title": "Filters", "children": [
+        { "component": "stack", "children": [
+          { "component": "segmented", "stateKey": "statusFilter", "options": [
+            { "value": "", "label": "All" }, { "value": "active", "label": "Active" }] }
+        ] },
+        { "component": "list", "bind": { "collection": "issues" }, "selectable": {
+          "stateKey": "batch",
+          "actions": [{ "action": "issues.close", "label": "Close" }]
+        } }
+      ] }
+    ]
+    """#)
+
+    // Every walk goes through one child accessor, so a second container cannot
+    // silently swallow a control: a `segmented` in an unwalked group would
+    // declare no key and a `list` in one would bind a collection nobody fetched.
+    XCTAssertEqual(PluginVocabState.declarations(in: nodes).map(\.stateKey), ["statusFilter"])
+    XCTAssertEqual(PluginVocabState.selectionDeclarations(in: nodes).map(\.stateKey), ["batch"])
+  }
+
+  // MARK: - Selectable rows
+
+  func testABoundListsRowsInheritTheirCollectionKey() throws {
+    // A collection row HAS a key. Making a plugin repeat it inside the value
+    // just to make its rows selectable would be a second identity that can
+    // disagree with the first.
+    let inherited = try XCTUnwrap(PluginPanelParser.parseBoundListItem(
+      ["title": "Fix the crash"],
+      allowActions: nil,
+      rowKey: "ADE-142"
+    ))
+    XCTAssertEqual(inherited.key, "ADE-142")
+
+    // A value that names its own `key` keeps it.
+    let declared = try XCTUnwrap(PluginPanelParser.parseBoundListItem(
+      ["title": "Fix the crash", "key": "own"],
+      allowActions: nil,
+      rowKey: "ADE-142"
+    ))
+    XCTAssertEqual(declared.key, "own")
+
+    // A row that inherited nothing draws no tick rather than one that would put
+    // an empty string into a batch.
+    let keyless = try XCTUnwrap(PluginPanelParser.parseBoundListItem(
+      ["title": "Fix the crash"],
+      allowActions: nil
+    ))
+    XCTAssertNil(keyless.key)
+  }
+
+  func testAnOverLongItemKeyIsRefusedRatherThanTruncated() throws {
+    let long = String(repeating: "k", count: PluginVocabLimits.maxIdChars + 1)
+    let nodes = try body(#"""
+    [{ "component": "list", "items": [
+      { "title": "Long", "key": "\#(long)" },
+      { "title": "Fine", "key": "ok" }
+    ] }]
+    """#)
+
+    guard case let .list(list) = nodes[0], let items = list.items else {
+      return XCTFail("expected a list node")
+    }
+    // `cleanString` would append an ellipsis, which is right for a title and
+    // wrong for an identity: the shortened key names no row and no plugin
+    // record, and it would ride into a batch pointing at nothing. So the row
+    // keeps its title and loses only its tick.
+    XCTAssertEqual(items[0].title, "Long")
+    XCTAssertNil(items[0].key)
+    XCTAssertEqual(items[1].key, "ok")
+
+    // The same refusal on the bound path, where the over-long identity is the
+    // collection row's own key.
+    let bound = try XCTUnwrap(PluginPanelParser.parseBoundListItem(
+      ["title": "Long"],
+      allowActions: nil,
+      rowKey: long
+    ))
+    XCTAssertNil(bound.key)
+  }
+
+  func testASelectableWithNoUsableActionIsDropped() throws {
+    let nodes = try body(#"""
+    [
+      { "component": "list", "items": [{ "title": "a", "key": "a" }], "selectable": {
+        "stateKey": "batch", "actions": [{ "label": "No action id" }] } },
+      { "component": "list", "items": [{ "title": "a", "key": "a" }], "selectable": {
+        "stateKey": "batch" } },
+      { "component": "list", "items": [{ "title": "a", "key": "a" }], "selectable": {
+        "stateKey": "$state", "actions": [{ "action": "x", "label": "X" }] } },
+      { "component": "list", "items": [{ "title": "a", "key": "a" }], "selectable": {
+        "stateKey": "batch",
+        "max": 4,
+        "actions": [
+          { "action": "a", "label": "A" }, { "action": "b", "label": "B" },
+          { "action": "c", "label": "C" }, { "action": "d", "label": "D" },
+          { "action": "e", "label": "E" }
+        ] } }
+    ]
+    """#)
+
+    func selectable(_ index: Int) -> PluginVocabSelectable? {
+      guard case let .list(list) = nodes[index] else { return nil }
+      return list.selectable
+    }
+
+    // A selection with no verb is a set of ticks the reader cannot spend, so it
+    // is dropped whole rather than drawing checkboxes over an empty bar. The
+    // list itself still renders — the `selectable` is node-local damage.
+    XCTAssertNil(selectable(0))
+    XCTAssertNil(selectable(1))
+    XCTAssertNil(selectable(2))
+    let usable = try XCTUnwrap(selectable(3))
+    XCTAssertEqual(usable.stateKey, "batch")
+    XCTAssertEqual(usable.max, 4)
+    // A fifth verb over a selection is a menu, and the vocabulary has no menu.
+    XCTAssertEqual(usable.actions.map(\.label), ["A", "B", "C", "D"])
+    XCTAssertEqual(
+      PluginVocabState.selectionDeclarations(in: nodes).map(\.stateKey),
+      ["batch"]
+    )
+  }
+
+  func testOnlyTwoListsInOnePanelMayClaimTheBar() throws {
+    let nodes = try body(#"""
+    [
+      { "component": "list", "items": [{ "title": "a", "key": "a" }], "selectable": {
+        "stateKey": "one", "actions": [{ "action": "x", "label": "X" }] } },
+      { "component": "list", "items": [{ "title": "b", "key": "b" }], "selectable": {
+        "stateKey": "two", "actions": [{ "action": "x", "label": "X" }] } },
+      { "component": "list", "items": [{ "title": "c", "key": "c" }], "selectable": {
+        "stateKey": "three", "actions": [{ "action": "x", "label": "X" }] } }
+    ]
+    """#)
+
+    // The third list still draws its rows; it simply draws no ticks and no bar.
+    XCTAssertEqual(PluginVocabState.selectionDeclarations(in: nodes).map(\.stateKey), ["one", "two"])
+  }
+
+  // MARK: - The selection lifecycle
+
+  private let batch = PluginVocabSelectionDeclaration(
+    stateKey: "batch",
+    max: 2,
+    actionIds: ["issues.close"]
+  )
+
+  func testTheCapRefusesATickRatherThanEvictingTheOldest() {
+    var selection = PluginVocabState.initialSelection([batch])
+    XCTAssertEqual(selection, ["batch": []])
+
+    selection = PluginVocabState.toggleRow(selection, declaration: batch, rowKey: "a")
+    selection = PluginVocabState.toggleRow(selection, declaration: batch, rowKey: "b")
+    let full = selection
+    // A silent eviction would take a row out of a batch the reader believes
+    // they assembled, and the count on the bar is the only thing that could
+    // have told them.
+    selection = PluginVocabState.toggleRow(selection, declaration: batch, rowKey: "c")
+    XCTAssertEqual(selection, full)
+    XCTAssertEqual(selection["batch"], ["a", "b"])
+
+    // Unticking always works, cap or no cap — and then the refused row fits.
+    selection = PluginVocabState.toggleRow(selection, declaration: batch, rowKey: "a")
+    XCTAssertEqual(selection["batch"], ["b"])
+    selection = PluginVocabState.toggleRow(selection, declaration: batch, rowKey: "c")
+    XCTAssertEqual(selection["batch"], ["b", "c"])
+
+    // An empty key is not an identity.
+    XCTAssertEqual(PluginVocabState.toggleRow(selection, declaration: batch, rowKey: ""), selection)
+    XCTAssertEqual(PluginVocabState.clearSelection(selection, declaration: batch)["batch"], [])
+  }
+
+  func testTheRangeIsAUnionAndFillsToTheCap() {
+    let wide = PluginVocabSelectionDeclaration(stateKey: "batch", max: 3, actionIds: ["x"])
+    let rows = ["a", "b", "c", "d"]
+
+    // "Between" has two answers when the reader drags upwards, so the slice is
+    // always in draw order.
+    XCTAssertEqual(PluginVocabState.rowRange(rows, anchor: "c", target: "a"), ["a", "b", "c"])
+    XCTAssertEqual(PluginVocabState.rowRange(rows, anchor: "a", target: "c"), ["a", "b", "c"])
+    // An anchor that is no longer on screen extends nothing: the honest reading
+    // is the plain click.
+    XCTAssertEqual(PluginVocabState.rowRange(rows, anchor: "gone", target: "b"), ["b"])
+    XCTAssertEqual(PluginVocabState.rowRange(rows, anchor: nil, target: "b"), ["b"])
+    XCTAssertEqual(PluginVocabState.rowRange(rows, anchor: "a", target: "gone"), [])
+
+    // A union, not a replacement: a reader assembling a batch out of two
+    // clusters must not lose the first one.
+    var selection: PluginVocabPanelSelection = ["batch": ["d"]]
+    selection = PluginVocabState.selectRange(selection, declaration: wide, rowKeys: ["a", "b"])
+    XCTAssertEqual(selection["batch"], ["d", "a", "b"])
+    // Full. The rows it could not take are the tail of the range the reader can
+    // see, not rows it silently swapped out.
+    let full = selection
+    XCTAssertEqual(PluginVocabState.selectRange(selection, declaration: wide, rowKeys: ["c"]), full)
+  }
+
+  func testSelectedRowKeysReturnsOnlyTheVisibleKeysInDrawOrder() {
+    let selection: PluginVocabPanelSelection = ["batch": ["c", "a", "hidden"]]
+
+    // Acting on a row nobody can see is the one outcome a selection must never
+    // produce, so a filter that hid two rows narrows the batch to what is on
+    // screen — in draw order, not tick order.
+    XCTAssertEqual(
+      PluginVocabState.selectedRowKeys(selection, stateKey: "batch", rowKeys: ["a", "b", "c"]),
+      ["a", "c"]
+    )
+    // The hidden key is KEPT in the stored set: moving the filter back brings it
+    // and its tick with it, which a prune at filter time would not.
+    XCTAssertEqual(selection["batch"], ["c", "a", "hidden"])
+    XCTAssertEqual(
+      PluginVocabState.selectedRowKeys(selection, stateKey: "other", rowKeys: ["a"]),
+      []
+    )
+  }
+
+  func testTheSelectionSignatureIgnoresRowsAndMovesOnAChangedCapOrActionList() throws {
+    func lists(_ json: String) throws -> [PluginVocabSelectionDeclaration] {
+      PluginVocabState.selectionDeclarations(in: try body(json))
+    }
+
+    let one = try lists(#"""
+    [{ "component": "list", "items": [{ "title": "a", "key": "a" }], "selectable": {
+      "stateKey": "batch", "max": 10, "actions": [{ "action": "close", "label": "Close" }] } }]
+    """#)
+    // Same control, entirely different rows: a plugin republishing its rows
+    // every few seconds would otherwise empty a batch mid-assembly.
+    let republished = try lists(#"""
+    [{ "component": "list", "items": [
+      { "title": "z", "key": "z" }, { "title": "y", "key": "y" }], "selectable": {
+      "stateKey": "batch", "max": 10, "actions": [{ "action": "close", "label": "Close" }] } }]
+    """#)
+    let lowered = try lists(#"""
+    [{ "component": "list", "items": [{ "title": "a", "key": "a" }], "selectable": {
+      "stateKey": "batch", "max": 2, "actions": [{ "action": "close", "label": "Close" }] } }]
+    """#)
+    let reverbed = try lists(#"""
+    [{ "component": "list", "items": [{ "title": "a", "key": "a" }], "selectable": {
+      "stateKey": "batch", "max": 10, "actions": [{ "action": "archive", "label": "Close" }] } }]
+    """#)
+
+    XCTAssertEqual(
+      PluginVocabState.selectionSignature(one),
+      PluginVocabState.selectionSignature(republished)
+    )
+    XCTAssertNotEqual(
+      PluginVocabState.selectionSignature(one),
+      PluginVocabState.selectionSignature(lowered)
+    )
+    XCTAssertNotEqual(
+      PluginVocabState.selectionSignature(one),
+      PluginVocabState.selectionSignature(reverbed)
+    )
+
+    // Normalizing re-applies the cap a republish lowered, and drops a key the
+    // new schema does not declare.
+    let carried = PluginVocabState.normalizeSelection(
+      ["batch": ["a", "b", "b", "c", ""], "gone": ["x"]],
+      declarations: lowered
+    )
+    XCTAssertEqual(carried, ["batch": ["a", "b"]])
+  }
+
+  func testAnActionCanPutTheReaderBackOnAnEmptySelection() {
+    let other = PluginVocabSelectionDeclaration(stateKey: "other", max: 5, actionIds: ["y"])
+    let ticked: PluginVocabPanelSelection = ["batch": ["a"], "other": ["b"]]
+
+    // One verb for both maps: a plugin answering a bulk action with
+    // `{resetState}` has almost always just acted on every ticked row.
+    XCTAssertEqual(
+      PluginVocabState.resetSelection(ticked, declarations: [batch, other], reset: .all),
+      ["batch": [], "other": []]
+    )
+    XCTAssertEqual(
+      PluginVocabState.resetSelection(
+        ticked,
+        declarations: [batch, other],
+        reset: PluginInvokeStateReset(keys: ["batch"])!
+      ),
+      ["batch": [], "other": ["b"]]
+    )
+    // A key nothing declares changes nothing.
+    XCTAssertEqual(
+      PluginVocabState.resetSelection(
+        ticked,
+        declarations: [batch, other],
+        reset: PluginInvokeStateReset(keys: ["zzz"])!
+      ),
+      ticked
+    )
+  }
+
+  // MARK: - Collection-bound options
+
+  func testABoundControlIsExemptFromTheTwoOptionFloor() throws {
+    let nodes = try body(#"""
+    [
+      {
+        "component": "segmented",
+        "stateKey": "project",
+        "label": "Project",
+        "default": "eng",
+        "options": [{ "value": "", "label": "All projects" }],
+        "optionsFrom": {
+          "collection": "projects",
+          "keyPrefix": "p:",
+          "valueField": "id",
+          "labelField": "name"
+        }
+      },
+      { "component": "segmented", "stateKey": "solo", "options": [{ "value": "a", "label": "A" }] },
+      {
+        "component": "segmented",
+        "stateKey": "broken",
+        "options": [{ "value": "a", "label": "A" }],
+        "optionsFrom": { "collection": "projects" }
+      }
+    ]
+    """#)
+
+    // A bound control's second option is a row that has not arrived yet, not an
+    // author's mistake, so the floor does not apply to it.
+    guard case let .segmented(bound) = nodes[0] else { return XCTFail("expected a segmented node") }
+    XCTAssertEqual(bound.optionsFrom?.collection, "projects")
+    XCTAssertEqual(bound.optionsFrom?.keyPrefix, "p:")
+    XCTAssertEqual(bound.optionsFrom?.valueField, "id")
+    XCTAssertEqual(bound.optionsFrom?.labelField, "name")
+    // The author's `default` is kept VERBATIM: resolving it against the literal
+    // options here would throw away a default naming a row nobody has fetched.
+    XCTAssertEqual(bound.initial, "eng")
+
+    // A control with one literal option and no binding is still a filter stuck
+    // wherever the author left it.
+    if case .invalid = nodes[1] {} else { XCTFail("one literal option must not parse") }
+    // A binding with no `valueField` would resolve every row to the same empty
+    // value, so it degrades to "this control has only its literal options" —
+    // and then the floor bites.
+    if case .invalid = nodes[2] {} else { XCTFail("a binding with no `valueField` is not one") }
+  }
+
+  func testBoundOptionsResolveFromTheCollectionAndDrawAfterTheLiteralOnes() throws {
+    let nodes = try body(#"""
+    [{
+      "component": "segmented",
+      "stateKey": "project",
+      "default": "eng",
+      "options": [{ "value": "", "label": "All projects" }],
+      "optionsFrom": { "collection": "projects", "valueField": "id", "labelField": "name" }
+    }]
+    """#)
+    guard case let .segmented(control) = nodes[0], let binding = control.optionsFrom else {
+      return XCTFail("expected a bound segmented node")
+    }
+
+    let rows: [Any?] = [
+      ["id": "eng", "name": "Engineering", "badge": 12],
+      // A row with no readable value is dropped rather than minting a second
+      // "All" sentinel, and a duplicate collapses with the first row winning.
+      ["id": "", "name": "Nameless"],
+      ["id": "eng", "name": "Engineering again"],
+      ["id": "des"],
+      "not an object",
+    ]
+    let resolved = PluginVocabState.resolveStateOptions(binding, rows: rows)
+    XCTAssertEqual(resolved.map(\.value), ["eng", "des"])
+    // A label falls back to the value; a numeric badge reads as its digits.
+    XCTAssertEqual(resolved.map(\.label), ["Engineering", "des"])
+    XCTAssertEqual(resolved.first?.badge, "12")
+
+    // Literals first — that is where the "All" sentinel is written, and a reader
+    // looks for it at the top.
+    let declaration = control.declaration(resolved: resolved)
+    XCTAssertEqual(declaration.options.map(\.value), ["", "eng", "des"])
+    // The declared default is among the resolved options, so the control opens
+    // on it.
+    XCTAssertEqual(declaration.initial, "eng")
+
+    // With nothing fetched yet the control is still usable, sitting on its
+    // unset "All" rather than on whichever project the collection yielded first.
+    let unresolved = PluginVocabState.declarations(in: nodes)
+    XCTAssertEqual(unresolved.first?.options.map(\.value), [""])
+    XCTAssertEqual(unresolved.first?.initial, "")
+  }
+
+  func testABoundControlsSignatureDoesNotMoveWhenItsResolvedOptionsChange() throws {
+    let nodes = try body(#"""
+    [{
+      "component": "segmented",
+      "stateKey": "project",
+      "options": [{ "value": "", "label": "All projects" }],
+      "optionsFrom": { "collection": "projects", "valueField": "id" }
+    }]
+    """#)
+
+    let empty = PluginVocabState.declarations(in: nodes)
+    let landed = PluginVocabState.declarations(in: nodes) { _ in
+      [PluginVocabStateOption(value: "eng", label: "Engineering", badge: nil)]
+    }
+    let more = PluginVocabState.declarations(in: nodes) { _ in
+      [
+        PluginVocabStateOption(value: "eng", label: "Engineering", badge: nil),
+        PluginVocabStateOption(value: "des", label: "Design", badge: nil),
+      ]
+    }
+
+    // The options are DATA: a project created in another window, or the second
+    // page of a fetch landing, would otherwise change the signature and drop the
+    // reader's filter — for a change they did not make and cannot see.
+    XCTAssertEqual(PluginVocabState.signature(empty), PluginVocabState.signature(landed))
+    XCTAssertEqual(PluginVocabState.signature(landed), PluginVocabState.signature(more))
+
+    // The BINDING is the schema, so it still moves when the author changes it.
+    let rebound = try body(#"""
+    [{
+      "component": "segmented",
+      "stateKey": "project",
+      "options": [{ "value": "", "label": "All projects" }],
+      "optionsFrom": { "collection": "labels", "valueField": "id" }
+    }]
+    """#)
+    XCTAssertNotEqual(
+      PluginVocabState.signature(empty),
+      PluginVocabState.signature(PluginVocabState.declarations(in: rebound))
+    )
+
+    // And the fine reconciliation still runs: a value that is no longer an
+    // option falls back to the control's initial.
+    XCTAssertEqual(
+      PluginVocabState.normalize(["project": "gone"], declarations: landed),
+      ["project": ""]
+    )
+    XCTAssertEqual(
+      PluginVocabState.normalize(["project": "eng"], declarations: landed),
+      ["project": "eng"]
+    )
+  }
+
+  func testAControlPastTheStripCeilingDrawsAsAMenu() throws {
+    let nodes = try body(#"""
+    [{
+      "component": "segmented",
+      "stateKey": "project",
+      "options": [{ "value": "", "label": "All" }],
+      "optionsFrom": { "collection": "projects", "valueField": "id" }
+    }]
+    """#)
+    func resolved(_ count: Int) -> [PluginVocabStateOption] {
+      (0..<count).map { PluginVocabStateOption(value: "p\($0)", label: "P\($0)", badge: nil) }
+    }
+
+    // A strip of pills is the right picture for three states and the wrong one
+    // for thirty projects, and the author cannot know which they will get.
+    let strip = PluginVocabState.declarations(in: nodes) { _ in resolved(4) }
+    let menu = PluginVocabState.declarations(in: nodes) { _ in resolved(40) }
+    XCTAssertEqual(PluginVocabState.controlStyle(try XCTUnwrap(strip.first)), .segmented)
+    XCTAssertEqual(PluginVocabState.controlStyle(try XCTUnwrap(menu.first)), .menu)
+    // Fifty is where a flat menu stops being findable, and the cap is applied to
+    // the merged list rather than to the resolved half of it.
+    let capped = PluginVocabState.declarations(in: nodes) { _ in resolved(80) }
+    XCTAssertEqual(
+      try XCTUnwrap(capped.first).options.count,
+      PluginVocabLimits.maxBoundStateOptions
+    )
+
+    // A two-option toggle is still a toggle.
+    let toggle = try body(#"""
+    [{ "component": "segmented", "stateKey": "k", "style": "toggle", "options": [
+      { "value": "a", "label": "A" }, { "value": "b", "label": "B" }] }]
+    """#)
+    XCTAssertEqual(
+      PluginVocabState.controlStyle(try XCTUnwrap(PluginVocabState.declarations(in: toggle).first)),
+      .toggle
+    )
+  }
+
+  // MARK: - Capacity
+
+  func testAPanelMayDeclareEightStateKeys() {
+    // Four was one filter axis short of the panels people actually write: an
+    // issue browser wants state, project, assignee, priority, sort and a search.
+    XCTAssertEqual(PluginVocabLimits.maxStateKeys, 8)
+    XCTAssertEqual(PluginVocabLimits.maxBoundStateOptions, 50)
+    XCTAssertEqual(PluginVocabLimits.maxSelectionKeys, 2)
+    XCTAssertEqual(PluginVocabLimits.maxSelectedRows, 100)
+    XCTAssertEqual(PluginVocabLimits.maxBulkActions, 4)
   }
 }

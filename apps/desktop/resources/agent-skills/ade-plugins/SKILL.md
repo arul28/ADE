@@ -424,7 +424,7 @@ Three shapes that fit the platform well:
 
 **Churning synced values spends the user's relay allowance.** Per-machine daily relay ceilings exist and a machine past one loses relay transport until midnight UTC — numbers and the rule in *Budgets*. Direct and LAN sync are never counted. Read it as etiquette rather than a limit you will hit: publish when something changed, not on a loop.
 
-**The vocabulary is fourteen components with hard ceilings** — 200 nodes, depth 8, 64 KiB per schema, plus the per-component caps in *Vocabulary limits*. No expressions, conditionals, formatting strings or callbacks. A component this build has never heard of renders a marker naming it, and a panel over any ceiling renders its required `fallback` instead — which is why `fallback` is mandatory rather than nice to have. **`panels.update` refuses a schema past `maxNodes` or `maxDepth` at the write**, with `plugin_budget_exceeded` naming the ceiling and your actual count, exactly as a collection value over 64 KiB is refused. That is deliberate: an over-ceiling schema is fatal to the panel on *every* client, so storing it would buy you a blank fallback card on desktop, iOS, web and the TUI at once with nothing anywhere saying why. Note this is the ceiling check only — an unknown component and a malformed known one are still accepted at the write and still become markers at render. What draws where differs per surface: *Per-surface support* is the authority, and worth reading before you design a panel around a `chart`.
+**The vocabulary is sixteen components with hard ceilings** — 200 nodes, depth 8, 64 KiB per schema, plus the per-component caps in *Vocabulary limits*. No expressions, conditionals, formatting strings or callbacks. A component this build has never heard of renders a marker naming it, and a panel over any ceiling renders its required `fallback` instead — which is why `fallback` is mandatory rather than nice to have. **`panels.update` refuses a schema past `maxNodes` or `maxDepth` at the write**, with `plugin_budget_exceeded` naming the ceiling and your actual count, exactly as a collection value over 64 KiB is refused. That is deliberate: an over-ceiling schema is fatal to the panel on *every* client, so storing it would buy you a blank fallback card on desktop, iOS, web and the TUI at once with nothing anywhere saying why. Note this is the ceiling check only — an unknown component and a malformed known one are still accepted at the write and still become markers at render. What draws where differs per surface: *Per-surface support* is the authority, and worth reading before you design a panel around a `chart`.
 
 **A `webview` page is desktop-only and sandboxed.** Its own origin, `script-src 'self'`, no Node, no `require`, no raw IPC, and no `window.ade` — the `window.adePlugin` bridge is the entire capability, and even `collections.put` through it is refused on the desktop app (write through `invoke` instead). iOS, the web client and the TUI render the surface's `panelId` panel in its place. **There is no custom native UI on iOS or the TUI at all**; declarative panels are the only cross-device UI that exists.
 
@@ -829,19 +829,21 @@ A panel is a JSON document. `v` is the vocabulary version, `fallback` is **requi
 | Component | Shape (required fields in bold) |
 |---|---|
 | `stack` | **`children[]`**, `direction` (`vertical`\|`horizontal`), `gap` (`none`\|`sm`\|`md`\|`lg`), `align`, `wrap` |
+| `group` | **`title`**, **`children[]`**, `groupKey`, `badge`, `defaultOpen` (default true). A section the reader can collapse — see *Seven groups, no state keys* |
 | `text` | **`text`**, `variant` (`title`\|`subtitle`\|`body`\|`caption`\|`code`), `tone`. `code` is the only monospace affordance |
+| `markdown` | **`text`** — formatted prose. One field: no `maxHeight`, no variant, no tone. See *Prose with structure* below for the subset, which is the same on all four clients |
 | `badge` | **`text`**, `tone`, `icon` |
 | `button` | **`label`**, **`onPress`** (a `VocabAction`), `kind` (`primary`\|`default`\|`quiet`), `icon`, `disabled` |
-| `list` | **`items[]` or `bind`**, `emptyText`. Item: **`title`**, `subtitle`, `meta`, `tone`, `icon`, `onPress`, `badge` `{text, tone?, icon?}`, `mono`, `actions[]` (≤3), `overflow[]` (≤6) |
+| `list` | **`items[]` or `bind`**, `emptyText`, `selectable` `{stateKey, actions[] (≤4), max?}`. Item: **`title`**, `key`, `subtitle`, `meta`, `tone`, `icon`, `onPress`, `badge` `{text, tone?, icon?}`, `mono`, `actions[]` (≤3), `overflow[]` (≤6) |
 | `table` | **`columns[]`** and **`rows[]` or `bind`**, `emptyText`. Column: **`key`**, **`label`**, `align` |
 | `form` | **`fields[]`**, and **`submit` `{label, onPress}` or `applyOnChange` (a `VocabAction`)** — at least one, both allowed. Field kinds: `text`, `secret`, `select`, `toggle`, `number`. See *A form with no Apply button* |
 | `chart` | **`kind`** (`line`\|`bar`), **`series[]`** of `{id, label?, tone?, points:[{x,y}]}`, `title`, `emptyText` |
-| `video` | **`src`**, `poster`, `title` |
-| `image` | **`src`**, **`alt`**, `maxHeight` |
+| `video` | **`src`**, `poster`, `title`. A source over `maxSrcChars` is refused, never shortened — a truncated `data:` URI still passes the scheme check and then decodes to nothing |
+| `image` | **`src`**, **`alt`**, `maxHeight`. Same `src` rule as `video` |
 | `divider` | `label` |
 | `keyValue` | **`rows[]` or `bind`**, `emptyText`. Row: **`key`**, `value`, `tone` |
 | `emptyState` | **`title`**, `description`, `icon`, `action` `{label, onPress}` |
-| `segmented` | **`stateKey`**, **`options[]`** (2–8) of `{value, label?, badge?}`, `label`, `default`, `style` (`segmented`\|`toggle`), `onChange`. The one control that holds state — see *A filter with no round trip* |
+| `segmented` | **`stateKey`**, **`options[]`** (2–8) of `{value, label?, badge?}`, `optionsFrom` `{collection, valueField, labelField?, keyPrefix?}`, `label`, `default`, `style` (`segmented`\|`toggle`), `onChange`. The one control that holds state — see *A filter with no round trip*. With `optionsFrom` the literal `options` may be as few as one, and the control draws as a menu past eight |
 
 Tones are `neutral`, `accent`, `success`, `warning`. **There is no red.** Any red-ish value you write (`danger`, `error`, `fail`) folds to `warning` — the house rule cannot be bypassed by a payload.
 
@@ -873,6 +875,92 @@ Per-client: desktop, the web client and iOS draw all of it, with `overflow` behi
 ```
 
 A row naming anything outside that list still renders; it is simply not pressable. Max **16** ids, deduplicated. An empty `allowActions` means the same as none.
+
+### Prose with structure
+
+`text` renders literally on every client: a `#` is a hash and `**bold**` is four
+asterisks and two words. An issue body, a comment or a release note needs the
+other thing, and **`markdown`** is it.
+
+```json
+{ "component": "markdown", "text": "## Fix the redirect\n\nDrops `next` when the session is **stale**." }
+```
+
+**The subset is closed, and it is identical on desktop, web, iPhone and the
+terminal.** It is defined once, as data, in
+`apps/desktop/src/shared/plugins/vocabularyMarkdown.ts`; the phone mirrors it in
+`PluginVocabularyMarkdown.swift`. Anything outside it is not markup — it is the
+characters you typed.
+
+| In the subset | Written as | Notes |
+|---|---|---|
+| Headings | `# a` … `###### f` | Six levels. A seventh hash is a paragraph |
+| Bold / italic / strike | `**a**` `_a_` `~~a~~` | Nested emphasis becomes both, not a tree. `snake_case` is a word |
+| Inline code | `` `a` `` | Swallows everything inside it: `` `**a**` `` is four literal characters |
+| Fenced code | ```` ```ts ```` … ```` ``` ```` | The info string's first word is the language. An unclosed fence still renders |
+| Links | `[text](https://…)`, `<https://…>` | **`https:` only** — see below |
+| Lists | `- a`, `1. a` | Ordered lists keep their start number. Nesting is allowed |
+| Task list | `- [x] a`, `- [ ] a` | **Drawn inert.** A picture of the source document, never a control |
+| Blockquote | `> a` | Its content is parsed as blocks |
+| Thematic break | `---` | |
+
+| NOT in the subset | What you get | Use instead |
+|---|---|---|
+| Raw HTML | The characters, escaped | Nothing. This is the security line and there is no way through it |
+| Images | The alt text | The `image` node, which has a source ceiling and a scheme gate |
+| Tables | The pipes, as text | The `table` node, which has columns a client can lay out |
+| Bare URLs | Text, not a link | `[text](url)`. Three clients disagree about where a bare URL ends |
+| Setext headings, indented code | A paragraph | `#` and a fence, which nobody types by accident |
+
+**Links pass the same gate as `{openUrl}`, and open through the same path.**
+`https:` with a host, and nothing else: a `javascript:`, `data:`, `file:`,
+`ade:` or plain `http:` destination loses its link and keeps its words. A tap
+goes out through the client's plugin-link opener — the one that logs your plugin
+id — never straight to a browser.
+
+**Length.** `maxMarkdownChars` is 4,000, the same ceiling as `text`, and a panel
+is capped at 65,536 bytes either way. Past the node ceiling the document is cut
+and drawn **as its source, in monospace, with a line saying so** — because a cut
+lands wherever it lands, regularly inside a fence or a link, and half-parsed
+prose says less about what happened than the text does. Past
+`maxMarkdownBlocks` (100) the rest is dropped and the panel says that too. Send
+less prose rather than relying on either.
+
+Per-client: desktop, the web client and iPhone draw it as formatted prose. The
+terminal draws it as lines that keep the structure — a heading is bold, a bullet
+is a bullet, a fenced block is its own lines, a checkbox is `[x]`, and a link is
+its words followed by its URL, because a terminal cannot hide a destination
+behind a word. It is **not** a placeholder like `image` and `chart`: prose is
+the one thing a terminal draws as well as anything else.
+
+**Worked example — an issue and its comments.** This is the shape the node was
+built for. The issue's own fields are a `keyValue`, the body is one `markdown`,
+and each comment is a `divider` naming the author plus a `markdown` of their
+words. Every node here is data your plugin already fetched and materialized: the
+renderer reshapes nothing.
+
+```json
+{ "component": "stack", "gap": "md", "children": [
+  { "component": "text", "text": "ADE-122 · Fix the login redirect", "variant": "title" },
+  { "component": "keyValue", "rows": [
+    { "key": "State", "value": "In Progress", "tone": "accent" },
+    { "key": "Assignee", "value": "arul" }
+  ]},
+  { "component": "markdown", "text": "The redirect drops the `next` param when the session is **stale**.\n\n- [x] Reproduce on `main`\n- [ ] Add a regression test\n\nSee [the trace](https://linear.app/ade/issue/ADE-122)." },
+  { "component": "divider", "label": "kai · 2 days ago" },
+  { "component": "markdown", "text": "Confirmed. The fix is in `sessionRedirect.ts`:\n\n```ts\nconst next = url.searchParams.get(\"next\");\n```" },
+  { "component": "divider", "label": "arul · yesterday" },
+  { "component": "markdown", "text": "> the fix is in `sessionRedirect.ts`\n\nAgreed — ~~blocked~~ ready for review." }
+]}
+```
+
+Two things to size for. A comment thread is many `markdown` nodes, and each one
+costs a node against `maxNodes` (200) and its characters against the panel's
+65,536-byte budget — so publish the last N comments, not all of them, and let
+the reader open the full thread on the web. And the body you fetched is somebody
+else's text: it may contain HTML, a `javascript:` link or 40 KB of prose, and
+you do not need to clean any of it. The subset already refuses all three,
+identically, on every client.
 
 ### A form with no Apply button
 
@@ -990,7 +1078,74 @@ The operand is one of four things:
 
 **Lifecycle.** State is per-panel, per-viewer and session-only. It never reaches sqlite and never syncs. It survives a re-publish of the same controls — your panel refreshing its rows every few seconds must not reset the filter — and reconciles when the controls themselves change: a key the new schema drops goes away, and a value the control no longer offers falls back to that control's default.
 
-**Ceilings.** 4 state keys per panel, 2–8 options per control, 4 top-level `where` clauses, depth 3, 24 clauses in total, 20 literals per list — a `since` or `before` spends from the same budget as any other clause. A `style: "toggle"` with anything other than two options draws as a segmented control, because drawing three options as a switch would hide one.
+**Ceilings.** 8 state keys per panel, 2–8 literal options per control (50 once `optionsFrom` has resolved), 4 top-level `where` clauses, depth 3, 24 clauses in total, 20 literals per list — a `since` or `before` spends from the same budget as any other clause. A `style: "toggle"` with anything other than two options draws as a segmented control, because drawing three options as a switch would hide one.
+
+### A filter over thirty projects
+
+Eight options is right for "All / Active / Failed" and useless for "project": a real workspace has thirty of them, and you do not know their names when you write the schema. You are already writing them into a collection for the list beside the control, so point the control at that collection:
+
+```json
+{ "component": "segmented", "stateKey": "project", "label": "Project",
+  "options": [{ "value": "", "label": "All projects" }],
+  "optionsFrom": { "collection": "projects", "valueField": "id", "labelField": "name" } }
+```
+
+- **The literal `options` still draw, first.** That is where the empty-value "All" goes, and it is why a bound control needs no second concept for "no filter" — the sentinel is a literal like any other. A bound control is also exempt from the two-option floor: its second option is a row that has not arrived yet, not a mistake.
+- **`valueField` is what a `where` compares against**, so write the same value onto the rows you filter. `labelField` is what the reader sees, and falls back to the value. Both are top-level fields of the row: no paths, same rule as everywhere else.
+- **The host fetches it for you.** `optionsFrom` is a binding, so the collection behind it is fetched with the panel's others. No `limit`, no `where`, no `allowActions` — an option presses nothing, and a filter over a filter's own options is a puzzle. You decide which rows are options by which rows you write.
+- **Past eight options the control draws as a menu**, on every surface: a dropdown on desktop and the web, a `Menu` on iOS, one line with `←→` in the TUI. You cannot ask for that and you cannot refuse it — the count is the reader's workspace, not your schema.
+- **A control bound to a collection signs its BINDING, not its options.** A project created in another window, or a second page of rows landing, does not reset the reader's filter. Pointing the control at a different collection does. If the selected value stops being an option, it falls back to the unset "All" — the same fine reconciliation a literal control gets.
+- **50 is the ceiling** on resolved options. Past that, filter the collection you write rather than the one you read.
+
+### A batch, not eleven presses
+
+A reader who wants eleven lanes should not press eleven rows. Declare `selectable` on the list and it grows a tick on every keyed row, plus a bar that appears once anything is ticked:
+
+```json
+{ "component": "list",
+  "bind": { "collection": "issues", "allowActions": ["open-issue"] },
+  "selectable": {
+    "stateKey": "issueBatch",
+    "actions": [
+      { "action": "launch-lanes", "label": "Create lanes", "kind": "primary",
+        "confirm": "Create a lane for each selected issue?" },
+      { "action": "archive-issues", "label": "Archive" }
+    ]
+  },
+  "emptyText": "No issues match this filter." }
+```
+
+Your handler is invoked once, with the ticked rows:
+
+```js
+sdk.actions.register("launch-lanes", async ({ selection, state, context }) => {
+  for (const issueId of selection ?? []) { /* one lane per issue */ }
+  return { message: `Created ${selection.length} lanes.`, resetState: true };
+});
+```
+
+- **`args.selection` is an array of row keys**, injected by the host and injected last, so a schema naming `selection` cannot replace what the reader ticked. It is the one array in an args object that is otherwise flat scalars, and it is not a hole in rule 3: nothing computed it, and every key in it is one you wrote.
+- **A row needs a `key` to be tickable.** A declared row writes one; a bound row inherits its collection row's own primary key, so a list you already publish becomes selectable for free. A row without one still renders and simply has no tick — a title is not an identity, and two issues can share one.
+- **The batch is what the reader can SEE.** Tick four rows, move a filter that hides two, press the button: the two on screen are the batch. The other two keep their ticks and come back when the filter does. Acting on a row nobody can see is the one outcome a selection must never produce.
+- **`confirm` works on a bulk verb exactly as on a row**, and matters more — a mistake here costs eleven lanes.
+- **Answer with `{resetState: true}`** when you have acted on the whole batch. The same verb that puts the reader back on "All" empties the ticks, because leaving them offers to do it again to rows that have moved on.
+- **Ceilings.** 100 rows ticked at once (raise nothing; that is `maxListItems`), 4 bulk actions, and 2 selectable lists in one panel. At the cap a further tick is refused rather than quietly evicting an earlier one. A `selectable` naming no usable action is dropped whole — a tick the reader cannot spend is a checkbox over an empty bar.
+
+Per-client: desktop and the web draw a checkbox, with **shift-click extending from the last row you ticked**. iOS and the TUI have no shift, so both toggle one row at a time — the gesture degrades, the batch does not.
+
+### Seven groups, no state keys
+
+An issue browser has seven state groups in a fixed order, each one collapsible. Built out of `segmented` controls that was seven booleans against a ceiling of eight, and a filter strip nobody would want to look at. **`group`** is a titled section with a disclosure:
+
+```json
+{ "component": "group", "title": "In Progress", "groupKey": "started", "badge": 4,
+  "children": [{ "component": "list", "bind": { "collection": "issues", "keyPrefix": "started:" } }] }
+```
+
+- **Open/closed is client-local and is not panel state.** It never signs, never reaches a `where`, never rides on an action, and never reaches your plugin. Collapsing a section says something about the reader's screen, not about which rows the panel is showing — which is exactly what makes a group free: declare as many as your node budget allows without spending a state key on any of them.
+- **`groupKey` is its identity across a re-publish**, falling back to the title. A section the reader closed stays closed when you republish with one more group above it.
+- **A folded section is still declared.** Its `segmented` controls still own their keys, and its bindings are still fetched — the panel is read off the schema, not off what a client chose to draw. Only the drawing is skipped, and it is skipped properly: a closed section's images do not load and its rows do not lay out.
+- **Children count against `maxNodes` and `maxDepth`** like any other nodes. A group is cheap to draw, never cheap to declare.
 
 ### A panel that fetches
 
@@ -1016,6 +1171,10 @@ A refresh handler is invoked like any other panel action — one args object, ca
 |---|---|---|---|
 | `stack`, `text`, `badge`, `button`, `list`, `table`, `keyValue`, `divider`, `emptyState` | full | full | full |
 | `segmented` | full | full | full (numbered options; ←→ cycles) |
+| `segmented` with `optionsFrom` past 8 options | dropdown | `Menu` | one line naming the choice; ←→ cycles |
+| `group` | full | full | full (`▾`/`▸` header; Enter folds) |
+| `list` with `selectable` | checkbox per row; **shift-click extends** | tap target per row; no range | `[x]`/`[ ]` per row; no range |
+| `markdown` | full (headings, emphasis, code, links, lists, quotes) | native attributed text, same subset | styled text; links shown as text + url |
 | `form` | full | full | full (via the composer prompt line) |
 | `video`, `image` | full | full | named placeholder; `Ctrl+Y` copies a link to the panel |
 | `chart` | full | named marker | named placeholder |
@@ -1031,7 +1190,7 @@ Two consequences worth designing around: **put a `deeplink` in every `fallback`*
 
 ### Vocabulary limits
 
-`maxNodes` 200 · `maxDepth` 8 · `maxSchemaBytes` 65,536 · `maxSelectOptions` 40 · `maxTableRows` 100 · `maxTableColumns` 8 · `maxListItems` 100 · `maxKeyValueRows` 60 · `maxChartSeries` 3 · `maxChartPoints` 200 · `maxFormFields` 24 · `maxTextChars` 4,000 · `maxLabelChars` 200 · `maxValueChars` 1,000 · `maxBindingAllowActions` 16 · `maxStateKeys` 4 · `maxStateOptions` 8 · `maxWhereClauses` 4 · `maxWhereDepth` 3 · `maxWhereNodes` 24 · `maxWhereValues` 20.
+`maxNodes` 200 · `maxDepth` 8 · `maxSchemaBytes` 65,536 · `maxSelectOptions` 40 · `maxTableRows` 100 · `maxTableColumns` 8 · `maxListItems` 100 · `maxKeyValueRows` 60 · `maxChartSeries` 3 · `maxChartPoints` 200 · `maxFormFields` 24 · `maxTextChars` 4,000 · `maxLabelChars` 200 · `maxValueChars` 1,000 · `maxSrcChars` 8,192 · `maxBindingAllowActions` 16 · `maxStateKeys` 8 · `maxStateOptions` 8 · `maxBoundStateOptions` 50 · `maxSelectionKeys` 2 · `maxSelectedRows` 100 · `maxBulkActions` 4 · `maxWhereClauses` 4 · `maxWhereDepth` 3 · `maxWhereNodes` 24 · `maxWhereValues` 20 · `maxMarkdownChars` 4,000 · `maxMarkdownBlocks` 100 · `maxMarkdownDepth` 3 · `maxMarkdownSpans` 200.
 
 These are part of the contract, not a client's private defence — a schema over any of them is invalid everywhere, identically.
 
@@ -1124,7 +1283,7 @@ A `webview` surface renders the plugin's **own HTML page** instead of a panel sc
 
 ### When to choose it — and when not to
 
-The vocabulary's ceiling is the fourteen components above, arranged in stacks. Rows, tables, key/value pairs, forms, a line or bar chart, an image, a video. No expressions, no conditionals, no custom layout, no pointer events of your own, no canvas, no drag.
+The vocabulary's ceiling is the sixteen components above, arranged in stacks. Rows, tables, key/value pairs, forms, a line or bar chart, an image, a video. No expressions, no conditionals, no custom layout, no pointer events of your own, no canvas, no drag.
 
 Choose a webview when what you need to draw is genuinely past that line — a graph someone pans, a diagram editor, a timeline with blocks people drag. Do not choose it to skip learning the vocabulary: everything you build in a page is invisible on three of ADE's four clients, and you will have written the panel anyway.
 
@@ -1656,6 +1815,9 @@ exports.actions = {
 | `ade.notifications.post({title, body?, target?, deeplink?})` | Tell the user outside ADE's window. `target` is `"desktop"`, `"mobile"` or `"both"` (default). Your **display name is stamped on by the host** and cannot be set, spoofed or omitted. `deeplink` decides where a tap lands and must be `ade://plugin/<your-own-id>/<panel-id>[?ctx=…]`, max 1,024 chars — anything else costs the destination, not the notification, and the tap opens your plugin as before. It reaches the phone; the desktop notification has no destination field. Resolves `{delivered: [...]}` with what actually landed; rejects `notification_unavailable` only when nothing was reached. Rate-limited — see *Budgets* |
 | `ade.schedules.create({action, cron\|runAt\|delaySeconds, args?, note?})` | Ask ADE to call one of **your own** actions later. `cron` is five-field local time and recurs; `runAt`/`delaySeconds` fire once and are then dropped. Rejects `plugin_budget_exceeded` past the quota |
 | `ade.schedules.list()` / `delete(scheduleId)` | Your schedules, never another plugin's. `delete` is idempotent. **Mind the two spellings:** the parameter is `scheduleId`, but a row from `list()` names the field **`id`** — so it is `delete(row.id)`, not `delete(row.scheduleId)`. Both spellings are accepted, and passing neither refuses with a message naming the row's field. Get this wrong and you delete `undefined`: the old schedule survives every settings save and walks into the live-schedule ceiling one change at a time |
+| `ade.lanes.list()` / `get(laneId)` | The lanes of the project you are bound to, non-archived, as a **fixed allowlist** of fields — no `worktreePath`, no `attachedRootPath`, no `devicesOpen`. Each carries `primaryIssue` and `issueLinks`. A host with no project bound answers `unsupported_method`, not an empty list: there are no lanes here, and retrying will not grow one |
+| `ade.lanes.linkIssue({laneId\|sessionId, issue, role?, includeInPr?, closeOnMerge?})` | Link an issue from **any** tracker to a lane or a chat/CLI session. Exactly one of `laneId` and `sessionId` — both, or neither, is `invalid_args`. `role` defaults to `"referenced"` (`primary` \| `worked` \| `referenced` \| `inferred`). `issue` is an `IssueRef` **without** `pluginId`: there is no field for it, because the host stamps your id from the connection that asked — see *Linking an issue* |
+| `ade.lanes.unlinkIssue({laneId\|sessionId, provider, issueId})` | Remove a link **you** created. `false` when there was none, which is not an error; `not_permitted` when it belongs to another plugin or to ADE itself, with a sentence naming the owner |
 | `ade.clipboard.read()` / `write(text)` | Machine clipboard, text only. A read returns whatever the user last copied — often a password they were moving between apps — so read it in response to something the user just did, never on a timer |
 | `ade.dialogs.pickFile({title?, defaultPath?, directory?, filters?})` | Native picker; resolves the chosen path. Rejects `dialog_cancelled` when the user dismisses it — a dismissal is an answer, not a fault |
 | `ade.log(level, message, fields?)` | `debug`/`info`/`warn`/`error` into the ring buffer `ade plugin logs` reads |
@@ -1663,7 +1825,7 @@ exports.actions = {
 
 The last four need a host that can perform them. `notifications`, `clipboard` and `dialogs` are the desktop's — a plugin running against a headless daemon gets `notification_unavailable` or `desktop_unavailable`, which are refusals worth retrying later rather than reasons to give up. Check the code, don't check the platform.
 
-**Two things you may no longer borrow through `ade.actions.invoke`, because these verbs replace them:** `session.requestSessionAttention` (its push arrived unlabelled and unlimited, and it lied about a chat session waiting on the user) and `chat.createScheduledWork` (its cron carried no owner, so nothing listed it as yours and uninstalling you left it firing forever). Both are refused for plugins and name their replacement in the refusal.
+**Three things you may no longer borrow through `ade.actions.invoke`, because these verbs replace them:** `session.requestSessionAttention` (its push arrived unlabelled and unlimited, and it lied about a chat session waiting on the user), `chat.createScheduledWork` (its cron carried no owner, so nothing listed it as yours and uninstalling you left it firing forever), and `lane.linkLinearIssues` / `lane.unlinkLinearIssues` (they write the lane's issue rows with no record of who asked, so your link is indistinguishable from the user's, uninstalling you leaves it behind, and any plugin can unlink any other plugin's — or ADE's own). All are refused for plugins and name their replacement in the refusal. The user keeps every one of them through the UI, the CLI and the TUI; the refusal is about attribution, not about the act.
 
 **And one thing you may only borrow by name:** the `project_secret` domain. `get` needs the name in your manifest's `projectSecrets`; every other verb in the domain is refused outright — see *Project secrets*.
 
@@ -1672,6 +1834,46 @@ The last four need a host that can perform them. `notifications`, `clipboard` an
 Every rejection is a structural error carrying a `code` you can branch on: `plugin_not_found`, `plugin_disabled`, `plugin_no_entry`, `plugin_crashed`, `plugin_timeout`, `invalid_args`, `plugin_budget_exceeded`, `not_permitted`, `unsupported_method`, `internal_error`, plus `notification_unavailable`, `desktop_unavailable` and `dialog_cancelled` from the host capabilities above. A budget refusal additionally carries `detail: {budget, limit, actual}` — enough to tell the user exactly which ceiling they hit.
 
 Naming rules the SDK enforces: collection names `^[A-Za-z][A-Za-z0-9._-]{0,63}$`, keys `^[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$`, secret names `^[A-Za-z][A-Za-z0-9_.-]{0,127}$`.
+
+### Linking an issue
+
+If your plugin is a tracker — Jira, Shortcut, Asana, your company's internal one — this is the seam that makes it a first-class one rather than a panel beside the real thing. A link you make is on the lane itself: it rides `lane.issueLinks` everywhere ADE reads a lane, syncs to the user's other devices, survives your plugin being reloaded, and is addressable as `ade://issue/<provider>/<key>`. A lane-to-issue map kept in one of your collections is none of those things.
+
+```js
+const [lane] = await ade.lanes.list();
+await ade.lanes.linkIssue({
+  laneId: lane.id,
+  issue: {
+    provider: "jira",                                   // your tracker's vocabulary
+    issueId: "10042",                                   // its stable id
+    key: "OPS-42",                                      // the human key
+    title: "Rotate the certificates",
+    url: "https://example.atlassian.net/browse/OPS-42",
+    state: { id: "3", name: "In Review", category: "started" },
+    container: { id: "10000", key: "OPS", name: "Operations" },
+  },
+  role: "worked",
+  includeInPr: true,
+});
+```
+
+**`role: "primary"` does not make it the lane's primary issue.** The role is
+recorded on the link, but `lane.primaryIssue` is derived from the lane's own
+`lane_linear_issues` row, which only ADE's create-a-lane-from-an-issue path
+writes. Your link lands in `lane.issueLinks` either way. Say what is true —
+`primary` when your plugin opened the lane from that issue, `inferred` when you
+guessed from a branch name — because the lane's issue list is what reads those
+words back.
+
+**Four required fields**, and a ref missing any of them is refused whole rather than repaired: `provider`, `issueId`, `key`, `title`. Everything else is optional. `state.category` is a closed set — `triage | backlog | unstarted | started | completed | canceled` — and `container` is whatever your tracker calls the group (a project, a repo, a team). `extra` is a free object ADE stores and never reads, which is where tracker-specific residue goes.
+
+**You never state your own id.** `issue` has no `pluginId` field. The host stamps the id of the child connection that asked, and that stamp is exactly what `unlinkIssue` checks — a ref whose owner you could set would be a check against a value you supplied. `source` is host-set to `plugin_link` for the same reason: a link you made must not be able to claim the user made it.
+
+**You can remove only your own links.** Another plugin's link, or one ADE made itself, refuses with `not_permitted` and a sentence naming the owner. A link that is not there answers `false` — no owner to check, so it is a no-op, not a fault. The user can unlink anything from the lane UI, the CLI or the TUI; the restriction is on plugins undoing each other.
+
+**Where it lands, so you know what an older device sees.** Your ref goes inside the lane's existing issue row, under a reserved key, beside a legacy Linear-shaped projection of itself. Nothing about the database shape changes. The consequence for you: a phone or a desktop on an older build shows your Jira issue with the right key, title, URL and state name **under a Linear badge**. That is a mislabel, not a break, and it is the price of never altering a replicated table. It corrects itself when that device updates.
+
+**Two things ADE does not do for you yet.** The PR body renders Linear references only, so an `includeInPr` link on your tracker is recorded and shows in the lane's issue list but does not currently put a line in the PR description. And a magic word only closes where something performs the close: `Fixes` for Linear, `Closes` for GitHub, `Refs` for everything else regardless of `closeOnMerge` — because `Fixes OPS-42` in a GitHub PR body is inert text, and writing it would promise a transition nobody makes. Close your own issues in your merge handler.
 
 ### Runtime hooks
 

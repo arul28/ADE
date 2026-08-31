@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  EMPTY_VOCAB_PANEL_SELECTION,
   EMPTY_VOCAB_PANEL_STATE,
   VOCAB_STATE_COLLECTION,
   VOCAB_STATE_LIMITS,
@@ -9,23 +10,40 @@ import {
   parseVocabSegmentedStyle,
   parseVocabStateKey,
   parseVocabStateOptions,
+  parseVocabStateOptionsBinding,
   parseVocabWhere,
   readPluginActionResetState,
   vocabApplyStateChange,
+  vocabClearRowSelection,
   vocabCycleStateValue,
+  vocabInitialPanelSelection,
   vocabInitialPanelState,
+  vocabMergeStateOptions,
+  vocabNormalizePanelSelection,
   vocabNormalizePanelState,
   vocabPredicateFieldText,
+  vocabResetPanelSelection,
   vocabResetPanelState,
+  vocabResolveStateOptions,
+  vocabRowRange,
+  vocabSelectRowRange,
+  vocabSelectedRowKeys,
+  vocabSelectionDeclarations,
+  vocabSelectionSignature,
   vocabStateBadgeText,
+  vocabStateControlStyle,
   vocabStateDeclarations,
   vocabStateInitial,
   vocabStatePayload,
   vocabStateRows,
   vocabStateSignature,
+  vocabToggleRowSelection,
   vocabWhereStateKeys,
+  type VocabPanelSelection,
   type VocabPanelState,
+  type VocabSelectionDeclaration,
   type VocabStateDeclaration,
+  type VocabStateOption,
 } from "./vocabularyState";
 import { boundRowValues } from "./vocabularyNodes";
 
@@ -623,12 +641,17 @@ describe("segmented declarations", () => {
       control({ stateKey: "c" }),
       control({ stateKey: "d" }),
       control({ stateKey: "e" }),
+      control({ stateKey: "f" }),
+      control({ stateKey: "g" }),
+      control({ stateKey: "h" }),
+      control({ stateKey: "i" }),
     ];
     const declarations = vocabStateDeclarations(found);
 
     // First rather than last: it is the control highest on the page, and its
     // default is the one a reader assumes is in force.
-    expect(declarations.map((entry) => entry.stateKey)).toEqual(["a", "b", "c", "d"]);
+    expect(declarations.map((entry) => entry.stateKey))
+      .toEqual(["a", "b", "c", "d", "e", "f", "g", "h"]);
     expect(declarations[0]?.initial).toBe("first");
     expect(declarations).toHaveLength(VOCAB_STATE_LIMITS.maxStateKeys);
   });
@@ -783,5 +806,217 @@ describe("vocabPredicateFieldText", () => {
     expect(vocabPredicateFieldText(undefined)).toBe("");
     expect(vocabPredicateFieldText({ a: 1 })).toBe("");
     expect(vocabPredicateFieldText([1, 2])).toBe("");
+  });
+});
+
+/* ── Collection-bound options ───────────────────────────────────────────── */
+
+/**
+ * A control whose options are data. Mirrored in `PluginVocabGroupSelectionTests`
+ * on iOS and in "collection-bound segmented options in the terminal" in the TUI
+ * suite, because the rule that matters — a control's identity is its binding,
+ * never its rows — is the one that decides whether a reader's filter survives.
+ */
+describe("collection-bound state options", () => {
+  const PROJECTS = [
+    { value: { id: "core", name: "Core platform" } },
+    { value: { id: "mobile", name: "Mobile" } },
+    { value: { id: "core", name: "A duplicate nobody can reach" } },
+    { value: { name: "no id" } },
+    { value: "not a row" },
+  ];
+
+  const binding = { collection: "projects", valueField: "id", labelField: "name" };
+
+  it("reads a binding and refuses one that names nothing to read", () => {
+    expect(parseVocabStateOptionsBinding({ collection: "projects", valueField: "id" }))
+      .toEqual({ collection: "projects", valueField: "id" });
+    expect(parseVocabStateOptionsBinding({ collection: "projects" })).toBeUndefined();
+    expect(parseVocabStateOptionsBinding({ valueField: "id" })).toBeUndefined();
+    expect(parseVocabStateOptionsBinding("projects")).toBeUndefined();
+  });
+
+  it("bound options resolve from the collection and draw after the literal ones", () => {
+    const resolved = vocabResolveStateOptions(binding, PROJECTS);
+    expect(resolved.map((option) => option.value)).toEqual(["core", "mobile"]);
+    expect(resolved.map((option) => option.label)).toEqual(["Core platform", "Mobile"]);
+
+    const merged = vocabMergeStateOptions([{ value: "", label: "All projects" }], resolved);
+    // The literal "All" stays first: it is the unset sentinel and the reader
+    // looks for it at the top.
+    expect(merged.map((option) => option.value)).toEqual(["", "core", "mobile"]);
+  });
+
+  it("falls back to the value when no label field is named, and caps the list", () => {
+    expect(vocabResolveStateOptions({ collection: "projects", valueField: "id" }, PROJECTS)
+      .map((option) => option.label)).toEqual(["core", "mobile"]);
+
+    const many = Array.from(
+      { length: VOCAB_STATE_LIMITS.maxBoundStateOptions + 5 },
+      (_, index) => ({ value: { id: `p${index}` } }),
+    );
+    expect(vocabResolveStateOptions({ collection: "projects", valueField: "id" }, many))
+      .toHaveLength(VOCAB_STATE_LIMITS.maxBoundStateOptions);
+    // A fetch that has not landed is not an empty collection, and neither is a
+    // control with no options at all.
+    expect(vocabResolveStateOptions(binding, undefined)).toEqual([]);
+  });
+
+  it("a bound control's signature does not move when its resolved options change", () => {
+    const bound = (options: VocabStateOption[]) => [control({
+      stateKey: "project",
+      options,
+      initial: "",
+      optionsFrom: binding,
+    })];
+    const before = vocabStateSignature(bound([{ value: "", label: "All" }]));
+    const after = vocabStateSignature(bound([
+      { value: "", label: "All" },
+      { value: "core", label: "Core platform" },
+    ]));
+    // A project created in another window must not drop the reader's filter.
+    expect(after).toBe(before);
+    // The binding itself IS the identity, so pointing the control somewhere else
+    // still starts the reader over.
+    expect(vocabStateSignature([control({
+      stateKey: "project",
+      options: [],
+      initial: "",
+      optionsFrom: { ...binding, collection: "labels" },
+    })])).not.toBe(before);
+  });
+
+  it("a control past the strip ceiling draws as a menu", () => {
+    const options = (count: number) => Array.from({ length: count }, (_, index) => ({
+      value: `v${index}`,
+      label: `V${index}`,
+    }));
+    expect(vocabStateControlStyle({ options: options(3) })).toBe("segmented");
+    expect(vocabStateControlStyle({ options: options(2), style: "toggle" })).toBe("toggle");
+    expect(vocabStateControlStyle({ options: options(VOCAB_STATE_LIMITS.maxStateOptions) }))
+      .toBe("segmented");
+    // Thirty projects is not a strip on any surface, whatever the author asked
+    // for — the row count is the reader's workspace, not the schema.
+    expect(vocabStateControlStyle({
+      options: options(VOCAB_STATE_LIMITS.maxStateOptions + 1),
+      style: "toggle",
+    })).toBe("menu");
+  });
+});
+
+/* ── Selection ──────────────────────────────────────────────────────────── */
+
+/**
+ * The batch half of the lifecycle. Mirrored case for case in
+ * `PluginVocabGroupSelectionTests` on iOS and in "a selectable list in the
+ * terminal" in the TUI suite.
+ */
+describe("selection lifecycle", () => {
+  const ISSUES: VocabSelectionDeclaration = {
+    stateKey: "issues",
+    max: 3,
+    actionIds: ["create-lanes"],
+  };
+  const ROWS = ["a", "b", "c", "d", "e"];
+
+  it("opens every list on nothing ticked", () => {
+    expect(vocabInitialPanelSelection([ISSUES])).toEqual({ issues: [] });
+    expect(vocabInitialPanelSelection([])).toEqual({});
+    expect(EMPTY_VOCAB_PANEL_SELECTION).toEqual({});
+  });
+
+  it("the cap refuses a tick rather than evicting the oldest", () => {
+    let selection: VocabPanelSelection = { issues: [] };
+    for (const key of ["a", "b", "c"]) {
+      selection = vocabToggleRowSelection(selection, ISSUES, key);
+    }
+    expect(selection.issues).toEqual(["a", "b", "c"]);
+
+    // A silent eviction would take a row out of a batch the reader believes
+    // they assembled, and nothing on screen would say so.
+    const full = vocabToggleRowSelection(selection, ISSUES, "d");
+    expect(full).toBe(selection);
+
+    // Unticking always works, cap or no cap.
+    expect(vocabToggleRowSelection(selection, ISSUES, "b").issues).toEqual(["a", "c"]);
+    // A row with no key is not a row.
+    expect(vocabToggleRowSelection(selection, ISSUES, "")).toBe(selection);
+  });
+
+  it("the range is a union and fills to the cap", () => {
+    const one = vocabSelectRowRange({ issues: ["e"] }, ISSUES, vocabRowRange(ROWS, "a", "b"));
+    // Shift-clicking a second cluster must not throw away the first.
+    expect(one.issues).toEqual(["e", "a", "b"]);
+
+    const overflowing = vocabSelectRowRange({ issues: [] }, ISSUES, ROWS);
+    expect(overflowing.issues).toEqual(["a", "b", "c"]);
+    // Nothing to add is not a change, so a redraw is not forced.
+    expect(vocabSelectRowRange(one, ISSUES, ["a"])).toBe(one);
+  });
+
+  it("reads a range in draw order however the reader dragged it", () => {
+    expect(vocabRowRange(ROWS, "b", "d")).toEqual(["b", "c", "d"]);
+    expect(vocabRowRange(ROWS, "d", "b")).toEqual(["b", "c", "d"]);
+    // No anchor, or one whose row has scrolled out of the schema, is a plain
+    // click on the row the reader actually hit.
+    expect(vocabRowRange(ROWS, null, "c")).toEqual(["c"]);
+    expect(vocabRowRange(ROWS, "gone", "c")).toEqual(["c"]);
+    expect(vocabRowRange(ROWS, "a", "gone")).toEqual([]);
+  });
+
+  it("selectedRowKeys returns only the visible keys in draw order", () => {
+    const selection = { issues: ["d", "a"] };
+    // The stored set keeps a row a filter has hidden — moving the filter back
+    // brings the tick with it — but a batch acts only on what the reader sees.
+    expect(vocabSelectedRowKeys(selection, "issues", ROWS)).toEqual(["a", "d"]);
+    expect(vocabSelectedRowKeys(selection, "issues", ["a", "b"])).toEqual(["a"]);
+    expect(vocabSelectedRowKeys(selection, "prs", ROWS)).toEqual([]);
+    expect(vocabSelectedRowKeys(undefined, "issues", ROWS)).toEqual([]);
+  });
+
+  it("the selection signature ignores rows and moves on a changed cap or action list", () => {
+    const base = vocabSelectionSignature([ISSUES]);
+    expect(vocabSelectionSignature([{ ...ISSUES }])).toBe(base);
+    expect(vocabSelectionSignature([{ ...ISSUES, max: 4 }])).not.toBe(base);
+    expect(vocabSelectionSignature([{ ...ISSUES, actionIds: ["archive"] }])).not.toBe(base);
+    expect(vocabSelectionSignature([{ ...ISSUES, stateKey: "prs" }])).not.toBe(base);
+  });
+
+  it("carries the ticks across a republish and drops a list the schema no longer declares", () => {
+    const carried = vocabNormalizePanelSelection({ issues: ["a", "b"], prs: ["p1"] }, [ISSUES]);
+    expect(carried).toEqual({ issues: ["a", "b"] });
+    // A republish that lowered the cap cannot leave more ticked than it allows,
+    // and a repeated key does not spend the cap twice.
+    expect(vocabNormalizePanelSelection({ issues: ["a", "a", "b", "c", "d"] }, [ISSUES]).issues)
+      .toEqual(["a", "b", "c"]);
+    expect(vocabNormalizePanelSelection(undefined, [ISSUES])).toEqual({ issues: [] });
+  });
+
+  it("an action can put the reader back on an empty selection", () => {
+    const selection = { issues: ["a"], prs: ["p1"] };
+    const prs: VocabSelectionDeclaration = { stateKey: "prs", max: 3, actionIds: ["merge"] };
+    expect(vocabResetPanelSelection(selection, [ISSUES, prs], "all"))
+      .toEqual({ issues: [], prs: [] });
+    expect(vocabResetPanelSelection(selection, [ISSUES, prs], ["issues"]))
+      .toEqual({ issues: [], prs: ["p1"] });
+    // A key no list declares is ignored rather than invented.
+    expect(vocabResetPanelSelection(selection, [ISSUES], ["nothing"])).toEqual(selection);
+    expect(vocabClearRowSelection(selection, ISSUES).issues).toEqual([]);
+    expect(vocabClearRowSelection({ issues: [] }, ISSUES)).toEqual({ issues: [] });
+  });
+
+  it("caps how many lists in one panel may claim the bar", () => {
+    const many = Array.from({ length: VOCAB_STATE_LIMITS.maxSelectionKeys + 2 }, (_, index) => ({
+      stateKey: `list${index}`,
+      max: 10,
+      actionIds: ["go"],
+    }));
+    expect(vocabSelectionDeclarations([...many, many[0]!]))
+      .toHaveLength(VOCAB_STATE_LIMITS.maxSelectionKeys);
+    // First declaration wins, the same rule the state keys follow.
+    expect(vocabSelectionDeclarations([
+      { stateKey: "a", max: 3, actionIds: ["x"] },
+      { stateKey: "a", max: 9, actionIds: ["y"] },
+    ])).toEqual([{ stateKey: "a", max: 3, actionIds: ["x"] }]);
   });
 });

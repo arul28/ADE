@@ -4,7 +4,11 @@ import { COLORS, SANS_FONT } from "../lanes/laneDesignTokens";
 import type { PluginCollectionRow } from "../../lib/pluginRuntimeBridge";
 import type {
   VocabAction,
+  VocabGroupNode,
+  VocabPanelSelection,
   VocabPanelState,
+  VocabSelectionDeclaration,
+  VocabStateDeclaration,
   VocabTone,
 } from "../../../shared/plugins/vocabulary";
 
@@ -20,7 +24,19 @@ import type {
 /** Merged into an action's own args when a form submits. */
 export type VocabActionArgs = Record<string, string | number | boolean>;
 
-export type VocabDispatch = (action: VocabAction, extraArgs?: VocabActionArgs) => Promise<void>;
+/**
+ * `extraArgs` is deliberately wider than {@link VocabActionArgs}.
+ *
+ * A node's declared `args` are flat scalars and stay that way — that is the seam
+ * rule 3 guards. What a CONTROL adds at press time is not schema: a form adds
+ * its field values, a bulk bar adds the array of row keys the reader ticked, and
+ * the host adds the panel's `context` and `state`. None of those came from the
+ * schema, so none of them can smuggle anything into it.
+ */
+export type VocabDispatch = (
+  action: VocabAction,
+  extraArgs?: Record<string, unknown>,
+) => Promise<void>;
 
 export type VocabRenderContext = {
   pluginId: string;
@@ -40,6 +56,48 @@ export type VocabRenderContext = {
    * state object.
    */
   setStateValue: (stateKey: string, value: string) => void;
+  /**
+   * The controls as the HOST resolved them, which is not always what the node
+   * says.
+   *
+   * A `segmented` declaring `optionsFrom` has its real option list only after
+   * the collection behind it has been fetched, and the fetch is the host's. So a
+   * control renders from its declaration when there is one and from its own node
+   * otherwise — the second being a control on its literal "All", which is what a
+   * panel shows for the moment before its rows land.
+   */
+  declarations: readonly VocabStateDeclaration[];
+  /** The ticked rows of every `selectable` list, keyed by its state key. */
+  selection: VocabPanelSelection;
+  /** The selectable lists the host admitted, with their caps and their verbs. */
+  selectionDeclarations: readonly VocabSelectionDeclaration[];
+  /**
+   * Tick or untick one row.
+   *
+   * `visibleKeys` is the shift-click half, and the two halves of that gesture
+   * are split on purpose: the LIST knows the rows it drew and their order, the
+   * HOST remembers which row the reader last ticked. Passing the visible keys
+   * therefore means "extend from wherever the anchor is" and ticks the whole
+   * range; omitting them toggles the one row and moves the anchor to it.
+   *
+   * Pointer surfaces only. There is no shift on a phone and none in the pane,
+   * and both degrade to the plain toggle rather than to a second gesture.
+   */
+  toggleRow: (stateKey: string, rowKey: string, visibleKeys?: readonly string[]) => void;
+  /** Untick everything in one list. What the bar's own Clear does. */
+  clearSelection: (stateKey: string) => void;
+  /**
+   * Whether a `group` is showing its children.
+   *
+   * Client-local and deliberately not panel state: collapsing a section says
+   * something about the reader's screen, not about which rows the panel is
+   * showing. It lives on the host rather than in the disclosure's own React
+   * state because the node tree is rebuilt on every re-publish, and component
+   * state keyed by position would re-open a section the reader closed the moment
+   * the plugin inserted a group above it.
+   */
+  groupOpen: (node: VocabGroupNode) => boolean;
+  toggleGroup: (node: VocabGroupNode) => void;
   /**
    * False while the hosting surface is mounted but not visible. Media does not
    * load and animation does not run when false — the hidden-but-mounted perf law.

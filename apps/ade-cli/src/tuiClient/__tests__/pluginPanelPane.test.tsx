@@ -2,13 +2,25 @@ import React from "react";
 import { describe, expect, it } from "vitest";
 import { render } from "ink-testing-library";
 
-import { buildPluginPaneModel, type PluginPaneInput, type PluginPanelFetch } from "../pluginPane";
+import {
+  bindingKey,
+  buildPluginPaneModel,
+  type PluginPaneCollectionMap,
+  type PluginPaneInput,
+  type PluginPanelFetch,
+} from "../pluginPane";
 import { RightPane } from "../components/RightPane";
 import type { RightPaneContent } from "../types";
 
 function content(
   body: unknown[],
-  options: { values?: Record<string, string>; editing?: number | null } = {},
+  options: {
+    values?: Record<string, string>;
+    editing?: number | null;
+    selection?: Record<string, readonly string[]>;
+    openGroups?: Record<string, boolean>;
+    collections?: PluginPaneCollectionMap;
+  } = {},
 ): Extract<RightPaneContent, { kind: "plugin-panel" }> {
   const fetch: PluginPanelFetch = {
     state: "ok",
@@ -30,9 +42,11 @@ function content(
     displayName: "Graph",
     panelId: "main",
     fetch,
-    collections: new Map(),
+    collections: options.collections ?? new Map(),
     values: options.values ?? {},
     editing: options.editing ?? null,
+    ...(options.selection !== undefined ? { selection: options.selection } : {}),
+    ...(options.openGroups !== undefined ? { openGroups: options.openGroups } : {}),
     width: 44,
   };
   return { kind: "plugin-panel", state, model: buildPluginPaneModel(state) };
@@ -175,5 +189,95 @@ describe("PluginPanelPane", () => {
     };
     const output = frame({ kind: "plugin-panel", state, model: buildPluginPaneModel(state) });
     expect(plain(output)).toContain("does not serve plugin panels");
+  });
+});
+
+describe("the markdown node", () => {
+  it("draws a document's structure, and prints a link's destination beside it", () => {
+    const drawn = plain(frame(content([{
+      component: "markdown",
+      text: [
+        "## Fix the redirect",
+        "",
+        "- [x] Reproduce",
+        "- [ ] Test it",
+        "",
+        "See [ADE-122](https://linear.app/x).",
+      ].join("\n"),
+    }])));
+
+    expect(drawn).toContain("Fix the redirect");
+    // The checkbox is text and stays text: nothing in this pane can press it.
+    expect(drawn).toContain("[x] Reproduce");
+    expect(drawn).toContain("[ ] Test it");
+    // A terminal cannot hide a destination behind a word, so it does not try.
+    expect(drawn).toContain("ADE-122");
+    expect(drawn).toContain("https://linear.app/x");
+  });
+
+  it("draws a script tag as characters", () => {
+    expect(plain(frame(content([{ component: "markdown", text: "<script>alert(1)</script>" }]))))
+      .toContain("<script>alert(1)</script>");
+  });
+
+  it("folds a group behind the house disclosure glyph", () => {
+    const body = [
+      { component: "group", title: "Backlog", badge: 3, children: [{ component: "text", text: "ISS-1" }] },
+    ];
+    const open = plain(frame(content(body)));
+    expect(open).toContain("▾ Backlog");
+    expect(open).toContain("3");
+    expect(open).toContain("ISS-1");
+
+    const closed = plain(frame(content(body, { openGroups: { Backlog: false } })));
+    expect(closed).toContain("▸ Backlog");
+    expect(closed).not.toContain("ISS-1");
+  });
+
+  it("draws tick boxes and the bulk bar the ticks earn", () => {
+    const body = [
+      {
+        component: "list",
+        selectable: { stateKey: "batch", actions: [{ action: "createLanes", label: "Create lanes" }] },
+        items: [{ title: "ISS-1", key: "iss-1" }, { title: "ISS-2", key: "iss-2" }],
+      },
+    ];
+    const empty = plain(frame(content(body)));
+    expect(empty).toContain("[ ] ISS-1");
+    expect(empty).not.toContain("selected");
+
+    const ticked = plain(frame(content(body, { selection: { batch: ["iss-1"] } })));
+    expect(ticked).toContain("[x] ISS-1");
+    expect(ticked).toContain("[ ] ISS-2");
+    expect(ticked).toContain("1 selected");
+    expect(ticked).toContain("[ Create lanes ]");
+    expect(ticked).toContain("[ Clear ]");
+  });
+
+  it("draws a menu-styled control as one line rather than a strip of pills", () => {
+    const collections: PluginPaneCollectionMap = new Map([
+      [
+        bindingKey({ collection: "projects" }),
+        Array.from({ length: 12 }, (_unused, index) => ({
+          key: `row-${index}`,
+          value: { id: `p${index}`, name: `Project ${index}` },
+        })),
+      ],
+    ]);
+    const output = plain(frame(content([
+      {
+        component: "segmented",
+        stateKey: "project",
+        label: "Project",
+        options: [{ value: "", label: "All projects" }],
+        optionsFrom: { collection: "projects", valueField: "id", labelField: "name" },
+      },
+    ], { collections })));
+
+    expect(output).toContain("All projects");
+    expect(output).toContain("1/13");
+    // Not a pill in sight: one line, and the ←→ gesture that moves along it.
+    expect(output).not.toContain("[ Project 4 ]");
+    expect(output).toContain("←→");
   });
 });

@@ -19,20 +19,35 @@ import {
   VOCAB_CONTEXT_COLLECTION,
   VOCAB_STATE_COLLECTION,
   bindingKey,
+  collectVocabSelectionDeclarations,
   collectVocabStateDeclarations,
   distinctBindings,
   parsePluginPanel,
   readPluginActionResetState,
   vocabApplyStateChange,
+  vocabClearRowSelection,
   vocabContextRows,
+  vocabGroupKey,
+  vocabInitialPanelSelection,
   vocabInitialPanelState,
+  vocabNormalizePanelSelection,
   vocabNormalizePanelState,
+  vocabResetPanelSelection,
   vocabResetPanelState,
+  vocabResolveStateOptions,
+  vocabRowRange,
+  vocabSelectRowRange,
+  vocabSelectionSignature,
+  vocabStateOptionsBindingKey,
   vocabStatePayload,
   vocabStateRows,
   vocabStateSignature,
+  vocabToggleRowSelection,
   type VocabAction,
+  type VocabGroupNode,
+  type VocabPanelSelection,
   type VocabPanelState,
+  type VocabSelectionDeclaration,
   type VocabStateDeclaration,
 } from "../../../shared/plugins/vocabulary";
 import {
@@ -102,7 +117,32 @@ type PanelStateHolder = { signature: string; values: VocabPanelState };
 
 const EMPTY_STATE_HOLDER: PanelStateHolder = { signature: "", values: {} };
 
+/**
+ * The reader's ticked rows, plus the identity of the lists they belong to.
+ *
+ * The same holder shape as the selections above, for the same reason: the
+ * signature is what lets a batch survive the republish that lands while the
+ * reader is still assembling it, and what discards one when the panel starts
+ * offering a different control.
+ *
+ * `anchor` is the shift-click memory and is deliberately part of this holder
+ * rather than of the shared contract: it is a pointer gesture's private state,
+ * no other client has it, and nothing outside this file may read it.
+ */
+type PanelSelectionHolder = {
+  signature: string;
+  values: VocabPanelSelection;
+  anchor: Readonly<Record<string, string>>;
+};
+
+const EMPTY_SELECTION_HOLDER: PanelSelectionHolder = { signature: "", values: {}, anchor: {} };
+
 const NO_DECLARATIONS: readonly VocabStateDeclaration[] = [];
+
+const NO_SELECTION_DECLARATIONS: readonly VocabSelectionDeclaration[] = [];
+
+/** Which `group` sections the reader has folded, against the author's default. */
+const NO_GROUP_OVERRIDES: Readonly<Record<string, boolean>> = {};
 
 export function PluginPanelHost({
   pluginId,
@@ -149,6 +189,15 @@ export function PluginPanelHost({
   const [actionMessage, setActionMessage] = React.useState<PluginActionMessage | null>(null);
   const [refreshing, setRefreshing] = React.useState(false);
   const [panelState, setPanelState] = React.useState<PanelStateHolder>(EMPTY_STATE_HOLDER);
+  const [panelSelection, setPanelSelection] = React.useState<PanelSelectionHolder>(
+    EMPTY_SELECTION_HOLDER,
+  );
+  // Which sections the reader has folded, against whatever the author's
+  // `defaultOpen` said. Overrides only, so a group nobody has touched follows
+  // the schema and a group the reader closed stays closed through a republish.
+  const [groupOverrides, setGroupOverrides] = React.useState<Readonly<Record<string, boolean>>>(
+    NO_GROUP_OVERRIDES,
+  );
   const activeRef = React.useRef(active);
   activeRef.current = active;
   const contextRef = React.useRef(renderContext ?? null);
@@ -159,24 +208,55 @@ export function PluginPanelHost({
     setActionMessage(null);
     // A different panel is a different set of controls. Cleared rather than
     // left to the signature check, so navigating away and back reads as a fresh
-    // open rather than as the same panel it happened to match.
+    // open rather than as the same panel it happened to match. The ticks and the
+    // folds go with them, for the same reason.
     setPanelState(EMPTY_STATE_HOLDER);
+    setPanelSelection(EMPTY_SELECTION_HOLDER);
+    setGroupOverrides(NO_GROUP_OVERRIDES);
   }, [pluginId, panelId]);
 
   /**
-   * The `segmented` controls this schema declares.
+   * The parsed body, or `null`.
+   *
+   * Held once because three things now read it — the state controls, the
+   * selectable lists, and the option resolution behind an `optionsFrom` — and
+   * parsing a 64 KiB schema three times per render for a poll that changed
+   * nothing is exactly the kind of work the fetch-on-reveal law exists to avoid.
+   */
+  const body = React.useMemo(() => {
+    const schema = state.record?.schema;
+    if (schema === undefined) return null;
+    const parsed = parsePluginPanel(schema);
+    return parsed.ok ? parsed.panel.body : null;
+  }, [state.record?.schema]);
+
+  /**
+   * The `segmented` controls this schema declares, with any `optionsFrom`
+   * already resolved against the rows this host fetched.
    *
    * Parsed off the stored schema rather than threaded down from the renderer:
    * the host needs them before anything renders — to build the initial state, to
    * validate a change, and to fill a `$state` binding — and a callback out of the
    * render tree would make the first paint depend on a second one.
+   *
+   * It depends on the ROWS as well as the schema, which is new and is what makes
+   * a bound control work: the projects arrive after the panel does. The reader's
+   * selection survives that arrival because a bound control signs its binding
+   * rather than its options — see `vocabStateSignature`.
    */
   const declarations = React.useMemo(() => {
-    const schema = state.record?.schema;
-    if (schema === undefined) return NO_DECLARATIONS;
-    const parsed = parsePluginPanel(schema);
-    return parsed.ok ? collectVocabStateDeclarations(parsed.panel.body) : NO_DECLARATIONS;
-  }, [state.record?.schema]);
+    if (!body) return NO_DECLARATIONS;
+    return collectVocabStateDeclarations(body, (binding) => vocabResolveStateOptions(
+      binding,
+      state.rows.get(vocabStateOptionsBindingKey(binding)),
+    ));
+  }, [body, state.rows]);
+
+  /** The selectable lists this schema declares, with their caps and their verbs. */
+  const selectionDeclarations = React.useMemo(() => {
+    if (!body) return NO_SELECTION_DECLARATIONS;
+    return collectVocabSelectionDeclarations(body);
+  }, [body]);
 
   // Reconcile the held selections against the controls that are actually on
   // screen now. Both halves matter: the signature catches a control that
@@ -194,6 +274,23 @@ export function PluginPanelHost({
     });
   }, [declarations]);
 
+  // The same reconciliation for the ticks. The anchor is dropped whenever the
+  // controls change, because a row to extend from is only meaningful inside the
+  // list the reader was ticking.
+  React.useEffect(() => {
+    const signature = vocabSelectionSignature(selectionDeclarations);
+    setPanelSelection((previous) => {
+      if (previous.signature === signature) return previous;
+      return {
+        signature,
+        values: previous.signature === ""
+          ? vocabInitialPanelSelection(selectionDeclarations)
+          : vocabNormalizePanelSelection(previous.values, selectionDeclarations),
+        anchor: {},
+      };
+    });
+  }, [selectionDeclarations]);
+
   // Read by `dispatch`, which must stay referentially stable: rebuilding it on
   // every filter change would rebuild the render context and re-render the whole
   // panel for a value the dispatcher only reads at press time.
@@ -201,6 +298,8 @@ export function PluginPanelHost({
   panelStateRef.current = panelState;
   const declarationsRef = React.useRef(declarations);
   declarationsRef.current = declarations;
+  const selectionDeclarationsRef = React.useRef(selectionDeclarations);
+  selectionDeclarationsRef.current = selectionDeclarations;
 
   const setStateValue = React.useCallback((stateKey: string, value: string) => {
     const declaration = declarations.find((entry) => entry.stateKey === stateKey);
@@ -210,6 +309,58 @@ export function PluginPanelHost({
       return values === previous.values ? previous : { ...previous, values };
     });
   }, [declarations]);
+
+  /**
+   * Tick one row, or extend from the anchor when the reader held shift.
+   *
+   * The two halves of the range live apart on purpose: the list passes the rows
+   * it drew and their order, this remembers where the reader last ticked. A
+   * plain toggle moves the anchor; an extension does not, so shift-clicking
+   * twice widens one range rather than walking it down the list.
+   */
+  const toggleRow = React.useCallback((
+    stateKey: string,
+    rowKey: string,
+    visibleKeys?: readonly string[],
+  ) => {
+    const declaration = selectionDeclarations.find((entry) => entry.stateKey === stateKey);
+    if (!declaration) return;
+    setPanelSelection((previous) => {
+      if (visibleKeys) {
+        const range = vocabRowRange(visibleKeys, previous.anchor[stateKey], rowKey);
+        const values = vocabSelectRowRange(previous.values, declaration, range);
+        return values === previous.values ? previous : { ...previous, values };
+      }
+      const values = vocabToggleRowSelection(previous.values, declaration, rowKey);
+      return {
+        ...previous,
+        values,
+        anchor: { ...previous.anchor, [stateKey]: rowKey },
+      };
+    });
+  }, [selectionDeclarations]);
+
+  const clearSelection = React.useCallback((stateKey: string) => {
+    const declaration = selectionDeclarations.find((entry) => entry.stateKey === stateKey);
+    if (!declaration) return;
+    setPanelSelection((previous) => {
+      const values = vocabClearRowSelection(previous.values, declaration);
+      return values === previous.values ? previous : { ...previous, values };
+    });
+  }, [selectionDeclarations]);
+
+  const groupOpen = React.useCallback(
+    (node: VocabGroupNode) => groupOverrides[vocabGroupKey(node)] ?? node.defaultOpen ?? true,
+    [groupOverrides],
+  );
+
+  const toggleGroup = React.useCallback((node: VocabGroupNode) => {
+    const key = vocabGroupKey(node);
+    setGroupOverrides((previous) => ({
+      ...previous,
+      [key]: !(previous[key] ?? node.defaultOpen ?? true),
+    }));
+  }, []);
 
   // Auto-dismiss. An outcome is worth reading once; left up it becomes part of
   // the panel and starts describing a press nobody remembers making. The next
@@ -341,6 +492,15 @@ export function PluginPanelHost({
           ...previous,
           values: vocabResetPanelState(previous.values, declarationsRef.current, reset),
         }));
+        // The same verb empties the batch. A plugin answering a bulk action with
+        // `{resetState: true}` has almost always just acted on every ticked row,
+        // and leaving them ticked offers to do it again to rows that have moved
+        // on. The anchor goes with them — it points into a list that has changed.
+        setPanelSelection((previous) => ({
+          ...previous,
+          values: vocabResetPanelSelection(previous.values, selectionDeclarationsRef.current, reset),
+          anchor: {},
+        }));
       }
       // What the action said about how it went. iOS and the TUI have shown this
       // since the verb existed; desktop and the web discarded it, so one line of
@@ -442,8 +602,29 @@ export function PluginPanelHost({
       active,
       state: panelState.values,
       setStateValue,
+      declarations,
+      selection: panelSelection.values,
+      selectionDeclarations,
+      toggleRow,
+      clearSelection,
+      groupOpen,
+      toggleGroup,
     }),
-    [active, dispatch, panelState.values, pluginId, rowsByBinding, setStateValue],
+    [
+      active,
+      clearSelection,
+      declarations,
+      dispatch,
+      groupOpen,
+      panelSelection.values,
+      panelState.values,
+      pluginId,
+      rowsByBinding,
+      selectionDeclarations,
+      setStateValue,
+      toggleGroup,
+      toggleRow,
+    ],
   );
 
   // Declared on the manifest and stamped onto the stored schema by the writer,

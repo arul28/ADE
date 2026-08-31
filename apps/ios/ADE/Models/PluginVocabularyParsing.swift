@@ -120,7 +120,9 @@ enum PluginPanelParser {
 
     switch name {
     case "stack": return parseStack(object, path: path, depth: depth, context: &context)
+    case "group": return parseGroup(object, path: path, depth: depth, context: &context)
     case "text": return parseText(object, path: path, context: &context)
+    case "markdown": return parseMarkdown(object, path: path, context: &context)
     case "badge": return parseBadge(object, path: path, context: &context)
     case "button": return parseButton(object, path: path, context: &context)
     case "list": return parseList(object, path: path, context: &context)

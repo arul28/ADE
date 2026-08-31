@@ -77,6 +77,43 @@ export const PLUGIN_FIXTURES: PluginFixture[] = [
     },
   },
   {
+    id: "markdown",
+    label: "Formatted prose",
+    note: "The whole markdown subset in one document. No raw HTML, https links only, checkboxes inert.",
+    schema: {
+      v: VOCAB_VERSION,
+      title: "Markdown",
+      fallback,
+      body: [
+        {
+          component: "markdown",
+          text: [
+            "## Fix the login redirect",
+            "",
+            "The redirect drops the `next` param when the session is **stale**, so a",
+            "reader who signs back in lands on the dashboard instead of the page they",
+            "asked for. See [ADE-122](https://linear.app/ade/issue/ADE-122) for the trace.",
+            "",
+            "- [x] Reproduce on `main`",
+            "- [ ] Add a regression test",
+            "- [ ] Check the *mobile* flow too",
+            "",
+            "> Reviewer: this is ~~blocked~~ ready for a second pair of eyes.",
+            "",
+            "```ts",
+            "const next = url.searchParams.get(\"next\");",
+            "```",
+            "",
+            "---",
+            "",
+            "A tag written into an issue body is text, not markup: <script>alert(1)</script>",
+            "renders exactly as it reads, on every client.",
+          ].join("\n"),
+        },
+      ],
+    },
+  },
+  {
     id: "lists",
     label: "List and key/value",
     note: "Rows with an icon, a subtitle and a meta column; a definition grid beside it.",
@@ -501,6 +538,95 @@ export const PLUGIN_FIXTURES: PluginFixture[] = [
         { component: "keyValue", bind: { collection: "meta" }, emptyText: "No metadata published." },
       ],
     },
+  },
+  {
+    id: "batch",
+    label: "Groups, a batch, and a filter over a collection",
+    note: "The issue-browser shape: collapsible sections, ticks with a bulk bar, and a project filter whose options are rows rather than schema.",
+    schema: {
+      v: VOCAB_VERSION,
+      title: "Issues",
+      fallback,
+      body: [
+        {
+          component: "segmented",
+          stateKey: "project",
+          label: "Project",
+          // One literal option — the unset "All" — and the rest from a
+          // collection. Past eight resolved options this draws as a menu.
+          options: [{ value: "", label: "All projects" }],
+          optionsFrom: { collection: "projects", valueField: "id", labelField: "name" },
+        },
+        {
+          component: "group",
+          title: "In Progress",
+          groupKey: "started",
+          badge: 2,
+          children: [
+            {
+              component: "list",
+              bind: {
+                collection: "issues",
+                keyPrefix: "started:",
+                allowActions: ["open-issue"],
+                where: [{ field: "projectId", equals: { $state: "project" } }],
+              },
+              selectable: {
+                stateKey: "issueBatch",
+                actions: [
+                  {
+                    action: "launch-lanes",
+                    label: "Create lanes",
+                    kind: "primary",
+                    confirm: "Create a lane for each selected issue?",
+                  },
+                  { action: "archive-issues", label: "Archive" },
+                ],
+              },
+              emptyText: "No issues in this project.",
+            },
+          ],
+        },
+        {
+          component: "group",
+          title: "Backlog",
+          groupKey: "backlog",
+          badge: 1,
+          // Closed on arrival, and still declaring everything inside it: the
+          // rows are fetched and the filter above still reaches them.
+          defaultOpen: false,
+          children: [
+            {
+              component: "list",
+              bind: { collection: "issues", keyPrefix: "backlog:" },
+              emptyText: "Nothing in the backlog.",
+            },
+          ],
+        },
+      ],
+    },
+    rows: [
+      {
+        collection: "projects",
+        items: [
+          { id: "core", name: "Core platform" },
+          { id: "mobile", name: "Mobile" },
+        ],
+      },
+      {
+        collection: "issues",
+        keyPrefix: "started:",
+        items: [
+          { title: "ADE-122", subtitle: "Handoff glitch", mono: "ade-122", projectId: "core", badge: { text: "In Progress", tone: "accent" }, onPress: { action: "open-issue" } },
+          { title: "ADE-140", subtitle: "Blank pane on reconnect", mono: "ade-140", projectId: "mobile" },
+        ],
+      },
+      {
+        collection: "issues",
+        keyPrefix: "backlog:",
+        items: [{ title: "ADE-151", subtitle: "Paging on long lists", projectId: "core" }],
+      },
+    ],
   },
 ];
 

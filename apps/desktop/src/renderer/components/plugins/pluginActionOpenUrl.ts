@@ -36,7 +36,24 @@ export function applyPluginActionOpenUrl(
     }
     return false;
   }
-  console.info("[plugin openUrl] opening", source.pluginId, source.actionId, request.url);
-  openExternalUrl(request.url);
+  openPluginExternalUrl(request.url, { pluginId: source.pluginId, source: source.actionId });
   return true;
+}
+
+/**
+ * The one door out of a plugin panel, whatever opened it.
+ *
+ * An action's `{openUrl}` and a `markdown` node's link are the same capability —
+ * a plugin sending the reader somewhere — so they take the same path and log the
+ * same line. Two paths would have meant two places to check when the question is
+ * "what did this plugin send me to", and only one of them would have been found.
+ *
+ * The caller has already passed `httpsUrl`: this opens, it does not decide.
+ */
+export function openPluginExternalUrl(
+  url: string,
+  source: { pluginId: string; source: string },
+): void {
+  console.info("[plugin openUrl] opening", source.pluginId, source.source, url);
+  openExternalUrl(url);
 }

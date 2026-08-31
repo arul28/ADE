@@ -8,8 +8,8 @@ import { PluginPanelView, VocabularyBoundary } from "./VocabularyRenderer";
 import type { VocabRenderContext } from "./vocabularyComponents";
 import { PLUGIN_FIXTURES, pluginFixtureRows } from "./pluginFixtures";
 import type { PluginCollectionRow } from "../../lib/pluginRuntimeBridge";
-import { bindingKey, type VocabAction } from "../../../shared/plugins/vocabulary";
-import type { VocabActionArgs } from "./vocabularyPrimitives";
+import { VOCAB_LIMITS, bindingKey, type VocabAction } from "../../../shared/plugins/vocabulary";
+import * as openExternalModule from "../../lib/openExternal";
 
 /**
  * These cover the one promise the renderer makes that a type system cannot:
@@ -26,6 +26,15 @@ function makeContext(overrides: Partial<VocabRenderContext> = {}): VocabRenderCo
     active: true,
     state: {},
     setStateValue: vi.fn(),
+    declarations: [],
+    selection: {},
+    selectionDeclarations: [],
+    toggleRow: vi.fn(),
+    clearSelection: vi.fn(),
+    // A group with no host opinion follows the schema's own `defaultOpen`, which
+    // is what an untouched section does in the real host too.
+    groupOpen: (node) => node.defaultOpen ?? true,
+    toggleGroup: vi.fn(),
     ...overrides,
   };
 }
@@ -121,7 +130,7 @@ describe("PluginPanelView", () => {
   it("asks before running a list row's action, the way a button already does", async () => {
     // A row used to dispatch straight through, so the same destructive action
     // prompted behind a button and ran silently behind a row.
-    const dispatch = vi.fn(async (_action: VocabAction, _args?: VocabActionArgs) => {});
+    const dispatch = vi.fn(async (_action: VocabAction, _args?: Record<string, unknown>) => {});
     const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
     const row = {
       title: "bc-1",
@@ -148,7 +157,7 @@ describe("PluginPanelView", () => {
   });
 
   it("makes a collection-driven row pressable only for an action its binding allowed", async () => {
-    const dispatch = vi.fn(async (_action: VocabAction, _args?: VocabActionArgs) => {});
+    const dispatch = vi.fn(async (_action: VocabAction, _args?: Record<string, unknown>) => {});
     const rowsByBinding = new Map<string, PluginCollectionRow[]>([
       [bindingKey({ collection: "fleet" }), [
         { key: "1", value: { title: "allowed row", onPress: { action: "open-agent" } } } as PluginCollectionRow,
@@ -176,7 +185,7 @@ describe("PluginPanelView", () => {
   });
 
   it("draws a rich row and keeps its trailing buttons out of the row's own press", async () => {
-    const dispatch = vi.fn(async (_action: VocabAction, _args?: VocabActionArgs) => {});
+    const dispatch = vi.fn(async (_action: VocabAction, _args?: Record<string, unknown>) => {});
     render(
       <PluginPanelView
         schema={{
@@ -217,7 +226,7 @@ describe("PluginPanelView", () => {
   });
 
   it("asks before running a row's trailing action, the way the row's own press does", async () => {
-    const dispatch = vi.fn(async (_action: VocabAction, _args?: VocabActionArgs) => {});
+    const dispatch = vi.fn(async (_action: VocabAction, _args?: Record<string, unknown>) => {});
     const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
     render(
       <PluginPanelView
@@ -246,7 +255,7 @@ describe("PluginPanelView", () => {
   });
 
   it("keeps a row's overflow actions behind a menu until it is opened", async () => {
-    const dispatch = vi.fn(async (_action: VocabAction, _args?: VocabActionArgs) => {});
+    const dispatch = vi.fn(async (_action: VocabAction, _args?: Record<string, unknown>) => {});
     render(
       <PluginPanelView
         schema={{
@@ -359,7 +368,7 @@ describe("PluginPanelView", () => {
     };
 
     it("draws no submit button, and dispatches the whole form on a toggle", async () => {
-      const dispatch = vi.fn(async (_action: VocabAction, _args?: VocabActionArgs) => {});
+      const dispatch = vi.fn(async (_action: VocabAction, _args?: Record<string, unknown>) => {});
       render(<PluginPanelView schema={applySchema} context={makeContext({ dispatch })} />);
 
       expect(screen.queryByRole("button", { name: /save|apply/i })).toBeNull();
@@ -374,7 +383,7 @@ describe("PluginPanelView", () => {
     });
 
     it("does not dispatch a text field per keystroke, only when it commits", async () => {
-      const dispatch = vi.fn(async (_action: VocabAction, _args?: VocabActionArgs) => {});
+      const dispatch = vi.fn(async (_action: VocabAction, _args?: Record<string, unknown>) => {});
       render(<PluginPanelView schema={applySchema} context={makeContext({ dispatch })} />);
       const note = screen.getByLabelText("Note");
 
@@ -389,7 +398,7 @@ describe("PluginPanelView", () => {
   });
 
   it("keeps the submit button, and Enter's ordinary meaning, on a form without applyOnChange", async () => {
-    const dispatch = vi.fn(async (_action: VocabAction, _args?: VocabActionArgs) => {});
+    const dispatch = vi.fn(async (_action: VocabAction, _args?: Record<string, unknown>) => {});
     const schema = {
       v: 1,
       fallback: { title: "Settings", text: "Open ADE." },
@@ -408,6 +417,117 @@ describe("PluginPanelView", () => {
     fireEvent.click(screen.getByText("Save"));
     await waitFor(() => expect(dispatch).toHaveBeenCalledTimes(1));
     expect(dispatch.mock.calls[0]?.[1]).toEqual({ note: "hi" });
+  });
+});
+
+describe("the markdown node", () => {
+  /**
+   * Asserted by CONTENT, never by snapshot. What matters about a rendered
+   * document is which element carries which words and where a link goes — a
+   * snapshot would pin the padding too, and would go red for every design pass
+   * while staying green through a broken link.
+   */
+  function renderMarkdown(text: string, overrides: Partial<VocabRenderContext> = {}) {
+    return render(
+      <PluginPanelView
+        schema={{
+          v: 1,
+          fallback: { title: "Issue", text: "Open ADE." },
+          body: [{ component: "markdown", text }],
+        }}
+        context={makeContext(overrides)}
+      />,
+    );
+  }
+
+  it("draws a golden document: heading, emphasis, code, link, task list, quote, rule", () => {
+    const { container } = renderMarkdown([
+      "## Fix the login redirect",
+      "",
+      "The redirect drops `next` when the session is **stale**.",
+      "See [ADE-122](https://linear.app/ade/issue/ADE-122).",
+      "",
+      "- [x] Reproduce on main",
+      "- [ ] Add a regression test",
+      "",
+      "> Reviewer: ~~blocked~~ ready.",
+      "",
+      "```ts",
+      "const next = 1;",
+      "```",
+      "",
+      "---",
+    ].join("\n"));
+
+    expect(container.querySelector("h2")?.textContent).toBe("Fix the login redirect");
+    expect(container.querySelector("strong")?.textContent).toBe("stale");
+    expect(container.querySelector("s")?.textContent).toBe("blocked");
+    // Inline code and the fenced block are different elements: one is a run
+    // inside a sentence, the other is a block a reader can scan.
+    expect(container.querySelector("p code")?.textContent).toBe("next");
+    expect(container.querySelector("pre code")?.textContent).toBe("const next = 1;");
+    expect(container.querySelector("pre code")?.getAttribute("data-language")).toBe("ts");
+    expect(container.querySelector("blockquote")?.textContent).toContain("ready.");
+    expect(container.querySelector("hr")).not.toBeNull();
+
+    const link = container.querySelector("a");
+    expect(link?.textContent).toBe("ADE-122");
+    expect(link?.getAttribute("href")).toBe("https://linear.app/ade/issue/ADE-122");
+
+    const items = container.querySelectorAll("li");
+    expect(items).toHaveLength(2);
+    expect(items[0]?.textContent).toContain("Reproduce on main");
+  });
+
+  it("renders a task checkbox as inert decoration, not a control", () => {
+    const { container } = renderMarkdown("- [x] done\n- [ ] not done");
+    // No input, no button, nothing focusable: the plugin declared no action for
+    // a checkbox, so a pressable one would change nothing and say nothing.
+    expect(container.querySelectorAll("input")).toHaveLength(0);
+    expect(container.querySelectorAll("button")).toHaveLength(0);
+    expect(container.querySelectorAll("[aria-hidden]")).toHaveLength(2);
+  });
+
+  it("renders script and img payloads as text, with no element and no href", () => {
+    const { container } = renderMarkdown('<script>alert(1)</script> and <img src=x onerror=y>');
+    expect(container.querySelector("script")).toBeNull();
+    expect(container.querySelector("img")).toBeNull();
+    expect(container.querySelector("a")).toBeNull();
+    expect(container.textContent).toContain("<script>alert(1)</script>");
+  });
+
+  it("refuses a javascript: link and keeps its words as plain text", () => {
+    const { container } = renderMarkdown("[Click me](javascript:alert(1))");
+    expect(container.querySelector("a")).toBeNull();
+    expect(container.textContent).toContain("Click me");
+  });
+
+  it("opens an https link through the plugin's own external-open path", () => {
+    const openExternal = vi.spyOn(openExternalModule, "openExternalUrl").mockImplementation(() => {});
+    const { container } = renderMarkdown("[the issue](https://linear.app/ade/issue/ADE-1)");
+
+    const link = container.querySelector("a");
+    if (!link) throw new Error("expected a link");
+    fireEvent.click(link);
+
+    // The click never navigates the renderer; it hands the URL to the same
+    // function the `{openUrl}` action verb uses.
+    expect(openExternal).toHaveBeenCalledWith("https://linear.app/ade/issue/ADE-1");
+  });
+
+  it("shows an over-long document as its source, with a line saying why", () => {
+    const { container } = renderMarkdown(`# Heading\n\n${"a".repeat(VOCAB_LIMITS.maxMarkdownChars)}`);
+    // No formatting: a cut lands wherever it lands, and half-parsed prose says
+    // less about what happened than the source plus one sentence.
+    expect(container.querySelector("h1")).toBeNull();
+    expect(container.textContent).toContain("# Heading");
+    expect(container.textContent).toContain("shown as written");
+  });
+
+  it("says so when a document has more blocks than a panel draws", () => {
+    const many = Array.from({ length: VOCAB_LIMITS.maxMarkdownBlocks + 5 }, (_u, i) => `p${i}`);
+    const { container } = renderMarkdown(many.join("\n\n"));
+    expect(container.textContent).toContain("The rest of this text is not shown.");
   });
 });
 
@@ -456,5 +576,236 @@ describe("VocabularyBoundary", () => {
       </VocabularyBoundary>,
     );
     expect(container.textContent).toContain("fixed");
+  });
+});
+
+/**
+ * The three capabilities a panel gains at the pointer: a folded section, a
+ * batch, and a control too long for a strip. The shared rules are covered in
+ * `shared/plugins/vocabularyState.test.ts`; these cover what only a rendered
+ * panel can answer.
+ */
+describe("groups, selection and the menu form", () => {
+  it("folds a group's body away without dropping its siblings", () => {
+    const schema = {
+      v: 1,
+      fallback: { title: "T", text: "B" },
+      body: [
+        {
+          component: "group",
+          title: "In Progress",
+          badge: 2,
+          children: [{ component: "text", text: "inside" }],
+        },
+        { component: "text", text: "after" },
+      ],
+    };
+
+    const open = render(<PluginPanelView schema={schema} context={makeContext()} />);
+    expect(screen.getByText("inside")).toBeTruthy();
+    expect(screen.getByRole("button", { name: /In Progress/ }).getAttribute("aria-expanded"))
+      .toBe("true");
+    open.unmount();
+
+    // A closed section is unmounted, not hidden: an image inside it must not
+    // load and a hundred rows inside it must not lay out.
+    render(
+      <PluginPanelView schema={schema} context={makeContext({ groupOpen: () => false })} />,
+    );
+    expect(screen.queryByText("inside")).toBeNull();
+    expect(screen.getByText("after")).toBeTruthy();
+    expect(screen.getByText("2")).toBeTruthy();
+  });
+
+  it("asks the host to fold, rather than remembering the fold itself", () => {
+    const toggleGroup = vi.fn();
+    render(
+      <PluginPanelView
+        schema={{
+          v: 1,
+          fallback: { title: "T", text: "B" },
+          body: [{ component: "group", title: "Done", groupKey: "done", children: [] }],
+        }}
+        context={makeContext({ toggleGroup })}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: /Done/ }));
+    // Held by the host and keyed by the group's own key, so a republish that
+    // inserts a section above it cannot re-open what the reader closed.
+    expect(toggleGroup).toHaveBeenCalledWith(expect.objectContaining({ groupKey: "done" }));
+  });
+
+  it("ticks only the rows that have a key, and only for a list the host admitted", () => {
+    const toggleRow = vi.fn();
+    const body = [{
+      component: "list",
+      items: [{ title: "bc-1", key: "1" }, { title: "bc-2" }],
+      selectable: { stateKey: "issues", actions: [{ action: "launch", label: "Create lanes" }] },
+    }];
+    const schema = { v: 1, fallback: { title: "T", text: "B" }, body };
+
+    // No declaration: the panel declared more selectable lists than the ceiling
+    // allows, so this one draws as the plain list it was before ticks existed.
+    const plain = render(<PluginPanelView schema={schema} context={makeContext()} />);
+    expect(screen.queryByRole("checkbox")).toBeNull();
+    plain.unmount();
+
+    render(
+      <PluginPanelView
+        schema={schema}
+        context={makeContext({
+          toggleRow,
+          selectionDeclarations: [{ stateKey: "issues", max: 100, actionIds: ["launch"] }],
+        })}
+      />,
+    );
+    // The keyless row renders and is simply not selectable.
+    expect(screen.getByText("bc-2")).toBeTruthy();
+    expect(screen.getAllByRole("checkbox")).toHaveLength(1);
+
+    fireEvent.click(screen.getByRole("checkbox", { name: "Select bc-1" }));
+    expect(toggleRow).toHaveBeenCalledWith("issues", "1", undefined);
+  });
+
+  it("extends from the anchor when the reader holds shift, and toggles when they do not", () => {
+    const toggleRow = vi.fn();
+    render(
+      <PluginPanelView
+        schema={{
+          v: 1,
+          fallback: { title: "T", text: "B" },
+          body: [{
+            component: "list",
+            items: [{ title: "a", key: "1" }, { title: "b", key: "2" }],
+            selectable: { stateKey: "issues", actions: [{ action: "launch", label: "Go" }] },
+          }],
+        }}
+        context={makeContext({
+          toggleRow,
+          selectionDeclarations: [{ stateKey: "issues", max: 100, actionIds: ["launch"] }],
+        })}
+      />,
+    );
+
+    // The list passes the rows it drew, in draw order; the host holds the anchor.
+    fireEvent.click(screen.getByRole("checkbox", { name: "Select b" }), { shiftKey: true });
+    expect(toggleRow).toHaveBeenCalledWith("issues", "2", ["1", "2"]);
+  });
+
+  it("draws the bar only once something visible is ticked, and hands it those rows", async () => {
+    const dispatch = vi.fn(async () => {});
+    const declarations = [{ stateKey: "issues", max: 100, actionIds: ["launch"] }];
+    const schema = {
+      v: 1,
+      fallback: { title: "T", text: "B" },
+      body: [{
+        component: "list",
+        items: [{ title: "a", key: "1" }, { title: "b", key: "2" }],
+        selectable: { stateKey: "issues", actions: [{ action: "launch", label: "Create lanes" }] },
+      }],
+    };
+
+    const empty = render(
+      <PluginPanelView
+        schema={schema}
+        context={makeContext({ selectionDeclarations: declarations })}
+      />,
+    );
+    expect(screen.queryByRole("button", { name: "Create lanes" })).toBeNull();
+    empty.unmount();
+
+    render(
+      <PluginPanelView
+        schema={schema}
+        context={makeContext({
+          dispatch,
+          selectionDeclarations: declarations,
+          // "3" is ticked and not on screen — a filter is hiding it. It keeps its
+          // tick and stays out of the batch.
+          selection: { issues: ["2", "3"] },
+        })}
+      />,
+    );
+    expect(screen.getByText("1 selected")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Create lanes" }));
+    await waitFor(() => expect(dispatch).toHaveBeenCalledTimes(1));
+    expect(dispatch).toHaveBeenCalledWith(
+      expect.objectContaining({ action: "launch" }),
+      { selection: ["2"] },
+    );
+  });
+
+  it("asks before running a bulk action, the way a row already does", async () => {
+    const dispatch = vi.fn(async () => {});
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
+    render(
+      <PluginPanelView
+        schema={{
+          v: 1,
+          fallback: { title: "T", text: "B" },
+          body: [{
+            component: "list",
+            items: [{ title: "a", key: "1" }],
+            selectable: {
+              stateKey: "issues",
+              actions: [{ action: "archive", label: "Archive", confirm: "Archive 1 issue?" }],
+            },
+          }],
+        }}
+        context={makeContext({
+          dispatch,
+          selection: { issues: ["1"] },
+          selectionDeclarations: [{ stateKey: "issues", max: 100, actionIds: ["archive"] }],
+        })}
+      />,
+    );
+
+    // A mistake over a batch costs eleven rows, so the gate matters more here.
+    fireEvent.click(screen.getByRole("button", { name: "Archive" }));
+    expect(confirm).toHaveBeenCalledWith("Archive 1 issue?");
+    expect(dispatch).not.toHaveBeenCalled();
+  });
+
+  it("draws a control past the strip ceiling as a menu over the host's resolved options", () => {
+    const options = Array.from({ length: VOCAB_LIMITS.maxStateOptions + 2 }, (_, index) => ({
+      value: `p${index}`,
+      label: `Project ${index}`,
+    }));
+    const setStateValue = vi.fn();
+    render(
+      <PluginPanelView
+        schema={{
+          v: 1,
+          fallback: { title: "T", text: "B" },
+          body: [{
+            component: "segmented",
+            stateKey: "project",
+            label: "Project",
+            // The schema's own list is the "All" sentinel and nothing else. The
+            // options are data, and the host is the only thing that has them.
+            options: [{ value: "", label: "All projects" }],
+            optionsFrom: { collection: "projects", valueField: "id", labelField: "name" },
+          }],
+        }}
+        context={makeContext({
+          setStateValue,
+          declarations: [{
+            stateKey: "project",
+            label: "Project",
+            initial: "",
+            optionsFrom: { collection: "projects", valueField: "id" },
+            options: [{ value: "", label: "All projects" }, ...options],
+          }],
+        })}
+      />,
+    );
+
+    const menu = screen.getByRole("combobox", { name: "Project" });
+    expect(menu).toBeTruthy();
+    expect(screen.queryByRole("radiogroup")).toBeNull();
+    expect(screen.getAllByRole("option")).toHaveLength(options.length + 1);
+
+    fireEvent.change(menu, { target: { value: "p3" } });
+    expect(setStateValue).toHaveBeenCalledWith("project", "p3");
   });
 });

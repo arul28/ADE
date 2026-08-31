@@ -17,6 +17,17 @@
  * - a **`where` clause on a binding** keeps the rows whose fields match, read
  *   either against a literal or against the current value of a state key.
  *
+ * ## The second map
+ *
+ * A batch — "tick eleven issues, create eleven lanes" — is the same lifecycle
+ * with a different shape in it: a SET of row keys per selectable list rather
+ * than one string per control. It lives in its own map ({@link VocabPanelSelection})
+ * because folding a set into the string map would put a delimiter and a parser
+ * between a tick and a redraw, and would push a hundred issue ids through
+ * `$state` and through the `state` payload, neither of which wants them. Every
+ * rule around it is the segmented one: same session-only lifetime, same
+ * signature/normalize pair, same `{resetState}` verb.
+ *
  * ## The one thing the client computes
  *
  * `since` / `before` compare a row field to an instant, and a `{"$rel": "-24h"}`
@@ -81,10 +92,32 @@ import { finite, isRecord, oneOf, trimmed } from "./parse";
  * out of a panel schema.
  */
 export const VOCAB_STATE_LIMITS = {
-  /** Distinct `segmented` state keys in one panel. */
-  maxStateKeys: 4,
-  /** Options on one `segmented` control. */
+  /**
+   * Distinct `segmented` state keys in one panel.
+   *
+   * Eight rather than four, because four was one filter axis short of the panels
+   * people actually write: an issue browser wants state, project, assignee,
+   * priority, sort and a text search, and the `group` node (`vocabularyNodes.ts`)
+   * deliberately does NOT spend a key, so a panel with seven collapsible groups
+   * still has its whole filter budget. Eight is still small enough that every
+   * key fits in one `$state` `keyValue` node without scrolling.
+   */
+  maxStateKeys: 8,
+  /** Literal options written into one `segmented` control's `options`. */
   maxStateOptions: 8,
+  /**
+   * Options one control may hold once `optionsFrom` has resolved.
+   *
+   * Higher than {@link VOCAB_STATE_LIMITS.maxStateOptions} because the two are
+   * different objects. A literal list is read at a glance and drawn as a strip
+   * of pills, so eight is where a strip stops fitting; a collection-bound list
+   * is a workspace's projects or labels, drawn as a menu, and a real workspace
+   * has thirty. Fifty is where a flat menu stops being findable and the honest
+   * answer becomes a search field the vocabulary does not have yet — and it sits
+   * under `maxKeyValueRows` (60), so no client draws a longer list than one it
+   * already draws.
+   */
+  maxBoundStateOptions: 50,
   /** Top-level clauses on one binding's `where`. They are ANDed. */
   maxWhereClauses: 4,
   /** Nesting depth of `and`/`or`/`not`. A top-level clause is depth 1. */
@@ -95,6 +128,32 @@ export const VOCAB_STATE_LIMITS = {
   maxWhereValues: 20,
   /** A state key, an option value, or a predicate field name. */
   maxStateIdChars: 120,
+  /**
+   * `list` nodes in one panel that may declare `selectable`.
+   *
+   * Two, not eight. A selection owns a bar across the panel and one word —
+   * "3 selected" — and two lists both claiming that bar is already a panel that
+   * needs splitting. Two covers the one shape that is not a mistake: a detail
+   * panel offering a batch over its issues and a batch over its pull requests.
+   */
+  maxSelectionKeys: 2,
+  /**
+   * Rows selectable at once in one list.
+   *
+   * The same number as `maxListItems`, on purpose: the ceiling on a selection is
+   * the ceiling on what a list can draw, so "select everything on screen" is
+   * always expressible and never silently drops the tail.
+   */
+  maxSelectedRows: 100,
+  /**
+   * Buttons on one list's bulk-action bar.
+   *
+   * Four, where a row's own trailing actions stop at three: a row shares its
+   * width with its title, subtitle and chip, while the bar has the whole panel
+   * and draws the count and Clear itself. A fifth verb over a selection is a
+   * menu, and the vocabulary has no menu.
+   */
+  maxBulkActions: 4,
 } as const;
 
 /* ── Panel state ────────────────────────────────────────────────────────── */
@@ -125,15 +184,86 @@ export type VocabStateOption = {
 };
 
 /**
+ * Where a control's options come from, when they are not written in the schema.
+ *
+ * A literal option list caps at {@link VOCAB_STATE_LIMITS.maxStateOptions},
+ * which is right for "All / Active / Failed" and useless for "project", because
+ * a real workspace has thirty of those and the plugin cannot know their names
+ * when it writes the schema. The plugin already materializes them — it is
+ * writing them into a collection for the list beside the control — so this
+ * points the control at that collection instead of asking the author to inline
+ * a list they do not have.
+ *
+ * It is a `VocabBinding` minus the parts that would make it a second query
+ * language: no `limit` (the ceiling is the ceiling), no `where` (a filter over
+ * a filter's own options is a puzzle), no `allowActions` (an option presses
+ * nothing). The plugin decides which rows are options by which rows it writes.
+ */
+export type VocabStateOptionsBinding = {
+  collection: string;
+  /** Restricts to keys with this prefix, exactly as a node binding's does. */
+  keyPrefix?: string;
+  /** Top-level field of the row holding the option's value. */
+  valueField: string;
+  /** Top-level field holding the label. Falls back to the value. */
+  labelField?: string;
+};
+
+/**
  * What a `segmented` node contributes to the panel's state, lifted out of the
  * node tree so a host can build the initial state without walking it twice.
  */
 export type VocabStateDeclaration = {
   stateKey: string;
   label?: string;
+  /**
+   * Every option the control offers: the literal ones first, then whatever
+   * {@link optionsFrom} resolved to. Literals first because that is where the
+   * "All" sentinel is written, and a reader looks for it at the top.
+   */
   options: VocabStateOption[];
   /** The option selected when the panel first renders. Always a declared value. */
   initial: string;
+  /** How the author asked for it to be drawn. See {@link vocabStateControlStyle}. */
+  style?: VocabSegmentedStyle;
+  /** Set when the options came from a collection rather than from the schema. */
+  optionsFrom?: VocabStateOptionsBinding;
+};
+
+/* ── Selection ──────────────────────────────────────────────────────────── */
+
+/**
+ * The rows a reader has ticked, per `selectable` list.
+ *
+ * A second map beside {@link VocabPanelState} rather than a value inside it,
+ * because the two hold different shapes — one string against a closed option
+ * list, versus an open set of row keys — and folding a set into a delimited
+ * string would put a parser between the reader's tick and the panel's redraw,
+ * and would leak into `$state` and into the `state` payload, neither of which
+ * wants a hundred issue ids in it.
+ *
+ * Everything else about the two is deliberately identical: same per-panel,
+ * per-viewer, session-only lifetime; same signature/normalize pair; same reset
+ * verb. See {@link vocabSelectionSignature}.
+ */
+export type VocabPanelSelection = Readonly<Record<string, readonly string[]>>;
+
+export const EMPTY_VOCAB_PANEL_SELECTION: VocabPanelSelection = Object.freeze({});
+
+/**
+ * What a `list` node's `selectable` contributes, in the shape a host holds.
+ *
+ * The bulk actions are named by id only. The buttons themselves are node data
+ * and live in `vocabularyNodes.ts`, which imports this module and must not be
+ * imported back; the ids are all the lifecycle needs, because they are what
+ * decides whether a re-published panel is offering the same control.
+ */
+export type VocabSelectionDeclaration = {
+  stateKey: string;
+  /** Most rows selectable at once, already clamped to the ceiling. */
+  max: number;
+  /** The bulk action ids, in the order they are drawn. */
+  actionIds: string[];
 };
 
 /* ── Predicates ─────────────────────────────────────────────────────────── */
@@ -631,8 +761,111 @@ export function parseVocabStateKey(raw: unknown): string | undefined {
   return key.slice(0, VOCAB_STATE_LIMITS.maxStateIdChars);
 }
 
+/**
+ * A control's `optionsFrom`, or `undefined` when it is not a usable binding.
+ *
+ * `collection` and `valueField` are both required: without the first there is
+ * nothing to read and without the second every row would resolve to the same
+ * empty value, which is one option, not thirty. A malformed binding degrades to
+ * "this control has only its literal options", which is a control that still
+ * works — the same direction a broken `where` degrades in.
+ */
+export function parseVocabStateOptionsBinding(raw: unknown): VocabStateOptionsBinding | undefined {
+  if (!isRecord(raw)) return undefined;
+  const collection = trimmed(raw.collection)?.slice(0, VOCAB_STATE_LIMITS.maxStateIdChars);
+  const valueField = trimmed(raw.valueField)?.slice(0, VOCAB_STATE_LIMITS.maxStateIdChars);
+  if (collection === undefined || valueField === undefined) return undefined;
+  const keyPrefix = trimmed(raw.keyPrefix)?.slice(0, VOCAB_STATE_LIMITS.maxStateIdChars);
+  const labelField = trimmed(raw.labelField)?.slice(0, VOCAB_STATE_LIMITS.maxStateIdChars);
+  return {
+    collection,
+    valueField,
+    ...(keyPrefix !== undefined ? { keyPrefix } : {}),
+    ...(labelField !== undefined ? { labelField } : {}),
+  };
+}
+
+/**
+ * A collection's rows as a control's options.
+ *
+ * Reads exactly two top-level fields of each row and coerces them the way a
+ * predicate reads a field, not the way a cell is displayed — an option's value
+ * is compared against a row's field by `where`, and `true` must compare as
+ * `"true"` on both sides rather than as `"Yes"` on one of them.
+ *
+ * A row with no readable value is dropped rather than becoming a blank option:
+ * the empty value is the "All" sentinel and a collection cannot be allowed to
+ * mint a second one. Duplicates collapse, first row winning, exactly as a
+ * literal list's do.
+ */
+export function vocabResolveStateOptions(
+  binding: VocabStateOptionsBinding,
+  rows: readonly { value: unknown }[] | null | undefined,
+): VocabStateOption[] {
+  if (!rows) return [];
+  const options: VocabStateOption[] = [];
+  const seen = new Set<string>();
+  for (const row of rows) {
+    if (!isRecord(row.value)) continue;
+    const value = vocabPredicateFieldText(row.value[binding.valueField])
+      .slice(0, VOCAB_STATE_LIMITS.maxStateIdChars);
+    if (value === "" || seen.has(value)) continue;
+    const label = binding.labelField === undefined
+      ? value
+      : (trimmed(row.value[binding.labelField])?.slice(0, VOCAB_STATE_LIMITS.maxStateIdChars) ?? value);
+    seen.add(value);
+    const badge = vocabStateBadgeText(row.value.badge);
+    options.push({ value, label, ...(badge !== undefined ? { badge } : {}) });
+    if (options.length >= VOCAB_STATE_LIMITS.maxBoundStateOptions) break;
+  }
+  return options;
+}
+
+/**
+ * The literal options and the resolved ones as one list, capped.
+ *
+ * Literals first because that is where the "All" sentinel lives and a reader
+ * looks for it at the top; a resolved value that repeats a literal one loses,
+ * because the literal is the option the author wrote a label for.
+ */
+export function vocabMergeStateOptions(
+  literal: readonly VocabStateOption[],
+  resolved: readonly VocabStateOption[],
+): VocabStateOption[] {
+  const options = [...literal];
+  const seen = new Set(literal.map((option) => option.value));
+  for (const option of resolved) {
+    if (seen.has(option.value)) continue;
+    seen.add(option.value);
+    options.push(option);
+    if (options.length >= VOCAB_STATE_LIMITS.maxBoundStateOptions) break;
+  }
+  return options;
+}
+
 /** How a segmented control is drawn. `toggle` needs exactly two options. */
 export type VocabSegmentedStyle = "segmented" | "toggle";
+
+/**
+ * What a client actually draws for a state control, including the one form an
+ * author cannot ask for.
+ *
+ * `menu` is computed, never declared. A strip of pills is the right picture for
+ * three states and the wrong one for thirty projects, and the author of a
+ * collection-bound control cannot know which they will get — the row count is
+ * the reader's workspace, not the schema. So the decision is made from the
+ * resolved list, here, once, and every surface reads it: over
+ * {@link VOCAB_STATE_LIMITS.maxStateOptions} the control is a menu that names
+ * the current choice, under it the strip it has always been.
+ */
+export type VocabStateControlStyle = VocabSegmentedStyle | "menu";
+
+export function vocabStateControlStyle(
+  declaration: Pick<VocabStateDeclaration, "options" | "style">,
+): VocabStateControlStyle {
+  if (declaration.options.length > VOCAB_STATE_LIMITS.maxStateOptions) return "menu";
+  return declaration.style ?? "segmented";
+}
 
 export function parseVocabSegmentedStyle(
   raw: unknown,
@@ -699,13 +932,29 @@ export function vocabInitialPanelState(
  * cannot stay selected. The signature is exactly the controls — keys, option
  * values, and their order — so a schema whose rows changed keeps the selection
  * and a schema whose filter changed starts over.
+ *
+ * A control whose options came from a collection signs its BINDING instead of
+ * its resolved values, and that difference is the whole reason `optionsFrom` is
+ * usable. Its options are data: a project created in another window, or the
+ * second page of a fetch landing, would otherwise change the signature and drop
+ * the reader's filter — an unusable control, for a change they did not make and
+ * cannot see. The binding is what the author declared, so it moves only when the
+ * schema does. The fine reconciliation still applies: a value that is no longer
+ * an option falls back through {@link vocabNormalizePanelState}.
  */
 export function vocabStateSignature(declarations: readonly VocabStateDeclaration[]): string {
   return JSON.stringify(
     declarations.map((declaration) => [
       declaration.stateKey,
-      declaration.initial,
-      declaration.options.map((option) => option.value),
+      declaration.optionsFrom
+        ? [
+            "$from",
+            declaration.optionsFrom.collection,
+            declaration.optionsFrom.keyPrefix ?? "",
+            declaration.optionsFrom.valueField,
+            declaration.optionsFrom.labelField ?? "",
+          ]
+        : [declaration.initial, declaration.options.map((option) => option.value)],
     ]),
   );
 }
@@ -758,6 +1007,209 @@ export function vocabCycleStateValue(
   const index = options.findIndex((option) => option.value === current);
   const next = (((index < 0 ? 0 : index) + delta) % options.length + options.length) % options.length;
   return options[next]?.value ?? current;
+}
+
+/* ── Selection lifecycle ────────────────────────────────────────────────── */
+
+/**
+ * Every selectable list a panel declares, first declaration wins.
+ *
+ * The same rule and the same reason as {@link vocabStateDeclarations}: the first
+ * one is the list the reader sees highest on the page, and a list past
+ * {@link VOCAB_STATE_LIMITS.maxSelectionKeys} still draws its rows — it simply
+ * draws no ticks and no bar, which is the honest failure for a panel that asked
+ * for three selections.
+ */
+export function vocabSelectionDeclarations(
+  found: readonly VocabSelectionDeclaration[],
+): VocabSelectionDeclaration[] {
+  const byKey = new Map<string, VocabSelectionDeclaration>();
+  for (const declaration of found) {
+    if (byKey.has(declaration.stateKey)) continue;
+    byKey.set(declaration.stateKey, declaration);
+    if (byKey.size >= VOCAB_STATE_LIMITS.maxSelectionKeys) break;
+  }
+  return [...byKey.values()];
+}
+
+/** The selection a freshly opened panel starts in: every list, nothing ticked. */
+export function vocabInitialPanelSelection(
+  declarations: readonly VocabSelectionDeclaration[],
+): VocabPanelSelection {
+  const selection: Record<string, readonly string[]> = {};
+  for (const declaration of declarations) selection[declaration.stateKey] = [];
+  return selection;
+}
+
+/**
+ * Identity of a panel's selectable LISTS, not of their rows.
+ *
+ * Row keys are deliberately absent. A plugin republishing its rows every few
+ * seconds changes which rows exist constantly, and a selection that emptied on
+ * each of those would make a batch impossible to assemble — the same argument
+ * that keeps {@link vocabStateSignature} off the data. What resets a selection
+ * is the CONTROL changing: a different state key, a different cap, or a
+ * different set of bulk actions, all of which mean the panel is offering
+ * something other than what the reader ticked rows for.
+ */
+export function vocabSelectionSignature(
+  declarations: readonly VocabSelectionDeclaration[],
+): string {
+  return JSON.stringify(
+    declarations.map((declaration) => [declaration.stateKey, declaration.max, declaration.actionIds]),
+  );
+}
+
+/**
+ * Carry a reader's ticks onto a newly parsed panel.
+ *
+ * Keys the new schema does not declare are dropped and the cap is re-applied,
+ * so a republish that lowered `max` cannot leave more rows ticked than the
+ * control now allows. Row keys the panel no longer holds are NOT pruned here —
+ * see {@link vocabSelectedRowKeys}, which is where a selection meets the rows
+ * that actually rendered.
+ */
+export function vocabNormalizePanelSelection(
+  selection: VocabPanelSelection | undefined,
+  declarations: readonly VocabSelectionDeclaration[],
+): VocabPanelSelection {
+  const next: Record<string, readonly string[]> = {};
+  for (const declaration of declarations) {
+    const current = selection?.[declaration.stateKey] ?? [];
+    const kept: string[] = [];
+    for (const key of current) {
+      if (typeof key !== "string" || key === "" || kept.includes(key)) continue;
+      kept.push(key);
+      if (kept.length >= declaration.max) break;
+    }
+    next[declaration.stateKey] = kept;
+  }
+  return next;
+}
+
+/**
+ * Tick or untick one row.
+ *
+ * At the cap, ticking a new row is REFUSED rather than evicting the oldest one.
+ * A silent eviction would take a row out of a batch the reader believes they
+ * assembled, and the count on the bar is the only thing that could have told
+ * them — untick is a gesture they have, a row vanishing from under them is not.
+ * Unticking always works, cap or no cap.
+ */
+export function vocabToggleRowSelection(
+  selection: VocabPanelSelection,
+  declaration: VocabSelectionDeclaration,
+  rowKey: string,
+): VocabPanelSelection {
+  if (rowKey === "") return selection;
+  const current = selection[declaration.stateKey] ?? [];
+  if (current.includes(rowKey)) {
+    return { ...selection, [declaration.stateKey]: current.filter((key) => key !== rowKey) };
+  }
+  if (current.length >= declaration.max) return selection;
+  return { ...selection, [declaration.stateKey]: [...current, rowKey] };
+}
+
+/**
+ * Tick every row of a range, keeping what was already ticked.
+ *
+ * A union rather than a replacement: shift-clicking a second range must not
+ * throw away the first one, which is what a reader assembling a batch out of
+ * two clusters is doing. Fills to the cap and stops there, for the same reason
+ * {@link vocabToggleRowSelection} refuses — the rows it could not take are the
+ * tail of the range the reader can see, not rows it silently swapped out.
+ */
+export function vocabSelectRowRange(
+  selection: VocabPanelSelection,
+  declaration: VocabSelectionDeclaration,
+  rowKeys: readonly string[],
+): VocabPanelSelection {
+  const current = selection[declaration.stateKey] ?? [];
+  const next = [...current];
+  for (const key of rowKeys) {
+    if (key === "" || next.includes(key)) continue;
+    if (next.length >= declaration.max) break;
+    next.push(key);
+  }
+  return next.length === current.length
+    ? selection
+    : { ...selection, [declaration.stateKey]: next };
+}
+
+/** Untick everything in one list. What the bar's own Clear does. */
+export function vocabClearRowSelection(
+  selection: VocabPanelSelection,
+  declaration: VocabSelectionDeclaration,
+): VocabPanelSelection {
+  const current = selection[declaration.stateKey] ?? [];
+  if (current.length === 0) return selection;
+  return { ...selection, [declaration.stateKey]: [] };
+}
+
+/**
+ * The inclusive slice between two rows, in the order they are drawn.
+ *
+ * The range-anchor half of shift-click, shared rather than left to each client,
+ * because "between" has two answers when the reader drags upwards and a client
+ * that picked the other one would tick a different set from the same gesture.
+ * An anchor or a target that is not on screen yields just the target, which is
+ * what a plain click does — the honest reading of "extend from a row that is no
+ * longer there".
+ */
+export function vocabRowRange(
+  rowKeys: readonly string[],
+  anchorKey: string | null | undefined,
+  targetKey: string,
+): string[] {
+  const target = rowKeys.indexOf(targetKey);
+  if (target < 0) return [];
+  const anchor = anchorKey === null || anchorKey === undefined ? -1 : rowKeys.indexOf(anchorKey);
+  if (anchor < 0) return [targetKey];
+  const from = Math.min(anchor, target);
+  const to = Math.max(anchor, target);
+  return rowKeys.slice(from, to + 1);
+}
+
+/**
+ * The ticked rows that are actually on screen, in the order they are drawn.
+ *
+ * What the bar counts and what a bulk action is handed, and the reason the
+ * stored set is allowed to keep a key whose row is gone. A reader ticks four
+ * rows, moves a filter that hides two of them, and presses "Create lanes": the
+ * two they can see are the batch, because acting on a row nobody can see is the
+ * one outcome a selection must never produce. Moving the filter back brings the
+ * other two — and their ticks — with it, which a prune at filter time would not.
+ */
+export function vocabSelectedRowKeys(
+  selection: VocabPanelSelection | undefined,
+  stateKey: string,
+  rowKeys: readonly string[],
+): string[] {
+  const ticked = selection?.[stateKey];
+  if (!ticked || ticked.length === 0) return [];
+  const wanted = new Set(ticked);
+  return rowKeys.filter((key) => wanted.has(key));
+}
+
+/**
+ * Apply a `{resetState}` to the selection.
+ *
+ * One verb for both maps. A plugin answering a bulk action with
+ * `{resetState: true}` has almost always just acted on every ticked row, and
+ * leaving them ticked would offer to do it again to rows that have moved on.
+ * A named list resets only that key, exactly as a named state key does.
+ */
+export function vocabResetPanelSelection(
+  selection: VocabPanelSelection,
+  declarations: readonly VocabSelectionDeclaration[],
+  reset: "all" | readonly string[],
+): VocabPanelSelection {
+  if (reset === "all") return vocabInitialPanelSelection(declarations);
+  const next: Record<string, readonly string[]> = { ...selection };
+  for (const key of reset) {
+    if (declarations.some((declaration) => declaration.stateKey === key)) next[key] = [];
+  }
+  return next;
 }
 
 /* ── `$state` as a binding ──────────────────────────────────────────────── */

@@ -30,6 +30,48 @@ export function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
+/**
+ * Longest URL any plugin contract accepts from a plugin.
+ *
+ * A liveness bound rather than a permission. Real links are far shorter; a
+ * value this long is a payload wearing a URL, and every client would have to
+ * carry it through a system API that has its own, unstated ceiling.
+ *
+ * Declared here, in the leaf, because two contracts need the same number: the
+ * `{openUrl}` action verb (`PLUGIN_OPEN_URL_MAX_CHARS` in `sdk.ts`, which is
+ * this constant) and a `markdown` node's links. A link a plugin may open from a
+ * button and a link it may write into prose are the same capability, so they
+ * cannot be allowed to disagree about how long one may be.
+ */
+export const PLUGIN_URL_MAX_CHARS = 2_048;
+
+/**
+ * An `https:` URL a client may hand to the system browser, normalized — or
+ * `null`.
+ *
+ * The single gate for every external link a plugin can produce: the `{openUrl}`
+ * action verb and a `markdown` node's links both read it, so a scheme refused
+ * on a button cannot be accepted in prose. `http:` is refused with everything
+ * else — a plugin sending a reader to a cleartext page is a downgrade the host
+ * would be performing on their behalf — and so is a URL with no host, which is
+ * what `https:javascript:alert(1)` parses as.
+ *
+ * Returns `href` rather than the caller's string, so the client opens exactly
+ * what was validated and never a value that could re-parse differently.
+ */
+export function httpsUrl(value: unknown, max: number = PLUGIN_URL_MAX_CHARS): string | null {
+  const text = bounded(value, max);
+  if (text === null) return null;
+  let parsed: URL;
+  try {
+    parsed = new URL(text);
+  } catch {
+    return null;
+  }
+  if (parsed.protocol !== "https:" || !parsed.hostname) return null;
+  return parsed.href;
+}
+
 /** Trimmed, non-empty, unbounded. `null` for everything else. */
 export function trimmed(value: unknown): string | null {
   if (typeof value !== "string") return null;

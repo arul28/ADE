@@ -19,19 +19,25 @@
  */
 
 import { bounded, finite, isRecord, oneOf, trimmed } from "./parse";
+import { VOCAB_MARKDOWN_LIMITS } from "./vocabularyMarkdown";
 import {
   VOCAB_STATE_LIMITS,
   evaluateVocabWhere,
   parseVocabSegmentedStyle,
   parseVocabStateKey,
   parseVocabStateOptions,
+  parseVocabStateOptionsBinding,
   parseVocabWhere,
+  vocabMergeStateOptions,
+  vocabStateBadgeText,
   vocabStateInitial,
   type VocabPanelState,
   type VocabPredicate,
   type VocabSegmentedStyle,
+  type VocabSelectionDeclaration,
   type VocabStateDeclaration,
   type VocabStateOption,
+  type VocabStateOptionsBinding,
 } from "./vocabularyState";
 
 /**
@@ -42,6 +48,13 @@ import {
  * here.
  */
 export * from "./vocabularyState";
+
+/**
+ * The `markdown` node's subset — the block and inline types, the ceilings and
+ * {@link parseVocabMarkdown} itself — re-exported for the same reason and with
+ * the same one-way dependency: `vocabularyNodes.ts → vocabularyMarkdown.ts`.
+ */
+export * from "./vocabularyMarkdown";
 
 /** Bumped only for a change old clients cannot safely interpret. */
 export const VOCAB_VERSION = 1;
@@ -58,6 +71,13 @@ export const VOCAB_LIMITS = {
    * spread in here so a schema author reads one table rather than two.
    */
   ...VOCAB_STATE_LIMITS,
+  /**
+   * The `markdown` node's ceilings — the source length, the block budget, the
+   * container depth and the link length. Declared in `vocabularyMarkdown.ts`
+   * beside the parser that enforces them, spread in here for the same reason as
+   * the state ceilings above: one table.
+   */
+  ...VOCAB_MARKDOWN_LIMITS,
   /** Total nodes in a panel, counted through the whole tree. */
   maxNodes: 200,
   /** Nesting depth. Root `body` entries are depth 1. */
@@ -117,7 +137,9 @@ export const VOCAB_LIMITS = {
  */
 export type VocabComponentName =
   | "stack"
+  | "group"
   | "text"
+  | "markdown"
   | "badge"
   | "button"
   | "list"
@@ -232,12 +254,76 @@ export type VocabStackNode = {
   children: VocabNode[];
 };
 
+/**
+ * A titled section the reader can collapse.
+ *
+ * A `stack` with a disclosure triangle, and deliberately nothing more. Seven
+ * state groups in a fixed rank order — the shape every issue browser has — used
+ * to cost seven `segmented` controls whose only job was to hide one section
+ * each, which is seven state keys against a ceiling of eight and a filter strip
+ * nobody would want to look at.
+ *
+ * **Open/closed is CLIENT-LOCAL and is not panel state.** It never enters
+ * {@link VocabStateDeclaration}, never signs, never reaches a `where`, and never
+ * rides on an action — collapsing a section is a statement about the reader's
+ * screen, not about which rows the panel is showing, and a `where` that could
+ * read it would make the two indistinguishable. That is also what keeps a group
+ * free: a panel may hold as many as its node budget allows without spending a
+ * state key on any of them.
+ *
+ * Its identity across a re-publish is {@link groupKey} when the author declared
+ * one and the title otherwise — a plugin republishing its rows every few seconds
+ * must not re-open a section the reader just closed.
+ */
+export type VocabGroupNode = {
+  component: "group";
+  title: string;
+  /** Stable identity for the open/closed memory. Falls back to `title`. */
+  groupKey?: string;
+  /** A count beside the title, e.g. `12`. Text only, like an option's badge. */
+  badge?: string;
+  /** Open on first render. Absent means open — a section nobody has touched shows its contents. */
+  defaultOpen?: boolean;
+  children: VocabNode[];
+};
+
 export type VocabTextNode = {
   component: "text";
   text: string;
   /** `code` is the ONLY monospace affordance in the vocabulary. */
   variant?: "title" | "subtitle" | "body" | "caption" | "code";
   tone?: VocabTone;
+};
+
+/**
+ * Formatted prose: an issue body, a comment, a release note.
+ *
+ * The subset is `./vocabularyMarkdown.ts` and is the same on all four clients —
+ * headings, emphasis, code, links, lists, quotes and inert task checkboxes.
+ * There is no raw HTML anywhere in it, and a link is `https:` only.
+ *
+ * One field, on purpose. There is no `maxHeight` twin of {@link VocabImageNode}
+ * here: an image has an intrinsic pixel size a panel has to bound, prose has a
+ * length the ceiling below already bounds, and a height in points is not a thing
+ * a terminal can honour — a clamp that meant something on three clients and
+ * nothing on the fourth is exactly the per-client drift this node exists to
+ * avoid. A panel that wants less prose sends less prose.
+ */
+export type VocabMarkdownNode = {
+  component: "markdown";
+  /** Source, already clamped to {@link VOCAB_LIMITS.maxMarkdownChars}. */
+  text: string;
+  /**
+   * Set by the parser when the source was over the ceiling and was cut.
+   *
+   * A clamped document renders as PLAIN TEXT with a marker rather than as
+   * markdown, on every client. That is not squeamishness about length: a cut
+   * lands wherever the ceiling falls, which is regularly inside a fence, a link
+   * or an emphasis run, so the markdown of a truncated document is not the
+   * document's markdown — a half-open fence swallows the rest of it as code.
+   * Showing the source says "this was cut" in a way half-parsed prose cannot.
+   */
+  truncated?: boolean;
 };
 
 export type VocabBadgeNode = {
@@ -297,6 +383,16 @@ export type VocabListItemAction = VocabAction & {
  */
 export type VocabListItem = {
   title: string;
+  /**
+   * The row's identity, and the only thing a selection ever holds.
+   *
+   * A declared row writes it; a bound row inherits its collection row's own
+   * primary key, so a plugin that already writes `{title, subtitle}` rows gets
+   * selection for free. A row with no key cannot be ticked — it draws no
+   * checkbox at all rather than one that would put an empty string in a batch,
+   * because a title is not an identity and two issues can share one.
+   */
+  key?: string;
   subtitle?: string;
   meta?: string;
   tone?: VocabTone;
@@ -312,11 +408,41 @@ export type VocabListItem = {
   overflow?: VocabListItemAction[];
 };
 
+/**
+ * What a `list` needs to carry a multi-row selection.
+ *
+ * The vocabulary had no concept of one: a panel could press a row, and a reader
+ * who wanted eleven lanes pressed eleven rows. This is the smallest thing that
+ * fixes that — a state key to hold the ticks, and the verbs to offer once there
+ * are any.
+ *
+ * `actions` reuses {@link VocabListItemAction} exactly, so a bulk verb and a
+ * row verb are the same shape parsed by the same reader: `{action, args?,
+ * confirm?, label, kind?, icon?}`. `confirm` therefore works on a batch the way
+ * it works on a row, which matters more here — a mistake costs eleven lanes.
+ *
+ * The selection reaches the plugin as `args.selection`, an array of row keys,
+ * injected by the HOST at dispatch and last, so a schema cannot name an argument
+ * that would replace it. It is the one array in an args object that is otherwise
+ * flat scalars, and it is not a hole in rule 3: the client did not compute it,
+ * the reader ticked it, and every key in it is one the plugin itself wrote.
+ */
+export type VocabSelectable = {
+  /** Panel-local key holding this list's ticks. Same shape as a `segmented` key. */
+  stateKey: string;
+  /** The bar's buttons, up to {@link VOCAB_LIMITS.maxBulkActions}. */
+  actions: VocabListItemAction[];
+  /** Most rows ticked at once, already clamped to {@link VOCAB_LIMITS.maxSelectedRows}. */
+  max: number;
+};
+
 export type VocabListNode = {
   component: "list";
   items?: VocabListItem[];
   bind?: VocabBinding;
   emptyText?: string;
+  /** Ticks on every keyed row, and a bulk bar once any of them is ticked. */
+  selectable?: VocabSelectable;
 };
 
 export type VocabTableColumn = {
@@ -459,6 +585,19 @@ export type VocabSegmentedNode = {
   /** Shown beside the control, and used as the `$state` row's key. */
   label?: string;
   options: VocabStateOption[];
+  /**
+   * Take the rest of the options from a collection the plugin already writes.
+   *
+   * For the option list an author cannot inline because they do not know it:
+   * a workspace's projects, its labels, its assignees. The literal `options`
+   * above are still drawn, first, which is where the "All" sentinel goes — so a
+   * bound control declaring `[{value: "", label: "All projects"}]` reads the
+   * same as a literal one and needs no second concept for "no filter".
+   *
+   * A control declaring it is exempt from the two-option floor: its second
+   * option is data that has not arrived yet, not an author's mistake.
+   */
+  optionsFrom?: VocabStateOptionsBinding;
   /** Selected on first render. Falls back to the first option. */
   default?: string;
   style?: VocabSegmentedStyle;
@@ -475,12 +614,52 @@ export type VocabSegmentedNode = {
  * {@link vocabInitialPanelState} and {@link vocabStateSignature} never have to
  * repeat the `default` fallback and never disagree about it.
  */
-export function vocabSegmentedDeclaration(node: VocabSegmentedNode): VocabStateDeclaration {
+export function vocabSegmentedDeclaration(
+  node: VocabSegmentedNode,
+  /**
+   * The options `optionsFrom` resolved to, when the caller has the rows. A host
+   * that has not fetched them yet passes nothing and gets the literal options,
+   * which is a working control on its "All" — never a control with no options
+   * at all.
+   */
+  resolved?: readonly VocabStateOption[],
+): VocabStateDeclaration {
+  const options = node.optionsFrom !== undefined && resolved !== undefined
+    ? vocabMergeStateOptions(node.options, resolved)
+    : node.options;
   return {
     stateKey: node.stateKey,
-    options: node.options,
-    initial: vocabStateInitial(node.options, node.default),
+    options,
+    // A bound control opens on the unset "All" unless its declared default is
+    // already among the resolved options. Falling back to `options[0]` the way
+    // a literal control does would open it on whichever project the collection
+    // happened to yield first, which is a filter the reader did not ask for and
+    // a different one on every machine.
+    initial: node.optionsFrom !== undefined
+      ? (options.some((option) => option.value === node.default) ? node.default ?? "" : "")
+      : vocabStateInitial(options, node.default),
     ...(node.label !== undefined ? { label: node.label } : {}),
+    ...(node.style !== undefined ? { style: node.style } : {}),
+    ...(node.optionsFrom !== undefined ? { optionsFrom: node.optionsFrom } : {}),
+  };
+}
+
+/**
+ * A parsed `selectable` as the selection key it declares.
+ *
+ * The same split as {@link vocabSegmentedDeclaration}: the node holds the
+ * buttons a client draws, the declaration holds what the lifecycle needs, and
+ * the two are different shapes so the cap and the identity are resolved exactly
+ * once. Kept here rather than in `vocabularyState.ts` because the action ids it
+ * reads live on a node type, and the dependency runs one way.
+ */
+export function vocabSelectableDeclaration(
+  selectable: VocabSelectable,
+): VocabSelectionDeclaration {
+  return {
+    stateKey: selectable.stateKey,
+    max: selectable.max,
+    actionIds: selectable.actions.map((action) => action.action),
   };
 }
 
@@ -515,7 +694,9 @@ export type VocabInvalidNode = {
 
 export type VocabNode =
   | VocabStackNode
+  | VocabGroupNode
   | VocabTextNode
+  | VocabMarkdownNode
   | VocabBadgeNode
   | VocabButtonNode
   | VocabListNode
@@ -530,6 +711,35 @@ export type VocabNode =
   | VocabSegmentedNode
   | VocabUnknownNode
   | VocabInvalidNode;
+
+/**
+ * The children of a node that has any, and `[]` for one that does not.
+ *
+ * Every walk over a panel body goes through here — collecting bindings,
+ * collecting state declarations, counting nodes, rendering. Before `group`
+ * there was one container and each of those walks tested for it by hand, which
+ * made adding a second container four separate chances to forget one: a
+ * `segmented` inside an unwalked container would declare no state key, and a
+ * `list` inside one would bind a collection nobody fetched. Now a container is
+ * added here, once.
+ */
+export function vocabChildNodes(node: VocabNode): readonly VocabNode[] {
+  if (node.component === "stack" || node.component === "group") return node.children;
+  return [];
+}
+
+/**
+ * What a client remembers a group's open/closed state under.
+ *
+ * The declared `groupKey` when there is one, the title otherwise — and never
+ * the node's position, which is what a client keying off `body[2]` would use.
+ * Position is the wrong identity for the case this has to survive: a plugin
+ * republishing its panel with one more group above yours has not opened the
+ * section you closed, but a positional key says it has.
+ */
+export function vocabGroupKey(node: VocabGroupNode): string {
+  return node.groupKey ?? node.title;
+}
 
 /* ── Errors ─────────────────────────────────────────────────────────────── */
 
@@ -713,8 +923,18 @@ export function boundRowAction(
 export function coerceBoundListItem(
   value: unknown,
   allowActions?: readonly string[],
+  /**
+   * The collection row's own primary key, used as the row's identity when the
+   * stored value declares no `key` of its own.
+   *
+   * The same rule {@link coerceBoundKeyValueRow} already applies for the same
+   * reason: a collection row HAS a key, and making a plugin repeat it inside
+   * the value just to make its rows selectable would be a second identity that
+   * can disagree with the first.
+   */
+  rowKey?: string,
 ): VocabListItem | null {
-  return readListItem(value, (raw) => boundRowAction(raw, allowActions));
+  return readListItem(value, (raw) => boundRowAction(raw, allowActions), rowKey);
 }
 
 /**
@@ -888,10 +1108,20 @@ function parseListItemActions(
  * Shared by {@link parseListItem} and {@link coerceBoundListItem} so a declared
  * row and a bound row read every field the same way and differ only in `gate`.
  */
-function readListItem(raw: unknown, gate: VocabActionGate): VocabListItem | null {
+function readListItem(
+  raw: unknown,
+  gate: VocabActionGate,
+  fallbackKey?: string,
+): VocabListItem | null {
   if (!isRecord(raw)) return null;
   const title = vocabString(raw.title, VOCAB_LIMITS.maxLabelChars);
   if (title === undefined) return null;
+  // `bounded`, never `vocabString`: a key that was shortened at the ceiling —
+  // with or without the ellipsis `vocabString` appends — is an identity no row
+  // and no plugin holds, and it would ride into a batch naming nothing. So an
+  // over-long key is REFUSED, which leaves the row unselectable and visibly so.
+  const itemKey = bounded(raw.key, VOCAB_LIMITS.maxIdChars)
+    ?? (fallbackKey !== undefined ? bounded(fallbackKey, VOCAB_LIMITS.maxIdChars) : null);
   const subtitle = vocabString(raw.subtitle, VOCAB_LIMITS.maxValueChars);
   const meta = vocabString(raw.meta, VOCAB_LIMITS.maxLabelChars);
   const icon = vocabString(raw.icon, VOCAB_LIMITS.maxIdChars);
@@ -902,6 +1132,7 @@ function readListItem(raw: unknown, gate: VocabActionGate): VocabListItem | null
   const overflow = parseListItemActions(raw.overflow, VOCAB_LIMITS.maxListItemOverflow, gate);
   return {
     title,
+    ...(itemKey !== null ? { key: itemKey } : {}),
     ...(subtitle !== undefined ? { subtitle } : {}),
     ...(meta !== undefined ? { meta } : {}),
     ...(raw.tone !== undefined ? { tone: normalizeVocabTone(raw.tone) } : {}),
@@ -916,6 +1147,30 @@ function readListItem(raw: unknown, gate: VocabActionGate): VocabListItem | null
 
 function parseListItem(raw: unknown): VocabListItem | null {
   return readListItem(raw, parseAction);
+}
+
+/**
+ * A `list` node's `selectable`, or `null`.
+ *
+ * A selection with no verb is a set of ticks the reader cannot spend, so a
+ * `selectable` declaring no usable action is dropped whole rather than drawing
+ * checkboxes over an empty bar. The bulk buttons go through the SAME reader a
+ * row's trailing buttons do — `parseAction`, not `boundRowAction` — because
+ * they are the panel author's own words: a bulk verb is declared on the node,
+ * never supplied by a collection row, which is exactly what keeps stored data
+ * from minting an action over a hundred rows at once.
+ */
+function parseSelectable(raw: unknown): VocabSelectable | null {
+  if (!isRecord(raw)) return null;
+  const stateKey = parseVocabStateKey(raw.stateKey);
+  if (stateKey === undefined) return null;
+  const actions = parseListItemActions(raw.actions, VOCAB_LIMITS.maxBulkActions, parseAction);
+  if (actions === undefined) return null;
+  const declaredMax = finiteNumber(raw.max);
+  const max = declaredMax !== undefined && declaredMax >= 1
+    ? Math.min(Math.floor(declaredMax), VOCAB_LIMITS.maxSelectedRows)
+    : VOCAB_LIMITS.maxSelectedRows;
+  return { stateKey, actions, max };
 }
 
 function parseField(raw: unknown): VocabField | null {
@@ -1026,6 +1281,30 @@ export const NODE_PARSERS: Record<string, VocabNodeParser> = {
     };
   },
 
+  group: (raw, ctx) => {
+    const title = vocabString(raw.title, VOCAB_LIMITS.maxLabelChars);
+    // A disclosure with no word on it is a triangle the reader has to open to
+    // find out what they opened, so the title is the one required field.
+    if (title === undefined) return ctx.invalid("`title` is required");
+    const rawChildren = Array.isArray(raw.children) ? raw.children : [];
+    const children: VocabNode[] = [];
+    for (let index = 0; index < rawChildren.length; index += 1) {
+      const child = ctx.child(rawChildren[index], index);
+      if (child === null) break;
+      children.push(child);
+    }
+    const groupKey = vocabString(raw.groupKey, VOCAB_LIMITS.maxIdChars);
+    const badge = vocabStateBadgeText(raw.badge);
+    return {
+      component: "group",
+      title,
+      ...(groupKey !== undefined ? { groupKey } : {}),
+      ...(badge !== undefined ? { badge } : {}),
+      ...(typeof raw.defaultOpen === "boolean" ? { defaultOpen: raw.defaultOpen } : {}),
+      children,
+    };
+  },
+
   text: (raw, ctx) => {
     const text = vocabString(raw.text, VOCAB_LIMITS.maxTextChars);
     if (text === undefined) return ctx.invalid("`text` is required");
@@ -1035,6 +1314,22 @@ export const NODE_PARSERS: Record<string, VocabNodeParser> = {
       text,
       ...(variant !== undefined ? { variant } : {}),
       ...(raw.tone !== undefined ? { tone: normalizeVocabTone(raw.tone) } : {}),
+    };
+  },
+
+  markdown: (raw, ctx) => {
+    // NOT `vocabString`: its ellipsis would be appended INSIDE the document, so
+    // a cut that landed in a fence would render `…` as code and the marker the
+    // reader needs would be invisible. Over the ceiling the node keeps the text
+    // it can and says so in a field, which is what every client reads to decide
+    // between drawing prose and drawing the source.
+    const source = trimmed(raw.text);
+    if (source === null) return ctx.invalid("`text` is required");
+    const truncated = source.length > VOCAB_LIMITS.maxMarkdownChars;
+    return {
+      component: "markdown",
+      text: truncated ? source.slice(0, VOCAB_LIMITS.maxMarkdownChars) : source,
+      ...(truncated ? { truncated: true as const } : {}),
     };
   },
 
@@ -1078,11 +1373,13 @@ export const NODE_PARSERS: Record<string, VocabNodeParser> = {
     }
     if (items === undefined && bind === null) return ctx.invalid("needs `items` or a `bind`");
     const emptyText = vocabString(raw.emptyText, VOCAB_LIMITS.maxValueChars);
+    const selectable = parseSelectable(raw.selectable);
     return {
       component: "list",
       ...(items !== undefined ? { items } : {}),
       ...(bind !== null ? { bind } : {}),
       ...(emptyText !== undefined ? { emptyText } : {}),
+      ...(selectable !== null ? { selectable } : {}),
     };
   },
 
@@ -1258,17 +1555,32 @@ export const NODE_PARSERS: Record<string, VocabNodeParser> = {
       return ctx.invalid("`stateKey` is required and may not start with `$`");
     }
     const options = parseVocabStateOptions(raw.options);
+    const optionsFrom = parseVocabStateOptionsBinding(raw.optionsFrom);
     // One option is not a choice, and a control the reader cannot change is a
-    // filter permanently stuck wherever the author left it. Two is the floor.
-    if (options.length < 2) return ctx.invalid("`options` needs at least two distinct values");
+    // filter permanently stuck wherever the author left it. Two is the floor —
+    // but only for a control whose options are all in the schema. A bound
+    // control's second option is a row that has not arrived yet, and failing it
+    // at parse would make "the collection is empty right now" a broken node.
+    if (optionsFrom === undefined && options.length < 2) {
+      return ctx.invalid("`options` needs at least two distinct values");
+    }
     const label = vocabString(raw.label, VOCAB_LIMITS.maxLabelChars);
     const style = parseVocabSegmentedStyle(raw.style, options.length);
     const onChange = parseAction(raw.onChange);
+    // A bound control keeps the author's `default` VERBATIM. Resolving it here
+    // against the literal options — which is right for a literal control, where
+    // that list is the whole control — would throw away a default naming a row
+    // nobody has fetched yet, every time. The resolution moves to
+    // {@link vocabSegmentedDeclaration}, which runs where the rows are.
+    const boundDefault = typeof raw.default === "string"
+      ? raw.default.trim().slice(0, VOCAB_STATE_LIMITS.maxStateIdChars)
+      : "";
     return {
       component: "segmented",
       stateKey,
       options,
-      default: vocabStateInitial(options, raw.default),
+      default: optionsFrom !== undefined ? boundDefault : vocabStateInitial(options, raw.default),
+      ...(optionsFrom !== undefined ? { optionsFrom } : {}),
       ...(label !== undefined ? { label } : {}),
       ...(style !== undefined ? { style } : {}),
       ...(onChange !== null ? { onChange } : {}),

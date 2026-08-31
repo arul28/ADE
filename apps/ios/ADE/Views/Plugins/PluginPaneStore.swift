@@ -26,6 +26,16 @@ protocol PluginPaneSyncing: AnyObject {
     keyPrefix: String?,
     limit: Int
   ) async throws -> [PluginCollectionEntry]
+
+  // MARK: Sign-in, brokered by the machine
+
+  /// Whether the attached machine can take a sign-in callback back. Read before
+  /// the browser opens, so a phone that could not deliver the answer says so
+  /// instead of walking the reader through a sign-in that goes nowhere.
+  var supportsPluginAuthSessions: Bool { get }
+  /// Hand back exactly what the provider returned. The machine routes it by the
+  /// `state` it minted; the phone names no plugin and no session.
+  func completePluginAuthSession(params: [String: String]) async throws
 }
 
 extension SyncService: PluginPaneSyncing {}
@@ -153,7 +163,9 @@ final class PluginPanelFallbackCache {
 enum PluginRenderSupport {
   static let renderableComponents: Set<String> = [
     "stack",
+    "group",
     "text",
+    "markdown",
     "badge",
     "button",
     "list",
@@ -217,10 +229,32 @@ final class PluginPaneStore: ObservableObject {
   /// itself the moment it is tapped.
   @Published private(set) var panelState: PluginVocabPanelState = [:]
 
+  /// The rows a reader has ticked, per `selectable` list.
+  ///
+  /// The second half of panel state and held on exactly the same terms:
+  /// per-panel, per-viewer, gone when the pane closes, never in sqlite and never
+  /// synced. A separate map because a set of row keys is a different shape from
+  /// one string against a closed option list — see ``PluginVocabPanelSelection``.
+  @Published private(set) var panelSelection: PluginVocabPanelSelection = [:]
+
+  /// Which groups the reader has flipped away from their declared `defaultOpen`.
+  ///
+  /// A set of OVERRIDES, not a set of open groups, so an untouched section still
+  /// obeys the schema's `defaultOpen` — a plugin that publishes a section closed
+  /// gets it closed on first draw, and one the reader opened stays open across
+  /// the republishes that follow. Client-local, and deliberately unreachable
+  /// from a `where`, a signature or an action payload: collapsing a section is a
+  /// statement about this screen, not about which rows the panel is showing.
+  @Published private var groupOverrides: Set<String> = []
+
   /// The controls the current schema declares, in reading order.
   private(set) var stateDeclarations: [PluginVocabStateDeclaration] = []
   /// Identity of those controls — see ``PluginVocabState/signature(_:)``.
   private var stateSignature = ""
+  /// The selectable lists the current schema declares, in reading order.
+  private(set) var selectionDeclarations: [PluginVocabSelectionDeclaration] = []
+  /// Identity of those lists — see ``PluginVocabState/selectionSignature(_:)``.
+  private var selectionSignature = ""
 
   /// What this pane was opened with. Read by a node bound to `$context` and
   /// attached to every action dispatched from here, so a button knows what the
@@ -273,6 +307,17 @@ final class PluginPaneStore: ObservableObject {
   /// Injected so a test can assert what a plugin asked to open without Safari
   /// coming to the front. Every real caller takes the default.
   private let openExternalURL: (URL) -> Void
+  /// How the `{authSession}` verb reaches `ASWebAuthenticationSession`.
+  ///
+  /// Injected for the same reason ``openExternalURL`` is, and it matters more
+  /// here: the default fronts a real system sign-in sheet, so a test that could
+  /// not replace it could not exercise this verb at all.
+  ///
+  /// Main-actor by declaration: everything it touches — the runner, the auth
+  /// sheet's presentation anchor, the `sync` it hands the callback to — already
+  /// is, so spelling the isolation here is what keeps the existential from
+  /// having to cross an actor boundary it has no business crossing.
+  private let runAuthSession: @MainActor (URL, String, PluginPaneSyncing) async -> PluginAuthSessionOutcome
 
   init(
     pluginId: String,
@@ -284,7 +329,10 @@ final class PluginPaneStore: ObservableObject {
     // evaluated in a NONISOLATED context, and `shared` is main-actor state, so
     // spelling it here warns today and is an error in the Swift 6 language mode.
     fallbackCache: PluginPanelFallbackCache? = nil,
-    openExternalURL: @escaping (URL) -> Void = { UIApplication.shared.open($0) }
+    openExternalURL: @escaping (URL) -> Void = { UIApplication.shared.open($0) },
+    // Nil-defaulted and built in the body, like `fallbackCache` and for the same
+    // isolation reason.
+    runAuthSession: (@MainActor (URL, String, PluginPaneSyncing) async -> PluginAuthSessionOutcome)? = nil
   ) {
     self.pluginId = pluginId
     self.selectedPanelId = panelId
@@ -294,9 +342,28 @@ final class PluginPaneStore: ObservableObject {
     self.fetchesMissingRows = fetchesMissingRows
     self.fallbackCache = fallbackCache ?? .shared
     self.openExternalURL = openExternalURL
+    // One runner per pane, captured rather than made per call: its `isRunning`
+    // flag is what stops a second tap on Connect from stacking a second sign-in
+    // sheet, and a fresh runner each time would have nothing to guard.
+    let runner = PluginAuthSessionRunner()
+    self.runAuthSession = runAuthSession ?? { url, scheme, sync in
+      await runner.run(url: url, callbackScheme: scheme, using: sync)
+    }
   }
 
   var canInvoke: Bool { sync.canInvokePluginActions }
+
+  /// Send the reader out to the system browser.
+  ///
+  /// The one door out of a plugin panel, whatever opened it: an action's
+  /// `{openUrl}` result and a `markdown` node's link both come through here, so
+  /// there is a single injectable seam a test can watch and a single place to
+  /// change if the destination ever stops being Safari. The caller has already
+  /// passed ``PluginInvokeResult/parseOpenURL(_:)`` — this opens, it does not
+  /// decide.
+  func openExternal(_ url: URL) {
+    openExternalURL(url)
+  }
 
   var displayName: String { presenceCatalog.label(for: pluginId) }
 
@@ -579,14 +646,53 @@ final class PluginPaneStore: ObservableObject {
   /// catches a value inside a control that did not vanish — an option the new
   /// schema no longer offers cannot stay selected.
   private func adoptStateControls(from body: [PluginVocabNode]) {
-    let declarations = PluginVocabState.declarations(in: body)
+    // A control's `optionsFrom` is a fetch like any other, resolved from the
+    // rows this pane already reads — so a bound control draws the reader's
+    // projects rather than nothing but its "All". The signature deliberately
+    // does NOT move when those rows do: see ``PluginVocabState/signature(_:)``.
+    let declarations = PluginVocabState.declarations(in: body) { binding in
+      self.stateOptions(for: binding)
+    }
     let signature = PluginVocabState.signature(declarations)
     stateDeclarations = declarations
-    guard signature != stateSignature else { return }
-    panelState = stateSignature.isEmpty
-      ? PluginVocabState.initialState(declarations)
-      : PluginVocabState.normalize(panelState, declarations: declarations)
-    stateSignature = signature
+    if signature != stateSignature {
+      panelState = stateSignature.isEmpty
+        ? PluginVocabState.initialState(declarations)
+        : PluginVocabState.normalize(panelState, declarations: declarations)
+      stateSignature = signature
+    }
+    adoptSelectionControls(from: body)
+  }
+
+  /// The selection half of ``adoptStateControls(from:)``, on the same terms.
+  ///
+  /// Same signature/normalize pair and the same reason for each: the signature
+  /// catches a list that vanished, changed its cap or changed its verbs, and
+  /// ``PluginVocabState/normalizeSelection(_:declarations:)`` re-applies the cap
+  /// to ticks a republish may have made too many.
+  private func adoptSelectionControls(from body: [PluginVocabNode]) {
+    let declarations = PluginVocabState.selectionDeclarations(in: body)
+    let signature = PluginVocabState.selectionSignature(declarations)
+    selectionDeclarations = declarations
+    guard signature != selectionSignature else { return }
+    panelSelection = selectionSignature.isEmpty
+      ? PluginVocabState.initialSelection(declarations)
+      : PluginVocabState.normalizeSelection(panelSelection, declarations: declarations)
+    selectionSignature = signature
+  }
+
+  /// The options a control's `optionsFrom` resolves to right now.
+  ///
+  /// Read through the same path a node binding takes, so a bound control shares
+  /// the pane's one fetch of that collection instead of asking for its own — and
+  /// so a collection the mirror is missing is queued for the live read exactly
+  /// as a bound list's would be.
+  private func stateOptions(for binding: PluginVocabStateOptionsBinding) -> [PluginVocabStateOption] {
+    let rows = entries(
+      for: PluginVocabBinding(collection: binding.collection, keyPrefix: binding.keyPrefix),
+      limit: PluginVocabLimits.maxBoundStateOptions
+    )
+    return PluginVocabState.resolveStateOptions(binding, rows: rows.map(\.value))
   }
 
   /// Forget the reader's selections because they are leaving this panel.
@@ -594,11 +700,99 @@ final class PluginPaneStore: ObservableObject {
   /// A different panel is a different set of controls. Cleared outright rather
   /// than left to the signature check, so arriving at a panel that happens to
   /// declare the same controls reads as a fresh open rather than as a
-  /// continuation of one the reader has moved on from.
+  /// continuation of one the reader has moved on from. The ticks and the group
+  /// overrides go with it for the same reason: a batch assembled on one panel is
+  /// not a batch on the next, and a section closed there is not this one's.
   private func clearPanelState() {
     panelState = [:]
     stateDeclarations = []
     stateSignature = ""
+    panelSelection = [:]
+    selectionDeclarations = []
+    selectionSignature = ""
+    groupOverrides = []
+  }
+
+  // MARK: - Groups
+
+  /// Whether a collapsible section is showing its contents.
+  ///
+  /// The schema's `defaultOpen` decides until the reader says otherwise; after
+  /// that this pane remembers the flip under the group's own key, so a plugin
+  /// republishing its rows every few seconds cannot re-open a section the reader
+  /// just closed. Nothing about it reaches the plugin.
+  func groupIsOpen(_ group: PluginVocabGroup) -> Bool {
+    groupOverrides.contains(group.key) ? !group.defaultOpen : group.defaultOpen
+  }
+
+  func toggleGroup(_ group: PluginVocabGroup) {
+    if groupOverrides.contains(group.key) {
+      groupOverrides.remove(group.key)
+    } else {
+      groupOverrides.insert(group.key)
+    }
+  }
+
+  // MARK: - Selection
+
+  /// The declaration a list's ticks are held under.
+  ///
+  /// A list past ``PluginVocabLimits/maxSelectionKeys`` declares nothing, and
+  /// gets no ticks and no bar — the honest failure for a panel that asked for
+  /// three selections. `nil` is what the views read to draw no affordance.
+  func selectionDeclaration(for selectable: PluginVocabSelectable) -> PluginVocabSelectionDeclaration? {
+    selectionDeclarations.first { $0.stateKey == selectable.stateKey }
+  }
+
+  func isSelected(rowKey: String, in selectable: PluginVocabSelectable) -> Bool {
+    (panelSelection[selectable.stateKey] ?? []).contains(rowKey)
+  }
+
+  /// Tick or untick one row. At the cap a new tick is refused rather than
+  /// evicting an older one — see ``PluginVocabState/toggleRow(_:declaration:rowKey:)``.
+  func toggle(rowKey: String, in selectable: PluginVocabSelectable) {
+    guard let declaration = selectionDeclaration(for: selectable) else { return }
+    let next = PluginVocabState.toggleRow(panelSelection, declaration: declaration, rowKey: rowKey)
+    guard next != panelSelection else { return }
+    panelSelection = next
+  }
+
+  func clearSelection(in selectable: PluginVocabSelectable) {
+    guard let declaration = selectionDeclaration(for: selectable) else { return }
+    let next = PluginVocabState.clearSelection(panelSelection, declaration: declaration)
+    guard next != panelSelection else { return }
+    panelSelection = next
+  }
+
+  /// The ticked rows that are actually on screen, in the order they are drawn.
+  ///
+  /// What the bar counts AND what a bulk action is handed — one helper for both,
+  /// because a bar reading "3 selected" that dispatched four keys would be
+  /// acting on a row nobody can see.
+  func selectedKeys(in selectable: PluginVocabSelectable, visibleRowKeys: [String]) -> [String] {
+    PluginVocabState.selectedRowKeys(
+      panelSelection,
+      stateKey: selectable.stateKey,
+      rowKeys: visibleRowKeys
+    )
+  }
+
+  /// Run one bulk verb over the visible selection.
+  ///
+  /// The keys ride as `args.selection`, injected HERE and last: `extraArgs`
+  /// overrides the schema's own `args` in ``runAction(_:extraArgs:label:allowsPrompt:)``,
+  /// so a panel cannot declare an argument that would quietly replace the batch.
+  /// Routed through ``perform(_:extraArgs:label:)`` like every other control, so
+  /// a bulk verb's `confirm` asks first exactly as a row's does — which matters
+  /// more here, where a mistake costs eleven lanes.
+  func performBulk(
+    _ entry: PluginVocabListItemAction,
+    in selectable: PluginVocabSelectable,
+    visibleRowKeys: [String]
+  ) {
+    let keys = selectedKeys(in: selectable, visibleRowKeys: visibleRowKeys)
+    guard !keys.isEmpty else { return }
+    perform(entry.action, extraArgs: ["selection": keys], label: entry.label)
   }
 
   /// Choose one option of a `segmented` control.
@@ -609,11 +803,11 @@ final class PluginPaneStore: ObservableObject {
   /// a plugin that wants to know which filter the reader picked gets told, and a
   /// plugin that does not declare it still gets a working filter.
   func select(_ option: PluginVocabStateOption, in segmented: PluginVocabSegmented) {
-    // The store's declaration wins where there is one; a control past the
-    // `maxStateKeys` ceiling declares nothing and falls back to its own node, so
-    // it still works as a control even though no `where` can read it.
-    let declaration = stateDeclarations.first { $0.stateKey == segmented.stateKey } ?? segmented.declaration
-    let next = PluginVocabState.apply(panelState, declaration: declaration, value: option.value)
+    let next = PluginVocabState.apply(
+      panelState,
+      declaration: declaration(for: segmented),
+      value: option.value
+    )
     if next != panelState {
       panelState = next
       presentation = resolvePresentation()
@@ -626,9 +820,22 @@ final class PluginPaneStore: ObservableObject {
     }
   }
 
+  /// The control as the store holds it: literal options plus whatever the
+  /// node's `optionsFrom` resolved to, and the initial value already reconciled
+  /// against that list.
+  ///
+  /// The store's declaration wins where there is one; a control past the
+  /// `maxStateKeys` ceiling declares nothing and falls back to its own node, so
+  /// it still works as a control even though no `where` can read it — and a
+  /// bound one past the ceiling honestly draws only its literal options, since
+  /// nothing resolved them.
+  func declaration(for segmented: PluginVocabSegmented) -> PluginVocabStateDeclaration {
+    stateDeclarations.first { $0.stateKey == segmented.stateKey } ?? segmented.declaration()
+  }
+
   /// The option a control is currently showing as chosen.
   func selectedValue(in segmented: PluginVocabSegmented) -> String {
-    panelState[segmented.stateKey] ?? segmented.initial
+    panelState[segmented.stateKey] ?? declaration(for: segmented).initial
   }
 
   // MARK: - Binding resolution
@@ -645,11 +852,26 @@ final class PluginPaneStore: ObservableObject {
       stack.children = stack.children.map(resolveBindings(in:))
       return .stack(stack)
 
+    // A container is a container: a `list` inside a `group` binds the same
+    // collection a `list` inside a `stack` does, and forgetting this arm would
+    // leave its rows unresolved and its node drawing an empty state.
+    case var .group(group):
+      group.children = group.children.map(resolveBindings(in:))
+      return .group(group)
+
     case var .list(list):
       guard let bind = list.bind else { return node }
       let rows = entries(for: bind, limit: PluginVocabLimits.maxListItems)
-      list.items = (list.items ?? []) + rows.compactMap {
-        PluginPanelParser.parseBoundListItem($0.value, allowActions: bind.allowActions)
+      list.items = (list.items ?? []) + rows.compactMap { entry in
+        // The collection row's own primary key becomes the row's identity when
+        // the stored value declares none, so a plugin that already writes
+        // `{title, subtitle}` rows gets selection for free — the same rule the
+        // `keyValue` arm below has always followed.
+        PluginPanelParser.parseBoundListItem(
+          entry.value,
+          allowActions: bind.allowActions,
+          rowKey: entry.key
+        )
       }
       list.bind = nil
       return .list(list)
@@ -984,6 +1206,14 @@ final class PluginPaneStore: ObservableObject {
       // ran on, and a navigation replaces that panel's controls anyway.
       if let reset = result.resetState {
         panelState = PluginVocabState.reset(panelState, declarations: stateDeclarations, reset: reset)
+        // One verb, both maps. A plugin answering a bulk action with
+        // `{resetState}` has almost always just acted on every ticked row, and
+        // leaving them ticked would offer to do it again to rows that moved on.
+        panelSelection = PluginVocabState.resetSelection(
+          panelSelection,
+          declarations: selectionDeclarations,
+          reset: reset
+        )
         presentation = resolvePresentation()
       }
       if let navigation = result.navigate {
@@ -1007,15 +1237,78 @@ final class PluginPaneStore: ObservableObject {
           isFailure: true
         )
       }
-      // Last: re-read the pane so the invalidation above turns into an actual
-      // ask. A navigation already loaded, and a second load costs one mirror
-      // read — the same thing a projection bump does.
+      // Re-read the pane so the invalidation above turns into an actual ask. A
+      // navigation already loaded, and a second load costs one mirror read —
+      // the same thing a projection bump does.
       load()
+      // After the load, and awaited, unlike every verb above it: a sign-in is
+      // the only one that blocks for as long as a person takes to read a consent
+      // screen. Running it before the pane refreshed would leave the panel
+      // frozen on pre-action state for that whole time, and running it
+      // unawaited would drop the in-flight flag — the Connect button would stop
+      // spinning while its sign-in was still on screen.
+      if let authSession = result.authSession {
+        await presentAuthSession(authSession)
+      }
     } catch {
       actionMessage = PluginActionMessage(
         text: (error as NSError).localizedDescription,
         isFailure: true
       )
+    }
+  }
+
+  /// Present a sign-in the machine stamped, and hand the answer back to it.
+  ///
+  /// `loopback` is a DESKTOP flow and this phone cannot finish it: the machine
+  /// that began it has an HTTP listener open on its OWN `127.0.0.1`, and a
+  /// redirect there from a phone lands on the phone's loopback, where nothing is
+  /// listening. Opening a browser anyway would walk the reader through a real
+  /// sign-in and then strand them on an unreachable page with a live
+  /// authorization code in the address bar — the exact failure this whole seam
+  /// exists to prevent — so the pane says where the flow does finish instead.
+  private func presentAuthSession(_ session: PluginInvokeAuthSession) async {
+    guard session.transport == .app else {
+      actionMessage = PluginActionMessage(
+        text: "Connect \(displayName) on the machine — this sign-in can only finish there.",
+        isFailure: true
+      )
+      return
+    }
+    // Asked before the browser opens, never after it closes: a reader who signed
+    // in and then learned the answer had nowhere to go has given a provider a
+    // grant for nothing.
+    guard sync.supportsPluginAuthSessions else {
+      actionMessage = PluginActionMessage(
+        text: "This machine's ADE is too old to finish a sign-in from your phone. Update it, or connect \(displayName) there.",
+        isFailure: true
+      )
+      return
+    }
+    // The host stamps this for every `app` flow. Without it there is no scheme
+    // to watch for, and the session would sit open until the reader gave up.
+    guard let callbackScheme = session.callbackScheme else {
+      actionMessage = PluginActionMessage(
+        text: "\(displayName) asked for a sign-in ADE could not open.",
+        isFailure: true
+      )
+      return
+    }
+    switch await runAuthSession(session.url, callbackScheme, sync) {
+    case .delivered:
+      // The plugin has just been handed its callback ON THE MACHINE, and acting
+      // on it is the point — a connected account, a stored token, rows it can
+      // finally read. None of that is in the copy this pane fetched before the
+      // sign-in started.
+      invalidateFetchedCollections()
+      load()
+    case .canceled:
+      // Deliberately silent. A reader who closed the sheet knows what they did,
+      // and an error toast would tell them something went wrong when nothing
+      // did.
+      break
+    case .failed(let message):
+      actionMessage = PluginActionMessage(text: message, isFailure: true)
     }
   }
 }

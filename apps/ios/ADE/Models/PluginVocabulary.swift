@@ -77,9 +77,21 @@ enum PluginVocabLimits {
   static let maxChartPoints = 200
   static let maxFormFields = 24
   static let maxTextChars = 4_000
+  /// A `markdown` node's source. The same ceiling as `maxTextChars`, because
+  /// markdown is prose and that is already the prose ceiling — a paragraph does
+  /// not earn more room for being formatted. Mirrors `maxMarkdownChars`.
+  static let maxMarkdownChars = PluginVocabMarkdownLimits.maxChars
   static let maxLabelChars = 200
   static let maxValueChars = 1_000
   static let maxIdChars = 120
+  /// A media `src` or `poster`, with its own reader — see
+  /// ``PluginPanelParser/mediaSrc(_:)``.
+  ///
+  /// Larger than ``maxValueChars`` because a `data:` URI is a legitimate source
+  /// and an inline thumbnail does not fit in a thousand characters; well under
+  /// ``maxSchemaBytes`` because a panel that spends its whole budget on one
+  /// image has nothing left to say about it. Mirrors `maxSrcChars`.
+  static let maxSrcChars = 8_192
   static let maxActionArgs = 16
   static let maxBindingAllowActions = 16
   /// Trailing buttons on one list row. Three, and the rest go to `overflow`.
@@ -179,6 +191,45 @@ struct PluginVocabStack: Equatable {
   var children: [PluginVocabNode] = []
 }
 
+/// A titled section the reader can collapse.
+///
+/// A `stack` with a disclosure triangle, and deliberately nothing more. Seven
+/// state groups in a fixed rank order — the shape every issue browser has — used
+/// to cost seven `segmented` controls whose only job was to hide one section
+/// each, which is seven state keys against a ceiling of eight and a filter strip
+/// nobody would want to look at.
+///
+/// **Open/closed is CLIENT-LOCAL and is not panel state.** It never enters
+/// ``PluginVocabStateDeclaration``, never signs, never reaches a `where`, and
+/// never rides on an action — collapsing a section is a statement about the
+/// reader's screen, not about which rows the panel is showing, and a `where`
+/// that could read it would make the two indistinguishable. That is also what
+/// keeps a group free: a panel may hold as many as its node budget allows
+/// without spending a state key on any of them.
+///
+/// Mirrors `VocabGroupNode` in `vocabularyNodes.ts`.
+struct PluginVocabGroup: Equatable {
+  var title: String
+  /// Stable identity for the open/closed memory. Falls back to ``title``.
+  var groupKey: String?
+  /// A count beside the title, e.g. `12`. Text only, like an option's badge.
+  var badge: String?
+  /// Open on first render. Absent means open — a section nobody has touched
+  /// shows its contents.
+  var defaultOpen = true
+  var children: [PluginVocabNode] = []
+
+  /// What a client remembers this group's open/closed state under.
+  ///
+  /// The declared ``groupKey`` when there is one, the title otherwise — and
+  /// never the node's position, which is what a client keying off `body[2]`
+  /// would use. Position is the wrong identity for the case this has to
+  /// survive: a plugin republishing its panel with one more group above yours
+  /// has not opened the section you closed, but a positional key says it has.
+  /// Mirrors `vocabGroupKey`.
+  var key: String { groupKey ?? title }
+}
+
 struct PluginVocabText: Equatable {
   /// `code` is the only monospace affordance in the vocabulary.
   enum Variant: String { case title, subtitle, body, caption, code }
@@ -186,6 +237,28 @@ struct PluginVocabText: Equatable {
   var text: String
   var variant: Variant = .body
   var tone: PluginVocabTone = .neutral
+}
+
+/// Formatted prose: an issue body, a comment, a release note.
+///
+/// The subset is `PluginVocabularyMarkdown.swift`, mirrored from
+/// `vocabularyMarkdown.ts` — headings, emphasis, code, links, lists, quotes and
+/// inert task checkboxes, with no raw HTML anywhere in it and `https:`-only
+/// links. One field, on purpose: there is no `maxHeight` twin of
+/// ``PluginVocabImage`` here, because prose has a length the ceiling already
+/// bounds and a height in points is not a thing a terminal can honour.
+///
+/// Mirrors `VocabMarkdownNode` in `vocabularyNodes.ts`.
+struct PluginVocabMarkdown: Equatable {
+  /// Source, already clamped to `PluginVocabLimits.maxMarkdownChars`.
+  var text: String
+  /// Set by the parser when the source was over the ceiling and was cut.
+  ///
+  /// A clamped document renders as PLAIN TEXT with a marker rather than as
+  /// markdown, on every client: the cut lands wherever the ceiling falls, which
+  /// is regularly inside a fence or a link, so the markdown of a truncated
+  /// document is not the document's markdown.
+  var truncated = false
 }
 
 struct PluginVocabBadge: Equatable {
@@ -222,8 +295,16 @@ struct PluginVocabListItemAction: Equatable, Identifiable {
 /// item the whole list is one node's worth of budget, so `maxListItems` becomes
 /// the real ceiling. Mirrors `VocabListItem` in `vocabularyNodes.ts`.
 struct PluginVocabListItem: Equatable, Identifiable {
-  var id: String { "\(title)|\(subtitle ?? "")|\(meta ?? "")|\(mono ?? "")" }
+  var id: String { "\(key ?? "")|\(title)|\(subtitle ?? "")|\(meta ?? "")|\(mono ?? "")" }
   var title: String
+  /// The row's identity, and the only thing a selection ever holds.
+  ///
+  /// A declared row writes it; a bound row inherits its collection row's own
+  /// primary key, so a plugin that already writes `{title, subtitle}` rows gets
+  /// selection for free. A row with no key cannot be ticked — it draws no
+  /// checkbox at all rather than one that would put an empty string in a batch,
+  /// because a title is not an identity and two issues can share one.
+  var key: String?
   var subtitle: String?
   var meta: String?
   var tone: PluginVocabTone = .neutral
@@ -239,10 +320,40 @@ struct PluginVocabListItem: Equatable, Identifiable {
   var overflow: [PluginVocabListItemAction] = []
 }
 
+/// What a `list` needs to carry a multi-row selection.
+///
+/// The vocabulary had no concept of one: a panel could press a row, and a
+/// reader who wanted eleven lanes pressed eleven rows. This is the smallest
+/// thing that fixes that — a state key to hold the ticks, and the verbs to offer
+/// once there are any.
+///
+/// `actions` reuses ``PluginVocabListItemAction`` exactly, so a bulk verb and a
+/// row verb are the same shape parsed by the same reader. `confirm` therefore
+/// works on a batch the way it works on a row, which matters more here — a
+/// mistake costs eleven lanes.
+///
+/// The selection reaches the plugin as `args.selection`, an array of row keys,
+/// injected by the HOST at dispatch and last, so a schema cannot name an
+/// argument that would replace it. It is the one array in an args object that is
+/// otherwise flat scalars, and it is not a hole in rule 3: the client did not
+/// compute it, the reader ticked it, and every key in it is one the plugin
+/// itself wrote. Mirrors `VocabSelectable` in `vocabularyNodes.ts`.
+struct PluginVocabSelectable: Equatable {
+  /// Panel-local key holding this list's ticks. Same shape as a `segmented` key.
+  var stateKey: String
+  /// The bar's buttons, up to ``PluginVocabLimits/maxBulkActions``.
+  var actions: [PluginVocabListItemAction]
+  /// Most rows ticked at once, already clamped to
+  /// ``PluginVocabLimits/maxSelectedRows``.
+  var max: Int
+}
+
 struct PluginVocabList: Equatable {
   var items: [PluginVocabListItem]?
   var bind: PluginVocabBinding?
   var emptyText: String?
+  /// Ticks on every keyed row, and a bulk bar once any of them is ticked.
+  var selectable: PluginVocabSelectable?
 }
 
 struct PluginVocabTableColumn: Equatable, Identifiable {
@@ -364,7 +475,9 @@ struct PluginVocabEmptyState: Equatable {
 /// the panel down with it.
 indirect enum PluginVocabNode: Equatable {
   case stack(PluginVocabStack)
+  case group(PluginVocabGroup)
   case text(PluginVocabText)
+  case markdown(PluginVocabMarkdown)
   case badge(PluginVocabBadge)
   case button(PluginVocabButton)
   case list(PluginVocabList)
@@ -385,7 +498,9 @@ indirect enum PluginVocabNode: Equatable {
   var componentName: String {
     switch self {
     case .stack: return "stack"
+    case .group: return "group"
     case .text: return "text"
+    case .markdown: return "markdown"
     case .badge: return "badge"
     case .button: return "button"
     case .list: return "list"
@@ -400,6 +515,23 @@ indirect enum PluginVocabNode: Equatable {
     case .segmented: return "segmented"
     case let .unknown(name): return name
     case let .invalid(name, _): return name
+    }
+  }
+
+  /// The children of a node that has any, and `[]` for one that does not.
+  ///
+  /// Every walk over a panel body goes through here — resolving bindings,
+  /// collecting state and selection declarations, rendering. Before `group`
+  /// there was one container and each of those walks tested for it by hand,
+  /// which made adding a second container several separate chances to forget
+  /// one: a `segmented` inside an unwalked container would declare no state
+  /// key, and a `list` inside one would bind a collection nobody fetched. Now a
+  /// container is added here, once. Mirrors `vocabChildNodes`.
+  var childNodes: [PluginVocabNode] {
+    switch self {
+    case let .stack(stack): return stack.children
+    case let .group(group): return group.children
+    default: return []
     }
   }
 }
