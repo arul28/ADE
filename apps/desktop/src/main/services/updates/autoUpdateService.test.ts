@@ -2,7 +2,7 @@ import { EventEmitter } from "node:events";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi, type Mock } from "vitest";
 import { createAutoUpdateService } from "./autoUpdateService";
 import {
   buildGithubReleaseUrl,
@@ -74,6 +74,80 @@ function plentyOfDisk(): { availableBytes: number; volumePath: string } {
     availableBytes: 20 * 1024 * 1024 * 1024,
     volumePath: "/System/Volumes/Data",
   };
+}
+
+// The release the supersede tests answer the feed with. Every one of them
+// needs the same shape, and a drifting `files` entry would silently change
+// which preflight the download runs through.
+const NEWER_UPDATE = {
+  version: "1.2.63",
+  files: [{ url: "ADE-1.2.63-mac.zip", size: 100 * 1024 * 1024, sha512: "new" }],
+};
+
+function newerUpdateArchivePath(updaterCacheDir: string): string {
+  return path.join(updaterCacheDir, "pending", "ADE-1.2.63-universal-mac.zip");
+}
+
+// electron-updater emits `update-downloaded` from inside downloadUpdate(), so
+// the fake writes the archive and emits before it resolves. A mock that only
+// resolves cannot see the supersede path at all.
+function downloadsNewerUpdate(
+  updater: FakeAutoUpdater,
+  updaterCacheDir: string,
+): () => Promise<void> {
+  const archivePath = newerUpdateArchivePath(updaterCacheDir);
+  return async () => {
+    fs.mkdirSync(path.dirname(archivePath), { recursive: true });
+    fs.writeFileSync(archivePath, "newer update", "utf8");
+    updater.emit("update-downloaded", { ...NEWER_UPDATE, downloadedFile: archivePath });
+  };
+}
+
+type StagedReadyUpdate = {
+  service: ReturnType<typeof createAutoUpdateService>;
+  updater: FakeAutoUpdater & { downloadUpdate: Mock<[], Promise<unknown>> };
+  logger: Logger;
+  updaterCacheDir: string;
+};
+
+/**
+ * Builds a service that already has 1.2.61 downloaded and waiting for a
+ * restart, which is the starting state of every "check while staged" test.
+ * `downloadUpdate` defaults to a fake that downloads nothing; pass
+ * `downloadsNewerUpdate` to cover the supersede path.
+ */
+function stageReadyUpdate(
+  overrides: Partial<Parameters<typeof createAutoUpdateService>[0]> & {
+    downloadUpdate?: (
+      updater: FakeAutoUpdater,
+      updaterCacheDir: string,
+    ) => () => Promise<void>;
+  } = {},
+): StagedReadyUpdate {
+  const { downloadUpdate, ...serviceOverrides } = overrides;
+  const updaterCacheDir = makeUpdaterCacheDir();
+  const logger = makeLogger();
+  const updater = new FakeAutoUpdater() as StagedReadyUpdate["updater"];
+  updater.downloadUpdate = vi.fn<[], Promise<unknown>>(
+    downloadUpdate?.(updater, updaterCacheDir) ?? (async () => undefined),
+  );
+  const service = createAutoUpdateService({
+    logger,
+    currentVersion: "1.2.60",
+    globalStatePath: makeStatePath(),
+    updaterCacheDir,
+    getDiskSpace: plentyOfDisk,
+    autoCheckEnabled: false,
+    autoApplyEnabled: false,
+    updater,
+    ...serviceOverrides,
+  });
+
+  updater.emit("update-available", { version: "1.2.61" });
+  updater.emit("update-downloaded", { version: "1.2.61" });
+  expect(service.getSnapshot()).toMatchObject({ status: "ready", version: "1.2.61" });
+
+  return { service, updater, logger, updaterCacheDir };
 }
 
 function readState(globalStatePath: string): Record<string, unknown> {
@@ -468,80 +542,242 @@ describe("createAutoUpdateService", () => {
     service.dispose();
   });
 
-  it("still checks when an update is already staged, but only when the user asked", async () => {
-    // The Settings button was a silent no-op in exactly this state: an update
-    // downloaded and waiting for a restart. The automatic timers must keep
-    // standing down so they cannot disturb the staged download.
-    const updater = new FakeAutoUpdater();
-    const service = createAutoUpdateService({
-      logger: makeLogger(),
-      currentVersion: "1.2.60",
-      globalStatePath: makeStatePath(),
+  // A staged update used to block discovery of every later release until the
+  // app was relaunched: the automatic checks returned early while `ready`, and
+  // a manual check recorded the newer version as metadata only. The pill kept
+  // offering the older release for hours. Every check now behaves the same way.
+  it("ignores a same-version feed answer on the periodic check while an update is staged", async () => {
+    vi.useFakeTimers();
+    const { service, updater, logger, updaterCacheDir } = stageReadyUpdate({
       startupDelayMs: 60_000,
-      periodicCheckMs: 60_000,
-      now: () => "2026-08-19T21:00:00.000Z",
-      updater,
+      periodicCheckMs: 1_000,
+      autoCheckEnabled: true,
     });
 
-    updater.emit("update-available", { version: "1.2.61" });
-    updater.emit("update-downloaded", { version: "1.2.61" });
-    expect(service.getSnapshot()).toMatchObject({ status: "ready", version: "1.2.61" });
-
-    updater.checkForUpdates.mockClear();
-    service.checkForUpdates();
-    // Flush the microtask queue rather than waitFor: a `not.toHaveBeenCalled`
-    // inside waitFor passes on its first tick and would assert nothing.
-    await Promise.resolve();
-    await Promise.resolve();
-    expect(updater.checkForUpdates).not.toHaveBeenCalled();
-
-    // electron-updater emits these BEFORE checkForUpdates() resolves. A mock
-    // that only resolves cannot see the bug this test exists for: the
-    // update-available handler is what supersedes the staged update, deletes
-    // the finished download, and frees the resolve path to start a new one.
-    const downloadUpdate = vi.fn(async () => null);
-    (updater as unknown as { downloadUpdate: unknown }).downloadUpdate = downloadUpdate;
-    updater.checkForUpdates.mockImplementation(async () => {
+    updater.checkForUpdates.mockImplementationOnce(async () => {
       updater.emit("checking-for-update");
-      updater.emit("update-available", { version: "1.2.63" });
-      return { updateInfo: { version: "1.2.63" } };
+      updater.emit("update-available", { version: "1.2.61" });
+      return { updateInfo: { version: "1.2.61" } };
     });
-    service.checkForUpdates({ userInitiated: true });
 
+    await vi.advanceTimersByTimeAsync(1_000);
+    await vi.waitFor(() => expect(updater.checkForUpdates).toHaveBeenCalled());
+
+    expect(service.getSnapshot()).toMatchObject({
+      status: "ready",
+      version: "1.2.61",
+      latestKnownVersion: "1.2.61",
+    });
+    expect(updater.downloadUpdate).not.toHaveBeenCalled();
+    expect(fs.readdirSync(updaterCacheDir).sort()).toEqual(["pending", "update.zip"]);
+    expect(logger.info).not.toHaveBeenCalledWith(
+      "autoUpdate.cache_cleaned",
+      expect.objectContaining({ reason: "superseded_ready_update" }),
+    );
+    expect(logger.info).toHaveBeenCalledWith(
+      "autoUpdate.update_available_ignored",
+      expect.objectContaining({ version: "1.2.61", reason: "same_ready_version" }),
+    );
+
+    service.dispose();
+  });
+
+  it("supersedes a staged update with a newer release found by the periodic check", async () => {
+    vi.useFakeTimers();
+    const { service, updater, logger, updaterCacheDir } = stageReadyUpdate({
+      startupDelayMs: 60_000,
+      periodicCheckMs: 1_000,
+      autoCheckEnabled: true,
+      downloadUpdate: downloadsNewerUpdate,
+    });
+
+    updater.checkForUpdates.mockImplementationOnce(async () => {
+      updater.emit("checking-for-update");
+      updater.emit("update-available", NEWER_UPDATE);
+      return { updateInfo: NEWER_UPDATE };
+    });
+
+    await vi.advanceTimersByTimeAsync(1_000);
     await vi.waitFor(() => {
-      expect(updater.checkForUpdates).toHaveBeenCalledTimes(1);
-      // The newest version is reported, and the staged 1.2.61 is left alone.
       expect(service.getSnapshot()).toMatchObject({
         status: "ready",
-        version: "1.2.61",
+        version: "1.2.63",
         latestKnownVersion: "1.2.63",
       });
     });
-    // Asking what the newest version is must not throw away the update the
-    // user already downloaded and is one restart away from installing.
-    expect(downloadUpdate).not.toHaveBeenCalled();
 
-    // Let the first check's promise chain settle: while `checkPromise` is
-    // still set, a second call is swallowed by the in-flight guard and would
-    // assert nothing.
-    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(updater.downloadUpdate).toHaveBeenCalledTimes(1);
+    expect(logger.info).toHaveBeenCalledWith(
+      "autoUpdate.cache_cleaned",
+      expect.objectContaining({ reason: "superseded_ready_update" }),
+    );
+    expect(fs.readFileSync(newerUpdateArchivePath(updaterCacheDir), "utf8")).toBe("newer update");
 
-    // ...and neither must a check that fails. A feed error here means "nothing
-    // new to tell you", not "discard the finished download".
-    updater.checkForUpdates.mockImplementation(async () => {
+    service.dispose();
+  });
+
+  it("supersedes a staged update with a newer release found by a user-initiated check", async () => {
+    const { service, updater, logger } = stageReadyUpdate({
+      downloadUpdate: downloadsNewerUpdate,
+    });
+
+    // electron-updater emits these BEFORE checkForUpdates() resolves, so the
+    // supersede happens in the update-available handler.
+    updater.checkForUpdates.mockImplementationOnce(async () => {
+      updater.emit("checking-for-update");
+      updater.emit("update-available", NEWER_UPDATE);
+      return { updateInfo: NEWER_UPDATE };
+    });
+
+    service.checkForUpdates({ userInitiated: true });
+
+    await vi.waitFor(() => {
+      expect(service.getSnapshot()).toMatchObject({
+        status: "ready",
+        version: "1.2.63",
+        latestKnownVersion: "1.2.63",
+      });
+    });
+    expect(updater.checkForUpdates).toHaveBeenCalledTimes(1);
+    expect(updater.downloadUpdate).toHaveBeenCalledTimes(1);
+    expect(logger.info).toHaveBeenCalledWith(
+      "autoUpdate.cache_cleaned",
+      expect.objectContaining({ reason: "superseded_ready_update" }),
+    );
+
+    service.dispose();
+  });
+
+  it("leaves a staged update untouched when the check itself fails", async () => {
+    const { service, updater, logger, updaterCacheDir } = stageReadyUpdate();
+
+    // A feed error means "nothing new to report", not "discard the finished
+    // download". electron-updater emits `error` and rejects, so cover both.
+    updater.checkForUpdates.mockImplementationOnce(async () => {
       updater.emit("checking-for-update");
       updater.emit("error", new Error("net::ERR_INTERNET_DISCONNECTED"));
       throw new Error("net::ERR_INTERNET_DISCONNECTED");
     });
-    service.checkForUpdates({ userInitiated: true });
 
-    await vi.waitFor(() => expect(updater.checkForUpdates).toHaveBeenCalledTimes(2));
+    service.checkForUpdates();
+
+    await vi.waitFor(() => expect(updater.checkForUpdates).toHaveBeenCalledTimes(1));
     expect(service.getSnapshot()).toMatchObject({
       status: "ready",
       version: "1.2.61",
-      latestKnownVersion: "1.2.63",
+      latestKnownVersion: "1.2.61",
+      error: null,
+      errorDetails: null,
     });
-    expect(downloadUpdate).not.toHaveBeenCalled();
+    expect(updater.downloadUpdate).not.toHaveBeenCalled();
+    expect(fs.readdirSync(updaterCacheDir).sort()).toEqual(["pending", "update.zip"]);
+    expect(logger.info).not.toHaveBeenCalledWith(
+      "autoUpdate.cache_cleaned",
+      expect.anything(),
+    );
+    expect(logger.warn).toHaveBeenCalledWith(
+      "autoUpdate.ready_check_failed",
+      expect.objectContaining({ readyVersion: "1.2.61" }),
+    );
+
+    service.dispose();
+  });
+
+  it("refuses to check the feed while a quit-and-install transaction is running", async () => {
+    // The snapshot stays `ready` for the whole transaction, across the
+    // `beforeQuitAndInstall` service uninstall, and only flips to `installing`
+    // afterwards. A check started in that window would let a strictly newer
+    // feed answer supersede and delete the archive the install is one call away
+    // from handing to Squirrel/NSIS.
+    let releasePrepare!: () => void;
+    let signalPrepareStarted!: () => void;
+    const prepareStarted = new Promise<void>((resolve) => {
+      signalPrepareStarted = resolve;
+    });
+    const { service, updater, logger, updaterCacheDir } = stageReadyUpdate({
+      downloadUpdate: downloadsNewerUpdate,
+      beforeQuitAndInstall: () => {
+        signalPrepareStarted();
+        return new Promise<void>((resolve) => {
+          releasePrepare = resolve;
+        });
+      },
+    });
+    const cacheBefore = fs.readdirSync(updaterCacheDir).sort();
+
+    const installPromise = service.quitAndInstall();
+    await prepareStarted;
+
+    // The pre-install refresh already ran and finished; only the guard can
+    // stand between the next check and the staged archive now.
+    updater.checkForUpdates.mockClear();
+    updater.checkForUpdates.mockImplementation(async () => {
+      updater.emit("checking-for-update");
+      updater.emit("update-available", NEWER_UPDATE);
+      return { updateInfo: NEWER_UPDATE };
+    });
+
+    service.checkForUpdates();
+    service.checkForUpdates({ userInitiated: true });
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(updater.checkForUpdates).not.toHaveBeenCalled();
+    expect(updater.downloadUpdate).not.toHaveBeenCalled();
+    expect(fs.readdirSync(updaterCacheDir).sort()).toEqual(cacheBefore);
+    expect(fs.existsSync(newerUpdateArchivePath(updaterCacheDir))).toBe(false);
+    expect(logger.info).not.toHaveBeenCalledWith(
+      "autoUpdate.cache_cleaned",
+      expect.objectContaining({ reason: "superseded_ready_update" }),
+    );
+    expect(service.getSnapshot()).toMatchObject({ status: "ready", version: "1.2.61" });
+
+    releasePrepare();
+    await expect(installPromise).resolves.toBe(true);
+    expect(service.getSnapshot()).toMatchObject({ status: "installing", version: "1.2.61" });
+    expect(updater.quitAndInstall).toHaveBeenCalledWith(false, true);
+
+    service.dispose();
+  });
+
+  it("aborts the install when the check it piggybacks on fails", async () => {
+    // The pre-install refresh reuses an in-flight periodic check instead of
+    // starting its own. The failure guards must test the refresh first, or the
+    // feed error is swallowed as "nothing new" and the install proceeds on a
+    // version it never managed to verify.
+    const { service, updater, logger, updaterCacheDir } = stageReadyUpdate({
+      downloadUpdate: downloadsNewerUpdate,
+    });
+    const cacheBefore = fs.readdirSync(updaterCacheDir).sort();
+
+    let rejectFeed!: (error: Error) => void;
+    updater.checkForUpdates.mockImplementationOnce(() => {
+      updater.emit("checking-for-update");
+      return new Promise((_resolve, reject) => {
+        rejectFeed = reject;
+      });
+    });
+
+    service.checkForUpdates();
+    await vi.waitFor(() => expect(updater.checkForUpdates).toHaveBeenCalledTimes(1));
+    const installPromise = service.quitAndInstall();
+
+    const feedError = new Error("net::ERR_INTERNET_DISCONNECTED");
+    updater.emit("error", feedError);
+    rejectFeed(feedError);
+
+    await expect(installPromise).resolves.toBe(false);
+    expect(updater.quitAndInstall).not.toHaveBeenCalled();
+    expect(service.getSnapshot()).toMatchObject({
+      status: "ready",
+      version: "1.2.61",
+      parked: { reason: "refresh_failed" },
+    });
+    expect(fs.readdirSync(updaterCacheDir).sort()).toEqual(cacheBefore);
+    expect(logger.warn).toHaveBeenCalledWith(
+      "autoUpdate.refresh_ready_before_install_failed",
+      expect.objectContaining({ version: "1.2.61" }),
+    );
 
     service.dispose();
   });
