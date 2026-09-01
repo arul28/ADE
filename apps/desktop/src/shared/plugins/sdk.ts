@@ -629,11 +629,71 @@ export function isPluginEventName(value: unknown): value is PluginEventName {
     || isPluginChatRuntimeEventName(value);
 }
 
+/**
+ * A pull request's lifecycle position, as a change event reports it.
+ *
+ * Two fields rather than one because `state` is the provider's vocabulary and
+ * `merged` is the question every consumer actually asks. A plugin that only
+ * wants "did this just merge" compares `from.merged` with `to.merged` and never
+ * has to know which spelling of `closed` a merge leaves behind.
+ */
+export type PluginPrEventState = {
+  /** `open`, `merged`, `closed`, `draft` — whatever the PR carries. */
+  state: string;
+  merged: boolean;
+};
+
+/**
+ * What one entity actually did, when the producer knew.
+ *
+ * ## The gap this closes
+ *
+ * A change event is a coalesced hint: ids and no history. So "the PR just
+ * merged" — the trigger behind every PR→Done rule — could only be recovered by
+ * reading each named PR back and comparing it against whatever the plugin last
+ * remembered. That re-read is racy in both directions: a PR merged and reverted
+ * inside one coalesce window reads as never-merged, and a plugin that lost its
+ * memory (a restart, a reinstall) treats every open PR as newly transitioned.
+ *
+ * The producer already holds the previous state — it is the same value ADE's
+ * own merge handling reads — so it says so, and nobody has to re-derive it.
+ *
+ * ## What it is not
+ *
+ * Not a ledger and not a guarantee. It is ABSENT whenever the producer had no
+ * previous state to compare against, and absent for a delivery whose `ids`
+ * overflowed the cap, because a partial transition list next to a truncated id
+ * list is the one shape a reader could mistake for complete. Both cases mean
+ * the same thing: fall back to reading the entities named in `ids`.
+ */
+export type PluginPrTransition = {
+  /** The PR id, which also appears in the payload's `ids`. */
+  id: string;
+  /** Where it was when the producer last looked. */
+  from: PluginPrEventState;
+  /** Where it is now. */
+  to: PluginPrEventState;
+};
+
 export type PluginEventPayload = {
   event: PluginChangeEventName;
   /** Entity ids that changed since the last delivery, capped and deduped. */
   ids: string[];
   projectId: string | null;
+  /**
+   * What some of those ids DID, when the producer knew — see
+   * {@link PluginPrTransition}. Only `pr.changed` carries it today.
+   *
+   * Additive and always optional, so a plugin compiled against the older
+   * payload keeps working and a plugin written for this one still has to handle
+   * its absence. Never present alongside `overflow`, and never longer than
+   * `ids`: a transition is only ever reported for an id the payload also names.
+   *
+   * Coalescing keeps the FIRST-seen `from` and the latest `to`, so a PR that
+   * moved twice inside one window reports the whole journey rather than only
+   * its last step.
+   */
+  transitions?: PluginPrTransition[];
   /**
    * `ids` was truncated at the delivery cap. Absent, never `false`, when it
    * was not — additive so a plugin compiled against the two-field payload
@@ -643,6 +703,9 @@ export type PluginEventPayload = {
    * than the cap carries, so the honest read is "the install set moved,
    * treat this the same as `install.changed` with no ids at all" — re-read
    * the roster (`plugin.list`) rather than acting only on the ids present.
+   *
+   * `transitions` is dropped whenever this is set, for the same reason: a
+   * transition list that covered only the ids that fitted would look complete.
    */
   overflow?: true;
 };
@@ -1122,6 +1185,74 @@ export const PLUGIN_LANE_SUMMARY_FIELDS = [
   "issueLinks",
 ] as const satisfies readonly (keyof PluginLaneSummary)[];
 
+/**
+ * The issue-link fields a plugin may see, as a list rather than as a set of
+ * exclusions — the same rule {@link PLUGIN_LANE_SUMMARY_FIELDS} follows, and
+ * for the same reason: a field added to `IssueLink` later must not reach a
+ * plugin because nobody remembered to delete it here.
+ *
+ * `IssueLink` carries no path and no device marker today. The projection is
+ * therefore a no-op on every field it copies, and that is the point: it is the
+ * guard that stays correct on the day one is added.
+ */
+export const PLUGIN_ISSUE_LINK_FIELDS = [
+  "id",
+  "laneId",
+  "sessionId",
+  "issue",
+  "role",
+  "source",
+  "includeInPr",
+  "closeOnMerge",
+  "evidence",
+  "createdAt",
+  "updatedAt",
+] as const satisfies readonly (keyof IssueLink)[];
+
+/** Project one issue link down to what a plugin may see. */
+export function toPluginIssueLink(link: IssueLink): IssueLink {
+  return {
+    id: link.id,
+    laneId: link.laneId,
+    sessionId: link.sessionId,
+    issue: link.issue,
+    role: link.role,
+    source: link.source,
+    includeInPr: link.includeInPr,
+    closeOnMerge: link.closeOnMerge,
+    evidence: link.evidence ?? null,
+    createdAt: link.createdAt,
+    updatedAt: link.updatedAt,
+  };
+}
+
+/**
+ * Every issue linked to ONE chat or CLI session inside a lane.
+ *
+ * ## Why this is not already in `PluginLaneSummary`
+ *
+ * A lane summary carries `primaryIssue` and `issueLinks`, and both are
+ * LANE-scoped. An issue a person attached to a single chat inside the lane
+ * lives in a different table and appears in neither — so a plugin reproducing
+ * ADE's "the merged PR moves its issues to Done" rule off a lane summary alone
+ * silently skips exactly those issues. Core does not skip them: it unions the
+ * lane's links with `listLinearIssuesForLaneSessions`, and this verb is that
+ * second half, made generic.
+ *
+ * ## Why the links and not bare refs
+ *
+ * `closeOnMerge` is the flag core filters session links on, and it lives on the
+ * LINK rather than on the ref. A shape carrying only `IssueRef`s would let a
+ * plugin see the issues and not the rule, so every reproduction of core's
+ * behaviour would move issues the user asked it to leave alone.
+ */
+export type PluginSessionIssues = {
+  /** The chat or CLI session the links hang off. */
+  sessionId: string;
+  /** Its links, across every tracker, projected by {@link toPluginIssueLink}. */
+  issueLinks: IssueLink[];
+};
+
 /** Project a lane down to what a plugin may see. See {@link PluginLaneSummary}. */
 export function toPluginLaneSummary(lane: LaneSummary): PluginLaneSummary {
   return {
@@ -1139,7 +1270,9 @@ export function toPluginLaneSummary(lane: LaneSummary): PluginLaneSummary {
     createdAt: lane.createdAt,
     archivedAt: lane.archivedAt ?? null,
     primaryIssue: lane.primaryIssue ?? null,
-    issueLinks: lane.issueLinks ?? [],
+    // Projected rather than passed through, so the lane surface has ONE rule
+    // about what an issue link may carry rather than one per verb.
+    issueLinks: (lane.issueLinks ?? []).map(toPluginIssueLink),
   };
 }
 
@@ -1339,6 +1472,47 @@ export type AdePluginSdk = {
      * ordinary sign-in flow is still there.
      */
     requestHandoff(builtin: string): Promise<PluginCredentialHandoffResult>;
+
+    /**
+     * Borrow ADE's OWN registered OAuth client id for a provider ADE bundles
+     * one for.
+     *
+     * ## The gap this closes
+     *
+     * `requestHandoff` moves an EXISTING connection, so it does nothing for a
+     * fresh install and nothing for a user who declined. Before this verb, a
+     * plugin superseding a compiled integration had no way to obtain the
+     * `client_id` that identifies ADE to the provider, so on a clean machine
+     * the only reachable path was a pasted API key — an OAuth button that
+     * could not build an authorize URL the provider would accept.
+     *
+     * ## Why lending the id is safe, and lending a secret would not be
+     *
+     * The id is public: it is a query parameter of every authorize URL ADE has
+     * ever opened. The SECRET is ADE's identity to the provider, and a plugin
+     * holding it could mint tokens in ADE's name on every machine it is
+     * installed on. This verb NEVER returns one — {@link
+     * PluginOfficialOAuthClient} has no field for it — and the host asserts
+     * that before it answers.
+     *
+     * ## Who may ask
+     *
+     * The honoured owner of the built-in surface ADE bundles the credential
+     * for, and nobody else. `ade-linear` owns the `linear` surface, so it may
+     * borrow the Linear client id; `ade-graph` asking for it is
+     * `not_permitted`, exactly as `requestHandoff` is. Ownership comes from the
+     * host's own table and never from anything the plugin says about itself.
+     *
+     * A community plugin does not use this at all. It registers its own OAuth
+     * app with the provider and puts that app's public client id in its
+     * manifest ({@link PluginManifestAuthSession.clientId}), which is the
+     * supported way to ship a sign-in nobody has to configure by hand.
+     *
+     * Rejects with `not_permitted` for a non-owner and for a provider ADE
+     * bundles no client for — one code, because both mean "this plugin cannot
+     * have this" and neither is fixed by retrying.
+     */
+    officialClient(provider: string): Promise<PluginOfficialOAuthClient>;
   };
 
   contributions: {
@@ -1622,6 +1796,20 @@ export type AdePluginSdk = {
     /** Every open lane in the project this plugin is bound to. */
     list(): Promise<PluginLaneSummary[]>;
     get(laneId: string): Promise<PluginLaneSummary | null>;
+    /**
+     * The issues linked to the SESSIONS inside one lane, grouped by session.
+     *
+     * The half of the picture a lane summary cannot carry — see
+     * {@link PluginSessionIssues}. A lane with no session links answers an
+     * empty array, and a lane this project does not have answers an empty array
+     * too: "no session in that lane has a linked issue" is the same fact either
+     * way, and a plugin acting on a merged PR should not have to tell them
+     * apart.
+     *
+     * Union it with the lane's own `primaryIssue` and `issueLinks` — deduped by
+     * `provider:issueId` — to see exactly what ADE's own PR→Done rule sees.
+     */
+    listSessionIssues(laneId: string): Promise<PluginSessionIssues[]>;
     /**
      * Link an issue to a lane or to a chat/CLI session.
      *
@@ -2522,6 +2710,47 @@ export type PluginCredentialHandoffStatus =
   /** ADE holds no credential for that surface, so there is nothing to offer. */
   | "empty";
 
+/**
+ * ADE's OWN registered OAuth application for one provider, as a plugin sees it.
+ *
+ * Three fields and no fourth. There is deliberately no `clientSecret` slot in
+ * this type, so a host that somehow resolved one has nowhere to put it: the
+ * absence is structural rather than a rule somebody has to remember. See
+ * {@link AdePluginSdk.auth}`.officialClient` for who may ask and why the id
+ * alone is safe to give.
+ */
+export type PluginOfficialOAuthClient = {
+  /** Echoed back lowercased, so a plugin can key a cache on the answer. */
+  provider: string;
+  /**
+   * The public `client_id` of the app ADE registered with this provider.
+   *
+   * Public in the literal sense: it is a query parameter of every authorize URL
+   * ADE has ever put in front of a user, so it is already readable by anyone
+   * who has signed in once.
+   */
+  clientId: string;
+  /**
+   * Where this client's authorize endpoint lives, when ADE knows it.
+   *
+   * A convenience and never a requirement: the plugin's own manifest declares
+   * the `authorizeUrl` the host actually sends the browser to, and this field
+   * is here so a plugin can check that the two agree rather than discovering a
+   * mismatch as a provider error page.
+   */
+  authorizeUrl?: string;
+  /**
+   * The scopes ADE's own integration asks for, when the app's registration
+   * depends on them.
+   *
+   * Linear's is the case that forced this: an ADE-app authorization only
+   * delivers data-change webhooks when it carries `admin`, so a plugin that
+   * inherited the client id and then asked for a narrower grant would get a
+   * connection whose webhooks silently never fire.
+   */
+  scopes?: string[];
+};
+
 export type PluginCredentialHandoffResult = {
   builtin: string;
   status: PluginCredentialHandoffStatus;
@@ -2952,6 +3181,7 @@ export type PluginSdkMethod =
   | "auth.beginSession"
   | "auth.cancelSession"
   | "auth.requestHandoff"
+  | "auth.officialClient"
   | "contributions.publish"
   | "panels.update"
   | "config.get"
@@ -2973,6 +3203,7 @@ export type PluginSdkMethod =
   | "chat.hydrate"
   | "lanes.list"
   | "lanes.get"
+  | "lanes.listSessionIssues"
   | "lanes.linkIssue"
   | "lanes.unlinkIssue"
   | "clipboard.read"

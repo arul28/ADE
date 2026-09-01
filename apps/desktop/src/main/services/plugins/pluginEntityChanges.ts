@@ -28,11 +28,12 @@
  *    inside a write path a user is waiting on — a lane rebase, a PR poll, the
  *    end of a turn. {@link emitPluginEntityChange} returns void, swallows every
  *    listener failure, and does no I/O.
- * 2. **Identity, never content.** An emission carries entity ids and the
- *    checkout they happened in. No titles, no branch names, no diff, no message
- *    text. The event means "this family moved, re-read it" and a plugin that
- *    wants detail asks for it through the ordinary read actions, under the
- *    ordinary gates.
+ * 2. **Identity and lifecycle position, never content.** An emission carries
+ *    entity ids, the checkout they happened in, and — where the producer knows
+ *    it — where each id moved FROM and TO. No titles, no branch names, no diff,
+ *    no message text. The event means "this family moved, re-read it" and a
+ *    plugin that wants detail asks for it through the ordinary read actions,
+ *    under the ordinary gates.
  * 3. **`projectRoot`, not a project id.** A lane service knows which checkout it
  *    serves and does not know the id the plugin host binds that checkout under.
  *    The host holds the bindings, so it does the translation on the way out —
@@ -43,6 +44,8 @@
  * bus's: `install.changed` already has all three, and a second implementation
  * of the same debounce would be a second set of numbers to keep in step.
  */
+
+import type { PluginPrTransition } from "../../../shared/plugins/sdk";
 
 /** The three entity families the SDK's change events name. */
 export type PluginEntityChangeFamily = "lane" | "pr" | "session";
@@ -58,6 +61,21 @@ export type PluginEntityChangeEmission = {
   ids: readonly string[];
   /** Absolute checkout it happened in. The host maps it to a project id. */
   projectRoot: string | null;
+  /**
+   * What some of those ids DID, for the producers that know.
+   *
+   * The ONE narrowing of invariant 2 above, and it is narrow on purpose: a
+   * transition carries lifecycle position and nothing else — no title, no
+   * branch, no author, no body. It is here because "this pull request just
+   * merged" is a fact only the producer holds (it is comparing against the
+   * previous poll) and one every consumer would otherwise re-derive by reading
+   * each PR back, racily and once per plugin.
+   *
+   * Optional, and a producer with no previous state to compare against must
+   * omit it rather than inventing a `from`. Every id named here must also
+   * appear in `ids`; the host does not add ids from this list.
+   */
+  transitions?: readonly PluginPrTransition[];
 };
 
 const listeners = new Set<(emission: PluginEntityChangeEmission) => void>();
@@ -86,6 +104,41 @@ export function emitPluginEntityChange(emission: PluginEntityChangeEmission): vo
       // A broken subscriber loses its notification, not the caller's write.
     }
   }
+}
+
+/**
+ * Turn one PR poll's changes into the transitions a `pr.changed` should carry.
+ *
+ * Pure, and exported so the mapping is testable without an Electron main
+ * process: the call site is one arrow inside `main.ts`'s
+ * `onPullRequestsChanged`, which is where the previous state and the project
+ * root meet and nowhere a test can reach.
+ *
+ * A change whose `previousState` the poller never saw is DROPPED rather than
+ * reported with its current state as the `from`. The first tick after a
+ * restart, and the tick that discovers a PR, both have no history — and a
+ * transition reading `merged → merged` would say "it did not move" and suppress
+ * exactly the merge a plugin is waiting for.
+ */
+export function prTransitionsFromChanges(
+  changes: readonly {
+    pr: { id: string; state: string };
+    previousState: string | null;
+  }[],
+): PluginPrTransition[] {
+  const transitions: PluginPrTransition[] = [];
+  for (const change of changes) {
+    const previousState = change.previousState;
+    if (previousState === null || previousState === undefined) continue;
+    const id = change.pr.id?.trim();
+    if (!id) continue;
+    transitions.push({
+      id,
+      from: { state: previousState, merged: previousState === "merged" },
+      to: { state: change.pr.state, merged: change.pr.state === "merged" },
+    });
+  }
+  return transitions;
 }
 
 /** Subscribe; call the returned function to detach (the host does, on dispose). */

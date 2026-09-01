@@ -824,3 +824,97 @@ describe("the launch panel", () => {
     assert.ok(schemaBytes(panel) <= LIMITS.maxSchemaBytes);
   });
 });
+
+/* ── The OAuth client the sign-in uses ──────────────────────────────────── */
+
+describe("which Linear app the connection is made with", () => {
+  function warnings(panel) {
+    return everyNode(panel.body)
+      .filter((node) => node.tone === "warning" && typeof node.text === "string")
+      .map((node) => node.text)
+      .join(" ");
+  }
+
+  it("withholds a sign-in button that cannot run, and says why", () => {
+    // A build with no Linear OAuth client cannot start the flow. Drawing the
+    // button anyway opens an authorize URL Linear refuses, and the reader has
+    // no way to tell why — so the reason takes the button's place and the API
+    // key becomes the one path that works.
+    const reason = "This copy of ADE has no Linear OAuth client to sign in with. Paste a Linear API key instead.";
+    const panel = panels.buildSettingsPanel({ connection: { connected: false }, oauthBlockedReason: reason });
+
+    const actions = everyNode(panel.body)
+      .map((node) => node.action?.onPress?.action)
+      .filter(Boolean);
+    assert.ok(!actions.includes(contract.ACTIONS.connectOAuth), "drew a sign-in that cannot run");
+    assert.ok(warnings(panel).includes(reason));
+
+    // The API key path is untouched, because it is the one that still works.
+    const form = nodesOf(panel, "form").find((node) => node.submit?.onPress.action === contract.ACTIONS.connectApiKey);
+    assert.ok(form, "no API key form");
+  });
+
+  it("still offers the sign-in when this machine can run it", () => {
+    const panel = panels.buildSettingsPanel({ connection: { connected: false } });
+    const actions = everyNode(panel.body).map((node) => node.action?.onPress?.action).filter(Boolean);
+    assert.ok(actions.includes(contract.ACTIONS.connectOAuth));
+    assert.equal(warnings(panel), "");
+  });
+
+  it("warns that a custom Linear app will never receive a webhook", () => {
+    // Linear delivers data-change events only to an authorization carrying
+    // `admin`, and a custom client is narrowed to `read,write` on purpose — the
+    // app is the user's own. So the same button produces a connection that
+    // browses and writes normally and never receives an event. Without this,
+    // the reader pastes the URL into Linear, pastes the signing secret, reads
+    // "Signed deliveries only", and waits forever.
+    const panel = panels.buildSettingsPanel({
+      connection: { connected: true, clientSource: "custom", organizationName: "Acme" },
+      ingress: { status: "Endpoint ready", url: "https://relay.ade.dev/hook/abc", secretStored: true },
+    });
+    assert.ok(warnings(panel).includes("Linear will not deliver events to this connection"), warnings(panel));
+  });
+
+  it("says so before the reader spends ten minutes in Linear's settings", () => {
+    // The warning has to come BEFORE the URL and the secret field, because
+    // after them it is a post-mortem rather than a warning.
+    const panel = panels.buildSettingsPanel({
+      connection: { connected: true, clientSource: "custom", organizationName: "Acme" },
+      ingress: { status: "Endpoint ready", url: "https://relay.ade.dev/hook/abc", secretStored: false },
+    });
+    const body = everyNode(panel.body);
+    const warnAt = body.findIndex(
+      (node) => typeof node.text === "string" && node.text.includes("Linear will not deliver events"),
+    );
+    const secretAt = body.findIndex((node) => node.component === "form" && node.fields?.[0]?.id === "secret");
+    assert.ok(warnAt !== -1 && secretAt !== -1);
+    assert.ok(warnAt < secretAt, "the warning comes after the field it is about");
+  });
+
+  it("warns before sign-in too, so the choice is made knowingly", () => {
+    // The shape the data half actually sends when nobody is signed in:
+    // `connection` is NULL and `clientSource` rides at the top level, because
+    // which app this build signs in as is a fact about the BUILD, not about a
+    // credential that does not exist yet. Reading it only off `connection`
+    // would have silently dropped the warning in exactly the state where a
+    // reader can still act on it.
+    const panel = panels.buildSettingsPanel({ connection: null, clientSource: "custom" });
+    assert.ok(warnings(panel).includes("does not send webhooks to a connection made this way"), warnings(panel));
+  });
+
+  it("still finds it on the connection when that is the only copy", () => {
+    const panel = panels.buildSettingsPanel({ connection: { connected: false, clientSource: "custom" } });
+    assert.ok(warnings(panel).includes("does not send webhooks to a connection made this way"), warnings(panel));
+  });
+
+  it("says nothing at all when the connection uses ADE's own app", () => {
+    // The quiet case has to stay quiet: a warning a reader cannot act on, on
+    // the connection they were told to make, is noise that trains them to
+    // ignore the loud one.
+    const panel = panels.buildSettingsPanel({
+      connection: { connected: true, clientSource: "official", organizationName: "Acme" },
+      ingress: { status: "Endpoint ready", url: "https://relay.ade.dev/hook/abc", secretStored: true },
+    });
+    assert.equal(warnings(panel), "");
+  });
+});

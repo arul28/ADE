@@ -144,16 +144,31 @@ function connectedCard(connection = {}) {
  * name for exactly that.
  */
 function disconnectCard(input = {}) {
+  // A build with no Linear OAuth client cannot run the flow at all, and the
+  // data half sends the sentence saying so. Drawing the button anyway would be
+  // a button that opens an authorize URL Linear refuses, and a reader with no
+  // way to tell why — so the button is withheld and the reason takes its place,
+  // which leaves the API key as the one path that works.
+  const blocked = typeof input.oauthBlockedReason === "string" && input.oauthBlockedReason.trim()
+    ? input.oauthBlockedReason.trim()
+    : null;
+
   const body = [
     {
       component: "emptyState",
       title: COPY.connectTitle,
       description: COPY.connectBody,
       icon: "plug",
-      action: { label: COPY.connectAction, onPress: { action: ACTIONS.connectOAuth } },
+      ...(blocked ? {} : { action: { label: COPY.connectAction, onPress: { action: ACTIONS.connectOAuth } } }),
     },
-    { component: "text", variant: "caption", text: COPY.connectOauthBody },
   ];
+
+  if (blocked) {
+    body.push({ component: "text", variant: "caption", tone: "warning", text: prose(blocked) });
+  } else {
+    body.push({ component: "text", variant: "caption", text: COPY.connectOauthBody });
+    body.push(...clientSourceNote(input.clientSource));
+  }
 
   if (input.handoffStatus === "offered") {
     body.push({
@@ -196,6 +211,31 @@ function disconnectCard(input = {}) {
   });
 
   return body;
+}
+
+/**
+ * Which Linear app the sign-in presents itself as, when it is not ADE's own.
+ *
+ * Not cosmetic. Linear only delivers data-change webhooks to an authorization
+ * carrying the `admin` scope, and a CUSTOM client is deliberately narrowed to
+ * `read,write` — the app is the user's own and its webhooks are theirs to
+ * arrange. So the same "Sign in with Linear" button produces a connection that
+ * can browse and write issues but will never receive an event, and nothing else
+ * on this screen would tell them. Silence here is the failure: a webhook that
+ * never fires is indistinguishable from a workspace where nothing happened.
+ */
+function clientSourceNote(clientSource) {
+  if (clientSource !== "custom") return [];
+  return [
+    {
+      component: "text",
+      variant: "caption",
+      tone: "warning",
+      text: prose(
+        "This signs in through the Linear app registered on this machine, not ADE's. Issue browsing and writes work as normal, but Linear does not send webhooks to a connection made this way, so nothing below the Automations heading will fire.",
+      ),
+    },
+  ];
 }
 
 /**
@@ -337,6 +377,13 @@ function ingressBlock(input = {}) {
   const ingress = input.ingress;
   if (!ingress) return [];
 
+  // A custom OAuth client is narrowed to `read,write`, so Linear never sends a
+  // data-change event to this connection — the endpoint is reachable, the
+  // secret can be pasted, the strip would read "Signed deliveries only", and
+  // nothing would ever arrive. Said before the URL rather than after it,
+  // because the reader is about to spend ten minutes in Linear's settings.
+  const starved = input.clientSource === "custom";
+
   const rows = [{ key: "Webhook", value: value(ingress.status ?? "Not set up"), tone: ingress.tone ?? "neutral" }];
   if (ingress.lastEvent) rows.push({ key: "Last event", value: value(ingress.lastEvent) });
 
@@ -344,6 +391,17 @@ function ingressBlock(input = {}) {
     { component: "divider", label: "Automations" },
     { component: "keyValue", rows },
   ];
+
+  if (starved) {
+    block.push({
+      component: "text",
+      variant: "caption",
+      tone: "warning",
+      text: prose(
+        "Linear will not deliver events to this connection. It was made with the Linear app registered on this machine, which Linear does not grant webhooks to — setting up the URL and the signing secret below will not change that. Reconnect with ADE's own Linear app to receive events.",
+      ),
+    });
+  }
 
   if (ingress.url) {
     block.push({
@@ -486,6 +544,7 @@ module.exports = {
   SETTING_MOVE_ON_MERGE,
   autolinksBlock,
   buildSettingsPanel,
+  clientSourceNote,
   connectedCard,
   disconnectCard,
   ingressBlock,

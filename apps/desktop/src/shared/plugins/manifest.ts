@@ -1655,11 +1655,15 @@ function parseAuthSessions(raw: unknown, ctx: ParseContext): PluginManifestAuthS
     // a provider error page the plugin cannot see.
     let clientId: string | undefined;
     if (entry.clientId !== undefined && entry.clientId !== null) {
-      const parsed = singleLine(entry.clientId, PLUGIN_AUTH_CLIENT_ID_MAX);
-      if (!parsed) {
+      // NOT `singleLine`, which clips to the bound. A clipped client id is
+      // worse than no client id: it is a value the plugin would send and the
+      // provider would refuse, and the author would be debugging a rejected
+      // authorization rather than reading a manifest warning.
+      const parsed = trimmedString(entry.clientId);
+      if (!parsed || parsed.length > PLUGIN_AUTH_CLIENT_ID_MAX || /\s/u.test(parsed)) {
         return ctx.drop(
-          `${label}.clientId must be a single-line string of at most`
-            + ` ${PLUGIN_AUTH_CLIENT_ID_MAX} characters`,
+          `${label}.clientId must be a non-empty string of at most`
+            + ` ${PLUGIN_AUTH_CLIENT_ID_MAX} characters with no whitespace`,
         );
       }
       clientId = parsed;

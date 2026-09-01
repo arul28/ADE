@@ -908,6 +908,150 @@ describe("plugin start and panel materialization", () => {
       }
     });
 
+    it("carries a merge transition through to the child, from-state and all", async () => {
+      vi.useFakeTimers();
+      try {
+        const { supervisors, projectRoot } = await hostWithFixture();
+        const running = supervisors.latest("hello-plugin")!;
+        running.sent.length = 0;
+
+        emitPluginEntityChange({
+          family: "pr",
+          ids: ["pr-1"],
+          projectRoot,
+          transitions: [{
+            id: "pr-1",
+            from: { state: "open", merged: false },
+            to: { state: "merged", merged: true },
+          }],
+        });
+        vi.runOnlyPendingTimers();
+
+        const frame = running.sent.find(
+          (entry): entry is { type: "event"; payload: PluginEventPayload } =>
+            entry.type === "event" && entry.payload.event === "pr.changed",
+        );
+        expect(frame?.payload.transitions).toEqual([{
+          id: "pr-1",
+          from: { state: "open", merged: false },
+          to: { state: "merged", merged: true },
+        }]);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("keeps the FIRST-seen from-state when a PR moves twice inside one window", async () => {
+      vi.useFakeTimers();
+      try {
+        const { supervisors, projectRoot } = await hostWithFixture();
+        const running = supervisors.latest("hello-plugin")!;
+        running.sent.length = 0;
+
+        // draft → open → merged, coalesced. A reader must see the whole journey
+        // and not just its last step: taking the second emission's `from` would
+        // report `open → merged` and lose that the window began at `draft`.
+        emitPluginEntityChange({
+          family: "pr",
+          ids: ["pr-1"],
+          projectRoot,
+          transitions: [{
+            id: "pr-1",
+            from: { state: "draft", merged: false },
+            to: { state: "open", merged: false },
+          }],
+        });
+        emitPluginEntityChange({
+          family: "pr",
+          ids: ["pr-1"],
+          projectRoot,
+          transitions: [{
+            id: "pr-1",
+            from: { state: "open", merged: false },
+            to: { state: "merged", merged: true },
+          }],
+        });
+        vi.runOnlyPendingTimers();
+
+        const frame = running.sent.find(
+          (entry): entry is { type: "event"; payload: PluginEventPayload } =>
+            entry.type === "event" && entry.payload.event === "pr.changed",
+        );
+        expect(frame?.payload.transitions).toEqual([{
+          id: "pr-1",
+          from: { state: "draft", merged: false },
+          to: { state: "merged", merged: true },
+        }]);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("drops transitions on an overflowed delivery but keeps the capped ids", async () => {
+      vi.useFakeTimers();
+      try {
+        const { supervisors, projectRoot } = await hostWithFixture();
+        const running = supervisors.latest("hello-plugin")!;
+        running.sent.length = 0;
+
+        const ids = Array.from({ length: 55 }, (_, index) => `pr-${index}`);
+        emitPluginEntityChange({
+          family: "pr",
+          ids,
+          projectRoot,
+          transitions: ids.map((id) => ({
+            id,
+            from: { state: "open", merged: false },
+            to: { state: "merged", merged: true },
+          })),
+        });
+        vi.runOnlyPendingTimers();
+
+        const frame = running.sent.find(
+          (entry): entry is { type: "event"; payload: PluginEventPayload } =>
+            entry.type === "event" && entry.payload.event === "pr.changed",
+        );
+        expect(frame?.payload.ids).toHaveLength(50);
+        expect(frame?.payload.overflow).toBe(true);
+        // Absent, not truncated. A transition list covering only the ids that
+        // fitted reads as complete and would send a plugin acting on a subset
+        // while believing it had the set.
+        expect(frame?.payload.transitions).toBeUndefined();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("ignores a transition for an id the emission did not also name", async () => {
+      vi.useFakeTimers();
+      try {
+        const { supervisors, projectRoot } = await hostWithFixture();
+        const running = supervisors.latest("hello-plugin")!;
+        running.sent.length = 0;
+
+        emitPluginEntityChange({
+          family: "pr",
+          ids: ["pr-1"],
+          projectRoot,
+          transitions: [{
+            id: "pr-999",
+            from: { state: "open", merged: false },
+            to: { state: "merged", merged: true },
+          }],
+        });
+        vi.runOnlyPendingTimers();
+
+        const frame = running.sent.find(
+          (entry): entry is { type: "event"; payload: PluginEventPayload } =>
+            entry.type === "event" && entry.payload.event === "pr.changed",
+        );
+        expect(frame?.payload.ids).toEqual(["pr-1"]);
+        expect(frame?.payload.transitions).toBeUndefined();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
     it("carries a null projectId for a checkout no host has attached, rather than guessing", async () => {
       vi.useFakeTimers();
       try {

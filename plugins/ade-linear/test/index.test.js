@@ -175,6 +175,125 @@ describe("activate", () => {
   });
 });
 
+describe("the two facts a schema cannot compute for itself", () => {
+  it("pre-formats the token's remaining life, because a schema has no dates", () => {
+    const { expiry } = plugin.__internals;
+    const inDays = new Date(Date.now() + 6 * 86_400_000).toISOString();
+    assert.deepEqual(expiry(inDays), { expiresIn: "expires in 6 days", expired: false });
+
+    const inHours = new Date(Date.now() + 3 * 3_600_000).toISOString();
+    assert.deepEqual(expiry(inHours), { expiresIn: "expires in 3 hours", expired: false });
+
+    const past = new Date(Date.now() - 1_000).toISOString();
+    assert.deepEqual(expiry(past), { expiresIn: "expired", expired: true });
+  });
+
+  it("says nothing rather than 'never' for a credential that does not expire", () => {
+    // An API key has no expiry, and the Token row simply does not render.
+    const { expiry } = plugin.__internals;
+    assert.deepEqual(expiry(null), { expiresIn: null, expired: false });
+    assert.deepEqual(expiry("not a date"), { expiresIn: null, expired: false });
+  });
+
+  it("maps the handoff into the four words the settings card branches on", () => {
+    const { handoffLabel } = plugin.__internals;
+    assert.equal(handoffLabel({ canHandoff: true }), "offered");
+    assert.equal(handoffLabel({ handoffStatus: "accepted" }), "taken");
+    assert.equal(handoffLabel({ handoffStatus: "declined" }), "declined");
+    // `empty` is null, NOT "offered": there is nothing on this machine to
+    // adopt, and a button that copies nothing is worse than no button.
+    assert.equal(handoffLabel({ handoffStatus: "empty" }), null);
+    assert.equal(handoffLabel({}), null);
+  });
+});
+
+describe("republishing a panel that is ABOUT something", () => {
+  /**
+   * The panel half's host capability is `publish(panelId)` — one argument.
+   *
+   * So every republish it makes of the issue or launch panel arrives with
+   * nothing naming the issue. Before this was handled, a handler that wrote a
+   * comment and then redrew the panel blanked the issue it had just changed,
+   * and the launch form showed "that issue is not in this view" the moment it
+   * opened. Both are silent: the panel renders, it is just empty.
+   */
+  async function seeded() {
+    const built = await activated({
+      actions: { "chat.getAvailableModels": async () => [{ id: "codex/gpt", label: "GPT" }] },
+    });
+    return built;
+  }
+
+  it("draws the issue panel on a context-less republish, not an empty one", async () => {
+    const { sdk } = await seeded();
+    await plugin.__internals.publish("issue", { issueId: "a" });
+    // The panel half's redraw: a panel id and nothing else.
+    await plugin.__internals.publish("issue");
+    const schema = sdk.panels.get("issue");
+    // A blanked panel is the "could not be found" empty state.
+    assert.ok(schema);
+    assert.ok(!JSON.stringify(schema).includes("could not be found"));
+  });
+
+  it("prefers the client's own context over what it remembered", async () => {
+    const { sdk } = await seeded();
+    await plugin.__internals.publish("issue", { issueId: "a" });
+    await plugin.__internals.publish("issue", { issueId: "b" });
+    // Whatever the client says is on screen wins; the memory is only ever the
+    // fallback for the caller that structurally cannot say.
+    assert.ok(sdk.panels.get("issue"));
+  });
+
+  it("forgets the subject on deactivate, so a restart resumes nothing stale", async () => {
+    await seeded();
+    await plugin.__internals.publish("issue", { issueId: "a" });
+    await plugin.deactivate();
+    const { sdk } = await seeded();
+    await plugin.__internals.publish("issue");
+    assert.ok(sdk.panels.get("issue"));
+  });
+});
+
+describe("a connection Linear will never deliver webhooks to", () => {
+  /**
+   * Linear delivers data-change webhooks only to an authorization carrying
+   * `admin`, and only ADE's own registered app asks for it. So on a custom
+   * client the reader signs in, browses and writes issues normally, pastes the
+   * relay URL, pastes the signing secret — and never receives one event.
+   *
+   * A webhook that never fires is indistinguishable from a workspace where
+   * nothing happened, which is why every surface that reports on the ingress
+   * has to say this rather than only the settings panel.
+   */
+  it("is possible only on ADE's own app", () => {
+    const { webhooksReachable } = plugin.__internals;
+    assert.equal(webhooksReachable({ clientSource: "official" }), true);
+    assert.equal(webhooksReachable({ clientSource: "custom" }), false);
+    // An API key has no OAuth grant at all.
+    assert.equal(webhooksReachable({ clientSource: null }), false);
+    assert.equal(webhooksReachable({}), false);
+  });
+
+  it("the CLI says so rather than reporting a healthy green", async () => {
+    const built = await activated();
+    await built.sdk.secrets.set("LINEAR_OAUTH_CLIENT_ID", "somebody-elses-app");
+    const result = await plugin.actions.linear({ verb: "status" });
+    assert.equal(result.clientSource, "custom");
+    assert.equal(result.webhooksPossible, false);
+    assert.match(result.note, /will not fire/);
+  });
+
+  it("the CLI stays quiet about it on ADE's own app", async () => {
+    // A warning a reader cannot act on, about the connection they were told to
+    // make, is noise that trains them to ignore the real one.
+    await activated();
+    const result = await plugin.actions.linear({ verb: "status" });
+    assert.equal(result.clientSource, "official");
+    assert.equal(result.webhooksPossible, true);
+    assert.equal(result.note, undefined);
+  });
+});
+
 describe("the webhook channel, which now fails closed", () => {
   it("declares verify against the header the relay stores", () => {
     // The relay drops every header outside PLUGIN_WEBHOOK_STORED_HEADERS

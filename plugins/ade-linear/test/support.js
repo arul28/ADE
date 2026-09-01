@@ -158,6 +158,11 @@ function createSdk(overrides = {}) {
         calls.push(["lanes.get", laneId]);
         return (overrides.lanes ?? []).find((lane) => lane.id === laneId) ?? null;
       },
+      async listSessionIssues(laneId) {
+        calls.push(["lanes.listSessionIssues", laneId]);
+        if (overrides.listSessionIssuesThrows) throw overrides.listSessionIssuesThrows;
+        return (overrides.sessionIssues ?? {})[laneId] ?? [];
+      },
       async linkIssue(input) {
         calls.push(["lanes.linkIssue", input]);
         if (overrides.linkIssueThrows) throw new Error("link refused");
@@ -205,6 +210,25 @@ function createSdk(overrides = {}) {
       },
       async cancelSession(sessionId) {
         calls.push(["auth.cancelSession", sessionId]);
+      },
+      /**
+       * The official-client broker, refused for every plugin that does not own
+       * the built-in surface. `overrides.officialClient === null` models a host
+       * that lends nothing, which is an ordinary state and not a failure.
+       */
+      async officialClient(provider) {
+        calls.push(["auth.officialClient", provider]);
+        if (overrides.officialClientThrows) throw overrides.officialClientThrows;
+        if (overrides.officialClient === null) {
+          const error = new Error("no official client");
+          error.code = "not_permitted";
+          throw error;
+        }
+        return overrides.officialClient ?? {
+          provider,
+          clientId: "ade-official-client",
+          scopes: ["read", "write", "admin"],
+        };
       },
       async requestHandoff(builtin) {
         calls.push(["auth.requestHandoff", builtin]);

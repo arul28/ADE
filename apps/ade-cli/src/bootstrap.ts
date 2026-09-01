@@ -219,7 +219,11 @@ import {
   PLUGIN_CHANGED_EVENT_TYPE,
   subscribeToPluginChanges,
 } from "../../desktop/src/main/services/plugins/pluginEvents";
-import { emitPluginEntityChange } from "../../desktop/src/main/services/plugins/pluginEntityChanges";
+import {
+  emitPluginEntityChange,
+  hasPluginEntityChangeListeners,
+  prTransitionsFromChanges,
+} from "../../desktop/src/main/services/plugins/pluginEntityChanges";
 import { LANES_INVALIDATED_LANE_ID } from "../../desktop/src/shared/types/lanes";
 import { createPluginWebhookIngressService } from "../../desktop/src/main/services/plugins/pluginWebhookIngressService";
 import { createLaneWorktreeLockService, type LaneWorktreeLockService } from "../../desktop/src/main/services/lanes/laneWorktreeLockService";
@@ -2180,6 +2184,31 @@ export async function createAdeRuntime(args: {
           chat: agentChatService,
           logger,
         });
+        // `pr.changed`, WITH what each PR actually did.
+        //
+        // `emitPrEvent` above already emits the id-only hint for every PR
+        // event. This is the second half, and it can only be emitted here:
+        // `previousState` exists in this handler and nowhere else, and it is
+        // the same value ADE's own merge handling compares against. Without
+        // it a plugin reproducing the PR→Done rule has to read each named PR
+        // back — racy in both directions, because a PR merged and reverted
+        // inside one coalesce window reads as never-merged, and a plugin that
+        // lost its memory treats every open PR as newly transitioned.
+        //
+        // The host merges this into whatever `emitPrEvent` already queued for
+        // the same window, so the ids are not sent twice — they are one set.
+        //
+        // Guarded on `hasPluginEntityChangeListeners` so a brain with no
+        // plugin host attached pays one set-size read and builds nothing.
+        if (changes.length > 0 && hasPluginEntityChangeListeners()) {
+          const transitions = prTransitionsFromChanges(changes);
+          emitPluginEntityChange({
+            family: "pr",
+            ids: changes.map((change) => change.pr.id),
+            projectRoot,
+            ...(transitions.length > 0 ? { transitions } : {}),
+          });
+        }
       },
     });
     teardown.push(() => prPollingService.dispose());

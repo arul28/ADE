@@ -4717,6 +4717,49 @@ export function createLaneService({
      * before `IssueRef` existed project through the legacy fields, so this is
      * never emptier than the provider-specific readers beside it.
      */
+    /**
+     * Every SESSION-scoped issue link inside one lane, across trackers.
+     *
+     * The generic twin of `listLinearIssuesForLaneSessions`, which answers
+     * Linear rows only. Both tables carry `lane_id`, so a chat that belongs to
+     * a lane contributes its links here whether the issue came from Linear or
+     * from GitHub — and a plugin for a third tracker gets the same treatment
+     * the day its rows land in these tables.
+     *
+     * Lane-scoped links are deliberately NOT included: they already reach every
+     * reader through `listIssueLinks({laneId})`, and unioning them here would
+     * make the two verbs overlap in a way a caller would have to dedupe.
+     */
+    listIssueLinksForLaneSessions(args: { laneId: string }): IssueLink[] {
+      const laneId = args.laneId.trim();
+      if (!laneId) return [];
+      const linear = this.listLinearIssuesForLaneSessions({ laneId })
+        .map(sessionLinearLinkToIssueLink);
+      let github: IssueLink[] = [];
+      try {
+        github = db.all<SessionGitHubIssueLinkRow>(
+          `
+            select *
+            from session_github_issues
+            where project_id = ?
+              and lane_id = ?
+            order by
+              case role when 'primary' then 0 when 'worked' then 1 when 'referenced' then 2 else 3 end,
+              updated_at desc
+          `,
+          [projectId, laneId],
+        ).map(parseSessionGitHubIssueLink)
+          .filter((link): link is SessionGitHubIssueLink => Boolean(link))
+          .map(sessionGitHubLinkToIssueLink);
+      } catch {
+        // A missing table is "no GitHub session links", not a failure of the
+        // whole read: the Linear half is still a correct answer and dropping it
+        // would take the PR→Done rule down with it.
+        github = [];
+      }
+      return [...linear, ...github];
+    },
+
     listIssueLinks(args: { laneId?: string; sessionId?: string }): IssueLink[] {
       const laneId = args.laneId?.trim() || null;
       const sessionId = args.sessionId?.trim() || null;

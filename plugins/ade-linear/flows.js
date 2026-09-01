@@ -343,22 +343,15 @@ function createFlows(options = {}) {
   /**
    * A merged pull request moves its lane's issues to Done.
    *
-   * Ported from `main.ts:3838`, with three differences, all forced:
+   * Ported from `main.ts:3838`. It now reads the same three sources core does:
+   * the lane's primary issue, the lane's own links that asked to close, and
+   * every SESSION-scoped link inside the lane that asked to close — the last
+   * through `ade.lanes.listSessionIssues`, which is the generic twin of core's
+   * `laneService.listLinearIssuesForLaneSessions`. An issue attached only to a
+   * chat inside the lane is therefore moved here exactly as core moves it.
    *
-   * 1. **The trigger.** Core sits inside `onPullRequestsChanged` and sees
-   *    `previousState !== "merged" && pr.state === "merged"`. A plugin gets
-   *    `pr.changed` — a debounced, coalesced hint with ids and no previous
-   *    state — so the transition is derived by reading the PR back
-   *    (`pr.getDetail`) and comparing against what this plugin last saw. A
-   *    change that coalesced away is therefore a merge this plugin can still
-   *    see, because the READ says merged even if the event did not.
-   * 2. **Session-level links are invisible.** Core also collects
-   *    `laneService.listLinearIssuesForLaneSessions({laneId})`. The plugin's
-   *    `PluginLaneSummary` projection carries `primaryIssue` and `issueLinks`
-   *    and nothing per-session, so an issue linked ONLY to a chat inside the
-   *    lane is not moved. This is in the gap list.
-   * 3. **The gate.** Core is gated on an env flag; this is gated on the
-   *    `moveToDoneOnMerge` setting.
+   * One difference remains, and it is the gate: core is gated on an env flag
+   * and this is gated on the `moveToDoneOnMerge` setting.
    */
   async function closeIssueOnMerge(input = {}) {
     const settings = await config();
@@ -378,8 +371,9 @@ function createFlows(options = {}) {
       }
       if (!lane) continue;
 
-      // The same two sources core reads, in the same order: the lane's primary
-      // issue always, and every other link only when it asked to close.
+      // The same three sources core reads, in the same order: the lane's
+      // primary issue always, every other LANE link only when it asked to
+      // close, and every SESSION link in the lane only when it asked to close.
       const wanted = new Map();
       const add = (issue) => {
         if (issue?.provider === "linear" && issue?.issueId) wanted.set(issue.issueId, issue);
@@ -387,6 +381,21 @@ function createFlows(options = {}) {
       add(lane.primaryIssue ?? null);
       for (const link of Array.isArray(lane.issueLinks) ? lane.issueLinks : []) {
         if (link?.closeOnMerge) add(link.issue);
+      }
+      // The third source is a separate read because it is a separate table.
+      // A failure here must not take the lane-level half down with it: those
+      // issues are still correct to move, and losing them because one read
+      // failed would make the whole rule unreliable rather than partial.
+      let sessionGroups = [];
+      try {
+        sessionGroups = await sdk.lanes.listSessionIssues(laneId);
+      } catch (error) {
+        log("warn", `Could not read session issue links for lane ${laneId}: ${error?.message ?? error}`);
+      }
+      for (const group of Array.isArray(sessionGroups) ? sessionGroups : []) {
+        for (const link of Array.isArray(group?.issueLinks) ? group.issueLinks : []) {
+          if (link?.closeOnMerge) add(link.issue);
+        }
       }
       if (wanted.size === 0) continue;
 
@@ -418,24 +427,95 @@ function createFlows(options = {}) {
   }
 
   /**
+   * The issues linked to the SESSIONS inside one lane.
+   *
+   * Answers `[]` rather than throwing on a host whose SDK predates the verb —
+   * `unsupported_method` there means "this build cannot tell you", which is not
+   * the same as "there are none" but leads to the same, smaller, correct
+   * action: the lane's own links still close.
+   */
+  async function sessionIssues(laneId) {
+    if (typeof sdk.lanes?.listSessionIssues !== "function") return [];
+    try {
+      const rows = await sdk.lanes.listSessionIssues(laneId);
+      return Array.isArray(rows) ? rows : [];
+    } catch (error) {
+      log("debug", `Could not read the session issues for ${laneId}: ${error?.message ?? error}`);
+      return [];
+    }
+  }
+
+  /**
    * Which lanes just had a pull request merge.
    *
-   * `pr.changed` names PR ids and says nothing about what changed, so this
-   * reads each one back and answers the lanes whose PR is now merged. The
-   * caller de-duplicates against what it already acted on.
+   * Two paths, and the first is the honest one.
+   *
+   * 1. **`transitions`.** When the host's producer knew where each PR moved
+   *    from, it says so, and a merge is `from.merged === false && to.merged`.
+   *    That is the same test core makes inside `onPullRequestsChanged`, made
+   *    against the same previous state, so this path agrees with core exactly.
+   * 2. **The re-read.** For an event with no transitions — an older host, a
+   *    delivery whose ids overflowed the cap, a PR the poller saw for the first
+   *    time — each id is read back and counted as merged if it is merged NOW.
+   *    Weaker on purpose: it cannot tell "just merged" from "was already
+   *    merged", so the caller's `movedDone` latch is what stops it acting twice.
+   *
+   * Mixed events take both paths: the ids a transition covers are decided by
+   * the transition, and only the rest are re-read. A transition therefore never
+   * costs a round trip, and never hides an id the producer did not describe.
    */
-  async function mergedLanesFromPrIds(prIds) {
+  async function mergedLanesFromPrIds(input) {
+    const payload = Array.isArray(input) ? { ids: input } : (input ?? {});
+    const prIds = Array.isArray(payload.ids) ? payload.ids.filter(Boolean) : [];
+    const transitions = Array.isArray(payload.transitions) ? payload.transitions : [];
+
     const laneIds = new Set();
-    for (const prId of Array.isArray(prIds) ? prIds.slice(0, 25) : []) {
-      try {
-        const detail = await sdk.actions.invoke("pr", "getDetail", { prId });
-        const pr = detail?.pr ?? detail ?? null;
-        if (pr?.state === "merged" && pr?.laneId) laneIds.add(pr.laneId);
-      } catch (error) {
-        log("debug", `Could not read PR ${prId}: ${error?.message ?? error}`);
-      }
+    const decided = new Set();
+
+    for (const transition of transitions) {
+      const prId = transition?.id;
+      if (!prId) continue;
+      decided.add(prId);
+      // Merged BEFORE this window is not a merge to act on. Core makes the same
+      // distinction with `previousState !== "merged"`, and it is what keeps a
+      // re-poll of an already-merged PR from reopening the whole rule.
+      if (transition.from?.merged === true) continue;
+      if (transition.to?.merged !== true) continue;
+      // The transition carries lifecycle position and no lane, by design — the
+      // change event says what moved and never what it is about. One read per
+      // genuinely-merged PR is the floor, and it is far below the one read per
+      // NAMED PR the fallback pays.
+      const laneId = await laneIdForPr(prId);
+      if (laneId) laneIds.add(laneId);
+    }
+
+    // Capped on the ids the transitions did not already answer, so a full event
+    // of transitions is never truncated by a budget meant for the re-read path.
+    const toRead = prIds.filter((prId) => !decided.has(prId)).slice(0, 25);
+    for (const prId of toRead) {
+      const laneId = await laneIdForPr(prId, { onlyWhenMerged: true });
+      if (laneId) laneIds.add(laneId);
     }
     return [...laneIds];
+  }
+
+  /**
+   * The lane one pull request belongs to.
+   *
+   * `onlyWhenMerged` is the fallback path's extra condition: with no transition
+   * to trust, "is it merged now" is the only merge test there is.
+   */
+  async function laneIdForPr(prId, options = {}) {
+    try {
+      const detail = await sdk.actions.invoke("pr", "getDetail", { prId });
+      const pr = detail?.pr ?? detail ?? null;
+      if (!pr?.laneId) return null;
+      if (options.onlyWhenMerged && pr.state !== "merged") return null;
+      return pr.laneId;
+    } catch (error) {
+      log("debug", `Could not read PR ${prId}: ${error?.message ?? error}`);
+      return null;
+    }
   }
 
   /**

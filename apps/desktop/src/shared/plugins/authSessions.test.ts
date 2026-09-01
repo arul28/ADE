@@ -63,6 +63,46 @@ describe("authSessions parsing", () => {
     expect(manifestOf().authSessions).toBeUndefined();
   });
 
+  it("keeps a declared public client id, so a community plugin can ship a sign-in", () => {
+    // The community half of the OAuth story. An official plugin borrows ADE's
+    // own client id at runtime through `ade.auth.officialClient`; everybody else
+    // registers their own app and puts its PUBLIC id here.
+    const manifest = manifestOf({
+      authSessions: [{ ...LINEAR_FLOW, clientId: "e552c738cd63ea5967f08bbc9c09b54c" }],
+    });
+    expect(manifest.authSessions?.[0]?.clientId).toBe("e552c738cd63ea5967f08bbc9c09b54c");
+  });
+
+  it("leaves clientId absent when the plugin computes it at runtime", () => {
+    // Absent is a real answer, not a gap: `beginSession` takes `client_id` in
+    // `params` either way, so a plugin with one client per region simply sends
+    // it there.
+    expect(manifestOf({ authSessions: [LINEAR_FLOW] }).authSessions?.[0]?.clientId)
+      .toBeUndefined();
+  });
+
+  it("drops the whole flow when a declared clientId is empty", () => {
+    // Dropped rather than silently omitted. A plugin that declared a client id
+    // and got none would build an authorize URL missing the one parameter the
+    // provider identifies it by, and the symptom would be a provider error page
+    // the plugin cannot see.
+    const result = parse({ authSessions: [{ ...LINEAR_FLOW, clientId: "   " }] });
+    expect(result.manifest?.authSessions).toBeUndefined();
+    expect(result.warnings.join(" ")).toContain("clientId");
+  });
+
+  it("drops the whole flow when a declared clientId is over the length bound", () => {
+    const result = parse({ authSessions: [{ ...LINEAR_FLOW, clientId: "x".repeat(257) }] });
+    expect(result.manifest?.authSessions).toBeUndefined();
+    expect(result.warnings.join(" ")).toContain("clientId");
+  });
+
+  it("drops the whole flow when clientId is not a string", () => {
+    const result = parse({ authSessions: [{ ...LINEAR_FLOW, clientId: 42 }] });
+    expect(result.manifest?.authSessions).toBeUndefined();
+    expect(result.warnings.join(" ")).toContain("clientId");
+  });
+
   it("refuses an authorize URL that is not https", () => {
     const result = parse({ authSessions: [{ ...LINEAR_FLOW, authorizeUrl: "http://linear.app/oauth" }] });
     expect(result.manifest?.authSessions).toBeUndefined();

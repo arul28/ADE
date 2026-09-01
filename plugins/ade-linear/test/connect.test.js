@@ -131,25 +131,44 @@ describe("the release-day handoff", () => {
 });
 
 describe("what the settings panel can offer", () => {
-  it("cannot start OAuth without a client id, and says why in a sentence", async () => {
-    // `client_id` identifies ADE to Linear and no SDK verb hands a plugin
-    // ADE's. Producing an authorize URL Linear would refuse is worse than
-    // saying so.
+  it("can start OAuth on a build that lends an official client, with nothing stored", async () => {
+    // The broker is what closed this: `client_id` identifies ADE to Linear, and
+    // before `auth.officialClient` existed the only way one reached the plugin
+    // was through the credential handoff — so a fresh install that declined it
+    // could never sign in.
     const { connect } = build();
     const status = await connect.connectStatus();
-    assert.equal(status.canOAuth, false);
-    assert.match(status.oauthBlockedReason, /handoff|API key/);
+    assert.equal(status.canOAuth, true);
+    assert.equal(status.clientSource, "official");
+    assert.equal(status.oauthBlockedReason, null);
   });
 
-  it("can start OAuth once a client id arrived", async () => {
-    const { connect } = build({ sdk: { secrets: undefined } });
-    await build().connect.connectStatus();
+  it("cannot start OAuth where ADE lends nothing, and says why in a sentence", async () => {
+    // A non-owner build, or a host with no broker. Producing an authorize URL
+    // Linear would refuse is worse than saying so.
+    const { connect } = build({ sdk: { officialClient: null } });
+    const status = await connect.connectStatus();
+    assert.equal(status.canOAuth, false);
+    assert.equal(status.clientSource, null);
+    assert.match(status.oauthBlockedReason, /API key/);
+  });
+
+  it("calls a stored id that is NOT ADE's a custom client", async () => {
+    // Which app a stored id belongs to decides the scope list, and the only
+    // honest way to decide is to compare it against ADE's.
     const built = build();
-    await built.sdk.secrets.set("LINEAR_OAUTH_CLIENT_ID", "client-1");
+    await built.sdk.secrets.set("LINEAR_OAUTH_CLIENT_ID", "somebody-elses-app");
     const status = await built.connect.connectStatus();
     assert.equal(status.canOAuth, true);
-    assert.equal(status.oauthBlockedReason, null);
-    assert.ok(connect);
+    assert.equal(status.clientSource, "custom");
+  });
+
+  it("recognises a stored id that IS ADE's as official", async () => {
+    // A client id that arrived through the handoff must not be mistaken for a
+    // custom one, or the sign-in would drop the webhook grant.
+    const built = build();
+    await built.sdk.secrets.set("LINEAR_OAUTH_CLIENT_ID", "ade-official-client");
+    assert.equal((await built.connect.connectStatus()).clientSource, "official");
   });
 
   it("stops offering the handoff once it has been answered", async () => {
@@ -177,21 +196,32 @@ describe("beginning the sign-in", () => {
     assert.deepEqual(result.authSession, { sessionId: AUTH_SESSION_ID });
   });
 
-  it("asks for the narrower grant when the client id is not ADE's", async () => {
+  it("asks for the narrower grant for a client the USER registered", async () => {
+    // Webhooks on an app the user registered are the user's to arrange, so the
+    // extra grant would be asking for a permission nothing here would use.
     const { sdk, connect } = await ready();
     await connect.begin();
     assert.equal(sdk.calls.find(([name]) => name === "auth.beginSession")[2].scope, SCOPES_CUSTOM);
   });
 
-  it("asks for admin once the handoff says the client id is ADE's own", async () => {
-    const { sdk, connect } = await ready({ sdk: { handoff: { builtin: "linear", status: "accepted", secretNames: [] } } });
-    await connect.requestHandoff();
-    await connect.begin();
-    assert.equal(sdk.calls.find(([name]) => name === "auth.beginSession")[2].scope, SCOPES_ADE_APP);
+  it("asks for admin for ADE's own app, because its webhooks need it", async () => {
+    // Linear only delivers data-change webhooks for a workspace whose
+    // authorization carries `admin`.
+    const built = build();
+    await built.sdk.secrets.set("LINEAR_OAUTH_CLIENT_ID", "ade-official-client");
+    await built.connect.begin();
+    const scope = built.sdk.calls.find(([name]) => name === "auth.beginSession")[2].scope;
+    assert.equal(scope, SCOPES_ADE_APP);
   });
 
-  it("refuses before it starts when there is no client id", async () => {
-    const { sdk, connect } = build();
+  it("takes the scope list from the BROKER when it names one", () => {
+    // The registration is ADE's, so the grant it needs is ADE's to state — the
+    // plugin's constant is the fallback, not the authority.
+    assert.equal(SCOPES_ADE_APP, "read,write,admin");
+  });
+
+  it("refuses before it starts where ADE lends nothing and nothing is stored", async () => {
+    const { sdk, connect } = build({ sdk: { officialClient: null } });
     const result = await connect.begin();
     assert.equal(result.code, "no_client_id");
     assert.equal(sdk.calls.some(([name]) => name === "auth.beginSession"), false);

@@ -69,6 +69,9 @@ import {
   type PluginIssueLink,
   type PluginLaneSummary,
   toPluginLaneSummary,
+  toPluginIssueLink,
+  type PluginOfficialOAuthClient,
+  type PluginSessionIssues,
   readPluginNotificationDeeplink,
   type PluginNotificationInput,
   type PluginNotificationResult,
@@ -603,6 +606,21 @@ export function createPluginSdkServer(deps: {
    */
   requestCredentialHandoff?: (builtin: string) => Promise<PluginCredentialHandoffResult>;
   /**
+   * Lend this plugin ADE's own PUBLIC OAuth client id for a provider ADE
+   * bundles an app for. See `pluginOfficialClients.ts`.
+   *
+   * Not optional in the way the three above are, and not a host CAPABILITY at
+   * all: the answer is a compile-time constant plus an ownership check, so
+   * there is no machine that has a browser and lacks this. It is a dep only so
+   * the ownership table stays out of the frame-parsing layer and so a test can
+   * hand the server a different one.
+   *
+   * Synchronous by design. A verb that reaches no store and asks no person has
+   * nothing to await, and making it async would invite a later implementation
+   * to reach for one.
+   */
+  officialOAuthClient?: (provider: string) => PluginOfficialOAuthClient;
+  /**
    * This plugin's own schedules. Absent on a host with no scheduler, which is
    * `unsupported_method` rather than a silent success — a plugin told its
    * schedule was created would go on to rely on it firing.
@@ -1004,6 +1022,20 @@ export function createPluginSdkServer(deps: {
         case "auth.requestHandoff": {
           if (!deps.requestCredentialHandoff) throw pluginAuthUnavailable();
           return await deps.requestCredentialHandoff(requireString(params, "builtin"));
+        }
+
+        case "auth.officialClient": {
+          // No `pluginAuthUnavailable` fallback: an absent supplier is a host
+          // wired without the broker rather than a machine that cannot show a
+          // window, and telling a plugin to "try again when something can show
+          // a sign-in" would send it retrying forever.
+          if (!deps.officialOAuthClient) {
+            throw new PluginSdkError(
+              "not_permitted",
+              "This host does not lend ADE's own OAuth clients to plugins.",
+            );
+          }
+          return deps.officialOAuthClient(requireString(params, "provider"));
         }
 
         case "contributions.publish": {
@@ -1429,6 +1461,30 @@ export function createPluginSdkServer(deps: {
           const lanes = requireLanes();
           const lane = await lanes.get(pluginId, requireString(params, "laneId"));
           return lane ? toPluginLaneSummary(lane) : null;
+        }
+
+        case "lanes.listSessionIssues": {
+          const lanes = requireLanes();
+          const links = await lanes.listSessionIssues(pluginId, requireString(params, "laneId"));
+          // Grouped here rather than by the supplier: the store answers rows in
+          // its own order and a plugin wants them per session, and doing it in
+          // one place means every host that serves lanes groups them the same
+          // way. Insertion order is preserved, so the first session to appear
+          // in the store's ordering is the first group out.
+          const bySession = new Map<string, IssueLink[]>();
+          for (const link of links) {
+            const sessionId = link.sessionId?.trim();
+            // A lane-scoped row has no session and does not belong in this
+            // answer. It reaches the plugin through `lanes.get`'s `issueLinks`.
+            if (!sessionId) continue;
+            const group = bySession.get(sessionId);
+            if (group) group.push(toPluginIssueLink(link));
+            else bySession.set(sessionId, [toPluginIssueLink(link)]);
+          }
+          return [...bySession].map(([sessionId, issueLinks]) => ({
+            sessionId,
+            issueLinks,
+          })) satisfies PluginSessionIssues[];
         }
 
         case "lanes.linkIssue": {

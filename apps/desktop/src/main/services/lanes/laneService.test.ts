@@ -6376,6 +6376,22 @@ describe("laneService session-scoped Linear issue links", () => {
       const laneSessionLinks = service.listLinearIssuesForLaneSessions({ laneId: "lane-child" });
       expect(laneSessionLinks).toHaveLength(1);
       expect(laneSessionLinks[0]?.sessionId).toBe("chat-on-child");
+
+      // The generic twin, which is what a tracker PLUGIN reads: the same rows
+      // as `IssueRef`-carrying `IssueLink`s, so a Jira plugin sees its own
+      // session links the same way the Linear one sees these.
+      const genericSessionLinks = service.listIssueLinksForLaneSessions({ laneId: "lane-child" });
+      expect(genericSessionLinks).toHaveLength(1);
+      expect(genericSessionLinks[0]?.sessionId).toBe("chat-on-child");
+      expect(genericSessionLinks[0]?.issue.provider).toBe("linear");
+      expect(genericSessionLinks[0]?.issue.key).toBe("ABC-42");
+      // Lane-scoped links stay out of it. They already reach every reader
+      // through `listIssueLinks({laneId})`, and unioning them here would make
+      // the two verbs overlap in a way a caller would have to dedupe.
+      expect(genericSessionLinks.every((link) => link.sessionId !== null)).toBe(true);
+      // A lane with no sessions at all answers empty rather than throwing.
+      expect(service.listIssueLinksForLaneSessions({ laneId: "lane-parent" })).toEqual([]);
+      expect(service.listIssueLinksForLaneSessions({ laneId: "  " })).toEqual([]);
       expect(onLinearIssueLinked).toHaveBeenCalledWith(expect.objectContaining({
         lane: expect.objectContaining({ id: "lane-child" }),
         issue: expect.objectContaining({ identifier: "ABC-42" }),

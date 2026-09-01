@@ -245,6 +245,17 @@ function buildSettingsPanel(model = {}) {
     autolinks: Array.isArray(model.autolinks) ? model.autolinks : [],
     githubRepo: model.githubRepo ?? null,
     ingress: model.ingress ?? null,
+    // Read at the TOP level first, because that is where it survives being
+    // disconnected: the view sends `connection: null` when there is no
+    // credential, and the pre-sign-in warning is the one that matters most —
+    // it is the difference between choosing a custom Linear app knowingly and
+    // discovering weeks later that no webhook ever fired. The copy on
+    // `connection` is the fallback for a connected reader.
+    clientSource: model.clientSource ?? connection.clientSource ?? null,
+    // A sibling of `connection` in the view, not a field of it: it is a fact
+    // about this MACHINE's ability to run the flow, not about the connection
+    // that does not exist yet.
+    oauthBlockedReason: model.oauthBlockedReason ?? null,
   });
 }
 

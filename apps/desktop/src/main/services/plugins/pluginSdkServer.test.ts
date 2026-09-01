@@ -4,6 +4,7 @@ import type { Logger } from "../logging/logger";
 import type { PluginManifest } from "../../../shared/plugins/manifest";
 import {
   PluginSdkError,
+  PLUGIN_ISSUE_LINK_FIELDS,
   PLUGIN_LANE_SUMMARY_FIELDS,
   PLUGIN_WEBHOOK_SECRET_NAME,
   type PluginCollectionPutOptions,
@@ -337,6 +338,38 @@ describe("createPluginSdkServer host capabilities", () => {
     expect(await codeOf(() => handle("clipboard.write", { text: "x".repeat(64 * 1024 + 1) })))
       .toBe("plugin_budget_exceeded");
     expect(wrote).toBe(0);
+  });
+
+  it("hands auth.officialClient straight to the broker and answers what it says", async () => {
+    const asked: string[] = [];
+    const { handle } = createServer({
+      officialOAuthClient: (provider) => {
+        asked.push(provider);
+        return { provider, clientId: "public-id", scopes: ["read"] };
+      },
+    });
+
+    expect(await handle("auth.officialClient", { provider: "linear" }))
+      .toEqual({ provider: "linear", clientId: "public-id", scopes: ["read"] });
+    expect(asked).toEqual(["linear"]);
+  });
+
+  it("refuses auth.officialClient with not_permitted on a host that lends none", async () => {
+    const { handle } = createServer();
+
+    // Not `auth_unavailable`: a host wired without the broker is not a machine
+    // that cannot show a window, and telling the plugin to try again when one
+    // appears would send it retrying forever.
+    expect(await codeOf(() => handle("auth.officialClient", { provider: "linear" })))
+      .toBe("not_permitted");
+  });
+
+  it("refuses an auth.officialClient call with no provider", async () => {
+    const { handle } = createServer({
+      officialOAuthClient: () => ({ provider: "linear", clientId: "public-id" }),
+    });
+
+    expect(await codeOf(() => handle("auth.officialClient", {}))).toBe("invalid_args");
   });
 
   it("refuses schedules with unsupported_method on a host that runs no scheduler", async () => {
@@ -1021,7 +1054,9 @@ describe("createPluginSdkServer lanes", () => {
     };
   }
 
-  function laneServer(options: { links?: IssueLink[]; lanes?: LaneSummary[] } = {}) {
+  function laneServer(
+    options: { links?: IssueLink[]; lanes?: LaneSummary[]; sessionLinks?: IssueLink[] } = {},
+  ) {
     const linkCalls: LinkCall[] = [];
     const unlinkCalls: LinkCall[] = [];
     const { handle } = createServer({
@@ -1030,6 +1065,7 @@ describe("createPluginSdkServer lanes", () => {
         get: async (_pluginId, laneId) =>
           (options.lanes ?? [laneRow()]).find((lane) => lane.id === laneId) ?? null,
         listIssueLinks: async () => options.links ?? [],
+        listSessionIssues: async () => options.sessionLinks ?? [],
         linkIssue: async (pluginId, args) => {
           linkCalls.push({ pluginId, args: args as unknown as Record<string, unknown> });
           return issueLink(args.issue);
@@ -1074,6 +1110,78 @@ describe("createPluginSdkServer lanes", () => {
       // an allowlist and not about a lane row that happened to be empty.
       expect(projected!.branchRef).toBe("arul/fix-parser");
     }
+  });
+
+  it("projects every issue link on a lane through the issue-link allowlist", async () => {
+    const leaky = {
+      ...issueLink(issueRef()),
+      // A field `IssueLink` does not have. It stands in for whatever gets added
+      // to the internal shape next: the projection must drop it without anyone
+      // remembering to.
+      worktreePath: "/Users/arul/Projects/ADE/.ade/worktrees/fix-parser",
+    } as unknown as IssueLink;
+    const { handle } = laneServer({ lanes: [laneRow({ issueLinks: [leaky] })] });
+
+    const listed = (await handle("lanes.list", {})) as Record<string, unknown>[];
+    const [link] = listed[0]!.issueLinks as Record<string, unknown>[];
+
+    expect(Object.keys(link!).sort()).toEqual([...PLUGIN_ISSUE_LINK_FIELDS].sort());
+    expect(link).not.toHaveProperty("worktreePath");
+    expect((link!.issue as IssueRef).key).toBe("ADE-7");
+  });
+
+  it("groups a lane's session issue links by session, projected", async () => {
+    const first = {
+      ...issueLink(issueRef({ issueId: "1", key: "ADE-1" })),
+      id: "link-a",
+      laneId: null,
+      sessionId: "chat-1",
+      devicesOpen: [{ deviceId: "d1" }],
+    } as unknown as IssueLink;
+    const second = {
+      ...issueLink(issueRef({ issueId: "2", key: "ADE-2" })),
+      id: "link-b",
+      laneId: null,
+      sessionId: "chat-2",
+      closeOnMerge: true,
+    };
+    const third = {
+      ...issueLink(issueRef({ issueId: "3", key: "ADE-3" })),
+      id: "link-c",
+      laneId: null,
+      sessionId: "chat-1",
+    };
+    const { handle } = laneServer({ sessionLinks: [first, second, third] });
+
+    const groups = (await handle("lanes.listSessionIssues", { laneId: "lane-1" })) as {
+      sessionId: string;
+      issueLinks: IssueLink[];
+    }[];
+
+    expect(groups.map((group) => group.sessionId)).toEqual(["chat-1", "chat-2"]);
+    expect(groups[0]!.issueLinks.map((link) => link.issue.key)).toEqual(["ADE-1", "ADE-3"]);
+    // `closeOnMerge` is the flag the PR→Done rule filters on, so it has to
+    // survive the projection — a shape that dropped it would let a plugin move
+    // issues the user asked it to leave alone.
+    expect(groups[1]!.issueLinks[0]!.closeOnMerge).toBe(true);
+    expect(groups[0]!.issueLinks[0]).not.toHaveProperty("devicesOpen");
+    expect(Object.keys(groups[0]!.issueLinks[0]!).sort())
+      .toEqual([...PLUGIN_ISSUE_LINK_FIELDS].sort());
+  });
+
+  it("drops a lane-scoped row from the session answer rather than mislabelling it", async () => {
+    // A row with no `sessionId` belongs to the lane and reaches the plugin
+    // through `lanes.get`. Grouping it here under an empty session id would
+    // invent a session that does not exist.
+    const { handle } = laneServer({ sessionLinks: [issueLink(issueRef())] });
+
+    expect(await handle("lanes.listSessionIssues", { laneId: "lane-1" })).toEqual([]);
+  });
+
+  it("refuses lanes.listSessionIssues on a host that binds no lanes", async () => {
+    const { handle } = createServer();
+    expect(await codeOf(() => handle("lanes.listSessionIssues", { laneId: "lane-1" })))
+      .toBe("unsupported_method");
   });
 
   it("answers null for a lane this project does not have", async () => {

@@ -33,6 +33,8 @@ import {
   type PluginAuthSessionStart,
   type PluginChatHydrateResult,
   type PluginCredentialHandoffResult,
+  type PluginOfficialOAuthClient,
+  type PluginSessionIssues,
   type PluginChatSessionRef,
   type PluginChildFrame,
   type PluginCollectionRow,
@@ -225,6 +227,9 @@ export function runPluginChild(): void {
       requestHandoff: async (builtin) => (
         await callHost("auth.requestHandoff", { builtin })
       ) as PluginCredentialHandoffResult,
+      officialClient: async (provider) => (
+        await callHost("auth.officialClient", { provider })
+      ) as PluginOfficialOAuthClient,
     },
     contributions: {
       publish: async (
@@ -347,6 +352,9 @@ export function runPluginChild(): void {
       get: async (laneId) => (
         await callHost("lanes.get", { laneId })
       ) as PluginLaneSummary | null,
+      listSessionIssues: async (laneId) => (
+        await callHost("lanes.listSessionIssues", { laneId })
+      ) as PluginSessionIssues[],
       // `input.issue` carries no `pluginId`: the host stamps the calling
       // plugin's own id over whatever arrived, and unlinking checks against
       // that. See `PluginIssueRefInput`.

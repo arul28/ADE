@@ -322,6 +322,7 @@ async function viewFor(panelId, context) {
     const settings = await sdk.config.get().catch(() => ({}));
     const status = await connect.connectStatus().catch(() => ({}));
     const secretStored = Boolean(await sdk.secrets.get("LINEAR_WEBHOOK_SECRET").catch(() => null));
+    const webhooksPossible = webhooksReachable(status);
     return {
       state: connection?.connected ? "connected" : "disconnected",
       error: connection?.lastError ?? null,
@@ -335,11 +336,20 @@ async function viewFor(panelId, context) {
           // Pre-formatted, because a schema cannot do date arithmetic.
           ...expiry(connection.tokenExpiresAt),
           oauthAvailable: status.canOAuth === true,
+          // Which app the sign-in presents itself as. "Sign in with Linear"
+          // behaves differently for the two: ADE's own app carries the webhook
+          // grant and an app the user registered does not.
+          clientSource: status.clientSource ?? null,
         }
         : null,
       // "offered" is the one value that draws the adopt button, so it is set
       // only while the handoff genuinely has not been answered.
       handoffStatus: handoffLabel(status),
+      // Top-level as well as on `connection`: the DISCONNECTED card reads it
+      // here, and on that path `connection` is either null or a row that says
+      // it is not connected. Which app the sign-in would present itself as is a
+      // fact about this build, not about a credential that does not exist yet.
+      clientSource: status.clientSource ?? null,
       settings,
       teams: (await data.teams().catch(() => [])).map((team) => ({ key: team.key, name: team.name })),
       showAutolinks: Boolean(connection?.organizationUrlKey),
@@ -353,24 +363,29 @@ async function viewFor(panelId, context) {
         configured: false,
       })),
       githubRepo: githubRepoSlug,
-      // `plugin.json` declares `verify`, so the channel FAILS CLOSED without
-      // the secret (`pluginWebhookIngressService.ts:429`). That inverts what a
-      // missing secret means: it is not "deliveries arrive unverified", it is
-      // "no deliveries arrive at all". Saying the weaker thing would leave a
-      // reader waiting for events that are being dropped.
+      // `status` is the WEBHOOK row and `secretStored` drives a separate
+      // Verification row beside it, so this must not be about the secret —
+      // two adjacent rows saying the same thing in different words is worse
+      // than one saying it well.
       //
-      // Declaring it costs no installed base: this channel is new in this wave
-      // — the built-in's webhooks run through `linearIngressService`, not
-      // through the plugin — so nobody's working ingress stops.
+      // It DOES have to be about whether events can arrive at all. Linear only
+      // delivers data-change webhooks to an authorization carrying `admin`, and
+      // a connection made with a client the user registered themselves is
+      // granted `read,write` — so on a custom client this endpoint is a URL
+      // that will never be posted to. Saying "ready" there would be the same
+      // failure the fail-closed copy exists to prevent.
+      //
+      // Whether deliveries are actually ARRIVING needs the host's delivery
+      // ledger, and no SDK verb exposes it — which is why `lastEvent` is null
+      // rather than a guess. That gap is in the report.
       ingress: connection?.webhookUrl
         ? {
-          status: secretStored
-            ? "Signed deliveries only"
-            : "Waiting for the signing secret — deliveries are dropped until you paste it",
-          tone: secretStored ? "success" : "warning",
+          status: webhooksPossible ? "Endpoint ready" : "Linear will not deliver to this connection",
+          tone: webhooksPossible ? "neutral" : "warning",
           lastEvent: null,
           url: connection.webhookUrl,
           secretStored,
+          webhooksPossible,
         }
         : null,
       oauthBlockedReason: status.oauthBlockedReason ?? null,
@@ -397,6 +412,27 @@ function expiry(tokenExpiresAt) {
   if (days >= 1) return { expiresIn: `expires in ${days} ${days === 1 ? "day" : "days"}`, expired: false };
   const hours = Math.max(1, Math.round(ms / 3_600_000));
   return { expiresIn: `expires in ${hours} ${hours === 1 ? "hour" : "hours"}`, expired: false };
+}
+
+/**
+ * Can a Linear webhook ever reach this connection?
+ *
+ * Linear delivers data-change webhooks only to an authorization carrying
+ * `admin`, and only ADE's own registered app asks for it — a client the user
+ * registered themselves is granted `read,write`, because webhooks on an app
+ * somebody else registered are theirs to arrange rather than ours to demand.
+ *
+ * The consequence is worth stating plainly, because nothing else reports it: on
+ * a custom client the reader can sign in, browse and write issues normally,
+ * paste the relay URL into Linear, paste the signing secret — and never receive
+ * one event. A webhook that never fires is indistinguishable from a workspace
+ * where nothing happened, so every surface that reports on the ingress has to
+ * say this, not just the panel.
+ *
+ * An API-key connection has no OAuth grant at all and is treated the same way.
+ */
+function webhooksReachable(status) {
+  return status?.clientSource === "official";
 }
 
 /**
@@ -768,13 +804,15 @@ exports.activate = async (ade) => {
     void refreshIssues().then(() => publishLaneBadges()).catch(() => {});
   }));
 
-  // The merged-PR transition. `pr.changed` is a coalesced hint with ids and no
-  // previous state, so the merge is derived by reading the PRs back — see
-  // `flows.closeIssueOnMerge` for why that is not the same trigger core has.
+  // The merged-PR transition. The WHOLE payload goes through, not just `ids`:
+  // `pr.changed` now carries `transitions` when the host's producer knew where
+  // each PR moved from, which is the same previous state core's own merge
+  // handling reads. See `flows.mergedLanesFromPrIds` for the fallback when it
+  // does not.
   subscriptions.push(sdk.events.on("pr.changed", (payload) => {
     void (async () => {
       try {
-        const laneIds = await flows.mergedLanesFromPrIds(payload?.ids ?? []);
+        const laneIds = await flows.mergedLanesFromPrIds(payload ?? { ids: [] });
         if (laneIds.length === 0) return;
         const result = await flows.closeIssueOnMerge({ laneIds });
         if (result.moved > 0) await refreshIssues();
@@ -1086,8 +1124,22 @@ const ownActions = {
         return await automation.createLaneForIssue({ issueId: args?.issueId ?? args?._?.[1], baseRef: args?.baseRef });
       case "graphql":
         return await automation.graphql(args ?? {});
-      case "status":
-        return { connection: await data.refreshConnection() };
+      case "status": {
+        // The connection alone would report a healthy green on a custom
+        // client whose automations can never fire, so the CLI says both.
+        const connection = await data.refreshConnection();
+        const status = await connect.connectStatus().catch(() => ({}));
+        return {
+          connection,
+          clientSource: status.clientSource ?? null,
+          webhooksPossible: webhooksReachable(status),
+          ...(webhooksReachable(status)
+            ? {}
+            : {
+              note: "Linear does not send webhooks to this connection, so automation triggers will not fire. Reconnect with ADE's own Linear app to receive events.",
+            }),
+        };
+      }
       case "refresh":
         return await refreshIssues();
       default:
@@ -1118,6 +1170,9 @@ exports.actions = { ...ownActions };
 // lifecycle without a running daemon.
 exports.__internals = {
   ISSUE_CACHE_MS,
+  expiry,
+  webhooksReachable,
+  handoffLabel,
   publish,
   refreshCatalogAndIssues,
   refreshIssues,

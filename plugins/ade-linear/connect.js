@@ -22,14 +22,24 @@
 // and refreshing a grant it cannot use is a responsibility with no matching
 // capability.
 //
-// ## The client id is not ours to invent
+// ## Where the client id comes from
 //
-// `client_id` identifies ADE to Linear, and no SDK verb hands a plugin ADE's.
-// It arrives exactly one way: `LINEAR_OAUTH_CLIENT_ID` through the handoff. So
-// a user who declines the handoff and has no client id of their own can
-// connect by API key and not by OAuth. That is a real gap and it is in the
-// report — see `connectStatus`, which says so in the panel rather than
-// producing an authorize URL that Linear would refuse.
+// `client_id` identifies ADE to Linear, and it is not this plugin's to invent.
+// Two doors, tried in this order:
+//
+//   1. **This plugin's own store.** Put there by the handoff
+//      (`LINEAR_OAUTH_CLIENT_ID`) or by a completed exchange, and it is what a
+//      refresh has to send. A user who registered their own OAuth app has
+//      theirs here too.
+//   2. **`ade.auth.officialClient("linear")`.** ADE lends the honoured owner of
+//      the built-in Linear surface its OWN public client id — the same id that
+//      appears in the authorize URL of every sign-in ADE has ever run. This is
+//      what makes OAuth work on a FRESH install, where there is no connection
+//      to hand over, and on a machine where the user declined the handoff.
+//
+// ADE never lends the client SECRET, and there is no shape in which it could:
+// the answer has no field for one. That is the correct outcome — the exchange
+// below is a public-client exchange and PKCE stands in for the secret.
 
 "use strict";
 
@@ -126,10 +136,66 @@ function createConnect(options = {}) {
    */
   let pending = null;
 
-  /** The stored OAuth client id, or `null` when only the handoff could supply one. */
-  async function clientId() {
+  /**
+   * The OAuth client this plugin should sign in with.
+   *
+   * `{clientId, source, scopes}` or `null` when nothing on this machine can
+   * supply one. `source` is `"official"` for ADE's own registered app and
+   * `"custom"` for an app the user registered themselves.
+   *
+   * ## Why both doors are opened every time
+   *
+   * A stored client id WINS — after an exchange, the id the token was issued to
+   * is the only id its refresh can be redeemed with, and quietly preferring
+   * ADE's would break exactly the self-hosted setups that registered their own.
+   * But which app a stored id belongs to still has to be decided, because the
+   * scope list depends on it, and the only honest way to decide is to compare
+   * it against ADE's. That is the same test the compiled integration uses
+   * (`linearCredentialService.ts:705` — "Compare by client id, not by which
+   * branch resolved"), and it means a client id that arrived through the
+   * handoff is correctly recognised as ADE's rather than mistaken for a custom
+   * one.
+   */
+  async function resolveClient() {
+    // Refused for every plugin that does not own the built-in Linear surface,
+    // and on a host that lends no official clients at all. Both are ordinary
+    // states rather than failures — the panel falls back to the API key — so
+    // the refusal is swallowed here rather than reported as an error.
+    let official = null;
+    try {
+      const answer = await sdk.auth.officialClient("linear");
+      const id = answer?.clientId ? String(answer.clientId).trim() : "";
+      if (id) {
+        official = {
+          clientId: id,
+          scopes: Array.isArray(answer.scopes) && answer.scopes.length > 0
+            ? answer.scopes.join(",")
+            : null,
+        };
+      }
+    } catch (error) {
+      log("debug", `ADE lends no Linear OAuth client here: ${error?.message ?? error}`);
+    }
+
     const stored = await sdk.secrets.get(SECRET_CLIENT_ID).catch(() => null);
-    return stored ? String(stored).trim() : null;
+    const storedId = stored ? String(stored).trim() : "";
+    if (storedId) {
+      const isOfficial = Boolean(official) && storedId === official.clientId;
+      return {
+        clientId: storedId,
+        source: isOfficial ? "official" : "custom",
+        scopes: isOfficial ? official.scopes : null,
+      };
+    }
+
+    if (!official) return null;
+    return { clientId: official.clientId, source: "official", scopes: official.scopes };
+  }
+
+  /** The client id alone, for callers that only need to know whether there is one. */
+  async function clientId() {
+    const client = await resolveClient();
+    return client?.clientId ?? null;
   }
 
   /**
@@ -166,19 +232,25 @@ function createConnect(options = {}) {
    */
   async function connectStatus() {
     const credential = await api.readCredential().catch(() => ({ token: null }));
-    const id = await clientId();
+    const client = await resolveClient();
     const handoffStatus = (await sdk.memory.get("handoffStatus").catch(() => null)) ?? null;
     return {
       connected: Boolean(credential.token),
       authMode: credential.authMode ?? null,
-      canOAuth: Boolean(id),
+      canOAuth: Boolean(client),
+      // Which app the sign-in would present itself as. The panel says so,
+      // because "Sign in with Linear" behaves differently for the two: ADE's
+      // app carries the webhook grant and a user's own does not.
+      clientSource: client?.source ?? null,
       canHandoff: handoffStatus === null,
       handoffStatus,
       // Said plainly, because the alternative is an authorize URL Linear
-      // refuses and a user who cannot tell why.
-      oauthBlockedReason: id
+      // refuses and a user who cannot tell why. Reached now only where ADE
+      // lends nothing — a non-owner build, or a host with no broker — rather
+      // than on every fresh install, which is what it used to mean.
+      oauthBlockedReason: client
         ? null
-        : "OAuth needs ADE's Linear client id, which arrives with the connection handoff. Adopt ADE's connection, or paste a Linear API key.",
+        : "This copy of ADE has no Linear OAuth client to sign in with. Paste a Linear API key instead.",
     };
   }
 
@@ -193,16 +265,21 @@ function createConnect(options = {}) {
    * exists to close.
    */
   async function begin() {
-    const id = await clientId();
-    if (!id) {
+    const client = await resolveClient();
+    if (!client) {
       const status = await connectStatus();
       return { ok: false, message: status.oauthBlockedReason, code: "no_client_id" };
     }
+    const id = client.clientId;
     const pkce = createPkcePair();
-    // Custom clients keep the narrower grant. `handoffStatus === "accepted"`
-    // is what says the client id is ADE's own rather than one the user pasted.
-    const handoffStatus = await sdk.memory.get("handoffStatus").catch(() => null);
-    const scopes = handoffStatus === "accepted" ? SCOPES_ADE_APP : SCOPES_CUSTOM;
+    // Custom clients keep the narrower grant, because webhooks on an app the
+    // user registered are the user's to arrange. ADE's own app asks for
+    // `admin`, and it takes the scope list from the broker rather than from
+    // this constant when the broker names one: the registration is ADE's, so
+    // the grant it needs is ADE's to state.
+    const scopes = client.source === "official"
+      ? (client.scopes ?? SCOPES_ADE_APP)
+      : SCOPES_CUSTOM;
 
     let start;
     try {
@@ -378,6 +455,7 @@ function createConnect(options = {}) {
     begin,
     cancel,
     clientId,
+    resolveClient,
     complete,
     connectStatus,
     disconnect,

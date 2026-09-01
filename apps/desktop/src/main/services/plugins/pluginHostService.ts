@@ -56,6 +56,7 @@ import {
   type PluginActionInvokeRecord,
   type PluginAudioClip,
   type PluginChangeEventName,
+  type PluginPrTransition,
   type PluginRuntimeHookName,
   type PluginRuntimeHookPayload,
   type PluginCollectionRow,
@@ -125,6 +126,7 @@ import {
   createPluginCredentialHandoffService,
   type PluginCredentialHandoffService,
 } from "./pluginCredentialHandoff";
+import { officialOAuthClientForPlugin } from "./pluginOfficialClients";
 import { resolvePluginsRoot } from "./pluginRegistryFile";
 import type { SyncCredentialStore } from "../../../../../ade-cli/src/services/credentials/credentialStore";
 
@@ -273,6 +275,7 @@ export type PluginProjectBinding = {
       options?: { includeStatus?: boolean },
     ) => Promise<LaneSummary | null>;
     listIssueLinks: (args: { laneId?: string; sessionId?: string }) => IssueLink[];
+    listIssueLinksForLaneSessions: (args: { laneId: string }) => IssueLink[];
     linkIssueRef: (args: {
       laneId?: string;
       sessionId?: string;
@@ -1369,6 +1372,11 @@ function createHost(args: PluginHostServiceArgs): PluginHostService {
         }
         return await service.request({ pluginId, manifest, builtin });
       },
+      // `pluginId` is closed over from the supervisor this bag was built for,
+      // exactly as `requestCredentialHandoff` above — so the ownership check
+      // inside the broker runs against a host-derived identity and never
+      // against anything the child sent.
+      officialOAuthClient: (provider) => officialOAuthClientForPlugin({ pluginId, provider }),
       // Read through `machine` at call time rather than captured here: a
       // supervisor outlives the desktop that lends it a microphone, and a
       // captured `undefined` would keep refusing captures long after one
@@ -1481,6 +1489,8 @@ function createHost(args: PluginHostServiceArgs): PluginHostService {
           .list({ includeArchived: false, includeStatus: false }),
         get: async (lanesPluginId, laneId) => await requireLanes(lanesPluginId)
           .getSummary(laneId, { includeStatus: false }),
+        listSessionIssues: async (lanesPluginId, laneId) =>
+          requireLanes(lanesPluginId).listIssueLinksForLaneSessions({ laneId }),
         listIssueLinks: async (lanesPluginId, target) =>
           requireLanes(lanesPluginId).listIssueLinks(target),
         linkIssue: async (lanesPluginId, linkArgs) => requireLanes(lanesPluginId).linkIssueRef({
@@ -2393,7 +2403,21 @@ function createHost(args: PluginHostServiceArgs): PluginHostService {
    */
   const pendingEntityChanges = new Map<
     PluginChangeEventName,
-    { ids: Set<string>; projectRoot: string | null }
+    {
+      ids: Set<string>;
+      projectRoot: string | null;
+      /**
+       * One entry per id that reported a transition, in first-seen order.
+       *
+       * A Map rather than an array because coalescing has to MERGE rather than
+       * append: a PR that goes draft → open → merged inside one 250 ms window
+       * must arrive as one `{from: draft, to: merged}` and not as two rows a
+       * reader would have to stitch back together. The first `from` is the
+       * truth about where the window started, so it is never overwritten; `to`
+       * is the truth about where it ended, so it always is.
+       */
+      transitions: Map<string, PluginPrTransition>;
+    }
   >();
   let entityChangeTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -2414,11 +2438,21 @@ function createHost(args: PluginHostServiceArgs): PluginHostService {
       const all = [...queue.ids];
       const overflow = all.length > PLUGIN_EVENT_MAX_IDS;
       const ids = all.slice(0, PLUGIN_EVENT_MAX_IDS);
+      // Dropped WHOLE on overflow rather than truncated alongside `ids`. A
+      // transition list covering only the ids that fitted reads as complete —
+      // "these are the ones that moved" — and would send a plugin acting on a
+      // subset while believing it had the set. An overflowed delivery already
+      // means "re-read the entities named here", and that instruction is the
+      // same one a missing transition list gives.
+      const transitions = overflow
+        ? []
+        : [...queue.transitions.values()].slice(0, PLUGIN_EVENT_MAX_IDS);
       const payload = {
         event,
         ids,
         projectId: projectIdForRoot(queue.projectRoot),
         ...(overflow ? { overflow: true as const } : {}),
+        ...(transitions.length > 0 ? { transitions } : {}),
       };
       for (const [, supervisor] of running) {
         supervisor.send({ type: "event", payload });
@@ -2430,10 +2464,30 @@ function createHost(args: PluginHostServiceArgs): PluginHostService {
     if (disposed) return;
     const event = ENTITY_CHANGE_EVENT_NAMES[emission.family];
     const queue = pendingEntityChanges.get(event)
-      ?? { ids: new Set<string>(), projectRoot: emission.projectRoot };
+      ?? {
+        ids: new Set<string>(),
+        projectRoot: emission.projectRoot,
+        transitions: new Map<string, PluginPrTransition>(),
+      };
     for (const id of emission.ids) {
       const trimmed = id.trim();
       if (trimmed) queue.ids.add(trimmed);
+    }
+    for (const transition of emission.transitions ?? []) {
+      const id = transition.id.trim();
+      // An id the emission did not also name would put a transition in the
+      // payload for an entity `ids` never mentions. The producer's contract
+      // says that cannot happen; this is what makes it true rather than
+      // assumed.
+      if (!id || !queue.ids.has(id)) continue;
+      const seen = queue.transitions.get(id);
+      queue.transitions.set(id, {
+        id,
+        // First-seen `from` wins: it is where this window started, and the
+        // second emission's `from` is only the first one's `to` restated.
+        from: seen?.from ?? transition.from,
+        to: transition.to,
+      });
     }
     // Last writer names the project. Two checkouts changing inside one 250 ms
     // window is only possible on a machine running two brains, and the ids in

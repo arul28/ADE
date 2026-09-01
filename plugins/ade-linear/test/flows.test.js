@@ -357,7 +357,11 @@ describe("a merged pull request moving its issues to Done", () => {
     }];
     const moves = [];
     const built = build({
-      sdk: { lanes, config: { moveToDoneOnMerge: true, ...(overrides.config ?? {}) } },
+      sdk: {
+        lanes,
+        config: { moveToDoneOnMerge: true, ...(overrides.config ?? {}) },
+        ...(overrides.sdk ?? {}),
+      },
       api: {
         listTeamsAndStates: async () => doneStates,
         updateIssueState: async (...args) => moves.push(args),
@@ -444,6 +448,79 @@ describe("a merged pull request moving its issues to Done", () => {
     assert.deepEqual(moves, []);
   });
 
+  it("moves an issue linked ONLY to a chat inside the lane", async () => {
+    // The half a lane summary cannot carry. Core reads it through
+    // `laneService.listLinearIssuesForLaneSessions`; the plugin reads it
+    // through `lanes.listSessionIssues`.
+    const { data, flows, moves } = merged({
+      lane: { primaryIssue: null },
+      sdk: {
+        sessionIssues: {
+          "lane-1": [{
+            sessionId: "chat-1",
+            issueLinks: [{
+              issue: { provider: "linear", issueId: "z", key: "ENG-99", container: { key: "ENG" } },
+              closeOnMerge: true,
+            }],
+          }],
+        },
+      },
+    });
+    await data.refreshCatalog();
+    assert.equal((await flows.closeIssueOnMerge({ laneIds: ["lane-1"] })).moved, 1);
+    assert.deepEqual(moves, [["z", "s-done"]]);
+  });
+
+  it("leaves a session link that did NOT ask to close on merge", async () => {
+    const { data, flows, moves } = merged({
+      lane: { primaryIssue: null },
+      sdk: {
+        sessionIssues: {
+          "lane-1": [{
+            sessionId: "chat-1",
+            issueLinks: [{
+              issue: { provider: "linear", issueId: "z", container: { key: "ENG" } },
+              closeOnMerge: false,
+            }],
+          }],
+        },
+      },
+    });
+    await data.refreshCatalog();
+    await flows.closeIssueOnMerge({ laneIds: ["lane-1"] });
+    assert.deepEqual(moves, []);
+  });
+
+  it("de-duplicates an issue linked to BOTH the lane and a chat in it", async () => {
+    const { data, flows, moves } = merged({
+      sdk: {
+        sessionIssues: {
+          "lane-1": [{
+            sessionId: "chat-1",
+            issueLinks: [{
+              issue: { provider: "linear", issueId: "a", container: { key: "ENG" } },
+              closeOnMerge: true,
+            }],
+          }],
+        },
+      },
+    });
+    await data.refreshCatalog();
+    await flows.closeIssueOnMerge({ laneIds: ["lane-1"] });
+    assert.equal(moves.length, 1);
+  });
+
+  it("still closes the lane's own links on a host with no such verb", async () => {
+    // `unsupported_method` means "this build cannot tell you", which is not
+    // "there are none" — but it leads to the same smaller correct action.
+    const { data, flows, moves } = merged({
+      sdk: { listSessionIssuesThrows: Object.assign(new Error("no"), { code: "unsupported_method" }) },
+    });
+    await data.refreshCatalog();
+    assert.equal((await flows.closeIssueOnMerge({ laneIds: ["lane-1"] })).moved, 1);
+    assert.deepEqual(moves, [["a", "s-done"]]);
+  });
+
   it("answers zero for a lane with no Linear issue", async () => {
     const { data, flows } = merged({ lane: { primaryIssue: null } });
     await data.refreshCatalog();
@@ -494,6 +571,103 @@ describe("deriving the merge from pr.changed, which core does not have to", () =
       actions: { "pr.getDetail": async () => ({ pr: { state: "merged", laneId: null } }) },
     });
     assert.deepEqual(await flows.mergedLanesFromPrIds(["pr-1"]), []);
+  });
+});
+
+describe("using the transitions pr.changed now carries", () => {
+  function withDetails(overrides = {}) {
+    const reads = [];
+    const built = build({
+      actions: {
+        "pr.getDetail": async ({ prId }) => {
+          reads.push(prId);
+          const pr = overrides[prId] ?? { state: "open", laneId: `lane-${prId}` };
+          return { pr: { id: prId, ...pr } };
+        },
+      },
+    });
+    return { ...built, reads };
+  }
+
+  it("takes a merge from the transition rather than from a re-read of the state", async () => {
+    // The producer compared against the same previous state core's own merge
+    // handling reads, so this path agrees with core exactly. The re-read cannot:
+    // it sees only where the PR is now.
+    const { flows } = withDetails({ "pr-1": { state: "merged", laneId: "lane-1" } });
+
+    assert.deepEqual(await flows.mergedLanesFromPrIds({
+      ids: ["pr-1"],
+      transitions: [{
+        id: "pr-1",
+        from: { state: "open", merged: false },
+        to: { state: "merged", merged: true },
+      }],
+    }), ["lane-1"]);
+  });
+
+  it("ignores a PR that was ALREADY merged when the window opened", async () => {
+    // Core's `previousState !== "merged"` test. Without it, a re-poll of an
+    // already-merged PR would re-run the whole rule.
+    const { flows, reads } = withDetails({ "pr-1": { state: "merged", laneId: "lane-1" } });
+
+    assert.deepEqual(await flows.mergedLanesFromPrIds({
+      ids: ["pr-1"],
+      transitions: [{
+        id: "pr-1",
+        from: { state: "merged", merged: true },
+        to: { state: "merged", merged: true },
+      }],
+    }), []);
+    // And it costs nothing: an id the transition decided is never re-read.
+    assert.deepEqual(reads, []);
+  });
+
+  it("ignores a transition that did not end merged", async () => {
+    const { flows } = withDetails({ "pr-1": { state: "closed", laneId: "lane-1" } });
+
+    assert.deepEqual(await flows.mergedLanesFromPrIds({
+      ids: ["pr-1"],
+      transitions: [{
+        id: "pr-1",
+        from: { state: "open", merged: false },
+        to: { state: "closed", merged: false },
+      }],
+    }), []);
+  });
+
+  it("falls back to the re-read for the ids no transition covered", async () => {
+    // A mixed event: the producer knew about one PR and not the other. Both
+    // must be decided, and only the undescribed one costs a round trip.
+    const { flows, reads } = withDetails({
+      "pr-1": { state: "merged", laneId: "lane-1" },
+      "pr-2": { state: "merged", laneId: "lane-2" },
+    });
+
+    const lanes = await flows.mergedLanesFromPrIds({
+      ids: ["pr-1", "pr-2"],
+      transitions: [{
+        id: "pr-1",
+        from: { state: "open", merged: false },
+        to: { state: "merged", merged: true },
+      }],
+    });
+
+    assert.deepEqual(lanes.sort(), ["lane-1", "lane-2"]);
+    assert.deepEqual(reads, ["pr-1", "pr-2"]);
+  });
+
+  it("re-reads everything for a payload with no transitions at all", async () => {
+    // An older host, or a delivery whose ids overflowed the cap and dropped
+    // them. The weaker path still has to work.
+    const { flows } = withDetails({ "pr-1": { state: "merged", laneId: "lane-1" } });
+
+    assert.deepEqual(await flows.mergedLanesFromPrIds({ ids: ["pr-1"] }), ["lane-1"]);
+  });
+
+  it("still takes a bare array of ids, so an older caller keeps working", async () => {
+    const { flows } = withDetails({ "pr-1": { state: "merged", laneId: "lane-1" } });
+
+    assert.deepEqual(await flows.mergedLanesFromPrIds(["pr-1"]), ["lane-1"]);
   });
 });
 

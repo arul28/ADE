@@ -440,7 +440,7 @@ Three shapes that fit the platform well:
 **A borrowed action runs against ONE project, and you do not pick which.** The host resolves a project for you at call time — the project your call arrived through, or, when nothing pins one, an arbitrary attached project. Two consequences, both of which have cost an author a day:
 
 - **A project-scoped read can answer `[]` truthfully and uselessly.** `ade.actions.invoke("lane", "list")` takes no `projectId` and cannot be given one; it lists the lanes of whichever project the host resolved. An empty array means "that project has no lanes", which is not the same as "you asked the wrong project", and nothing in the answer tells the two apart. If you have a `laneId` already, prefer `lane.getSummary({laneId})` — it takes the id you hold instead of depending on the resolution.
-- **Nothing hands you a `projectId` at `activate`.** There is no project namespace on the SDK and no activate context that carries one. The first place a real `projectId` reaches you is a **change event** — `lane.changed`, `pr.changed`, `session.changed` and `install.changed` all carry `{event, ids[], projectId, overflow?}`. So a plugin that needs to know its project waits for one, rather than assuming the one it read at startup.
+- **Nothing hands you a `projectId` at `activate`.** There is no project namespace on the SDK and no activate context that carries one. The first place a real `projectId` reaches you is a **change event** — `lane.changed`, `pr.changed`, `session.changed` and `install.changed` all carry `{event, ids[], projectId, overflow?}`, and `pr.changed` adds `transitions?`. So a plugin that needs to know its project waits for one, rather than assuming the one it read at startup.
 
 If a project-scoped call comes back empty at `activate` and you expected rows, this is the first thing to suspect — not your query.
 
@@ -555,7 +555,7 @@ Parsing is **strict on keys it knows, tolerant of keys it does not**: an unknown
 | `theme` | no | Token sets — see *Themes* |
 | `network` | no | `{"hosts": ["api.cursor.com"]}`. Hosts your plugin's process may contact. Max **8**, lowercase, no scheme, no port, no IP. One leading `*.` wildcard is allowed and matches any subdomain depth. **Omit it and your plugin reaches nothing** — see *Outbound network* |
 | `providerKeys` | no | `["cursor"]`. Providers whose ADE-stored API key you read through `ade.secrets.getProviderKey`. Max **4**, from the api-key store's own ids — see *Provider keys* |
-| `authSessions[]` | no | `{id, provider, authorizeUrl, callbacks, loopback?}`. Sign-in flows the host runs for you. Max **2**. `authorizeUrl` is `https:` with no query or fragment; `callbacks` names `"loopback"` and/or `"app"`; `loopback` is required when `"loopback"` is one of them and its `port` is **1024–65535** — see *Signing the user in* |
+| `authSessions[]` | no | `{id, provider, authorizeUrl, clientId?, callbacks, loopback?}`. Sign-in flows the host runs for you. Max **2**. `authorizeUrl` is `https:` with no query or fragment; `clientId` is your app's **public** client id, at most 256 characters with no whitespace, and a declared-but-broken one drops the flow; `callbacks` names `"loopback"` and/or `"app"`; `loopback` is required when `"loopback"` is one of them and its `port` is **1024–65535** — see *Signing the user in* and *Where your `client_id` comes from* |
 | `credentialHandoff` | no | `["linear"]`. Built-in surfaces whose ADE-held credential you ask to inherit. Max **2**, official-only, and the host additionally refuses a built-in this plugin does not own — see *Inheriting a connection ADE already has* |
 | `projectSecrets` | no | `["STRIPE_API_KEY"]`. Names of **this project's** ADE secrets you read through `ade.actions.invoke("project_secret", "get", { name })`. Max **6**. **Omit it and you read none** — see *Project secrets* |
 | `webhookIngress[]` | no | `{id, label, description?, verify?}`. Webhook channels ADE receives for you at its relay. Max **4**; `id` is a URL path segment, so `^[a-z][a-z0-9-]{0,31}$` — see *Webhooks* |
@@ -710,6 +710,41 @@ On `linear`, accepting COPIES whichever of these ADE actually holds into your ow
 - **Uninstall forgets the answer**, so a reinstall asks again rather than inheriting a decision given to a package that is no longer on the machine.
 - `auth_unavailable` when there is something to hand over and nothing on this machine that can ask a person about it.
 - `secretNames` is keys, never values — it is your documentation of what to read, and it is safe to log. The values go into your secret store and nowhere else.
+
+### Where your `client_id` comes from
+
+`client_id` is the one authorize parameter you cannot invent, and there are exactly two supported ways to have one. Which one applies to you is decided by whether you are replacing something ADE already ships.
+
+**Community plugins: register your own app, and declare its id.** Put the app's *public* client id in the flow that uses it, so `ade plugin doctor` can print it for a plugin that is installed and not running — which is exactly when someone is setting the integration up:
+
+```json
+"authSessions": [{
+  "id": "linear",
+  "provider": "Linear",
+  "authorizeUrl": "https://linear.app/oauth/authorize",
+  "clientId": "e552c738cd63ea5967f08bbc9c09b54c",
+  "callbacks": ["loopback", "app"],
+  "loopback": { "port": 19836, "path": "/oauth/callback" }
+}]
+```
+
+- **Optional.** `beginSession` takes `client_id` in `params` either way, so a plugin with one client per region or per self-hosted install simply computes it and sends it there. Declaring it is a convenience, not a gate.
+- **Public values only.** A manifest ships inside the package and is world-readable, so anything in it is disclosed to everyone who installs the plugin. **Never put a client secret here.** A confidential client's secret belongs in `ade.secrets`, set by the user — or, better, nowhere at all: PKCE exists precisely so a distributed client does not need one.
+- **A declared-but-broken `clientId` drops the whole flow**, with a warning naming the field. Empty, over 256 characters, or carrying whitespace are all refusals rather than silent omissions: a flow that lost its client id would build an authorize URL missing the one parameter the provider identifies it by, and the symptom would be a provider error page you cannot see.
+
+**Official plugins: borrow ADE's.** A plugin that is the honoured owner of a built-in surface ADE bundles OAuth credentials for can ask for ADE's own registered client:
+
+```js
+const { clientId, authorizeUrl, scopes } = await ade.auth.officialClient("linear");
+```
+
+This is what makes OAuth work on a **fresh install**. `requestHandoff` moves a connection that already exists, so it does nothing on a clean machine and nothing for a user who declined — before this verb, both were left with a Connect button that could not build a URL the provider would accept, and a pasted API key as the only way in.
+
+- **The owner, and nobody else.** `ade-linear` owns the `linear` surface, so it may borrow the Linear client; `ade-graph` asking is `not_permitted`. Ownership comes from ADE's own table and never from anything your manifest claims.
+- **A provider ADE bundles nothing for is `not_permitted` too** — the same code, deliberately, so a plugin cannot enumerate which providers ADE has apps for by asking for each in turn.
+- **It never returns a client secret.** The answer has no field for one, and the host asserts that before it replies. The id alone is safe because it is already a query parameter of every authorize URL ADE has ever opened; the secret is ADE's identity to the provider and is not the user's to give.
+- **Use the `scopes` it names.** They are the registration's, not yours: an ADE-app Linear authorization only delivers data-change webhooks when it carries `admin`, so asking for a narrower grant would build a connection whose webhooks silently never fire.
+- **A stored id still wins.** After an exchange, the id the token was issued to is the only id its refresh can be redeemed with — so read your own store first, and use `officialClient` when it is empty. Compare the two to know which app you are presenting as: an id that matches ADE's is ADE's app, whether it arrived from the broker or through the handoff, and anything else is a client the user registered.
 - The install card says "Asks to use the Linear connection you already set up in ADE". *Asks*, because the install is not the consent — a separate card is, and this line is only the warning that it is coming.
 
 Call it once, at first run, and only when your own store is empty; everything after that reads `ade.secrets` like any other token you obtained yourself. Handle all three statuses where you draw your Connect button — `declined` and `empty` are not failures to report, they are the unconnected state you were already drawing.
@@ -882,7 +917,7 @@ Four of them share one shape, `{id, label, action?}`, deliberately, so an author
 | `searchProviders[]` | 2 | `{id, label, action}` | Invoked live with `{query}`. `action` defaults to `id` |
 | `keybindings[]` | 6 | `{binding, label, action}` | One chord, e.g. `"Mod+Shift+P"` |
 | `urlMatchers[]` | 8 | `{id, hosts, pathPattern, chip, panelId?, entity?}` | A URL shape that becomes a smart-link chip — see *Smart-link chips for your tracker* |
-| `authSessions[]` | 2 | `{id, provider, authorizeUrl, callbacks, loopback?}` | The host runs the flow; `id` is what `ade.auth.beginSession` names. The install card reads the `provider` and the loopback port off it before any code runs — see *Signing the user in* |
+| `authSessions[]` | 2 | `{id, provider, authorizeUrl, clientId?, callbacks, loopback?}` | The host runs the flow; `id` is what `ade.auth.beginSession` names. The install card reads the `provider` and the loopback port off it before any code runs. `clientId` is optional and must be a PUBLIC value — see *Signing the user in* |
 | `credentialHandoff` | 2 | `["linear"]` | Official-only, and only for the built-in this plugin owns — see *Inheriting a connection ADE already has* |
 
 **Over-cap and duplicate entries are warnings, not errors** — the offending entry drops and the plugin still installs. A manifest typo must not turn into a dead Marketplace listing.
@@ -2024,7 +2059,7 @@ exports.actions = {
 | `ade.collections.list(collection, {keyPrefix?, limit?})` | Rows as `{collection, key, value, updatedAt}`, ordered by key. **`limit` is clamped to 1,000 and defaults to 200** — a collection may hold 4,000 rows, so a list can never return all of them, and it is silent about the ones it left out. When you need to know about a specific set of keys, `get` them by key; a `list` is for a window, not for the whole store |
 | `ade.secrets.get/set/delete(name)` | Machine credential store, namespaced `plugin:<id>:<NAME>`. Never readable by another plugin |
 | `ade.contributions.publish(entityKind, entityId, socket, payload)` | Publish or clear (`payload: null`) a dynamic contribution |
-| `ade.events.on(event, cb)` | Two families — **change events** `lane.changed`, `pr.changed`, `session.changed`, `install.changed` (debounced; payload `{event, ids[], projectId, overflow?}`, where `overflow: true` means `ids` was truncated at the delivery cap and you should treat it as a bare refetch signal rather than trusting the partial list) and **runtime hooks** `turn.start`, `turn.end`, `tool.before` (told as they happen — see *Runtime hooks* below). Returns an unsubscribe function; call it, because a hook kind nobody subscribed to is never delivered at all |
+| `ade.events.on(event, cb)` | Two families — **change events** `lane.changed`, `pr.changed`, `session.changed`, `install.changed` (debounced; payload `{event, ids[], projectId, overflow?}`, where `overflow: true` means `ids` was truncated at the delivery cap and you should treat it as a bare refetch signal rather than trusting the partial list). `pr.changed` also carries `transitions?: [{id, from: {state, merged}, to: {state, merged}}]` when the producer knew where each PR moved from — see *Acting on a merge* and **runtime hooks** `turn.start`, `turn.end`, `tool.before` (told as they happen — see *Runtime hooks* below). Returns an unsubscribe function; call it, because a hook kind nobody subscribed to is never delivered at all |
 | `ade.panels.update(panelId, schema)` | Replace a panel's schema. Refused for a panel the manifest never declared |
 | `ade.config.get()` | Current values for `manifest.settings`, defaults applied. `secret` kinds are redacted |
 | `ade.config.set(key, value)` / `set({key: value, …})` | Write your own settings, so a `settings-section` form can save what it renders. Resolves the new effective config. Does **not** restart you, so it is safe inside an action handler, and the next `config.get()` sees it. Refused with `invalid_args` when: the key is not in `manifest.settings`; the value is the wrong kind for it (`toggle` wants a boolean, `number` a number, everything else text); a `select` value is not one of its declared `options`; or the setting's `kind` is `secret` — those go to `ade.secrets.set`, never into the plain config store. **`null` resets**: the stored override is dropped and the manifest `default` comes back |
@@ -2033,6 +2068,7 @@ exports.actions = {
 | `ade.schedules.create({action, cron\|runAt\|delaySeconds, args?, note?})` | Ask ADE to call one of **your own** actions later. `cron` is five-field local time and recurs; `runAt`/`delaySeconds` fire once and are then dropped. Rejects `plugin_budget_exceeded` past the quota |
 | `ade.schedules.list()` / `delete(scheduleId)` | Your schedules, never another plugin's. `delete` is idempotent. **Mind the two spellings:** the parameter is `scheduleId`, but a row from `list()` names the field **`id`** — so it is `delete(row.id)`, not `delete(row.scheduleId)`. Both spellings are accepted, and passing neither refuses with a message naming the row's field. Get this wrong and you delete `undefined`: the old schedule survives every settings save and walks into the live-schedule ceiling one change at a time |
 | `ade.lanes.list()` / `get(laneId)` | The lanes of the project you are bound to, non-archived, as a **fixed allowlist** of fields — no `worktreePath`, no `attachedRootPath`, no `devicesOpen`. Each carries `primaryIssue` and `issueLinks`. A host with no project bound answers `unsupported_method`, not an empty list: there are no lanes here, and retrying will not grow one |
+| `ade.lanes.listSessionIssues(laneId)` | The issues linked to the **sessions** inside a lane, as `[{sessionId, issueLinks[]}]`. The half a lane summary cannot carry: an issue attached to one chat inside the lane appears in neither `primaryIssue` nor `issueLinks`, so a rule built on those alone silently skips it. Union it with the lane's own links, deduped by `provider:issueId`, to see what ADE's own PR→Done rule sees. Each link is projected by the same allowlist the lane summary uses, and carries `closeOnMerge` — which is the flag to filter on, and which lives on the link and not on the ref |
 | `ade.lanes.linkIssue({laneId\|sessionId, issue, role?, includeInPr?, closeOnMerge?})` | Link an issue from **any** tracker to a lane or a chat/CLI session. Exactly one of `laneId` and `sessionId` — both, or neither, is `invalid_args`. `role` defaults to `"referenced"` (`primary` \| `worked` \| `referenced` \| `inferred`). `issue` is an `IssueRef` **without** `pluginId`: there is no field for it, because the host stamps your id from the connection that asked — see *Linking an issue* |
 | `ade.lanes.unlinkIssue({laneId\|sessionId, provider, issueId})` | Remove a link **you** created. `false` when there was none, which is not an error; `not_permitted` when it belongs to another plugin or to ADE itself, with a sentence naming the owner |
 | `ade.clipboard.read()` / `write(text)` | Machine clipboard, text only. A read returns whatever the user last copied — often a password they were moving between apps — so read it in response to something the user just did, never on a timer |
@@ -2246,6 +2282,34 @@ ade.events.on("pr.changed", async ({ ids }) => {
 ```
 
 Publishing `null` clears the badge — do that rather than leaving a stale one, and remember badges cap at 2 visible per row. Until the first publish lands, the PR rows carry no badge at all: a declaration reserves the slot and draws nothing.
+
+### Acting on a merge
+
+`pr.changed` is coalesced and its `ids` say nothing about what changed, so "this PR just merged" used to mean reading every named PR back and comparing it against whatever you last remembered. That is racy in both directions: a PR merged and reverted inside one coalesce window reads as never-merged, and a plugin that lost its memory treats every open PR as newly transitioned.
+
+So the producer says what happened, when it knew:
+
+```js
+ade.events.on("pr.changed", async ({ ids, transitions }) => {
+  const decided = new Set();
+  for (const { id, from, to } of transitions ?? []) {
+    decided.add(id);
+    if (from.merged || !to.merged) continue;      // already merged, or did not merge
+    await onMerged(id);
+  }
+  // Anything the producer could not describe still has to be decided.
+  for (const id of ids.filter((id) => !decided.has(id))) {
+    const { pr } = await ade.actions.invoke("pr", "getDetail", { prId: id });
+    if (pr?.state === "merged") await onMerged(id);
+  }
+});
+```
+
+- **`from.merged` is the test, not `to.merged` alone.** A re-poll of an already-merged PR arrives as `merged → merged`; acting on it would re-run your whole rule. This is the same `previousState !== "merged"` comparison ADE's own merge handling makes, against the same previous state, so this path agrees with core exactly.
+- **`transitions` is optional and you must handle its absence.** It is missing for a producer with no previous state to compare against — the first poll after a restart, a PR discovered this tick — and it is dropped entirely from an `overflow: true` delivery, because a transition list covering only the ids that fitted would read as complete.
+- **Every id in `transitions` also appears in `ids`.** The host drops any that does not, so the two never disagree.
+- **Coalescing keeps the first-seen `from` and the latest `to`.** A PR that went `draft → open → merged` inside one window arrives as one `draft → merged`, not as two rows to stitch together.
+- **A transition carries lifecycle position and nothing else** — no title, no branch, no lane. If you need to know what the PR was about, read it back; you now only pay for the ones that actually moved.
 
 ### A file viewer
 
