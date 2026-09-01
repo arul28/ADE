@@ -41,6 +41,12 @@ import {
   type PluginSocketRequirementField,
   type PluginSurfaceId,
 } from "./sockets";
+import {
+  isPluginBuiltinSurfaceId,
+  PLUGIN_BUILTIN_SURFACE_MOBILE,
+  PLUGIN_BUILTIN_SURFACE_PRESENCE,
+  type PluginBuiltinSurfaceId,
+} from "./builtinSurfaceRegistry";
 import { isValidPluginKeybinding } from "./keybindings";
 import { isValidPluginNetworkHost, PLUGIN_NETWORK_HOSTS_MAX } from "./network";
 import { isRecord, oneOf, trimmed as trimmedString } from "./parse";
@@ -134,112 +140,29 @@ export const PLUGIN_THEME_TOKEN_NAME_PATTERN = /^--[a-z0-9-]{1,60}$/;
 export type PluginSurfaceKind = "tab" | "pane" | "webview";
 
 /**
- * Tabs that ship compiled into the app and can be *gated* by a plugin rather
- * than rendered by one.
+ * The closed list of gateable compiled surfaces, and the tables keyed by it,
+ * now live in `builtinSurfaceRegistry.ts` — a module that imports nothing at
+ * all.
  *
- * Some of ADE's own tabs cannot be expressed as vocabulary — the Graph is an
- * interactive canvas, not a list of rows — but they are still optional weight
- * in the rail. A surface with `builtin` set does not draw anything: it says
- * "this plugin owns the existing tab named here", and the client renders its
- * own compiled page in place of a plugin panel. Uninstalling the plugin takes
- * every entry point for that compiled surface out of the product. Routes and
- * deeplinks must fail closed too; a hidden rail item is not an access control.
+ * They moved because `urlMatchers.ts` needs the owner half of that registry and
+ * cannot import this file: the arrow already runs the other way, since the
+ * manifest parser validates the URL-matcher pattern language. A leaf both
+ * modules can read replaced the hand-written mirror of the owner names that the
+ * cycle used to force.
  *
- * The list is CLOSED and lives here rather than in the renderer because every
- * client validates against it: a name outside it is a manifest typo, and
- * honouring it would produce a rail item that navigates nowhere.
+ * Re-exported from here, rather than re-pointing every caller, because roughly
+ * twenty modules across main, the renderer, the shared layer and `apps/ade-cli`
+ * already import these names from `manifest`. Only the file the constants live
+ * in changed; new code should import them from the registry directly.
  */
-export const PLUGIN_BUILTIN_SURFACE_IDS = [
-  "graph",
-  "review",
-  "history",
-  "linear",
-  "ios",
-  "app-control",
-  "cursor-cloud",
-] as const;
-
-export type PluginBuiltinSurfaceId = (typeof PLUGIN_BUILTIN_SURFACE_IDS)[number];
-
-export function isPluginBuiltinSurfaceId(value: unknown): value is PluginBuiltinSurfaceId {
-  return PLUGIN_BUILTIN_SURFACE_IDS.some((id) => id === value);
-}
-
-/**
- * Which way round the owner plugin and the compiled surface relate.
- *
- * Two opposite relationships share this one table, and a single boolean cannot
- * carry both:
- *
- * - `"enables"` — the plugin is the only reason the surface exists. ADE draws
- *   the compiled page only while the owner is installed and enabled. Every
- *   unknown hides it, so there is no state in which a surface appears because
- *   ADE was unsure. This is what Graph, Review, History, the iOS Simulator pane
- *   and Electron Control do: ADE never shipped any of those compiled, so there
- *   is nothing to hand back when the plugin leaves.
- * - `"supersedes"` — the plugin REPLACES a surface ADE already ships compiled.
- *   ADE draws the compiled page only while the owner is ABSENT. Every unknown
- *   SHOWS it, because the built-in is what the product has always done and a
- *   machine without the plugin must behave exactly as it did before the plugin
- *   existed. Hiding on an unknown would delete a shipped feature every time the
- *   registry had not resolved yet. This is what Cursor Cloud and Linear do: ADE
- *   shipped both compiled long before either plugin existed, and an install
- *   with no `ade-linear` must still be the Linear integration it was.
- *
- * The polarity also decides what the manifest may say. A `"supersedes"` surface
- * is never named by a `surfaces[].builtin` field: that field means "ADE draws
- * this compiled page in my place", and a plugin that supersedes a surface draws
- * its own panels instead. See {@link parseSurfaces}, which refuses the
- * combination rather than producing a rail item that navigates nowhere.
- *
- * Keyed by the closed id list above, so adding a gateable surface without
- * deciding this question does not compile.
- */
-export const PLUGIN_BUILTIN_SURFACE_PRESENCE: Readonly<
-  Record<PluginBuiltinSurfaceId, "enables" | "supersedes">
-> = {
-  graph: "enables",
-  review: "enables",
-  history: "enables",
-  linear: "supersedes",
-  ios: "enables",
-  "app-control": "enables",
-  "cursor-cloud": "supersedes",
-};
-
-/**
- * Which gated built-ins the phone has a page for.
- *
- * A `builtin` surface renders compiled code, not a panel schema, so "does it
- * appear on mobile" is a fact about what the iOS app SHIPS — not something a
- * manifest can decide. The phone ships a Linear pane and a Cursor Cloud screen;
- * the Graph canvas, Review, History, the simulator pane and Electron Control are
- * not ported, and declaring `mobile: true` on one of them would put a rail entry
- * in front of a renderer that does not exist. So the table is the ceiling and
- * the manifest may only narrow it.
- *
- * Keyed by the closed id list above, so adding a gateable surface without
- * deciding this question does not compile.
- *
- * `linear` and `cursor-cloud` both record `true` because the phone really does
- * ship those screens, which is the question this table asks. Nothing reads
- * either entry today, and that is now true of EVERY `true` in the table: the
- * ceiling only ever applies to a surface a manifest named with `builtin`, a
- * `"supersedes"` surface may not be named that way at all, and both of the
- * phone's screens supersede — see {@link PLUGIN_BUILTIN_SURFACE_PRESENCE}. So
- * the only rule that runs today is the clamp on a built-in the phone cannot
- * draw. The honest answer is still the one to record, so a later change that
- * does consult it does not read a lie.
- */
-export const PLUGIN_BUILTIN_SURFACE_MOBILE: Readonly<Record<PluginBuiltinSurfaceId, boolean>> = {
-  graph: false,
-  review: false,
-  history: false,
-  linear: true,
-  ios: false,
-  "app-control": false,
-  "cursor-cloud": true,
-};
+export {
+  isPluginBuiltinSurfaceId,
+  PLUGIN_BUILTIN_SURFACE_IDS,
+  PLUGIN_BUILTIN_SURFACE_MOBILE,
+  PLUGIN_BUILTIN_SURFACE_OWNER_IDS,
+  PLUGIN_BUILTIN_SURFACE_PRESENCE,
+  type PluginBuiltinSurfaceId,
+} from "./builtinSurfaceRegistry";
 
 const SURFACE_KINDS: readonly PluginSurfaceKind[] = ["tab", "pane", "webview"];
 

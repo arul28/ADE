@@ -16,7 +16,7 @@ import {
   PLUGIN_BUILTIN_SURFACE_PRESENCE,
   type PluginBuiltinSurfaceId,
 } from "./manifest";
-import { CORE_SMART_LINK_BUILTIN_OWNERS, CORE_SMART_LINK_HOST_BUILTINS } from "./urlMatchers";
+import { coreSmartLinkBuiltinsOwnedBy, CORE_SMART_LINK_HOST_BUILTINS } from "./urlMatchers";
 
 const CURSOR_CLOUD_INSTALLED = [{ pluginId: "ade-cursor-cloud", enabled: true }];
 const LINEAR_INSTALLED = [{ pluginId: "ade-linear", enabled: true }];
@@ -203,23 +203,27 @@ describe("hiddenBuiltinActionNames", () => {
 /**
  * The smart-link relaxation keys on OWNERSHIP, not on the `builtin` field.
  *
- * `urlMatchers.ts` sits below `builtinSurfaces.ts` in the import graph, so it
- * hand-mirrors which package owns each surface behind a core smart-link host.
- * A drift there costs `ade-linear` the `linear.app` matcher it ships, silently,
- * so the mirror is pinned here rather than trusted.
+ * `urlMatchers.ts` used to hand-mirror which package owns each surface behind a
+ * core smart-link host, because `builtinSurfaces.ts` imports it and the arrow
+ * could not run back; two cases here pinned the mirror against the real table.
+ * Both owner maps now read `PLUGIN_BUILTIN_SURFACE_OWNER_IDS` out of
+ * `builtinSurfaceRegistry.ts`, so there is no second copy left to drift and the
+ * pinning cases are gone with it. What is still worth asserting is the OUTPUT:
+ * a drift here costs `ade-linear` the `linear.app` matcher it ships, silently.
  */
 describe("core smart-link host ownership", () => {
-  it("names a real owner for every built-in a core host unlocks", () => {
+  it("hands each built-in a core host unlocks to its registered owner", () => {
     for (const builtinId of Object.values(CORE_SMART_LINK_HOST_BUILTINS)) {
-      const owner = builtinSurfaceOwner(builtinId as PluginBuiltinSurfaceId);
-      expect(CORE_SMART_LINK_BUILTIN_OWNERS[builtinId], builtinId).toBe(owner.ownerPluginId);
+      const owner = builtinSurfaceOwner(builtinId);
+      expect(coreSmartLinkBuiltinsOwnedBy(owner.ownerPluginId), builtinId).toContain(builtinId);
     }
   });
 
-  it("declares no owner for a surface no core host unlocks", () => {
-    const unlocked = new Set(Object.values(CORE_SMART_LINK_HOST_BUILTINS));
-    for (const builtinId of Object.keys(CORE_SMART_LINK_BUILTIN_OWNERS)) {
-      expect(unlocked.has(builtinId), builtinId).toBe(true);
+  it("hands nothing to a package that owns no unlocked surface", () => {
+    const unlocked = new Set<string>(Object.values(CORE_SMART_LINK_HOST_BUILTINS));
+    for (const owner of BUILTIN_SURFACE_OWNERS) {
+      if (unlocked.has(owner.builtinId)) continue;
+      expect(coreSmartLinkBuiltinsOwnedBy(owner.ownerPluginId), owner.ownerPluginId).toEqual([]);
     }
   });
 });

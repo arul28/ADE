@@ -1,6 +1,13 @@
 /**
- * Which official plugin owns each compiled surface, and the one pure question
- * "is that owner installed and enabled here?".
+ * Everything ADE knows about a compiled surface beyond its bare identity — the
+ * route it sits at, what to call it, the action domains and action names its
+ * owner gates — and the one pure question "is that owner installed and enabled
+ * here?".
+ *
+ * The id list, the polarity, the mobile ceiling and the bare
+ * builtin-id → owner-plugin-id map live one module down, in
+ * `builtinSurfaceRegistry.ts`, which imports nothing. This file is the rich
+ * table hung off those ids; it does not spell an owner name of its own.
  *
  * The renderer answers this from the plugin registry it already holds in the
  * root store; the main process answers it by reading `state.json` off disk. The
@@ -14,17 +21,27 @@
  * the membership test.
  */
 
-import { PLUGIN_BUILTIN_SURFACE_PRESENCE, type PluginBuiltinSurfaceId } from "./manifest";
+import {
+  PLUGIN_BUILTIN_SURFACE_OWNER_IDS,
+  PLUGIN_BUILTIN_SURFACE_PRESENCE,
+  type PluginBuiltinSurfaceId,
+} from "./builtinSurfaceRegistry";
 
 export type BuiltinSurfaceOwner = {
   builtinId: PluginBuiltinSurfaceId;
   /** Null for compiled panes that live inside Work rather than at a route. */
   route: string | null;
   /**
-   * The official plugin that owns it. Held in this table rather than discovered
-   * from whichever installed plugin happens to declare `builtin`, so a plugin
-   * cannot take over a core surface by naming it: the manifest field says "I
-   * gate the surface I am registered for", and this table is the registration.
+   * The official plugin that owns it, read from
+   * {@link PLUGIN_BUILTIN_SURFACE_OWNER_IDS} rather than spelled again here.
+   *
+   * That map is the registration, and it lives one module down in
+   * `builtinSurfaceRegistry.ts` because `urlMatchers.ts` needs the same answer
+   * and cannot import this file. Ownership is held in a table at all — rather
+   * than discovered from whichever installed plugin happens to declare
+   * `builtin` — so a plugin cannot take over a core surface by naming it: the
+   * manifest field says "I gate the surface I am registered for", and the
+   * registry is where it is registered.
    */
   ownerPluginId: string;
   /** What to call it when ADE has to explain that it is not here. */
@@ -158,9 +175,9 @@ const CURSOR_CLOUD_ACTION_NAMES: readonly string[] = [
 ];
 
 export const BUILTIN_SURFACE_OWNERS: readonly BuiltinSurfaceOwner[] = [
-  { builtinId: "graph", route: "/graph", ownerPluginId: "ade-graph", title: "Graph", actionDomains: [], actionNames: [] },
-  { builtinId: "review", route: "/review", ownerPluginId: "ade-review", title: "Review", actionDomains: [], actionNames: [] },
-  { builtinId: "history", route: "/history", ownerPluginId: "ade-history", title: "History", actionDomains: [], actionNames: [] },
+  { builtinId: "graph", route: "/graph", ownerPluginId: PLUGIN_BUILTIN_SURFACE_OWNER_IDS.graph, title: "Graph", actionDomains: [], actionNames: [] },
+  { builtinId: "review", route: "/review", ownerPluginId: PLUGIN_BUILTIN_SURFACE_OWNER_IDS.review, title: "Review", actionDomains: [], actionNames: [] },
+  { builtinId: "history", route: "/history", ownerPluginId: PLUGIN_BUILTIN_SURFACE_OWNER_IDS.history, title: "History", actionDomains: [], actionNames: [] },
   {
     // The second SUPERSEDED surface, and the one the whole polarity was built
     // for: ADE has shipped a compiled Linear integration since long before the
@@ -170,7 +187,7 @@ export const BUILTIN_SURFACE_OWNERS: readonly BuiltinSurfaceOwner[] = [
     // never both.
     builtinId: "linear",
     route: null,
-    ownerPluginId: "ade-linear",
+    ownerPluginId: PLUGIN_BUILTIN_SURFACE_OWNER_IDS.linear,
     title: "Linear",
     // Deliberately empty, and this is the difference from an `"enables"`
     // vertical. Refusing `linear_issue_tracker.*` by domain would break every
@@ -181,8 +198,8 @@ export const BUILTIN_SURFACE_OWNERS: readonly BuiltinSurfaceOwner[] = [
     actionDomains: [],
     actionNames: LINEAR_ACTION_NAMES,
   },
-  { builtinId: "ios", route: null, ownerPluginId: "ade-ios-sim", title: "iOS Simulator", actionDomains: ["ios_simulator"], actionNames: [] },
-  { builtinId: "app-control", route: null, ownerPluginId: "ade-app-control", title: "Electron Control", actionDomains: ["app_control"], actionNames: [] },
+  { builtinId: "ios", route: null, ownerPluginId: PLUGIN_BUILTIN_SURFACE_OWNER_IDS.ios, title: "iOS Simulator", actionDomains: ["ios_simulator"], actionNames: [] },
+  { builtinId: "app-control", route: null, ownerPluginId: PLUGIN_BUILTIN_SURFACE_OWNER_IDS["app-control"], title: "Electron Control", actionDomains: ["app_control"], actionNames: [] },
   {
     // Superseded, like `linear` above: `ade-cursor-cloud` replaces ADE's
     // compiled fleet button, fleet modal, composer cloud row and `/cloud`
@@ -191,7 +208,7 @@ export const BUILTIN_SURFACE_OWNERS: readonly BuiltinSurfaceOwner[] = [
     // `PLUGIN_BUILTIN_SURFACE_PRESENCE`.
     builtinId: "cursor-cloud",
     route: null,
-    ownerPluginId: "ade-cursor-cloud",
+    ownerPluginId: PLUGIN_BUILTIN_SURFACE_OWNER_IDS["cursor-cloud"],
     title: "Cursor Cloud",
     // No domain of its own: ADE's Cursor Cloud verbs live in `ai`. They are
     // named individually below instead.

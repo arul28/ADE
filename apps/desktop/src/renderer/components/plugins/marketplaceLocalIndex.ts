@@ -17,9 +17,14 @@
  * the unranked tail — which is exactly where an unmeasured plugin belongs.
  *
  * The manifests below are the real shapes these plugins ship, so the install
- * modal's "Adds" list is derived rather than written by hand. Keeping them in
- * step with the published manifests is a Wave F/E concern; a drift here shows
- * as a wrong "Adds" list, never as a wrong install.
+ * modal's "Adds" list is derived rather than written by hand. They are copies —
+ * this module is bundled into the renderer by Vite and `plugins/` sits outside
+ * the Vite root, so there is no import that could read the real file — and a
+ * copy drifts silently: the install still works, but `describeManifestAdds`
+ * under-reports what the package adds on exactly the path where this file is
+ * what the reader sees (offline, or before the directory has the entry).
+ * `marketplaceLocalIndex.test.ts` deep-equals every literal below against its
+ * `plugins/<id>/plugin.json`, so keep them complete and let that test pin them.
  */
 
 import type { PluginManifest } from "../../../shared/plugins/manifest";
@@ -37,7 +42,15 @@ import { surfacesFromManifest } from "./marketplaceModel";
  */
 const REGISTRY_ORG = "https://github.com/arul28";
 
-/** Fills the fields every manifest has but most official plugins leave empty. */
+/**
+ * Fills the fields every manifest has but most official plugins leave empty.
+ *
+ * Exported below as `withBundledManifestDefaults` for one caller: the mirror
+ * test, which has to run a parsed `plugin.json` through the identical defaults
+ * before it can compare. A `plugin.json` omits everything defaulted here, so a
+ * test that normalised only one side would report a dozen phantom differences
+ * and drown the real one.
+ */
 function manifest(partial: Partial<PluginManifest> & Pick<PluginManifest,
   "name" | "version" | "displayName" | "description">): PluginManifest {
   return {
@@ -120,11 +133,14 @@ const HISTORY = manifest({
  *
  * The gate is gone. `linear` is a SUPERSEDED surface now, so the plugin may not
  * name it with `builtin` at all — it draws its own panels and ADE's compiled
- * Linear steps aside. What is left is an ordinary package: a `tab`, seven
- * sockets, its own collections, its own credential. The one official-only thing
- * is the `urlMatchers` entry claiming `linear.app`, which only the plugin that
- * OWNS the `linear` built-in surface may do — and ownership, not the `builtin`
- * field, is what unlocks it.
+ * Linear steps aside. What is left is an ordinary package, and the biggest one
+ * ADE ships: a `tab`, seven sockets, five panels, eight collections, three
+ * settings, five automation triggers, four automation steps, a search provider,
+ * a keybinding, nine agent tools, a CLI word, a skills directory, its own
+ * OAuth flow and its own credential handoff. The one official-only thing is the
+ * `urlMatchers` entry claiming `linear.app`, present below, which only the
+ * plugin that OWNS the `linear` built-in surface may declare — and ownership,
+ * not the `builtin` field, is what unlocks it.
  */
 const LINEAR = manifest({
   name: "ade-linear",
@@ -136,10 +152,34 @@ const LINEAR = manifest({
   entry: "index.js",
   network: { hosts: ["api.linear.app"] },
   credentialHandoff: ["linear"],
+  // Declared, not optional: the install card has to be able to say "signs you
+  // in to Linear" before any of the plugin's code runs, and `authorizeUrl` is
+  // the one value a runtime argument may never choose.
+  authSessions: [{
+    id: "linear",
+    provider: "Linear",
+    authorizeUrl: "https://linear.app/oauth/authorize",
+    callbacks: ["loopback", "app"],
+    loopback: { port: 19837, path: "/oauth/callback" },
+  }],
   webhookIngress: [{
     id: "linear",
     label: "Linear issue events",
     description: "Paste this URL into Linear's webhook settings so an issue that changes wakes ADE.",
+    // Linear signs with its OWN secret, so the relay's per-plugin check is not
+    // the only one that has to pass — the host verifies this signature itself,
+    // constant-time, before a delivery goes anywhere near the plugin child.
+    verify: { kind: "hmac-sha256", secretRef: "LINEAR_WEBHOOK_SECRET", header: "linear-signature" },
+  }],
+  // The official-only claim on `linear.app`. See the block comment above: it is
+  // ownership of the superseded `linear` built-in surface that unlocks this,
+  // and it is why the plugin needs no `builtin` field to replace it.
+  urlMatchers: [{
+    id: "issue",
+    hosts: ["linear.app"],
+    pathPattern: "/{workspace}/issue/{key}/**",
+    chip: { label: "{key}", icon: "L" },
+    panelId: "issue",
   }],
   surfaces: [
     { kind: "tab", id: "issues", title: "Linear", icon: "list-checks", panelId: "issues", order: 55, mobile: true },
@@ -171,6 +211,194 @@ const LINEAR = manifest({
     { id: "settings", schemaFile: "panels/settings.json", title: "Linear connection", icon: "list-checks", refreshAction: "refreshConnection" },
     { id: "launch", schemaFile: "panels/launch.json", title: "Launch", icon: "rocket" },
   ],
+  // `sync: false` is a decision, not an omission. Comments and webhook
+  // deliveries are per-machine working state — replaying them to every device
+  // would put the same delivery through the plugin twice.
+  collections: {
+    issues: { sync: true },
+    comments: { sync: false },
+    teams: { sync: true },
+    states: { sync: true },
+    projects: { sync: true },
+    people: { sync: true },
+    viewer: { sync: true },
+    deliveries: { sync: false },
+  },
+  settings: [
+    {
+      key: "moveToDoneOnMerge",
+      kind: "toggle",
+      label: "Move the issue to Done when its pull request merges",
+      description: "Only issues linked to the lane with \"close on merge\" are moved.",
+      default: false,
+    },
+    {
+      key: "moveToStartedOnLaunch",
+      kind: "toggle",
+      label: "Move the issue to In Progress when an agent starts on it",
+      description: "Uses the team's first started workflow state.",
+      default: false,
+    },
+    {
+      key: "defaultTeamKey",
+      kind: "text",
+      label: "Default team key",
+      description: "Used when a command does not name a team, e.g. ENG.",
+    },
+  ],
+  automationTriggers: [
+    { id: "issue_created", label: "A Linear issue is created", description: "Fires when Linear reports a new issue." },
+    { id: "issue_updated", label: "A Linear issue is updated", description: "Fires when any field of an issue changes." },
+    { id: "issue_assigned", label: "A Linear issue is assigned", description: "Fires when an issue's assignee changes." },
+    { id: "issue_status_changed", label: "A Linear issue changes state", description: "Fires when an issue moves to another workflow state." },
+    { id: "issue_labeled", label: "A Linear issue is labeled", description: "Fires when a label is added to an issue." },
+  ],
+  automationSteps: [
+    { id: "set_issue_state", label: "Move a Linear issue to a state", action: "stepSetIssueState" },
+    { id: "comment_on_issue", label: "Comment on a Linear issue", action: "stepCommentOnIssue" },
+    { id: "assign_issue", label: "Assign a Linear issue", action: "stepAssignIssue" },
+    { id: "close_issue_on_merge", label: "Move a merged lane's Linear issue to Done", action: "stepCloseIssueOnMerge" },
+  ],
+  searchProviders: [
+    { id: "issues", label: "Linear", action: "searchIssuesProvider" },
+  ],
+  keybindings: [
+    { action: "openIssues", binding: "Mod+Shift+L", label: "Open Linear issues" },
+  ],
+  // Nine tools, spelled out rather than summarised, because the install
+  // disclosure names each one: "an agent can call these" is the widest thing on
+  // the card, and a copy that lists four of nine understates it.
+  tools: [
+    {
+      name: "get_issue",
+      description: "Fetch a Linear issue by its id or identifier (e.g. 'ABC-42'), with state, labels, assignee and description.",
+      action: "getIssueTool",
+      input: {
+        type: "object",
+        properties: {
+          issueId: { type: "string", description: "The issue id (UUID) or identifier (e.g. 'PROJ-123')." },
+        },
+        required: ["issueId"],
+      },
+    },
+    {
+      name: "search_issues",
+      description: "Search Linear issues by text, team, project, assignee, priority or state type.",
+      action: "searchIssuesTool",
+      input: {
+        type: "object",
+        properties: {
+          query: { type: "string", description: "Free text matched against title and description." },
+          teamKey: { type: "string", description: "Team key, e.g. 'ENG'." },
+          projectId: { type: "string", description: "Linear project id." },
+          assigneeId: { type: "string", description: "Assignee user id." },
+          priority: { type: "integer", description: "Priority 0 (none) to 4 (low)." },
+          stateTypes: {
+            type: "array",
+            description: "State types to include.",
+            items: {
+              type: "string",
+              enum: ["triage", "backlog", "unstarted", "started", "completed", "canceled"],
+            },
+          },
+          limit: { type: "integer", description: "How many issues to return. Defaults to 50, at most 100." },
+        },
+        required: [],
+      },
+    },
+    {
+      name: "add_comment",
+      description: "Post a comment on a Linear issue. Use it to report progress or document findings on the issue you are working on.",
+      action: "addCommentTool",
+      input: {
+        type: "object",
+        properties: {
+          issueId: { type: "string", description: "The issue id or identifier." },
+          body: { type: "string", description: "The comment body, in markdown." },
+        },
+        required: ["issueId", "body"],
+      },
+    },
+    {
+      name: "update_issue_state",
+      description: "Move a Linear issue to another workflow state. Call list_states first to find the state id.",
+      action: "updateIssueStateTool",
+      input: {
+        type: "object",
+        properties: {
+          issueId: { type: "string", description: "The issue id or identifier." },
+          stateId: { type: "string", description: "The target workflow state id (UUID)." },
+        },
+        required: ["issueId", "stateId"],
+      },
+    },
+    {
+      name: "list_states",
+      description: "List the workflow states of a Linear team. Use it to look up a state id before update_issue_state.",
+      action: "listStatesTool",
+      input: {
+        type: "object",
+        properties: {
+          teamKey: { type: "string", description: "Team key, e.g. 'ENG'. Omit for every team." },
+        },
+        required: [],
+      },
+    },
+    {
+      name: "assign_issue",
+      description: "Assign a Linear issue to a user, or clear its assignee.",
+      action: "assignIssueTool",
+      input: {
+        type: "object",
+        properties: {
+          issueId: { type: "string", description: "The issue id or identifier." },
+          assigneeId: { type: "string", description: "The user id, or omit to clear the assignee." },
+        },
+        required: ["issueId"],
+      },
+    },
+    {
+      name: "add_label",
+      description: "Add an existing label to a Linear issue, by label name.",
+      action: "addLabelTool",
+      input: {
+        type: "object",
+        properties: {
+          issueId: { type: "string", description: "The issue id or identifier." },
+          labelName: { type: "string", description: "The label name, which must already exist." },
+        },
+        required: ["issueId", "labelName"],
+      },
+    },
+    {
+      name: "create_lane_for_issue",
+      description: "Create an ADE lane for a Linear issue, on the branch name Linear expects, and link the issue to it.",
+      action: "createLaneForIssueTool",
+      input: {
+        type: "object",
+        properties: {
+          issueId: { type: "string", description: "The issue id or identifier." },
+          baseRef: { type: "string", description: "Branch to cut from. Defaults to the project's base branch." },
+        },
+        required: ["issueId"],
+      },
+    },
+    {
+      name: "graphql",
+      description: "Run a raw GraphQL query or mutation against the Linear API, for anything the other tools do not cover.",
+      action: "graphqlTool",
+      input: {
+        type: "object",
+        properties: {
+          query: { type: "string", description: "The GraphQL query or mutation." },
+          variables: { type: "object", description: "Variables for the operation.", properties: {}, required: [] },
+        },
+        required: ["query"],
+      },
+    },
+  ],
+  cli: ["linear"],
+  skills: ["skills"],
 });
 
 const IOS_SIM = manifest({
@@ -182,6 +410,10 @@ const IOS_SIM = manifest({
   accent: "#8A8F98",
   surfaces: [{ kind: "pane", id: "ios-sim", title: "iOS Simulator", icon: "device-mobile", panelId: "main", builtin: "ios", mobile: false }],
   panels: [{ id: "main", schemaFile: "panels/main.json", title: "iOS Simulator" }],
+  // A gate that still ships something an agent reads: the package carries an
+  // agent-skill directory, and "adds an agent skill" is a line on the install
+  // card, so leaving it off understated a plugin that is otherwise a switch.
+  skills: ["skills"],
 });
 
 const APP_CONTROL = manifest({
@@ -193,6 +425,9 @@ const APP_CONTROL = manifest({
   accent: "#47848F",
   surfaces: [{ kind: "pane", id: "app-control", title: "Electron Control", icon: "desktop", panelId: "main", builtin: "app-control", mobile: false }],
   panels: [{ id: "main", schemaFile: "panels/main.json", title: "Electron Control" }],
+  // Same as `ade-ios-sim`: a compiled pane, plus a skill directory the agent
+  // gets on install. Both belong on the card.
+  skills: ["skills"],
 });
 
 const LOG_VIEWER = manifest({
@@ -254,6 +489,15 @@ const VOICE = manifest({
       actionId: "dictate",
     },
   ],
+  // The one thing dictation reaches off the machine for: the speech model, on
+  // first use. Declared because the install card's network line is derived from
+  // it, and a plugin that says "on-device" while fetching 141 MB from a host
+  // the card never named is the disclosure failure this field exists to stop.
+  //
+  // Its sibling `extraDownloads` — the 141 MB itself — is a registry-index
+  // field rather than a manifest one, so it has no place in this literal; the
+  // mirror test names it as the single allowed exception.
+  network: { hosts: ["huggingface.co", "*.huggingface.co", "*.hf.co"] },
 });
 
 /**
@@ -339,6 +583,81 @@ const CURSOR_CLOUD = manifest({
       actionId: "openFleet",
     },
   ],
+  // `laneSecrets` and `deliveries` stay local: one holds per-machine secrets
+  // and the other webhook deliveries, and syncing either would replay a
+  // delivery through a second machine's plugin child.
+  collections: {
+    fleet: { sync: true },
+    sessions: { sync: true },
+    deliveries: { sync: false },
+    laneSecrets: { sync: false },
+  },
+  settings: [
+    { key: "autoOpenPr", kind: "toggle", label: "Open a PR when a run finishes", default: false },
+  ],
+  automationTriggers: [
+    { id: "cloud_finished", label: "A Cursor Cloud agent finishes", description: "Fires when Cursor reports a run FINISHED." },
+    { id: "cloud_error", label: "A Cursor Cloud agent errors", description: "Fires when Cursor reports a run ERROR." },
+  ],
+  automationSteps: [
+    { id: "stop_agent", label: "Stop a Cursor Cloud agent", action: "stopRun" },
+    { id: "pull_into_lane", label: "Pull the agent's branch into its lane", action: "pullIntoLane" },
+  ],
+  searchProviders: [
+    { id: "agents", label: "Cursor Cloud", action: "searchAgents" },
+  ],
+  tools: [
+    {
+      name: "list_agents",
+      description: "List this project's Cursor Cloud agents, newest first.",
+      action: "listAgents",
+      input: {
+        type: "object",
+        properties: {
+          includeArchived: { type: "boolean", description: "Include archived agents." },
+          limit: { type: "integer", description: "How many agent rows to walk. Defaults to 100, at most 200." },
+        },
+        required: [],
+      },
+    },
+    {
+      name: "launch_agent",
+      description: "Start a Cursor Cloud agent on this lane's branch.",
+      action: "createRun",
+      input: {
+        type: "object",
+        properties: {
+          prompt: { type: "string", description: "What the agent should do." },
+          laneId: { type: "string", description: "The lane whose branch the agent works on." },
+          model: { type: "string", description: "Cursor model id. Omit for Cursor's default." },
+          openPr: { type: "boolean", description: "Open a pull request when the run finishes." },
+        },
+        required: ["prompt"],
+      },
+    },
+    {
+      name: "stop_agent",
+      description: "Stop a running Cursor Cloud agent.",
+      action: "stopRun",
+      input: {
+        type: "object",
+        properties: { agentId: { type: "string", description: "The agent id." } },
+        required: ["agentId"],
+      },
+    },
+    {
+      name: "pull_into_lane",
+      description: "Fetch a finished Cursor Cloud agent's branch into its lane.",
+      action: "pullIntoLane",
+      input: {
+        type: "object",
+        properties: { agentId: { type: "string", description: "The agent id." } },
+        required: ["agentId"],
+      },
+    },
+  ],
+  cli: ["agents", "runs", "artifacts", "repos", "me"],
+  skills: ["skills"],
 });
 
 /**
@@ -1247,3 +1566,31 @@ export const MARKETPLACE_LOCAL_INDEX: readonly MarketplaceListing[] = [
     ].join("\n"),
   }),
 ];
+
+/* ── The mirror seam ────────────────────────────────────────────────────── */
+
+/**
+ * The bundled manifests, by plugin id.
+ *
+ * Derived from {@link MARKETPLACE_LOCAL_INDEX} rather than declared beside the
+ * literals, so it cannot list a manifest the gallery does not offer or miss one
+ * it does. Its reason to exist is the mirror test: every entry here is compared
+ * field for field against `plugins/<id>/plugin.json`, which is the only thing
+ * keeping a hand-copied manifest honest. `listing()` always passes a manifest,
+ * so the cast below is reading a type that is `| null` for directory entries.
+ */
+export const BUNDLED_MANIFESTS_BY_ID: Readonly<Record<string, PluginManifest>> =
+  Object.freeze(Object.fromEntries(
+    MARKETPLACE_LOCAL_INDEX.map((entry) => [entry.pluginId, entry.manifest as PluginManifest]),
+  ));
+
+/**
+ * The default-filling helper above, under a name that reads outside this file.
+ *
+ * Exported for the mirror test and nothing else: a `plugin.json` omits every
+ * field defaulted here, so the test has to put the parsed file through the
+ * identical defaults before it can compare the two. Re-exported rather than
+ * renamed in place because `manifest({...})` is what the twelve literals above
+ * read as, and spelling it out at each of them would bury them.
+ */
+export { manifest as withBundledManifestDefaults };
