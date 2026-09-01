@@ -403,7 +403,7 @@ function signingSecretBlock(ingress = {}) {
       text: prose(
         stored
           ? "ADE checks every delivery against this secret. Paste a new one here if you re-create the webhook in Linear."
-          : "Until you paste the signing secret, anyone who learns the URL above can post a fake issue event and fire your automation rules. Linear shows the secret once, when the webhook is created.",
+          : "Until you paste the signing secret, ADE drops every delivery from this webhook, so no issue events reach your automations. Linear shows the secret once, when the webhook is created.",
       ),
     },
     {
