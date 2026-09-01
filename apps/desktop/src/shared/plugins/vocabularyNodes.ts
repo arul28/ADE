@@ -91,25 +91,23 @@ export const VOCAB_LIMITS = {
    * Rows one `list` may hold, and the ceiling a client reads a bound
    * collection up to.
    *
-   * 250 rather than 100, because 100 was the number that made a plugin's list
-   * visibly poorer than the built-in it replaced: the desktop issue browser
-   * pages to 500. The byte budget does not object. A BOUND row lives in
-   * `plugin_collections` and never touches `maxSchemaBytes`, so 250 bound rows
-   * cost the schema one node. An INLINE list is the only one that spends
-   * bytes, and there `maxSchemaBytes` was always the real ceiling and still is:
-   * a fully dressed row — key, title, subtitle, meta, badge, mono, a press and
-   * three trailing actions — measures 580 bytes, so 112 of them fill the whole
-   * 64 KiB budget and the writer refuses the panel long before 250. A plain
-   * inline row measures 82 bytes, so 250 of those spend 20,750 bytes, under a
-   * third of the budget, and leave the rest of the panel room to exist.
+   * 1000 rather than 250, because 250 was still a reduced issue browser: the
+   * compiled desktop list pages to 500 and the phone to ~1000 on scroll. The
+   * byte budget does not object for BOUND rows — they live in
+   * `plugin_collections` and never touch `maxSchemaBytes`, so 1000 of them cost
+   * the schema one node. An INLINE list is the only one that spends bytes, and
+   * there `maxSchemaBytes` remains the real ceiling: a fully dressed row
+   * measures ~580 bytes, so ~112 of them fill 64 KiB long before 1000; a plain
+   * inline row measures 82 bytes, so 1000 of those would be 82 KiB and the
+   * writer refuses the panel. Bound is the case this number is for.
    *
-   * A client does not draw all 250 at once — see
+   * A client does not draw all 1000 at once — see
    * {@link VOCAB_LIMITS.listPageSize}.
    */
-  maxListItems: 250,
+  maxListItems: 1000,
   /**
    * How many rows a `list` draws before the reader asks for more, and how many
-   * one "Show more" adds.
+   * one scroll-to-load (or "Show more") adds.
    *
    * Client-local, per list, and never panel state: how far a reader has scrolled
    * a list is a statement about their screen, not about which rows the panel is
@@ -423,7 +421,7 @@ export type VocabListItemAction = VocabAction & {
  * row out of `stack`, `badge`, `text` and `button` nodes spent about seven nodes
  * a row, which meant `maxNodes: 200` capped the panel at roughly 27 rows. As one
  * item it is one node's worth of budget for the whole list, so `maxListItems`
- * (250) becomes the real ceiling — see {@link VOCAB_LIMITS.maxListItemActions}.
+ * (1000, for bound rows) becomes the real ceiling — see {@link VOCAB_LIMITS.maxListItemActions}.
  *
  * Every field past `title` is optional, so a row written before any of them
  * existed still parses to exactly what it always did.
@@ -453,6 +451,18 @@ export type VocabListItem = {
   actions?: VocabListItemAction[];
   /** Behind an overflow control, up to {@link VOCAB_LIMITS.maxListItemOverflow}. */
   overflow?: VocabListItemAction[];
+  /**
+   * Hover card on desktop and web. iOS shows it as a context-menu preview; the
+   * TUI has no hover and omits it. Not a body node — it is row data, so a bound
+   * collection can ship it the same way it ships `subtitle`.
+   */
+  preview?: VocabListItemPreview;
+};
+
+/** What a list row shows when the pointer rests on it. */
+export type VocabListItemPreview = {
+  title?: string;
+  text?: string;
 };
 
 /**
@@ -1182,6 +1192,7 @@ function readListItem(
   const badge = parseListItemBadge(raw.badge);
   const actions = parseListItemActions(raw.actions, VOCAB_LIMITS.maxListItemActions, gate);
   const overflow = parseListItemActions(raw.overflow, VOCAB_LIMITS.maxListItemOverflow, gate);
+  const preview = parseListItemPreview(raw.preview);
   return {
     title,
     ...(itemKey !== null ? { key: itemKey } : {}),
@@ -1194,6 +1205,19 @@ function readListItem(
     ...(mono !== undefined ? { mono } : {}),
     ...(actions !== undefined ? { actions } : {}),
     ...(overflow !== undefined ? { overflow } : {}),
+    ...(preview !== undefined ? { preview } : {}),
+  };
+}
+
+/** Hover-card payload. Dropped whole when it has neither a title nor text. */
+function parseListItemPreview(raw: unknown): VocabListItemPreview | undefined {
+  if (!isRecord(raw)) return undefined;
+  const title = vocabString(raw.title, VOCAB_LIMITS.maxLabelChars);
+  const text = vocabString(raw.text, VOCAB_LIMITS.maxTextChars);
+  if (title === undefined && text === undefined) return undefined;
+  return {
+    ...(title !== undefined ? { title } : {}),
+    ...(text !== undefined ? { text } : {}),
   };
 }
 

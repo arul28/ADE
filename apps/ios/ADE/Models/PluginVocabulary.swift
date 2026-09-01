@@ -74,19 +74,19 @@ enum PluginVocabLimits {
   /// Rows one `list` may hold, and the ceiling this phone reads a bound
   /// collection up to. Mirrors `maxListItems`.
   ///
-  /// 250 rather than 100, because 100 was the number that made a plugin's list
-  /// visibly poorer than the built-in it replaced. The byte budget does not
-  /// object: a BOUND row lives in `plugin_collections` and never touches
-  /// ``maxSchemaBytes``, so 250 bound rows cost the schema one node. An INLINE
-  /// list is the only one that spends bytes, and there ``maxSchemaBytes`` was
-  /// always the real ceiling — a fully dressed row measures 580 bytes, so 112
-  /// of them fill the whole 64 KiB budget and the writer refuses the panel long
-  /// before 250.
+  /// 1000 rather than 250, because 250 was still a reduced issue browser: the
+  /// compiled desktop list pages to 500 and the phone to ~1000 on scroll. The
+  /// byte budget does not object for BOUND rows — they live in
+  /// `plugin_collections` and never touch ``maxSchemaBytes``, so 1000 of them
+  /// cost the schema one node. An INLINE list is the only one that spends
+  /// bytes, and there ``maxSchemaBytes`` remains the real ceiling: a fully
+  /// dressed row measures ~580 bytes, so ~112 of them fill 64 KiB long before
+  /// 1000.
   ///
-  /// A panel does not draw all 250 at once — see ``listPageSize``.
-  static let maxListItems = 250
+  /// A panel does not draw all 1000 at once — see ``listPageSize``.
+  static let maxListItems = 1000
   /// How many rows a `list` draws before the reader asks for more, and how many
-  /// one "Show more" adds. Mirrors `listPageSize`.
+  /// one scroll-to-load (or "Show more") adds. Mirrors `listPageSize`.
   ///
   /// Client-local, per list, and never panel state: how far down a list a
   /// reader has walked is a statement about their screen, not about which rows
@@ -344,6 +344,16 @@ struct PluginVocabListItem: Equatable, Identifiable {
   var actions: [PluginVocabListItemAction] = []
   /// Behind the row's overflow menu, up to `PluginVocabLimits.maxListItemOverflow`.
   var overflow: [PluginVocabListItemAction] = []
+  /// Hover-card payload on desktop/web. This phone shows it as a context-menu
+  /// preview; there is no hover.
+  var preview: PluginVocabListItemPreview?
+}
+
+/// What a list row shows when the pointer rests on it. Mirrors
+/// `VocabListItemPreview` in `vocabularyNodes.ts`.
+struct PluginVocabListItemPreview: Equatable {
+  var title: String?
+  var text: String?
 }
 
 /// What a `list` needs to carry a multi-row selection.
@@ -459,7 +469,7 @@ enum PluginVocabPaging {
   /// - `Showing 100 of 143` — 143 rows are held and that is the true total.
   /// - `Showing 100` — as many rows are held as may be, so a total would be a
   ///   guess dressed as a fact.
-  /// - `Showing the first 250` — everything held is drawn and the ceiling is
+  /// - `Showing the first 1000` — everything held is drawn and the ceiling is
   ///   why there is no more. Silence here is what made a truncated list look
   ///   complete.
   static func label(_ page: PluginVocabListPage) -> String? {
@@ -471,6 +481,12 @@ enum PluginVocabPaging {
 
   /// The words on the control itself. Mirrors `VOCAB_LIST_SHOW_MORE_LABEL`.
   static let showMoreLabel = "Show more"
+
+  /// How many page-steps it takes to draw ``PluginVocabLimits/maxListItems``.
+  static var pagesToCeiling: Int {
+    (PluginVocabLimits.maxListItems + PluginVocabLimits.listPageSize - 1)
+      / PluginVocabLimits.listPageSize
+  }
 }
 
 struct PluginVocabTableColumn: Equatable, Identifiable {

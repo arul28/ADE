@@ -20,6 +20,8 @@ struct PluginPaneSheet: View {
   /// Whether the nav-bar search field is open. Dismissing it commits `onChange`,
   /// the same way blurring the desktop field does.
   @State private var searchPresented = false
+  /// Selectable lists report here so one bulk bar can sit in the sheet chrome.
+  @State private var bulkReports: [PluginVocabBulkReport] = []
 
   init(request: PluginPaneRequest, syncService: SyncService) {
     self.request = request
@@ -162,20 +164,30 @@ struct PluginPaneSheet: View {
 
   @ViewBuilder
   private func footerWrapped<Content: View>(_ inner: Content) -> some View {
-    if let footer = panelChrome?.footer, !footer.isEmpty {
-      inner.safeAreaInset(edge: .bottom, spacing: 0) {
-        VStack(alignment: .leading, spacing: 10) {
-          ForEach(Array(footer.enumerated()), id: \.offset) { _, node in
-            PluginVocabularyNodeView(node: node, store: store)
-          }
-        }
-        .padding(.horizontal, 20)
-        .padding(.vertical, 12)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(.ultraThinMaterial)
+    let footer = panelChrome?.footer ?? []
+    inner
+      .onPreferenceChange(PluginVocabBulkPreferenceKey.self) { bulkReports = $0 }
+      .safeAreaInset(edge: .bottom, spacing: 0) {
+        chromeBottom(footer: footer)
       }
-    } else {
-      inner
+  }
+
+  @ViewBuilder
+  private func chromeBottom(footer: [PluginVocabNode]) -> some View {
+    let showBulk = bulkReports.contains { report in
+      !store.selectedKeys(in: report.selectable, visibleRowKeys: report.visibleRowKeys).isEmpty
+    }
+    if showBulk || !footer.isEmpty {
+      VStack(alignment: .leading, spacing: 10) {
+        PluginVocabActiveBulkBar(reports: bulkReports, store: store)
+        ForEach(Array(footer.enumerated()), id: \.offset) { _, node in
+          PluginVocabularyNodeView(node: node, store: store)
+        }
+      }
+      .padding(.horizontal, 20)
+      .padding(.vertical, 12)
+      .frame(maxWidth: .infinity, alignment: .leading)
+      .background(.ultraThinMaterial)
     }
   }
 

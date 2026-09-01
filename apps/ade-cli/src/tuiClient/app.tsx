@@ -10621,7 +10621,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
         ...(samePanel && current.state.openGroups !== undefined
           ? { openGroups: current.state.openGroups }
           : {}),
-        // And the pages. A reader who walked a list down to 250 rows must not
+        // And the pages. A reader who walked a list down to 1000 rows must not
         // be put back on the first hundred every ten seconds.
         ...(samePanel && current.state.listPages !== undefined
           ? { listPages: current.state.listPages }

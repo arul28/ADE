@@ -8,7 +8,7 @@ import { PluginPanelView, VocabularyBoundary } from "./VocabularyRenderer";
 import type { VocabRenderContext } from "./vocabularyComponents";
 import { PLUGIN_FIXTURES, pluginFixtureRows } from "./pluginFixtures";
 import type { PluginCollectionRow } from "../../lib/pluginRuntimeBridge";
-import { VOCAB_LIMITS, bindingKey, type VocabAction } from "../../../shared/plugins/vocabulary";
+import { VOCAB_LIMITS, bindingKey, vocabListPagesToCeiling, type VocabAction } from "../../../shared/plugins/vocabulary";
 import * as openExternalModule from "../../lib/openExternal";
 
 /**
@@ -730,7 +730,7 @@ describe("groups, selection and the menu form", () => {
         })}
       />,
     );
-    expect(screen.getByText("1 selected")).toBeTruthy();
+    await waitFor(() => expect(screen.getByText("1 selected")).toBeTruthy());
     fireEvent.click(screen.getByRole("button", { name: "Create lanes" }));
     await waitFor(() => expect(dispatch).toHaveBeenCalledTimes(1));
     expect(dispatch).toHaveBeenCalledWith(
@@ -764,7 +764,7 @@ describe("groups, selection and the menu form", () => {
       />,
     );
 
-    // A mistake over a batch costs eleven rows, so the gate matters more here.
+    await waitFor(() => expect(screen.getByRole("button", { name: "Archive" })).toBeTruthy());
     fireEvent.click(screen.getByRole("button", { name: "Archive" }));
     expect(confirm).toHaveBeenCalledWith("Archive 1 issue?");
     expect(dispatch).not.toHaveBeenCalled();
@@ -862,8 +862,8 @@ describe("VocabList — paging", () => {
   });
 
   it("says a list stopped at the ceiling instead of stopping in silence", () => {
-    renderList(VOCAB_LIMITS.maxListItems, { listPage: () => 3 });
-    expect(screen.getByText("Showing the first 250")).toBeTruthy();
+    renderList(VOCAB_LIMITS.maxListItems, { listPage: () => vocabListPagesToCeiling() });
+    expect(screen.getByText(`Showing the first ${VOCAB_LIMITS.maxListItems}`)).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Show more" })).toBeNull();
   });
 
@@ -871,6 +871,92 @@ describe("VocabList — paging", () => {
     renderList(12);
     expect(screen.queryByText(/^Showing /)).toBeNull();
     expect(screen.queryByRole("button", { name: "Show more" })).toBeNull();
+  });
+
+  it("loads the next page when the sentinel intersects", () => {
+    const showMoreListRows = vi.fn();
+    const observers: IntersectionObserverCallback[] = [];
+    class FakeObserver implements IntersectionObserver {
+      readonly root = null;
+      readonly rootMargin = "";
+      readonly thresholds = [];
+      constructor(callback: IntersectionObserverCallback) {
+        observers.push(callback);
+      }
+      disconnect() {}
+      observe() {}
+      takeRecords(): IntersectionObserverEntry[] { return []; }
+      unobserve() {}
+    }
+    vi.stubGlobal("IntersectionObserver", FakeObserver);
+    renderList(143, { showMoreListRows });
+    expect(screen.getByTestId("plugin-list-load-sentinel")).toBeTruthy();
+    expect(observers).toHaveLength(1);
+    observers[0]?.(
+      [{ isIntersecting: true } as IntersectionObserverEntry],
+      {} as IntersectionObserver,
+    );
+    expect(showMoreListRows).toHaveBeenCalledWith(
+      expect.objectContaining({ component: "list" }),
+      143,
+    );
+  });
+});
+
+describe("list hover card and chip strip", () => {
+  it("shows a hover card when the pointer rests on a row with preview", () => {
+    render(
+      <PluginPanelView
+        schema={{
+          v: 1,
+          fallback: { title: "T", text: "B" },
+          body: [{
+            component: "list",
+            items: [{ title: "ISS-1", preview: { title: "Login fails", text: "Assigned to you" } }],
+          }],
+        }}
+        context={makeContext()}
+      />,
+    );
+    expect(screen.queryByTestId("plugin-list-hover-card")).toBeNull();
+    fireEvent.mouseEnter(screen.getByText("ISS-1").closest("li") as HTMLElement);
+    expect(screen.getByTestId("plugin-list-hover-card").textContent).toContain("Assigned to you");
+  });
+
+  it("draws a segmented strip that scrolls sideways instead of wrapping", () => {
+    render(
+      <PluginPanelView
+        schema={{
+          v: 1,
+          fallback: { title: "T", text: "B" },
+          body: [{
+            component: "segmented",
+            stateKey: "status",
+            label: "Status",
+            options: [
+              { value: "", label: "All" },
+              { value: "open", label: "Open" },
+              { value: "done", label: "Done" },
+            ],
+          }],
+        }}
+        context={makeContext({
+          state: { status: "" },
+          declarations: [{
+            stateKey: "status",
+            initial: "",
+            options: [
+              { value: "", label: "All" },
+              { value: "open", label: "Open" },
+              { value: "done", label: "Done" },
+            ],
+          }],
+        })}
+      />,
+    );
+    const strip = screen.getByTestId("plugin-segmented-strip");
+    expect(strip.style.overflowX).toBe("auto");
+    expect(strip.style.flexWrap).toBe("nowrap");
   });
 });
 

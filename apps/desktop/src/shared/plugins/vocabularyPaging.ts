@@ -32,8 +32,8 @@ import { VOCAB_LIMITS, bindingKey, type VocabListNode } from "./vocabularyNodes"
  * `limit` of its own.
  *
  * Equal to {@link VOCAB_LIMITS.maxListItems} on purpose: a client that drew up
- * to 250 rows but fetched fewer would page into rows it did not have and stop
- * early with no way to say why. Passed explicitly rather than left to the
+ * to the ceiling but fetched fewer would page into rows it did not have and
+ * stop early with no way to say why. Passed explicitly rather than left to the
  * host's own default, which is 200 and is not this contract's number.
  */
 export const VOCAB_PANEL_READ_LIMIT = VOCAB_LIMITS.maxListItems;
@@ -115,7 +115,7 @@ export function vocabListNextPage(total: number, pages: number): number {
  * - `Showing 100 of 143` — the client holds 143 rows and that is the true total.
  * - `Showing 100` — the client holds as many as it may, so a total would be a
  *   guess dressed as a fact.
- * - `Showing the first 250` — everything held is drawn and the ceiling is why
+ * - `Showing the first 1000` — everything held is drawn and the ceiling is why
  *   there is no more. Silence here is what made a truncated list look complete.
  */
 export function vocabListPageLabel(page: VocabListPage): string | null {
@@ -127,3 +127,13 @@ export function vocabListPageLabel(page: VocabListPage): string | null {
 
 /** The words on the control itself, so four clients cannot each invent one. */
 export const VOCAB_LIST_SHOW_MORE_LABEL = "Show more";
+
+/**
+ * How many page-steps it takes to draw {@link VOCAB_LIMITS.maxListItems}.
+ *
+ * Tests that used to hard-code `pages: 3` were saturating a 250-row ceiling
+ * (3 × 100). At 1000 that count no longer reaches the end.
+ */
+export function vocabListPagesToCeiling(): number {
+  return Math.ceil(VOCAB_LIMITS.maxListItems / VOCAB_LIMITS.listPageSize);
+}

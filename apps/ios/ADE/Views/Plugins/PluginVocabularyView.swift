@@ -433,6 +433,39 @@ private struct PluginVocabSegmentedView: View {
   }
 }
 
+/// One selectable list's report to the pane, so the bulk bar can sit in the
+/// sheet chrome instead of under every list.
+struct PluginVocabBulkReport: Equatable {
+  var selectable: PluginVocabSelectable
+  var visibleRowKeys: [String]
+}
+
+enum PluginVocabBulkPreferenceKey: PreferenceKey {
+  static var defaultValue: [PluginVocabBulkReport] = []
+
+  static func reduce(value: inout [PluginVocabBulkReport], nextValue: () -> [PluginVocabBulkReport]) {
+    value.append(contentsOf: nextValue())
+  }
+}
+
+/// The one bulk bar for the pane. First non-empty visible selection wins.
+struct PluginVocabActiveBulkBar: View {
+  let reports: [PluginVocabBulkReport]
+  @ObservedObject var store: PluginPaneStore
+
+  var body: some View {
+    if let report = reports.first(where: {
+      !store.selectedKeys(in: $0.selectable, visibleRowKeys: $0.visibleRowKeys).isEmpty
+    }) {
+      PluginVocabBulkBar(
+        selectable: report.selectable,
+        visibleRowKeys: report.visibleRowKeys,
+        store: store
+      )
+    }
+  }
+}
+
 private struct PluginVocabListView: View {
   let list: PluginVocabList
   @ObservedObject var store: PluginPaneStore
@@ -482,17 +515,21 @@ private struct PluginVocabListView: View {
           }
           PluginVocabListRow(item: item, selectable: selectable, store: store)
         }
+        if page.hasMore {
+          Color.clear
+            .frame(height: 1)
+            .id(page.drawn)
+            .onAppear { store.showMoreRows(in: list) }
+            .accessibilityHidden(true)
+        }
         if let label = PluginVocabPaging.label(page) {
           PluginVocabListPageRow(label: label, page: page, list: list, store: store)
         }
-        if let selectable {
-          PluginVocabBulkBar(
-            selectable: selectable,
-            visibleRowKeys: visibleRowKeys,
-            store: store
-          )
-        }
       }
+      .preference(
+        key: PluginVocabBulkPreferenceKey.self,
+        value: selectable.map { [PluginVocabBulkReport(selectable: $0, visibleRowKeys: visibleRowKeys)] } ?? []
+      )
     }
   }
 }
@@ -681,6 +718,16 @@ private struct PluginVocabListRow: View {
           Spacer(minLength: 0)
         }
         .padding(.bottom, 9)
+      }
+    }
+    .contextMenu {
+      if let preview = item.preview {
+        if let title = preview.title {
+          Text(title)
+        }
+        if let text = preview.text {
+          Text(text)
+        }
       }
     }
   }

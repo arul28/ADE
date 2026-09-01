@@ -1095,13 +1095,18 @@ action is a `VocabAction` plus a required `label`, `kind` and `icon`. The reason
 is the node budget: a row hand-assembled out of `stack`, `badge`, `text` and
 `button` nodes cost about seven nodes, so `maxNodes: 200` capped a panel near 27
 rows. A list is one node however rich its rows are, which makes `maxListItems`
-(250) the ceiling that actually applies — of which a client draws
+(1000, for bound rows) the ceiling that actually applies — of which a client draws
 `listPageSize` (100) at a time. The caps on `actions` and `overflow`
 count what survived parsing rather than what was offered, so a refused entry does
 not spend a slot a valid one needed — and every client counts the same way.
 Desktop, web and iOS draw the overflow behind a menu; the TUI draws `actions` and
 `overflow` as one numbered key list, because a terminal has no menu and showing
 what a row can do beats hiding half of it.
+
+A row may also declare `preview: { title?, text? }`. Desktop and web show it as a
+hover card; iOS shows it as a context-menu preview; the TUI has no hover and
+omits it. It is row data, not a body node, so a bound collection can ship it
+the same way it ships `subtitle`.
 
 A bound row acts only through the binding's `allowActions`, an explicit list of
 the action ids a row from that collection may name. The rule it protects is that
@@ -1127,8 +1132,12 @@ list row cannot skip the prompt a button asks. iOS holds the same shape in
 while the built-in it replaced paged to 500, and it stopped SILENTLY — the reader
 saw a complete-looking list that was not one. `vocabularyPaging.ts` fixes both
 halves, in one place, so four clients cannot disagree: a list draws
-`listPageSize` (100) rows and adds another page each time the reader presses
-**Show more**, up to `maxListItems` (250).
+`listPageSize` (100) rows and adds another page each time the reader scrolls
+(desktop, web, iOS) or presses **Show more** (every client, including the TUI),
+up to `maxListItems` (1000). The TUI never auto-loads: including the last row
+in the pane window would dump every page. Bound rows live in
+`plugin_collections` and never touch `maxSchemaBytes`; an inline list of 1000
+plain rows would be ~82 KiB and the writer refuses the panel.
 
 The sentence above the control follows what is actually KNOWABLE, and there are
 three readings (`vocabularyPaging.ts:109-126`):
@@ -1136,8 +1145,8 @@ three readings (`vocabularyPaging.ts:109-126`):
 | what the client holds | the label |
 |---|---|
 | 143 rows, drawing 100 | `Showing 100 of 143` |
-| 250 rows — as many as it may — drawing 100 | `Showing 100` |
-| 250 rows, all drawn | `Showing the first 250` |
+| 1000 rows — as many as it may — drawing 100 | `Showing 100` |
+| 1000 rows, all drawn | `Showing the first 1000` |
 | fewer than it may, all drawn | nothing to say |
 
 The middle reading is the honest one: there is no count read in the host's data
@@ -1156,8 +1165,12 @@ already run by the time paging is called, so pressing Show more on a filtered li
 cannot hand the reader rows the filter rejected.
 
 `VOCAB_PANEL_READ_LIMIT` equals `maxListItems` on purpose. A client that drew up
-to 250 rows but fetched fewer would page into rows it did not have and stop early
-with no way to say why.
+to the ceiling but fetched fewer would page into rows it did not have and stop
+early with no way to say why.
+
+A `segmented` strip of pills scrolls horizontally on desktop, web, and iOS
+instead of wrapping. Past the strip ceiling it is still a menu. The TUI keeps
+numbered pills on one line.
 
 ### Folding a section: the `group` node
 
@@ -1450,7 +1463,9 @@ Four rules carry it:
   one word — "3 selected" — and two lists both claiming that bar is already a
   panel that needs splitting. Two covers the one shape that is not a mistake: a
   detail panel offering a batch over its issues and a batch over its pull
-  requests.
+  requests. When two lists both have visible ticks, the first non-empty report
+  in tree order wins; the bar sits in panel chrome above `chrome.footer`, not
+  under each list.
 
 Ceilings, in `VOCAB_STATE_LIMITS` and spread into `VOCAB_LIMITS`: **8** state keys
 per panel, 2–8 literal options per control and 50 resolved, 4 top-level `where`
@@ -2126,11 +2141,6 @@ oversight:
   there is no path for a plugin to supply its own mono mark. `brand:linear` does
   not exist on either client, so the Linear plugin draws a generic mark where the
   compiled integration drew a logo.
-- **A list pages to 250 by button, not by scroll.** `maxListItems` is 250 and
-  `listPageSize` is 100, extended by pressing Show more; the compiled issue
-  browser it replaces pages to 500 on scroll. Raising the ceiling needs byte math
-  against `maxSchemaBytes` for the inline case, and a scroll-to-load contract all
-  four clients can honour.
 - **A `markdown` node over 4,000 characters renders as plain text.** Deliberate —
   see [Prose: the `markdown` node](#prose-the-markdown-node) — but it is still a
   reduction against a surface that renders a whole issue body. Markdown also has
@@ -2143,9 +2153,6 @@ oversight:
 - **There is no picker node.** A bound single-select — "link this to a lane" — has
   no control, so a panel either offers a `segmented` over a bounded option list or
   takes the first candidate.
-- **There is no hover card.** Desktop and web have nowhere to put the preview a
-  compiled surface shows on hover, so the equivalent is a `navigate` to a detail
-  panel.
 - **iOS renders a plugin's URLs as plain links.** The phone's smart-link detector
   is a hardcoded four-provider host test and reads no `urlMatchers`, because
   manifests never replicate to a phone — it sees a contribution only when the

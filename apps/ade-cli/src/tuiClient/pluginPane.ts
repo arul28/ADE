@@ -350,14 +350,14 @@ export type PluginPaneRow =
    * A numbered row rather than a note, because in a terminal the only way to
    * ask for more rows is to select something — but it is drawn with no
    * `selection` when there is nothing more to ask for, which is the case a
-   * bigger ceiling alone would not have fixed: a list stopped at 250 used to
+   * bigger ceiling alone would not have fixed: a list stopped at 1000 used to
    * look exactly like a complete one.
    */
   | {
       kind: "listPage";
       key: string;
       indent: number;
-      /** `Showing 100 of 143`, or `Showing the first 250`. */
+      /** `Showing 100 of 143`, or `Showing the first 1000`. */
       label: string;
       /** Index into {@link PluginPaneModel.interactives}, or null at the end. */
       selection: number | null;
@@ -1602,7 +1602,9 @@ export function buildPluginPaneModel(input: PluginPaneInput): PluginPaneModel {
   if (ctx.rows.length === chromeHeaderCount) {
     ctx.rows.push({ kind: "note", key: "body.empty", indent: 0, text: parsed.panel.fallback.text });
   }
+  const bulkBar = takeFirstBulkBar(ctx.rows, chromeHeaderCount);
   const bodyEnd = ctx.rows.length;
+  if (bulkBar) ctx.rows.push(bulkBar);
   if (parsed.panel.chrome?.footer && parsed.panel.chrome.footer.length > 0) {
     walkNodes(parsed.panel.chrome.footer, "chrome.footer", 0, ctx);
   }
@@ -1629,6 +1631,22 @@ export function buildPluginPaneModel(input: PluginPaneInput): PluginPaneModel {
     chromeHeaderCount,
     chromeFooterCount,
   };
+}
+
+/**
+ * One bulk bar for the pane, pinned with chrome.footer.
+ *
+ * Each selectable list would otherwise emit its own bar. A grouped view of
+ * seven lists is seven bars in a terminal; the first non-empty one in walk
+ * order is the panel's bar, matching desktop.
+ */
+function takeFirstBulkBar(rows: PluginPaneRow[], from: number): PluginPaneRow | null {
+  const body = rows.slice(from);
+  const bars = body.filter((row) => row.kind === "bulkBar");
+  if (bars.length === 0) return null;
+  const rest = body.filter((row) => row.kind !== "bulkBar");
+  rows.splice(from, body.length, ...rest);
+  return bars[0] ?? null;
 }
 
 function walkChrome(

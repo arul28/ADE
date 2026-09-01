@@ -320,8 +320,18 @@ extension PluginPanelParser {
         object["overflow"],
         max: PluginVocabLimits.maxListItemOverflow,
         gate: gate
-      )
+      ),
+      preview: parseListItemPreview(object["preview"])
     )
+  }
+
+  /// Hover-card payload. Dropped whole when it has neither a title nor text.
+  static func parseListItemPreview(_ raw: Any?) -> PluginVocabListItemPreview? {
+    guard let object = raw as? [String: Any] else { return nil }
+    let title = cleanString(object["title"], max: PluginVocabLimits.maxLabelChars)
+    let text = cleanString(object["text"], max: PluginVocabLimits.maxTextChars)
+    guard title != nil || text != nil else { return nil }
+    return PluginVocabListItemPreview(title: title, text: text)
   }
 
   static func parseListItem(_ raw: Any?) -> PluginVocabListItem? {

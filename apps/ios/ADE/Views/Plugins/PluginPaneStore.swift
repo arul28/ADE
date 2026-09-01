@@ -865,7 +865,7 @@ final class PluginPaneStore: ObservableObject {
     selectionSignature = ""
     groupOverrides = []
     // And the pages, for the same reason: a reader who walked one panel's list
-    // down to 250 rows has asked nothing of the next panel's list. The entry
+    // down to 1000 rows has asked nothing of the next panel's list. The entry
     // pushed onto the back stack keeps its own copy, so this clears the LIVE
     // map and never the one a return will restore.
     listPages = [:]

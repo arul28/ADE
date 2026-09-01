@@ -42,7 +42,7 @@ import {
   readPluginActionNavigation,
   type PluginSummary,
 } from "../../../../desktop/src/shared/plugins/sdk";
-import { VOCAB_LIMITS } from "../../../../desktop/src/shared/plugins/vocabulary";
+import { VOCAB_LIMITS, vocabListPagesToCeiling } from "../../../../desktop/src/shared/plugins/vocabulary";
 import type { VocabField } from "../../../../desktop/src/shared/plugins/vocabulary";
 
 const FALLBACK = { title: "Graph", text: "Open ADE to see the graph.", deeplink: "ade://lane/lane-1" };
@@ -1500,6 +1500,31 @@ describe("a selectable list in the terminal", () => {
       .toEqual([false, true, null]);
   });
 
+  it("pins one bulk bar for the pane even when two lists have ticks", () => {
+    const schema = panel([
+      {
+        component: "list",
+        items: [{ title: "a", key: "a" }],
+        selectable: { stateKey: "left", actions: [{ action: "go", label: "Go" }] },
+      },
+      {
+        component: "list",
+        items: [{ title: "b", key: "b" }],
+        selectable: { stateKey: "right", actions: [{ action: "run", label: "Run" }] },
+      },
+    ]);
+    const empty = build(schema);
+    const model = build(schema, {
+      selection: { left: ["a"], right: ["b"] },
+      selectionSignature: empty.selectionSignature,
+    });
+    const bars = model.rows.filter((row) => row.kind === "bulkBar");
+    expect(bars).toHaveLength(1);
+    expect(bars[0]?.kind === "bulkBar" && bars[0].count).toBe(1);
+    expect(model.chromeFooterCount).toBeGreaterThanOrEqual(1);
+    expect(model.rows[model.rows.length - 1]?.kind).toBe("bulkBar");
+  });
+
   it("leaves a ticked row the filter hid out of the batch, without unticking it", () => {
     const collections: PluginPaneCollectionMap = new Map([
       [
@@ -1812,11 +1837,11 @@ describe("plugin pane list paging", () => {
 
   it("says a list stopped at the ceiling, with no control beside it", () => {
     const model = build(listPanel(VOCAB_LIMITS.maxListItems), {
-      listPages: { "items:k0": 3 },
+      listPages: { "items:k0": vocabListPagesToCeiling() },
     });
     const row = pageRow(model);
     if (row?.kind !== "listPage") return expect.fail("expected a page row");
-    expect(row.label).toBe("Showing the first 250");
+    expect(row.label).toBe(`Showing the first ${VOCAB_LIMITS.maxListItems}`);
     expect(row.selection).toBeNull();
   });
 

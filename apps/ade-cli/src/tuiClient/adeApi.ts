@@ -1520,8 +1520,8 @@ export async function readPluginCollection(
       ...(binding.keyPrefix ? { keyPrefix: binding.keyPrefix } : {}),
       // A binding with no `limit` reads up to the vocabulary's own ceiling
       // rather than falling through to the host's default of 200. The two used
-      // to agree by accident; now a list may draw 250, and a pane that fetched
-      // 200 of them would stop the reader 50 rows short and say nothing.
+      // to agree by accident; now a list may draw 1000, and a pane that fetched
+      // 200 of them would stop the reader 800 rows short and say nothing.
       limit: binding.limit ?? VOCAB_PANEL_READ_LIMIT,
     });
     return Array.isArray(rows) ? rows : [];

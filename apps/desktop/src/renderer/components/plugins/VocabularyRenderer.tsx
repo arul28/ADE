@@ -5,7 +5,9 @@ import { COLORS, RADII, SANS_FONT, outlineButton } from "../lanes/laneDesignToke
 import { openAdeDeeplink } from "../../lib/openExternal";
 import { pluginIcon } from "./pluginIcons";
 import {
+  VocabActiveBulkBar,
   VocabBadge,
+  VocabBulkBarHost,
   VocabButton,
   VocabChart,
   VocabDivider,
@@ -240,42 +242,48 @@ export function VocabularyRenderer({
   const chrome = panel.chrome;
   const footer = chrome?.footer;
   return (
-    <div
-      data-tour={`plugin:${context.pluginId}.panel`}
-      style={{
-        display: "flex",
-        flexDirection: "column",
-        gap: 12,
-        minWidth: 0,
-        minHeight: 0,
-        flex: 1,
-      }}
-    >
-      <VocabChromeBar chrome={chrome} context={context} accessory={headerAccessory} />
-      <div style={{ display: "flex", flexDirection: "column", gap: 16, minWidth: 0, minHeight: 0, flex: 1, overflow: "auto" }}>
-        {panel.body.map((node, index) => (
-          <VocabNodeView key={index} node={node} context={context} />
-        ))}
-      </div>
-      {footer && footer.length > 0 ? (
+    <VocabBulkBarHost>
+      <div
+        data-tour={`plugin:${context.pluginId}.panel`}
+        style={{
+          display: "flex",
+          flexDirection: "column",
+          gap: 12,
+          minWidth: 0,
+          minHeight: 0,
+          flex: 1,
+        }}
+      >
+        <VocabChromeBar chrome={chrome} context={context} accessory={headerAccessory} />
         <div
-          data-testid="plugin-panel-footer"
-          style={{
-            flexShrink: 0,
-            display: "flex",
-            flexDirection: "column",
-            gap: 8,
-            minWidth: 0,
-            paddingTop: 8,
-            borderTop: `1px solid ${COLORS.borderMuted}`,
-          }}
+          data-plugin-panel-scroll=""
+          style={{ display: "flex", flexDirection: "column", gap: 16, minWidth: 0, minHeight: 0, flex: 1, overflow: "auto" }}
         >
-          {footer.map((node, index) => (
+          {panel.body.map((node, index) => (
             <VocabNodeView key={index} node={node} context={context} />
           ))}
         </div>
-      ) : null}
-    </div>
+        <VocabActiveBulkBar context={context} />
+        {footer && footer.length > 0 ? (
+          <div
+            data-testid="plugin-panel-footer"
+            style={{
+              flexShrink: 0,
+              display: "flex",
+              flexDirection: "column",
+              gap: 8,
+              minWidth: 0,
+              paddingTop: 8,
+              borderTop: `1px solid ${COLORS.borderMuted}`,
+            }}
+          >
+            {footer.map((node, index) => (
+              <VocabNodeView key={index} node={node} context={context} />
+            ))}
+          </div>
+        ) : null}
+      </div>
+    </VocabBulkBarHost>
   );
 }
 

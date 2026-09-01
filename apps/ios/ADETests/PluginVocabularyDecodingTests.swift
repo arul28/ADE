@@ -429,6 +429,16 @@ final class PluginVocabularyDecodingTests: XCTestCase {
     XCTAssertEqual(item.overflow.map(\.action.action), ["archive"])
   }
 
+  func testARowPreviewIsRowDataNotABodyNode() {
+    let item = PluginPanelParser.parseListItem([
+      "title": "ISS-1",
+      "preview": ["title": "Login fails", "text": "Assigned to you"]
+    ])
+    XCTAssertEqual(item?.preview?.title, "Login fails")
+    XCTAssertEqual(item?.preview?.text, "Assigned to you")
+    XCTAssertNil(PluginPanelParser.parseListItem(["title": "ISS-1", "preview": "nope"])?.preview)
+  }
+
   func testARowActionNeedsBothAnIdAndALabel() {
     let item = PluginPanelParser.parseListItem([
       "title": "bc-1",
@@ -4755,21 +4765,23 @@ final class PluginPaneNavigationTests: XCTestCase {
     XCTAssertTrue(first.totalIsFloor)
     XCTAssertEqual(PluginVocabPaging.label(first), "Showing 100")
 
-    let last = PluginVocabPaging.page(total: PluginVocabLimits.maxListItems, pages: 3)
+    let last = PluginVocabPaging.page(total: PluginVocabLimits.maxListItems, pages: PluginVocabPaging.pagesToCeiling)
     XCTAssertEqual(last.drawn, PluginVocabLimits.maxListItems)
     XCTAssertFalse(last.hasMore)
-    XCTAssertEqual(PluginVocabPaging.label(last), "Showing the first 250")
+    XCTAssertEqual(PluginVocabPaging.label(last), "Showing the first \(PluginVocabLimits.maxListItems)")
   }
 
   /// A node combining literal `items` with a `bind` holds more rows than the
   /// ceiling allows — the store appends the bound rows to the declared ones.
   /// Offering a "Show more" there would be a control that does nothing.
   func testTheCeilingStopsTheOfferHoweverManyRowsAreHeld() {
-    let page = PluginVocabPaging.page(total: 500, pages: 3)
+    let pages = PluginVocabPaging.pagesToCeiling
+    let held = PluginVocabLimits.maxListItems * 2
+    let page = PluginVocabPaging.page(total: held, pages: pages)
     XCTAssertEqual(page.drawn, PluginVocabLimits.maxListItems)
     XCTAssertFalse(page.hasMore)
-    XCTAssertEqual(PluginVocabPaging.label(page), "Showing the first 250")
-    XCTAssertEqual(PluginVocabPaging.nextPage(total: 500, pages: 3), 3)
+    XCTAssertEqual(PluginVocabPaging.label(page), "Showing the first \(PluginVocabLimits.maxListItems)")
+    XCTAssertEqual(PluginVocabPaging.nextPage(total: held, pages: pages), pages)
   }
 
   /// "Show more" extends by one page and is inert at the end.
@@ -4860,8 +4872,9 @@ final class PluginPaneNavigationTests: XCTestCase {
 
   /// The ceiling itself, and the page step under it.
   func testTheListCeilingAndItsPageStep() {
-    XCTAssertEqual(PluginVocabLimits.maxListItems, 250)
+    XCTAssertEqual(PluginVocabLimits.maxListItems, 1000)
     XCTAssertEqual(PluginVocabLimits.listPageSize, 100)
+    XCTAssertEqual(PluginVocabPaging.pagesToCeiling, 10)
   }
 }
 

@@ -26,6 +26,7 @@ import type {
   VocabKeyValueRow,
   VocabListItem,
   VocabListItemAction,
+  VocabListItemPreview,
   VocabListNode,
   VocabSegmentedNode,
   VocabSelectable,
@@ -44,6 +45,7 @@ import {
   coerceBoundKeyValueRow,
   coerceBoundListItem,
   coerceBoundTableRow,
+  vocabListKey,
   vocabListPage,
   vocabListPageLabel,
   vocabSelectedRowKeys,
@@ -321,22 +323,26 @@ export function VocabSegmented({
     <div
       role="radiogroup"
       {...(node.label ? { "aria-label": node.label } : {})}
-      style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", minWidth: 0 }}
+      style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}
     >
       {node.label ? (
-        <span style={{ fontFamily: SANS_FONT, fontSize: 11, color: COLORS.textMuted }}>
+        <span style={{ fontFamily: SANS_FONT, fontSize: 11, color: COLORS.textMuted, flexShrink: 0 }}>
           {node.label}
         </span>
       ) : null}
       <div
+        data-testid="plugin-segmented-strip"
         style={{
           display: "inline-flex",
+          flexWrap: "nowrap",
+          overflowX: "auto",
           padding: 2,
           gap: 2,
           background: COLORS.recessedBg,
           border: `1px solid ${COLORS.borderMuted}`,
           borderRadius: RADII.md,
           minWidth: 0,
+          flex: 1,
         }}
       >
         {options.map((option) => {
@@ -466,6 +472,74 @@ function boundKeyedRows(
   return boundRowEntries(node.bind, context.rowsByBinding.get(bindingKey(node.bind)), context.state);
 }
 
+/* ── Panel bulk bar ─────────────────────────────────────────────────────── */
+
+/**
+ * One selection bar for the whole panel, not one under every list.
+ *
+ * A grouped Linear-style view would otherwise draw seven bars. Two lists both
+ * claiming ticks still produce one bar: the first non-empty report in tree
+ * order wins, which is the same "one word — N selected" the selection ceiling
+ * already assumed.
+ */
+type VocabBulkReport = {
+  stateKey: string;
+  selectable: VocabSelectable;
+  keys: readonly string[];
+};
+
+const VocabBulkReportBus = React.createContext<
+  ((id: string, next: VocabBulkReport | null) => void) | null
+>(null);
+const VocabBulkActive = React.createContext<VocabBulkReport | null>(null);
+
+export function VocabBulkBarHost({ children }: { children: React.ReactNode }) {
+  const [reports, setReports] = React.useState<Record<string, VocabBulkReport>>({});
+  const report = React.useCallback((id: string, next: VocabBulkReport | null) => {
+    setReports((prev) => {
+      if (next === null) {
+        if (!(id in prev)) return prev;
+        const copy = { ...prev };
+        delete copy[id];
+        return copy;
+      }
+      const prevEntry = prev[id];
+      if (
+        prevEntry
+        && prevEntry.stateKey === next.stateKey
+        && prevEntry.keys.length === next.keys.length
+        && prevEntry.keys.every((key, index) => key === next.keys[index])
+      ) {
+        return prev;
+      }
+      return { ...prev, [id]: next };
+    });
+  }, []);
+  const active = React.useMemo(() => {
+    for (const entry of Object.values(reports)) {
+      if (entry.keys.length > 0) return entry;
+    }
+    return null;
+  }, [reports]);
+  return (
+    <VocabBulkReportBus.Provider value={report}>
+      <VocabBulkActive.Provider value={active}>{children}</VocabBulkActive.Provider>
+    </VocabBulkReportBus.Provider>
+  );
+}
+
+export function VocabActiveBulkBar({ context }: { context: VocabRenderContext }) {
+  const active = React.useContext(VocabBulkActive);
+  if (!active || active.keys.length === 0) return null;
+  return (
+    <VocabBulkBar
+      selectable={active.selectable}
+      keys={active.keys}
+      context={context}
+    />
+  );
+}
+
 /* ── List ───────────────────────────────────────────────────────────────── */
 
 export function VocabList({
@@ -513,6 +587,27 @@ export function VocabList({
   const ticked = ticking
     ? vocabSelectedRowKeys(context.selection, selectable.stateKey, visibleKeys)
     : [];
+  const tickedKey = ticked.join("\0");
+  const listId = vocabListKey(node);
+  const reportBulk = React.useContext(VocabBulkReportBus);
+  const showMoreListRows = context.showMoreListRows;
+  const showMore = React.useCallback(() => {
+    showMoreListRows(node, items.length);
+  }, [showMoreListRows, node, items.length]);
+
+  React.useEffect(() => {
+    if (!reportBulk) return;
+    if (!ticking || tickedKey === "") {
+      reportBulk(listId, null);
+      return;
+    }
+    reportBulk(listId, {
+      stateKey: selectable.stateKey,
+      selectable,
+      keys: tickedKey.split("\0"),
+    });
+    return () => reportBulk(listId, null);
+  }, [reportBulk, listId, ticking, tickedKey, selectable]);
 
   return (
     <div style={{ display: "grid", gap: 8, minWidth: 0 }}>
@@ -534,23 +629,38 @@ export function VocabList({
           />
         ))}
       </ul>
+      {page.hasMore ? <VocabListLoadSentinel onShowMore={showMore} /> : null}
       {pageLabel ? (
         <VocabListPageRow
           label={pageLabel}
-          {...(page.hasMore
-            ? { onShowMore: () => context.showMoreListRows(node, items.length) }
-            : {})}
-        />
-      ) : null}
-      {ticking && ticked.length > 0 ? (
-        <VocabBulkBar
-          selectable={selectable}
-          keys={ticked}
-          context={context}
+          {...(page.hasMore ? { onShowMore: showMore } : {})}
         />
       ) : null}
     </div>
   );
+}
+
+/**
+ * Scroll-to-load. Show more stays for keyboard and for surfaces without
+ * IntersectionObserver (jsdom, some Windows embeds). The TUI never auto-loads:
+ * including the last row in the window would dump every page.
+ */
+function VocabListLoadSentinel({ onShowMore }: { onShowMore: () => void }) {
+  const ref = React.useRef<HTMLDivElement>(null);
+  React.useEffect(() => {
+    const node = ref.current;
+    if (!node || typeof IntersectionObserver === "undefined") return;
+    const root = node.closest("[data-plugin-panel-scroll]");
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((entry) => entry.isIntersecting)) onShowMore();
+      },
+      { root: root instanceof Element ? root : null, rootMargin: "80px" },
+    );
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, [onShowMore]);
+  return <div ref={ref} data-testid="plugin-list-load-sentinel" aria-hidden />;
 }
 
 /**
@@ -605,12 +715,9 @@ function VocabListPageRow({
 /**
  * The bar a selection earns.
  *
- * Drawn under the list rather than over it, where the outcome banner and the
- * row's own error already are: it belongs to the rows it will act on, and a bar
- * that pushed the list down the moment a reader ticked the first row would move
- * the second row out from under their pointer.
- *
- * It counts and dispatches {@link vocabSelectedRowKeys}, never the stored set —
+ * Drawn once for the panel, above `chrome.footer`, not under each list: a
+ * grouped view of seven selectable lists would otherwise be seven bars. It
+ * counts and dispatches {@link vocabSelectedRowKeys}, never the stored set —
  * see that function for why the two differ and why the visible answer is the
  * right one.
  */
@@ -625,7 +732,7 @@ function VocabBulkBar({
 }) {
   const { pending, error, run } = useVocabActionRunner(context);
   return (
-    <div style={{ display: "grid", gap: 4, minWidth: 0 }}>
+    <div data-testid="plugin-panel-bulk-bar" style={{ display: "grid", gap: 4, minWidth: 0, flexShrink: 0 }}>
       <div
         role="toolbar"
         aria-label={`${keys.length} selected`}
@@ -716,6 +823,8 @@ function VocabListRow({
   const interactive = Boolean(item.onPress);
   const actions = item.actions ?? [];
   const overflow = item.overflow ?? [];
+  const preview = item.preview;
+  const showCard = hovered && preview !== undefined;
 
   const body = (
     <>
@@ -814,7 +923,11 @@ function VocabListRow({
   };
 
   return (
-    <li style={{ display: "grid", gap: 2, minWidth: 0 }}>
+    <li
+      style={{ display: "grid", gap: 2, minWidth: 0, position: "relative" }}
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
+    >
       <div style={{ display: "flex", alignItems: "center", gap: 4, width: "100%", minWidth: 0 }}>
         {selection && item.key !== undefined ? (
           <VocabRowTick
@@ -831,8 +944,6 @@ function VocabListRow({
           <button
             type="button"
             disabled={pending}
-            onMouseEnter={() => setHovered(true)}
-            onMouseLeave={() => setHovered(false)}
             onClick={() => void run(item.onPress!)}
             data-tour={`plugin:${context.pluginId}.action-${item.onPress!.action}`}
             style={{
@@ -865,7 +976,44 @@ function VocabListRow({
         ) : null}
       </div>
       {error ? <InlineError message={error} /> : null}
+      {showCard && preview ? <VocabHoverCard preview={preview} /> : null}
     </li>
+  );
+}
+
+function VocabHoverCard({ preview }: { preview: VocabListItemPreview }) {
+  return (
+    <div
+      data-testid="plugin-list-hover-card"
+      role="tooltip"
+      style={{
+        position: "absolute",
+        left: 28,
+        top: "100%",
+        zIndex: 2,
+        minWidth: 180,
+        maxWidth: 280,
+        padding: "8px 10px",
+        display: "grid",
+        gap: 4,
+        background: COLORS.cardBgSolid,
+        border: `1px solid ${COLORS.borderMuted}`,
+        borderRadius: RADII.md,
+        boxShadow: "var(--shadow-panel)",
+        pointerEvents: "none",
+      }}
+    >
+      {preview.title ? (
+        <span style={{ fontFamily: SANS_FONT, fontSize: 12, fontWeight: 600, color: COLORS.textPrimary }}>
+          {preview.title}
+        </span>
+      ) : null}
+      {preview.text ? (
+        <span style={{ fontFamily: SANS_FONT, fontSize: 11, color: COLORS.textMuted, lineHeight: 1.45 }}>
+          {preview.text}
+        </span>
+      ) : null}
+    </div>
   );
 }
 

@@ -144,9 +144,10 @@ export const VOCAB_STATE_LIMITS = {
   /**
    * Rows selectable at once in one list.
    *
-   * The same number as `maxListItems`, on purpose: the ceiling on a selection is
-   * the ceiling on what a list can draw, so "select everything on screen" is
-   * always expressible and never silently drops the tail.
+   * 100, not {@link VOCAB_LIMITS.maxListItems}. A thousand-row batch is not a
+   * UI action: the bar spends what a reader ticked, and shift-select of one
+   * page is the gesture. Raising this with the list ceiling would let a plugin
+   * ask a reader to act on a thousand keys at once.
    */
   maxSelectedRows: 100,
   /**

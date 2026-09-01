@@ -102,9 +102,10 @@ extension PluginVocabLimits {
   static let maxSelectionKeys = 2
   /// Rows selectable at once in one list.
   ///
-  /// The same number as ``maxListItems``, on purpose: the ceiling on a selection
-  /// is the ceiling on what a list can draw, so "select everything on screen" is
-  /// always expressible and never silently drops the tail.
+  /// 100, not ``maxListItems``. A thousand-row batch is not a UI action: the
+  /// bar spends what a reader ticked, and ticking one row at a time is the
+  /// phone's gesture. Raising this with the list ceiling would let a plugin
+  /// ask a reader to act on a thousand keys at once.
   static let maxSelectedRows = 100
   /// Buttons on one list's bulk-action bar.
   ///

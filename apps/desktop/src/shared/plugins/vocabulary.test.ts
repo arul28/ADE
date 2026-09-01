@@ -27,6 +27,7 @@ import {
   vocabListNextPage,
   vocabListPage,
   vocabListPageLabel,
+  vocabListPagesToCeiling,
   vocabPanelContentNodes,
   type VocabNode,
 } from "./vocabulary";
@@ -963,10 +964,10 @@ describe("list paging", () => {
   it("says a list stopped at the ceiling rather than stopping in silence", () => {
     // The half a bigger number alone would not have fixed: a truncated list
     // that says nothing is indistinguishable from a complete one.
-    const page = vocabListPage(VOCAB_LIMITS.maxListItems, 3);
+    const page = vocabListPage(VOCAB_LIMITS.maxListItems, vocabListPagesToCeiling());
     expect(page.drawn).toBe(VOCAB_LIMITS.maxListItems);
     expect(page.hasMore).toBe(false);
-    expect(vocabListPageLabel(page)).toBe("Showing the first 250");
+    expect(vocabListPageLabel(page)).toBe(`Showing the first ${VOCAB_LIMITS.maxListItems}`);
   });
 
   it("never draws past the ceiling however many pages are asked for", () => {
@@ -978,11 +979,13 @@ describe("list paging", () => {
     // ceiling allows. Offering a "Show more" there would be a control that does
     // nothing, and `vocabListNextPage` would keep growing a number the list
     // cannot spend.
-    const page = vocabListPage(500, 3);
+    const pages = vocabListPagesToCeiling();
+    const held = VOCAB_LIMITS.maxListItems * 2;
+    const page = vocabListPage(held, pages);
     expect(page.drawn).toBe(VOCAB_LIMITS.maxListItems);
     expect(page.hasMore).toBe(false);
-    expect(vocabListPageLabel(page)).toBe("Showing the first 250");
-    expect(vocabListNextPage(500, 3)).toBe(3);
+    expect(vocabListPageLabel(page)).toBe(`Showing the first ${VOCAB_LIMITS.maxListItems}`);
+    expect(vocabListNextPage(held, pages)).toBe(pages);
   });
 
   it("reads a lost or nonsense page count as the first page", () => {
@@ -1033,9 +1036,28 @@ describe("list paging", () => {
   });
 
   it("reads a bound collection up to the same ceiling a list may draw", () => {
-    // A client that drew 250 but fetched 200 would page into rows it does not
-    // have and stop early with nothing on screen to say why.
+    // A client that drew the ceiling but fetched the host default of 200 would
+    // page into rows it does not have and stop early with nothing on screen to
+    // say why.
     expect(VOCAB_PANEL_READ_LIMIT).toBe(VOCAB_LIMITS.maxListItems);
+  });
+
+  it("parses a row preview without counting it as a body node", () => {
+    const result = parsePluginPanel(panel([{
+      component: "list",
+      items: [{
+        title: "ISS-1",
+        preview: { title: "Login fails", text: "Assigned to you" },
+      }],
+    }]));
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const node = result.panel.body[0];
+    expect(node).toMatchObject({
+      component: "list",
+      items: [{ title: "ISS-1", preview: { title: "Login fails", text: "Assigned to you" } }],
+    });
+    expect(countVocabNodes(result.panel.body)).toBe(1);
   });
 });
 
