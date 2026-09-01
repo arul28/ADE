@@ -707,9 +707,20 @@ total-height correction the paragraph above exists to avoid. The force-pin
 remains as belt-and-braces, but it now stays armed until the content size has
 been quiet for 600ms rather than firing on a fixed retry ladder, because
 hydration routinely lands after that ladder ends. It stands down early only for
-a deliberate drag (16pt — the 2pt stickiness deadband is finger jitter on a
-freshly-opened chat). A transcript shorter than the viewport renders from the
-top, desktop-style; a one-entry chat skips the pin entirely.
+a deliberate scroll (the 2pt stickiness deadband — finger jitter and keyboard
+`.interacting` do not count). A transcript shorter than the viewport renders from
+the top, desktop-style; a one-entry chat skips the pin entirely.
+
+**Follow survives the keyboard the same way a terminal does.** Opening the
+composer or the system keyboard shrinks the transcript window. A reader who was
+glued to the live tail stays glued: the content-size observer re-pins to
+`chat-end` after that pass (`workChatLayoutScrollAdjustment`), and the
+keyboard's `.interacting` phase is not treated as the reader taking over —
+consulting `distanceFromBottom` there is the same predicate flip the terminal
+refuses to use on a layout resize. A reader who had scrolled up keeps that
+place; the pre-keyboard offset is restored and clamped so a shorter window
+cannot overscroll into blank. The same following re-pin runs when a finishing
+turn collapses cards and the tape shrinks under the viewport.
 
 **A message's truncation budget only ever grows.** The newest assistant message
 renders tail-anchored under a generous budget so a finishing turn is readable in
