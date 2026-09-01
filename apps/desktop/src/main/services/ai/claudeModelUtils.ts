@@ -3,8 +3,8 @@ import { getDefaultModelDescriptor, getModelById, resolveModelAlias } from "../.
 
 /**
  * Normalize arbitrary Claude model strings into CLI-safe values accepted by
- * Claude Code (`claude-fable-5`, `claude-opus-5`, `claude-opus-4-8`, `claude-sonnet-5`,
- * `claude-haiku-4-5`, `claude-opus-4-7[1m]`) where possible.
+ * Claude Code (`claude-fable-5-1`, `claude-opus-5`, `claude-opus-4-8`, `claude-sonnet-5`,
+ * `claude-haiku-4-5`) where possible.
  */
 export function resolveClaudeCliModel(model: string | null | undefined): string {
   return resolveClaudeCliModelAlias(model, "claude-sonnet-5") ?? "claude-sonnet-5";

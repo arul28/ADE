@@ -3122,7 +3122,7 @@ describe("createAgentChatService", () => {
       expect(session.model).toBe("claude-sonnet-5");
     });
 
-    it("keeps legacy bracketed 1M model aliases on Claude Opus 4.7 1M", async () => {
+    it("maps retired Claude Opus 4.7 1M aliases onto Opus 4.8", async () => {
       const { service } = createService();
       const session = await service.createSession({
         laneId: "lane-1",
@@ -3130,8 +3130,8 @@ describe("createAgentChatService", () => {
         model: "claude-opus-4-7[1m]",
       });
 
-      expect(session.modelId).toBe("anthropic/claude-opus-4-7-1m");
-      expect(session.model).toBe("claude-opus-4-7[1m]");
+      expect(session.modelId).toBe("anthropic/claude-opus-4-8");
+      expect(session.model).toBe("claude-opus-4-8");
     });
 
     it.each([
@@ -3216,7 +3216,7 @@ describe("createAgentChatService", () => {
       expect((doneEvent!.event as any).modelId).toBe("anthropic/claude-opus-4-8");
     });
 
-    it("preserves selected Claude Opus 4.7 1M metadata when the SDK reports bare Opus 4.7", async () => {
+    it("maps retired Claude Opus 4.7 1M sessions onto Opus 4.8 even when the SDK reports bare Opus 4.7", async () => {
       const events: AgentChatEventEnvelope[] = [];
       let streamCall = 0;
       vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
@@ -3287,8 +3287,8 @@ describe("createAgentChatService", () => {
 
       const doneEvent = events.filter((event) => event.event.type === "done").at(-1);
       expect(doneEvent?.event.type).toBe("done");
-      expect((doneEvent!.event as any).model).toBe("claude-opus-4-7[1m]");
-      expect((doneEvent!.event as any).modelId).toBe("anthropic/claude-opus-4-7-1m");
+      expect((doneEvent!.event as any).model).toBe("claude-opus-4-8");
+      expect((doneEvent!.event as any).modelId).toBe("anthropic/claude-opus-4-8");
     });
 
     it("suppresses Claude EDE diagnostics without hiding real result errors", async () => {

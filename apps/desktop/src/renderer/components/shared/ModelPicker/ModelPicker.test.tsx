@@ -191,8 +191,8 @@ const SONNET: ModelDescriptor = {
 
 const OPUS: ModelDescriptor = {
   id: "anthropic/claude-opus-4-8",
-  shortId: "opus-4.8-1m",
-  displayName: "Claude Opus 4.8 1M",
+  shortId: "opus-4.8",
+  displayName: "Claude Opus 4.8",
   family: "anthropic",
   authTypes: ["cli-subscription"],
   contextWindow: 1_000_000,

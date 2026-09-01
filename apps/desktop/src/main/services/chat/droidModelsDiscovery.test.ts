@@ -138,23 +138,28 @@ describe("discoverDroidCliModelDescriptors", () => {
       { id: "opus-4-7", displayName: "Opus 4.7" },
       { id: "claude-opus-4-6-fast", displayName: "Claude Opus 4.6 Fast Mode" },
       { id: "opus", displayName: "Opus" },
-      { id: "claude-opus-4-8", displayName: "Claude Opus 4.8 1M" },
+      { id: "claude-fable-5", displayName: "Claude Fable 5" },
+      { id: "claude-fable-5-1", displayName: "Claude Fable 5.1" },
+      { id: "claude-opus-4-8", displayName: "Claude Opus 4.8" },
       { id: "claude-sonnet-5", displayName: "Claude Sonnet 5" },
     ]));
 
     const descriptors = await discoverDroidCliModelDescriptors("/mock/bin/droid");
 
     expect(descriptors.map((descriptor) => descriptor.id)).toEqual([
+      "droid/claude-fable-5-1",
       "droid/claude-opus-4-8",
       "droid/claude-opus-5",
       "droid/claude-sonnet-5",
     ]);
     expect(descriptors.map((descriptor) => descriptor.displayName)).toEqual([
-      "Opus 4.8 1M",
+      "Fable 5.1",
+      "Opus 4.8",
       "Opus 5",
       "Sonnet 5 (1.2x)",
     ]);
     expect(descriptors.map((descriptor) => descriptor.providerModelId)).toEqual([
+      "claude-fable-5-1",
       "claude-opus-4-8",
       "claude-opus-5",
       "claude-sonnet-5",
@@ -168,6 +173,7 @@ describe("discoverDroidCliModelDescriptors", () => {
       { id: "claude-opus-4-6-fast", displayName: "Claude Opus 4.6 Fast Mode" },
       { id: "opus-4-6", displayName: "Opus 4.6" },
       { id: "opus", displayName: "Opus" },
+      { id: "claude-fable-5", displayName: "Claude Fable 5" },
     ]));
 
     const descriptors = await discoverDroidCliModelDescriptors("/mock/bin/droid");
@@ -192,12 +198,20 @@ describe("discoverDroidCliModelDescriptors", () => {
       defaultReasoningEffort: "high",
     });
     expect(descriptors.find((descriptor) => descriptor.id === "droid/claude-opus-5")?.serviceTiers).toBeUndefined();
+    expect(descriptors.find((descriptor) => descriptor.id === "droid/claude-fable-5-1")).toMatchObject({
+      displayName: "Fable 5.1",
+      providerModelId: "claude-fable-5-1",
+      defaultReasoningEffort: "high",
+      reasoningTiers: ["low", "medium", "high", "xhigh", "max", "ultracode"],
+    });
   });
 
   it("prefers canonical Droid rows over normalized retired aliases", async () => {
     mockSpawnAsync.mockResolvedValueOnce(helpFromModels([
       { id: "sonnet-4-6", displayName: "Sonnet 4.6" },
       { id: "claude-sonnet-5", displayName: "Claude Sonnet 5" },
+      { id: "claude-fable-5", displayName: "Claude Fable 5" },
+      { id: "claude-fable-5-1", displayName: "Claude Fable 5.1" },
     ]));
 
     const descriptors = await discoverDroidCliModelDescriptors("/mock/bin/droid");
@@ -205,6 +219,10 @@ describe("discoverDroidCliModelDescriptors", () => {
     expect(descriptors.filter((descriptor) => descriptor.id === "droid/claude-sonnet-5")).toHaveLength(1);
     expect(descriptors.find((descriptor) => descriptor.id === "droid/claude-sonnet-5")).toMatchObject({
       providerModelId: "claude-sonnet-5",
+    });
+    expect(descriptors.filter((descriptor) => descriptor.id === "droid/claude-fable-5-1")).toHaveLength(1);
+    expect(descriptors.find((descriptor) => descriptor.id === "droid/claude-fable-5-1")).toMatchObject({
+      providerModelId: "claude-fable-5-1",
     });
   });
 
@@ -298,7 +316,7 @@ describe("discoverDroidCliModelDescriptors", () => {
     });
     expect(descriptors.find((descriptor) => descriptor.id === "droid/custom:claude-opus-4-8")).toMatchObject({
       providerModelId: "custom:claude-opus-4-8",
-      displayName: "Opus 4.8 1M",
+      displayName: "Opus 4.8",
       customProxy: true,
       contextWindow: 1_000_000,
       maxOutputTokens: 128_000,

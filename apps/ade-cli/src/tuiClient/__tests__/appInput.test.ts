@@ -2579,7 +2579,7 @@ describe("notice scoping", () => {
   it("keeps the chat-or-global fallback when not in a draft", () => {
     const notices = [
       notice("Reconnected to the ADE runtime.", null),
-      notice("Model set to Claude Opus 4.8 1M.", "chat-1"),
+      notice("Model set to Claude Opus 4.8.", "chat-1"),
       notice("Other chat feedback.", "chat-2"),
     ];
     const visible = selectVisibleNotices({
@@ -2591,7 +2591,7 @@ describe("notice scoping", () => {
     });
     expect(visible.map((entry) => entry.text)).toEqual([
       "Reconnected to the ADE runtime.",
-      "Model set to Claude Opus 4.8 1M.",
+      "Model set to Claude Opus 4.8.",
     ]);
   });
 

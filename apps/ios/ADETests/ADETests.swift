@@ -20452,7 +20452,7 @@ final class ADETests: XCTestCase {
     let groups = workModelCatalogGroups(currentModelId: "", currentProvider: "codex")
     let claudeGroup = groups.first(where: { $0.key == "claude" })
     let anthropicProvider = claudeGroup?.providers.first(where: { $0.key == "anthropic" })
-    let fable = anthropicProvider?.models.first(where: { $0.id == "claude-fable-5" })
+    let fable = anthropicProvider?.models.first(where: { $0.id == "claude-fable-5-1" })
     let opus5 = anthropicProvider?.models.first(where: { $0.id == "claude-opus-5" })
     let opus48 = anthropicProvider?.models.first(where: { $0.id == "claude-opus-4-8" })
     let openCodeAnthropic = groups
@@ -20469,26 +20469,25 @@ final class ADETests: XCTestCase {
     let gpt55 = openAIProvider?.models.first(where: { $0.id == "gpt-5.5" })
 
     XCTAssertEqual(anthropicProvider?.models.map(\.id), [
-      "claude-fable-5",
+      "claude-fable-5-1",
       "claude-opus-5",
       "claude-sonnet-5",
       "claude-haiku-4-5",
       "claude-opus-4-8",
-      "claude-opus-4-7-1m",
     ])
     XCTAssertEqual(openCodeAnthropic?.models.map(\.id), [
-      "opencode/anthropic/claude-fable-5",
+      "opencode/anthropic/claude-fable-5-1",
       "opencode/anthropic/claude-opus-5",
       "opencode/anthropic/claude-sonnet-5",
       "opencode/anthropic/claude-haiku-4-5",
       "opencode/anthropic/claude-opus-4-8",
-      "opencode/anthropic/claude-opus-4-7-1m",
     ])
-    XCTAssertEqual(workDefaultCatalogModelId(provider: "claude"), "claude-fable-5")
-    XCTAssertEqual(fable?.displayName, "Claude Fable 5")
+    XCTAssertEqual(workDefaultCatalogModelId(provider: "claude"), "claude-fable-5-1")
+    XCTAssertEqual(fable?.displayName, "Claude Fable 5.1")
     XCTAssertEqual(fable?.tier, .flagship)
     XCTAssertEqual(fable?.tagline, "Flagship · 1M context")
-    XCTAssertNotNil(ADEColor.modelBrand(for: "claude-fable-5"))
+    XCTAssertEqual(fable?.defaultReasoningEffort, "high")
+    XCTAssertNotNil(ADEColor.modelBrand(for: "claude-fable-5-1"))
     XCTAssertEqual(opus5?.displayName, "Claude Opus 5")
     XCTAssertEqual(opus5?.tagline, "Agentic coding · 1M context")
     XCTAssertEqual(opus5?.reasoningEfforts.map(\.effort), ["low", "medium", "high", "xhigh", "max"])
@@ -20500,7 +20499,7 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(droidOpus5?.reasoningEfforts.map(\.effort), ["low", "medium", "high", "xhigh", "max"])
     XCTAssertEqual(droidOpus5?.defaultReasoningEffort, "high")
     XCTAssertFalse(droidOpus5?.supportsCodexFastMode == true)
-    XCTAssertEqual(opus48?.displayName, "Claude Opus 4.8 1M")
+    XCTAssertEqual(opus48?.displayName, "Claude Opus 4.8")
     XCTAssertEqual(opus48?.tier, .flagship)
     XCTAssertEqual(opus48?.tagline, "Previous Opus · 1M context")
     XCTAssertNotNil(ADEColor.modelBrand(for: "claude-opus-4-8"))
@@ -20551,6 +20550,9 @@ final class ADETests: XCTestCase {
   }
 
   func testMobileComposerReasoningTiersMirrorDesktopRegistry() {
+    XCTAssertEqual(ADEColor.reasoningTiers(for: "anthropic/claude-fable-5-1"), ["low", "medium", "high", "xhigh", "max", "ultracode"])
+    XCTAssertEqual(ADEColor.reasoningTiers(for: "anthropic/claude-fable-5-1-api"), ["low", "medium", "high", "xhigh", "max", "ultracode"])
+    XCTAssertEqual(ADEColor.reasoningTiers(for: "claude-fable-5-1"), ["low", "medium", "high", "xhigh", "max", "ultracode"])
     XCTAssertEqual(ADEColor.reasoningTiers(for: "anthropic/claude-fable-5"), ["low", "medium", "high", "xhigh", "max", "ultracode"])
     XCTAssertEqual(ADEColor.reasoningTiers(for: "anthropic/claude-fable-5-api"), ["low", "medium", "high", "xhigh", "max", "ultracode"])
     XCTAssertEqual(ADEColor.reasoningTiers(for: "claude-fable-5"), ["low", "medium", "high", "xhigh", "max", "ultracode"])
@@ -20563,7 +20565,7 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(ADEColor.reasoningTiers(for: "claude-opus-4-8"), ["low", "medium", "high", "xhigh", "max", "ultracode"])
     XCTAssertEqual(ADEColor.reasoningTiers(for: "anthropic/claude-opus-4-7"), ["low", "medium", "high", "xhigh", "max", "ultracode"])
     XCTAssertEqual(ADEColor.reasoningTiers(for: "claude-opus-4-7"), ["low", "medium", "high", "xhigh", "max", "ultracode"])
-    XCTAssertEqual(ADEColor.reasoningTiers(for: "opus[1m]"), ["low", "medium", "high", "xhigh", "max"])
+    XCTAssertEqual(ADEColor.reasoningTiers(for: "opus[1m]"), ["low", "medium", "high", "xhigh", "max", "ultracode"])
     XCTAssertEqual(ADEColor.reasoningTiers(for: "anthropic/claude-sonnet-5"), ["low", "medium", "high", "max"])
     XCTAssertNil(ADEColor.reasoningTiers(for: "claude-haiku-4-5"))
     XCTAssertEqual(ADEColor.reasoningTiers(for: "sol"), ["low", "medium", "high", "xhigh", "max", "ultra"])
@@ -21314,7 +21316,7 @@ final class ADETests: XCTestCase {
     XCTAssertTrue(workModelIdsEquivalent("opus-4.6", "claude-opus-4-8"))
     XCTAssertTrue(workModelIdsEquivalent("claude-opus-4-6-1m", "claude-opus-4-7-1m"))
     XCTAssertTrue(workModelIdsEquivalent("claude-opus-4-6[1m]", "claude-opus-4-7-1m"))
-    XCTAssertEqual(workKnownModelDisplayName("anthropic/claude-opus-4-6"), "Claude Opus 4.8 1M")
+    XCTAssertEqual(workKnownModelDisplayName("anthropic/claude-opus-4-6"), "Claude Opus 4.8")
   }
 
   func testExtractWorkNavigationTargetsFindsFilePathsAndPullRequestNumbers() {

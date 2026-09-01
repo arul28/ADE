@@ -102,18 +102,21 @@ defaults to `guarded` unless explicitly whitelisted.
 Claude's global quick-pick vocabulary is `low | medium | high | max`
 (`CLAUDE_THINKING_LEVELS` in `shared/modelProfiles.ts`), while model
 descriptors advertise their provider-native ladders to model-specific
-pickers. Opus 5 and Opus 4.7 expose `low|medium|high|xhigh|max`; Fable
+pickers. Opus 5 exposes `low|medium|high|xhigh|max`; Fable 5.1
 and Opus 4.8 add `ultracode`; Sonnet 5 exposes
 `low|medium|high|max`; Haiku 4.5 has no reasoning control. The Claude
 registry is ordered as
-Fable 5, Opus 5, Sonnet 5, Haiku 4.5, Opus 4.8 1M, then Opus 4.7 1M.
+Fable 5.1, Opus 5, Sonnet 5, Haiku 4.5, then Opus 4.8.
 Opus 5 selects provider model `claude-opus-5`, defaults to `high`
 effort, and exposes `low|medium|high|xhigh|max` plus Fast Mode.
+Fable 5.1 selects provider model `claude-fable-5-1`, defaults to `high`
+effort, and exposes `low|medium|high|xhigh|max|ultracode` plus Fast Mode.
 Sonnet 5 selects provider model `claude-sonnet-5`; retired Sonnet 4.6
 ids resolve forward for compatibility and no longer appear as picker
-rows. The basic Opus 4.7 row is also removed; its old aliases resolve
-to Opus 4.8, while the generic `opus` alias selects Opus 5 and
-`opus[1m]` / `opus-1m` still target Opus 4.7 1M.
+rows. The basic Opus 4.7 row and the Opus 4.7 1M row are both removed;
+their old aliases, including `opus[1m]` / `opus-1m`, resolve to Opus 4.8.
+The generic `opus` alias selects Opus 5. Retired Fable 5 ids resolve to
+Fable 5.1. Opus 4.8 is labelled without a 1M suffix.
 Passthrough to the provider config is unchanged (the tier string is
 forwarded directly to the CLI / SDK, with no synthesized token budgets).
 

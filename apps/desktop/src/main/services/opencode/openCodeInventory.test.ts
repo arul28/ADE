@@ -228,6 +228,24 @@ describe("openCodeInventory", () => {
                 tool_call: true,
                 reasoning: true,
               },
+              "opus-4.7": {
+                id: "opus-4.7",
+                name: "Opus 4.7",
+                tool_call: true,
+                reasoning: true,
+              },
+              "claude-fable-5": {
+                id: "claude-fable-5",
+                name: "Claude Fable 5",
+                tool_call: true,
+                reasoning: true,
+              },
+              "claude-fable-5-1": {
+                id: "claude-fable-5-1",
+                name: "Claude Fable 5.1",
+                tool_call: true,
+                reasoning: true,
+              },
             },
           },
         ],
@@ -243,8 +261,11 @@ describe("openCodeInventory", () => {
 
     expect(result.descriptors.map((descriptor) => descriptor.id)).toContain("opencode/anthropic/claude-sonnet-5");
     expect(result.descriptors.map((descriptor) => descriptor.id)).toContain("opencode/anthropic/claude-opus-4-8");
+    expect(result.descriptors.map((descriptor) => descriptor.id)).toContain("opencode/anthropic/claude-fable-5-1");
     expect(result.descriptors.map((descriptor) => descriptor.id)).not.toContain("opencode/anthropic/claude-sonnet-4-6");
     expect(result.descriptors.map((descriptor) => descriptor.id)).not.toContain("opencode/anthropic/claude-opus-4-7");
+    expect(result.descriptors.map((descriptor) => descriptor.id)).not.toContain("opencode/anthropic/claude-fable-5");
+    expect(result.descriptors.filter((descriptor) => descriptor.id === "opencode/anthropic/claude-fable-5-1")).toHaveLength(1);
     expect(result.descriptors.find((descriptor) => descriptor.id === "opencode/anthropic/claude-sonnet-5")).toMatchObject({
       contextWindow: 1_000_000,
       maxOutputTokens: 128_000,
@@ -357,7 +378,7 @@ describe("openCodeInventory", () => {
               },
               "claude-opus-4-8": {
                 id: "claude-opus-4-8",
-                name: "Claude Opus 4.8 1M",
+                name: "Claude Opus 4.8",
                 capabilities: {
                   reasoning: true,
                   toolcall: true,
@@ -365,6 +386,30 @@ describe("openCodeInventory", () => {
                 },
                 variants: {
                   max: {},
+                  fast: {},
+                },
+              },
+              "claude-fable-5": {
+                id: "claude-fable-5",
+                name: "Claude Fable 5",
+                capabilities: {
+                  reasoning: false,
+                  toolcall: false,
+                },
+                variants: {
+                  stale: {},
+                },
+              },
+              "claude-fable-5-1": {
+                id: "claude-fable-5-1",
+                name: "Claude Fable 5.1",
+                capabilities: {
+                  reasoning: true,
+                  toolcall: true,
+                  input: { image: true },
+                },
+                variants: {
+                  high: {},
                   fast: {},
                 },
               },
@@ -387,6 +432,7 @@ describe("openCodeInventory", () => {
     expect(result.descriptors.filter((entry) => entry.id === "opencode/anthropic/claude-sonnet-5")).toHaveLength(1);
     expect(result.descriptors.filter((entry) => entry.id === "opencode/anthropic/claude-opus-5")).toHaveLength(1);
     expect(result.descriptors.filter((entry) => entry.id === "opencode/anthropic/claude-opus-4-8")).toHaveLength(1);
+    expect(result.descriptors.filter((entry) => entry.id === "opencode/anthropic/claude-fable-5-1")).toHaveLength(1);
     expect(result.modelIds).not.toContain("opencode/anthropic/claude-opus-4-6");
     expect(result.modelIds).not.toContain("opencode/anthropic/opus-4-6");
     expect(result.modelIds).not.toContain("opencode/anthropic/opus-4.6");
