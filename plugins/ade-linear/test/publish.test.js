@@ -50,12 +50,21 @@ const ISSUES = [
   }),
 ];
 
+// Two teams, because the team control only draws for a workspace that has more
+// than one — which is also the only workspace where filtering by team means
+// anything.
 const TEAMS = [
   {
     id: "team-1",
     key: "ENG",
     name: "Engineering",
     states: { nodes: [{ id: "state-started", name: "In Progress", type: "started" }, { id: "state-todo", name: "Todo", type: "unstarted" }] },
+  },
+  {
+    id: "team-2",
+    key: "OPS",
+    name: "Operations",
+    states: { nodes: [{ id: "state-ops", name: "Todo", type: "unstarted" }] },
   },
 ];
 
@@ -68,9 +77,11 @@ const TEAMS = [
  */
 function linearFetch() {
   const calls = [];
+  const requests = [];
   const impl = async (_url, init) => {
     const body = JSON.parse(init.body);
     calls.push(body.operationName);
+    requests.push({ operationName: body.operationName, variables: body.variables ?? null });
     const data = {
       ConnectionIdentity: {
         viewer: { id: "user-1", name: "Ada", displayName: "Ada L" },
@@ -94,6 +105,7 @@ function linearFetch() {
     };
   };
   impl.calls = calls;
+  impl.requests = requests;
   return impl;
 }
 
@@ -126,14 +138,27 @@ async function activate({ connected = true, ...overrides } = {}) {
     await sdk.secrets.set("LINEAR_ACCESS_TOKEN", "lin_api_abcdefghijklmnopqrstuv");
     await sdk.secrets.set("LINEAR_AUTH_MODE", "manual");
   }
+  linear = linearFetch();
   await withLinear(() => plugin.activate(sdk));
-  return { sdk };
+  return { sdk, linear };
 }
+
+/**
+ * The fake Linear for the activation under test, and every request it saw.
+ *
+ * ONE instance per activate, not one per step. `createLinearApi` captures
+ * `globalThis.fetch` at construction (`linearApi.js:fetch = globalThis.fetch`),
+ * so the client built during `activate` is pinned to whatever fake was
+ * installed then — a fresh fake per step would record nothing and quietly
+ * assert against an empty list.
+ */
+let linear = null;
 
 /** Run one step of the plugin with the fake Linear in place of the real one. */
 async function withLinear(run) {
   const realFetch = globalThis.fetch;
-  globalThis.fetch = linearFetch();
+  if (!linear) linear = linearFetch();
+  globalThis.fetch = linear;
   try {
     return await run();
   } finally {
@@ -175,6 +200,7 @@ function pressed(panel) {
 
 afterEach(async () => {
   await plugin.deactivate().catch(() => {});
+  linear = null;
 });
 
 /* ── The issue list ─────────────────────────────────────────────────────── */
@@ -248,6 +274,31 @@ describe("the issue list a connected reader is actually published", () => {
     assert.equal(list.selectable.stateKey, contract.STATE_BATCH);
     const view = nodesOf(panel, "segmented").find((node) => node.stateKey === contract.STATE_VIEW);
     assert.equal(view.default, "flat");
+  });
+
+  it("sends the team the reader picked to Linear, and draws it back", async () => {
+    // The team control dispatched `applyFilters` into a patch key nothing
+    // stored, so it moved and changed nothing at all — the same two-key-spaces
+    // defect as the state preset. It is a ROUND TRIP and not a client `where`:
+    // the team decides which groups exist, and a predicate hides rows inside a
+    // section without removing the section.
+    const { sdk } = await activate();
+    await withLinear(() => plugin.actions.applyFilters({ [contract.STATE_TEAM]: "ENG" }));
+
+    // It reached Linear, in the one shape `IssueFilter` offers.
+    const search = [...linear.requests].reverse().find((request) => request.operationName === "SearchIssues");
+    assert.deepEqual(search?.variables?.filter?.team, { key: { eq: "ENG" } });
+
+    // And it comes back on the control, so the reader sees what is filtering.
+    const panel = await published(sdk, "issues");
+    const control = nodesOf(panel, "segmented").find((node) => node.stateKey === contract.STATE_TEAM);
+    assert.ok(control, "no team control");
+    assert.equal(control.default, "ENG");
+    // Bound on the KEY, not the id: the value rides back as `teamKey` and
+    // reaches Linear as `team: { key: { eq } }`. Binding the id would have sent
+    // a uuid where a key belongs and matched nothing.
+    assert.equal(control.optionsFrom.valueField, "key");
+    assert.ok(pressed(panel).has(contract.ACTIONS.clearFilters), "no way back from a team filter");
   });
 
   it("publishes the connect card when there IS no credential", async () => {

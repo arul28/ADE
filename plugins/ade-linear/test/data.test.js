@@ -32,7 +32,16 @@ describe("filters", () => {
       // Stored rather than left to panel state, which is per-viewer and
       // session-scoped: the view chosen on the desktop should open on the phone.
       view: "grouped", updated: "",
+      // By KEY, because that is what Linear's `IssueFilter` matches on.
+      teamKey: "",
     });
+  });
+
+  it("sends the team to Linear rather than filtering rows on the client", () => {
+    // The team decides which GROUPS exist, so it cannot be a client `where`:
+    // a predicate hides rows inside a section without removing the section.
+    assert.equal(filtersToQuery(normalizeFilters({ teamKey: "ENG" })).teamKey, "ENG");
+    assert.equal(filtersToQuery(defaultFilters()).teamKey, undefined);
   });
 
   it("drops a state tab and a sort this build does not know", () => {
