@@ -104,8 +104,40 @@ const STALE_INIT_RETRY_LIMIT = 2;
  * closing the SDK agent, and on Windows it is the only orderly path there is.
  */
 const CURSOR_SDK_DISPOSE_GRACE_MS = 3_000;
-/** Cap how long a replacement waits for the previous worker of the same pool key. */
-export const CURSOR_SDK_REPLACE_WAIT_MS = CURSOR_SDK_DISPOSE_GRACE_MS + 500;
+/**
+ * Gap between SIGTERM and SIGKILL once the dispose grace expires.
+ *
+ * Named here rather than left to `terminateChildProcessTree`'s default, because
+ * the replacement wait below has to be derived from it: two independent numbers
+ * would drift, and the drift is only observable as a failed turn an hour into a
+ * session.
+ */
+const CURSOR_SDK_KILL_ESCALATION_MS = 1_500;
+/**
+ * Cap how long a replacement waits for the previous worker of the same pool key.
+ *
+ * This has to cover the whole teardown ladder, not just the dispose grace. A
+ * worker that answers the IPC `dispose` exits in milliseconds and never reaches
+ * this wait — but the worker the wait exists for is wedged (expired token,
+ * transport-poisoned agent thread), so it ignores the IPC request *and* the
+ * SIGTERM, and only dies at grace + escalation. Budgeting for the grace alone
+ * made the wait expire ~1.5s before the process could possibly exit, so every
+ * wedged recycle threw and failed the very turn it was recovering.
+ */
+export const CURSOR_SDK_REPLACE_WAIT_MS =
+  CURSOR_SDK_DISPOSE_GRACE_MS + CURSOR_SDK_KILL_ESCALATION_MS + 1_000;
+/**
+ * Budget for a hook socket path, in bytes.
+ *
+ * POSIX `sun_path` holds 104 bytes on macOS/BSD and 108 on Linux, and libuv
+ * rejects a longer `listen()` with EINVAL — not ENAMETOOLONG — so an over-long
+ * path reads as a mysterious "invalid argument" at bind time. The budget sits
+ * under the macOS limit to leave room for the trailing NUL and a tmpdir that is
+ * a few bytes longer than the usual `/var/folders/<2>/<30>/T`.
+ */
+export const MAX_CURSOR_SDK_SOCKET_PATH_BYTES = 100;
+/** Fallback socket root when the platform tmpdir is too deep to bind under. */
+const SHORT_SOCKET_ROOT = "/tmp";
 const CURSOR_SDK_WORKER_ENV_DENYLIST = [
   "CURSOR_API_KEY",
   "CURSOR_AUTH_TOKEN",
@@ -146,20 +178,35 @@ function resolveWorkerPath(): string {
   return candidates[0]!;
 }
 
-function socketPathFor(poolKey: string, instanceId: string): string {
+function socketPathFor(
+  poolKey: string,
+  instanceId: string,
+  tempDir: string = os.tmpdir(),
+  platform: NodeJS.Platform = process.platform,
+): string {
   const trimmedInstance = instanceId.trim();
   if (!trimmedInstance) {
     throw new Error("Cursor SDK worker instance id is required.");
   }
-  const name = hashKey(poolKey);
-  const instance = hashKey(trimmedInstance);
-  if (process.platform === "win32") {
-    return `\\\\.\\pipe\\ade-cursor-sdk-${name}-${instance}`;
+  if (platform === "win32") {
+    // Named pipes live in a flat kernel namespace with no `sun_path` budget, so
+    // the two hashes stay separate and readable there.
+    return `\\\\.\\pipe\\ade-cursor-sdk-${hashKey(poolKey)}-${hashKey(trimmedInstance)}`;
   }
   const userPart = typeof process.getuid === "function" ? String(process.getuid()) : hashKey(os.homedir());
-  // Per-instance directory so a dying worker's close()/unlink cannot delete
-  // the replacement's hook socket (same pool key, overlapping shutdown).
-  return path.join(os.tmpdir(), `ade-cursor-sdk-${userPart}`, name, instance, "hook.sock");
+  // One directory per worker instance, so a dying worker's close()/unlink and
+  // the pool's `rmSync` of the socket directory cannot delete the replacement's
+  // hook socket (same pool key, overlapping shutdown). Pool and instance share
+  // a single segment: a second directory level costs 17 bytes, and the default
+  // macOS tmpdir already spends 48 of the 104 `sun_path` bytes.
+  const tail = path.join(`ade-cursor-sdk-${userPart}`, hashKey(`${poolKey}\n${trimmedInstance}`), "hook.sock");
+  const preferred = path.join(tempDir, tail);
+  if (Buffer.byteLength(preferred, "utf8") <= MAX_CURSOR_SDK_SOCKET_PATH_BYTES) return preferred;
+  // A deep TMPDIR would otherwise fail at bind() with a bare EINVAL. `/tmp` is
+  // world-writable, but `ensurePrivateSocketPath` creates every level 0700 and
+  // refuses a directory this user does not own, so a squatter cannot answer
+  // the worker's connect.
+  return path.join(SHORT_SOCKET_ROOT, tail);
 }
 
 export function sanitizeCursorSdkWorkerBaseEnv(base: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
@@ -416,6 +463,10 @@ export function buildCursorSdkPaths(args: {
   instanceId: string;
   stateKey?: string;
   userHomeDir?: string;
+  /** Overridable so the deep-tmpdir fallback is testable from any platform. */
+  tempDir?: string;
+  /** Overridable so the Windows named-pipe branch is testable from POSIX. */
+  platform?: NodeJS.Platform;
 }): { userHomeDir: string; cacheRoot: string; stateRoot: string; socketPath: string } {
   const keyHash = hashKey(args.stateKey ?? args.poolKey);
   const cacheRoot = path.join(args.projectRoot, ".ade", "cache", "cursor-sdk", keyHash);
@@ -423,7 +474,12 @@ export function buildCursorSdkPaths(args: {
     userHomeDir: args.userHomeDir?.trim() || resolveCursorSdkUserHome(),
     cacheRoot,
     stateRoot: path.join(cacheRoot, "state"),
-    socketPath: socketPathFor(args.poolKey, args.instanceId),
+    socketPath: socketPathFor(
+      args.poolKey,
+      args.instanceId,
+      args.tempDir ?? os.tmpdir(),
+      args.platform ?? process.platform,
+    ),
   };
 }
 
@@ -666,7 +722,7 @@ async function createCursorSdkConnection(args: Parameters<typeof acquireCursorSd
       // the escalation must kill the whole tree rather than a single pid.
       const escalate = (): void => {
         if (child.exitCode != null || child.killed) return;
-        killTimer = terminateChildProcessTree(child, killTimer);
+        killTimer = terminateChildProcessTree(child, killTimer, CURSOR_SDK_KILL_ESCALATION_MS);
       };
       const sent = sendWorkerMessage({ type: "dispose", requestId: randomUUID() } as CursorSdkWorkerRequest);
       if (!sent) {
@@ -875,14 +931,16 @@ async function createCursorSdkConnection(args: Parameters<typeof acquireCursorSd
         timer.unref();
       }),
     ]).catch(() => {});
-    if (args.cleanupStateRoot) {
-      cleanupCursorSdkRuntimePaths({
-        cacheRoot: paths.cacheRoot,
-        stateRoot: paths.stateRoot,
-        socketPath: paths.socketPath,
-        cleanupStateRoot: true,
-      });
-    }
+    // Unconditional: the callee decides what a failed init may reclaim. The
+    // durable state is still gated on `cleanupStateRoot`, but this worker's
+    // instance socket directory is dead either way, and skipping the call
+    // entirely leaked one directory per failed init.
+    cleanupCursorSdkRuntimePaths({
+      cacheRoot: paths.cacheRoot,
+      stateRoot: paths.stateRoot,
+      socketPath: paths.socketPath,
+      cleanupStateRoot: args.cleanupStateRoot === true,
+    });
     throw error;
   }
   pooled.agentId = result.agentId;
@@ -929,14 +987,23 @@ export function cleanupCursorSdkRuntimePaths(entry: {
   socketPath?: string;
   cleanupStateRoot: boolean;
 }): void {
-  if (!entry.cleanupStateRoot) return;
   const targets = new Set<string>();
-  targets.add(entry.cacheRoot ?? entry.stateRoot);
+  // The per-instance socket directory (`.../ade-cursor-sdk-<uid>/<instance>/hook.sock`)
+  // dies with its worker no matter what happens to the durable state: the next
+  // worker derives a fresh instance directory, so nothing can ever bind here
+  // again. `cleanupStateRoot` is false for every ordinary chat pool — gating the
+  // socket directory on it leaked one empty directory per worker into the
+  // tmpdir for the life of the machine.
+  //
+  // Do not walk up to the per-user root — a replacement worker may already be
+  // listening in a sibling directory there.
   if (process.platform !== "win32" && entry.socketPath) {
-    // Per-instance socket directory (`.../<pool>/<instance>/hook.sock`). Do not
-    // walk up to the pool directory — a replacement worker may already be
-    // listening there.
     targets.add(path.dirname(entry.socketPath));
+  }
+  // The durable Cursor state is the opposite: it has to survive a recycle, so
+  // only an explicit teardown removes it.
+  if (entry.cleanupStateRoot) {
+    targets.add(entry.cacheRoot ?? entry.stateRoot);
   }
   for (const target of targets) {
     removeCursorSdkRuntimePath(target);

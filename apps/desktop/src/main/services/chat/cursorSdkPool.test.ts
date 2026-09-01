@@ -1,5 +1,6 @@
 import { EventEmitter } from "node:events";
 import fs from "node:fs";
+import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -10,6 +11,7 @@ import {
   cleanupCursorSdkRuntimePaths,
   CURSOR_SDK_REPLACE_WAIT_MS,
   isCursorSdkPooledAlive,
+  MAX_CURSOR_SDK_SOCKET_PATH_BYTES,
   poisonCursorSdkConnection,
   releaseCursorSdkConnection,
   releaseCursorSdkConnectionAfterIdle,
@@ -117,6 +119,19 @@ class StuckExitChild extends DelayedExitChild {
   }
 }
 
+/**
+ * The worker the replace wait actually exists for: wedged on an expired token
+ * or a poisoned agent thread, so it answers neither the IPC `dispose` nor the
+ * SIGTERM and only dies once the escalation SIGKILLs it.
+ */
+class WedgedWorkerChild extends DelayedExitChild {
+  override kill(signal?: NodeJS.Signals): boolean {
+    this.killed = true;
+    if (signal === "SIGKILL") this.finishExit(null, "SIGKILL");
+    return true;
+  }
+}
+
 class ExitingBeforeInitChild extends EventEmitter {
   stdout = new EventEmitter();
   stderr = new EventEmitter();
@@ -177,6 +192,24 @@ class ExitingWithStderrBeforeInitChild extends EventEmitter {
     this.killed = true;
     this.emit("exit", null, signal ?? "SIGTERM");
     return true;
+  }
+}
+
+/** Init itself is rejected — the fork happened, so its socket directory exists. */
+class FailingInitChild extends FakeSdkChild {
+  override send(message: { type?: string; requestId?: string }): boolean {
+    if (message.type === "init" && message.requestId) {
+      queueMicrotask(() => {
+        this.emit("message", {
+          type: "response",
+          requestId: message.requestId,
+          ok: false,
+          error: "Cursor SDK init failed: listen EINVAL: invalid argument (code=EINVAL)",
+        });
+      });
+      return true;
+    }
+    return super.send(message);
   }
 }
 
@@ -349,6 +382,113 @@ describe("Cursor SDK pool paths", () => {
     }
   });
 
+  it.skipIf(process.platform === "win32")("keeps the hook socket path inside the POSIX sun_path budget", () => {
+    // A real bind() on macOS fails with EINVAL past 104 bytes, and the default
+    // tmpdir (`/var/folders/<2>/<30>/T`) already spends 48 of them. Real keys:
+    // the pool key carries a lane path and the instance id is a UUID.
+    const paths = buildCursorSdkPaths({
+      projectRoot: path.join(os.homedir(), "Projects", "ADE", ".ade", "worktrees", "some-long-lane-name-41540d5a"),
+      poolKey: "session-1e3fdc51-a1f9-4eda-9045-62646f3f4fb9:composer-grok-4.6:full-auto",
+      instanceId: "a4f1c0de-7b52-4a1e-9c33-8d2b6e5f0a17",
+    });
+
+    expect(Buffer.byteLength(paths.socketPath, "utf8")).toBeLessThanOrEqual(MAX_CURSOR_SDK_SOCKET_PATH_BYTES);
+    // The budget only means something if it is measured against the real
+    // layout, so pin the shape the bytes are being spent on.
+    expect(path.basename(paths.socketPath)).toBe("hook.sock");
+    expect(paths.socketPath).toContain(`ade-cursor-sdk-${process.getuid?.() ?? ""}`);
+  });
+
+  it.skipIf(process.platform === "win32")("falls back to a short socket root when the tempdir is too deep to bind under", () => {
+    const deepTempDir = path.join("/var/folders/ck/qnm27lyn4d3865_9s0xt26y80000gn/T", "x".repeat(60));
+    const paths = buildCursorSdkPaths({
+      projectRoot: path.join(os.tmpdir(), "ade-project"),
+      poolKey: "lane:/repo:session",
+      instanceId: "worker-a",
+      tempDir: deepTempDir,
+    });
+
+    expect(paths.socketPath.startsWith(deepTempDir)).toBe(false);
+    expect(Buffer.byteLength(paths.socketPath, "utf8")).toBeLessThanOrEqual(MAX_CURSOR_SDK_SOCKET_PATH_BYTES);
+    expect(path.basename(paths.socketPath)).toBe("hook.sock");
+  });
+
+  it.skipIf(process.platform === "win32")("binds a real listener on the derived hook socket path", async () => {
+    // The regression #1177 shipped was invisible to path assertions: the path
+    // was well-formed and only `listen()` rejected it.
+    const paths = buildCursorSdkPaths({
+      projectRoot: path.join(os.homedir(), "Projects", "ADE", ".ade", "worktrees", "some-long-lane-name-41540d5a"),
+      poolKey: "session-1e3fdc51-a1f9-4eda-9045-62646f3f4fb9:composer-grok-4.6:full-auto",
+      instanceId: "a4f1c0de-7b52-4a1e-9c33-8d2b6e5f0a17",
+    });
+    fs.mkdirSync(path.dirname(paths.socketPath), { recursive: true, mode: 0o700 });
+    const server = net.createServer();
+
+    try {
+      await new Promise<void>((resolve, reject) => {
+        server.once("error", reject);
+        server.listen(paths.socketPath, resolve);
+      });
+      expect(server.listening).toBe(true);
+      // A bound socket is a real file the worker's peer can connect to, and it
+      // has to sit in a directory no other local user can reach.
+      expect(fs.statSync(paths.socketPath).isSocket()).toBe(true);
+      expect(fs.statSync(path.dirname(paths.socketPath)).mode & 0o077).toBe(0);
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+      fs.rmSync(path.dirname(paths.socketPath), { recursive: true, force: true });
+    }
+  });
+
+  it("keeps per-instance named pipes on Windows, with no path-length budget applied", () => {
+    // Runs on every host: CI's macOS/Linux shards would otherwise never execute
+    // the win32 branch, and a named pipe is a flat kernel namespace entry with
+    // no `sun_path` limit — so the POSIX byte budget must NOT be imposed here.
+    const shared = {
+      projectRoot: path.join(os.homedir(), "Projects", "ADE"),
+      poolKey: "session-1e3fdc51-a1f9-4eda-9045-62646f3f4fb9:composer-grok-4.6:full-auto",
+      platform: "win32" as NodeJS.Platform,
+    };
+    const first = buildCursorSdkPaths({ ...shared, instanceId: "worker-a" });
+    const second = buildCursorSdkPaths({ ...shared, instanceId: "worker-b" });
+
+    expect(first.socketPath.startsWith("\\\\.\\pipe\\ade-cursor-sdk-")).toBe(true);
+    expect(second.socketPath.startsWith("\\\\.\\pipe\\ade-cursor-sdk-")).toBe(true);
+    // Distinct instances must not share a pipe, or a recycle hands the
+    // replacement's policy gate to the dying worker.
+    expect(first.socketPath).not.toBe(second.socketPath);
+    expect(first.socketPath).not.toContain("/");
+  });
+
+  it.skipIf(process.platform === "win32")("does not leak the instance socket directory when init fails", async () => {
+    // Every failed init used to leave its directory behind, because the caller
+    // skipped cleanup entirely whenever the durable state had to be kept. A
+    // provider outage or a bad key would then litter the tmpdir indefinitely.
+    const failingChild = new FailingInitChild();
+    forkMock.mockReturnValueOnce(failingChild);
+    const poolKey = `test-init-failure-cleanup:${Date.now()}:${Math.random()}`;
+    const args = {
+      poolKey,
+      projectRoot: makeTempDir("ade-cursor-init-fail-"),
+      workspacePath: path.join(os.tmpdir(), "ade-workspace"),
+      modelSdkId: "cursor-model",
+      sessionId: "session-1",
+      policy: { ...TEST_POLICY },
+    };
+    // The per-user root is shared with every other worker on this machine, so
+    // compare against a snapshot rather than asserting it is empty.
+    const instanceRoot = path.dirname(path.dirname(
+      buildCursorSdkPaths({ projectRoot: args.projectRoot, poolKey, instanceId: "probe" }).socketPath,
+    ));
+    const before = new Set(fs.existsSync(instanceRoot) ? fs.readdirSync(instanceRoot) : []);
+
+    await expect(acquireCursorSdkConnection(args)).rejects.toThrow();
+
+    const after = fs.existsSync(instanceRoot) ? fs.readdirSync(instanceRoot) : [];
+    expect(after.filter((entry) => !before.has(entry))).toEqual([]);
+    expect(forkMock).toHaveBeenCalledTimes(1);
+  });
+
   it("refuses an empty worker instance id", () => {
     expect(() => buildCursorSdkPaths({
       projectRoot: path.join(os.tmpdir(), "ade-project"),
@@ -381,6 +521,33 @@ describe("Cursor SDK pool paths", () => {
     expect(fs.existsSync(firstInstance)).toBe(false);
     expect(fs.existsSync(secondSock)).toBe(true);
     expect(fs.existsSync(poolRoot)).toBe(true);
+  });
+
+  it.skipIf(process.platform === "win32")("reclaims the instance socket directory even when the durable state is kept", () => {
+    // `cleanupStateRoot` is false for every ordinary chat pool, because the
+    // Cursor state has to survive a recycle. The socket directory does not: its
+    // worker is gone and the replacement binds elsewhere, so leaving it behind
+    // leaked one empty directory per worker for the life of the machine.
+    const cacheRoot = makeTempDir("ade-cursor-keep-state-");
+    const stateRoot = path.join(cacheRoot, "state");
+    fs.mkdirSync(stateRoot, { recursive: true });
+    const poolRoot = makeTempDir("ade-cursor-sdk-keep-");
+    const instanceDir = path.join(poolRoot, "instance-a");
+    fs.mkdirSync(instanceDir, { recursive: true });
+    const socketPath = path.join(instanceDir, "hook.sock");
+    fs.writeFileSync(socketPath, "");
+
+    cleanupCursorSdkRuntimePaths({
+      cacheRoot,
+      stateRoot,
+      socketPath,
+      cleanupStateRoot: false,
+    });
+
+    expect(fs.existsSync(instanceDir)).toBe(false);
+    expect(fs.existsSync(poolRoot)).toBe(true);
+    expect(fs.existsSync(stateRoot)).toBe(true);
+    expect(fs.existsSync(cacheRoot)).toBe(true);
   });
 
   it("builds a worker environment with real HOME parity and no ADE brain ownership metadata", () => {
@@ -625,6 +792,46 @@ describe("Cursor SDK pool paths", () => {
     expect(second.pooled).not.toBe(first.pooled);
     expect(forkMock).toHaveBeenCalledTimes(2);
     expect(forkedSocketPath(1)).not.toBe(forkedSocketPath(0));
+
+    releaseCursorSdkConnection(poolKey, second.generation);
+  });
+
+  it("replaces a wedged worker that only dies at the end of the kill escalation", async () => {
+    // The hour-mark recovery path. A wedged worker ignores the IPC dispose AND
+    // the SIGTERM, so it exits at dispose-grace + SIGTERM->SIGKILL. A replace
+    // wait budgeted for the dispose grace alone expired before that exit could
+    // land and failed the very turn the recycle was recovering.
+    const firstChild = new WedgedWorkerChild();
+    const nextChild = new FakeSdkChild();
+    forkMock.mockReturnValueOnce(firstChild);
+    const poolKey = `test-replace-wedged:${Date.now()}:${Math.random()}`;
+    const args = {
+      poolKey,
+      projectRoot: path.join(os.tmpdir(), "ade-project"),
+      workspacePath: path.join(os.tmpdir(), "ade-workspace"),
+      modelSdkId: "cursor-model",
+      sessionId: "session-1",
+      policy: { ...TEST_POLICY },
+    };
+
+    const first = await acquireCursorSdkConnection(args);
+    vi.useFakeTimers();
+    let second: Awaited<ReturnType<typeof acquireCursorSdkConnection>>;
+    try {
+      expect(poisonCursorSdkConnection(poolKey, first.generation)).toBe(true);
+      forkMock.mockReturnValue(nextChild);
+      const pending = acquireCursorSdkConnection(args);
+      // Walk the whole ladder the pool actually schedules, without ever
+      // reaching the replace-wait deadline.
+      await vi.advanceTimersByTimeAsync(CURSOR_SDK_REPLACE_WAIT_MS - 1);
+      second = await pending;
+    } finally {
+      vi.useRealTimers();
+    }
+
+    expect(firstChild.killed).toBe(true);
+    expect(second.pooled).not.toBe(first.pooled);
+    expect(forkMock).toHaveBeenCalledTimes(2);
 
     releaseCursorSdkConnection(poolKey, second.generation);
   });
