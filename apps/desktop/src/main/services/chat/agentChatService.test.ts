@@ -597,19 +597,39 @@ vi.mock("../opencode/openCodeRuntime", async () => {
       client,
     };
   }),
-  openCodeEventStream: vi.fn(async ({ client }: { client: { __sessionId?: string } }) => {
+  openCodeEventStream: vi.fn(async ({
+    client,
+    signal,
+  }: {
+    client: { __sessionId?: string };
+    signal?: AbortSignal;
+  }) => {
     const state = client.__sessionId ? mockState.openCodeSessions.get(client.__sessionId) : undefined;
     if (!state) {
       return (async function* () {})();
     }
     return (async function* () {
       while (true) {
+        if (signal?.aborted) return;
         if (state.events.length > 0) {
           yield state.events.shift();
           continue;
         }
         if (state.aborted) return;
-        await new Promise<void>((resolve) => state.waiters.push(resolve));
+        await new Promise<void>((resolve) => {
+          if (signal?.aborted) {
+            resolve();
+            return;
+          }
+          const finish = () => {
+            signal?.removeEventListener("abort", finish);
+            const index = state.waiters.indexOf(finish);
+            if (index >= 0) state.waiters.splice(index, 1);
+            resolve();
+          };
+          signal?.addEventListener("abort", finish, { once: true });
+          state.waiters.push(finish);
+        });
       }
     })();
   }),
