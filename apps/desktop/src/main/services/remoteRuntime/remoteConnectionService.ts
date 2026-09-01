@@ -118,7 +118,8 @@ type RemoteConnectionConnectOptions = {
   explicit?: boolean;
 };
 
-const AUTOMATIC_RECONNECT_FAILURE_LIMIT = 10;
+const AUTOMATIC_RECONNECT_BASE_BACKOFF_MS = 30_000;
+const AUTOMATIC_RECONNECT_MAX_BACKOFF_MS = 5 * 60_000;
 const MAX_LAST_ERROR_CHARS = 500;
 const DISCOVERED_ENDPOINT_REFRESH_INTERVAL_MS = 60_000;
 
@@ -205,8 +206,12 @@ function errorStatusPatch(
   };
 }
 
-function automaticReconnectStoppedMessage(): string {
-  return `ADE stopped automatic reconnecting after ${AUTOMATIC_RECONNECT_FAILURE_LIMIT} failed attempts. Press Connect to try again.`;
+export function automaticReconnectBackoffMs(failureCount: number): number {
+  const normalizedCount = Math.max(1, Math.floor(failureCount));
+  return Math.min(
+    AUTOMATIC_RECONNECT_MAX_BACKOFF_MS,
+    AUTOMATIC_RECONNECT_BASE_BACKOFF_MS * 2 ** Math.min(normalizedCount - 1, 10),
+  );
 }
 
 function isImplicitConnectionFailure(error: unknown): boolean {
@@ -249,7 +254,7 @@ export class RemoteConnectionService {
     string,
     number
   >();
-  private readonly automaticReconnectPausedTargetIds = new Set<string>();
+  private readonly automaticReconnectRetryAtByTargetId = new Map<string, number>();
   private readonly disconnectGenerationByTargetId = new Map<string, number>();
   private readonly latencyProbeTargetIds = new Set<string>();
   private readonly pairedFallbackSshTrustByTargetId = new Map<
@@ -293,8 +298,8 @@ export class RemoteConnectionService {
    *
    * For opportunistic background readers that must not trigger an implicit
    * reconnect: a failed call on a disconnected target spends that machine's
-   * automatic-reconnect budget, and exhausting it pauses automatic reconnect
-   * for every feature that target serves.
+   * automatic-reconnect backoff, and a failed target is retried with bounded
+   * exponential spacing rather than being latched off permanently.
    */
   isConnected(targetId: string): boolean {
     return this.statusById.get(targetId)?.state === "connected";
@@ -345,7 +350,7 @@ export class RemoteConnectionService {
       this.pool.disconnect(targetId);
       this.statusById.delete(targetId);
       this.manuallyDisconnectedTargetIds.delete(targetId);
-      this.clearAutomaticReconnectBudget(targetId);
+      this.clearAutomaticReconnectState(targetId);
       this.latencyProbeTargetIds.delete(targetId);
       this.pairedFallbackSshTrustByTargetId.delete(targetId);
     }
@@ -355,7 +360,7 @@ export class RemoteConnectionService {
       if (!target) continue;
       this.bumpDisconnectGeneration(targetId);
       this.mergeStatus(targetId, { state: "idle", lastError: null });
-      this.clearAutomaticReconnectBudget(targetId);
+      this.clearAutomaticReconnectState(targetId);
       if (
         shouldAutoconnectTarget(target)
         && !this.manuallyDisconnectedTargetIds.has(targetId)
@@ -404,7 +409,7 @@ export class RemoteConnectionService {
     });
     if (enabled) {
       this.manuallyDisconnectedTargetIds.delete(target.id);
-      this.clearAutomaticReconnectBudget(target.id);
+      this.clearAutomaticReconnectState(target.id);
     }
     this.emit();
     return updated;
@@ -588,7 +593,7 @@ export class RemoteConnectionService {
       : null;
     this.disconnect(targetId);
     this.manuallyDisconnectedTargetIds.delete(targetId);
-    this.clearAutomaticReconnectBudget(targetId);
+    this.clearAutomaticReconnectState(targetId);
     this.pairedFallbackSshTrustByTargetId.delete(targetId);
     this.statusById.delete(targetId);
     const removed = this.registry.remove(targetId);
@@ -684,7 +689,7 @@ export class RemoteConnectionService {
     for (const target of this.registry.list()) {
       if (!shouldAutoconnectTarget(target)) continue;
       if (this.manuallyDisconnectedTargetIds.has(target.id)) continue;
-      if (this.automaticReconnectPausedTargetIds.has(target.id)) continue;
+      if (!this.automaticReconnectRetryIsDue(target.id)) continue;
       void this.connect(target.id).catch(() => {});
     }
     if (this.autoconnectTimer) return;
@@ -710,7 +715,7 @@ export class RemoteConnectionService {
     const explicit = options.explicit === true;
     if (explicit) {
       this.manuallyDisconnectedTargetIds.delete(target.id);
-      this.clearAutomaticReconnectBudget(target.id);
+      this.clearAutomaticReconnectState(target.id);
     } else {
       this.assertImplicitReconnectAllowed(target.id);
     }
@@ -759,7 +764,7 @@ export class RemoteConnectionService {
         lastAttemptedAt: Date.now(),
         lastError: null,
       });
-      this.clearAutomaticReconnectBudget(connectedResult.target.id);
+      this.clearAutomaticReconnectState(connectedResult.target.id);
       this.pairedFallbackSshTrustByTargetId.delete(connectedResult.target.id);
       return connectedResult;
     } catch (error) {
@@ -823,7 +828,7 @@ export class RemoteConnectionService {
         projects,
         lastError: null,
       });
-      this.clearAutomaticReconnectBudget(targetId);
+      this.clearAutomaticReconnectState(targetId);
       return projects;
     } catch (error) {
       this.markCallFailure(targetId, error);
@@ -840,7 +845,7 @@ export class RemoteConnectionService {
       const value = await this.pool.addProjectForTarget(target, rootPath);
       const project = coerceConnectionProject(value);
       this.upsertProject(targetId, project);
-      this.clearAutomaticReconnectBudget(targetId);
+      this.clearAutomaticReconnectState(targetId);
       return project;
     } catch (error) {
       this.markCallFailure(targetId, error);
@@ -1053,7 +1058,7 @@ export class RemoteConnectionService {
         lastError: null,
         lastAttemptedAt: Date.now(),
       });
-      this.clearAutomaticReconnectBudget(targetId);
+      this.clearAutomaticReconnectState(targetId);
       return result;
     } catch (error) {
       this.markCallFailure(targetId, error);
@@ -1078,7 +1083,7 @@ export class RemoteConnectionService {
         lastError: null,
         lastAttemptedAt: Date.now(),
       });
-      this.clearAutomaticReconnectBudget(targetId);
+      this.clearAutomaticReconnectState(targetId);
       return result;
     } catch (error) {
       this.markCallFailure(targetId, error);
@@ -1109,7 +1114,7 @@ export class RemoteConnectionService {
         lastError: null,
         lastAttemptedAt: Date.now(),
       });
-      this.clearAutomaticReconnectBudget(targetId);
+      this.clearAutomaticReconnectState(targetId);
       return cleanup;
     } catch (error) {
       this.markCallFailure(targetId, error);
@@ -1132,7 +1137,7 @@ export class RemoteConnectionService {
         lastError: null,
         lastAttemptedAt: Date.now(),
       });
-      this.clearAutomaticReconnectBudget(targetId);
+      this.clearAutomaticReconnectState(targetId);
       return registry;
     } catch (error) {
       this.markCallFailure(targetId, error);
@@ -1159,7 +1164,7 @@ export class RemoteConnectionService {
         lastError: null,
         lastAttemptedAt: Date.now(),
       });
-      this.clearAutomaticReconnectBudget(targetId);
+      this.clearAutomaticReconnectState(targetId);
       return result;
     } catch (error) {
       this.markCallFailure(targetId, error);
@@ -1182,6 +1187,8 @@ export class RemoteConnectionService {
     this.stopAutoconnect();
     this.pool.dispose();
     this.latencyProbeTargetIds.clear();
+    this.automaticReconnectFailuresByTargetId.clear();
+    this.automaticReconnectRetryAtByTargetId.clear();
     this.pairedFallbackSshTrustByTargetId.clear();
     this.listeners.clear();
   }
@@ -1193,7 +1200,7 @@ export class RemoteConnectionService {
     for (const target of this.registry.list()) {
       if (!shouldAutoconnectTarget(target)) continue;
       if (this.manuallyDisconnectedTargetIds.has(target.id)) continue;
-      if (this.automaticReconnectPausedTargetIds.has(target.id)) continue;
+      if (!this.automaticReconnectRetryIsDue(target.id)) continue;
       const status = this.statusById.get(target.id);
       if (status?.state === "connecting") continue;
       if (status?.state === "connected") {
@@ -1253,7 +1260,7 @@ export class RemoteConnectionService {
       if (current?.state !== "connected") {
         this.mergeStatus(target.id, { state: "connected", lastError: null });
       }
-      this.clearAutomaticReconnectBudget(target.id);
+      this.clearAutomaticReconnectState(target.id);
       return result;
     } catch (error) {
       this.markCallFailure(target.id, error);
@@ -1304,14 +1311,20 @@ export class RemoteConnectionService {
         "Remote machine was manually disconnected. Connect again to use this remote project.",
       );
     }
-    if (this.automaticReconnectPausedTargetIds.has(targetId)) {
-      throw new Error(automaticReconnectStoppedMessage());
-    }
   }
 
-  private clearAutomaticReconnectBudget(targetId: string): void {
+  private clearAutomaticReconnectState(targetId: string): void {
     this.automaticReconnectFailuresByTargetId.delete(targetId);
-    this.automaticReconnectPausedTargetIds.delete(targetId);
+    this.automaticReconnectRetryAtByTargetId.delete(targetId);
+  }
+
+  private automaticReconnectRetryIsDue(targetId: string): boolean {
+    const retryAt = this.automaticReconnectRetryAtByTargetId.get(targetId);
+    if (retryAt == null || retryAt <= Date.now()) {
+      this.automaticReconnectRetryAtByTargetId.delete(targetId);
+      return true;
+    }
+    return false;
   }
 
   /**
@@ -1322,7 +1335,7 @@ export class RemoteConnectionService {
    * "error"/reconnecting — doing so surfaces a false "host is unreachable"
    * toast and a reconnect loop for what is really a per-action failure. Only
    * genuine transport failures update the connection status and reconnect
-   * budget; everything else is left to rethrow to the caller untouched.
+   * backoff state; everything else is left to rethrow to the caller untouched.
    */
   private markCallFailure(targetId: string, error: unknown): void {
     if (!isImplicitConnectionFailure(error)) return;
@@ -1346,16 +1359,13 @@ export class RemoteConnectionService {
     targetId: string,
     error: unknown,
   ): string {
-    if (this.automaticReconnectPausedTargetIds.has(targetId)) {
-      return automaticReconnectStoppedMessage();
-    }
     const failureCount =
       (this.automaticReconnectFailuresByTargetId.get(targetId) ?? 0) + 1;
     this.automaticReconnectFailuresByTargetId.set(targetId, failureCount);
-    if (failureCount >= AUTOMATIC_RECONNECT_FAILURE_LIMIT) {
-      this.automaticReconnectPausedTargetIds.add(targetId);
-      return automaticReconnectStoppedMessage();
-    }
+    this.automaticReconnectRetryAtByTargetId.set(
+      targetId,
+      Date.now() + automaticReconnectBackoffMs(failureCount),
+    );
     return errorMessage(error);
   }
 

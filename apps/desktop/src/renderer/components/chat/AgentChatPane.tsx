@@ -11801,16 +11801,31 @@ export function AgentChatPane({
   const draftShelfLaneValue = draftLaunchTargetIsAutoCreate
     ? AUTO_CREATE_LANE_OPTION.id
     : (laneId ?? "");
+  const canUseThisComputerForDraft = laneMachineOptions.some(
+    (option) => option.id === THIS_MACHINE_ID,
+  );
   /**
    * Cursor Cloud rides in the machine picker because "where does this run" is one question. It
    * appears whenever Cursor is connected and this draft could launch there; picking it is cloud
    * mode, and picking any real machine leaves it.
    */
   const draftShelfMachineOptions = useMemo<DraftMachineOption[]>(() => {
-    const machines: DraftMachineOption[] = laneMachineOptions.map((option) => ({
-      id: option.id,
-      name: option.name,
-    }));
+    const unavailableMachine = canUseThisComputerForDraft && draftMachineUnavailable
+      && selectedDraftMachineId
+      && !laneMachineOptions.some((option) => option.id === selectedDraftMachineId)
+      ? {
+          id: selectedDraftMachineId,
+          name: "Unavailable machine",
+          unavailableReason: "This machine is disconnected. Choose This computer to continue.",
+        }
+      : null;
+    const machines: DraftMachineOption[] = [
+      ...(unavailableMachine ? [unavailableMachine] : []),
+      ...laneMachineOptions.map((option) => ({
+        id: option.id,
+        name: option.name,
+      })),
+    ];
     if (!cursorCloudCanLaunch) return machines;
     const withLocal = machines.length
       ? machines
@@ -11831,15 +11846,17 @@ export function AgentChatPane({
     ];
   }, [
     boundLaneMachineId,
+    canUseThisComputerForDraft,
     cursorCloudCanLaunch,
     cursorCloudUnavailableReason,
+    draftMachineUnavailable,
     laneMachineOptions,
     parallelChatMode,
     selectedDraftMachineId,
   ]);
   const draftShelfMachineValue = cursorCloudMode
     ? CURSOR_CLOUD_MACHINE_ID
-    : (selectedDraftMachine?.id ?? null);
+    : selectedDraftMachineId;
   const handleDraftShelfMachineChange = useCallback((nextMachineId: string) => {
     if (nextMachineId === CURSOR_CLOUD_MACHINE_ID) {
       setError(null);
@@ -11849,6 +11866,11 @@ export function AgentChatPane({
     setCursorCloudMode(false);
     handleDraftMachineChange(nextMachineId);
   }, [handleDraftMachineChange, setCursorCloudMode]);
+  const useThisComputerForDraft = useCallback(() => {
+    setCursorCloudMode(false);
+    handleDraftMachineChange(THIS_MACHINE_ID);
+    setError(null);
+  }, [handleDraftMachineChange, setCursorCloudMode, setError]);
   draftExecutionLanesRef.current = draftExecutionLanes;
   draftExecutionMachineIdRef.current = selectedDraftMachineId;
   draftBoundMachineIdRef.current = boundLaneMachineId;
@@ -13093,6 +13115,9 @@ export function AgentChatPane({
             cursorRuntime={cursorRuntime}
             modelRuntimePin={activeComposerRuntimeBinding}
             attachmentPersistenceUnavailableReason={draftAttachmentUnavailableReason}
+            onUseThisComputer={draftMachineUnavailable && canUseThisComputerForDraft
+              ? useThisComputerForDraft
+              : undefined}
             contextAttachments={contextAttachments}
             allowAttachmentOnlySubmit={workDraftKind === "cli"}
             pinnedLinearIssue={pinnedLinearIssue}
@@ -13822,6 +13847,15 @@ export function AgentChatPane({
         {error ? (
           <div className="flex flex-wrap items-center justify-between gap-2 border-b border-red-500/[0.08] bg-red-500/[0.03] px-4 py-2.5 font-sans text-[11px] text-red-300/80">
             <span className="min-w-0 flex-1 break-words">{error}</span>
+            {draftMachineUnavailable && canUseThisComputerForDraft ? (
+              <button
+                type="button"
+                className="shrink-0 rounded-md border border-red-300/15 px-2 py-0.5 font-medium text-red-50/90 transition-colors hover:bg-red-300/[0.12]"
+                onClick={useThisComputerForDraft}
+              >
+                Use this computer
+              </button>
+            ) : null}
             {restorableErrorDraftLaunchJob ? (
               <button
                 type="button"

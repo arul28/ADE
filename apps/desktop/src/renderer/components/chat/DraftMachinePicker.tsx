@@ -42,8 +42,9 @@ function machineIcon(option: DraftMachineOption) {
  * lanes. Choosing the machine first means the lane list beside it is always
  * flat, short, and unambiguous.
  *
- * Renders nothing with fewer than two machines: there is no choice to make, and
- * the shelf should not spend a control saying so.
+ * Renders nothing with fewer than two machines unless the current selection is
+ * unavailable. That exception keeps the recovery control visible when a
+ * persisted remote selection outlives its connection.
  */
 export function DraftMachinePicker({
   machines,
@@ -162,14 +163,20 @@ export function DraftMachinePicker({
     }
   }, [closeAndRestoreFocus]);
 
-  if (machines.length < 2) return null;
-
   const selected = machines.find((machine) => machine.id === selectedMachineId) ?? null;
   const displayed = selected ?? machines[0];
+  const selectionUnavailable = selectedMachineId != null && selected == null;
+  if (machines.length < 2 && !selectionUnavailable) return null;
   if (!displayed) return null;
-  const triggerAriaLabel = selected
-    ? `${triggerLabel}, currently ${selected.name}`
-    : `${triggerLabel}, current machine unavailable; fallback ${displayed.name}`;
+  const availableFallback = machines.find((machine) => !machine.unavailableReason?.trim()) ?? displayed;
+  let triggerAriaLabel: string;
+  if (selected?.unavailableReason || selectionUnavailable) {
+    triggerAriaLabel = `${triggerLabel}, current machine unavailable; fallback ${availableFallback.name}`;
+  } else if (selected) {
+    triggerAriaLabel = `${triggerLabel}, currently ${selected.name}`;
+  } else {
+    triggerAriaLabel = `${triggerLabel}, current machine unavailable; fallback ${displayed.name}`;
+  }
   const hasCloudOption = machines.some((machine) => machine.kind === "cloud");
   const defaultTriggerDescription = hasCloudOption
     ? "Pick this computer, another paired computer, or Cursor Cloud. The lane list beside it follows your choice."

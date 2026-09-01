@@ -6525,7 +6525,7 @@ describe("AgentChatPane submit recovery", () => {
     expect(onLaneChange).not.toHaveBeenCalled();
   });
 
-  it("keeps machine and lane unchanged for Auto-create on an unavailable machine", async () => {
+  it("falls back to this computer when a persisted draft machine is unavailable", async () => {
     installAdeMocks({ sessions: [] });
     const onDraftMachineChange = vi.fn();
     const onLaneChange = vi.fn();
@@ -6535,11 +6535,48 @@ describe("AgentChatPane submit recovery", () => {
       onLaneChange,
     });
 
+    await waitFor(() => expect(onDraftMachineChange).toHaveBeenCalledWith(null));
+
     fireEvent.click(await screen.findByRole("button", { name: "Select lane" }));
     fireEvent.click(await screen.findByRole("option", { name: /Auto-create lane/i }));
 
-    expect(onDraftMachineChange).not.toHaveBeenCalled();
+    expect(onDraftMachineChange).toHaveBeenCalledWith(null);
     expect(onLaneChange).not.toHaveBeenCalled();
+  });
+
+  it("does not offer local recovery when the remote-bound project has no local checkout", async () => {
+    installAdeMocks({ sessions: [] });
+    let resolveSnapshot: ((snapshot: unknown) => void) | null = null;
+    (window.ade as any).remoteRuntime = {
+      getConnectionSnapshot: vi.fn(() => new Promise((resolve) => {
+        resolveSnapshot = resolve;
+      })),
+      onConnectionSnapshotChanged: vi.fn(() => () => {}),
+    };
+    const remoteBinding: OpenProjectBinding = {
+      kind: "remote",
+      key: "remote:studio:project-1",
+      targetId: "studio",
+      runtimeName: "Mac Studio",
+      projectId: "project-1",
+      rootPath: "/Volumes/work/project-under-test",
+      displayName: "project-under-test",
+      gitOriginUrl: "https://github.com/acme/project-under-test",
+    };
+    renderAutoCreateDraftPane({
+      initialDraftMachineId: "disconnected-studio",
+      projectBinding: remoteBinding,
+    });
+
+    expect(screen.queryByRole("button", { name: "Use this computer" })).toBeNull();
+    expect(resolveSnapshot).not.toBeNull();
+
+    act(() => {
+      resolveSnapshot?.({ connections: [], connectedCount: 0, updatedAt: Date.now() });
+    });
+    await waitFor(() => {
+      expect(screen.queryByRole("button", { name: "Use this computer" })).toBeNull();
+    });
   });
 
   it("rejects an unavailable draft lane instead of launching against the bound project", async () => {
@@ -6686,19 +6723,6 @@ describe("AgentChatPane submit recovery", () => {
     fireEvent.click(modelTrigger);
     fireEvent.click(await screen.findByRole("tab", { name: /^OpenAI$/i }));
     await clickEnabledModelOption(new RegExp(escapeRegExp(codexLabel), "i"));
-    // Machine and lane are separate shelf controls now, so routing an
-    // auto-create launch onto this computer is two choices rather than one
-    // machine-qualified row inside the lane list.
-    const unavailableTrigger = await screen.findByRole("button", {
-      name: /current machine unavailable; fallback Mac Studio/i,
-    });
-    fireEvent.click(unavailableTrigger);
-    const studioOption = await screen.findByRole("menuitemradio", { name: /Mac Studio/ });
-    await waitFor(() => expect(document.activeElement).toBe(studioOption));
-    fireEvent.keyDown(studioOption, { key: "Enter" });
-    expect(onDraftMachineChange).toHaveBeenCalledWith(null);
-    await waitFor(() => expect(document.activeElement).toBe(unavailableTrigger));
-
     const selectedTrigger = await screen.findByRole("button", { name: /currently Mac Studio/i });
     fireEvent.click(selectedTrigger);
     const selectedStudioOption = await screen.findByRole("menuitemradio", { name: /Mac Studio/ });

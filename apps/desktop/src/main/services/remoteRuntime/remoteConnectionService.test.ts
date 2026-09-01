@@ -20,7 +20,10 @@ import {
   encodePairingQrUrl,
 } from "../../../shared/pairingQr";
 import type { RemoteConnectionPool } from "./remoteConnectionPool";
-import { RemoteConnectionService } from "./remoteConnectionService";
+import {
+  automaticReconnectBackoffMs,
+  RemoteConnectionService,
+} from "./remoteConnectionService";
 import type { RemoteTargetRegistry } from "./remoteTargetRegistry";
 import {
   PairedRuntimeRelayAuthRequiredError,
@@ -1071,7 +1074,7 @@ describe("RemoteConnectionService", () => {
     expect(service.snapshot().connectedCount).toBe(1);
   });
 
-  it("pauses automatic reconnect after repeated implicit connection failures", async () => {
+  it("does not permanently disable implicit reconnect after repeated failures", async () => {
     const previouslyConnected = target("previously-connected", 1_700_000_000);
     const registry = {
       list: vi.fn(() => [previouslyConnected]),
@@ -1101,30 +1104,31 @@ describe("RemoteConnectionService", () => {
 
     expect(pool.connect).toHaveBeenCalledTimes(10);
     expect(service.snapshot().connections[0]?.lastError).toMatch(
-      /stopped automatic reconnecting after 10 failed attempts/i,
+      /connection failed/i,
     );
 
     await expect(service.connect(previouslyConnected.id)).rejects.toThrow(
-      /stopped automatic reconnecting/i,
+      /connection failed/i,
     );
-    await expect(
-      service.callAction(previouslyConnected.id, "project-1", {
-        domain: "file",
-        action: "read",
-      }),
-    ).rejects.toThrow(/stopped automatic reconnecting/i);
-    expect(pool.connect).toHaveBeenCalledTimes(10);
-    expect(pool.callActionForTarget).not.toHaveBeenCalled();
+    expect(pool.connect).toHaveBeenCalledTimes(11);
 
     failConnect = false;
     await expect(
       service.connect(previouslyConnected.id, { explicit: true }),
     ).resolves.toMatchObject({ target: previouslyConnected });
-    expect(pool.connect).toHaveBeenCalledTimes(11);
+    expect(pool.connect).toHaveBeenCalledTimes(12);
     expect(service.snapshot().connections[0]?.lastError).toBeNull();
   });
 
-  it("does not spend the reconnect budget on pool backoff throttle errors", async () => {
+  it("uses bounded exponential backoff for automatic reconnect attempts", () => {
+    expect(automaticReconnectBackoffMs(1)).toBe(30_000);
+    expect(automaticReconnectBackoffMs(2)).toBe(60_000);
+    expect(automaticReconnectBackoffMs(3)).toBe(120_000);
+    expect(automaticReconnectBackoffMs(10)).toBe(5 * 60_000);
+    expect(automaticReconnectBackoffMs(100)).toBe(5 * 60_000);
+  });
+
+  it("does not change the backoff state on pool backoff throttle errors", async () => {
     const previouslyConnected = target("previously-connected", 1_700_000_000);
     const registry = {
       list: vi.fn(() => [previouslyConnected]),
@@ -1158,7 +1162,7 @@ describe("RemoteConnectionService", () => {
     expect(pool.connect).toHaveBeenCalledTimes(11);
   });
 
-  it("does not spend the reconnect budget when relay needs sign-in", async () => {
+  it("does not change the backoff state when relay needs sign-in", async () => {
     const previouslyConnected = target("previously-connected", 1_700_000_000);
     const registry = {
       list: vi.fn(() => [previouslyConnected]),
@@ -1190,7 +1194,7 @@ describe("RemoteConnectionService", () => {
     );
   });
 
-  it("spends the reconnect budget on normalized SSH handshake failures", async () => {
+  it("keeps retrying after normalized SSH handshake failures", async () => {
     const previouslyConnected = target("previously-connected", 1_700_000_000);
     const registry = {
       list: vi.fn(() => [previouslyConnected]),
@@ -1216,15 +1220,15 @@ describe("RemoteConnectionService", () => {
     }
 
     expect(service.snapshot().connections[0]?.lastError).toMatch(
-      /stopped automatic reconnecting after 10 failed attempts/i,
+      /SSH handshake/i,
     );
     await expect(service.connect(previouslyConnected.id)).rejects.toThrow(
-      /stopped automatic reconnecting/i,
+      /SSH handshake/i,
     );
-    expect(pool.connect).toHaveBeenCalledTimes(10);
+    expect(pool.connect).toHaveBeenCalledTimes(11);
   });
 
-  it("keeps the connection healthy and spends no budget on ordinary remote action errors", async () => {
+  it("keeps the connection healthy and leaves backoff state unchanged on ordinary remote action errors", async () => {
     const previouslyConnected = target("previously-connected", 1_700_000_000);
     const registry = {
       list: vi.fn(() => [previouslyConnected]),
@@ -1267,7 +1271,7 @@ describe("RemoteConnectionService", () => {
 
     // An application-level error came back over a live channel — the host is
     // reachable, so the connection must stay connected (no "unreachable" toast,
-    // no reconnect loop) and the auto-reconnect budget is untouched.
+    // no reconnect loop) and the automatic reconnect backoff state is untouched.
     expect(pool.callActionForTarget).toHaveBeenCalledTimes(11);
     expect(service.snapshot().connections[0]?.state).toBe("connected");
     expect(service.snapshot().connections[0]?.lastError).toBeNull();

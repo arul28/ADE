@@ -1563,6 +1563,7 @@ export function AgentChatComposer({
   cursorRuntime = null,
   modelRuntimePin = null,
   attachmentPersistenceUnavailableReason = null,
+  onUseThisComputer,
   contextAttachments = [],
   allowAttachmentOnlySubmit = false,
   pinnedLinearIssue = null,
@@ -1715,6 +1716,8 @@ export function AgentChatComposer({
   modelRuntimePin?: OpenProjectBinding | null;
   /** Fail-closed reason shown when the selected runtime cannot own new attachments. */
   attachmentPersistenceUnavailableReason?: string | null;
+  /** Clears an unavailable draft machine without changing the project tab. */
+  onUseThisComputer?: () => void;
   contextAttachments?: AgentChatContextAttachment[];
   allowAttachmentOnlySubmit?: boolean;
   pinnedLinearIssue?: LaneLinearIssue | null;
@@ -5406,6 +5409,18 @@ export function AgentChatComposer({
             {attachError ? (
               <div className="flex items-center gap-1.5 px-3">
                 <span className="text-[length:calc(var(--chat-font-size)*10/14)] text-red-300/75">{attachError}</span>
+                {onUseThisComputer && attachError === attachmentPersistenceUnavailableReason ? (
+                  <button
+                    type="button"
+                    className="shrink-0 rounded px-1 text-[length:calc(var(--chat-font-size)*10/14)] text-red-200/80 underline underline-offset-2 transition-colors hover:text-red-100"
+                    onClick={() => {
+                      onUseThisComputer();
+                      setAttachError(null);
+                    }}
+                  >
+                    Use this computer
+                  </button>
+                ) : null}
                 {attachRetryFiles?.length ? (
                   <button
                     type="button"

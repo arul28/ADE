@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { remoteProjectBindingKey } from "../../../shared/projectIdentity";
 import type {
   LaneSummary,
@@ -79,20 +79,44 @@ export function useDraftMachineRouting({
 }: UseDraftMachineRoutingInput) {
   const [connectionSnapshot, setConnectionSnapshot] =
     useState<RemoteRuntimeConnectionSnapshot | null>(null);
+  const [connectionCatalogResolved, setConnectionCatalogResolved] = useState(!enabled);
+  const connectionCatalogResolvedRef = useRef(connectionCatalogResolved);
   const [knownLocalProjects, setKnownLocalProjects] = useState<RecentProjectSummary[]>([]);
 
   useEffect(() => {
-    if (!enabled) return;
+    if (!enabled) {
+      connectionCatalogResolvedRef.current = true;
+      setConnectionCatalogResolved(true);
+      return;
+    }
+    // Update the ref before the reconciliation effect runs so an enabled draft
+    // cannot treat its previous disabled state as a resolved catalog.
+    connectionCatalogResolvedRef.current = false;
+    setConnectionCatalogResolved(false);
     const remoteRuntime = window.ade?.remoteRuntime;
-    if (!remoteRuntime?.getConnectionSnapshot) return;
+    if (!remoteRuntime?.getConnectionSnapshot) {
+      // A missing remote bridge is a resolved local-only catalog, not an
+      // indefinitely loading one. This matters for a persisted remote choice:
+      // the local machine must remain usable when the remote feature is absent.
+      connectionCatalogResolvedRef.current = true;
+      setConnectionCatalogResolved(true);
+      return;
+    }
     let cancelled = false;
     const apply = (snapshot: RemoteRuntimeConnectionSnapshot) => {
       if (cancelled) return;
+      connectionCatalogResolvedRef.current = true;
+      setConnectionCatalogResolved(true);
       setConnectionSnapshot((current) =>
         current && current.updatedAt > snapshot.updatedAt ? current : snapshot,
       );
     };
-    void remoteRuntime.getConnectionSnapshot().then(apply).catch(() => {});
+    void remoteRuntime.getConnectionSnapshot().then(apply).catch(() => {
+      if (!cancelled) {
+        connectionCatalogResolvedRef.current = true;
+        setConnectionCatalogResolved(true);
+      }
+    });
     const unsubscribe = remoteRuntime.onConnectionSnapshotChanged?.(apply) ?? (() => {});
     return () => {
       cancelled = true;
@@ -222,16 +246,24 @@ export function useDraftMachineRouting({
 
   useEffect(() => {
     if (machineOptions.some((option) => option.id === machineId)) return;
-    // Preserve a persisted foreign choice while the asynchronous catalog is
-    // still loading. If it remains unavailable, the launch path reports that
-    // exact machine instead of silently falling back to the tab binding.
-    if (initialDraftMachineId?.trim() === machineId) return;
+    // Preserve a persisted foreign choice only while the asynchronous catalog
+    // is still loading. Once the catalog resolves (including a failed probe),
+    // the local/bound machine is the safe fallback instead of leaving the
+    // composer pinned to a machine that no longer exists in the options.
+    if (!connectionCatalogResolvedRef.current && initialDraftMachineId?.trim() === machineId) return;
     chooseMachine(
       machineOptions.find((option) => option.isBound)?.id
         ?? machineOptions[0]?.id
         ?? boundMachineId,
     );
-  }, [boundMachineId, chooseMachine, initialDraftMachineId, machineId, machineOptions]);
+  }, [
+    boundMachineId,
+    chooseMachine,
+    connectionCatalogResolved,
+    initialDraftMachineId,
+    machineId,
+    machineOptions,
+  ]);
 
   const executionLanes = lanesByMachineId.get(machineId) ?? [];
   const preservedLane = laneId

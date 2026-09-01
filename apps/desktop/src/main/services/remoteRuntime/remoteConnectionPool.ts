@@ -17,7 +17,10 @@ import type {
   RemoteRuntimeTarget,
 } from "../../../shared/types/remoteRuntime";
 import type { AdeActionRegistryEntry } from "../../../shared/types/automations";
-import { isRemoteRuntimeConnectionError } from "../../../shared/runtimeErrors";
+import {
+  isRemoteRuntimeConnectionError,
+  isRuntimeTransportTimeoutError,
+} from "../../../shared/runtimeErrors";
 import type { RuntimeRpcClient } from "./runtimeRpcClient";
 import { bootstrapRemoteRuntime, ensureRemoteProject } from "./remoteBootstrap";
 import type { RemoteTargetRegistry } from "./remoteTargetRegistry";
@@ -135,7 +138,15 @@ function assertRequiredActionRoute(
 
 export { isRemoteRuntimeConnectionError };
 
+function isRemoteRuntimeStreamFailure(error: unknown): boolean {
+  return isRemoteRuntimeConnectionError(error) || isRuntimeTransportTimeoutError(error);
+}
+
 const RETRYABLE_REMOTE_ACTION_RPC_TIMEOUT_MS = 25_000;
+/** Event reads and subscription acknowledgements should fail fast enough to
+ * notice a peer that disappeared during sleep, while still allowing a cold
+ * remote runtime a reasonable response window. */
+export const REMOTE_RUNTIME_STREAM_EVENTS_TIMEOUT_MS = 30_000;
 const LONG_RUNNING_REMOTE_RUNTIME_ACTION_TIMEOUTS: ReadonlyMap<string, number> = new Map([
   ["chat.suggestLaneNameFromPrompt", 120_000],
   ["chat.generateAutoLaneIdentity", 120_000],
@@ -921,6 +932,8 @@ export class RemoteConnectionPool {
           ? { category: request.category }
           : {}),
       },
+    }, {
+      timeoutMs: REMOTE_RUNTIME_STREAM_EVENTS_TIMEOUT_MS,
     });
 
     if (value && typeof value === "object" && !Array.isArray(value)) {
@@ -980,7 +993,10 @@ export class RemoteConnectionPool {
     return await this.withEntryForTarget(
       target,
       (entry) => this.streamEventsWithEntry(entry, projectId, request),
-      { retryOnConnectionError: true },
+      {
+        retryOnConnectionError: true,
+        isRetryableError: isRemoteRuntimeStreamFailure,
+      },
     );
   }
 
@@ -1022,7 +1038,10 @@ export class RemoteConnectionPool {
           onEnded,
           onSubscribed,
         ),
-      { retryOnConnectionError: true },
+      {
+        retryOnConnectionError: true,
+        isRetryableError: isRemoteRuntimeStreamFailure,
+      },
     );
   }
 
@@ -1138,7 +1157,10 @@ export class RemoteConnectionPool {
   private async withEntryForTarget<T>(
     target: RemoteRuntimeTarget,
     operation: (entry: PoolEntry) => Promise<T>,
-    options: { retryOnConnectionError: boolean },
+    options: {
+      retryOnConnectionError: boolean;
+      isRetryableError?: (error: unknown) => boolean;
+    },
   ): Promise<T> {
     const entry = await this.connectEntry(target);
     const disconnectGeneration =
@@ -1146,7 +1168,7 @@ export class RemoteConnectionPool {
     try {
       return await operation(entry);
     } catch (error) {
-      if (!isRemoteRuntimeConnectionError(error)) throw error;
+      if (!(options.isRetryableError ?? isRemoteRuntimeConnectionError)(error)) throw error;
       if (
         (this.disconnectGenerationByTargetId.get(target.id) ?? 0) !==
         disconnectGeneration
@@ -1396,6 +1418,8 @@ async function subscribeToRuntimeEvents(
         ? { category: request.category }
         : {}),
       ...(typeof request.replay === "boolean" ? { replay: request.replay } : {}),
+    }, {
+      timeoutMs: REMOTE_RUNTIME_STREAM_EVENTS_TIMEOUT_MS,
     });
     subscriptionId = readSubscriptionId(value);
     onSubscribed?.(normalizeRuntimeEventsSubscribeResult(value, request.cursor));
