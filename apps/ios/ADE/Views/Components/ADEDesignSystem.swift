@@ -220,25 +220,34 @@ enum ADEColor {
     case "gpt-5.4-mini", "gpt-5.4-mini-codex", "openai/gpt-5.4-mini", "openai/gpt-5.4-mini-codex":
       append("openai/gpt-5.4-mini")
       append("gpt-5.4-mini")
-    case "fable", "fable-5.1", "fable-5-1", "anthropic/claude-fable-5-1", "anthropic/claude-fable-5-1-api",
-         "claude-fable-5-1", "anthropic/claude-fable-5", "anthropic/claude-fable-5-api", "claude-fable-5":
+    case "fable", "fable-5.1", "fable-5-1", "fable-5", "fable-5.0",
+         "anthropic/claude-fable-5-1", "anthropic/claude-fable-5-1-api",
+         "claude-fable-5-1", "opencode/anthropic/claude-fable-5-1",
+         "anthropic/claude-fable-5", "anthropic/claude-fable-5-api", "claude-fable-5",
+         "opencode/anthropic/claude-fable-5":
       append("anthropic/claude-fable-5-1")
       append("anthropic/claude-fable-5-1-api")
       append("claude-fable-5-1")
+      append("opencode/anthropic/claude-fable-5-1")
       append("anthropic/claude-fable-5")
       append("anthropic/claude-fable-5-api")
       append("claude-fable-5")
+      append("opencode/anthropic/claude-fable-5")
       append("fable")
     case "opus", "opus-5", "opus-5.0", "opus-5-0",
-         "anthropic/claude-opus-5", "anthropic/claude-opus-5-api", "claude-opus-5":
+         "anthropic/claude-opus-5", "anthropic/claude-opus-5-api", "claude-opus-5",
+         "opencode/anthropic/opus", "opencode/anthropic/claude-opus-5":
       append("anthropic/claude-opus-5")
       append("claude-opus-5")
+      append("opencode/anthropic/claude-opus-5")
       append("opus")
     case "anthropic/claude-opus-4-8", "anthropic/claude-opus-4-8-api", "claude-opus-4-8",
          "opus-4.8", "opus-4-8", "opus-4.8-1m", "opus-4.8[1m]", "opus-4-8-1m",
-         "anthropic/claude-opus-4-8-1m", "claude-opus-4-8-1m", "claude-opus-4-8[1m]":
+         "anthropic/claude-opus-4-8-1m", "claude-opus-4-8-1m", "claude-opus-4-8[1m]",
+         "opencode/anthropic/claude-opus-4-8":
       append("anthropic/claude-opus-4-8")
       append("claude-opus-4-8")
+      append("opencode/anthropic/claude-opus-4-8")
     case "anthropic/claude-opus-4-7", "anthropic/claude-opus-4-7-api", "claude-opus-4-7":
       append("anthropic/claude-opus-4-8")
       append("claude-opus-4-8")
@@ -246,10 +255,18 @@ enum ADEColor {
       append("anthropic/claude-opus-4-8")
       append("claude-opus-4-8")
     case "sonnet", "anthropic/claude-sonnet-5", "claude-sonnet-5",
-         "anthropic/claude-sonnet-4-6", "claude-sonnet-4-6":
+         "anthropic/claude-sonnet-4-6", "claude-sonnet-4-6",
+         "opencode/anthropic/claude-sonnet-5":
       append("anthropic/claude-sonnet-5")
       append("claude-sonnet-5")
+      append("opencode/anthropic/claude-sonnet-5")
       append("sonnet")
+    case "haiku", "anthropic/claude-haiku-4-5", "claude-haiku-4-5",
+         "opencode/anthropic/claude-haiku-4-5":
+      append("anthropic/claude-haiku-4-5")
+      append("claude-haiku-4-5")
+      append("opencode/anthropic/claude-haiku-4-5")
+      append("haiku")
     default:
       break
     }

@@ -28,6 +28,7 @@ import {
   resolveModelDescriptorForProvider,
   resolveModelSlug,
   selectSupportedReasoningEffort,
+  normalizeAnthropicRuntimeAlias,
 } from "./modelRegistry";
 import type { ModelDescriptor, ProviderFamily } from "./modelRegistry";
 import { describeModelSource } from "../renderer/lib/modelOptions";
@@ -478,6 +479,18 @@ describe("modelRegistry", () => {
       expect(resolveModelAlias("anthropic/claude-opus-4-7-1m")?.id).toBe("anthropic/claude-opus-4-8");
       expect(getModelById("claude-opus-4-6")?.id).toBe("anthropic/claude-opus-4-8");
       expect(getModelById("claude-opus-4-6[1m]")?.id).toBe("anthropic/claude-opus-4-8");
+    });
+
+    it("canonicalizes Anthropic runtime aliases including Opus 4.8 1M forms", () => {
+      expect(normalizeAnthropicRuntimeAlias("claude-fable-5")?.modelId).toBe("claude-fable-5-1");
+      expect(normalizeAnthropicRuntimeAlias("fable-5.0")?.modelId).toBe("claude-fable-5-1");
+      expect(normalizeAnthropicRuntimeAlias("opus-4.8")?.modelId).toBe("claude-opus-4-8");
+      expect(normalizeAnthropicRuntimeAlias("opus-4.8-1m")?.modelId).toBe("claude-opus-4-8");
+      expect(normalizeAnthropicRuntimeAlias("claude-opus-4-8-1m")?.modelId).toBe("claude-opus-4-8");
+      expect(normalizeAnthropicRuntimeAlias("claude-opus-4-8[1m]")?.modelId).toBe("claude-opus-4-8");
+      expect(normalizeAnthropicRuntimeAlias("anthropic/claude-opus-4-8-1m")?.modelId).toBe("claude-opus-4-8");
+      expect(normalizeAnthropicRuntimeAlias("claude-opus-4-8")?.wasAlias).toBe(false);
+      expect(normalizeAnthropicRuntimeAlias("opus-4.8-1m")?.wasAlias).toBe(true);
     });
 
     it("maps removed Sonnet aliases forward without listing Sonnet 4.6 as a row", () => {

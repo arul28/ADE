@@ -1001,7 +1001,8 @@ private func workCanonicalClaudeRegistryId(for raw: String) -> String? {
   switch raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
   case "fable", "fable-5.1", "fable-5-1", "claude-fable-5-1", "anthropic/claude-fable-5-1",
        "anthropic/claude-fable-5-1-api", "fable-5", "fable-5.0",
-       "claude-fable-5", "anthropic/claude-fable-5", "anthropic/claude-fable-5-api":
+       "claude-fable-5", "anthropic/claude-fable-5", "anthropic/claude-fable-5-api",
+       "opencode/anthropic/claude-fable-5-1", "opencode/anthropic/claude-fable-5":
     return "anthropic/claude-fable-5-1"
   case "opus", "opus-5", "opus-5.0", "opus-5-0",
        "claude-opus-5", "anthropic/claude-opus-5", "anthropic/claude-opus-5-api",
@@ -1009,7 +1010,8 @@ private func workCanonicalClaudeRegistryId(for raw: String) -> String? {
     return "anthropic/claude-opus-5"
   case "claude-opus-4-8", "anthropic/claude-opus-4-8", "anthropic/claude-opus-4-8-api",
        "opus-4.8", "opus-4-8", "opus-4.8-1m", "opus-4.8[1m]", "opus-4-8-1m",
-       "claude-opus-4-8-1m", "claude-opus-4-8[1m]", "anthropic/claude-opus-4-8-1m":
+       "claude-opus-4-8-1m", "claude-opus-4-8[1m]", "anthropic/claude-opus-4-8-1m",
+       "opencode/anthropic/claude-opus-4-8":
     return "anthropic/claude-opus-4-8"
   case "claude-opus-4-7", "anthropic/claude-opus-4-7", "anthropic/claude-opus-4-7-api",
        "opus-4.6", "opus-4-6", "claude-opus-4-6", "anthropic/claude-opus-4-6":
@@ -1018,9 +1020,11 @@ private func workCanonicalClaudeRegistryId(for raw: String) -> String? {
        "opus-4-6-1m", "claude-opus-4-6-1m", "claude-opus-4-6[1m]", "anthropic/claude-opus-4-6-1m":
     return "anthropic/claude-opus-4-8"
   case "sonnet", "claude-sonnet-5", "anthropic/claude-sonnet-5",
-       "claude-sonnet-4-6", "anthropic/claude-sonnet-4-6":
+       "claude-sonnet-4-6", "anthropic/claude-sonnet-4-6",
+       "opencode/anthropic/claude-sonnet-5":
     return "anthropic/claude-sonnet-5"
-  case "haiku", "claude-haiku-4-5", "anthropic/claude-haiku-4-5":
+  case "haiku", "claude-haiku-4-5", "anthropic/claude-haiku-4-5",
+       "opencode/anthropic/claude-haiku-4-5":
     return "anthropic/claude-haiku-4-5"
   default:
     return nil
@@ -1031,7 +1035,8 @@ private func workClaudeRuntimeModelId(for raw: String) -> String? {
   switch raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
   case "fable", "fable-5.1", "fable-5-1", "claude-fable-5-1", "anthropic/claude-fable-5-1",
        "anthropic/claude-fable-5-1-api", "fable-5", "fable-5.0",
-       "claude-fable-5", "anthropic/claude-fable-5", "anthropic/claude-fable-5-api":
+       "claude-fable-5", "anthropic/claude-fable-5", "anthropic/claude-fable-5-api",
+       "opencode/anthropic/claude-fable-5-1", "opencode/anthropic/claude-fable-5":
     return "claude-fable-5-1"
   case "opus", "opus-5", "opus-5.0", "opus-5-0",
        "claude-opus-5", "anthropic/claude-opus-5", "anthropic/claude-opus-5-api",
@@ -1039,7 +1044,8 @@ private func workClaudeRuntimeModelId(for raw: String) -> String? {
     return "claude-opus-5"
   case "claude-opus-4-8", "anthropic/claude-opus-4-8", "anthropic/claude-opus-4-8-api",
        "opus-4.8", "opus-4-8", "opus-4.8-1m", "opus-4.8[1m]", "opus-4-8-1m",
-       "claude-opus-4-8-1m", "claude-opus-4-8[1m]", "anthropic/claude-opus-4-8-1m":
+       "claude-opus-4-8-1m", "claude-opus-4-8[1m]", "anthropic/claude-opus-4-8-1m",
+       "opencode/anthropic/claude-opus-4-8":
     return "claude-opus-4-8"
   case "claude-opus-4-7", "anthropic/claude-opus-4-7", "anthropic/claude-opus-4-7-api",
        "opus-4.6", "opus-4-6", "claude-opus-4-6", "anthropic/claude-opus-4-6":
@@ -1048,9 +1054,11 @@ private func workClaudeRuntimeModelId(for raw: String) -> String? {
        "opus-4-6-1m", "claude-opus-4-6-1m", "claude-opus-4-6[1m]", "anthropic/claude-opus-4-6-1m":
     return "claude-opus-4-8"
   case "sonnet", "claude-sonnet-5", "anthropic/claude-sonnet-5",
-       "claude-sonnet-4-6", "anthropic/claude-sonnet-4-6":
+       "claude-sonnet-4-6", "anthropic/claude-sonnet-4-6",
+       "opencode/anthropic/claude-sonnet-5":
     return "claude-sonnet-5"
-  case "haiku", "claude-haiku-4-5", "anthropic/claude-haiku-4-5":
+  case "haiku", "claude-haiku-4-5", "anthropic/claude-haiku-4-5",
+       "opencode/anthropic/claude-haiku-4-5":
     return "claude-haiku-4-5"
   default:
     return nil
@@ -1136,9 +1144,10 @@ struct WorkModelIdMatcher {
 
 func workKnownModelDisplayName(_ raw: String?) -> String? {
   switch raw?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? "" {
-  case "fable", "fable-5.1", "fable-5-1", "anthropic/claude-fable-5-1", "claude-fable-5-1",
-       "opencode/anthropic/claude-fable-5-1", "anthropic/claude-fable-5", "claude-fable-5",
-       "opencode/anthropic/claude-fable-5":
+  case "fable", "fable-5.1", "fable-5-1", "fable-5", "fable-5.0",
+       "anthropic/claude-fable-5-1", "anthropic/claude-fable-5-1-api", "claude-fable-5-1",
+       "opencode/anthropic/claude-fable-5-1", "anthropic/claude-fable-5", "anthropic/claude-fable-5-api",
+       "claude-fable-5", "opencode/anthropic/claude-fable-5":
     return "Claude Fable 5.1"
   case "opus", "opus-5", "opus-5.0", "opus-5-0",
        "anthropic/claude-opus-5", "anthropic/claude-opus-5-api", "claude-opus-5",
@@ -1146,7 +1155,8 @@ func workKnownModelDisplayName(_ raw: String?) -> String? {
     return "Claude Opus 5"
   case "anthropic/claude-opus-4-8", "anthropic/claude-opus-4-8-api", "claude-opus-4-8",
        "opus-4.8", "opus-4-8", "opus-4.8-1m", "opus-4.8[1m]", "opus-4-8-1m",
-       "anthropic/claude-opus-4-8-1m", "claude-opus-4-8-1m", "claude-opus-4-8[1m]":
+       "anthropic/claude-opus-4-8-1m", "claude-opus-4-8-1m", "claude-opus-4-8[1m]",
+       "opencode/anthropic/claude-opus-4-8":
     return "Claude Opus 4.8"
   case "anthropic/claude-opus-4-7", "anthropic/claude-opus-4-7-api", "claude-opus-4-7",
        "opus-4.6", "opus-4-6", "anthropic/claude-opus-4-6", "claude-opus-4-6":
@@ -1155,9 +1165,11 @@ func workKnownModelDisplayName(_ raw: String?) -> String? {
        "opus-4-6-1m", "anthropic/claude-opus-4-6-1m", "claude-opus-4-6-1m", "claude-opus-4-6[1m]":
     return "Claude Opus 4.8"
   case "sonnet", "anthropic/claude-sonnet-5", "claude-sonnet-5", "cursor/claude-4.6-sonnet-medium",
-       "anthropic/claude-sonnet-4-6", "claude-sonnet-4-6":
+       "anthropic/claude-sonnet-4-6", "claude-sonnet-4-6",
+       "opencode/anthropic/claude-sonnet-5":
     return "Claude Sonnet 5"
-  case "haiku", "anthropic/claude-haiku-4-5", "claude-haiku-4-5":
+  case "haiku", "anthropic/claude-haiku-4-5", "claude-haiku-4-5",
+       "opencode/anthropic/claude-haiku-4-5":
     return "Claude Haiku 4.5"
   case "sol", "gpt-5.6-sol", "openai/gpt-5.6-sol":
     return "GPT-5.6 Sol"

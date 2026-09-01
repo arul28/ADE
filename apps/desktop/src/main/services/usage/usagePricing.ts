@@ -146,6 +146,10 @@ const STATIC_TOKEN_PRICES: Record<string, TokenPrice> = {
 const BUILTIN_PRICING_ALIASES: Record<string, string> = {
   auto: "claude-sonnet-5",
   fable: "claude-fable-5-1",
+  "fable-5.1": "claude-fable-5-1",
+  "fable-5-1": "claude-fable-5-1",
+  "fable-5": "claude-fable-5-1",
+  "fable-5.0": "claude-fable-5-1",
   sol: "gpt-5.6-sol",
   terra: "gpt-5.6-terra",
   luna: "gpt-5.6-luna",

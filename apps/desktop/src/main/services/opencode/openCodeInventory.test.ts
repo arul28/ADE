@@ -389,6 +389,28 @@ describe("openCodeInventory", () => {
                   fast: {},
                 },
               },
+              "claude-opus-4-8-1m": {
+                id: "claude-opus-4-8-1m",
+                name: "Claude Opus 4.8 1M",
+                capabilities: {
+                  reasoning: false,
+                  toolcall: false,
+                },
+                variants: {
+                  stale: {},
+                },
+              },
+              "opus-4.8-1m": {
+                id: "opus-4.8-1m",
+                name: "Opus 4.8 1M",
+                capabilities: {
+                  reasoning: false,
+                  toolcall: false,
+                },
+                variants: {
+                  stale: {},
+                },
+              },
               "claude-fable-5": {
                 id: "claude-fable-5",
                 name: "Claude Fable 5",
@@ -432,6 +454,8 @@ describe("openCodeInventory", () => {
     expect(result.descriptors.filter((entry) => entry.id === "opencode/anthropic/claude-sonnet-5")).toHaveLength(1);
     expect(result.descriptors.filter((entry) => entry.id === "opencode/anthropic/claude-opus-5")).toHaveLength(1);
     expect(result.descriptors.filter((entry) => entry.id === "opencode/anthropic/claude-opus-4-8")).toHaveLength(1);
+    expect(result.descriptors.map((entry) => entry.id)).not.toContain("opencode/anthropic/claude-opus-4-8-1m");
+    expect(result.descriptors.map((entry) => entry.id)).not.toContain("opencode/anthropic/opus-4.8-1m");
     expect(result.descriptors.filter((entry) => entry.id === "opencode/anthropic/claude-fable-5-1")).toHaveLength(1);
     expect(result.modelIds).not.toContain("opencode/anthropic/claude-opus-4-6");
     expect(result.modelIds).not.toContain("opencode/anthropic/opus-4-6");

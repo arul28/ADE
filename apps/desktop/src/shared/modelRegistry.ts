@@ -1029,6 +1029,14 @@ export function normalizeAnthropicRuntimeAlias(modelId: string): {
   }
   if (
     normalized === "claude-opus-4-8"
+    || normalized === "opus-4.8"
+    || normalized === "opus-4-8"
+    || normalized === "opus-4.8-1m"
+    || normalized === "opus-4.8[1m]"
+    || normalized === "opus-4-8-1m"
+    || normalized === "claude-opus-4-8-1m"
+    || normalized === "claude-opus-4-8[1m]"
+    || normalized === "anthropic/claude-opus-4-8-1m"
     || normalized === "claude-opus-4-7"
     || normalized === "opus-4-7"
     || normalized === "opus-4.7"
