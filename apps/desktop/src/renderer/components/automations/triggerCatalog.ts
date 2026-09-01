@@ -18,6 +18,7 @@ import {
 } from "@phosphor-icons/react";
 import type { ElementType } from "react";
 import type { AutomationTrigger } from "../../../shared/types";
+import type { PluginBuiltinSurfaceId } from "../../../shared/plugins/manifest";
 import { LINEAR_BRAND, LinearMark } from "../lanes/linearBrand";
 import { LANE_MERGED_TRIGGER_TYPE } from "./localAutomationConfig";
 
@@ -46,6 +47,14 @@ export type TriggerSourceDef = {
   accent: string;
   /** One-line description used in the source picker. */
   hint: string;
+  /**
+   * The compiled surface this source belongs to, when a plugin owns it.
+   *
+   * The picker asks the one builtin-surface predicate about this id instead of
+   * naming vendors, so a plugin that takes over a source only has to say so
+   * here. A source with no `builtin` is ADE's own and is always offered.
+   */
+  builtin?: PluginBuiltinSurfaceId;
   events: TriggerEvent[];
 };
 
@@ -84,6 +93,7 @@ export const TRIGGER_SOURCES: readonly TriggerSourceDef[] = [
     icon: LinearMark,
     accent: LINEAR_BRAND.primary,
     hint: "Issues, status, labels",
+    builtin: "linear",
     events: [
       { value: "linear.issue_created", label: "Issue created" },
       { value: "linear.issue_updated", label: "Issue updated" },
@@ -98,6 +108,7 @@ export const TRIGGER_SOURCES: readonly TriggerSourceDef[] = [
     icon: Cloud,
     accent: "#F54E00",
     hint: "Cloud agent finished or errored",
+    builtin: "cursor-cloud",
     events: [
       { value: "cursor.cloud_finished", label: "Cloud agent finished" },
       { value: "cursor.cloud_error", label: "Cloud agent errored" },

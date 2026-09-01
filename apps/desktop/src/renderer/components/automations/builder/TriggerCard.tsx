@@ -22,7 +22,8 @@ import {
   type TriggerSource,
 } from "../triggerCatalog";
 import { usePluginAutomationTriggers, type PluginAutomationOption } from "../../plugins/usePluginRegistry";
-import { useBuiltinSurfaceVisible } from "../../plugins/useBuiltinTabs";
+import { useBuiltinGateInput, useBuiltinSurfaceVisible } from "../../plugins/useBuiltinTabs";
+import { isBuiltinSurfaceVisible } from "../../plugins/builtinTabs";
 import { GitHubTriggerFilters } from "../GitHubTriggerFilters";
 import { LinearTriggerFilters } from "../LinearTriggerFilters";
 import { ScheduleEditor } from "./ScheduleEditor";
@@ -300,8 +301,7 @@ export function TriggerCard({
   onIngressChanged?: () => void;
 }) {
   const source = sourceForTriggerType(trigger.type);
-  const cursorCloudSurfaceVisible = useBuiltinSurfaceVisible("cursor-cloud");
-  const linearSurfaceVisible = useBuiltinSurfaceVisible("linear");
+  const builtinGate = useBuiltinGateInput();
   const def = sourceDef(source);
   const events = def.events;
   const deliveryKey = triggerDeliveryKeyForType(trigger.type);
@@ -320,12 +320,16 @@ export function TriggerCard({
    * saved cursor or Linear automation after installing the plugin shows the
    * automation that exists rather than silently re-pointing its trigger at
    * GitHub.
+   *
+   * No vendor is named here. The catalog says which compiled surface a source
+   * belongs to, and the one builtin-surface predicate answers for it — polarity
+   * included — so a Jira-class plugin gates its own source by adding `builtin`
+   * to its catalog entry.
    */
   const offeredTriggerSources = TRIGGER_SOURCES.filter((candidate) => {
     if (candidate.value === source) return true;
-    if (candidate.value === "cursor") return cursorCloudSurfaceVisible;
-    if (candidate.value === "linear") return linearSurfaceVisible;
-    return true;
+    if (!candidate.builtin) return true;
+    return isBuiltinSurfaceVisible(candidate.builtin, builtinGate);
   });
   const setSource = (nextSource: TriggerSource) => onChange(defaultTriggerForSource(nextSource));
   const setEvent = (type: string) => onChange({ ...defaultTriggerForSource(source), type: type as AutomationTrigger["type"] });

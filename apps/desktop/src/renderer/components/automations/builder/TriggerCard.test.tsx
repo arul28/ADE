@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { AutomationIngressStatus, AutomationTrigger } from "../../../../shared/types";
 import { resetBuiltinSurfacePlugins, seedBuiltinSurfacePlugins } from "../../../../test/builtinSurfaces";
+import { TRIGGER_SOURCES } from "../triggerCatalog";
 import { TriggerCard } from "./TriggerCard";
 
 /**
@@ -108,6 +109,42 @@ describe("TriggerCard source picker", () => {
     renderCard({ type: "schedule", cron: "0 9 * * 1-5" });
     expect(screen.getByRole("button", { name: "GitHub" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Cursor Cloud" })).toBeTruthy();
+  });
+});
+
+describe("TriggerCard source picker gates every plugin-owned source", () => {
+  /**
+   * The picker names no vendor. A source says which compiled surface it belongs
+   * to via `builtin`, and the one builtin-surface predicate answers for it, so
+   * these cases are driven by the catalog rather than by a hand-written vendor
+   * list — a Jira-class source added to the catalog is covered the day it lands.
+   */
+  const gatedSources = TRIGGER_SOURCES.filter((entry) => entry.builtin);
+
+  it("names at least the two sources a plugin owns today", () => {
+    expect(gatedSources.map((entry) => entry.value).sort()).toEqual(["cursor", "linear"]);
+  });
+
+  for (const entry of gatedSources) {
+    it(`drops ${entry.label} once its owner plugin is installed`, () => {
+      seedBuiltinSurfacePlugins([entry.builtin!]);
+      renderCard({ type: "schedule", cron: "0 9 * * 1-5" });
+      expect(screen.queryByRole("button", { name: entry.label })).toBeNull();
+    });
+
+    it(`offers ${entry.label} on a machine without its owner plugin`, () => {
+      seedNoPlugins();
+      renderCard({ type: "schedule", cron: "0 9 * * 1-5" });
+      expect(screen.getByRole("button", { name: entry.label })).toBeTruthy();
+    });
+  }
+
+  it("leaves the sources ADE owns alone whatever is installed", () => {
+    seedBuiltinSurfacePlugins(["linear", "cursor-cloud"]);
+    renderCard({ type: "schedule", cron: "0 9 * * 1-5" });
+    for (const entry of TRIGGER_SOURCES.filter((candidate) => !candidate.builtin)) {
+      expect(screen.getByRole("button", { name: entry.label })).toBeTruthy();
+    }
   });
 });
 
