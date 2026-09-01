@@ -105,6 +105,24 @@ let panelHandlers = null;
 /** `owner/repo` for the settings panel's autolink card, or null. */
 let githubRepoSlug = null;
 
+/**
+ * Which issue the detail and launch panels are currently ABOUT.
+ *
+ * The panel half's host capability is `publish(panelId)` — one argument, no
+ * context — so every republish it makes of the issue or launch panel arrives
+ * here with nothing naming the issue. Without this, a handler that wrote a
+ * comment and then redrew the panel would blank the very issue it just changed,
+ * and the launch form would show "that issue is not in this view" the instant
+ * it opened.
+ *
+ * The navigation `context` is still preferred when there IS one: it is the
+ * client's own answer to "which issue is on screen", and it survives a plugin
+ * restart in a way this does not. This is the fallback for the one caller that
+ * structurally cannot pass it.
+ */
+let currentIssueId = null;
+let currentLaunch = null;
+
 function log(level, message, fields) {
   sdk?.log(level, message, fields);
 }
@@ -143,6 +161,13 @@ async function publishSchema(panelId, schema, attempt = 1) {
  */
 async function publish(panelId, context = null) {
   if (!sdk || disposed) return;
+  // Recorded here rather than at each call site, so a caller that knows which
+  // issue it means records it exactly once and every later republish — from
+  // either half — finds it. See `currentIssueId`.
+  if (panelId === "issue" && context?.issueId) currentIssueId = context.issueId;
+  if (panelId === "launch" && context?.issueId) {
+    currentLaunch = { issueId: context.issueId, laneOnly: context.laneOnly === true };
+  }
   let view;
   try {
     view = await viewFor(panelId, context);
@@ -223,7 +248,9 @@ async function viewFor(panelId, context) {
   }
 
   if (panelId === "issue") {
-    const issueId = context?.issueId ?? null;
+    // `context` when the client sent one, the remembered issue when the panel
+    // half republished with only a panel id. See `currentIssueId`.
+    const issueId = context?.issueId ?? currentIssueId;
     const issue = issueId ? await data.issueRow(issueId) : null;
     if (!issue) {
       return { state: "detail", issue: null, error: snapshot.error ?? null };
@@ -255,20 +282,29 @@ async function viewFor(panelId, context) {
   }
 
   if (panelId === "launch") {
-    const issueId = context?.issueId ?? null;
+    const issueId = context?.issueId ?? currentLaunch?.issueId ?? null;
     const issue = issueId ? await data.issueRow(issueId) : null;
     if (!issue) return { state: "form", issue: null, error: "That issue is not in this project's Linear view." };
+    // "Create lane only" and "Launch lane + agent" are one screen with the
+    // agent half hidden, which is the phone's own flow. The flag reaches here
+    // from the navigation context or from the press that opened the form.
+    const laneOnly = context?.laneOnly === true || currentLaunch?.laneOnly === true;
+    const models = (snapshot.models ?? []).map((entry) => ({ id: entry.value, label: entry.label }));
     return {
       state: "form",
       issue,
       // An empty list draws the form without the picker and the provider takes
       // its own default, which is the same launch one tap later rather than a
       // form that cannot submit.
-      models: (snapshot.models ?? []).map((entry) => ({ id: entry.value, label: entry.label })),
+      models,
       permissionModes: PERMISSION_MODES,
       reasoningEfforts: REASONING_EFFORTS,
-      laneOnly: false,
-      sessionType: "chat",
+      laneOnly,
+      // The picker opens on a real choice rather than on its first option,
+      // which would silently be a different model from the one the reader
+      // picked last time.
+      selectedModel: models[0]?.id ?? null,
+      sessionType: laneOnly ? "laneOnly" : "chat",
       // The two names derived from the issue, shown before the reader commits.
       // The branch is the one Linear matches on, so seeing it is the difference
       // between trusting the link and hoping for it.
@@ -613,12 +649,13 @@ function buildPanelHost() {
        * this and the manifest's `launch` panel go together, and neither is
        * useful without the other.
        */
-      openLaunch: async (issueId) => {
+      openLaunch: async (issueId, args) => {
         // The models are read lazily rather than at activate, because a project
         // that never opens the form should not pay for the round trip.
         if ((model().models ?? []).length === 0) await loadModels();
-        await publish("launch", { issueId });
-        return { issueId };
+        const laneOnly = args?.laneOnly === true;
+        await publish("launch", { issueId, laneOnly });
+        return { issueId, laneOnly };
       },
 
       connectOAuth: async () => {
@@ -810,6 +847,8 @@ exports.deactivate = async () => {
     } catch { /* an unsubscribe that throws is not worth a crash on the way out */ }
   }
   await connect?.cancel().catch(() => {});
+  currentIssueId = null;
+  currentLaunch = null;
   sdk = null;
   api = null;
   data = null;

@@ -747,7 +747,7 @@ describe("the ids the two halves share", () => {
     assert.ok(!form.applyOnChange, "a half-typed secret must not commit on blur");
     // The unverified state says what is actually at risk rather than "not configured".
     const captions = nodesOf(panel, "text").map((node) => node.text).join(" ");
-    assert.ok(captions.includes("post a fake issue event"), captions);
+    assert.ok(captions.includes("drops every delivery"), captions);
   });
 });
 

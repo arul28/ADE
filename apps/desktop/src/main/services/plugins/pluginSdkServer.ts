@@ -680,6 +680,13 @@ export function createPluginSdkServer(deps: {
   lanes?: {
     list: (pluginId: string) => Promise<LaneSummary[]>;
     get: (pluginId: string, laneId: string) => Promise<LaneSummary | null>;
+    /**
+     * Every session-scoped issue link inside one lane, across trackers.
+     *
+     * Answers ADE's own `IssueLink`, like {@link listIssueLinks}; this module
+     * groups by session and projects each link before it crosses the boundary.
+     */
+    listSessionIssues: (pluginId: string, laneId: string) => Promise<IssueLink[]>;
     listIssueLinks: (
       pluginId: string,
       target: { laneId?: string; sessionId?: string },

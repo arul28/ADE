@@ -577,6 +577,30 @@ export type PluginManifestAuthSession = {
    */
   authorizeUrl: string;
   /**
+   * The PUBLIC OAuth client id of the app this plugin registered with the
+   * provider.
+   *
+   * Optional, and it is a convenience rather than a gate: `beginSession` takes
+   * `client_id` in `params` either way, and a plugin that computes it at
+   * runtime — one client per region, one per self-hosted install — simply sends
+   * it there instead. Declaring it puts the value in the manifest, where `ade
+   * plugin doctor` can print it for a plugin that is installed and not running,
+   * which is exactly when a user is setting the integration up.
+   *
+   * Public in the literal sense, and validated as such: it is a query parameter
+   * of every authorize URL this flow will ever open. A client SECRET must never
+   * appear here — a manifest ships inside the package and is world-readable, so
+   * anything in it is disclosed to everyone who installs the plugin. A
+   * confidential client's secret belongs in `ade.secrets`, set by the user, or
+   * — better — nowhere, because PKCE exists precisely so a distributed client
+   * does not need one.
+   *
+   * Official plugins that supersede a compiled ADE integration do not use this.
+   * They borrow ADE's own registered client id at runtime through
+   * `ade.auth.officialClient(provider)`, which no community plugin may call.
+   */
+  clientId?: string;
+  /**
    * Which callback transports this flow supports, in no particular order.
    *
    * A flow with only `loopback` is desktop-only, and the phone is told so
@@ -929,6 +953,17 @@ export const PLUGIN_DESCRIPTION_MAX = 512;
 
 /** The same ceilings for a single engine registration's own label and blurb. */
 export const PLUGIN_DECLARATION_LABEL_MAX = 120;
+
+/**
+ * The longest public OAuth client id a manifest may declare.
+ *
+ * Generous next to the real ones — Linear's is 32 hex characters, Google's is
+ * about 72 — and it is a bound rather than a format because every provider
+ * spells these differently. It exists so an over-long value is refused where a
+ * reader can see why, rather than becoming a query parameter that pushes the
+ * origin off the end of a phone's address bar.
+ */
+export const PLUGIN_AUTH_CLIENT_ID_MAX = 256;
 export const PLUGIN_DECLARATION_DESCRIPTION_MAX = 240;
 
 /**
@@ -1613,6 +1648,23 @@ function parseAuthSessions(raw: unknown, ctx: ParseContext): PluginManifestAuthS
     const authorizeUrl = parseAuthorizeUrl(entry.authorizeUrl, label, ctx);
     if (!authorizeUrl) return null;
 
+    // Optional, so an absent field is not a drop. A PRESENT one that is empty
+    // or over-long IS a drop rather than a silent omission: a plugin that
+    // declared a client id and got none would build an authorize URL missing
+    // the one parameter the provider identifies it by, and the symptom would be
+    // a provider error page the plugin cannot see.
+    let clientId: string | undefined;
+    if (entry.clientId !== undefined && entry.clientId !== null) {
+      const parsed = singleLine(entry.clientId, PLUGIN_AUTH_CLIENT_ID_MAX);
+      if (!parsed) {
+        return ctx.drop(
+          `${label}.clientId must be a single-line string of at most`
+            + ` ${PLUGIN_AUTH_CLIENT_ID_MAX} characters`,
+        );
+      }
+      clientId = parsed;
+    }
+
     const callbacks = parseArray(entry.callbacks, `${label}.callbacks`, ctx, (value, valueLabel) => (
       isPluginAuthCallbackKind(value) ? value : ctx.drop(`${valueLabel} is not a callback kind`)
     ));
@@ -1649,6 +1701,7 @@ function parseAuthSessions(raw: unknown, ctx: ParseContext): PluginManifestAuthS
       id,
       provider,
       authorizeUrl,
+      ...(clientId ? { clientId } : {}),
       callbacks: unique,
       ...(loopback ? { loopback } : {}),
     };
