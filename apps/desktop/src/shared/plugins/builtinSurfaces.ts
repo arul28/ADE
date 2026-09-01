@@ -179,12 +179,9 @@ export const BUILTIN_SURFACE_OWNERS: readonly BuiltinSurfaceOwner[] = [
   { builtinId: "review", route: "/review", ownerPluginId: PLUGIN_BUILTIN_SURFACE_OWNER_IDS.review, title: "Review", actionDomains: [], actionNames: [] },
   { builtinId: "history", route: "/history", ownerPluginId: PLUGIN_BUILTIN_SURFACE_OWNER_IDS.history, title: "History", actionDomains: [], actionNames: [] },
   {
-    // The second SUPERSEDED surface, and the one the whole polarity was built
-    // for: ADE has shipped a compiled Linear integration since long before the
-    // plugin platform, so `ade-linear` replaces it rather than being the reason
-    // it exists. An install without the plugin is the Linear integration ADE
-    // always had; an install with it sees the plugin's panels instead, and
-    // never both.
+    // Superseded: ADE has shipped a compiled Linear integration since long
+    // before the plugin platform, so `ade-linear` replaces it rather than being
+    // the reason it exists. Polarity rule: `renderer/components/plugins/builtinTabs.ts`.
     builtinId: "linear",
     route: null,
     ownerPluginId: PLUGIN_BUILTIN_SURFACE_OWNER_IDS.linear,

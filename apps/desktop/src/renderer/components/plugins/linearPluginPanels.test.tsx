@@ -94,8 +94,10 @@ const contract = require_(path.join(pluginRoot, "panels/contract.js")) as {
 
 const copy = require_(path.join(pluginRoot, "panels/common.js")) as {
   COPY: Record<string, string>;
+  LIMITS: Record<string, number>;
 };
 const COPY = copy.COPY;
+const LIMITS = copy.LIMITS;
 
 /** The `settings` block of the manifest, read rather than restated. */
 const manifestSettingKeys: string[] = (
@@ -437,6 +439,56 @@ describe("the issues panel's filter strip", () => {
     expect(
       labelsOf(panels.buildIssuesPanel(connectedIssuesView({ statePreset: "active", filtersActive: true }))),
     ).toContain(COPY.resetFilters);
+  });
+});
+
+/* ── 2b. The ceilings the plugin restates ───────────────────────────────── */
+
+/**
+ * `panels/common.js:LIMITS` against the real `VOCAB_LIMITS`.
+ *
+ * The plugin child is CommonJS and cannot import ADE's TypeScript, so it keeps
+ * its own copy of the numbers every builder measures against. A copy that
+ * drifts is not a test failure anywhere in `plugins/ade-linear/test/` — it is a
+ * panel that measures itself against a ceiling the parser no longer enforces
+ * and gets refused whole, on the machine that holds the plugin.
+ *
+ * This is the only test that can see both tables, which is why it lives here
+ * rather than beside the plugin.
+ */
+describe("the vocabulary ceilings the plugin restates", () => {
+  it("pins every number in LIMITS to the contract it mirrors", () => {
+    const contract = VOCAB_LIMITS as unknown as Record<string, number>;
+    for (const [name, value] of Object.entries(LIMITS)) {
+      expect(contract[name], `LIMITS.${name} is not a VOCAB_LIMITS name`).toBeDefined();
+      expect(value, `LIMITS.${name} drifted from VOCAB_LIMITS.${name}`).toBe(contract[name]);
+    }
+  });
+
+  it("restates every ceiling a builder in this plugin actually measures against", () => {
+    // Not the whole of `VOCAB_LIMITS` — the plugin draws no table and no chart,
+    // so it has no business restating `maxTableRows`. This pins the set it DOES
+    // spend, so a builder that starts measuring against a new one has to add it
+    // here rather than inlining the number.
+    for (const name of [
+      "maxNodes",
+      "maxSchemaBytes",
+      "maxListItems",
+      "maxKeyValueRows",
+      "maxFormFields",
+      "maxTextChars",
+      "maxMarkdownChars",
+      "maxLabelChars",
+      "maxValueChars",
+      "maxStateOptions",
+      "maxBoundStateOptions",
+      "maxSelectOptions",
+      "maxListItemActions",
+      "maxBulkActions",
+      "maxSelectedRows",
+    ]) {
+      expect(LIMITS[name], `LIMITS is missing ${name}`).toBeDefined();
+    }
   });
 });
 

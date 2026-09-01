@@ -1,7 +1,6 @@
 import React from "react";
 
-import { isBuiltinSurfaceVisible } from "../../plugins/builtinTabs";
-import { useBuiltinGateInput } from "../../plugins/useBuiltinTabs";
+import { useBuiltinSurfaceGate } from "../../plugins/useBuiltinTabs";
 import type { AutomationTemplate } from "./templateData";
 
 /**
@@ -17,10 +16,9 @@ import type { AutomationTemplate } from "./templateData";
  * call sites hold different lists: one flat, one grouped.
  */
 export function useOfferedTemplateFilter(): (template: AutomationTemplate) => boolean {
-  const input = useBuiltinGateInput();
+  const gate = useBuiltinSurfaceGate();
   return React.useCallback(
-    (template: AutomationTemplate) =>
-      !template.builtin || isBuiltinSurfaceVisible(template.builtin, input),
-    [input],
+    (template: AutomationTemplate) => !template.builtin || gate(template.builtin),
+    [gate],
   );
 }

@@ -43,6 +43,31 @@ export function useBuiltinSurfaceVisible(builtinId: PluginBuiltinSurfaceId): boo
 }
 
 /**
+ * The same answer, asked for an id the caller does not know at render time.
+ *
+ * `useBuiltinSurfaceVisible` fixes its surface in the call, which is right for
+ * a component that draws one vendor's thing. It cannot serve a caller that
+ * filters a LIST whose entries each name their own surface — a trigger source,
+ * a settings tab, an automation template — because a hook may not be called in
+ * a loop over data. Such a caller used to name every vendor it knew and call
+ * the hook once per name, which is the shape that made a Jira-class plugin edit
+ * a shared picker to be seen at all.
+ *
+ * So the gate hands back the predicate instead of an answer. One
+ * `useBuiltinGateInput()` per render, and the polarity rule stays in the one
+ * place that owns it — an `"enables"` surface reads every unknown as hidden and
+ * a `"supersedes"` surface reads every unknown as drawn. A caller must not
+ * reimplement that; it asks.
+ */
+export function useBuiltinSurfaceGate(): (builtinId: PluginBuiltinSurfaceId) => boolean {
+  const input = useBuiltinGateInput();
+  return React.useCallback(
+    (builtinId: PluginBuiltinSurfaceId) => isBuiltinSurfaceVisible(builtinId, input),
+    [input],
+  );
+}
+
+/**
  * The whole set, for code that hands the answer to something outside the render
  * tree — an agent's bootstrap roster, for instance.
  *

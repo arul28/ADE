@@ -462,7 +462,16 @@ export function runPluginChild(): void {
         writeFrame({ type: "invokeResult", requestId: frame.requestId, result: delivered });
         return;
       }
-      const handler = pluginModule?.actions?.[frame.action];
+      // `Object.hasOwn`, not a bare index: `actions` is a plain object literal
+      // in the plugin's own file, so `frame.action` values of "constructor",
+      // "toString" or "valueOf" resolve through `Object.prototype` to real
+      // functions, pass a truthiness check, and get INVOKED — answering a bogus
+      // success where the honest answer is `unsupported_method`. Same class the
+      // vocabulary parser already guards in `isKnownVocabComponent`. Own-key is
+      // also exactly what the `ready` frame advertised, since that lists
+      // `Object.keys(actions)`.
+      const actions = pluginModule?.actions;
+      const handler = actions && Object.hasOwn(actions, frame.action) ? actions[frame.action] : undefined;
       if (!handler) {
         throw new PluginSdkError("unsupported_method", `Plugin "${pluginId}" has no action "${frame.action}".`);
       }

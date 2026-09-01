@@ -33,6 +33,8 @@ import { resolveClaudeCodeExecutable } from "../ai/claudeCodeExecutable";
 import { resolveCodexExecutable } from "../ai/codexExecutable";
 import type { createProjectConfigService } from "../config/projectConfigService";
 import type { createLaneService } from "../lanes/laneService";
+import type { PluginBuiltinSurfaceId } from "../../../shared/plugins/manifest";
+import { readInstalledBuiltinSurfaces } from "../plugins/builtinSurfaceInstalls";
 import { resolveCliSpawnInvocation } from "../shared/processExecution";
 import { getErrorMessage, quoteIfNeeded, resolvePathWithinRoot } from "../shared/utils";
 
@@ -333,13 +335,50 @@ function buildPlannerSchema(): Record<string, unknown> {
   };
 }
 
-function buildPlannerPrompt(args: {
-  intent: string;
-  suites: TestSuiteDefinition[];
-  laneBranches: string[];
-}): string {
+/**
+ * The five Linear events ADE's compiled integration triggers on, in the order
+ * the builder's Linear source lists them. `issue_labeled` belongs here as much
+ * as the other four: leaving it out taught the planner that ADE cannot watch a
+ * label, which is the one Linear trigger the shipped templates lean on.
+ */
+const LINEAR_PLANNER_TRIGGERS: readonly string[] = [
+  "linear.issue_created",
+  "linear.issue_updated",
+  "linear.issue_assigned",
+  "linear.issue_status_changed",
+  "linear.issue_labeled",
+];
+
+/**
+ * Same gate the builder's trigger-source picker applies, asked from main.
+ *
+ * `linear` is a `"supersedes"` surface: ADE compiled its Linear integration
+ * long before the plugin platform, so `builtinSurfaceDrawn` reads TRUE on a
+ * normal machine with no plugin — these triggers stay offered — and only flips
+ * FALSE once `ade-linear` is installed and enabled, because the plugin then
+ * publishes its own five events under the Plugin source and `TriggerCard`
+ * stops offering the compiled Linear source at all. Naming them to the planner
+ * anyway would draft a rule bound to a source the builder will not show: the
+ * user gets a rule they can neither see nor repair in the UI.
+ *
+ * `readInstalledBuiltinSurfaces` is the main-process seam for exactly this
+ * question — the same one the CTO prompt's page list and the agent bootstrap's
+ * skill roster read — and it already applies the polarity, so this is a
+ * membership test and never an install flag.
+ */
+export function buildPlannerPrompt(
+  args: {
+    intent: string;
+    suites: TestSuiteDefinition[];
+    laneBranches: string[];
+  },
+  installedSurfaces: ReadonlySet<PluginBuiltinSurfaceId> = readInstalledBuiltinSurfaces(),
+): string {
   const suiteList = args.suites.slice(0, 80).map((s) => `- ${s.id}${s.name ? `: ${s.name}` : ""}`).join("\n");
   const branchList = args.laneBranches.slice(0, 40).map((b) => `- ${b}`).join("\n");
+  const linearTriggerLines = installedSurfaces.has("linear")
+    ? LINEAR_PLANNER_TRIGGERS.map((type) => `- ${type}`)
+    : [];
 
   return [
     "You are generating an automation rule draft for ADE Desktop.",
@@ -365,10 +404,7 @@ function buildPlannerPrompt(args: {
     "- lane.merged",
     "- schedule (requires cron)",
     "- manual",
-    "- linear.issue_created",
-    "- linear.issue_updated",
-    "- linear.issue_assigned",
-    "- linear.issue_status_changed",
+    ...linearTriggerLines,
     "",
     "Available actions:",
     "- predict-conflicts",

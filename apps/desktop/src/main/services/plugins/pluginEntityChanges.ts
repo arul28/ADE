@@ -109,10 +109,12 @@ export function emitPluginEntityChange(emission: PluginEntityChangeEmission): vo
 /**
  * Turn one PR poll's changes into the transitions a `pr.changed` should carry.
  *
- * Pure, and exported so the mapping is testable without an Electron main
- * process: the call site is one arrow inside `main.ts`'s
- * `onPullRequestsChanged`, which is where the previous state and the project
- * root meet and nowhere a test can reach.
+ * Pure, and exported so the mapping is testable without standing up a daemon:
+ * the call site is one arrow inside the daemon's `onPullRequestsChanged`
+ * (`apps/ade-cli/src/bootstrap.ts`), which is where the previous state and the
+ * project root meet and nowhere a test can reach. The daemon owns every
+ * producer on this bus — lane, session and PR alike; the Electron main process
+ * emits none of them.
  *
  * A change whose `previousState` the poller never saw is DROPPED rather than
  * reported with its current state as the `from`. The first tick after a
@@ -129,7 +131,10 @@ export function prTransitionsFromChanges(
   const transitions: PluginPrTransition[] = [];
   for (const change of changes) {
     const previousState = change.previousState;
-    if (previousState === null || previousState === undefined) continue;
+    // `== null` on purpose: the type says `null`, but this is exported and a
+    // hand-written JS caller can hand over an absent field. One check covers
+    // both, and neither reads as a contradiction of the signature.
+    if (previousState == null) continue;
     const id = change.pr.id?.trim();
     if (!id) continue;
     transitions.push({

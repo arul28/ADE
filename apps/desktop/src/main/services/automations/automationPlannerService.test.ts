@@ -1,8 +1,9 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { describe, expect, it } from "vitest";
-import { createAutomationPlannerService } from "./automationPlannerService";
+import { afterEach, describe, expect, it } from "vitest";
+import { buildPlannerPrompt, createAutomationPlannerService } from "./automationPlannerService";
+import { readInstalledBuiltinSurfaces } from "../plugins/builtinSurfaceInstalls";
 import { TEMPLATES } from "../../../renderer/components/automations/templates/templateData";
 import type { AutomationRuleDraft } from "../../../shared/types";
 
@@ -603,6 +604,113 @@ describe("automationPlannerService.validateDraft", () => {
         }
       });
     }
+  });
+});
+
+
+/**
+ * The planner names the compiled Linear triggers exactly while ADE still draws
+ * its compiled Linear integration.
+ *
+ * `linear` SUPERSEDES: no plugin means ADE's own Linear source is what the
+ * builder offers, so the absent case is the normal machine and its prompt must
+ * not move. Once `ade-linear` is installed the builder drops that source
+ * entirely — the plugin publishes its own five events — and a draft the planner
+ * bound to `linear.*` anyway would be a rule the user can neither see nor
+ * repair in the trigger picker.
+ *
+ * Both cases go through the real registry read rather than a hand-built Set, so
+ * a polarity flip in `builtinSurfaceDrawn` fails here instead of silently
+ * removing Linear automations from every machine that has no plugin.
+ */
+describe("buildPlannerPrompt Linear triggers", () => {
+  const scratch: string[] = [];
+
+  afterEach(() => {
+    while (scratch.length) fs.rmSync(scratch.pop()!, { recursive: true, force: true });
+  });
+
+  function pluginsRootWith(installed: Record<string, { enabled?: boolean }>): string {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-planner-plugins-"));
+    scratch.push(root);
+    fs.writeFileSync(
+      path.join(root, "state.json"),
+      JSON.stringify({
+        version: 2,
+        plugins: Object.fromEntries(
+          Object.entries(installed).map(([pluginId, record]) => [
+            pluginId,
+            {
+              version: "1.0.0",
+              enabled: record.enabled !== false,
+              source: { kind: "builtin" },
+              installedAt: "2026-08-01T00:00:00.000Z",
+            },
+          ]),
+        ),
+      }),
+    );
+    return root;
+  }
+
+  const promptFor = (pluginsRoot: string): string =>
+    buildPlannerPrompt(
+      { intent: "make a rule for when an issue is created", suites: [], laneBranches: [] },
+      readInstalledBuiltinSurfaces(pluginsRoot),
+    );
+
+  const LINEAR_TRIGGERS = [
+    "linear.issue_created",
+    "linear.issue_updated",
+    "linear.issue_assigned",
+    "linear.issue_status_changed",
+    "linear.issue_labeled",
+  ];
+
+  it("offers all five Linear triggers on a machine with no plugins", () => {
+    const lines = promptFor(pluginsRootWith({})).split("\n");
+    const start = lines.indexOf("Available triggers:");
+    const triggers = lines.slice(start + 1, lines.indexOf("", start));
+
+    expect(triggers).toEqual([
+      "- session-end",
+      "- commit",
+      "- git.commit",
+      "- git.push",
+      "- git.pr_opened",
+      "- git.pr_updated",
+      "- git.pr_merged",
+      "- git.pr_closed",
+      "- file.change",
+      "- lane.created",
+      "- lane.archived",
+      "- lane.merged",
+      "- schedule (requires cron)",
+      "- manual",
+      "- linear.issue_created",
+      "- linear.issue_updated",
+      "- linear.issue_assigned",
+      "- linear.issue_status_changed",
+      "- linear.issue_labeled",
+    ]);
+  });
+
+  it("offers the Linear triggers alongside another plugin that supersedes nothing here", () => {
+    const prompt = promptFor(pluginsRootWith({ "ade-graph": {} }));
+    for (const type of LINEAR_TRIGGERS) expect(prompt).toContain(`- ${type}`);
+  });
+
+  it("names no Linear trigger once ade-linear is installed", () => {
+    const prompt = promptFor(pluginsRootWith({ "ade-linear": {} }));
+    for (const type of LINEAR_TRIGGERS) expect(prompt).not.toContain(type);
+    // Everything ADE still owns keeps its place; only the superseded source goes.
+    expect(prompt).toContain("- git.pr_merged");
+    expect(prompt).toContain("- manual");
+  });
+
+  it("keeps offering them when ade-linear is installed but disabled", () => {
+    const prompt = promptFor(pluginsRootWith({ "ade-linear": { enabled: false } }));
+    for (const type of LINEAR_TRIGGERS) expect(prompt).toContain(`- ${type}`);
   });
 });
 

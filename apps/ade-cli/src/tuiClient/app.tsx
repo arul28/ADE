@@ -77,6 +77,7 @@ import {
   readPluginActionNavigation,
   readPluginActionOpenUrl,
 } from "../../../desktop/src/shared/plugins/sdk";
+import { builtinSurfaceDrawn } from "../../../desktop/src/shared/plugins/builtinSurfaces";
 import type { PluginSurfaceContext } from "../../../desktop/src/shared/plugins/context";
 import {
   pluginPromptAnswerArgs,
@@ -400,7 +401,7 @@ import {
 } from "./externalSessionBrowser";
 import { SpinTickProvider } from "./spinTick";
 import { ACTIVE_SESSION_PLACEHOLDER, buildLinearToolRequest } from "./linearCommands";
-import { executeIssueToolRequest } from "./issueCommands";
+import { buildIssueToolRequest, executeIssueToolRequest } from "./issueCommands";
 import {
   formatLinearIssueComments,
   derivePrMergeReadiness,
@@ -12613,6 +12614,22 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       setRightPane({ kind: "details", title: "PR review", body: formatPrReview(review) });
       return;
     }
+    if (name === "/linear" || name.startsWith("/linear ")) {
+      // A hidden palette row is not access control: `/linear list` can still be
+      // typed in full, restored from history, or arrive from a keybinding. The
+      // gate is checked here as well, and it names the plugin so the refusal
+      // reads as a move rather than a breakage. One check covers the whole
+      // `/linear*` chain below, including the catch-all group.
+      if (slashCommandUnavailableSurface(name, pluginInstallRecords)) {
+        setRightPane({
+          kind: "details",
+          title: "Linear",
+          body: "The Linear plugin owns this surface on this machine. Open it from the plugin instead.",
+        });
+        setRightOpen(true);
+        return;
+      }
+    }
     if (name === "/linear list") {
       const linear = await conn.action("linear_issue_tracker", "listIssues", parseLinearIssueListArgs(args || "--limit 20"));
       setRightPane({ kind: "list", title: "Linear", rows: routeRows(linear), emptyText: "No Linear issues." });
@@ -12723,6 +12740,24 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     }
     if (name === "/issue" || name.startsWith("/issue ")) {
       const issueInput = `${name.slice("/issue".length)} ${args}`.trim();
+      // `/issue` has two issue sources and only one of them is a plugin
+      // surface, which is why the row carries no `builtin` of its own: gating
+      // the command wholesale would take core GitHub attach down with an
+      // uninstalled Linear plugin. Only the Linear half steps aside, the same
+      // split the desktop composer makes (AgentChatComposer.tsx). Attach is the
+      // half that reaches ADE's compiled Linear integration; list and detach
+      // read and write the lane's own issue links, which the plugin does not
+      // own and which a user still needs on an already-attached issue.
+      if (buildIssueToolRequest(issueInput).kind === "linearAttach"
+        && !builtinSurfaceDrawn("linear", pluginInstallRecords)) {
+        setRightPane({
+          kind: "details",
+          title: "Issue attach",
+          body: "The Linear plugin owns Linear issues on this machine. Attach it from the plugin instead. GitHub issues still attach here.",
+        });
+        setRightOpen(true);
+        return;
+      }
       await executeIssueToolRequest(issueInput, {
         sessionId: sessionId ?? null,
         conn,

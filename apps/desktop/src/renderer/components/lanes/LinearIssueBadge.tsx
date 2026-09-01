@@ -58,10 +58,9 @@ export function LinearIssueBadge({
   // Gated inside the component rather than at each call site: four lane
   // surfaces render this badge, and the one that forgets is the one that shows
   // a SECOND Linear badge next to the plugin's own `row-badge` contribution.
-  // `ade-linear` supersedes this badge, so the gate hides it only when the
-  // plugin is positively installed and enabled — every other state draws it,
-  // which is the lane row ADE has always had. Matches iOS's
-  // `LaneLinearIssueBadge`, which gates on `PluginPresenceGate` the same way.
+  // `ade-linear` supersedes this badge — polarity rule in
+  // `../plugins/builtinTabs.ts`. Matches iOS's `LaneLinearIssueBadge`, which
+  // gates on `PluginPresenceGate` the same way.
   const linearSurfaceVisible = useBuiltinSurfaceVisible("linear");
   const [copyState, setCopyState] = React.useState<CopyState>("idle");
   const project = issue.projectName?.trim() || issue.projectSlug || issue.teamKey;

@@ -313,18 +313,17 @@ export function TriggerCard({
    * Cursor Cloud's two triggers are ADE's own, and `ade-cursor-cloud` publishes
    * its own pair. Offering both would put two "A Cursor Cloud agent finishes"
    * rows in front of the user, wired to different halves of the same feature.
-   * Linear is the same shape with five events: `ade-linear` declares
-   * `issue_created`, `issue_updated`, `issue_assigned`, `issue_status_changed`
-   * and `issue_labeled` of its own, and they arrive under the Plugin source.
+   * `ade-linear` is the same shape: it declares its own issue events, and they
+   * arrive under the Plugin source.
    * The source that is already SELECTED always stays offered, so opening a
    * saved cursor or Linear automation after installing the plugin shows the
    * automation that exists rather than silently re-pointing its trigger at
    * GitHub.
    *
-   * No vendor is named here. The catalog says which compiled surface a source
-   * belongs to, and the one builtin-surface predicate answers for it — polarity
-   * included — so a Jira-class plugin gates its own source by adding `builtin`
-   * to its catalog entry.
+   * No vendor is named here: the catalog says which compiled surface a source
+   * belongs to and `isBuiltinSurfaceVisible` answers for it, polarity included
+   * (see `../../plugins/builtinTabs.ts`), so a Jira-class plugin gates its own
+   * source by adding `builtin` to its catalog entry.
    */
   const offeredTriggerSources = TRIGGER_SOURCES.filter((candidate) => {
     if (candidate.value === source) return true;

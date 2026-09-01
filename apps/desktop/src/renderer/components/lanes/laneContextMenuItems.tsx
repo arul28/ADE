@@ -5,6 +5,7 @@ import { buildDeeplink } from "../../../shared/deeplinks";
 import { buildWebClientUrl } from "../../../shared/webClientUrl";
 import { openExternalUrl } from "../../lib/openExternal";
 import { revealLabel } from "../../lib/platform";
+import type { PluginBuiltinSurfaceId } from "../../../shared/plugins/manifest";
 import { COLORS, MONO_FONT } from "./laneDesignTokens";
 import { LANE_CLASSIC_COLORS, LANE_RAINBOW_COLORS, colorsInUse, type LaneColor } from "./laneColorPalette";
 
@@ -58,14 +59,19 @@ export type LaneMenuArgs = {
   visibleLaneIds: string[];
   isRemoteProject: boolean;
   /**
-   * Whether ADE still draws its own Linear integration, from
-   * `useBuiltinSurfaceVisible("linear")`.
+   * Whether ADE still draws its own compiled UI for a given plugin-owned
+   * surface, from `useBuiltinSurfaceGate()`.
    *
    * Threaded in like `isRemoteProject` rather than read here, because this
    * module is pure and both renderers share it — and required rather than
    * optional, so a third menu cannot be added that quietly forgets to ask.
+   *
+   * A predicate rather than one boolean per vendor: this is a SHARED args type,
+   * so `linearSurfaceVisible` made the next tracker's row cost a second field
+   * here plus an edit in every caller, none of which have anything to say about
+   * it. Asking by id keeps a new gated row local to the group that adds it.
    */
-  linearSurfaceVisible: boolean;
+  surfaceVisible: (builtinId: PluginBuiltinSurfaceId) => boolean;
   onClose: () => void;
   onManage: (laneId: string) => void;
   selectLane: (id: string) => void;
@@ -120,7 +126,7 @@ export function buildLaneMenuGroups(args: LaneMenuArgs): LaneMenuGroup[] {
     lanesById,
     visibleLaneIds,
     isRemoteProject,
-    linearSurfaceVisible,
+    surfaceVisible,
     onClose,
     onManage,
     selectLane,
@@ -264,7 +270,7 @@ export function buildLaneMenuGroups(args: LaneMenuArgs): LaneMenuGroup[] {
     // is this way of reaching it. With `ade-linear` installed the plugin owns
     // every Linear entry point, and the same row in its own menus is the one the
     // user should get.
-    if (lane.linearIssue?.url && linearSurfaceVisible) {
+    if (lane.linearIssue?.url && surfaceVisible("linear")) {
       const linearUrl = lane.linearIssue.url;
       copy.push({
         kind: "action",

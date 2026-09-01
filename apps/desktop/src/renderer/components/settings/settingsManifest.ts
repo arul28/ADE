@@ -13,7 +13,11 @@
  */
 
 import { isWebClientMode } from "../../lib/webClientMode";
-import { builtinSurfaceDrawn } from "../../../shared/plugins/builtinSurfaces";
+import {
+  hasWebMachineBinding,
+  isBuiltinSurfaceShown,
+  type BuiltinSurfaceGate,
+} from "./settingsAvailability";
 import type { PluginBuiltinSurfaceId } from "../../../shared/plugins/manifest";
 
 /**
@@ -770,11 +774,18 @@ export function settingsEntryById(id: string): SettingEntry | null {
  * that names a hidden setting still resolves, and the settings shell decides
  * where to land it.
  */
-export function isSettingAvailable(entry: SettingEntry): boolean {
+export function isSettingAvailable(
+  entry: SettingEntry,
+  gate: BuiltinSurfaceGate = isBuiltinSurfaceShown,
+): boolean {
   // Asked before the web-client rules, and on the desktop too: a plugin that
   // owns a compiled surface takes that surface's settings card away on every
   // renderer, which is not a question about where the write lands.
-  if (entry.builtinSurface && !isBuiltinSurfaceShown(entry.builtinSurface)) return false;
+  //
+  // The gate defaults to the installed resolver — the same answer — and is
+  // taken as an argument so a React caller can hand in the gate it already
+  // holds and name it as a memo dependency instead of reading it invisibly.
+  if (entry.builtinSurface && !gate(entry.builtinSurface)) return false;
   if (!isWebClientMode()) return true;
   if (entry.web === "hidden") return false;
   // A machine-scoped setting writes to the machine the active project tab is
@@ -821,81 +832,44 @@ export function sectionWebScope(entryIds: readonly string[]): SettingWebScope | 
 }
 
 /**
- * Whether the hosted client currently has a machine to write machine-scoped
- * settings to — i.e. whether a project tab is bound.
- *
- * A resolver rather than a flag: nav, search and the palette all ask
- * `isSettingAvailable` mid-render, so the answer has to be read at call time
- * from live app state instead of pushed here on a lifecycle event that may not
- * have run yet. The desktop never installs one, and never asks.
+ * The two live-state resolvers `isSettingAvailable` reads through, re-exported
+ * so the manifest stays the one import site for the whole registry. The
+ * implementations live in `settingsAvailability.ts` — they are the only mutable
+ * state in an otherwise pure data module.
  */
-let webMachineBindingResolver: (() => boolean) | null = null;
-
-export function setWebMachineBindingResolver(resolve: (() => boolean) | null): void {
-  webMachineBindingResolver = resolve;
-}
-
-/**
- * Uninstall a resolver, but only if it is still the installed one.
- *
- * Two surfaces install a resolver (the settings page and the palette) and they
- * unmount in no fixed order, so an unconditional clear on unmount would tear
- * down a resolver the OTHER surface had since installed, leaving the manifest
- * answering `false` for a machine that is in fact bound.
- */
-export function clearWebMachineBindingResolver(resolve: () => boolean): void {
-  if (webMachineBindingResolver === resolve) webMachineBindingResolver = null;
-}
-
-export function hasWebMachineBinding(): boolean {
-  return webMachineBindingResolver?.() ?? false;
-}
-
-/**
- * Whether ADE still draws a compiled surface, for the settings that live on one.
- *
- * A resolver for the same reason the machine binding is one: the answer comes
- * from the plugin registry in the root store, this module has no React, and
- * nav, search and the palette all ask mid-render. The React surfaces install it
- * with `isBuiltinSurfaceVisible` behind it, so the polarity rules live in one
- * place rather than being restated here.
- */
-let builtinSurfaceResolver: ((builtinId: PluginBuiltinSurfaceId) => boolean) | null = null;
-
-export function setBuiltinSurfaceResolver(
-  resolve: ((builtinId: PluginBuiltinSurfaceId) => boolean) | null,
-): void {
-  builtinSurfaceResolver = resolve;
-}
-
-/** Uninstall a resolver, but only if it is still the installed one. */
-export function clearBuiltinSurfaceResolver(
-  resolve: (builtinId: PluginBuiltinSurfaceId) => boolean,
-): void {
-  if (builtinSurfaceResolver === resolve) builtinSurfaceResolver = null;
-}
-
-export function isBuiltinSurfaceShown(builtinId: PluginBuiltinSurfaceId): boolean {
-  // With no resolver installed the question is "what does a machine with no
-  // registry to read show?", and each polarity answers it differently: a
-  // superseded surface is one ADE has always shipped and stays, while an
-  // enabled one has no owner and is absent. An empty registry says exactly
-  // that, so the fallback defers to the shared rule instead of guessing.
-  return builtinSurfaceResolver?.(builtinId) ?? builtinSurfaceDrawn(builtinId, []);
-}
+export {
+  clearBuiltinSurfaceResolver,
+  clearWebMachineBindingResolver,
+  hasWebMachineBinding,
+  isBuiltinSurfaceShown,
+  setBuiltinSurfaceResolver,
+  setWebMachineBindingResolver,
+  type BuiltinSurfaceGate,
+} from "./settingsAvailability";
 
 /** Every setting reachable in this renderer, in manifest order. */
 export function availableSettingsEntries(): SettingEntry[] {
-  return SETTINGS_ENTRIES.filter(isSettingAvailable);
+  // Wrapped rather than passed by reference: `filter` would hand the array
+  // index in as the gate.
+  return SETTINGS_ENTRIES.filter((entry) => isSettingAvailable(entry));
 }
 
-/** Tabs with at least one reachable setting, in manifest order. */
-export function availableSettingsTabs(): SettingsTab[] {
-  return SETTINGS_TABS.filter((tab) => settingsEntriesForTab(tab.id).length > 0);
+/**
+ * Tabs with at least one reachable setting, in manifest order.
+ *
+ * Takes the gate rather than reading the installed resolver, because both
+ * callers compute this inside a `useMemo` during the very render that installs
+ * that resolver: the answer changes when the plugin registry changes, and a
+ * dependency array cannot name a module global. Passing the gate makes the edge
+ * visible to React — and the gate a React surface holds is the same function it
+ * installed, so the answer is unchanged.
+ */
+export function availableSettingsTabs(gate: BuiltinSurfaceGate): SettingsTab[] {
+  return SETTINGS_TABS.filter((tab) => settingsEntriesForTab(tab.id, gate).length > 0);
 }
 
-export function settingsEntriesForTab(tab: SettingsTabId): SettingEntry[] {
-  return SETTINGS_ENTRIES.filter((entry) => entry.tab === tab && isSettingAvailable(entry));
+export function settingsEntriesForTab(tab: SettingsTabId, gate?: BuiltinSurfaceGate): SettingEntry[] {
+  return SETTINGS_ENTRIES.filter((entry) => entry.tab === tab && isSettingAvailable(entry, gate));
 }
 
 /** Group names for a tab, in first-appearance order. */

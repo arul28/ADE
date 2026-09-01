@@ -75,6 +75,12 @@ export function ForeignLaneContextMenu({
     <div style={{ height: 1, background: COLORS.border, margin: "4px 0" }} />
   );
   const branch = branchNameFromRef(lane.branchRef);
+  // Hoisted out of the row below so the click handler copies the URL the guard
+  // actually proved was there. Re-reading `lane.linearIssue?.url` inside the
+  // handler needed a `?? ""` to typecheck, which is a silent "copy nothing"
+  // waiting for the day the two reads disagree — the shared lane menu binds the
+  // same const for the same reason.
+  const linearIssueUrl = lane.linearIssue?.url ?? null;
   const openIn = resolveOpenInTarget({ worktreePath: lane.worktreePath, binding });
 
   return (
@@ -177,10 +183,10 @@ export function ForeignLaneContextMenu({
           Copy branch name
         </HoverButton>
       ) : null}
-      {lane.linearIssue?.url && linearSurfaceVisible ? (
+      {linearIssueUrl && linearSurfaceVisible ? (
         <HoverButton
           style={menuItemStyle}
-          onClick={() => copyText(lane.linearIssue?.url ?? "")}
+          onClick={() => copyText(linearIssueUrl)}
         >
           Copy Linear Issue Link
         </HoverButton>

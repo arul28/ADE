@@ -82,9 +82,7 @@ import {
   usePluginPaletteCommands,
   usePluginSearchResults,
 } from "../plugins/sockets";
-import { useBuiltinGateInput, useBuiltinSurfaceVisible, useVisibleBuiltinRoutes } from "../plugins/useBuiltinTabs";
-import { isBuiltinSurfaceVisible } from "../plugins/builtinTabs";
-import type { PluginBuiltinSurfaceId } from "../../../shared/plugins/manifest";
+import { useBuiltinSurfaceVisible, useVisibleBuiltinRoutes } from "../plugins/useBuiltinTabs";
 import {
   selectActiveProjectStateKey,
   useAppStore,
@@ -104,13 +102,10 @@ import { RemoteTargetList } from "../remoteTargets/RemoteTargetList";
 import {
   availableSettingsEntries,
   availableSettingsTabs,
-  clearBuiltinSurfaceResolver,
-  clearWebMachineBindingResolver,
-  setBuiltinSurfaceResolver,
-  setWebMachineBindingResolver,
   settingsEntryPath,
   settingsTabLabel,
 } from "../settings/settingsManifest";
+import { useSettingsManifestResolvers } from "../settings/useSettingsManifestResolvers";
 
 export type CommandPaletteIntent =
   | "default"
@@ -351,41 +346,10 @@ export function CommandPalette({
     return hidden;
   }, [historyVisible, linearSurfaceVisible]);
   // The palette lists settings, so it has to agree with the settings page about
-  // which ones exist. On web that depends on whether a project tab is bound —
-  // the manifest reads it back through this resolver.
-  // Installed during render because `isSettingAvailable` is consulted mid-render
-  // (nav, search, the palette) and an effect would install it a render too late.
-  // The effect exists only to take it back down on unmount, and only if it is
-  // still ours — the module global outlives this component otherwise.
-  const machineBoundRef = useRef(false);
-  machineBoundRef.current = projectBinding != null;
-  // One stable function identity for this component's whole life, so the
-  // unmount cleanup can tell its own resolver from the other surface's.
-  const resolverRef = useRef<() => boolean>();
-  if (!resolverRef.current) resolverRef.current = () => machineBoundRef.current;
-  setWebMachineBindingResolver(resolverRef.current);
-  useEffect(() => {
-    const installed = resolverRef.current!;
-    return () => clearWebMachineBindingResolver(installed);
-  }, []);
-  // The palette also lists settings whose card belongs to a plugin-owned
-  // compiled surface, so it installs the manifest's other resolver on the same
-  // terms. Both surfaces install both resolvers rather than one each: either can
-  // be the only one mounted, and a settings row must not appear on one and be
-  // missing from the other.
-  const builtinGateInput = useBuiltinGateInput();
-  const builtinGateInputRef = useRef(builtinGateInput);
-  builtinGateInputRef.current = builtinGateInput;
-  const surfaceResolverRef = useRef<(builtinId: PluginBuiltinSurfaceId) => boolean>();
-  if (!surfaceResolverRef.current) {
-    surfaceResolverRef.current = (builtinId) =>
-      isBuiltinSurfaceVisible(builtinId, builtinGateInputRef.current);
-  }
-  setBuiltinSurfaceResolver(surfaceResolverRef.current);
-  useEffect(() => {
-    const installed = surfaceResolverRef.current!;
-    return () => clearBuiltinSurfaceResolver(installed);
-  }, []);
+  // which ones exist — on web that turns on whether a project tab is bound, and
+  // everywhere on whether a plugin has taken over a compiled surface. Both
+  // surfaces install both manifest resolvers through the same hook.
+  const surfaceGate = useSettingsManifestResolvers();
   const hasActiveProject = Boolean(project?.rootPath);
 
   // Thread results are read straight out of the Work tab's per-project session
@@ -838,7 +802,7 @@ export function CommandPalette({
       // manifest reports only the tabs this renderer can serve, so the web
       // client stops offering Secrets, Providers, Storage and the rest —
       // whose pages it hides. The desktop gets the full list, as before.
-      ...availableSettingsTabs().map((tab) => ({
+      ...availableSettingsTabs(surfaceGate).map((tab) => ({
         id: `go-settings-${tab.id}`,
         title: `Go to ${tab.label}`,
         hint: tab.description,
@@ -984,7 +948,6 @@ export function CommandPalette({
 
     return next;
   }, [
-    builtinGateInput,
     builtinTabVisible,
     hasActiveProject,
     installedPlugins,
@@ -999,6 +962,10 @@ export function CommandPalette({
     startProjectClone,
     startProjectCreate,
     startProjectRemote,
+    // Not only the argument to `availableSettingsTabs`: `availableSettingsEntries`
+    // reads the same registry through the resolver this render installed, so the
+    // gate is how that edge is named.
+    surfaceGate,
   ]);
 
   const parsedWorkQuery = useMemo(() => parseWorkSearchQuery(q), [q]);

@@ -1,4 +1,7 @@
-import { describe, expect, it } from "vitest";
+import React from "react";
+import { act } from "react";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { render } from "ink-testing-library";
 import {
   builtinCommandAvailable,
   commandPlacement,
@@ -7,6 +10,79 @@ import {
   slashCommandUnavailableSurface,
 } from "../commands";
 import { buildLinearToolRequest, parseLinearArgs } from "../linearCommands";
+
+/**
+ * The dispatch-side tests below drive the REAL terminal: they render
+ * `AdeCodeApp`, type the command, and press Enter. Everything the app reaches
+ * for on the way to the first frame is stubbed here, the same way
+ * `appPolling.test.tsx` stubs it; the plugin roster deliberately is NOT — it
+ * arrives over `connection.action("plugin", "list")`, which is the path the
+ * shipped gate reads.
+ */
+const appMocks = vi.hoisted(() => ({
+  connectToAde: vi.fn(),
+  startTuiHeartbeat: vi.fn(),
+  listLanes: vi.fn(),
+  listChatSessions: vi.fn(),
+  listTerminalSessions: vi.fn(),
+  getChatHistory: vi.fn(),
+  getSlashCommands: vi.fn(),
+  getAvailableModels: vi.fn(),
+  fsWatch: vi.fn(),
+}));
+
+vi.mock("../connection", () => ({
+  connectToAde: appMocks.connectToAde,
+  INTERACTIVE_PROJECT_REGISTRATION: {
+    catalogVisibility: "recent",
+    registrationSource: "cli-explicit",
+  },
+}));
+
+vi.mock("../heartbeat", () => ({
+  startTuiHeartbeat: appMocks.startTuiHeartbeat,
+}));
+
+vi.mock("../state", async () => {
+  const actual = await vi.importActual<typeof import("../state")>("../state");
+  return {
+    ...actual,
+    loadAdeCodeState: () => ({
+      lastChatByLane: {},
+      lastChatByProjectLane: { "/repo": { "lane-1": "chat-1" } },
+      lastLaneByProject: { "/repo": "lane-1" },
+      lastLaneId: null,
+      draftKind: "chat",
+      draftKindByProject: {},
+    }),
+    saveAdeCodeProjectState: vi.fn(),
+  };
+});
+
+vi.mock("../adeApi", async () => {
+  const actual = await vi.importActual<typeof import("../adeApi")>("../adeApi");
+  return {
+    ...actual,
+    listLanes: appMocks.listLanes,
+    listChatSessions: appMocks.listChatSessions,
+    listTerminalSessions: appMocks.listTerminalSessions,
+    getChatHistory: appMocks.getChatHistory,
+    getSlashCommands: appMocks.getSlashCommands,
+    getAvailableModels: appMocks.getAvailableModels,
+  };
+});
+
+vi.mock("node:fs", async () => {
+  const actual = await vi.importActual<typeof import("node:fs")>("node:fs");
+  return {
+    ...actual,
+    watch: appMocks.fsWatch,
+    default: { ...actual, watch: appMocks.fsWatch },
+  };
+});
+
+import { AdeCodeApp } from "../app";
+import type { AdeCodeConnection, ProjectLaunchContext } from "../types";
 
 describe("commands", () => {
   it("routes account Activity to the keyboard-accessible right pane", () => {
@@ -860,10 +936,263 @@ describe("built-in commands over a plugin-owned surface", () => {
     expect(listed).toContain("/activity");
   });
 
-  it("still refuses a typed /linear, because a hidden row is not access control", () => {
+  it("reports /linear as plugin-owned to the dispatch gate", () => {
+    // What this proves is that the HELPER answers; the terminal actually
+    // refusing is proven by driving dispatch, in "plugin-owned Linear surfaces
+    // at dispatch" below. A hidden row is not access control, and neither is a
+    // green assertion on a pure function no dispatch path calls.
     expect(slashCommandUnavailableSurface("/linear", LINEAR_INSTALLED)).toBe("linear");
     expect(slashCommandUnavailableSurface("/linear pull", LINEAR_INSTALLED)).toBe("linear");
     expect(slashCommandUnavailableSurface("/linear", [])).toBeNull();
     expect(slashCommandUnavailableSurface("/linear pull", [])).toBeNull();
+  });
+});
+
+/**
+ * Dispatch-side coverage for the built-in surfaces `ade-linear` owns.
+ *
+ * The palette tests above prove the ROW leaves. They cannot prove the terminal
+ * REFUSES — a hidden row is not access control, and `/linear list` still
+ * arrives by being typed in full, restored from history, or bound to a key. So
+ * these render the app and go through the keyboard.
+ */
+describe("plugin-owned Linear surfaces at dispatch", () => {
+  const reactActGlobal = globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean };
+  let previousReactActEnvironment: boolean | undefined;
+
+  beforeAll(() => {
+    previousReactActEnvironment = reactActGlobal.IS_REACT_ACT_ENVIRONMENT;
+    reactActGlobal.IS_REACT_ACT_ENVIRONMENT = true;
+  });
+
+  afterAll(() => {
+    if (previousReactActEnvironment === undefined) delete reactActGlobal.IS_REACT_ACT_ENVIRONMENT;
+    else reactActGlobal.IS_REACT_ACT_ENVIRONMENT = previousReactActEnvironment;
+  });
+
+  const project: ProjectLaunchContext = {
+    launchCwd: "/repo",
+    projectRoot: "/repo",
+    workspaceRoot: "/repo",
+    laneHint: null,
+    sessionHint: null,
+    remote: false,
+    remoteLabel: null,
+    skipProjectPicker: true,
+  };
+
+  let connection: AdeCodeConnection;
+  let actionMock: ReturnType<typeof vi.fn>;
+  let actionListMock: ReturnType<typeof vi.fn>;
+  let pluginRoster: Array<{ pluginId: string; displayName: string; enabled: boolean }>;
+
+  /**
+   * What the right pane shows RIGHT NOW, punctuation-normalised.
+   *
+   * The pane clips a long body to its column width with an ellipsis, so these
+   * assertions match the leading fragment plus the pane title rather than the
+   * whole sentence — the refusal is identified by which pane it opened in and
+   * how it starts, not by a full-width string the layout is free to clip.
+   */
+  function pane(instance: ReturnType<typeof render>): string {
+    return (instance.lastFrame() ?? "")
+      .replace(/\u001b\[[0-?]*[ -/]*[@-~]/g, "")
+      .replace(/\s+/g, " ");
+  }
+
+  async function flushAsyncEffects(): Promise<void> {
+    await act(async () => {
+      for (let i = 0; i < 12; i++) await Promise.resolve();
+    });
+  }
+
+  async function renderTui(): Promise<ReturnType<typeof render>> {
+    let instance: ReturnType<typeof render> | null = null;
+    await act(async () => {
+      instance = render(React.createElement(AdeCodeApp, { project }));
+    });
+    await flushAsyncEffects();
+    // The plugin roster rides an async effect on the connection; the gate reads
+    // nothing until it lands, so wait for it rather than racing it.
+    for (let i = 0; i < 40; i++) {
+      if (actionMock.mock.calls.some(([domain, action]) => domain === "plugin" && action === "list")) break;
+      await flushAsyncEffects();
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(20);
+      });
+    }
+    await flushAsyncEffects();
+    return instance!;
+  }
+
+  async function typeCommand(instance: ReturnType<typeof render>, text: string): Promise<void> {
+    await act(async () => {
+      instance.stdin.write(text);
+    });
+    await flushAsyncEffects();
+    await act(async () => {
+      instance.stdin.write("\r");
+    });
+    await flushAsyncEffects();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(50);
+    });
+    await flushAsyncEffects();
+  }
+
+  async function unmount(instance: ReturnType<typeof render>): Promise<void> {
+    await act(async () => {
+      instance.unmount();
+    });
+    await flushAsyncEffects();
+  }
+
+  /**
+   * Every reach for ADE's own compiled Linear integration, over BOTH call
+   * shapes: `/linear list` goes through `action`, `/linear pull` and
+   * `/issue attach ADE-123` go through `actionList`.
+   */
+  const linearTrackerCalls = (): unknown[][] => [
+    ...actionMock.mock.calls,
+    ...actionListMock.mock.calls,
+  ].filter(([domain]) => domain === "linear_issue_tracker");
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    pluginRoster = [];
+    actionMock = vi.fn(async (domain: string, action: string) => {
+      if (domain === "plugin" && action === "list") return pluginRoster;
+      if (domain === "linear_issue_tracker" && action === "listIssues") return [];
+      return null;
+    });
+    actionListMock = vi.fn(async () => null);
+    connection = {
+      mode: "attached",
+      projectRoot: "/repo",
+      workspaceRoot: "/repo",
+      socketPath: "/tmp/ade.sock",
+      request: vi.fn(),
+      tool: vi.fn(async () => null),
+      action: actionMock,
+      actionList: actionListMock,
+      onChatEvent: vi.fn(() => () => {}),
+      subscribeRuntimeEvents: vi.fn(async () => () => {}),
+      close: vi.fn(async () => {}),
+    } as unknown as AdeCodeConnection;
+    appMocks.connectToAde.mockResolvedValue(connection);
+    appMocks.startTuiHeartbeat.mockReturnValue({ stop: vi.fn() });
+    appMocks.listLanes.mockResolvedValue([{
+      id: "lane-1",
+      name: "main",
+      laneType: "primary",
+      baseRef: "main",
+      branchRef: "main",
+      worktreePath: "/repo",
+      parentLaneId: null,
+      childCount: 0,
+      stackDepth: 0,
+      parentStatus: null,
+      isEditProtected: false,
+      status: { dirty: false, ahead: 0, behind: 0, remoteBehind: 0, rebaseInProgress: false },
+      color: null,
+      icon: null,
+      tags: [],
+      createdAt: "2026-01-01T00:00:00.000Z",
+    }]);
+    appMocks.listChatSessions.mockResolvedValue([{
+      sessionId: "chat-1",
+      laneId: "lane-1",
+      provider: "codex",
+      model: "gpt-5.5",
+      modelId: "openai/gpt-5.5",
+      status: "active",
+      startedAt: "2026-01-01T00:00:00.000Z",
+      endedAt: null,
+      lastActivityAt: "2026-01-01T00:00:00.000Z",
+      lastOutputPreview: null,
+      summary: null,
+      nextWakeAt: null,
+    }]);
+    appMocks.listTerminalSessions.mockResolvedValue([]);
+    appMocks.getChatHistory.mockResolvedValue({ sessionId: "chat-1", events: [], truncated: false });
+    appMocks.getSlashCommands.mockResolvedValue([]);
+    appMocks.getAvailableModels.mockResolvedValue([]);
+    appMocks.fsWatch.mockReturnValue({ close: vi.fn() });
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.clearAllMocks();
+  });
+
+  it("runs a typed /linear list on a machine without the plugin", async () => {
+    // The control that keeps the refusal test honest: the same keystrokes on an
+    // ADE with no `ade-linear` DO reach ADE's compiled Linear verbs, so a
+    // passing refusal below is a gate and not a broken harness.
+    const instance = await renderTui();
+    await typeCommand(instance, "/linear list");
+
+    expect(linearTrackerCalls().map(([, action]) => action)).toContain("listIssues");
+    await unmount(instance);
+  });
+
+  it("refuses a typed /linear list once the plugin owns the surface", async () => {
+    pluginRoster = [{ pluginId: "ade-linear", displayName: "Linear", enabled: true }];
+    const instance = await renderTui();
+    await typeCommand(instance, "/linear list");
+
+    expect(linearTrackerCalls()).toEqual([]);
+    expect(pane(instance)).toContain("LINEAR");
+    expect(pane(instance)).toContain("The Linear plugin ow");
+    await unmount(instance);
+  });
+
+  it("refuses a typed /linear pull, the chat-context entry point, the same way", async () => {
+    pluginRoster = [{ pluginId: "ade-linear", displayName: "Linear", enabled: true }];
+    const instance = await renderTui();
+    await typeCommand(instance, "/linear pull ADE-123");
+
+    expect(linearTrackerCalls()).toEqual([]);
+    expect(pane(instance)).toContain("LINEAR");
+    expect(pane(instance)).toContain("The Linear plugin ow");
+    await unmount(instance);
+  });
+
+  it("refuses the Linear half of /issue and keeps the GitHub half", async () => {
+    // `/issue` serves two issue sources and only one of them is a plugin
+    // surface, so it carries no `builtin` row: gating them together would take
+    // core GitHub attach down with an uninstalled plugin.
+    pluginRoster = [{ pluginId: "ade-linear", displayName: "Linear", enabled: true }];
+    const instance = await renderTui();
+    await typeCommand(instance, "/issue attach ADE-123");
+
+    expect(linearTrackerCalls()).toEqual([]);
+    expect(pane(instance)).toContain("ISSUE ATTACH");
+    expect(pane(instance)).toContain("The Linear plugin ow");
+
+    await unmount(instance);
+
+    // The GitHub half of the same command on the same machine is untouched: it
+    // runs on into `executeIssueToolRequest` and stops at the harness's own
+    // missing-session message, not at the Linear refusal. A second terminal,
+    // because dispatching a right-pane command moves focus off the composer.
+    const github = await renderTui();
+    await typeCommand(github, "/issue attach acme/repo#42");
+    expect(pane(github)).not.toContain("The Linear plugin ow");
+    expect(pane(github)).toContain("No active chat");
+    await unmount(github);
+  });
+
+  it("keeps /issue attach ADE-123 running on a machine without the plugin", async () => {
+    // The control for the `/issue` gate. The harness has no opened chat, so the
+    // ungated path stops one step later, inside `executeIssueToolRequest`, at
+    // its own missing-session message — a different pane from the refusal, and
+    // proof the branch ran rather than being turned away at the gate.
+    const instance = await renderTui();
+    await typeCommand(instance, "/issue attach ADE-123");
+
+    expect(pane(instance)).toContain("No active chat");
+    expect(pane(instance)).not.toContain("The Linear plugin ow");
+    await unmount(instance);
   });
 });

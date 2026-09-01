@@ -78,10 +78,51 @@ export function IngressStatusStrip({ ingressStatus }: { ingressStatus: Automatio
   if (dismissed) return null;
 
   const gh = githubSummary(ingressStatus);
-  const linearAvailable = linearSurfaceVisible
+  // The status itself rather than a boolean beside it: three of the four
+  // conditions are about whether there is a Linear status worth drawing, so
+  // narrowing to it once means the row below never re-asks whether `linear` is
+  // there. `disabled` is the workspace saying it wants no row at all.
+  const linearStatus = linearSurfaceVisible
     && Boolean(api?.getStatus)
     && linear != null
-    && linear.state !== "disabled";
+    && linear.state !== "disabled"
+    ? linear
+    : null;
+
+  /**
+   * The Linear row's one state, flat. Four outcomes that a nested ternary chain
+   * read as one expression: connected, errored, self-configuring under the ADE
+   * app, and the manual connect step for everyone else.
+   */
+  const linearRow = (status: AutomationLinearIngressStatus) => {
+    if (status.state === "ready") {
+      return (
+        <>
+          <Dot tone="ok" />
+          <span className="text-fg/80">
+            {status.appManaged ? "Connected via ADE app" : "Connected"}
+            {status.lastEventAt ? ` · last ${formatDate(status.lastEventAt, "—")}` : ""}
+          </span>
+        </>
+      );
+    }
+    if (status.state === "error") {
+      return (
+        <>
+          <Dot tone="warn" />
+          <span className="text-amber-200">Error</span>
+        </>
+      );
+    }
+    // App-connected workspaces self-configure on the first poll after a
+    // linear.* rule is enabled — no manual connect step.
+    if (status.appManaged) return <span className="text-muted-fg/70">Via ADE app</span>;
+    return (
+      <Button size="sm" variant="outline" disabled={busy} onClick={setupLinear}>
+        Connect
+      </Button>
+    );
+  };
 
   return (
     <div className="flex items-center gap-3 border-b border-white/[0.06] bg-white/[0.02] px-4 py-2 text-[11px]">
@@ -92,34 +133,13 @@ export function IngressStatusStrip({ ingressStatus }: { ingressStatus: Automatio
         <span className={cn(gh.tone === "off" ? "text-muted-fg/55" : "text-fg/80")}>{gh.label}</span>
       </div>
 
-      {linearAvailable ? (
-        <div className="flex items-center gap-1.5" title={linear?.lastError ?? undefined}>
+      {linearStatus ? (
+        <div className="flex items-center gap-1.5" title={linearStatus.lastError ?? undefined}>
           <span className="shrink-0" style={{ color: LINEAR_BRAND.primary }}>
             <LinearMark size={13} />
           </span>
           <span className="text-muted-fg/70">Linear</span>
-          {linear?.state === "ready" ? (
-            <>
-              <Dot tone="ok" />
-              <span className="text-fg/80">
-                {linear.appManaged ? "Connected via ADE app" : "Connected"}
-                {linear.lastEventAt ? ` · last ${formatDate(linear.lastEventAt, "—")}` : ""}
-              </span>
-            </>
-          ) : linear?.state === "error" ? (
-            <>
-              <Dot tone="warn" />
-              <span className="text-amber-200">Error</span>
-            </>
-          ) : linear?.appManaged ? (
-            // App-connected workspaces self-configure on the first poll after
-            // a linear.* rule is enabled — no manual connect step.
-            <span className="text-muted-fg/70">Via ADE app</span>
-          ) : (
-            <Button size="sm" variant="outline" disabled={busy} onClick={setupLinear}>
-              Connect
-            </Button>
-          )}
+          {linearRow(linearStatus)}
         </div>
       ) : null}
 

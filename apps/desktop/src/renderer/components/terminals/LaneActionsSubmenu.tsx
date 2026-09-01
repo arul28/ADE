@@ -5,7 +5,7 @@ import { buildLaneMenuGroups } from "../lanes/laneContextMenuItems";
 import { COLORS } from "../lanes/laneDesignTokens";
 import { MenuSubmenu } from "../ui/MenuSubmenu";
 import { pluginLaneContext, usePluginMenuEntries } from "../plugins/sockets";
-import { useBuiltinSurfaceVisible } from "../plugins/useBuiltinTabs";
+import { useBuiltinSurfaceGate } from "../plugins/useBuiltinTabs";
 import { useLaneMenuActions } from "./useWorkLaneContextMenu";
 import { resolveOpenInTarget } from "../../../shared/editorTargets";
 
@@ -61,7 +61,10 @@ export function LaneActionsSubmenu({
     lane ? pluginLaneContext(lane) : null,
     { onClose, includeExtend: true },
   );
-  const linearSurfaceVisible = useBuiltinSurfaceVisible("linear");
+  // The predicate, not one surface's answer — see `LaneMenuArgs.surfaceVisible`.
+  // This menu renders whatever rows the shared builder produces, so it must not
+  // be the place that decides which vendors those rows belong to.
+  const surfaceVisible = useBuiltinSurfaceGate();
 
   const groups = useMemo(() => {
     const openIn = resolveOpenInTarget({ worktreePath: lane?.worktreePath, binding: projectBinding });
@@ -73,13 +76,13 @@ export function LaneActionsSubmenu({
       // the Work sidebar passes its own lane menu.
       visibleLaneIds: [laneId],
       isRemoteProject,
-      linearSurfaceVisible,
+      surfaceVisible,
       onClose,
       ...actions,
       pluginEntries,
       ...(openIn ? { openIn } : {}),
     });
-  }, [actions, isRemoteProject, lane, laneId, lanesById, linearSurfaceVisible, onClose, pluginEntries, projectBinding]);
+  }, [actions, isRemoteProject, lane, laneId, lanesById, onClose, pluginEntries, projectBinding, surfaceVisible]);
 
   return (
     <MenuSubmenu

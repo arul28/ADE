@@ -16,7 +16,7 @@ import {
   type LaneMenuEntry,
   type LaneMenuGroup,
 } from "./laneContextMenuItems";
-import { useBuiltinSurfaceVisible } from "../plugins/useBuiltinTabs";
+import { useBuiltinSurfaceGate } from "../plugins/useBuiltinTabs";
 import { OpenInSubmenu } from "../ui/OpenInSubmenu";
 import { resolveOpenInTarget } from "../../../shared/editorTargets";
 
@@ -218,7 +218,10 @@ export function LaneContextMenu({
     { onClose },
   );
   const extendEntry = useExtendSurfaceEntry("lanes", { onClose });
-  const linearSurfaceVisible = useBuiltinSurfaceVisible("linear");
+  // The whole gate rather than one surface's answer: `buildLaneMenuGroups` owns
+  // which of its rows are plugin-owned, and this menu should not have to learn
+  // a new vendor's name to keep drawing it correctly.
+  const surfaceVisible = useBuiltinSurfaceGate();
 
   const openIn = resolveOpenInTarget({ worktreePath: ctxLane?.worktreePath, binding: projectBinding });
   const args: LaneMenuArgs = {
@@ -227,7 +230,7 @@ export function LaneContextMenu({
     lanesById,
     visibleLaneIds,
     isRemoteProject,
-    linearSurfaceVisible,
+    surfaceVisible,
     onClose,
     onManage,
     selectLane,

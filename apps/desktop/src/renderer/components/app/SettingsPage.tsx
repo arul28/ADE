@@ -37,24 +37,18 @@ import { StorageSection } from "../settings/StorageSection";
 import { RemoteSettingsBanner } from "../settings/RemoteContextBadge";
 import { WebSettingsSection } from "../settings/WebScopeBanner";
 import { PluginSettingsSections } from "../plugins/sockets";
-import { isBuiltinSurfaceVisible } from "../plugins/builtinTabs";
-import { useBuiltinGateInput } from "../plugins/useBuiltinTabs";
-import type { PluginBuiltinSurfaceId } from "../../../shared/plugins/manifest";
 import {
   SETTINGS_ENTRIES,
   availableSettingsTabs,
   resolveSettingsHash,
   resolveSettingsTab,
   searchSettingsEntries,
-  clearBuiltinSurfaceResolver,
-  clearWebMachineBindingResolver,
-  setBuiltinSurfaceResolver,
-  setWebMachineBindingResolver,
   settingsEntriesForTab,
   settingsTabLabel,
   type SettingEntry,
   type SettingsTabId,
 } from "../settings/settingsManifest";
+import { useSettingsManifestResolvers } from "../settings/useSettingsManifestResolvers";
 import { isWebClientMode } from "../../lib/webClientMode";
 import { useAppStore } from "../../state/appStore";
 import { COLORS, SANS_FONT, LABEL_STYLE } from "../lanes/laneDesignTokens";
@@ -309,49 +303,19 @@ export function SettingsPage({ active = true }: { active?: boolean } = {}) {
   const [searchParams] = useSearchParams();
   const tabParam = searchParams.get("tab");
   // Machine-scoped settings write to the machine the active project tab is
-  // bound to, so on web they exist only while one is open. The manifest is what
-  // nav, search and the palette all consult, and it has no store of its own —
-  // it reads this binding through the resolver, refreshed here because this is
-  // the surface that re-renders when the binding changes.
+  // bound to, so on web they exist only while one is open. The resolver hook
+  // below feeds the same fact to the manifest; this copy is what the page's own
+  // banner and memos read, and what makes them recompute when it flips.
   const machineBound = useAppStore((state) => state.projectBinding) != null;
-  // Installed during render because `isSettingAvailable` is consulted mid-render
-  // (nav, search, the palette) and an effect would install it a render too late.
-  // The effect exists only to take it back down on unmount, and only if it is
-  // still ours — the module global outlives this component otherwise.
-  const machineBoundRef = useRef(false);
-  machineBoundRef.current = machineBound;
-  // One stable function identity for this component's whole life, so the
-  // unmount cleanup can tell its own resolver from the other surface's.
-  const resolverRef = useRef<() => boolean>();
-  if (!resolverRef.current) resolverRef.current = () => machineBoundRef.current;
-  setWebMachineBindingResolver(resolverRef.current);
-  useEffect(() => {
-    const installed = resolverRef.current!;
-    return () => clearWebMachineBindingResolver(installed);
-  }, []);
-  // A setting whose card belongs to a plugin-owned compiled surface exists only
-  // while ADE still draws that surface. The manifest cannot read the plugin
-  // registry itself, so it reads it back through this resolver — installed the
-  // same way, during render and cleaned up only if it is still ours, because
-  // the palette installs one too and the two unmount in no fixed order.
-  const builtinGateInput = useBuiltinGateInput();
-  const builtinGateInputRef = useRef(builtinGateInput);
-  builtinGateInputRef.current = builtinGateInput;
-  const surfaceResolverRef = useRef<(builtinId: PluginBuiltinSurfaceId) => boolean>();
-  if (!surfaceResolverRef.current) {
-    surfaceResolverRef.current = (builtinId) =>
-      isBuiltinSurfaceVisible(builtinId, builtinGateInputRef.current);
-  }
-  setBuiltinSurfaceResolver(surfaceResolverRef.current);
-  useEffect(() => {
-    const installed = surfaceResolverRef.current!;
-    return () => clearBuiltinSurfaceResolver(installed);
-  }, []);
+  // Installs both manifest resolvers for the whole settings surface and hands
+  // back the compiled-surface gate; the palette installs the same pair. See
+  // `useSettingsManifestResolvers` for why they go in during render.
+  const surfaceGate = useSettingsManifestResolvers();
   const webMachineSectionsHidden = isWebClientMode() && !machineBound;
   // Tabs the web client cannot serve still resolve — a deeplink or palette
   // entry naming one should land somewhere real rather than on an empty page,
   // so it falls through to the first tab this renderer does serve.
-  const tabs = useMemo(() => availableSettingsTabs(), [builtinGateInput, machineBound]);
+  const tabs = useMemo(() => availableSettingsTabs(surfaceGate), [surfaceGate, machineBound]);
   const defaultTab = tabs[0]?.id ?? "general";
   // A `#hash` names one specific setting, so it is strictly more precise than
   // the `?tab=` next to it. When the two disagree — an older link that still
@@ -468,7 +432,10 @@ export function SettingsPage({ active = true }: { active?: boolean } = {}) {
       matchesThisTab: all.filter((entry) => entry.tab === section),
       matchesOtherTabs: all.filter((entry) => entry.tab !== section),
     };
-  }, [builtinGateInput, trimmedQuery, section]);
+    // `surfaceGate` is a dependency, not an argument: `searchSettingsEntries`
+    // reads availability through the resolver this render installed, and its
+    // result changes when the plugin registry does.
+  }, [surfaceGate, trimmedQuery, section]);
 
   // Searching hides non-matching cards on this tab. Sections own their own
   // markup, so the filter runs over the `data-settings-anchor` ids the

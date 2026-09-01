@@ -27,7 +27,7 @@
 // ---------------------------------------------------------------------------
 
 import { createHmac } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import { createRequire } from "node:module";
 import path from "node:path";
 import type { DatabaseSync as DatabaseSyncType } from "node:sqlite";
@@ -57,6 +57,30 @@ const REPO_ROOT = path.resolve(HERE, "../../../../../..");
 const LINEAR_PLUGIN_DIR = path.join(REPO_ROOT, "plugins", "ade-linear");
 const LINEAR_MANIFEST_PATH = path.join(LINEAR_PLUGIN_DIR, "plugin.json");
 const LINEAR_ENTRY_PATH = path.join(LINEAR_PLUGIN_DIR, "index.js");
+
+/**
+ * Every JavaScript file the plugin ships, as one string.
+ *
+ * The secret-name check below reads the plugin as TEXT, and it must read the
+ * WHOLE plugin: the writer moved from `index.js` to `actions.js` when the
+ * action table was split out, and a check pinned to one file would have gone
+ * quietly green on a package that no longer wrote the secret at all. Reading
+ * every file is also what makes "exactly one writer" a real claim rather than a
+ * claim about one file.
+ */
+function pluginSource(): string {
+  const files: string[] = [];
+  const walk = (dir: string): void => {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      if (entry.name === "node_modules" || entry.name === "test") continue;
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) walk(full);
+      else if (entry.name.endsWith(".js")) files.push(readFileSync(full, "utf8"));
+    }
+  };
+  walk(LINEAR_PLUGIN_DIR);
+  return files.join("\n");
+}
 const RELAY_SOURCE_PATH = path.join(REPO_ROOT, "apps", "webhook-relay", "src", "relay.ts");
 
 const PLUGIN_ID = "ade-linear";
@@ -281,14 +305,14 @@ describe("ade-linear webhook channel declaration", () => {
     const secretRef = linearChannel().verify?.secretRef;
     expect(secretRef).toBe("LINEAR_WEBHOOK_SECRET");
 
-    const source = readFileSync(LINEAR_ENTRY_PATH, "utf8");
-    const setNames = [...source.matchAll(/sdk\.secrets\.set\(\s*"([^"]+)"/g)].map((match) => match[1]!);
+    const source = pluginSource();
+    const setNames = [...source.matchAll(/secrets\.set\(\s*"([^"]+)"/g)].map((match) => match[1]!);
     const webhookSetNames = setNames.filter((name) => name.includes("WEBHOOK"));
 
     // Exactly one writer, and it writes the declared name. A second writer
     // under another name would be the same silent breakage wearing a disguise.
     expect(webhookSetNames).toEqual([secretRef]);
-    expect(source).toContain(`sdk.secrets.set("${secretRef}"`);
+    expect(source).toContain(`secrets.set("${secretRef}"`);
   });
 
   // The relay drops every header outside `PLUGIN_WEBHOOK_STORED_HEADERS` before

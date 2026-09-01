@@ -3,10 +3,11 @@
 import React from "react";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { LaneSummary } from "../../../shared/types";
 import { rootAppStoreApi } from "../../state/appStore";
 import { resetBuiltinSurfacePlugins, seedBuiltinSurfacePlugins } from "../../../test/builtinSurfaces";
+import { laneFixture, laneLinearIssueFixture } from "../../../test/laneFixture";
 import { SUBMENU_OPEN_DELAY_MS } from "../ui/MenuSubmenu";
+import type { PluginBuiltinSurfaceId } from "../../../shared/plugins/manifest";
 import { buildLaneMenuGroups, type LaneMenuArgs } from "./laneContextMenuItems";
 import { LaneContextMenu } from "./LaneContextMenu";
 
@@ -26,61 +27,29 @@ import { LaneContextMenu } from "./LaneContextMenu";
 
 const COPY_LINEAR = "Copy Linear Issue Link";
 
-const linkedLane = {
-  id: "lane-1",
+const linkedLane = laneFixture({
   name: "Linked lane",
-  laneType: "worktree",
-  baseRef: "main",
-  branchRef: "refs/heads/ade-123",
-  worktreePath: "/tmp/lane-1",
-  parentLaneId: null,
-  childCount: 0,
-  stackDepth: 0,
-  parentStatus: null,
-  isEditProtected: false,
-  status: { dirty: false, ahead: 0, behind: 0, remoteBehind: 0, rebaseInProgress: false },
-  color: null,
-  icon: null,
-  tags: [],
-  createdAt: "2026-07-10T10:00:00.000Z",
-  linearIssue: {
-    id: "issue-1",
-    identifier: "ADE-123",
-    title: "Copy the issue link",
-    description: null,
-    url: "https://linear.app/ade/issue/ADE-123/copy-the-issue-link",
-    projectId: null,
-    projectSlug: null,
-    projectName: null,
-    teamId: "team-1",
-    teamKey: "ADE",
-    teamName: "ADE",
-    stateId: "state-1",
-    stateName: "In Progress",
-    stateType: "started",
-    priority: 2,
-    priorityLabel: "high",
-    labels: [],
-    assigneeId: null,
-    assigneeName: null,
-    creatorId: null,
-    creatorName: null,
-    dueDate: null,
-    estimate: null,
-    branchName: "ade-123",
-    createdAt: "2026-07-10T10:00:00.000Z",
-    updatedAt: "2026-07-10T10:00:00.000Z",
-  },
-} as unknown as LaneSummary;
+  linearIssue: laneLinearIssueFixture(),
+});
 
-function menuArgs(linearSurfaceVisible: boolean): LaneMenuArgs {
+/**
+ * Every surface reads visible here except the ones a case names, so a test that
+ * cares about Linear says only that. The builder takes the id rather than a
+ * fixed answer because `buildLaneMenuGroups` asks by id, and a stub that
+ * ignored the id would pass a builder that gated the wrong row.
+ */
+function gateHiding(hidden: readonly PluginBuiltinSurfaceId[]) {
+  return (builtinId: PluginBuiltinSurfaceId) => !hidden.includes(builtinId);
+}
+
+function menuArgs(linearVisible: boolean): LaneMenuArgs {
   return {
     laneId: linkedLane.id,
     lane: linkedLane,
     lanesById: new Map([[linkedLane.id, linkedLane]]),
     visibleLaneIds: [linkedLane.id],
     isRemoteProject: false,
-    linearSurfaceVisible,
+    surfaceVisible: gateHiding(linearVisible ? [] : ["linear"]),
     onClose: vi.fn(),
     onManage: vi.fn(),
     selectLane: vi.fn(),
@@ -91,8 +60,8 @@ function menuArgs(linearSurfaceVisible: boolean): LaneMenuArgs {
   };
 }
 
-function copyLabels(linearSurfaceVisible: boolean): string[] {
-  const copy = buildLaneMenuGroups(menuArgs(linearSurfaceVisible))
+function copyLabels(linearVisible: boolean): string[] {
+  const copy = buildLaneMenuGroups(menuArgs(linearVisible))
     .find((group) => group.key === "copy");
   return (copy?.entries ?? []).map((entry) => ("label" in entry ? entry.label : entry.key));
 }

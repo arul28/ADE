@@ -703,15 +703,32 @@ export function CreatePrModal({
   );
   const selectedNormalLinearIssue = selectedNormalLane?.linearIssue ?? null;
   /**
-   * The Linear card below is ADE's own close-on-merge control, so it goes when
-   * `ade-linear` owns Linear: the plugin has a `moveToDoneOnMerge` setting and a
-   * `close_issue_on_merge` automation step of its own, and two controls over one
-   * policy is how the two disagree.
+   * Who owns close-on-merge once `ade-linear` is installed, and why hiding the
+   * card was never enough on its own.
    *
-   * Only the CARD is gated. The magic word the body effect below writes stays;
-   * see the comment on that effect for why.
+   * The plugin ships a `moveToDoneOnMerge` setting and a `close_issue_on_merge`
+   * automation step, so where it is installed it is the single owner of that
+   * policy and ADE's own card goes — two controls over one policy is how the
+   * two disagree. But the card is only the OPT-OUT. The policy itself lives in
+   * two other places: the magic word the body carries (`Fixes` closes the
+   * issue, `Refs` merely links it) and the `closeLinearIssueOnMerge` argument,
+   * which `prService.createFromLane` reads as true unless it is explicitly
+   * false. Hiding the card alone would leave both of those enforcing ADE's
+   * closing linkage alongside the plugin's, with no visible way to turn it off.
+   *
+   * So the predicate that hides the card resolves the policy too, once, here:
+   * superseded means ADE emits the plain `Refs` form and sends an explicit
+   * `false`, leaving the plugin the only thing that can move the issue. Every
+   * close-on-merge site below reads `effectiveCloseLinearIssueOnMerge` rather
+   * than testing the gate again, so the card and the behaviour cannot drift
+   * apart. With no plugin installed the derived value IS the checkbox and
+   * nothing about the unplugged app moves.
+   *
+   * What does NOT change either way is the reference itself; see the comment on
+   * the body effect below.
    */
   const linearSurfaceVisible = useBuiltinSurfaceVisible("linear");
+  const effectiveCloseLinearIssueOnMerge = linearSurfaceVisible && normalCloseLinearIssueOnMerge;
 
   /**
    * A `{dialog:{setField}}` response from a contributed section.
@@ -766,12 +783,13 @@ export function CreatePrModal({
    * effect ever ran. Editing or deleting the text below changes what the user
    * reads here; it does not change what GitHub receives.
    *
-   * That is why the gate above hides only the CARD and leaves this alone. The
-   * card is ADE's own close-on-merge control and `ade-linear` owns that policy
-   * once installed. The reference is Linear's mechanism for linking a pull
-   * request to an issue, the plugin's own lane links depend on it, and stopping
-   * it here would not remove it from the PR — it would only make the textarea
-   * disagree with what is about to be created.
+   * That is why the gate above changes only the FORM of the reference and never
+   * removes it: superseded downgrades `Fixes` to `Refs`, because closing is
+   * ADE's own policy and `ade-linear` owns it once installed. The reference is
+   * Linear's mechanism for linking a pull request to an issue, the plugin's own
+   * lane links depend on it, and stopping it here would not remove it from the
+   * PR — it would only make the textarea disagree with what is about to be
+   * created.
    */
   React.useEffect(() => {
     if (!open) return;
@@ -788,7 +806,7 @@ export function CreatePrModal({
       return;
     }
 
-    const nextBody = `${buildLinearPrReference(selectedNormalLinearIssue, normalCloseLinearIssueOnMerge)}\n`;
+    const nextBody = `${buildLinearPrReference(selectedNormalLinearIssue, effectiveCloseLinearIssueOnMerge)}\n`;
     setNormalBody((current) => {
       const previousAutoBody = normalLinearBodyDefaultRef.current;
       if (!current.trim() || (previousAutoBody && current === previousAutoBody)) {
@@ -796,9 +814,9 @@ export function CreatePrModal({
         return nextBody;
       }
       normalLinearBodyDefaultRef.current = nextBody;
-      return ensureLinearPrReference(current, selectedNormalLinearIssue, normalCloseLinearIssueOnMerge, { preserveExisting: false });
+      return ensureLinearPrReference(current, selectedNormalLinearIssue, effectiveCloseLinearIssueOnMerge, { preserveExisting: false });
     });
-  }, [open, normalCloseLinearIssueOnMerge, selectedNormalLinearIssue]);
+  }, [effectiveCloseLinearIssueOnMerge, open, selectedNormalLinearIssue]);
 
   React.useEffect(() => {
     if (!open || !normalDefaultTitle) return;
@@ -919,7 +937,7 @@ export function CreatePrModal({
         const linearIssue = lane?.linearIssue ?? null;
         const title = normalTitle.trim() || normalDefaultTitle || lane?.name || "PR";
         const body = linearIssue
-          ? ensureLinearPrReference(normalBody, linearIssue, normalCloseLinearIssueOnMerge, { preserveExisting: false })
+          ? ensureLinearPrReference(normalBody, linearIssue, effectiveCloseLinearIssueOnMerge, { preserveExisting: false })
           : normalBody;
         const pr = await runWithDirtyWorktreeConfirmation({
           confirmMessage: "Continue and create the PR anyway?",
@@ -928,7 +946,10 @@ export function CreatePrModal({
             title,
             body,
             draft: normalDraft,
-            ...(linearIssue ? { closeLinearIssueOnMerge: normalCloseLinearIssueOnMerge } : {}),
+            // Sent even when false, and especially then: `prService` reads a
+            // missing field as true, so a superseded surface has to say `false`
+            // out loud or ADE's closing linkage survives the hidden card.
+            ...(linearIssue ? { closeLinearIssueOnMerge: effectiveCloseLinearIssueOnMerge } : {}),
             ...(normalBaseBranch.trim() ? { baseBranch: normalBaseBranch.trim() } : {}),
             ...(allowDirtyWorktree ? { allowDirtyWorktree: true } : {})
           })
@@ -1805,7 +1826,7 @@ export function CreatePrModal({
                           </span>
                         </label>
                         <div style={{ fontFamily: MONO_FONT, fontSize: 10, color: C.textMuted }}>
-                          PR body will include {buildLinearPrReference(selectedNormalLinearIssue, normalCloseLinearIssueOnMerge)} so Linear links the PR.
+                          PR body will include {buildLinearPrReference(selectedNormalLinearIssue, effectiveCloseLinearIssueOnMerge)} so Linear links the PR.
                         </div>
                       </div>
                     ) : null}

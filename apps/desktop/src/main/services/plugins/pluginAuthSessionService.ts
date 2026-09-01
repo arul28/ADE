@@ -142,17 +142,39 @@ function liveKey(pluginId: string, sessionId: string): string {
 }
 
 /**
- * The same EADDRINUSE test `linearOAuthService` uses, including the message
- * fallback: not every path that fails to bind sets `code`, and a port collision
- * reported as a generic error would surface to the plugin as `internal_error`
- * when the user's actual remedy is to quit the other program.
+ * "This declared port is not available", not merely "somebody is listening".
+ *
+ * The EADDRINUSE half is the same test `linearOAuthService` uses, including the
+ * message fallback: not every path that fails to bind sets `code`, and a port
+ * collision reported as a generic error would surface to the plugin as
+ * `internal_error` when the user's actual remedy is to quit the other program.
+ *
+ * Windows adds a second way to lose the same port. A bind inside a Hyper-V or
+ * WSL dynamic-port exclusion range — reserved by the OS, with nothing listening
+ * on it — fails with EACCES rather than EADDRINUSE, and a bind against a socket
+ * another process still holds open can surface as EBUSY. Both are the same
+ * "this port is not yours right now, try another moment or another port"
+ * condition, and both otherwise reach the plugin as a bare `internal_error`.
+ *
+ * SCOPED TO `win32` deliberately, and in the same shape as `isLockContention`
+ * in `apps/ade-cli/src/services/credentials/credentialFileIo.ts` — base check
+ * first, platform gate, then the extra codes. On macOS and Linux EACCES on a
+ * bind means a genuine permission problem (a privileged port, a sandbox denial)
+ * that no amount of waiting fixes, and telling that user the port is "already
+ * in use" would send them hunting for a program that does not exist.
+ *
+ * Exported only so the test can drive the `win32` branch from a macOS host: the
+ * platform is read here, at call time, which is the seam the test writes to.
  */
-function isAddressInUseError(error: unknown): boolean {
+export function isPortUnavailableError(error: unknown): boolean {
   if (!error || typeof error !== "object") return false;
-  if ("code" in error && (error as { code?: unknown }).code === "EADDRINUSE") return true;
-  return error instanceof Error && (
+  const code = "code" in error ? (error as { code?: unknown }).code : undefined;
+  if (code === "EADDRINUSE") return true;
+  if (error instanceof Error && (
     error.message.includes("EADDRINUSE") || error.message.includes("address already in use")
-  );
+  )) return true;
+  if (process.platform !== "win32") return false;
+  return code === "EACCES" || code === "EBUSY";
 }
 
 function closeServerAndWait(server: http.Server): Promise<void> {
@@ -557,7 +579,7 @@ export function createPluginAuthSessionService(deps: {
       } catch {
         // Best effort: it never bound.
       }
-      if (isAddressInUseError(error)) {
+      if (isPortUnavailableError(error)) {
         logger.warn("plugin.auth_loopback_port_in_use", {
           pluginId: session.pluginId,
           sessionId: session.sessionId,
@@ -565,9 +587,11 @@ export function createPluginAuthSessionService(deps: {
         });
         // Rewritten rather than surfaced raw, and as `auth_session_busy` rather
         // than an internal error: the port is DECLARED in the manifest, so the
-        // only ways it is taken are another ADE running this same flow or an
-        // unrelated program on the machine. Both are "wait and retry", and the
-        // port number is the one fact that lets the user find the other one.
+        // only ways it is taken are another ADE running this same flow, an
+        // unrelated program on the machine, or — on Windows — an OS port
+        // exclusion range. Every one of them is a condition the user can act on
+        // once they know WHICH port, and the port number is the one fact this
+        // message exists to carry.
         throw new PluginSdkError(
           "auth_session_busy",
           `The sign-in callback port ${port} is already in use on ${LOOPBACK_HOST}.`

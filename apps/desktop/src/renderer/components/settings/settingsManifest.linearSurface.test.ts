@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import {
   availableSettingsEntries,
+  availableSettingsTabs,
   clearBuiltinSurfaceResolver,
   isBuiltinSurfaceShown,
   searchSettingsEntries,
@@ -66,6 +67,29 @@ describe("the Linear settings row and the Linear surface", () => {
     setBuiltinSurfaceResolver((builtinId) => builtinId !== "linear");
     expect(ids(availableSettingsEntries()))
       .toEqual(withLinear.filter((id) => id !== LINEAR_ID));
+  });
+
+  it("decides from the gate it is handed, not the installed resolver", () => {
+    // `availableSettingsTabs` is computed inside a `useMemo` during the very
+    // render that installs the resolver, and a dependency array cannot name a
+    // module global — so the gate is an argument, and the argument has to win.
+    // Proven by making the two disagree.
+    setBuiltinSurfaceResolver(() => false);
+    expect(ids(settingsEntriesForTab("integrations", () => true))).toEqual([GITHUB_ID, LINEAR_ID]);
+    // Omitted, it still falls back to the resolver, which is what every
+    // non-React caller (this file included) relies on.
+    expect(ids(settingsEntriesForTab("integrations"))).toEqual([GITHUB_ID]);
+
+    const asked: PluginBuiltinSurfaceId[] = [];
+    const tabs = availableSettingsTabs((builtinId) => {
+      asked.push(builtinId);
+      return true;
+    });
+    expect(asked).toContain("linear");
+    // And the gate takes away rows, never a tab that still has other settings:
+    // Integrations keeps GitHub either way.
+    expect(tabs.map((tab) => tab.id)).toContain("integrations");
+    expect(availableSettingsTabs(() => false).map((tab) => tab.id)).toContain("integrations");
   });
 
   it("only takes down its own resolver, because two surfaces install one", () => {

@@ -10,6 +10,7 @@ import {
 import type { Logger } from "../logging/logger";
 import {
   createPluginAuthSessionService,
+  isPortUnavailableError,
   PLUGIN_AUTH_APP_REDIRECT_URI,
   PLUGIN_AUTH_CALLBACK_SCHEME,
   PLUGIN_AUTH_SESSION_TTL_MS,
@@ -550,5 +551,76 @@ describe("createPluginAuthSessionService", () => {
     // which parameters went out — and a key names nothing.
     expect(written).toContain("client_id");
     expect(written).toContain("code_challenge");
+  });
+});
+
+/**
+ * Swap `process.platform` for the duration of one synchronous check.
+ *
+ * `process.platform` IS the seam: the predicate reads it at call time, exactly
+ * as `isLockContention` does, so nothing had to be threaded through the
+ * production path to make the Windows branch testable. The property is a
+ * non-writable own property on `process`, hence `defineProperty` rather than an
+ * assignment, and it is restored in a `finally` so a failing expectation cannot
+ * leave the rest of the suite believing it runs on Windows.
+ */
+function withPlatform<T>(platform: NodeJS.Platform, run: () => T): T {
+  const original = Object.getOwnPropertyDescriptor(process, "platform");
+  if (!original) throw new Error("process.platform is not an own property");
+  Object.defineProperty(process, "platform", { ...original, value: platform });
+  try {
+    return run();
+  } finally {
+    Object.defineProperty(process, "platform", original);
+  }
+}
+
+const withCode = (message: string, code: string): Error => Object.assign(new Error(message), { code });
+
+/**
+ * The mapping from this predicate to the `auth_session_busy` error the plugin
+ * sees is covered by the live-squatter test above; these cases cover which
+ * failures count as "this declared port is not available" in the first place,
+ * which is the half a macOS host can never observe for Windows.
+ */
+describe("isPortUnavailableError", () => {
+  it("treats EADDRINUSE as contention on every platform, by code and by message", () => {
+    for (const platform of ["darwin", "linux", "win32"] as const) {
+      withPlatform(platform, () => {
+        expect(isPortUnavailableError(withCode("listen failed", "EADDRINUSE"))).toBe(true);
+        // The message fallback: not every path that fails to bind sets `code`.
+        expect(isPortUnavailableError(new Error("listen EADDRINUSE 127.0.0.1:8321"))).toBe(true);
+        expect(isPortUnavailableError(new Error("bind: address already in use"))).toBe(true);
+      });
+    }
+  });
+
+  it("accepts EACCES and EBUSY on win32, where a reserved port range fails the bind that way", () => {
+    withPlatform("win32", () => {
+      // A Hyper-V / WSL dynamic-port exclusion range holds the port with nothing
+      // listening on it; Windows answers the bind EACCES, not EADDRINUSE.
+      expect(isPortUnavailableError(withCode("listen EACCES 127.0.0.1:53000", "EACCES"))).toBe(true);
+      expect(isPortUnavailableError(withCode("listen EBUSY 127.0.0.1:53000", "EBUSY"))).toBe(true);
+    });
+  });
+
+  it("refuses EACCES and EBUSY off win32, where they are a real fault and not a busy port", () => {
+    for (const platform of ["darwin", "linux"] as const) {
+      withPlatform(platform, () => {
+        // Reporting a privileged-port or sandbox denial as "the port is busy"
+        // would send the user hunting for a program that does not exist.
+        expect(isPortUnavailableError(withCode("listen EACCES 127.0.0.1:80", "EACCES"))).toBe(false);
+        expect(isPortUnavailableError(withCode("listen EBUSY 127.0.0.1:80", "EBUSY"))).toBe(false);
+      });
+    }
+  });
+
+  it("refuses every other bind failure, on win32 too", () => {
+    withPlatform("win32", () => {
+      expect(isPortUnavailableError(withCode("listen EADDRNOTAVAIL", "EADDRNOTAVAIL"))).toBe(false);
+      expect(isPortUnavailableError(new Error("something else entirely"))).toBe(false);
+      expect(isPortUnavailableError(null)).toBe(false);
+      expect(isPortUnavailableError("EADDRINUSE")).toBe(false);
+    });
   });
 });

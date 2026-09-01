@@ -3,9 +3,10 @@
 import React from "react";
 import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { LaneSummary, OpenProjectBinding } from "../../../shared/types";
+import type { OpenProjectBinding } from "../../../shared/types";
 import { rootAppStoreApi } from "../../state/appStore";
 import { resetBuiltinSurfacePlugins, seedBuiltinSurfacePlugins } from "../../../test/builtinSurfaces";
+import { laneFixture, laneLinearIssueFixture } from "../../../test/laneFixture";
 import { ForeignLaneContextMenu } from "./ForeignLaneContextMenu";
 
 /**
@@ -23,58 +24,36 @@ import { ForeignLaneContextMenu } from "./ForeignLaneContextMenu";
 
 const COPY_LINEAR = "Copy Linear Issue Link";
 
-const foreignLane = {
+const foreignLane = laneFixture({
   id: "lane-remote",
   name: "Remote lane",
-  laneType: "worktree",
-  baseRef: "main",
   branchRef: "refs/heads/ade-321",
   worktreePath: "/tmp/lane-remote",
-  parentLaneId: null,
-  childCount: 0,
-  stackDepth: 0,
-  parentStatus: null,
-  isEditProtected: false,
-  status: { dirty: false, ahead: 0, behind: 0, remoteBehind: 0, rebaseInProgress: false },
-  color: null,
-  icon: null,
-  tags: [],
-  createdAt: "2026-07-10T10:00:00.000Z",
-  linearIssue: {
+  linearIssue: laneLinearIssueFixture({
     id: "issue-2",
     identifier: "ADE-321",
     title: "Copy from a foreign lane",
-    description: null,
     url: "https://linear.app/ade/issue/ADE-321/copy-from-a-foreign-lane",
-    projectId: null,
-    projectSlug: null,
-    projectName: null,
-    teamId: "team-1",
-    teamKey: "ADE",
-    teamName: "ADE",
-    stateId: "state-1",
     stateName: "Todo",
     stateType: "unstarted",
     priority: 0,
     priorityLabel: "none",
-    labels: [],
-    assigneeId: null,
-    assigneeName: null,
-    creatorId: null,
-    creatorName: null,
-    dueDate: null,
-    estimate: null,
     branchName: "ade-321",
-    createdAt: "2026-07-10T10:00:00.000Z",
-    updatedAt: "2026-07-10T10:00:00.000Z",
-  },
-} as unknown as LaneSummary;
+  }),
+});
 
+// Spelled out rather than cast: a foreign lane's menu is reached through a
+// remote binding, and the fields it resolves `Open in…` from are exactly the
+// ones a cast would let go missing.
 const binding: OpenProjectBinding = {
   kind: "remote",
   key: "machine-b:/project",
+  targetId: "machine-b",
+  runtimeName: "machine-b",
+  projectId: "project-1",
   rootPath: "/project",
-} as unknown as OpenProjectBinding;
+  displayName: "Project",
+};
 
 function renderMenu() {
   render(
@@ -96,7 +75,14 @@ function renderMenu() {
 describe("the foreign lane menu and the Linear surface", () => {
   beforeEach(() => {
     rootAppStoreApi.setState({ installedPlugins: [], pluginsLoaded: false });
-    globalThis.window.ade = { app: { writeClipboardText: vi.fn() } } as never;
+    // The cast covers the rest of the preload API this menu never touches; the
+    // one member it does touch is typed against the real signature, so a change
+    // there is a compile error here rather than a spy called with the wrong
+    // arguments and nobody noticing.
+    const writeClipboardText: typeof window.ade.app.writeClipboardText = vi.fn(
+      async () => {},
+    );
+    globalThis.window.ade = { app: { writeClipboardText } } as never;
   });
 
   afterEach(() => {
