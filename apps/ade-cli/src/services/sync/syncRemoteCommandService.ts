@@ -232,7 +232,7 @@ import {
 } from "../../../../desktop/src/shared/types";
 import type { OrchestrationRunCreateRequest } from "../../../../desktop/src/shared/types/orchestration";
 import { readInstalledBuiltinSurfaces } from "../../../../desktop/src/main/services/plugins/builtinSurfaceInstalls";
-import { buildMissingSurfaceDenial } from "../../../../desktop/src/main/services/plugins/gatedActionDomains";
+import { buildSurfaceUnavailableDenial } from "../../../../desktop/src/main/services/plugins/gatedActionDomains";
 import type { PluginBuiltinSurfaceId } from "../../../../desktop/src/shared/plugins/manifest";
 import {
   PERSONAL_CHAT_ACTIONS,
@@ -6464,7 +6464,7 @@ export function createSyncRemoteCommandService(args: SyncRemoteCommandServiceArg
           payload: Record<string, unknown>,
           context: SyncRemoteCommandExecutionContext,
         ): Promise<unknown> => {
-          const denial = buildMissingSurfaceDenial(requiresBuiltinSurface);
+          const denial = buildSurfaceUnavailableDenial(requiresBuiltinSurface);
           if (denial) throw codedError(denial.message, "plugin_not_installed");
           return handler(payload, context);
         }

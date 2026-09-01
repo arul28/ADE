@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   allGatedActionDomains,
   buildGatedDomainDenial,
-  buildMissingSurfaceDenial,
+  buildSurfaceUnavailableDenial,
   gatedDomainUnavailableReason,
   pluginDisplayNameFromCatalog,
   pluginNotInstalledMessage,
@@ -213,9 +213,9 @@ describe("refusal copy", () => {
   });
 });
 
-describe("buildMissingSurfaceDenial", () => {
+describe("buildSurfaceUnavailableDenial", () => {
   it("refuses an enabling surface whose plugin is absent", () => {
-    const denial = buildMissingSurfaceDenial("ios", {
+    const denial = buildSurfaceUnavailableDenial("ios", {
       pluginsRoot: writePluginsRoot({}),
       lookupDisplayName: () => "iOS Simulator",
     });
@@ -225,7 +225,7 @@ describe("buildMissingSurfaceDenial", () => {
   });
 
   it("lets the call through once the enabling plugin is installed", () => {
-    expect(buildMissingSurfaceDenial("ios", {
+    expect(buildSurfaceUnavailableDenial("ios", {
       pluginsRoot: writePluginsRoot({ "ade-ios-sim": {} }),
       lookupDisplayName: () => "iOS Simulator",
     })).toBeNull();
@@ -235,7 +235,7 @@ describe("buildMissingSurfaceDenial", () => {
     // Failing open here would leave every paired phone reading and writing
     // through a plugin the machine no longer has, just because the display
     // name was unavailable.
-    const denial = buildMissingSurfaceDenial("ios", {
+    const denial = buildSurfaceUnavailableDenial("ios", {
       pluginsRoot: writePluginsRoot({}),
       lookupDisplayName: () => null,
     });
@@ -254,19 +254,19 @@ describe("buildMissingSurfaceDenial", () => {
    * `builtinSurfaceInstalled`.
    */
   it("lets a superseded surface through on a machine WITHOUT the plugin", () => {
-    expect(buildMissingSurfaceDenial("linear", {
+    expect(buildSurfaceUnavailableDenial("linear", {
       pluginsRoot: writePluginsRoot({}),
       lookupDisplayName: () => "Linear",
     })).toBeNull();
     // Disabled counts as absent, and absent means ADE draws it.
-    expect(buildMissingSurfaceDenial("linear", {
+    expect(buildSurfaceUnavailableDenial("linear", {
       pluginsRoot: writePluginsRoot({ "ade-linear": { enabled: false } }),
       lookupDisplayName: () => "Linear",
     })).toBeNull();
   });
 
   it("refuses a superseded surface once the plugin owns it", () => {
-    const denial = buildMissingSurfaceDenial("linear", {
+    const denial = buildSurfaceUnavailableDenial("linear", {
       pluginsRoot: writePluginsRoot({ "ade-linear": {} }),
       lookupDisplayName: () => "Linear",
     });
@@ -279,7 +279,7 @@ describe("buildMissingSurfaceDenial", () => {
     // The copy inverts with the verdict. "This machine doesn't have Linear" is
     // the opposite of the truth here: the plugin arrived and took the surface
     // over, so the phone must be told to use the plugin's own screen.
-    const denial = buildMissingSurfaceDenial("linear", {
+    const denial = buildSurfaceUnavailableDenial("linear", {
       pluginsRoot: writePluginsRoot({ "ade-linear": {} }),
       lookupDisplayName: () => "Linear",
     });

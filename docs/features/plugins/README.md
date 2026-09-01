@@ -1867,10 +1867,20 @@ Two surfaces use it, for two different reasons:
   the calls the plugin exists to take over. So all thirty names are on the
   `actionNames` list and `actionDomains` is empty.
 
-The sync command surface follows the same polarity: `buildMissingSurfaceDenial`
+The sync command surface follows the same polarity: `buildSurfaceUnavailableDenial`
 asks `builtinSurfaceDrawn`, not `builtinSurfaceInstalled`, so a paired phone
 reaches ADE's compiled Linear commands on a machine with no plugin and is told to
-use the plugin's own screen on a machine that has one.
+use the plugin's own screen on a machine that has one. The two refusals read
+opposite ways, which is why the function is named for the surface being
+unavailable rather than missing: an `enables` surface answers "this machine
+doesn't have the `ade-ios-sim` plugin", and a `supersedes` one answers "the
+`ade-linear` plugin provides Linear on this computer. Open it from the plugin's
+own screen." Telling the user to install a plugin that has already arrived and
+taken the surface over would be the opposite of the truth. A null answer means
+only "ADE still draws this surface here" — a cold catalog never becomes a pass,
+because a sync command has no generic fallback and failing open would leave every
+paired phone reading and writing through a plugin the machine no longer has
+(`gatedActionDomains.ts:296-330`).
 
 ### Recording audio: `ade.audio.captureClip`
 

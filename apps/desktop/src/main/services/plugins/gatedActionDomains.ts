@@ -195,7 +195,7 @@ export function pluginNotInstalledMessage(
  * has its own generic unknown-domain error to fall back to; an automation step
  * has none — the sentence IS the run's `errorMessage`, and an empty one would
  * leave a failed run with nothing on it. So a cold catalog degrades the copy
- * instead of withholding it, exactly as `buildMissingSurfaceDenial` does: name
+ * instead of withholding it, exactly as `buildSurfaceUnavailableDenial` does: name
  * the plugin id, which is a registered fact, and stop short of pointing anyone
  * at a Marketplace listing for a package ADE cannot describe.
  */
@@ -280,15 +280,20 @@ export function gatedDomainUnavailableReason(
  * plugin's capability as named methods rather than as an action domain — the
  * sync command surface phones and the web client call.
  *
+ * A denial reads one of two ways, and only one of them means something is
+ * missing: either the plugin that owns this surface isn't on the machine, or it
+ * IS here and has superseded ADE's compiled handler. Either way the compiled
+ * surface is unavailable to this caller, which is the only thing the transport
+ * needs to know.
+ *
  * Null means ONLY "ADE still draws this surface here". Unlike the action-domain
- * helper,
- * a cold catalog must not turn into a pass here: the domain path still refuses
- * with its own generic error when this returns null, but a sync command has no
- * such fallback, so failing open would leave every paired phone reading and
- * writing through a plugin the machine no longer has. The catalog decides how
- * much ADVICE the message carries, never whether the call is allowed.
+ * helper, a cold catalog must not turn into a pass here: the domain path still
+ * refuses with its own generic error when this returns null, but a sync command
+ * has no such fallback, so failing open would leave every paired phone reading
+ * and writing through a plugin the machine no longer has. The catalog decides
+ * how much ADVICE the message carries, never whether the call is allowed.
  */
-export function buildMissingSurfaceDenial(
+export function buildSurfaceUnavailableDenial(
   builtinId: string,
   options: { pluginsRoot?: string; lookupDisplayName?: PluginDisplayNameLookup } = {},
 ): { pluginId: string; message: string } | null {
