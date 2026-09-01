@@ -5981,6 +5981,10 @@ describe("CTO-gated Linear sync commands", () => {
         "chat.listPromptStashes",
         "chat.createPromptStash",
         "chat.deletePromptStash",
+        // The way back for a sign-in the phone presented. Optional for the same
+        // reason as the rest: an older brain omits it and the phone hides the
+        // affordance, rather than offering a flow it could not complete.
+        "plugins.completeAuthSession",
       ]);
       expect(MOBILE_SYNC_REQUIRED_REMOTE_COMMAND_ACTIONS).not.toEqual(
         expect.arrayContaining([...MOBILE_SYNC_OPTIONAL_REMOTE_COMMAND_ACTIONS]),
@@ -5998,6 +6002,15 @@ describe("CTO-gated Linear sync commands", () => {
         "ai.cursorCloudPullIntoLane",
       ]);
 
+      // Optional actions that are RUNTIME-scoped rather than project-scoped.
+      // Named rather than loosened to "any scope", so the scope stays pinned
+      // per action and a new exception has to be argued for here.
+      //
+      // Completing a sign-in is a property of the machine that minted the
+      // `state`, not of any one project: the phone that presented the flow may
+      // not even have the project open when the redirect lands.
+      const runtimeScopedActions = new Set<string>(["plugins.completeAuthSession"]);
+
       for (const action of MOBILE_SYNC_OPTIONAL_REMOTE_COMMAND_ACTIONS) {
         const viewerBlocked = viewerBlockedActions.has(action);
         // Policy shape varies (lifecycle mutations are additionally queueable);
@@ -6005,7 +6018,7 @@ describe("CTO-gated Linear sync commands", () => {
         // with an accurate viewerAllowed bit.
         expect(actions).toContainEqual(expect.objectContaining({
           action,
-          scope: "project",
+          scope: runtimeScopedActions.has(action) ? "runtime" : "project",
           policy: expect.objectContaining({ viewerAllowed: !viewerBlocked }),
         }));
 

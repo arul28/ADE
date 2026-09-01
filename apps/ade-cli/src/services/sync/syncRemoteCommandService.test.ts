@@ -60,8 +60,23 @@ function useSyncMachineWithPlugins(pluginIds: readonly string[]): void {
   process.env.ADE_HOME = home;
 }
 
+/**
+ * The default machine for this file, and why `ade-linear` is NOT on it.
+ *
+ * `ios` and `app-control` ENABLE their surfaces: ADE never shipped either
+ * compiled, so the plugin has to be installed for the commands behind them to
+ * exist at all. `linear` runs the other way round — it SUPERSEDES. ADE shipped
+ * the compiled Linear integration long before the plugin, so the ordinary
+ * machine, the one nearly every case in this file describes, is the machine
+ * with NO `ade-linear`, and installing it is what takes ADE's compiled Linear
+ * commands away. Seeding it here made every Linear case run against the one
+ * machine where those commands are correctly refused.
+ *
+ * See the polarity contract in
+ * `apps/desktop/src/renderer/components/plugins/builtinTabs.ts`.
+ */
 beforeEach(() => {
-  useSyncMachineWithPlugins(["ade-linear", "ade-ios-sim", "ade-app-control"]);
+  useSyncMachineWithPlugins(["ade-ios-sim", "ade-app-control"]);
 });
 
 afterEach(() => {
@@ -4315,27 +4330,51 @@ describe("plugin remote commands", () => {
 describe("plugin-gated sync commands", () => {
   /**
    * Phones and the web client reach Linear through named sync commands rather
-   * than through an action domain, so uninstalling on the desktop has to stop
-   * them too — otherwise the machine that no longer has Linear would keep
-   * serving Linear reads and writes to every paired device.
+   * than through an action domain, so the desktop's answer to "who owns Linear
+   * here" has to reach them too.
+   *
+   * `linear` SUPERSEDES, so that answer is the opposite of the one an
+   * `"enables"` surface gives. ADE's compiled Linear commands are what the
+   * machine has always served, and they keep being served until `ade-linear`
+   * arrives and takes the surface over. Only then are they refused — not
+   * because anything is missing, but because the phone must stop calling the
+   * compiled command and draw the plugin's own panels instead.
+   *
+   * Every case states its registry, because taking ADE's compiled Linear away
+   * takes a positive "the plugin is here" and nothing less.
    */
-  it("refuses a Linear command on a machine without the plugin", async () => {
+  it("serves ADE's compiled Linear command on a machine without the plugin", async () => {
     useSyncMachineWithPlugins([]);
     process.env.ADE_BUILTIN_PLUGINS_DIR = path.resolve(__dirname, "../../../../../plugins");
     try {
       const { service } = createService({});
 
       await expect(service.execute(makePayload("cto.getLinearConnectionStatus")))
-        .rejects.toThrow(/ade-linear plugin/);
+        .resolves.toBeDefined();
     } finally {
       delete process.env.ADE_BUILTIN_PLUGINS_DIR;
     }
   });
 
-  it("serves it again once the plugin is installed", async () => {
+  it("keeps serving it while the plugin registry has not resolved", async () => {
+    // No `plugins/state.json` at all, which is what a fresh install and an
+    // unreadable registry both look like. A superseded surface reads that
+    // unknown as "ADE still draws it": refusing here would delete a shipped
+    // feature from every machine whose registry had not been read yet.
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "ade-sync-plugins-"));
+    machinePluginDirs.push(home);
+    process.env.ADE_HOME = home;
+    const { service } = createService({});
+
+    await expect(service.execute(makePayload("cto.getLinearConnectionStatus")))
+      .resolves.toBeDefined();
+  });
+
+  it("refuses it once ade-linear installs and takes the surface over", async () => {
     useSyncMachineWithPlugins(["ade-linear"]);
     const { service } = createService({});
 
-    await expect(service.execute(makePayload("cto.getLinearConnectionStatus"))).resolves.toBeDefined();
+    await expect(service.execute(makePayload("cto.getLinearConnectionStatus")))
+      .rejects.toThrow(/ade-linear plugin/);
   });
 });
