@@ -204,20 +204,85 @@ describe("beginning the sign-in", () => {
     assert.equal(sdk.calls.find(([name]) => name === "auth.beginSession")[2].scope, SCOPES_CUSTOM);
   });
 
-  it("asks for admin for ADE's own app, because its webhooks need it", async () => {
+  /** The scope string one `begin()` actually put on the authorize request. */
+  async function scopeSentBy(built) {
+    await built.connect.begin();
+    const call = built.sdk.calls.find(([name]) => name === "auth.beginSession");
+    assert.ok(call, "begin() never reached auth.beginSession");
+    return call[2].scope;
+  }
+
+  it("takes the scope list from the BROKER when it names one", async () => {
+    // The registration is ADE's, so the grant it needs is ADE's to state — the
+    // plugin's constant is the fallback, not the authority. The list here is
+    // deliberately NOT `SCOPES_ADE_APP`, so the assertion cannot be satisfied
+    // by the constant: only the broker path produces it.
+    const built = build({
+      sdk: {
+        officialClient: {
+          provider: "linear",
+          clientId: "ade-official-client",
+          scopes: ["read", "write", "admin", "issues:create"],
+        },
+      },
+    });
+    await built.sdk.secrets.set("LINEAR_OAUTH_CLIENT_ID", "ade-official-client");
+
+    const scope = await scopeSentBy(built);
+    assert.equal(scope, "read,write,admin,issues:create");
+    assert.notEqual(scope, SCOPES_ADE_APP);
+  });
+
+  it("asks for admin from its own constant when the broker names no scopes", async () => {
     // Linear only delivers data-change webhooks for a workspace whose
-    // authorization carries `admin`.
+    // authorization carries `admin`, so the fallback cannot be narrower than
+    // the grant the webhook channel depends on.
+    const built = build({
+      sdk: { officialClient: { provider: "linear", clientId: "ade-official-client" } },
+    });
+    await built.sdk.secrets.set("LINEAR_OAUTH_CLIENT_ID", "ade-official-client");
+    assert.equal(await scopeSentBy(built), SCOPES_ADE_APP);
+  });
+
+  /**
+   * The broker describes ADE's registration. A stored id that is not ADE's
+   * belongs to somebody else's app, and handing it ADE's grant list would ask a
+   * workspace to approve permissions for an app that is not ADE's.
+   *
+   * TWO independent guards enforce this — `resolveClient` nulls the scopes for
+   * a non-official id, and `begin` branches on `client.source` — so mutating
+   * either one alone leaves this test green. It fails when the SOURCE CHECK
+   * goes, which is the single-point failure worth having a test for; the
+   * redundancy is deliberate and is the reason a mutation run reads oddly here.
+   */
+  it("ignores the broker's list entirely for a client the USER registered", async () => {
+    const built = build({
+      sdk: {
+        officialClient: {
+          provider: "linear",
+          clientId: "ade-official-client",
+          scopes: ["read", "write", "admin", "issues:create"],
+        },
+      },
+    });
+    await built.sdk.secrets.set("LINEAR_OAUTH_CLIENT_ID", "somebody-elses-app");
+
+    const scope = await scopeSentBy(built);
+    assert.equal(scope, SCOPES_CUSTOM);
+    assert.ok(!scope.includes("admin"));
+  });
+
+  it("sends the resolved scope on the authorize request, not just into a variable", async () => {
+    // The whole point of reading it back off `auth.beginSession` rather than
+    // off `connectStatus`: the scope has to reach the parameters the host puts
+    // in front of the user.
     const built = build();
     await built.sdk.secrets.set("LINEAR_OAUTH_CLIENT_ID", "ade-official-client");
     await built.connect.begin();
-    const scope = built.sdk.calls.find(([name]) => name === "auth.beginSession")[2].scope;
-    assert.equal(scope, SCOPES_ADE_APP);
-  });
-
-  it("takes the scope list from the BROKER when it names one", () => {
-    // The registration is ADE's, so the grant it needs is ADE's to state — the
-    // plugin's constant is the fallback, not the authority.
-    assert.equal(SCOPES_ADE_APP, "read,write,admin");
+    const params = built.sdk.calls.find(([name]) => name === "auth.beginSession")[2];
+    assert.equal(params.client_id, "ade-official-client");
+    assert.equal(params.scope, SCOPES_ADE_APP);
+    assert.equal(params.code_challenge_method, "S256");
   });
 
   it("refuses before it starts where ADE lends nothing and nothing is stored", async () => {
