@@ -115,6 +115,16 @@ Linear ~16.5k lines (5.4k renderer + 2.9k iOS + 8.2k main), legacy lane columns,
 - NUL policy: main owns 4 literal-NUL source files (composerDrafts.ts:29, openCodeAdeInstructions.ts:45, githubRequestAccounting.ts:78, prChecksGraphLayout.ts:313 — the last is escaped on this branch only). One upstream PR to main for all four + a CI NUL scan. Use a python byte scan; shell grep cannot see NUL.
 - Sync: never filter a column from an inbound changeset; cr-sqlite deletes are sentinel rows.
 
+## Logging findings from the handoff doc pass (docs/logging.md "Plugins", commit d23d957fc) — not fixed, backlog
+- F1 SINK RULE VIOLATED: the plugin host is a machine-scoped singleton (`pluginHostService.ts:3023`) but every plugin line lands in a PROJECT log: `apps/ade-cli/src/bootstrap.ts:1089-1093` says children belong to the machine, then passes the project logger (`:970` = `<project>/.ade/transcripts/logs/ade-cli.jsonl`); the first project to open owns every plugin line machine-wide (`projectScope.ts:174`). No plugin event reaches `desktop-main.jsonl` or `brain.jsonl`. Fix: give the host a machine-scoped `createFileLogger` sink.
+- F2 PostHog: no plugin fact reaches analytics (clean).
+- F3 full URLs in local log fields: `apps/desktop/src/main/main.ts:914` (`src`), `:987`, `:997` (`url`).
+- F4 filesystem paths in fields: `pluginInstallService.ts:532` (`source`), `:482` (`statePath`), `:1043` (`root`).
+- F5 plugin-relative request paths: `pluginWebviewProtocol.ts:203/209/222` (`path`).
+- F6 `plugin.child_stderr` is truncated (500 chars) but NOT rate-limited (`pluginChildSupervisor.ts:447`, debug level; crash ring bounded at 4000 bytes at `:77`).
+- F7 plugin/third-party-authored text in fields: `pluginChildSupervisor.ts:316`, `pluginScheduleService.ts:268`, `pluginInstallService.ts:161` (git stderr 200 chars), `pluginRegistryService.ts:597,601-604` (remote Marketplace index parser messages).
+- F8 git identifiers and stderr: `agentChatService.ts:40017-40021` logs branch, remote, raw git fetch output (rest of the list: see the ADE-148 comment thread).
+
 ## Process lessons that cost real time
 - Only `xcodebuild` is authoritative for Swift; per-file `swiftc -typecheck` missed two committed defects. Use `-IDEBuildOperationContinueBuildingAfterErrors=YES` on a failing build; `simctl boot` before `xcodebuild`; the 30 GB disk gate in the global CLAUDE.md is real (this session freed disk twice: cursor-sdk worker cache leak, leaked test temp dirs, abandoned `~/.cache/codex-runtimes/codex-runtime-install-*`).
 - Never sample a shared test directory while another agent writes to it; the combined `node --test` glob reported phantom failures twice.
@@ -123,4 +133,4 @@ Linear ~16.5k lines (5.4k renderer + 2.9k iOS + 8.2k main), legacy lane columns,
 - Three sessions crashed mid-wave; the resume pattern that worked: back up the diff to a patch, respawn resume agents on the surviving diff.
 
 ## Handoff commit
-`54df53935` at ticket creation. IN FLIGHT at creation: the two doc updates (plugins README, logging.md Plugins section) and a scoped `/quality` pass over `c35bc0b88^..HEAD`. If they landed, later commits on the branch and a comment on this ticket say so. If no later commit exists, the docs are NOT updated and quality did NOT run — do them first. `/test` was NOT run at the handoff (owner.s call).
+`54df53935` at ticket creation. LANDED: logging.md Plugins section (d23d957fc). IN FLIGHT at creation: the plugins README update and a scoped `/quality` pass over `c35bc0b88^..HEAD`. If they landed, later commits on the branch and a comment on this ticket say so. If no later commit exists, the docs are NOT updated and quality did NOT run — do them first. `/test` was NOT run at the handoff (owner.s call).
