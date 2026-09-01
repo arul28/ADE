@@ -70,6 +70,25 @@ const AUTH_SESSION_ID = "linear";
 const HANDOFF_ANSWER_KEY = "handoffAnswer";
 
 /**
+ * What this key was called before the rename, read only as a fallback.
+ *
+ * The two vocabularies both spelled themselves `handoffStatus`, which is what
+ * let the settings card compare the SDK's word to the panel's and never draw
+ * the adopt button. Renaming the stored one fixed that — and would have asked a
+ * machine that ALREADY answered to answer again, because the answer was under
+ * the old name. One extra read, only when there is nothing under the new name,
+ * and only until every install has written one.
+ */
+const HANDOFF_ANSWER_KEY_LEGACY = "handoffStatus";
+
+/** The handoff's answer, under either name. `null` means genuinely unanswered. */
+async function readHandoffAnswer(sdk) {
+  const answer = await sdk.memory.get(HANDOFF_ANSWER_KEY).catch(() => null);
+  if (answer !== null && answer !== undefined) return answer;
+  return (await sdk.memory.get(HANDOFF_ANSWER_KEY_LEGACY).catch(() => null)) ?? null;
+}
+
+/**
  * The scopes, ported from `linearOAuthService.ts:260`.
  *
  * `admin` is not ambition. Linear only delivers data-change webhooks for a
@@ -239,7 +258,7 @@ function createConnect(options = {}) {
   async function connectStatus() {
     const credential = await api.readCredential().catch(() => ({ token: null }));
     const client = await resolveClient();
-    const handoffAnswer = (await sdk.memory.get(HANDOFF_ANSWER_KEY).catch(() => null)) ?? null;
+    const handoffAnswer = await readHandoffAnswer(sdk);
     return {
       connected: Boolean(credential.token),
       authMode: credential.authMode ?? null,
@@ -486,10 +505,13 @@ function createConnect(options = {}) {
 
 module.exports = {
   API_KEY_PATTERN,
+  HANDOFF_ANSWER_KEY,
+  HANDOFF_ANSWER_KEY_LEGACY,
   AUTH_SESSION_ID,
   SCOPES_ADE_APP,
   SCOPES_CUSTOM,
   authorizeParams,
+  readHandoffAnswer,
   createConnect,
   createPkcePair,
 };

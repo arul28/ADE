@@ -502,6 +502,23 @@ describe("disconnecting", () => {
     assert.equal(client.clientId, "ade-official-client");
   });
 
+  it("still reads an answer written under the key's old name", async () => {
+    // The stored key was renamed `handoffStatus` -> `handoffAnswer` so the SDK's
+    // vocabulary could not collide with the panel's again. A machine that had
+    // ALREADY answered kept its answer under the old name, so without this
+    // fallback it would be asked to adopt a credential it has already adopted
+    // or declined — which reads as a regression, not as a fix.
+    const { sdk, connect } = build();
+    await sdk.memory.set("handoffStatus", "declined");
+    const status = await connect.connectStatus();
+    assert.equal(status.handoffAnswer, "declined");
+    assert.equal(status.canHandoff, false, "offered the handoff to a machine that declined it");
+
+    // The new name wins whenever it has anything at all to say.
+    await sdk.memory.set("handoffAnswer", "accepted");
+    assert.equal((await connect.connectStatus()).handoffAnswer, "accepted");
+  });
+
   it("cancelling is safe when nothing is running", async () => {
     await assert.doesNotReject(() => build().connect.cancel());
   });
