@@ -115,6 +115,10 @@ started; `STATE_GROUP_ORDER` orders started, unstarted, backlog, triage. `data.j
 `row.stateRank`, so `STATE_RANKS` is live and `stateGroupRank` (`common.js:181`) is dead. The live
 order therefore contradicts the parity claim at `common.js:168`.
 
+**Resolved 2026-09-01 (owner's call):** `STATE_RANKS` now carries the built-in's order — started,
+unstarted, backlog, triage, completed, canceled — and the `common.js` comment names that sequence.
+The dead `stateGroupRank` table is gone.
+
 - Standard 5 (one word, one meaning), 4.
 - Judo: move all three into `panels/contract.js`, which both halves already import. Delete
   `stateGroupRank` and `STATE_GROUP_ORDER`.

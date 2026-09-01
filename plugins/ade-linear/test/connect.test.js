@@ -98,11 +98,14 @@ describe("the authorize parameters", () => {
     });
   });
 
-  it("asks for admin only for ADE's own app, because webhooks need it", () => {
+  it("asks for admin on BOTH clients, because webhooks need it", () => {
     // Linear only delivers data-change webhooks for a workspace whose
-    // authorization carries admin; a custom client arranges its own.
+    // authorization carries admin. A user who registers their own Linear app
+    // wants the whole product, so the custom list is not narrowed: the narrower
+    // grant cost them every automation and protected nothing.
     assert.equal(SCOPES_ADE_APP, "read,write,admin");
-    assert.equal(SCOPES_CUSTOM, "read,write");
+    assert.equal(SCOPES_CUSTOM, "read,write,admin");
+    assert.ok(SCOPES_CUSTOM.includes("admin"));
   });
 });
 
@@ -196,12 +199,14 @@ describe("beginning the sign-in", () => {
     assert.deepEqual(result.authSession, { sessionId: AUTH_SESSION_ID });
   });
 
-  it("asks for the narrower grant for a client the USER registered", async () => {
-    // Webhooks on an app the user registered are the user's to arrange, so the
-    // extra grant would be asking for a permission nothing here would use.
+  it("asks for admin for a client the USER registered, so its webhooks deliver", async () => {
+    // The same grant ADE's own app asks for. Without `admin` this connection
+    // browses and writes normally and never receives one event.
     const { sdk, connect } = await ready();
     await connect.begin();
-    assert.equal(sdk.calls.find(([name]) => name === "auth.beginSession")[2].scope, SCOPES_CUSTOM);
+    const scope = sdk.calls.find(([name]) => name === "auth.beginSession")[2].scope;
+    assert.equal(scope, SCOPES_CUSTOM);
+    assert.ok(scope.includes("admin"));
   });
 
   /** The scope string one `begin()` actually put on the authorize request. */
@@ -247,7 +252,10 @@ describe("beginning the sign-in", () => {
   /**
    * The broker describes ADE's registration. A stored id that is not ADE's
    * belongs to somebody else's app, and handing it ADE's grant list would ask a
-   * workspace to approve permissions for an app that is not ADE's.
+   * workspace to approve permissions ADE described for an app that is not
+   * ADE's. Both lists carry `admin` now, so what this proves is the SOURCE of
+   * the list, not its width: the broker's extra `issues:create` must not reach
+   * a custom client's authorize request.
    *
    * TWO independent guards enforce this — `resolveClient` nulls the scopes for
    * a non-official id, and `begin` branches on `client.source` — so mutating
@@ -269,7 +277,7 @@ describe("beginning the sign-in", () => {
 
     const scope = await scopeSentBy(built);
     assert.equal(scope, SCOPES_CUSTOM);
-    assert.ok(!scope.includes("admin"));
+    assert.ok(!scope.includes("issues:create"), "the broker's list reached a custom client");
   });
 
   it("sends the resolved scope on the authorize request, not just into a variable", async () => {
@@ -488,10 +496,10 @@ describe("disconnecting", () => {
     // The client id is what `resolveClient` reads FIRST. Left behind, a
     // disconnected plugin kept reporting `source: "custom"` and the next
     // sign-in went out as the user's own registered app. That is not cosmetic:
-    // ADE's app carries the `admin` scope Linear requires before it will
-    // deliver a webhook, and a user's own registration does not — so the
-    // reader would have reconnected into a workspace that silently never
-    // delivers an event.
+    // The next sign-in would then go out as the user's own registered app,
+    // against a token ADE's broker never issued, and the scope list would come
+    // from this plugin's constant rather than from the broker that describes
+    // ADE's registration.
     const { sdk, connect } = build();
     await sdk.secrets.set("LINEAR_OAUTH_CLIENT_ID", "the-users-own-app");
     await connect.disconnect();

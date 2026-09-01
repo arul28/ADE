@@ -280,30 +280,32 @@ describe("republishing a panel that is ABOUT something", () => {
 describe("a connection Linear will never deliver webhooks to", () => {
   /**
    * Linear delivers data-change webhooks only to an authorization carrying
-   * `admin`, and only ADE's own registered app asks for it. So on a custom
-   * client the reader signs in, browses and writes issues normally, pastes the
-   * relay URL, pastes the signing secret — and never receives one event.
+   * `admin`, and BOTH OAuth clients ask for it — ADE's own registered app and
+   * one the user registered themselves. What is left without a grant is the
+   * API-key connection: a personal key carries no OAuth scope at all, so that
+   * reader signs in, browses and writes issues normally, pastes the relay URL,
+   * pastes the signing secret — and never receives one event.
    *
    * A webhook that never fires is indistinguishable from a workspace where
    * nothing happened, which is why every surface that reports on the ingress
    * has to say this rather than only the settings panel.
    */
-  it("is possible only on ADE's own app", () => {
+  it("is possible on either OAuth client, because both ask for admin", () => {
     const { webhooksReachable } = plugin.__internals;
     assert.equal(webhooksReachable({ clientSource: "official" }), true);
-    assert.equal(webhooksReachable({ clientSource: "custom" }), false);
+    assert.equal(webhooksReachable({ clientSource: "custom" }), true);
     // An API key has no OAuth grant at all.
     assert.equal(webhooksReachable({ clientSource: null }), false);
     assert.equal(webhooksReachable({}), false);
   });
 
-  it("the CLI says so rather than reporting a healthy green", async () => {
+  it("the CLI stays quiet on a client the user registered, which now delivers", async () => {
     const built = await activated();
     await built.sdk.secrets.set("LINEAR_OAUTH_CLIENT_ID", "somebody-elses-app");
     const result = await plugin.actions.linear({ verb: "status" });
     assert.equal(result.clientSource, "custom");
-    assert.equal(result.webhooksPossible, false);
-    assert.match(result.note, /will not fire/);
+    assert.equal(result.webhooksPossible, true);
+    assert.equal(result.note, undefined);
   });
 
   it("the CLI stays quiet about it on ADE's own app", async () => {
@@ -314,6 +316,16 @@ describe("a connection Linear will never deliver webhooks to", () => {
     assert.equal(result.clientSource, "official");
     assert.equal(result.webhooksPossible, true);
     assert.equal(result.note, undefined);
+  });
+
+  it("the CLI says so on an API-key connection, rather than reporting a healthy green", async () => {
+    // The only connection left that cannot receive an event. `resolveClient`
+    // finds no client id here at all, so `clientSource` is null.
+    await activated({ officialClient: null });
+    const result = await plugin.actions.linear({ verb: "status" });
+    assert.equal(result.clientSource, null);
+    assert.equal(result.webhooksPossible, false);
+    assert.match(result.note, /will not fire/);
   });
 });
 

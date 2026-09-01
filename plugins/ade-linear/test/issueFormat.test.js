@@ -158,11 +158,24 @@ describe("shaping one issue into a row", () => {
 });
 
 describe("state rank and tone", () => {
-  it("orders the six state types the way Linear's board does", () => {
+  it("orders the six state types the way the built-in's list does", () => {
+    // `STATE_GROUP_ORDER` in `app/LinearIssueBrowser.tsx`: work in flight
+    // first, then Todo, then the queues, then the two closed states. Written
+    // as the sequence rather than as six lookups so a reordering of the table
+    // fails here loudly.
     assert.deepEqual(
-      ["triage", "backlog", "unstarted", "started", "completed", "canceled"].map(stateRank),
+      ["started", "unstarted", "backlog", "triage", "completed", "canceled"].map(stateRank),
       [0, 1, 2, 3, 4, 5],
     );
+    assert.ok(stateRank("started") < stateRank("unstarted"), "In Progress must sort above Todo");
+    assert.ok(stateRank("backlog") < stateRank("triage"), "Backlog must sort above Triage");
+  });
+
+  it("sorts the built-in's seventh type, duplicate, last — where the built-in puts it", () => {
+    // `STATE_GROUP_ORDER` ends with `duplicate`, and this table does not name
+    // it. The unknown rank has to land it in the same place anyway.
+    assert.equal(stateRank("duplicate"), 6);
+    assert.ok(stateRank("duplicate") > stateRank("canceled"));
   });
 
   it("sorts a state type this build has never heard of LAST, not first", () => {

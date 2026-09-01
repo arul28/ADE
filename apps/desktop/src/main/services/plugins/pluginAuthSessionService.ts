@@ -177,6 +177,35 @@ export function isPortUnavailableError(error: unknown): boolean {
   return code === "EACCES" || code === "EBUSY";
 }
 
+/**
+ * What to tell the user when the declared callback port will not bind.
+ *
+ * Two failures wear the same `auth_session_busy` code and need two different
+ * sentences, because they have two different remedies. On every platform
+ * EADDRINUSE means a program holds the port and the user closes it. On Windows
+ * a bind can instead fail EACCES or EBUSY inside a Hyper-V or WSL dynamic-port
+ * exclusion range: the OS has reserved the port with NOTHING listening on it,
+ * so "close the other program using it" sends the reader to Task Manager to
+ * hunt for a process that does not exist. The remedy there is to look the
+ * exclusion up and then either free it or get the plugin's declared port
+ * changed, so the message names the command that prints the ranges.
+ *
+ * `process.platform` is read at call time and this is exported for the same
+ * reason `isPortUnavailableError` is: it is the seam a macOS test writes to.
+ */
+export function portUnavailableMessage(port: number, error: unknown): string {
+  const code = error && typeof error === "object" && "code" in error
+    ? (error as { code?: unknown }).code
+    : undefined;
+  if (process.platform === "win32" && (code === "EACCES" || code === "EBUSY")) {
+    return `Windows has reserved port ${port} (a Hyper-V or WSL exclusion range), so nothing can bind it on ${LOOPBACK_HOST}.`
+      + " Run `netsh int ipv4 show excludedportrange protocol=tcp` to confirm,"
+      + " then free the range or ask the plugin author for a different port.";
+  }
+  return `The sign-in callback port ${port} is already in use on ${LOOPBACK_HOST}.`
+    + " Close the other program using it, or finish the sign-in already in progress, then try again.";
+}
+
 function closeServerAndWait(server: http.Server): Promise<void> {
   return new Promise((resolve) => {
     try {
@@ -591,12 +620,9 @@ export function createPluginAuthSessionService(deps: {
         // unrelated program on the machine, or — on Windows — an OS port
         // exclusion range. Every one of them is a condition the user can act on
         // once they know WHICH port, and the port number is the one fact this
-        // message exists to carry.
-        throw new PluginSdkError(
-          "auth_session_busy",
-          `The sign-in callback port ${port} is already in use on ${LOOPBACK_HOST}.`
-            + " Close the other program using it, or finish the sign-in already in progress, then try again.",
-        );
+        // message exists to carry. The Windows exclusion case gets its own
+        // sentence, because its remedy is not the same one.
+        throw new PluginSdkError("auth_session_busy", portUnavailableMessage(port, error));
       }
       throw error;
     }

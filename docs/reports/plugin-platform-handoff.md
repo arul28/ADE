@@ -70,8 +70,8 @@ Rebuild Alpha + Debug iOS from `origin/plugin-platform`. Then:
 7. Disable the plugin: compiled Linear returns unchanged.
 This is the "switch to the plugin version on install, do not remove code from the binary yet" test. The owner extended it: run the same test for EVERY extracted plugin at once (see scope below) so one build proves the platform.
 
-## Open product decision (owner's call)
-Self-registered Linear OAuth clients request `read,write`, so their webhooks never fire (faithful port of `linearOAuthService.ts:260`). Two lines widen custom clients to `admin`, but that changes what an existing custom-client user consents to on next sign-in. The plugin says so on three surfaces (settings, `ade linear status`, ingress strip).
+## Product decision (settled 2026-09-01, owner's call)
+Self-registered Linear OAuth clients used to request `read,write`, so their webhooks never fired (a faithful port of `linearOAuthService.ts:260`). The owner chose the full product for a self-registered app: `SCOPES_CUSTOM` is now `read,write,admin`, so a custom client's webhooks deliver. An existing custom-client user re-consents on their next sign-in, which is the accepted cost. `webhooksReachable` now tests for an OAuth grant rather than for ADE's own app, and the three "webhooks are impossible" surfaces (settings panel, `ade linear status`, ingress strip) are gone. The remaining warning is the API-key connection, which carries no OAuth grant at all, plus the missing-signing-secret warning.
 
 ## THE NEW SCOPE (owner's instruction on 2026-09-01, verbatim intent)
 

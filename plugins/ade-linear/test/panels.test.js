@@ -934,16 +934,13 @@ describe("which Linear app the connection is made with", () => {
     assert.equal(warnings(panel), "");
   });
 
-  it("warns that a custom Linear app will never receive a webhook", () => {
-    // Linear delivers data-change events only to an authorization carrying
-    // `admin`, and a custom client is narrowed to `read,write` on purpose — the
-    // app is the user's own. So the same button produces a connection that
-    // browses and writes normally and never receives an event. Without this,
-    // the reader pastes the URL into Linear, pastes the signing secret, reads
-    // "Signed deliveries only", and waits forever.
+  it("warns an API-key reader, who has no OAuth grant at all", () => {
+    // The one connection left that Linear cannot deliver to. A personal key
+    // carries no OAuth scope, so `webhooksPossible` is false with
+    // `clientSource` null — and that reader would otherwise paste a signing
+    // secret for a webhook that can never fire, with nothing saying so.
     const panel = panels.buildSettingsPanel({
-      connection: { connected: true, clientSource: "custom", organizationName: "Acme" },
-      clientSource: "custom",
+      connection: { connected: true, authMode: "apiKey", organizationName: "Acme" },
       ingress: {
         status: "Linear will not deliver to this connection",
         url: "https://relay.ade.dev/hook/abc",
@@ -951,44 +948,20 @@ describe("which Linear app the connection is made with", () => {
         webhooksPossible: false,
       },
     });
-    assert.ok(warnings(panel).includes("Linear does not grant webhooks to it"), warnings(panel));
+    assert.ok(warnings(panel).includes("a personal API key carries none"), warnings(panel));
     // The Webhook row carries the headline; the caption must not restate it in
     // different words, which is the duplicate the data half removed from its
     // own status string.
     assert.ok(!warnings(panel).includes("Linear will not deliver events to this connection"));
   });
 
-  it("warns an API-key reader too, who has no OAuth grant at all", () => {
-    // The case a `clientSource === "custom"` test would miss completely. An API
-    // key carries no OAuth grant, so `webhooksPossible` is false with
-    // `clientSource` null — and that reader would otherwise paste a signing
-    // secret for a webhook that can never fire, with nothing saying so.
-    const panel = panels.buildSettingsPanel({
-      connection: { connected: true, authMode: "apiKey", organizationName: "Acme" },
-      clientSource: null,
-      ingress: {
-        status: "Linear will not deliver to this connection",
-        url: "https://relay.ade.dev/hook/abc",
-        secretStored: true,
-        webhooksPossible: false,
-      },
-    });
-    assert.ok(warnings(panel).includes("an API key carries none"), warnings(panel));
-  });
-
-  it("falls back to clientSource for a data half that sends no flag", () => {
+  it("says NOTHING to a reader on their own registered Linear app", () => {
+    // The warning this panel used to draw here. A custom client asks for
+    // `admin` like ADE's own does, so its webhooks deliver, and the old caption
+    // would now tell the reader a false thing about a connection that works.
     const panel = panels.buildSettingsPanel({
       connection: { connected: true, clientSource: "custom", organizationName: "Acme" },
       clientSource: "custom",
-      ingress: { status: "Endpoint ready", url: "https://relay.ade.dev/hook/abc", secretStored: true },
-    });
-    assert.ok(warnings(panel).includes("Linear does not grant webhooks to it"), warnings(panel));
-  });
-
-  it("says nothing when Linear can actually deliver", () => {
-    const panel = panels.buildSettingsPanel({
-      connection: { connected: true, clientSource: "official", organizationName: "Acme" },
-      clientSource: "official",
       ingress: {
         status: "Endpoint ready",
         url: "https://relay.ade.dev/hook/abc",
@@ -999,12 +972,23 @@ describe("which Linear app the connection is made with", () => {
     assert.equal(warnings(panel), "");
   });
 
+  it("draws no warning at all from a data half that sends no flag", () => {
+    // `undefined` is a data half that cannot answer, not a "no". Nothing is
+    // re-derived from which app signed in any more, because that no longer
+    // decides whether a webhook can arrive.
+    const panel = panels.buildSettingsPanel({
+      connection: { connected: true, clientSource: "custom", organizationName: "Acme" },
+      clientSource: "custom",
+      ingress: { status: "Endpoint ready", url: "https://relay.ade.dev/hook/abc", secretStored: true },
+    });
+    assert.equal(warnings(panel), "");
+  });
+
   it("says so before the reader spends ten minutes in Linear's settings", () => {
     // The warning has to come BEFORE the URL and the secret field, because
     // after them it is a post-mortem rather than a warning.
     const panel = panels.buildSettingsPanel({
-      connection: { connected: true, clientSource: "custom", organizationName: "Acme" },
-      clientSource: "custom",
+      connection: { connected: true, authMode: "apiKey", organizationName: "Acme" },
       ingress: {
         status: "Linear will not deliver to this connection",
         url: "https://relay.ade.dev/hook/abc",
@@ -1014,40 +998,44 @@ describe("which Linear app the connection is made with", () => {
     });
     const body = everyNode(panel.body);
     const warnAt = body.findIndex(
-      (node) => typeof node.text === "string" && node.text.includes("Linear does not grant webhooks to it"),
+      (node) => typeof node.text === "string" && node.text.includes("a personal API key carries none"),
     );
     const secretAt = body.findIndex((node) => node.component === "form" && node.fields?.[0]?.id === "secret");
     assert.ok(warnAt !== -1 && secretAt !== -1);
     assert.ok(warnAt < secretAt, "the warning comes after the field it is about");
   });
 
-  it("warns before sign-in too, so the choice is made knowingly", () => {
-    // The shape the data half actually sends when nobody is signed in:
-    // `connection` is NULL and `clientSource` rides at the top level, because
-    // which app this build signs in as is a fact about the BUILD, not about a
-    // credential that does not exist yet. Reading it only off `connection`
-    // would have silently dropped the warning in exactly the state where a
-    // reader can still act on it.
-    const panel = panels.buildSettingsPanel({ connection: null, clientSource: "custom" });
-    assert.ok(warnings(panel).includes("does not send webhooks to a connection made this way"), warnings(panel));
+  it("says nothing before sign-in, whichever app this build signs in as", () => {
+    // There is no scope difference left to warn about, so the connect card is
+    // the same card for both clients. A caption naming the machine's own Linear
+    // app would now be trivia in front of the button.
+    for (const clientSource of ["custom", "official", null]) {
+      assert.equal(warnings(panels.buildSettingsPanel({ connection: null, clientSource })), "");
+      assert.equal(
+        warnings(panels.buildSettingsPanel({ connection: { connected: false }, clientSource })),
+        "",
+      );
+    }
   });
 
-  it("warns a disconnected reader who has a connection row but no credential", () => {
-    // `viewFor` sends `clientSource` at the top level in every state, because
-    // it is a fact about this BUILD. The warning must not depend on whether a
-    // connection row happens to exist beside it.
-    const panel = panels.buildSettingsPanel({ connection: { connected: false }, clientSource: "custom" });
-    assert.ok(warnings(panel).includes("does not send webhooks to a connection made this way"), warnings(panel));
-  });
-
-  it("says nothing at all when the connection uses ADE's own app", () => {
-    // The quiet case has to stay quiet: a warning a reader cannot act on, on
-    // the connection they were told to make, is noise that trains them to
-    // ignore the loud one.
+  it("keeps the missing-secret warning, which is a real one", () => {
+    // Removing the scope warnings must not take the secret warning with them:
+    // with nothing stored, every delivery Linear sends is dropped before the
+    // plugin sees it.
     const panel = panels.buildSettingsPanel({
-      connection: { connected: true, clientSource: "official", organizationName: "Acme" },
-      ingress: { status: "Endpoint ready", url: "https://relay.ade.dev/hook/abc", secretStored: true },
+      connection: { connected: true, organizationName: "Acme" },
+      ingress: {
+        status: "Waiting for the signing secret",
+        tone: "warning",
+        url: "https://relay.ade.dev/hook/abc",
+        secretStored: false,
+        webhooksPossible: true,
+      },
     });
-    assert.equal(warnings(panel), "");
+    const rows = everyNode(panel.body).flatMap((node) => node.rows ?? []);
+    const webhook = rows.find((row) => row.key === "Webhook");
+    assert.ok(webhook, "no Webhook row on the settings panel");
+    assert.equal(webhook.tone, "warning");
+    assert.match(JSON.stringify(webhook.value), /Waiting for the signing secret/);
   });
 });

@@ -180,7 +180,6 @@ function disconnectCard(input = {}) {
     body.push({ component: "text", variant: "caption", tone: "warning", text: prose(blocked) });
   } else {
     body.push({ component: "text", variant: "caption", text: COPY.connectOauthBody });
-    body.push(...clientSourceNote(input.clientSource));
   }
 
   if (input.handoffStatus === "offered") {
@@ -224,31 +223,6 @@ function disconnectCard(input = {}) {
   });
 
   return body;
-}
-
-/**
- * Which Linear app the sign-in presents itself as, when it is not ADE's own.
- *
- * Not cosmetic. Linear only delivers data-change webhooks to an authorization
- * carrying the `admin` scope, and a CUSTOM client is deliberately narrowed to
- * `read,write` — the app is the user's own and its webhooks are theirs to
- * arrange. So the same "Sign in with Linear" button produces a connection that
- * can browse and write issues but will never receive an event, and nothing else
- * on this screen would tell them. Silence here is the failure: a webhook that
- * never fires is indistinguishable from a workspace where nothing happened.
- */
-function clientSourceNote(clientSource) {
-  if (clientSource !== "custom") return [];
-  return [
-    {
-      component: "text",
-      variant: "caption",
-      tone: "warning",
-      text: prose(
-        "This signs in through the Linear app registered on this machine, not ADE's. Issue browsing and writes work as normal, but Linear does not send webhooks to a connection made this way, so nothing below the Automations heading will fire.",
-      ),
-    },
-  ];
 }
 
 /**
@@ -402,15 +376,14 @@ function ingressBlock(input = {}) {
   // Whether Linear can deliver to this connection AT ALL, which is a different
   // question from whether the endpoint exists or the secret is stored.
   //
-  // Read from `webhooksPossible` rather than re-derived from `clientSource`,
-  // because the two are not the same test and the difference is a whole class
-  // of reader: a custom OAuth client is narrowed to `read,write`, and an API-key
-  // connection has no OAuth grant at all. Branching on `clientSource === "custom"`
-  // would have left every API-key reader with no warning, pasting a signing
-  // secret for a webhook that can never fire. The `clientSource` fallback is for
-  // an older data half that does not send the flag yet.
-  const starved = input.ingress?.webhooksPossible === false
-    || (input.ingress?.webhooksPossible === undefined && input.clientSource === "custom");
+  // Read from `webhooksPossible` and from nothing else. Both OAuth clients now
+  // ask for `admin`, so which app signed in no longer decides this; what
+  // decides it is whether there is an OAuth grant at all, and the connection an
+  // API key made has none. A `clientSource === "custom"` fallback used to stand
+  // here and would now warn the one reader who no longer needs warning, so it
+  // is gone rather than corrected: `undefined` means a data half that cannot
+  // answer, and a warning drawn on a guess is worse than the silence.
+  const starved = input.ingress?.webhooksPossible === false;
 
   const rows = [{ key: "Webhook", value: value(ingress.status ?? "Not set up"), tone: ingress.tone ?? "neutral" }];
   if (ingress.lastEvent) rows.push({ key: "Last event", value: value(ingress.lastEvent) });
@@ -430,9 +403,7 @@ function ingressBlock(input = {}) {
       variant: "caption",
       tone: "warning",
       text: prose(
-        input.clientSource === "custom"
-          ? "This connection was made with the Linear app registered on this machine, and Linear does not grant webhooks to it. Setting up the URL and the signing secret below will not change that — reconnect with ADE's own Linear app to receive events."
-          : "This connection has no webhook grant — an API key carries none, and neither does a Linear app registered outside ADE. Setting up the URL and the signing secret below will not change that. Sign in with ADE's own Linear app to receive events.",
+        "This connection has no webhook grant — a personal API key carries none. Setting up the URL and the signing secret below will not change that. Sign in with Linear to receive events.",
       ),
     });
   }
@@ -583,7 +554,6 @@ module.exports = {
   SETTING_MOVE_ON_MERGE,
   autolinksBlock,
   buildSettingsPanel,
-  clientSourceNote,
   connectedCard,
   disconnectCard,
   ingressBlock,

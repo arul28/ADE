@@ -236,8 +236,8 @@ describe("the issue list a connected reader is actually published", () => {
     // One section per workflow state the two issues sit in, keyed on the state
     // id so renaming a state in Linear does not re-open a folded section.
     const groups = nodesOf(panel, "group");
-    // In the built-in's fixed rank order, which is Todo before In Progress.
-    assert.deepEqual(groups.map((node) => node.groupKey), ["state-todo", "state-started"]);
+    // In the built-in's fixed rank order, which is In Progress before Todo.
+    assert.deepEqual(groups.map((node) => node.groupKey), ["state-started", "state-todo"]);
     for (const [index, group] of groups.entries()) {
       const [list] = everyNode(group.children).filter((node) => node.component === "list");
       assert.equal(list.bind.keyPrefix, contract.groupKeyPrefix(groups[index].groupKey));

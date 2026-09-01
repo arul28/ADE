@@ -95,12 +95,22 @@ async function readHandoffAnswer(sdk) {
  * workspace whose authorization carries it, so an OAuth connection without
  * `admin` is one where the ingress channel silently never fires — and a
  * webhook that never fires is indistinguishable from a workspace where nothing
- * happened. The built-in narrows to `read,write` for a CUSTOM OAuth client,
- * where the user registered the app themselves and webhooks are their own to
- * arrange; the same rule applies here.
+ * happened.
+ *
+ * So a CUSTOM client asks for `admin` too. Someone who registers their own
+ * Linear app is asking for the whole product, not for a narrower one, and the
+ * narrowed grant bought them nothing: it did not protect a workspace they
+ * already own, and it cost them every automation the plugin has. The consent
+ * screen is where a workspace admin decides what to approve; guessing on their
+ * behalf here only made the guess wrong.
+ *
+ * Two constants, one value, on purpose. The official app's list is a fallback —
+ * `begin` prefers whatever the broker names, because that registration is
+ * ADE's to describe — and the custom one is the only list there is. Merging
+ * them would tie a change in ADE's own grant to every self-registered app.
  */
 const SCOPES_ADE_APP = "read,write,admin";
-const SCOPES_CUSTOM = "read,write";
+const SCOPES_CUSTOM = "read,write,admin";
 
 /** A Linear personal API key. Matched before it is stored so a paste of the wrong string is refused here. */
 const API_KEY_PATTERN = /^lin_api_[A-Za-z0-9]{20,}$/;
@@ -297,11 +307,14 @@ function createConnect(options = {}) {
     }
     const id = client.clientId;
     const pkce = createPkcePair();
-    // Custom clients keep the narrower grant, because webhooks on an app the
-    // user registered are the user's to arrange. ADE's own app asks for
-    // `admin`, and it takes the scope list from the broker rather than from
-    // this constant when the broker names one: the registration is ADE's, so
-    // the grant it needs is ADE's to state.
+    // Both sources ask for `admin`, because Linear delivers a webhook to
+    // neither without it. They still read from different constants: ADE's own
+    // app takes the list from the broker when the broker names one — the
+    // registration is ADE's, so the grant it needs is ADE's to state — and a
+    // client the user registered gets the plugin's own list, never the
+    // broker's, because handing somebody else's app ADE's list would ask a
+    // workspace to approve permissions ADE described for an app that is not
+    // ADE's.
     const scopes = client.source === "official"
       ? (client.scopes ?? SCOPES_ADE_APP)
       : SCOPES_CUSTOM;

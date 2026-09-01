@@ -336,8 +336,8 @@ function createOwnActions(deps) {
         case "graphql":
           return await deps.automation.graphql(args ?? {});
         case "status": {
-          // The connection alone would report a healthy green on a custom
-          // client whose automations can never fire, so the CLI says both.
+          // The connection alone would report a healthy green on an API-key
+          // connection whose automations can never fire, so the CLI says both.
           const connection = await deps.data.refreshConnection();
           const status = await deps.connect.connectStatus().catch(() => ({}));
           return {
@@ -347,7 +347,7 @@ function createOwnActions(deps) {
             ...(webhooksReachable(status)
               ? {}
               : {
-                note: "Linear does not send webhooks to this connection, so automation triggers will not fire. Reconnect with ADE's own Linear app to receive events.",
+                note: "Linear does not send webhooks to this connection, so automation triggers will not fire. An API key carries no webhook grant — sign in with Linear to receive events.",
               }),
           };
         }

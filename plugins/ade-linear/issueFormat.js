@@ -29,14 +29,24 @@ const { priorityLabel, stateTone } = require("./panels/contract");
 /**
  * Group order for the issue list.
  *
- * Linear's own board order, not alphabetical. The rank rides on every row so a
- * client sorts by one integer instead of carrying this table itself.
+ * Byte-for-byte the built-in's `STATE_GROUP_ORDER`
+ * (`app/LinearIssueBrowser.tsx:77`), not alphabetical and not Linear's board
+ * order: work in flight sits at the top of the list, because that is the
+ * section a reader opens the tab to look at. Todo follows it, then the two
+ * queues nobody is working yet, then the two closed states.
+ *
+ * The built-in names a seventh type, `duplicate`, in last place. It is absent
+ * here on purpose — `UNKNOWN_STATE_RANK` already sorts it last, which is the
+ * same slot, so naming it would buy a row in this table and nothing else.
+ *
+ * The rank rides on every row so a client sorts by one integer instead of
+ * carrying this table itself.
  */
 const STATE_RANKS = {
-  triage: 0,
-  backlog: 1,
-  unstarted: 2,
-  started: 3,
+  started: 0,
+  unstarted: 1,
+  backlog: 2,
+  triage: 3,
   completed: 4,
   canceled: 5,
 };

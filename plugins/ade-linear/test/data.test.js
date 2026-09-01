@@ -327,19 +327,27 @@ describe("the lane badge, which Linear cannot know", () => {
 });
 
 describe("the state groups the panel draws sections from", () => {
-  it("orders groups by Linear's board rank and counts each", async () => {
+  it("orders groups by the built-in's rank and counts each", async () => {
+    // Fed in an order no sort could accidentally produce: Done first, the
+    // started row last. In Progress has to come out on top, then Todo, then
+    // Backlog, with Done last.
     const { data } = build({
       api: {
         searchAllIssues: async () => nodes(
           { id: "a", state: { id: "s-done", name: "Done", type: "completed" } },
           { id: "b", state: { id: "s-todo", name: "Todo", type: "unstarted" } },
           { id: "c", state: { id: "s-todo", name: "Todo", type: "unstarted" } },
+          { id: "d", state: { id: "s-backlog", name: "Backlog", type: "backlog" } },
+          { id: "e", state: { id: "s-doing", name: "In Progress", type: "started" } },
         ),
       },
     });
     await data.refreshIssues();
     const groups = data.currentModel().groups;
-    assert.deepEqual(groups.map((group) => [group.stateName, group.count]), [["Todo", 2], ["Done", 1]]);
+    assert.deepEqual(
+      groups.map((group) => [group.stateName, group.count]),
+      [["In Progress", 1], ["Todo", 2], ["Backlog", 1], ["Done", 1]],
+    );
   });
 
   it("has no group for a state with no issues in this filter", async () => {

@@ -481,20 +481,11 @@ async function viewFor(panelId, context) {
           // Pre-formatted, because a schema cannot do date arithmetic.
           ...expiry(connection.tokenExpiresAt),
           oauthAvailable: status.canOAuth === true,
-          // Which app the sign-in presents itself as. "Sign in with Linear"
-          // behaves differently for the two: ADE's own app carries the webhook
-          // grant and an app the user registered does not.
-          clientSource: status.clientSource ?? null,
         }
         : null,
       // "offered" is the one value that draws the adopt button, so it is set
       // only while the handoff genuinely has not been answered.
       handoffStatus: handoffLabel(status),
-      // Top-level as well as on `connection`: the DISCONNECTED card reads it
-      // here, and on that path `connection` is either null or a row that says
-      // it is not connected. Which app the sign-in would present itself as is a
-      // fact about this build, not about a credential that does not exist yet.
-      clientSource: status.clientSource ?? null,
       settings,
       teams: (await data.teams().catch(() => [])).map((team) => ({ key: team.key, name: team.name })),
       showAutolinks: Boolean(connection?.organizationUrlKey),
@@ -514,9 +505,9 @@ async function viewFor(panelId, context) {
       // than one saying it well.
       //
       // It DOES have to be about whether events can arrive at all. Linear only
-      // delivers data-change webhooks to an authorization carrying `admin`, and
-      // a connection made with a client the user registered themselves is
-      // granted `read,write` — so on a custom client this endpoint is a URL
+      // delivers data-change webhooks to an authorization carrying `admin`.
+      // Both OAuth clients ask for it, but a personal API key carries no OAuth
+      // grant of any kind — so on an API-key connection this endpoint is a URL
       // that will never be posted to. Saying "ready" there would be the same
       // failure the fail-closed copy exists to prevent.
       //
@@ -574,21 +565,20 @@ function expiry(tokenExpiresAt) {
  * Can a Linear webhook ever reach this connection?
  *
  * Linear delivers data-change webhooks only to an authorization carrying
- * `admin`, and only ADE's own registered app asks for it — a client the user
- * registered themselves is granted `read,write`, because webhooks on an app
- * somebody else registered are theirs to arrange rather than ours to demand.
+ * `admin`, and BOTH OAuth clients ask for it — ADE's own registered app and a
+ * client the user registered themselves (`connect.js:SCOPES_CUSTOM`). So the
+ * test is not which app signed in; it is whether an OAuth grant exists at all.
  *
- * The consequence is worth stating plainly, because nothing else reports it: on
- * a custom client the reader can sign in, browse and write issues normally,
+ * An API-key connection is the case that remains. A personal API key carries no
+ * OAuth grant of any kind, so the reader can browse and write issues normally,
  * paste the relay URL into Linear, paste the signing secret — and never receive
  * one event. A webhook that never fires is indistinguishable from a workspace
  * where nothing happened, so every surface that reports on the ingress has to
  * say this, not just the panel.
- *
- * An API-key connection has no OAuth grant at all and is treated the same way.
  */
 function webhooksReachable(status) {
-  return status?.clientSource === "official";
+  const source = status?.clientSource;
+  return source === "official" || source === "custom";
 }
 
 /**

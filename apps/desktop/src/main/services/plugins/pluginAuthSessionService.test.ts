@@ -11,6 +11,7 @@ import type { Logger } from "../logging/logger";
 import {
   createPluginAuthSessionService,
   isPortUnavailableError,
+  portUnavailableMessage,
   PLUGIN_AUTH_APP_REDIRECT_URI,
   PLUGIN_AUTH_CALLBACK_SCHEME,
   PLUGIN_AUTH_SESSION_TTL_MS,
@@ -621,6 +622,62 @@ describe("isPortUnavailableError", () => {
       expect(isPortUnavailableError(new Error("something else entirely"))).toBe(false);
       expect(isPortUnavailableError(null)).toBe(false);
       expect(isPortUnavailableError("EADDRINUSE")).toBe(false);
+    });
+  });
+});
+
+/**
+ * The sentence the user actually reads when the callback port will not bind.
+ *
+ * `isPortUnavailableError` decides WHETHER to rewrite the failure; this decides
+ * WHAT to say. They are split because the two Windows codes and EADDRINUSE
+ * share one error code and one log line but have two different remedies, and a
+ * user sent to close a program that does not exist has been sent nowhere.
+ */
+describe("portUnavailableMessage", () => {
+  it("names the Windows exclusion range, and the command that proves it", () => {
+    withPlatform("win32", () => {
+      for (const code of ["EACCES", "EBUSY"] as const) {
+        const message = portUnavailableMessage(19837, withCode(`listen ${code} 127.0.0.1:19837`, code));
+        expect(message).toContain("Windows has reserved port 19837");
+        expect(message).toContain("Hyper-V or WSL exclusion range");
+        expect(message).toContain("netsh int ipv4 show excludedportrange protocol=tcp");
+        expect(message).toContain("ask the plugin author for a different port");
+        // The wrong remedy for this failure: nothing is holding the port.
+        expect(message).not.toContain("Close the other program using it");
+      }
+    });
+  });
+
+  it("keeps the close-the-other-program copy for EADDRINUSE on darwin", () => {
+    withPlatform("darwin", () => {
+      const message = portUnavailableMessage(19837, withCode("listen EADDRINUSE 127.0.0.1:19837", "EADDRINUSE"));
+      expect(message).toBe(
+        "The sign-in callback port 19837 is already in use on 127.0.0.1."
+          + " Close the other program using it, or finish the sign-in already in progress, then try again.",
+      );
+      expect(message).not.toContain("Windows");
+    });
+  });
+
+  it("keeps that copy for EADDRINUSE on win32 too, where a program really is holding it", () => {
+    // The Windows sentence is for the exclusion codes ONLY. An ordinary port
+    // collision on Windows has the ordinary remedy.
+    withPlatform("win32", () => {
+      const message = portUnavailableMessage(19837, withCode("listen EADDRINUSE 127.0.0.1:19837", "EADDRINUSE"));
+      expect(message).toContain("Close the other program using it");
+      expect(message).not.toContain("netsh");
+    });
+  });
+
+  it("gives EACCES off win32 the ordinary copy, because the predicate never rewrites it there", () => {
+    // Belt and braces on the platform gate: on darwin EACCES is a real
+    // permission fault, `isPortUnavailableError` refuses it, and the raw error
+    // reaches the plugin. Should that ever change, the message must not tell a
+    // macOS user about a Windows exclusion range.
+    withPlatform("darwin", () => {
+      const message = portUnavailableMessage(80, withCode("listen EACCES 127.0.0.1:80", "EACCES"));
+      expect(message).not.toContain("Windows");
     });
   });
 });

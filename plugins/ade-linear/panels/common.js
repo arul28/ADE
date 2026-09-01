@@ -161,8 +161,8 @@ function stateIcon(stateType) {
 // No group-order table here. There was one, named after the built-in's
 // `STATE_GROUP_ORDER` and claiming parity with it — but nothing outside a test
 // ever called it, and it DISAGREED with the order the product actually draws.
-// The live order is `issueFormat.js:STATE_RANKS` (triage, backlog, unstarted,
-// started, completed, canceled), stamped onto every row as `stateRank` by
+// The live order is `issueFormat.js:STATE_RANKS` (started, unstarted, backlog,
+// triage, completed, canceled), stamped onto every row as `stateRank` by
 // `normalizeIssue` and sorted on in `data.js:buildGroups`. Two orders, one of
 // them dead, is how a panel ends up drawing sections in an order no one chose.
 
