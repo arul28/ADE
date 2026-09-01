@@ -1043,6 +1043,15 @@ describe("resolveTokenPrice", () => {
     expect(price.cacheWrite).toBe(6.25 / 1_000_000);
   });
 
+  it("uses Fable 5.1 pricing for short aliases and keeps historical Fable 5 cache read", () => {
+    expect(resolveTokenPrice("claude-fable-5-1").cacheRead).toBe(0.25 / 1_000_000);
+    expect(resolveTokenPrice("fable-5.1").cacheRead).toBe(0.25 / 1_000_000);
+    expect(resolveTokenPrice("fable-5-1").cacheRead).toBe(0.25 / 1_000_000);
+    expect(resolveTokenPrice("fable-5").cacheRead).toBe(0.25 / 1_000_000);
+    expect(resolveTokenPrice("fable-5.0").cacheRead).toBe(0.25 / 1_000_000);
+    expect(resolveTokenPrice("claude-fable-5").cacheRead).toBe(1 / 1_000_000);
+  });
+
   it("returns sonnet pricing for sonnet models", () => {
     const price = resolveTokenPrice("claude-3-5-sonnet");
     expect(price.input).toBe(3 / 1_000_000);

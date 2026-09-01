@@ -21,7 +21,7 @@ const modelState: Pick<AdeCodeModelState, "modelId" | "reasoningEffort" | "inter
 
 describe("buildModelPickerLayout", () => {
   const models: AgentChatModelInfo[] = [
-    modelInfo({ id: "anthropic/claude-opus-4-8", displayName: "Claude Opus 4.8 1M" }),
+    modelInfo({ id: "anthropic/claude-opus-4-8", displayName: "Claude Opus 4.8" }),
     modelInfo({ id: "anthropic/claude-sonnet-5", displayName: "Claude Sonnet 5" }),
     modelInfo({ id: "openai/gpt-5", displayName: "GPT-5" }),
   ];
@@ -128,12 +128,11 @@ describe("buildModelPickerLayout", () => {
       searchMode: false,
     });
     expect(layout.entries.map((entry) => entry.modelId)).toEqual([
-      "anthropic/claude-fable-5",
+      "anthropic/claude-fable-5-1",
       "anthropic/claude-opus-5",
       "anthropic/claude-sonnet-5",
       "anthropic/claude-haiku-4-5",
       "anthropic/claude-opus-4-8",
-      "anthropic/claude-opus-4-7-1m",
     ]);
     expect(layout.entries.every((entry) => entry.family === "claude")).toBe(true);
   });

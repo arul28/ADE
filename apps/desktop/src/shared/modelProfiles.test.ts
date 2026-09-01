@@ -163,15 +163,15 @@ describe("modelConfigToServiceModel", () => {
   });
 
   it("falls back to the default Claude model when modelId is empty and provider is claude", () => {
-    expect(modelConfigToServiceModel({ provider: "claude", modelId: "" })).toBe("anthropic/claude-fable-5");
+    expect(modelConfigToServiceModel({ provider: "claude", modelId: "" })).toBe("anthropic/claude-fable-5-1");
   });
 
   it("falls back to the default Claude model when modelId is whitespace only", () => {
-    expect(modelConfigToServiceModel({ provider: "claude", modelId: "   " })).toBe("anthropic/claude-fable-5");
+    expect(modelConfigToServiceModel({ provider: "claude", modelId: "   " })).toBe("anthropic/claude-fable-5-1");
   });
 
   it("falls back to the default Claude model when provider is unknown and modelId is empty", () => {
-    expect(modelConfigToServiceModel({ provider: "unknown", modelId: "" })).toBe("anthropic/claude-fable-5");
+    expect(modelConfigToServiceModel({ provider: "unknown", modelId: "" })).toBe("anthropic/claude-fable-5-1");
   });
 });
 

@@ -250,24 +250,32 @@ export const MODEL_REGISTRY: ModelDescriptor[] = [
   // Claude chat surfaces use the native Agent SDK effort ladder. Keep these
   // tiers aligned with the launch validation path.
   {
-    id: "anthropic/claude-fable-5",
+    id: "anthropic/claude-fable-5-1",
     shortId: "fable",
     aliases: [
       "fable",
+      "fable-5.1",
+      "fable-5-1",
+      "claude-fable-5-1",
+      "anthropic/claude-fable-5-1-api",
+      "fable-5",
+      "fable-5.0",
       "claude-fable-5",
+      "anthropic/claude-fable-5",
       "anthropic/claude-fable-5-api",
     ],
-    displayName: "Claude Fable 5",
+    displayName: "Claude Fable 5.1",
     family: "anthropic",
     authTypes: ["cli-subscription"],
     contextWindow: 1_000_000,
     maxOutputTokens: 128_000,
     capabilities: ALL_CAPS,
     reasoningTiers: ["low", "medium", "high", "xhigh", "max", "ultracode"],
+    defaultReasoningEffort: "high",
     serviceTiers: ["fast"],
     color: "#D97706",
     providerRoute: "claude-cli",
-    providerModelId: "claude-fable-5",
+    providerModelId: "claude-fable-5-1",
     cliCommand: "claude",
     isCliWrapped: true,
     inputPricePer1M: 10,
@@ -353,7 +361,7 @@ export const MODEL_REGISTRY: ModelDescriptor[] = [
   },
   {
     id: "anthropic/claude-opus-4-8",
-    shortId: "opus-4.8-1m",
+    shortId: "opus-4.8",
     aliases: [
       "claude-opus-4-8",
       "opus-4.8",
@@ -375,28 +383,6 @@ export const MODEL_REGISTRY: ModelDescriptor[] = [
       "anthropic/claude-opus-4-6-api",
       "anthropic/claude-opus-4-7",
       "anthropic/claude-opus-4-7-api",
-    ],
-    displayName: "Claude Opus 4.8 1M",
-    family: "anthropic",
-    authTypes: ["cli-subscription"],
-    contextWindow: 1_000_000,
-    maxOutputTokens: 128_000,
-    capabilities: ALL_CAPS,
-    reasoningTiers: ["low", "medium", "high", "xhigh", "max", "ultracode"],
-    serviceTiers: ["fast"],
-    color: "#D97706",
-    providerRoute: "claude-cli",
-    providerModelId: "claude-opus-4-8",
-    cliCommand: "claude",
-    isCliWrapped: true,
-    inputPricePer1M: 5,
-    outputPricePer1M: 25,
-    costTier: "very_high",
-  },
-  {
-    id: "anthropic/claude-opus-4-7-1m",
-    shortId: "opus-1m",
-    aliases: [
       "opus[1m]",
       "opus-1m",
       "opus-4-6-1m",
@@ -407,17 +393,17 @@ export const MODEL_REGISTRY: ModelDescriptor[] = [
       "anthropic/claude-opus-4-6-1m",
       "anthropic/claude-opus-4-7-1m",
     ],
-    displayName: "Claude Opus 4.7 1M",
+    displayName: "Claude Opus 4.8",
     family: "anthropic",
     authTypes: ["cli-subscription"],
     contextWindow: 1_000_000,
     maxOutputTokens: 128_000,
     capabilities: ALL_CAPS,
-    reasoningTiers: ["low", "medium", "high", "xhigh", "max"],
+    reasoningTiers: ["low", "medium", "high", "xhigh", "max", "ultracode"],
     serviceTiers: ["fast"],
-    color: "#B45309",
+    color: "#D97706",
     providerRoute: "claude-cli",
-    providerModelId: "claude-opus-4-7[1m]",
+    providerModelId: "claude-opus-4-8",
     cliCommand: "claude",
     isCliWrapped: true,
     inputPricePer1M: 5,
@@ -973,7 +959,7 @@ export function decodeOpenCodeRegistryId(id: string): { openCodeProviderId: stri
   }
 }
 
-function normalizeAnthropicRuntimeAlias(modelId: string): {
+export function normalizeAnthropicRuntimeAlias(modelId: string): {
   modelId: string;
   displayName: string;
   contextWindow: number;
@@ -986,6 +972,27 @@ function normalizeAnthropicRuntimeAlias(modelId: string): {
 } | null {
   const normalized = modelId.trim().toLowerCase();
   if (!normalized.length) return null;
+  if (
+    normalized === "claude-fable-5-1"
+    || normalized === "fable"
+    || normalized === "fable-5.1"
+    || normalized === "fable-5-1"
+    || normalized === "fable-5"
+    || normalized === "fable-5.0"
+    || normalized === "claude-fable-5"
+  ) {
+    return {
+      modelId: "claude-fable-5-1",
+      displayName: "Claude Fable 5.1",
+      contextWindow: 1_000_000,
+      maxOutputTokens: 128_000,
+      capabilities: ALL_CAPS,
+      reasoningTiers: ["low", "medium", "high", "xhigh", "max", "ultracode"],
+      defaultReasoningEffort: "high",
+      serviceTiers: ["fast"],
+      wasAlias: normalized !== "claude-fable-5-1",
+    };
+  }
   if (
     normalized === "claude-sonnet-5"
     || normalized === "claude-sonnet-4-6"
@@ -1022,6 +1029,14 @@ function normalizeAnthropicRuntimeAlias(modelId: string): {
   }
   if (
     normalized === "claude-opus-4-8"
+    || normalized === "opus-4.8"
+    || normalized === "opus-4-8"
+    || normalized === "opus-4.8-1m"
+    || normalized === "opus-4.8[1m]"
+    || normalized === "opus-4-8-1m"
+    || normalized === "claude-opus-4-8-1m"
+    || normalized === "claude-opus-4-8[1m]"
+    || normalized === "anthropic/claude-opus-4-8-1m"
     || normalized === "claude-opus-4-7"
     || normalized === "opus-4-7"
     || normalized === "opus-4.7"
@@ -1029,10 +1044,17 @@ function normalizeAnthropicRuntimeAlias(modelId: string): {
     || normalized === "claude-opus-4-6-fast"
     || normalized === "opus-4-6"
     || normalized === "opus-4.6"
+    || normalized === "opus[1m]"
+    || normalized === "opus-1m"
+    || normalized === "opus-4-6-1m"
+    || normalized === "claude-opus-4-7[1m]"
+    || normalized === "claude-opus-4-7-1m"
+    || normalized === "claude-opus-4-6[1m]"
+    || normalized === "claude-opus-4-6-1m"
   ) {
     return {
       modelId: "claude-opus-4-8",
-      displayName: "Claude Opus 4.8 1M",
+      displayName: "Claude Opus 4.8",
       contextWindow: 1_000_000,
       maxOutputTokens: 128_000,
       capabilities: ALL_CAPS,
@@ -1419,9 +1441,10 @@ function normalizeDroidEffortLabel(value: string): string {
 }
 
 const KNOWN_DROID_COMPACT_DISPLAY_NAMES: Record<string, string> = {
+  "claude-fable-5-1": "Fable 5.1",
   "claude-fable-5": "Fable 5",
   "claude-opus-5": "Opus 5",
-  "claude-opus-4-8": "Opus 4.8 1M",
+  "claude-opus-4-8": "Opus 4.8",
   "claude-opus-4-5-20251101": "Opus 4.5 (2x)",
   "claude-opus-4-6": "Opus 4.6 (2x)",
   "claude-opus-4-6-fast": "Opus 4.6 Fast Mode (12x)",
@@ -1885,6 +1908,9 @@ function pickPreferredModel(
 
 function pickDefaultClaudeModel(models: ModelDescriptor[]): ModelDescriptor | undefined {
   return pickPreferredModel(models, [
+    (model) =>
+      model.id === "anthropic/claude-fable-5-1"
+      || /fable-5-1|fable 5\.1/i.test(`${model.displayName} ${model.providerModelId}`),
     (model) => /\bfable\b/i.test(model.displayName) || /\bfable\b/i.test(model.providerModelId),
     (model) => /\bsonnet\b/i.test(model.displayName) || /\bsonnet\b/i.test(model.providerModelId),
     (model) => /\bopus\b/i.test(model.displayName) || /\bopus\b/i.test(model.providerModelId),
@@ -1920,7 +1946,8 @@ function pickDefaultCodexModel(models: ModelDescriptor[]): ModelDescriptor | und
 function pickDefaultOpenCodeModel(models: ModelDescriptor[]): ModelDescriptor | undefined {
   return pickPreferredModel(models, [
     (model) => model.family === "openai" && /\bgpt-5\.4\b/i.test(`${model.displayName} ${model.providerModelId}`),
-    (model) => model.id === "opencode/anthropic/claude-fable-5" || (model.family === "anthropic" && /\bfable\b/i.test(`${model.displayName} ${model.providerModelId}`)),
+    (model) => model.id === "opencode/anthropic/claude-fable-5-1" || (model.family === "anthropic" && /fable-5-1|fable 5\.1/i.test(`${model.displayName} ${model.providerModelId}`)),
+    (model) => model.family === "anthropic" && /\bfable\b/i.test(`${model.displayName} ${model.providerModelId}`),
     (model) => model.id === "opencode/anthropic/claude-sonnet-5" || (model.family === "anthropic" && model.providerRoute === "opencode"),
     (model) => model.family === "anthropic" && /\bsonnet\b/i.test(model.displayName),
     (model) => model.family === "anthropic",

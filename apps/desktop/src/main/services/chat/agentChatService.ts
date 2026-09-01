@@ -5610,10 +5610,9 @@ function resolveClaudeCliModelIdFromRuntimeValue(model: string): string | undefi
   const descriptors = listModelDescriptorsForProvider("claude");
 
   const exactMatch = descriptors.find((descriptor) => {
-    const descriptorShortId = descriptor.shortId.toLowerCase();
     const candidates = new Set([
       descriptor.id.toLowerCase(),
-      descriptorShortId,
+      descriptor.shortId.toLowerCase(),
       descriptor.providerModelId.toLowerCase(),
       descriptor.id.toLowerCase().replace(/^anthropic\//, ""),
       ...(descriptor.aliases ?? []).map((alias) => alias.toLowerCase()),
@@ -5623,20 +5622,14 @@ function resolveClaudeCliModelIdFromRuntimeValue(model: string): string | undefi
   });
   if (exactMatch) return exactMatch.id;
 
+  // Prefix-match dated snapshots (`claude-opus-5-20260301`) against the
+  // canonical provider id, not the short id. Short id `opus` would otherwise
+  // swallow every `claude-opus-*` runtime string, including retired 4.7 ids.
   return descriptors.find((descriptor) => {
-    const descriptorShortId = descriptor.shortId.toLowerCase();
-    return normalizedWithoutProvider === `claude-${descriptorShortId}`
-      || normalizedWithoutProvider.startsWith(`claude-${descriptorShortId}-`);
+    const providerModelId = descriptor.providerModelId.toLowerCase();
+    return normalizedWithoutProvider === providerModelId
+      || normalizedWithoutProvider.startsWith(`${providerModelId}-`);
   })?.id;
-}
-
-function isBareClaudeOpus47RuntimeValue(model: string): boolean {
-  const normalized = model.trim().toLowerCase()
-    .replace(/^anthropic\//, "")
-    .replace(/-api$/, "");
-  return normalized === "claude-opus-4-7"
-    || normalized === "opus-4-7"
-    || normalized === "opus-4.7";
 }
 
 function isBareClaudeOpusRuntimeAlias(model: string): boolean {
@@ -5770,21 +5763,7 @@ function resolveClaudeTurnModelPayload(
   } else if (sessionModelId) {
     selectedDescriptor = getModelById(sessionModelId);
   }
-  const selectedIsOpusOneMillion =
-    selectedDescriptor?.id === "anthropic/claude-opus-4-7-1m"
-    || selectedDescriptor?.shortId === "opus-1m"
-    || selectedDescriptor?.providerModelId.toLowerCase().includes("[1m]");
   const selectedIsOpus48 = selectedDescriptor?.id === "anthropic/claude-opus-4-8";
-  const shouldPreserveSelectedModel = (reportedModelId: string | undefined, reportedModel?: string): boolean => {
-    if (!reportedModelId || reportedModelId === session.modelId) return false;
-    const reportedDescriptor = getModelById(reportedModelId) ?? resolveModelAlias(reportedModelId);
-    if (selectedIsOpus48) {
-      return reportedDescriptor?.id === "anthropic/claude-opus-4-7-1m";
-    }
-    if (!selectedIsOpusOneMillion) return false;
-    if (reportedModel && isBareClaudeOpus47RuntimeValue(reportedModel)) return true;
-    return reportedDescriptor?.id === "anthropic/claude-opus-4-7-1m";
-  };
 
   for (const candidate of candidates) {
     const normalized = normalizeReportedModelName(candidate);
@@ -5797,7 +5776,7 @@ function resolveClaudeTurnModelPayload(
       if (selectedIsOpus48 && isBareClaudeOpusRuntimeAlias(normalized)) {
         return sessionPayload;
       }
-      if (shouldPreserveSelectedModel(resolvedCliModelId, normalized)) return sessionPayload;
+      if (sessionModelId && resolvedCliModelId === sessionModelId) return sessionPayload;
       const descriptor = getModelById(resolvedCliModelId);
       const reportedMatchesCanonical = descriptor?.providerModelId === normalizedCliModel;
       return {
@@ -5809,7 +5788,7 @@ function resolveClaudeTurnModelPayload(
       resolveModelIdFromStoredValue(normalized, "claude")
       ?? resolveModelIdFromStoredValue(normalizedCliModel, "claude");
     if (resolvedModelId) {
-      if (shouldPreserveSelectedModel(resolvedModelId, normalized)) return sessionPayload;
+      if (sessionModelId && resolvedModelId === sessionModelId) return sessionPayload;
       return { model: normalized, modelId: resolvedModelId };
     }
     return { model: normalized };

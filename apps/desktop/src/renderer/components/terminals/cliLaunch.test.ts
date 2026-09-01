@@ -694,21 +694,21 @@ describe("buildTrackedCliStartupCommand", () => {
         provider: "claude",
         permissionMode: "default",
         sessionId: "00000000-0000-0000-0000-000000000001",
-        model: "anthropic/claude-fable-5",
+        model: "anthropic/claude-fable-5-1",
         reasoningEffort: "ultracode",
         fastMode: true,
       });
 
       expect(launch.args).toEqual(expect.arrayContaining([
         "--model",
-        "claude-fable-5",
+        "claude-fable-5-1",
         "--effort",
         "xhigh",
         "--settings",
         JSON.stringify({ fastMode: true, ultracode: true }),
       ]));
       expect(launch.args).not.toEqual(expect.arrayContaining(["--effort", "ultracode"]));
-      expect(launch.startupCommand).toContain("--model claude-fable-5");
+      expect(launch.startupCommand).toContain("--model claude-fable-5-1");
       expect(launch.startupCommand).toContain("--effort xhigh");
       expect(launch.startupCommand).toContain("ultracode");
     });
@@ -1501,11 +1501,11 @@ describe("tracked CLI resume helpers", () => {
       targetId: "claude-session-1",
       launch: {
         permissionMode: "default",
-        model: "anthropic/claude-fable-5",
+        model: "anthropic/claude-fable-5-1",
         reasoningEffort: "ultracode",
       },
     })).toBe(
-      "claude --permission-mode default --model claude-fable-5 --effort xhigh --settings \"{\\\"ultracode\\\":true}\" --resume claude-session-1",
+      "claude --permission-mode default --model claude-fable-5-1 --effort xhigh --settings \"{\\\"ultracode\\\":true}\" --resume claude-session-1",
     );
 
     expect(buildTrackedCliResumeCommand({

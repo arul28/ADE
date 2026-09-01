@@ -7,6 +7,7 @@ import type { EffectiveProjectConfig, ProjectConfigFile } from "../../../shared/
 import {
   createDynamicOpenCodeModelDescriptor,
   isLocalProviderFamily,
+  normalizeAnthropicRuntimeAlias,
   replaceDynamicOpenCodeModelDescriptors,
   type ModelCapabilities,
   type ModelDescriptor,
@@ -197,13 +198,6 @@ const OPENCODE_SERVICE_VARIANT_ALIASES: Record<string, string> = {
   fast: "fast",
 };
 
-const CANONICAL_ANTHROPIC_MODEL_CAPABILITIES: ModelCapabilities = {
-  tools: true,
-  vision: true,
-  reasoning: true,
-  streaming: true,
-};
-
 function addUnique(out: string[], value: string): void {
   if (!out.some((entry) => entry.trim().toLowerCase() === value)) out.push(value);
 }
@@ -278,83 +272,25 @@ function normalizeOpenCodeProviderModel(
   if (providerId.trim().toLowerCase() !== "anthropic") {
     return { modelId, ...(displayName ? { displayName } : {}), preferredDuplicateSource: true };
   }
-  const normalized = modelId.trim().toLowerCase();
-  const preferredDuplicateSource =
-    normalized === "claude-sonnet-5"
-    || normalized === "claude-opus-5"
-    || normalized === "claude-opus-4-8";
-  if (normalized === "claude-sonnet-5") {
-    return {
-      modelId: "claude-sonnet-5",
-      displayName: displayName ?? "Claude Sonnet 5",
-      contextWindow: 1_000_000,
-      maxOutputTokens: 128_000,
-      preferredDuplicateSource,
-    };
+  const canonical = normalizeAnthropicRuntimeAlias(modelId);
+  if (!canonical) {
+    return { modelId, ...(displayName ? { displayName } : {}), preferredDuplicateSource: false };
   }
-  if (normalized === "claude-opus-4-8") {
-    return {
-      modelId: "claude-opus-4-8",
-      displayName: displayName ?? "Claude Opus 4.8 1M",
-      contextWindow: 1_000_000,
-      maxOutputTokens: 128_000,
-      preferredDuplicateSource,
-    };
-  }
-  if (normalized === "claude-opus-5") {
-    return {
-      modelId: "claude-opus-5",
-      displayName: displayName ?? "Claude Opus 5",
-      contextWindow: 1_000_000,
-      maxOutputTokens: 128_000,
-      preferredDuplicateSource,
-    };
-  }
-  if (normalized === "claude-sonnet-4-6" || normalized === "sonnet-4-6") {
-    return {
-      modelId: "claude-sonnet-5",
-      displayName: "Claude Sonnet 5",
-      contextWindow: 1_000_000,
-      maxOutputTokens: 128_000,
-      capabilities: CANONICAL_ANTHROPIC_MODEL_CAPABILITIES,
-      reasoningTiers: ["low", "medium", "high", "max"],
-      preferredDuplicateSource,
-    };
-  }
-  if (
-    normalized === "opus"
-  ) {
-    return {
-      modelId: "claude-opus-5",
-      displayName: "Claude Opus 5",
-      contextWindow: 1_000_000,
-      maxOutputTokens: 128_000,
-      capabilities: CANONICAL_ANTHROPIC_MODEL_CAPABILITIES,
-      reasoningTiers: ["low", "medium", "high", "xhigh", "max"],
-      defaultReasoningEffort: "high",
-      serviceTiers: ["fast"],
-      preferredDuplicateSource,
-    };
-  }
-  if (
-    normalized === "claude-opus-4-7"
-    || normalized === "opus-4-7"
-    || normalized === "claude-opus-4-6"
-    || normalized === "opus-4-6"
-    || normalized === "opus-4.6"
-  ) {
-    return {
-      modelId: "claude-opus-4-8",
-      displayName: "Claude Opus 4.8 1M",
-      contextWindow: 1_000_000,
-      maxOutputTokens: 128_000,
-      capabilities: CANONICAL_ANTHROPIC_MODEL_CAPABILITIES,
-      reasoningTiers: ["low", "medium", "high", "xhigh", "max", "ultracode"],
-      serviceTiers: ["fast"],
-      preferredDuplicateSource,
-    };
-  }
-  return { modelId, ...(displayName ? { displayName } : {}), preferredDuplicateSource };
+  return {
+    modelId: canonical.modelId,
+    displayName: canonical.wasAlias ? canonical.displayName : (displayName ?? canonical.displayName),
+    contextWindow: canonical.contextWindow,
+    maxOutputTokens: canonical.maxOutputTokens,
+    ...(canonical.wasAlias
+      ? {
+        reasoningTiers: canonical.reasoningTiers,
+        defaultReasoningEffort: canonical.defaultReasoningEffort,
+        serviceTiers: canonical.serviceTiers,
+        capabilities: canonical.capabilities,
+      }
+      : {}),
+    preferredDuplicateSource: !canonical.wasAlias,
+  };
 }
 
 function openCodeSdkErrorMessage(error: unknown): string | null {

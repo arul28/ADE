@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Claude models
+
+- Claude Fable 5.1 is the default Claude model. Pickers list Fable 5.1, Opus 5, Sonnet 5, Haiku 4.5, then Opus 4.8. Opus 4.8 drops the 1M suffix. Fable 5 and Opus 4.7 ids, including the old 1M aliases, resolve forward and no longer appear as rows.
+
 ## [1.2.70] - 2026-09-01
 
 ### Cursor chat reliability

@@ -320,14 +320,14 @@ describe("model picker search", () => {
   const opus = {
     family: "opencode" as const,
     providerDisplayName: "opencode",
-    name: "Claude Opus 4.8 1M",
+    name: "Claude Opus 4.8",
     subProvider: "GitHub Copilot",
     aliases: ["opus-latest"],
   };
 
   it("builds provider-agnostic searchable text", () => {
     expect(buildModelPickerSearchText(opus))
-      .toBe("claude opus 4.8 1m github copilot opencode opencode opus-latest");
+      .toBe("claude opus 4.8 github copilot opencode opencode opus-latest");
   });
 
   it("requires every query token while tolerating typos", () => {
@@ -346,13 +346,13 @@ describe("model picker search", () => {
     const favoriteScore = scoreModelPickerSearch({
       family: "anthropic",
       providerDisplayName: "Claude",
-      name: "Claude Opus 4.8 1M",
+      name: "Claude Opus 4.8",
       isFavorite: true,
     }, "opus 4.8");
     const nonFavoriteExactScore = scoreModelPickerSearch({
       family: "cursor",
       providerDisplayName: "Cursor",
-      name: "Opus 4.8 1M",
+      name: "Opus 4.8",
     }, "opus 4.8");
 
     expect(exactScore).not.toBeNull();
