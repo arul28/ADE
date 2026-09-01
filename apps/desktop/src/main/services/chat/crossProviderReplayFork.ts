@@ -1,14 +1,33 @@
-import type { AgentChatEvent, AgentChatEventEnvelope, AgentChatReplayForkDisclosure } from "../../../shared/types/chat";
+import type {
+  AgentChatEvent,
+  AgentChatEventEnvelope,
+  AgentChatProvider,
+  AgentChatReplayForkDisclosure,
+} from "../../../shared/types/chat";
 
 /**
  * Cross-provider (and native-fork-unsupported) full-transcript replay.
  * The user rejected brief-style compression: this is a verbatim dump of the
  * ADE transcript, trimmed oldest-first only when it cannot fit the target
- * context window.
+ * context window or provider input limit.
  */
 
 export const CROSS_PROVIDER_REPLAY_HEADER =
   "Full prior transcript (verbatim replay; not a summary). Treat this as the conversation so far. Do not recap it unless asked.";
+
+/**
+ * Codex app-server rejects a `turn/start` request whose aggregate text input
+ * exceeds 1,048,576 characters. Keep replay below that wire limit and leave
+ * room for the next prompt and continuity context.
+ */
+export const CODEX_REPLAY_MAX_CHARS = 1_000_000;
+export const CODEX_APP_SERVER_INPUT_MAX_CHARS = 1_048_576;
+
+export function replayMaxCharsForProvider(
+  provider: AgentChatProvider | null | undefined,
+): number | undefined {
+  return provider === "codex" ? CODEX_REPLAY_MAX_CHARS : undefined;
+}
 
 const CHARS_PER_TOKEN = 4;
 /** Leave room for the next user turn, system prompt, and tool payloads. */
@@ -181,11 +200,53 @@ export function fitTranscriptReplayToBudget(
 export function buildFittedTranscriptReplay(
   envelopes: readonly AgentChatEventEnvelope[],
   contextWindowTokens: number | null | undefined,
+  /** Optional provider wire cap; the effective budget is the lower of both limits. */
+  maxChars?: number,
 ): TranscriptReplayFit {
+  const contextBudget = replayBudgetChars(contextWindowTokens);
+  const budget = maxChars === undefined
+    ? contextBudget
+    : Math.min(contextBudget, maxChars);
   return fitTranscriptReplayToBudget(
     buildTranscriptReplayDocument(envelopes),
-    replayBudgetChars(contextWindowTokens),
+    budget,
   );
+}
+
+/**
+ * Apply a final, dispatch-time cap to a previously-rendered replay. This is
+ * needed when the next user turn or continuity context consumes part of the
+ * Codex app-server's aggregate text-input budget. Keep the replay header and
+ * newest available turn content whenever the earlier fit has to be reduced
+ * again.
+ */
+export function fitTranscriptReplayTextToBudget(
+  text: string,
+  maxChars: number,
+): string {
+  const budget = Number.isFinite(maxChars) ? Math.max(0, Math.floor(maxChars)) : 0;
+  if (text.length <= budget) return text;
+  if (budget === 0) return "";
+
+  const headerOnlyReplay = buildTranscriptReplayDocument([]).text;
+  if (text === headerOnlyReplay) {
+    return CROSS_PROVIDER_REPLAY_HEADER.slice(0, budget);
+  }
+
+  const headerPrefix = `${CROSS_PROVIDER_REPLAY_HEADER}\n\n`;
+  if (!text.startsWith(headerPrefix)) return text.slice(-budget);
+  if (budget < headerPrefix.length) {
+    return CROSS_PROVIDER_REPLAY_HEADER.slice(0, budget);
+  }
+
+  const bodyBudget = budget - headerPrefix.length;
+  const body = text.slice(headerPrefix.length);
+  const suffixStart = Math.max(0, body.length - bodyBudget);
+  const newestTurnStart = body.indexOf("\n\n[user]\n", suffixStart);
+  const suffix = newestTurnStart >= 0
+    ? body.slice(newestTurnStart + 2)
+    : body.slice(suffixStart);
+  return `${headerPrefix}${suffix.length <= bodyBudget ? suffix : suffix.slice(-bodyBudget)}`;
 }
 
 export function toReplayForkDisclosure(fit: TranscriptReplayFit): AgentChatReplayForkDisclosure | undefined {

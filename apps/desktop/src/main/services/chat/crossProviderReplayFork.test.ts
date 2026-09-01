@@ -4,7 +4,11 @@ import type { AgentChatEventEnvelope } from "../../../shared/types/chat";
 import {
   buildFittedTranscriptReplay,
   buildTranscriptReplayDocument,
+  CROSS_PROVIDER_REPLAY_HEADER,
+  CODEX_REPLAY_MAX_CHARS,
   fitTranscriptReplayToBudget,
+  fitTranscriptReplayTextToBudget,
+  replayMaxCharsForProvider,
   replayBudgetChars,
 } from "./crossProviderReplayFork";
 
@@ -132,6 +136,8 @@ describe("fitTranscriptReplayToBudget", () => {
 });
 
 describe("buildFittedTranscriptReplay", () => {
+  const CODEX_APP_SERVER_INPUT_MAX_CHARS = 1_048_576;
+
   it("uses the target context window to decide truncation", () => {
     expect(replayBudgetChars(16_000)).toBeLessThan(replayBudgetChars(200_000));
     const envelopes = [
@@ -141,5 +147,42 @@ describe("buildFittedTranscriptReplay", () => {
     const fit = buildFittedTranscriptReplay(envelopes, 1_000_000);
     expect(fit.truncated).toBe(false);
     expect(fit.keptTurnCount).toBe(1);
+  });
+
+  it("regression: honors a provider input cap below the model context window", () => {
+    const fit = buildFittedTranscriptReplay([
+      envelope(1, { type: "user_message", text: `oldest ${"o".repeat(600_000)}` }),
+      envelope(2, { type: "user_message", text: `newest ${"n".repeat(600_000)}` }),
+    ], 1_000_000, replayMaxCharsForProvider("codex"));
+
+    expect(fit.truncated).toBe(true);
+    expect(fit.truncatedTurnCount).toBe(1);
+    expect(fit.text).toContain("newest");
+    expect(fit.text).not.toContain("oldest");
+    expect(fit.text.length).toBeLessThanOrEqual(CODEX_REPLAY_MAX_CHARS);
+    expect(fit.text.length).toBeLessThanOrEqual(CODEX_APP_SERVER_INPUT_MAX_CHARS);
+  });
+});
+
+describe("fitTranscriptReplayTextToBudget", () => {
+  it("keeps the newest complete turn when a later prompt consumes the budget", () => {
+    const document = buildTranscriptReplayDocument([
+      envelope(1, { type: "user_message", text: "oldest" }),
+      envelope(2, { type: "user_message", text: "newest" }),
+    ]);
+    const budget = `${document.header}\n\n[user]\nnewest`.length + 2;
+    const text = fitTranscriptReplayTextToBudget(document.text, budget);
+
+    expect(text.length).toBeLessThanOrEqual(budget);
+    expect(text).toContain("newest");
+    expect(text).not.toContain("oldest");
+  });
+
+  it("keeps the beginning of a header-only replay for tiny budgets", () => {
+    const headerOnlyReplay = buildTranscriptReplayDocument([]).text;
+    const budget = 8;
+
+    expect(fitTranscriptReplayTextToBudget(headerOnlyReplay, budget))
+      .toBe(CROSS_PROVIDER_REPLAY_HEADER.slice(0, budget));
   });
 });
