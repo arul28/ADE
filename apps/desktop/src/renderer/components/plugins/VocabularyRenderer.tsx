@@ -3,6 +3,7 @@ import { ArrowSquareOut, CaretRight, WarningCircle } from "@phosphor-icons/react
 
 import { COLORS, RADII, SANS_FONT, outlineButton } from "../lanes/laneDesignTokens";
 import { openAdeDeeplink } from "../../lib/openExternal";
+import { pluginIcon } from "./pluginIcons";
 import {
   VocabBadge,
   VocabButton,
@@ -24,13 +25,17 @@ import {
   type VocabRenderContext,
 } from "./vocabularyComponents";
 import {
+  VOCAB_STATE_LIMITS,
   parsePluginPanel,
   readVocabFallback,
+  type VocabChromeNavAction,
+  type VocabChromeSearch,
   type VocabError,
   type VocabFallback,
   type VocabGroupNode,
   type VocabNode,
   type VocabPanel,
+  type VocabPanelChrome,
 } from "../../../shared/plugins/vocabulary";
 
 /**
@@ -157,6 +162,7 @@ function VocabGroupSection({
   children: React.ReactNode;
 }) {
   const open = context.groupOpen(node);
+  const Icon = node.icon ? pluginIcon(node.icon) : null;
   return (
     <section style={{ display: "grid", gap: 8, minWidth: 0 }}>
       <button
@@ -187,6 +193,7 @@ function VocabGroupSection({
             transition: "transform 120ms ease",
           }}
         />
+        {Icon ? <Icon size={12} weight="regular" color={COLORS.textMuted} aria-hidden /> : null}
         <span
           style={{
             fontFamily: SANS_FONT,
@@ -220,23 +227,167 @@ function VocabGroupSection({
   );
 }
 
-/** Render a parsed panel's body. Assumes validation already happened. */
+/** Render a parsed panel: sticky chrome, scrolling body, sticky footer. */
 export function VocabularyRenderer({
   panel,
   context,
+  headerAccessory,
 }: {
   panel: VocabPanel;
   context: VocabRenderContext;
+  headerAccessory?: React.ReactNode;
 }) {
+  const chrome = panel.chrome;
+  const footer = chrome?.footer;
   return (
     <div
       data-tour={`plugin:${context.pluginId}.panel`}
-      style={{ display: "flex", flexDirection: "column", gap: 16, minWidth: 0 }}
+      style={{
+        display: "flex",
+        flexDirection: "column",
+        gap: 12,
+        minWidth: 0,
+        minHeight: 0,
+        flex: 1,
+      }}
     >
-      {panel.body.map((node, index) => (
-        <VocabNodeView key={index} node={node} context={context} />
-      ))}
+      <VocabChromeBar chrome={chrome} context={context} accessory={headerAccessory} />
+      <div style={{ display: "flex", flexDirection: "column", gap: 16, minWidth: 0, minHeight: 0, flex: 1, overflow: "auto" }}>
+        {panel.body.map((node, index) => (
+          <VocabNodeView key={index} node={node} context={context} />
+        ))}
+      </div>
+      {footer && footer.length > 0 ? (
+        <div
+          data-testid="plugin-panel-footer"
+          style={{
+            flexShrink: 0,
+            display: "flex",
+            flexDirection: "column",
+            gap: 8,
+            minWidth: 0,
+            paddingTop: 8,
+            borderTop: `1px solid ${COLORS.borderMuted}`,
+          }}
+        >
+          {footer.map((node, index) => (
+            <VocabNodeView key={index} node={node} context={context} />
+          ))}
+        </div>
+      ) : null}
     </div>
+  );
+}
+
+function VocabChromeBar({
+  chrome,
+  context,
+  accessory,
+}: {
+  chrome?: VocabPanelChrome;
+  context: VocabRenderContext;
+  accessory?: React.ReactNode;
+}) {
+  const search = chrome?.search;
+  const navActions = chrome?.navActions;
+  if (!search && (!navActions || navActions.length === 0) && !accessory) return null;
+  return (
+    <div
+      data-testid="plugin-panel-chrome"
+      style={{
+        flexShrink: 0,
+        display: "flex",
+        alignItems: "center",
+        gap: 8,
+        minWidth: 0,
+      }}
+    >
+      {search ? <VocabChromeSearchField search={search} context={context} /> : null}
+      {navActions?.map((action) => (
+        <VocabChromeNavButton key={`${action.action}:${action.label}`} action={action} context={context} />
+      ))}
+      {accessory ? (
+        <div style={{ marginLeft: "auto", flexShrink: 0, display: "flex" }}>{accessory}</div>
+      ) : null}
+    </div>
+  );
+}
+
+function VocabChromeSearchField({
+  search,
+  context,
+}: {
+  search: VocabChromeSearch;
+  context: VocabRenderContext;
+}) {
+  const value = context.state[search.stateKey] ?? "";
+  const commit = () => {
+    if (!search.onChange) return;
+    void context.dispatch(search.onChange, { [search.stateKey]: value }).catch(() => {
+      // The query is already applied locally. A plugin that failed to hear it
+      // still leaves the reader looking at the filtered list.
+    });
+  };
+  return (
+    <input
+      type="search"
+      value={value}
+      maxLength={VOCAB_STATE_LIMITS.maxSearchChars}
+      placeholder={search.placeholder ?? "Search"}
+      aria-label={search.placeholder ?? "Search this panel"}
+      onChange={(event) => context.setStateValue(search.stateKey, event.target.value)}
+      onBlur={commit}
+      onKeyDown={(event) => {
+        if (event.key === "Enter") {
+          event.preventDefault();
+          commit();
+        }
+      }}
+      style={{
+        flex: 1,
+        minWidth: 0,
+        padding: "5px 8px",
+        fontFamily: SANS_FONT,
+        fontSize: 12,
+        color: COLORS.textPrimary,
+        background: COLORS.recessedBg,
+        border: `1px solid ${COLORS.borderMuted}`,
+        borderRadius: RADII.sm,
+        outline: "none",
+      }}
+    />
+  );
+}
+
+function VocabChromeNavButton({
+  action,
+  context,
+}: {
+  action: VocabChromeNavAction;
+  context: VocabRenderContext;
+}) {
+  const Icon = action.icon ? pluginIcon(action.icon) : null;
+  return (
+    <button
+      type="button"
+      onClick={() => {
+        void context.dispatch(action).catch(() => {});
+      }}
+      title={action.label}
+      style={{
+        ...outlineButton,
+        display: "inline-flex",
+        alignItems: "center",
+        gap: 5,
+        flexShrink: 0,
+        padding: "3px 8px",
+        fontFamily: SANS_FONT,
+        fontSize: 11,
+      }}
+    >
+      {Icon ? <Icon size={12} weight="regular" aria-hidden /> : null}
+      {action.label}
+    </button>
   );
 }
 
@@ -427,12 +578,15 @@ export function PluginPanelView({
   schema,
   context,
   recoveryAction,
+  headerAccessory,
 }: {
   /** The `schema_json` value as stored, or an already-parsed object. */
   schema: unknown;
   context: VocabRenderContext;
   /** Rendered next to `Open` on the fallback card, e.g. a Restart button. */
   recoveryAction?: React.ReactNode;
+  /** Refresh (and anything else that belongs in the nav bar with search). */
+  headerAccessory?: React.ReactNode;
 }) {
   const parsed = React.useMemo(() => parsePluginPanel(schema), [schema]);
   const fallback = parsed.ok ? parsed.panel.fallback : (parsed.fallback ?? readVocabFallback(schema));
@@ -453,7 +607,7 @@ export function PluginPanelView({
 
   return (
     <VocabularyBoundary fallback={fallback} action={recoveryAction} resetKey={resetKey}>
-      <VocabularyRenderer panel={parsed.panel} context={context} />
+      <VocabularyRenderer panel={parsed.panel} context={context} headerAccessory={headerAccessory} />
     </VocabularyBoundary>
   );
 }

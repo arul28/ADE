@@ -1886,3 +1886,42 @@ describe("plugin pane list paging", () => {
     expect(listRows(build(listPanel(143)))).toHaveLength(VOCAB_LIMITS.listPageSize);
   });
 });
+
+describe("panel chrome", () => {
+  it("pins search and nav actions, walks the footer, and names a group icon", () => {
+    const model = build(panel(
+      [
+        { component: "group", title: "Started", icon: "circle", children: [{ component: "text", text: "a" }] },
+        { component: "list", bind: { collection: "issues", where: [{ field: "title", contains: { $state: "q" } }] } },
+      ],
+      {
+        chrome: {
+          search: { stateKey: "q", placeholder: "Filter issues", onChange: { action: "search" } },
+          navActions: [{ action: "openLinear", label: "Open in Linear" }],
+          footer: [{ component: "button", label: "New issue", onPress: { action: "create" } }],
+        },
+      },
+    ), {
+      collections: new Map([[bindingKey({ collection: "issues" }), [
+        { key: "1", value: { title: "ISS-1 login" } },
+        { key: "2", value: { title: "Other" } },
+      ]]]),
+      state: { q: "login" },
+    });
+
+    expect(model.rows[0]).toMatchObject({ kind: "search", placeholder: "Filter issues", value: "login" });
+    expect(model.rows.some((row) => row.kind === "buttons" && row.buttons.some((button) => button.label === "Open in Linear"))).toBe(true);
+    expect(model.rows[model.rows.length - 1]).toMatchObject({ kind: "buttons" });
+    expect(model.chromeHeaderCount).toBeGreaterThan(0);
+    expect(model.chromeFooterCount).toBeGreaterThan(0);
+    expect(model.declarations.map((entry) => entry.stateKey)).toEqual(["q"]);
+    const group = model.rows.find((row) => row.kind === "group");
+    expect(group).toMatchObject({ kind: "group", title: "Started", icon: "circle" });
+    expect(model.rows.filter((row) => row.kind === "listItem").map((row) => row.kind === "listItem" ? row.title : ""))
+      .toEqual(["ISS-1 login"]);
+
+    const windowed = pluginPaneWindow(model, 0, 4);
+    expect(windowed.rows[0]?.kind).toBe("search");
+    expect(windowed.rows[windowed.rows.length - 1]?.kind).toBe("buttons");
+  });
+});

@@ -89,6 +89,7 @@ extension PluginPanelParser {
     var group = PluginVocabGroup(title: title)
     group.groupKey = cleanString(object["groupKey"], max: PluginVocabLimits.maxIdChars)
     group.badge = parseStateBadge(object["badge"])
+    group.icon = cleanString(object["icon"], max: PluginVocabLimits.maxIdChars)
     group.defaultOpen = boolValue(object["defaultOpen"]) ?? true
     for (index, child) in (object["children"] as? [Any] ?? []).enumerated() {
       guard let node = parseNode(child, path: "\(path).children[\(index)]", depth: depth + 1, context: &context) else {

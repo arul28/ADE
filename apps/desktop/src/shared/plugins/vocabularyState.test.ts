@@ -18,6 +18,7 @@ import {
   vocabCycleStateValue,
   vocabInitialPanelSelection,
   vocabInitialPanelState,
+  vocabIsSearchDeclaration,
   vocabMergeStateOptions,
   vocabNormalizePanelSelection,
   vocabNormalizePanelState,
@@ -128,6 +129,24 @@ describe("parseVocabWhere", () => {
     expect(parseWhere([{ field: "statusGroup", in: [{ nested: true }] }]).where).toBeUndefined();
   });
 
+  it("reads `contains` as its own clause, never as membership", () => {
+    const { where, warnings } = parseWhere([
+      { field: "title", contains: "bc-" },
+      { field: "title", contains: { $state: "q" } },
+    ]);
+    expect(warnings).toEqual([]);
+    expect(where).toEqual([
+      { kind: "contains", field: "title", needle: "bc-" },
+      { kind: "contains", field: "title", stateKey: "q" },
+    ]);
+    expect(vocabWhereStateKeys(where).sort()).toEqual(["q"]);
+    // An empty literal is not a needle — parse drops it, evaluation would have
+    // treated it as inactive anyway.
+    expect(parseWhere([{ field: "title", contains: "" }]).where).toBeUndefined();
+    // Two operators on one clause still drop it.
+    expect(parseWhere([{ field: "title", contains: "a", equals: "b" }]).where).toBeUndefined();
+  });
+
   it("keeps the clauses that parsed when one of them does not", () => {
     const { where, warnings } = parseWhere([
       { field: "statusGroup", equals: "active" },
@@ -217,6 +236,19 @@ describe("evaluateVocabWhere", () => {
     const clause = [{ field: "statusGroup", equals: { $state: "statusFilter" } }];
     expect(kept(clause, { statusFilter: "active" })).toEqual(["bc-1f4a", "bc-90de"]);
     expect(kept(clause, { statusFilter: "failed" })).toEqual(["bc-77b2"]);
+  });
+
+  it("matches `contains` case-insensitively and treats an empty needle as inactive", () => {
+    expect(kept([{ field: "title", contains: "BC-77" }])).toEqual(["bc-77b2"]);
+    expect(kept([{ field: "title", contains: { $state: "q" } }], { q: "1f4A" }))
+      .toEqual(["bc-1f4a"]);
+    // Empty query — typed, whitespace, or missing — is "this filter is off".
+    expect(kept([{ field: "title", contains: { $state: "q" } }], { q: "" })).toHaveLength(5);
+    expect(kept([{ field: "title", contains: { $state: "q" } }], { q: "   " })).toHaveLength(5);
+    expect(kept([{ field: "title", contains: { $state: "q" } }], {})).toHaveLength(5);
+    expect(kept([{ field: "title", contains: "" }])).toHaveLength(5);
+    // A missing field fails the comparison, the same as `equals`.
+    expect(kept([{ field: "missing", contains: "bc" }])).toEqual([]);
   });
 
   it("treats an unset or undeclared state key as inactive, not as false", () => {
@@ -1018,5 +1050,51 @@ describe("selection lifecycle", () => {
       { stateKey: "a", max: 3, actionIds: ["x"] },
       { stateKey: "a", max: 9, actionIds: ["y"] },
     ])).toEqual([{ stateKey: "a", max: 3, actionIds: ["x"] }]);
+  });
+});
+
+describe("chrome.search state", () => {
+  const search = (overrides: Partial<VocabStateDeclaration> = {}): VocabStateDeclaration => ({
+    stateKey: "q",
+    kind: "search",
+    options: [],
+    initial: "",
+    ...overrides,
+  });
+
+  it("is a search field, never a strip or a menu", () => {
+    expect(vocabIsSearchDeclaration(search())).toBe(true);
+    expect(vocabIsSearchDeclaration(control())).toBe(false);
+    expect(vocabStateControlStyle(search())).toBe("search");
+    // Even a search whose options someone stuffed still draws as a field —
+    // the kind is the identity, not the option count.
+    expect(vocabStateControlStyle(search({ options: [{ value: "a", label: "A" }] }))).toBe("search");
+  });
+
+  it("signs the control, not the typed query", () => {
+    const a = vocabStateSignature([search({ placeholder: "Filter issues" })]);
+    const b = vocabStateSignature([search({ placeholder: "Filter issues", initial: "ISS" })]);
+    expect(a).toBe(b);
+    expect(vocabStateSignature([search({ placeholder: "Other" })])).not.toBe(a);
+    expect(vocabStateSignature([search({ stateKey: "other" })])).not.toBe(a);
+  });
+
+  it("keeps typed text across a republish and clamps it", () => {
+    const declaration = search();
+    const typed = vocabApplyStateChange({}, declaration, "  Issue  ");
+    expect(typed).toEqual({ q: "  Issue  " });
+    expect(vocabNormalizePanelState(typed, [declaration])).toEqual({ q: "  Issue  " });
+    const tooLong = "x".repeat(VOCAB_STATE_LIMITS.maxSearchChars + 40);
+    expect(vocabApplyStateChange({}, declaration, tooLong).q)
+      .toHaveLength(VOCAB_STATE_LIMITS.maxSearchChars);
+    expect(vocabNormalizePanelState({ q: tooLong }, [declaration]).q)
+      .toHaveLength(VOCAB_STATE_LIMITS.maxSearchChars);
+    // Arrow keys do not invent an option a search field never offered.
+    expect(vocabCycleStateValue(declaration, "abc", 1)).toBe("abc");
+  });
+
+  it("reports the typed string through `$state`, not an option label", () => {
+    expect(vocabStateRows([search({ placeholder: "Filter" })], { q: "ISS-1" }))
+      .toEqual([{ key: "q", value: "ISS-1" }]);
   });
 });

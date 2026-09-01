@@ -17,6 +17,9 @@ struct PluginPaneSheet: View {
   /// — because a snapshot has to be takeable at the moment a plugin navigates,
   /// which is not a moment this view is involved in.
   @State private var scrollPosition = ScrollPosition()
+  /// Whether the nav-bar search field is open. Dismissing it commits `onChange`,
+  /// the same way blurring the desktop field does.
+  @State private var searchPresented = false
 
   init(request: PluginPaneRequest, syncService: SyncService) {
     self.request = request
@@ -35,7 +38,7 @@ struct PluginPaneSheet: View {
 
   var body: some View {
     NavigationStack {
-      content
+      chromeWrapped(content)
         .scrollContentBackground(.hidden)
         .background(ADEColor.pageBackground)
         // The panel on top, not the plugin: once a plugin can send the reader
@@ -52,11 +55,26 @@ struct PluginPaneSheet: View {
               closeButton
             }
           }
-          // Close moves to the trailing edge only while Back owns the leading
-          // one. Both gestures stay reachable at every depth, and neither ever
-          // sits where the other was a moment ago.
-          if store.canGoBack {
-            ToolbarItem(placement: .topBarTrailing) { closeButton }
+          ToolbarItemGroup(placement: .topBarTrailing) {
+            ForEach(Array((panelChrome?.navActions ?? []).enumerated()), id: \.offset) { _, nav in
+              Button {
+                ADEHaptics.light()
+                store.perform(nav.action, label: nav.label)
+              } label: {
+                if PluginSymbol.drawsIcon(nav.icon) {
+                  PluginSymbol.image(nav.icon, fallback: "puzzlepiece.extension")
+                } else {
+                  Text(nav.label).font(.subheadline)
+                }
+              }
+              .accessibilityLabel(nav.label)
+            }
+            // Close moves to the trailing edge only while Back owns the leading
+            // one. Both gestures stay reachable at every depth, and neither ever
+            // sits where the other was a moment ago.
+            if store.canGoBack {
+              closeButton
+            }
           }
         }
     }
@@ -109,6 +127,56 @@ struct PluginPaneSheet: View {
       }
     }
     .accessibilityLabel("Back to \(title)")
+  }
+
+  private var panelChrome: PluginVocabPanelChrome? {
+    if case let .panel(schema) = store.presentation { return schema.chrome }
+    return nil
+  }
+
+  /// Nav-bar search and a sticky footer sit outside the scrolling body, the
+  /// same split desktop draws. Search types locally; submitting or dismissing
+  /// the field is the commit that may dispatch `onChange`.
+  @ViewBuilder
+  private func chromeWrapped<Content: View>(_ inner: Content) -> some View {
+    if let search = panelChrome?.search {
+      footerWrapped(
+        inner
+          .searchable(
+            text: Binding(
+              get: { store.searchQuery(for: search) },
+              set: { store.setSearch($0, in: search) }
+            ),
+            isPresented: $searchPresented,
+            prompt: Text(search.placeholder ?? "Search")
+          )
+          .onSubmit(of: .search) { store.commitSearch(search) }
+          .onChange(of: searchPresented) { _, presented in
+            if !presented { store.commitSearch(search) }
+          }
+      )
+    } else {
+      footerWrapped(inner)
+    }
+  }
+
+  @ViewBuilder
+  private func footerWrapped<Content: View>(_ inner: Content) -> some View {
+    if let footer = panelChrome?.footer, !footer.isEmpty {
+      inner.safeAreaInset(edge: .bottom, spacing: 0) {
+        VStack(alignment: .leading, spacing: 10) {
+          ForEach(Array(footer.enumerated()), id: \.offset) { _, node in
+            PluginVocabularyNodeView(node: node, store: store)
+          }
+        }
+        .padding(.horizontal, 20)
+        .padding(.vertical, 12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(.ultraThinMaterial)
+      }
+    } else {
+      inner
+    }
   }
 
   @ViewBuilder

@@ -2576,6 +2576,45 @@ final class PluginVocabPanelStateTests: XCTestCase {
     """#), ["bc-3ac1"])
   }
 
+  func testContainsIsItsOwnClauseAndMatchesCaseInsensitively() {
+    let (parsed, warnings) = predicates(#"""
+    [
+      { "field": "title", "contains": "bc-" },
+      { "field": "title", "contains": { "$state": "q" } }
+    ]
+    """#)
+    XCTAssertEqual(warnings, [])
+    XCTAssertEqual(parsed?.count, 2)
+    if case let .contains(field, needle, stateKey)? = parsed?[0] {
+      XCTAssertEqual(field, "title")
+      XCTAssertEqual(needle, "bc-")
+      XCTAssertNil(stateKey)
+    } else {
+      XCTFail("expected a literal contains clause")
+    }
+    if case let .contains(field, needle, stateKey)? = parsed?[1] {
+      XCTAssertEqual(field, "title")
+      XCTAssertNil(needle)
+      XCTAssertEqual(stateKey, "q")
+    } else {
+      XCTFail("expected a $state contains clause")
+    }
+
+    let (empty, _) = predicates(#"[{ "field": "title", "contains": "" }]"#)
+    XCTAssertNil(empty)
+    let (both, bothWarnings) = predicates(#"[{ "field": "title", "contains": "a", "equals": "b" }]"#)
+    XCTAssertNil(both)
+    XCTAssertEqual(bothWarnings.map(\.code), [.invalidBinding])
+
+    XCTAssertEqual(kept(#"[{ "field": "title", "contains": "BC-77" }]"#), ["bc-77b2"])
+    XCTAssertEqual(kept(#"[{ "field": "title", "contains": { "$state": "q" } }]"#, state: ["q": "1f4A"]), ["bc-1f4a"])
+    XCTAssertEqual(kept(#"[{ "field": "title", "contains": { "$state": "q" } }]"#, state: ["q": ""]).count, 5)
+    XCTAssertEqual(kept(#"[{ "field": "title", "contains": { "$state": "q" } }]"#, state: ["q": "   "]).count, 5)
+    XCTAssertEqual(kept(#"[{ "field": "title", "contains": { "$state": "q" } }]"#, state: [:]).count, 5)
+    XCTAssertEqual(kept(#"[{ "field": "title", "contains": "" }]"#).count, 5)
+    XCTAssertEqual(kept(#"[{ "field": "missing", "contains": "bc" }]"#), [])
+  }
+
   func testAStateDrivenFilterFollowsTheReadersSelection() {
     let clause = #"[{ "field": "statusGroup", "equals": { "$state": "statusFilter" } }]"#
     XCTAssertEqual(kept(clause, state: ["statusFilter": "active"]), ["bc-1f4a", "bc-90de"])
@@ -3857,6 +3896,7 @@ final class PluginVocabGroupSelectionTests: XCTestCase {
     XCTAssertEqual(group.groupKey, "state:started")
     // A numeric badge reads as its digits, exactly as an option's does.
     XCTAssertEqual(group.badge, "12")
+    XCTAssertNil(group.icon)
     XCTAssertFalse(group.defaultOpen)
     XCTAssertEqual(group.children.count, 2)
     XCTAssertEqual(group.key, "state:started")
@@ -4822,5 +4862,151 @@ final class PluginPaneNavigationTests: XCTestCase {
   func testTheListCeilingAndItsPageStep() {
     XCTAssertEqual(PluginVocabLimits.maxListItems, 250)
     XCTAssertEqual(PluginVocabLimits.listPageSize, 100)
+  }
+}
+
+// MARK: - Panel chrome
+
+final class PluginVocabChromeTests: XCTestCase {
+  private func parse(_ json: String) -> PluginPanelParseResult {
+    PluginPanelParser.parse(json)
+  }
+
+  private func panel(_ result: PluginPanelParseResult) throws -> PluginPanelSchema {
+    guard case let .ok(schema, _) = result else {
+      throw XCTSkip("Expected a parsed panel, got \(result)")
+    }
+    return schema
+  }
+
+  func testParsesSearchNavActionsFooterAndAGroupIcon() throws {
+    let schema = try panel(parse(#"""
+    {
+      "v": 1,
+      "fallback": { "title": "F", "text": "f" },
+      "body": [
+        { "component": "group", "title": "Started", "icon": "circle", "children": [] },
+        { "component": "list", "bind": {
+          "collection": "issues",
+          "where": [{ "field": "title", "contains": { "$state": "q" } }]
+        } }
+      ],
+      "chrome": {
+        "search": { "stateKey": "q", "placeholder": "Filter issues", "onChange": { "action": "search" } },
+        "navActions": [{ "action": "openLinear", "label": "Open in Linear", "icon": "arrow-square-out" }],
+        "footer": [{ "component": "button", "label": "New issue", "onPress": { "action": "create" } }]
+      }
+    }
+    """#))
+
+    XCTAssertEqual(schema.chrome?.search?.stateKey, "q")
+    XCTAssertEqual(schema.chrome?.search?.placeholder, "Filter issues")
+    XCTAssertEqual(schema.chrome?.search?.onChange?.action, "search")
+    XCTAssertEqual(schema.chrome?.navActions.count, 1)
+    XCTAssertEqual(schema.chrome?.navActions.first?.label, "Open in Linear")
+    XCTAssertEqual(schema.chrome?.navActions.first?.icon, "arrow-square-out")
+    XCTAssertEqual(schema.chrome?.navActions.first?.action.action, "openLinear")
+    XCTAssertEqual(schema.chrome?.footer.count, 1)
+    if case let .button(button)? = schema.chrome?.footer.first {
+      XCTAssertEqual(button.label, "New issue")
+    } else {
+      XCTFail("expected a footer button")
+    }
+    guard case let .group(group) = schema.body[0] else { return XCTFail("expected a group") }
+    XCTAssertEqual(group.icon, "circle")
+  }
+
+  func testDeclaresSearchFirstAndWalksTheFooterForBindings() throws {
+    let schema = try panel(parse(#"""
+    {
+      "v": 1,
+      "fallback": { "title": "F", "text": "f" },
+      "body": [{
+        "component": "segmented",
+        "stateKey": "status",
+        "options": [{ "value": "", "label": "All" }, { "value": "active", "label": "Active" }]
+      }],
+      "chrome": {
+        "search": { "stateKey": "q" },
+        "footer": [{ "component": "list", "bind": { "collection": "drafts" } }]
+      }
+    }
+    """#))
+
+    let declarations = PluginVocabState.declarations(in: schema.contentNodes, chrome: schema.chrome)
+    XCTAssertEqual(declarations.map(\.stateKey), ["q", "status"])
+    XCTAssertTrue(declarations[0].isSearch)
+    XCTAssertEqual(PluginVocabState.controlStyle(declarations[0]), .search)
+    XCTAssertEqual(schema.contentNodes.count, 2)
+  }
+
+  func testOmitsMalformedChromePiecesWithoutFailingThePanel() throws {
+    let result = parse(#"""
+    {
+      "v": 1,
+      "fallback": { "title": "F", "text": "f" },
+      "body": [],
+      "chrome": {
+        "search": { "placeholder": "no key" },
+        "navActions": [
+          { "action": "a", "label": "One" },
+          { "action": "b", "label": "Two" },
+          { "action": "c", "label": "Three" },
+          { "action": "d", "label": "Four" },
+          { "action": "e", "label": "Five" },
+          { "label": "no action" }
+        ],
+        "footer": "not-an-array"
+      }
+    }
+    """#)
+    let schema = try panel(result)
+    XCTAssertNil(schema.chrome?.search)
+    XCTAssertEqual(schema.chrome?.navActions.count, PluginVocabLimits.maxChromeNavActions)
+    XCTAssertEqual(schema.chrome?.footer ?? [], [])
+    guard case let .ok(_, warnings) = result else { return XCTFail("expected ok") }
+    XCTAssertFalse(warnings.isEmpty)
+  }
+
+  func testSearchSignsTheControlNotTheTypedQueryAndKeepsTypedText() {
+    let declaration = PluginVocabStateDeclaration(
+      stateKey: "q",
+      kind: .search,
+      placeholder: "Filter issues",
+      options: [],
+      initial: ""
+    )
+    let otherPlaceholder = PluginVocabStateDeclaration(
+      stateKey: "q",
+      kind: .search,
+      placeholder: "Other",
+      options: [],
+      initial: ""
+    )
+    XCTAssertEqual(
+      PluginVocabState.signature([declaration]),
+      PluginVocabState.signature([
+        PluginVocabStateDeclaration(stateKey: "q", kind: .search, placeholder: "Filter issues", options: [], initial: "ISS")
+      ])
+    )
+    XCTAssertNotEqual(PluginVocabState.signature([declaration]), PluginVocabState.signature([otherPlaceholder]))
+    XCTAssertEqual(PluginVocabState.controlStyle(declaration), .search)
+
+    let typed = PluginVocabState.apply([:], declaration: declaration, value: "  Issue  ")
+    XCTAssertEqual(typed, ["q": "  Issue  "])
+    XCTAssertEqual(PluginVocabState.normalize(typed, declarations: [declaration]), ["q": "  Issue  "])
+    let tooLong = String(repeating: "x", count: PluginVocabLimits.maxSearchChars + 40)
+    XCTAssertEqual(
+      PluginVocabState.apply([:], declaration: declaration, value: tooLong)["q"]?.count,
+      PluginVocabLimits.maxSearchChars
+    )
+    XCTAssertEqual(
+      PluginVocabState.normalize(["q": tooLong], declarations: [declaration])["q"]?.count,
+      PluginVocabLimits.maxSearchChars
+    )
+    XCTAssertEqual(
+      PluginVocabState.rows([declaration], state: ["q": "ISS-1"]),
+      [PluginVocabKeyValueRow(key: "q", value: "ISS-1")]
+    )
   }
 }

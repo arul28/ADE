@@ -18,6 +18,7 @@ import {
   vocabInitialPanelState,
   vocabListKey,
   vocabListNextPage,
+  vocabPanelContentNodes,
   vocabResolveStateOptions,
   vocabRowRange,
   vocabSelectRowRange,
@@ -147,10 +148,15 @@ function FixturePanel({
   fixture: PluginFixture;
   dispatch: VocabRenderContext["dispatch"];
 }) {
-  const body = React.useMemo(() => {
+  const parsedPanel = React.useMemo(() => {
     const parsed = parsePluginPanel(fixture.schema);
-    return parsed.ok ? parsed.panel.body : null;
+    return parsed.ok ? parsed.panel : null;
   }, [fixture.schema]);
+
+  const contentNodes = React.useMemo(
+    () => (parsedPanel ? vocabPanelContentNodes(parsedPanel) : null),
+    [parsedPanel],
+  );
 
   // The fixture rows are static, so an `optionsFrom` resolves once here rather
   // than per render — but through the same shared resolver the real host uses,
@@ -158,16 +164,16 @@ function FixturePanel({
   const fixtureRows = React.useMemo(() => pluginFixtureRows(fixture), [fixture]);
 
   const declarations = React.useMemo(() => {
-    if (!body) return [];
-    return collectVocabStateDeclarations(body, (binding) => vocabResolveStateOptions(
+    if (!contentNodes || !parsedPanel) return [];
+    return collectVocabStateDeclarations(contentNodes, (binding) => vocabResolveStateOptions(
       binding,
       fixtureRows.get(vocabStateOptionsBindingKey(binding)),
-    ));
-  }, [body, fixtureRows]);
+    ), parsedPanel.chrome);
+  }, [contentNodes, fixtureRows, parsedPanel]);
 
   const selectionDeclarations = React.useMemo(
-    () => (body ? collectVocabSelectionDeclarations(body) : []),
-    [body],
+    () => (contentNodes ? collectVocabSelectionDeclarations(contentNodes) : []),
+    [contentNodes],
   );
 
   const [panelState, setPanelState] = React.useState<VocabPanelState>(

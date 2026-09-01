@@ -55,6 +55,7 @@ import {
   vocabListPageLabel,
   vocabNormalizePanelSelection,
   vocabNormalizePanelState,
+  vocabPanelContentNodes,
   vocabResetPanelSelection,
   vocabResetPanelState,
   vocabResolveStateOptions,
@@ -77,6 +78,7 @@ import {
   type VocabMarkdownBlock,
   type VocabMarkdownSpan,
   type VocabNode,
+  type VocabPanelChrome,
   type VocabPanelSelection,
   type VocabPanelState,
   type VocabSelectionDeclaration,
@@ -242,6 +244,8 @@ export type PluginPaneRow =
       badge: string | null;
       open: boolean;
       selection: number;
+      /** Named glyph token; a terminal prints the id rather than a picture. */
+      icon: string | null;
     }
   /**
    * A selectable list's bulk bar: the count, the declared verbs, and Clear.
@@ -360,6 +364,20 @@ export type PluginPaneRow =
     }
   /** Dim explanatory line: an `emptyText`, a help string, a truncation notice. */
   | { kind: "note"; key: string; indent: number; text: string }
+  /**
+   * The nav-bar search field. Always the first row when the panel declared
+   * `chrome.search`, and never a body node — the query filters locally on every
+   * change, and Enter commits `onChange` the way a field does.
+   */
+  | {
+      kind: "search";
+      key: string;
+      indent: number;
+      placeholder: string;
+      value: string;
+      selection: number;
+      editing: boolean;
+    }
   /** A component this surface does not draw. Names it and says where it lives. */
   | { kind: "placeholder"; key: string; indent: number; label: string; hint: string };
 
@@ -393,6 +411,11 @@ export type PluginPaneInteractive =
       value: string;
       onChange?: VocabAction;
     }
+  /**
+   * The nav-bar search field. Enter hands it to the composer; committing writes
+   * panel state (the local filter) and, when declared, dispatches `onChange`.
+   */
+  | { kind: "search"; stateKey: string; label: string; onChange?: VocabAction }
   /**
    * A `group`'s disclosure. Pressing it folds the section and does nothing
    * else: no dispatch, no state write, no socket. Open/closed is a statement
@@ -458,6 +481,9 @@ export function pluginInteractiveKey(
   // a different option, and an armed confirm must survive that.
   if (interactive.kind === "state") {
     return JSON.stringify([...owner, "state", interactive.stateKey, interactive.value]);
+  }
+  if (interactive.kind === "search") {
+    return JSON.stringify([...owner, "search", interactive.stateKey]);
   }
   // A section is what it is called, never where it sits: a plugin republishing
   // its panel with one more group above this one has not opened the section the
@@ -587,6 +613,17 @@ export type PluginPaneModel = {
    * and refusing the gesture there would strand the reader on the card.
    */
   refreshAction: string | null;
+  /**
+   * Rows at the top that stay on screen: search, then nav actions.
+   *
+   * The window pins them so paging the body cannot scroll the nav bar off the
+   * pane — the same job sticky chrome does on desktop and the phone.
+   */
+  chromeHeaderCount: number;
+  /**
+   * Rows at the bottom that stay on screen: `chrome.footer`, already walked.
+   */
+  chromeFooterCount: number;
 };
 
 /** Form values live in app.tsx as one flat string map, like every other TUI form. */
@@ -917,6 +954,7 @@ function walkNode(node: VocabNode, key: string, indent: number, ctx: WalkContext
         groupKey,
         title: node.title,
         badge: node.badge ?? null,
+        icon: node.icon ?? null,
         open,
         selection,
       });
@@ -1470,6 +1508,8 @@ export function buildPluginPaneModel(input: PluginPaneInput): PluginPaneModel {
     // No row means no schema to read a declaration off, so `r` stays the plain
     // refetch it has always been.
     refreshAction: null as string | null,
+    chromeHeaderCount: 0,
+    chromeFooterCount: 0,
   };
 
   if (input.fetch.state !== "ok") {
@@ -1522,7 +1562,8 @@ export function buildPluginPaneModel(input: PluginPaneInput): PluginPaneModel {
   // move when the rows do land, so the reader's filter survives that.
   const resolveStateOptions = (binding: VocabStateOptionsBinding): readonly VocabStateOption[] =>
     vocabResolveStateOptions(binding, input.collections.get(vocabStateOptionsBindingKey(binding)));
-  const declarations = collectVocabStateDeclarations(parsed.panel.body, resolveStateOptions);
+  const contentNodes = vocabPanelContentNodes(parsed.panel);
+  const declarations = collectVocabStateDeclarations(contentNodes, resolveStateOptions, parsed.panel.chrome);
   const stateSignature = vocabStateSignature(declarations);
   const state = input.state === undefined
     ? vocabInitialPanelState(declarations)
@@ -1530,7 +1571,7 @@ export function buildPluginPaneModel(input: PluginPaneInput): PluginPaneModel {
       ? input.state
       : vocabNormalizePanelState(input.state, declarations);
 
-  const selectionDeclarations = collectVocabSelectionDeclarations(parsed.panel.body);
+  const selectionDeclarations = collectVocabSelectionDeclarations(contentNodes);
   const selectionSignature = vocabSelectionSignature(selectionDeclarations);
   const selection = input.selection === undefined
     ? vocabInitialPanelSelection(selectionDeclarations)
@@ -1555,10 +1596,17 @@ export function buildPluginPaneModel(input: PluginPaneInput): PluginPaneModel {
     inner,
     hasDeeplink: Boolean(parsed.panel.fallback.deeplink),
   };
+  walkChrome(parsed.panel.chrome, ctx);
+  const chromeHeaderCount = ctx.rows.length;
   walkNodes(parsed.panel.body, "body", 0, ctx);
-  if (ctx.rows.length === 0) {
+  if (ctx.rows.length === chromeHeaderCount) {
     ctx.rows.push({ kind: "note", key: "body.empty", indent: 0, text: parsed.panel.fallback.text });
   }
+  const bodyEnd = ctx.rows.length;
+  if (parsed.panel.chrome?.footer && parsed.panel.chrome.footer.length > 0) {
+    walkNodes(parsed.panel.chrome.footer, "chrome.footer", 0, ctx);
+  }
+  const chromeFooterCount = ctx.rows.length - bodyEnd;
 
   return {
     pluginId: input.pluginId,
@@ -1578,7 +1626,43 @@ export function buildPluginPaneModel(input: PluginPaneInput): PluginPaneModel {
     fallback: parsed.panel.fallback,
     status: "ok",
     refreshAction: readPluginPanelRefreshAction(record.schema),
+    chromeHeaderCount,
+    chromeFooterCount,
   };
+}
+
+function walkChrome(
+  chrome: VocabPanelChrome | undefined,
+  ctx: WalkContext,
+): void {
+  if (!chrome) return;
+  if (chrome.search) {
+    const search = chrome.search;
+    const selection = addInteractive(ctx, {
+      kind: "search",
+      stateKey: search.stateKey,
+      label: search.placeholder ?? "Search",
+      ...(search.onChange ? { onChange: search.onChange } : {}),
+    });
+    push(ctx, {
+      kind: "search",
+      key: "chrome.search",
+      indent: 0,
+      placeholder: search.placeholder ?? "Search",
+      value: ctx.state[search.stateKey] ?? "",
+      selection,
+      editing: ctx.editing === selection,
+    });
+  }
+  if (chrome.navActions && chrome.navActions.length > 0) {
+    const buttons: PluginPaneButton[] = chrome.navActions.map((action) => ({
+      label: action.label,
+      kind: "quiet",
+      disabled: false,
+      selection: addInteractive(ctx, { kind: "action", label: action.label, action }),
+    }));
+    push(ctx, { kind: "buttons", key: "chrome.nav", indent: 0, buttons });
+  }
 }
 
 function fallbackNote(
@@ -1778,16 +1862,25 @@ export function pluginPaneWindow(
   capacity: number,
 ): PluginPaneWindow {
   const limit = Math.max(1, Math.floor(capacity));
-  if (model.rows.length <= limit) {
-    return { rows: model.rows, hiddenBefore: 0, hiddenAfter: 0 };
+  const header = Math.max(0, Math.min(model.chromeHeaderCount ?? 0, model.rows.length));
+  const footer = Math.max(0, Math.min(model.chromeFooterCount ?? 0, model.rows.length - header));
+  const headerRows = model.rows.slice(0, header);
+  const footerRows = footer > 0 ? model.rows.slice(model.rows.length - footer) : [];
+  const body = model.rows.slice(header, model.rows.length - footer);
+  const innerLimit = Math.max(1, limit - headerRows.length - footerRows.length);
+
+  if (body.length <= innerLimit) {
+    return {
+      rows: [...headerRows, ...body, ...footerRows],
+      hiddenBefore: 0,
+      hiddenAfter: 0,
+    };
   }
+
+  const bodyOffset = header;
   const anchor = model.rows.findIndex(
     (row) => "selection" in row && row.selection === selectionIndex,
   );
-  // A row whose selection lives in a nested list — a button strip or a
-  // `segmented` control — is found by asking the row, not by reading a
-  // `selection` field it does not have. Missing one here scrolls the control the
-  // reader is standing on off the top of the pane.
   const nestedAnchor = anchor >= 0
     ? anchor
     : model.rows.findIndex((row) => (
@@ -1796,20 +1889,16 @@ export function pluginPaneWindow(
         : row.kind === "segmented"
           ? row.options.some((option) => option.selection === selectionIndex)
           : row.kind === "listItem"
-            // A row's tick box is its second interactive, so a reader standing
-            // on the box rather than on the row itself is still standing on
-            // this row — missing it would scroll it off the top of the pane.
             ? row.tick?.selection === selectionIndex
             : false
     ));
   const focus = nestedAnchor >= 0 ? nestedAnchor : 0;
-  // Keep a row of context above the selection so the user can see what they are
-  // moving through, not just where they landed.
-  const start = Math.max(0, Math.min(focus - 1, model.rows.length - limit));
+  const focusInBody = Math.max(0, Math.min(focus - bodyOffset, body.length - 1));
+  const start = Math.max(0, Math.min(focusInBody - 1, body.length - innerLimit));
   return {
-    rows: model.rows.slice(start, start + limit),
+    rows: [...headerRows, ...body.slice(start, start + innerLimit), ...footerRows],
     hiddenBefore: start,
-    hiddenAfter: Math.max(0, model.rows.length - start - limit),
+    hiddenAfter: Math.max(0, body.length - start - innerLimit),
   };
 }
 

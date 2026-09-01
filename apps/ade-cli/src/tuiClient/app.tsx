@@ -11150,6 +11150,19 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       committedFieldValues = { ...current.state.values, [valueKey]: committed };
     }
 
+    if (interactive.kind === "search") {
+      let committed = options?.commitValue ?? null;
+      if (committed === null) {
+        stashActiveInput();
+        setPromptValue(current.model.state[interactive.stateKey] ?? "");
+        updatePluginPaneState((state) => ({ ...state, editing: index }));
+        return;
+      }
+      const values = pluginPaneStateChange(current.model, interactive.stateKey, committed);
+      updatePluginPaneState((state) => ({ ...state, state: values, editing: null }));
+      if (!interactive.onChange) return;
+    }
+
     // A `segmented` option. The write is local and immediate — that is the whole
     // point of the control — so it happens before anything can fail, and a panel
     // with no `onChange` never touches the socket at all.
@@ -11164,7 +11177,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       return;
     }
 
-    const action = interactive.kind === "state"
+    const action = interactive.kind === "state" || interactive.kind === "search"
       ? interactive.onChange
       : interactive.kind === "field" ? interactive.applyOnChange : interactive.action;
     if (!action) return;
@@ -11183,6 +11196,11 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     // An `onChange` is told which option was picked, named by the control's own
     // state key — the plugin reads back exactly the key it wrote in the schema.
     if (interactive.kind === "state") args[interactive.stateKey] = interactive.value;
+    if (interactive.kind === "search") {
+      args[interactive.stateKey] = options?.commitValue
+        ?? current.model.state[interactive.stateKey]
+        ?? "";
+    }
     // The panel's own context rides along as `context`, the same field a socket's
     // surface context uses, so a button pressed on a context-carrying panel
     // reaches the plugin knowing what it was looking at.
@@ -11207,7 +11225,13 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     const statePayload = pluginPaneStatePayload(
       interactive.kind === "state"
         ? pluginPaneStateChange(current.model, interactive.stateKey, interactive.value)
-        : current.model.state,
+        : interactive.kind === "search"
+          ? pluginPaneStateChange(
+            current.model,
+            interactive.stateKey,
+            options?.commitValue ?? current.model.state[interactive.stateKey] ?? "",
+          )
+          : current.model.state,
     );
     if (statePayload) args.state = statePayload;
     // The batch, LAST of all — after the schema's own args, after the context
@@ -14181,6 +14205,12 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
           }
           // Land on the next thing to do — usually the next field, then submit.
           setRightSelectionIndex(movePluginPaneSelection(rightPane.model, pluginFieldIndex, 1));
+          return;
+        }
+        if (interactive?.kind === "search") {
+          updatePluginPaneState((state) => ({ ...state, editing: null }));
+          setPromptValue("");
+          void activatePluginInteractive(pluginFieldIndex, { commitValue: submittedValue });
           return;
         }
       }

@@ -48,6 +48,9 @@ enum PluginPanelParser {
       guard let node = parseNode(raw, path: "body[\(index)]", depth: 1, context: &context) else { break }
       body.append(node)
     }
+
+    let chrome = parseChrome(object["chrome"], context: &context)
+
     if context.overflowed {
       return .failed(
         context.nodeCount >= PluginVocabLimits.maxNodes ? .tooManyNodes : .tooDeep,
@@ -58,7 +61,8 @@ enum PluginPanelParser {
     let schema = PluginPanelSchema(
       title: cleanString(object["title"], max: PluginVocabLimits.maxLabelChars),
       fallback: fallback,
-      body: body
+      body: body,
+      chrome: chrome
     )
     return .ok(schema, warnings: context.warnings)
   }
@@ -146,6 +150,123 @@ enum PluginPanelParser {
       ))
       return .unknown(name: name)
     }
+  }
+
+  // MARK: - Panel chrome
+
+  /// Search, trailing nav verbs, and a sticky footer. Malformed pieces warn and
+  /// drop; overflow of the node budget is still panel-fatal, after the footer
+  /// has been counted — the same order `parsePluginPanel` uses.
+  static func parseChrome(_ raw: Any?, context: inout ParseContext) -> PluginVocabPanelChrome? {
+    guard let raw else { return nil }
+    guard let object = raw as? [String: Any] else {
+      chromeWarn("`chrome` must be an object.", path: "chrome", context: &context)
+      return nil
+    }
+    let search = parseChromeSearch(object["search"], context: &context)
+    let navActions = parseChromeNavActions(object["navActions"], context: &context)
+    let footer = parseChromeFooter(object["footer"], context: &context)
+    if search == nil && navActions == nil && footer == nil { return nil }
+    return PluginVocabPanelChrome(
+      search: search,
+      navActions: navActions ?? [],
+      footer: footer ?? []
+    )
+  }
+
+  private static func chromeWarn(_ message: String, path: String, context: inout ParseContext) {
+    context.warnings.append(PluginVocabWarning(code: .invalidNode, path: path, message: message))
+  }
+
+  private static func parseChromeSearch(_ raw: Any?, context: inout ParseContext) -> PluginVocabChromeSearch? {
+    guard let raw else { return nil }
+    guard let object = raw as? [String: Any] else {
+      chromeWarn("`chrome.search` must be an object.", path: "chrome.search", context: &context)
+      return nil
+    }
+    guard let stateKey = parseStateKey(object["stateKey"]) else {
+      chromeWarn("`chrome.search` needs a `stateKey`.", path: "chrome.search.stateKey", context: &context)
+      return nil
+    }
+    var search = PluginVocabChromeSearch(
+      stateKey: stateKey,
+      placeholder: cleanString(object["placeholder"], max: PluginVocabLimits.maxLabelChars)
+    )
+    if object["onChange"] != nil {
+      if let onChange = parseAction(object["onChange"]) {
+        search.onChange = onChange
+      } else {
+        chromeWarn("`chrome.search.onChange` needs an `action`.", path: "chrome.search.onChange", context: &context)
+      }
+    }
+    return search
+  }
+
+  private static func parseChromeNavActions(_ raw: Any?, context: inout ParseContext) -> [PluginVocabChromeNavAction]? {
+    guard let raw else { return nil }
+    guard let entries = raw as? [Any] else {
+      chromeWarn("`chrome.navActions` must be an array.", path: "chrome.navActions", context: &context)
+      return nil
+    }
+    if entries.count > PluginVocabLimits.maxChromeNavActions {
+      chromeWarn(
+        "A panel may declare at most \(PluginVocabLimits.maxChromeNavActions) nav actions.",
+        path: "chrome.navActions",
+        context: &context
+      )
+    }
+    var actions: [PluginVocabChromeNavAction] = []
+    for (index, entry) in entries.enumerated() {
+      guard actions.count < PluginVocabLimits.maxChromeNavActions else { break }
+      if let parsed = parseChromeNavAction(entry, path: "chrome.navActions[\(index)]", context: &context) {
+        actions.append(parsed)
+      }
+    }
+    return actions.isEmpty ? nil : actions
+  }
+
+  private static func parseChromeNavAction(
+    _ raw: Any?,
+    path: String,
+    context: inout ParseContext
+  ) -> PluginVocabChromeNavAction? {
+    guard let object = raw as? [String: Any], let action = parseAction(raw) else {
+      chromeWarn("A nav action needs `action` and `label`.", path: path, context: &context)
+      return nil
+    }
+    guard let label = cleanString(object["label"], max: PluginVocabLimits.maxLabelChars) else {
+      chromeWarn("A nav action needs a `label`.", path: "\(path).label", context: &context)
+      return nil
+    }
+    return PluginVocabChromeNavAction(
+      action: action,
+      label: label,
+      icon: cleanString(object["icon"], max: PluginVocabLimits.maxIdChars)
+    )
+  }
+
+  private static func parseChromeFooter(_ raw: Any?, context: inout ParseContext) -> [PluginVocabNode]? {
+    guard let raw else { return nil }
+    guard let entries = raw as? [Any] else {
+      chromeWarn("`chrome.footer` must be an array.", path: "chrome.footer", context: &context)
+      return nil
+    }
+    if entries.count > PluginVocabLimits.maxChromeFooterNodes {
+      chromeWarn(
+        "A panel may declare at most \(PluginVocabLimits.maxChromeFooterNodes) footer nodes.",
+        path: "chrome.footer",
+        context: &context
+      )
+    }
+    var footer: [PluginVocabNode] = []
+    let limit = min(entries.count, PluginVocabLimits.maxChromeFooterNodes)
+    for index in 0..<limit {
+      guard let node = parseNode(entries[index], path: "chrome.footer[\(index)]", depth: 1, context: &context) else {
+        break
+      }
+      footer.append(node)
+    }
+    return footer.isEmpty ? nil : footer
   }
 
   // MARK: - Shared pieces

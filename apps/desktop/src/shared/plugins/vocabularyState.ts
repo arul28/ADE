@@ -10,12 +10,16 @@
  * selected value did not survive the re-render unless the plugin baked it back
  * into `field.value`. A fleet list is unusable that way.
  *
- * So the vocabulary gains one primitive and one clause:
+ * So the vocabulary gains two primitives and the clauses that read them:
  *
  * - a **`segmented` node** owns a named piece of CLIENT state — a closed option
  *   list, a default, and nothing else;
+ * - a **`chrome.search` field** owns a named piece of free-text CLIENT state —
+ *   a query string, a placeholder, and nothing else;
  * - a **`where` clause on a binding** keeps the rows whose fields match, read
  *   either against a literal or against the current value of a state key.
+ *   `contains` is the search operator: case-insensitive substring, inactive
+ *   when the needle is empty.
  *
  * ## The second map
  *
@@ -113,9 +117,9 @@ export const VOCAB_STATE_LIMITS = {
    * of pills, so eight is where a strip stops fitting; a collection-bound list
    * is a workspace's projects or labels, drawn as a menu, and a real workspace
    * has thirty. Fifty is where a flat menu stops being findable and the honest
-   * answer becomes a search field the vocabulary does not have yet — and it sits
-   * under `maxKeyValueRows` (60), so no client draws a longer list than one it
-   * already draws.
+   * answer becomes the panel's nav-bar search field (`chrome.search`) — and it
+   * sits under `maxKeyValueRows` (60), so no client draws a longer list than one
+   * it already draws.
    */
   maxBoundStateOptions: 50,
   /** Top-level clauses on one binding's `where`. They are ANDed. */
@@ -154,6 +158,14 @@ export const VOCAB_STATE_LIMITS = {
    * menu, and the vocabulary has no menu.
    */
   maxBulkActions: 4,
+  /**
+   * Characters a `chrome.search` query may hold.
+   *
+   * The same 200 as a label: a search field is a filter the reader types, not a
+   * document, and a query past that is a paste they should shorten rather than
+   * a document the panel should keep.
+   */
+  maxSearchChars: 200,
 } as const;
 
 /* ── Panel state ────────────────────────────────────────────────────────── */
@@ -215,11 +227,21 @@ export type VocabStateOptionsBinding = {
  */
 export type VocabStateDeclaration = {
   stateKey: string;
+  /**
+   * `search` is the nav-bar field (`chrome.search`). Absent means `segmented`,
+   * so every declaration written before this kind existed still means a closed
+   * option list.
+   */
+  kind?: "segmented" | "search";
   label?: string;
+  /** Placeholder shown while a `search` field is empty. */
+  placeholder?: string;
   /**
    * Every option the control offers: the literal ones first, then whatever
    * {@link optionsFrom} resolved to. Literals first because that is where the
    * "All" sentinel is written, and a reader looks for it at the top.
+   *
+   * Empty for a `search` declaration — the value is free text, not a choice.
    */
   options: VocabStateOption[];
   /** The option selected when the panel first renders. Always a declared value. */
@@ -229,6 +251,13 @@ export type VocabStateDeclaration = {
   /** Set when the options came from a collection rather than from the schema. */
   optionsFrom?: VocabStateOptionsBinding;
 };
+
+/** A nav-bar search field, as opposed to a closed `segmented` option list. */
+export function vocabIsSearchDeclaration(
+  declaration: Pick<VocabStateDeclaration, "kind">,
+): boolean {
+  return declaration.kind === "search";
+}
 
 /* ── Selection ──────────────────────────────────────────────────────────── */
 
@@ -283,6 +312,15 @@ export type VocabPredicate =
       /** Top-level field of the bound row. No paths, no nesting. */
       field: string;
       values?: string[];
+      stateKey?: string;
+    }
+  | {
+      kind: "contains";
+      /** Top-level field of the bound row. No paths, no nesting. */
+      field: string;
+      /** A literal needle. Absent when the needle comes from {@link stateKey}. */
+      needle?: string;
+      /** A state key whose current value is the needle — typically `chrome.search`. */
       stateKey?: string;
     }
   | {
@@ -408,10 +446,12 @@ type WhereParseBudget = { nodes: number; warn: (message: string) => void };
 const COMPARISON_KEYS = ["equals", "notEquals", "in", "notIn"] as const;
 type ComparisonKey = (typeof COMPARISON_KEYS)[number];
 
+const CONTAINS_KEY = "contains" as const;
+
 const TIME_KEYS = ["since", "before"] as const;
 type TimeKey = (typeof TIME_KEYS)[number];
 
-const OPERATOR_KEYS = [...COMPARISON_KEYS, ...TIME_KEYS] as const;
+const OPERATOR_KEYS = [...COMPARISON_KEYS, CONTAINS_KEY, ...TIME_KEYS] as const;
 
 /**
  * One `since` / `before` clause.
@@ -503,17 +543,36 @@ function parseClause(raw: unknown, depth: number, budget: WhereParseBudget): Voc
     // and picking one for them would filter rows nobody asked to hide.
     budget.warn(
       present.length === 0
-        ? "A `where` comparison needs one of `equals`, `notEquals`, `in`, `notIn`, `since` or `before`."
+        ? "A `where` comparison needs one of `equals`, `notEquals`, `in`, `notIn`, `contains`, `since` or `before`."
         : "A `where` comparison may declare only one operator.",
     );
     return null;
   }
-  const name = present[0] as ComparisonKey | TimeKey;
+  const name = present[0] as ComparisonKey | TimeKey | typeof CONTAINS_KEY;
   const operand = raw[name];
   const fieldName = field.slice(0, VOCAB_STATE_LIMITS.maxStateIdChars);
 
   if (name === "since" || name === "before") {
     return parseTimeClause(name, operand, fieldName, budget);
+  }
+
+  if (name === "contains") {
+    const fromState = stateRef(operand);
+    if (fromState !== null) {
+      return { kind: "contains", field: fieldName, stateKey: fromState };
+    }
+    const needle = literalText(operand);
+    if (needle === null) {
+      budget.warn(
+        '`contains` needs a literal string or a `{"$state": …}` reference.',
+      );
+      return null;
+    }
+    return {
+      kind: "contains",
+      field: fieldName,
+      needle: needle.slice(0, VOCAB_STATE_LIMITS.maxSearchChars),
+    };
   }
 
   const key = name;
@@ -575,6 +634,7 @@ export function vocabWhereStateKeys(where: readonly VocabPredicate[] | undefined
   const walk = (clause: VocabPredicate) => {
     switch (clause.kind) {
       case "compare":
+      case "contains":
       case "time":
         // A `since` written against a literal or a `{"$rel": …}` declares no key
         // at all, which is the honest answer: it reads the clock, not the panel.
@@ -583,8 +643,14 @@ export function vocabWhereStateKeys(where: readonly VocabPredicate[] | undefined
       case "not":
         walk(clause.clause);
         return;
-      default:
+      case "and":
+      case "or":
         for (const child of clause.clauses) walk(child);
+        return;
+      default: {
+        const exhaustive: never = clause;
+        void exhaustive;
+      }
     }
   };
   for (const clause of where ?? []) walk(clause);
@@ -619,6 +685,16 @@ function evaluateClause(
       }
       if (!values || values.length === 0) return null;
       return values.includes(vocabPredicateFieldText(row[clause.field])) === (clause.op === "in");
+    }
+    case "contains": {
+      const needle = containsNeedle(clause, state);
+      // Empty query is inactive: a blank search field is "show everything",
+      // the same reading as an "All" option on a segmented control.
+      if (needle === null) return null;
+      const haystack = vocabPredicateFieldText(row[clause.field]);
+      // A missing field fails the comparison — the same rule as `equals`.
+      if (haystack === "") return false;
+      return haystack.toLowerCase().includes(needle);
     }
     case "time": {
       const at = timeOperand(clause, state, now);
@@ -656,7 +732,35 @@ function evaluateClause(
       const value = evaluateClause(clause.clause, row, state, now);
       return value === null ? null : !value;
     }
+    default: {
+      const exhaustive: never = clause;
+      void exhaustive;
+      return null;
+    }
   }
+}
+
+/**
+ * The lowercase needle a `contains` clause compares against, or `null` when
+ * the clause is INACTIVE.
+ *
+ * Empty is inactive rather than "match nothing": a search field the reader has
+ * not typed into is "this filter is not filtering", the same as an unset
+ * segmented key. The fold is `toLowerCase` so four clients can agree without
+ * picking a locale.
+ */
+function containsNeedle(
+  clause: Extract<VocabPredicate, { kind: "contains" }>,
+  state: VocabPanelState,
+): string | null {
+  if (clause.stateKey !== undefined) {
+    const selected = state[clause.stateKey];
+    if (selected === undefined) return null;
+    const trimmed = selected.trim().slice(0, VOCAB_STATE_LIMITS.maxSearchChars).toLowerCase();
+    return trimmed === "" ? null : trimmed;
+  }
+  const literal = (clause.needle ?? "").trim().slice(0, VOCAB_STATE_LIMITS.maxSearchChars).toLowerCase();
+  return literal === "" ? null : literal;
 }
 
 /**
@@ -858,11 +962,12 @@ export type VocabSegmentedStyle = "segmented" | "toggle";
  * {@link VOCAB_STATE_LIMITS.maxStateOptions} the control is a menu that names
  * the current choice, under it the strip it has always been.
  */
-export type VocabStateControlStyle = VocabSegmentedStyle | "menu";
+export type VocabStateControlStyle = VocabSegmentedStyle | "menu" | "search";
 
 export function vocabStateControlStyle(
-  declaration: Pick<VocabStateDeclaration, "options" | "style">,
+  declaration: Pick<VocabStateDeclaration, "options" | "style" | "kind">,
 ): VocabStateControlStyle {
+  if (vocabIsSearchDeclaration(declaration)) return "search";
   if (declaration.options.length > VOCAB_STATE_LIMITS.maxStateOptions) return "menu";
   return declaration.style ?? "segmented";
 }
@@ -946,15 +1051,17 @@ export function vocabStateSignature(declarations: readonly VocabStateDeclaration
   return JSON.stringify(
     declarations.map((declaration) => [
       declaration.stateKey,
-      declaration.optionsFrom
-        ? [
-            "$from",
-            declaration.optionsFrom.collection,
-            declaration.optionsFrom.keyPrefix ?? "",
-            declaration.optionsFrom.valueField,
-            declaration.optionsFrom.labelField ?? "",
-          ]
-        : [declaration.initial, declaration.options.map((option) => option.value)],
+      vocabIsSearchDeclaration(declaration)
+        ? ["$search", declaration.placeholder ?? ""]
+        : declaration.optionsFrom
+          ? [
+              "$from",
+              declaration.optionsFrom.collection,
+              declaration.optionsFrom.keyPrefix ?? "",
+              declaration.optionsFrom.valueField,
+              declaration.optionsFrom.labelField ?? "",
+            ]
+          : [declaration.initial, declaration.options.map((option) => option.value)],
     ]),
   );
 }
@@ -975,6 +1082,13 @@ export function vocabNormalizePanelState(
   const next: Record<string, string> = {};
   for (const declaration of declarations) {
     const current = state?.[declaration.stateKey];
+    if (vocabIsSearchDeclaration(declaration)) {
+      next[declaration.stateKey] =
+        typeof current === "string"
+          ? current.slice(0, VOCAB_STATE_LIMITS.maxSearchChars)
+          : declaration.initial;
+      continue;
+    }
     next[declaration.stateKey] = declaration.options.some((option) => option.value === current)
       ? (current as string)
       : declaration.initial;
@@ -988,6 +1102,11 @@ export function vocabApplyStateChange(
   declaration: VocabStateDeclaration,
   value: string,
 ): VocabPanelState {
+  if (vocabIsSearchDeclaration(declaration)) {
+    const nextValue = value.slice(0, VOCAB_STATE_LIMITS.maxSearchChars);
+    if (state[declaration.stateKey] === nextValue) return state;
+    return { ...state, [declaration.stateKey]: nextValue };
+  }
   if (!declaration.options.some((option) => option.value === value)) return state;
   if (state[declaration.stateKey] === value) return state;
   return { ...state, [declaration.stateKey]: value };
@@ -1239,6 +1358,12 @@ export function vocabStateRows(
 ): { key: string; value: string }[] {
   return declarations.map((declaration) => {
     const current = state[declaration.stateKey] ?? declaration.initial;
+    if (vocabIsSearchDeclaration(declaration)) {
+      return {
+        key: declaration.label ?? declaration.stateKey,
+        value: current,
+      };
+    }
     const option = declaration.options.find((entry) => entry.value === current);
     return {
       key: declaration.label ?? declaration.stateKey,

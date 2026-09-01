@@ -221,7 +221,7 @@ function PluginRow({
         >
           {lead}
           <Rail on={focused} />
-          {` ${row.open ? "▾" : "▸"} ${endTruncate(row.title, Math.max(4, inner - 4))}`}
+          {` ${row.open ? "▾" : "▸"} ${row.icon ? `${row.icon} ` : ""}${endTruncate(row.title, Math.max(4, inner - 4))}`}
           {row.badge ? <Text color={theme.color.t4} dimColor>{`  ${row.badge}`}</Text> : null}
         </Text>
       );
@@ -413,6 +413,23 @@ function PluginRow({
         </Text>
       );
     }
+    case "search": {
+      const selected = row.selection === selectionIndex;
+      const display = row.editing && editingValue !== null
+        ? (editingValue || "…")
+        : (row.value || row.placeholder);
+      return (
+        <Text color={selected ? theme.color.violet : undefined} bold={row.editing} wrap="truncate-end">
+          {lead}
+          <Rail on={selected} />
+          {` / `}
+          <Text color={row.value || row.editing ? theme.color.t2 : theme.color.t4} dimColor={!row.value && !row.editing}>
+            {endTruncate(display, Math.max(6, inner - 4))}
+          </Text>
+          {row.editing ? <Text color={theme.color.t4} dimColor>{" ← typing below"}</Text> : null}
+        </Text>
+      );
+    }
     case "placeholder": {
       // Named, never blank: the user should know something is there and how to
       // reach it, rather than reading a gap as a broken plugin.
@@ -449,7 +466,7 @@ export function PluginPanelPane({
   const { model } = content;
   const inner = Math.max(8, width - 4);
   const window = pluginPaneWindow(model, selectedIndex, PLUGIN_PANE_ROW_CAPACITY);
-  const hasFields = model.interactives.some((entry) => entry.kind === "field");
+  const hasFields = model.interactives.some((entry) => entry.kind === "field" || entry.kind === "search");
   const hasControls = model.interactives.some((entry) => entry.kind === "state");
 
   return (

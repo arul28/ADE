@@ -403,7 +403,7 @@ function PluginPageShell({
         height: "100%",
         minHeight: 0,
         minWidth: 0,
-        overflow: fill ? "hidden" : "auto",
+        overflow: "hidden",
         ...(plugin?.accent ? ({ "--plugin-accent": plugin.accent } as React.CSSProperties) : {}),
       }}
     >
@@ -453,7 +453,7 @@ function PluginPageShell({
       <div
         style={fill
           ? { display: "flex", flex: 1, minHeight: 0, minWidth: 0 }
-          : { padding: 20, minWidth: 0 }}
+          : { padding: 20, minWidth: 0, flex: 1, minHeight: 0, display: "flex", flexDirection: "column" }}
       >
         {children}
       </div>

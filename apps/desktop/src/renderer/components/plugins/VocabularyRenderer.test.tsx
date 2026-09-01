@@ -873,3 +873,38 @@ describe("VocabList — paging", () => {
     expect(screen.queryByRole("button", { name: "Show more" })).toBeNull();
   });
 });
+
+describe("panel chrome", () => {
+  it("draws search, nav actions, and a sticky footer outside the scrolling body", () => {
+    const setStateValue = vi.fn();
+    const dispatch = vi.fn(async () => {});
+    render(
+      <PluginPanelView
+        schema={{
+          v: 1,
+          fallback: { title: "T", text: "B" },
+          body: [{ component: "text", text: "Issue list" }],
+          chrome: {
+            search: { stateKey: "q", placeholder: "Filter issues", onChange: { action: "search" } },
+            navActions: [{ action: "openLinear", label: "Open in Linear" }],
+            footer: [{ component: "button", label: "New issue", onPress: { action: "create" } }],
+          },
+        }}
+        context={makeContext({ setStateValue, dispatch, state: { q: "ISS" } })}
+      />,
+    );
+
+    expect(screen.getByTestId("plugin-panel-chrome")).toBeTruthy();
+    expect(screen.getByTestId("plugin-panel-footer")).toBeTruthy();
+    const search = screen.getByRole("searchbox", { name: "Filter issues" });
+    expect((search as HTMLInputElement).value).toBe("ISS");
+    fireEvent.change(search, { target: { value: "login" } });
+    expect(setStateValue).toHaveBeenCalledWith("q", "login");
+    expect(dispatch).not.toHaveBeenCalled();
+    fireEvent.keyDown(search, { key: "Enter" });
+    expect(dispatch).toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "Open in Linear" }));
+    fireEvent.click(screen.getByRole("button", { name: "New issue" }));
+    expect(screen.getByText("Issue list")).toBeTruthy();
+  });
+});

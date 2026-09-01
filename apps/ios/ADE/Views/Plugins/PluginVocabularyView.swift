@@ -177,6 +177,9 @@ private struct PluginVocabGroupView: View {
             .font(.system(size: 10, weight: .semibold))
             .foregroundStyle(ADEColor.textMuted)
             .rotationEffect(.degrees(isOpen ? 90 : 0))
+          if PluginSymbol.drawsIcon(group.icon) {
+            PluginSymbol.glyph(group.icon, fallback: "puzzlepiece.extension", pointSize: 12)
+          }
           Text(group.title)
             .font(.subheadline.weight(.semibold))
             .foregroundStyle(ADEColor.textPrimary)

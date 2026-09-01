@@ -751,7 +751,7 @@ final class PluginPaneStore: ObservableObject {
     }
     switch PluginPanelParser.parse(record.schemaJSON) {
     case let .ok(schema, _):
-      adoptStateControls(from: schema.body)
+      adoptStateControls(from: schema)
       return .panel(resolveBindings(in: schema))
     case let .failed(failure, fallback):
       if case .versionUnsupported = failure {
@@ -793,12 +793,17 @@ final class PluginPaneStore: ObservableObject {
   /// the selections untouched. ``PluginVocabState/normalize(_:declarations:)``
   /// catches a value inside a control that did not vanish — an option the new
   /// schema no longer offers cannot stay selected.
-  private func adoptStateControls(from body: [PluginVocabNode]) {
+  private func adoptStateControls(from schema: PluginPanelSchema) {
     // A control's `optionsFrom` is a fetch like any other, resolved from the
     // rows this pane already reads — so a bound control draws the reader's
     // projects rather than nothing but its "All". The signature deliberately
     // does NOT move when those rows do: see ``PluginVocabState/signature(_:)``.
-    let declarations = PluginVocabState.declarations(in: body) { binding in
+    // Search is declared first, from chrome, so a `where` that reads the query
+    // sees the same key the nav-bar field owns.
+    let declarations = PluginVocabState.declarations(
+      in: schema.contentNodes,
+      chrome: schema.chrome
+    ) { binding in
       self.stateOptions(for: binding)
     }
     let signature = PluginVocabState.signature(declarations)
@@ -809,7 +814,7 @@ final class PluginPaneStore: ObservableObject {
         : PluginVocabState.normalize(panelState, declarations: declarations)
       stateSignature = signature
     }
-    adoptSelectionControls(from: body)
+    adoptSelectionControls(from: schema.contentNodes)
   }
 
   /// The selection half of ``adoptStateControls(from:)``, on the same terms.
@@ -993,6 +998,42 @@ final class PluginPaneStore: ObservableObject {
     }
   }
 
+  /// The text currently in a `chrome.search` field.
+  func searchQuery(for search: PluginVocabChromeSearch) -> String {
+    panelState[search.stateKey] ?? ""
+  }
+
+  /// Type into the nav-bar search. The `where` re-filters on every change; the
+  /// optional `onChange` action is a separate ``commitSearch(_:)``.
+  func setSearch(_ value: String, in search: PluginVocabChromeSearch) {
+    let next = PluginVocabState.apply(
+      panelState,
+      declaration: searchDeclaration(for: search),
+      value: value
+    )
+    guard next != panelState else { return }
+    panelState = next
+    presentation = resolvePresentation()
+  }
+
+  /// Dispatch `chrome.search.onChange` with the typed query. Enter or dismissing
+  /// the field, never per keystroke — the same commit the desktop field uses.
+  func commitSearch(_ search: PluginVocabChromeSearch) {
+    guard let onChange = search.onChange else { return }
+    perform(onChange, extraArgs: [search.stateKey: searchQuery(for: search)])
+  }
+
+  private func searchDeclaration(for search: PluginVocabChromeSearch) -> PluginVocabStateDeclaration {
+    stateDeclarations.first { $0.stateKey == search.stateKey }
+      ?? PluginVocabStateDeclaration(
+        stateKey: search.stateKey,
+        kind: .search,
+        placeholder: search.placeholder,
+        options: [],
+        initial: ""
+      )
+  }
+
   /// The control as the store holds it: literal options plus whatever the
   /// node's `optionsFrom` resolved to, and the initial value already reconciled
   /// against that list.
@@ -1016,6 +1057,10 @@ final class PluginPaneStore: ObservableObject {
   private func resolveBindings(in schema: PluginPanelSchema) -> PluginPanelSchema {
     var resolved = schema
     resolved.body = schema.body.map(resolveBindings(in:))
+    if var chrome = schema.chrome, !chrome.footer.isEmpty {
+      chrome.footer = chrome.footer.map(resolveBindings(in:))
+      resolved.chrome = chrome
+    }
     return resolved
   }
 

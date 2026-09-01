@@ -118,6 +118,10 @@ enum PluginVocabLimits {
   static let maxListItemActions = 3
   /// Actions behind a row's overflow control.
   static let maxListItemOverflow = 6
+  /// Buttons in a panel's nav bar (`chrome.navActions`). Mirrors `maxChromeNavActions`.
+  static let maxChromeNavActions = 4
+  /// Root nodes in `chrome.footer`. Mirrors `maxChromeFooterNodes`.
+  static let maxChromeFooterNodes = 4
 }
 
 /// Semantic tone. No red: a failure is amber, the house rule stated at the top
@@ -234,6 +238,8 @@ struct PluginVocabGroup: Equatable {
   var groupKey: String?
   /// A count beside the title, e.g. `12`. Text only, like an option's badge.
   var badge: String?
+  /// A named glyph beside the title — the same token a badge or a button uses.
+  var icon: String?
   /// Open on first render. Absent means open — a section nobody has touched
   /// shows its contents.
   var defaultOpen = true
@@ -660,6 +666,33 @@ struct PluginPanelSchema: Equatable {
   var title: String?
   var fallback: PluginPanelFallback
   var body: [PluginVocabNode]
+  var chrome: PluginVocabPanelChrome?
+
+  /// Body plus footer, in reading order — what a host walks for bindings and selection.
+  var contentNodes: [PluginVocabNode] {
+    body + (chrome?.footer ?? [])
+  }
+}
+
+/// The panel's own chrome: a nav-bar search, trailing nav verbs, and a sticky
+/// footer. None of these are body nodes — the body scrolls under them.
+/// Mirrors `VocabPanelChrome`.
+struct PluginVocabPanelChrome: Equatable {
+  var search: PluginVocabChromeSearch?
+  var navActions: [PluginVocabChromeNavAction] = []
+  var footer: [PluginVocabNode] = []
+}
+
+struct PluginVocabChromeSearch: Equatable {
+  var stateKey: String
+  var placeholder: String?
+  var onChange: PluginVocabAction?
+}
+
+struct PluginVocabChromeNavAction: Equatable {
+  var action: PluginVocabAction
+  var label: String
+  var icon: String?
 }
 
 /// Why a whole panel could not be rendered. Distinct from a node-local problem:

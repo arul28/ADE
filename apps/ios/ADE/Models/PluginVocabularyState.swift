@@ -88,8 +88,8 @@ extension PluginVocabLimits {
   /// literal list is read at a glance and drawn as a strip of pills, so eight is
   /// where a strip stops fitting; a collection-bound list is a workspace's
   /// projects or labels, drawn as a menu, and a real workspace has thirty. Fifty
-  /// is where a flat menu stops being findable and the honest answer becomes a
-  /// search field the vocabulary does not have yet — and it sits under
+  /// is where a flat menu stops being findable and the honest answer becomes the
+  /// panel's nav-bar search field (`chrome.search`) — and it sits under
   /// ``maxKeyValueRows`` (60), so no client draws a longer list than one it
   /// already draws.
   static let maxBoundStateOptions = 50
@@ -113,6 +113,8 @@ extension PluginVocabLimits {
   /// and draws the count and Clear itself. A fifth verb over a selection is a
   /// menu, and the vocabulary has no menu.
   static let maxBulkActions = 4
+  /// Characters a `chrome.search` query may hold. Mirrors `maxSearchChars`.
+  static let maxSearchChars = 200
   /// Top-level clauses on one binding's `where`. They are ANDed.
   static let maxWhereClauses = 4
   /// Nesting depth of `and`/`or`/`not`. A top-level clause is depth 1.
@@ -175,12 +177,25 @@ struct PluginVocabStateOptionsBinding: Equatable {
 /// What a `segmented` node contributes to the panel's state, lifted out of the
 /// node tree so the store can build the initial state without walking it twice.
 struct PluginVocabStateDeclaration: Equatable, Identifiable {
+  enum Kind: String, Equatable {
+    case segmented
+    case search
+  }
+
   var id: String { stateKey }
   var stateKey: String
+  /// `search` is the nav-bar field (`chrome.search`). Absent/`segmented` is a
+  /// closed option list, so every declaration written before this kind existed
+  /// still means a segmented control.
+  var kind: Kind = .segmented
   var label: String?
+  /// Placeholder shown while a `search` field is empty.
+  var placeholder: String?
   /// Every option the control offers: the literal ones first, then whatever
   /// ``optionsFrom`` resolved to. Literals first because that is where the "All"
   /// sentinel is written, and a reader looks for it at the top.
+  ///
+  /// Empty for a `search` declaration — the value is free text, not a choice.
   var options: [PluginVocabStateOption]
   /// The option selected when the panel first renders. Always a declared value.
   var initial: String
@@ -189,6 +204,8 @@ struct PluginVocabStateDeclaration: Equatable, Identifiable {
   var style: PluginVocabSegmented.Style?
   /// Set when the options came from a collection rather than from the schema.
   var optionsFrom: PluginVocabStateOptionsBinding?
+
+  var isSearch: Bool { kind == .search }
 }
 
 /// What a `list` node's `selectable` contributes, in the shape the store holds.
@@ -235,6 +252,7 @@ enum PluginVocabStateControlStyle: String, Equatable {
   case segmented
   case toggle
   case menu
+  case search
 }
 
 /// A closed set of options with one selected, owning a named piece of CLIENT
@@ -335,6 +353,8 @@ indirect enum PluginVocabPredicate: Equatable {
   enum TimeOp: String, Equatable { case since, before }
 
   case compare(op: Op, field: String, values: [String]?, stateKey: String?)
+  /// Case-insensitive substring. Empty needle is inactive. Mirrors `contains`.
+  case contains(field: String, needle: String?, stateKey: String?)
   /// `since` / `before`, holding EITHER an absolute instant in epoch
   /// milliseconds, an offset from the render clock, or a state key whose
   /// selected value is read as one of those two.
@@ -472,6 +492,24 @@ enum PluginVocabState {
     return at
   }
 
+  /// The lowercase needle a `contains` clause compares against, or `nil` when
+  /// the clause is INACTIVE.
+  static func containsNeedle(
+    needle: String?,
+    stateKey: String?,
+    state: PluginVocabPanelState
+  ) -> String? {
+    if let stateKey {
+      guard let selected = state[stateKey] else { return nil }
+      let trimmed = selected.trimmingCharacters(in: .whitespacesAndNewlines)
+      let folded = String(trimmed.prefix(PluginVocabLimits.maxSearchChars)).lowercased()
+      return folded.isEmpty ? nil : folded
+    }
+    let literal = (needle ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+    let folded = String(literal.prefix(PluginVocabLimits.maxSearchChars)).lowercased()
+    return folded.isEmpty ? nil : folded
+  }
+
   /// The wall clock in epoch milliseconds. The default every caller that has no
   /// opinion uses, and the seam a test replaces instead of sleeping.
   static func nowMilliseconds() -> Double { Date().timeIntervalSince1970 * 1000 }
@@ -501,6 +539,14 @@ enum PluginVocabState {
       }
       guard let operands, !operands.isEmpty else { return nil }
       return operands.contains(fieldText(row[field])) == (op == .membership)
+
+    case let .contains(field, needle, stateKey):
+      guard let folded = containsNeedle(needle: needle, stateKey: stateKey, state: state) else {
+        return nil
+      }
+      let haystack = fieldText(row[field])
+      if haystack.isEmpty { return false }
+      return haystack.lowercased().contains(folded)
 
     case let .time(op, field, at, relMs, stateKey):
       guard let instant = timeOperand(at: at, relMs: relMs, stateKey: stateKey, state: state, now: now) else {
@@ -598,10 +644,22 @@ enum PluginVocabState {
   ///   transition. See ``signature(_:)``.
   static func declarations(
     in body: [PluginVocabNode],
+    chrome: PluginVocabPanelChrome? = nil,
     resolveOptions: (PluginVocabStateOptionsBinding) -> [PluginVocabStateOption] = { _ in [] }
   ) -> [PluginVocabStateDeclaration] {
     var found: [PluginVocabStateDeclaration] = []
     var seen = Set<String>()
+
+    if let search = chrome?.search, found.count < PluginVocabLimits.maxStateKeys {
+      found.append(PluginVocabStateDeclaration(
+        stateKey: search.stateKey,
+        kind: .search,
+        placeholder: search.placeholder,
+        options: [],
+        initial: ""
+      ))
+      seen.insert(search.stateKey)
+    }
 
     func walk(_ nodes: [PluginVocabNode]) {
       for node in nodes {
@@ -695,6 +753,7 @@ enum PluginVocabState {
   /// `menu` is computed from the resolved option count and is the one form an
   /// author cannot ask for. Mirrors `vocabStateControlStyle`.
   static func controlStyle(_ declaration: PluginVocabStateDeclaration) -> PluginVocabStateControlStyle {
+    if declaration.isSearch { return .search }
     if declaration.options.count > PluginVocabLimits.maxStateOptions { return .menu }
     switch declaration.style ?? .segmented {
     case .segmented: return .segmented
@@ -727,6 +786,9 @@ enum PluginVocabState {
   /// the two spell the same string.
   static func signature(_ declarations: [PluginVocabStateDeclaration]) -> String {
     let shape: [[Any]] = declarations.map { declaration -> [Any] in
+      if declaration.isSearch {
+        return [declaration.stateKey, ["$search", declaration.placeholder ?? ""]]
+      }
       guard let binding = declaration.optionsFrom else {
         return [declaration.stateKey, declaration.initial, declaration.options.map(\.value)]
       }
@@ -758,6 +820,14 @@ enum PluginVocabState {
     var next: PluginVocabPanelState = [:]
     for declaration in declarations {
       let current = state[declaration.stateKey]
+      if declaration.isSearch {
+        if let current {
+          next[declaration.stateKey] = String(current.prefix(PluginVocabLimits.maxSearchChars))
+        } else {
+          next[declaration.stateKey] = declaration.initial
+        }
+        continue
+      }
       next[declaration.stateKey] = declaration.options.contains { $0.value == current }
         ? (current ?? declaration.initial)
         : declaration.initial
@@ -771,6 +841,13 @@ enum PluginVocabState {
     declaration: PluginVocabStateDeclaration,
     value: String
   ) -> PluginVocabPanelState {
+    if declaration.isSearch {
+      let nextValue = String(value.prefix(PluginVocabLimits.maxSearchChars))
+      guard state[declaration.stateKey] != nextValue else { return state }
+      var next = state
+      next[declaration.stateKey] = nextValue
+      return next
+    }
     guard declaration.options.contains(where: { $0.value == value }) else { return state }
     guard state[declaration.stateKey] != value else { return state }
     var next = state
@@ -789,6 +866,12 @@ enum PluginVocabState {
   ) -> [PluginVocabKeyValueRow] {
     declarations.map { declaration in
       let current = state[declaration.stateKey] ?? declaration.initial
+      if declaration.isSearch {
+        return PluginVocabKeyValueRow(
+          key: declaration.label ?? declaration.stateKey,
+          value: current
+        )
+      }
       let option = declaration.options.first { $0.value == current }
       return PluginVocabKeyValueRow(
         key: declaration.label ?? declaration.stateKey,
@@ -1267,12 +1350,12 @@ extension PluginPanelParser {
       warn("A `where` comparison needs a `field`.")
       return nil
     }
-    let present = ["equals", "notEquals", "in", "notIn", "since", "before"].filter { object[$0] != nil }
+    let present = ["equals", "notEquals", "in", "notIn", "contains", "since", "before"].filter { object[$0] != nil }
     guard present.count == 1, let key = present.first else {
       // Two operators on one clause is not a clause the author meant either way,
       // and picking one for them would filter rows nobody asked to hide.
       warn(present.isEmpty
-        ? "A `where` comparison needs one of `equals`, `notEquals`, `in`, `notIn`, `since` or `before`."
+        ? "A `where` comparison needs one of `equals`, `notEquals`, `in`, `notIn`, `contains`, `since` or `before`."
         : "A `where` comparison may declare only one operator.")
       return nil
     }
@@ -1280,6 +1363,21 @@ extension PluginPanelParser {
 
     if let timeOp = PluginVocabPredicate.TimeOp(rawValue: key) {
       return parseTimeClause(timeOp, operand: operand, field: field, warn: warn)
+    }
+
+    if key == "contains" {
+      if let reference = operand as? [String: Any], let stateKey = stateText(reference["$state"]) {
+        return .contains(field: field, needle: nil, stateKey: stateKey)
+      }
+      guard let needle = literalText(operand) else {
+        warn(#"`contains` needs a literal string or a `{"$state": …}` reference."#)
+        return nil
+      }
+      return .contains(
+        field: field,
+        needle: String(needle.prefix(PluginVocabLimits.maxSearchChars)),
+        stateKey: nil
+      )
     }
 
     let op: PluginVocabPredicate.Op = (key == "equals" || key == "in") ? .membership : .exclusion

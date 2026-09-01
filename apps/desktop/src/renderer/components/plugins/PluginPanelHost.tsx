@@ -24,6 +24,7 @@ import {
   collectVocabStateDeclarations,
   distinctBindings,
   parsePluginPanel,
+  vocabPanelContentNodes,
   readPluginActionResetState,
   vocabApplyStateChange,
   vocabClearRowSelection,
@@ -232,19 +233,26 @@ export function PluginPanelHost({
   }, [pluginId, panelId]);
 
   /**
-   * The parsed body, or `null`.
+   * The parsed panel, or `null`.
    *
    * Held once because three things now read it — the state controls, the
    * selectable lists, and the option resolution behind an `optionsFrom` — and
    * parsing a 64 KiB schema three times per render for a poll that changed
    * nothing is exactly the kind of work the fetch-on-reveal law exists to avoid.
+   * The full panel, not only the body: chrome.search is a state declaration and
+   * the footer binds collections the body never names.
    */
-  const body = React.useMemo(() => {
+  const parsedPanel = React.useMemo(() => {
     const schema = state.record?.schema;
     if (schema === undefined) return null;
     const parsed = parsePluginPanel(schema);
-    return parsed.ok ? parsed.panel.body : null;
+    return parsed.ok ? parsed.panel : null;
   }, [state.record?.schema]);
+
+  const contentNodes = React.useMemo(
+    () => (parsedPanel ? vocabPanelContentNodes(parsedPanel) : null),
+    [parsedPanel],
+  );
 
   /**
    * The `segmented` controls this schema declares, with any `optionsFrom`
@@ -261,18 +269,22 @@ export function PluginPanelHost({
    * rather than its options — see `vocabStateSignature`.
    */
   const declarations = React.useMemo(() => {
-    if (!body) return NO_DECLARATIONS;
-    return collectVocabStateDeclarations(body, (binding) => vocabResolveStateOptions(
-      binding,
-      state.rows.get(vocabStateOptionsBindingKey(binding)),
-    ));
-  }, [body, state.rows]);
+    if (!contentNodes || !parsedPanel) return NO_DECLARATIONS;
+    return collectVocabStateDeclarations(
+      contentNodes,
+      (binding) => vocabResolveStateOptions(
+        binding,
+        state.rows.get(vocabStateOptionsBindingKey(binding)),
+      ),
+      parsedPanel.chrome,
+    );
+  }, [contentNodes, parsedPanel, state.rows]);
 
   /** The selectable lists this schema declares, with their caps and their verbs. */
   const selectionDeclarations = React.useMemo(() => {
-    if (!body) return NO_SELECTION_DECLARATIONS;
-    return collectVocabSelectionDeclarations(body);
-  }, [body]);
+    if (!contentNodes) return NO_SELECTION_DECLARATIONS;
+    return collectVocabSelectionDeclarations(contentNodes);
+  }, [contentNodes]);
 
   // Reconcile the held selections against the controls that are actually on
   // screen now. Both halves matter: the signature catches a control that
@@ -729,25 +741,19 @@ export function PluginPanelHost({
   }
 
   return (
-    <div style={{ display: "grid", gap: 12, minWidth: 0 }}>
-      {/* The refresh control, for a panel whose manifest declared a refresh
-          action. Here rather than in `PluginPageShell`'s header because a panel
-          is hosted in six places — a tab, a detail section, a settings section,
-          a file viewer, a chat card, a webview overlay — and only one of them
-          has that header. Rendered by whoever renders the panel, so the gesture
-          exists wherever the panel does. */}
-      {refreshAction ? (
-        <div style={{ display: "flex", justifyContent: "flex-end", minWidth: 0 }}>
-          <PanelRefreshButton
-            pending={refreshing}
-            onRefresh={() => void refresh()}
-          />
-        </div>
-      ) : null}
+    <div style={{ display: "flex", flexDirection: "column", gap: 12, minWidth: 0, minHeight: 0, flex: 1 }}>
       <PluginPanelView
         schema={state.record.schema}
         context={context}
         recoveryAction={recoveryAction}
+        headerAccessory={refreshAction
+          ? (
+            <PanelRefreshButton
+              pending={refreshing}
+              onRefresh={() => void refresh()}
+            />
+          )
+          : null}
       />
       {/* Under the panel, where iOS puts it — the outcome follows the thing it
           is about rather than pushing it down the page on every press. */}

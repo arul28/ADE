@@ -60,13 +60,16 @@ import {
   VOCAB_LIMITS,
   VOCAB_VERSION,
   bindingKey,
+  parseVocabAction,
   parseVocabNode,
+  parseVocabStateKey,
   vocabChildNodes,
   vocabSegmentedDeclaration,
   vocabSelectableDeclaration,
   vocabSelectionDeclarations,
   vocabStateDeclarations,
   vocabString,
+  type VocabAction,
   type VocabBinding,
   type VocabError,
   type VocabNode,
@@ -95,12 +98,46 @@ export type VocabFallback = {
   deeplink?: string;
 };
 
+/**
+ * The panel's own chrome: a nav-bar search, trailing nav verbs, and a sticky
+ * footer. None of these are body nodes — the body scrolls under them.
+ *
+ * Malformed pieces are omitted (node-local). Footer nodes that survive still
+ * count toward {@link VOCAB_LIMITS.maxNodes}; overflowing that ceiling, or
+ * {@link VOCAB_LIMITS.maxDepth}, is still panel-fatal.
+ */
+export type VocabChromeSearch = {
+  stateKey: string;
+  placeholder?: string;
+  onChange?: VocabAction;
+};
+
+export type VocabChromeNavAction = VocabAction & {
+  label: string;
+  icon?: string;
+};
+
+export type VocabPanelChrome = {
+  search?: VocabChromeSearch;
+  navActions?: VocabChromeNavAction[];
+  footer?: VocabNode[];
+};
+
 export type VocabPanel = {
   v: typeof VOCAB_VERSION;
   title?: string;
   fallback: VocabFallback;
   body: VocabNode[];
+  chrome?: VocabPanelChrome;
 };
+
+/** Body plus footer, in reading order — what a host walks for bindings and selection. */
+export function vocabPanelContentNodes(
+  panel: Pick<VocabPanel, "body" | "chrome">,
+): readonly VocabNode[] {
+  const footer = panel.chrome?.footer;
+  return footer && footer.length > 0 ? [...panel.body, ...footer] : panel.body;
+}
 
 export type VocabParseResult =
   | {
@@ -209,8 +246,23 @@ export function collectVocabStateDeclarations(
    * reader's selection survives that transition. See {@link vocabStateSignature}.
    */
   resolveOptions?: (binding: VocabStateOptionsBinding) => readonly VocabStateOption[],
+  /**
+   * Panel chrome, when the host has it. Search is declared first so a `where`
+   * that reads the query sees the same key the nav-bar field owns, and so a
+   * `segmented` that reused the name loses rather than stealing the query.
+   */
+  chrome?: VocabPanelChrome,
 ): VocabStateDeclaration[] {
   const found: VocabStateDeclaration[] = [];
+  if (chrome?.search) {
+    found.push({
+      stateKey: chrome.search.stateKey,
+      kind: "search",
+      ...(chrome.search.placeholder !== undefined ? { placeholder: chrome.search.placeholder } : {}),
+      options: [],
+      initial: "",
+    });
+  }
   const walk = (list: readonly VocabNode[]) => {
     for (const node of list) {
       if (node.component === "segmented") {
@@ -378,6 +430,8 @@ export function parsePluginPanel(raw: unknown): VocabParseResult {
     body.push(node);
   }
 
+  const chrome = parseVocabChrome(source.chrome, state);
+
   if (state.overflowed) {
     return fail([
       {
@@ -398,9 +452,130 @@ export function parsePluginPanel(raw: unknown): VocabParseResult {
       ...(title !== undefined ? { title } : {}),
       fallback,
       body,
+      ...(chrome !== undefined ? { chrome } : {}),
     },
     warnings: state.warnings,
   };
+}
+
+function chromeWarn(state: VocabParseState, path: string, message: string): void {
+  state.warnings.push({ code: "invalid_node", path, message });
+}
+
+function parseVocabChrome(raw: unknown, state: VocabParseState): VocabPanelChrome | undefined {
+  if (raw === undefined) return undefined;
+  if (!isRecord(raw)) {
+    chromeWarn(state, "chrome", "`chrome` must be an object.");
+    return undefined;
+  }
+
+  const search = parseChromeSearch(raw.search, state);
+  const navActions = parseChromeNavActions(raw.navActions, state);
+  const footer = parseChromeFooter(raw.footer, state);
+
+  if (search === undefined && navActions === undefined && footer === undefined) return undefined;
+  return {
+    ...(search !== undefined ? { search } : {}),
+    ...(navActions !== undefined ? { navActions } : {}),
+    ...(footer !== undefined ? { footer } : {}),
+  };
+}
+
+function parseChromeSearch(raw: unknown, state: VocabParseState): VocabChromeSearch | undefined {
+  if (raw === undefined) return undefined;
+  if (!isRecord(raw)) {
+    chromeWarn(state, "chrome.search", "`chrome.search` must be an object.");
+    return undefined;
+  }
+  const stateKey = parseVocabStateKey(raw.stateKey);
+  if (stateKey === undefined) {
+    chromeWarn(state, "chrome.search.stateKey", "`chrome.search` needs a `stateKey`.");
+    return undefined;
+  }
+  const placeholder = vocabString(raw.placeholder, VOCAB_LIMITS.maxLabelChars);
+  const search: VocabChromeSearch = {
+    stateKey,
+    ...(placeholder !== undefined ? { placeholder } : {}),
+  };
+  if (raw.onChange !== undefined) {
+    const onChange = parseVocabAction(raw.onChange);
+    if (onChange === null) {
+      chromeWarn(state, "chrome.search.onChange", "`chrome.search.onChange` needs an `action`.");
+    } else {
+      search.onChange = onChange;
+    }
+  }
+  return search;
+}
+
+function parseChromeNavActions(
+  raw: unknown,
+  state: VocabParseState,
+): VocabChromeNavAction[] | undefined {
+  if (raw === undefined) return undefined;
+  if (!Array.isArray(raw)) {
+    chromeWarn(state, "chrome.navActions", "`chrome.navActions` must be an array.");
+    return undefined;
+  }
+  if (raw.length > VOCAB_LIMITS.maxChromeNavActions) {
+    chromeWarn(
+      state,
+      "chrome.navActions",
+      `A panel may declare at most ${VOCAB_LIMITS.maxChromeNavActions} nav actions.`,
+    );
+  }
+  const actions: VocabChromeNavAction[] = [];
+  for (let index = 0; index < raw.length && actions.length < VOCAB_LIMITS.maxChromeNavActions; index += 1) {
+    const parsed = parseChromeNavAction(raw[index], `chrome.navActions[${index}]`, state);
+    if (parsed !== undefined) actions.push(parsed);
+  }
+  return actions.length > 0 ? actions : undefined;
+}
+
+function parseChromeNavAction(
+  raw: unknown,
+  path: string,
+  state: VocabParseState,
+): VocabChromeNavAction | undefined {
+  const action = parseVocabAction(raw);
+  if (action === null || !isRecord(raw)) {
+    chromeWarn(state, path, "A nav action needs `action` and `label`.");
+    return undefined;
+  }
+  const label = vocabString(raw.label, VOCAB_LIMITS.maxLabelChars);
+  if (label === undefined) {
+    chromeWarn(state, `${path}.label`, "A nav action needs a `label`.");
+    return undefined;
+  }
+  const icon = vocabString(raw.icon, VOCAB_LIMITS.maxIdChars);
+  return {
+    ...action,
+    label,
+    ...(icon !== undefined ? { icon } : {}),
+  };
+}
+
+function parseChromeFooter(raw: unknown, state: VocabParseState): VocabNode[] | undefined {
+  if (raw === undefined) return undefined;
+  if (!Array.isArray(raw)) {
+    chromeWarn(state, "chrome.footer", "`chrome.footer` must be an array.");
+    return undefined;
+  }
+  if (raw.length > VOCAB_LIMITS.maxChromeFooterNodes) {
+    chromeWarn(
+      state,
+      "chrome.footer",
+      `A panel may declare at most ${VOCAB_LIMITS.maxChromeFooterNodes} footer nodes.`,
+    );
+  }
+  const footer: VocabNode[] = [];
+  const limit = Math.min(raw.length, VOCAB_LIMITS.maxChromeFooterNodes);
+  for (let index = 0; index < limit; index += 1) {
+    const node = parseVocabNode(raw[index], `chrome.footer[${index}]`, 1, state);
+    if (node === null) break;
+    footer.push(node);
+  }
+  return footer.length > 0 ? footer : undefined;
 }
 
 /** Total nodes in a parsed panel, counted through the whole tree. */
@@ -512,7 +687,7 @@ export function distinctBindings(schema: unknown): VocabBinding[] {
   if (!parsed.ok) return [];
   const seen = new Map<string, VocabBinding>();
   const filtered = new Set<string>();
-  for (const binding of collectVocabBindings(parsed.panel.body)) {
+  for (const binding of collectVocabBindings(vocabPanelContentNodes(parsed.panel))) {
     const key = bindingKey(binding);
     if (binding.where && binding.where.length > 0) filtered.add(key);
     const existing = seen.get(key);

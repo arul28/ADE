@@ -27,6 +27,7 @@ import {
   vocabListNextPage,
   vocabListPage,
   vocabListPageLabel,
+  vocabPanelContentNodes,
   type VocabNode,
 } from "./vocabulary";
 
@@ -1035,5 +1036,82 @@ describe("list paging", () => {
     // A client that drew 250 but fetched 200 would page into rows it does not
     // have and stop early with nothing on screen to say why.
     expect(VOCAB_PANEL_READ_LIMIT).toBe(VOCAB_LIMITS.maxListItems);
+  });
+});
+
+describe("panel chrome", () => {
+  it("parses search, nav actions, a footer, and a group icon", () => {
+    const result = parsePluginPanel(panel(
+      [{ component: "list", bind: { collection: "issues", where: [{ field: "title", contains: { $state: "q" } }] } }],
+      {
+        chrome: {
+          search: { stateKey: "q", placeholder: "Filter issues", onChange: { action: "search" } },
+          navActions: [{ action: "openLinear", label: "Open in Linear", icon: "arrow-square-out" }],
+          footer: [{ component: "button", label: "New issue", onPress: { action: "create" } }],
+        },
+      },
+    ));
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.warnings).toEqual([]);
+    expect(result.panel.chrome).toEqual({
+      search: { stateKey: "q", placeholder: "Filter issues", onChange: { action: "search" } },
+      navActions: [{ action: "openLinear", label: "Open in Linear", icon: "arrow-square-out" }],
+      footer: [{ component: "button", label: "New issue", onPress: { action: "create" } }],
+    });
+    const group = parsePluginPanel(panel([{ component: "group", title: "Started", icon: "circle", children: [] }]));
+    expect(group.ok).toBe(true);
+    if (!group.ok) return;
+    expect(group.panel.body[0]).toMatchObject({ component: "group", title: "Started", icon: "circle" });
+  });
+
+  it("declares search first and walks the footer for bindings", () => {
+    const result = parsePluginPanel(panel(
+      [{
+        component: "segmented",
+        stateKey: "status",
+        options: [{ value: "", label: "All" }, { value: "active", label: "Active" }],
+      }],
+      {
+        chrome: {
+          search: { stateKey: "q" },
+          footer: [{ component: "list", bind: { collection: "drafts" } }],
+        },
+      },
+    ));
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(collectVocabStateDeclarations(
+      vocabPanelContentNodes(result.panel),
+      undefined,
+      result.panel.chrome,
+    ).map((entry) => entry.stateKey)).toEqual(["q", "status"]);
+    expect(distinctBindings(panel(
+      [{ component: "text", text: "body" }],
+      { chrome: { footer: [{ component: "list", bind: { collection: "drafts" } }] } },
+    ))).toEqual([{ collection: "drafts" }]);
+  });
+
+  it("omits malformed chrome pieces and extra nav/footer entries, without failing the panel", () => {
+    const result = parsePluginPanel(panel([], {
+      chrome: {
+        search: { placeholder: "no key" },
+        navActions: [
+          { action: "a", label: "One" },
+          { action: "b", label: "Two" },
+          { action: "c", label: "Three" },
+          { action: "d", label: "Four" },
+          { action: "e", label: "Five" },
+          { label: "no action" },
+        ],
+        footer: "not-an-array",
+      },
+    }));
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.panel.chrome?.search).toBeUndefined();
+    expect(result.panel.chrome?.navActions).toHaveLength(VOCAB_LIMITS.maxChromeNavActions);
+    expect(result.panel.chrome?.footer).toBeUndefined();
+    expect(result.warnings.length).toBeGreaterThan(0);
   });
 });

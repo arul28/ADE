@@ -157,6 +157,22 @@ export const VOCAB_LIMITS = {
    * image has nothing left to say about it.
    */
   maxSrcChars: 8_192,
+  /**
+   * Buttons in a panel's nav bar (`chrome.navActions`).
+   *
+   * Four, the same ceiling as a bulk bar: the nav sits beside search and
+   * Refresh, and a fifth verb is a menu the vocabulary still does not have.
+   * Extra entries are dropped (node-local), never a panel-fatal overflow.
+   */
+  maxChromeNavActions: 4,
+  /**
+   * Root nodes in `chrome.footer`.
+   *
+   * Four, not the body budget: a sticky footer is a strip of actions or a
+   * one-line status, and a fifth node is a second body. The nodes that survive
+   * still count toward {@link VOCAB_LIMITS.maxNodes}; extras are omitted.
+   */
+  maxChromeFooterNodes: 4,
 } as const;
 
 /**
@@ -311,6 +327,8 @@ export type VocabGroupNode = {
   groupKey?: string;
   /** A count beside the title, e.g. `12`. Text only, like an option's badge. */
   badge?: string;
+  /** A named glyph beside the title — the same token a badge or a button uses. */
+  icon?: string;
   /** Open on first render. Absent means open — a section nobody has touched shows its contents. */
   defaultOpen?: boolean;
   children: VocabNode[];
@@ -1036,6 +1054,11 @@ export type VocabNodeParser = (
   ctx: VocabNodeParseContext,
 ) => VocabNode;
 
+/** A plugin action reference. Exported so panel chrome can parse the same shape a node does. */
+export function parseVocabAction(raw: unknown): VocabAction | null {
+  return parseAction(raw);
+}
+
 function parseAction(raw: unknown): VocabAction | null {
   if (!isRecord(raw)) return null;
   const action = vocabString(raw.action, VOCAB_LIMITS.maxIdChars);
@@ -1324,11 +1347,13 @@ export const NODE_PARSERS: Record<string, VocabNodeParser> = {
     }
     const groupKey = vocabString(raw.groupKey, VOCAB_LIMITS.maxIdChars);
     const badge = vocabStateBadgeText(raw.badge);
+    const icon = vocabString(raw.icon, VOCAB_LIMITS.maxIdChars);
     return {
       component: "group",
       title,
       ...(groupKey !== undefined ? { groupKey } : {}),
       ...(badge !== undefined ? { badge } : {}),
+      ...(icon !== undefined ? { icon } : {}),
       ...(typeof raw.defaultOpen === "boolean" ? { defaultOpen: raw.defaultOpen } : {}),
       children,
     };

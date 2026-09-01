@@ -31,9 +31,9 @@ Node built-ins:
 | File | Responsibility |
 |---|---|
 | `apps/desktop/src/shared/plugins/manifest.ts` | `plugin.json` contract, strict-on-known/tolerant-of-unknown parser, id and relative-path validation, `minAdeVersion` gate, the `tab`/`pane`/`webview` surface kinds and the `entryHtml` rule |
-| `apps/desktop/src/shared/plugins/vocabulary.ts` | Panel schema v1: component union, `VOCAB_LIMITS`, degradation ladder, `parsePluginPanel`, the reserved bindings (`vocabReservedRows` over `$context` and `$state`), `collectVocabStateDeclarations` |
+| `apps/desktop/src/shared/plugins/vocabulary.ts` | Panel schema v1: component union, `VOCAB_LIMITS`, degradation ladder, `parsePluginPanel`, panel `chrome` (search, nav actions, sticky footer), the reserved bindings (`vocabReservedRows` over `$context` and `$state`), `collectVocabStateDeclarations` |
 | `apps/desktop/src/shared/plugins/vocabularyNodes.ts` | The 16 v1 components and their parsers, `VOCAB_LIMITS`, the `group` node and `vocabGroupKey`, the row-action allowlist (`boundRowAction`) |
-| `apps/desktop/src/shared/plugins/vocabularyState.ts` | Client-evaluated panel state: the `segmented` control's declarations and its `optionsFrom` binding, the `where` grammar and its three-valued evaluator, the `$state` binding (`VOCAB_STATE_COLLECTION`), the row selection a `list.selectable` owns, the signature/normalize/reset lifecycle, `readPluginActionResetState` |
+| `apps/desktop/src/shared/plugins/vocabularyState.ts` | Client-evaluated panel state: the `segmented` control's declarations, `chrome.search`, the `where` grammar (`contains` included) and its three-valued evaluator, the `$state` binding (`VOCAB_STATE_COLLECTION`), the row selection a `list.selectable` owns, the signature/normalize/reset lifecycle, `readPluginActionResetState` |
 | `apps/desktop/src/shared/plugins/vocabularyMarkdown.ts` | The `markdown` node's subset: a bounded block/span AST, `VOCAB_MARKDOWN_LIMITS`, `https:`-only links, and no HTML path at all |
 | `apps/desktop/src/shared/plugins/vocabularyPaging.ts` | One `list`'s page: `vocabListPage`, `vocabListNextPage`, the three-state `vocabListPageLabel`, and `VOCAB_LIST_SHOW_MORE_LABEL` |
 | `apps/desktop/src/shared/plugins/urlMatchers.ts` | The no-regex `pathPattern` grammar, the chip label template, the core-host refusal and the ownership relaxation (`coreSmartLinkBuiltinsOwnedBy`) |
@@ -1180,6 +1180,26 @@ title, and never the node's position — a plugin republishing its rows every fe
 seconds must not re-open a section the reader just closed, which is exactly what a
 key of `body[2]` would do (`vocabularyNodes.ts:761-771`). `defaultOpen` is
 optional and absent means open: a section nobody has touched shows its contents.
+A group may also name an `icon` token — the same catalogue a badge or a button
+uses — drawn beside the title on every client.
+
+### Panel chrome: search, nav actions, sticky footer
+
+Panel chrome is **not a body node**. `chrome.search`, `chrome.navActions` and
+`chrome.footer` sit outside the scrolling body: a nav-bar search field, up to
+four trailing nav verbs, and up to four sticky footer nodes. Desktop and web pin
+them above and below the scroll; iOS uses `.searchable`, trailing toolbar items,
+and a bottom `safeAreaInset`; the TUI pins the search and nav rows at the top of
+the pane and reserves the last rows for the footer.
+
+`chrome.search` owns a `stateKey` whose value is free text, not a closed option
+list. The signature signs the control (key + placeholder), never the typed
+query, so typing does not reset the field on a republish. A `where` `contains`
+clause reading that key re-filters locally on every change; an optional
+`onChange` action fires on commit (Enter or blur), not per keystroke. Empty
+query is inactive, the same three-valued reading an "All" option already has.
+Malformed chrome pieces warn and drop; a footer that blows the node or depth
+ceiling is still panel-fatal.
 
 ### Prose: the `markdown` node
 
@@ -1260,11 +1280,12 @@ itself for a `toggle` or `select`, and blur or Enter for a typed field, so a
 plugin is not invoked once per keystroke. A form declaring neither is refused at
 parse and degrades to a marker, on all four clients.
 
-Rule 3 ("data, never code") is intact. A predicate is a fixed grammar of four
-comparisons (`equals`, `notEquals`, `in`, `notIn`) over three composers (`and`,
+Rule 3 ("data, never code") is intact. A predicate is a fixed grammar of five
+comparisons (`equals`, `notEquals`, `in`, `notIn`, `contains`) over three composers (`and`,
 `or`, `not`), with no functions, no regular expressions, no arithmetic, no
 field-to-field comparison and no reach beyond the row it was handed and the state
-the panel declared. The plugin still computes on its own machine — it
+the panel declared. `contains` is a case-insensitive substring; an empty needle
+is inactive. The plugin still computes on its own machine — it
 materializes `statusGroup`, `laneId` and `archived` onto each row — and the
 client still only compares strings.
 
@@ -1288,9 +1309,10 @@ also strips `limit` from the fetch when the binding carries a `where`.
 
 **`$state` is the second reserved collection**, beside `$context` and for the
 same reason: the leading `$` is illegal in a real collection name, so nothing can
-shadow it. Binding to it yields one row per declared key, whose value is the
-*selected option's label* rather than its raw value — "Showing: Active", not
-"Showing: FINISHED_WITH_ERROR". It is the only way a schema with no interpolation
+shadow it. Binding to it yields one row per declared key. For a `segmented`
+control the value is the *selected option's label* rather than its raw value —
+"Showing: Active", not "Showing: FINISHED_WITH_ERROR". For a `chrome.search`
+field the value is the typed string. It is the only way a schema with no interpolation
 in it can name the reader's own choice. `vocabReservedRows` resolves both
 reserved collections in one place so a client cannot support one and quietly not
 support the other; `$state` is filled at render rather than at fetch, because
@@ -1433,7 +1455,8 @@ Four rules carry it:
 Ceilings, in `VOCAB_STATE_LIMITS` and spread into `VOCAB_LIMITS`: **8** state keys
 per panel, 2–8 literal options per control and 50 resolved, 4 top-level `where`
 clauses, depth 3, 24 clauses in total, 20 literals per list, 2 selectable lists per
-panel, 100 selected rows per list, 4 bulk actions per bar. The predicate numbers
+panel, 100 selected rows per list, 4 bulk actions per bar, 4 chrome nav actions,
+4 chrome footer nodes, 200 characters in a search field. The predicate numbers
 are small on purpose — a predicate language with a generous budget is a query
 language, and a query language is what rule 3 exists to keep out of a panel
 schema. The key count is 8 rather than 4 because 4 was one filter axis short of
@@ -2098,17 +2121,11 @@ oversight:
   phone-width panel and the most expensive to draw well.
 - **The TUI renders 13 of 16.** `video`, `image` and `chart` show named
   placeholders.
-- **The vocabulary has no sticky footer or action-bar region.** A panel's
-  controls scroll with its content, so a launch bar at the bottom of a phone
-  screen is not expressible. This is a node the vocabulary still owes.
 - **A plugin cannot ship a brand glyph.** The `brand:` icon namespace is a closed
   five-token catalogue (`claude`, `codex`, `cursor`, `github`, `openai`), and
   there is no path for a plugin to supply its own mono mark. `brand:linear` does
   not exist on either client, so the Linear plugin draws a generic mark where the
   compiled integration drew a logo.
-- **There is no nav-bar search field.** A panel searches through a `{prompt}`
-  round trip instead, which costs a tap and a dispatch where the compiled surface
-  typed into a field.
 - **A list pages to 250 by button, not by scroll.** `maxListItems` is 250 and
   `listPageSize` is 100, extended by pressing Show more; the compiled issue
   browser it replaces pages to 500 on scroll. Raising the ceiling needs byte math
