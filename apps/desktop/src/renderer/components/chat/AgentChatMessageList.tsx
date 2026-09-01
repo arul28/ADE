@@ -6988,12 +6988,12 @@ function AgentChatMessageListMain({
         <button
           type="button"
           onClick={jumpToLatest}
-          className="absolute bottom-4 left-1/2 z-10 flex -translate-x-1/2 items-center gap-1.5 rounded-full border border-violet-400/30 bg-violet-500/20 px-3 py-1.5 font-sans text-[length:calc(var(--chat-font-size)*11/14)] font-medium text-violet-100 shadow-lg shadow-violet-500/20 backdrop-blur-md transition-colors hover:bg-violet-500/30"
-          aria-label={newRowsSinceDetach > 0 ? `${newRowsSinceDetach} new · jump to latest` : "Jump to latest message"}
+          className="absolute bottom-4 left-1/2 z-10 flex -translate-x-1/2 items-center gap-1 rounded-full border border-violet-400/30 bg-violet-500/20 px-2 py-1 font-sans text-[length:calc(var(--chat-font-size)*10/14)] font-medium text-violet-100 shadow-lg shadow-violet-500/20 backdrop-blur-md transition-colors hover:bg-violet-500/30"
+          aria-label={newRowsSinceDetach > 0 ? `${newRowsSinceDetach} new · Jump To Latest` : "Jump to latest message"}
         >
-          <CaretDown size={11} weight="bold" />
+          <CaretDown size={9} weight="bold" />
           {/* Answers "did I miss anything?" without making the reader scroll to find out. */}
-          <span>{newRowsSinceDetach > 0 ? `${newRowsSinceDetach} new · jump to latest` : "Jump to latest"}</span>
+          <span>{newRowsSinceDetach > 0 ? `${newRowsSinceDetach} new · Jump To Latest` : "Jump To Latest"}</span>
         </button>
       ) : null}
       <AssistantOutputSelectionToolbar rootRef={listRootRef} onAddToChat={onInsertDraft} />

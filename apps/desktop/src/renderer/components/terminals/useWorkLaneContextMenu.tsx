@@ -9,6 +9,7 @@ import {
 } from "../../state/appStore";
 import { useStartChatInLane } from "../../hooks/useStartChatInLane";
 import { chatDraftMachineId, startChatDraftPatch } from "../../lib/workDraft";
+import { machineIdForBinding } from "../../../shared/machineIdentity";
 import { LaneContextMenu } from "../lanes/LaneContextMenu";
 import { ForeignLaneContextMenu } from "./ForeignLaneContextMenu";
 import { WorkManageLaneDialogHost } from "./WorkManageLaneDialogHost";
@@ -97,7 +98,7 @@ export function useLaneMenuActions(args: {
     setWorkViewState,
     selectLane,
     navigate,
-    boundMachineId: projectBinding?.kind === "remote" ? projectBinding.targetId : "this-mac",
+    boundMachineId: machineIdForBinding(projectBinding),
   });
 
   return useMemo<LaneMenuActions>(() => ({
@@ -200,9 +201,7 @@ export function useWorkLaneContextMenu(options?: {
   }, []);
   const laneMenuActions = useLaneMenuActions({ close, onManageLane: openManageDialog });
 
-  const boundMachineId = projectBinding?.kind === "remote"
-    ? projectBinding.targetId
-    : "this-mac";
+  const boundMachineId = machineIdForBinding(projectBinding);
   const startForeignChat = useCallback(() => {
     if (!foreignMenuState || !projectStateKey || !foreignMachineOnline) return;
     const laneId = foreignMenuState.lane.id;

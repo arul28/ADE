@@ -614,9 +614,6 @@ function ClosedCliSessionSurface({
   onContextMenu,
   onContinue,
   onResume,
-  onToggleSessionsPane,
-  sessionsPaneCollapsed,
-  sessionsPaneCount,
   onToggleToolsPane,
   toolsPaneOpen,
 }: {
@@ -632,9 +629,6 @@ function ClosedCliSessionSurface({
     launch: TerminalResumeLaunchConfig | null,
   ) => Promise<void> | void;
   onResume?: (session: TerminalSessionSummary) => Promise<void> | void;
-  onToggleSessionsPane?: () => void;
-  sessionsPaneCollapsed?: boolean;
-  sessionsPaneCount?: number;
   onToggleToolsPane?: () => void;
   toolsPaneOpen?: boolean;
 }) {
@@ -700,9 +694,6 @@ function ClosedCliSessionSurface({
           lanes={lanes}
           onInfoClick={onInfoClick}
           onContextMenu={onContextMenu}
-          onToggleSessionsPane={onToggleSessionsPane}
-          sessionsPaneCollapsed={sessionsPaneCollapsed}
-          sessionsPaneCount={sessionsPaneCount}
           onToggleToolsPane={onToggleToolsPane}
           toolsPaneOpen={toolsPaneOpen}
         />
@@ -774,9 +765,6 @@ function CliSessionSurface({
   onInfoClick,
   onContextMenu,
   onStopRunningSession,
-  onToggleSessionsPane,
-  sessionsPaneCollapsed,
-  sessionsPaneCount,
   onToggleToolsPane,
   toolsPaneOpen,
 }: {
@@ -792,9 +780,6 @@ function CliSessionSurface({
   onInfoClick?: (session: TerminalSessionSummary, event: React.MouseEvent<HTMLElement>) => void;
   onContextMenu?: (session: TerminalSessionSummary, event: React.MouseEvent<HTMLElement>) => void;
   onStopRunningSession?: (session: TerminalSessionSummary) => void;
-  onToggleSessionsPane?: () => void;
-  sessionsPaneCollapsed?: boolean;
-  sessionsPaneCount?: number;
   onToggleToolsPane?: () => void;
   toolsPaneOpen?: boolean;
 }) {
@@ -815,9 +800,6 @@ function CliSessionSurface({
           onInfoClick={onInfoClick}
           onContextMenu={onContextMenu}
           onStopRunningSession={onStopRunningSession}
-          onToggleSessionsPane={onToggleSessionsPane}
-          sessionsPaneCollapsed={sessionsPaneCollapsed}
-          sessionsPaneCount={sessionsPaneCount}
           onToggleToolsPane={onToggleToolsPane}
           toolsPaneOpen={toolsPaneOpen}
           onTogglePrPane={session.laneId ? () => setPrPaneOpen((v) => !v) : undefined}
@@ -880,9 +862,6 @@ function SessionSurface({
   onOpenChatSession,
   onContinueCliSession,
   onResumeCliSession,
-  onToggleSessionsPane,
-  sessionsPaneCollapsed,
-  sessionsPaneCount,
   onToggleToolsPane,
   toolsPaneOpen,
   onToggleTerminalPane,
@@ -915,10 +894,6 @@ function SessionSurface({
     launch: TerminalResumeLaunchConfig | null,
   ) => Promise<void> | void;
   onResumeCliSession?: (session: TerminalSessionSummary) => Promise<void> | void;
-  /** Far-left session-list expander (per-surface header now owns it). */
-  onToggleSessionsPane?: () => void;
-  sessionsPaneCollapsed?: boolean;
-  sessionsPaneCount?: number;
   /** Far-right Tools-pane toggle (per-surface header now owns it). */
   onToggleToolsPane?: () => void;
   toolsPaneOpen?: boolean;
@@ -951,9 +926,6 @@ function SessionSurface({
         isTileActive={surfaceActive}
         isTileVisible={surfaceVisible}
         shouldAutofocusComposer={surfaceActive && shouldAutofocus}
-        onToggleSessionsPane={onToggleSessionsPane}
-        sessionsPaneCollapsed={sessionsPaneCollapsed}
-        sessionsPaneCount={sessionsPaneCount}
         onToggleToolsPane={onToggleToolsPane}
         toolsPaneOpen={toolsPaneOpen}
         onToggleTerminalPane={onToggleTerminalPane}
@@ -977,9 +949,6 @@ function SessionSurface({
           onInfoClick={onInfoClick}
           onContextMenu={onContextMenu}
           onStopRunningSession={onStopRunningSession}
-          onToggleSessionsPane={onToggleSessionsPane}
-          sessionsPaneCollapsed={sessionsPaneCollapsed}
-          sessionsPaneCount={sessionsPaneCount}
           onToggleToolsPane={onToggleToolsPane}
           toolsPaneOpen={toolsPaneOpen}
         />
@@ -1010,9 +979,6 @@ function SessionSurface({
         onContextMenu={onContextMenu}
         onContinue={onContinueCliSession}
         onResume={onResumeCliSession}
-        onToggleSessionsPane={onToggleSessionsPane}
-        sessionsPaneCollapsed={sessionsPaneCollapsed}
-        sessionsPaneCount={sessionsPaneCount}
         onToggleToolsPane={onToggleToolsPane}
         toolsPaneOpen={toolsPaneOpen}
       />
@@ -1155,9 +1121,6 @@ export function WorkViewArea({
   onShowDraftKind,
   closingPtyIds,
   onContextMenu,
-  sessionsPaneCollapsed = false,
-  onToggleSessionsPane,
-  sessionsPaneListCount = 0,
   workSidebarOpen = false,
   onToggleWorkSidebar,
   terminalPaneOpen = false,
@@ -1214,10 +1177,6 @@ export function WorkViewArea({
   ) => Promise<void> | void;
   onResumeCliSession?: (session: TerminalSessionSummary) => Promise<void> | void;
   onGoToLane?: (laneId: string) => void;
-  /** Whether the work sessions list pane is collapsed. */
-  sessionsPaneCollapsed?: boolean;
-  onToggleSessionsPane?: () => void;
-  sessionsPaneListCount?: number;
   workSidebarOpen?: boolean;
   onToggleWorkSidebar?: () => void;
   terminalPaneOpen?: boolean;
@@ -1290,9 +1249,6 @@ export function WorkViewArea({
       onOpenChatSession={onOpenChatSession}
       onContinueCliSession={onContinueCliSession}
       onResumeCliSession={onResumeCliSession}
-      onToggleSessionsPane={onToggleSessionsPane}
-      sessionsPaneCollapsed={sessionsPaneCollapsed}
-      sessionsPaneCount={sessionsPaneListCount}
       onToggleToolsPane={onToggleWorkSidebar}
       toolsPaneOpen={workSidebarOpen}
       onToggleTerminalPane={onToggleTerminalPane}
@@ -1342,9 +1298,6 @@ export function WorkViewArea({
           onOpenChatSession={onOpenChatSession}
           onContinueCliSession={onContinueCliSession}
           onResumeCliSession={onResumeCliSession}
-          onToggleSessionsPane={onToggleSessionsPane}
-          sessionsPaneCollapsed={sessionsPaneCollapsed}
-          sessionsPaneCount={sessionsPaneListCount}
           onToggleToolsPane={onToggleWorkSidebar}
           toolsPaneOpen={workSidebarOpen}
           onToggleTerminalPane={onToggleTerminalPane}

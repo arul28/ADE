@@ -2826,6 +2826,19 @@ describe("SessionListPane header shape", () => {
     expect(header.className).toContain("h-8");
   });
 
+  it("hides the sessions list from a control next to search", () => {
+    const onToggleSessionsPane = vi.fn();
+    renderPane({ onToggleSessionsPane });
+    const header = screen.getByTestId("work-session-list-header");
+    const hide = screen.getByRole("button", { name: "Hide sessions" });
+    expect(header.contains(hide)).toBe(true);
+    const search = screen.getByTestId("work-sidebar-search");
+    expect(search.compareDocumentPosition(hide) & Node.DOCUMENT_POSITION_PRECEDING).toBeTruthy();
+    expect(search.className).toContain("text-[10px]");
+    fireEvent.click(hide);
+    expect(onToggleSessionsPane).toHaveBeenCalledTimes(1);
+  });
+
   it("opens the command palette from the search button instead of filtering inline", () => {
     const setQ = vi.fn();
     renderPane({ setQ });

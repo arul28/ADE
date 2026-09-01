@@ -2044,6 +2044,7 @@ describe("AgentChatMessageList transcript rendering", () => {
     fireEvent.scroll(transcript);
 
     const jumpButton = await screen.findByRole("button", { name: "Jump to latest message" });
+    expect(jumpButton.textContent).toContain("Jump To Latest");
     fireEvent.click(jumpButton);
     expect(onReturnToLatest).toHaveBeenCalledTimes(1);
 
@@ -2363,8 +2364,8 @@ describe("AgentChatMessageList transcript rendering", () => {
       </MemoryRouter>,
     );
 
-    const pill = screen.getByRole("button", { name: "2 new · jump to latest" });
-    expect(pill.textContent).toContain("2 new · jump to latest");
+    const pill = screen.getByRole("button", { name: "2 new · Jump To Latest" });
+    expect(pill.textContent).toContain("2 new · Jump To Latest");
 
     fireEvent.click(pill);
     await waitFor(() => {

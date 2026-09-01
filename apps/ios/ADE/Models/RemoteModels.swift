@@ -2547,6 +2547,8 @@ enum AgentChatEvent: Decodable, Equatable {
   case autoApprovalReview(targetItemId: String, reviewStatus: AgentChatAutoApprovalReviewStatus, action: String?, review: String?, turnId: String?)
   case promptSuggestion(suggestion: String, turnId: String?)
   case planText(text: String, turnId: String?, itemId: String?)
+  /// A completed provider/model transition recorded in this chat's transcript.
+  case modelHandoff(fromProvider: String, toProvider: String, fromModelId: String?, toModelId: String?, turnId: String?)
   /// Generic emittable chat card (`apps/desktop/src/shared/adeCard.ts`). The
   /// whole payload rides in one already-normalized model so this union member
   /// never has to grow when the wire contract adds a field.
@@ -2787,6 +2789,10 @@ extension AgentChatEvent {
     case resultOmittedBytes
     case urlOriginalBytes
     case urlOmittedBytes
+    case fromProvider
+    case toProvider
+    case fromModelId
+    case toModelId
   }
 
   init(from decoder: Decoder) throws {
@@ -3374,6 +3380,14 @@ extension AgentChatEvent {
         turnId: try container.decodeIfPresent(String.self, forKey: .turnId),
         itemId: try container.decodeIfPresent(String.self, forKey: .itemId)
       )
+    case "model_handoff":
+      self = .modelHandoff(
+        fromProvider: try container.decode(String.self, forKey: .fromProvider),
+        toProvider: try container.decode(String.self, forKey: .toProvider),
+        fromModelId: try container.decodeIfPresent(String.self, forKey: .fromModelId),
+        toModelId: try container.decodeIfPresent(String.self, forKey: .toModelId),
+        turnId: try container.decodeIfPresent(String.self, forKey: .turnId)
+      )
     case "ade_card":
       // Decoded off the same container: the card payload is flat inside
       // `event`. A payload too broken to decode at all still becomes a card
@@ -3440,6 +3454,7 @@ extension AgentChatEvent {
     case .autoApprovalReview: return "auto_approval_review"
     case .promptSuggestion: return "prompt_suggestion"
     case .planText: return "plan_text"
+    case .modelHandoff: return "model_handoff"
     case .adeCard: return "ade_card"
     case .unknown(let type): return type
     }

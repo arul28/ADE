@@ -233,8 +233,11 @@ the handoff fails.
 
 Also renders:
 
-- a 32 px toolbar with borderless Search, Filters, and New chat actions; Search
-  opens the command palette and displays the configured shortcut
+- a 32 px toolbar with a **Hide sessions** control, then a slightly
+  tighter Search button, then Filters and New chat; Search opens the
+  command palette and displays the configured shortcut. **Hide sessions**
+  is not in the chat/CLI header. When the list is collapsed, a thin left
+  rail in `TerminalsPage` shows the same glyph as **Show sessions**.
 - an expandable filter panel with group selector (Lane / Status / Time), lane
   sort, status/tool chips, Has PR / Dirty, and `LaneCombobox`
 - the actual list of `SessionCard` rows (memoized)
@@ -455,8 +458,11 @@ enough styled cells to be obviously a TUI redraw, the snapshot wins so
 the user sees the Claude/Codex final screen instead of a flattened
 transcript with the alt-screen escape codes visible. Ended tracked CLI
 surfaces keep the same `WorkSurfaceHeader` controls as live CLI and chat
-surfaces, including the far-left sessions-pane toggle and the far-right
-Tools toggle, so a collapsed session sidebar is always recoverable. They
+surfaces, including the far-right Tools toggle (a mirrored `SidebarSimple`
+glyph so the solid rail sits on the right). The sessions-list collapse
+control lives on the session sidebar search row, not in the chat/CLI
+header; when that sidebar is hidden, a thin left rail with **Show sessions**
+recovers it. They
 also expose two relaunch paths: **Resume** calls
 `ade.pty.resumeSession` and opens the provider TUI without sending a
 prompt, while the continuation composer calls `ade.pty.sendToSession`
@@ -691,10 +697,10 @@ excluded — they host terminals but are not a context-insertion target.
 Toggling and tab selection go through `useWorkSessions` setters
 (`setWorkSidebarOpen`, `setWorkSidebarTab`, `setWorkSidebarWidthPct`).
 `setWorkSidebarTab` also opens the sidebar so clicking a tab from a
-closed state acts as a one-click reveal. The toggle button itself
-lives in the `WorkViewArea` tab-strip header (`WorkSidebarToggle`,
-`SidebarSimple` glyph) so users can flip the sidebar on/off without
-reaching across the screen.
+closed state acts as a one-click reveal. The tools-pane toggle is the
+mirrored `SidebarSimple` glyph on the chat/CLI `WorkSurfaceHeader` (solid
+rail on the right), so it matches the sessions-list collapse control on
+the opposite edge.
 
 Drawers in `AgentChatPane` accept `hideLaneToolDrawers={true}` when the
 pane is mounted as a Work tile (`SessionSurface`), so the chat header
@@ -865,10 +871,9 @@ for context insertions. Contains:
   session), and **Shell** (plain shell terminal in the lane's
   worktree). `draftKind` is `WorkDraftKind = "chat" | "cli" | "shell"`
   in `appStore`.
-- A sessions-pane expand affordance (`SessionsPaneExpandAffordance`)
-  on the toolbar when the sidebar is collapsed: a sidebar glyph plus
-  a count chip ("N in list, M running"). Clicking it expands the
-  session sidebar without leaving the Work view.
+- When the sessions list is collapsed, a thin left rail still offers
+  **Show sessions**. The empty draft does not put that control in the
+  chat header.
 - lane selector (`LaneCombobox`) synced to the global `selectedLaneId`
 - for chat drafts: `AgentChatPane` in draft mode with provider-specific
   permission controls (`getPermissionOptions`, `safetyColors`)

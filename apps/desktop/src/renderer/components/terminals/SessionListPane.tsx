@@ -28,6 +28,7 @@ import { resolveLaneAccentColor } from "../../../shared/laneColorPalette";
 import { resolveOpenInTarget } from "../../../shared/editorTargets";
 import { LaneMachineMarker } from "./LaneMachineMarker";
 import { SessionCard } from "./SessionCard";
+import { WorkHeaderSidebarToggle } from "../work/WorkHeaderPaneToggles";
 import { ToolLogo } from "./ToolLogos";
 import { LaneNamingLabel } from "./LaneNamingLabel";
 import { LaneCombobox } from "./LaneCombobox";
@@ -929,6 +930,7 @@ export const SessionListPane = React.memo(function SessionListPane({
   activeItemId = null,
   handoffJobs = [],
   crossMachineSyncActive = true,
+  onToggleSessionsPane,
 }: {
   lanes: LaneSummary[];
   runningFiltered: TerminalSessionSummary[];
@@ -1024,6 +1026,7 @@ export const SessionListPane = React.memo(function SessionListPane({
   }) => void;
   handoffJobs?: HandoffLaunchJob[];
   crossMachineSyncActive?: boolean;
+  onToggleSessionsPane?: () => void;
 }) {
   const navigate = useNavigate();
   /**
@@ -3014,6 +3017,9 @@ export const SessionListPane = React.memo(function SessionListPane({
           className="ade-session-list-toolbar-row flex h-8 min-w-0 items-center gap-1 overflow-hidden px-2"
           data-testid="work-session-list-header"
         >
+          {onToggleSessionsPane ? (
+            <WorkHeaderSidebarToggle collapsed={false} onToggle={onToggleSessionsPane} />
+          ) : null}
           <SmartTooltip
             content={{
               label: "Search",
@@ -3025,7 +3031,7 @@ export const SessionListPane = React.memo(function SessionListPane({
           >
             <button
               type="button"
-              className={cn(SIDEBAR_BARE_BUTTON_CLASS, "h-6 min-w-0 flex-1 px-1.5 text-[11px]")}
+              className={cn(SIDEBAR_BARE_BUTTON_CLASS, "h-6 min-w-0 flex-1 px-1 text-[10px]")}
               onClick={openCommandPalette}
               aria-label="Search chats and commands"
               data-testid="work-sidebar-search"

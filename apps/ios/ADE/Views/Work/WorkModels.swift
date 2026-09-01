@@ -251,6 +251,12 @@ func workChatSurfaceProviderName(_ source: String?) -> String {
   }
 }
 
+func workModelHandoffNoticeMessage(fromProvider: String, toProvider: String) -> String {
+  let from = workChatSurfaceProviderName(fromProvider)
+  let to = workChatSurfaceProviderName(toProvider)
+  return "Model handoff · \(from) → \(to)"
+}
+
 func workChatPendingInputHeaderVerb(source: String?, fallbackProvider: String?, kind: String) -> String {
   let rawSource = source?.trimmingCharacters(in: .whitespacesAndNewlines)
   let provider = rawSource?.isEmpty == false ? rawSource : fallbackProvider

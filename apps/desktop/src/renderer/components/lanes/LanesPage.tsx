@@ -106,6 +106,7 @@ import type {
   IntegrationProposal,
   LaneDeleteProgress,
 } from "../../../shared/types";
+import { machineIdForBinding } from "../../../shared/machineIdentity";
 import { eventMatchesBinding, getEffectiveBinding } from "../../lib/keybindings";
 import { SmartTooltip } from "../ui/SmartTooltip";
 import { docs } from "../../onboarding/docsLinks";
@@ -1332,7 +1333,7 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
     setWorkViewState,
     selectLane,
     navigate,
-    boundMachineId: projectBinding?.kind === "remote" ? projectBinding.targetId : "this-mac",
+    boundMachineId: machineIdForBinding(projectBinding),
   });
 
   useEffect(() => {

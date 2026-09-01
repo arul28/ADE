@@ -264,11 +264,14 @@ that could not work without it.
   runtime unchanged until the next message is sent. Permission, reasoning, and
   Fast Mode controls for that pending model stay local too — writing them
   immediately would apply the new provider's fields to the still-bound previous
-  provider and snap the picker back to a default. Send applies the existing
+  provider and snap the picker back to a default. The pending pick is scoped to
+  that chat: switching to another locked Work chat hydrates the incoming
+  session instead of carrying the pick across. Send applies the existing
   handoff together with those pending native controls, records a `model_handoff`
   divider with the previous and current provider marks (20px marks, one
   baseline), and keeps the current provider mark stacked above prior handoff
-  marks on the Work session card.
+  marks on the Work session card. The TUI prints `[model] Codex → Claude`.
+  iOS renders the same event as a system notice (`Model handoff · Claude → Codex`).
 
 - **Text input** with auto-grow up to `composerMaxHeightPx`. Grid tiles
   pass a fixed 144 px ceiling (computed statically from `layoutVariant`)
@@ -961,8 +964,8 @@ render unwindowed. Key rules:
   carries non-empty body text, it is rendered as a `MarkdownBlock`
   (`chatMarkdownBlock.tsx`) beneath the header.
 - The jump-to-latest pill (shown while scrolled away from the bottom of
-  a live session) reads `N new · jump to latest` when rows arrived after
-  the reader detached, and plain `Jump to latest` otherwise. The count
+  a live session) reads `N new · Jump To Latest` when rows arrived after
+  the reader detached, and plain `Jump To Latest` otherwise. The count
   comes from `countRowsAppendedSince` in `chatTranscriptRows.ts`.
 - The transcript head pages older history **silently**: an
   IntersectionObserver on a fixed-height sentinel — plus an underfill
@@ -1895,9 +1898,11 @@ prompt linking Settings → AI connections instead of an empty list.
   callback and the session-list refresh before sending the first agent
   turn. Skipping this wait renders a blank "new chat" screen because
   the parent surface has not yet navigated to the chat tab.
-- **Model warmup on selection.** Selecting a Claude model triggers
-  `ade.agentChat.warmupModel` to preload a V2 session. If the warmup
-  promise is never awaited, the first turn incurs a 20 s latency.
+- **Model warmup is not on selection.** Changing the composer model does
+  not call `ade.agentChat.warmupModel`. Warmup remains an IPC for callers
+  that explicitly preload a Claude runtime; the Work composer waits until
+  Send to bind the new model, so a selection must not tear down the
+  current provider.
 - **Reasoning slider pointer ownership.** The track captures a drag only
   after the small movement threshold, writes preview positions through CSS
   custom properties, and commits exactly once on pointer-up. Ridge-button
@@ -1905,10 +1910,11 @@ prompt linking Settings → AI connections instead of an empty list.
   the trailing synthetic click so it cannot toggle the newly snapped tier
   back to Auto. Do not close the Radix popover from `onChange` — outside click
   and Escape are the intentional close actions.
-- **Stale slash commands.** SDK-provided slash commands are fetched once
-  per session initialisation. If the user switches model mid-session,
-  the pane re-fetches. Missing the refetch surfaces slash commands
-  from the previous provider.
+- **Stale slash commands.** SDK-provided slash commands fetch by session
+  while the composer matches the committed model. A pending model handoff
+  fetches by lane and the pending provider (the draft path), so the menu
+  does not keep the previous provider's commands. Missing that refetch
+  surfaces slash commands from the still-bound session.
 - **File-search debounce.** The `@` picker debounces input (40 ms in
   `ChatCommandMenu`) and stamps each request with a sequence number to
   discard stale results; cached queries re-render immediately and

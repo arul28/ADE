@@ -8,6 +8,7 @@ import { COLORS } from "../lanes/laneDesignTokens";
 import { MenuSubmenu } from "../ui/MenuSubmenu";
 import { useLaneMenuActions } from "./useWorkLaneContextMenu";
 import { resolveOpenInTarget } from "../../../shared/editorTargets";
+import { machineIdForBinding } from "../../../shared/machineIdentity";
 
 /**
  * The lane menu, hosted as a submenu of a singleton lane's session menu.
@@ -76,9 +77,7 @@ export function LaneActionsSubmenu({
     map.set(lane.id, lane);
     return map;
   }, [lane, lanesById]);
-  const boundMachineId = projectBinding?.kind === "remote"
-    ? projectBinding.targetId
-    : "this-mac";
+  const boundMachineId = machineIdForBinding(projectBinding);
   const startChatMachineId = machineId
     ?? (binding?.kind === "remote" ? binding.targetId : null);
   const isForeignLane = Boolean(

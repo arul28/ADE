@@ -1648,7 +1648,12 @@ function resolveChatRuntimeProvider(desc: ModelDescriptor | null | undefined): C
 function isDeferredComposerModelSelection(
   composerModelId: string | null | undefined,
   sessionModelId: string | null | undefined,
+  deferredSessionId: string | null | undefined,
+  currentSessionId: string | null | undefined,
 ): boolean {
+  if (!deferredSessionId || !currentSessionId || deferredSessionId !== currentSessionId) {
+    return false;
+  }
   return Boolean(composerModelId && sessionModelId && composerModelId !== sessionModelId);
 }
 
@@ -3173,9 +3178,6 @@ export function AgentChatPane({
   onLaneChange,
   initialDraftMachineId = null,
   onDraftMachineChange,
-  onToggleSessionsPane,
-  sessionsPaneCollapsed,
-  sessionsPaneCount,
   onToggleToolsPane,
   toolsPaneOpen,
   onToggleTerminalPane,
@@ -3265,10 +3267,6 @@ export function AgentChatPane({
   initialDraftMachineId?: string | null;
   /** Persists machine selection independently from the raw lane id. */
   onDraftMachineChange?: (machineId: string | null) => void;
-  /** Work tab: far-left session-list expander rendered in this chat's header. */
-  onToggleSessionsPane?: () => void;
-  sessionsPaneCollapsed?: boolean;
-  sessionsPaneCount?: number;
   /** Work tab: far-right Tools-pane toggle rendered in this chat's header. */
   onToggleToolsPane?: () => void;
   toolsPaneOpen?: boolean;
@@ -4075,6 +4073,7 @@ export function AgentChatPane({
   composerModelIdRef.current = modelId;
   const selectedSessionModelIdRef = useRef(selectedSessionModelId);
   selectedSessionModelIdRef.current = selectedSessionModelId;
+  const deferredComposerSessionIdRef = useRef<string | null>(null);
   useEffect(() => {
     const api = window.ade?.iosSimulator;
     if (!api?.getStatus) return;
@@ -5479,6 +5478,11 @@ export function AgentChatPane({
 
   const syncComposerToSession = useCallback((session: AgentChatSessionSummary | null) => {
     if (!session) {
+      // Locked Work chats keep this pane mounted across switches. While the
+      // incoming session is still loading, do not seed last-launch into it.
+      if (lockSessionId) {
+        return;
+      }
       if (draftLaunchConfigTouchedKeyRef.current === draftLaunchConfigScopeKey) {
         return;
       }
@@ -5499,8 +5503,19 @@ export function AgentChatPane({
       setFastModeState(false);
       return;
     }
+    if (
+      deferredComposerSessionIdRef.current
+      && deferredComposerSessionIdRef.current !== session.sessionId
+    ) {
+      deferredComposerSessionIdRef.current = null;
+    }
     const nextModelId = session.modelId ?? resolveRegistryModelId(session.model);
-    if (isDeferredComposerModelSelection(composerModelIdRef.current, nextModelId)) {
+    if (isDeferredComposerModelSelection(
+      composerModelIdRef.current,
+      nextModelId,
+      deferredComposerSessionIdRef.current,
+      session.sessionId,
+    )) {
       // A model picked in this chat is local until Send. Session permission
       // fields still describe the previous provider, so hydrating from them
       // would snap the new model's picker back to its default.
@@ -5540,6 +5555,7 @@ export function AgentChatPane({
     draftLaunchConfigScopeKey,
     initialNativeControls,
     lastLaunchConfigStorageKeys,
+    lockSessionId,
     setFastModeState,
   ]);
   const executionModeOptions = useMemo(
@@ -7438,7 +7454,13 @@ export function AgentChatPane({
     if (!isTileActive) { setSdkSlashCommands([]); return; }
     if (!selectedSessionId && !laneId) { setSdkSlashCommands([]); return; }
     let cancelled = false;
-    const args = selectedSessionId
+    const pendingHandoff = isDeferredComposerModelSelection(
+      modelId,
+      selectedSessionModelId,
+      deferredComposerSessionIdRef.current,
+      selectedSessionId,
+    );
+    const args = selectedSessionId && !pendingHandoff
       ? { sessionId: selectedSessionId, projectRoot }
       : { laneId, provider: sessionProvider, projectRoot };
     const pin = selectedSessionId ? chatRuntimePinRef.current : draftExecutionBindingRef.current;
@@ -7450,7 +7472,7 @@ export function AgentChatPane({
       .then((cmds) => { if (!cancelled) setSdkSlashCommands(cmds); })
       .catch(() => { if (!cancelled) setSdkSlashCommands([]); });
     return () => { cancelled = true; };
-  }, [isTileActive, laneId, projectRoot, selectedSessionId, sessionProvider]);
+  }, [isTileActive, laneId, modelId, projectRoot, selectedSessionId, selectedSessionModelId, sessionProvider]);
 
   const sessionDeltaTurnActiveRef = useRef(false);
   const sessionDeltaSessionIdRef = useRef<string | null>(null);
@@ -7749,6 +7771,8 @@ export function AgentChatPane({
           && !isDeferredComposerModelSelection(
             composerModelIdRef.current,
             selectedSessionModelIdRef.current,
+            deferredComposerSessionIdRef.current,
+            selectedSessionIdRef.current,
           )
         ) {
           if (meta.interactionMode !== undefined) {
@@ -10978,6 +11002,9 @@ export function AgentChatPane({
       const selectedFastModeChanged =
         Boolean(selectedSessionId)
         && (selectedSession?.fastMode === true) !== fastMode;
+      const selectedReasoningChanged =
+        Boolean(selectedSessionId)
+        && (selectedSession?.reasoningEffort ?? null) !== reasoningEffort;
       const selectedAttachments = isLiteralSlashCommand ? [] : attachmentsSnapshot;
       const selectedContextAttachments = isLiteralSlashCommand ? [] : contextAttachmentsSnapshot;
       const optimisticEnvelope = (nextSessionId: string): AgentChatEventEnvelope => ({
@@ -11005,6 +11032,7 @@ export function AgentChatPane({
         setOptimisticIfAllowed(sessionId);
         const modelUpdate = selectedModelChanged ? { modelId } : {};
         const fastModeUpdate = selectedFastModeChanged ? { fastMode } : {};
+        const reasoningUpdate = selectedReasoningChanged ? { reasoningEffort } : {};
         const pendingNativeUpdate = selectedModelChanged
           ? summarizeNativeControls(sessionProvider, nativeControlsRef.current)
           : {};
@@ -11015,9 +11043,11 @@ export function AgentChatPane({
           sessionId,
           ...modelUpdate,
           ...fastModeUpdate,
+          ...reasoningUpdate,
           ...pendingNativeUpdate,
           ...pendingCursorConfig,
         }, chatRuntimePinRef.current);
+        deferredComposerSessionIdRef.current = null;
         void refreshSessions().catch(() => {});
       } else if (!sessionId) {
         // No session yet — create one
@@ -11511,7 +11541,12 @@ export function AgentChatPane({
 
     if (!selectedSessionId) return;
 
-    if (isDeferredComposerModelSelection(composerModelIdRef.current, selectedSessionModelIdRef.current)) {
+    if (isDeferredComposerModelSelection(
+      composerModelIdRef.current,
+      selectedSessionModelIdRef.current,
+      deferredComposerSessionIdRef.current,
+      selectedSessionId,
+    )) {
       // Persist with the model handoff on Send. Writing now would apply the
       // new provider's fields to the still-bound previous provider, then the
       // session hydration would snap the picker back to its default.
@@ -11605,6 +11640,14 @@ export function AgentChatPane({
     setReasoningEffort(nextReasoningEffort);
     if (!selectedSessionId) return;
     if (isPersistentIdentitySurface && sessionMutationKind) return;
+    if (isDeferredComposerModelSelection(
+      composerModelIdRef.current,
+      selectedSessionModelIdRef.current,
+      deferredComposerSessionIdRef.current,
+      selectedSessionId,
+    )) {
+      return;
+    }
 
     const seq = ++reasoningEffortUpdateCounterRef.current;
     const targetSessionId = selectedSessionId;
@@ -11651,6 +11694,14 @@ export function AgentChatPane({
     setFastModeState(enabled);
     if (!selectedSessionId) return;
     if (isPersistentIdentitySurface && sessionMutationKind) return;
+    if (isDeferredComposerModelSelection(
+      composerModelIdRef.current,
+      selectedSessionModelIdRef.current,
+      deferredComposerSessionIdRef.current,
+      selectedSessionId,
+    )) {
+      return;
+    }
 
     const updateId = ++fastModeUpdateCounterRef.current;
     const targetSessionId = selectedSessionId;
@@ -12905,9 +12956,6 @@ export function AgentChatPane({
         prPaneOpen={prPaneOpen}
         runtimePin={chatRuntimePin}
         trailingActions={chatHeaderTrailingActions}
-        onToggleSessionsPane={onToggleSessionsPane}
-        sessionsPaneCollapsed={sessionsPaneCollapsed}
-        sessionsPaneCount={sessionsPaneCount}
         onToggleToolsPane={onToggleToolsPane}
         toolsPaneOpen={toolsPaneOpen}
         className="h-8 space-y-0 p-0"
@@ -13275,6 +13323,7 @@ export function AgentChatPane({
               // existing updateSession handoff immediately before send(), so
               // no provider runtime is torn down or rebound while the user is
               // still choosing a model or typing.
+              deferredComposerSessionIdRef.current = selectedSessionId;
               applyModelSelectionSnapshot(snapshot);
             }}
             onReasoningEffortChange={handleReasoningEffortChange}

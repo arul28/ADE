@@ -5051,6 +5051,41 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(buildWorkSubagentSnapshots(from: transcript).first?.agentId, "agent-1")
   }
 
+  func testAgentChatEventEnvelopeDecodesModelHandoff() throws {
+    let json = """
+    {
+      "sessionId": "session-handoff",
+      "timestamp": "2026-09-01T00:00:00.000Z",
+      "sequence": 8,
+      "event": {
+        "type": "model_handoff",
+        "fromProvider": "codex",
+        "toProvider": "claude",
+        "fromModelId": "openai/gpt-5.4",
+        "toModelId": "anthropic/claude-sonnet-5",
+        "turnId": "turn-handoff"
+      }
+    }
+    """
+
+    let envelope = try JSONDecoder().decode(AgentChatEventEnvelope.self, from: Data(json.utf8))
+    guard case .modelHandoff(let fromProvider, let toProvider, let fromModelId, let toModelId, let turnId) = envelope.event else {
+      return XCTFail("Expected model_handoff event.")
+    }
+    XCTAssertEqual(fromProvider, "codex")
+    XCTAssertEqual(toProvider, "claude")
+    XCTAssertEqual(fromModelId, "openai/gpt-5.4")
+    XCTAssertEqual(toModelId, "anthropic/claude-sonnet-5")
+    XCTAssertEqual(turnId, "turn-handoff")
+
+    guard case .systemNotice(let kind, let message, _, let noticeTurnId, _) = makeWorkChatEvent(from: envelope.event) else {
+      return XCTFail("Expected model_handoff to map to a visible system notice.")
+    }
+    XCTAssertEqual(kind, "info")
+    XCTAssertEqual(message, "Model handoff · Codex → Claude")
+    XCTAssertEqual(noticeTurnId, "turn-handoff")
+  }
+
   func testAgentChatEventEnvelopeDecodesTokenUsageEvent() throws {
     let json = """
     {
