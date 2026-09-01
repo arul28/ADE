@@ -377,12 +377,18 @@ function ingressBlock(input = {}) {
   const ingress = input.ingress;
   if (!ingress) return [];
 
-  // A custom OAuth client is narrowed to `read,write`, so Linear never sends a
-  // data-change event to this connection — the endpoint is reachable, the
-  // secret can be pasted, the strip would read "Signed deliveries only", and
-  // nothing would ever arrive. Said before the URL rather than after it,
-  // because the reader is about to spend ten minutes in Linear's settings.
-  const starved = input.clientSource === "custom";
+  // Whether Linear can deliver to this connection AT ALL, which is a different
+  // question from whether the endpoint exists or the secret is stored.
+  //
+  // Read from `webhooksPossible` rather than re-derived from `clientSource`,
+  // because the two are not the same test and the difference is a whole class
+  // of reader: a custom OAuth client is narrowed to `read,write`, and an API-key
+  // connection has no OAuth grant at all. Branching on `clientSource === "custom"`
+  // would have left every API-key reader with no warning, pasting a signing
+  // secret for a webhook that can never fire. The `clientSource` fallback is for
+  // an older data half that does not send the flag yet.
+  const starved = input.ingress?.webhooksPossible === false
+    || (input.ingress?.webhooksPossible === undefined && input.clientSource === "custom");
 
   const rows = [{ key: "Webhook", value: value(ingress.status ?? "Not set up"), tone: ingress.tone ?? "neutral" }];
   if (ingress.lastEvent) rows.push({ key: "Last event", value: value(ingress.lastEvent) });
@@ -393,12 +399,18 @@ function ingressBlock(input = {}) {
   ];
 
   if (starved) {
+    // The Webhook row above already carries the headline, so this says only
+    // what a status line cannot: WHICH connection cannot receive, and what to
+    // do instead. Repeating the headline in different words is the duplicate
+    // the data half just removed from its own status string.
     block.push({
       component: "text",
       variant: "caption",
       tone: "warning",
       text: prose(
-        "Linear will not deliver events to this connection. It was made with the Linear app registered on this machine, which Linear does not grant webhooks to — setting up the URL and the signing secret below will not change that. Reconnect with ADE's own Linear app to receive events.",
+        input.clientSource === "custom"
+          ? "This connection was made with the Linear app registered on this machine, and Linear does not grant webhooks to it. Setting up the URL and the signing secret below will not change that — reconnect with ADE's own Linear app to receive events."
+          : "This connection has no webhook grant — an API key carries none, and neither does a Linear app registered outside ADE. Setting up the URL and the signing secret below will not change that. Sign in with ADE's own Linear app to receive events.",
       ),
     });
   }

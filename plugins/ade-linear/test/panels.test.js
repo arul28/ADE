@@ -870,9 +870,60 @@ describe("which Linear app the connection is made with", () => {
     // "Signed deliveries only", and waits forever.
     const panel = panels.buildSettingsPanel({
       connection: { connected: true, clientSource: "custom", organizationName: "Acme" },
+      clientSource: "custom",
+      ingress: {
+        status: "Linear will not deliver to this connection",
+        url: "https://relay.ade.dev/hook/abc",
+        secretStored: true,
+        webhooksPossible: false,
+      },
+    });
+    assert.ok(warnings(panel).includes("Linear does not grant webhooks to it"), warnings(panel));
+    // The Webhook row carries the headline; the caption must not restate it in
+    // different words, which is the duplicate the data half removed from its
+    // own status string.
+    assert.ok(!warnings(panel).includes("Linear will not deliver events to this connection"));
+  });
+
+  it("warns an API-key reader too, who has no OAuth grant at all", () => {
+    // The case a `clientSource === "custom"` test would miss completely. An API
+    // key carries no OAuth grant, so `webhooksPossible` is false with
+    // `clientSource` null — and that reader would otherwise paste a signing
+    // secret for a webhook that can never fire, with nothing saying so.
+    const panel = panels.buildSettingsPanel({
+      connection: { connected: true, authMode: "apiKey", organizationName: "Acme" },
+      clientSource: null,
+      ingress: {
+        status: "Linear will not deliver to this connection",
+        url: "https://relay.ade.dev/hook/abc",
+        secretStored: true,
+        webhooksPossible: false,
+      },
+    });
+    assert.ok(warnings(panel).includes("an API key carries none"), warnings(panel));
+  });
+
+  it("falls back to clientSource for a data half that sends no flag", () => {
+    const panel = panels.buildSettingsPanel({
+      connection: { connected: true, clientSource: "custom", organizationName: "Acme" },
+      clientSource: "custom",
       ingress: { status: "Endpoint ready", url: "https://relay.ade.dev/hook/abc", secretStored: true },
     });
-    assert.ok(warnings(panel).includes("Linear will not deliver events to this connection"), warnings(panel));
+    assert.ok(warnings(panel).includes("Linear does not grant webhooks to it"), warnings(panel));
+  });
+
+  it("says nothing when Linear can actually deliver", () => {
+    const panel = panels.buildSettingsPanel({
+      connection: { connected: true, clientSource: "official", organizationName: "Acme" },
+      clientSource: "official",
+      ingress: {
+        status: "Endpoint ready",
+        url: "https://relay.ade.dev/hook/abc",
+        secretStored: true,
+        webhooksPossible: true,
+      },
+    });
+    assert.equal(warnings(panel), "");
   });
 
   it("says so before the reader spends ten minutes in Linear's settings", () => {
@@ -880,11 +931,17 @@ describe("which Linear app the connection is made with", () => {
     // after them it is a post-mortem rather than a warning.
     const panel = panels.buildSettingsPanel({
       connection: { connected: true, clientSource: "custom", organizationName: "Acme" },
-      ingress: { status: "Endpoint ready", url: "https://relay.ade.dev/hook/abc", secretStored: false },
+      clientSource: "custom",
+      ingress: {
+        status: "Linear will not deliver to this connection",
+        url: "https://relay.ade.dev/hook/abc",
+        secretStored: false,
+        webhooksPossible: false,
+      },
     });
     const body = everyNode(panel.body);
     const warnAt = body.findIndex(
-      (node) => typeof node.text === "string" && node.text.includes("Linear will not deliver events"),
+      (node) => typeof node.text === "string" && node.text.includes("Linear does not grant webhooks to it"),
     );
     const secretAt = body.findIndex((node) => node.component === "form" && node.fields?.[0]?.id === "secret");
     assert.ok(warnAt !== -1 && secretAt !== -1);
