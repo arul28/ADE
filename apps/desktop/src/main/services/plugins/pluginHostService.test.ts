@@ -987,6 +987,64 @@ describe("plugin start and panel materialization", () => {
       }
     });
 
+    it("merges the daemon's bare poll hint and its transition emission into ONE pr.changed", async () => {
+      vi.useFakeTimers();
+      try {
+        const { supervisors, projectRoot } = await hostWithFixture();
+        const running = supervisors.latest("hello-plugin")!;
+        running.sent.length = 0;
+
+        // The exact pair `ade-cli`'s `bootstrap.ts` produces for one poll, and
+        // the reason it is allowed to produce two.
+        //
+        // `emitPrEvent` fires first, from the poller's `onEvent`, naming EVERY
+        // PR the poll re-read. It cannot carry transitions: `previousState`
+        // only exists inside `onPullRequestsChanged`, which the poller calls
+        // afterwards, and that hook does not run at all on an empty or a
+        // first-tick poll — so the bare hint is the only signal on those.
+        // `onPullRequestsChanged` then fires the second, naming just the PRs
+        // that moved, with what each one did.
+        //
+        // A plugin must never see the bare one on its own for a window that
+        // also produced transitions, because a subscriber reading
+        // `payload.transitions` on that first frame would read an empty list
+        // and conclude nothing moved. Coalescing is what makes the two halves
+        // one event, so the count is the contract here, not just the content.
+        emitPluginEntityChange({
+          family: "pr",
+          ids: ["pr-1", "pr-2", "pr-3"],
+          projectRoot,
+        });
+        emitPluginEntityChange({
+          family: "pr",
+          ids: ["pr-2"],
+          projectRoot,
+          transitions: [{
+            id: "pr-2",
+            from: { state: "open", merged: false },
+            to: { state: "merged", merged: true },
+          }],
+        });
+        vi.runOnlyPendingTimers();
+
+        const frames = running.sent.filter(
+          (entry): entry is { type: "event"; payload: PluginEventPayload } =>
+            entry.type === "event" && entry.payload.event === "pr.changed",
+        );
+        expect(frames).toHaveLength(1);
+        // Every PR the poll named, not just the one that moved: the hint half
+        // is a "re-read the set" signal and dropping its ids would lose it.
+        expect(frames[0]?.payload.ids).toEqual(["pr-1", "pr-2", "pr-3"]);
+        expect(frames[0]?.payload.transitions).toEqual([{
+          id: "pr-2",
+          from: { state: "open", merged: false },
+          to: { state: "merged", merged: true },
+        }]);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
     it("drops transitions on an overflowed delivery but keeps the capped ids", async () => {
       vi.useFakeTimers();
       try {
