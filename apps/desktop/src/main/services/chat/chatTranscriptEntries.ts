@@ -58,6 +58,7 @@ const TRANSCRIPT_CONTENT_EVENT_TYPES: ReadonlySet<string> = new Set<AgentChatEve
   "subagent.progress",
   "subagent.started",
   "system_notice",
+  "model_handoff",
   "todo_update",
   "tool_call",
   "tool_result",

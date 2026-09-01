@@ -1645,6 +1645,13 @@ function resolveChatRuntimeProvider(desc: ModelDescriptor | null | undefined): C
   return desc ? resolveProviderGroupForModel(desc) : "opencode";
 }
 
+function isDeferredComposerModelSelection(
+  composerModelId: string | null | undefined,
+  sessionModelId: string | null | undefined,
+): boolean {
+  return Boolean(composerModelId && sessionModelId && composerModelId !== sessionModelId);
+}
+
 function runtimeFacingModelId(desc: ModelDescriptor | null | undefined, registryModelId: string): string {
   if (!desc?.isCliWrapped) return registryModelId;
   if (desc.family === "cursor" || desc.family === "openai" || desc.family === "factory") {
@@ -3973,20 +3980,6 @@ export function AgentChatPane({
     () => (selectedSessionId ? sessions.find((session) => session.sessionId === selectedSessionId) ?? null : null),
     [sessions, selectedSessionId]
   );
-  // Does the composer's model actually describe the chat on screen? The
-  // model-derived accent inputs (the composer model descriptor's family and
-  // color, which give the chat its accent) trail a prop-driven switch, because
-  // the pane is not remounted — so those inputs are withheld until this holds,
-  // and a neutral fallback covers the gap. It gates only where it is read; it
-  // is not a blanket freshness test for everything keyed to `selectedSession`.
-  //
-  // Deliberately not `!chatSelectionTransitioning`: that one compares the
-  // composer id to the rendered id, which already agree in the frame where the
-  // incoming id is known but its row has not been listed yet. Here
-  // `selectedSession` is still null in that frame, so this stays false and the
-  // stale model args keep being withheld. A draft pane has no session at all,
-  // so `null === null` holds and it keeps its composer model color.
-  const composerModelDescribesRenderedChat = (selectedSession?.sessionId ?? null) === renderedSessionId;
   // Which atomic active-turn dispatch modes this session's backend accepts,
   // read off the canonical table in shared/types/chat.ts rather than restated
   // here.
@@ -4078,6 +4071,10 @@ export function AgentChatPane({
     if (!selectedSession) return null;
     return selectedSession.modelId ?? resolveRegistryModelId(selectedSession.model);
   }, [selectedSession]);
+  const composerModelIdRef = useRef(modelId);
+  composerModelIdRef.current = modelId;
+  const selectedSessionModelIdRef = useRef(selectedSessionModelId);
+  selectedSessionModelIdRef.current = selectedSessionModelId;
   useEffect(() => {
     const api = window.ade?.iosSimulator;
     if (!api?.getStatus) return;
@@ -5297,6 +5294,13 @@ export function AgentChatPane({
 
   const modelSelectionDiffersFromSession = Boolean(selectedSession && selectedSessionModelId && selectedSessionModelId !== modelId);
 
+  // A model picked in an existing chat is a draft until the next message is
+  // sent. Keep model-derived chat accents on the committed session so the
+  // visual identity does not get ahead of the provider handoff.
+  const composerModelDescribesRenderedChat =
+    (selectedSession?.sessionId ?? null) === renderedSessionId
+    && (!selectedSession || !modelSelectionDiffersFromSession);
+
   const sessionProvider = useMemo(() => {
     if (selectedSession && !modelSelectionDiffersFromSession) return selectedSession.provider;
     return resolveChatRuntimeProvider(resolveScopedModelDescriptor(modelId, modelCatalogScopeKey));
@@ -5496,6 +5500,12 @@ export function AgentChatPane({
       return;
     }
     const nextModelId = session.modelId ?? resolveRegistryModelId(session.model);
+    if (isDeferredComposerModelSelection(composerModelIdRef.current, nextModelId)) {
+      // A model picked in this chat is local until Send. Session permission
+      // fields still describe the previous provider, so hydrating from them
+      // would snap the new model's picker back to its default.
+      return;
+    }
     if (nextModelId) {
       setModelId(nextModelId);
     }
@@ -7733,7 +7743,14 @@ export function AgentChatPane({
         const modeChanged = Object.keys(summaryPatch).some((key) =>
           key !== "title" && key !== "spawnKind" && key !== "subagentTakeoverPromptShownAt"
         );
-        if (modeChanged && envelope.sessionId === selectedSessionIdRef.current) {
+        if (
+          modeChanged
+          && envelope.sessionId === selectedSessionIdRef.current
+          && !isDeferredComposerModelSelection(
+            composerModelIdRef.current,
+            selectedSessionModelIdRef.current,
+          )
+        ) {
           if (meta.interactionMode !== undefined) {
             setInteractionMode(meta.interactionMode ?? initialNativeControls.interactionMode);
           }
@@ -10988,10 +11005,18 @@ export function AgentChatPane({
         setOptimisticIfAllowed(sessionId);
         const modelUpdate = selectedModelChanged ? { modelId } : {};
         const fastModeUpdate = selectedFastModeChanged ? { fastMode } : {};
+        const pendingNativeUpdate = selectedModelChanged
+          ? summarizeNativeControls(sessionProvider, nativeControlsRef.current)
+          : {};
+        const pendingCursorConfig = selectedModelChanged && sessionProvider === "cursor"
+          ? { cursorConfigValues: nativeControlsRef.current.cursorConfigValues }
+          : {};
         await window.ade.agentChat.updateSession({
           sessionId,
           ...modelUpdate,
           ...fastModeUpdate,
+          ...pendingNativeUpdate,
+          ...pendingCursorConfig,
         }, chatRuntimePinRef.current);
         void refreshSessions().catch(() => {});
       } else if (!sessionId) {
@@ -11485,6 +11510,13 @@ export function AgentChatPane({
     setCursorConfigValues(nextControls.cursorConfigValues);
 
     if (!selectedSessionId) return;
+
+    if (isDeferredComposerModelSelection(composerModelIdRef.current, selectedSessionModelIdRef.current)) {
+      // Persist with the model handoff on Send. Writing now would apply the
+      // new provider's fields to the still-bound previous provider, then the
+      // session hydration would snap the picker back to its default.
+      return;
+    }
 
     const provider = selectedSession?.provider ?? sessionProvider;
     const nextSummary = {
@@ -13230,75 +13262,20 @@ export function AgentChatPane({
               if (!selectedSessionId) {
                 draftLaunchConfigTouchedKeyRef.current = draftLaunchConfigScopeKey;
               }
-              const previousModelId = modelId;
-              const previousFastMode = fastModeRef.current;
               if (options) {
                 setFastModeState(options.fastMode);
               }
               const snapshot = buildModelSelectionSnapshot(nextModelId);
               if (!selectedSessionId || turnActive) {
                 applyModelSelectionSnapshot(snapshot);
-                if (
-                  selectedSessionId
-                  && snapshot.nextDesc?.isCliWrapped
-                  && (snapshot.nextDesc.family === "anthropic" || snapshot.nextDesc.family === "cursor")
-                ) {
-                  window.ade.agentChat.warmupModel({
-                    sessionId: selectedSessionId,
-                    modelId: nextModelId,
-                  }, chatRuntimePinRef.current).catch(() => { /* warmup is best-effort */ });
-                }
                 return;
               }
 
-              setSessionMutationKind("model");
-              void window.ade.agentChat.updateSession({
-                sessionId: selectedSessionId,
-                modelId: nextModelId,
-                ...(options ? { fastMode: fastModeRef.current } : {}),
-              }, chatRuntimePinRef.current).then((updatedSession) => {
-                applyModelSelectionSnapshot(snapshot);
-                patchSessionSummary(selectedSessionId, {
-                  provider: updatedSession.provider,
-                  model: updatedSession.model,
-                  modelId: updatedSession.modelId,
-                  reasoningEffort: updatedSession.reasoningEffort ?? null,
-                  fastMode: updatedSession.fastMode === true,
-                  permissionMode: updatedSession.permissionMode,
-                  interactionMode: updatedSession.interactionMode ?? null,
-                  claudePermissionMode: updatedSession.claudePermissionMode,
-                  codexApprovalPolicy: updatedSession.codexApprovalPolicy,
-                  codexSandbox: updatedSession.codexSandbox,
-                  codexConfigSource: updatedSession.codexConfigSource,
-                  opencodePermissionMode: updatedSession.opencodePermissionMode,
-                  droidPermissionMode: updatedSession.droidPermissionMode,
-                  cursorModeId: updatedSession.cursorModeId,
-                  cursorModeSnapshot: updatedSession.cursorModeSnapshot,
-                });
-                getAgentChatSlashCommandsCached(
-                  { sessionId: selectedSessionId, projectRoot },
-                  { force: true, pin: chatRuntimePinRef.current },
-                )
-                  .then(setSdkSlashCommands)
-                  .catch(() => {});
-                if (
-                  snapshot.nextDesc?.isCliWrapped
-                  && (snapshot.nextDesc.family === "anthropic" || snapshot.nextDesc.family === "cursor")
-                ) {
-                  window.ade.agentChat.warmupModel({
-                    sessionId: selectedSessionId,
-                    modelId: nextModelId,
-                  }, chatRuntimePinRef.current).catch(() => { /* warmup is best-effort */ });
-                }
-                void refreshSessions().catch(() => {});
-              }).catch((err) => {
-                setModelId(previousModelId);
-                if (options) setFastModeState(previousFastMode);
-                void refreshSessions().catch(() => {});
-                setError(err instanceof Error ? err.message : String(err));
-              }).finally(() => {
-                setSessionMutationKind(null);
-              });
+              // Keep the selection local until submit(). Submit applies the
+              // existing updateSession handoff immediately before send(), so
+              // no provider runtime is torn down or rebound while the user is
+              // still choosing a model or typing.
+              applyModelSelectionSnapshot(snapshot);
             }}
             onReasoningEffortChange={handleReasoningEffortChange}
             onFastModeChange={handleFastModeChange}

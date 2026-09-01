@@ -8,6 +8,7 @@ import {
   isHostSleepNoticeEvent,
 } from "../../../desktop/src/shared/hostSleepNotice";
 import { approvalRequestKind, isQuestionKind } from "../../../desktop/src/shared/pendingInputAnswers";
+import { providerDisplayLabel } from "../../../desktop/src/shared/pendingInputLabels";
 import { renderAdeCardBody } from "./adeCardFormat";
 import { highlightCode, type HighlightedToken } from "./highlightCache";
 import { glyphFor } from "./theme";
@@ -789,6 +790,12 @@ export function renderChatLines(args: {
           lines.splice(lineIndex, 1);
         }
       }
+      continue;
+    }
+    if (event.type === "model_handoff") {
+      const from = providerDisplayLabel(event.fromProvider, "previous model");
+      const to = providerDisplayLabel(event.toProvider, "new model");
+      lines.push({ id, tone: "notice", body: `[model] ${from} → ${to}` });
       continue;
     }
     if (event.type === "text") {

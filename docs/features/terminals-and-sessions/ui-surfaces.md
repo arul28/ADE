@@ -298,7 +298,10 @@ The full card is one full-bleed row with three lines:
    `session.summary`, then `session.goal`. Output fallback is plain text (never
    linkified), capped at 120 characters, and strips ANSI/control sequences plus
    repeated whitespace via `sanitizeTerminalInlineText`. The trailing cluster
-   is limited to Claude cache TTL, a non-stop exit code, and `ToolLogo`; delta
+   is limited to Claude cache TTL, a non-stop exit code, and `ToolLogo` — or,
+   after a model handoff, a stacked current-over-previous provider mark with
+   the previous logo peeking as a sliver to the right (offset ~28% of the mark,
+   current logo at full opacity). Delta
    moved to line one so preview text owns the width it needs.
 
 `SessionStatusSlot` is the card's only permanent status vocabulary. It resolves
@@ -958,7 +961,8 @@ Launch commands are built by `apps/desktop/src/shared/cliLaunch.ts`:
 
 ## Context menu: `SessionContextMenu.tsx`
 
-The right-click menu uses one grouped, liquid-glass menu vocabulary:
+The right-click menu uses one grouped, liquid-glass menu vocabulary. Every row
+carries a 13px duotone Phosphor glyph so the list is scannable:
 
 - Chat rows put **Rename…**, **Generate chat title**, **Generate lane name**,
   **Generate status line**, and **Generate all three** in a **Name & status**
@@ -1020,8 +1024,14 @@ the chat header chips can never disagree about what an action does.
 A singleton lane has no divider to right-click, so its session menu adds a
 **Lane** hover submenu. `LaneActionsSubmenu` renders the exact
 `buildLaneMenuGroups()` model used by `LaneContextMenu`; it does not transcribe
-the actions. Menu subpanels share `MenuSubmenu`'s 180 ms open delay, 300 ms
-pointer-safe close grace, viewport clamping, and keyboard navigation.
+the actions. A headerless foreign card passes its `lane`, `binding`, and
+`machineId` into that submenu so it is the same menu as a local singleton —
+**Start chat in lane** writes `draftMachineId` for the owning machine, colour
+and manage pin to that runtime, and tab/split actions (which navigate the local
+Lanes tab) stay omitted. The old **Open lane menu…** stub remains only when the
+lane cannot be resolved at all. Menu subpanels share `MenuSubmenu`'s 180 ms open
+delay, 300 ms pointer-safe close grace, viewport clamping, and keyboard
+navigation.
 
 The rename input uses local state. Chat rows submit through
 `agentChat.updateSession({ title, manuallyNamed: true })`; PTY rows submit

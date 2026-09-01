@@ -363,7 +363,7 @@ describe("chatUserMinimap.logic", () => {
     expect(computeScrollTopForRow(2, offsets)).toBe(offsets[2]);
   });
 
-  it("adds Codex queued and compact ticks without a tick per done event", () => {
+  it("adds Codex queued ticks but omits compaction events", () => {
     const rows: ChatTranscriptGroupedEnvelope[] = [
       userRow("ask", "u1"),
       {
@@ -390,12 +390,11 @@ describe("chatUserMinimap.logic", () => {
       doneRow("completed", "d1"),
     ];
     const entries = collectUserMessageMinimapSourceEntries(rows, { includeCodexExtras: true });
-    expect(entries.map((entry) => entry.kind)).toEqual(["user", "queued", "compact"]);
+    expect(entries.map((entry) => entry.kind)).toEqual(["user", "queued"]);
     expect(entries.find((entry) => entry.kind === "queued")?.preview).toBe("still there?");
-    expect(entries.find((entry) => entry.kind === "compact")?.turnOutcome).toBe("failed");
   });
 
-  it("keeps a single compact tick for started then completed compaction", () => {
+  it("omits both started and completed compaction events", () => {
     const rows: ChatTranscriptGroupedEnvelope[] = [
       userRow("ask", "u1"),
       {
@@ -422,7 +421,7 @@ describe("chatUserMinimap.logic", () => {
       },
     ];
     const entries = collectUserMessageMinimapSourceEntries(rows, { includeCodexExtras: true });
-    expect(entries.filter((entry) => entry.kind === "compact")).toHaveLength(1);
-    expect(entries.find((entry) => entry.kind === "compact")?.preview).toBe("Context compacted");
+    expect(entries).toHaveLength(1);
+    expect(entries[0]?.kind).toBe("user");
   });
 });

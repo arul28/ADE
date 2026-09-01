@@ -16,6 +16,14 @@ import { providerDisplayLabel } from "../pendingInputLabels";
 
 export type AgentChatProvider = "codex" | "claude" | "cursor" | "droid" | "opencode" | "pi" | (string & {});
 
+/** A completed model/provider transition recorded on a chat session. */
+export type AgentChatModelHandoff = {
+  fromProvider: AgentChatProvider;
+  toProvider: AgentChatProvider;
+  fromModelId?: ModelId;
+  toModelId?: ModelId;
+};
+
 export type AgentChatSessionStatus = "active" | "idle" | "ended";
 export type AgentChatSessionProfile = "light" | "workflow";
 
@@ -1298,6 +1306,15 @@ export type AgentChatEvent =
       turnId?: string;
     }
   | {
+      /** A completed provider/model transition in this chat's transcript. */
+      type: "model_handoff";
+      fromProvider: AgentChatProvider;
+      toProvider: AgentChatProvider;
+      fromModelId?: ModelId;
+      toModelId?: ModelId;
+      turnId?: string;
+    }
+  | {
       type: "completion_report";
       report: AgentChatCompletionReport;
       turnId?: string;
@@ -1657,6 +1674,8 @@ export type AgentChatSession = {
   /** Runtime-facing model token (CLI shortId or direct API model id), persisted as a plain string for compatibility. */
   model: string;
   modelId?: ModelId;
+  /** Completed model/provider transitions, oldest first. */
+  modelHandoffHistory?: AgentChatModelHandoff[];
   sessionProfile?: AgentChatSessionProfile;
   goal?: string | null;
   reasoningEffort?: string | null;
@@ -1750,6 +1769,8 @@ export type AgentChatSessionSummary = {
   provider: AgentChatProvider;
   model: string;
   modelId?: ModelId;
+  /** Completed model/provider transitions, oldest first. */
+  modelHandoffHistory?: AgentChatModelHandoff[];
   sessionProfile?: AgentChatSessionProfile;
   title?: string | null;
   goal?: string | null;

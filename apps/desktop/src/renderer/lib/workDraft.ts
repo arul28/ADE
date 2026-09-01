@@ -10,12 +10,28 @@ export type StartChatDraftPatch = Pick<
   | "selectedItemId"
 >;
 
-export function startChatDraftPatch(laneId: string): StartChatDraftPatch {
+/**
+ * Persist a foreign machine id on the Work draft. The tab's bound machine is
+ * represented as `null` so `WorkStartSurface` keeps reading the local lane list.
+ */
+export function chatDraftMachineId(
+  machineId: string | null | undefined,
+  boundMachineId: string,
+): string | null {
+  const trimmed = machineId?.trim() || null;
+  if (!trimmed || trimmed === boundMachineId) return null;
+  return trimmed;
+}
+
+export function startChatDraftPatch(
+  laneId: string,
+  machineId: string | null = null,
+): StartChatDraftPatch {
   return {
     draftKind: "chat",
     orchestratorEnabled: false,
     draftLaneId: laneId,
-    draftMachineId: null,
+    draftMachineId: machineId,
     activeItemId: null,
     selectedItemId: null,
   };

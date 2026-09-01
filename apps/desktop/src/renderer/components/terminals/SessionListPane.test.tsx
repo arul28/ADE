@@ -1418,15 +1418,14 @@ describe("SessionListPane", () => {
           laneId: "lane-elsewhere",
           laneName: "Elsewhere Lane",
         }),
-        // No hostname on this foreign binding, so Open in stays hidden even
-        // though a headerless foreign card would otherwise keep it at session
-        // root (Lane ▸ cannot resolve a remote editor from the local store).
+        // Lane ▸ now carries the foreign binding, so session-root Open in
+        // would duplicate the editor picker the lane menu already renders.
         null,
         "worktree",
       );
     });
 
-    it("keeps session-root Open in on a headerless foreign SSH lane", () => {
+    it("puts Open in on the Lane submenu for a headerless foreign SSH lane", () => {
       seedForeignMachine({
         binding: {
           kind: "remote",
@@ -1450,11 +1449,12 @@ describe("SessionListPane", () => {
         expect.anything(),
         expect.objectContaining({ hostname: "dev.example", transport: "ssh" }),
         "Mac Studio (12)",
-        expect.objectContaining({ laneId: "lane-elsewhere" }),
         expect.objectContaining({
-          rootPath: "/tmp/known-lane",
-          remote: { hostname: "dev.example", transport: "ssh" },
+          laneId: "lane-elsewhere",
+          binding: expect.objectContaining({ hostname: "dev.example" }),
+          machineId: "target-studio",
         }),
+        null,
         "worktree",
       );
     });
@@ -3656,6 +3656,38 @@ describe("SessionListPane shared-branch clusters", () => {
     expect(allGroupIds.indexOf("target-studio:lane-studio-mobile")).toBeLessThan(
       allGroupIds.indexOf("lane-unrelated"),
     );
+  });
+
+  it("does not keep a dashed cluster around a foreign lane when its local sibling is empty", () => {
+    const localLane = makeLane({
+      id: "lane-local-deleted",
+      name: "ade/mobile-chat-scrolling",
+      branchRef: "ade/mobile-chat-scrolling",
+    });
+    const studioLane = makeLane({
+      id: "lane-studio-mobile",
+      name: "Mobile Chat Scrolling",
+      branchRef: "ade/mobile-chat-scrolling",
+    });
+    seedStudioLane({
+      lane: studioLane,
+      session: makeSession({
+        id: "session-studio-mobile",
+        laneId: studioLane.id,
+        laneName: studioLane.name,
+        title: "Fix Mobile Chat Issues",
+      }),
+    });
+
+    const { container } = renderPane({
+      lanes: [localLane],
+      runningFiltered: [],
+      allSessionsUnfiltered: [],
+      sessionsGroupedByLane: new Map([[localLane.id, []]]),
+    });
+
+    expect(container.querySelector('[data-testid="shared-branch-cluster"]')).toBeNull();
+    expect(container.querySelector('[data-group-id="target-studio:lane-studio-mobile"]')).toBeTruthy();
   });
 
   it("does not cluster two Primaries that both track main", () => {

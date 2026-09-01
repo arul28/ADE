@@ -420,6 +420,7 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
   const keybindings = useAppStore((s) => s.keybindings);
   const activeProjectRoot = useAppStore(selectActiveProjectRoot);
   const activeProjectStateKey = useAppStore(selectActiveProjectStateKey);
+  const projectBinding = useAppStore((s) => s.projectBinding);
   const getActiveProjectRoot = useCallback(() => {
     return selectActiveProjectRoot(appStore.getState());
   }, [appStore]);
@@ -1331,6 +1332,7 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
     setWorkViewState,
     selectLane,
     navigate,
+    boundMachineId: projectBinding?.kind === "remote" ? projectBinding.targetId : "this-mac",
   });
 
   useEffect(() => {

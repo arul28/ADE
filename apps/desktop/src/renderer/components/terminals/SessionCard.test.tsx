@@ -109,6 +109,33 @@ function row(container: HTMLElement): HTMLElement {
 }
 
 describe("SessionCard orchestration identity", () => {
+  it("stacks the current provider mark above the previous handoff mark", () => {
+    render(
+      <SessionCard
+        session={makeSession({
+          toolType: "codex-chat",
+          modelHandoffHistory: [{
+            fromProvider: "claude",
+            toProvider: "codex",
+            fromModelId: "anthropic/claude-sonnet-5",
+            toModelId: "openai/gpt-5.4",
+          }],
+        })}
+        lane={lane}
+        isSelected={false}
+        onSelect={vi.fn()}
+        onContextMenu={vi.fn()}
+      />,
+    );
+
+    const stack = screen.getByTestId("session-provider-stack");
+    expect(stack.getAttribute("aria-label")).toBe("Model handoff history: Claude, Codex");
+    const logos = [...stack.querySelectorAll("[data-session-provider-logo]")];
+    expect(logos.map((logo) => logo.getAttribute("data-session-provider-logo"))).toEqual(["codex", "claude"]);
+    expect(logos.map((logo) => (logo as HTMLElement).style.left)).toEqual(["0px", "6px"]);
+    expect(logos.map((logo) => (logo as HTMLElement).style.zIndex)).toEqual(["2", "1"]);
+  });
+
   it("shows grid membership immediately left of the status", () => {
     const { container } = render(
       <SessionCard

@@ -5,6 +5,7 @@ import {
   CaretDown,
   CaretLeft,
   CaretRight,
+  ArrowRight,
   Bug,
   CloudArrowUp,
   GitFork,
@@ -89,7 +90,7 @@ import type { AgentChatContextAttachment, AgentChatFileRef } from "../../../shar
 import { getToolMeta } from "./chatToolAppearance";
 import { ClaudeLogo, CodexLogo, CursorAgentLogo } from "../terminals/ToolLogos";
 import { ModelRowLogo, ProviderLogo } from "../shared/ProviderLogos";
-import { pendingInputHeaderLabel } from "../../../shared/pendingInputLabels";
+import { pendingInputHeaderLabel, providerDisplayLabel } from "../../../shared/pendingInputLabels";
 import { isHostResumedNoticeEvent, isHostSleepNoticeEvent } from "../../../shared/hostSleepNotice";
 import type { ChatSubagentSnapshot } from "./chatExecutionSummary";
 import {
@@ -2421,6 +2422,42 @@ function renderEvent(
   }
 ) {
   const event = envelope.event;
+
+  if (event.type === "model_handoff") {
+    const fromLabel = providerDisplayLabel(event.fromProvider, "Previous model");
+    const toLabel = providerDisplayLabel(event.toProvider, "New model");
+    return (
+      <div
+        className="my-3 flex items-center gap-2 font-sans text-fg/50"
+        data-testid="model-handoff-event"
+        aria-label={`Model handoff from ${fromLabel} to ${toLabel}`}
+        title={`Model handoff from ${fromLabel} to ${toLabel}`}
+      >
+        <span className="h-px flex-1 bg-fg/[0.08]" />
+        <span className="inline-flex h-6 shrink-0 items-center gap-2 leading-none">
+          <span
+            className="inline-flex h-5 w-5 shrink-0 items-center justify-center overflow-hidden [&_svg]:block"
+            data-model-handoff-provider={event.fromProvider}
+            aria-label={fromLabel}
+          >
+            <ProviderLogo family={event.fromProvider} size={20} />
+          </span>
+          <span className="text-[11px] font-semibold uppercase tracking-[0.14em] leading-none text-fg/45">
+            handoff
+          </span>
+          <ArrowRight size={14} weight="bold" className="block shrink-0" aria-hidden />
+          <span
+            className="inline-flex h-5 w-5 shrink-0 items-center justify-center overflow-hidden [&_svg]:block"
+            data-model-handoff-provider={event.toProvider}
+            aria-label={toLabel}
+          >
+            <ProviderLogo family={event.toProvider} size={20} />
+          </span>
+        </span>
+        <span className="h-px flex-1 bg-fg/[0.08]" />
+      </div>
+    );
+  }
 
   if (event.type === "scheduled_wake_divider") {
     const reason = event.reason?.trim();
@@ -4890,6 +4927,19 @@ export function shouldStickToBottomAfterScroll({
     : distanceFromBottom <= STICK_RESUME_THRESHOLD_PX;
 }
 
+export function shouldKeepPinnedThroughViewportShrink({
+  wasStuckToBottom,
+  previousClientHeight,
+  nextClientHeight,
+}: {
+  wasStuckToBottom: boolean;
+  previousClientHeight: number;
+  nextClientHeight: number;
+}): boolean {
+  if (!wasStuckToBottom || previousClientHeight <= 0) return false;
+  return nextClientHeight < previousClientHeight - 0.5;
+}
+
 export function calculateVirtualWindow({
   rowCount,
   scrollTop,
@@ -5331,6 +5381,7 @@ function AgentChatMessageListMain({
   // latest ADE-authored scrollTop target instead of using a counter, so a real
   // user scroll never gets swallowed by stale "programmatic" credits.
   const programmaticScrollTargetRef = useRef<number | null>(null);
+  const lastScrollClientHeightRef = useRef(0);
   const scrollToBottomSoonRef = useRef<((followUpFrames?: number) => void) | null>(null);
   const scrollMemoryKeyRef = useRef(resolvedScrollMemoryKey);
   const scrollMemorySnapshotByKeyRef = useRef(new Map<string, ChatScrollMemory>());
@@ -5835,10 +5886,22 @@ function AgentChatMessageListMain({
     stickToBottomRef.current = stickToBottom;
   }, [stickToBottom]);
 
+  const pinScrollToBottomNow = useCallback((el: HTMLElement) => {
+    const pinTarget = Math.max(0, el.scrollHeight - el.clientHeight);
+    const before = el.scrollTop;
+    if (Math.abs(before - pinTarget) < 1) return;
+    el.scrollTop = pinTarget;
+    programmaticScrollTargetRef.current = el.scrollTop;
+    setScrollTop(el.scrollTop);
+  }, []);
+
   const measureScrollContainerHeight = useCallback(() => {
     const el = scrollRef.current;
     if (!el) return;
     const nextHeight = el.clientHeight;
+    if (lastScrollClientHeightRef.current <= 0) {
+      lastScrollClientHeightRef.current = nextHeight;
+    }
     setContainerHeight((current) => (movedByAPixel(current, nextHeight) ? nextHeight : current));
   }, []);
 
@@ -5990,12 +6053,22 @@ function AgentChatMessageListMain({
     const ro = new ResizeObserver((entries) => {
       const entry = entries[0];
       const nextHeight = Math.max(entry?.contentRect.height ?? 0, el.clientHeight);
+      const previousHeight = lastScrollClientHeightRef.current;
+      if (shouldKeepPinnedThroughViewportShrink({
+        wasStuckToBottom: stickToBottomRef.current,
+        previousClientHeight: previousHeight,
+        nextClientHeight: nextHeight,
+      })) {
+        pinScrollToBottomNow(el);
+        scrollToBottomSoon(2);
+      }
+      lastScrollClientHeightRef.current = nextHeight;
       setContainerHeight((current) => (movedByAPixel(current, nextHeight) ? nextHeight : current));
     });
     ro.observe(el);
     measureScrollContainerHeight();
     return () => ro.disconnect();
-  }, [measureScrollContainerHeight]);
+  }, [measureScrollContainerHeight, pinScrollToBottomNow, scrollToBottomSoon]);
 
   // A short initial tail may not create a scrollbar, so no scroll event can
   // ever ask for the next page. Keep backfilling while the viewport is
@@ -6470,10 +6543,23 @@ function AgentChatMessageListMain({
       programmaticTarget,
     })) {
       programmaticScrollTargetRef.current = null;
+      lastScrollClientHeightRef.current = target.clientHeight;
       setScrollTop(target.scrollTop);
       return;
     }
     programmaticScrollTargetRef.current = null;
+    const nextClientHeight = target.clientHeight;
+    const previousClientHeight = lastScrollClientHeightRef.current;
+    lastScrollClientHeightRef.current = nextClientHeight;
+    if (shouldKeepPinnedThroughViewportShrink({
+      wasStuckToBottom: stickToBottomRef.current,
+      previousClientHeight,
+      nextClientHeight,
+    })) {
+      pinScrollToBottomNow(target);
+      scrollToBottomSoon(2);
+      return;
+    }
     const distanceFromBottom = target.scrollHeight - target.scrollTop - target.clientHeight;
     // Wider threshold (~1 row of assistant text) so a small wheel nudge
     // while the turn is streaming actually breaks free instead of snapping
@@ -6496,7 +6582,7 @@ function AgentChatMessageListMain({
     }
     setScrollTop(target.scrollTop);
     maybeRequestOlderHistory(target.scrollTop);
-  }, [markDetachAnchor, maybeRequestOlderHistory, onReturnToLatest]);
+  }, [markDetachAnchor, maybeRequestOlderHistory, onReturnToLatest, pinScrollToBottomNow, scrollToBottomSoon]);
 
   const handleWheel = useCallback((event: React.WheelEvent<HTMLDivElement>) => {
     if (event.deltaY < 0) {

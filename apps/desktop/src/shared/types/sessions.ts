@@ -9,6 +9,7 @@ import type {
   AgentChatCodexConfigSource,
   AgentChatCodexSandbox,
   AgentChatCliLaunchProvider,
+  AgentChatModelHandoff,
   AgentChatSpawnKind,
 } from "./chat";
 import type { LaneLinearIssue } from "./lanes";
@@ -189,6 +190,8 @@ export type TerminalSessionSummary = {
   manuallyNamed?: boolean;
   goal: string | null;
   toolType: TerminalToolType | null;
+  /** Completed model/provider transitions for an ADE chat, oldest first. */
+  modelHandoffHistory?: AgentChatModelHandoff[];
   title: string;
   status: TerminalSessionStatus;
   startedAt: string;

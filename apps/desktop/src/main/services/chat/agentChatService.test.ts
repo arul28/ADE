@@ -80,6 +80,7 @@ const mockState = vi.hoisted(() => ({
     questionReject: ReturnType<typeof vi.fn>;
     permissionReply: ReturnType<typeof vi.fn>;
   }>(),
+  openCodePromptAsyncBarrier: null as Promise<void> | null,
   openCodeTitleForNextPrompt: null as string | null,
   openCodeQuestionForNextPrompt: null as null | {
     id: string;
@@ -430,6 +431,9 @@ vi.mock("../opencode/openCodeRuntime", async () => {
         // arrives alongside sessionID and directory.
         promptAsync: vi.fn(async (params: any = {}) => {
           state.promptBodies.push(params ?? {});
+          if (mockState.openCodePromptAsyncBarrier) {
+            await mockState.openCodePromptAsyncBarrier;
+          }
           void (async () => {
             if (mockState.openCodeTitleForNextPrompt) {
               pushEvent({
@@ -2136,6 +2140,7 @@ beforeEach(() => {
   mockState.openCodeSessionCounter = 0;
   mockState.openCodeForkCalls = [];
   mockState.openCodeSessions.clear();
+  mockState.openCodePromptAsyncBarrier = null;
   mockState.openCodeTitleForNextPrompt = null;
   mockState.openCodeQuestionForNextPrompt = null;
   mockState.droidSessionCounter = 0;
@@ -4263,7 +4268,10 @@ describe("createAgentChatService", () => {
     });
 
     it("recomputes the MCP report when a model switch crosses providers", async () => {
-      const { service } = createService();
+      const events: AgentChatEventEnvelope[] = [];
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
       const created = await service.createSession({
         laneId: "lane-1",
         provider: "claude",
@@ -4285,6 +4293,26 @@ describe("createAgentChatService", () => {
         delivered: true,
       });
       expect(summary?.mcpCapability?.residual).toBeTruthy();
+      expect(summary?.modelHandoffHistory).toEqual([
+        expect.objectContaining({
+          fromProvider: "claude",
+          toProvider: "codex",
+          fromModelId: expect.any(String),
+          toModelId: expect.any(String),
+        }),
+      ]);
+      expect(events.map((event) => event.event)).toContainEqual(
+        expect.objectContaining({
+          type: "model_handoff",
+          fromProvider: "claude",
+          toProvider: "codex",
+        }),
+      );
+
+      const { service: restarted } = createService();
+      await expect(restarted.getSessionSummary(created.id)).resolves.toMatchObject({
+        modelHandoffHistory: summary?.modelHandoffHistory,
+      });
     });
 
     it("refuses a model switch onto a provider that cannot carry the injected servers", async () => {
@@ -40892,6 +40920,126 @@ describe("createAgentChatService", () => {
     expect(observations).toEqual(["promptBodiesAtSubscribe=0"]);
     // Let the failed turn settle (its failure is emitted as an error event).
     await sendPromise.catch(() => undefined);
+  });
+
+  it("renders OpenCode follow-up text whose message.updated arrives before promptAsync settles", async () => {
+    // The SSE is live-only. Awaiting promptAsync before draining it used to
+    // drop the role announcement on a fast follow-up; the role gate then
+    // swallowed every assistant part while session.idle still completed.
+    let pulling = false;
+    const liveQueue: any[] = [];
+    let liveWaiter: (() => void) | null = null;
+    const wakeLive = () => {
+      const waiter = liveWaiter;
+      liveWaiter = null;
+      waiter?.();
+    };
+    const pushLive = (...nextEvents: any[]) => {
+      if (!pulling) return;
+      liveQueue.push(...nextEvents);
+      wakeLive();
+    };
+
+    vi.mocked(streamText).mockReturnValue({
+      fullStream: (async function* () {})(),
+    } as any);
+    vi.mocked(openCodeEventStream).mockImplementationOnce((async () => {
+      return (async function* () {
+        pulling = true;
+        wakeLive();
+        while (true) {
+          if (liveQueue.length > 0) {
+            yield liveQueue.shift();
+            continue;
+          }
+          await new Promise<void>((resolve) => {
+            liveWaiter = resolve;
+            if (liveQueue.length > 0) {
+              liveWaiter = null;
+              resolve();
+            }
+          });
+        }
+      })();
+    }) as unknown as typeof openCodeEventStream);
+
+    let releasePrompt!: () => void;
+    mockState.openCodePromptAsyncBarrier = new Promise<void>((resolve) => {
+      releasePrompt = resolve;
+    });
+
+    const events: AgentChatEventEnvelope[] = [];
+    const { service } = createService({
+      onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+    });
+    const session = await service.createSession({
+      laneId: "lane-1",
+      provider: "opencode",
+      model: "opencode/openai/gpt-5.4",
+      modelId: "opencode/openai/gpt-5.4",
+    });
+    const sendPromise = service.sendMessage({
+      sessionId: session.id,
+      text: "What model are you now?",
+    });
+
+    await waitForEvent(
+      events,
+      (event): event is AgentChatEventEnvelope =>
+        event.event.type === "status" && event.event.turnStatus === "started",
+    );
+    await vi.waitFor(() => {
+      expect(pulling).toBe(true);
+    });
+    expect(mockState.openCodeSessions.values().next().value?.promptBodies.length ?? 0).toBe(1);
+
+    const sessionID = [...mockState.openCodeSessions.keys()][0]!;
+    pushLive(
+      {
+        type: "message.updated",
+        properties: { info: { id: "msg-fast-1", role: "assistant", sessionID } },
+      },
+      {
+        type: "message.part.updated",
+        properties: {
+          part: {
+            id: "text-fast-1",
+            type: "text",
+            text: "Still receiving messages.",
+            messageID: "msg-fast-1",
+            sessionID,
+          },
+        },
+      },
+      {
+        type: "message.part.updated",
+        properties: {
+          part: {
+            id: "finish-fast-1",
+            sessionID,
+            type: "step-finish",
+            tokens: { input: 20, output: 8, cache: { read: 0, write: 0 } },
+          },
+        },
+      },
+      {
+        type: "session.idle",
+        properties: { sessionID },
+      },
+    );
+
+    await waitForEvent(
+      events,
+      (event): event is AgentChatEventEnvelope =>
+        event.event.type === "text" && event.event.text.includes("Still receiving messages."),
+    );
+
+    releasePrompt();
+    await waitForEvent(
+      events,
+      (event): event is AgentChatEventEnvelope => event.event.type === "done",
+    );
+    await sendPromise;
   });
 
 it("fails a cleanly ended OpenCode event stream and clears active child sessions", async () => {

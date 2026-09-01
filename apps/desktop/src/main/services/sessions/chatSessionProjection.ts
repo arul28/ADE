@@ -80,6 +80,9 @@ export function projectChatOntoSession(
     ...(chat.backgroundWork ? { backgroundWork: chat.backgroundWork } : {}),
     ...(chat.backgroundWorkSince ? { backgroundWorkSince: chat.backgroundWorkSince } : {}),
     ...(chat.runtimeProcesses?.length ? { runtimeProcesses: chat.runtimeProcesses } : {}),
+    ...(chat.modelHandoffHistory?.length
+      ? { modelHandoffHistory: chat.modelHandoffHistory }
+      : {}),
     ...(chat.claudeTag !== undefined ? { claudeTag: chat.claudeTag } : {}),
     ...(chat.orchestrationRunId
       ? {

@@ -300,7 +300,13 @@ function renderSharedBranchClusters(
   innerStackClass: string,
 ): React.ReactNode[] {
   const nodes: React.ReactNode[] = [];
-  for (const run of consecutiveSharedBranchRuns(items)) {
+  // Some callers can provide a node that intentionally renders nothing. Exclude
+  // those records before deciding whether a run has multiple members; otherwise
+  // an empty sibling can leave a dashed wrapper around the one visible lane.
+  const visibleItems = items.filter((item) => (
+    item.node !== null && item.node !== undefined && item.node !== false
+  ));
+  for (const run of consecutiveSharedBranchRuns(visibleItems)) {
     const first = run[0];
     if (!first) continue;
     if (run.length === 1 || !first.clusterKey) {
@@ -2032,7 +2038,7 @@ export const SessionListPane = React.memo(function SessionListPane({
             foreignRow?.binding,
             foreignRow?.machineName,
             options?.laneActions,
-            openIn && (!options?.laneActions || Boolean(foreignRow))
+            openIn && !options?.laneActions
               ? openIn
               : null,
             sessionLane?.laneType,
@@ -2528,6 +2534,10 @@ export const SessionListPane = React.memo(function SessionListPane({
               laneActions: {
                 laneId: lane.id,
                 laneName: lane.name,
+                lane,
+                onToggleWorkPin: toggleWorkLanePinned,
+                workPinnedLaneIds,
+                workPinLaneId: lane.id,
                 // Anchored at the session menu's own position, so the lane menu
                 // opens where the user right-clicked rather than jumping.
                 open: ({ x, y }) => triggerLaneContextMenu(lane.id, {
@@ -2597,6 +2607,12 @@ export const SessionListPane = React.memo(function SessionListPane({
       ? {
           laneId: row.lane.id,
           laneName: row.lane.name,
+          lane: row.lane,
+          binding: row.binding,
+          machineId: row.machineId,
+          onToggleWorkPin: toggleWorkLanePinned,
+          workPinnedLaneIds,
+          workPinLaneId: compositeLaneId,
           open: ({ x, y }: { x: number; y: number }) => triggerForeignLaneContextMenu(
             row.lane,
             row.binding!,
@@ -2759,7 +2775,16 @@ export const SessionListPane = React.memo(function SessionListPane({
     foreignEntries: ForeignLaneEntry[],
   ) => applySharedBranchAdjacency(
     [
-      ...localLanes.map((lane): ClusterableLaneItem => ({ id: lane.id, kind: "local", lane })),
+      // `StickyGroupHeader` returns null when its count is zero, but the JSX
+      // element itself is still truthy until React evaluates that component.
+      // Filter at the source so an empty/deleted local lane cannot qualify a
+      // foreign sibling for a dashed cluster.
+      ...localLanes
+        .filter((lane) => (
+          (sessionsGroupedByLane?.get(lane.id)?.length ?? 0)
+          + (handoffJobsByLaneId.get(lane.id)?.length ?? 0) > 0
+        ))
+        .map((lane): ClusterableLaneItem => ({ id: lane.id, kind: "local", lane })),
       ...foreignEntries.map((entry): ClusterableLaneItem => ({
         id: entry.compositeLaneId,
         kind: "foreign",

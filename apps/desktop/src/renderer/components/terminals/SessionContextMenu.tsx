@@ -1,6 +1,32 @@
 import { useState, useRef, useEffect, type ReactNode } from "react";
+import {
+  Alarm,
+  ArrowCounterClockwise,
+  ArrowDown,
+  ArrowUp,
+  CheckCircle,
+  ClockCountdown,
+  Copy,
+  GitBranch,
+  Globe,
+  Hash,
+  Lightning,
+  Link,
+  PencilSimple,
+  Prohibit,
+  PushPin,
+  PushPinSlash,
+  Sparkle,
+  SquaresFour,
+  Stop,
+  Tag,
+  TextT,
+  Trash,
+  type Icon,
+} from "@phosphor-icons/react";
 import type {
   AgentChatSessionMetadataField,
+  LaneSummary,
   LaneType,
   OpenProjectBinding,
   TerminalSessionSummary,
@@ -38,6 +64,18 @@ const MENU_ITEM_CLASS =
 const DESTRUCTIVE_ITEM_CLASS =
   "flex w-full items-center gap-2 rounded px-3 py-1.5 text-left text-xs text-red-300 transition-colors hover:bg-red-500/10";
 
+function MenuRowIcon({ icon: Icon, danger = false }: { icon: Icon; danger?: boolean }) {
+  return (
+    <span
+      aria-hidden
+      data-menu-icon=""
+      className={danger ? "inline-flex shrink-0 text-red-300/70" : "inline-flex shrink-0 text-fg/45"}
+    >
+      <Icon size={13} weight="duotone" />
+    </span>
+  );
+}
+
 const SESSION_METADATA_GENERATION_ACTIONS: ReadonlyArray<{
   label: string;
   fields: AgentChatSessionMetadataField[];
@@ -68,15 +106,25 @@ const SESSION_METADATA_GENERATION_ACTIONS: ReadonlyArray<{
  * The lane's actions render as a hover submenu built from the SAME item
  * definitions and the SAME action wiring the lane divider's own menu uses
  * (`buildLaneMenuGroups` + `useLaneMenuActions`), so the two surfaces cannot
- * drift. `open` survives as the escape hatch for a lane this renderer cannot
- * resolve from the store, where re-opening the real portal is still the only
- * correct answer.
+ * drift. A foreign singleton passes its lane + binding in; `open` survives as
+ * the escape hatch only when that lane still cannot be resolved.
  */
 export type SessionContextMenuLaneActions = {
   laneId: string;
   laneName: string;
   /** Opens the real lane context menu, anchored where the session menu opened. */
   open: (position: { x: number; y: number }) => void;
+  /**
+   * The lane this row stands for. Required for a foreign singleton: that lane
+   * is not in the local store, and without it the submenu used to collapse to
+   * "Open lane menu…".
+   */
+  lane?: LaneSummary | null;
+  binding?: OpenProjectBinding | null;
+  machineId?: string | null;
+  onToggleWorkPin?: (laneId: string) => void;
+  workPinnedLaneIds?: string[];
+  workPinLaneId?: string;
 };
 
 export type SessionContextMenuOpenIn = OpenInTarget;
@@ -152,7 +200,11 @@ type SessionContextMenuProps = {
  * panel would unmount in the same tick it was asked for.
  */
 export function SessionContextMenu(props: SessionContextMenuProps) {
-  const [managedLaneId, setManagedLaneId] = useState<string | null>(null);
+  const [managedLane, setManagedLane] = useState<{
+    laneId: string;
+    lane?: LaneSummary;
+    binding?: OpenProjectBinding | null;
+  } | null>(null);
 
   return (
     <>
@@ -160,13 +212,15 @@ export function SessionContextMenu(props: SessionContextMenuProps) {
         <SessionContextMenuPanel
           {...props}
           menu={props.menu}
-          onManageLane={setManagedLaneId}
+          onManageLane={(laneId, extras) => setManagedLane({ laneId, ...extras })}
         />
       ) : null}
-      {managedLaneId ? (
+      {managedLane ? (
         <WorkManageLaneDialogHost
-          laneId={managedLaneId}
-          onClose={() => setManagedLaneId(null)}
+          laneId={managedLane.laneId}
+          lane={managedLane.lane}
+          runtimePin={managedLane.binding ?? undefined}
+          onClose={() => setManagedLane(null)}
         />
       ) : null}
     </>
@@ -196,7 +250,10 @@ function SessionContextMenuPanel({
   onManageLane,
 }: Omit<SessionContextMenuProps, "menu"> & {
   menu: NonNullable<SessionContextMenuState>;
-  onManageLane: (laneId: string) => void;
+  onManageLane: (
+    laneId: string,
+    extras?: { lane?: LaneSummary; binding?: OpenProjectBinding | null },
+  ) => void;
 }) {
   const [renaming, setRenaming] = useState(false);
   const [tagging, setTagging] = useState(false);
@@ -312,6 +369,7 @@ function SessionContextMenuPanel({
           onClose();
         }}
       >
+        <MenuRowIcon icon={ArrowCounterClockwise} />
         Unsettle
       </button>
       {isDeclaredSettled ? (
@@ -321,6 +379,7 @@ function SessionContextMenuPanel({
           title="Pin this session active so a clean exit cannot re-settle it"
           onClick={() => { void setSessionSettleOverride(session, "active", binding); onClose(); }}
         >
+          <MenuRowIcon icon={Lightning} />
           Keep active
         </button>
       ) : null}
@@ -331,6 +390,7 @@ function SessionContextMenuPanel({
       className={MENU_ITEM_CLASS}
       onClick={() => { onSettle(session, binding); onClose(); }}
     >
+      <MenuRowIcon icon={CheckCircle} />
       {canonicalPhase === "needs_you" ? "Dismiss & settle" : "Settle"}
     </button>
   ) : canonicalPhase === "needs_you" && !canDismissNeedsYou ? (
@@ -340,6 +400,7 @@ function SessionContextMenuPanel({
       disabled
       title="Resolve the terminal prompt before settling this session"
     >
+      <MenuRowIcon icon={Prohibit} />
       Resolve input to settle
     </button>
   ) : null;
@@ -363,6 +424,7 @@ function SessionContextMenuPanel({
             setRenaming(true);
           }}
         >
+          <MenuRowIcon icon={PencilSimple} />
           Rename…
         </button>
         <MenuSeparator />
@@ -379,6 +441,7 @@ function SessionContextMenuPanel({
               title={action.laneNameOnly && isPrimaryLane ? "The primary lane keeps its name" : undefined}
               onClick={() => { regenerateMetadata(session, fields, binding); onClose(); }}
             >
+              <MenuRowIcon icon={Sparkle} />
               {isRegeneratingMetadata ? "Generating…" : label}
             </button>
           );
@@ -392,6 +455,7 @@ function SessionContextMenuPanel({
       return (
         <MenuSubmenu
           label="Name & status"
+          icon={<MenuRowIcon icon={TextT} />}
           className={MENU_ITEM_CLASS}
           data-testid="session-menu-name-status"
           title="Rename this chat or refresh its visible metadata with AI"
@@ -407,6 +471,7 @@ function SessionContextMenuPanel({
           className={MENU_ITEM_CLASS}
           onClick={() => { setDraft(session.title); setRenaming(true); }}
         >
+          <MenuRowIcon icon={PencilSimple} />
           Rename
         </button>
       );
@@ -464,6 +529,7 @@ function SessionContextMenuPanel({
               setTagging(true);
             }}
           >
+            <MenuRowIcon icon={Tag} />
             Set tag…
           </button>
         ) : null}
@@ -473,6 +539,7 @@ function SessionContextMenuPanel({
             className={MENU_ITEM_CLASS}
             onClick={() => { onTogglePinned(session); onClose(); }}
           >
+            <MenuRowIcon icon={(pinnedSessionIds ?? []).includes(session.id) ? PushPinSlash : PushPin} />
             {(pinnedSessionIds ?? []).includes(session.id) ? "Unpin from front" : "Pin to front"}
           </button>
         ) : null}
@@ -482,6 +549,7 @@ function SessionContextMenuPanel({
             className={MENU_ITEM_CLASS}
             onClick={() => { onRemoveFromGrid(session); onClose(); }}
           >
+            <MenuRowIcon icon={SquaresFour} />
             Remove from grid
           </button>
         ) : null}
@@ -501,6 +569,7 @@ function SessionContextMenuPanel({
               onClose();
             }}
           >
+            <MenuRowIcon icon={Stop} />
             Stop runtime
           </button>
         ) : null}
@@ -511,6 +580,7 @@ function SessionContextMenuPanel({
             className={MENU_ITEM_CLASS}
             onClick={() => { void wakeSessionNow(session, binding); onClose(); }}
           >
+            <MenuRowIcon icon={Alarm} />
             Wake now
             {snoozeWake ? (
               <span className="ml-auto shrink-0 text-[10px] text-muted-fg/50">{snoozeWake}</span>
@@ -519,6 +589,7 @@ function SessionContextMenuPanel({
         ) : (
           <MenuSubmenu
             label="Snooze…"
+            icon={<MenuRowIcon icon={ClockCountdown} />}
             className={MENU_ITEM_CLASS}
             // Resolved against the wall clock at the moment the submenu opens,
             // NOT from the static vocabulary. The static list would offer "This
@@ -534,6 +605,7 @@ function SessionContextMenuPanel({
                 className={MENU_ITEM_CLASS}
                 onClick={() => chooseSnooze(preset.key)}
               >
+                <MenuRowIcon icon={ClockCountdown} />
                 {preset.label}
                 <span className="ml-auto shrink-0 pl-4 text-[10px] text-muted-fg/50">
                   {preset.whenLabel}
@@ -551,6 +623,7 @@ function SessionContextMenuPanel({
             className={MENU_ITEM_CLASS}
             onClick={() => { void setChatSpawnKind(session, "peer", binding); onClose(); }}
           >
+            <MenuRowIcon icon={ArrowDown} />
             Demote to peer
           </button>
         ) : null}
@@ -560,6 +633,7 @@ function SessionContextMenuPanel({
             className={MENU_ITEM_CLASS}
             onClick={() => { void setChatSpawnKind(session, "subagent", binding); onClose(); }}
           >
+            <MenuRowIcon icon={ArrowUp} />
             Promote to subagent
           </button>
         ) : null}
@@ -572,6 +646,7 @@ function SessionContextMenuPanel({
           className={MENU_ITEM_CLASS}
           onClick={() => { onGoToLane(session, binding); onClose(); }}
         >
+          <MenuRowIcon icon={GitBranch} />
           Go to lane
         </button>
         {onOpenSessionInWeb ? (
@@ -580,17 +655,19 @@ function SessionContextMenuPanel({
             className={MENU_ITEM_CLASS}
             onClick={() => { onOpenSessionInWeb(session); onClose(); }}
           >
+            <MenuRowIcon icon={Globe} />
             Open in web
           </button>
         ) : null}
 
         {/* ── Copy: near-identical clipboard rows, collapsed behind one. ── */}
-        <MenuSubmenu label="Copy" className={MENU_ITEM_CLASS}>
+        <MenuSubmenu label="Copy" icon={<MenuRowIcon icon={Copy} />} className={MENU_ITEM_CLASS}>
           <button
             type="button"
             className={MENU_ITEM_CLASS}
             onClick={() => { onCopySessionId(session.id); onClose(); }}
           >
+            <MenuRowIcon icon={Hash} />
             Session ID
           </button>
           {onCopySessionDeepLink ? (
@@ -599,6 +676,7 @@ function SessionContextMenuPanel({
               className={MENU_ITEM_CLASS}
               onClick={() => { onCopySessionDeepLink(session); onClose(); }}
             >
+              <MenuRowIcon icon={Link} />
               Session deep link
             </button>
           ) : null}
@@ -621,6 +699,12 @@ function SessionContextMenuPanel({
           <LaneActionsSubmenu
             laneId={laneActions.laneId}
             laneName={laneActions.laneName}
+            lane={laneActions.lane}
+            binding={laneActions.binding}
+            machineId={laneActions.machineId}
+            onToggleWorkPin={laneActions.onToggleWorkPin}
+            workPinnedLaneIds={laneActions.workPinnedLaneIds}
+            workPinLaneId={laneActions.workPinLaneId}
             onClose={onClose}
             onManageLane={onManageLane}
             onFallbackOpen={laneActions.open}
@@ -638,6 +722,7 @@ function SessionContextMenuPanel({
             disabled={deletingSessionId === session.id}
             onClick={() => { onStopAndDelete(session, binding); onClose(); }}
           >
+            <MenuRowIcon icon={Trash} danger />
             {deletingLabel ?? "Stop & delete"}
           </button>
         ) : null}
@@ -648,6 +733,7 @@ function SessionContextMenuPanel({
             disabled={deletingSessionId === session.id}
             onClick={() => { onDeleteChat(session, binding); onClose(); }}
           >
+            <MenuRowIcon icon={Trash} danger />
             {deletingLabel ?? "Delete chat"}
           </button>
         ) : null}
@@ -658,6 +744,7 @@ function SessionContextMenuPanel({
             disabled={deletingSessionId === session.id}
             onClick={() => { onDeleteSession(session, binding); onClose(); }}
           >
+            <MenuRowIcon icon={Trash} danger />
             {deletingLabel ?? "Delete session"}
           </button>
         ) : null}

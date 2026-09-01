@@ -33,10 +33,12 @@ import {
   sessionStatusDisplay,
 } from "../../lib/terminalAttention";
 import {
+  chatToolTypeForProvider,
   defaultSessionLabel,
   getStaleRunningCliSessionAgeHours,
   primarySessionLabel,
   preferredSessionLabel,
+  providerFromChatToolType,
 } from "../../lib/sessions";
 import { relativeTimeCompact } from "../../lib/format";
 import { GRID_SESSION_DND_MIME } from "../../lib/workGrid";
@@ -58,6 +60,7 @@ import { ToolLogo } from "./ToolLogos";
 import { cursorCloudAgentWebUrl } from "../../lib/cursorCloudUtils";
 import { openExternalUrl } from "../../lib/openExternal";
 import { readImportedFrom, providerDisplayName } from "./importSessions/contract";
+import { providerDisplayLabel } from "../../../shared/pendingInputLabels";
 import { ClaudeCacheTtlBadge } from "../shared/ClaudeCacheTtlBadge";
 import { shouldShowClaudeCacheTtl } from "../../lib/claudeCacheTtl";
 import { ChatSubagentGlyph, chatSubagentColor } from "../chat/chatSubagentIdentity";
@@ -278,6 +281,85 @@ function WhereSeparator() {
   return (
     <span aria-hidden className="shrink-0 text-muted-fg/25">
       ·
+    </span>
+  );
+}
+
+const MAX_VISIBLE_MODEL_HANDOFF_LOGOS = 4;
+
+function modelHandoffLogoOffsetPx(size: number): number {
+  // Tight stack: previous marks peek as a sliver, the current mark stays
+  // dominant. Floor at 5px so a 20px logo still shows a recognisable edge.
+  return Math.max(5, Math.round(size * 0.28));
+}
+
+function modelHandoffProviderSequence(session: TerminalSessionSummary): string[] {
+  const history = session.modelHandoffHistory ?? [];
+  if (!history.length) return [];
+
+  const firstHandoff = history[0];
+  if (!firstHandoff) return [];
+  const providers: string[] = [firstHandoff.fromProvider];
+  for (const handoff of history) {
+    if (handoff.toProvider !== providers[providers.length - 1]) {
+      providers.push(handoff.toProvider);
+    }
+  }
+
+  const currentProvider = providerFromChatToolType(session.toolType);
+  if (currentProvider && currentProvider !== providers[providers.length - 1]) {
+    providers.push(currentProvider);
+  }
+  return providers;
+}
+
+function SessionProviderLogoStack({
+  session,
+  size,
+}: {
+  session: TerminalSessionSummary;
+  size: number;
+}) {
+  const providers = modelHandoffProviderSequence(session);
+  if (providers.length < 2) {
+    return <ToolLogo toolType={session.toolType} size={size} className="shrink-0 opacity-75" />;
+  }
+
+  const visibleProviders = providers.slice(-MAX_VISIBLE_MODEL_HANDOFF_LOGOS);
+  const offsetPx = modelHandoffLogoOffsetPx(size);
+  const label = visibleProviders
+    .map((provider) => providerDisplayLabel(provider, provider))
+    .join(", ");
+  return (
+    <span
+      className="relative inline-flex shrink-0 items-center"
+      data-testid="session-provider-stack"
+      aria-label={`Model handoff history: ${label}`}
+      title={`Model handoff history: ${label}`}
+      style={{
+        width: size + (visibleProviders.length - 1) * offsetPx,
+        height: size,
+      }}
+    >
+      {visibleProviders.slice().reverse().map((provider, index) => (
+        <span
+          key={`${provider}:${index}`}
+          className="absolute top-1/2 flex -translate-y-1/2 items-center justify-center overflow-hidden rounded-full bg-bg ring-2 ring-inset ring-bg"
+          data-session-provider-logo={provider}
+          style={{
+            left: index * offsetPx,
+            width: size,
+            height: size,
+            zIndex: visibleProviders.length - index,
+          }}
+        >
+          <ToolLogo
+            toolType={chatToolTypeForProvider(provider)}
+            size={size}
+            className={index === 0 ? "block shrink-0" : "block shrink-0 opacity-60"}
+          />
+        </span>
+      ))}
     </span>
   );
 }
@@ -1017,7 +1099,7 @@ export const SessionCard = React.memo(function SessionCard({
           {titleNode}
           {compactLineageGlyph}
           {cursorCloudLink}
-          <ToolLogo toolType={session.toolType} size={14} className="shrink-0 opacity-75" />
+          <SessionProviderLogoStack session={session} size={14} />
           {/* Compact rows have no line 1, so this is their only seat for it —
               same precedent as `compactLineageGlyph` directly above. */}
           {machineGlyph}
@@ -1105,7 +1187,7 @@ export const SessionCard = React.memo(function SessionCard({
                 most rows share a provider — so it sits in the least prominent
                 slot rather than leading the card. */}
             {cursorCloudLink}
-            <ToolLogo toolType={session.toolType} size={20} className="shrink-0 opacity-75" />
+            <SessionProviderLogoStack session={session} size={20} />
           </div>
         </div>
       )}
