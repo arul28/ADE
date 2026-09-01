@@ -11451,8 +11451,8 @@ export function registerIpc({
   });
 
   ipcMain.handle(IPC.updateCheckForUpdates, () => {
-    // Only reachable from the Settings button, so it always counts as
-    // user-initiated: it must run even when an update is already staged.
+    // Only reachable from the Settings button. Every entry point now runs the
+    // same check, so `userInitiated` only labels the log line.
     getCtx().autoUpdateService?.checkForUpdates({ userInitiated: true });
   });
 
