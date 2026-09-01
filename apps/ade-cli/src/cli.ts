@@ -2203,7 +2203,8 @@ const HELP_BY_COMMAND: Record<string, string> = {
     Claude, Codex, OpenCode, and Droid fork through the provider's own fork.
     Cursor has no fork surface, so ADE forks it by replaying this conversation
     into a fresh Cursor agent instead of copying a provider thread; the oldest
-    turns drop if the transcript exceeds the target model's context window.
+    turns drop if the transcript exceeds the target model's context window or
+    provider input limit.
 
   Personal chats attach to the machine-owned ADE brain and never register a
   project. They work with a desktopless brain and through the same

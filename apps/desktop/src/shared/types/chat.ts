@@ -2515,7 +2515,8 @@ export type AgentChatHandoffResult = {
   /**
    * Present when the fork seeded the target via full-transcript replay
    * (cross-provider, or a provider without a native fork such as Cursor) and
-   * oldest turns were dropped to fit the target context window.
+   * oldest turns were dropped to fit the target context window or provider
+   * input limit.
    */
   replayFork?: AgentChatReplayForkDisclosure;
 };

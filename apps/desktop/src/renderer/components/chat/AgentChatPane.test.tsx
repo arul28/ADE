@@ -5655,9 +5655,10 @@ describe("AgentChatPane submit recovery", () => {
     await clickEnabledModelOption(new RegExp(escapeRegExp(claudeLabel), "i"));
 
     // The cross-family path is disclosed as a verbatim replay, truncated only
-    // when the transcript overflows the target model's context window.
+    // when the transcript exceeds the target model's context window or
+    // provider input limit.
     expect(screen.getByText(/full transcript replayed verbatim/i)).toBeTruthy();
-    expect(screen.getByText(/Oldest turns drop only if the transcript exceeds the target context window/i)).toBeTruthy();
+    expect(screen.getByText(/Oldest turns drop only if the transcript exceeds the target context window or provider input limit/i)).toBeTruthy();
 
     fireEvent.click(await screen.findByRole("button", { name: "Fork chat" }));
 
@@ -5702,7 +5703,7 @@ describe("AgentChatPane submit recovery", () => {
     // The pre-fork hint only predicts truncation; the completed fork has to
     // report what it actually dropped.
     expect(await screen.findByText(/Forked chat replayed 18 turns/i)).toBeTruthy();
-    expect(screen.getByText(/4 oldest turns didn't fit/i)).toBeTruthy();
+    expect(screen.getByText(/4 oldest turns didn't fit the new model's context window or provider input limit/i)).toBeTruthy();
   });
 
   it("routes a brief handoff into a newly auto-created lane", async () => {

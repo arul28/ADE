@@ -153,6 +153,9 @@ import { transcriptEntriesFromEnvelopes } from "./chatTranscriptEntries";
 import {
   buildFittedTranscriptReplay,
   buildTranscriptReplayDocument,
+  CODEX_APP_SERVER_INPUT_MAX_CHARS,
+  fitTranscriptReplayTextToBudget,
+  replayMaxCharsForProvider,
   toReplayForkDisclosure,
 } from "./crossProviderReplayFork";
 import {
@@ -1429,6 +1432,8 @@ type CodexRuntime = {
   activeTurnId: string | null;
   startedTurnId: string | null;
   awaitingTurnStart: boolean;
+  /** True while a pending replay/continuity prefix belongs to an in-flight turn/start. */
+  turnStartContextConsumed: boolean;
   threadResumed: boolean;
   canAttachResumedTurnStart: boolean;
   itemTurnIdByItemId: Map<string, string>;
@@ -2354,6 +2359,7 @@ function adoptCodexActiveTurnId(
     foundTurnId,
   });
   runtime.awaitingTurnStart = false;
+  runtime.turnStartContextConsumed = false;
   runtime.canAttachResumedTurnStart = false;
   runtime.activeTurnId = foundTurnId;
   if (options.markStarted !== false) {
@@ -11506,15 +11512,20 @@ export function createAgentChatService(args: {
     managed: ManagedChatSession,
     sourceEnvelopes: readonly AgentChatEventEnvelope[],
     contextWindow: number | null | undefined,
+    targetProvider: AgentChatProvider,
   ): AgentChatReplayForkDisclosure | undefined => {
-    const fit = buildFittedTranscriptReplay(sourceEnvelopes, contextWindow);
+    const fit = buildFittedTranscriptReplay(
+      sourceEnvelopes,
+      contextWindow,
+      replayMaxCharsForProvider(targetProvider),
+    );
     managed.pendingTranscriptReplay = fit.text;
     persistChatState(managed);
     if (fit.truncated) {
       emitChatEvent(managed, {
         type: "system_notice",
         noticeKind: "info",
-        message: `Replayed the full prior transcript. Oldest ${fit.truncatedTurnCount} turn${fit.truncatedTurnCount === 1 ? " was" : "s were"} dropped to fit the target context window.`,
+        message: `Replayed the full prior transcript. Oldest ${fit.truncatedTurnCount} turn${fit.truncatedTurnCount === 1 ? " was" : "s were"} dropped to fit the target context window or provider input limit.`,
       });
     }
     return toReplayForkDisclosure(fit);
@@ -11529,13 +11540,35 @@ export function createAgentChatService(args: {
   const consumePendingTurnContextPrefix = (
     managed: ManagedChatSession,
     skip: boolean,
+    maxComposedChars?: number,
   ): ConsumedTurnContextPrefix | null => {
     if (skip) return null;
-    const replay = managed.pendingTranscriptReplay?.trim() ?? "";
-    const reconstruction = managed.pendingReconstructionContext?.trim() ?? "";
+    let replay = managed.pendingTranscriptReplay?.trim() ?? "";
+    let reconstruction = managed.pendingReconstructionContext?.trim() ?? "";
     if (!replay && !reconstruction) return null;
-    if (replay) managed.pendingTranscriptReplay = null;
-    if (reconstruction) managed.pendingReconstructionContext = null;
+    const hadReplay = replay.length > 0;
+    const hadReconstruction = reconstruction.length > 0;
+
+    if (maxComposedChars !== undefined) {
+      const budget = Number.isFinite(maxComposedChars)
+        ? Math.max(0, Math.floor(maxComposedChars))
+        : 0;
+      replay = fitTranscriptReplayTextToBudget(replay, budget);
+      const reconstructionPrefix = "System context (ADE continuity, do not echo verbatim):\n";
+      const separatorLength = replay && reconstruction ? 2 : 0;
+      const reconstructionBudget = Math.max(
+        0,
+        budget - replay.length - separatorLength - reconstructionPrefix.length,
+      );
+      if (reconstruction.length > reconstructionBudget) {
+        reconstruction = reconstructionBudget > 0
+          ? reconstruction.slice(-reconstructionBudget)
+          : "";
+      }
+    }
+
+    if (hadReplay) managed.pendingTranscriptReplay = null;
+    if (hadReconstruction) managed.pendingReconstructionContext = null;
     // Consumption has to be durable: `pendingTranscriptReplay` is restored on
     // reconstruct, so clearing it in memory alone would replay the whole
     // transcript a second time after a restart.
@@ -18973,7 +19006,11 @@ export function createAgentChatService(args: {
 
     const pendingUserShell = parseCodexUserShellDraft(slashText) ?? parseCodexShellSlashCommand(slashText);
     const pendingMemoryCommand = parseCodexMemorySlashCommand(slashText);
-    if (runtime.activeTurnId && !pendingUserShell && !pendingMemoryCommand) {
+    if (
+      (runtime.activeTurnId || runtime.awaitingTurnStart || runtime.turnStartContextConsumed)
+      && !pendingUserShell
+      && !pendingMemoryCommand
+    ) {
       throw new Error("A turn is already active. Use steer or interrupt.");
     }
     const skipTurnStartForActiveComposerCommand = Boolean(
@@ -19383,62 +19420,78 @@ export function createAgentChatService(args: {
     const suppressTurnContext = providerSlashCommand && !planSlashCommand;
     const input: Array<Record<string, unknown>> = [];
 
-    const reconstructionContext = suppressTurnContext ? "" : consumePendingTurnContextPrefix(managed, false)?.composed ?? "";
-    if (reconstructionContext.length) {
-      input.push({
-        type: "text",
-        text: reconstructionContext,
-        text_elements: []
-      });
+    if (effectivePromptText.length > CODEX_APP_SERVER_INPUT_MAX_CHARS) {
+      throw new Error(
+        `Codex turn input exceeds the app-server maximum of ${CODEX_APP_SERVER_INPUT_MAX_CHARS} characters. Shorten the message and try again.`,
+      );
     }
-    const { codexPolicy } = resolveCodexThreadParams(managed);
-    await runtime.collaborationModesReady?.catch(() => {});
-    const requestedCollaborationMode = resolveRequestedCodexCollaborationMode(managed.session);
-    const collaborationMode = buildCodexCollaborationMode(
-      managed.session,
-      runtime.collaborationModes,
-      managed.laneWorktreePath,
-      resolveSessionLinearDirective(managed.session.id),
-    );
-    if (
-      requestedCollaborationMode === "plan"
-      && collaborationMode?.mode !== "plan"
-      && !runtime.planModeFallbackNotified
-    ) {
-      emitChatEvent(managed, {
-        type: "system_notice",
-        noticeKind: "info",
-        message: "Native Codex plan mode is unavailable for this session, so ADE is continuing in default collaboration mode.",
-      });
-      runtime.planModeFallbackNotified = true;
-    } else if (collaborationMode?.mode === "plan") {
-      runtime.planModeFallbackNotified = false;
-    }
-    input.push({
-      type: "text",
-      text: effectivePromptText,
-      text_elements: []
-    });
-
-    for (const attachment of resolvedAttachments) {
-      if (attachment.type === "image-url") {
-        input.push({ type: "image", url: attachment.url });
-        continue;
-      }
-      const stagedPath = await stageAttachmentForCodexInput(attachment);
-      if (attachment.type === "image") {
-        input.push({ type: "localImage", path: stagedPath });
-        continue;
-      }
-      const name = path.basename(attachment.path) || attachment.path;
-      input.push({ type: "mention", name, path: stagedPath });
-    }
+    let consumedTurnContext: ConsumedTurnContextPrefix | null = null;
     const planningApprovalGuarded = managed.session.permissionMode === "plan";
-    managed.runtime.awaitingTurnStart = true;
-    managed.runtime.pendingTurnPlanningApprovalGuarded = planningApprovalGuarded;
     let result: { turn?: { id?: string } };
     try {
-      result = await managed.runtime.request<{ turn?: { id?: string } }>("turn/start", {
+      const reconstructionContext = suppressTurnContext
+        ? ""
+        : (() => {
+          consumedTurnContext = consumePendingTurnContextPrefix(
+            managed,
+            false,
+            CODEX_APP_SERVER_INPUT_MAX_CHARS - effectivePromptText.length,
+          );
+          return consumedTurnContext?.composed ?? "";
+        })();
+      runtime.turnStartContextConsumed = consumedTurnContext !== null;
+      if (reconstructionContext.length) {
+        input.push({
+          type: "text",
+          text: reconstructionContext,
+          text_elements: []
+        });
+      }
+      const { codexPolicy } = resolveCodexThreadParams(managed);
+      await runtime.collaborationModesReady?.catch(() => {});
+      const requestedCollaborationMode = resolveRequestedCodexCollaborationMode(managed.session);
+      const collaborationMode = buildCodexCollaborationMode(
+        managed.session,
+        runtime.collaborationModes,
+        managed.laneWorktreePath,
+        resolveSessionLinearDirective(managed.session.id),
+      );
+      if (
+        requestedCollaborationMode === "plan"
+        && collaborationMode?.mode !== "plan"
+        && !runtime.planModeFallbackNotified
+      ) {
+        emitChatEvent(managed, {
+          type: "system_notice",
+          noticeKind: "info",
+          message: "Native Codex plan mode is unavailable for this session, so ADE is continuing in default collaboration mode.",
+        });
+        runtime.planModeFallbackNotified = true;
+      } else if (collaborationMode?.mode === "plan") {
+        runtime.planModeFallbackNotified = false;
+      }
+      input.push({
+        type: "text",
+        text: effectivePromptText,
+        text_elements: []
+      });
+
+      for (const attachment of resolvedAttachments) {
+        if (attachment.type === "image-url") {
+          input.push({ type: "image", url: attachment.url });
+          continue;
+        }
+        const stagedPath = await stageAttachmentForCodexInput(attachment);
+        if (attachment.type === "image") {
+          input.push({ type: "localImage", path: stagedPath });
+          continue;
+        }
+        const name = path.basename(attachment.path) || attachment.path;
+        input.push({ type: "mention", name, path: stagedPath });
+      }
+      runtime.awaitingTurnStart = true;
+      runtime.pendingTurnPlanningApprovalGuarded = planningApprovalGuarded;
+      result = await runtime.request<{ turn?: { id?: string } }>("turn/start", {
         threadId: managed.session.threadId,
         input,
         model: managed.session.model,
@@ -19452,10 +19505,18 @@ export function createAgentChatService(args: {
         ...(collaborationMode ? { collaborationMode } : {}),
       });
     } catch (error) {
-      managed.runtime.awaitingTurnStart = false;
-      managed.runtime.pendingTurnPlanningApprovalGuarded = null;
+      const contextToRestore = runtime.turnStartContextConsumed ? consumedTurnContext : null;
+      runtime.awaitingTurnStart = false;
+      runtime.turnStartContextConsumed = false;
+      runtime.pendingTurnPlanningApprovalGuarded = null;
+      if (contextToRestore) {
+        managed.pendingTranscriptReplay = contextToRestore.replay || null;
+        managed.pendingReconstructionContext = contextToRestore.reconstruction || null;
+        persistChatState(managed);
+      }
       throw error;
     }
+    runtime.turnStartContextConsumed = false;
     markDispatched();
     persistDeliveredLaneDirectiveKey(managed, args.laneDirectiveKey);
 
@@ -26087,6 +26148,7 @@ export function createAgentChatService(args: {
     rememberInterruptedCodexTurn(runtime, interruptedTurnId);
     rememberTerminalCodexTurn(runtime, interruptedTurnId, managed);
     runtime.awaitingTurnStart = false;
+    runtime.turnStartContextConsumed = false;
     runtime.canAttachResumedTurnStart = false;
     runtime.activeTurnId = null;
     runtime.startedTurnId = null;
@@ -28640,6 +28702,7 @@ export function createAgentChatService(args: {
     markAcceptedCodexSteersUnprocessed(managed, runtime, turnId);
     rememberTerminalCodexTurn(runtime, turnId, managed);
     runtime.awaitingTurnStart = false;
+    runtime.turnStartContextConsumed = false;
     runtime.canAttachResumedTurnStart = false;
     runtime.activeTurnId = null;
     runtime.startedTurnId = null;
@@ -28993,6 +29056,7 @@ export function createAgentChatService(args: {
         });
       }
       runtime.awaitingTurnStart = false;
+      runtime.turnStartContextConsumed = false;
       runtime.canAttachResumedTurnStart = false;
       runtime.activeTurnId = null;
       runtime.startedTurnId = null;
@@ -29111,6 +29175,7 @@ export function createAgentChatService(args: {
         return;
       }
       runtime.awaitingTurnStart = false;
+      runtime.turnStartContextConsumed = false;
       runtime.canAttachResumedTurnStart = false;
       runtime.activeTurnId = turnId;
       if (runtime.pendingTurnPlanningApprovalGuarded !== null) {
@@ -29161,6 +29226,7 @@ export function createAgentChatService(args: {
       markAcceptedCodexSteersUnprocessed(managed, runtime, turnId);
       rememberTerminalCodexTurn(runtime, turnId, managed);
       runtime.awaitingTurnStart = false;
+      runtime.turnStartContextConsumed = false;
       runtime.canAttachResumedTurnStart = false;
       runtime.activeTurnId = null;
       runtime.startedTurnId = null;
@@ -29461,6 +29527,7 @@ export function createAgentChatService(args: {
       rememberInterruptedCodexTurn(runtime, turnId);
       rememberTerminalCodexTurn(runtime, turnId, managed);
       runtime.awaitingTurnStart = false;
+      runtime.turnStartContextConsumed = false;
       runtime.canAttachResumedTurnStart = false;
       runtime.activeTurnId = null;
       runtime.startedTurnId = null;
@@ -29816,6 +29883,7 @@ export function createAgentChatService(args: {
       activeTurnId: null,
       startedTurnId: null,
       awaitingTurnStart: false,
+      turnStartContextConsumed: false,
       threadResumed: false,
       canAttachResumedTurnStart: false,
       itemTurnIdByItemId: new Map<string, string>(),
@@ -33375,6 +33443,7 @@ export function createAgentChatService(args: {
       const fit = buildFittedTranscriptReplay(
         readTranscriptEnvelopes(managed, { includeBuffered: true }),
         targetDescriptor.contextWindow,
+        replayMaxCharsForProvider(targetProvider),
       );
       createdManaged.pendingTranscriptReplay = fit.text;
       persistChatState(createdManaged);
@@ -33383,7 +33452,7 @@ export function createAgentChatService(args: {
         emitChatEvent(createdManaged, {
           type: "system_notice",
           noticeKind: "info",
-          message: `Forked with a full transcript replay. Oldest ${fit.truncatedTurnCount} turn${fit.truncatedTurnCount === 1 ? " was" : "s were"} dropped to fit the target context window.`,
+          message: `Forked with a full transcript replay. Oldest ${fit.truncatedTurnCount} turn${fit.truncatedTurnCount === 1 ? " was" : "s were"} dropped to fit the target context window or provider input limit.`,
         });
       }
     }
@@ -35660,6 +35729,7 @@ export function createAgentChatService(args: {
         managed,
         seeded,
         options.targetDescriptor.contextWindow,
+        options.targetProvider,
       );
       persistChatState(managed);
       return await persistedImportedChatResult(managed, options.targetProvider, externalSessionId, replayFork);
@@ -36011,6 +36081,7 @@ export function createAgentChatService(args: {
       managed.runtime.activeTurnId = null;
       managed.runtime.startedTurnId = null;
       managed.runtime.awaitingTurnStart = false;
+      managed.runtime.turnStartContextConsumed = false;
       managed.runtime.canAttachResumedTurnStart = false;
       managed.runtime.pendingTurnPlanningApprovalGuarded = null;
       managed.runtime.itemTurnIdByItemId.clear();
@@ -46328,6 +46399,7 @@ export function createAgentChatService(args: {
           managed,
           readTranscriptEnvelopes(managed, { includeBuffered: true }),
           descriptor.contextWindow,
+          nextProvider,
         );
       } else if (previousProvider === "codex" && !liveCodexSettings) {
         delete managed.session.threadId;

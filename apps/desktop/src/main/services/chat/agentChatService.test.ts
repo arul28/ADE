@@ -954,7 +954,10 @@ import { parseAgentChatTranscript } from "../../../shared/chatTranscript";
 import type { ChatScheduledWorkRecord, ChatScheduledWorkState } from "./chatScheduledWorkScheduler";
 import { mapPermissionToCodex } from "./permissionMapping";
 import { acquireCursorSdkConnection, releaseCursorSdkConnection } from "./cursorSdkPool";
-import { CROSS_PROVIDER_REPLAY_HEADER } from "./crossProviderReplayFork";
+import {
+  CODEX_REPLAY_MAX_CHARS,
+  CROSS_PROVIDER_REPLAY_HEADER,
+} from "./crossProviderReplayFork";
 import { acquireDroidSdkConnection } from "./droidSdkPool";
 import { clearCursorCliModelsCache } from "./cursorModelsDiscovery";
 import type { AgentChatCreateScheduledWorkArgs, AgentChatCrossMachineHandoffCapsule, AgentChatEventEnvelope, ComputerUseBackendStatus, LaneLinearIssue, PendingInputRequest } from "../../../shared/types";
@@ -5841,6 +5844,162 @@ describe("createAgentChatService", () => {
       expect(aiIntegrationService.summarizeTerminal).not.toHaveBeenCalledWith(
         expect.objectContaining({ taskType: "handoff_summary" }),
       );
+    });
+
+    it("regression: caps a Cursor-to-Codex replay below the app-server input limit", async () => {
+      const CODEX_APP_SERVER_INPUT_MAX_CHARS = 1_048_576;
+      installRealTranscriptParser();
+      const { service } = createService();
+      const source = await service.createSession({
+        laneId: "lane-1",
+        provider: "cursor",
+        model: "composer-2",
+        modelId: "cursor/composer-2",
+      });
+      writeTestTranscriptEnvelopes(source.id, [
+        {
+          sessionId: source.id,
+          sequence: 1,
+          timestamp: "2026-07-10T11:00:00.000Z",
+          event: { type: "user_message", text: `oldest ${"o".repeat(600_000)}` },
+        },
+        {
+          sessionId: source.id,
+          sequence: 2,
+          timestamp: "2026-07-10T11:01:00.000Z",
+          event: { type: "user_message", text: `newest ${"n".repeat(600_000)}` },
+        },
+      ]);
+
+      const result = await service.handoffSession({
+        sourceSessionId: source.id,
+        targetModelId: "openai/gpt-5.5",
+        mode: "fork",
+      });
+      const persisted = readPersistedChatState(result.session.id);
+
+      expect(result.replayFork?.truncated).toBe(true);
+      expect(persisted.pendingTranscriptReplay?.length).toBeLessThanOrEqual(CODEX_REPLAY_MAX_CHARS);
+      expect(persisted.pendingTranscriptReplay).toContain("newest");
+      expect(persisted.pendingTranscriptReplay).not.toContain("oldest");
+
+      await service.sendMessage({
+        sessionId: result.session.id,
+        text: `Continue from the replay. ${"f".repeat(500_000)}`,
+      }, { awaitDispatch: true });
+      const turnStart = await vi.waitFor(() => {
+        const payload = mockState.codexRequestPayloads
+          .slice()
+          .reverse()
+          .find((candidate) => candidate.method === "turn/start");
+        expect(payload).toBeDefined();
+        return payload as {
+          params?: { input?: Array<{ text?: unknown }> };
+        };
+      });
+      const textInputs = turnStart?.params?.input
+        ?.flatMap((entry) => typeof entry.text === "string" ? [entry.text] : []) ?? [];
+      const replayInputChars = textInputs.reduce((total, text) => total + text.length, 0);
+      expect(replayInputChars).toBeLessThanOrEqual(CODEX_APP_SERVER_INPUT_MAX_CHARS);
+      expect(textInputs.join("\n")).toContain("Continue from the replay.");
+    });
+
+    it("restores the bounded replay when Codex rejects the first turn", async () => {
+      installRealTranscriptParser();
+      const { service } = createService();
+      const source = await service.createSession({
+        laneId: "lane-1",
+        provider: "cursor",
+        model: "composer-2",
+        modelId: "cursor/composer-2",
+      });
+      writeTestTranscriptEnvelopes(source.id, [
+        {
+          sessionId: source.id,
+          sequence: 1,
+          timestamp: "2026-07-10T11:00:00.000Z",
+          event: { type: "user_message", text: "oldest" },
+        },
+        {
+          sessionId: source.id,
+          sequence: 2,
+          timestamp: "2026-07-10T11:01:00.000Z",
+          event: { type: "user_message", text: "newest" },
+        },
+      ]);
+
+      const result = await service.handoffSession({
+        sourceSessionId: source.id,
+        targetModelId: "openai/gpt-5.5",
+        mode: "fork",
+      });
+      mockState.codexResponseOverrides.set("turn/start", {
+        error: { code: -32_000, message: "input rejected" },
+      });
+
+      await expect(service.sendMessage({
+        sessionId: result.session.id,
+        text: "Try this turn.",
+      }, { awaitBackendDispatch: true })).rejects.toThrow("input rejected");
+
+      expect(readPersistedChatState(result.session.id).pendingTranscriptReplay)
+        .toContain("newest");
+    });
+
+    it("blocks an overlapping Codex send before it can race replay restoration", async () => {
+      installRealTranscriptParser();
+      const { service } = createService();
+      const source = await service.createSession({
+        laneId: "lane-1",
+        provider: "cursor",
+        model: "composer-2",
+        modelId: "cursor/composer-2",
+      });
+      writeTestTranscriptEnvelopes(source.id, [
+        {
+          sessionId: source.id,
+          sequence: 1,
+          timestamp: "2026-07-10T11:00:00.000Z",
+          event: { type: "user_message", text: "oldest" },
+        },
+        {
+          sessionId: source.id,
+          sequence: 2,
+          timestamp: "2026-07-10T11:01:00.000Z",
+          event: { type: "user_message", text: "newest" },
+        },
+      ]);
+
+      const result = await service.handoffSession({
+        sourceSessionId: source.id,
+        targetModelId: "openai/gpt-5.5",
+        mode: "fork",
+      });
+      mockState.delayedCodexMethods.add("turn/start");
+      mockState.codexResponseOverrides.set("turn/start", {
+        error: { code: -32_000, message: "input rejected" },
+      });
+
+      const firstSend = service.sendMessage({
+        sessionId: result.session.id,
+        text: "First turn.",
+      }, { awaitBackendDispatch: true });
+      await vi.waitFor(() => {
+        expect(mockState.codexRequestPayloads.filter((payload) => payload.method === "turn/start"))
+          .toHaveLength(1);
+      });
+
+      await expect(service.sendMessage({
+        sessionId: result.session.id,
+        text: "Overlapping turn.",
+      }, { awaitBackendDispatch: true })).rejects.toThrow("already active");
+      expect(mockState.codexRequestPayloads.filter((payload) => payload.method === "turn/start"))
+        .toHaveLength(1);
+
+      mockState.flushCodexResponses();
+      await expect(firstSend).rejects.toThrow("input rejected");
+      expect(readPersistedChatState(result.session.id).pendingTranscriptReplay)
+        .toContain("newest");
     });
 
     it("forks a Claude chat onto a Codex model with a full transcript replay", async () => {

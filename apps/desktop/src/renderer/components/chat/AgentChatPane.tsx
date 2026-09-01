@@ -11976,12 +11976,12 @@ export function AgentChatPane({
     ? {
         subtitle: "Fork carries this whole conversation into a new chat. Brief summarizes it and starts fresh.",
         body: <>{handoffSourceProviderLabel} models start a new {handoffSourceProviderLabel} agent — {handoffSourceProviderLabel} threads can&rsquo;t be resumed twice — with the full transcript replayed verbatim. Any other model does the same{laneId ? <> in this lane ({laneDisplayLabel})</> : null}.</>,
-        footnote: <>Pick any catalog model. Oldest turns drop only if the transcript exceeds the target context window.</>,
+        footnote: <>Pick any catalog model. Oldest turns drop only if the transcript exceeds the target context window or provider input limit.</>,
       }
     : {
         subtitle: "Fork copies the whole conversation. Brief summarizes it and starts fresh.",
         body: <>Same-family models use {handoffSourceProviderLabel}&rsquo;s native fork. Any other model starts a new chat with the full transcript replayed verbatim{laneId ? <> in this lane ({laneDisplayLabel})</> : null}.</>,
-        footnote: <>Pick any catalog model. Oldest turns drop only if the transcript exceeds the target context window.</>,
+        footnote: <>Pick any catalog model. Oldest turns drop only if the transcript exceeds the target context window or provider input limit.</>,
       }
   ), [handoffForkReplaysTranscript, handoffSourceProviderLabel, laneId, laneDisplayLabel]);
 
@@ -13837,7 +13837,7 @@ export function AgentChatPane({
           <div className="flex flex-wrap items-center justify-between gap-2 border-b border-amber-500/10 bg-amber-500/[0.04] px-4 py-2.5 font-sans text-[11px] text-amber-100/80">
             <span className="min-w-0 flex-1 break-words">
               {`Forked chat replayed ${replayForkDisclosure.keptTurnCount} ${replayForkDisclosure.keptTurnCount === 1 ? "turn" : "turns"}. `}
-              {`The ${replayForkDisclosure.truncatedTurnCount} oldest ${replayForkDisclosure.truncatedTurnCount === 1 ? "turn" : "turns"} didn't fit the new model's context window.`}
+              {`The ${replayForkDisclosure.truncatedTurnCount} oldest ${replayForkDisclosure.truncatedTurnCount === 1 ? "turn" : "turns"} didn't fit the new model's context window or provider input limit.`}
             </span>
             <button
               type="button"
