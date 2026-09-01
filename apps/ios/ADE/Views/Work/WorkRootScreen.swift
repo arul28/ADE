@@ -1011,14 +1011,16 @@ struct WorkRootScreen: View {
   /// already sends, so the two surfaces cannot disagree about what a lane action
   /// does. The flags are availability gates: a host that does not advertise
   /// `lanes.updateAppearance` or `lanes.rename` shows no colour or manage row at
-  /// all rather than one that fails on tap, and a machine without the Linear
-  /// plugin shows no Linear row rather than copying a link to a screen it no
-  /// longer has.
+  /// all rather than one that fails on tap, and a machine that HAS `ade-linear`
+  /// shows no Linear row, because the plugin's own panels replace the compiled
+  /// Linear surface this row belongs to. The polarity runs that way round for
+  /// every Linear affordance on the phone: `drawsBuiltin`, not `owns`, so a
+  /// machine without the plugin keeps the row it has always had.
   var workLaneMenuActions: WorkSessionLaneMenuActions {
     WorkSessionLaneMenuActions(
       colorAvailable: syncService.canInvokeRemoteAction("lanes.updateAppearance"),
       manageAvailable: syncService.canInvokeRemoteAction("lanes.rename"),
-      linearLinkAvailable: pluginGate.owns(.linear),
+      linearLinkAvailable: pluginGate.drawsBuiltin(.linear),
       onStartChat: startChatInLane,
       onCopyLaneLink: copyLaneLink,
       onCopyBranchLink: copyLaneBranchLink,

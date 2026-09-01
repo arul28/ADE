@@ -55,15 +55,20 @@ enum PluginBuiltinSurface: String, CaseIterable {
   ///
   /// See ``PluginSurfacePresence`` for what each polarity means at render time.
   /// The reason a surface picks one rather than the other is a product fact
-  /// about who draws the screen: `ade-linear` is the *only* reason a Linear pane
-  /// exists at all, while `ade-cursor-cloud` REPLACES a fleet pane this app has
-  /// shipped compiled since before the plugin existed. Uninstalling the former
-  /// removes a feature; uninstalling the latter must hand the feature back.
+  /// about who drew the screen first.
+  ///
+  /// Both surfaces this app compiles are `.supersedes`. `ade-linear` and
+  /// `ade-cursor-cloud` each ship a replacement for a pane this app has drawn in
+  /// hand-written SwiftUI since before the plugin platform existed. Installing
+  /// either plugin REMOVES the compiled pane rather than adding a second way in,
+  /// and uninstalling it hands the feature back. The `.enables` surfaces are the
+  /// ones this app never compiled — Graph, Review, History, iOS Simulator, App
+  /// Control — where the plugin is the only reason a screen could exist at all.
   var presence: PluginSurfacePresence {
     switch self {
-    case .graph, .review, .history, .linear, .iosSimulator, .appControl:
+    case .graph, .review, .history, .iosSimulator, .appControl:
       return .enables
-    case .cursorCloud:
+    case .linear, .cursorCloud:
       return .supersedes
     }
   }
@@ -174,14 +179,17 @@ final class PluginPresenceGate: ObservableObject {
   ///
   /// - `.enables` — the plugin is the whole reason the screen exists, so the
   ///   built-in draws only when the plugin is positively known to be installed
-  ///   and enabled. Identical to `owns(_:)`, which is why Linear's callers are
-  ///   unchanged and can keep calling `owns` directly.
+  ///   and enabled. The result equals `owns(_:)` for these surfaces, but every
+  ///   entry point still calls this one: the polarity belongs to the table, and
+  ///   a surface that flips later must not need its call sites found again.
   /// - `.supersedes` — the plugin replaces a screen this app already ships, so
   ///   the built-in draws unless we positively know the plugin is there. Every
   ///   unknown — no answer yet, a host too old to be asked, a failed call, the
   ///   gap right after attaching to another machine — leaves the built-in up,
   ///   because that is exactly how the app behaved before the plugin existed and
   ///   a machine without the plugin must not lose the feature to a slow socket.
+  ///   Both compiled surfaces on this phone, Linear and Cursor Cloud, read this
+  ///   way.
   ///
   /// The two are never on screen at once. The plugin's own entry point is drawn
   /// from ``PluginEntryListModel``, which lists nothing until `refresh()` has
@@ -190,12 +198,12 @@ final class PluginPresenceGate: ObservableObject {
   /// returning false for the surface it supersedes, and before that reply the
   /// plugin entry is absent while the built-in is present.
   ///
-  /// There is deliberately no `await` twin for `.supersedes`. The one-shot form
-  /// exists for decisions with no second chance — a deep link is consumed once —
-  /// and iOS has no Cursor Cloud deep link. A view that renders before the answer
-  /// lands simply re-renders when it does, because `installedPlugins` is
-  /// `@Published`. Add the awaited twin alongside the first such entry point,
-  /// not before it.
+  /// A view calls this form and nothing else, because a view that renders
+  /// before the answer lands re-renders when it arrives — `installedPlugins` is
+  /// `@Published`, so waiting here would only stall the frame. A decision with
+  /// no second chance cannot re-render, and for those there is now
+  /// ``awaitDrawsBuiltin(_:)``: the `ade://linear-issue` deep link is consumed
+  /// once, and it is the entry point whose arrival this twin was held back for.
   func drawsBuiltin(_ surface: PluginBuiltinSurface) -> Bool {
     switch surface.presence {
     case .enables:
@@ -214,6 +222,29 @@ final class PluginPresenceGate: ObservableObject {
     return isInstalled(pluginId)
   }
 
+  /// ``drawsBuiltin(_:)`` for a decision with no second chance.
+  ///
+  /// Same question, same table, but it waits for the first real answer instead
+  /// of reading the pre-answer default. A deep link is consumed once, so a
+  /// `.supersedes` surface answered from the default would open the compiled
+  /// Linear pane on a machine that has `ade-linear` — two Linear surfaces, one
+  /// of them the one the plugin replaced — purely because the socket had not
+  /// replied yet.
+  ///
+  /// There is no polarity-blind awaited form. `awaitInstalled(_:)` asks about a
+  /// plugin id and is right for a `ade://plugin/...` link, which opens the
+  /// plugin's own panel. Anything asking whether ADE's compiled screen is still
+  /// part of the product asks this, so the answer cannot invert when a surface
+  /// changes polarity.
+  func awaitDrawsBuiltin(_ surface: PluginBuiltinSurface) async -> Bool {
+    await ensureAnswer()
+    // Deliberately the same predicate rather than a second copy of the switch:
+    // two readings of one table are two places for a polarity to drift, and a
+    // deep link that disagreed with the button it opens is the exact bug this
+    // gate exists to prevent. The only difference is the `await` above.
+    return drawsBuiltin(surface)
+  }
+
   /// Resolve once per scope, and no more.
   ///
   /// The difference from ``refresh()`` is who pays: `refresh` always re-asks,
@@ -225,10 +256,6 @@ final class PluginPresenceGate: ObservableObject {
   func ensureAnswer() async {
     guard !hasAnswer || resolvedTrigger != sync.pluginPresenceTrigger else { return }
     await refresh()
-  }
-
-  func awaitOwner(of surface: PluginBuiltinSurface) async -> Bool {
-    await awaitInstalled(surface.ownerPluginId)
   }
 
   /// Re-asks the attached machine. Safe to call from several views at once and

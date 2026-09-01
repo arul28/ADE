@@ -81,11 +81,15 @@ struct ContentView: View {
         // `await` rather than a plain read: a link tapped at cold launch can
         // land before the first plugin answer does, and deciding on the
         // pre-answer default would make the same URL open or not depending on
-        // how fast the socket came up. When the machine really has no Linear
-        // plugin the request is dropped — there is no pane to open, and no
-        // other machine to hand it to, since the link already resolved to this
-        // one.
-        guard await pluginGate.awaitOwner(of: .linear) else {
+        // how fast the socket came up.
+        //
+        // The awaited form is the polarity-aware one, because `ade-linear`
+        // SUPERSEDES this pane. The compiled pane opens on every machine that
+        // does not have the plugin, which is how the app behaved before the
+        // plugin existed. It is dropped only when the machine positively has
+        // `ade-linear`, whose own panels are the Linear surface there — opening
+        // the compiled pane as well would put two Linear screens on one phone.
+        guard await pluginGate.awaitDrawsBuiltin(.linear) else {
           syncService.requestedLinearIssueNavigation = nil
           return
         }
@@ -144,6 +148,20 @@ struct ContentView: View {
       .sheet(isPresented: linearPanePresentation) {
         LinearPaneSheet(syncService: syncService)
           .environmentObject(syncService)
+          .environmentObject(pluginGate)
+      }
+      // Clearing the flag is separate from filtering it because the filter alone
+      // only suppresses the sheet, it does not forget that something asked for
+      // it. Leaving `linearPanePresented` true under a superseding plugin would
+      // arm the pane to spring open later, the moment the plugin was disabled or
+      // the phone attached to a machine without it — a sheet appearing out of
+      // nowhere long after the tap that requested it. The write is here rather
+      // than in the binding's getter because a getter runs during the view
+      // update, where mutating published state is not allowed.
+      .onChange(of: pluginGate.drawsBuiltin(.linear)) { _, drawsBuiltin in
+        if !drawsBuiltin {
+          syncService.linearPanePresented = false
+        }
       }
       // `item:` rather than a bool: which plugin AND which panel is showing is
       // part of the presentation, and a bool would keep the previous pane's
@@ -331,12 +349,24 @@ struct ContentView: View {
     mobileLaunchAccess.hasAccess
   }
 
-  /// `linearPanePresented`, filtered through the plugin gate. Reads false while
-  /// the machine has no Linear plugin, so the pane cannot be presented by a
-  /// stray flag; writes are unfiltered so dismissal always lands.
+  /// `linearPanePresented`, filtered through the plugin gate. Reads false once
+  /// the machine positively has `ade-linear`, which draws its own Linear panels
+  /// in this pane's place, so a stray flag cannot put two Linear surfaces up at
+  /// once; writes are unfiltered so dismissal always lands.
+  ///
+  /// Note the polarity: `drawsBuiltin`, not `owns`. Every unknown — no answer
+  /// yet, an old host, a dropped socket, the gap after attaching elsewhere —
+  /// leaves the compiled pane presentable, because that is what the phone did
+  /// before the plugin existed.
+  ///
+  /// Written as a filter rather than a plain `isPresented` for the case where
+  /// the answer arrives WHILE the sheet is up: the user installs `ade-linear`
+  /// from Marketplace mid-session, or the phone attaches to a machine that has
+  /// it. Reading false then flips the binding, which dismisses the superseded
+  /// pane instead of leaving a screen up that the plugin has taken over.
   private var linearPanePresentation: Binding<Bool> {
     Binding(
-      get: { syncService.linearPanePresented && pluginGate.owns(.linear) },
+      get: { syncService.linearPanePresented && pluginGate.drawsBuiltin(.linear) },
       set: { syncService.linearPanePresented = $0 }
     )
   }

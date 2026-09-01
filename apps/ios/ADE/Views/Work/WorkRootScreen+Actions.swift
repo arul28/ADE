@@ -820,13 +820,15 @@ extension WorkRootScreen {
   }
 
   /// Re-checks the plugin the menu row was already gated on. A context menu is
-  /// built once and can stay on screen across an uninstall, so the action
-  /// verifies rather than trusting that the row it came from could not exist.
+  /// built once and can stay on screen across an install, so the action verifies
+  /// rather than trusting that the row it came from could not exist. `ade-linear`
+  /// supersedes the compiled Linear surface, so the row disappears when the
+  /// plugin ARRIVES and every unknown leaves it in place.
   func copyLaneLinearLink(_ lane: LaneSummary) {
     guard let ref = primaryLaneIssueRef(for: lane) else { return }
     // Only a Linear ref was ever gated on the Linear plugin; another tracker's
     // link is owned by the plugin that wrote it. Same rule as the menu row.
-    guard !ref.isLinear || pluginGate.owns(.linear) else { return }
+    guard !ref.isLinear || pluginGate.drawsBuiltin(.linear) else { return }
     guard let url = ref.url, !url.isEmpty else { return }
     UIPasteboard.general.string = url
   }

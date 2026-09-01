@@ -3,12 +3,20 @@ import XCTest
 
 /// The decision table behind "does this surface exist on this phone".
 ///
-/// Everything the gate answers is a hide-or-show, and every ambiguous case has
-/// to fall on the same side: an entry point that opens a screen the attached
-/// machine cannot serve reads as a broken app, while a missing one reads as an
-/// uninstalled plugin. These tests pin that asymmetry — no answer yet, a failed
-/// call, a disabled install and a host too old to be asked all resolve to
-/// hidden, and only an installed-and-enabled reply resolves to shown.
+/// The gate answers one thing — is this plugin installed and enabled on the
+/// attached machine — and every ambiguous case falls the same way: no answer
+/// yet, a failed call, a disabled install and a host too old to be asked all
+/// read as "not installed", because an entry point that opens a screen the
+/// machine cannot serve reads as a broken app while a missing one reads as an
+/// uninstalled plugin. These tests pin that asymmetry through ``owns(_:)``.
+///
+/// What that answer does to PIXELS is a second question, and the two polarities
+/// answer it in opposite directions from the same reply. An `.enables` surface
+/// draws only on a positive answer. A `.supersedes` surface — Linear and Cursor
+/// Cloud, the two panes this app compiles — draws on every unknown and hides
+/// only on a positive answer, because the compiled pane is what the product did
+/// before the plugin existed and a slow socket must not delete a feature. These
+/// tests pin that split through ``drawsBuiltin(_:)`` and its awaited twin.
 @MainActor
 final class PluginPresenceGateTests: XCTestCase {
   private enum FetchFailure: Error { case unreachable }
@@ -153,8 +161,11 @@ final class PluginPresenceGateTests: XCTestCase {
     XCTAssertFalse(gate.owns(.linear))
   }
 
-  // MARK: - One-shot consults (deep links)
+  // MARK: - One-shot consults, at the plugin level
 
+  /// `awaitInstalled` is the plugin-id form, which an `ade://plugin/...` link
+  /// uses to decide whether the plugin's OWN panel can open. It is not the form
+  /// a compiled screen asks — see the `awaitDrawsBuiltin` tests below.
   func testDeepLinkWaitsForTheFirstAnswerInsteadOfReadingTheDefault() async {
     let sync = FakePresenceSync()
     sync.reply = PluginPresenceListResult(plugins: [entry("ade-linear")])
@@ -162,7 +173,7 @@ final class PluginPresenceGateTests: XCTestCase {
 
     // A link tapped at cold launch: nothing has refreshed yet. Answering from
     // the pre-answer default would make the same URL open or not by timing.
-    let allowed = await gate.awaitOwner(of: .linear)
+    let allowed = await gate.awaitInstalled("ade-linear")
 
     XCTAssertTrue(allowed)
     XCTAssertEqual(sync.fetchCount, 1)
@@ -174,7 +185,7 @@ final class PluginPresenceGateTests: XCTestCase {
     let gate = PluginPresenceGate(sync: sync)
     await gate.refresh()
 
-    let allowed = await gate.awaitOwner(of: .linear)
+    let allowed = await gate.awaitInstalled("ade-linear")
     XCTAssertTrue(allowed)
     XCTAssertEqual(sync.fetchCount, 1, "A resolved machine must not be re-asked per link.")
   }
@@ -190,7 +201,7 @@ final class PluginPresenceGateTests: XCTestCase {
     // that arrives while the machine is unreachable still resolves to hidden.
     sync.failure = nil
     sync.reply = PluginPresenceListResult(plugins: [entry("ade-linear")])
-    let allowed = await gate.awaitOwner(of: .linear)
+    let allowed = await gate.awaitInstalled("ade-linear")
     XCTAssertTrue(allowed)
     XCTAssertEqual(sync.fetchCount, 2)
   }
@@ -304,60 +315,244 @@ final class PluginPresenceGateTests: XCTestCase {
 
   // MARK: - The `.enables` surfaces keep their polarity
 
-  /// Linear's behaviour is unchanged by the polarity split, in every state the
-  /// table above enumerates.
+  /// An `.enables` surface reads `drawsBuiltin` and `owns` the same way in every
+  /// state the table above enumerates.
   ///
-  /// `drawsBuiltin` is the predicate the entry points call now, so for an
-  /// `.enables` surface it has to agree with `owns` everywhere — including in
-  /// the unknowns, which is where the two polarities disagree and where a
-  /// mistake would silently invert Linear.
+  /// `.graph` stands for the whole `.enables` half: the phone has no compiled
+  /// Graph screen, so the plugin is the only thing that could put one there, and
+  /// every unknown must hide. `drawsBuiltin` is the predicate the entry points
+  /// call, so it has to agree with `owns` here — including in the unknowns,
+  /// which is exactly where the two polarities disagree and where a mistake
+  /// would silently invert a surface.
   func testEnablesSurfacesDrawExactlyWhenTheyAreOwned() async {
     let sync = FakePresenceSync()
     let gate = PluginPresenceGate(sync: sync)
 
     // Before any answer.
-    XCTAssertFalse(gate.owns(.linear))
-    XCTAssertFalse(gate.drawsBuiltin(.linear))
+    XCTAssertFalse(gate.owns(.graph))
+    XCTAssertFalse(gate.drawsBuiltin(.graph))
 
     // Installed and enabled.
-    sync.reply = PluginPresenceListResult(plugins: [entry("ade-linear")])
+    sync.reply = PluginPresenceListResult(plugins: [entry("ade-graph")])
     await gate.refresh()
-    XCTAssertTrue(gate.owns(.linear))
-    XCTAssertTrue(gate.drawsBuiltin(.linear))
+    XCTAssertTrue(gate.owns(.graph))
+    XCTAssertTrue(gate.drawsBuiltin(.graph))
 
     // Installed but disabled.
-    sync.reply = PluginPresenceListResult(plugins: [entry("ade-linear", enabled: false)])
+    sync.reply = PluginPresenceListResult(plugins: [entry("ade-graph", enabled: false)])
     sync.pluginPresenceTrigger = "machine-a|1"
     await gate.refresh()
-    XCTAssertFalse(gate.owns(.linear))
-    XCTAssertFalse(gate.drawsBuiltin(.linear))
+    XCTAssertFalse(gate.owns(.graph))
+    XCTAssertFalse(gate.drawsBuiltin(.graph))
 
     // Unreachable.
     sync.failure = FetchFailure.unreachable
     await gate.refresh()
-    XCTAssertFalse(gate.drawsBuiltin(.linear))
+    XCTAssertFalse(gate.drawsBuiltin(.graph))
 
     // Host too old to be asked.
     sync.failure = nil
     sync.supportsPluginPresenceList = false
     await gate.refresh()
-    XCTAssertFalse(gate.drawsBuiltin(.linear))
+    XCTAssertFalse(gate.drawsBuiltin(.graph))
   }
 
   /// A machine with BOTH plugins moves each surface its own way at once, which
   /// is the case a single shared boolean would get wrong.
+  ///
+  /// `ade-graph` enables a screen the phone does not compile, and `ade-linear`
+  /// replaces one it does. One reply, two surfaces, opposite results.
   func testOneAnswerMovesTheTwoPolaritiesInOppositeDirections() async {
     let sync = FakePresenceSync()
     sync.reply = PluginPresenceListResult(plugins: [
+      entry("ade-graph"),
       entry("ade-linear"),
-      entry("ade-cursor-cloud"),
     ])
     let gate = PluginPresenceGate(sync: sync)
 
     await gate.refresh()
 
+    XCTAssertTrue(gate.owns(.graph))
+    XCTAssertTrue(gate.owns(.linear))
+    XCTAssertTrue(gate.drawsBuiltin(.graph))
+    XCTAssertFalse(
+      gate.drawsBuiltin(.linear),
+      "One reply must move an enabled surface up and a superseded one down."
+    )
+  }
+
+  // MARK: - Linear, the surface that changed polarity
+
+  /// Linear used to be an `.enables` surface and is now `.supersedes`, so these
+  /// six states are the ones a mistake would invert. ADE compiles a Linear pane
+  /// and has shipped it since before the plugin platform, so the pane is the
+  /// default and `ade-linear` is what takes it away.
+
+  func testTheCompiledLinearPaneIsDrawnBeforeAnyAnswerHasLanded() {
+    let sync = FakePresenceSync()
+    sync.reply = PluginPresenceListResult(plugins: [entry("ade-linear")])
+    let gate = PluginPresenceGate(sync: sync)
+
+    // A cold launch renders here. The machine may well have the plugin — the
+    // point is that nothing has said so yet, and a late reply must not be the
+    // reason the Linear button is missing from the top bar.
     XCTAssertTrue(gate.drawsBuiltin(.linear))
-    XCTAssertFalse(gate.drawsBuiltin(.cursorCloud))
+    XCTAssertEqual(sync.fetchCount, 0, "Rendering must not fire a round trip of its own.")
+  }
+
+  func testInstallingTheLinearPluginTakesTheCompiledPaneAway() async {
+    let sync = FakePresenceSync()
+    sync.reply = PluginPresenceListResult(plugins: [entry("ade-linear")])
+    let gate = PluginPresenceGate(sync: sync)
+
+    await gate.refresh()
+
+    // Both directions of the same fact: the plugin is owned, and precisely
+    // therefore the compiled pane is not drawn. `ade-linear` brings its own
+    // panels and its own Linear connection, so a second Linear entry point and
+    // a second connect card would be the confusion the gate exists to prevent.
+    XCTAssertTrue(gate.owns(.linear))
+    XCTAssertFalse(gate.drawsBuiltin(.linear))
+  }
+
+  func testDisablingTheLinearPluginHandsTheCompiledPaneBack() async {
+    let sync = FakePresenceSync()
+    sync.reply = PluginPresenceListResult(plugins: [entry("ade-linear", enabled: false)])
+    let gate = PluginPresenceGate(sync: sync)
+
+    await gate.refresh()
+
+    // Disabling is the reversible half of uninstalling and restores exactly as
+    // much: with the plugin off there are no plugin panels to open, so hiding
+    // the compiled pane too would leave no Linear anywhere on the phone.
+    XCTAssertFalse(gate.owns(.linear))
+    XCTAssertTrue(gate.drawsBuiltin(.linear))
+  }
+
+  func testAFailedAnswerLeavesTheCompiledLinearPaneUp() async {
+    let sync = FakePresenceSync()
+    sync.reply = PluginPresenceListResult(plugins: [entry("ade-linear")])
+    let gate = PluginPresenceGate(sync: sync)
+    await gate.refresh()
+    XCTAssertFalse(gate.drawsBuiltin(.linear))
+
+    // A dropped socket is not an answer, and deleting a shipped feature every
+    // time the socket blinks is worse than showing a pane the plugin replaced.
+    sync.failure = FetchFailure.unreachable
+    await gate.refresh()
+
+    XCTAssertTrue(gate.drawsBuiltin(.linear))
+  }
+
+  func testAHostTooOldToBeAskedKeepsTheCompiledLinearPane() async {
+    let sync = FakePresenceSync()
+    sync.supportsPluginPresenceList = false
+    let gate = PluginPresenceGate(sync: sync)
+
+    await gate.refresh()
+
+    // Every host that predates the plugin platform still has the compiled
+    // Linear pane and no way to install a plugin that replaces it.
+    XCTAssertTrue(gate.drawsBuiltin(.linear))
+    XCTAssertEqual(sync.fetchCount, 0)
+  }
+
+  func testAttachingToAMachineWithoutTheLinearPluginBringsTheCompiledPaneBack() async {
+    let sync = FakePresenceSync()
+    sync.reply = PluginPresenceListResult(plugins: [entry("ade-linear")])
+    let gate = PluginPresenceGate(sync: sync)
+    await gate.refresh()
+    XCTAssertFalse(gate.drawsBuiltin(.linear))
+
+    // Plugins are installed per machine. The phone attaching elsewhere retires
+    // the previous machine's list immediately, and the compiled pane is what the
+    // new machine gets until it says otherwise.
+    sync.pluginPresenceTrigger = "machine-b|0"
+    sync.reply = PluginPresenceListResult(plugins: [])
+    await gate.refresh()
+
+    XCTAssertTrue(gate.drawsBuiltin(.linear))
+  }
+
+  // MARK: - The awaited, polarity-aware twin
+
+  /// `awaitDrawsBuiltin` is what a decision with no second chance calls. The
+  /// `ade://linear-issue` deep link is consumed once, so reading the pre-answer
+  /// default would open the compiled pane on a machine that has `ade-linear`,
+  /// purely because the socket had not replied yet.
+
+  func testAwaitedGateWaitsForTheFirstAnswerBeforeRefusingTheCompiledPane() async {
+    let sync = FakePresenceSync()
+    sync.reply = PluginPresenceListResult(plugins: [entry("ade-linear")])
+    let gate = PluginPresenceGate(sync: sync)
+
+    // A link tapped at cold launch: nothing has refreshed yet, and the render
+    // default here says "draw the compiled pane". The awaited form must ask.
+    let drawsBuiltin = await gate.awaitDrawsBuiltin(.linear)
+
+    XCTAssertFalse(drawsBuiltin, "The machine has the plugin, so the link belongs to its panels.")
+    XCTAssertEqual(sync.fetchCount, 1)
+  }
+
+  func testAwaitedGateOpensTheCompiledPaneOnAMachineWithoutThePlugin() async {
+    let sync = FakePresenceSync()
+    sync.reply = PluginPresenceListResult(plugins: [])
+    let gate = PluginPresenceGate(sync: sync)
+
+    let drawsBuiltin = await gate.awaitDrawsBuiltin(.linear)
+
+    // The overwhelmingly common machine, and the one the app shipped for. The
+    // link opens exactly the pane it always has.
+    XCTAssertTrue(drawsBuiltin)
+    XCTAssertEqual(sync.fetchCount, 1)
+  }
+
+  func testAwaitedGateReusesAnAnswerAlreadyResolvedForThisMachine() async {
+    let sync = FakePresenceSync()
+    sync.reply = PluginPresenceListResult(plugins: [entry("ade-linear")])
+    let gate = PluginPresenceGate(sync: sync)
+    await gate.refresh()
+
+    let drawsBuiltin = await gate.awaitDrawsBuiltin(.linear)
+
+    XCTAssertFalse(drawsBuiltin)
+    XCTAssertEqual(sync.fetchCount, 1, "A resolved machine must not be re-asked per link.")
+  }
+
+  func testAwaitedGateRetriesAfterAFailedCallRatherThanTrustingIt() async {
+    let sync = FakePresenceSync()
+    sync.failure = FetchFailure.unreachable
+    let gate = PluginPresenceGate(sync: sync)
+    await gate.refresh()
+    XCTAssertTrue(gate.drawsBuiltin(.linear))
+
+    // A failed call is left unanswered on purpose, so the next link asks again
+    // instead of treating a dropped socket as "no plugin, forever".
+    sync.failure = nil
+    sync.reply = PluginPresenceListResult(plugins: [entry("ade-linear")])
+    let drawsBuiltin = await gate.awaitDrawsBuiltin(.linear)
+
+    XCTAssertFalse(drawsBuiltin)
+    XCTAssertEqual(sync.fetchCount, 2)
+  }
+
+  /// The twin reads the same table `drawsBuiltin` does, so it must invert for an
+  /// `.enables` surface too. A polarity-blind awaited form is the trap this
+  /// replaces, and it would answer both of these the same way.
+  func testAwaitedGateKeepsTheEnablesPolarityToo() async {
+    let installed = FakePresenceSync()
+    installed.reply = PluginPresenceListResult(plugins: [entry("ade-graph")])
+    let withPlugin = PluginPresenceGate(sync: installed)
+    let graphWithPlugin = await withPlugin.awaitDrawsBuiltin(.graph)
+    XCTAssertTrue(graphWithPlugin, "An `.enables` surface exists only while its plugin does.")
+
+    let bare = FakePresenceSync()
+    bare.reply = PluginPresenceListResult(plugins: [])
+    let withoutPlugin = PluginPresenceGate(sync: bare)
+    let graphWithoutPlugin = await withoutPlugin.awaitDrawsBuiltin(.graph)
+    let linearWithoutPlugin = await withoutPlugin.awaitDrawsBuiltin(.linear)
+    XCTAssertFalse(graphWithoutPlugin)
+    XCTAssertTrue(linearWithoutPlugin, "The same empty reply moves the two surfaces apart.")
   }
 
   // MARK: - Surface ids
@@ -389,7 +584,7 @@ final class PluginPresenceGateTests: XCTestCase {
   func testSurfacePolarityMatchesTheSharedPresenceTable() {
     XCTAssertEqual(
       PluginBuiltinSurface.allCases.map(\.presence),
-      [.enables, .enables, .enables, .enables, .enables, .enables, .supersedes]
+      [.enables, .enables, .enables, .supersedes, .enables, .enables, .supersedes]
     )
   }
 }

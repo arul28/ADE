@@ -534,6 +534,59 @@ describe("webview surfaces", () => {
     expect(result.warnings.join(" ")).toMatch(/superseded surface/);
   });
 
+  it("refuses a surface that names the superseded Linear built-in", () => {
+    // The same refusal, on the surface `ade-linear` used to declare. It is
+    // pinned separately because Linear crossed the polarity AFTER the rule was
+    // written, and a rule that only ever ran against one surface is a rule
+    // nobody has tested.
+    const result = parsePluginManifest(validManifest({
+      official: true,
+      surfaces: [{ kind: "tab", id: "issues", title: "Linear", panelId: "issues", builtin: "linear" }],
+    }));
+    expect(result.errors).toEqual([]);
+    expect(result.manifest!.surfaces[0]).not.toHaveProperty("builtin");
+    expect(result.warnings.join(" ")).toMatch(/superseded surface/);
+  });
+
+  it("still lets the registered owner claim its own core smart-link host", () => {
+    // The relaxation used to key on the honoured `builtin` field, which a
+    // superseding plugin may not use. It keys on OWNERSHIP now, so `ade-linear`
+    // keeps the `linear.app` matcher it ships even with no `builtin` anywhere.
+    const result = parsePluginManifest(validManifest({
+      name: "ade-linear",
+      official: true,
+      surfaces: [{ kind: "tab", id: "issues", title: "Linear", panelId: "issues" }],
+      panels: [{ id: "issues", schemaFile: "panels/issues.json", title: "Linear" }],
+      urlMatchers: [{
+        id: "issue",
+        hosts: ["linear.app"],
+        pathPattern: "/{workspace}/issue/{key}/**",
+        chip: { label: "{key}" },
+        panelId: "issues",
+      }],
+    }));
+    expect(result.errors).toEqual([]);
+    expect(result.warnings).toEqual([]);
+    expect(result.manifest!.urlMatchers?.[0]?.hosts).toEqual(["linear.app"]);
+  });
+
+  it("refuses linear.app to a package that is not the registered owner", () => {
+    // Ownership, not officialness. Another official package naming the host
+    // would draw its chip over ADE's Linear links on every machine.
+    const result = parsePluginManifest(validManifest({
+      name: "ade-graph",
+      official: true,
+      urlMatchers: [{
+        id: "issue",
+        hosts: ["linear.app"],
+        pathPattern: "/{workspace}/issue/{key}/**",
+        chip: { label: "{key}" },
+      }],
+    }));
+    expect(result.warnings.join(" ")).toMatch(/linear\.app/);
+    expect(result.manifest!.urlMatchers).toEqual([]);
+  });
+
   it("accepts a brand icon token on a surface and on the manifest itself", () => {
     const result = parsePluginManifest(validManifest({
       icon: "brand:cursor",
@@ -586,20 +639,23 @@ describe("pane surfaces", () => {
   });
 
   it("keeps a pane that gates a compiled built-in, which ADE itself draws", () => {
+    // The iOS Simulator pane rather than Linear: `linear` supersedes now, and a
+    // superseded surface may not be named with `builtin` at all, so it can no
+    // longer stand for this shape.
     const parsed = parsePluginManifest(validManifest({
-      name: "ade-linear",
+      name: "ade-ios-sim",
       official: true,
-      surfaces: [{ kind: "pane", id: "linear", title: "Linear", panelId: "main", builtin: "linear" }],
+      surfaces: [{ kind: "pane", id: "ios", title: "iOS Simulator", panelId: "main", builtin: "ios" }],
     }));
     expect(parsed.manifest!.surfaces).toHaveLength(1);
-    expect(parsed.manifest!.surfaces[0]).toMatchObject({ kind: "pane", builtin: "linear" });
+    expect(parsed.manifest!.surfaces[0]).toMatchObject({ kind: "pane", builtin: "ios" });
   });
 
   it("refuses a pane whose builtin was not honoured, rather than keeping it inert", () => {
     // Not official, so `builtin` is ignored — and what is left is a pane with
     // nothing to gate, which is the inert shape.
     const parsed = parsePluginManifest(validManifest({
-      surfaces: [{ kind: "pane", id: "linear", title: "Linear", panelId: "main", builtin: "linear" }],
+      surfaces: [{ kind: "pane", id: "ios", title: "iOS Simulator", panelId: "main", builtin: "ios" }],
     }));
     expect(parsed.manifest!.surfaces).toEqual([]);
     expect(parsed.warnings.join(" ")).toContain("work-rail-pane");

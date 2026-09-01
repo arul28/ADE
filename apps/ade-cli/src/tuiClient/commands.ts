@@ -184,13 +184,19 @@ export const BUILTIN_COMMANDS: BuiltinCommand[] = [
   { name: "/pr reopen", description: "Reopen the active PR after it was closed", placement: "right", category: "PRs" },
   { name: "/pr update-branch", description: "Update the PR branch with its base (merge or rebase)", placement: "right", argumentHint: "[merge|rebase]", category: "PRs" },
   { name: "/pr checks", description: "Show PR checks", placement: "right", category: "PRs" },
-  { name: "/linear", description: "Run Linear issue commands", placement: "right", argumentHint: "<group>", category: "Linear" },
-  { name: "/linear list", description: "List Linear work", placement: "right", category: "Linear" },
-  { name: "/linear pull", description: "Pull a Linear ticket into chat context", placement: "right", argumentHint: "<id>", category: "Linear" },
-  { name: "/linear comment", description: "Comment on a Linear ticket", placement: "right", argumentHint: "<id> <text>", category: "Linear" },
-  { name: "/linear comments", description: "Show comments on a Linear ticket", placement: "right", argumentHint: "<id>", category: "Linear" },
-  { name: "/linear status", description: "Show Linear status", placement: "right", category: "Linear" },
-  { name: "/linear assign", description: "Assign a Linear ticket", placement: "right", argumentHint: "<id> <user>", category: "Linear" },
+  // ADE's own compiled Linear commands. `ade-linear` SUPERSEDES them: it ships
+  // its own `linear` CLI word, so on a machine that has the plugin these rows
+  // step aside rather than sitting next to a second `/linear` that does the
+  // same thing. On every other machine — no plugin, plugin disabled, a host
+  // that cannot answer — `builtinCommandAvailable` keeps them, which is the
+  // TUI the product has always had.
+  { name: "/linear", description: "Run Linear issue commands", placement: "right", argumentHint: "<group>", category: "Linear", builtin: "linear" },
+  { name: "/linear list", description: "List Linear work", placement: "right", category: "Linear", builtin: "linear" },
+  { name: "/linear pull", description: "Pull a Linear ticket into chat context", placement: "right", argumentHint: "<id>", category: "Linear", builtin: "linear" },
+  { name: "/linear comment", description: "Comment on a Linear ticket", placement: "right", argumentHint: "<id> <text>", category: "Linear", builtin: "linear" },
+  { name: "/linear comments", description: "Show comments on a Linear ticket", placement: "right", argumentHint: "<id>", category: "Linear", builtin: "linear" },
+  { name: "/linear status", description: "Show Linear status", placement: "right", category: "Linear", builtin: "linear" },
+  { name: "/linear assign", description: "Assign a Linear ticket", placement: "right", argumentHint: "<id> <user>", category: "Linear", builtin: "linear" },
   { name: "/issue", description: "Attach, list, or detach Linear and GitHub issues", placement: "right", argumentHint: "<attach|list|detach> [id]", category: "Issues" },
   { name: "/issue attach", description: "Attach a Linear or GitHub issue to this chat", placement: "right", argumentHint: "<ADE-123|owner/repo#42|#42>", category: "Issues" },
   { name: "/issue list", description: "List issues attached to this chat", placement: "right", category: "Issues" },

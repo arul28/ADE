@@ -56,8 +56,11 @@ export function LinearIssueBadge({
   onStartChatWithIssue?: () => void;
 }) {
   // Gated inside the component rather than at each call site: four lane
-  // surfaces render this badge, and the one that forgets is the one that leaks
-  // a Linear entry point onto a machine without the plugin. Matches iOS's
+  // surfaces render this badge, and the one that forgets is the one that shows
+  // a SECOND Linear badge next to the plugin's own `row-badge` contribution.
+  // `ade-linear` supersedes this badge, so the gate hides it only when the
+  // plugin is positively installed and enabled — every other state draws it,
+  // which is the lane row ADE has always had. Matches iOS's
   // `LaneLinearIssueBadge`, which gates on `PluginPresenceGate` the same way.
   const linearSurfaceVisible = useBuiltinSurfaceVisible("linear");
   const [copyState, setCopyState] = React.useState<CopyState>("idle");

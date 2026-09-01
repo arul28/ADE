@@ -5,6 +5,7 @@ import { buildLaneMenuGroups } from "../lanes/laneContextMenuItems";
 import { COLORS } from "../lanes/laneDesignTokens";
 import { MenuSubmenu } from "../ui/MenuSubmenu";
 import { pluginLaneContext, usePluginMenuEntries } from "../plugins/sockets";
+import { useBuiltinSurfaceVisible } from "../plugins/useBuiltinTabs";
 import { useLaneMenuActions } from "./useWorkLaneContextMenu";
 import { resolveOpenInTarget } from "../../../shared/editorTargets";
 
@@ -60,6 +61,7 @@ export function LaneActionsSubmenu({
     lane ? pluginLaneContext(lane) : null,
     { onClose, includeExtend: true },
   );
+  const linearSurfaceVisible = useBuiltinSurfaceVisible("linear");
 
   const groups = useMemo(() => {
     const openIn = resolveOpenInTarget({ worktreePath: lane?.worktreePath, binding: projectBinding });
@@ -71,12 +73,13 @@ export function LaneActionsSubmenu({
       // the Work sidebar passes its own lane menu.
       visibleLaneIds: [laneId],
       isRemoteProject,
+      linearSurfaceVisible,
       onClose,
       ...actions,
       pluginEntries,
       ...(openIn ? { openIn } : {}),
     });
-  }, [actions, isRemoteProject, lane, laneId, lanesById, onClose, pluginEntries, projectBinding]);
+  }, [actions, isRemoteProject, lane, laneId, lanesById, linearSurfaceVisible, onClose, pluginEntries, projectBinding]);
 
   return (
     <MenuSubmenu

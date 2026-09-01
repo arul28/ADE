@@ -39,11 +39,13 @@ function makeIssue(overrides: Partial<LaneLinearIssue> = {}): LaneLinearIssue {
 }
 
 describe("LinearIssueBadge", () => {
-  // The badge is a Linear entry point, so it is only in the product on a
-  // machine that has `ade-linear`. Every rendering test therefore describes
-  // such a machine; the gate itself is asserted from both sides below.
+  // The badge is ADE's own compiled Linear entry point. `ade-linear` supersedes
+  // it: the plugin draws its own issue badge, so ADE draws this one on every
+  // machine that does not have the plugin. Each rendering test therefore
+  // describes such a machine; the gate itself is asserted from all three sides
+  // below.
   beforeEach(() => {
-    seedBuiltinSurfacePlugins(["linear"]);
+    seedBuiltinSurfacePlugins([]);
   });
 
   afterEach(() => {
@@ -53,8 +55,8 @@ describe("LinearIssueBadge", () => {
     vi.restoreAllMocks();
   });
 
-  it("renders nothing when the Linear plugin is not installed", () => {
-    resetBuiltinSurfacePlugins();
+  it("renders nothing once the Linear plugin is installed", () => {
+    seedBuiltinSurfacePlugins(["linear"]);
     Object.defineProperty(window, "ade", {
       configurable: true,
       value: { plugins: {}, app: { writeClipboardText: vi.fn(async () => undefined) } },
@@ -66,7 +68,22 @@ describe("LinearIssueBadge", () => {
     expect(screen.queryByText("ADE-123")).toBeNull();
   });
 
-  it("renders the issue once the Linear plugin is installed", () => {
+  it("renders the issue when the Linear plugin is not installed", () => {
+    Object.defineProperty(window, "ade", {
+      configurable: true,
+      value: { plugins: {}, app: { writeClipboardText: vi.fn(async () => undefined) } },
+    });
+
+    render(<LinearIssueBadge issue={makeIssue()} />);
+
+    expect(screen.getAllByText("ADE-123").length).toBeGreaterThan(0);
+  });
+
+  it("keeps rendering the issue while the plugin registry has not resolved", () => {
+    // The unknown case. A lane badge that blinks off on every launch, before
+    // the registry answers, removes a shipped feature for a moment on a machine
+    // that has no Linear plugin at all. The gate must fall the other way.
+    resetBuiltinSurfacePlugins();
     Object.defineProperty(window, "ade", {
       configurable: true,
       value: { plugins: {}, app: { writeClipboardText: vi.fn(async () => undefined) } },

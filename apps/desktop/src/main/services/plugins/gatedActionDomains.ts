@@ -1,10 +1,15 @@
 /**
  * Refusing an action domain whose plugin is not on this machine.
  *
- * A plugin is a whole vertical: its pane, its agent tooling and its skills
- * arrive and leave together. Round 2 hid the UI; hiding the UI alone would only
- * have moved the confusion into the agent, which would keep calling
- * `linear.comment` against a machine that has no Linear.
+ * An `"enables"` plugin is a whole vertical: its pane, its agent tooling and its
+ * skills arrive and leave together. Round 2 hid the UI; hiding the UI alone
+ * would only have moved the confusion into the agent, which would keep calling
+ * `ios_simulator.tap` against a machine that has no simulator pane.
+ *
+ * A `"supersedes"` surface is refused by NOTHING here. ADE compiled those verbs
+ * and still answers them, because the plugin replacing the UI is not a reason to
+ * fail a call an existing chat or automation is part-way through. Those verbs
+ * stop being ADVERTISED instead — see {@link resolveHiddenActionNames}.
  *
  * ## The refusal is policy, never a missing method
  *
@@ -28,8 +33,10 @@ import path from "node:path";
 
 import {
   BUILTIN_SURFACE_OWNERS,
+  builtinSurfaceDrawn,
   builtinSurfaceInstalled,
   builtinSurfaceOwnerForActionDomain,
+  builtinSurfacePresence,
   gatedBuiltinActionDomains,
   gatedBuiltinActionNames,
   hiddenBuiltinActionNames,
@@ -80,12 +87,13 @@ export function allGatedActionNames(): ReadonlySet<string> {
 /**
  * The `"<domain>.<action>"` names to leave out of an action catalog right now.
  *
- * The name-level twin of {@link resolveDisabledActionDomains}, for a surface
- * whose verbs share a domain ADE keeps — today only Cursor Cloud, whose verbs
- * live in `ai`. It is a WITHHOLDING, not a refusal: the verbs still dispatch, so
- * a chat already bound to a cloud agent keeps working while the built-in UI is
- * hidden. What stops is ADE listing a surface's verbs to an agent when the user
- * cannot see that surface.
+ * The name-level twin of {@link resolveDisabledActionDomains}, and it covers the
+ * two surfaces that must not refuse: Cursor Cloud, whose verbs share the `ai`
+ * domain ADE keeps, and Linear, which supersedes an integration ADE compiled
+ * and still serves. It is a WITHHOLDING, not a refusal: the verbs still
+ * dispatch, so a chat already bound to a cloud agent or a Linear issue keeps
+ * working while the built-in UI is hidden. What stops is ADE listing a
+ * surface's verbs to an agent when the user cannot see that surface.
  *
  * Reads the registry through the same lenient path the domain gate uses, so an
  * unparseable `state.json` withholds rather than advertises.
@@ -272,7 +280,8 @@ export function gatedDomainUnavailableReason(
  * plugin's capability as named methods rather than as an action domain — the
  * sync command surface phones and the web client call.
  *
- * Null means ONLY "the surface is installed". Unlike the action-domain helper,
+ * Null means ONLY "ADE still draws this surface here". Unlike the action-domain
+ * helper,
  * a cold catalog must not turn into a pass here: the domain path still refuses
  * with its own generic error when this returns null, but a sync command has no
  * such fallback, so failing open would leave every paired phone reading and
@@ -287,7 +296,22 @@ export function buildMissingSurfaceDenial(
   if (!owner) return null;
   const pluginsRoot = options.pluginsRoot ?? resolvePluginsRoot();
   const records = [...readPluginInstallRecords(pluginsRoot).values()];
-  if (builtinSurfaceInstalled(owner.builtinId, records)) return null;
+  // `Drawn`, not `Installed`: the question a sync command has is whether ADE's
+  // own compiled handler is still part of this machine, and for a superseded
+  // surface that is the opposite of "is the plugin here". A phone attached to a
+  // machine with no `ade-linear` must reach ADE's compiled Linear commands, the
+  // way it always did.
+  if (builtinSurfaceDrawn(owner.builtinId, records)) return null;
+  if (builtinSurfacePresence(owner.builtinId) === "supersedes") {
+    // The refusal reads the other way round too. Nothing is missing here — the
+    // plugin arrived and took the surface over — so telling the user to install
+    // it would be the opposite of the truth. The phone reads this as "stop
+    // calling the compiled command" and draws the plugin's panels instead.
+    return {
+      pluginId: owner.ownerPluginId,
+      message: `The ${owner.ownerPluginId} plugin provides ${owner.title} on this computer. Open it from the plugin's own screen.`,
+    };
+  }
   const message = pluginNotInstalledMessage(owner.ownerPluginId, options.lookupDisplayName ?? defaultLookup);
   return {
     pluginId: owner.ownerPluginId,

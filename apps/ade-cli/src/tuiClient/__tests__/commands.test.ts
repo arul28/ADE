@@ -789,6 +789,17 @@ describe("linear command routing", () => {
 describe("built-in commands over a plugin-owned surface", () => {
   const CURSOR_CLOUD_INSTALLED = [{ pluginId: "ade-cursor-cloud", enabled: true }];
 
+  const LINEAR_INSTALLED = [{ pluginId: "ade-linear", enabled: true }];
+  const LINEAR_COMMANDS = [
+    "/linear",
+    "/linear list",
+    "/linear pull",
+    "/linear comment",
+    "/linear comments",
+    "/linear status",
+    "/linear assign",
+  ];
+
   function names(installedPlugins?: { pluginId: string; enabled: boolean }[]): string[] {
     return paletteCommands("", [], installedPlugins ? { installedPlugins } : {})
       .map((command) => command.name);
@@ -821,5 +832,38 @@ describe("built-in commands over a plugin-owned surface", () => {
 
   it("leaves a command that names no built-in surface alone", () => {
     expect(builtinCommandAvailable({}, CURSOR_CLOUD_INSTALLED)).toBe(true);
+  });
+
+  it("lists every /linear command on a machine that does not have the plugin", () => {
+    // The TUI half of the acceptance test. An ADE with no `ade-linear` keeps
+    // the Linear commands it has always had, and an unknown roster reads the
+    // same way as an empty one.
+    for (const roster of [undefined, [], [{ pluginId: "ade-cursor-cloud", enabled: true }]]) {
+      const listed = names(roster);
+      for (const command of LINEAR_COMMANDS) expect(listed, command).toContain(command);
+    }
+  });
+
+  it("keeps the /linear commands listed while the plugin is installed but switched off", () => {
+    const listed = names([{ pluginId: "ade-linear", enabled: false }]);
+    for (const command of LINEAR_COMMANDS) expect(listed, command).toContain(command);
+  });
+
+  it("drops every /linear command once the plugin owns the surface", () => {
+    // `ade-linear` ships its own `linear` CLI word, so leaving these listed
+    // would put two `/linear` rows in the palette that do the same thing.
+    const listed = names(LINEAR_INSTALLED);
+    for (const command of LINEAR_COMMANDS) expect(listed, command).not.toContain(command);
+    // Only the Linear ones. The rest of the palette is untouched.
+    expect(listed).toContain("/cloud");
+    expect(listed).toContain("/issue");
+    expect(listed).toContain("/activity");
+  });
+
+  it("still refuses a typed /linear, because a hidden row is not access control", () => {
+    expect(slashCommandUnavailableSurface("/linear", LINEAR_INSTALLED)).toBe("linear");
+    expect(slashCommandUnavailableSurface("/linear pull", LINEAR_INSTALLED)).toBe("linear");
+    expect(slashCommandUnavailableSurface("/linear", [])).toBeNull();
+    expect(slashCommandUnavailableSurface("/linear pull", [])).toBeNull();
   });
 });

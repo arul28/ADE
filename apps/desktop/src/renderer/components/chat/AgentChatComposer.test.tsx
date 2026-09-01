@@ -84,9 +84,10 @@ vi.mock("@lobehub/icons", () => {
 
 beforeEach(() => {
   installMatchMediaMock();
-  // Issue context has a Linear half and a core GitHub half. Only the Linear
-  // half is a plugin surface; these tests describe a machine that has it.
-  seedBuiltinSurfacePlugins(["linear"]);
+  // Issue context has a Linear half and a core GitHub half. `ade-linear`
+  // supersedes the Linear half, so ADE draws its own on every machine that does
+  // not have the plugin. These tests describe such a machine.
+  seedBuiltinSurfacePlugins([]);
 });
 
 afterEach(() => {
@@ -3050,6 +3051,36 @@ describe("AgentChatComposer", () => {
     expect(menu?.parentElement).toBe(document.body);
     expect(composerShell?.contains(menu)).toBe(false);
     expect((menu as HTMLElement).className).toContain("fixed");
+  });
+
+  it("drops the Linear issue entry point once the Linear plugin is installed", () => {
+    // The plugin brings its own issue attachment, so ADE stops offering this
+    // one. There is no GitHub repo here, so the whole entry goes with it.
+    Object.defineProperty(window, "ade", {
+      configurable: true,
+      value: { plugins: {} },
+    });
+    seedBuiltinSurfacePlugins(["linear"]);
+
+    renderComposer({ draft: "", turnActive: false, onAddContextAttachment: vi.fn() });
+
+    expect(screen.queryByRole("button", { name: "Issue context" })).toBeNull();
+    const overflow = screen.queryByRole("button", { name: "More composer controls" });
+    if (overflow) {
+      fireEvent.click(overflow);
+      expect(screen.queryByRole("menuitemcheckbox", { name: /Issue context/ })).toBeNull();
+    }
+  });
+
+  it("keeps the Linear issue entry point while the plugin registry has not resolved", () => {
+    // The unknown case. The registry resolves after the composer first paints.
+    // An entry point that blinks off and back on is worse than one that stays,
+    // and on a machine with no Linear plugin it must simply stay.
+    resetBuiltinSurfacePlugins();
+
+    renderComposer({ draft: "", turnActive: false, onAddContextAttachment: vi.fn() });
+
+    expect(screen.getByRole("button", { name: "Issue context" })).toBeTruthy();
   });
 
   it("offers Linear settings when issue search needs a connection", async () => {

@@ -90,6 +90,7 @@ function TriggerDeliveryCallout({
   const navigate = useNavigate();
   const [linearPending, setLinearPending] = useState(false);
   const linearApi = linearIngressApi();
+  const linearSurfaceVisible = useBuiltinSurfaceVisible("linear");
 
   const setupLinear = async () => {
     if (!linearApi?.setup) return;
@@ -109,7 +110,16 @@ function TriggerDeliveryCallout({
     action = (
       <CalloutActionButton label="Open GitHub settings" onClick={() => navigate(settingsRouteFor("integrations.github"))} />
     );
-  } else if (deliveryKey === "linear") {
+  } else if (deliveryKey === "linear" && linearSurfaceVisible) {
+    // Only the ACTION is gated, not the callout. The warning above it stays
+    // true on a machine that has `ade-linear`: a rule saved before the install
+    // still runs on ADE's compiled Linear trigger, and telling the user its
+    // events cannot arrive is the honest thing to keep saying. What has to go
+    // is both buttons, because both lead into ADE's compiled Linear connection
+    // — `Connect Linear` writes a token the plugin's own credential handoff now
+    // owns, and `Open Linear settings` navigates to a settings card that
+    // renders null once the plugin supersedes the surface, so the user would
+    // land on an empty page.
     action = linearApi?.setup ? (
       <CalloutActionButton label="Connect Linear" disabled={linearPending} onClick={() => void setupLinear()} />
     ) : (
@@ -139,6 +149,13 @@ function TriggerFilters({
 }) {
   if (trigger.type === "schedule") return <ScheduleEditor trigger={trigger} onPatch={onPatch} />;
   if (source === "github") return <GitHubTriggerFilters trigger={trigger} onPatch={onPatch} />;
+  // Not gated, and that is the decision rather than an omission. This branch
+  // runs only for the source that is ALREADY selected, and the source picker
+  // stops anyone selecting Linear once `ade-linear` owns the surface — so the
+  // only rule that reaches this line on such a machine is one the user saved
+  // before the install. Hiding the editor there removes no Linear entry point.
+  // It would blank out the team, project and assignee filters the user wrote,
+  // on a trigger ADE's compiled ingress still delivers.
   if (source === "linear") return <LinearTriggerFilters trigger={trigger} onPatch={onPatch} />;
   if (source === "git") {
     return (
@@ -284,6 +301,7 @@ export function TriggerCard({
 }) {
   const source = sourceForTriggerType(trigger.type);
   const cursorCloudSurfaceVisible = useBuiltinSurfaceVisible("cursor-cloud");
+  const linearSurfaceVisible = useBuiltinSurfaceVisible("linear");
   const def = sourceDef(source);
   const events = def.events;
   const deliveryKey = triggerDeliveryKeyForType(trigger.type);
@@ -295,15 +313,20 @@ export function TriggerCard({
    * Cursor Cloud's two triggers are ADE's own, and `ade-cursor-cloud` publishes
    * its own pair. Offering both would put two "A Cursor Cloud agent finishes"
    * rows in front of the user, wired to different halves of the same feature.
+   * Linear is the same shape with five events: `ade-linear` declares
+   * `issue_created`, `issue_updated`, `issue_assigned`, `issue_status_changed`
+   * and `issue_labeled` of its own, and they arrive under the Plugin source.
    * The source that is already SELECTED always stays offered, so opening a
-   * saved cursor automation after installing the plugin shows the automation
-   * that exists rather than silently re-pointing its trigger at GitHub.
+   * saved cursor or Linear automation after installing the plugin shows the
+   * automation that exists rather than silently re-pointing its trigger at
+   * GitHub.
    */
-  const offeredTriggerSources = TRIGGER_SOURCES.filter(
-    (candidate) => candidate.value === source
-      || candidate.value !== "cursor"
-      || cursorCloudSurfaceVisible,
-  );
+  const offeredTriggerSources = TRIGGER_SOURCES.filter((candidate) => {
+    if (candidate.value === source) return true;
+    if (candidate.value === "cursor") return cursorCloudSurfaceVisible;
+    if (candidate.value === "linear") return linearSurfaceVisible;
+    return true;
+  });
   const setSource = (nextSource: TriggerSource) => onChange(defaultTriggerForSource(nextSource));
   const setEvent = (type: string) => onChange({ ...defaultTriggerForSource(source), type: type as AutomationTrigger["type"] });
   const patch = (p: Partial<AutomationTrigger>) => onChange({ ...trigger, ...p });

@@ -10,7 +10,12 @@ export function LinearIntegrationSection() {
   // Gated inside the section rather than at the Settings render site: this
   // wrapper exists only to head `LinearSection` on the Integrations tab, so it
   // has exactly one owner and returning null here takes the heading with it.
-  // Hidden is the default — the gate stays false until the registry resolves.
+  // VISIBLE is the default here, because `ade-linear` supersedes this card
+  // rather than enabling it: ADE shipped the Linear connection long before the
+  // plugin, so an unresolved registry, a host with no plugin support and an
+  // uninstalled plugin all keep it. Only a positive "the plugin is installed
+  // and enabled" takes it away, and that is the moment the plugin's own Linear
+  // settings panel appears in its place.
   // Integrations still shows GitHub, so the tab never renders empty.
   const linearSurfaceVisible = useBuiltinSurfaceVisible("linear");
   if (!linearSurfaceVisible) return null;

@@ -20,6 +20,7 @@ import {
 } from "../../../shared/linearMagicWords";
 import { COLORS, MONO_FONT, LABEL_STYLE } from "../lanes/laneDesignTokens";
 import { PluginDialogSections } from "../plugins/sockets";
+import { useBuiltinSurfaceVisible } from "../plugins/useBuiltinTabs";
 import type { PluginDialogField } from "../../../shared/plugins/sockets";
 import { isDirtyWorktreeErrorMessage, stripDirtyWorktreePrefix } from "./shared/dirtyWorktree";
 import { branchNameFromRef, describePrTargetDiff, resolveLaneBaseBranch } from "./shared/laneBranchTargets";
@@ -701,6 +702,16 @@ export function CreatePrModal({
     [lanes, normalLaneId],
   );
   const selectedNormalLinearIssue = selectedNormalLane?.linearIssue ?? null;
+  /**
+   * The Linear card below is ADE's own close-on-merge control, so it goes when
+   * `ade-linear` owns Linear: the plugin has a `moveToDoneOnMerge` setting and a
+   * `close_issue_on_merge` automation step of its own, and two controls over one
+   * policy is how the two disagree.
+   *
+   * Only the CARD is gated. The magic word the body effect below writes stays;
+   * see the comment on that effect for why.
+   */
+  const linearSurfaceVisible = useBuiltinSurfaceVisible("linear");
 
   /**
    * A `{dialog:{setField}}` response from a contributed section.
@@ -746,6 +757,22 @@ export function CreatePrModal({
     return `${selectedNormalLane.name} -> ${normalTargetLabel}`;
   }, [normalTargetLabel, selectedNormalLane]);
 
+  /**
+   * The Linear magic word in the description, and what it is NOT.
+   *
+   * This is a PREVIEW. `prService.createFromLane` runs the body through
+   * `applyIssuePrLinkage` on the way out and writes the reference from the
+   * lane's own issue links, so the created PR carries it whether or not this
+   * effect ever ran. Editing or deleting the text below changes what the user
+   * reads here; it does not change what GitHub receives.
+   *
+   * That is why the gate above hides only the CARD and leaves this alone. The
+   * card is ADE's own close-on-merge control and `ade-linear` owns that policy
+   * once installed. The reference is Linear's mechanism for linking a pull
+   * request to an issue, the plugin's own lane links depend on it, and stopping
+   * it here would not remove it from the PR — it would only make the textarea
+   * disagree with what is about to be created.
+   */
   React.useEffect(() => {
     if (!open) return;
     if (!selectedNormalLinearIssue) {
@@ -1716,7 +1743,7 @@ export function CreatePrModal({
                       />
                     </div>
 
-                    {selectedNormalLinearIssue ? (
+                    {selectedNormalLinearIssue && linearSurfaceVisible ? (
                       <div
                         style={{
                           border: `1px solid ${C.accentBorder}`,

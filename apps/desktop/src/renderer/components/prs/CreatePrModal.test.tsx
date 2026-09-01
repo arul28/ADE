@@ -107,9 +107,16 @@ const mockLanes: LaneSummary[] = [
   }),
 ];
 
-vi.mock("../../state/appStore", () => ({
-  useAppStore: (selector: (state: { lanes: LaneSummary[] }) => unknown) => selector({ lanes: mockLanes }),
-}));
+// Spread over the real module rather than replacing it: the modal's Linear card
+// is gated on `useBuiltinSurfaceVisible`, which reads the ROOT store, and a mock
+// that publishes only `useAppStore` leaves that hook with nothing to call.
+vi.mock("../../state/appStore", async () => {
+  const actual = await vi.importActual<typeof import("../../state/appStore")>("../../state/appStore");
+  return {
+    ...actual,
+    useAppStore: (selector: (state: { lanes: LaneSummary[] }) => unknown) => selector({ lanes: mockLanes }),
+  };
+});
 
 import { CreatePrModal } from "./CreatePrModal";
 

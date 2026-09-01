@@ -1,6 +1,12 @@
 import { describe, expect, it } from "vitest";
 
-import { PLUGIN_BUILTIN_SURFACE_IDS, PLUGIN_BUILTIN_SURFACE_MOBILE, parsePluginManifest } from "./manifest";
+import {
+  PLUGIN_BUILTIN_SURFACE_IDS,
+  PLUGIN_BUILTIN_SURFACE_MOBILE,
+  PLUGIN_BUILTIN_SURFACE_PRESENCE,
+  parsePluginManifest,
+  type PluginBuiltinSurfaceId,
+} from "./manifest";
 
 /**
  * `surfaces[].builtin` — the field that lets a plugin gate a compiled-in tab.
@@ -76,24 +82,31 @@ describe("manifest builtin surfaces", () => {
     expect(parsed.warnings.join(" ")).toContain("no page for");
   });
 
-  it("lets a built-in the phone does ship stay on it", () => {
-    const parsed = parsePluginManifest(manifest({
-      official: true,
-      surfaces: [{ kind: "pane", id: "linear", title: "Linear", panelId: "main", builtin: "linear" }],
-    }));
-    expect(parsed.warnings).toEqual([]);
-    expect(parsed.manifest?.surfaces[0]?.mobile).toBe(true);
+  it("has no mobile-capable built-in left for a manifest to name", () => {
+    // A fact about the product, pinned so it cannot change by accident. The
+    // ceiling table records two surfaces the phone really does draw — `linear`
+    // and `cursor-cloud` — and BOTH of them supersede, so neither may appear in
+    // a `surfaces[].builtin` field. Every built-in a manifest can still name is
+    // one the phone has no page for, which is why the only mobile rule that
+    // runs today is the clamp above.
+    for (const [builtinId, hasPage] of Object.entries(PLUGIN_BUILTIN_SURFACE_MOBILE)) {
+      if (!hasPage) continue;
+      expect(PLUGIN_BUILTIN_SURFACE_PRESENCE[builtinId as PluginBuiltinSurfaceId], builtinId)
+        .toBe("supersedes");
+    }
   });
 
-  it("lets an author narrow a mobile-capable built-in", () => {
-    // Narrowing is always allowed: the ceiling says what iOS CAN draw, the flag
-    // says what this plugin wants drawn.
+  it("refuses the claim before the ceiling is ever consulted", () => {
+    // The order matters. `linear` is mobile-capable, so a reader might expect
+    // `mobile: true` to survive here. It does not: the surface parser drops the
+    // `builtin` field first, because the surface supersedes, and what is left is
+    // an ordinary tab that takes the ordinary default.
     const parsed = parsePluginManifest(manifest({
       official: true,
-      surfaces: [{ kind: "pane", id: "linear", title: "Linear", panelId: "main", builtin: "linear", mobile: false }],
+      surfaces: [{ kind: "tab", id: "issues", title: "Linear", panelId: "issues", builtin: "linear" }],
     }));
-    expect(parsed.warnings).toEqual([]);
-    expect(parsed.manifest?.surfaces[0]?.mobile).toBe(false);
+    expect(parsed.manifest?.surfaces[0]?.builtin).toBeUndefined();
+    expect(parsed.warnings.join(" ")).toContain("superseded surface");
   });
 
   it("gives a refused builtin claim the ordinary surface default", () => {

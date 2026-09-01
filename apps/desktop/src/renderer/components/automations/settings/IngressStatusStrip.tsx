@@ -7,6 +7,7 @@ import { cn } from "../../ui/cn";
 import { formatDate } from "../../../lib/format";
 import { linearIngressApi } from "../linearIngressApi";
 import { useAsyncAction } from "../../../hooks/useAsyncAction";
+import { useBuiltinSurfaceVisible } from "../../plugins/useBuiltinTabs";
 
 function Dot({ tone }: { tone: "ok" | "warn" | "off" }) {
   return (
@@ -34,15 +35,29 @@ export function IngressStatusStrip({ ingressStatus }: { ingressStatus: Automatio
   const [dismissed, setDismissed] = useState(false);
   const [linear, setLinear] = useState<AutomationLinearIngressStatus | null>(null);
   const api = linearIngressApi();
+  /**
+   * Gated inside the strip rather than at `RuleList`, the one place that draws
+   * it today: the row is a Linear connection status and a Connect button, and a
+   * second call site added later would leak both onto a machine where
+   * `ade-linear` owns Linear. Same reason `LinearIssueBadge` carries its own
+   * gate. The plugin declares a `webhookIngress` channel of its own and reports
+   * its own delivery state, so ADE's row would be the second answer to one
+   * question.
+   */
+  const linearSurfaceVisible = useBuiltinSurfaceVisible("linear");
 
   const refreshLinear = useCallback(async () => {
+    // No poll once the plugin owns the surface. The row cannot be drawn, and
+    // `getStatus` is one of the compiled Linear verbs ADE stops advertising on
+    // such a machine.
+    if (!linearSurfaceVisible) return;
     if (!api?.getStatus) return;
     try {
       setLinear(await api.getStatus());
     } catch {
       // Ignore — the strip degrades to hiding the Linear row.
     }
-  }, [api]);
+  }, [api, linearSurfaceVisible]);
 
   useEffect(() => {
     void refreshLinear();
@@ -63,7 +78,10 @@ export function IngressStatusStrip({ ingressStatus }: { ingressStatus: Automatio
   if (dismissed) return null;
 
   const gh = githubSummary(ingressStatus);
-  const linearAvailable = Boolean(api?.getStatus) && linear != null && linear.state !== "disabled";
+  const linearAvailable = linearSurfaceVisible
+    && Boolean(api?.getStatus)
+    && linear != null
+    && linear.state !== "disabled";
 
   return (
     <div className="flex items-center gap-3 border-b border-white/[0.06] bg-white/[0.02] px-4 py-2 text-[11px]">

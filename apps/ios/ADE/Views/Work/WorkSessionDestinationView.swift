@@ -1193,7 +1193,7 @@ struct WorkSessionDestinationView: View {
             // Checked again rather than trusting the hidden row: a hidden
             // control is not access control, which is the rule every other
             // gated entry point on the phone follows.
-            guard pluginGate.owns(.linear) else { return }
+            guard pluginGate.drawsBuiltin(.linear) else { return }
             ADEHaptics.light()
             syncService.linearPaneAttachSessionId = session.id
             syncService.linearPanePresented = true
@@ -1232,7 +1232,7 @@ struct WorkSessionDestinationView: View {
       pluginActions: pluginContributions.chatHeaderActions(sessionId: session.id),
       pluginNames: chatHeaderPluginNames(session.id),
       pluginActionsEnabled: syncService.canInvokePluginActions,
-      canAttachIssue: pluginGate.owns(.linear)
+      canAttachIssue: pluginGate.drawsBuiltin(.linear)
         && syncService.canInvokeRemoteAction("lane.attachLinearIssueToSession")
     )
   }

@@ -232,11 +232,71 @@ describe("a superseded builtin surface", () => {
     expect(builtinRouteForPluginRoute("ade-cursor-cloud", [installed])).toBeNull();
   });
 
-  it("leaves every other surface on the original polarity", () => {
+  it("leaves every enabling surface on the original polarity", () => {
     const withCursorCloud = input({ plugins: [cursorCloudPlugin()] });
     for (const builtinId of PLUGIN_BUILTIN_SURFACE_IDS) {
-      if (builtinId === "cursor-cloud") continue;
+      if (builtinSurfacePresence(builtinId) === "supersedes") continue;
       expect(isBuiltinSurfaceVisible(builtinId, withCursorCloud), builtinId).toBe(false);
     }
+  });
+});
+
+/**
+ * Linear, the surface that changed polarity — and the one the user's acceptance
+ * test runs through.
+ *
+ * "An ADE install with no Linear, install `ade-linear`, it works fully" only
+ * holds if the compiled Linear pane is present on every machine that does not
+ * have the plugin, and absent on every machine that does. The first half is the
+ * half a gate gets wrong: an unresolved registry must not delete an integration
+ * ADE has shipped for years, so every unknown draws.
+ */
+describe("isBuiltinSurfaceVisible for the superseded Linear surface", () => {
+  function linearPlugin(overrides: Partial<InstalledPlugin> = {}): InstalledPlugin {
+    return plugin({
+      pluginId: "ade-linear",
+      displayName: "Linear",
+      icon: "list-checks",
+      accent: "#5E6AD2",
+      // No `builtin`: the plugin draws its own issues tab. The manifest parser
+      // refuses the field on a superseded surface, so this is the only shape a
+      // real `ade-linear` install can have.
+      tabs: [{ id: "issues", title: "Linear", panelId: "issues" }],
+      ...overrides,
+    });
+  }
+
+  it("is visible on a machine that does not have the plugin", () => {
+    expect(isBuiltinSurfaceVisible("linear", input({ plugins: [] }))).toBe(true);
+  });
+
+  it("is visible while the registry is still loading", () => {
+    expect(isBuiltinSurfaceVisible("linear", input({ pluginsLoaded: false, plugins: [linearPlugin()] })))
+      .toBe(true);
+  });
+
+  it("is visible on a host with no plugin support at all", () => {
+    expect(isBuiltinSurfaceVisible("linear", input({ pluginSupport: false }))).toBe(true);
+  });
+
+  it("is visible when the plugin is installed but switched off", () => {
+    expect(isBuiltinSurfaceVisible("linear", input({ plugins: [linearPlugin({ enabled: false })] })))
+      .toBe(true);
+  });
+
+  it("is hidden exactly once the plugin is installed and enabled", () => {
+    expect(isBuiltinSurfaceVisible("linear", input({ plugins: [linearPlugin()] }))).toBe(false);
+  });
+
+  it("keeps the plugin's own rail item, because ADE draws nothing in its place", () => {
+    const installed = linearPlugin();
+    expect(claimedBuiltinGate(installed)).toBeNull();
+    expect(pluginOwnsBuiltinTab(installed)).toBe(false);
+    expect(builtinRouteForPluginRoute("ade-linear", [installed])).toBeNull();
+  });
+
+  it("is unmoved by any plugin that is not the registered owner", () => {
+    const impostor = plugin({ pluginId: "someone-elses-linear", tabs: [{ id: "issues", title: "Linear", panelId: "issues" }] });
+    expect(isBuiltinSurfaceVisible("linear", input({ plugins: [impostor] }))).toBe(true);
   });
 });

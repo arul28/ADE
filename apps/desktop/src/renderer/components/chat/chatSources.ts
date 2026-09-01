@@ -200,6 +200,22 @@ export function deriveChatSources(events: AgentChatEventEnvelope[]): ChatSources
       }
       for (const context of event.contextAttachments ?? []) {
         if (context.type !== "linear_issue") continue;
+        // Deliberately NOT gated on the Linear surface, and it is the one Linear
+        // site in this pass that is not. Three reasons, all pointing the same
+        // way:
+        //
+        // - This is a past turn, not a way in. The composer's attach row is
+        //   already gated (`AgentChatComposer`), so no new Linear attachment can
+        //   be made once `ade-linear` is installed; what is left is a turn the
+        //   agent has already read. Dropping the row would make the Sources
+        //   count disagree with what the chat actually carries.
+        // - The row opens `issue.url`, which is linear.app. It is not an entry
+        //   into a compiled ADE page, so there is no dead click to remove — the
+        //   distinction `ChatAttachmentTray` draws when it keeps the chip and
+        //   strips `onOpen`.
+        // - This module is pure and has no store to read; gating it would mean
+        //   threading a flag through `ChatSourcesPanel` to hide a link that
+        //   still works.
         addExternalResource(
           external,
           context.issue.url,

@@ -993,13 +993,14 @@ token, or the session's transcript.
 The lane row's Linear issue badge (`LinearIssueBadge`) is not a `row-badge`
 socket contribution — which Linear issue a lane implements is core lane
 metadata (`lane.linearIssue`), not something a plugin adds — but it follows
-`ade-linear` anyway, because it is a visible Linear entry point and a machine
-without the plugin should have none. It gates itself, on the same
-`isBuiltinSurfaceVisible("linear")` predicate as the pane and the `linear-issue`
-deeplink, rather than at each of the four lane surfaces that render it. iOS does
-the same in `LaneLinearIssueBadge` via `PluginPresenceGate`. The lane metadata
-underneath is untouched: uninstalling `ade-linear` hides the badge, it does not
-unlink the issue, and reinstalling brings the badge back with the issue still
+`ade-linear` anyway, because `ade-linear` contributes its own `row-badge` and two
+Linear badges on one lane row is the duplicate the polarity exists to prevent. It
+gates itself, on the same `isBuiltinSurfaceVisible("linear")` predicate as the
+quick view and the `linear-issue` deeplink, rather than at each of the four lane
+surfaces that render it. iOS does the same in `LaneLinearIssueBadge` via
+`PluginPresenceGate`. The lane metadata underneath is untouched: installing
+`ade-linear` hides ADE's badge in favour of the plugin's, it does not unlink the
+issue, and uninstalling brings the compiled badge back with the issue still
 attached.
 
 ### Agent skills
@@ -1030,7 +1031,7 @@ moves the compiled surface.
 | `graph` | `ade-graph` | `enables` |
 | `review` | `ade-review` | `enables` |
 | `history` | `ade-history` | `enables` |
-| `linear` | `ade-linear` | `enables` |
+| `linear` | `ade-linear` | `supersedes` |
 | `ios` | `ade-ios-sim` | `enables` |
 | `app-control` | `ade-app-control` | `enables` |
 | `cursor-cloud` | `ade-cursor-cloud` | `supersedes` |
@@ -1040,15 +1041,21 @@ surface exists, so ADE draws it only while the owner is installed and enabled,
 and every unknown — an unresolved registry, a host with no plugin support —
 hides it. There is no state in which a surface appears because ADE was unsure.
 
-`supersedes` is the mirror, and Cursor Cloud is the first of it. ADE shipped a
-compiled fleet surface long before the plugin existed, and `ade-cursor-cloud`
-**replaces** it: its own header button, composer socket, panels and chat runtime
-stand where the built-in ones did. So ADE draws the compiled surface only while
-the owner is ABSENT, and every unknown draws it — a machine without the plugin
-must behave exactly as it did before the plugin existed, and hiding on an
-unresolved registry would blink a shipped feature off on every launch. Only a
-positive "the owner is here" takes it away, which is the same instant the
-plugin's own entry point appears, so the user never sees both at once.
+`supersedes` is the mirror, and two surfaces use it. ADE shipped a compiled
+fleet surface and a compiled Linear integration long before either plugin
+existed, and `ade-cursor-cloud` and `ade-linear` **replace** them: their own
+header buttons, composer sockets, panels, row badges and settings sections stand
+where the built-in ones did. So ADE draws the compiled surface only while the
+owner is ABSENT, and every unknown draws it — a machine without the plugin must
+behave exactly as it did before the plugin existed, and hiding on an unresolved
+registry would blink a shipped feature off on every launch. Only a positive "the
+owner is here" takes it away, which is the same instant the plugin's own entry
+point appears, so the user never sees both at once.
+
+Linear is the one that had to CHANGE polarity, and the change is what makes the
+acceptance test possible: take an ADE install that has no `ade-linear`, and it
+is the full Linear integration it has always been; install the plugin, and every
+compiled Linear surface steps aside for the plugin's own.
 
 The polarity also decides what a manifest may say. A `supersedes` surface is
 never named by `surfaces[].builtin`: that field means "ADE draws its compiled
@@ -1062,28 +1069,66 @@ row plus the cloud mode, Advanced menu and secrets picker that descend from it
 (`cursorCloudAvailable` in `AgentChatPane`), the phone's Work top-bar button and
 `CursorCloudPaneSheet`, and the TUI's `/cloud`.
 
+What is gated for Linear, on all four clients:
+
+- Desktop and web — the top-bar quick view and its issue browser
+  (`LinearQuickViewButton`, gated inside the component), the Integrations
+  settings card (`LinearIntegrationSection`) and its `integrations.linear`
+  entry in the settings manifest, in-page search and the palette, the lane badge
+  (`LinearIssueBadge`, gated inside the component so all four lane surfaces
+  inherit it), the "Copy Linear Issue Link" row in both lane context menus, the
+  Create-lane issue row and picker, the composer's issue attach row and the
+  transcript's issue detail pane, session-card `ENG-123` linkification, the
+  Create-PR modal's issue card and close-on-merge checkbox, the automations
+  Linear trigger source, its ingress row and its two Linear templates, the
+  `ade://linear-issue/…` deeplink, and the palette's Linear search results.
+- iOS — `PluginPresenceGate`'s `linear` case, the Work top-bar Linear button,
+  the Linear pane sheet and its presentation flag, the lane issue badge, the
+  copy-issue-link menu row and action, the chat header's attach-issue row, the
+  Settings Linear connection card, and the `ade://linear-issue` deeplink.
+- TUI — every `/linear` command, through the `builtin` field on the command
+  spec.
+
+The compiled Linear code is NOT deleted by any of this. It is still there, still
+compiled, and still what the product runs on a machine without the plugin.
+
 ### Agent tooling
 
-A plugin's ADE action domains leave with it. `BUILTIN_SURFACE_OWNERS` in
-`shared/plugins/builtinSurfaces.ts` carries an `actionDomains` list per surface
-— `ade-linear` owns `linear_credentials`, `linear_oauth` and
-`linear_issue_tracker`; `ade-ios-sim` owns `ios_simulator`; `ade-app-control`
-owns `app_control` — and `resolveDisabledActionDomains()` turns that plus the
-install registry into the set to refuse. Graph, Review and History list nothing:
-they are views over state other domains already own, so there is nothing of
-theirs to refuse.
+An `enables` plugin's ADE action domains leave with it. `BUILTIN_SURFACE_OWNERS`
+in `shared/plugins/builtinSurfaces.ts` carries an `actionDomains` list per
+surface — `ade-ios-sim` owns `ios_simulator`, `ade-app-control` owns
+`app_control` — and `resolveDisabledActionDomains()` turns that plus the install
+registry into the set to refuse. Graph, Review and History list nothing: they are
+views over state other domains already own, so there is nothing of theirs to
+refuse.
 
-Cursor Cloud gets a second mechanism, because its verbs have no domain of their
-own: all twenty live in `ai`, next to `getStatus`, every API-key verb and the
-Cursor CLI login, so refusing that domain would take the model picker with it.
-The owner row carries an `actionNames` list of `"ai.<verb>"` strings instead, and
+A `supersedes` surface refuses NOTHING, and gets a second mechanism instead. The
+owner row carries an `actionNames` list of `"<domain>.<action>"` strings, and
 `resolveHiddenActionNames()` withholds them from the three places ADE lists
 actions to an agent — the automations action picker, `list_ade_actions`, and the
 automation ADE-action registry. It is a withholding, not a refusal: the verbs
-still dispatch, so a chat already bound to a cloud agent keeps working. What
-stops is ADE advertising a surface the user can no longer see. The `cursorAuth*`
-verbs are deliberately not on the list — that is the Cursor API-key connection,
-which the Cursor chat provider and CLI still need.
+still dispatch, so a chat already bound to a cloud agent or a Linear issue keeps
+working. What stops is ADE advertising a surface the user can no longer see.
+
+Two surfaces use it, for two different reasons:
+
+- **Cursor Cloud** has no domain of its own: all twenty verbs live in `ai`, next
+  to `getStatus`, every API-key verb and the Cursor CLI login, so refusing that
+  domain would take the model picker with it. The `cursorAuth*` verbs are
+  deliberately off the list — that is the Cursor API-key connection, which the
+  Cursor chat provider and CLI still need.
+- **Linear** has three domains of its own — `linear_credentials`, `linear_oauth`
+  and `linear_issue_tracker` — and still may not refuse them, because it
+  supersedes. Those verbs are ADE's compiled Linear integration, which every
+  machine without the plugin still runs. Refusing
+  `linear_issue_tracker.listIssues` because `ade-linear` is installed would fail
+  the calls the plugin exists to take over. So all thirty names are on the
+  `actionNames` list and `actionDomains` is empty.
+
+The sync command surface follows the same polarity: `buildMissingSurfaceDenial`
+asks `builtinSurfaceDrawn`, not `builtinSurfaceInstalled`, so a paired phone
+reaches ADE's compiled Linear commands on a machine with no plugin and is told to
+use the plugin's own screen on a machine that has one.
 
 ### Recording audio: `ade.audio.captureClip`
 

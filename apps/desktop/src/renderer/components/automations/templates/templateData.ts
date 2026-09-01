@@ -5,6 +5,7 @@
  */
 
 import type { AutomationRuleDraft } from "../../../../shared/types";
+import type { PluginBuiltinSurfaceId } from "../../../../shared/plugins/manifest";
 
 export type AutomationTemplate = {
   id: string;
@@ -14,6 +15,18 @@ export type AutomationTemplate = {
   triggerType: string;
   whatYouConfigure: string[];
   isFlagship?: boolean;
+  /**
+   * A compiled surface an official plugin owns, when this template's trigger
+   * only exists while ADE draws that surface itself.
+   *
+   * This module is plain data with no hooks, so it cannot ask whether the
+   * surface is drawn on this machine — the two galleries do that and filter.
+   * The field is the same tag `/cloud` carries in the TUI's command table, for
+   * the same reason: a template is an offer to create a NEW rule, and offering
+   * one built on a trigger the user can no longer pick would hand them a rule
+   * whose source picker has no row for its own source.
+   */
+  builtin?: PluginBuiltinSurfaceId;
   draft: Omit<AutomationRuleDraft, "id">;
 };
 
@@ -73,6 +86,7 @@ export const TEMPLATES: AutomationTemplate[] = [
     triggerType: "linear.issue_created",
     whatYouConfigure: ["Team / project", "Agent prompt", "Model"],
     isFlagship: true,
+    builtin: "linear",
     draft: {
       ...BASE,
       name: "Linear issue → lane + agent",
@@ -303,6 +317,7 @@ export const TEMPLATES: AutomationTemplate[] = [
     group: "Issue intake",
     triggerType: "linear.issue_labeled",
     whatYouConfigure: ["Label to watch", "Comment prompt"],
+    builtin: "linear",
     draft: {
       ...BASE,
       name: "Linear label triage",

@@ -37,13 +37,18 @@ import { StorageSection } from "../settings/StorageSection";
 import { RemoteSettingsBanner } from "../settings/RemoteContextBadge";
 import { WebSettingsSection } from "../settings/WebScopeBanner";
 import { PluginSettingsSections } from "../plugins/sockets";
+import { isBuiltinSurfaceVisible } from "../plugins/builtinTabs";
+import { useBuiltinGateInput } from "../plugins/useBuiltinTabs";
+import type { PluginBuiltinSurfaceId } from "../../../shared/plugins/manifest";
 import {
   SETTINGS_ENTRIES,
   availableSettingsTabs,
   resolveSettingsHash,
   resolveSettingsTab,
   searchSettingsEntries,
+  clearBuiltinSurfaceResolver,
   clearWebMachineBindingResolver,
+  setBuiltinSurfaceResolver,
   setWebMachineBindingResolver,
   settingsEntriesForTab,
   settingsTabLabel,
@@ -324,11 +329,29 @@ export function SettingsPage({ active = true }: { active?: boolean } = {}) {
     const installed = resolverRef.current!;
     return () => clearWebMachineBindingResolver(installed);
   }, []);
+  // A setting whose card belongs to a plugin-owned compiled surface exists only
+  // while ADE still draws that surface. The manifest cannot read the plugin
+  // registry itself, so it reads it back through this resolver — installed the
+  // same way, during render and cleaned up only if it is still ours, because
+  // the palette installs one too and the two unmount in no fixed order.
+  const builtinGateInput = useBuiltinGateInput();
+  const builtinGateInputRef = useRef(builtinGateInput);
+  builtinGateInputRef.current = builtinGateInput;
+  const surfaceResolverRef = useRef<(builtinId: PluginBuiltinSurfaceId) => boolean>();
+  if (!surfaceResolverRef.current) {
+    surfaceResolverRef.current = (builtinId) =>
+      isBuiltinSurfaceVisible(builtinId, builtinGateInputRef.current);
+  }
+  setBuiltinSurfaceResolver(surfaceResolverRef.current);
+  useEffect(() => {
+    const installed = surfaceResolverRef.current!;
+    return () => clearBuiltinSurfaceResolver(installed);
+  }, []);
   const webMachineSectionsHidden = isWebClientMode() && !machineBound;
   // Tabs the web client cannot serve still resolve — a deeplink or palette
   // entry naming one should land somewhere real rather than on an empty page,
   // so it falls through to the first tab this renderer does serve.
-  const tabs = useMemo(() => availableSettingsTabs(), [machineBound]);
+  const tabs = useMemo(() => availableSettingsTabs(), [builtinGateInput, machineBound]);
   const defaultTab = tabs[0]?.id ?? "general";
   // A `#hash` names one specific setting, so it is strictly more precise than
   // the `?tab=` next to it. When the two disagree — an older link that still
@@ -445,7 +468,7 @@ export function SettingsPage({ active = true }: { active?: boolean } = {}) {
       matchesThisTab: all.filter((entry) => entry.tab === section),
       matchesOtherTabs: all.filter((entry) => entry.tab !== section),
     };
-  }, [trimmedQuery, section]);
+  }, [builtinGateInput, trimmedQuery, section]);
 
   // Searching hides non-matching cards on this tab. Sections own their own
   // markup, so the filter runs over the `data-settings-anchor` ids the

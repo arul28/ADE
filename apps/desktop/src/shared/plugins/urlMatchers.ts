@@ -117,12 +117,14 @@ export const CORE_SMART_LINK_HOSTS: Readonly<Record<string, string>> = {
  * - Only an EXACT host is relaxed. A wildcard stays refused for everyone,
  *   including the owner: `*.linear.app` claims names core never parsed, and
  *   `*.app` would otherwise reach this door through the suffix rule.
- * - `surfaces[].builtin` is honoured only for an official package
- *   (`manifest.ts`), so a community plugin cannot reach the relaxation at all.
- * - WHICH official package may own a given surface is not decided here. That
- *   table is `builtinSurfaces.ts`, which imports this module, and the host
- *   refuses a non-owner. Parse-time this is "the manifest claims the surface";
- *   install-time it is "and it is allowed to".
+ * - The relaxation applies only to an official package (`manifest.ts` checks
+ *   `official` before it passes anything in), so a community plugin cannot
+ *   reach it at all.
+ * - WHICH official package owns a given surface is answered by
+ *   `CORE_SMART_LINK_BUILTIN_OWNERS` below, a hand-mirror of the full owner
+ *   table in `builtinSurfaces.ts`. That module imports this one, so the arrow
+ *   cannot run the other way. Parse-time this is "the manifest is the owner";
+ *   install-time the host still refuses a non-owner.
  *
  * `github.com` is deliberately absent: there is no gateable `github` built-in
  * surface, so no plugin can ever claim it.
@@ -130,6 +132,45 @@ export const CORE_SMART_LINK_HOSTS: Readonly<Record<string, string>> = {
 export const CORE_SMART_LINK_HOST_BUILTINS: Readonly<Record<string, string>> = {
   "linear.app": "linear",
 };
+
+/**
+ * Which official package owns each of those built-in surfaces.
+ *
+ * The relaxation above used to key on the honoured `surfaces[].builtin` field,
+ * and that stopped working the day `linear` became a SUPERSEDED surface: a
+ * plugin that supersedes may not name the surface with `builtin` at all (see
+ * `PLUGIN_BUILTIN_SURFACE_PRESENCE` in `manifest.ts`), so `ade-linear` claimed
+ * nothing and lost its own domain. Ownership is the fact the relaxation always
+ * meant, and ownership survives both polarities.
+ *
+ * Keyed by built-in surface id, and a hand-mirror of `BUILTIN_SURFACE_OWNERS`
+ * in `builtinSurfaces.ts` — which imports this module, so the arrow cannot run
+ * the other way. `builtinSurfaces.test.ts` pins the two together, because the
+ * cost of a drift here is a plugin silently losing the smart links it ships.
+ *
+ * Only the hosts in `CORE_SMART_LINK_HOST_BUILTINS` need an entry. A surface
+ * with no core host to claim unlocks nothing.
+ */
+export const CORE_SMART_LINK_BUILTIN_OWNERS: Readonly<Record<string, string>> = {
+  linear: "ade-linear",
+};
+
+/**
+ * The built-in surfaces this package owns, and may therefore claim the core
+ * smart-link host of.
+ *
+ * Empty for every plugin but the registered owner, and the caller must still
+ * establish that the manifest is OFFICIAL before it uses the answer — this
+ * function reads a name, not a trust level.
+ */
+export function coreSmartLinkBuiltinsOwnedBy(pluginId: unknown): string[] {
+  if (typeof pluginId !== "string") return [];
+  const id = pluginId.trim();
+  if (id.length === 0) return [];
+  return Object.entries(CORE_SMART_LINK_BUILTIN_OWNERS)
+    .filter(([, owner]) => owner === id)
+    .map(([builtin]) => builtin);
+}
 
 /**
  * Issue providers core speaks for. A plugin may not claim one.

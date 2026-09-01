@@ -649,11 +649,15 @@ final class DeepLinkRouter {
   /// (the global Linear pane searches Linear by identifier); otherwise it bounces
   /// to the paired Mac, which owns the workspace's lane↔issue mapping.
   ///
-  /// The pane belongs to the Linear plugin, so the link fails closed when the
-  /// attached machine does not have it: a URL is not an access path a hidden
-  /// button can be trusted to guard. Nothing is shown when that happens — the
-  /// send-to-Mac card would be a lie (the link already resolved to *this*
-  /// machine, which is the one without the plugin), and the app has no other
+  /// The pane is ADE's own compiled Linear screen and `ade-linear` supersedes
+  /// it, so the link opens the pane on every machine WITHOUT the plugin — which
+  /// is how the app behaved before the plugin existed — and is dropped only when
+  /// the attached machine positively has it. There the plugin's own panels are
+  /// the Linear surface, and opening the compiled pane as well would put two
+  /// Linear screens on one phone. A URL is not an access path a hidden button
+  /// can be trusted to guard, so the router checks rather than trusting the
+  /// toolbar. Nothing is shown on the drop — the send-to-Mac card would be a lie
+  /// (the link already resolved to *this* machine), and the app has no other
   /// "could not open this link" affordance to borrow. The drop is recorded as a
   /// failed deep link so it is at least countable.
   private func routeLinearIssue(identifier: String, url: URL) {
@@ -665,7 +669,7 @@ final class DeepLinkRouter {
     // machine has answered what it has installed, and answering from the
     // pre-answer default would make the same URL work or not by timing.
     Task { @MainActor in
-      guard await sync.pluginPresenceGate.awaitOwner(of: .linear) else {
+      guard await sync.pluginPresenceGate.awaitDrawsBuiltin(.linear) else {
         ProductAnalytics.shared.captureFeature(
           .deepLink,
           outcome: .failed,

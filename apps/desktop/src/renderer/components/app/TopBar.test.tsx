@@ -407,10 +407,12 @@ describe("TopBar", () => {
         onEvent: vi.fn(() => () => {}),
       },
     } as any;
-    // The Linear quick view is a plugin surface: a machine without the Linear
-    // plugin has no button and no pane, whatever its connection says. These
-    // tests are about the connection half, so they install the plugin.
-    seedBuiltinSurfacePlugins(["linear"]);
+    // The Linear quick view is ADE's own compiled surface, and `ade-linear`
+    // SUPERSEDES it: the button and the pane are there on every machine that
+    // does not have the plugin, and they disappear the moment it arrives. These
+    // tests are about the connection half, so they resolve the registry with no
+    // plugins in it — which is the machine that draws the compiled quick view.
+    seedBuiltinSurfacePlugins([]);
   });
 
   afterEach(() => {
@@ -1881,6 +1883,43 @@ describe("TopBar", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  /**
+   * The other side of the gate, and the half these tests never covered.
+   *
+   * Every test in this block resolves the registry with no plugins, which is
+   * the machine that draws ADE's compiled quick view. This one installs
+   * `ade-linear` instead: the plugin brings its own Linear tab and its own
+   * command-palette entry, so the compiled button must go rather than sit next
+   * to them.
+   */
+  it("hides the Linear quick view once ade-linear owns the surface", async () => {
+    seedBuiltinSurfacePlugins(["linear"]);
+    const getLinearConnectionStatus = vi.fn(async () => ({
+      tokenStored: true,
+      connected: true,
+      viewerId: "user-1",
+      viewerName: "Arul",
+      checkedAt: "2026-04-22T01:00:00.000Z",
+      authMode: "manual",
+      oauthAvailable: true,
+      tokenExpiresAt: null,
+      message: null,
+    }));
+    globalThis.window.ade.cto = { getLinearConnectionStatus } as any;
+
+    render(<TopBar />);
+
+    await act(async () => {
+      window.dispatchEvent(new Event("focus"));
+      await flushMicrotasks(2);
+    });
+
+    expect(screen.queryByRole("button", { name: /linear quick view/i })).toBeNull();
+    // Not merely hidden: a superseded surface stops asking the machine about a
+    // connection the plugin now owns, so there is no wasted probe either.
+    expect(getLinearConnectionStatus).not.toHaveBeenCalled();
   });
 
   it("opens Linear quick view and creates a linked lane from an issue", async () => {

@@ -390,7 +390,7 @@ describe("installing ade-linear from the bundled directory", () => {
     expect(installed.record.source.kind).toBe("builtin");
     expect(installed.record.enabled).toBe(true);
 
-    expect(installed.manifest?.surfaces.map((surface) => surface.id)).toEqual(["linear", "issues"]);
+    expect(installed.manifest?.surfaces.map((surface) => surface.id)).toEqual(["issues"]);
     expect(installed.manifest?.sockets.map((socket) => socket.socket)).toEqual([
       "work-rail-pane",
       "composer-action",
@@ -401,11 +401,14 @@ describe("installing ade-linear from the bundled directory", () => {
       "command-palette-action",
     ]);
 
-    // The pane still gates the compiled browser. That binding is the
-    // extraction's own scaffolding and is the ONE official-only thing left on
-    // the surfaces; the tab beside it is ordinary.
-    expect(installed.manifest?.surfaces.find((surface) => surface.id === "linear")?.builtin).toBe("linear");
-    expect(installed.manifest?.surfaces.find((surface) => surface.id === "issues")?.builtin).toBeUndefined();
+    // No `builtin` anywhere, and there cannot be one: `linear` supersedes, so
+    // the parser refuses the field on any surface that names it. The plugin
+    // draws its own issues tab and ADE's compiled Linear steps aside. Nothing
+    // official-only is left on the surfaces at all — the one remaining
+    // official-only declaration is the `linear.app` URL matcher below, which is
+    // unlocked by OWNERSHIP rather than by `builtin`.
+    expect(installed.manifest?.surfaces.every((surface) => surface.builtin === undefined)).toBe(true);
+    expect(installed.manifest?.urlMatchers?.map((matcher) => matcher.hosts)).toEqual([["linear.app"]]);
 
     expect(installed.manifest?.network?.hosts).toEqual(["api.linear.app"]);
     expect(installed.manifest?.credentialHandoff).toEqual(["linear"]);

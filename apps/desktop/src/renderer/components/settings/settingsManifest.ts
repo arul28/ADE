@@ -13,6 +13,8 @@
  */
 
 import { isWebClientMode } from "../../lib/webClientMode";
+import { builtinSurfaceDrawn } from "../../../shared/plugins/builtinSurfaces";
+import type { PluginBuiltinSurfaceId } from "../../../shared/plugins/manifest";
 
 /**
  * Where a setting lands when the renderer is the hosted web client.
@@ -101,6 +103,16 @@ export type SettingEntry = {
   showScopeChip?: boolean;
   /** Group heading the card sits under, within its tab. */
   group: string;
+  /**
+   * The compiled surface this setting's card belongs to, when a plugin owns it.
+   *
+   * The card is drawn by a gated component, so the setting exists only while
+   * that surface is drawn. Naming the surface here is what keeps nav, in-page
+   * search and the palette from offering a row whose anchor renders nothing —
+   * a link that scrolls to an absent card and leaves the user on a tab they did
+   * not ask for. Omitted by every setting ADE draws unconditionally.
+   */
+  builtinSurface?: PluginBuiltinSurfaceId;
 };
 
 /**
@@ -430,6 +442,10 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     web: "hidden",
     showScopeChip: true,
     group: "Linear",
+    // `LinearIntegrationSection` returns null once `ade-linear` is installed,
+    // so `#linear-connection` has nothing to scroll to. The plugin brings its
+    // own settings section, and this row would compete with it.
+    builtinSurface: "linear",
   },
   // ── Notifications ───────────────────────────────────────────────────────
   {
@@ -755,6 +771,10 @@ export function settingsEntryById(id: string): SettingEntry | null {
  * where to land it.
  */
 export function isSettingAvailable(entry: SettingEntry): boolean {
+  // Asked before the web-client rules, and on the desktop too: a plugin that
+  // owns a compiled surface takes that surface's settings card away on every
+  // renderer, which is not a question about where the write lands.
+  if (entry.builtinSurface && !isBuiltinSurfaceShown(entry.builtinSurface)) return false;
   if (!isWebClientMode()) return true;
   if (entry.web === "hidden") return false;
   // A machine-scoped setting writes to the machine the active project tab is
@@ -829,6 +849,39 @@ export function clearWebMachineBindingResolver(resolve: () => boolean): void {
 
 export function hasWebMachineBinding(): boolean {
   return webMachineBindingResolver?.() ?? false;
+}
+
+/**
+ * Whether ADE still draws a compiled surface, for the settings that live on one.
+ *
+ * A resolver for the same reason the machine binding is one: the answer comes
+ * from the plugin registry in the root store, this module has no React, and
+ * nav, search and the palette all ask mid-render. The React surfaces install it
+ * with `isBuiltinSurfaceVisible` behind it, so the polarity rules live in one
+ * place rather than being restated here.
+ */
+let builtinSurfaceResolver: ((builtinId: PluginBuiltinSurfaceId) => boolean) | null = null;
+
+export function setBuiltinSurfaceResolver(
+  resolve: ((builtinId: PluginBuiltinSurfaceId) => boolean) | null,
+): void {
+  builtinSurfaceResolver = resolve;
+}
+
+/** Uninstall a resolver, but only if it is still the installed one. */
+export function clearBuiltinSurfaceResolver(
+  resolve: (builtinId: PluginBuiltinSurfaceId) => boolean,
+): void {
+  if (builtinSurfaceResolver === resolve) builtinSurfaceResolver = null;
+}
+
+export function isBuiltinSurfaceShown(builtinId: PluginBuiltinSurfaceId): boolean {
+  // With no resolver installed the question is "what does a machine with no
+  // registry to read show?", and each polarity answers it differently: a
+  // superseded surface is one ADE has always shipped and stays, while an
+  // enabled one has no owner and is absent. An empty registry says exactly
+  // that, so the fallback defers to the shared rule instead of guessing.
+  return builtinSurfaceResolver?.(builtinId) ?? builtinSurfaceDrawn(builtinId, []);
 }
 
 /** Every setting reachable in this renderer, in manifest order. */

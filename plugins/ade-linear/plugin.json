@@ -58,15 +58,6 @@
   ],
   "surfaces": [
     {
-      "kind": "pane",
-      "id": "linear",
-      "title": "Linear",
-      "icon": "list-checks",
-      "panelId": "main",
-      "builtin": "linear",
-      "mobile": true
-    },
-    {
       "kind": "tab",
       "id": "issues",
       "title": "Linear",

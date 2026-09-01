@@ -77,22 +77,31 @@ describe("resolveDisabledActionDomains", () => {
   it("refuses every plugin-owned domain on a machine with no plugins", () => {
     const disabled = resolveDisabledActionDomains(writePluginsRoot({}));
 
-    expect([...disabled].sort()).toEqual([
-      "app_control",
-      "ios_simulator",
-      "linear_credentials",
-      "linear_issue_tracker",
-      "linear_oauth",
-    ]);
+    // Only the two `"enables"` verticals. ADE never compiled a simulator pane
+    // or Electron Control, so there is nothing to keep serving and the whole
+    // domain is refused.
+    expect([...disabled].sort()).toEqual(["app_control", "ios_simulator"]);
+  });
+
+  it("never refuses a domain behind a superseded surface, whoever is installed", () => {
+    // The rule the `supersedes` polarity turns on. ADE compiled the Linear
+    // verbs and still answers them, so no registry state may put a `linear_*`
+    // domain in the refusal set — not an empty machine, and not one that has
+    // the plugin. What moves for Linear is the CATALOG, in
+    // `resolveHiddenActionNames`, never the dispatch.
+    for (const root of [writePluginsRoot({}), writePluginsRoot({ "ade-linear": {} })]) {
+      const disabled = resolveDisabledActionDomains(root);
+      for (const domain of ["linear_issue_tracker", "linear_credentials", "linear_oauth"]) {
+        expect(disabled.has(domain), domain).toBe(false);
+      }
+    }
   });
 
   it("opens exactly the installed plugin's domains and no others", () => {
-    const disabled = resolveDisabledActionDomains(writePluginsRoot({ "ade-linear": {} }));
+    const disabled = resolveDisabledActionDomains(writePluginsRoot({ "ade-ios-sim": {} }));
 
-    expect(disabled.has("linear_issue_tracker")).toBe(false);
-    expect(disabled.has("linear_credentials")).toBe(false);
-    expect(disabled.has("linear_oauth")).toBe(false);
-    expect(disabled.has("ios_simulator")).toBe(true);
+    expect(disabled.has("ios_simulator")).toBe(false);
+    expect(disabled.has("app_control")).toBe(true);
   });
 
   it("treats a disabled plugin as absent", () => {
@@ -115,22 +124,22 @@ describe("resolveDisabledActionDomains", () => {
     const root = scratchDir("ade-gated-corrupt-");
     fs.writeFileSync(path.join(root, "state.json"), "{ not json");
 
-    expect(resolveDisabledActionDomains(root).has("linear_issue_tracker")).toBe(true);
+    expect(resolveDisabledActionDomains(root).has("ios_simulator")).toBe(true);
   });
 });
 
 describe("refusal copy", () => {
   it("names the plugin using the catalog's display name, not a hardcoded label", () => {
-    const denial = buildGatedDomainDenial("linear_issue_tracker", () => "Linear");
+    const denial = buildGatedDomainDenial("ios_simulator", () => "iOS Simulator");
 
     expect(denial?.message).toBe(
-      "This machine doesn't have Linear. It's provided by the ade-linear plugin — available in the Marketplace.",
+      "This machine doesn't have iOS Simulator. It's provided by the ade-ios-sim plugin — available in the Marketplace.",
     );
-    expect(denial?.pluginId).toBe("ade-linear");
+    expect(denial?.pluginId).toBe("ade-ios-sim");
     expect(denial?.data).toEqual({
       kind: "plugin_not_installed",
-      domain: "linear_issue_tracker",
-      pluginId: "ade-linear",
+      domain: "ios_simulator",
+      pluginId: "ade-ios-sim",
     });
   });
 
@@ -153,8 +162,9 @@ describe("refusal copy", () => {
     const gated = allGatedActionDomains();
     expect(gated.has("ios_simulator")).toBe(true);
     expect(gated.has("app_control")).toBe(true);
-    expect(gated.has("linear_credentials")).toBe(true);
     expect(gated.has("lane")).toBe(false);
+    // Not gated, and that is the point: a superseded surface refuses nothing.
+    expect(gated.has("linear_credentials")).toBe(false);
   });
 
   it("says nothing about a domain no plugin owns", () => {
@@ -204,20 +214,20 @@ describe("refusal copy", () => {
 });
 
 describe("buildMissingSurfaceDenial", () => {
-  it("refuses a surface whose plugin is absent", () => {
-    const denial = buildMissingSurfaceDenial("linear", {
+  it("refuses an enabling surface whose plugin is absent", () => {
+    const denial = buildMissingSurfaceDenial("ios", {
       pluginsRoot: writePluginsRoot({}),
-      lookupDisplayName: () => "Linear",
+      lookupDisplayName: () => "iOS Simulator",
     });
 
-    expect(denial?.pluginId).toBe("ade-linear");
-    expect(denial?.message).toContain("ade-linear plugin");
+    expect(denial?.pluginId).toBe("ade-ios-sim");
+    expect(denial?.message).toContain("ade-ios-sim plugin");
   });
 
-  it("lets the call through once the plugin is installed", () => {
-    expect(buildMissingSurfaceDenial("linear", {
-      pluginsRoot: writePluginsRoot({ "ade-linear": {} }),
-      lookupDisplayName: () => "Linear",
+  it("lets the call through once the enabling plugin is installed", () => {
+    expect(buildMissingSurfaceDenial("ios", {
+      pluginsRoot: writePluginsRoot({ "ade-ios-sim": {} }),
+      lookupDisplayName: () => "iOS Simulator",
     })).toBeNull();
   });
 
@@ -225,13 +235,56 @@ describe("buildMissingSurfaceDenial", () => {
     // Failing open here would leave every paired phone reading and writing
     // through a plugin the machine no longer has, just because the display
     // name was unavailable.
-    const denial = buildMissingSurfaceDenial("linear", {
+    const denial = buildMissingSurfaceDenial("ios", {
       pluginsRoot: writePluginsRoot({}),
       lookupDisplayName: () => null,
     });
 
+    expect(denial?.pluginId).toBe("ade-ios-sim");
+    expect(denial?.message).toBe("This machine doesn't have the ade-ios-sim plugin.");
+    expect(denial?.message).not.toContain("Marketplace");
+  });
+
+  /**
+   * The superseded half, and it reads the other way round in BOTH directions.
+   *
+   * The sync command surface is how a paired phone and the web client reach
+   * ADE's compiled Linear. A machine with no `ade-linear` must serve them, the
+   * way it always has — so the verdict is `builtinSurfaceDrawn`, not
+   * `builtinSurfaceInstalled`.
+   */
+  it("lets a superseded surface through on a machine WITHOUT the plugin", () => {
+    expect(buildMissingSurfaceDenial("linear", {
+      pluginsRoot: writePluginsRoot({}),
+      lookupDisplayName: () => "Linear",
+    })).toBeNull();
+    // Disabled counts as absent, and absent means ADE draws it.
+    expect(buildMissingSurfaceDenial("linear", {
+      pluginsRoot: writePluginsRoot({ "ade-linear": { enabled: false } }),
+      lookupDisplayName: () => "Linear",
+    })).toBeNull();
+  });
+
+  it("refuses a superseded surface once the plugin owns it", () => {
+    const denial = buildMissingSurfaceDenial("linear", {
+      pluginsRoot: writePluginsRoot({ "ade-linear": {} }),
+      lookupDisplayName: () => "Linear",
+    });
+
     expect(denial?.pluginId).toBe("ade-linear");
-    expect(denial?.message).toBe("This machine doesn't have the ade-linear plugin.");
+    expect(denial?.message).toContain("ade-linear plugin provides Linear");
+  });
+
+  it("never tells the user to install a plugin they already have", () => {
+    // The copy inverts with the verdict. "This machine doesn't have Linear" is
+    // the opposite of the truth here: the plugin arrived and took the surface
+    // over, so the phone must be told to use the plugin's own screen.
+    const denial = buildMissingSurfaceDenial("linear", {
+      pluginsRoot: writePluginsRoot({ "ade-linear": {} }),
+      lookupDisplayName: () => "Linear",
+    });
+
+    expect(denial?.message).not.toContain("doesn't have");
     expect(denial?.message).not.toContain("Marketplace");
   });
 });
@@ -283,20 +336,20 @@ describe("gatedDomainUnavailableReason", () => {
   // The domain-shaped half of the same question, and the one that regressed:
   // both automation registries answered it with `buildGatedDomainDenial` alone,
   // which writes the sentence without ever checking install state. Every
-  // `ios_simulator` / `linear_*` / `app_control` automation step then failed —
+  // `ios_simulator` / `app_control` automation step then failed —
   // telling the user to install a plugin they already had.
   it("stays silent for a domain whose plugin is installed and enabled", () => {
-    expect(gatedDomainUnavailableReason("linear_issue_tracker", {
-      pluginsRoot: writePluginsRoot({ "ade-linear": {} }),
-      lookupDisplayName: () => "Linear",
+    expect(gatedDomainUnavailableReason("ios_simulator", {
+      pluginsRoot: writePluginsRoot({ "ade-ios-sim": {} }),
+      lookupDisplayName: () => "iOS Simulator",
     })).toBeNull();
   });
 
   it("refuses a domain whose plugin is installed but switched off", () => {
-    expect(gatedDomainUnavailableReason("linear_issue_tracker", {
-      pluginsRoot: writePluginsRoot({ "ade-linear": { enabled: false } }),
-      lookupDisplayName: () => "Linear",
-    })).toContain("Linear");
+    expect(gatedDomainUnavailableReason("ios_simulator", {
+      pluginsRoot: writePluginsRoot({ "ade-ios-sim": { enabled: false } }),
+      lookupDisplayName: () => "iOS Simulator",
+    })).toContain("iOS Simulator");
   });
 
   it("refuses a domain whose plugin was never installed", () => {

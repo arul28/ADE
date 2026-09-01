@@ -33,8 +33,31 @@ describe("LinearIntegrationSection", () => {
     Reflect.deleteProperty(window, "ade");
   });
 
-  it("renders nothing — card and heading — when the Linear plugin is not installed", () => {
+  it("renders the connection card when the Linear plugin is not installed", () => {
+    seedBuiltinSurfacePlugins([]);
+
+    const { container } = render(<LinearIntegrationSection />);
+
+    expect(screen.getByText("Linear integration")).toBeTruthy();
+    expect(screen.getByTestId("linear-connection-form")).toBeTruthy();
+    expect(container.querySelector("[data-settings-anchor='linear-connection']")).toBeTruthy();
+  });
+
+  it("keeps the connection card while the plugin registry has not resolved", () => {
+    // The state that matters most for a superseded surface. ADE has always
+    // shipped this card. An unresolved registry must not remove it for the
+    // moment before the answer arrives, on a machine that has no Linear plugin
+    // at all.
     resetBuiltinSurfacePlugins();
+
+    const { container } = render(<LinearIntegrationSection />);
+
+    expect(screen.getByText("Linear integration")).toBeTruthy();
+    expect(container.querySelector("[data-settings-anchor='linear-connection']")).toBeTruthy();
+  });
+
+  it("renders nothing — card and heading — once the Linear plugin is installed and enabled", () => {
+    seedBuiltinSurfacePlugins(["linear"]);
 
     const { container } = render(<LinearIntegrationSection />);
 
@@ -45,17 +68,7 @@ describe("LinearIntegrationSection", () => {
     expect(container.querySelector("[data-settings-anchor='linear-connection']")).toBeNull();
   });
 
-  it("renders the connection card once the Linear plugin is installed and enabled", () => {
-    seedBuiltinSurfacePlugins(["linear"]);
-
-    const { container } = render(<LinearIntegrationSection />);
-
-    expect(screen.getByText("Linear integration")).toBeTruthy();
-    expect(screen.getByTestId("linear-connection-form")).toBeTruthy();
-    expect(container.querySelector("[data-settings-anchor='linear-connection']")).toBeTruthy();
-  });
-
-  it("hides the card again when the installed Linear plugin is disabled", () => {
+  it("shows the card again when the installed Linear plugin is disabled", () => {
     seedBuiltinSurfacePlugins(["linear"]);
     rootAppStoreApi.setState({
       installedPlugins: rootAppStoreApi.getState().installedPlugins.map((plugin) => ({
@@ -64,8 +77,8 @@ describe("LinearIntegrationSection", () => {
       })),
     });
 
-    const { container } = render(<LinearIntegrationSection />);
+    render(<LinearIntegrationSection />);
 
-    expect(container.textContent).toBe("");
+    expect(screen.getByText("Linear integration")).toBeTruthy();
   });
 });

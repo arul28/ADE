@@ -82,7 +82,9 @@ import {
   usePluginPaletteCommands,
   usePluginSearchResults,
 } from "../plugins/sockets";
-import { useBuiltinSurfaceVisible, useVisibleBuiltinRoutes } from "../plugins/useBuiltinTabs";
+import { useBuiltinGateInput, useBuiltinSurfaceVisible, useVisibleBuiltinRoutes } from "../plugins/useBuiltinTabs";
+import { isBuiltinSurfaceVisible } from "../plugins/builtinTabs";
+import type { PluginBuiltinSurfaceId } from "../../../shared/plugins/manifest";
 import {
   selectActiveProjectStateKey,
   useAppStore,
@@ -102,7 +104,9 @@ import { RemoteTargetList } from "../remoteTargets/RemoteTargetList";
 import {
   availableSettingsEntries,
   availableSettingsTabs,
+  clearBuiltinSurfaceResolver,
   clearWebMachineBindingResolver,
+  setBuiltinSurfaceResolver,
   setWebMachineBindingResolver,
   settingsEntryPath,
   settingsTabLabel,
@@ -363,6 +367,24 @@ export function CommandPalette({
   useEffect(() => {
     const installed = resolverRef.current!;
     return () => clearWebMachineBindingResolver(installed);
+  }, []);
+  // The palette also lists settings whose card belongs to a plugin-owned
+  // compiled surface, so it installs the manifest's other resolver on the same
+  // terms. Both surfaces install both resolvers rather than one each: either can
+  // be the only one mounted, and a settings row must not appear on one and be
+  // missing from the other.
+  const builtinGateInput = useBuiltinGateInput();
+  const builtinGateInputRef = useRef(builtinGateInput);
+  builtinGateInputRef.current = builtinGateInput;
+  const surfaceResolverRef = useRef<(builtinId: PluginBuiltinSurfaceId) => boolean>();
+  if (!surfaceResolverRef.current) {
+    surfaceResolverRef.current = (builtinId) =>
+      isBuiltinSurfaceVisible(builtinId, builtinGateInputRef.current);
+  }
+  setBuiltinSurfaceResolver(surfaceResolverRef.current);
+  useEffect(() => {
+    const installed = surfaceResolverRef.current!;
+    return () => clearBuiltinSurfaceResolver(installed);
   }, []);
   const hasActiveProject = Boolean(project?.rootPath);
 
@@ -962,6 +984,7 @@ export function CommandPalette({
 
     return next;
   }, [
+    builtinGateInput,
     builtinTabVisible,
     hasActiveProject,
     installedPlugins,

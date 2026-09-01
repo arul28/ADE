@@ -44,6 +44,9 @@ struct CtoRootScreen: View {
             self.snapshot = updated
           }
           .environmentObject(syncService)
+          // The Integrations card is gated on the Linear plugin, so the sheet
+          // needs the same shared gate the rest of the app reads.
+          .environmentObject(syncService.pluginPresenceGate)
         }
     }
   }

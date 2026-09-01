@@ -47,6 +47,7 @@ import { isRecord, oneOf, trimmed as trimmedString } from "./parse";
 import {
   compilePluginUrlMatcherPattern,
   coreSmartLinkHostOwner,
+  coreSmartLinkBuiltinsOwnedBy,
   isValidPluginUrlMatcherGlyph,
   isValidPluginUrlMatcherProvider,
   parsePluginUrlMatcherLabelTemplate,
@@ -173,14 +174,17 @@ export function isPluginBuiltinSurfaceId(value: unknown): value is PluginBuiltin
  * - `"enables"` — the plugin is the only reason the surface exists. ADE draws
  *   the compiled page only while the owner is installed and enabled. Every
  *   unknown hides it, so there is no state in which a surface appears because
- *   ADE was unsure. This is what Graph, Review, History, Linear, the iOS
- *   Simulator pane and Electron Control have always done.
+ *   ADE was unsure. This is what Graph, Review, History, the iOS Simulator pane
+ *   and Electron Control do: ADE never shipped any of those compiled, so there
+ *   is nothing to hand back when the plugin leaves.
  * - `"supersedes"` — the plugin REPLACES a surface ADE already ships compiled.
  *   ADE draws the compiled page only while the owner is ABSENT. Every unknown
  *   SHOWS it, because the built-in is what the product has always done and a
  *   machine without the plugin must behave exactly as it did before the plugin
  *   existed. Hiding on an unknown would delete a shipped feature every time the
- *   registry had not resolved yet.
+ *   registry had not resolved yet. This is what Cursor Cloud and Linear do: ADE
+ *   shipped both compiled long before either plugin existed, and an install
+ *   with no `ade-linear` must still be the Linear integration it was.
  *
  * The polarity also decides what the manifest may say. A `"supersedes"` surface
  * is never named by a `surfaces[].builtin` field: that field means "ADE draws
@@ -197,7 +201,7 @@ export const PLUGIN_BUILTIN_SURFACE_PRESENCE: Readonly<
   graph: "enables",
   review: "enables",
   history: "enables",
-  linear: "enables",
+  linear: "supersedes",
   ios: "enables",
   "app-control": "enables",
   "cursor-cloud": "supersedes",
@@ -208,20 +212,24 @@ export const PLUGIN_BUILTIN_SURFACE_PRESENCE: Readonly<
  *
  * A `builtin` surface renders compiled code, not a panel schema, so "does it
  * appear on mobile" is a fact about what the iOS app SHIPS — not something a
- * manifest can decide. Linear is ported; the Graph canvas, Review, History, the
- * simulator pane and Electron Control are not, and declaring `mobile: true` on
- * one of them would put a rail entry in front of a renderer that does not exist.
- * So the table is the ceiling and the manifest may only narrow it.
+ * manifest can decide. The phone ships a Linear pane and a Cursor Cloud screen;
+ * the Graph canvas, Review, History, the simulator pane and Electron Control are
+ * not ported, and declaring `mobile: true` on one of them would put a rail entry
+ * in front of a renderer that does not exist. So the table is the ceiling and
+ * the manifest may only narrow it.
  *
  * Keyed by the closed id list above, so adding a gateable surface without
  * deciding this question does not compile.
  *
- * `cursor-cloud` records `true` because the phone really does ship a Cursor
- * Cloud screen, which is the question this table asks. Nothing reads that entry
- * today: the ceiling only ever applies to a surface a manifest named with
- * `builtin`, and a `"supersedes"` surface may not be named that way at all — see
- * {@link PLUGIN_BUILTIN_SURFACE_PRESENCE}. The honest answer is still the one to
- * record, so a later change that does consult it does not read a lie.
+ * `linear` and `cursor-cloud` both record `true` because the phone really does
+ * ship those screens, which is the question this table asks. Nothing reads
+ * either entry today, and that is now true of EVERY `true` in the table: the
+ * ceiling only ever applies to a surface a manifest named with `builtin`, a
+ * `"supersedes"` surface may not be named that way at all, and both of the
+ * phone's screens supersede — see {@link PLUGIN_BUILTIN_SURFACE_PRESENCE}. So
+ * the only rule that runs today is the clamp on a built-in the phone cannot
+ * draw. The honest answer is still the one to record, so a later change that
+ * does consult it does not read a lie.
  */
 export const PLUGIN_BUILTIN_SURFACE_MOBILE: Readonly<Record<PluginBuiltinSurfaceId, boolean>> = {
   graph: false,
@@ -1846,8 +1854,10 @@ function parseKeybindings(raw: unknown, ctx: ParseContext): PluginManifestKeybin
  *   shipping a matcher that silently never wins. The one exception is the
  *   plugin that OWNS the built-in surface behind that host — it is the package
  *   the tracker moves into, so refusing it its own domain would mean the
- *   extraction could never finish. `claimedBuiltins` carries the honoured
- *   `surfaces[].builtin` ids, which are official-only, and
+ *   extraction could never finish. `claimedBuiltins` carries the surfaces this
+ *   manifest may speak for — the honoured `surfaces[].builtin` ids, plus the
+ *   surfaces an official package is the registered OWNER of, because a plugin
+ *   that supersedes a surface may not name it with `builtin` at all.
  *   `CORE_SMART_LINK_HOST_BUILTINS` says which host each one unlocks.
  * - A label template naming a capture the pattern does not declare is refused
  *   rather than rendered. A chip that reads `{key}` because nothing filled it is
@@ -2318,11 +2328,22 @@ export function parsePluginManifest(raw: unknown): PluginManifestParseResult {
   const automationSteps = parseAutomationSteps(raw.automationSteps, ctx);
   const searchProviders = parseSearchProviders(raw.searchProviders, ctx);
   const keybindings = parseKeybindings(raw.keybindings, ctx);
-  // Only the builtins the surface parser actually HONOURED, so a community
-  // package cannot unlock a core host by writing `builtin` into its manifest.
-  const claimedBuiltins = new Set<string>(
-    surfaces.map((surface) => surface.builtin).filter((builtin): builtin is PluginBuiltinSurfaceId => Boolean(builtin)),
-  );
+  // Which built-in surfaces this manifest may speak for, for the one relaxation
+  // that reads it: a plugin claiming the core smart-link host behind its own
+  // surface (see `parseUrlMatchers`).
+  //
+  // Two sources, because the two polarities say it in different ways. An
+  // `"enables"` plugin says it with `surfaces[].builtin`, and only the ids the
+  // surface parser actually HONOURED count — so a community package cannot
+  // unlock a core host by writing `builtin` into its manifest. A `"supersedes"`
+  // plugin may not use that field at all, so it says it by BEING the registered
+  // owner, which is `official`-only for the same reason.
+  const claimedBuiltins = new Set<string>([
+    ...surfaces
+      .map((surface) => surface.builtin)
+      .filter((builtin): builtin is PluginBuiltinSurfaceId => Boolean(builtin)),
+    ...(official ? coreSmartLinkBuiltinsOwnedBy(name) : []),
+  ]);
   const urlMatchers = parseUrlMatchers(raw.urlMatchers, ctx, claimedBuiltins);
   const chatRuntimes = parseChatRuntimes(raw.chatRuntimes, ctx);
   const webhookIngress = parseWebhookIngress(raw.webhookIngress, ctx);

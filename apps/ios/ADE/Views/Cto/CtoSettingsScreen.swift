@@ -6,6 +6,7 @@ import SwiftUI
 /// from the CTO tab's gear button.
 struct CtoSettingsScreen: View {
   @EnvironmentObject private var syncService: SyncService
+  @EnvironmentObject private var pluginGate: PluginPresenceGate
   @Environment(\.dismiss) private var dismiss
 
   let onSnapshotChanged: (CtoSnapshot) -> Void
@@ -75,6 +76,14 @@ struct CtoSettingsScreen: View {
       }
       .tint(ADEColor.ctoAccent)
       .refreshable { await reload() }
+      // The answer can land while the sheet is up, or the phone can attach to a
+      // machine without the plugin. Either way the card reappears with nothing
+      // in it until something asks again, and the sheet's own `.task` has
+      // already run by then.
+      .onChange(of: pluginGate.drawsBuiltin(.linear)) { _, drawsBuiltin in
+        guard drawsBuiltin else { return }
+        Task { await loadLinearStatus() }
+      }
       .task {
         guard snapshot == nil else {
           // Still refresh the side data (Linear, memory) even if identity was
@@ -252,17 +261,36 @@ struct CtoSettingsScreen: View {
 
   // MARK: - Integrations (read-only)
 
+  /// ADE's own Linear connection card, and the only row the section has.
+  ///
+  /// `ade-linear` supersedes it. That plugin declares
+  /// `credentialHandoff: ["linear"]`, which makes it the owner of the Linear
+  /// connection on that machine, and it draws a "Linear connection" panel of its
+  /// own from a `settings-section` contribution. Leaving this card up beside it
+  /// would put two connect surfaces for one account in the app, each able to
+  /// report a different state.
+  ///
+  /// Note the polarity: `drawsBuiltin`, not `owns`. Every unknown — no answer
+  /// yet, an old host, a dropped socket, the gap right after attaching to
+  /// another machine — keeps the card, because that is the connection surface
+  /// the phone has always had and a late round trip must not remove it.
+  ///
+  /// The whole section goes, header included: Linear is its only row, and a
+  /// heading over nothing reads as a screen that failed to load.
+  @ViewBuilder
   private var integrationsSection: some View {
-    VStack(alignment: .leading, spacing: 6) {
-      SectionHeader(title: "Integrations")
-      VStack(spacing: 0) {
-        IntegrationRow(
-          name: "Linear",
-          subtitle: linearSubtitle,
-          connected: linearStatus?.connected == true
-        )
+    if pluginGate.drawsBuiltin(.linear) {
+      VStack(alignment: .leading, spacing: 6) {
+        SectionHeader(title: "Integrations")
+        VStack(spacing: 0) {
+          IntegrationRow(
+            name: "Linear",
+            subtitle: linearSubtitle,
+            connected: linearStatus?.connected == true
+          )
+        }
+        .adeListCard(padding: 0)
       }
-      .adeListCard(padding: 0)
     }
   }
 
@@ -358,6 +386,22 @@ struct CtoSettingsScreen: View {
     await loadCtoSession()
   }
 
+  /// The connection status behind the Integrations card, fetched only while
+  /// that card is on screen. A machine with `ade-linear` hides the card, and the
+  /// plugin's own settings panel asks for the same state itself, so the round
+  /// trip here would pay for a row nobody can see.
+  private func loadLinearStatus() async {
+    guard pluginGate.drawsBuiltin(.linear) else {
+      self.linearStatus = nil
+      return
+    }
+    if let value = try? await syncService.fetchLinearConnectionStatus() {
+      self.linearStatus = value
+    } else {
+      self.linearStatus = nil
+    }
+  }
+
   /// The live CTO chat is the source of truth for model, reasoning, and fast
   /// mode. Keep identity preferences as an offline fallback, but do not let a
   /// failed session refresh make the rest of CTO settings unusable.
@@ -370,11 +414,7 @@ struct CtoSettingsScreen: View {
   /// Linear status + memory. Both tolerate failure: Linear falls back to
   /// "Manage in ADE" and memory falls back to the "not available" row.
   private func loadSideData() async {
-    if let value = try? await syncService.fetchLinearConnectionStatus() {
-      self.linearStatus = value
-    } else {
-      self.linearStatus = nil
-    }
+    await loadLinearStatus()
 
     do {
       self.memory = try await syncService.fetchCtoMemory()

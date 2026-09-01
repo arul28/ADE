@@ -1,9 +1,11 @@
+import React from "react";
 import type { AutomationRuleDraft } from "../../../../shared/types";
 import { cn } from "../../ui/cn";
 import { cardCls } from "../designTokens";
 import { FLAGSHIP_TEMPLATES } from "../templates/templateData";
 import { templateIconFor } from "../templates/templateIcons";
 import { SourceIconBadge, TemplateSourceChip } from "../templates/TemplateSourceChip";
+import { useOfferedTemplateFilter } from "../templates/useOfferedTemplates";
 import { sourceForTriggerType } from "../triggerCatalog";
 
 export function AutomationsEmptyState({
@@ -13,7 +15,14 @@ export function AutomationsEmptyState({
   onUseTemplate: (draft: Omit<AutomationRuleDraft, "id">) => void;
   onBrowseTemplates: () => void;
 }) {
-  const flagships = FLAGSHIP_TEMPLATES.slice(0, 3);
+  const offered = useOfferedTemplateFilter();
+  // Filter first, then take three. Slicing first would leave two cards on a
+  // machine with `ade-linear`, when a fourth flagship is sitting behind the
+  // Linear one and can fill the gap.
+  const flagships = React.useMemo(
+    () => FLAGSHIP_TEMPLATES.filter(offered).slice(0, 3),
+    [offered],
+  );
   return (
     <div className="px-1 py-2">
       <div className="text-[13px] font-semibold text-fg">No automations yet</div>

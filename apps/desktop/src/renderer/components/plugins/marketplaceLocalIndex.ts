@@ -118,12 +118,13 @@ const HISTORY = manifest({
 /**
  * Linear, as the real integration rather than a gate.
  *
- * The `pane` surface still carries `builtin: "linear"` and still gates the
- * compiled browser — that binding is the extraction's own scaffolding and goes
- * away with core. Everything beside it is ordinary: a `tab`, seven sockets, its
- * own collections, its own credential. The one official-only thing left is the
- * `urlMatchers` entry claiming `linear.app`, which only the plugin that OWNS
- * the `linear` built-in surface may do.
+ * The gate is gone. `linear` is a SUPERSEDED surface now, so the plugin may not
+ * name it with `builtin` at all — it draws its own panels and ADE's compiled
+ * Linear steps aside. What is left is an ordinary package: a `tab`, seven
+ * sockets, its own collections, its own credential. The one official-only thing
+ * is the `urlMatchers` entry claiming `linear.app`, which only the plugin that
+ * OWNS the `linear` built-in surface may do — and ownership, not the `builtin`
+ * field, is what unlocks it.
  */
 const LINEAR = manifest({
   name: "ade-linear",
@@ -141,7 +142,6 @@ const LINEAR = manifest({
     description: "Paste this URL into Linear's webhook settings so an issue that changes wakes ADE.",
   }],
   surfaces: [
-    { kind: "pane", id: "linear", title: "Linear", icon: "list-checks", panelId: "main", builtin: "linear", mobile: true },
     { kind: "tab", id: "issues", title: "Linear", icon: "list-checks", panelId: "issues", order: 55, mobile: true },
   ],
   sockets: [

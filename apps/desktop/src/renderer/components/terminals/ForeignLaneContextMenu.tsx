@@ -9,6 +9,7 @@ import {
   menuItemStyle,
 } from "../lanes/LaneContextMenu";
 import { COLORS, MONO_FONT } from "../lanes/laneDesignTokens";
+import { useBuiltinSurfaceVisible } from "../plugins/useBuiltinTabs";
 import { OpenInSubmenu } from "../ui/OpenInSubmenu";
 import { resolveOpenInTarget } from "../../../shared/editorTargets";
 
@@ -46,6 +47,11 @@ export function ForeignLaneContextMenu({
     { x, y },
     `${machineName}:${lane.id}`,
   );
+  // The second copy of "Copy Linear Issue Link", for a lane on another machine.
+  // Read here rather than threaded, because this menu is its own component and
+  // shares nothing with `buildLaneMenuGroups`. The surface is a property of THIS
+  // machine — the plugin owns Linear here, whichever machine owns the lane.
+  const linearSurfaceVisible = useBuiltinSurfaceVisible("linear");
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -171,7 +177,7 @@ export function ForeignLaneContextMenu({
           Copy branch name
         </HoverButton>
       ) : null}
-      {lane.linearIssue?.url ? (
+      {lane.linearIssue?.url && linearSurfaceVisible ? (
         <HoverButton
           style={menuItemStyle}
           onClick={() => copyText(lane.linearIssue?.url ?? "")}

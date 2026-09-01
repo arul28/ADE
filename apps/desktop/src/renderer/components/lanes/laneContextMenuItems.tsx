@@ -57,6 +57,15 @@ export type LaneMenuArgs = {
   lanesById: Map<string, LaneSummary>;
   visibleLaneIds: string[];
   isRemoteProject: boolean;
+  /**
+   * Whether ADE still draws its own Linear integration, from
+   * `useBuiltinSurfaceVisible("linear")`.
+   *
+   * Threaded in like `isRemoteProject` rather than read here, because this
+   * module is pure and both renderers share it — and required rather than
+   * optional, so a third menu cannot be added that quietly forgets to ask.
+   */
+  linearSurfaceVisible: boolean;
   onClose: () => void;
   onManage: (laneId: string) => void;
   selectLane: (id: string) => void;
@@ -111,6 +120,7 @@ export function buildLaneMenuGroups(args: LaneMenuArgs): LaneMenuGroup[] {
     lanesById,
     visibleLaneIds,
     isRemoteProject,
+    linearSurfaceVisible,
     onClose,
     onManage,
     selectLane,
@@ -250,7 +260,11 @@ export function buildLaneMenuGroups(args: LaneMenuArgs): LaneMenuGroup[] {
         },
       });
     }
-    if (lane.linearIssue?.url) {
+    // The issue link itself is the user's data and stays on the lane; what goes
+    // is this way of reaching it. With `ade-linear` installed the plugin owns
+    // every Linear entry point, and the same row in its own menus is the one the
+    // user should get.
+    if (lane.linearIssue?.url && linearSurfaceVisible) {
       const linearUrl = lane.linearIssue.url;
       copy.push({
         kind: "action",

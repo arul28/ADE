@@ -153,9 +153,10 @@ describe("CreateLaneDialog", () => {
         plugins: {},
       },
     });
-    // Connecting an issue is Linear browsing, and browsing ships as a plugin —
-    // without it the dialog has no issue row to click.
-    seedBuiltinSurfacePlugins(["linear"]);
+    // Connecting an issue opens ADE's own compiled Linear browser. ADE draws
+    // that row on a machine without `ade-linear`, which is the machine this
+    // test describes.
+    seedBuiltinSurfacePlugins([]);
 
     render(<CreateLaneDialog {...makeProps()} />);
 
@@ -166,6 +167,35 @@ describe("CreateLaneDialog", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Close Connect Linear issue backdrop" }));
     expect(await screen.findByText("Lane name")).toBeTruthy();
+  });
+
+  it("drops the issue row once the Linear plugin is installed", () => {
+    // `ade-linear` supersedes the compiled browser and brings its own. Two ways
+    // to connect an issue, in one dialog, open two different pickers.
+    Object.defineProperty(window, "ade", {
+      configurable: true,
+      value: { plugins: {} },
+    });
+    seedBuiltinSurfacePlugins(["linear"]);
+
+    render(<CreateLaneDialog {...makeProps()} />);
+
+    expect(screen.queryByRole("button", { name: /connect a linear issue/i })).toBeNull();
+  });
+
+  it("keeps the issue row while the plugin registry has not resolved", () => {
+    // The unknown case. The registry answers after the dialog first paints, and
+    // a row that appears late reads as a bug on every machine that has no
+    // Linear plugin at all.
+    Object.defineProperty(window, "ade", {
+      configurable: true,
+      value: { plugins: {} },
+    });
+    resetBuiltinSurfacePlugins();
+
+    render(<CreateLaneDialog {...makeProps()} />);
+
+    expect(screen.getByRole("button", { name: /connect a linear issue/i })).toBeTruthy();
   });
 
   it("keeps the base-source selector visible when the selected source has no options", () => {
