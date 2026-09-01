@@ -1,0 +1,17 @@
+{
+  "v": 1,
+  "title": "Linear",
+  "fallback": {
+    "title": "Linear",
+    "text": "Open ADE on the computer that holds this plugin to browse Linear issues.",
+    "deeplink": "ade://plugin/ade-linear/issues"
+  },
+  "body": [
+    {
+      "component": "emptyState",
+      "title": "Loading Linear issues…",
+      "description": "Reading your workspace.",
+      "icon": "kanban"
+    }
+  ]
+}

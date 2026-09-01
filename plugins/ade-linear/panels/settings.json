@@ -1,0 +1,17 @@
+{
+  "v": 1,
+  "title": "Linear",
+  "fallback": {
+    "title": "Linear",
+    "text": "Linear connects on the computer that holds this plugin. Open ADE there to sign in.",
+    "deeplink": "ade://plugin/ade-linear/settings"
+  },
+  "body": [
+    {
+      "component": "emptyState",
+      "title": "Checking your Linear connection…",
+      "description": "Reading the credential stored on this machine.",
+      "icon": "plug"
+    }
+  ]
+}

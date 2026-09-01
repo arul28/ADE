@@ -1,0 +1,17 @@
+{
+  "v": 1,
+  "title": "Launch",
+  "fallback": {
+    "title": "Linear",
+    "text": "Lanes launch on the computer that holds this plugin. Open ADE there to start one.",
+    "deeplink": "ade://plugin/ade-linear/launch"
+  },
+  "body": [
+    {
+      "component": "emptyState",
+      "title": "Getting ready…",
+      "description": "Reading this project's lanes and the models you can run.",
+      "icon": "rocket"
+    }
+  ]
+}
