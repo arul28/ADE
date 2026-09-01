@@ -4312,6 +4312,21 @@ final class SyncService: ObservableObject {
   private var connectionEstablishedUptime: TimeInterval?
   private(set) var deviceId: String
   private var remoteCommandDescriptors: [SyncRemoteCommandDescriptor] = []
+  /// Whether `remoteCommandDescriptors` is THIS connection's own answer rather
+  /// than the previous run's cache.
+  ///
+  /// The array is restored from `UserDefaults` at launch and replaced only when
+  /// a hello lands, so before that it describes whichever machine this phone
+  /// last spoke to — or nothing at all on a first run or after a trust reset.
+  /// Until this is true, "the host does not advertise that action" is not an
+  /// answer about the host, and a caller that latches one freezes it for the
+  /// whole session.
+  ///
+  /// Published because `ContentView` re-runs the gate's refresh from
+  /// `.task(id: pluginPresenceTrigger)`. A plain stored property would move the
+  /// trigger without re-rendering anything, so the re-consult would depend on
+  /// some other published change happening to land with the hello.
+  @Published private(set) var hasNegotiatedRemoteCommandCatalog = false
   private var remoteProjectCatalog: [MobileProjectSummary] = []
   private var hiddenProjectKeys: Set<String> = []
   private var pendingProjectCatalogChunks: [String: [Int: [MobileProjectSummary]]] = [:]
@@ -8969,7 +8984,7 @@ final class SyncService: ObservableObject {
       }
       keychain.clearToken()
       saveProfile(nil)
-      saveRemoteCommandDescriptors([])
+      saveRemoteCommandDescriptors([], negotiated: false)
       clearPendingChatCreations()
       resetPendingSessionSettleStates()
       resetChatEventState(clearHistory: true)
@@ -9547,12 +9562,29 @@ final class SyncService: ObservableObject {
     )
   }
 
-  /// Scope of a presence answer, in one cheap string: which machine, and how
-  /// many times plugin rows have changed. Every surface that gates on an
-  /// installed plugin refreshes off this — one definition so a top-bar button
-  /// and a deep link cannot disagree about when the answer went stale.
+  /// The two halves of the capability component of ``pluginPresenceTrigger``.
+  /// Named rather than inline so a test can pin the trigger against the flag it
+  /// is built from instead of against a copy of the format.
+  static let pluginPresenceCatalogPendingMarker = "catalog-pending"
+  static let pluginPresenceCatalogReadyMarker = "catalog-ready"
+
+  /// Scope of a presence answer, in one cheap string: which machine, how many
+  /// times plugin rows have changed, and whether this connection has negotiated
+  /// a command catalog yet. Every surface that gates on an installed plugin
+  /// refreshes off this — one definition so a top-bar button and a deep link
+  /// cannot disagree about when the answer went stale.
+  ///
+  /// The capability component is what makes the hello retire an answer resolved
+  /// before it. `activeProjectHostIdentity` is restored from `UserDefaults` at
+  /// launch, so on a cold launch with a remembered host the other two
+  /// components are already final while the catalog is still unknown. Without
+  /// this third one, an answer resolved in that window would describe a machine
+  /// nothing had asked yet and would never be re-asked.
   var pluginPresenceTrigger: String {
-    "\(activeProjectHostIdentity ?? "-")|\(pluginsProjectionRevision)"
+    let catalog = hasNegotiatedRemoteCommandCatalog
+      ? SyncService.pluginPresenceCatalogReadyMarker
+      : SyncService.pluginPresenceCatalogPendingMarker
+    return "\(activeProjectHostIdentity ?? "-")|\(pluginsProjectionRevision)|\(catalog)"
   }
 
   /// Is a given plugin installed and enabled on the machine this phone is
@@ -14820,8 +14852,15 @@ final class SyncService: ObservableObject {
     return descriptors
   }
 
-  private func saveRemoteCommandDescriptors(_ descriptors: [SyncRemoteCommandDescriptor]) {
+  /// - Parameter negotiated: whether these descriptors came from a hello. False
+  ///   only where the pairing is being torn down, which returns this phone to
+  ///   knowing nothing about any host's catalog.
+  private func saveRemoteCommandDescriptors(
+    _ descriptors: [SyncRemoteCommandDescriptor],
+    negotiated: Bool = true
+  ) {
     remoteCommandDescriptors = descriptors
+    hasNegotiatedRemoteCommandCatalog = negotiated
     // `refreshCtoAttentionIfNeeded` no-ops until it knows the host supports the
     // command, so the first probe after a (re)connect has to happen here —
     // forced past the debounce, since a reconnect can land inside its window.

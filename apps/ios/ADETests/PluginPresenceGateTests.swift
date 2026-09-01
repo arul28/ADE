@@ -26,7 +26,20 @@ final class PluginPresenceGateTests: XCTestCase {
   @MainActor
   private final class FakePresenceSync: PluginPresenceGateSyncing {
     var supportsPluginPresenceList = true
-    var pluginPresenceTrigger = "machine-a|0"
+    var hasNegotiatedRemoteCommandCatalog = true
+    /// The machine-and-install-set half of the trigger. The capability half is
+    /// appended below, as `SyncService.pluginPresenceTrigger` does it, so a
+    /// test that flips the catalog flag moves the trigger the same way a hello
+    /// moves it in the app. The markers are the service's own constants, and
+    /// `testTheRealTriggerCarriesTheCatalogComponent` pins that the service
+    /// still builds its trigger from them.
+    var triggerScope = "machine-a|0"
+    var pluginPresenceTrigger: String {
+      let catalog = hasNegotiatedRemoteCommandCatalog
+        ? SyncService.pluginPresenceCatalogReadyMarker
+        : SyncService.pluginPresenceCatalogPendingMarker
+      return "\(triggerScope)|\(catalog)"
+    }
     var reply = PluginPresenceListResult()
     var failure: Error?
     var fetchCount = 0
@@ -164,7 +177,7 @@ final class PluginPresenceGateTests: XCTestCase {
 
     // The phone attaches elsewhere. Until the new machine has answered, the
     // previous machine's install list says nothing about this one.
-    sync.pluginPresenceTrigger = "machine-b|0"
+    sync.triggerScope = "machine-b|0"
     sync.reply = PluginPresenceListResult(plugins: [])
     await gate.refresh()
 
@@ -178,7 +191,7 @@ final class PluginPresenceGateTests: XCTestCase {
     // The machine changes while the round trip is out: the reply describes a
     // machine this phone is no longer talking to, and applying it would show
     // Linear on a machine that may not have it.
-    sync.duringFetch = { sync.pluginPresenceTrigger = "machine-b|0" }
+    sync.duringFetch = { sync.triggerScope = "machine-b|0" }
     let gate = PluginPresenceGate(sync: sync)
 
     await gate.refresh()
@@ -352,7 +365,7 @@ final class PluginPresenceGateTests: XCTestCase {
       // Plugins are installed per machine. The phone attaching elsewhere retires
       // the previous machine's list immediately, and the built-in is what the
       // new machine gets until it says otherwise.
-      sync.pluginPresenceTrigger = "machine-b|0"
+      sync.triggerScope = "machine-b|0"
       sync.reply = PluginPresenceListResult(plugins: [])
       await gate.refresh()
 
@@ -387,7 +400,7 @@ final class PluginPresenceGateTests: XCTestCase {
 
     // Installed but disabled.
     sync.reply = PluginPresenceListResult(plugins: [entry("ade-graph", enabled: false)])
-    sync.pluginPresenceTrigger = "machine-a|1"
+    sync.triggerScope = "machine-a|1"
     await gate.refresh()
     XCTAssertFalse(gate.owns(.graph))
     XCTAssertFalse(gate.drawsBuiltin(.graph))
@@ -507,6 +520,98 @@ final class PluginPresenceGateTests: XCTestCase {
     let linearWithoutPlugin = await withoutPlugin.awaitDrawsBuiltin(.linear)
     XCTAssertFalse(graphWithoutPlugin)
     XCTAssertTrue(linearWithoutPlugin, "The same empty reply moves the two surfaces apart.")
+  }
+
+  // MARK: - Before the host's command catalog has arrived
+
+  /// The window this whole section is about: the app has launched, the socket
+  /// has not said hello, and the catalog restored from the last run says
+  /// nothing about `plugins.presenceList`. An empty roster read there is not an
+  /// answer, and recording one froze it — `ensureAnswer` never asks twice once
+  /// `hasAnswer` is set.
+  func testAnEmptyCatalogIsNotRecordedAsAnAnswer() async {
+    let sync = FakePresenceSync()
+    sync.hasNegotiatedRemoteCommandCatalog = false
+    sync.supportsPluginPresenceList = false
+    let gate = PluginPresenceGate(sync: sync)
+
+    await gate.refresh()
+
+    XCTAssertFalse(gate.hasAnswer, "Nothing has asked the host; that is not an answer about it.")
+    XCTAssertEqual(sync.fetchCount, 0, "There is no catalog yet to say the action exists.")
+  }
+
+  /// A host that predates the plugin platform still answers definitively, and
+  /// must keep latching — the distinction this fix turns on.
+  func testAHostThatNegotiatedACatalogWithoutTheActionAnswersDefinitively() async {
+    let sync = FakePresenceSync()
+    sync.hasNegotiatedRemoteCommandCatalog = true
+    sync.supportsPluginPresenceList = false
+    let gate = PluginPresenceGate(sync: sync)
+
+    await gate.refresh()
+
+    XCTAssertTrue(gate.hasAnswer, "The catalog arrived and the action is not in it.")
+    XCTAssertEqual(sync.fetchCount, 0)
+  }
+
+  /// The bug end to end. A cold-launch `ade://linear-issue/…` on a machine that
+  /// HAS `ade-linear` used to open ADE's compiled pane, because the pre-hello
+  /// empty roster read as "no plugin" and never refreshed. The hello now moves
+  /// the trigger, so the next consult re-asks and answers correctly.
+  func testTheAwaitedTwinReAnswersOnceTheCatalogArrives() async {
+    let sync = FakePresenceSync()
+    sync.hasNegotiatedRemoteCommandCatalog = false
+    sync.supportsPluginPresenceList = false
+    sync.reply = PluginPresenceListResult(plugins: [entry("ade-linear")])
+    let gate = PluginPresenceGate(sync: sync)
+
+    // A link consumed in the pre-hello window still reads the `.supersedes`
+    // default. That much is unchanged, and is the right default for a machine
+    // nothing has heard from.
+    let beforeHello = await gate.awaitDrawsBuiltin(.linear)
+    XCTAssertTrue(beforeHello)
+    XCTAssertEqual(sync.fetchCount, 0)
+
+    // The hello lands: the catalog is negotiated, the action is in it, and the
+    // trigger has moved.
+    sync.hasNegotiatedRemoteCommandCatalog = true
+    sync.supportsPluginPresenceList = true
+
+    let afterHello = await gate.awaitDrawsBuiltin(.linear)
+    XCTAssertFalse(afterHello, "The machine has the plugin; the link belongs to its panels.")
+    XCTAssertEqual(sync.fetchCount, 1, "The arrival of the catalog is what re-ran the consult.")
+  }
+
+  /// The half the fake cannot prove about itself: that the real service builds
+  /// its trigger from the readiness flag at all. Without this component the
+  /// hello never retires a pre-hello answer, whatever the gate does.
+  func testTheRealTriggerCarriesTheCatalogComponent() {
+    let database = DatabaseService(baseURL: makeTemporaryDirectory())
+    defer { database.close() }
+    let service = SyncService(database: database)
+    defer { service.disconnect(clearCredentials: false) }
+
+    XCTAssertNotEqual(
+      SyncService.pluginPresenceCatalogPendingMarker,
+      SyncService.pluginPresenceCatalogReadyMarker,
+      "Identical markers would leave the trigger unmoved when the hello lands."
+    )
+    XCTAssertFalse(
+      service.hasNegotiatedRemoteCommandCatalog,
+      "A service that has not connected has negotiated nothing."
+    )
+    XCTAssertTrue(
+      service.pluginPresenceTrigger.hasSuffix("|\(SyncService.pluginPresenceCatalogPendingMarker)"),
+      "The trigger must carry the readiness marker: \(service.pluginPresenceTrigger)"
+    )
+  }
+
+  private func makeTemporaryDirectory() -> URL {
+    let url = FileManager.default.temporaryDirectory
+      .appendingPathComponent("plugin-presence-\(UUID().uuidString)", isDirectory: true)
+    try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+    return url
   }
 
   // MARK: - A lane's issue ref, which is only sometimes Linear's

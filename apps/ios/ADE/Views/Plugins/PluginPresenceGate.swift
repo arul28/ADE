@@ -99,7 +99,12 @@ enum PluginSurfacePresence: Equatable {
 @MainActor
 protocol PluginPresenceGateSyncing: AnyObject {
   /// Whether the attached machine can answer `plugins.presenceList` at all.
+  /// Only meaningful once ``hasNegotiatedRemoteCommandCatalog`` is true.
   var supportsPluginPresenceList: Bool { get }
+
+  /// Whether this connection has received the host's command catalog yet.
+  /// Separates "this host cannot answer" from "nothing has asked it".
+  var hasNegotiatedRemoteCommandCatalog: Bool { get }
 
   /// Cheap identity of the answer's scope: which machine, and how many times
   /// plugin rows have changed. A different value means the previous answer
@@ -309,6 +314,22 @@ final class PluginPresenceGate: ObservableObject {
   }
 
   private func resolve(trigger: String) async {
+    // "The host does not advertise the action" and "nothing has asked the host
+    // yet" produce the identical empty catalog, and only the first is an
+    // answer. The catalog is restored from the previous run at launch and
+    // replaced when a hello lands, so a cold launch reads a stale one — or an
+    // empty one on a first run — for as long as the socket takes to come up.
+    //
+    // Recording that as answered was the bug: `ensureAnswer` returns early once
+    // `hasAnswer` is set, so an empty roster taken before the hello froze for
+    // the session. For a `.supersedes` surface an empty roster means "draw the
+    // compiled pane", which is the opposite of what a machine that HAS the
+    // plugin should do. Left unanswered, the next consult retries — and the
+    // hello moves `pluginPresenceTrigger`, which retires this answer outright.
+    guard sync.hasNegotiatedRemoteCommandCatalog else {
+      apply(plugins: [], trigger: trigger, answered: false)
+      return
+    }
     // A host that predates the plugin platform never advertises the action.
     // That is a definitive answer for this host — nothing to wait for — so it
     // counts as answered and every gated entry point simply is not there.
