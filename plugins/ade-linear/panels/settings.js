@@ -392,7 +392,7 @@ function signingSecretBlock(ingress = {}) {
       rows: [
         {
           key: "Verification",
-          value: stored ? "Signed deliveries only" : "Not verified",
+          value: stored ? "Signed deliveries only" : "Deliveries dropped until the signing secret is saved",
           tone: stored ? "success" : "warning",
         },
       ],
