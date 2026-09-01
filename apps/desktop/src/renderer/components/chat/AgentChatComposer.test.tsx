@@ -2761,6 +2761,7 @@ describe("AgentChatComposer", () => {
   it("fails closed when the selected machine cannot own new attachments", async () => {
     const readClipboardImage = vi.fn();
     const saveTempAttachment = vi.fn();
+    const onUseThisComputer = vi.fn();
     (window as any).ade = {
       app: { readClipboardImage },
       agentChat: { saveTempAttachment },
@@ -2769,8 +2770,10 @@ describe("AgentChatComposer", () => {
     renderComposer({
       turnActive: false,
       draft: "",
+      sessionId: "session-1",
       composerMachineBinding: null,
       attachmentPersistenceUnavailableReason: reason,
+      onUseThisComputer,
     });
 
     const input = screen.getByPlaceholderText("Type to vibecode...");
@@ -2779,6 +2782,11 @@ describe("AgentChatComposer", () => {
     expect((screen.getByRole("button", { name: "Upload file from disk" }) as HTMLButtonElement).disabled).toBe(true);
     expect(readClipboardImage).not.toHaveBeenCalled();
     expect(saveTempAttachment).not.toHaveBeenCalled();
+
+    const uploadInput = document.querySelector('input[type="file"]') as HTMLInputElement;
+    fireEvent.change(uploadInput, { target: { files: [new File(["data"], "note.txt")] } });
+    fireEvent.click(await screen.findByRole("button", { name: "Use this computer" }));
+    expect(onUseThisComputer).toHaveBeenCalledTimes(1);
   });
 
   it("uses runtime temp attachments for native macOS clipboard image fallback even when local save IPC is available", async () => {

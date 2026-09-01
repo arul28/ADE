@@ -69,12 +69,17 @@ relay payload E2E encryption is planned security work. See the trust boundary in
   does not widen the separate method allowlist `IPC.remoteRuntimeCallSync`
   keeps for the renderer; `isTargetConnected` (backed by
   `RemoteConnectionService.isConnected`) lets an opportunistic background reader
-  skip a disconnected target, because a failed call there spends that machine's
-  automatic-reconnect budget and exhausting it pauses automatic reconnect for
-  every feature the target serves. The local machine identity those callers key
+  skip a disconnected target, because a failed call there schedules that
+  machine's bounded automatic-reconnect backoff and an optional refresh should
+  not compete with an interactive reconnect. The local machine identity those callers key
   on moved to `services/account/localMachineIdentity.ts` — Electron-free, so the
   usage rollup publisher and the CLI-hosted brain resolve the same machine key
   without importing this bridge — and is re-exported here for existing callers.
+  Remote event-stream reads and subscription acknowledgements use a 30 s
+  transport deadline and retry once after reconnecting; ordinary remote
+  actions keep their action-specific budgets. Automatic reconnects use bounded
+  exponential backoff from 30 s to 5 minutes and remain eligible indefinitely,
+  so a temporary sleep/network gap does not require restarting the desktop app.
 - `apps/desktop/src/main/services/ipc/runtimeEventSubscriptionRegistry.ts` —
   the store behind those streams. Subscriptions are keyed by
   `(sender, requestKey = <bindingKey>:<category|*>:<replay|live>)`, because one
@@ -934,8 +939,8 @@ run a local repair against data owned by the remote machine. See
    route is tried only while this ADE client is signed in. The client attaches
    a short-lived account proof to that relay hello, and the host accepts it only
    when the proof belongs to the Clerk user currently signed in on the host.
-   A missing or different account reports **Sign in to ADE** without spending
-   the automatic-reconnect failure budget. Relay remains a trusted-operator
+   A missing or different account reports **Sign in to ADE** without consuming
+   the transport's automatic-reconnect backoff. Relay remains a trusted-operator
    plaintext-readable path, not a confidential channel; end-to-end payload
    encryption remains planned. A signed-out host does not advertise or hold a
    Relay tunnel; it resumes automatically after sign-in. Legacy shared
@@ -1004,7 +1009,7 @@ WebSocket/auth wait is capped by the remaining budget and observes cancellation;
 authentication failure stops redundant channel-home probes for that route, and
 the final error aggregates the routes/runtimes that were actually attempted.
 
-After connecting, the desktop persists the active remote project to `globalState.lastRemoteProjectBinding` and records it in the unified recent-project list with target id, project id, runtime name, and hostname. Remote recents are keyed as `remote:<targetId>:<projectId>`, so a remote project can share a path string with a local checkout without colliding; the welcome screen can reconnect/open the remote row directly from that metadata. Each target also persists an explicit `autoConnect` preference: a successful Connect enables it, and Disconnect disables it. Only targets with that preference enabled reconnect at launch or after wake; an explicit failed Connect does not change the saved preference. After 10 implicit failures ADE pauses retries until the user presses Connect, which resets the retry budget without bypassing SSH or pairing authentication.
+After connecting, the desktop persists the active remote project to `globalState.lastRemoteProjectBinding` and records it in the unified recent-project list with target id, project id, runtime name, and hostname. Remote recents are keyed as `remote:<targetId>:<projectId>`, so a remote project can share a path string with a local checkout without colliding; the welcome screen can reconnect/open the remote row directly from that metadata. Each target also persists an explicit `autoConnect` preference: a successful Connect enables it, and Disconnect disables it. Only targets with that preference enabled reconnect at launch or after wake; an explicit failed Connect does not change the saved preference. Implicit retries use bounded exponential backoff from 30 s through 5 minutes and remain eligible after repeated failures. Pressing Connect bypasses the current backoff without bypassing SSH or pairing authentication.
 
 Per-channel layout: builds with `ADE_PACKAGE_CHANNEL=alpha|beta` upload to `~/.ade-alpha/` or `~/.ade-beta/` instead of `~/.ade/` so a remote machine can host stable, beta, and alpha runtimes side by side. Runtime binaries, native deps, PTY workers, and bundled ADE agent skills all live under the selected home. Remote compatibility launches keep `ADE_DISABLE_RUNTIME_SERVICE_INSTALL=1` so remote probes do not fight the user's login service.
 
@@ -1228,7 +1233,7 @@ diagnostics with `ADE_ENABLE_DESKTOP_SYNC_HOST=1`.
 
 - `Remote target was not found` — the saved target was removed or the UI has a stale selection. Refresh the target list.
 - `Remote machine was manually disconnected. Connect again to use this remote project.` — the user explicitly disconnected the target; ADE will not implicitly reconnect or restore it until Connect is pressed.
-- `ADE stopped automatic reconnecting after 10 failed attempts. Press Connect to try again.` — implicit reconnects were paused after repeated failures so the renderer does not keep hammering SSH.
+- `Remote ADE service connection failed.` — the target is currently unreachable or its route failed. Automatic reconnects continue with bounded backoff; press Connect to bypass the current backoff when you want an immediate retry.
 - `SSH server at <host:port> closed the connection before ADE could finish the SSH handshake` — the TCP route opened but the server reset or closed the SSH handshake. Check Remote Login/sshd, firewall rules, and Tailscale SSH policy.
 - `ADE service is not installed ... no bundled ADE service is available` — install or build `ade` on the remote, or use a release build that includes runtime resources for the remote architecture.
 - `Uploaded ADE service version mismatch: expected X, got Y` — the uploaded binary did not report the expected runtime version. Rebuild the static runtime artifacts for the current desktop version.

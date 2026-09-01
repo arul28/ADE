@@ -84,6 +84,40 @@ export type DiagnosticReportContext = {
   projectRoot?: string | null;
 };
 
+export type DiagnosticRemoteMachineState =
+  | "idle"
+  | "connecting"
+  | "connected"
+  | "parked"
+  | "error"
+  | "unknown";
+
+export type DiagnosticRemoteMachineRoute = "lan" | "tailnet" | "relay" | "ssh" | "unknown";
+
+export type DiagnosticRemoteMachineError =
+  | "disk_full"
+  | "authentication"
+  | "pairing"
+  | "timeout"
+  | "unreachable"
+  | "unsupported"
+  | "generic"
+  | "unknown";
+
+/** Privacy-safe remote-runtime state. It intentionally contains no names, ids, paths, hosts, or error text. */
+export type DiagnosticRemoteMachine = {
+  state: DiagnosticRemoteMachineState;
+  route: DiagnosticRemoteMachineRoute;
+  projectCount: number;
+  error: DiagnosticRemoteMachineError | null;
+};
+
+export type DiagnosticRemoteMachines = {
+  configuredCount: number;
+  connectedCount: number;
+  machines: readonly DiagnosticRemoteMachine[];
+};
+
 export type DiagnosticReportInput = {
   generatedAt: string;
   app: {
@@ -117,6 +151,7 @@ export type DiagnosticReportInput = {
     recoveryDiagnosis?: unknown;
     updateTransaction?: unknown;
   };
+  remoteMachines?: DiagnosticRemoteMachines | null;
   storage?: readonly DiagnosticVolumeSpace[];
   /**
    * How the reported directories are stored, rather than how full they are.
@@ -418,6 +453,88 @@ function optionalBullet(label: string, value: unknown): string | null {
   return bullet(label, value);
 }
 
+const DIAGNOSTIC_REMOTE_MACHINE_STATES = new Set<DiagnosticRemoteMachineState>([
+  "idle",
+  "connecting",
+  "connected",
+  "parked",
+  "error",
+]);
+const DIAGNOSTIC_REMOTE_MACHINE_ROUTES = new Set<DiagnosticRemoteMachineRoute>([
+  "lan",
+  "tailnet",
+  "relay",
+  "ssh",
+]);
+
+function recordValue(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
+}
+
+function diagnosticRemoteErrorKind(connection: Record<string, unknown>): DiagnosticRemoteMachineError | null {
+  const info = recordValue(connection.lastErrorInfo);
+  const failure = info?.failure;
+  if (failure === "timeout") return "timeout";
+  if (failure === "unreachable") return "unreachable";
+  if (failure === "authentication" || info?.kind === "auth_required" || info?.kind === "ssh_auth") {
+    return "authentication";
+  }
+  if (failure === "pairing") return "pairing";
+  if (info?.kind === "disk_full") return "disk_full";
+  if (info?.kind === "unsupported_os") return "unsupported";
+  if (info?.kind === "generic") return "generic";
+
+  const raw = [info?.kind, connection.lastError]
+    .filter((value): value is string => typeof value === "string")
+    .join(" ")
+    .toLowerCase();
+  if (!raw.trim()) return null;
+  if (/timeout|timed out/.test(raw)) return "timeout";
+  if (/unreachable|connection (?:was )?(?:interrupted|closed|lost)|socket closed|econn|epipe|enotconn/.test(raw)) {
+    return "unreachable";
+  }
+  if (/auth|sign in|credential|permission denied/.test(raw)) return "authentication";
+  if (/pair/.test(raw)) return "pairing";
+  if (/disk|no space|enospc/.test(raw)) return "disk_full";
+  if (/unsupported/.test(raw)) return "unsupported";
+  return "unknown";
+}
+
+/**
+ * Converts the live remote-runtime snapshot into a bounded, redacted report
+ * section. Keep this at the shared report boundary so the desktop and CLI can
+ * never accidentally render target names or raw connection errors.
+ */
+export function summarizeDiagnosticRemoteMachines(value: unknown): DiagnosticRemoteMachines | null {
+  const snapshot = recordValue(value);
+  if (!snapshot || !Array.isArray(snapshot.connections)) return null;
+  const machines = snapshot.connections.slice(0, 1_000).map((entry): DiagnosticRemoteMachine => {
+    const connection = recordValue(entry) ?? {};
+    const rawState = connection.state;
+    const state = typeof rawState === "string" && DIAGNOSTIC_REMOTE_MACHINE_STATES.has(rawState as DiagnosticRemoteMachineState)
+      ? rawState as DiagnosticRemoteMachineState
+      : "unknown";
+    const route = recordValue(connection.route)?.kind;
+    const routeKind = typeof route === "string" && DIAGNOSTIC_REMOTE_MACHINE_ROUTES.has(route as DiagnosticRemoteMachineRoute)
+      ? route as DiagnosticRemoteMachineRoute
+      : "unknown";
+    const projects = Array.isArray(connection.projects) ? connection.projects.length : 0;
+    return {
+      state,
+      route: routeKind,
+      projectCount: Math.min(1_000, Math.max(0, projects)),
+      error: diagnosticRemoteErrorKind(connection),
+    };
+  });
+  return {
+    configuredCount: machines.length,
+    connectedCount: machines.filter((machine) => machine.state === "connected").length,
+    machines,
+  };
+}
+
 function lines(...values: (string | null)[]): string {
   return values.filter((value): value is string => value != null).join("\n");
 }
@@ -500,6 +617,20 @@ function storageEnvironmentBlock(
     .join("\n");
 }
 
+function remoteMachinesBlock(
+  remoteMachines: DiagnosticReportInput["remoteMachines"],
+): string | null {
+  if (!remoteMachines) return null;
+  const rows = remoteMachines.machines.map((machine, index) =>
+    `- Machine ${index + 1}: state=${machine.state}; route=${machine.route}; projects=${machine.projectCount}; error=${machine.error ?? "none"}`,
+  );
+  return lines(
+    bullet("Configured", remoteMachines.configuredCount),
+    bullet("Connected", remoteMachines.connectedCount),
+    ...rows,
+  );
+}
+
 /**
  * Renders the Markdown report, then redacts the whole thing. Redaction runs on
  * the assembled text rather than per-field on purpose: a future section cannot
@@ -564,6 +695,7 @@ export function buildDiagnosticReport(input: DiagnosticReportInput): string {
   parts.push(section("Last failure (project)", state.projectLastFailure == null ? null : jsonBlock(state.projectLastFailure)));
   parts.push(section("Last wedge", state.lastWedge == null ? null : jsonBlock(state.lastWedge)));
   parts.push(section("Update transaction", state.updateTransaction == null ? null : jsonBlock(state.updateTransaction)));
+  parts.push(section("Remote machines", remoteMachinesBlock(input.remoteMachines)));
 
   const storage = input.storage ?? [];
   parts.push(

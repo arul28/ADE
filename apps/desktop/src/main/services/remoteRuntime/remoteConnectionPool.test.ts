@@ -32,7 +32,10 @@ vi.mock("./sshTransport", () => ({
   getSshHostKeyTrustForTarget: getSshHostKeyTrustForTargetMock,
 }));
 
-import { RemoteConnectionPool } from "./remoteConnectionPool";
+import {
+  REMOTE_RUNTIME_STREAM_EVENTS_TIMEOUT_MS,
+  RemoteConnectionPool,
+} from "./remoteConnectionPool";
 import {
   PairedRuntimeCompatibilityError,
   PairedRuntimeRelayAuthRequiredError,
@@ -915,7 +918,7 @@ describe("RemoteConnectionPool", () => {
         cursor: 1,
         limit: 10,
       },
-    });
+    }, { timeoutMs: REMOTE_RUNTIME_STREAM_EVENTS_TIMEOUT_MS });
 
     firstClient.emitDisconnect(new Error("lost"));
 
@@ -938,6 +941,46 @@ describe("RemoteConnectionPool", () => {
       nextCursor: 2,
       events: [],
     });
+    expect(bootstrapRemoteRuntimeMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("reconnects a stream after its bounded transport timeout", async () => {
+    const firstClient = createClient();
+    firstClient.call.mockRejectedValueOnce(
+      new Error(
+        `Remote ADE service timed out waiting for method ade/actions/call (${REMOTE_RUNTIME_STREAM_EVENTS_TIMEOUT_MS}ms).`,
+      ),
+    );
+    bootstrapRemoteRuntimeMock.mockResolvedValueOnce({
+      client: firstClient,
+      ssh: createSsh(),
+      result: connectResult("1.0.0"),
+    });
+
+    const secondClient = createClient();
+    secondClient.call.mockResolvedValueOnce({
+      ok: true,
+      events: [],
+      nextCursor: 4,
+      hasMore: false,
+    });
+    bootstrapRemoteRuntimeMock.mockResolvedValueOnce({
+      client: secondClient,
+      ssh: createSsh(),
+      result: connectResult("1.0.1"),
+    });
+
+    const pool = new RemoteConnectionPool({ get: () => null } as unknown as RemoteTargetRegistry, "1.0.0");
+
+    await expect(
+      pool.streamEventsForTarget(target, "project-1", { cursor: 3 }),
+    ).resolves.toMatchObject({ nextCursor: 4, events: [] });
+
+    expect(firstClient.call).toHaveBeenCalledWith(
+      "ade/actions/call",
+      expect.objectContaining({ name: "stream_events" }),
+      { timeoutMs: REMOTE_RUNTIME_STREAM_EVENTS_TIMEOUT_MS },
+    );
     expect(bootstrapRemoteRuntimeMock).toHaveBeenCalledTimes(2);
   });
 
@@ -1869,7 +1912,7 @@ describe("RemoteConnectionPool", () => {
       limit: 10,
       category: "pty",
       replay: false,
-    });
+    }, { timeoutMs: REMOTE_RUNTIME_STREAM_EVENTS_TIMEOUT_MS });
     expect(onEvent).toHaveBeenCalledTimes(1);
     expect(onEvent).toHaveBeenCalledWith({
       id: 12,

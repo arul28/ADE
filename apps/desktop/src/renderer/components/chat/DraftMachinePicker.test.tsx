@@ -69,4 +69,44 @@ describe("DraftMachinePicker", () => {
     expect(await screen.findByText("Parallel models runs locally.")).toBeTruthy();
     expect(cloudRow.getAttribute("aria-checked")).toBe("false");
   });
+
+  it("keeps the recovery picker visible when the selected machine disappeared", () => {
+    const onChange = vi.fn();
+    render(
+      <DraftMachinePicker
+        machines={[LOCAL]}
+        selectedMachineId="studio"
+        onChange={onChange}
+      />,
+    );
+
+    const trigger = screen.getByRole("button", {
+      name: /current machine unavailable; fallback This computer/i,
+    });
+    fireEvent.click(trigger);
+
+    const localRow = screen.getByRole("menuitemradio", { name: /This computer/ });
+    expect(localRow).toBeTruthy();
+    fireEvent.click(localRow);
+    expect(onChange).toHaveBeenCalledWith(LOCAL.id);
+  });
+
+  it("keeps the recovery picker visible when the selected machine is unavailable", () => {
+    const onChange = vi.fn();
+    render(
+      <DraftMachinePicker
+        machines={[{ ...LOCAL, unavailableReason: "The machine is offline." }]}
+        selectedMachineId={LOCAL.id}
+        onChange={onChange}
+      />,
+    );
+
+    const trigger = screen.getByRole("button", {
+      name: /current machine unavailable; fallback This computer/i,
+    });
+    fireEvent.click(trigger);
+
+    expect(screen.getByRole("menuitemradio", { name: /This computer/ })).toBeTruthy();
+    expect(onChange).not.toHaveBeenCalled();
+  });
 });

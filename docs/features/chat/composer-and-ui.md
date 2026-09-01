@@ -87,7 +87,11 @@ Cross-machine Work drafts do not rebind the project tab. `AgentChatPane` freezes
 the selected `OpenProjectBinding` and uses it for model/auth discovery, slash
 commands, file search, attachments, parallel launch state, lane/chat creation,
 rollback, and recovery. A selected binding that is unresolved or disconnected
-fails closed instead of silently using the tab's machine. Changing the selected
+falls back to the bound/This computer machine after the catalog resolves, so a
+disconnected Studio cannot block local sends or attachments. While the catalog
+is loading, the persisted selection is preserved; when it is unavailable after
+resolution, the picker remains visible even with one machine and offers an
+unavailable row plus **Use this computer**. Changing the selected
 machine within the same draft copies local image attachments to the new runtime
 and keeps portable image URLs. Non-image files and machine-owned tool context
 are removed because their paths cannot cross runtimes safely. Sending waits for

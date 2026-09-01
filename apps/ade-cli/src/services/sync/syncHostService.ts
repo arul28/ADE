@@ -486,7 +486,11 @@ export function isRuntimeOnlySyncPeer(args: {
 }
 
 const DEFAULT_SYNC_HEARTBEAT_INTERVAL_MS = 60_000;
-const DEFAULT_SYNC_HEARTBEAT_MISS_LIMIT = 2;
+// Desktop peers can legitimately disappear for a short laptop sleep. Keep the
+// timeout finite so dead peers are still reclaimed, but give them the same
+// four-minute floor used for a normal wake/reconnect cycle rather than dropping
+// them after only two minutes.
+const DEFAULT_SYNC_HEARTBEAT_MISS_LIMIT = 4;
 const MOBILE_SYNC_HEARTBEAT_MISS_LIMIT = 6;
 const DEFAULT_SYNC_POLL_INTERVAL_MS = 400;
 const DEFAULT_BRAIN_STATUS_INTERVAL_MS = 5_000;
@@ -2983,6 +2987,17 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       if (peer.awaitingHeartbeatAt) {
         peer.missedHeartbeatCount += 1;
         if (peer.missedHeartbeatCount >= syncHeartbeatMissLimitForPeerMetadata(peer.metadata)) {
+          args.logger.warn("sync_host.heartbeat_timeout", {
+            peerDeviceId: peer.metadata?.deviceId ?? null,
+            platform: peer.metadata?.platform ?? null,
+            deviceType: peer.metadata?.deviceType ?? null,
+            missedHeartbeatCount: peer.missedHeartbeatCount,
+            heartbeatIntervalMs,
+            graceMs: heartbeatIntervalMs * syncHeartbeatMissLimitForPeerMetadata(peer.metadata),
+            lastSeenAt: peer.lastSeenAt,
+          });
+          peer.awaitingHeartbeatAt = null;
+          peer.missedHeartbeatCount = 0;
           try {
             peer.ws.close(4001, "Heartbeat timed out");
           } catch {

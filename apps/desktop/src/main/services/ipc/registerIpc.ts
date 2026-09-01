@@ -4729,6 +4729,7 @@ export function registerIpc({
         installId: productAnalyticsService?.getDistinctId() ?? null,
         accountUserId: getCurrentAccountOwnerId?.() ?? null,
         getLocalRuntimeStatus: () => localRuntimeConnectionPool?.getStatus() ?? null,
+        getRemoteRuntimeSnapshot: () => runtimeBridge.snapshot(),
         diagnoseProject: projectRecoveryService
           ? (root: string) => projectRecoveryService.diagnose(root)
           : undefined,

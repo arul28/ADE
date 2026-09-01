@@ -60,6 +60,7 @@ import {
   selectChangesetBatchChunk,
   staleAdeTailnetServePorts,
   syncConnectionTransportForOrigin,
+  syncHeartbeatMissLimitForPeerMetadata,
 } from "./syncHostService";
 import { createBrainProjectActionsSyncHandler } from "./brainProjectActionsSyncHandler";
 import {
@@ -92,6 +93,19 @@ import {
   verifyEd25519,
 } from "../../../../desktop/src/shared/sync/adoptChannelCrypto";
 import { createMachineIdentitySigningStore } from "./machineIdentitySigningStore";
+
+describe("syncHeartbeatMissLimitForPeerMetadata", () => {
+  it("gives desktop peers a four-minute sleep grace and keeps the mobile grace", () => {
+    expect(syncHeartbeatMissLimitForPeerMetadata({
+      platform: "macOS",
+      deviceType: "desktop",
+    })).toBe(4);
+    expect(syncHeartbeatMissLimitForPeerMetadata({
+      platform: "iOS",
+      deviceType: "phone",
+    })).toBe(6);
+  });
+});
 
 // The sync host now binds to all interfaces (0.0.0.0) by default so phones on
 // the LAN can reach it. These tests assert the LOOPBACK-only posture (no LAN
