@@ -11804,15 +11804,15 @@ export function AgentChatPane({
   const canUseThisComputerForDraft = laneMachineOptions.some(
     (option) => option.id === THIS_MACHINE_ID,
   );
+  const draftMachineRecoveryAvailable = draftMachineUnavailable && canUseThisComputerForDraft;
   /**
    * Cursor Cloud rides in the machine picker because "where does this run" is one question. It
    * appears whenever Cursor is connected and this draft could launch there; picking it is cloud
    * mode, and picking any real machine leaves it.
    */
   const draftShelfMachineOptions = useMemo<DraftMachineOption[]>(() => {
-    const unavailableMachine = canUseThisComputerForDraft && draftMachineUnavailable
+    const unavailableMachine = draftMachineRecoveryAvailable
       && selectedDraftMachineId
-      && !laneMachineOptions.some((option) => option.id === selectedDraftMachineId)
       ? {
           id: selectedDraftMachineId,
           name: "Unavailable machine",
@@ -11846,10 +11846,9 @@ export function AgentChatPane({
     ];
   }, [
     boundLaneMachineId,
-    canUseThisComputerForDraft,
     cursorCloudCanLaunch,
     cursorCloudUnavailableReason,
-    draftMachineUnavailable,
+    draftMachineRecoveryAvailable,
     laneMachineOptions,
     parallelChatMode,
     selectedDraftMachineId,
@@ -13115,7 +13114,7 @@ export function AgentChatPane({
             cursorRuntime={cursorRuntime}
             modelRuntimePin={activeComposerRuntimeBinding}
             attachmentPersistenceUnavailableReason={draftAttachmentUnavailableReason}
-            onUseThisComputer={draftMachineUnavailable && canUseThisComputerForDraft
+            onUseThisComputer={draftMachineRecoveryAvailable
               ? useThisComputerForDraft
               : undefined}
             contextAttachments={contextAttachments}
@@ -13847,7 +13846,7 @@ export function AgentChatPane({
         {error ? (
           <div className="flex flex-wrap items-center justify-between gap-2 border-b border-red-500/[0.08] bg-red-500/[0.03] px-4 py-2.5 font-sans text-[11px] text-red-300/80">
             <span className="min-w-0 flex-1 break-words">{error}</span>
-            {draftMachineUnavailable && canUseThisComputerForDraft ? (
+            {draftMachineRecoveryAvailable ? (
               <button
                 type="button"
                 className="shrink-0 rounded-md border border-red-300/15 px-2 py-0.5 font-medium text-red-50/90 transition-colors hover:bg-red-300/[0.12]"
