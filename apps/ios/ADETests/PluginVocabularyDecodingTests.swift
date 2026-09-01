@@ -1457,9 +1457,16 @@ final class PluginVocabularyDecodingTests: XCTestCase {
     XCTAssertTrue(index.toolbarActions(.prs).isEmpty, "A declaration renders on the surface it named.")
   }
 
-  /// A manifest badge says "I badge lanes", not "I badge lane 7", so it applies
-  /// to every lane until a published row fills it in.
-  func testAPerEntityDeclarationAppliesToEveryEntityOfItsSurfacesKind() {
+  /// A manifest badge RESERVES THE SLOT AND DRAWS NOTHING, which is bug B4 in
+  /// the dogfood ledger: a badge is a value ABOUT one entity, and a manifest
+  /// cannot know one. The journal plugin declared `label: "0"` and every lane in
+  /// the list wore a `0` chip forever, because there is no label that reads
+  /// acceptably as "nothing to say about this row yet".
+  ///
+  /// The declaration is still built and still matched against — that is what
+  /// ``testAPublishedRowReplacesTheDeclarationItFillsForThatEntityOnly`` covers.
+  /// Only the drawing stops.
+  func testAPerEntityDeclarationDrawsNothingUntilAPublishedRowFillsIt() {
     let index = PluginContributionIndex(
       contributions: [],
       declarations: PluginSocketDeclarations(records: [
@@ -1469,11 +1476,10 @@ final class PluginVocabularyDecodingTests: XCTestCase {
       ])
     )
     for laneId in ["lane-1", "lane-2", "lane-3"] {
-      let badges = index.badges(.lane, laneId)
-      XCTAssertEqual(badges.visible.count, 1, "every lane carries the declaration")
-      XCTAssertEqual(badges.visible.first?.badge?.text, "Risk")
-      // A manifest badge has no value of its own yet, so it is neutral.
-      XCTAssertEqual(badges.visible.first?.badge?.tone, .neutral)
+      XCTAssertTrue(
+        index.badges(.lane, laneId).isEmpty,
+        "no lane wears a chip the manifest invented"
+      )
     }
     XCTAssertTrue(index.badges(.pr, "42").isEmpty, "Lanes declarations do not reach PR rows.")
   }
@@ -1499,8 +1505,13 @@ final class PluginVocabularyDecodingTests: XCTestCase {
     XCTAssertEqual(filled.visible.first?.badge?.text, "82%")
     XCTAssertFalse(filled.visible.first?.isDeclaration == true)
 
-    let untouched = index.badges(.lane, "lane-2")
-    XCTAssertEqual(untouched.visible.first?.badge?.text, "Risk", "Another lane still shows the declaration.")
+    // B4: the declaration reserves lane-2's slot but draws nothing in it, so the
+    // lane the plugin has said nothing about yet stays bare rather than wearing
+    // the manifest's placeholder label.
+    XCTAssertTrue(
+      index.badges(.lane, "lane-2").isEmpty,
+      "Another lane shows nothing until its own row is published."
+    )
   }
 
   /// Matching on the plugin alone would delete the declarations a plugin had
@@ -1547,9 +1558,13 @@ final class PluginVocabularyDecodingTests: XCTestCase {
         ]),
       ])
     )
-    let badges = index.badges(.lane, "lane-1")
-    XCTAssertEqual(badges.visible.count, 2, "Both declarations stand; the unresolvable row does not.")
-    XCTAssertEqual(Set(badges.visible.compactMap { $0.badge?.text }), ["Risk", "Age"])
+    // The row drops because it cannot be matched, and the two declarations draw
+    // nothing of their own under B4 — so the lane ends up bare. What this test
+    // holds is that the ambiguous row is NOT guessed onto one of the two.
+    XCTAssertTrue(
+      index.badges(.lane, "lane-1").isEmpty,
+      "The unresolvable row drops rather than being guessed onto a declaration."
+    )
   }
 
   /// Ambiguity is per SURFACE, as the host computes it.
@@ -1600,10 +1615,9 @@ final class PluginVocabularyDecodingTests: XCTestCase {
       ])
     )
 
-    XCTAssertEqual(
-      Set(index.badges(.pr, "916").visible.compactMap { $0.badge?.text }),
-      ["Risk", "Age"],
-      "The unresolvable row drops; both declarations stand."
+    XCTAssertTrue(
+      index.badges(.pr, "916").isEmpty,
+      "The unresolvable row drops; the two declarations draw nothing of their own."
     )
   }
 
@@ -2015,14 +2029,22 @@ final class PluginVocabularyDecodingTests: XCTestCase {
       ])
       let resolved = declarations.surfaceScoped.count
         + declarations.wildcardByEntityKind.values.reduce(0) { $0 + $1.count }
+      // `row-badge` is the ONE deliberate `return nil` this guard must tolerate,
+      // and it is written down here so it cannot be confused with the silent
+      // drop the test exists to catch. Dogfood bug B4: a badge is a value ABOUT
+      // one entity and a manifest cannot know one, so a manifest badge reserves
+      // the slot and draws nothing. Its declaration is still built and still
+      // matched against a published row — only the drawing stops. Every other
+      // `ios: true` kind must still resolve exactly one contribution.
+      let expected = entry.kind == "row-badge" ? 0 : 1
       XCTAssertEqual(
         resolved,
-        1,
+        expected,
         """
         `\(entry.kind)` is ios: true in PLUGIN_SOCKET_CLIENT_SUPPORT but resolved \
-        no contribution from a minimal declaration. Either its arm in \
-        PluginSocketDeclarations.payload(for:wire:) regressed, or the parity \
-        table now claims a kind this client does not render.
+        \(resolved) contributions from a minimal declaration, not \(expected). \
+        Either its arm in PluginSocketDeclarations.payload(for:wire:) regressed, \
+        or the parity table now claims a kind this client does not render.
         """
       )
     }
@@ -4577,7 +4599,15 @@ final class PluginPaneNavigationTests: XCTestCase {
   /// could plausibly remember walking through.
   func testTheStackIsCappedAndDropsTheOldestEntry() {
     let sync = FakeSync()
+    // Every destination is in the mirror. `makeStore` builds a pane with
+    // `fetchesMissingRows: false`, and such a pane redirects a request it has no
+    // row for back to `panels.first` — so navigating to panels the mirror never
+    // heard of would leave the reader on `stories` and push `stories` twenty
+    // times, which measures the redirect rather than the cap.
     sync.localPanels = [record(panelId: "stories", title: "Stories", schemaJSON: Self.listSchema)]
+      + (0..<20).map {
+        record(panelId: "panel-\($0)", title: "Panel \($0)", schemaJSON: Self.listSchema)
+      }
     let store = makeStore(sync)
     store.load()
 
