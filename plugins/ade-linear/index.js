@@ -18,10 +18,12 @@
 //   * the nine agent tools, the five automation triggers, the four steps, the
 //     search provider and the CLI word are all manifest registrations.
 //
-// `official: true` buys this package exactly two things: the `builtin: "linear"`
-// gate on the pane (which is the extraction's own scaffolding and goes away
-// when core does) and the relaxation that lets it claim `linear.app` in a URL
-// matcher. Everything else a community author could write.
+// `official: true` buys this package exactly two things: the credential handoff
+// and the official OAuth client broker — both gated on ADE owning the `linear`
+// builtin surface — plus the relaxation that lets it claim `linear.app` in a URL
+// matcher. It does NOT buy a pane: the manifest declares an ordinary `tab` with
+// no `builtin` field, and `parseSurfaces` would ignore one if it were there.
+// Everything else a community author could write.
 //
 // ## Where the work happens
 //
@@ -40,9 +42,9 @@
 
 "use strict";
 
-const { createLinearApi, isMissingTokenError } = require("./linearApi");
+const { createLinearApi } = require("./linearApi");
 const { createData } = require("./data");
-const { createFlows, parseGithubRemote } = require("./flows");
+const { createFlows } = require("./flows");
 const { issueBranchName, issueLaneName } = require("./issueFormat");
 const { createConnect } = require("./connect");
 const { createAutomation } = require("./automation");
@@ -50,6 +52,11 @@ const { createWebhookHandler } = require("./webhook");
 const panels = require("./panels");
 const panelActions = require("./panelActions");
 const { issueIdFromRowKey } = require("./panels/rows");
+const { createOwnActions } = require("./actions");
+// The comment key space, from the file that BUILDS it. A second spelling here
+// renders as an empty comment list rather than as an error — which is the exact
+// bug class `panels/contract.js` opens by naming.
+const { COLLECTION_COMMENTS, commentKeyPrefix } = require("./panels/contract");
 
 /** Attempts to publish a panel before giving up until the next action. */
 const PUBLISH_ATTEMPTS = 5;
@@ -80,13 +87,34 @@ const PERMISSION_MODES = [
   { value: "full-auto", label: "Full auto" },
 ];
 
+/**
+ * The reasoning-effort choices, with a SENTINEL for "whatever the model does".
+ *
+ * `"default"` and not `""`. An empty option value looks right — it is the
+ * absence of a choice — and a `segmented` control does accept one. A form
+ * SELECT does not: `vocabString("")` answers `undefined`, the option is
+ * dropped, and `readSelect` then fails the WHOLE field, so the "Reasoning
+ * effort" row silently did not render on any client.
+ *
+ * The sentinel is mapped back to "send nothing" in
+ * {@link REASONING_EFFORT_DEFAULT}'s one reader, so what reaches the provider
+ * is unchanged.
+ */
+const REASONING_EFFORT_DEFAULT = "default";
+
 const REASONING_EFFORTS = [
-  { value: "", label: "Default" },
+  { value: REASONING_EFFORT_DEFAULT, label: "Default" },
   { value: "low", label: "Low" },
   { value: "medium", label: "Medium" },
   { value: "high", label: "High" },
   { value: "xhigh", label: "Extra high" },
 ];
+
+/** The reader's choice, or `null` for the sentinel and for nothing at all. */
+function chosenReasoningEffort(value) {
+  const text = typeof value === "string" ? value.trim() : "";
+  return text && text !== REASONING_EFFORT_DEFAULT ? text : null;
+}
 
 let sdk = null;
 let api = null;
@@ -217,6 +245,7 @@ function filtersActive(filters = {}) {
     (filters.stateTab && filters.stateTab !== "all")
     || filters.projectId
     || filters.assigneeId
+    || filters.teamKey
     || (filters.priority !== undefined && filters.priority !== null && filters.priority !== "")
     || filters.updated
     || (filters.sort && filters.sort !== "updated_desc")
@@ -243,6 +272,7 @@ const STORED_FILTER_NAMES = Object.freeze({
   assignee: "assigneeId",
   priority: "priority",
   sort: "sort",
+  team: "teamKey",
   updated: "updated",
   view: "view",
 });
@@ -335,6 +365,7 @@ async function viewFor(panelId, context) {
       hasProjects: filters.hasProjects === true,
       hasPeople: filters.hasPeople === true,
       hasTeams: (snapshot.counts.teams ?? 0) > 1,
+      teamKey: filters.teamKey || null,
       filtersActive: filtersActive(filters),
       workspace: connection?.organizationName ?? null,
       age: ago(snapshot.updatedAt),
@@ -356,7 +387,7 @@ async function viewFor(panelId, context) {
       return { state: "detail", issue: null, error: snapshot.error ?? null };
     }
     const rows = await sdk.collections
-      .list("comments", { keyPrefix: `comment:${issue.id}:`, limit: 60 })
+      .list(COLLECTION_COMMENTS, { keyPrefix: commentKeyPrefix(issue.id), limit: 60 })
       .catch(() => []);
     return {
       state: "detail",
@@ -413,7 +444,7 @@ async function viewFor(panelId, context) {
       // default the provider would take — so `null` here is a choice, not a
       // hole.
       permissionMode: null,
-      reasoningEffort: null,
+      reasoningEffort: REASONING_EFFORT_DEFAULT,
       fastMode: false,
       sessionType: laneOnly ? "laneOnly" : "chat",
       // The two names derived from the issue, shown before the reader commits.
@@ -489,13 +520,24 @@ async function viewFor(panelId, context) {
       // that will never be posted to. Saying "ready" there would be the same
       // failure the fail-closed copy exists to prevent.
       //
+      // Nor may it say "ready" while the SECRET is missing. The manifest
+      // declares `verify`, and the host fails closed on a channel whose secret
+      // it cannot find — so with nothing stored, every delivery Linear sends is
+      // dropped before this plugin sees it. "Endpoint ready" there was the
+      // most misleading sentence on the screen: the endpoint exists, the
+      // deliveries arrive, and none of them count.
+      //
       // Whether deliveries are actually ARRIVING needs the host's delivery
       // ledger, and no SDK verb exposes it — which is why `lastEvent` is null
       // rather than a guess. That gap is in the report.
       ingress: connection?.webhookUrl
         ? {
-          status: webhooksPossible ? "Endpoint ready" : "Linear will not deliver to this connection",
-          tone: webhooksPossible ? "neutral" : "warning",
+          status: !webhooksPossible
+            ? "Linear will not deliver to this connection"
+            : secretStored
+              ? "Endpoint ready"
+              : "Waiting for the signing secret",
+          tone: webhooksPossible && secretStored ? "neutral" : "warning",
           lastEvent: null,
           url: connection.webhookUrl,
           secretStored,
@@ -766,7 +808,12 @@ function buildPanelHost() {
           ...(args?.sessionType ? { sessionType: args.sessionType } : {}),
           ...(args?.provider ? { provider: args.provider } : {}),
           ...(args?.model ? { model: args.model } : {}),
-          ...(args?.reasoningEffort ? { reasoningEffort: args.reasoningEffort } : {}),
+          // Through `chosenReasoningEffort`, so the form's "Default" sentinel
+          // becomes the absence of the field rather than a literal
+          // `reasoningEffort: "default"` no provider knows.
+          ...(chosenReasoningEffort(args?.reasoningEffort)
+            ? { reasoningEffort: chosenReasoningEffort(args.reasoningEffort) }
+            : {}),
           ...(args?.permissionMode ? { permissionMode: args.permissionMode } : {}),
           ...(typeof args?.fastMode === "boolean" ? { fastMode: args.fastMode } : {}),
         });
@@ -922,8 +969,14 @@ exports.activate = async (ade) => {
   }));
 
   // A lane that appeared or left changes which issues carry a `hasLane` badge.
+  // `ensureIssues`, not `refreshIssues`: this fires on every lane change, and
+  // the uncached read is up to three paginated GraphQL requests plus ~750
+  // collection writes plus two publishes. `createLaneFromIssue` emits a lane
+  // change AND refreshes directly, so one lane creation was paying for two full
+  // reads. What actually changed here is which issues carry a lane badge, and
+  // that is what the badge publish redraws.
   subscriptions.push(sdk.events.on("lane.changed", () => {
-    void refreshIssues().then(() => publishLaneBadges()).catch(() => {});
+    void ensureIssues().then(() => publishLaneBadges()).catch(() => {});
   }));
 
   // The merged-PR transition. The WHOLE payload goes through, not just `ids`:
@@ -958,25 +1011,6 @@ exports.activate = async (ade) => {
 };
 
 /**
- * `owner/repo` for the settings panel's autolink card.
- *
- * Read once per full refresh rather than per publish: the origin remote does
- * not change while ADE is open, and the settings panel is republished on every
- * connection change.
- */
-async function readGithubRepo() {
-  try {
-    const result = await sdk.actions.invoke("git", "getOriginRemote", {});
-    const remote = typeof result === "string" ? result : result?.url ?? result?.remote ?? null;
-    const repo = parseGithubRemote(remote);
-    githubRepoSlug = repo ? `${repo.owner}/${repo.name}` : null;
-  } catch {
-    // No git, no project, or no origin. The card says so; it is not a failure.
-    githubRepoSlug = null;
-  }
-}
-
-/**
  * The connection, then the near-static catalog, then the issues.
  *
  * In that order and not in parallel: the catalog read tells the connection
@@ -993,7 +1027,12 @@ async function refreshCatalogAndIssues() {
   }
   await data.refreshCatalog(null).catch(() => {});
   await data.buildAutolinks(connection.organizationUrlKey ?? null).catch(() => {});
-  await readGithubRepo();
+  // Through `flows.githubRepo`, which is the same read: this half had its own
+  // copy that parsed a narrower set of result fields, so the two disagreed
+  // about a host that answers `{originRemote}` and the autolink card said "no
+  // repo" for a project that plainly had one.
+  const repo = await flows.githubRepo().catch(() => null);
+  githubRepoSlug = repo ? `${repo.owner}/${repo.name}` : null;
   const result = await refreshIssues();
   await publishLaneBadges().catch(() => {});
   return result;
@@ -1018,272 +1057,28 @@ exports.deactivate = async () => {
   webhook = null;
 };
 
+
 /* ── Actions ─────────────────────────────────────────────────────────────── */
 
-/** One sentence for whatever Linear refused, worded for a banner. */
-function failureMessage(error, fallback) {
-  if (isMissingTokenError(error)) return "Connect Linear in Settings → Linear.";
-  return error?.message ?? fallback;
-}
-
 /**
- * The action table.
+ * The handlers the MANIFEST dispatches, from the file that holds them.
  *
- * `panelActions.bind(host)` RETURNS the panel half's handler table — there is
- * no `panelActions.actions` export to spread, and `{...undefined}` is legal, so
- * reaching for one would have registered nothing and thrown nowhere. `activate`
- * assigns the returned table and then re-applies this one over it, which is
- * what keeps the three refresh ids the data half's: `plugin.json` names them on
- * `refreshAction` and this half is what performs them.
+ * Built at LOAD, with `deps` reading this module's live bindings through
+ * getters: they are null until `activate` runs, and a table that captured them
+ * by value would capture the null. See `actions.js`.
  */
-const ownActions = {
-  /* ── Refresh, named by the manifest's `refreshAction` fields ─────────── */
-
-  /** The issue panel's refresh gesture, the empty state's retry, and the CLI's. */
-  async refreshIssues(args) {
-    const result = await refreshIssues({ ...(args?.limit ? { limit: args.limit } : {}) });
-    if (result.state === "no-token") return { message: "Connect Linear in Settings → Linear.", ok: false };
-    if (result.state === "error") return { message: result.error, ok: false };
-    return { message: `${result.count ?? 0} ${result.count === 1 ? "issue" : "issues"}.` };
-  },
-
-  /** The detail panel's refresh gesture. */
-  async refreshIssue(args) {
-    const issueId = args?.issueId ?? args?.context?.issueId ?? null;
-    if (!issueId) return { navigate: { panelId: "issues" } };
-    const result = await data.refreshIssue(issueId);
-    await publish("issue", { issueId });
-    if (!result.ok) return { message: result.error, ok: false };
-    return { message: null };
-  },
-
-  /** The settings section's refresh gesture. */
-  async refreshConnection() {
-    const connection = await data.refreshConnection();
-    await publish("settings");
-    if (!connection.connected && connection.lastError) return { message: connection.lastError, ok: false };
-    return { message: connection.connected ? `Connected as ${connection.viewerName ?? "you"}.` : null };
-  },
-
-  /* ── Agent tools ─────────────────────────────────────────────────────── */
-  //
-  // A tool THROWS on failure rather than answering `{ok:false}`. The host turns
-  // a thrown error into a tool error the model can read and react to; a
-  // successful-looking result carrying a failure is one the model reports to
-  // the user as done.
-
-  getIssueTool: (args) => automation.getIssue(args),
-  searchIssuesTool: (args) => automation.searchIssues(args),
-  addCommentTool: (args) => automation.addComment(args),
-  updateIssueStateTool: (args) => automation.updateIssueState(args),
-  listStatesTool: (args) => automation.listStates(args),
-  assignIssueTool: (args) => automation.assignIssue(args),
-  addLabelTool: (args) => automation.addLabel(args),
-  createLaneForIssueTool: (args) => automation.createLaneForIssue(args),
-  graphqlTool: (args) => automation.graphql(args),
-
-  /* ── Automation steps ────────────────────────────────────────────────── */
-  //
-  // Prefixed `step`, because `setIssueState`, `commentOnIssue` and
-  // `assignIssue` are also PANEL action ids in `panels/contract.js` and the two
-  // callers want different things from the same verb. A rule's step arrives
-  // with `{issueId, stateId}` from a template and must answer `{ok, message}`
-  // for the run log; the panel's arrives with a per-issue state key the schema
-  // invented and must answer a vocabulary action result. One handler serving
-  // both would have to guess which caller it had.
-  //
-  // The step's declared `id` in `plugin.json` is unchanged (`set_issue_state`
-  // and friends) — that is what a saved rule stores, so renaming the handler
-  // behind it costs nothing and renaming the id would break every rule.
-
-  stepSetIssueState: (args) => automation.steps.setIssueState(args),
-  stepCommentOnIssue: (args) => automation.steps.commentOnIssue(args),
-  stepAssignIssue: (args) => automation.steps.assignIssue(args),
-  stepCloseIssueOnMerge: (args) => automation.steps.closeIssueOnMerge(args),
-
-  /* ── Search ──────────────────────────────────────────────────────────── */
-
-  /** Universal search: this project's Linear issues, by key or by title. */
-  searchIssuesProvider: (args) => automation.searchProvider(args),
-
-  /* ── Sockets and the palette ─────────────────────────────────────────── */
-
-  /**
-   * Go to the issue list — the palette, the keybinding, the composer button and
-   * the CLI all press this.
-   *
-   * The refresh is fired and NOT awaited: navigation should be instant, and the
-   * panel that lands is the one this plugin last published rather than a blank
-   * screen behind a network call.
-   */
-  async openIssues() {
-    void ensureIssues();
-    return { navigate: { panelId: "issues" } };
-  },
-
-  /**
-   * One issue's detail page.
-   *
-   * The row's `onPress`, a sub-issue row's, the smart-link chip's, the URL
-   * matcher's and a bulk bar's tick. One handler for all of them, so the four
-   * places an id can ride are read in one order and only one order — and
-   * through `issueIdFromRowKey`, because a tick carries the row's COLLECTION
-   * key (`flat:000012:<id>`) when the row declared none.
-   */
-  async openIssue(args) {
-    const selection = Array.isArray(args?.selection) ? args.selection : [];
-    const raw = args?.issueId ?? args?.key ?? args?.context?.issueId ?? selection[0] ?? null;
-    const issueId = raw ? (issueIdFromRowKey(raw) ?? raw) : null;
-    if (!issueId) return { navigate: { panelId: "issues" } };
-    // A URL matcher hands over the issue KEY from the path, not the id, and a
-    // key this project has never listed is not in the collections — so the
-    // detail read falls through to Linear rather than showing "not found" for
-    // an issue that plainly exists.
-    const row = await data.findIssueRow(issueId);
-    if (!row) await data.refreshIssue(issueId).catch(() => {});
-    const resolved = row ?? (await data.findIssueRow(issueId));
-    if (!resolved) return { message: `Linear has no issue called ${issueId}.`, ok: false };
-    await publish("issue", { issueId: resolved.id });
-    return { navigate: { panelId: "issue", context: { issueId: resolved.id } } };
-  },
-
-  /** The issue behind the chat the user is in, or a message saying there is none. */
-  async openSessionIssue(args) {
-    const laneId = args?.context?.kind === "lane"
-      ? args.context.id
-      : args?.laneId ?? (args?.context?.kind === "composer" ? args.context.laneId : null);
-    const { rows } = await data.laneIndex();
-    const link = rows.find((row) => row.laneId === laneId) ?? null;
-    if (!link) return { message: "This lane has no Linear issue attached.", ok: false };
-    return await ownActions.openIssue({ issueId: link.issueId });
-  },
-
-  /** The issue on the open web. */
-  async openInLinear(args) {
-    const issueId = args?.issueId ?? args?.context?.issueId ?? null;
-    const row = issueId ? await data.findIssueRow(issueId) : null;
-    if (!row?.url) return { message: "That issue has no Linear link.", ok: false };
-    return { openUrl: row.url };
-  },
-
-  /**
-   * Comment the chat's progress onto its issue.
-   *
-   * Reads the transcript through the action layer rather than inventing a
-   * summary: `chat.readTranscript` is the gated verb for exactly this, and a
-   * plugin that made up a progress note would be posting words the agent never
-   * said onto a ticket other people read.
-   */
-  async commentProgress(args) {
-    const sessionId = args?.context?.kind === "session" ? args.context.id : args?.sessionId ?? null;
-    if (!sessionId) return { message: "Open this from inside a chat.", ok: false };
-    const laneId = args?.laneId ?? null;
-    const { rows } = await data.laneIndex();
-    const link = rows.find((row) => row.laneId === laneId) ?? rows[0] ?? null;
-    if (!link) return { message: "This lane has no Linear issue attached.", ok: false };
-
-    let transcript = [];
-    try {
-      const result = await sdk.actions.invoke("chat", "readTranscript", { sessionId, limit: 10 });
-      transcript = Array.isArray(result) ? result : Array.isArray(result?.entries) ? result.entries : [];
-    } catch (error) {
-      return { message: failureMessage(error, "Could not read this chat."), ok: false };
-    }
-    const last = [...transcript].reverse().find((entry) => entry?.role === "assistant");
-    const body = typeof last?.text === "string" && last.text.trim()
-      ? `Progress from ADE:\n\n${last.text.trim().slice(0, 4_000)}`
-      : null;
-    if (!body) return { message: "This chat has nothing to report yet.", ok: false };
-
-    try {
-      await automation.addComment({ issueId: link.issueId, body });
-    } catch (error) {
-      return { message: failureMessage(error, "Could not comment on the issue."), ok: false };
-    }
-    return { message: `Commented on ${link.issueKey ?? "the issue"}.` };
-  },
-
-  /**
-   * Store the signing secret Linear shows when the webhook is created.
-   *
-   * The manifest does NOT declare `verify` today, so this secret is not yet
-   * checked — see the gap list. It is written now because the order matters:
-   * a channel that declares `verify` and cannot find its secret FAILS CLOSED
-   * (`pluginWebhookIngressService.ts:429`), so declaring it before users have a
-   * way to store the secret would silently drop every delivery. With this
-   * action in place, turning verification on is a one-line manifest change.
-   */
-  async saveWebhookSecret(args) {
-    const secret = typeof args?.secret === "string" ? args.secret.trim() : "";
-    if (!secret) return { message: "Paste the signing secret Linear showed you.", ok: false };
-    await sdk.secrets.set("LINEAR_WEBHOOK_SECRET", secret);
-    await publish("settings");
-    return { message: "Saved the Linear webhook signing secret." };
-  },
-
-  /* ── CLI ─────────────────────────────────────────────────────────────── */
-
-  /**
-   * The `ade linear` word.
-   *
-   * One action with a `verb` argument rather than nine CLI words, because the
-   * manifest's `cli` list registers WORDS and nine of them would put nine
-   * Linear entries in `ade --help`. The verbs are the built-in's own
-   * (`cli.ts:2689`), so a script written against `ade linear issue ADE-1`
-   * keeps working.
-   */
-  async linear(args) {
-    const verb = String(args?.verb ?? args?._?.[0] ?? "issues").trim();
-    switch (verb) {
-      case "issues":
-        return await automation.searchIssues(args ?? {});
-      case "issue":
-        return await automation.getIssue({ issueId: args?.issueId ?? args?._?.[1] });
-      case "comment":
-        return await automation.addComment({ issueId: args?.issueId ?? args?._?.[1], body: args?.body });
-      case "set-state":
-        return await automation.updateIssueState({ issueId: args?.issueId ?? args?._?.[1], stateId: args?.stateId });
-      case "states":
-        return await automation.listStates(args ?? {});
-      case "assign":
-        return await automation.assignIssue({ issueId: args?.issueId ?? args?._?.[1], assigneeId: args?.assigneeId });
-      case "label":
-        return await automation.addLabel({ issueId: args?.issueId ?? args?._?.[1], labelName: args?.labelName });
-      case "attach":
-        return await flows.linkIssueToLane({ issueId: args?.issueId ?? args?._?.[1], laneId: args?.laneId });
-      case "lane":
-        return await automation.createLaneForIssue({ issueId: args?.issueId ?? args?._?.[1], baseRef: args?.baseRef });
-      case "graphql":
-        return await automation.graphql(args ?? {});
-      case "status": {
-        // The connection alone would report a healthy green on a custom
-        // client whose automations can never fire, so the CLI says both.
-        const connection = await data.refreshConnection();
-        const status = await connect.connectStatus().catch(() => ({}));
-        return {
-          connection,
-          clientSource: status.clientSource ?? null,
-          webhooksPossible: webhooksReachable(status),
-          ...(webhooksReachable(status)
-            ? {}
-            : {
-              note: "Linear does not send webhooks to this connection, so automation triggers will not fire. Reconnect with ADE's own Linear app to receive events.",
-            }),
-        };
-      }
-      case "refresh":
-        return await refreshIssues();
-      default:
-        return {
-          error: `Unknown verb "${verb}".`,
-          verbs: [
-            "issues", "issue", "comment", "set-state", "states", "assign",
-            "label", "attach", "lane", "graphql", "status", "refresh",
-          ],
-        };
-    }
-  },
-};
+const ownActions = createOwnActions({
+  get sdk() { return sdk; },
+  get data() { return data; },
+  get flows() { return flows; },
+  get connect() { return connect; },
+  get automation() { return automation; },
+  publish,
+  refreshIssues,
+  ensureIssues,
+  webhooksReachable,
+  issueIdFromRowKey,
+});
 
 /**
  * The action table the host dispatches into.
@@ -1291,9 +1086,14 @@ const ownActions = {
  * Seeded at LOAD with this half's own handlers, so every id the manifest
  * declares — the nine tools, the four steps, the search provider, the CLI word
  * — resolves before `activate` has run. The panel half's handlers need a bound
- * host and are merged in at activate; `ownActions` is re-applied after them so
- * the four ids both halves name (`setIssueState`, `commentOnIssue`,
- * `assignIssue`, and the three refreshes) stay this half's.
+ * host and are merged in at activate.
+ *
+ * The two tables are DISJOINT: no id is defined by both halves, and
+ * `test/index.test.js` asserts it. That is the invariant, and it replaced a
+ * merge order — `ownActions` re-applied last, so a collision silently resolved
+ * this way — that hid three dead handlers behind live-looking code. `ownActions`
+ * is still applied last, but now only as a belt on a table with no collisions
+ * in it rather than as the thing that decides which copy runs.
  */
 exports.actions = { ...ownActions };
 
@@ -1301,7 +1101,9 @@ exports.actions = { ...ownActions };
 // lifecycle without a running daemon.
 exports.__internals = {
   ISSUE_CACHE_MS,
+  chosenReasoningEffort,
   expiry,
+  ownActions,
   webhooksReachable,
   handoffLabel,
   publish,

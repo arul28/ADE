@@ -306,6 +306,51 @@ describe("handling one delivery", () => {
     assert.equal(sdk.calls.filter(([name]) => name === "automations.emitTrigger").length, 0);
   });
 
+  it("still refetches an issue whose body the host clipped past parsing", async () => {
+    // The host clamps a body at 64 KiB by code unit, so a big delivery arrives
+    // cut mid-JSON: it cannot parse, and the whole delivery used to end here —
+    // no refetch, no triggers — while the comment beside it promised the row
+    // would be right either way. Linear puts `data.id` ahead of the fields long
+    // enough to reach the cap, so the id survives the clip and the ROW can
+    // still be made right. Only the triggers are lost.
+    const { sdk, webhook } = build();
+    const clipped = JSON.stringify(body({ data: { id: "issue-77" } })).slice(0, 60);
+    const result = await webhook.handle(delivery({ bodyText: clipped, truncated: true }));
+
+    assert.equal(result.clipped, true);
+    assert.equal(result.issueId, "issue-77");
+    assert.ok(sdk.collections.value("issues", "issue:a"), "the issue was never refetched");
+    assert.equal(sdk.calls.filter(([name]) => name === "webhooks.ack").length, 1);
+    // The triggers are what the clip actually destroyed, so none are invented.
+    assert.equal(sdk.calls.filter(([name]) => name === "automations.emitTrigger").length, 0);
+  });
+
+  it("drops a clipped body that lost its issue id too", async () => {
+    const { sdk, webhook } = build();
+    const result = await webhook.handle(delivery({ bodyText: '{"action":"upd', truncated: true }));
+    assert.equal(result.unreadable, true);
+    assert.equal(sdk.calls.filter(([name]) => name === "webhooks.ack").length, 1);
+  });
+
+  it("keeps only the newest delivery ids, against a budget the whole plugin shares", async () => {
+    // `evictOldest` evicts inside THIS collection but against the plugin's
+    // whole row budget, so an ingress that ran for a year did not push out old
+    // delivery ids — it exhausted the budget, and then every issue write could
+    // only make room by evicting ISSUE rows. The list quietly emptied.
+    const { sdk, webhook } = build();
+    for (let index = 0; index < 540; index += 1) {
+      await webhook.remember(`d${String(index).padStart(4, "0")}`, {
+        at: new Date(1_700_000_000_000 + index * 1_000).toISOString(),
+      });
+    }
+    const kept = sdk.collections.keys("deliveries");
+    assert.equal(kept.length, 500);
+    // The oldest went and the newest stayed, by recorded time — a delivery id
+    // is a random string and sorts in no useful order at all.
+    assert.ok(!kept.includes("id:d0000"), "the oldest id was kept");
+    assert.ok(kept.includes("id:d0539"), "the newest id was dropped");
+  });
+
   it("ignores a delivery on somebody else's channel", async () => {
     const { sdk, webhook } = build();
     assert.equal((await webhook.handle(delivery({ channel: "stripe" }))).ignored, "channel");

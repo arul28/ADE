@@ -29,6 +29,16 @@
 "use strict";
 
 /** The plugin's five triggers. The manifest declares these ids. */
+/**
+ * How many delivery ids this plugin keeps, and the slack it lists over.
+ *
+ * The ids exist to make a REDELIVERY idempotent, and a relay redelivers within
+ * minutes — so a few hundred is generous and the row budget is 4,000 for the
+ * whole plugin. The slack is what makes the prune see that it is over.
+ */
+const DELIVERY_MEMORY = 500;
+const DELIVERY_SLACK = 64;
+
 const TRIGGER_CREATED = "issue_created";
 const TRIGGER_UPDATED = "issue_updated";
 const TRIGGER_ASSIGNED = "issue_assigned";
@@ -205,6 +215,23 @@ function triggersFor(payload) {
  * `sdk`, `data` and `log` are injected, so the whole path — parse, dedupe,
  * refetch, emit, ack — is testable with no relay, no Linear and no host.
  */
+/**
+ * The issue id out of a body that was clipped past parsing.
+ *
+ * Linear puts `data.id` at the front of the object, ahead of `description` and
+ * `updatedFrom` — the two fields long enough to reach a 64 KiB cap — so the id
+ * is in the surviving prefix even when the closing brace is not. Read with a
+ * pattern rather than a parser because there is nothing here a parser can read;
+ * anchored on `"data"` so it cannot pick up the actor's id instead.
+ */
+function issueIdFromClippedBody(raw) {
+  if (typeof raw !== "string") return null;
+  const scoped = /"data"\s*:\s*\{\s*"id"\s*:\s*"([^"]{1,128})"/.exec(raw);
+  if (scoped) return scoped[1];
+  const top = /"issueId"\s*:\s*"([^"]{1,128})"/.exec(raw);
+  return top ? top[1] : null;
+}
+
 function createWebhookHandler(options = {}) {
   const { sdk, data, log = () => {} } = options;
   if (!sdk || !data) throw new TypeError("createWebhookHandler needs sdk and data");
@@ -213,14 +240,38 @@ function createWebhookHandler(options = {}) {
    * Deliveries already acted on.
    *
    * A collection rather than a Set, because the child restarts and a redelivery
-   * after a restart would otherwise fire every automation a second time. Bounded
-   * by the platform: `evictOldest` drops the oldest ids in THIS collection when
-   * it fills, so an ingress that has run for a year cannot push the issue rows
-   * out of the store beside it. That is the whole argument for `deliveries`
-   * being a collection of its own.
+   * after a restart would otherwise fire every automation a second time.
+   *
+   * ## Why this prunes itself
+   *
+   * `evictOldest` is NOT the bound this once claimed. The host evicts within
+   * the collection it was asked to write, but the budget it evicts against is
+   * the whole plugin's (`PLUGIN_COLLECTIONS_MAX_ROWS_PER_PLUGIN`), so a year of
+   * deliveries does not push out old delivery ids — it exhausts the budget and
+   * then every issue write can only make room by evicting ISSUE rows. The
+   * symptom is a warn line per row and an issue list that quietly empties.
+   *
+   * So the cap is the plugin's own. `DELIVERY_MEMORY` ids is far more than a
+   * redelivery window needs and a small fraction of the row budget.
    */
   async function seen(deliveryId) {
     return Boolean(await sdk.collections.get("deliveries", `id:${deliveryId}`).catch(() => null));
+  }
+
+  /** Drop the oldest ids once there are more than the plugin keeps. */
+  async function pruneDeliveries() {
+    const rows = await sdk.collections
+      .list("deliveries", { keyPrefix: "id:", limit: DELIVERY_MEMORY + DELIVERY_SLACK })
+      .catch(() => []);
+    if (rows.length <= DELIVERY_MEMORY) return;
+    // By the recorded time, not by key: a delivery id is a random string and
+    // sorts in no useful order at all.
+    const oldest = [...rows]
+      .sort((a, b) => String(a.value?.at ?? "").localeCompare(String(b.value?.at ?? "")))
+      .slice(0, rows.length - DELIVERY_MEMORY);
+    for (const row of oldest) {
+      await sdk.collections.delete("deliveries", row.key).catch(() => {});
+    }
   }
 
   async function remember(deliveryId, value) {
@@ -232,6 +283,7 @@ function createWebhookHandler(options = {}) {
         // the delivery — the refetch already landed.
         log("warn", `Could not record delivery ${deliveryId}: ${error?.message ?? error}`);
       });
+    await pruneDeliveries();
   }
 
   /**
@@ -261,16 +313,41 @@ function createWebhookHandler(options = {}) {
       body = null;
     }
     if (!record(body)) {
+      // A body clipped at the host's 64 KiB cap is cut mid-JSON, so it cannot
+      // parse and lands HERE rather than in the `truncated` branch below. That
+      // used to end the delivery: no refetch, no triggers, acked and gone —
+      // while the comment beside it promised the row would be right either way.
+      //
+      // It can still be made right. The issue id sits at the front of Linear's
+      // body, before any field long enough to reach the cap, so the id survives
+      // the clip even when the JSON does not. The row is refetched from Linear
+      // and is therefore CORRECT; only the triggers are lost, because what
+      // changed is exactly the part that was cut off.
+      const clippedIssueId = payload.truncated ? issueIdFromClippedBody(payload.body) : null;
+      if (clippedIssueId) {
+        log("warn", `Linear delivery ${deliveryId} was clipped past parsing; refetching ${clippedIssueId} without its triggers.`);
+        const result = await data.refreshIssue(clippedIssueId, { comments: false }).catch((error) => ({
+          ok: false,
+          error: error?.message ?? String(error),
+        }));
+        if (!result?.ok) {
+          log("warn", `Could not refetch ${clippedIssueId} after a clipped webhook: ${result?.error ?? "unknown"}`);
+        }
+        await remember(deliveryId, { at: new Date().toISOString(), issueId: clippedIssueId, clipped: true });
+        await sdk.webhooks.ack(deliveryId).catch(() => {});
+        return { clipped: true, issueId: clippedIssueId, deliveryId };
+      }
       log("warn", `Linear delivery ${deliveryId} had a body this plugin could not read.`);
       await remember(deliveryId, { at: new Date().toISOString(), unreadable: true });
       await sdk.webhooks.ack(deliveryId).catch(() => {});
       return { unreadable: true, deliveryId };
     }
 
-    // A body the relay clipped at the cap is one whose `updatedFrom` may be
-    // missing, which would turn a label add into a plain update. The issue is
-    // still refetched — the ROW is right either way — and the triggers are
-    // emitted from what did arrive, which is the honest smaller version.
+    // A body the relay clipped at the cap but that still parsed is one whose
+    // `updatedFrom` may be missing, which would turn a label add into a plain
+    // update. The issue is still refetched — the ROW is right either way — and
+    // the triggers are emitted from what did arrive, which is the honest
+    // smaller version.
     if (payload.truncated) {
       log("warn", `Linear delivery ${deliveryId} was clipped at the size cap; its triggers may be coarser.`);
     }
@@ -315,7 +392,7 @@ function createWebhookHandler(options = {}) {
     return { deliveryId, issueId, triggers: triggers.map((trigger) => trigger.triggerId) };
   }
 
-  return { handle, seen, triggersFor };
+  return { handle, remember, seen, triggersFor };
 }
 
 module.exports = {

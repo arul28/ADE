@@ -371,6 +371,46 @@ describe("a merged pull request moving its issues to Done", () => {
     return { ...built, moves };
   }
 
+  it("refuses a link with no team rather than guessing another team's Done", async () => {
+    // `data.states(null)` returns EVERY stored team's states ordered by key and
+    // `pickCompletedStateId` takes the first `completed` it finds — the
+    // alphabetically first team's Done. `IssueRefContainer.key` is optional and
+    // this path consumes links from any producer, so an issue used to be sent
+    // to a foreign team's state, refused by Linear, caught and warned. The
+    // issue never moved and nothing said why.
+    const { flows, moves, data } = merged({
+      lane: {
+        primaryIssue: { provider: "linear", issueId: "a", key: "ENG-431", state: { id: "s-todo" } },
+      },
+    });
+    await data.refreshCatalog();
+    const result = await flows.closeIssueOnMerge({ laneIds: ["lane-1"] });
+    assert.equal(result.moved, 0);
+    assert.deepEqual(moves, []);
+  });
+
+  it("still finds the team from the stored row when the link omits it", async () => {
+    const { flows, moves, data } = merged({
+      lane: {
+        primaryIssue: { provider: "linear", issueId: "a", key: "ENG-431", state: { id: "s-todo" } },
+      },
+      api: {
+        searchAllIssues: async () => [{
+          id: "a",
+          identifier: "ENG-431",
+          title: "Fix OAuth",
+          team: { id: "t1", key: "ENG", name: "Eng" },
+          state: { id: "s-todo", name: "Todo", type: "unstarted" },
+        }],
+      },
+    });
+    await data.refreshCatalog();
+    await data.refreshIssues();
+    const result = await flows.closeIssueOnMerge({ laneIds: ["lane-1"] });
+    assert.equal(result.moved, 1);
+    assert.deepEqual(moves, [["a", "s-done"]]);
+  });
+
   it("does nothing at all while the setting is off", async () => {
     const { flows, moves } = merged({ config: { moveToDoneOnMerge: false } });
     const result = await flows.closeIssueOnMerge({ laneIds: ["lane-1"] });

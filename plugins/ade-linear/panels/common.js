@@ -12,7 +12,20 @@
 
 "use strict";
 
-const { PANEL_ISSUE, PANEL_ISSUES, PANEL_LAUNCH, PANEL_SETTINGS } = require("./contract");
+// `stateTone` and `priorityLabel` are RE-EXPORTED below rather than defined
+// here. Both existed twice — once in this file for the panel half and once in
+// `issueFormat.js` for the data half — with identical output and two sets of
+// words explaining why. One table, imported by both, is the only shape those
+// two cannot drift apart in.
+const {
+  PANEL_ISSUE,
+  PANEL_ISSUES,
+  PANEL_LAUNCH,
+  PANEL_SETTINGS,
+  STATE_TONES,
+  priorityLabel,
+  stateTone,
+} = require("./contract");
 
 /* ── Deeplinks ──────────────────────────────────────────────────────────── */
 
@@ -43,10 +56,15 @@ function fallback(text, link) {
 /* ── Measurements ───────────────────────────────────────────────────────── */
 
 /**
- * The vocabulary's own ceilings, restated here because a plugin child cannot
- * import ADE's TypeScript. Kept in one place so a builder never spells a
- * number inline, and pinned by `panels.limits.test.js` against the real
- * `VOCAB_LIMITS` so this copy cannot drift from the contract it mirrors.
+ * The vocabulary's own ceilings, restated here because a plugin child is
+ * CommonJS and cannot import ADE's TypeScript. Kept in one place so a builder
+ * never spells a number inline.
+ *
+ * Pinned against the real `VOCAB_LIMITS` by
+ * `apps/desktop/src/renderer/components/plugins/linearPluginPanels.test.tsx`,
+ * which is the only test that can see both tables. A drift here is not a
+ * failure in this package's own tests — it is a panel measuring itself against
+ * a ceiling the parser no longer enforces, refused whole at publish time.
  */
 const LIMITS = {
   maxNodes: 200,
@@ -119,25 +137,6 @@ function prose(text) {
 /* ── Tones and icons ────────────────────────────────────────────────────── */
 
 /**
- * Linear's six workflow-state categories as the vocabulary's four tones.
- *
- * `LinearStateIcon` paints six colours; the vocabulary has four tones and no
- * red at all, so this is a real narrowing and the mapping is chosen rather than
- * derived. `started` is the one the reader scans for, so it takes `accent`;
- * `completed` is the only settled-and-good state, so it takes `success`;
- * `triage` is the only one that wants attention, so it takes `warning`. The
- * rest are quiet.
- */
-const STATE_TONES = {
-  triage: "warning",
-  backlog: "neutral",
-  unstarted: "neutral",
-  started: "accent",
-  completed: "success",
-  canceled: "neutral",
-};
-
-/**
  * The same six as icon TOKENS.
  *
  * Node-level icons name tokens, never artwork, so Linear's hand-drawn state
@@ -155,33 +154,17 @@ const STATE_ICONS = {
   canceled: "clock-counter-clockwise",
 };
 
-function stateTone(stateType) {
-  return STATE_TONES[String(stateType ?? "").toLowerCase()] ?? "neutral";
-}
-
 function stateIcon(stateType) {
   return STATE_ICONS[String(stateType ?? "").toLowerCase()] ?? "kanban";
 }
 
-/**
- * The built-in's order for state groups, from `LinearIssueBrowser.tsx`'s
- * `STATE_GROUP_ORDER`. A state the list has never heard of sorts last rather
- * than first, exactly as `stateGroupRank` does.
- */
-const STATE_GROUP_ORDER = [
-  "started",
-  "unstarted",
-  "backlog",
-  "triage",
-  "completed",
-  "canceled",
-  "duplicate",
-];
-
-function stateGroupRank(stateType) {
-  const index = STATE_GROUP_ORDER.indexOf(String(stateType ?? "").toLowerCase());
-  return index === -1 ? 99 : index;
-}
+// No group-order table here. There was one, named after the built-in's
+// `STATE_GROUP_ORDER` and claiming parity with it — but nothing outside a test
+// ever called it, and it DISAGREED with the order the product actually draws.
+// The live order is `issueFormat.js:STATE_RANKS` (triage, backlog, unstarted,
+// started, completed, canceled), stamped onto every row as `stateRank` by
+// `normalizeIssue` and sorted on in `data.js:buildGroups`. Two orders, one of
+// them dead, is how a panel ends up drawing sections in an order no one chose.
 
 /**
  * Priority as the built-in labels it (`linearPriorityLabel`), plus a token.
@@ -203,11 +186,6 @@ const PRIORITIES = [
 function priorityEntry(priority) {
   const key = String(priority ?? "");
   return PRIORITIES.find((entry) => entry.value === key) ?? null;
-}
-
-/** `linearPriorityLabel` — "No priority" for 0, absent and unknown alike. */
-function priorityLabel(priority) {
-  return priorityEntry(priority)?.label ?? "No priority";
 }
 
 /* ── Copy ───────────────────────────────────────────────────────────────── */
@@ -380,7 +358,6 @@ module.exports = {
   PLUGIN_ID,
   PRIORITIES,
   SOFT_SCHEMA_BYTES,
-  STATE_GROUP_ORDER,
   STATE_ICONS,
   STATE_TONES,
   clamp,
@@ -391,7 +368,6 @@ module.exports = {
   priorityLabel,
   prose,
   schemaBytes,
-  stateGroupRank,
   stateIcon,
   stateTone,
   value,

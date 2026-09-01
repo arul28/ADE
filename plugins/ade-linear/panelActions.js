@@ -36,12 +36,15 @@
 // ## Optional host capabilities
 //
 // `host.publish` and `host.model` are REQUIRED. Everything else this module
-// touches is optional and guarded: a handler whose capability is missing still
-// returns a valid result — a message saying what it could not do — rather than
-// throwing inside the plugin host and leaving the reader on a screen that did
-// not move. The full list is {@link HOST_CAPABILITIES}, which
-// `panelActions.test.js` asserts against so a rename on either side is a failing
-// test rather than a dead button.
+// touches is optional and guarded through {@link invoke}: a handler whose
+// capability is missing still returns a valid result — a message saying what it
+// could not do — rather than throwing inside the plugin host and leaving the
+// reader on a screen that did not move.
+//
+// Each one is named where it is called (`host.flows?.openLaunch`) rather than in
+// a table of dotted strings walked at run time. The table existed to make a
+// misspelling fail a test; naming the property directly makes it fail to
+// resolve, which is the same guarantee without a second list to keep in step.
 
 "use strict";
 
@@ -67,41 +70,6 @@ const {
 const { COPY } = require("./panels/common");
 const { issueIdFromRowKey } = require("./panels/rows");
 
-/**
- * Everything a handler may reach for on the host, by path.
- *
- * Written down because "the button does nothing" is the failure mode a plugin
- * cannot see from the outside: a handler calling `host.data.loadIssue` when the
- * data layer named it `fetchIssue` would guard, fall through and return a
- * polite message forever. The test pins this list against the real host object,
- * so the rename fails the build instead.
- */
-const HOST_CAPABILITIES = Object.freeze({
-  required: ["publish", "model"],
-  optional: [
-    "data.reload",
-    "data.setFilters",
-    "data.search",
-    "data.loadIssue",
-    "data.loadComments",
-    "api.setIssueState",
-    "api.setIssuePriority",
-    "api.assignIssue",
-    "api.createComment",
-    "flows.createLaneFromIssue",
-    "flows.spawnAgentOnIssue",
-    "flows.linkIssueToLane",
-    "flows.openLaunch",
-    "flows.connectOAuth",
-    "flows.connectApiKey",
-    "flows.adoptHandoff",
-    "flows.disconnect",
-    "flows.applySettings",
-    "flows.createAutolink",
-    "sdk.clipboard.write",
-  ],
-});
-
 /** The state keys `Reset filters` clears. `view` is deliberately not among them. */
 const FILTER_STATE_KEYS = [
   STATE_PRESET,
@@ -125,31 +93,33 @@ const APPLIED_STATE_KEYS = [...FILTER_STATE_KEYS, STATE_VIEW];
 
 /* ── Reading the frame ──────────────────────────────────────────────────── */
 
-/** A dotted path on the host, or `null`. Never throws on a missing branch. */
-function capability(host, path) {
-  let node = host;
-  for (const step of path.split(".")) {
-    if (!node || typeof node !== "object") return null;
-    node = node[step];
-  }
-  return typeof node === "function" ? node : null;
-}
-
 /**
- * Call an optional capability, or say it is not there.
+ * Call an optional host capability, or say it is not there.
+ *
+ * Takes the FUNCTION, not a dotted string naming it. There was a `capability()`
+ * that walked `"flows.openLaunch"` over the host object, and a frozen table of
+ * the twenty paths it was allowed to walk, pinned by a test — an elaborate
+ * defence for a lookup with exactly ONE host (`index.js:buildPanelHost`, which
+ * writes all twenty). `host.flows?.openLaunch` is checked by the reader's own
+ * editor, greps to its definition, and cannot be misspelled into a handler that
+ * politely does nothing forever.
+ *
+ * `missing` and `ok:false` are NOT the same answer, and the difference matters:
+ * a capability this build does not have is a reason to do something else, while
+ * a capability that THREW is a failure the reader has to be told about. See
+ * `openLaunch`, which used to answer both by silently creating a lane.
  *
  * The `fallback` message is the reader's whole experience of a host that has
  * not implemented the verb yet, so it names what did not happen rather than
  * apologising in the abstract.
  */
-async function invoke(host, path, args, fallback) {
-  const fn = capability(host, path);
-  if (!fn) return { ok: false, message: fallback };
+async function invoke(fn, args, fallback) {
+  if (typeof fn !== "function") return { ok: false, missing: true, message: fallback };
   try {
-    const value = await fn.apply(null, args);
+    const value = await fn(...args);
     return { ok: true, value };
   } catch (error) {
-    return { ok: false, message: errorText(error) };
+    return { ok: false, missing: false, message: errorText(error) };
   }
 }
 
@@ -249,8 +219,8 @@ function bind(host) {
    * the reader's intention rather than the truth, and the panel is the only
    * thing that can put it back.
    */
-  const write = async (path, args, fallback, success) => {
-    const result = await invoke(host, path, args, fallback);
+  const write = async (fn, args, fallback, success) => {
+    const result = await invoke(fn, args, fallback);
     await publish(PANEL_ISSUE);
     await publish(PANEL_ISSUES);
     return result.ok ? { message: success } : { message: result.message, ok: false };
@@ -300,7 +270,7 @@ function bind(host) {
         if (frame[key] !== undefined) patch[key] = frame[key];
       }
       if (typeof frame.value === "string") patch.value = frame.value;
-      const result = await invoke(host, "data.setFilters", [patch], "");
+      const result = await invoke(host.data?.setFilters, [patch], "");
       await publish(PANEL_ISSUES);
       return result.ok ? undefined : { message: result.message, ok: false };
     },
@@ -316,7 +286,7 @@ function bind(host) {
      * from under them.
      */
     async clearFilters() {
-      await invoke(host, "data.setFilters", [{ reset: true }], "");
+      await invoke(host.data?.setFilters, [{ reset: true }], "");
       await publish(PANEL_ISSUES);
       return { resetState: FILTER_STATE_KEYS, message: "Filters reset." };
     },
@@ -342,7 +312,7 @@ function bind(host) {
         };
       }
       const text = answer.trim();
-      const result = await invoke(host, "data.search", [text], "Search needs the plugin's data layer.");
+      const result = await invoke(host.data?.search, [text], "Search needs the plugin's data layer.");
       await publish(PANEL_ISSUES);
       if (!result.ok) return { message: result.message, ok: false };
       return { message: text ? `Searching for “${text}”.` : "Search cleared." };
@@ -350,7 +320,7 @@ function bind(host) {
 
     /** The badge's companion, and the only way out of a search on a phone. */
     async clearSearch() {
-      const result = await invoke(host, "data.search", [""], "Search needs the plugin's data layer.");
+      const result = await invoke(host.data?.search, [""], "Search needs the plugin's data layer.");
       await publish(PANEL_ISSUES);
       return result.ok ? { message: "Search cleared." } : { message: result.message, ok: false };
     },
@@ -400,25 +370,28 @@ function bind(host) {
     },
 
     /**
-     * The launch FORM, when the manifest has a panel to draw it in.
+     * The launch FORM, when this build has a host that can draw it.
      *
-     * `flows.openLaunch` is the switch: while `plugin.json` declares no `launch`
-     * panel, navigating to one would send the reader to a panel id the host
-     * cannot resolve. So the capability is the manifest's proxy, and without it
-     * the two buttons above do the work directly with the plugin's defaults.
+     * `flows.openLaunch` is the switch: on a build without it, navigating to the
+     * launch panel would send the reader to a panel id the host cannot resolve.
+     * So its ABSENCE means "do the work directly with the defaults".
+     *
+     * A capability that is present and THREW means no such thing, and the two
+     * were answered the same way: a transient failure inside `openLaunch` —
+     * which awaits a model read and a publish — silently created a worktree and
+     * started an agent on the plugin's defaults, for a reader who had pressed a
+     * button that says it opens a form. Only `missing` falls through now; a
+     * failure is reported, and nothing is created.
      */
     async openLaunch(args) {
       const issueId = issueIdFrom(args);
       if (!issueId) return { message: "Pick an issue first.", ok: false };
       const laneOnly = args?.laneOnly === true || args?.laneOnly === "true";
-      const result = await invoke(host, "flows.openLaunch", [issueId, { ...args, laneOnly }], "");
-      // No `flows.openLaunch` means no `launch` panel in the manifest, and
-      // navigating to a panel id the host cannot resolve would leave the reader
-      // nowhere. So the button does what it says instead, with the defaults —
-      // which is exactly what it did before the panel existed.
-      if (!result.ok) {
+      const result = await invoke(host.flows?.openLaunch, [issueId, { ...args, laneOnly }], "");
+      if (result.missing) {
         return laneOnly ? await handlers.launchLaneOnly(args) : await handlers.launchLaneAndAgent(args);
       }
+      if (!result.ok) return { message: result.message, ok: false };
       await publish(PANEL_LAUNCH);
       return { navigate: { panelId: PANEL_LAUNCH, context: { issueId, laneOnly } } };
     },
@@ -456,10 +429,10 @@ function bind(host) {
 
       const failures = [];
       for (const issueId of ids) {
-        const result = await invoke(host, "api.assignIssue", [issueId, viewerId], "Assigning needs a connection.");
+        const result = await invoke(host.api?.assignIssue, [issueId, viewerId], "Assigning needs a connection.");
         if (!result.ok) failures.push(result.message);
       }
-      await invoke(host, "data.reload", [], "");
+      await invoke(host.data?.reload, [], "");
       await publish(PANEL_ISSUES);
       await publish(PANEL_ISSUE);
       if (failures.length > 0) {
@@ -484,7 +457,7 @@ function bind(host) {
       const issueId = issueIdFrom(args);
       const stateId = readChangedValue(args, "issueState:");
       if (!issueId || !stateId) return { message: "That state could not be read.", ok: false };
-      return await write("api.setIssueState", [issueId, stateId], "Changing state needs a connection.", "State updated.");
+      return await write(host.api?.setIssueState, [issueId, stateId], "Changing state needs a connection.", "State updated.");
     },
 
     /** The same shape, for priority. `0` is a real value and must survive. */
@@ -493,7 +466,7 @@ function bind(host) {
       const priority = readChangedValue(args, "issuePriority:");
       if (!issueId || priority === null) return { message: "That priority could not be read.", ok: false };
       return await write(
-        "api.setIssuePriority",
+        host.api?.setIssuePriority,
         [issueId, Number(priority)],
         "Changing priority needs a connection.",
         "Priority updated.",
@@ -532,8 +505,8 @@ function bind(host) {
       const body = answer.trim();
       if (!body) return { message: "Nothing to post." };
 
-      const result = await invoke(host, "api.createComment", [issueId, body], "Commenting needs a connection.");
-      if (result.ok) await invoke(host, "data.loadComments", [issueId, { all: false }], "");
+      const result = await invoke(host.api?.createComment, [issueId, body], "Commenting needs a connection.");
+      if (result.ok) await invoke(host.data?.loadComments, [issueId, { all: false }], "");
       await publish(PANEL_ISSUE);
       return result.ok ? { message: "Comment posted." } : { message: result.message, ok: false };
     },
@@ -549,7 +522,7 @@ function bind(host) {
     async loadComments(args) {
       const issueId = issueIdFrom(args);
       if (!issueId) return { message: "Pick an issue first.", ok: false };
-      const result = await invoke(host, "data.loadComments", [issueId, { all: true }], "Comments need a connection.");
+      const result = await invoke(host.data?.loadComments, [issueId, { all: true }], "Comments need a connection.");
       await publish(PANEL_ISSUE);
       return result.ok ? undefined : { message: result.message, ok: false };
     },
@@ -584,7 +557,7 @@ function bind(host) {
      * could point one somewhere else.
      */
     async connectOAuth() {
-      const result = await invoke(host, "flows.connectOAuth", [], "");
+      const result = await invoke(host.flows?.connectOAuth, [], "");
       if (result.ok && result.value) return result.value;
       return { authSession: { sessionId: "linear" } };
     },
@@ -599,7 +572,7 @@ function bind(host) {
     async connectApiKey(args) {
       const key = typeof args?.apiKey === "string" ? args.apiKey.trim() : "";
       if (!key) return { message: "Paste a Linear API key first.", ok: false };
-      const result = await invoke(host, "flows.connectApiKey", [key], "Connecting needs the plugin's data layer.");
+      const result = await invoke(host.flows?.connectApiKey, [key], "Connecting needs the plugin's data layer.");
       await publish(PANEL_SETTINGS);
       await publish(PANEL_ISSUES);
       return result.ok ? { message: "Connected to Linear." } : { message: result.message || COPY.apiKeyRejected, ok: false };
@@ -613,7 +586,7 @@ function bind(host) {
      * ordinary sign-in is still on the same screen.
      */
     async adoptHandoff() {
-      const result = await invoke(host, "flows.adoptHandoff", [], "This ADE build has no connection to hand over.");
+      const result = await invoke(host.flows?.adoptHandoff, [], "This ADE build has no connection to hand over.");
       await publish(PANEL_SETTINGS);
       await publish(PANEL_ISSUES);
       if (!result.ok) return { message: result.message, ok: false };
@@ -622,7 +595,7 @@ function bind(host) {
 
     /** Forget the credential on this machine. The button asks first. */
     async disconnect() {
-      const result = await invoke(host, "flows.disconnect", [], "Disconnecting needs the plugin's data layer.");
+      const result = await invoke(host.flows?.disconnect, [], "Disconnecting needs the plugin's data layer.");
       await publish(PANEL_SETTINGS);
       await publish(PANEL_ISSUES);
       return result.ok ? { message: "Disconnected from Linear." } : { message: result.message, ok: false };
@@ -641,7 +614,7 @@ function bind(host) {
       delete values.selection;
       delete values.context;
       delete values.prompt;
-      const result = await invoke(host, "flows.applySettings", [values], "Settings need the plugin's data layer.");
+      const result = await invoke(host.flows?.applySettings, [values], "Settings need the plugin's data layer.");
       await publish(PANEL_SETTINGS);
       return result.ok ? undefined : { message: result.message, ok: false };
     },
@@ -650,7 +623,7 @@ function bind(host) {
     async createAutolink(args) {
       const prefix = firstString(args?.prefix);
       if (!prefix) return { message: "That reference has no prefix.", ok: false };
-      const result = await invoke(host, "flows.createAutolink", [prefix], "GitHub autolinks need a connected repo.");
+      const result = await invoke(host.flows?.createAutolink, [prefix], "GitHub autolinks need a connected repo.");
       await publish(PANEL_SETTINGS);
       return result.ok ? { message: `Added ${prefix} references.` } : { message: result.message, ok: false };
     },
@@ -666,7 +639,7 @@ function bind(host) {
       const model = host.model() ?? {};
       const url = firstString(model.ingress?.url, model.connection?.webhookUrl);
       if (!url) return { message: "No webhook URL yet.", ok: false };
-      const result = await invoke(host, "sdk.clipboard.write", [url], "This surface has no clipboard.");
+      const result = await invoke(host.sdk?.clipboard?.write, [url], "This surface has no clipboard.");
       return result.ok ? { message: "Webhook URL copied." } : { message: result.message, ok: false };
     },
   };
@@ -684,16 +657,16 @@ function bind(host) {
     const ids = issueIdsFrom(args);
     if (ids.length === 0) return { message: "Pick an issue first.", ok: false };
 
-    const path = laneOnly ? "flows.createLaneFromIssue" : "flows.spawnAgentOnIssue";
+    const launch = laneOnly ? host.flows?.createLaneFromIssue : host.flows?.spawnAgentOnIssue;
     const failures = [];
     let done = 0;
     for (const issueId of ids) {
-      const result = await invoke(host, path, [issueId, args], "Launching is not available in this ADE build.");
+      const result = await invoke(launch, [issueId, args], "Launching is not available in this ADE build.");
       if (result.ok) done += 1;
       else failures.push(result.message);
     }
 
-    await invoke(host, "data.reload", [], "");
+    await invoke(host.data?.reload, [], "");
     await publish(PANEL_ISSUES);
     await publish(PANEL_ISSUE);
 
@@ -727,4 +700,4 @@ function readChangedValue(args, prefix) {
   return firstString(frame.value, frame.stateValue);
 }
 
-module.exports = { ACTIONS, APPLIED_STATE_KEYS, FILTER_STATE_KEYS, HOST_CAPABILITIES, bind, readChangedValue };
+module.exports = { ACTIONS, APPLIED_STATE_KEYS, FILTER_STATE_KEYS, bind, readChangedValue };

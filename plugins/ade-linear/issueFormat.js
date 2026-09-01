@@ -18,6 +18,14 @@
 
 "use strict";
 
+// The tone table and the priority scale live in `panels/contract.js`, imported
+// rather than restated. Both were spelled twice — once here for the data half
+// and once in `panels/common.js` for the panel half — with identical output and
+// two different sets of words explaining the same choices. Two copies of one
+// table is a table that eventually disagrees, in a way neither half's tests
+// can see.
+const { priorityLabel, stateTone } = require("./panels/contract");
+
 /**
  * Group order for the issue list.
  *
@@ -35,43 +43,9 @@ const STATE_RANKS = {
 /** Anything Linear adds after this build. Sorted last rather than dropped. */
 const UNKNOWN_STATE_RANK = 6;
 
-/** Linear's priority scale. 0 is "none", and 1 is the URGENT end, not the low one. */
-const PRIORITY_LABELS = ["No priority", "Urgent", "High", "Medium", "Low"];
-
-/**
- * Badge tone per state type.
- *
- * The vocabulary has exactly four (`VocabTone` in `vocabularyNodes.ts:191`):
- * `neutral`, `accent`, `success`, `warning`. Anything else is coerced to the
- * fallback, so a tone this table invented would not fail — it would silently
- * render flat, which is the worst of both outcomes. `started` is `accent`
- * rather than the `info` this table used to name, because `info` is not one of
- * the four and every in-progress issue was drawing without its emphasis.
- *
- * `canceled` reads neutral rather than loud on purpose: there is no red, so the
- * only louder tone is `warning`, and a cancelled issue is not a warning — it is
- * a closed one.
- */
-const STATE_TONES = {
-  triage: "warning",
-  backlog: "neutral",
-  unstarted: "neutral",
-  started: "accent",
-  completed: "success",
-  canceled: "neutral",
-};
-
 function stateRank(stateType) {
   const rank = STATE_RANKS[stateType];
   return typeof rank === "number" ? rank : UNKNOWN_STATE_RANK;
-}
-
-function priorityLabel(priority) {
-  return PRIORITY_LABELS[priority] ?? PRIORITY_LABELS[0];
-}
-
-function stateTone(stateType) {
-  return STATE_TONES[stateType] ?? "neutral";
 }
 
 /**
@@ -281,7 +255,6 @@ function issueRefFromRow(row) {
 }
 
 module.exports = {
-  PRIORITY_LABELS,
   STATE_RANKS,
   UNKNOWN_STATE_RANK,
   issueBranchName,

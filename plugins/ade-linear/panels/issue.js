@@ -63,6 +63,9 @@ const {
  * which leaves the rest of the issue room to exist. The reader asks for more
  * with the button below them, and the plugin republishes with a wider window.
  */
+/** How many sub-issue rows this card draws. The heading says so when it cuts. */
+const MAX_SUB_ISSUES = 50;
+
 const COMMENT_WINDOW = 20;
 
 /**
@@ -296,11 +299,18 @@ function issueActions(issue) {
 function subIssuesBlock(children) {
   const rows = Array.isArray(children) ? children : [];
   if (rows.length === 0) return [];
+  // The heading counts what is DRAWN, not what arrived. An issue with sixty
+  // children used to say "Sub-issues (60)" over fifty rows, with nothing to
+  // tell the reader that ten were missing rather than deleted.
+  const drawn = rows.slice(0, MAX_SUB_ISSUES);
+  const heading = drawn.length === rows.length
+    ? `${COPY.subIssues} (${rows.length})`
+    : `${COPY.subIssues} (${drawn.length} of ${rows.length})`;
   return [
-    { component: "divider", label: `${COPY.subIssues} (${rows.length})` },
+    { component: "divider", label: heading },
     {
       component: "list",
-      items: rows.slice(0, 50).map((child) => ({
+      items: drawn.map((child) => ({
         key: String(child.id),
         title: prose(child.title),
         mono: value(child.identifier),

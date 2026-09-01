@@ -76,7 +76,10 @@ function issueListRow(issue, options = {}) {
   // draws a badge for it and it is the one that changes what pressing the row
   // should do; then the assignee, then the date the desktop puts in its last
   // column.
-  row.meta = value(metaLine(source));
+  // `label`, not `value`: the parser reads `meta` at `maxLabelChars` (200) and
+  // `value` clamps to `maxValueChars` (1000), so a heavily labelled issue was
+  // cut twice — once here and again by the parser, with its own ellipsis.
+  row.meta = label(metaLine(source));
 
   const actions = [];
   if (options.showLaunch !== false && !source.hasLane) {

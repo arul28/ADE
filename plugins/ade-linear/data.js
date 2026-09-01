@@ -65,6 +65,19 @@ const {
 /** The canonical, id-addressed key space inside `issues`. */
 const ISSUE_KEY_CANONICAL = "issue:";
 
+/** The flat key space, as `panels/contract.js` builds it. Matched, never rebuilt. */
+const ISSUE_KEY_FLAT = "flat:";
+
+/**
+ * The most rows one `collections.list` can return, whatever limit it is asked
+ * for. The host clamps silently, so a caller that wants more than this has to
+ * ask more than once — see {@link replacePrefix}.
+ */
+const LIST_PAGE_SIZE = 1_000;
+
+/** How many times a sweep will re-read before leaving the rest to the next one. */
+const SWEEP_PASSES = 4;
+
 /** The group key space, as `panels/contract.js` builds it. Matched, never rebuilt. */
 const ISSUE_KEY_GROUP = "group:";
 
@@ -154,6 +167,10 @@ function defaultFilters() {
     // desktop expects the phone to open flat too.
     view: "grouped",
     updated: "",
+    // The TEAM, by key rather than by id, because that is what Linear's
+    // `IssueFilter` matches on (`team: { key: { eq } }`) and what the stored
+    // team rows carry beside their name.
+    teamKey: "",
   };
 }
 
@@ -173,6 +190,7 @@ function normalizeFilters(raw) {
     text: typeof raw.text === "string" ? raw.text : "",
     view: raw.view === "flat" ? "flat" : "grouped",
     updated: typeof raw.updated === "string" ? raw.updated : "",
+    teamKey: typeof raw.teamKey === "string" ? raw.teamKey : "",
   };
 }
 
@@ -184,6 +202,9 @@ function filtersToQuery(filters) {
     ...(filters.assigneeId ? { assigneeId: filters.assigneeId } : {}),
     ...(Number.isInteger(priority) ? { priority } : {}),
     ...(filters.text ? { query: filters.text } : {}),
+    // Server-side, not a client `where`: the team decides which GROUPS exist,
+    // and a predicate hides rows inside a section without removing the section.
+    ...(filters.teamKey ? { teamKey: filters.teamKey } : {}),
     ...(STATE_PRESETS[filters.stateTab] ? { stateTypes: STATE_PRESETS[filters.stateTab] } : {}),
   };
 }
@@ -278,44 +299,39 @@ function createData(options = {}) {
   }
 
 /**
-   * Every key under a prefix, in pages the host will actually serve.
-   *
-   * `collections.list` CLAMPS a limit above 1,000 without saying so
-   * (`pluginDataStore.ts:PLUGIN_COLLECTION_LIST_MAX_LIMIT`), and it orders by
-   * key — so a single `{limit: 1_500}` over the whole issue collection returned
-   * the first thousand keys and stopped. `flat:` and `group:` sort before
-   * `issue:`, which meant the canonical rows were never reached and a stale
-   * issue survived every filter change. Paging on the last key seen is what
-   * makes a sweep actually sweep.
-   */
-  async function allKeys(collection, prefix) {
-    const keys = [];
-    let after = null;
-    for (;;) {
-      const page = await list(collection, {
-        keyPrefix: prefix,
-        limit: LIST_PAGE_SIZE,
-        ...(after ? { after } : {}),
-      });
-      const fresh = page.filter((row) => row.key > (after ?? ""));
-      for (const row of fresh) keys.push(row.key);
-      if (fresh.length < LIST_PAGE_SIZE) return keys;
-      after = fresh[fresh.length - 1].key;
-    }
-  }
-
-  /**
    * Replace every row under a prefix with a new set.
    *
    * The delete half runs AFTER the write half and is never budget-checked, so
    * the worst outcome of a full store is a stale row rather than an empty
    * panel. A row for an issue that has left the filter would otherwise keep
    * rendering, and the reader has no way to tell it from a live one.
+   *
+   * ## Why it lists more than once
+   *
+   * `collections.list` CLAMPS any limit above `LIST_PAGE_SIZE` without saying
+   * so (`pluginDataStore.ts:PLUGIN_COLLECTION_LIST_MAX_LIMIT`) and offers no
+   * cursor — it orders by key and returns the first page, full stop. A single
+   * read therefore cannot see past the first thousand keys, which is how stale
+   * canonical issue rows survived every sweep: `flat:` and `group:` sort before
+   * `issue:` and filled the page on their own.
+   *
+   * Deleting IS the cursor. Each pass removes the unwanted rows it can see, so
+   * the next read starts further in. `SWEEP_PASSES` bounds it: a pass that
+   * deletes nothing, or a page that was not full, means there is nothing behind
+   * it, and a store somehow deeper than that converges over the next refresh
+   * rather than looping here.
    */
   async function replacePrefix(collection, prefix, wanted) {
     for (const [key, value] of wanted) await put(collection, key, value);
-    for (const key of await allKeys(collection, prefix)) {
-      if (!wanted.has(key)) await del(collection, key);
+    for (let pass = 0; pass < SWEEP_PASSES; pass += 1) {
+      const page = await list(collection, { keyPrefix: prefix, limit: LIST_PAGE_SIZE });
+      let deleted = 0;
+      for (const row of page) {
+        if (wanted.has(row.key)) continue;
+        await del(collection, row.key);
+        deleted += 1;
+      }
+      if (deleted === 0 || page.length < LIST_PAGE_SIZE) return;
     }
   }
 
@@ -464,10 +480,17 @@ function createData(options = {}) {
     // One sweep per key space rather than one over the whole collection. Three
     // prefixes is three paged reads instead of one truncated one, and it is the
     // same `replacePrefix` every other collection here uses.
-    for (const prefix of [ISSUE_KEY_CANONICAL, FLAT_KEY_PREFIX, GROUP_KEY_PREFIX]) {
+    for (const prefix of [ISSUE_KEY_CANONICAL, ISSUE_KEY_FLAT, ISSUE_KEY_GROUP]) {
       const scoped = new Map([...wanted].filter(([key]) => key.startsWith(prefix)));
       await replacePrefix(COLLECTION_ISSUES, prefix, scoped);
     }
+
+    // Comments are pruned per ISSUE when a thread is re-read, and nothing
+    // removed the threads of issues that left the view entirely. Sixty opened
+    // issues at fifty comments each exhausts the plugin's whole row budget, and
+    // after that every issue write can only make room by evicting ISSUE rows —
+    // so the list quietly empties, one warn line at a time.
+    await pruneComments(new Set(sorted.map((row) => row.id)));
 
     const facets = await writeFacets(sorted);
     await writeFilters(filters);
@@ -658,6 +681,22 @@ function createData(options = {}) {
     return { ok: true, count: wanted.size };
   }
 
+  /**
+   * Drop the comment threads of issues no longer in the reader's view.
+   *
+   * Keyed on the issue id, which is the first segment of every comment key
+   * (`comment:<issueId>:<rank>:<id>`), so one list over the collection is
+   * enough to decide the whole sweep.
+   */
+  async function pruneComments(liveIssueIds) {
+    const rows = await list(COLLECTION_COMMENTS, { limit: LIST_PAGE_SIZE });
+    for (const row of rows) {
+      const issueId = String(row.key).split(":")[1] ?? "";
+      if (!issueId || liveIssueIds.has(issueId)) continue;
+      await del(COLLECTION_COMMENTS, row.key);
+    }
+  }
+
   /* ── Teams, states and the connection ────────────────────────────────── */
 
   /**
@@ -676,6 +715,16 @@ function createData(options = {}) {
       log("warn", `Could not read the Linear teams: ${error?.message ?? error}`);
       return { ok: false, error: error?.message ?? String(error) };
     }
+    // A ONE-TEAM read may only replace that one team's rows.
+    //
+    // `listTeamsAndStates(teamKey)` filters to a single team, and the sweep
+    // below replaces a whole prefix — so a filtered read used to delete every
+    // OTHER team's states, and a key Linear does not have (an agent calling
+    // `list_states({teamKey: "NOPE"})`) answered with an empty list and wiped
+    // the catalog outright. With no states stored, `pickCompletedStateId` and
+    // `pickStartedStateId` return null and the merge and launch transitions
+    // stop silently until the next unfiltered read on activate.
+    const scoped = teamKey !== null;
     const teamRows = new Map();
     const stateRows = new Map();
     for (const team of teams) {
@@ -690,10 +739,25 @@ function createData(options = {}) {
         stateRows.set(`${statesKeyPrefix(row.key)}${rankSegment(index + 1)}:${state.id}`, state);
       });
     }
+    if (scoped) {
+      // Write what arrived and sweep only the states of the teams that arrived.
+      // Nothing is deleted for a team this read never asked about, and a key
+      // that matched no team deletes nothing at all.
+      for (const [key, value] of teamRows) await put(COLLECTION_TEAMS, key, value);
+      for (const team of teamRows.values()) {
+        const prefix = statesKeyPrefix(team.key);
+        const mine = new Map([...stateRows].filter(([key]) => key.startsWith(prefix)));
+        await replacePrefix(COLLECTION_STATES, prefix, mine);
+      }
+      // The stored count is the whole catalog's, which a one-team read has not
+      // seen — so it is left alone rather than set to 1.
+      return { ok: true, teams: teamRows.size, states: stateRows.size, scoped: true };
+    }
+
     await replacePrefix(COLLECTION_TEAMS, "team:", teamRows);
     await replacePrefix(COLLECTION_STATES, "team:", stateRows);
     model = { ...model, counts: { ...model.counts, teams: teamRows.size } };
-    return { ok: true, teams: teamRows.size, states: stateRows.size };
+    return { ok: true, teams: teamRows.size, states: stateRows.size, scoped: false };
   }
 
   /** Every stored workflow state, optionally for one team. */
@@ -890,7 +954,6 @@ function createData(options = {}) {
     updateFilters,
     buildAutolinks,
     writeFilters,
-    writeIssueRow,
   };
 }
 

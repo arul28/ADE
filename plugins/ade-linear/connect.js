@@ -204,12 +204,6 @@ function createConnect(options = {}) {
     return { clientId: official.clientId, source: "official", scopes: official.scopes };
   }
 
-  /** The client id alone, for callers that only need to know whether there is one. */
-  async function clientId() {
-    const client = await resolveClient();
-    return client?.clientId ?? null;
-  }
-
   /**
    * Ask ADE for the credential it holds for the built-in Linear surface.
    *
@@ -453,9 +447,23 @@ function createConnect(options = {}) {
    * Every secret, not just the token: leaving the refresh token behind would
    * mean a disconnected plugin still holds a live grant against the user's
    * workspace, which is not what "disconnect" means to anybody.
+   *
+   * The CLIENT ID is one of them, and it was the one left behind. It is stored
+   * so a refresh can send it (`exchange`), and it is also what `resolveClient`
+   * reads FIRST — so a disconnected plugin kept reporting `source: "custom"`
+   * and the next sign-in went out as the user's own registered app rather than
+   * through ADE's broker. That difference is not cosmetic: ADE's app carries
+   * the webhook grant and a user's own does not, so the reader would have
+   * reconnected into a workspace that silently never delivers an event.
    */
   async function disconnect() {
-    for (const name of [SECRET_ACCESS_TOKEN, SECRET_REFRESH_TOKEN, SECRET_EXPIRES_AT, SECRET_AUTH_MODE]) {
+    for (const name of [
+      SECRET_ACCESS_TOKEN,
+      SECRET_REFRESH_TOKEN,
+      SECRET_EXPIRES_AT,
+      SECRET_AUTH_MODE,
+      SECRET_CLIENT_ID,
+    ]) {
       await sdk.secrets.delete(name).catch(() => {});
     }
     await data?.refreshConnection().catch(() => {});
@@ -466,7 +474,6 @@ function createConnect(options = {}) {
     AUTH_SESSION_ID,
     begin,
     cancel,
-    clientId,
     resolveClient,
     complete,
     connectStatus,

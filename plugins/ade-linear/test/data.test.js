@@ -635,6 +635,74 @@ describe("the GitHub autolinks the settings panel offers", () => {
   });
 });
 
+describe("reading the catalog for ONE team", () => {
+  const TEAMS = [
+    { id: "t1", key: "ENG", name: "Eng", states: { nodes: [{ id: "s-eng", name: "Todo", type: "unstarted" }] } },
+    { id: "t2", key: "OPS", name: "Ops", states: { nodes: [{ id: "s-ops", name: "Todo", type: "unstarted" }] } },
+  ];
+
+  it("leaves every other team's states where they are", async () => {
+    // `listTeamsAndStates(teamKey)` fetches ONE team, and the sweep replaced the
+    // whole `team:` prefix — so a filtered read deleted every other team's
+    // workflow states. With no states stored, `pickCompletedStateId` and
+    // `pickStartedStateId` answer null and the merge and launch transitions
+    // stop silently until the next unfiltered read on activate.
+    const { sdk, data } = build({
+      api: {
+        listTeamsAndStates: async (teamKey) => (teamKey ? TEAMS.filter((team) => team.key === teamKey) : TEAMS),
+      },
+    });
+    await data.refreshCatalog();
+    assert.equal((await data.states()).length, 2);
+
+    await data.refreshCatalog("ENG");
+    assert.deepEqual((await data.states()).map((state) => state.id).sort(), ["s-eng", "s-ops"]);
+    assert.equal(sdk.collections.keys("teams").length, 2);
+  });
+
+  it("deletes nothing at all for a team key Linear does not have", async () => {
+    // An agent calling `list_states({teamKey: "NOPE"})` used to empty both
+    // collections outright: no teams matched, so the sweep's `wanted` map was
+    // empty and every stored row was unwanted.
+    const { sdk, data } = build({
+      api: {
+        listTeamsAndStates: async (teamKey) => (teamKey ? TEAMS.filter((team) => team.key === teamKey) : TEAMS),
+      },
+    });
+    await data.refreshCatalog();
+    await data.refreshCatalog("NOPE");
+    assert.equal((await data.states()).length, 2, "an unknown team key wiped the catalog");
+    assert.equal(sdk.collections.keys("teams").length, 2);
+  });
+});
+
+describe("the row budget the whole plugin shares", () => {
+  it("drops the comment threads of issues that left the view", async () => {
+    // Comments were pruned per ISSUE when a thread was re-read, and nothing
+    // removed the threads of issues that left the view entirely. The budget is
+    // per PLUGIN, not per collection, so sixty opened issues at fifty comments
+    // each exhausts it — and after that every issue write can only make room by
+    // evicting ISSUE rows. The symptom is a warn line per row and a list that
+    // quietly empties.
+    const { sdk, data } = build({
+      api: {
+        searchAllIssues: async () => nodes({ id: "a" }),
+        fetchIssueComments: async () => [{ id: "c1", body: "x", user: { name: "Ada" } }],
+      },
+    });
+    await data.refreshIssues();
+    await data.refreshComments("a");
+    await data.refreshComments("gone");
+    assert.ok(sdk.collections.keys("comments").some((key) => key.startsWith("comment:gone:")));
+
+    // "gone" is not in the next read's issues, so its thread goes with it.
+    await data.refreshIssues();
+    const keys = sdk.collections.keys("comments");
+    assert.ok(keys.some((key) => key.startsWith("comment:a:")), "pruned a live issue's thread");
+    assert.ok(!keys.some((key) => key.startsWith("comment:gone:")), "kept a departed issue's thread");
+  });
+});
+
 describe("the collections this plugin is allowed to write", () => {
   it("writes only names plugin.json declares", async () => {
     // The host REFUSES a write to an undeclared collection, so a name invented

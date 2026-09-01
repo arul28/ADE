@@ -20,6 +20,19 @@
 //    carries the row's `key`, so every row declares the bare issue id rather
 //    than letting the collection key (which encodes sort order) become the
 //    thing a batch handler has to parse.
+//
+// ## Which half answers an id in `ACTIONS`
+//
+// `index.js` merges its own handlers in AFTER `panelActions.js`'s, so an id
+// both halves define reaches the DATA half. Rather than keep a list of those
+// ids here — which drifted, naming verbs no panel dispatches and one that had
+// been renamed — the split is enforced where it is real: `panelActions.js`
+// simply does not define them, and its own test asserts that.
+//
+// The one thing a schema author has to know is the payload. `openIssue` and
+// `openInLinear` are the data half's and both resolve from a STORED issue row,
+// so a button passes `{issueId}` and never a `url`. A link that is not an
+// issue names `openExternal` instead.
 
 "use strict";
 
@@ -149,13 +162,13 @@ const PANEL_ISSUE = "issue";
 const PANEL_SETTINGS = "settings";
 
 /**
- * The launch panel is NOT declared in `plugin.json` today.
+ * The launch form: the phone's `LinearLaunchScreen`, as a panel.
  *
- * `launch.js` builds it and `panels.js` exports it, because the phone's
- * `LinearLaunchScreen` — the model picker, the permission mode, the kickoff
- * prompt — is five parity rows (M22–M26) and the builder for it is written. It
- * is inert until the manifest declares a `launch` panel; `panelActions.js`
- * therefore never navigates to it unless the host offers `flows.openLaunch`.
+ * Declared in `plugin.json`, built by `panels/launch.js`, and navigated to by
+ * `panelActions.openLaunch`. `flows.openLaunch` remains the switch for a HOST
+ * that cannot draw it — its absence means the two launch buttons do the work
+ * directly with the plugin's defaults rather than sending the reader to a panel
+ * id nothing can resolve.
  */
 const PANEL_LAUNCH = "launch";
 
@@ -195,6 +208,53 @@ function issueStateKey(identifier) {
 
 function issuePriorityKey(identifier) {
   return `issuePriority:${identifier}`;
+}
+
+/* ── State and priority, for BOTH halves ─────────────────────────────────── */
+
+/**
+ * Badge tone per state type.
+ *
+ * Here rather than in `panels/common.js` or `issueFormat.js` because it was in
+ * BOTH, spelled twice with identical output — and a table duplicated between
+ * the two halves of this plugin is a table that will eventually disagree, in a
+ * way no test on either side can see.
+ *
+ * The vocabulary has exactly four tones (`VocabTone`): `neutral`, `accent`,
+ * `success`, `warning`. Anything else is coerced to the fallback, so a tone
+ * invented here would not fail — it would silently render flat, which is the
+ * worst of both outcomes. There is no red anywhere a plugin reaches, so this is
+ * a real narrowing and the mapping is chosen rather than derived: `started` is
+ * the one a reader scans for, so it takes `accent`; `completed` is the only
+ * settled-and-good state, so it takes `success`; `triage` is the only one that
+ * wants attention, so it takes `warning`. `canceled` reads neutral rather than
+ * loud on purpose — the only louder tone is `warning`, and a cancelled issue is
+ * not a warning, it is a closed one.
+ */
+const STATE_TONES = Object.freeze({
+  triage: "warning",
+  backlog: "neutral",
+  unstarted: "neutral",
+  started: "accent",
+  completed: "success",
+  canceled: "neutral",
+});
+
+function stateTone(stateType) {
+  return STATE_TONES[String(stateType ?? "").toLowerCase()] ?? "neutral";
+}
+
+/**
+ * Linear's priority scale, as the built-in labels it (`linearPriorityLabel`).
+ *
+ * 0 is "none" and 1 is the URGENT end, not the low one — which is the one thing
+ * about this scale that is easy to get backwards. Also here rather than twice.
+ */
+const PRIORITY_LABELS = Object.freeze(["No priority", "Urgent", "High", "Medium", "Low"]);
+
+function priorityLabel(priority) {
+  const index = Number(priority);
+  return Number.isInteger(index) ? (PRIORITY_LABELS[index] ?? PRIORITY_LABELS[0]) : PRIORITY_LABELS[0];
 }
 
 /* ── Action ids ─────────────────────────────────────────────────────────── */
@@ -269,35 +329,6 @@ const ACTIONS = {
 };
 
 /**
- * Ids the DATA half owns, named here only so this table is the whole audit.
- *
- * `index.js` merges its own handlers in after this half's, so a schema
- * dispatching one of these reaches that half and must send ITS payload shape.
- * `openInLinear` is the one a panel still uses: it resolves the URL from the
- * stored row, so a button passes `{issueId}` and never a `url`.
- */
-const CORE_OWNED_ACTIONS = Object.freeze([
-  "refreshIssues",
-  "refreshIssue",
-  "refreshConnection",
-  "openIssue",
-  "openIssues",
-  "openSessionIssue",
-  // Resolves the URL from the STORED issue row and ignores a `url` argument, so
-  // every panel button passes `{issueId}`. It is also a socket menu item, which
-  // is why it stayed on that side.
-  "openInLinear",
-  "commentProgress",
-  "closeIssueOnMerge",
-  "saveWebhookSecret",
-  // The four automation steps, behind their own names since the collision above.
-  "stepSetIssueState",
-  "stepCommentOnIssue",
-  "stepAssignIssue",
-  "stepCloseIssueOnMerge",
-]);
-
-/**
  * The ids a bound issue row may name, on any of its three action slots.
  *
  * Deliberately short. A row that could press `disconnect` because a collection
@@ -313,15 +344,6 @@ const ISSUE_ROW_ACTIONS = [
   ACTIONS.openInLinear,
 ];
 
-/**
- * The ids a bound COMMENT row may name.
- *
- * One verb, and it is not a write: a comment row offers the way to the thread
- * in Linear and nothing else, because every write this panel can do to a
- * comment is a write it cannot show the result of.
- */
-const COMMENT_ROW_ACTIONS = [ACTIONS.openInLinear];
-
 /* ── Prompt ids ─────────────────────────────────────────────────────────── */
 
 /**
@@ -331,11 +353,9 @@ const COMMENT_ROW_ACTIONS = [ACTIONS.openInLinear];
  */
 const PROMPT_SEARCH = "search";
 const PROMPT_COMMENT = "comment";
-const PROMPT_API_KEY = "apikey";
 
 module.exports = {
   ACTIONS,
-  CORE_OWNED_ACTIONS,
   COLLECTION_COMMENTS,
   COLLECTION_ISSUES,
   COLLECTION_PEOPLE,
@@ -343,7 +363,6 @@ module.exports = {
   COLLECTION_STATES,
   COLLECTION_TEAMS,
   COLLECTION_VIEWER,
-  COMMENT_ROW_ACTIONS,
   FIELD_ASSIGNEE,
   FIELD_PRIORITY,
   FIELD_PROJECT,
@@ -354,7 +373,7 @@ module.exports = {
   PANEL_LAUNCH,
   PANEL_MAIN,
   PANEL_SETTINGS,
-  PROMPT_API_KEY,
+  PRIORITY_LABELS,
   PROMPT_COMMENT,
   PROMPT_SEARCH,
   STATE_ASSIGNEE,
@@ -364,6 +383,7 @@ module.exports = {
   STATE_PROJECT,
   STATE_SORT,
   STATE_TEAM,
+  STATE_TONES,
   STATE_UPDATED,
   STATE_VIEW,
   VIEWER_KEY_CONNECTION,
@@ -376,6 +396,8 @@ module.exports = {
   groupKeyPrefix,
   issuePriorityKey,
   issueStateKey,
+  priorityLabel,
   rankSegment,
+  stateTone,
   statesKeyPrefix,
 };

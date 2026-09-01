@@ -100,14 +100,16 @@ function linearFetch() {
 /* ── The fake ADE ───────────────────────────────────────────────────────── */
 
 function host(overrides = {}) {
+  // `actions` LAST, so a test that adds one verb keeps the two every activate
+  // needs rather than replacing the whole namespace with its own.
   return createSdk({
     secrets: undefined,
+    ...overrides,
     actions: {
       "chat.getAvailableModels": async () => [{ value: "opus-5", label: "Opus 5" }],
       "git.getOriginRemote": async () => "https://github.com/acme/app.git",
       ...(overrides.actions ?? {}),
     },
-    ...overrides,
   });
 }
 
@@ -326,6 +328,93 @@ describe("the settings panel a reader is actually published", () => {
     const method = rows.find((row) => row.key === COPY.signInMethod);
     assert.equal(method?.value, "API key");
     assert.ok(pressed(panel).has(contract.ACTIONS.disconnect), "a connected reader has no way to sign out");
+  });
+});
+
+/* ── The chat header's two Linear verbs ─────────────────────────────────── */
+
+describe("the chat header, whose socket sends a session and nothing else", () => {
+  /**
+   * The context that ACTUALLY arrives.
+   *
+   * `chat-header-action` dispatches `{context, ...args}` where context is a
+   * `PluginSessionContext` — `{kind, id, title, provider, status}` — and
+   * `PluginChatHeaderActions` passes no extra args. There is no `laneId` on it,
+   * which is the fact both of these verbs were written without.
+   */
+  function sessionContext(id = "session-1") {
+    return { context: { kind: "session", id, title: "Fix the login redirect", provider: "claude", status: "idle" } };
+  }
+
+  const LANES = [{ id: "lane-1", name: "First lane" }, { id: "lane-2", name: "Second lane" }];
+
+  /** Two lanes, each with its own Linear issue, and one session inside lane 2. */
+  function chatHost() {
+    return {
+      lanes: [
+        { ...LANES[0], primaryIssue: { provider: "linear", issueId: "issue-1", key: "ENG-1" }, issueLinks: [] },
+        { ...LANES[1], primaryIssue: { provider: "linear", issueId: "issue-2", key: "ENG-2" }, issueLinks: [] },
+      ],
+      sessionIssues: { "lane-2": [{ sessionId: "session-1", issueLinks: [] }] },
+    };
+  }
+
+  it("opens the issue of the lane the CHAT is in", async () => {
+    // The verb branched on `kind === "lane"` and `kind === "composer"`, and the
+    // socket sends neither — so the chat header's primary Linear button
+    // answered "this lane has no Linear issue attached" for every chat in every
+    // lane, including lanes that plainly had one.
+    await activate(chatHost());
+    const result = await withLinear(() => plugin.actions.openSessionIssue(sessionContext()));
+    assert.equal(result.navigate?.panelId, "issue");
+    assert.equal(result.navigate.context.issueId, "issue-2");
+  });
+
+  it("comments on the chat's OWN issue, never on the first one it can find", async () => {
+    // THE REGRESSION. `rows.find(row => row.laneId === laneId) ?? rows[0]` with
+    // a `laneId` that was always null: every press posted the transcript onto
+    // the first Linear-linked lane in the project — `issue-1` here — which is a
+    // ticket other people read and not the one the reader was looking at.
+    await activate({
+      ...chatHost(),
+      actions: {
+        "chat.readTranscript": async () => [{ role: "assistant", text: "Fixed the redirect." }],
+      },
+    });
+    const original = globalThis.fetch;
+    globalThis.fetch = linearFetch();
+    let result;
+    try {
+      result = await plugin.actions.commentProgress(sessionContext());
+    } finally {
+      globalThis.fetch = original;
+    }
+    assert.ok(result.message?.includes("ENG-2"), `commented on the wrong issue: ${result.message}`);
+    assert.ok(!result.message?.includes("ENG-1"), "commented on the first lane in the project");
+  });
+
+  it("says there is no issue rather than picking somebody else's", async () => {
+    // A chat in a lane with no Linear issue, and a host that cannot say which
+    // lane holds the session, are both honestly "there is nothing here".
+    await activate({ lanes: [], sessionIssues: {} });
+    const opened = await withLinear(() => plugin.actions.openSessionIssue(sessionContext()));
+    assert.equal(opened.ok, false);
+    assert.ok(opened.message.includes("no Linear issue"));
+
+    const commented = await withLinear(() => plugin.actions.commentProgress(sessionContext()));
+    assert.equal(commented.ok, false);
+    assert.ok(commented.message.includes("no Linear issue"));
+  });
+
+  it("still reads a lane context and a composer context, which do name their lane", async () => {
+    await activate(chatHost());
+    const fromLane = await withLinear(() => plugin.actions.openSessionIssue({ context: { kind: "lane", id: "lane-1" } }));
+    assert.equal(fromLane.navigate.context.issueId, "issue-1");
+
+    const fromComposer = await withLinear(() => plugin.actions.openSessionIssue({
+      context: { kind: "composer", laneId: "lane-2" },
+    }));
+    assert.equal(fromComposer.navigate.context.issueId, "issue-2");
   });
 });
 

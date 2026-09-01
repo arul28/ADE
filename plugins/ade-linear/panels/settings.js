@@ -37,6 +37,19 @@ const { COPY, DEEPLINK_SETTINGS, LIMITS, fallback, label, prose, value } = requi
 const LINEAR_API_SETTINGS_URL = "https://linear.app/settings/api";
 
 /**
+ * How many autolink rows this card draws.
+ *
+ * `LIMITS.maxListItems` is 250 and is the ceiling for a BOUND list, whose rows
+ * cost the schema nothing. These rows are literal and every one of them spends
+ * bytes against `maxSchemaBytes` — 250 of them beside a 250-team select
+ * measures past this file's own soft budget and, with longer team names, past
+ * the hard one, at which point the host refuses the publish and the settings
+ * panel goes stale. A workspace has a handful of teams; this is the bound that
+ * says so.
+ */
+const MAX_AUTOLINK_ROWS = 25;
+
+/**
  * The setting keys `plugin.json` declares. Spelled once, so a renamed key
  * breaks a test rather than a reader's toggle.
  */
@@ -323,6 +336,7 @@ function autolinksBlock(input = {}) {
   if (!input.showAutolinks) return [];
 
   const candidates = Array.isArray(input.autolinks) ? input.autolinks : [];
+  const hidden = Math.max(0, candidates.length - MAX_AUTOLINK_ROWS);
   const block = [
     { component: "divider", label: COPY.autolinksHeading },
     { component: "text", variant: "caption", text: prose(COPY.autolinksBody) },
@@ -339,7 +353,7 @@ function autolinksBlock(input = {}) {
 
   block.push({
     component: "list",
-    items: candidates.slice(0, LIMITS.maxListItems).map((entry) => ({
+    items: candidates.slice(0, MAX_AUTOLINK_ROWS).map((entry) => ({
       key: String(entry.prefix),
       title: label(entry.title),
       subtitle: value(entry.description),
@@ -359,6 +373,14 @@ function autolinksBlock(input = {}) {
           }),
     })),
   });
+
+  if (hidden > 0) {
+    block.push({
+      component: "text",
+      variant: "caption",
+      text: prose(`${hidden} more ${hidden === 1 ? "team is" : "teams are"} not shown here.`),
+    });
+  }
 
   return block;
 }
@@ -441,13 +463,18 @@ function ingressBlock(input = {}) {
 /**
  * The signing secret, which is what turns the webhook from open to verified.
  *
- * Without it a delivery is authenticated only by the relay's own per-plugin
- * secret, so anyone who learns the URL can post a fake issue event and fire the
- * user's automation rules. The manifest cannot simply declare `verify`: a
- * channel that declares it and cannot find its secret FAILS CLOSED
- * (`pluginWebhookIngressService.ts:429`) and silently drops every delivery — so
- * the field has to exist before verification can be turned on, which is why this
- * block ships first and the manifest change follows it.
+ * The manifest DECLARES `verify` with `secretRef: "LINEAR_WEBHOOK_SECRET"`, so
+ * every delivery is checked against an HMAC-SHA256 of its body — and the host
+ * fails closed: a channel whose secret it cannot find drops every delivery
+ * rather than trusting it (`pluginWebhookIngressService.ts`).
+ *
+ * So this field is not a preparation for a future manifest change. Until the
+ * reader pastes the secret, nothing Linear sends reaches this plugin at all,
+ * which is why the row above says "Waiting for the signing secret" rather than
+ * reporting a healthy endpoint. The alternative — verification off — is worse:
+ * a delivery would be authenticated only by the relay's own per-plugin secret,
+ * so anyone who learned the URL could post a fake issue event and fire the
+ * user's automation rules.
  *
  * A `secret` field, masked on every client, because this is a credential. And a
  * `submit` rather than `applyOnChange`, because a half-typed secret committed on

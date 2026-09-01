@@ -26,6 +26,7 @@ const { afterEach, describe, it } = require("node:test");
 
 const plugin = require("../index");
 const { ACTIONS } = require("../panels/contract");
+const panelActions = require("../panelActions");
 const { createApi, createSdk, issueNode } = require("./support");
 
 const MANIFEST = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "plugin.json"), "utf8"));
@@ -114,6 +115,20 @@ describe("activate", () => {
     for (const id of Object.values(ACTIONS)) {
       assert.equal(typeof plugin.actions[id], "function", `${id} is in contract.js and undefined`);
     }
+  });
+
+  it("lets no id be defined by BOTH halves, so no merge order decides anything", async () => {
+    // A collision was resolved by `Object.assign(actions, panelHandlers,
+    // ownActions)` — last one wins — and that is how three handlers in
+    // `panelActions.js` came to be unreachable while reading as the live ones.
+    // Disjoint tables mean the merge order cannot decide anything, so it cannot
+    // decide it wrongly.
+    const { sdk } = await activated();
+    const panelOnly = Object.keys(panelActions.bind({ publish: async () => {}, model: () => ({}) }));
+    const ownOnly = Object.keys(require("../index").__internals.ownActions);
+    const shared = panelOnly.filter((id) => ownOnly.includes(id));
+    assert.deepEqual(shared, [], `both halves define ${shared.join(", ")}`);
+    assert.ok(sdk);
   });
 
   it("keeps the three refresh ids as the DATA half's, not the panel half's", async () => {

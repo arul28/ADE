@@ -484,11 +484,22 @@ describe("disconnecting", () => {
     }
   });
 
-  it("keeps the client id, so reconnecting by OAuth still works", async () => {
+  it("forgets the client id too, so the next sign-in goes back through ADE's broker", async () => {
+    // The client id is what `resolveClient` reads FIRST. Left behind, a
+    // disconnected plugin kept reporting `source: "custom"` and the next
+    // sign-in went out as the user's own registered app. That is not cosmetic:
+    // ADE's app carries the `admin` scope Linear requires before it will
+    // deliver a webhook, and a user's own registration does not — so the
+    // reader would have reconnected into a workspace that silently never
+    // delivers an event.
     const { sdk, connect } = build();
-    await sdk.secrets.set("LINEAR_OAUTH_CLIENT_ID", "client-1");
+    await sdk.secrets.set("LINEAR_OAUTH_CLIENT_ID", "the-users-own-app");
     await connect.disconnect();
-    assert.equal(await sdk.secrets.get("LINEAR_OAUTH_CLIENT_ID"), "client-1");
+    assert.equal(await sdk.secrets.get("LINEAR_OAUTH_CLIENT_ID"), null);
+
+    const client = await connect.resolveClient();
+    assert.equal(client.source, "official");
+    assert.equal(client.clientId, "ade-official-client");
   });
 
   it("cancelling is safe when nothing is running", async () => {

@@ -15,7 +15,7 @@
 const assert = require("node:assert/strict");
 const { describe, it } = require("node:test");
 
-const { FILTER_STATE_KEYS, HOST_CAPABILITIES, bind, readChangedValue } = require("../panelActions");
+const { FILTER_STATE_KEYS, bind, readChangedValue } = require("../panelActions");
 const contract = require("../panels/contract");
 
 /**
@@ -69,6 +69,12 @@ function makeHost(options = {}) {
     },
     sdk: { clipboard: { write: record("sdk.clipboard.write") } },
   };
+  // A build that does not have a verb at all, which is a different answer from
+  // one whose verb threw — see the `openLaunch` test.
+  for (const path of options.without ?? []) {
+    const [branch, name] = path.split(".");
+    delete host[branch][name];
+  }
   return host;
 }
 
@@ -87,19 +93,31 @@ describe("the host seam", () => {
     assert.throws(() => bind({ publish: () => {} }), TypeError);
   });
 
-  it("declares every capability it reaches for, and reaches for no other", () => {
-    // The failure this pins is invisible from the outside: a handler calling
-    // `data.loadIssue` when the data layer named it `fetchIssue` guards, falls
-    // through and returns a polite message forever. The list is the contract
-    // `index.js` builds its host against.
-    const host = makeHost();
-    const declared = new Set([...HOST_CAPABILITIES.required, ...HOST_CAPABILITIES.optional]);
-    for (const path of HOST_CAPABILITIES.optional) {
-      let node = host;
-      for (const step of path.split(".")) node = node?.[step];
-      assert.equal(typeof node, "function", `the test host has no ${path}`);
-    }
-    assert.ok(declared.has("publish") && declared.has("model"));
+  it("tells a capability that is ABSENT from one that threw", async () => {
+    // The two used to be one answer, and `openLaunch` acted on it: a transient
+    // failure inside the launch flow was read as "this build has no launch
+    // panel", and the button that says it opens a form silently created a
+    // worktree and started an agent on the plugin's defaults instead.
+    //
+    // Absent IS still the fall-through — a build with no launch panel has
+    // nowhere to navigate, so the button does what it says with the defaults.
+    const absentHost = makeHost({ without: ["flows.openLaunch"] });
+    await bind(absentHost).openLaunch({ issueId: "issue-9" });
+    assert.ok(
+      reached(absentHost).includes("flows.spawnAgentOnIssue"),
+      "a build with no launch panel must still launch",
+    );
+
+    // A verb that threw creates nothing and says so.
+    const brokenHost = makeHost({ fail: ["flows.openLaunch"] });
+    const failed = await bind(brokenHost).openLaunch({ issueId: "issue-9" });
+    assert.equal(failed.ok, false);
+    assert.ok(!failed.navigate, "navigated after a launch flow that threw");
+    assert.deepEqual(
+      reached(brokenHost).filter((path) => path.startsWith("flows.spawn") || path.startsWith("flows.createLane")),
+      [],
+      "created a lane for a reader who had asked for the form",
+    );
   });
 
   it("says what it could not do rather than throwing inside the host", async () => {
@@ -121,11 +139,8 @@ describe("navigation", () => {
     // collection to fall through to. `contract.js:CORE_OWNED_ACTIONS` is the
     // audit, and this asserts the audit is true of the module.
     const handlers = bind(makeHost());
-    for (const id of ["openIssue", "openSubIssue", "openInLinear"]) {
-      assert.equal(handlers[id], undefined, `${id} is core-owned and defined here too`);
-    }
-    for (const id of contract.CORE_OWNED_ACTIONS) {
-      assert.equal(handlers[id], undefined, `${id} is core-owned and defined here too`);
+    for (const id of ["openIssue", "openSubIssue", "openInLinear", "openIssues", "openSessionIssue"]) {
+      assert.equal(handlers[id], undefined, `${id} is the data half's and is defined here too`);
     }
   });
 

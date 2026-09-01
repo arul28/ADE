@@ -751,16 +751,16 @@ describe("the ids the two halves share", () => {
       assert.ok(!id.startsWith("step"), `a schema dispatches the automation step ${id}`);
     }
 
-    // `openInLinear` is the one core-owned id a panel still presses. Everything
-    // else a schema names must be this half's, or it reaches a handler that
-    // does not exist and the button does nothing at all.
+    // Every id a schema names must be in the ACTIONS table. An id that is not
+    // reaches a handler neither half defines, and the button does nothing at
+    // all — silently, because the host answers "no such action" to a press
+    // nobody is watching. WHICH half answers is not this test's business:
+    // `test/index.test.js` proves every id in the table resolves, and
+    // `test/panelActions.test.js` proves the data half's ids are not
+    // shadowed by a second copy here.
     const mine = new Set(Object.values(contract.ACTIONS));
     for (const id of dispatched) {
-      if (id === "openInLinear") continue;
-      assert.ok(
-        mine.has(id) && !contract.CORE_OWNED_ACTIONS.includes(id),
-        `${id} is dispatched by a schema but is not this half's verb`,
-      );
+      assert.ok(mine.has(id), `${id} is dispatched by a schema and is in no action table`);
     }
   });
 
@@ -781,7 +781,7 @@ describe("the ids the two halves share", () => {
     const panel = panels.buildSettingsPanel({ connection: { connected: false } });
     const button = nodesOf(panel, "button").find((node) => node.onPress.args?.url);
     assert.equal(button.onPress.action, contract.ACTIONS.openExternal);
-    assert.ok(!contract.CORE_OWNED_ACTIONS.includes(contract.ACTIONS.openExternal));
+    assert.notEqual(button.onPress.action, contract.ACTIONS.openInLinear);
   });
 
   it("offers the signing secret the webhook channel cannot be verified without", () => {
@@ -814,7 +814,15 @@ describe("the launch panel", () => {
       { id: "gpt-5", label: "GPT-5" },
     ],
     permissionModes: ["default", "accept-edits", "full-auto"],
-    reasoningEfforts: ["", "low", "medium", "high", "xhigh"],
+    // As `index.js:REASONING_EFFORTS` sends them. "Default" rides a SENTINEL
+    // and not an empty string: an empty option value fails the whole select.
+    reasoningEfforts: [
+      { value: "default", label: "Default" },
+      { value: "low", label: "Low" },
+      { value: "medium", label: "Medium" },
+      { value: "high", label: "High" },
+      { value: "xhigh", label: "Extra high" },
+    ],
     laneOnly: false,
     fastModeSupported: false,
   };
@@ -841,14 +849,28 @@ describe("the launch panel", () => {
     assert.deepEqual(permissions.options.map((option) => option.value), ["default", "accept-edits", "full-auto"]);
   });
 
-  it("keeps the empty reasoning effort, which is a real choice", () => {
-    // `""` means "whatever the model does by default" and must survive as an
-    // option rather than being filtered out as a blank.
+  it("carries the default reasoning effort on a value the parser will keep", () => {
+    // "Whatever the model does by default" is a real choice, and it used to
+    // ride an EMPTY value. `vocabString("")` answers `undefined`, which drops
+    // the option and then fails the whole field — so the Reasoning effort row
+    // did not render on any client. A segmented control does accept an empty
+    // value, which is where the assumption came from; a form select does not.
     const form = formOf(panels.build("launch", LAUNCH_VIEW));
     const effort = form.fields.find((field) => field.id === "reasoningEffort");
-    assert.equal(effort.options[0].value, "");
-    assert.equal(effort.options[0].label, "Default");
     assert.equal(effort.options.length, 5);
+    assert.equal(effort.options[0].label, "Default");
+    for (const option of effort.options) {
+      assert.ok(
+        typeof option.value === "string" && option.value.trim(),
+        `the "${option.label}" option carries a value the parser drops`,
+      );
+    }
+    // And the sentinel maps back to sending nothing, so the provider sees the
+    // same request it saw before.
+    const { chosenReasoningEffort } = require("../index").__internals;
+    assert.equal(chosenReasoningEffort(effort.options[0].value), null);
+    assert.equal(chosenReasoningEffort("high"), "high");
+    assert.equal(chosenReasoningEffort(""), null);
   });
 
   it("reads the state the data half declares, not only a loading flag", () => {

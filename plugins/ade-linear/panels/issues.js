@@ -81,6 +81,19 @@ const {
  */
 const MAX_FILTER_CONTROLS = 8;
 
+/**
+ * How many state sections this panel draws.
+ *
+ * Two nodes per group, and `VOCAB_LIMITS.maxNodes` is 200 for the whole panel —
+ * which the filter strip, the search row and the footer also spend from. Groups
+ * are one per distinct state id across up to 250 issues, and every Linear TEAM
+ * has its own state ids, so a sixteen-team workspace reaches ninety-odd. The
+ * parser fails the whole panel on overflow rather than truncating, so the
+ * ceiling has to be enforced here or the reader gets a fallback card instead of
+ * their issues.
+ */
+const MAX_STATE_GROUPS = 40;
+
 /** The three presets the built-in's state tabs offer, in its order. */
 const STATE_PRESETS = [
   { value: "all", label: COPY.stateAll },
@@ -257,14 +270,22 @@ function updatedControl() {
  * keys are spent. A single-team workspace would get a filter that can only ever
  * mean "all", which is the two-option floor the vocabulary refuses anyway.
  */
-function teamControl() {
+/**
+ * The team control. A round trip, not a client `where`.
+ *
+ * `valueField: "key"` and not `"id"`: the value this sends back is stored as
+ * the `teamKey` filter and reaches Linear as `team: { key: { eq } }`, which is
+ * the only shape its `IssueFilter` offers. Binding the id would have sent a
+ * uuid where a key belongs and matched nothing.
+ */
+function teamControl(input = {}) {
   return {
     component: "segmented",
     stateKey: STATE_TEAM,
     label: COPY.filterTeam,
-    default: "",
+    default: input.teamKey ?? "",
     options: [{ value: "", label: COPY.allTeams }],
-    optionsFrom: { collection: COLLECTION_TEAMS, valueField: "id", labelField: "name" },
+    optionsFrom: { collection: COLLECTION_TEAMS, valueField: "key", labelField: "name" },
     onChange: onFilterChange(),
   };
 }
@@ -285,7 +306,7 @@ function filterStrip(input = {}) {
   children.push(sortControl(input));
   children.push(viewControl(input));
   children.push(updatedControl());
-  if (input.hasTeams) children.push(teamControl());
+  if (input.hasTeams) children.push(teamControl(input));
 
   return {
     component: "stack",
@@ -363,7 +384,8 @@ function issueBinding(keyPrefix) {
  * group and says so on the row, which is how one panel serves both.
  */
 function stateGroups(groups) {
-  return groups.map((group) => ({
+  const drawn = groups.slice(0, MAX_STATE_GROUPS);
+  const nodes = drawn.map((group) => ({
     component: "group",
     title: label(group.stateName || group.stateType || "Other"),
     groupKey: String(group.stateId),
@@ -377,6 +399,23 @@ function stateGroups(groups) {
       },
     ],
   }));
+  // Said out loud, never dropped in silence. `parsePluginPanel` fails the WHOLE
+  // panel on `maxNodes` rather than truncating, so an uncapped group list on a
+  // multi-team workspace draws the "open ADE on the computer that holds this
+  // plugin" fallback ON that computer. Every other list in this plugin caps;
+  // this one is the only one whose length is a property of the workspace.
+  const dropped = groups.length - drawn.length;
+  if (dropped > 0) {
+    nodes.push({
+      component: "text",
+      variant: "caption",
+      text: value(
+        `${dropped} more workflow ${dropped === 1 ? "state" : "states"} are not shown here.`
+        + " Switch to the flat view to see every issue in one list.",
+      ),
+    });
+  }
+  return nodes;
 }
 
 /**

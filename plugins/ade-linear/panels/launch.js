@@ -192,8 +192,12 @@ function buildLaunchPanel(input = {}) {
     });
   }
 
-  // `""` is a real option here — it is "whatever the model does by default" —
-  // so the list is not filtered for empties the way the other two would be.
+  // "Whatever the model does by default" is a real choice, and it rides a
+  // SENTINEL value rather than an empty string. `vocabString("")` answers
+  // `undefined`, which drops the option AND fails the whole field — so an empty
+  // value here did not mean "no effort chosen", it meant no effort row at all,
+  // on every client. `index.js:chosenReasoningEffort` maps the sentinel back to
+  // sending nothing.
   const effortOptions = selectOptions(reasoningEfforts, LIMITS.maxSelectOptions);
   if (effortOptions.length > 0) {
     fields.push({

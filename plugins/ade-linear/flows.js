@@ -383,15 +383,12 @@ function createFlows(options = {}) {
         if (link?.closeOnMerge) add(link.issue);
       }
       // The third source is a separate read because it is a separate table.
-      // A failure here must not take the lane-level half down with it: those
-      // issues are still correct to move, and losing them because one read
-      // failed would make the whole rule unreliable rather than partial.
-      let sessionGroups = [];
-      try {
-        sessionGroups = await sdk.lanes.listSessionIssues(laneId);
-      } catch (error) {
-        log("warn", `Could not read session issue links for lane ${laneId}: ${error?.message ?? error}`);
-      }
+      // Through `sessionIssues` rather than the SDK verb directly: it holds the
+      // downlevel guard AND the catch, so a host whose SDK predates the verb
+      // answers `[]` instead of throwing a TypeError this loop would have to
+      // know about. A failure here must not take the lane-level half down with
+      // it — those issues are still correct to move.
+      const sessionGroups = await sessionIssues(laneId);
       for (const group of Array.isArray(sessionGroups) ? sessionGroups : []) {
         for (const link of Array.isArray(group?.issueLinks) ? group.issueLinks : []) {
           if (link?.closeOnMerge) add(link.issue);
@@ -403,9 +400,20 @@ function createFlows(options = {}) {
         if (movedDone.has(issue.issueId)) continue;
         movedDone.add(issue.issueId);
         try {
-          const teamKey = issue.container?.key ?? null;
-          const states = await data.states(teamKey);
-          const doneId = pickCompletedStateId(states);
+          // The team, from the link if it carries one and from the stored row
+          // if it does not. `IssueRefContainer.key` is optional and this path
+          // consumes links from any producer, including core's.
+          //
+          // `data.states(null)` returns EVERY team's states ordered by key, and
+          // `pickCompletedStateId` takes the first `completed` it finds — the
+          // alphabetically first team's Done. Moving an issue to another team's
+          // state is a move Linear refuses, caught and warned two lines below,
+          // so the issue never moved and nothing said why. An unknown team is
+          // refused here instead, in the same words as a team with no Done.
+          const teamKey = issue.container?.key
+            ?? (await data.issueRow(issue.issueId).catch(() => null))?.teamKey
+            ?? null;
+          const doneId = teamKey ? pickCompletedStateId(await data.states(teamKey)) : null;
           if (!doneId) {
             log("warn", `No completed state for ${issue.key ?? issue.issueId}; leaving it where it is.`);
             movedDone.delete(issue.issueId);
@@ -578,9 +586,11 @@ function createFlows(options = {}) {
     createAutolink,
     createLaneFromIssue,
     defaultKickoff,
+    githubRepo,
     linkIssueToLane,
     mergedLanesFromPrIds,
     moveToStarted,
+    sessionIssues,
     sessionSetupFor,
     spawnAgentOnIssue,
   };
