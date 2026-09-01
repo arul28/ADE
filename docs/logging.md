@@ -594,6 +594,65 @@ handlers make no analytics call for any method.
 
 The browser sends events directly to `https://us.i.posthog.com/i/v0/e/`. It does not call a Vercel Function or Edge Function, enable Vercel Web Analytics, create a Vercel log drain, or proxy events through ADE infrastructure. PostHog therefore adds no Vercel compute, function-invocation, log-ingestion, or server-side analytics usage. The site retains only its normal static asset delivery; preview and development deployments intentionally have no PostHog environment variables so internal traffic does not spend quota or skew production data.
 
+## Plugins
+
+The plugin platform writes 111 structured log events. It writes no product-analytics event at all. Read this section before you add a log line to `apps/desktop/src/main/services/plugins/**`, `apps/ade-cli/src/services/plugins/**`, or any code that hosts a plugin child.
+
+### Which log a plugin event goes to
+
+The plugin host is machine-scoped. `getSharedPluginHostService` in `apps/desktop/src/main/services/plugins/pluginHostService.ts` is a process singleton, and the comment above its one caller says plugin children belong to the machine and not to whichever project happens to be open.
+
+**The code does not follow the subject rule.** The caller is `createAdeRuntime` in `apps/ade-cli/src/bootstrap.ts`, which passes the per-project logger it opened at `<project>/.ade/transcripts/logs/ade-cli.jsonl`. The brain opens one runtime per project inside one process (`apps/ade-cli/src/services/projects/projectScope.ts`). The first project to open therefore owns every plugin line on the machine, and a second project's plugin events land in the first project's log. This is the defect the `ade_cli.auto_install` events had before they moved: a machine fact filed wherever the startup latch won. No plugin event reaches `desktop-main.jsonl` or `brain.jsonl` today. Move the host's own lines to a machine-scoped sink before you add more of them.
+
+Three plugin events are genuinely project-subject and already correct. The desktop main process writes `window.plugin_webview_blocked`, `window.plugin_webview_open_failed`, and `window.plugin_webview_navigation_blocked` to the project's `main.jsonl`, because a window belongs to the project it opened for. The chat, sync, and database events below are project-subject for the same reason.
+
+The webhook relay writes no plugin line. Its only structured records are the two GitHub repository-auth warnings in `apps/webhook-relay/src/relay.ts`. A plugin delivery leaves no trace in the Worker, by design: the relay stores an opaque third-party payload it cannot interpret.
+
+### Bounded fields
+
+Every plugin identifier in every log line is bounded by a manifest pattern, not by free text. `pluginId` matches `^[a-z][a-z0-9-]{0,63}$`, a webhook channel matches `^[a-z][a-z0-9-]{0,31}$`, a secret name matches `^[A-Za-z][A-Za-z0-9_.-]{0,127}$`, and a version matches the semantic-version pattern. The relay re-checks the plugin id and the channel against the same alphabets before it routes a delivery, so a prober cannot write an arbitrary string into this machine's log through a webhook URL.
+
+### Event families
+
+**Host lifecycle and the child process** (`pluginChildSupervisor.ts`, `pluginHostService.ts`). `plugin.child_restart_scheduled` (`restartCount`, `delayMs`), `plugin.child_exited` (`code`, `signal`, `restartCount`, `lifetimeMs`), `plugin.child_restart_contained` (`fastFailures`, `lifetimeMs`), `plugin.child_restart_failed`, `plugin.child_write_failed`, `plugin.child_frame_oversized` (`limit`), `plugin.child_frame_handler_failed`, `plugin.child_fatal` (`code`, `message`), `plugin.child_process_error`, `plugin.child_stdin_error`, `plugin.child_stderr`, `plugin.autostart_failed`, `plugin.supervisor_dispose_failed`, and `plugin.runtime_hooks_dropped` (`dropped`). Each carries `pluginId`.
+
+**Install, checksum, and the local registry** (`pluginInstallService.ts`, `pluginRegistryFile.ts`). `plugin.checksum_verified` and `plugin.checksum_mismatch` (`pluginId`, `version`, `expected`, `actual` — two `git archive` digests, never a file list), `plugin.checksum_archive_failed`, `plugin.installed` (`version`, `source` as a kind, `warnings` as a count), `plugin.install_copied` (`files`, `bytes`), `plugin.uninstalled` (`known`), `plugin.uninstall_refused`, `plugin.enabled_changed` (`enabled`), `plugin.contribution_toggled` (`socketId`, `enabled`), `plugin.reload_resynced` and `plugin.reload_resync_refused` (`source`, `reason`), `plugin.registry_write_failed`, `plugin.skill_root_dropped` (`reason`, `maxFiles` or `bytes`, `totalBudgetBytes`), and the two install pings `plugin.install_ping_rejected` (`status`) and `plugin.install_ping_failed`.
+
+**The Marketplace index** (`apps/ade-cli/src/services/plugins/pluginRegistryService.ts`). Eleven events record the fetch and the star counts: `plugin.registry_fetch_rejected` (`status`), `plugin.registry_fetch_failed`, `plugin.registry_index_too_large` (`maxBytes`, `declared`), `plugin.registry_index_invalid` (`errors`, first three), `plugin.registry_entries_dropped` (`dropped`, `examples`, first three), `plugin.registry_cache_write_failed`, and the five `plugin.registry_stars_*` lines keyed by `slug`. They record why the catalog is stale. They never record what a user searched for or opened.
+
+**Auth sessions and the credential handoff** (`pluginAuthSessionService.ts`, `pluginCredentialHandoff.ts`). `plugin.auth_session_begun` and `plugin.auth_session_completed` carry `sessionId`, `attempt`, `transport`, and `paramKeys` — **the names of the callback parameters and never their values**, because a value here is a `client_id` at best and a `code_challenge` at worst. `plugin.auth_callback_state_mismatch` and `plugin.auth_app_callback_unmatched` carry `hasState` as a boolean, not the state. `plugin.auth_loopback_port_in_use` carries `port`. `plugin.auth_callback_failed`, `plugin.auth_completion_undelivered`, and `plugin.auth_session_result_dropped` complete the set. The handoff writes `plugin_credential_handoff.empty`, `.declined`, `.accepted`, and `.forgotten` with `pluginId`, `builtin`, and, on acceptance, `secretNames`. Names only, forever: a value must never join `secretNames`.
+
+**Webhook ingress and verification** (`pluginWebhookIngressService.ts`). `plugin.webhook_delivery_abandoned` (`deliveryId`, `reason`), `plugin.webhook_cursor_reset` (`cursor`), `plugin.webhook_channel_undeclared` (`channel`), `plugin.webhook_poll_failed`, and `plugin.webhook_drain_failed`. Verification itself is silent. `passesVerification` refuses a delivery whose HMAC does not match, or whose declared secret is not on this machine, and returns `false` without a log line; the abandonment that follows is the only record. Never log a signature, a header value, or a delivery body — the body is a third party's payload and this machine cannot know what is in it.
+
+**Contributions, panels, presence, schedules, and notifications.** `plugin.contribution_id_ambiguous` (`socket`, `surface`, `entityKind`, `reason`), `plugin.panel_seed_failed` and `plugin.panel_prune_failed` (`panelId`, `projectId`), `plugin.panels_pruned` (`panelIds`), `plugin.presence_publish_failed`, `plugin.presence_seed_failed`, the four `plugin.presence.*` machine-directory failures (two of them keyed by `machineKey`), `plugin.schedules_persist_failed`, `plugin.schedule_action_failed` (`scheduleId`, `action`, `error`), `plugin.notification_usage_persist_failed`, `plugin.notification_deeplink_refused`, `plugin.notification_desktop_failed`, and `plugin.notification_mobile_failed`.
+
+**Uninstall data cleanup** (`pluginHostService.ts`). Nine events record which store refused to give up a plugin's data: `plugin.data_cleanup_failed`, `plugin.presence_cleanup_failed`, `plugin.ingress_cleanup_failed`, `plugin.secret_cleanup_failed`, `plugin.credential_handoff_cleanup_failed`, `plugin.schedule_cleanup_failed`, `plugin.schedules_removed_on_uninstall` (`removed`), `plugin.notification_usage_cleanup_failed`, and `plugin.account_disconnect_failed`. The runtime adds `plugin.linear_disconnected_on_uninstall`. Every one of these is a failure line except `plugin.schedules_removed_on_uninstall` and the Linear disconnect. A successful cleanup is therefore silent. Add a failure line for each new store you attach to the uninstall path: a user who asks why a plugin's data survived an uninstall has nothing else to read.
+
+**The plugin webview** (`pluginWebviewProtocol.ts`, `pluginWebviewBridgeServer.ts`, `main.ts`). `plugin.webview_protocol_unknown_plugin`, `plugin.webview_protocol_refused`, `plugin.webview_protocol_symlink_escape`, `plugin.webview_protocol_register_failed` (`partition`), and `plugin.webview_bridge_failed` (`method`). The three `window.plugin_webview_*` lines record a blocked attach or navigation.
+
+**Plugin tables on the sync wire** (`syncHostService.ts`, `kvDb.ts`, `pluginSyncMeter.ts`). Eleven `sync_host.plugin_*` and `sync_host.peer_plugin_tables_state` lines record the per-peer watermark, the catch-up batch, and the per-batch budget, keyed by `peerDeviceId` and database versions. `db.plugin_watermark_table_create_failed`, `plugin.wire_meter_flush_failed`, and `plugin.wire_meter_pending_full` complete the set. `sync_host.plugin_change_over_budget` logs the first rejected row and not every one, so a peer cannot choose how much it writes to this machine's log. Apply that rule to any new per-row plugin line.
+
+**Chat integration** (`agentChatService.ts`, `pluginSlashCommands.ts`). `agent_chat.plugin_turn_dispatch` (`sessionId`, `turnId`, `pluginId`, `runtimeId`, `followUp`), `agent_chat.plugin_turn_dispatch_failed`, `agent_chat.plugin_interrupt_refused`, `agent_chat.plugin_runtime_adopted`, `agent_chat.plugin_tools_unavailable`, `agent_chat.plugin_branch_fetch_failed`, and `chat.plugin_slash_command_collision` (`command`, `reason`, `offeredAs`). These are project-subject and stay in the project log.
+
+### What a plugin may send to PostHog
+
+**Nothing that names it.** No plugin code calls the capture boundary. `PRODUCT_ANALYTICS_EVENTS` in `apps/desktop/src/shared/types/productAnalytics.ts` contains no plugin event. `productAnalyticsPolicy.ts` contains no plugin property key and no plugin property value.
+
+Two coarse facts reach PostHog, and neither identifies a plugin:
+
+- `ade_brain_action_failed` may carry `action_domain: "plugin"`. There is one such domain for every plugin, defined in `apps/desktop/src/main/services/adeActions/domains.ts`; the `{pluginId, action}` pair travels inside the arguments, which analytics never reads. The domains `ios_simulator` and `app_control` are also plugin-owned, and are likewise compiled names in that same closed list.
+- The iOS deeplink events may carry `source: "plugin_panel_link"`, one closed value of `ADEAnalyticsSource` in `apps/ios/ADE/Services/ProductAnalytics.swift`. It says a link came from a plugin panel. It does not say which plugin.
+
+Never send a plugin id, a Marketplace slug, a display name, a version, an install or enable count, a contribution or panel id, a webhook channel, a schedule action, or any string a plugin author or a plugin's provider wrote. The Plugins screen and the Marketplace are absent from the `screen` allowlist, and `plugins` is absent from the `feature` allowlist, so no screen view and no feature event exists for either surface. That is deliberate. Widening a closed list to admit a plugin's own vocabulary turns a third party into the author of ADE's analytics taxonomy.
+
+### What a plugin child may log
+
+A plugin child never holds a logger. The host writes every line about it, so a plugin cannot choose an event name, a level, or a field.
+
+`plugin.child_stderr` is the one line that carries plugin-authored text. The host truncates each chunk to 500 characters and writes it at `debug`, so `ADE_LOG_LEVEL` must be `debug` before it reaches the file at all. **It is not rate-limited and not deduplicated.** A chatty child writes one line per stderr chunk, and only the logger's 10 MiB rotation bounds the total. Add a limiter before you raise this line above `debug`. A separate 4000-byte ring (`PLUGIN_CHILD_STDERR_RING_BYTES`) keeps the tail that explains a crash; the ring is bounded and the log line is not.
+
+Three other fields carry text a plugin or its provider wrote: `message` on `plugin.child_fatal`, `error` on `plugin.schedule_action_failed`, and `stderr` on `plugin.checksum_archive_failed`. Treat all four as untrusted local diagnostics. **Plugin-authored text is never analytics.** It cannot be coarsened into an allowlisted value, and no sanitizer in `productAnalyticsPolicy.ts` accepts it.
+
 ## Consent and kill switches
 
 - Desktop/runtime builds are default-on when correctly configured and expose a durable opt-out in Settings. The machine-wide disable marker immediately stops all local clients and cancels queued delivery.
