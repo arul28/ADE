@@ -166,7 +166,11 @@ export function DraftMachinePicker({
   const selected = machines.find((machine) => machine.id === selectedMachineId) ?? null;
   const displayed = selected ?? machines[0];
   const selectionUnavailable = selectedMachineId != null && selected == null;
-  if (machines.length < 2 && !selectionUnavailable) return null;
+  if (
+    machines.length < 2
+    && !selectionUnavailable
+    && !selected?.unavailableReason?.trim()
+  ) return null;
   if (!displayed) return null;
   const availableFallback = machines.find((machine) => !machine.unavailableReason?.trim()) ?? displayed;
   let triggerAriaLabel: string;

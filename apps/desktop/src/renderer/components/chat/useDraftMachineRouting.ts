@@ -113,6 +113,7 @@ export function useDraftMachineRouting({
     };
     void remoteRuntime.getConnectionSnapshot().then(apply).catch(() => {
       if (!cancelled) {
+        setConnectionSnapshot(null);
         connectionCatalogResolvedRef.current = true;
         setConnectionCatalogResolved(true);
       }

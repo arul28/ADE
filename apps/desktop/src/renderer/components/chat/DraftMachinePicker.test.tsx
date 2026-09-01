@@ -90,4 +90,23 @@ describe("DraftMachinePicker", () => {
     fireEvent.click(localRow);
     expect(onChange).toHaveBeenCalledWith(LOCAL.id);
   });
+
+  it("keeps the recovery picker visible when the selected machine is unavailable", () => {
+    const onChange = vi.fn();
+    render(
+      <DraftMachinePicker
+        machines={[{ ...LOCAL, unavailableReason: "The machine is offline." }]}
+        selectedMachineId={LOCAL.id}
+        onChange={onChange}
+      />,
+    );
+
+    const trigger = screen.getByRole("button", {
+      name: /current machine unavailable; fallback This computer/i,
+    });
+    fireEvent.click(trigger);
+
+    expect(screen.getByRole("menuitemradio", { name: /This computer/ })).toBeTruthy();
+    expect(onChange).not.toHaveBeenCalled();
+  });
 });

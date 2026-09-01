@@ -2,7 +2,7 @@
 
 import React from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, renderHook, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 import type {
   AgentChatEventEnvelope,
@@ -70,6 +70,7 @@ import {
   shouldPromoteSessionForComputerUse,
   type AgentChatSessionCreatedOptions,
 } from "./AgentChatPane";
+import { useDraftMachineRouting } from "./useDraftMachineRouting";
 import {
   DEFAULT_CHAT_COMPANION_UI_STATE,
   chatCompanionUiStorageKey,
@@ -6542,6 +6543,78 @@ describe("AgentChatPane submit recovery", () => {
 
     expect(onDraftMachineChange).toHaveBeenCalledWith(null);
     expect(onLaneChange).not.toHaveBeenCalled();
+  });
+
+  it("clears a stale remote catalog when a later snapshot probe fails", async () => {
+    const localBinding: OpenProjectBinding = {
+      kind: "local",
+      key: "local:/tmp/project-under-test",
+      rootPath: "/tmp/project-under-test",
+      displayName: "project-under-test",
+      gitOriginUrl: "https://github.com/acme/project-under-test.git",
+    };
+    const getConnectionSnapshot = vi.fn()
+      .mockResolvedValueOnce({
+        connectedCount: 1,
+        updatedAt: 1,
+        connections: [{
+          state: "connected",
+          target: { id: "studio", name: "Mac Studio", hostname: "studio.local" },
+          projects: [{
+            projectId: "project-1",
+            rootPath: "/Users/test/project-under-test",
+            displayName: "project-under-test",
+            gitOriginUrl: localBinding.gitOriginUrl,
+          }],
+        }],
+      })
+      .mockRejectedValueOnce(new Error("snapshot unavailable"));
+    window.ade = {
+      remoteRuntime: {
+        getConnectionSnapshot,
+        onConnectionSnapshotChanged: vi.fn().mockReturnValue(() => {}),
+      },
+    } as any;
+    const onDraftMachineChange = vi.fn();
+    const setError = vi.fn();
+
+    const { result, rerender } = renderHook(
+      ({ enabled }: { enabled: boolean }) => useDraftMachineRouting({
+        enabled,
+        projectBinding: localBinding,
+        openProjectTabRoots: [localBinding.rootPath],
+        crossMachineLanesByMachineId: {},
+        lanes: [{
+          id: "lane-1",
+          name: "current-lane",
+          laneType: "worktree",
+          branchRef: "refs/heads/current-lane",
+          worktreePath: `${localBinding.rootPath}/current-lane`,
+        }],
+        laneId: "lane-1",
+        initialDraftMachineId: "studio",
+        draftLaunchTargetIsAutoCreate: true,
+        onDraftMachineChange,
+        setDraftLaunchTargetId: vi.fn(),
+        setError,
+      }),
+      { initialProps: { enabled: true } },
+    );
+
+    await waitFor(() => {
+      expect(result.current.machineOptions.map((option) => option.id)).toEqual(["this-mac", "studio"]);
+    });
+
+    rerender({ enabled: false });
+    rerender({ enabled: true });
+
+    await waitFor(() => {
+      expect(getConnectionSnapshot).toHaveBeenCalledTimes(2);
+      expect(result.current.machineOptions.map((option) => option.id)).toEqual(["this-mac"]);
+      expect(result.current.selectedMachineId).toBe("this-mac");
+    });
+    expect(onDraftMachineChange).toHaveBeenCalledWith(null);
+    expect(setError).not.toHaveBeenCalled();
   });
 
   it("does not offer local recovery when the remote-bound project has no local checkout", async () => {
