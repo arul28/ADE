@@ -183,7 +183,13 @@ function normalizeIssue(node) {
     dueDate: text(node?.dueDate),
     estimate: typeof node?.estimate === "number" ? node.estimate : null,
     archivedAt: text(node?.archivedAt),
+    startedAt: text(node?.startedAt),
     completedAt: text(node?.completedAt),
+    canceledAt: text(node?.canceledAt),
+    // A cycle that Linear left unnamed is still a cycle the reader knows by
+    // its number, and "Cycle 14" is the words their Linear shows them.
+    cycleName: text(node?.cycle?.name)
+      ?? (Number.isInteger(node?.cycle?.number) ? `Cycle ${node.cycle.number}` : null),
     createdAt: text(node?.createdAt),
     updatedAt: text(node?.updatedAt),
     branchName: issueBranchName({ identifier, title }),

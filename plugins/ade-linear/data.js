@@ -277,6 +277,33 @@ function createData(options = {}) {
     return await sdk.collections.list(collection, listOptions).catch(() => []);
   }
 
+/**
+   * Every key under a prefix, in pages the host will actually serve.
+   *
+   * `collections.list` CLAMPS a limit above 1,000 without saying so
+   * (`pluginDataStore.ts:PLUGIN_COLLECTION_LIST_MAX_LIMIT`), and it orders by
+   * key — so a single `{limit: 1_500}` over the whole issue collection returned
+   * the first thousand keys and stopped. `flat:` and `group:` sort before
+   * `issue:`, which meant the canonical rows were never reached and a stale
+   * issue survived every filter change. Paging on the last key seen is what
+   * makes a sweep actually sweep.
+   */
+  async function allKeys(collection, prefix) {
+    const keys = [];
+    let after = null;
+    for (;;) {
+      const page = await list(collection, {
+        keyPrefix: prefix,
+        limit: LIST_PAGE_SIZE,
+        ...(after ? { after } : {}),
+      });
+      const fresh = page.filter((row) => row.key > (after ?? ""));
+      for (const row of fresh) keys.push(row.key);
+      if (fresh.length < LIST_PAGE_SIZE) return keys;
+      after = fresh[fresh.length - 1].key;
+    }
+  }
+
   /**
    * Replace every row under a prefix with a new set.
    *
@@ -287,9 +314,8 @@ function createData(options = {}) {
    */
   async function replacePrefix(collection, prefix, wanted) {
     for (const [key, value] of wanted) await put(collection, key, value);
-    const existing = await list(collection, { keyPrefix: prefix, limit: 1_000 });
-    for (const row of existing) {
-      if (!wanted.has(row.key)) await del(collection, row.key);
+    for (const key of await allKeys(collection, prefix)) {
+      if (!wanted.has(key)) await del(collection, key);
     }
   }
 
@@ -398,20 +424,6 @@ function createData(options = {}) {
   }
 
   /**
-   * Write one issue into all three key spaces.
-   *
-   * `rank` is its position in the reader's current sort, and `groupRank` its
-   * position within its own state — two different numbers, because the flat
-   * list and the grouped list are two different orders.
-   */
-  async function writeIssueRow(row, rank, groupRank) {
-    const bound = boundIssueRow(row);
-    await put(COLLECTION_ISSUES, `${ISSUE_KEY_CANONICAL}${row.id}`, row);
-    await put(COLLECTION_ISSUES, flatIssueKey(rank, row.id), bound);
-    if (row.stateId) await put(COLLECTION_ISSUES, groupIssueKey(row.stateId, groupRank, row.id), bound);
-  }
-
-  /**
    * The whole issue read: Linear, then the lanes, then the rows, then the model.
    *
    * One function rather than four, because every entry point wants all of it —
@@ -449,10 +461,12 @@ function createData(options = {}) {
       if (row.stateId) wanted.set(groupIssueKey(row.stateId, groupRank, row.id), bound);
     });
 
-    for (const [key, value] of wanted) await put(COLLECTION_ISSUES, key, value);
-    const existing = await list(COLLECTION_ISSUES, { limit: 1_500 });
-    for (const row of existing) {
-      if (!wanted.has(row.key)) await del(COLLECTION_ISSUES, row.key);
+    // One sweep per key space rather than one over the whole collection. Three
+    // prefixes is three paged reads instead of one truncated one, and it is the
+    // same `replacePrefix` every other collection here uses.
+    for (const prefix of [ISSUE_KEY_CANONICAL, FLAT_KEY_PREFIX, GROUP_KEY_PREFIX]) {
+      const scoped = new Map([...wanted].filter(([key]) => key.startsWith(prefix)));
+      await replacePrefix(COLLECTION_ISSUES, prefix, scoped);
     }
 
     const facets = await writeFacets(sorted);
@@ -716,7 +730,10 @@ function createData(options = {}) {
       organizationLogoUrl: null,
       tokenExpiresAt: credential.expiresAt ?? null,
       refreshTokenStored: Boolean(credential.refreshToken),
-      handoffStatus: (await sdk.memory.get("handoffStatus").catch(() => null)) ?? null,
+      // The SDK's word (`accepted` | `declined` | `empty`), never the panel's
+      // (`offered` | `taken` | `declined`). `index.js:handoffLabel` is the one
+      // place the two vocabularies meet.
+      handoffAnswer: (await sdk.memory.get("handoffAnswer").catch(() => null)) ?? null,
       webhookUrl: null,
       lastError: null,
       lastSyncAt: new Date(now()).toISOString(),
@@ -828,7 +845,7 @@ function createData(options = {}) {
     return {
       connection: model.connection,
       counts: { ...model.counts },
-      filters: { ...(model.filters ?? defaultFilters()), ...(model.filters ? {} : { hasProjects: false, hasPeople: false }) },
+      filters: model.filters ?? { ...defaultFilters(), hasProjects: false, hasPeople: false },
       groups: [...(model.groups ?? [])],
       autolinks: [...(model.autolinks ?? [])],
       lanes: [...model.lanes],
@@ -860,7 +877,6 @@ function createData(options = {}) {
     issueRow,
     issueRows,
     laneIndex,
-    model: currentModel,
     normalizeFilters,
     readFilters,
     refreshCatalog,

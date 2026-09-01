@@ -177,7 +177,7 @@ async function publish(panelId, context = null) {
   }
   let schema;
   try {
-    schema = panels.build(panelId, view, context);
+    schema = panels.build(panelId, view);
   } catch (error) {
     log("warn", `Could not build the ${panelId} panel: ${error?.message ?? error}`);
     return;
@@ -205,12 +205,92 @@ function ago(iso) {
 }
 
 /**
- * The view one panel is drawn from.
+ * Whether any filter is away from its unset value.
  *
- * Four shapes, because four panels answer four questions. Keeping the mapping
- * here rather than in the builders is what lets the panel half stay a pure
- * function of its input — it never reads a collection, and it never has to know
- * that `groups` is derived while `issue` is a stored row.
+ * It decides one thing: whether the list offers `Reset filters`, which is
+ * pointless when there is nothing to reset. Read from the STORED filters, not
+ * from panel state — panel state belongs to the client and this plugin never
+ * sees it — and spelled `stateTab`, which is the stored name.
+ */
+function filtersActive(filters = {}) {
+  return Boolean(
+    (filters.stateTab && filters.stateTab !== "all")
+    || filters.projectId
+    || filters.assigneeId
+    || (filters.priority !== undefined && filters.priority !== null && filters.priority !== "")
+    || filters.updated
+    || (filters.sort && filters.sort !== "updated_desc")
+    || filters.text,
+  );
+}
+
+/**
+ * The panel's state keys, in the filter names `data.js` stores.
+ *
+ * `panels/contract.js` names a control by what it selects (`state`, `project`)
+ * and `data.js` names a filter by what it holds (`stateTab`, `projectId`).
+ * Neither is wrong. `normalizeFilters` silently drops a key it does not know,
+ * so the rename has to happen before the write or the control moves and
+ * nothing changes — which is what the state tabs and the grouped/flat toggle
+ * both did.
+ *
+ * `team` has no stored filter and no `IssueFilter` field behind it, so it is
+ * not listed: it is a client-side control over rows already in memory.
+ */
+const STORED_FILTER_NAMES = Object.freeze({
+  state: "stateTab",
+  project: "projectId",
+  assignee: "assigneeId",
+  priority: "priority",
+  sort: "sort",
+  updated: "updated",
+  view: "view",
+});
+
+/** One filter patch, renamed out of the panel's vocabulary into the store's. */
+function storedFilterPatch(patch) {
+  const frame = patch && typeof patch === "object" ? patch : {};
+  const next = {};
+  for (const [panelKey, storedKey] of Object.entries(STORED_FILTER_NAMES)) {
+    if (frame[panelKey] !== undefined) next[storedKey] = frame[panelKey];
+  }
+  // The stored names pass through as themselves, so a caller that already
+  // speaks the store's vocabulary — the CLI word, a tool — is not renamed
+  // twice into nothing.
+  for (const storedKey of Object.values(STORED_FILTER_NAMES)) {
+    if (frame[storedKey] !== undefined) next[storedKey] = frame[storedKey];
+  }
+  if (typeof frame.text === "string") next.text = frame.text;
+  return next;
+}
+
+/**
+ * A stored issue's labels, as the names the detail panel draws chips from.
+ *
+ * The row stores `{id, name, color}` so a binding can filter on a field; the
+ * panel half draws one badge per name and knows nothing else about a label.
+ */
+function labelNames(labels) {
+  return (Array.isArray(labels) ? labels : [])
+    .map((entry) => (typeof entry === "string" ? entry : entry?.name))
+    .filter((name) => typeof name === "string" && name.trim());
+}
+
+/**
+ * The view one panel is drawn from — the ONE mapper between the two halves.
+ *
+ * Five shapes, because five panels answer five questions. Everything a builder
+ * reads is produced here: the `state` word it branches on, the vocabulary it
+ * words (`apiKey`, not the stored `manual`; `offered`, not the stored
+ * `accepted`), and the shapes it draws (`labels` as names, not as rows).
+ * `panels.build` hands what comes back STRAIGHT to a body builder and reshapes
+ * nothing.
+ *
+ * That is the whole rule, and it is worth stating because breaking it is
+ * silent: the panel half once re-derived `connected` from a `model.connection`
+ * this function never produced, so `isConnected` was always false and the issue
+ * list drew the "Connect Linear" card to a connected reader with no error
+ * anywhere. One mapper cannot disagree with itself.
  */
 async function viewFor(panelId, context) {
   const snapshot = model();
@@ -220,34 +300,54 @@ async function viewFor(panelId, context) {
 
   if (panelId === "issues") {
     const connection = snapshot.connection;
+    const groups = snapshot.groups ?? [];
     return {
-      state: snapshot.error ? "error" : (snapshot.counts.issues === 0 ? "empty" : "list"),
+      // The five bodies `panels/issues.js` draws, decided HERE and only here.
+      // A reader with no credential gets the connect card rather than an empty
+      // filter strip, which is the one state the panel half cannot work out
+      // for itself: whether a credential exists is this half's fact.
+      //
+      // `connection === null` is NOT the same as "not connected": it means the
+      // first read has not finished, and saying "Connect Linear" to somebody
+      // whose credential is about to arrive is a worse answer than a spinner.
+      state: connection == null
+        ? "loading"
+        : !connection.connected
+          ? "disconnected"
+          : snapshot.error
+            ? "error"
+            : snapshot.counts.issues === 0
+              ? "empty"
+              : "list",
       error: snapshot.error,
-      groups: snapshot.groups ?? [],
+      groups,
       query: filters.text || null,
       title: "Linear",
       // `statePreset`, not the stored `stateTab`. The stored name is the one
       // the lead's contract fixed for `prefs:filters`; the builder reads the
       // other. Mapping at this boundary is cheaper than renaming a persisted
       // key that already exists on somebody's device.
-      statePreset: filters.stateTab,
-      sort: filters.sort,
+      statePreset: filters.stateTab ?? "all",
+      sort: filters.sort ?? "updated_desc",
       view: filters.view === "flat" ? "flat" : "grouped",
       viewerId: connection?.viewerId ?? null,
       assignedToMe: Boolean(filters.assigneeId && filters.assigneeId === connection?.viewerId),
       hasProjects: filters.hasProjects === true,
       hasPeople: filters.hasPeople === true,
       hasTeams: (snapshot.counts.teams ?? 0) > 1,
-      filtersActive: Boolean(
-        filters.projectId || filters.assigneeId || filters.priority || filters.updated
-        || (filters.stateTab && filters.stateTab !== "all"),
-      ),
+      filtersActive: filtersActive(filters),
       workspace: connection?.organizationName ?? null,
       age: ago(snapshot.updatedAt),
     };
   }
 
   if (panelId === "issue") {
+    // Decided here for the same reason as the list's: no credential means the
+    // connect card, not "that issue could not be found" for an issue that
+    // exists in a workspace this machine has never been able to read. And a
+    // connection not yet read is the loading body, not either of those.
+    if (snapshot.connection == null) return { state: "loading" };
+    if (!snapshot.connection.connected) return { state: "disconnected" };
     // `context` when the client sent one, the remembered issue when the panel
     // half republished with only a panel id. See `currentIssueId`.
     const issueId = context?.issueId ?? currentIssueId;
@@ -260,7 +360,12 @@ async function viewFor(panelId, context) {
       .catch(() => []);
     return {
       state: "detail",
-      issue,
+      // The row is passed with ONE field reshaped. `labels` is stored as
+      // `{id, name, color}` because a binding's `where` compares fields, and
+      // the detail panel draws a chip per NAME — so the panel half is handed
+      // names and never learns the storage shape. Every other field of the row
+      // is already the panel's.
+      issue: { ...issue, labels: labelNames(issue.labels) },
       error: null,
       subIssues: issue.subIssues ?? [],
       // `{author, at, body}` — what `commentNodes` reads. The stored row also
@@ -300,10 +405,16 @@ async function viewFor(panelId, context) {
       permissionModes: PERMISSION_MODES,
       reasoningEfforts: REASONING_EFFORTS,
       laneOnly,
-      // The picker opens on a real choice rather than on its first option,
-      // which would silently be a different model from the one the reader
-      // picked last time.
-      selectedModel: models[0]?.id ?? null,
+      // `model`, the name the form's select reads. The picker opens on a real
+      // choice rather than on its first option, which would silently be a
+      // different model from the one the reader picked last time.
+      model: models[0]?.id ?? null,
+      // Absent, every select opens on its own first option, which is the same
+      // default the provider would take — so `null` here is a choice, not a
+      // hole.
+      permissionMode: null,
+      reasoningEffort: null,
+      fastMode: false,
       sessionType: laneOnly ? "laneOnly" : "chat",
       // The two names derived from the issue, shown before the reader commits.
       // The branch is the one Linear matches on, so seeing it is the difference
@@ -324,7 +435,10 @@ async function viewFor(panelId, context) {
     const secretStored = Boolean(await sdk.secrets.get("LINEAR_WEBHOOK_SECRET").catch(() => null));
     const webhooksPossible = webhooksReachable(status);
     return {
-      state: connection?.connected ? "connected" : "disconnected",
+      // Three bodies, and the third is real: before the first `refreshConnection`
+      // there is no connection ROW at all, which is a different thing from a
+      // machine that has read one and found no credential.
+      state: connection == null ? "loading" : connection.connected ? "connected" : "disconnected",
       error: connection?.lastError ?? null,
       connection: connection
         ? {
@@ -446,8 +560,8 @@ function webhooksReachable(status) {
  */
 function handoffLabel(status) {
   if (status?.canHandoff) return "offered";
-  if (status?.handoffStatus === "accepted") return "taken";
-  if (status?.handoffStatus === "declined") return "declined";
+  if (status?.handoffAnswer === "accepted") return "taken";
+  if (status?.handoffAnswer === "declined") return "declined";
   return null;
 }
 
@@ -559,6 +673,14 @@ function buildPanelHost() {
        * `{reset: true}` clears back to the defaults; anything else is merged.
        * Both re-read Linear, because the state preset changes which GROUPS
        * exist and a predicate cannot remove a section.
+       *
+       * The patch arrives keyed by PANEL STATE KEY — `state`, `project`,
+       * `assignee`, `view` — because that is what a `segmented` control sends
+       * back, and it is stored under the filter names `data.js` persists. This
+       * is the inbound twin of `viewFor`, and it is the one place the rename
+       * happens: `normalizeFilters` drops any key it does not know, so an
+       * unmapped `state` was a state-tab control that moved and changed
+       * nothing at all.
        */
       setFilters: async (patch) => {
         const next = patch?.reset === true
@@ -566,7 +688,7 @@ function buildPanelHost() {
             await data.writeFilters(data.defaultFilters());
             return data.defaultFilters();
           })()
-          : await data.updateFilters(patch ?? {});
+          : await data.updateFilters(storedFilterPatch(patch));
         await refreshIssues({ filters: next });
         return next;
       },
@@ -999,9 +1121,18 @@ const ownActions = {
     return { navigate: { panelId: "issues" } };
   },
 
-  /** One issue's detail page. The row's `onPress` and the smart-link chip's. */
+  /**
+   * One issue's detail page.
+   *
+   * The row's `onPress`, a sub-issue row's, the smart-link chip's, the URL
+   * matcher's and a bulk bar's tick. One handler for all of them, so the four
+   * places an id can ride are read in one order and only one order — and
+   * through `issueIdFromRowKey`, because a tick carries the row's COLLECTION
+   * key (`flat:000012:<id>`) when the row declared none.
+   */
   async openIssue(args) {
-    const raw = args?.issueId ?? args?.context?.issueId ?? args?.key ?? null;
+    const selection = Array.isArray(args?.selection) ? args.selection : [];
+    const raw = args?.issueId ?? args?.key ?? args?.context?.issueId ?? selection[0] ?? null;
     const issueId = raw ? (issueIdFromRowKey(raw) ?? raw) : null;
     if (!issueId) return { navigate: { panelId: "issues" } };
     // A URL matcher hands over the issue KEY from the path, not the id, and a

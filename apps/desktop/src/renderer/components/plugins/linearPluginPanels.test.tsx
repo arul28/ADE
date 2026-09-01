@@ -69,7 +69,6 @@ const panels = require_(path.join(pluginRoot, "panels.js")) as {
   buildLaunchPanel: (model?: unknown) => Panel;
   buildMainPanel: () => Panel;
   buildSettingsPanel: (model?: unknown) => Panel;
-  filtersActive: (filters: Record<string, unknown>) => boolean;
 };
 
 const contract = require_(path.join(pluginRoot, "panels/contract.js")) as {
@@ -109,38 +108,43 @@ const manifestSettingKeys: string[] = (
 
 /**
  * A workspace with everything turned on: projects, people and more than one
- * team, plus a viewer. That is the model that spends the MOST panel-state keys,
+ * team, plus a viewer. That is the view that spends the MOST panel-state keys,
  * so it is the one that can hit `maxStateKeys` and fail the whole panel.
+ *
+ * This is the VIEW `index.js:viewFor("issues")` publishes — flat, and already
+ * in the builder's words. It used to be a hand-written MODEL with a nested
+ * `connection` the real publish path never sends, which is exactly why a
+ * builder that read `model.connection.connected` passed here and drew the
+ * "Connect Linear" card in the product.
  */
-function connectedIssuesModel(over: Record<string, unknown> = {}) {
+function connectedIssuesView(over: Record<string, unknown> = {}) {
   return {
-    connection: {
-      connected: true,
-      viewerId: "usr_viewer_1",
-      viewerName: "Arul Sharma",
-      organizationName: "Acme",
-    },
-    filters: {
-      statePreset: "all",
-      sort: "updated_desc",
-      view: "grouped",
-      hasProjects: true,
-      hasPeople: true,
-      hasTeams: true,
-    },
+    state: "list",
+    error: null,
     groups: [
       { stateId: "state_started", stateName: "In Progress", stateType: "started", count: 3, defaultOpen: true },
       { stateId: "state_unstarted", stateName: "Todo", stateType: "unstarted", count: 5, defaultOpen: true },
       { stateId: "state_done", stateName: "Done", stateType: "completed", count: 9, defaultOpen: false },
     ],
-    updatedAgo: "2 minutes ago",
+    query: null,
+    title: "Linear",
+    statePreset: "all",
+    sort: "updated_desc",
+    view: "grouped",
+    viewerId: "usr_viewer_1",
+    assignedToMe: false,
+    hasProjects: true,
+    hasPeople: true,
+    hasTeams: true,
+    filtersActive: false,
+    workspace: "Acme",
+    age: "2 minutes ago",
     ...over,
   };
 }
 
-function flatIssuesModel() {
-  const model = connectedIssuesModel();
-  return { ...model, filters: { ...model.filters, view: "flat" } };
+function flatIssuesView() {
+  return connectedIssuesView({ view: "flat" });
 }
 
 /** One issue with every optional half present: prose, labels, children, a thread. */
@@ -175,9 +179,10 @@ const FULL_ISSUE = {
   hasLane: true,
 };
 
-function issueDetailModel() {
+function issueDetailView() {
   return {
-    connection: { connected: true, viewerId: "usr_viewer_1" },
+    state: "detail",
+    error: null,
     issue: FULL_ISSUE,
     subIssues: [
       {
@@ -196,8 +201,9 @@ function issueDetailModel() {
   };
 }
 
-function connectedSettingsModel() {
+function connectedSettingsView() {
   return {
+    state: "connected",
     connection: {
       connected: true,
       authMode: "oauth",
@@ -213,12 +219,13 @@ function connectedSettingsModel() {
   };
 }
 
-function disconnectedSettingsModel() {
-  return { connection: { connected: false }, handoffStatus: null };
+function disconnectedSettingsView() {
+  return { state: "disconnected", connection: { connected: false }, handoffStatus: null };
 }
 
-function launchModel() {
+function launchView() {
   return {
+    state: "form",
     issue: FULL_ISSUE,
     models: [{ id: "opus-5", name: "Opus 5" }, { id: "sonnet-4.5", name: "Sonnet 4.5" }],
     permissionModes: [{ value: "ask", label: "Ask first" }, { value: "auto", label: "Auto" }],
@@ -233,13 +240,13 @@ function launchModel() {
 /** Every panel this plugin can publish, in the states a reader actually reaches. */
 function everyPanel(): { name: string; schema: Panel }[] {
   return [
-    { name: "issues (grouped list)", schema: panels.buildIssuesPanel(connectedIssuesModel()) },
-    { name: "issues (flat list)", schema: panels.buildIssuesPanel(flatIssuesModel()) },
-    { name: "issue (detail)", schema: panels.buildIssuePanel(issueDetailModel(), { issueId: "iss_1" }) },
-    { name: "settings (connected)", schema: panels.buildSettingsPanel(connectedSettingsModel()) },
-    { name: "settings (disconnected)", schema: panels.buildSettingsPanel(disconnectedSettingsModel()) },
+    { name: "issues (grouped list)", schema: panels.buildIssuesPanel(connectedIssuesView()) },
+    { name: "issues (flat list)", schema: panels.buildIssuesPanel(flatIssuesView()) },
+    { name: "issue (detail)", schema: panels.buildIssuePanel(issueDetailView()) },
+    { name: "settings (connected)", schema: panels.buildSettingsPanel(connectedSettingsView()) },
+    { name: "settings (disconnected)", schema: panels.buildSettingsPanel(disconnectedSettingsView()) },
     { name: "main", schema: panels.buildMainPanel() },
-    { name: "launch", schema: panels.buildLaunchPanel(launchModel()) },
+    { name: "launch", schema: panels.buildLaunchPanel(launchView()) },
   ];
 }
 
@@ -345,7 +352,7 @@ describe("every ade-linear panel, against the shared parser", () => {
 /* ── 2. The issue list's filters ────────────────────────────────────────── */
 
 describe("the issues panel's filter strip", () => {
-  const schema = panels.buildIssuesPanel(connectedIssuesModel());
+  const schema = panels.buildIssuesPanel(connectedIssuesView());
   const result = parsed(schema, "issues");
   const declarations = collectVocabStateDeclarations(result.panel.body);
   const byKey = new Map(declarations.map((entry) => [entry.stateKey, entry]));
@@ -415,13 +422,21 @@ describe("the issues panel's filter strip", () => {
   /**
    * `Reset filters` is the only way a reader clears the CONTROLS, and panel
    * state belongs to the client — so the button has to be offered exactly when
-   * something is set, and `filtersActive` is what decides.
+   * something is set. `index.js:viewFor` decides that and sends the answer as
+   * `filtersActive`; the builder draws the button and works nothing out for
+   * itself, which is why this asserts on the rendered panel rather than on a
+   * helper the panel half no longer owns.
    */
-  it("knows when there is something to reset", () => {
-    expect(panels.filtersActive({ statePreset: "all", sort: "updated_desc" })).toBe(false);
-    expect(panels.filtersActive({ statePreset: "active" })).toBe(true);
-    expect(panels.filtersActive({ assigneeId: "usr_viewer_1" })).toBe(true);
-    expect(panels.filtersActive({ priority: "1" })).toBe(true);
+  it("offers the reset only when the view says something is set", () => {
+    const labelsOf = (schema: Panel) =>
+      allNodes(parsed(schema, "issues").panel.body)
+        .map((node) => (node as { label?: unknown }).label)
+        .filter((label): label is string => typeof label === "string");
+
+    expect(labelsOf(panels.buildIssuesPanel(connectedIssuesView()))).not.toContain(COPY.resetFilters);
+    expect(
+      labelsOf(panels.buildIssuesPanel(connectedIssuesView({ statePreset: "active", filtersActive: true }))),
+    ).toContain(COPY.resetFilters);
   });
 });
 
@@ -434,7 +449,7 @@ describe("the issues panel's lists", () => {
    * — a widened allowlist in a builder shows up here rather than in production.
    */
   it("binds the flat list to the flat key space, with a batch inside its ceilings", () => {
-    const result = parsed(panels.buildIssuesPanel(flatIssuesModel()), "issues (flat)");
+    const result = parsed(panels.buildIssuesPanel(flatIssuesView()), "issues (flat)");
     const lists = allNodes(result.panel.body).filter(
       (node): node is VocabListNode => node.component === "list",
     );
@@ -469,7 +484,7 @@ describe("the issues panel's lists", () => {
    * with nothing to say why.
    */
   it("gives every state group its own section and its own key prefix", () => {
-    const model = connectedIssuesModel();
+    const model = connectedIssuesView();
     const result = parsed(panels.buildIssuesPanel(model), "issues (grouped)");
     const groups = result.panel.body.filter(
       (node): node is VocabGroupNode => node.component === "group",
@@ -582,7 +597,7 @@ describe("the issues panel, rendered by the desktop renderer", () => {
   }
 
   it("draws every issue the collection answered, under the filter strip", () => {
-    const schema = panels.buildIssuesPanel(flatIssuesModel());
+    const schema = panels.buildIssuesPanel(flatIssuesView());
     const result = parsed(schema, "issues (flat)");
     const rowsByBinding = new Map<string, PluginCollectionRow[]>([
       [flatBindingKey(schema), issueRows()],
@@ -640,7 +655,7 @@ describe("the issues panel, rendered by the desktop renderer", () => {
    * another section's rows is the failure a shared prefix would produce.
    */
   it("draws each state group's own rows in its own section", () => {
-    const model = connectedIssuesModel();
+    const model = connectedIssuesView();
     const schema = panels.buildIssuesPanel(model);
     const rowsByBinding = new Map<string, PluginCollectionRow[]>(
       model.groups.map((group, index) => [
@@ -686,7 +701,7 @@ describe("the issues panel, rendered by the desktop renderer", () => {
 
 describe("the issue panel, rendered by the desktop renderer", () => {
   function renderDetail() {
-    const schema = panels.buildIssuePanel(issueDetailModel(), { issueId: "iss_1" });
+    const schema = panels.buildIssuePanel(issueDetailView());
     return {
       schema,
       ...render(<PluginPanelView schema={schema} context={makeContext()} />),
@@ -758,7 +773,7 @@ describe("the issue panel, rendered by the desktop renderer", () => {
    * ADE-122 onto ADE-140 the moment they navigated.
    */
   it("keys its inline editors per issue", () => {
-    const result = parsed(panels.buildIssuePanel(issueDetailModel(), { issueId: "iss_1" }), "issue");
+    const result = parsed(panels.buildIssuePanel(issueDetailView()), "issue");
     const keys = segmentedNodes(result.panel.body).map((node) => node.stateKey);
     expect(keys).toHaveLength(2);
     for (const key of keys) {
@@ -773,7 +788,7 @@ describe("the settings panel", () => {
   it("offers both ways in when there is no connection", () => {
     const { container, getByLabelText } = render(
       <PluginPanelView
-        schema={panels.buildSettingsPanel(disconnectedSettingsModel())}
+        schema={panels.buildSettingsPanel(disconnectedSettingsView())}
         context={makeContext()}
       />,
     );
@@ -796,7 +811,7 @@ describe("the settings panel", () => {
   it("shows the workspace, the way out, and the preferences when connected", () => {
     const { container } = render(
       <PluginPanelView
-        schema={panels.buildSettingsPanel(connectedSettingsModel())}
+        schema={panels.buildSettingsPanel(connectedSettingsView())}
         context={makeContext()}
       />,
     );
@@ -818,7 +833,7 @@ describe("the settings panel", () => {
   it("names only settings the manifest declares in its preferences form", () => {
     expect(manifestSettingKeys.length).toBeGreaterThan(0);
 
-    const result = parsed(panels.buildSettingsPanel(connectedSettingsModel()), "settings (connected)");
+    const result = parsed(panels.buildSettingsPanel(connectedSettingsView()), "settings (connected)");
     const preferenceForms = allNodes(result.panel.body).filter(
       (node): node is VocabFormNode =>
         node.component === "form" && node.applyOnChange?.action === contract.ACTIONS.applySettings,

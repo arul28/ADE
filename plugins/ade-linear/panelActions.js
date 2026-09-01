@@ -61,6 +61,7 @@ const {
   STATE_SORT,
   STATE_TEAM,
   STATE_UPDATED,
+  STATE_VIEW,
 } = require("./panels/contract");
 
 const { COPY } = require("./panels/common");
@@ -111,6 +112,16 @@ const FILTER_STATE_KEYS = [
   STATE_TEAM,
   STATE_UPDATED,
 ];
+
+/**
+ * The state keys a filter change CARRIES, which is the reset list plus `view`.
+ *
+ * Two lists rather than one, because the two verbs want different sets: a reset
+ * must not throw the reader back to the grouped list they moved away from, and
+ * a change must carry `view` or the flat toggle moves and nothing happens —
+ * grouped and flat are two different key spaces, not a predicate.
+ */
+const APPLIED_STATE_KEYS = [...FILTER_STATE_KEYS, STATE_VIEW];
 
 /* ── Reading the frame ──────────────────────────────────────────────────── */
 
@@ -248,27 +259,12 @@ function bind(host) {
   const handlers = {
     /* ── Navigation ─────────────────────────────────────────────────────── */
 
-    /**
-     * A row's press, the smart-link chip's destination, and the palette's.
-     *
-     * The fetch is awaited before the navigation returns, so the reader lands on
-     * the issue rather than on a loading card that becomes the issue — the
-     * round trip is happening either way and doing it first spends no extra
-     * time. A fetch that fails still navigates: `buildIssuePanel` draws the "not
-     * found" body, which carries the way back.
-     */
-    async openIssue(args) {
-      const issueId = issueIdFrom(args);
-      if (!issueId) return { navigate: { panelId: PANEL_ISSUES } };
-      await invoke(host, "data.loadIssue", [issueId], "");
-      await publish(PANEL_ISSUE);
-      return { navigate: { panelId: PANEL_ISSUE, context: { issueId } } };
-    },
-
-    /** A sub-issue row. The same trip, from a panel that is already the detail. */
-    async openSubIssue(args) {
-      return await handlers.openIssue(args);
-    },
+    // No `openIssue` and no `openSubIssue`. Issue navigation is the DATA half's
+    // — `contract.js:CORE_OWNED_ACTIONS` says so, and `index.js` merges its
+    // handlers in after these, so a copy here would be dead code that reads as
+    // the live one. Its version resolves a row KEY or an identifier and falls
+    // through to Linear for an issue this project has never listed, which this
+    // one could not do: it has no collection to look in.
 
     /**
      * The way back, for the surfaces that have no chrome of their own.
@@ -300,7 +296,7 @@ function bind(host) {
     async applyFilters(args) {
       const frame = args && typeof args === "object" ? args : {};
       const patch = {};
-      for (const key of FILTER_STATE_KEYS) {
+      for (const key of APPLIED_STATE_KEYS) {
         if (frame[key] !== undefined) patch[key] = frame[key];
       }
       if (typeof frame.value === "string") patch.value = frame.value;
@@ -558,21 +554,10 @@ function bind(host) {
       return result.ok ? undefined : { message: result.message, ok: false };
     },
 
-    /**
-     * Out to Linear itself.
-     *
-     * `https:` only on every client, and the URL comes from the row or the
-     * button rather than being assembled here — an issue's canonical URL is
-     * Linear's to decide and the plugin already stored the one it was given.
-     */
-    async openInLinear(args) {
-      const url = firstString(args?.url, args?.context?.url);
-      if (url) return { openUrl: url };
-      const model = host.model() ?? {};
-      const issueUrl = firstString(model.issue?.url);
-      if (issueUrl) return { openUrl: issueUrl };
-      return { message: "That issue has no Linear URL yet.", ok: false };
-    },
+    // No `openInLinear` either, for the same reason and by the same rule. Every
+    // panel button passes `{issueId}` (`rows.js`, `issue.js`) because the data
+    // half answers it from the STORED row's `url` — a copy here that read a
+    // `url` argument would be answering a shape no schema sends.
 
     /**
      * An `https:` link that is not an issue.
@@ -742,4 +727,4 @@ function readChangedValue(args, prefix) {
   return firstString(frame.value, frame.stateValue);
 }
 
-module.exports = { ACTIONS, FILTER_STATE_KEYS, HOST_CAPABILITIES, bind, readChangedValue };
+module.exports = { ACTIONS, APPLIED_STATE_KEYS, FILTER_STATE_KEYS, HOST_CAPABILITIES, bind, readChangedValue };

@@ -182,15 +182,24 @@ describe("the three ways Linear says rate limited", () => {
     assert.deepEqual(waits, [3_000]);
   });
 
-  it("reads the budget Linear reports, for a panel to show before it is spent", async () => {
-    const impl = fetchQueue([response(200, { data: { issue: null } }, {
-      "x-ratelimit-requests-remaining": "480",
-      "x-ratelimit-requests-reset": "1800000000000",
-    })]);
-    const api = build(createSecrets(API_KEY), impl);
-    await api.fetchIssueById("x");
-    assert.equal(api.rateLimitStatus().remaining, 480);
-    assert.equal(api.rateLimitStatus().resetAt, new Date(1800000000000).toISOString());
+  it("names a credential of unknown kind as no_token, not as a network failure", async () => {
+    // The header is built BEFORE the fetch `try`. Inside it, this throw was
+    // caught as a transport error: three sleeps, then `network` — so
+    // `isMissingTokenError` said no and the panel drew an error banner where
+    // the Connect button belonged. Reachable whenever the token secret exists
+    // and the auth-mode secret does not.
+    const waits = [];
+    const impl = fetchQueue([]);
+    const api = build(
+      createSecrets({ LINEAR_ACCESS_TOKEN: "lin_api_abcdefghijklmnopqrstuv" }),
+      impl,
+      { sleep: async (ms) => waits.push(ms) },
+    );
+    const error = await api.fetchIssueById("x").then(() => null, (thrown) => thrown);
+    assert.equal(error.code, "no_token");
+    assert.ok(isMissingTokenError(error));
+    assert.deepEqual(waits, [], "slept on a credential no retry can fix");
+    assert.equal(impl.requests.length, 0, "reached Linear with a header it could not build");
   });
 });
 

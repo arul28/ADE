@@ -111,7 +111,7 @@ describe("the release-day handoff", () => {
     const { sdk, connect } = build({ sdk: { handoff: { builtin: "linear", status: "accepted", secretNames: [] } } });
     const result = await connect.requestHandoff();
     assert.equal(result.status, "accepted");
-    assert.equal(await sdk.memory.get("handoffStatus"), "accepted");
+    assert.equal(await sdk.memory.get("handoffAnswer"), "accepted");
   });
 
   it("treats a decline as a normal state, not an error", async () => {
@@ -176,7 +176,7 @@ describe("what the settings panel can offer", () => {
     assert.equal((await connect.connectStatus()).canHandoff, true);
     await connect.requestHandoff();
     assert.equal((await connect.connectStatus()).canHandoff, false);
-    assert.equal(await sdk.memory.get("handoffStatus"), "declined");
+    assert.equal(await sdk.memory.get("handoffAnswer"), "declined");
   });
 });
 

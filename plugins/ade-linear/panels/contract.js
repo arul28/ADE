@@ -218,7 +218,6 @@ const ACTIONS = {
 
   // Navigation.
   openIssue: "openIssue",
-  openSubIssue: "openSubIssue",
   backToIssues: "backToIssues",
   openSettings: "openSettings",
 

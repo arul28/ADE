@@ -188,11 +188,10 @@ function issueProperties(issue) {
     if (text) rows.push({ key, value: value(String(text)) });
   }
 
-  // Amber rather than red: there is no red anywhere a plugin reaches, and a
-  // blocker is the one property on this card that should still read as loud.
-  if (issue.blockerCount) {
-    rows.push({ key: COPY.propBlockers, value: String(issue.blockerCount), tone: "warning" });
-  }
+  // No blocker row. Counting what blocks an issue needs `relations` and
+  // `inverseRelations` on every issue in the workspace, which is a second
+  // fetch this plugin does not make — and a row drawn from a field nothing
+  // produces is a row that never appears. See the gap list.
 
   return { component: "keyValue", rows: rows.slice(0, LIMITS.maxKeyValueRows) };
 }
@@ -310,7 +309,10 @@ function subIssuesBlock(children) {
         ...(child.stateName
           ? { badge: { text: label(child.stateName), tone: stateTone(child.stateType) } }
           : {}),
-        onPress: { action: ACTIONS.openSubIssue, args: { issueId: String(child.id) } },
+        // `openIssue`, not a second id of its own: the data half owns issue
+        // navigation, and `openSubIssue` was an alias whose only handler
+        // delegated to a handler the merge order made unreachable.
+        onPress: { action: ACTIONS.openIssue, args: { issueId: String(child.id) } },
       })),
     },
   ];
@@ -413,6 +415,33 @@ function issueFallback(text) {
  */
 function buildIssuePanel(input = {}) {
   const { state = "detail", issue = null, error = null } = input;
+
+  // The same card the list draws, for the same reason: a reader with no
+  // credential cannot be told an issue is missing, because nothing on this
+  // machine has ever been able to look for it.
+  if (state === "disconnected") {
+    return {
+      v: 1,
+      title: "Issue",
+      fallback: issueFallback("Connect Linear in ADE to read this issue."),
+      body: [
+        {
+          component: "emptyState",
+          title: COPY.connectTitle,
+          description: COPY.connectBody,
+          icon: "plug",
+          action: { label: COPY.connectAction, onPress: { action: ACTIONS.connectOAuth } },
+        },
+        {
+          component: "button",
+          label: COPY.openSettings,
+          kind: "quiet",
+          icon: "gear",
+          onPress: { action: ACTIONS.openSettings },
+        },
+      ],
+    };
+  }
 
   if (state === "loading") {
     return {

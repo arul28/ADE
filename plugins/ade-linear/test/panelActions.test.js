@@ -114,38 +114,23 @@ describe("the host seam", () => {
 });
 
 describe("navigation", () => {
-  it("loads the issue before it navigates, so the reader lands on it", async () => {
-    const host = makeHost();
-    const result = await bind(host).openIssue({ issueId: "issue-9" });
-    assert.deepEqual(result, { navigate: { panelId: "issue", context: { issueId: "issue-9" } } });
-    assert.deepEqual(reached(host), ["data.loadIssue"]);
-    assert.deepEqual(published(host), ["issue"]);
-  });
-
-  it("still navigates when the fetch fails, because the panel says why", async () => {
-    const host = makeHost({ fail: ["data.loadIssue"] });
-    const result = await bind(host).openIssue({ issueId: "issue-9" });
-    assert.equal(result.navigate.panelId, "issue");
-  });
-
-  it("reads the issue from a row key, a context and a selection alike", async () => {
-    // One handler serves a detail button, a bound row and a bulk bar, so the
-    // four places an id can ride are read in one order and only one order.
+  it("defines no issue navigation of its own, which the data half owns", async () => {
+    // `index.js` merges its handlers in AFTER these, so a second `openIssue`
+    // here would be dead code that reads as the live one — and it was: the
+    // panel half's copy could not resolve a row KEY or an identifier and had no
+    // collection to fall through to. `contract.js:CORE_OWNED_ACTIONS` is the
+    // audit, and this asserts the audit is true of the module.
     const handlers = bind(makeHost());
-    assert.equal((await handlers.openIssue({ key: "from-key" })).navigate.context.issueId, "from-key");
-    assert.equal(
-      (await handlers.openIssue({ context: { issueId: "from-context" } })).navigate.context.issueId,
-      "from-context",
-    );
-    assert.equal(
-      (await handlers.openIssue({ selection: ["from-selection"] })).navigate.context.issueId,
-      "from-selection",
-    );
+    for (const id of ["openIssue", "openSubIssue", "openInLinear"]) {
+      assert.equal(handlers[id], undefined, `${id} is core-owned and defined here too`);
+    }
+    for (const id of contract.CORE_OWNED_ACTIONS) {
+      assert.equal(handlers[id], undefined, `${id} is core-owned and defined here too`);
+    }
   });
 
-  it("falls back to the list when nothing named an issue", async () => {
-    const result = await bind(makeHost()).openIssue({});
-    assert.deepEqual(result, { navigate: { panelId: "issues" } });
+  it("still offers the way back, which no other half draws", async () => {
+    assert.deepEqual(await bind(makeHost()).backToIssues(), { navigate: { panelId: "issues" } });
   });
 });
 
@@ -328,14 +313,15 @@ describe("writing back to Linear", () => {
     assert.deepEqual(reached(host), []);
   });
 
-  it("opens the URL the row carried, and falls back to the issue's own", async () => {
+  it("opens a link that is not an issue under its own id", async () => {
+    // `openInLinear` is the DATA half's and answers from the stored issue row,
+    // so a settings link to `linear.app/settings/api` has to name a different
+    // verb or be told that the API settings page is not a Linear issue.
     const handlers = bind(makeHost());
-    assert.deepEqual(await handlers.openInLinear({ url: "https://linear.app/acme/issue/ADE-9" }), {
-      openUrl: "https://linear.app/acme/issue/ADE-9",
+    assert.deepEqual(await handlers.openExternal({ url: "https://linear.app/settings/api" }), {
+      openUrl: "https://linear.app/settings/api",
     });
-    assert.deepEqual(await handlers.openInLinear({}), {
-      openUrl: "https://linear.app/acme/issue/ADE-122",
-    });
+    assert.equal((await handlers.openExternal({})).ok, false);
   });
 });
 

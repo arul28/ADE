@@ -266,7 +266,10 @@ function issueNode(overrides = {}) {
     dueDate: overrides.dueDate ?? null,
     estimate: overrides.estimate ?? null,
     archivedAt: null,
+    startedAt: overrides.startedAt ?? null,
     completedAt: null,
+    canceledAt: overrides.canceledAt ?? null,
+    cycle: overrides.cycle === null ? null : (overrides.cycle ?? null),
     project: overrides.project === null ? null : (overrides.project ?? { id: "proj-1", name: "Platform" }),
     team: overrides.team ?? { id: "team-1", key: "ENG", name: "Engineering" },
     state: overrides.state ?? { id: "state-started", name: "In Progress", type: "started" },
@@ -289,19 +292,10 @@ function createApi(overrides = {}) {
     async fetchIssueById() {
       return null;
     },
-    async fetchIssuesByIds() {
-      return [];
-    },
     async fetchIssueComments() {
       return [];
     },
     async listTeamsAndStates() {
-      return [];
-    },
-    async listProjects() {
-      return [];
-    },
-    async listUsers() {
       return [];
     },
     async listLabels() {
@@ -332,7 +326,6 @@ function createApi(overrides = {}) {
       return {};
     },
     async writeToken() {},
-    rateLimitStatus: () => ({ remaining: null, resetAt: null }),
     ...overrides,
   };
 }

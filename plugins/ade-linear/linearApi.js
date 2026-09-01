@@ -63,7 +63,10 @@ const ISSUE_FIELDS = `
   dueDate
   estimate
   archivedAt
+  startedAt
   completedAt
+  canceledAt
+  cycle { id name number }
   project { id name }
   team { id key name }
   state { id name type }
@@ -180,15 +183,6 @@ function retryAfterMs(headers) {
  * limited by being refused. Reading them costs nothing and lets the settings
  * panel show the budget before a bulk refresh spends it.
  */
-function readRateLimit(headers) {
-  const remaining = Number(headers?.get?.("x-ratelimit-requests-remaining"));
-  const resetAt = Number(headers?.get?.("x-ratelimit-requests-reset"));
-  return {
-    remaining: Number.isFinite(remaining) ? remaining : null,
-    resetAt: Number.isFinite(resetAt) ? new Date(resetAt).toISOString() : null,
-  };
-}
-
 /**
  * Build the client.
  *
@@ -212,7 +206,6 @@ function createLinearApi(options = {}) {
   }
 
   /** The last rate-limit reading, for the settings panel. Never a credential. */
-  let rateLimit = { remaining: null, resetAt: null };
   /** One refresh at a time inside this process, so a burst does not spend the refresh token twice. */
   let refreshInFlight = null;
 
@@ -356,6 +349,12 @@ function createLinearApi(options = {}) {
 
     for (;;) {
       const credential = await currentCredential();
+      // Built BEFORE the try, deliberately. `authorizationHeader` throws
+      // `no_token` for a credential whose kind we do not know, and inside the
+      // fetch `try` that was caught as a transport error: three sleeps and then
+      // `network`, so `isMissingTokenError` said no and the panel drew an error
+      // banner where the Connect button belonged.
+      const authorization = authorizationHeader(credential.token, credential.authMode);
       let response;
       let payload = null;
       try {
@@ -363,7 +362,7 @@ function createLinearApi(options = {}) {
           method: "POST",
           headers: {
             "content-type": "application/json",
-            authorization: authorizationHeader(credential.token, credential.authMode),
+            authorization,
           },
           body: JSON.stringify({
             query,
@@ -382,7 +381,6 @@ function createLinearApi(options = {}) {
         continue;
       }
 
-      rateLimit = readRateLimit(response.headers);
       const text = await response.text();
       try {
         payload = text ? JSON.parse(text) : null;
@@ -398,12 +396,8 @@ function createLinearApi(options = {}) {
 
       if (failure.code === "unauthorized" && credential.authMode === "oauth" && !didRefresh) {
         didRefresh = true;
-        try {
-          await refreshOnce(credential);
-          continue;
-        } catch (refreshError) {
-          throw refreshError;
-        }
+        await refreshOnce(credential);
+        continue;
       }
 
       const retryable = failure.code === "rate_limited" || (response.status >= 500 && response.status <= 599);
@@ -505,18 +499,6 @@ function createLinearApi(options = {}) {
     return data?.issue ?? null;
   }
 
-  /** Several issues at once, for a webhook that named more than one. */
-  async function fetchIssuesByIds(issueIds) {
-    const ids = [...new Set(issueIds.filter(Boolean))].slice(0, 50);
-    if (ids.length === 0) return [];
-    const data = await request(
-      `query IssuesByIds($ids: [ID!]!) { issues(filter: { id: { in: $ids } }, first: 50) { nodes { ${ISSUE_FIELDS} } } }`,
-      { ids },
-      { maxRetries: 2, operationName: "IssuesByIds" },
-    );
-    return data?.issues?.nodes ?? [];
-  }
-
   async function fetchIssueComments(issueId) {
     const data = await request(
       `query IssueComments($issueId: String!) {
@@ -555,23 +537,11 @@ function createLinearApi(options = {}) {
     return data?.teams?.nodes ?? [];
   }
 
-  async function listProjects() {
-    const data = await request(
-      `query Projects { projects(first: 100) { nodes { id name slugId } } }`,
-      null,
-      { maxRetries: 2, operationName: "Projects" },
-    );
-    return data?.projects?.nodes ?? [];
-  }
-
-  async function listUsers() {
-    const data = await request(
-      `query Users { users(first: 250, filter: { active: { eq: true } }) { nodes { id name displayName email } } }`,
-      null,
-      { maxRetries: 2, operationName: "Users" },
-    );
-    return data?.users?.nodes ?? [];
-  }
+  // No `listProjects` and no `listUsers`. The project and assignee filters are
+  // built from the issues already on screen (`data.js:writeFacets`), which is
+  // two round trips saved against a rate limit the reader can watch run down —
+  // and a filter offering a project none of the visible issues belong to is a
+  // filter that finds nothing.
 
   async function listLabels(teamKey = null) {
     const data = await request(
@@ -689,14 +659,10 @@ function createLinearApi(options = {}) {
     createComment,
     fetchIssueById,
     fetchIssueComments,
-    fetchIssuesByIds,
     getConnectionIdentity,
     listLabels,
-    listProjects,
     listTeamsAndStates,
-    listUsers,
     /** The last rate-limit reading. A plain object, never a credential. */
-    rateLimitStatus: () => ({ ...rateLimit }),
     readCredential,
     request,
     searchAllIssues,

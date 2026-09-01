@@ -322,7 +322,6 @@ const COPY = {
   propStarted: "Started",
   propCompleted: "Completed",
   propCanceled: "Canceled",
-  propBlockers: "Blockers",
 
   // Launch — `SINGLE_LAUNCH_ACTIONS` and `BATCH_ACTIONS_CONFIG`.
   launchOne: "Launch lane + agent",

@@ -80,12 +80,33 @@ const GROUPS = [
   { stateId: "s-done", stateName: "Done", stateType: "completed", count: 66, defaultOpen: false },
 ];
 
-function issuesModel(overrides = {}) {
+/**
+ * The issue list's VIEW, exactly as `index.js:viewFor("issues")` shapes it.
+ *
+ * Flat, and already in the panel half's words — there is no `connection` and no
+ * `filters` branch to dig into, because the builder does no mapping at all.
+ * Hand-writing a model shape here is what once hid the seam bug: this fixture
+ * had a `connection` the real publish path never sends, so `isConnected` was
+ * true here and false in the product.
+ */
+function issuesView(overrides = {}) {
   return {
-    connection: CONNECTION,
+    state: "list",
+    error: null,
     groups: GROUPS,
-    filters: { hasProjects: true, hasPeople: true, hasTeams: true, ...(overrides.filters ?? {}) },
-    updatedAgo: "2 minutes ago",
+    query: null,
+    title: "Linear",
+    statePreset: "all",
+    sort: "updated_desc",
+    view: "grouped",
+    viewerId: CONNECTION.viewerId,
+    assignedToMe: false,
+    hasProjects: true,
+    hasPeople: true,
+    hasTeams: true,
+    filtersActive: false,
+    workspace: CONNECTION.organizationName,
+    age: "2 minutes ago",
     ...overrides,
   };
 }
@@ -115,7 +136,7 @@ const ISSUE = {
 
 describe("the issue list panel", () => {
   it("stays inside every ceiling that fails a whole panel", () => {
-    const panel = panels.buildIssuesPanel(issuesModel());
+    const panel = panels.buildIssuesPanel(issuesView());
     const nodes = everyNode(panel.body);
 
     // Each of these refuses the panel outright rather than dropping one node,
@@ -131,7 +152,7 @@ describe("the issue list panel", () => {
     // The one ceiling this panel can actually reach: eight controls is every
     // axis the built-in has plus the two this panel adds. A ninth is a blank
     // screen, so the strip builds in importance order and cuts the tail.
-    const panel = panels.buildIssuesPanel(issuesModel());
+    const panel = panels.buildIssuesPanel(issuesView());
     const keys = nodesOf(panel, "segmented").map((node) => node.stateKey);
     assert.equal(new Set(keys).size, keys.length, "two controls share a state key");
     assert.ok(keys.length <= MAX_FILTER_CONTROLS, `${keys.length} controls`);
@@ -140,12 +161,12 @@ describe("the issue list panel", () => {
   });
 
   it("keeps the strip under the ceiling even when every optional axis is on", () => {
-    const panel = panels.buildIssuesPanel(issuesModel());
+    const panel = panels.buildIssuesPanel(issuesView());
     assert.equal(nodesOf(panel, "segmented").length, MAX_FILTER_CONTROLS);
   });
 
   it("draws no literal control with more options than a strip can hold", () => {
-    const panel = panels.buildIssuesPanel(issuesModel());
+    const panel = panels.buildIssuesPanel(issuesView());
     for (const node of nodesOf(panel, "segmented")) {
       assert.ok(
         node.options.length <= LIMITS.maxStateOptions,
@@ -160,7 +181,7 @@ describe("the issue list panel", () => {
     // viewer's own id is what keeps that one tap when the rest of the assignees
     // arrive from a collection — a bound option would need the rows to land
     // first, and the reader would be looking at a menu of eighty names.
-    const panel = panels.buildIssuesPanel(issuesModel());
+    const panel = panels.buildIssuesPanel(issuesView());
     const assignee = nodesOf(panel, "segmented").find((node) => node.stateKey === contract.STATE_ASSIGNEE);
     assert.ok(assignee, "no assignee control");
     const me = assignee.options.find((option) => option.label === COPY.assignedToMe);
@@ -170,7 +191,7 @@ describe("the issue list panel", () => {
 
   it("omits a bound control when the plugin has no rows to bind", () => {
     const panel = panels.buildIssuesPanel(
-      issuesModel({ filters: { hasProjects: false, hasPeople: false, hasTeams: false } }),
+      issuesView({ hasProjects: false, hasPeople: false, hasTeams: false }),
     );
     const keys = nodesOf(panel, "segmented").map((node) => node.stateKey);
     assert.ok(!keys.includes(contract.STATE_PROJECT));
@@ -183,7 +204,7 @@ describe("the issue list panel", () => {
   it("filters four axes on the client and no more", () => {
     // Four is `maxWhereClauses`. A fifth is dropped with a warning, which is a
     // filter that silently stops filtering — so the count is pinned here.
-    const panel = panels.buildIssuesPanel(issuesModel({ filters: { view: "flat" } }));
+    const panel = panels.buildIssuesPanel(issuesView({ view: "flat" }));
     const [list] = nodesOf(panel, "list");
     assert.equal(list.bind.where.length, 4);
     assert.deepEqual(
@@ -196,7 +217,7 @@ describe("the issue list panel", () => {
   });
 
   it("groups by state with a stable key and the phone's folded Done", () => {
-    const panel = panels.buildIssuesPanel(issuesModel());
+    const panel = panels.buildIssuesPanel(issuesView());
     const groups = nodesOf(panel, "group");
     assert.equal(groups.length, GROUPS.length);
     assert.deepEqual(
@@ -214,10 +235,10 @@ describe("the issue list panel", () => {
   });
 
   it("ticks and batches only in the flat view", () => {
-    const grouped = panels.buildIssuesPanel(issuesModel());
+    const grouped = panels.buildIssuesPanel(issuesView());
     assert.equal(nodesOf(grouped, "list").filter((node) => node.selectable).length, 0);
 
-    const flat = panels.buildIssuesPanel(issuesModel({ filters: { view: "flat" } }));
+    const flat = panels.buildIssuesPanel(issuesView({ view: "flat" }));
     const selectable = nodesOf(flat, "list").filter((node) => node.selectable);
     // One bar, not seven: a bulk bar is computed per list, so grouping and a
     // cross-group batch cannot both be on screen in vocabulary v1.
@@ -231,7 +252,7 @@ describe("the issue list panel", () => {
   });
 
   it("lets a bound row press only the verbs the panel itself declared", () => {
-    const panel = panels.buildIssuesPanel(issuesModel({ filters: { view: "flat" } }));
+    const panel = panels.buildIssuesPanel(issuesView({ view: "flat" }));
     for (const list of nodesOf(panel, "list")) {
       assert.ok(list.bind.allowActions.length <= 16);
       for (const action of list.bind.allowActions) {
@@ -243,8 +264,19 @@ describe("the issue list panel", () => {
     }
   });
 
+  it("says it is still reading rather than that nobody is connected", () => {
+    // `viewFor` sends `loading` while there is no connection ROW yet, which is
+    // a different fact from a machine that read one and found no credential.
+    // Telling a reader to sign in half a second before their credential lands
+    // is the worse of the two answers.
+    const panel = panels.buildIssuesPanel({ state: "loading" });
+    assert.equal(nodesOf(panel, "segmented").length, 0);
+    assert.equal(nodesOf(panel, "emptyState")[0].title, COPY.loadingTitle);
+    assert.ok(!nodesOf(panel, "emptyState")[0].action, "a spinner offers nothing to press");
+  });
+
   it("asks to sign in rather than drawing a filter strip nobody can use", () => {
-    const panel = panels.buildIssuesPanel({ connection: { connected: false } });
+    const panel = panels.buildIssuesPanel({ state: "disconnected" });
     assert.equal(nodesOf(panel, "segmented").length, 0);
     const [empty] = nodesOf(panel, "emptyState");
     assert.equal(empty.title, COPY.connectTitle);
@@ -252,43 +284,33 @@ describe("the issue list panel", () => {
   });
 
   it("offers a way out of a filter that hid everything", () => {
-    const panel = panels.buildIssuesPanel(issuesModel({ groups: [], filters: { statePreset: "active" } }));
+    const panel = panels.buildIssuesPanel(issuesView({ state: "empty", groups: [], statePreset: "active", filtersActive: true }));
     const [empty] = nodesOf(panel, "emptyState");
     assert.equal(empty.action.label, COPY.resetFilters);
     assert.equal(empty.action.onPress.action, contract.ACTIONS.clearFilters);
   });
 
-  it("reads the state preset under either name the data half uses", () => {
-    // `data.js` calls it `stateTab`, the builders call it `statePreset`. A
-    // mismatch would silently pin the list to "All issues" with no error, so
-    // the reader takes both rather than depending on which half renamed first.
-    const byTab = panels.buildIssuesPanel(issuesModel({ filters: { stateTab: "active" } }));
-    const preset = nodesOf(byTab, "segmented").find((node) => node.stateKey === contract.STATE_PRESET);
+  it("draws each preset and each optional axis from the view, unmapped", () => {
+    // There is no second spelling to read here any more. `viewFor` names the
+    // preset `statePreset` and the builder branches on that one word; the
+    // mapping from the STORED `stateTab` is proved end to end in
+    // `publish.test.js`, where stored filters actually reach a published panel.
+    const active = panels.buildIssuesPanel(issuesView({ statePreset: "active" }));
+    const preset = nodesOf(active, "segmented").find((node) => node.stateKey === contract.STATE_PRESET);
     assert.equal(preset.default, "active");
 
-    const byPreset = panels.buildIssuesPanel(issuesModel({ filters: { statePreset: "backlog" } }));
+    const backlog = panels.buildIssuesPanel(issuesView({ statePreset: "backlog" }));
     assert.equal(
-      nodesOf(byPreset, "segmented").find((node) => node.stateKey === contract.STATE_PRESET).default,
+      nodesOf(backlog, "segmented").find((node) => node.stateKey === contract.STATE_PRESET).default,
       "backlog",
     );
 
-    // And `hasTeams` beside the filters, which is where index.js computes it.
-    // Only as a FALLBACK: an explicit `filters.hasTeams: false` still wins, so
-    // the fixture omits it rather than setting it false.
-    const beside = panels.buildIssuesPanel({
-      connection: CONNECTION,
-      groups: GROUPS,
-      filters: { hasProjects: true, hasPeople: true },
-      hasTeams: true,
-    });
-    assert.ok(nodesOf(beside, "segmented").some((node) => node.stateKey === contract.STATE_TEAM));
-
-    const explicit = panels.buildIssuesPanel(issuesModel({ filters: { hasTeams: false } }));
-    assert.ok(!nodesOf(explicit, "segmented").some((node) => node.stateKey === contract.STATE_TEAM));
+    const noTeams = panels.buildIssuesPanel(issuesView({ hasTeams: false }));
+    assert.ok(!nodesOf(noTeams, "segmented").some((node) => node.stateKey === contract.STATE_TEAM));
   });
 
   it("says which filters are on when a search is live", () => {
-    const panel = panels.buildIssuesPanel(issuesModel({ filters: { text: "handoff" } }));
+    const panel = panels.buildIssuesPanel(issuesView({ query: "handoff", filtersActive: true }));
     const labels = nodesOf(panel, "button").map((node) => node.label);
     assert.ok(labels.includes(COPY.clearSearch));
     assert.ok(labels.includes(COPY.resetFilters));
@@ -300,7 +322,7 @@ describe("the issue list panel", () => {
 
 describe("the issue detail panel", () => {
   it("draws the built-in's properties in the built-in's order", () => {
-    const panel = panels.buildIssuePanel({ connection: CONNECTION, issue: ISSUE });
+    const panel = panels.buildIssuePanel({ state: "detail", issue: ISSUE });
     const [properties] = nodesOf(panel, "keyValue");
     const keys = properties.rows.map((row) => row.key);
     assert.deepEqual(keys.slice(0, 3), [COPY.propStatus, COPY.propPriority, COPY.propAssignee]);
@@ -310,14 +332,14 @@ describe("the issue detail panel", () => {
   });
 
   it("renders the description as prose rather than as a wall of source", () => {
-    const panel = panels.buildIssuePanel({ connection: CONNECTION, issue: ISSUE });
+    const panel = panels.buildIssuePanel({ state: "detail", issue: ISSUE });
     const [markdown] = nodesOf(panel, "markdown");
     assert.ok(markdown.text.includes("## What happens"));
     assert.ok(markdown.text.length <= LIMITS.maxMarkdownChars);
   });
 
   it("keeps the branch name monospaced, which a keyValue row cannot be", () => {
-    const panel = panels.buildIssuePanel({ connection: CONNECTION, issue: ISSUE });
+    const panel = panels.buildIssuePanel({ state: "detail", issue: ISSUE });
     const code = nodesOf(panel, "text").filter((node) => node.variant === "code");
     assert.equal(code.length, 1);
     assert.equal(code[0].text, ISSUE.branchName);
@@ -327,9 +349,9 @@ describe("the issue detail panel", () => {
     // Panel state survives a re-publish of the same controls. A shared key would
     // carry the state the reader picked on ADE-122 onto ADE-140 the moment they
     // navigated, which is the one bug a single detail panel can have.
-    const first = panels.buildIssuePanel({ connection: CONNECTION, issue: ISSUE });
+    const first = panels.buildIssuePanel({ state: "detail", issue: ISSUE });
     const second = panels.buildIssuePanel({
-      connection: CONNECTION,
+      state: "detail",
       issue: { ...ISSUE, id: "issue-2", identifier: "ADE-140" },
     });
     const keysOf = (panel) => nodesOf(panel, "segmented").map((node) => node.stateKey);
@@ -344,7 +366,7 @@ describe("the issue detail panel", () => {
     // parser refuses — so the editor vanished behind a warning nobody reads.
     // Status is still on the properties card, which is where the built-in has it.
     const panel = panels.buildIssuePanel({
-      connection: CONNECTION,
+      state: "detail",
       issue: { ...ISSUE, teamKey: undefined, teamName: undefined },
     });
     for (const node of nodesOf(panel, "segmented")) {
@@ -365,7 +387,7 @@ describe("the issue detail panel", () => {
       at: "2026-08-31",
       body: "x".repeat(3_000),
     }));
-    const panel = panels.buildIssuePanel({ connection: CONNECTION, issue: ISSUE, comments });
+    const panel = panels.buildIssuePanel({ state: "detail", issue: ISSUE, comments });
     assert.ok(schemaBytes(panel) <= LIMITS.maxSchemaBytes, `${schemaBytes(panel)} bytes`);
     assert.ok(everyNode(panel.body).length <= LIMITS.maxNodes);
     const captions = nodesOf(panel, "text").map((node) => node.text);
@@ -377,7 +399,7 @@ describe("the issue detail panel", () => {
     // screen serves both and `laneOnly` hides the agent half. Launching straight
     // from the detail would silently choose a model, a permission mode and a
     // kickoff prompt on the reader's behalf.
-    const panel = panels.buildIssuePanel({ connection: CONNECTION, issue: ISSUE });
+    const panel = panels.buildIssuePanel({ state: "detail", issue: ISSUE });
     const launches = nodesOf(panel, "button").filter(
       (node) => node.onPress.action === contract.ACTIONS.openLaunch,
     );
@@ -393,16 +415,25 @@ describe("the issue detail panel", () => {
     assert.ok(actions.includes(contract.ACTIONS.commentOnIssue));
   });
 
-  it("draws the loading body rather than the previous issue's words", () => {
-    // A model carrying a different issue than the one the reader navigated to
-    // means the fetch has not landed. Showing ADE-122 under the title ADE-140 is
-    // the one failure worse than a spinner.
-    const panel = panels.buildIssuePanel(
-      { connection: CONNECTION, issue: ISSUE, loading: true },
-      { issueId: "issue-2" },
+  it("draws one body per state and never an issue under the wrong title", () => {
+    // The builder branches on the word it is handed and on nothing else. It
+    // cannot draw ADE-122 under the title ADE-140, because `viewFor` reads the
+    // row for the id the reader navigated to and hands over that row or none.
+    const loading = panels.buildIssuePanel({ state: "loading" });
+    assert.equal(nodesOf(loading, "emptyState").length, 1);
+    assert.equal(nodesOf(loading, "markdown").length, 0);
+
+    const missing = panels.buildIssuePanel({ state: "detail", issue: null });
+    assert.equal(nodesOf(missing, "emptyState")[0].action.onPress.action, contract.ACTIONS.backToIssues);
+
+    // No credential is the connect card, not "that issue could not be found"
+    // for an issue this machine has never been able to look for.
+    const disconnected = panels.buildIssuePanel({ state: "disconnected" });
+    assert.equal(nodesOf(disconnected, "emptyState")[0].title, COPY.connectTitle);
+    assert.equal(
+      nodesOf(disconnected, "emptyState")[0].action.onPress.action,
+      contract.ACTIONS.connectOAuth,
     );
-    assert.equal(nodesOf(panel, "emptyState").length, 1);
-    assert.equal(nodesOf(panel, "markdown").length, 0);
   });
 });
 
@@ -426,6 +457,12 @@ describe("the settings panel", () => {
     assert.ok(form.fields.length <= LIMITS.maxFormFields);
   });
 
+  it("draws the reading body before the first connection row exists", () => {
+    const panel = panels.buildSettingsPanel({ state: "loading" });
+    assert.equal(nodesOf(panel, "form").length, 0, "a form for a connection nobody has read yet");
+    assert.equal(nodesOf(panel, "emptyState").length, 1);
+  });
+
   it("masks the API key rather than asking for it in a plain field", () => {
     const panel = panels.buildSettingsPanel({ connection: { connected: false } });
     const [form] = nodesOf(panel, "form");
@@ -436,14 +473,20 @@ describe("the settings panel", () => {
   });
 
   it("offers the handoff only while ADE is still offering it", () => {
+    // Top level, and in the PANEL's vocabulary. The stored SDK word is
+    // `connection.handoffAnswer` — `accepted` | `declined` | `empty` — and
+    // `index.js:handoffLabel` is the one place the two vocabularies meet. They
+    // shared the name `handoffStatus` once, and the adopt button never drew.
     const offered = panels.buildSettingsPanel({
-      connection: { connected: false, handoffStatus: "offered" },
+      connection: { connected: false },
+      handoffStatus: "offered",
     });
     assert.ok(
       nodesOf(offered, "button").some((node) => node.onPress.action === contract.ACTIONS.adoptHandoff),
     );
     const declined = panels.buildSettingsPanel({
-      connection: { connected: false, handoffStatus: "declined" },
+      connection: { connected: false },
+      handoffStatus: "declined",
     });
     assert.ok(
       !nodesOf(declined, "button").some((node) => node.onPress.action === contract.ACTIONS.adoptHandoff),
@@ -515,7 +558,15 @@ describe("the gating panel", () => {
 describe("the publish dispatcher", () => {
   it("answers every panel the manifest declares", () => {
     for (const panel of manifest.panels) {
-      const built = panels.build(panel.id, { connection: CONNECTION, issue: ISSUE, groups: GROUPS });
+      // The dispatcher passes this straight through, so one object has to
+      // carry every panel's view at once. That is the point: nothing between
+      // here and a builder reshapes it.
+      const built = panels.build(panel.id, {
+        ...issuesView(),
+        state: "detail",
+        issue: ISSUE,
+        connection: CONNECTION,
+      });
       assert.ok(built, `build("${panel.id}") returned nothing`);
       assert.equal(built.v, 1);
       assert.ok(built.fallback?.title && built.fallback?.text, `${panel.id} has no fallback`);
@@ -665,8 +716,8 @@ describe("the ids the two halves share", () => {
     // `url` argument. This walks every action every panel declares and fails if
     // one names a core-owned id that would be answered with the wrong shape.
     const panelsToCheck = [
-      panels.buildIssuesPanel(issuesModel({ filters: { view: "flat" } })),
-      panels.buildIssuePanel({ connection: CONNECTION, issue: ISSUE }),
+      panels.buildIssuesPanel(issuesView({ view: "flat" })),
+      panels.buildIssuePanel({ state: "detail", issue: ISSUE }),
       panels.buildSettingsPanel({ connection: CONNECTION, showAutolinks: true, autolinks: [] }),
       panels.buildSettingsPanel({ connection: { connected: false } }),
     ];
@@ -718,7 +769,7 @@ describe("the ids the two halves share", () => {
     const openInLinear = (row.actions ?? []).find((action) => action.action === "openInLinear");
     assert.deepEqual(openInLinear.args, { issueId: "i1" });
 
-    const panel = panels.buildIssuePanel({ connection: CONNECTION, issue: ISSUE });
+    const panel = panels.buildIssuePanel({ state: "detail", issue: ISSUE });
     const button = nodesOf(panel, "button").find((node) => node.onPress.action === "openInLinear");
     assert.deepEqual(button.onPress.args, { issueId: ISSUE.id });
   });
@@ -959,8 +1010,11 @@ describe("which Linear app the connection is made with", () => {
     assert.ok(warnings(panel).includes("does not send webhooks to a connection made this way"), warnings(panel));
   });
 
-  it("still finds it on the connection when that is the only copy", () => {
-    const panel = panels.buildSettingsPanel({ connection: { connected: false, clientSource: "custom" } });
+  it("warns a disconnected reader who has a connection row but no credential", () => {
+    // `viewFor` sends `clientSource` at the top level in every state, because
+    // it is a fact about this BUILD. The warning must not depend on whether a
+    // connection row happens to exist beside it.
+    const panel = panels.buildSettingsPanel({ connection: { connected: false }, clientSource: "custom" });
     assert.ok(warnings(panel).includes("does not send webhooks to a connection made this way"), warnings(panel));
   });
 

@@ -58,6 +58,18 @@ const {
 const AUTH_SESSION_ID = "linear";
 
 /**
+ * Where the handoff's ANSWER is remembered, in the SDK's own vocabulary.
+ *
+ * `accepted` | `declined` | `empty` | null — never the panel's words. The panel
+ * says `offered` | `taken` | `declined`, and the two vocabularies once shared
+ * the name `handoffStatus`: the settings panel read the stored word, compared
+ * it to `offered`, and the adopt button could never draw. One name for one
+ * vocabulary is what stops that from happening twice. See `handoffLabel` in
+ * `index.js`, which is the only place the two words meet.
+ */
+const HANDOFF_ANSWER_KEY = "handoffAnswer";
+
+/**
  * The scopes, ported from `linearOAuthService.ts:260`.
  *
  * `admin` is not ambition. Linear only delivers data-change webhooks for a
@@ -214,7 +226,7 @@ function createConnect(options = {}) {
       log("warn", `Could not ask for the Linear credential handoff: ${error?.message ?? error}`);
       return { status: "error", message: error?.message ?? String(error) };
     }
-    await sdk.memory.set("handoffStatus", result?.status ?? null).catch(() => {});
+    await sdk.memory.set(HANDOFF_ANSWER_KEY, result?.status ?? null).catch(() => {});
     if (result?.status === "accepted") {
       log("info", "Adopted ADE's existing Linear connection.");
       await data?.refreshConnection().catch(() => {});
@@ -233,7 +245,7 @@ function createConnect(options = {}) {
   async function connectStatus() {
     const credential = await api.readCredential().catch(() => ({ token: null }));
     const client = await resolveClient();
-    const handoffStatus = (await sdk.memory.get("handoffStatus").catch(() => null)) ?? null;
+    const handoffAnswer = (await sdk.memory.get(HANDOFF_ANSWER_KEY).catch(() => null)) ?? null;
     return {
       connected: Boolean(credential.token),
       authMode: credential.authMode ?? null,
@@ -242,8 +254,8 @@ function createConnect(options = {}) {
       // because "Sign in with Linear" behaves differently for the two: ADE's
       // app carries the webhook grant and a user's own does not.
       clientSource: client?.source ?? null,
-      canHandoff: handoffStatus === null,
-      handoffStatus,
+      canHandoff: handoffAnswer === null,
+      handoffAnswer,
       // Said plainly, because the alternative is an authorize URL Linear
       // refuses and a user who cannot tell why. Reached now only where ADE
       // lends nothing — a non-owner build, or a host with no broker — rather

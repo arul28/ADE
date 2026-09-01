@@ -196,14 +196,22 @@ describe("the two facts a schema cannot compute for itself", () => {
   });
 
   it("maps the handoff into the four words the settings card branches on", () => {
+    // Two vocabularies, two names. The SDK's answer is `handoffAnswer`
+    // (`accepted` | `declined` | `empty`) and the panel's word is
+    // `handoffStatus` (`offered` | `taken` | `declined`). They were both
+    // spelled `handoffStatus` once: the settings card compared the stored word
+    // to `offered`, and the adopt button could never draw.
     const { handoffLabel } = plugin.__internals;
     assert.equal(handoffLabel({ canHandoff: true }), "offered");
-    assert.equal(handoffLabel({ handoffStatus: "accepted" }), "taken");
-    assert.equal(handoffLabel({ handoffStatus: "declined" }), "declined");
+    assert.equal(handoffLabel({ handoffAnswer: "accepted" }), "taken");
+    assert.equal(handoffLabel({ handoffAnswer: "declined" }), "declined");
     // `empty` is null, NOT "offered": there is nothing on this machine to
     // adopt, and a button that copies nothing is worse than no button.
-    assert.equal(handoffLabel({ handoffStatus: "empty" }), null);
+    assert.equal(handoffLabel({ handoffAnswer: "empty" }), null);
     assert.equal(handoffLabel({}), null);
+    // And the SDK's word under the PANEL's name maps to nothing, which is what
+    // stops the two from being confused for each other again.
+    assert.equal(handoffLabel({ handoffStatus: "accepted" }), null);
   });
 });
 
