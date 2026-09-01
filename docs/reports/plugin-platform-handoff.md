@@ -123,7 +123,10 @@ Linear ~16.5k lines (5.4k renderer + 2.9k iOS + 8.2k main), legacy lane columns,
 - F5 plugin-relative request paths: `pluginWebviewProtocol.ts:203/209/222` (`path`).
 - F6 `plugin.child_stderr` is truncated (500 chars) but NOT rate-limited (`pluginChildSupervisor.ts:447`, debug level; crash ring bounded at 4000 bytes at `:77`).
 - F7 plugin/third-party-authored text in fields: `pluginChildSupervisor.ts:316`, `pluginScheduleService.ts:268`, `pluginInstallService.ts:161` (git stderr 200 chars), `pluginRegistryService.ts:597,601-604` (remote Marketplace index parser messages).
-- F8 git identifiers and stderr: `agentChatService.ts:40017-40021` logs branch, remote, raw git fetch output (rest of the list: see the ADE-148 comment thread).
+- F8 git identifiers and raw git stderr: `agentChatService.ts:40017-40022` `agent_chat.plugin_branch_fetch_failed` logs branch, remote, unbounded `fetched.stderr`.
+- F9 WEBHOOK VERIFICATION FAILS SILENTLY: `pluginWebhookIngressService.ts:435-459` `passesVerification` returns false with no log line in three cases (secret not on this machine :442, header absent :451, HMAC mismatch :454). Only `plugin.webhook_delivery_abandoned` at :467 records anything, with a caller-chosen reason. Add a coarse reason code (never the signature or body).
+- F10 renderer plugin failures are bare `console.warn` with no logger: `PluginPanelHost.tsx:580` (malformed prompt dropped), `PluginWebviewHost.tsx:117` (webview load failure, carries Chromium's errorDescription). docs/logging.md:29 forbids bare console for loggable events.
+- F11 low: `pluginAuthSessionService.ts:346` logs `paramKeys` from the OAuth provider's redirect (key names only, provider-controlled vocabulary, not enforced).
 
 ## Process lessons that cost real time
 - Only `xcodebuild` is authoritative for Swift; per-file `swiftc -typecheck` missed two committed defects. Use `-IDEBuildOperationContinueBuildingAfterErrors=YES` on a failing build; `simctl boot` before `xcodebuild`; the 30 GB disk gate in the global CLAUDE.md is real (this session freed disk twice: cursor-sdk worker cache leak, leaked test temp dirs, abandoned `~/.cache/codex-runtimes/codex-runtime-install-*`).
