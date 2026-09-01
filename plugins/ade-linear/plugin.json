@@ -34,7 +34,12 @@
     {
       "id": "linear",
       "label": "Linear issue events",
-      "description": "Paste this URL into Linear's webhook settings so an issue that changes wakes ADE."
+      "description": "Paste this URL into Linear's webhook settings so an issue that changes wakes ADE.",
+      "verify": {
+        "kind": "hmac-sha256",
+        "secretRef": "LINEAR_WEBHOOK_SECRET",
+        "header": "linear-signature"
+      }
     }
   ],
   "urlMatchers": [

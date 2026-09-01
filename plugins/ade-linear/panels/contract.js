@@ -229,6 +229,7 @@ const ACTIONS = {
   clearSearch: "clearSearch",
 
   // Launching work from an issue.
+  openLaunch: "openLaunch",
   launchLaneAndAgent: "launchLaneAndAgent",
   launchLaneOnly: "launchLaneOnly",
   linkToLane: "linkToLane",
@@ -236,19 +237,23 @@ const ACTIONS = {
 
   // Writing back to Linear.
   //
-  // `changeIssueState` and `writeComment` are NOT `setIssueState` and
-  // `commentOnIssue`, and the difference is load-bearing. Those two ids are
-  // automation STEPS and agent TOOLS that `index.js` owns and merges in after
-  // this half's table, so they win any collision — and they read
-  // `{issueId, stateId}` and `{issueId, body}`, which is a shape a panel cannot
-  // produce. A `segmented` hands its handler the panel's state map, where the
-  // new value sits under a key naming the issue, and a comment needs a `{prompt}`
-  // round trip that a rule must never have. Two entry points, two payload
-  // shapes, one API call underneath — see `panelActions.js`.
+  // These three ids were briefly a collision: the automation STEPS behind
+  // `set_issue_state`, `comment_on_issue` and `assign_issue` used to be handlers
+  // of the same names in `index.js`, which merges after this half's table and so
+  // won every dispatch — and they read `{issueId, stateId}` and `{issueId, body}`,
+  // which is a shape a panel cannot produce. A `segmented` hands its handler the
+  // panel's state map, where the new value sits under a key naming the issue, and
+  // a comment needs a `{prompt}` round trip that a rule must never have.
+  //
+  // The data half resolved it by moving its step handlers behind `step*` names,
+  // leaving the plain ids to the panel. The saved rule ids did not move, so no
+  // stored automation was affected. The lesson is kept rather than the workaround:
+  // a panel verb and a rule verb are different shapes even when they are the same
+  // sentence, and {@link CORE_OWNED_ACTIONS} is where that boundary is written down.
   assignToMe: "assignToMe",
-  changeIssueState: "changeIssueState",
-  changeIssuePriority: "changeIssuePriority",
-  writeComment: "writeComment",
+  setIssueState: "setIssueState",
+  setIssuePriority: "setIssuePriority",
+  commentOnIssue: "commentOnIssue",
   loadComments: "loadComments",
   openInLinear: "openInLinear",
   openExternal: "openExternal",
@@ -279,13 +284,18 @@ const CORE_OWNED_ACTIONS = Object.freeze([
   "openIssue",
   "openIssues",
   "openSessionIssue",
+  // Resolves the URL from the STORED issue row and ignores a `url` argument, so
+  // every panel button passes `{issueId}`. It is also a socket menu item, which
+  // is why it stayed on that side.
   "openInLinear",
   "commentProgress",
-  "setIssueState",
-  "commentOnIssue",
-  "assignIssue",
   "closeIssueOnMerge",
   "saveWebhookSecret",
+  // The four automation steps, behind their own names since the collision above.
+  "stepSetIssueState",
+  "stepCommentOnIssue",
+  "stepAssignIssue",
+  "stepCloseIssueOnMerge",
 ]);
 
 /**

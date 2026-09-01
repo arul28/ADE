@@ -414,10 +414,17 @@ function bind(host) {
     async openLaunch(args) {
       const issueId = issueIdFrom(args);
       if (!issueId) return { message: "Pick an issue first.", ok: false };
-      const result = await invoke(host, "flows.openLaunch", [issueId, args], "");
-      if (!result.ok) return await handlers.launchLaneAndAgent(args);
+      const laneOnly = args?.laneOnly === true || args?.laneOnly === "true";
+      const result = await invoke(host, "flows.openLaunch", [issueId, { ...args, laneOnly }], "");
+      // No `flows.openLaunch` means no `launch` panel in the manifest, and
+      // navigating to a panel id the host cannot resolve would leave the reader
+      // nowhere. So the button does what it says instead, with the defaults —
+      // which is exactly what it did before the panel existed.
+      if (!result.ok) {
+        return laneOnly ? await handlers.launchLaneOnly(args) : await handlers.launchLaneAndAgent(args);
+      }
       await publish(PANEL_LAUNCH);
-      return { navigate: { panelId: PANEL_LAUNCH, context: { issueId } } };
+      return { navigate: { panelId: PANEL_LAUNCH, context: { issueId, laneOnly } } };
     },
 
     /** The launch form's submit. Inert for the same reason as `openLaunch`. */
@@ -468,15 +475,16 @@ function bind(host) {
     /**
      * The detail panel's state control moved.
      *
-     * NOT `setIssueState`, which is the automation step and the agent tool that
-     * `index.js` owns: that one reads `{issueId, stateId}` and wins the merge,
-     * and a `segmented` cannot produce it. What a control hands its handler is
-     * the panel's STATE MAP, where the new value sits under a key naming the
-     * issue — so this reads whichever key it was given rather than guessing at a
-     * name it would have to keep in step with the builder. Both paths end in the
-     * same `api.setIssueState` call, so a rule and a control cannot drift.
+     * What a control hands its handler is the panel's STATE MAP, where the new
+     * value sits under a key naming the issue — so this reads whichever key it
+     * was given rather than guessing at a name it would have to keep in step
+     * with the builder. That is why the automation step of the same sentence
+     * lives behind `stepSetIssueState` in the data half: it reads
+     * `{issueId, stateId}`, which a `segmented` cannot produce. Both paths end
+     * in the same `api.setIssueState` call, so a rule and a control cannot
+     * drift — they only enter through different doors.
      */
-    async changeIssueState(args) {
+    async setIssueState(args) {
       const issueId = issueIdFrom(args);
       const stateId = readChangedValue(args, "issueState:");
       if (!issueId || !stateId) return { message: "That state could not be read.", ok: false };
@@ -484,7 +492,7 @@ function bind(host) {
     },
 
     /** The same shape, for priority. `0` is a real value and must survive. */
-    async changeIssuePriority(args) {
+    async setIssuePriority(args) {
       const issueId = issueIdFrom(args);
       const priority = readChangedValue(args, "issuePriority:");
       if (!issueId || priority === null) return { message: "That priority could not be read.", ok: false };
@@ -504,12 +512,12 @@ function bind(host) {
      * multi-line composer; a reader who wants a paragraph writes it in Linear,
      * and the report says so rather than pretending otherwise.
      *
-     * NOT `commentOnIssue`, for the reason `changeIssueState` is not
-     * `setIssueState`: that id is the automation step, it reads `{issueId, body}`
-     * and throws "A comment needs a body." on the first press — which is exactly
-     * the press that is supposed to ask the question.
+     * The automation step of the same sentence lives behind `stepCommentOnIssue`
+     * in the data half, because it reads `{issueId, body}` and would throw "A
+     * comment needs a body." on the first press — which is exactly the press
+     * that is supposed to ask the question.
      */
-    async writeComment(args) {
+    async commentOnIssue(args) {
       const issueId = issueIdFrom(args);
       if (!issueId) return { message: "Pick an issue first.", ok: false };
 

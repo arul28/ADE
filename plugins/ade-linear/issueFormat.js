@@ -39,17 +39,24 @@ const UNKNOWN_STATE_RANK = 6;
 const PRIORITY_LABELS = ["No priority", "Urgent", "High", "Medium", "Low"];
 
 /**
- * Badge tone per state type, inside the vocabulary's four tones.
+ * Badge tone per state type.
  *
- * `canceled` reads neutral rather than the destructive tone on purpose: the
- * vocabulary has no red (`vocabularyNodes.ts`), so the only louder tone is
- * `warning`, and a cancelled issue is not a warning — it is a closed one.
+ * The vocabulary has exactly four (`VocabTone` in `vocabularyNodes.ts:191`):
+ * `neutral`, `accent`, `success`, `warning`. Anything else is coerced to the
+ * fallback, so a tone this table invented would not fail — it would silently
+ * render flat, which is the worst of both outcomes. `started` is `accent`
+ * rather than the `info` this table used to name, because `info` is not one of
+ * the four and every in-progress issue was drawing without its emphasis.
+ *
+ * `canceled` reads neutral rather than loud on purpose: there is no red, so the
+ * only louder tone is `warning`, and a cancelled issue is not a warning — it is
+ * a closed one.
  */
 const STATE_TONES = {
   triage: "warning",
   backlog: "neutral",
   unstarted: "neutral",
-  started: "info",
+  started: "accent",
   completed: "success",
   canceled: "neutral",
 };

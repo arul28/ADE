@@ -59,6 +59,7 @@ const contract = require_(path.join(pluginRoot, "panels/contract.js")) as {
   groupIssueKey: (stateId: string, rank: number, issueId: string) => string;
   commentKey: (issueId: string, rank: number, commentId: string) => string;
   ACTIONS: Record<string, string>;
+  ISSUE_ROW_ACTIONS: string[];
 };
 const panels = require_(path.join(pluginRoot, "panels.js")) as {
   build: (panelId: string, model?: unknown, context?: unknown) => unknown;
@@ -188,6 +189,12 @@ describe("the panels ade-linear publishes at runtime", () => {
       ["settings", { state: "disconnected", connection: null }, null],
       ["settings", {
         state: "connected",
+        connection: { connected: true, authMode: "apiKey", viewerName: "Ada", oauthAvailable: false },
+        ingress: { status: "Waiting for the signing secret", tone: "warning", url: "https://relay.example/x", secretStored: false },
+        handoffStatus: "offered",
+      }, null],
+      ["settings", {
+        state: "connected",
         connection: {
           connected: true,
           authMode: "oauth",
@@ -288,6 +295,70 @@ describe("the URL matcher only this package may have", () => {
 // stored. Importing `relay.ts` here would pull the Workers ambient types into
 // the desktop program, which is a boundary this test is not worth crossing.
 
+describe("the dressed row the panels bind", () => {
+  const rows = require_(path.join(pluginRoot, "panels/rows.js")) as {
+    issueListRow: (issue: unknown) => Record<string, unknown>;
+    issueIdFromRowKey: (key: string) => string | null;
+  };
+
+  it("coerces to a list item with its chip, its press and its bare-id key", () => {
+    // The undressed row carried `badgeText`/`badgeTone`, which `readListItem`
+    // ignores — it drew as a bare title with no chip and no press.
+    const row = rows.issueListRow(issueFormat.normalizeIssue(issueNode(1)));
+    const item = coerceBoundListItem(row, contract.ISSUE_ROW_ACTIONS, "flat:000001:issue-1");
+    expect(item).not.toBeNull();
+    expect(item?.key).toBe("issue-1");
+    expect(item?.badge?.text).toBe("In Progress");
+    expect(item?.onPress).not.toBeUndefined();
+  });
+
+  it("presses NOTHING when the binding declares no allowlist", () => {
+    // `allowActions` is an allowlist, and an absent one allows nothing: a
+    // stored row can only ever press a verb the PANEL declared. That is the
+    // property that stops a collection row from naming `disconnect`.
+    const row = rows.issueListRow(issueFormat.normalizeIssue(issueNode(1)));
+    const item = coerceBoundListItem(row, undefined, "flat:000001:issue-1");
+    expect(item?.onPress).toBeUndefined();
+    expect(item?.actions ?? []).toEqual([]);
+  });
+
+  it("names only verbs inside ISSUE_ROW_ACTIONS", () => {
+    // The audit: a row that could press `disconnect` because a collection said
+    // so is exactly what the allowlist exists to prevent.
+    const row = rows.issueListRow(issueFormat.normalizeIssue(issueNode(1)));
+    const named = [
+      (row.onPress as { action: string }).action,
+      ...((row.actions ?? []) as Array<{ action: string }>).map((entry) => entry.action),
+      ...((row.overflow ?? []) as Array<{ action: string }>).map((entry) => entry.action),
+    ];
+    for (const action of named) {
+      expect(contract.ISSUE_ROW_ACTIONS, action).toContain(action);
+    }
+  });
+
+  it("names only tones the vocabulary has", () => {
+    // `VocabTone` is neutral | accent | success | warning. `info` is not one,
+    // and a tone outside the set is coerced to the fallback rather than
+    // failing — so the badge renders flat and nothing reports it.
+    const tones = new Set(["neutral", "accent", "success", "warning"]);
+    for (const type of ["triage", "backlog", "unstarted", "started", "completed", "canceled"]) {
+      const row = rows.issueListRow(issueFormat.normalizeIssue(issueNode(1, {
+        state: { id: "s", name: "S", type },
+      })));
+      expect(tones.has(String(row.tone)), `${type} → ${row.tone}`).toBe(true);
+      expect(tones.has(String((row.badge as Record<string, unknown>).tone)), `${type} badge`).toBe(true);
+    }
+  });
+
+  it("strips a sort prefix off a selection key", () => {
+    // A bulk handler that took the collection key would create a lane named
+    // after a sort rank.
+    expect(rows.issueIdFromRowKey("flat:000012:issue-9")).toBe("issue-9");
+    expect(rows.issueIdFromRowKey("group:state-0:000003:issue-9")).toBe("issue-9");
+    expect(rows.issueIdFromRowKey("issue-9")).toBe("issue-9");
+  });
+});
+
 describe("installing ade-linear from the bundled directory", () => {
   const roots: string[] = [];
   const scratchRoot = (): string => {
@@ -339,6 +410,14 @@ describe("installing ade-linear from the bundled directory", () => {
     expect(installed.manifest?.network?.hosts).toEqual(["api.linear.app"]);
     expect(installed.manifest?.credentialHandoff).toEqual(["linear"]);
     expect(installed.manifest?.webhookIngress.map((channel) => channel.id)).toEqual(["linear"]);
+    // Declared, so the channel fails closed without the signing secret. It
+    // costs no installed base: the built-in's webhooks run through
+    // `linearIngressService`, never through this channel.
+    expect(installed.manifest?.webhookIngress[0]?.verify).toMatchObject({
+      kind: "hmac-sha256",
+      secretRef: "LINEAR_WEBHOOK_SECRET",
+      header: "linear-signature",
+    });
     expect(installed.manifest?.authSessions?.map((session) => session.id)).toEqual(["linear"]);
     expect(installed.manifest?.tools.map((tool) => tool.name).sort()).toEqual([
       "add_comment", "add_label", "assign_issue", "create_lane_for_issue", "get_issue",

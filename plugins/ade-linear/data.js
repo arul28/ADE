@@ -189,6 +189,46 @@ function filtersToQuery(filters) {
 }
 
 /**
+ * The row a BOUND LIST reads, as opposed to the row this plugin reads.
+ *
+ * `readListItem` (`shared/plugins/vocabularyNodes.ts`) looks at exactly eleven
+ * names — title, key, subtitle, meta, tone, icon, mono, badge, onPress,
+ * actions, overflow — and IGNORES everything else. A stored row carrying
+ * `badgeText` and `badgeTone` therefore draws as a bare title with no chip and
+ * no press, and a row with no `key` lets a tick inherit the COLLECTION key
+ * (`flat:000012:<uuid>`), which is a sort rank standing in for an issue id.
+ *
+ * `issueListRow` makes those eleven. The axes merged back on top are what a
+ * binding's `where` compares, and dropping them would make every filter a
+ * silent no-op.
+ *
+ * The CANONICAL row (`issue:<id>`) is deliberately NOT dressed. The detail
+ * panel, the nine agent tools and the flows read `description`, `labels`,
+ * `subIssues`, `branchName` and `teamKey` off it, and the dresser keeps none of
+ * them. Dressed rows are for the two ordered key spaces a list binds, and
+ * nothing else reads them.
+ */
+function boundIssueRow(row) {
+  return {
+    ...issueListRow(row),
+    projectId: row.projectId,
+    assigneeId: row.assigneeId,
+    // A `where` compares text and `vocabPredicateFieldText` coerces a number,
+    // so a string is the shape that cannot surprise either side.
+    priority: String(row.priority ?? ""),
+    // ISO-8601 with a zone, which is what `vocabTimeValue` accepts. Linear's
+    // own `updatedAt` already is one; a spelling outside that silently drops
+    // the recency clause rather than failing.
+    updatedAt: row.updatedAt,
+    stateId: row.stateId,
+    stateType: row.stateType,
+    hasLane: row.hasLane === true,
+    laneId: row.laneId,
+    laneName: row.laneName,
+  };
+}
+
+/**
  * Build the data layer.
  *
  * Every dependency is injected — `sdk`, `api`, `now`, `log` — so the whole

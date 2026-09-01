@@ -49,6 +49,7 @@ const { createAutomation } = require("./automation");
 const { createWebhookHandler } = require("./webhook");
 const panels = require("./panels");
 const panelActions = require("./panelActions");
+const { issueIdFromRowKey } = require("./panels/rows");
 
 /** Attempts to publish a panel before giving up until the next action. */
 const PUBLISH_ATTEMPTS = 5;
@@ -188,27 +189,34 @@ function ago(iso) {
  */
 async function viewFor(panelId, context) {
   const snapshot = model();
-  const connection = snapshot.connection;
+  const filters = snapshot.filters ?? {};
 
   if (panelId === "main") return {};
 
   if (panelId === "issues") {
-    const filters = snapshot.filters ?? {};
+    const connection = snapshot.connection;
     return {
       state: snapshot.error ? "error" : (snapshot.counts.issues === 0 ? "empty" : "list"),
       error: snapshot.error,
       groups: snapshot.groups ?? [],
       query: filters.text || null,
       title: "Linear",
+      // `statePreset`, not the stored `stateTab`. The stored name is the one
+      // the lead's contract fixed for `prefs:filters`; the builder reads the
+      // other. Mapping at this boundary is cheaper than renaming a persisted
+      // key that already exists on somebody's device.
       statePreset: filters.stateTab,
       sort: filters.sort,
-      view: filters.view ?? "grouped",
+      view: filters.view === "flat" ? "flat" : "grouped",
       viewerId: connection?.viewerId ?? null,
       assignedToMe: Boolean(filters.assigneeId && filters.assigneeId === connection?.viewerId),
       hasProjects: filters.hasProjects === true,
       hasPeople: filters.hasPeople === true,
       hasTeams: (snapshot.counts.teams ?? 0) > 1,
-      filtersActive: Boolean(filters.projectId || filters.assigneeId || filters.priority || filters.stateTab !== "all"),
+      filtersActive: Boolean(
+        filters.projectId || filters.assigneeId || filters.priority || filters.updated
+        || (filters.stateTab && filters.stateTab !== "all"),
+      ),
       workspace: connection?.organizationName ?? null,
       age: ago(snapshot.updatedAt),
     };
@@ -228,10 +236,20 @@ async function viewFor(panelId, context) {
       issue,
       error: null,
       subIssues: issue.subIssues ?? [],
-      comments: rows.map((row) => row.value).filter(Boolean),
+      // `{author, at, body}` — what `commentNodes` reads. The stored row also
+      // carries the dressed list fields, and neither half has to know about
+      // the other's names because the mapping is here.
+      comments: rows
+        .map((row) => row.value)
+        .filter(Boolean)
+        .map((comment) => ({
+          author: comment.userDisplayName ?? comment.userName ?? null,
+          at: comment.createdAt ?? null,
+          body: comment.body ?? "",
+        })),
       commentsState: "loaded",
-      // The plugin stores at most `MAX_COMMENTS_PER_ISSUE`; a thread longer
-      // than that has earlier comments only Linear can show.
+      // The plugin stores at most `MAX_COMMENTS_PER_ISSUE`; a longer thread has
+      // earlier comments only Linear can show.
       hasEarlierComments: rows.length >= 50,
     };
   }
@@ -243,16 +261,16 @@ async function viewFor(panelId, context) {
     return {
       state: "form",
       issue,
-      // The models this project can actually run. An empty list draws the form
-      // without the picker and the provider takes its own default, which is the
-      // same launch one tap later rather than a form that cannot submit.
+      // An empty list draws the form without the picker and the provider takes
+      // its own default, which is the same launch one tap later rather than a
+      // form that cannot submit.
       models: (snapshot.models ?? []).map((entry) => ({ id: entry.value, label: entry.label })),
       permissionModes: PERMISSION_MODES,
       reasoningEfforts: REASONING_EFFORTS,
       laneOnly: false,
       sessionType: "chat",
-      // The two names derived from the issue, shown before the reader commits:
-      // the branch is the one Linear matches on, so seeing it is the difference
+      // The two names derived from the issue, shown before the reader commits.
+      // The branch is the one Linear matches on, so seeing it is the difference
       // between trusting the link and hoping for it.
       laneName: issueLaneName(issue),
       branchName: issueBranchName(issue),
@@ -264,26 +282,101 @@ async function viewFor(panelId, context) {
   }
 
   if (panelId === "settings") {
+    const connection = snapshot.connection;
     const settings = await sdk.config.get().catch(() => ({}));
     const status = await connect.connectStatus().catch(() => ({}));
+    const secretStored = Boolean(await sdk.secrets.get("LINEAR_WEBHOOK_SECRET").catch(() => null));
     return {
       state: connection?.connected ? "connected" : "disconnected",
       error: connection?.lastError ?? null,
-      connection,
-      // "offered" is the one value the panel draws the adopt button for, so it
-      // is set only while the handoff has genuinely not been answered.
-      handoffStatus: status.canHandoff ? "offered" : (status.handoffStatus ?? null),
+      connection: connection
+        ? {
+          ...connection,
+          // The builder words this as "OAuth" or "API key". The STORED
+          // vocabulary is `oauth` | `manual`, which is the handoff's own and
+          // must not change — so the rename happens here and nowhere else.
+          authMode: connection.authMode === "manual" ? "apiKey" : connection.authMode,
+          // Pre-formatted, because a schema cannot do date arithmetic.
+          ...expiry(connection.tokenExpiresAt),
+          oauthAvailable: status.canOAuth === true,
+        }
+        : null,
+      // "offered" is the one value that draws the adopt button, so it is set
+      // only while the handoff genuinely has not been answered.
+      handoffStatus: handoffLabel(status),
       settings,
-      teams: await data.teams().catch(() => []),
+      teams: (await data.teams().catch(() => [])).map((team) => ({ key: team.key, name: team.name })),
       showAutolinks: Boolean(connection?.organizationUrlKey),
-      autolinks: snapshot.autolinks ?? [],
+      autolinks: (snapshot.autolinks ?? []).map((entry) => ({
+        prefix: entry.keyPrefix,
+        title: entry.title,
+        description: entry.teamName,
+        // Nothing reads back GitHub's existing autolinks yet, so every row
+        // offers Create. Saying "configured" without checking would be worse
+        // than offering a create that GitHub answers as already-existing.
+        configured: false,
+      })),
       githubRepo: githubRepoSlug,
-      ingress: connection?.webhookUrl ? { url: connection.webhookUrl } : null,
+      // `plugin.json` declares `verify`, so the channel FAILS CLOSED without
+      // the secret (`pluginWebhookIngressService.ts:429`). That inverts what a
+      // missing secret means: it is not "deliveries arrive unverified", it is
+      // "no deliveries arrive at all". Saying the weaker thing would leave a
+      // reader waiting for events that are being dropped.
+      //
+      // Declaring it costs no installed base: this channel is new in this wave
+      // — the built-in's webhooks run through `linearIngressService`, not
+      // through the plugin — so nobody's working ingress stops.
+      ingress: connection?.webhookUrl
+        ? {
+          status: secretStored
+            ? "Signed deliveries only"
+            : "Waiting for the signing secret — deliveries are dropped until you paste it",
+          tone: secretStored ? "success" : "warning",
+          lastEvent: null,
+          url: connection.webhookUrl,
+          secretStored,
+        }
+        : null,
       oauthBlockedReason: status.oauthBlockedReason ?? null,
     };
   }
 
   return snapshot;
+}
+
+/**
+ * The token's remaining life, pre-formatted.
+ *
+ * A schema has no date arithmetic, so "expires in 6 days" has to be a string by
+ * the time it reaches a builder. An absent expiry is an API key or a token that
+ * does not expire, and says nothing rather than "never".
+ */
+function expiry(tokenExpiresAt) {
+  if (!tokenExpiresAt) return { expiresIn: null, expired: false };
+  const at = Date.parse(String(tokenExpiresAt));
+  if (Number.isNaN(at)) return { expiresIn: null, expired: false };
+  const ms = at - Date.now();
+  if (ms <= 0) return { expiresIn: "expired", expired: true };
+  const days = Math.round(ms / 86_400_000);
+  if (days >= 1) return { expiresIn: `expires in ${days} ${days === 1 ? "day" : "days"}`, expired: false };
+  const hours = Math.max(1, Math.round(ms / 3_600_000));
+  return { expiresIn: `expires in ${hours} ${hours === 1 ? "hour" : "hours"}`, expired: false };
+}
+
+/**
+ * The handoff, in the four words the settings panel branches on.
+ *
+ * The plugin's own vocabulary is the SDK's — `accepted`, `declined`, `empty`,
+ * or unanswered. The panel's is `offered` / `taken` / `declined` / null, and
+ * `offered` is what draws the adopt button. `empty` maps to null rather than to
+ * `offered`: there is nothing on this machine to adopt, and a button that
+ * copies nothing is worse than no button.
+ */
+function handoffLabel(status) {
+  if (status?.canHandoff) return "offered";
+  if (status?.handoffStatus === "accepted") return "taken";
+  if (status?.handoffStatus === "declined") return "declined";
+  return null;
 }
 
 /* ── Reading ─────────────────────────────────────────────────────────────── */
@@ -338,11 +431,11 @@ async function loadModels() {
 /**
  * The Linear badge on every lane that carries an issue.
  *
- * Published as a `row-badge` and a `graph-node` contribution, which is how a
- * lane row on the desktop, on the phone and in the graph all draw the same
- * thing without any of them knowing what Linear is. Two socket KINDS on one
- * surface, so each publish names its `id` — a row keyed only by kind would let
- * the second publish replace the first.
+ * Published as a `row-badge` and a `graph-node`, which is how a lane row on the
+ * desktop, on the phone and in the graph all draw the same thing without any of
+ * them knowing what Linear is. Two socket KINDS on one surface, so each publish
+ * names its `id` — a row keyed only by kind would let the second publish
+ * replace the first.
  */
 async function publishLaneBadges() {
   if (!sdk || disposed) return;
@@ -492,7 +585,14 @@ function buildPanelHost() {
 
       /** The bulk bar: attach several issues to the lane the reader is in. */
       linkIssueToLane: async (issueIds) => {
-        const ids = Array.isArray(issueIds) ? issueIds : [issueIds];
+        // Through `issueIdFromRowKey` even though the panel half already
+        // strips it. A tick carries the row's `key`, and a row that ever ships
+        // without one inherits the COLLECTION key — `flat:000012:<uuid>` — so
+        // the failure this guards is a lane named after a sort rank. Two
+        // defences is the right number when the wrong id creates a lane.
+        const ids = (Array.isArray(issueIds) ? issueIds : [issueIds])
+          .map((entry) => issueIdFromRowKey(entry) ?? entry)
+          .filter(Boolean);
         const lanes = await sdk.lanes.list().catch(() => []);
         const laneId = lanes[0]?.id ?? null;
         if (!laneId) throw new Error("Open a lane first.");
@@ -730,11 +830,12 @@ function failureMessage(error, fallback) {
 /**
  * The action table.
  *
- * `panelActions.actions` is spread in FIRST so the three refresh ids below win:
- * they are named by `plugin.json`'s `refreshAction` fields and by the panel
- * schemas' Retry buttons, and the data half is what performs them. Everything
- * else a panel dispatches belongs to the panel half and is taken from it
- * unchanged.
+ * `panelActions.bind(host)` RETURNS the panel half's handler table — there is
+ * no `panelActions.actions` export to spread, and `{...undefined}` is legal, so
+ * reaching for one would have registered nothing and thrown nowhere. `activate`
+ * assigns the returned table and then re-applies this one over it, which is
+ * what keeps the three refresh ids the data half's: `plugin.json` names them on
+ * `refreshAction` and this half is what performs them.
  */
 const ownActions = {
   /* ── Refresh, named by the manifest's `refreshAction` fields ─────────── */
@@ -823,7 +924,8 @@ const ownActions = {
 
   /** One issue's detail page. The row's `onPress` and the smart-link chip's. */
   async openIssue(args) {
-    const issueId = args?.issueId ?? args?.context?.issueId ?? null;
+    const raw = args?.issueId ?? args?.context?.issueId ?? args?.key ?? null;
+    const issueId = raw ? (issueIdFromRowKey(raw) ?? raw) : null;
     if (!issueId) return { navigate: { panelId: "issues" } };
     // A URL matcher hands over the issue KEY from the path, not the id, and a
     // key this project has never listed is not in the collections — so the

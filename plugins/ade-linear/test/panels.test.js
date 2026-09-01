@@ -372,13 +372,25 @@ describe("the issue detail panel", () => {
     assert.ok(captions.some((text) => text.includes("not shown here")), "the drop is silent");
   });
 
-  it("offers both launch verbs and the way out to Linear", () => {
+  it("opens the launch configuration rather than picking a model for the reader", () => {
+    // Both verbs go through `openLaunch`, which is the phone's own flow: one
+    // screen serves both and `laneOnly` hides the agent half. Launching straight
+    // from the detail would silently choose a model, a permission mode and a
+    // kickoff prompt on the reader's behalf.
     const panel = panels.buildIssuePanel({ connection: CONNECTION, issue: ISSUE });
+    const launches = nodesOf(panel, "button").filter(
+      (node) => node.onPress.action === contract.ACTIONS.openLaunch,
+    );
+    assert.equal(launches.length, 2);
+    assert.deepEqual(
+      launches.map((node) => node.onPress.args.laneOnly),
+      [false, true],
+    );
+    assert.deepEqual(launches.map((node) => node.label), [COPY.launchOne, COPY.laneOne]);
+
     const actions = nodesOf(panel, "button").map((node) => node.onPress.action);
-    assert.ok(actions.includes(contract.ACTIONS.launchLaneAndAgent));
-    assert.ok(actions.includes(contract.ACTIONS.launchLaneOnly));
     assert.ok(actions.includes(contract.ACTIONS.openInLinear));
-    assert.ok(actions.includes(contract.ACTIONS.writeComment));
+    assert.ok(actions.includes(contract.ACTIONS.commentOnIssue));
   });
 
   it("draws the loading body rather than the previous issue's words", () => {
@@ -646,13 +658,12 @@ describe("the issue row a list binds", () => {
 
 describe("the ids the two halves share", () => {
   it("never dispatches a core-owned id with a shape that half cannot read", () => {
-    // `index.js` merges its handlers in AFTER this half's, so a collision goes
-    // to it. Three of its ids read a shape a panel cannot produce:
-    // `setIssueState` wants `{stateId}` where a `segmented` hands over a state
-    // map, `commentOnIssue` wants `{body}` where the first press must ask for
-    // one, and `openInLinear` resolves the URL from the stored row and ignores
-    // a `url` argument. This walks every action a panel declares and proves the
-    // schemas name the panel-owned verb instead.
+    // `index.js` merges its handlers in AFTER this half's, so any id both halves
+    // define goes to it. The three step verbs moved behind `step*` names to end
+    // that collision, and `openInLinear` stayed on that side because it is also
+    // a socket menu item — it resolves the URL from the stored row and ignores a
+    // `url` argument. This walks every action every panel declares and fails if
+    // one names a core-owned id that would be answered with the wrong shape.
     const panelsToCheck = [
       panels.buildIssuesPanel(issuesModel({ filters: { view: "flat" } })),
       panels.buildIssuePanel({ connection: CONNECTION, issue: ISSUE }),
@@ -679,10 +690,27 @@ describe("the ids the two halves share", () => {
       }
     }
 
-    assert.ok(!dispatched.has("setIssueState"), "a schema dispatches the automation step");
-    assert.ok(!dispatched.has("commentOnIssue"), "a schema dispatches the automation step");
-    assert.ok(dispatched.has(contract.ACTIONS.changeIssueState));
-    assert.ok(dispatched.has(contract.ACTIONS.writeComment));
+    // The panel owns these three now, so it SHOULD name them.
+    assert.ok(dispatched.has(contract.ACTIONS.setIssueState));
+    assert.ok(dispatched.has(contract.ACTIONS.setIssuePriority));
+    assert.ok(dispatched.has(contract.ACTIONS.commentOnIssue));
+
+    // And it must never name a step verb, which reads `{issueId, stateId}`.
+    for (const id of dispatched) {
+      assert.ok(!id.startsWith("step"), `a schema dispatches the automation step ${id}`);
+    }
+
+    // `openInLinear` is the one core-owned id a panel still presses. Everything
+    // else a schema names must be this half's, or it reaches a handler that
+    // does not exist and the button does nothing at all.
+    const mine = new Set(Object.values(contract.ACTIONS));
+    for (const id of dispatched) {
+      if (id === "openInLinear") continue;
+      assert.ok(
+        mine.has(id) && !contract.CORE_OWNED_ACTIONS.includes(id),
+        `${id} is dispatched by a schema but is not this half's verb`,
+      );
+    }
   });
 
   it("passes an issue id, never a url, to the core-owned openInLinear", () => {
@@ -720,5 +748,79 @@ describe("the ids the two halves share", () => {
     // The unverified state says what is actually at risk rather than "not configured".
     const captions = nodesOf(panel, "text").map((node) => node.text).join(" ");
     assert.ok(captions.includes("post a fake issue event"), captions);
+  });
+});
+
+/* ── The launch panel ───────────────────────────────────────────────────── */
+
+describe("the launch panel", () => {
+  /** The view `index.js` hands `build("launch", …)`, spelled as it spells it. */
+  const LAUNCH_VIEW = {
+    state: "form",
+    issue: ISSUE,
+    models: [
+      { id: "claude-opus-5", label: "Opus 5" },
+      { id: "gpt-5", label: "GPT-5" },
+    ],
+    permissionModes: ["default", "accept-edits", "full-auto"],
+    reasoningEfforts: ["", "low", "medium", "high", "xhigh"],
+    laneOnly: false,
+    fastModeSupported: false,
+  };
+
+  function formOf(panel) {
+    return nodesOf(panel, "form")[0];
+  }
+
+  it("labels the models rather than showing their raw ids", () => {
+    // The data half sends `{id, label}`; the builder used to read `name || id`
+    // and fell through to the id, so the picker listed `claude-opus-5` where the
+    // phone's own sheet says "Opus 5".
+    const form = formOf(panels.build("launch", LAUNCH_VIEW));
+    const model = form.fields.find((field) => field.id === "model");
+    assert.deepEqual(model.options.map((option) => option.label), ["Opus 5", "GPT-5"]);
+  });
+
+  it("reads a choice list whether it holds strings or objects", () => {
+    // `permissionModes` arrives as bare strings and `models` as objects. One
+    // reader for both, because a select of `[object Object]` renders fine and is
+    // useless.
+    const form = formOf(panels.build("launch", LAUNCH_VIEW));
+    const permissions = form.fields.find((field) => field.id === "permissionMode");
+    assert.deepEqual(permissions.options.map((option) => option.value), ["default", "accept-edits", "full-auto"]);
+  });
+
+  it("keeps the empty reasoning effort, which is a real choice", () => {
+    // `""` means "whatever the model does by default" and must survive as an
+    // option rather than being filtered out as a blank.
+    const form = formOf(panels.build("launch", LAUNCH_VIEW));
+    const effort = form.fields.find((field) => field.id === "reasoningEffort");
+    assert.equal(effort.options[0].value, "");
+    assert.equal(effort.options[0].label, "Default");
+    assert.equal(effort.options.length, 5);
+  });
+
+  it("reads the state the data half declares, not only a loading flag", () => {
+    assert.equal(nodesOf(panels.build("launch", { ...LAUNCH_VIEW, state: "loading" }), "form").length, 0);
+    assert.ok(formOf(panels.build("launch", LAUNCH_VIEW)));
+  });
+
+  it("hides the agent configuration when only a lane was asked for", () => {
+    const form = formOf(panels.build("launch", { ...LAUNCH_VIEW, laneOnly: true }));
+    assert.equal(form.fields.find((field) => field.id === "sessionType").value, "laneOnly");
+    assert.equal(form.submit.label, "Create");
+    assert.equal(form.submit.onPress.action, contract.ACTIONS.submitLaunch);
+  });
+
+  it("stays inside the form and node ceilings with every option list full", () => {
+    const many = Array.from({ length: 80 }, (_, index) => ({ id: `m${index}`, label: `Model ${index}` }));
+    const panel = panels.build("launch", { ...LAUNCH_VIEW, models: many, fastModeSupported: true });
+    const form = formOf(panel);
+    assert.ok(form.fields.length <= LIMITS.maxFormFields);
+    for (const field of form.fields) {
+      assert.ok((field.options ?? []).length <= LIMITS.maxSelectOptions, `${field.id} has too many options`);
+    }
+    assert.ok(everyNode(panel.body).length <= LIMITS.maxNodes);
+    assert.ok(schemaBytes(panel) <= LIMITS.maxSchemaBytes);
   });
 });

@@ -21,6 +21,31 @@
 const { ACTIONS } = require("./contract");
 const { COPY, DEEPLINK_LAUNCH, LIMITS, clamp, fallback, label, prose, value } = require("./common");
 
+/**
+ * A choice list, however the data half spelled it.
+ *
+ * `models` arrives as `{id, label}`, `permissionModes` as bare strings, and
+ * `reasoningEfforts` as strings that include `""` for "unset". Reading one shape
+ * would have shown a model picker full of raw ids, or a permissions select of
+ * `[object Object]` — both of which render fine and are useless.
+ */
+function selectOptions(entries, max) {
+  const list = Array.isArray(entries) ? entries : [];
+  const options = [];
+  for (const entry of list) {
+    if (typeof entry === "string") {
+      options.push({ value: entry, label: label(entry || "Default") });
+      continue;
+    }
+    if (!entry || typeof entry !== "object") continue;
+    const rawValue = entry.value ?? entry.id ?? entry.key;
+    if (rawValue === undefined || rawValue === null) continue;
+    const value = String(rawValue);
+    options.push({ value, label: label(entry.label || entry.name || entry.title || value || "Default") });
+  }
+  return options.slice(0, max);
+}
+
 /** `LinearLaunchSessionType.title`, in its order. */
 const SESSION_TYPES = [
   { value: "chat", label: "Chat" },
@@ -145,42 +170,38 @@ function buildLaunchPanel(input = {}) {
     },
   ];
 
-  if (models.length > 0) {
+  const modelOptions = selectOptions(models, LIMITS.maxSelectOptions);
+  if (modelOptions.length > 0) {
     fields.push({
       kind: "select",
       id: "model",
       label: "Model",
-      options: models.slice(0, LIMITS.maxSelectOptions).map((model) => ({
-        value: String(model.id),
-        label: label(model.name || model.id),
-      })),
-      value: String(input.model ?? models[0].id),
+      options: modelOptions,
+      value: String(input.model ?? modelOptions[0].value),
     });
   }
 
-  if (permissionModes.length > 0) {
+  const permissionOptions = selectOptions(permissionModes, LIMITS.maxSelectOptions);
+  if (permissionOptions.length > 0) {
     fields.push({
       kind: "select",
       id: "permissionMode",
       label: "Permissions",
-      options: permissionModes.slice(0, LIMITS.maxSelectOptions).map((mode) => ({
-        value: String(mode.value),
-        label: label(mode.label || mode.value),
-      })),
-      value: String(input.permissionMode ?? permissionModes[0].value),
+      options: permissionOptions,
+      value: String(input.permissionMode ?? permissionOptions[0].value),
     });
   }
 
-  if (reasoningEfforts.length > 0) {
+  // `""` is a real option here — it is "whatever the model does by default" —
+  // so the list is not filtered for empties the way the other two would be.
+  const effortOptions = selectOptions(reasoningEfforts, LIMITS.maxSelectOptions);
+  if (effortOptions.length > 0) {
     fields.push({
       kind: "select",
       id: "reasoningEffort",
       label: "Reasoning effort",
-      options: reasoningEfforts.slice(0, LIMITS.maxSelectOptions).map((effort) => ({
-        value: String(effort.value),
-        label: label(effort.label || effort.value),
-      })),
-      value: String(input.reasoningEffort ?? ""),
+      options: effortOptions,
+      value: String(input.reasoningEffort ?? effortOptions[0].value),
     });
   }
 
@@ -228,4 +249,4 @@ function buildLaunchPanel(input = {}) {
   return { v: 1, title: value(title), fallback: launchFallback(), body };
 }
 
-module.exports = { SESSION_TYPES, buildLaunchPanel, laneOnlyNote };
+module.exports = { SESSION_TYPES, buildLaunchPanel, laneOnlyNote, selectOptions };

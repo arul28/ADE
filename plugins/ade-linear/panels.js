@@ -274,7 +274,11 @@ function buildMainPanel() {
  */
 function buildLaunchPanel(model = {}) {
   return buildLaunchBody({
-    state: model.loading ? "loading" : "form",
+    // `state` when the data half declares one, `loading` when it does not. The
+    // two halves were written at once and the view arrives spelled either way;
+    // reading only one of them would have shown a spinner over a ready form, or
+    // a form over an issue that had not arrived.
+    state: model.state ?? (model.loading ? "loading" : "form"),
     issue: model.issue ?? null,
     models: Array.isArray(model.models) ? model.models : [],
     permissionModes: Array.isArray(model.permissionModes) ? model.permissionModes : [],
@@ -284,7 +288,10 @@ function buildLaunchPanel(model = {}) {
     laneName: model.laneName ?? "",
     branchName: model.branchName ?? null,
     kickoff: model.kickoff ?? "",
-    model: model.selectedModel ?? null,
+    // The reader's stored choice, under either name. Absent, every select opens
+    // on its first option — which is a different model from the one they picked
+    // last time, silently.
+    model: model.selectedModel ?? model.model ?? null,
     permissionMode: model.permissionMode ?? null,
     reasoningEffort: model.reasoningEffort ?? null,
     fastModeSupported: model.fastModeSupported === true,

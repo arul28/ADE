@@ -29,6 +29,9 @@ describe("filters", () => {
   it("defaults to every issue, newest updated first", () => {
     assert.deepEqual(defaultFilters(), {
       stateTab: "all", projectId: "", assigneeId: "", priority: "", sort: "updated_desc", text: "",
+      // Stored rather than left to panel state, which is per-viewer and
+      // session-scoped: the view chosen on the desktop should open on the phone.
+      view: "grouped", updated: "",
     });
   });
 
@@ -190,6 +193,75 @@ describe("materializing the issue rows", () => {
   it("says empty rather than list when the workspace answered nothing", async () => {
     const { data } = build({ api: { searchAllIssues: async () => [] } });
     assert.equal((await data.refreshIssues()).state, "empty");
+  });
+});
+
+describe("the dressed row a bound list actually reads", () => {
+  it("dresses the two ORDERED copies and leaves the canonical one raw", async () => {
+    // The detail panel and the nine agent tools read description, labels and
+    // subIssues off the canonical row, and the dresser keeps none of them.
+    const { sdk, data } = build({ api: { searchAllIssues: async () => nodes({ id: "a" }) } });
+    await data.refreshIssues();
+
+    const canonical = sdk.collections.value("issues", "issue:a");
+    assert.equal(canonical.description, "Some body.");
+    assert.ok(Array.isArray(canonical.subIssues));
+
+    const bound = sdk.collections.value("issues", "flat:000001:a");
+    assert.equal(bound.description, undefined);
+    assert.deepEqual(bound, sdk.collections.value("issues", "group:state-started:000001:a"));
+  });
+
+  it("keys the bound row by the BARE issue id, never the sort-encoded key", async () => {
+    // A tick in a selectable list carries the row's `key`. A row that declared
+    // none would inherit `flat:000012:<uuid>`, and a bulk handler would create
+    // a lane named after a sort rank.
+    const { sdk, data } = build({ api: { searchAllIssues: async () => nodes({ id: "a" }) } });
+    await data.refreshIssues();
+    assert.equal(sdk.collections.value("issues", "flat:000001:a").key, "a");
+  });
+
+  it("carries a badge object, not the badgeText the row reader ignores", async () => {
+    const { sdk, data } = build({ api: { searchAllIssues: async () => nodes({ id: "a" }) } });
+    await data.refreshIssues();
+    const bound = sdk.collections.value("issues", "flat:000001:a");
+    assert.equal(bound.badge.text, "In Progress");
+    assert.equal(bound.badge.tone, "accent");
+    assert.equal(bound.badgeText, undefined);
+  });
+
+  it("makes the row pressable, which an undressed row was not", async () => {
+    const { sdk, data } = build({ api: { searchAllIssues: async () => nodes({ id: "a" }) } });
+    await data.refreshIssues();
+    assert.deepEqual(sdk.collections.value("issues", "flat:000001:a").onPress, {
+      action: "openIssue",
+      args: { issueId: "a" },
+    });
+  });
+
+  it("keeps the four axes a where clause compares", async () => {
+    // Dropping them would make every filter a silent no-op.
+    const { sdk, data } = build({
+      api: { searchAllIssues: async () => nodes({ id: "a", priority: 3 }) },
+    });
+    await data.refreshIssues();
+    const bound = sdk.collections.value("issues", "flat:000001:a");
+    assert.equal(bound.projectId, "proj-1");
+    assert.equal(bound.assigneeId, "user-1");
+    assert.equal(bound.priority, "3");
+    // ISO-8601 with a zone, or vocabTimeValue drops the recency clause.
+    assert.match(bound.updatedAt, /^\d{4}-\d{2}-\d{2}T.*Z$/);
+  });
+
+  it("dresses comment rows too, without losing the raw markdown body", async () => {
+    const { sdk, data } = build({
+      api: { fetchIssueComments: async () => [{ id: "c1", body: "**bold**", user: { name: "Ada" } }] },
+    });
+    await data.refreshComments("a");
+    const row = sdk.collections.value("comments", "comment:a:000001:c1");
+    assert.equal(row.key, "c1");
+    // buildIssuePanel renders the raw body as a markdown node.
+    assert.equal(row.body, "**bold**");
   });
 });
 

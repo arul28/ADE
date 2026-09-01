@@ -153,7 +153,7 @@ describe("shaping one issue into a row", () => {
     assert.equal(row.subtitle, "ENG-1 · In Progress");
     assert.equal(row.title2, "ENG-1 · In Progress");
     assert.equal(row.badgeText, "In Progress");
-    assert.equal(row.badgeTone, "info");
+    assert.equal(row.badgeTone, "accent");
   });
 });
 
@@ -175,11 +175,22 @@ describe("state rank and tone", () => {
     assert.equal(stateTone("canceled"), "neutral");
     assert.equal(stateTone("triage"), "warning");
     assert.equal(stateTone("completed"), "success");
-    assert.equal(stateTone("started"), "info");
+    assert.equal(stateTone("started"), "accent");
   });
 
   it("falls back to neutral for an unknown type", () => {
     assert.equal(stateTone("brand-new"), "neutral");
+  });
+
+  it("names only tones the vocabulary actually has", () => {
+    // `VocabTone` (vocabularyNodes.ts:191) is exactly these four. A tone
+    // outside the set does not fail — it is coerced to the fallback and the
+    // badge renders flat, which is why this is asserted rather than trusted.
+    // `info` was in this table and is not a vocabulary tone.
+    const TONES = ["neutral", "accent", "success", "warning"];
+    for (const type of ["triage", "backlog", "unstarted", "started", "completed", "canceled", "unknown"]) {
+      assert.ok(TONES.includes(stateTone(type)), `${type} → ${stateTone(type)}`);
+    }
   });
 });
 

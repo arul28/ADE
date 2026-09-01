@@ -138,7 +138,7 @@ function inlineEditors(issue) {
         valueField: "id",
         labelField: "name",
       },
-      onChange: { action: ACTIONS.changeIssueState, args: { issueId: String(issue.id) } },
+      onChange: { action: ACTIONS.setIssueState, args: { issueId: String(issue.id) } },
     });
   }
 
@@ -148,7 +148,7 @@ function inlineEditors(issue) {
     label: COPY.propPriority,
     default: String(issue.priority ?? "0"),
     options: PRIORITIES.map((entry) => ({ value: entry.value, label: entry.label })),
-    onChange: { action: ACTIONS.changeIssuePriority, args: { issueId: String(issue.id) } },
+    onChange: { action: ACTIONS.setIssuePriority, args: { issueId: String(issue.id) } },
   });
 
   return { component: "stack", direction: "horizontal", gap: "sm", wrap: true, align: "center", children };
@@ -229,19 +229,28 @@ function labelChips(labels) {
  * client and goes out through the opener that logs this plugin's id.
  */
 function issueActions(issue) {
+  // Both launch verbs open the CONFIGURATION panel rather than launching with
+  // the plugin's defaults, which is the phone's own flow: `LinearLaunchScreen`
+  // is one screen serving both, and `laneOnly` hides the agent half of it and
+  // shows the note instead. Launching straight from here would silently pick a
+  // model, a permission mode and a kickoff prompt on the reader's behalf.
+  //
+  // `openLaunch` falls back to launching directly when the host offers no
+  // `flows.openLaunch`, so a build whose manifest has no `launch` panel still
+  // does the thing the button says.
   const buttons = [
     {
       component: "button",
       label: COPY.launchOne,
       kind: "primary",
       icon: "sparkle",
-      onPress: { action: ACTIONS.launchLaneAndAgent, args: { issueId: String(issue.id) } },
+      onPress: { action: ACTIONS.openLaunch, args: { issueId: String(issue.id), laneOnly: false } },
     },
     {
       component: "button",
       label: COPY.laneOne,
       icon: "git-branch",
-      onPress: { action: ACTIONS.launchLaneOnly, args: { issueId: String(issue.id) } },
+      onPress: { action: ACTIONS.openLaunch, args: { issueId: String(issue.id), laneOnly: true } },
     },
     {
       component: "button",
@@ -255,7 +264,7 @@ function issueActions(issue) {
       label: COPY.comment,
       kind: "quiet",
       icon: "chat",
-      onPress: { action: ACTIONS.writeComment, args: { issueId: String(issue.id) } },
+      onPress: { action: ACTIONS.commentOnIssue, args: { issueId: String(issue.id) } },
     },
   ];
 

@@ -227,6 +227,25 @@ describe("launching work", () => {
     assert.ok(!reached(host).includes("flows.spawnAgentOnIssue"));
   });
 
+  it("carries laneOnly into the configuration panel", async () => {
+    const host = makeHost();
+    const result = await bind(host).openLaunch({ issueId: "issue-1", laneOnly: true });
+    assert.deepEqual(result.navigate, {
+      panelId: "launch",
+      context: { issueId: "issue-1", laneOnly: true },
+    });
+  });
+
+  it("falls back to the RIGHT verb when the manifest has no launch panel", async () => {
+    // The fallback used to always launch an agent, so pressing "Create lane
+    // only" on a build without the panel started one anyway.
+    const host = makeHost();
+    delete host.flows.openLaunch;
+    await bind(host).openLaunch({ issueId: "issue-1", laneOnly: true });
+    assert.ok(reached(host).includes("flows.createLaneFromIssue"));
+    assert.ok(!reached(host).includes("flows.spawnAgentOnIssue"));
+  });
+
   it("does the work directly when the manifest has no launch panel", async () => {
     // `flows.openLaunch` is the manifest's proxy. Without it, navigating would
     // send the reader to a panel id the host cannot resolve.
@@ -260,14 +279,14 @@ describe("writing back to Linear", () => {
     // The detail panel keys its controls on the issue's identifier, so the
     // handler cannot know the key's name in advance.
     const host = makeHost();
-    await bind(host).changeIssueState({ issueId: "issue-1", "issueState:ADE-122": "state-2" });
+    await bind(host).setIssueState({ issueId: "issue-1", "issueState:ADE-122": "state-2" });
     assert.deepEqual(host.calls.find((call) => call.path === "api.setIssueState").args, ["issue-1", "state-2"]);
   });
 
   it("treats priority 0 as a real value rather than as nothing", async () => {
     // "No priority" IS a priority in Linear, and a falsy check would drop it.
     const host = makeHost();
-    await bind(host).changeIssuePriority({ issueId: "issue-1", "issuePriority:ADE-122": "0" });
+    await bind(host).setIssuePriority({ issueId: "issue-1", "issuePriority:ADE-122": "0" });
     assert.deepEqual(host.calls.find((call) => call.path === "api.setIssuePriority").args, ["issue-1", 0]);
   });
 
@@ -275,7 +294,7 @@ describe("writing back to Linear", () => {
     // A control that moved optimistically shows the reader's intention. The
     // panel is the only thing that can put it back.
     const host = makeHost({ fail: ["api.setIssueState"] });
-    const result = await bind(host).changeIssueState({ issueId: "issue-1", "issueState:ADE-122": "state-2" });
+    const result = await bind(host).setIssueState({ issueId: "issue-1", "issueState:ADE-122": "state-2" });
     assert.equal(result.ok, false);
     assert.deepEqual(published(host), ["issue", "issues"]);
   });
@@ -284,11 +303,11 @@ describe("writing back to Linear", () => {
     const host = makeHost();
     const handlers = bind(host);
 
-    const asked = await handlers.writeComment({ issueId: "issue-1" });
+    const asked = await handlers.commentOnIssue({ issueId: "issue-1" });
     assert.equal(asked.prompt.id, contract.PROMPT_COMMENT);
     assert.deepEqual(asked.prompt.context, { issueId: "issue-1" });
 
-    await handlers.writeComment({
+    await handlers.commentOnIssue({
       issueId: "issue-1",
       prompt: { id: contract.PROMPT_COMMENT, text: "  Looking at it now.  " },
     });
@@ -301,7 +320,7 @@ describe("writing back to Linear", () => {
 
   it("posts nothing for an empty comment", async () => {
     const host = makeHost();
-    const result = await bind(host).writeComment({
+    const result = await bind(host).commentOnIssue({
       issueId: "issue-1",
       prompt: { id: contract.PROMPT_COMMENT, text: "   " },
     });

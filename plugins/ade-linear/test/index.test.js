@@ -175,6 +175,35 @@ describe("activate", () => {
   });
 });
 
+describe("the webhook channel, which now fails closed", () => {
+  it("declares verify against the header the relay stores", () => {
+    // The relay drops every header outside PLUGIN_WEBHOOK_STORED_HEADERS
+    // before the delivery is written, so a header outside it can never be
+    // verified — and Linear's is unprefixed, which is why it had to be added.
+    const channel = MANIFEST.webhookIngress[0];
+    assert.deepEqual(channel.verify, {
+      kind: "hmac-sha256",
+      secretRef: "LINEAR_WEBHOOK_SECRET",
+      header: "linear-signature",
+    });
+  });
+
+  it("points verify at a secret this plugin can actually write", async () => {
+    // A `secretRef` naming a secret nothing stores is a channel that fails
+    // closed forever. `saveWebhookSecret` is the action that fills it.
+    await activated();
+    assert.equal(typeof plugin.actions.saveWebhookSecret, "function");
+    const result = await plugin.actions.saveWebhookSecret({ secret: "lin_wh_abc" });
+    assert.equal(result.ok, undefined);
+    assert.match(result.message, /Saved/);
+  });
+
+  it("refuses an empty secret rather than storing one that verifies nothing", async () => {
+    await activated();
+    assert.equal((await plugin.actions.saveWebhookSecret({ secret: "  " })).ok, false);
+  });
+});
+
 describe("deactivate", () => {
   it("unsubscribes from everything it subscribed to", async () => {
     const { sdk } = await activated();
