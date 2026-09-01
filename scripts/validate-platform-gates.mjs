@@ -278,6 +278,13 @@ const VACUOUS_RETURN_PATTERN =
   /^\s*if\s*\(([^)]*process\.platform[^)]*)\)\s*(?:return;?|\{\s*return;?\s*\})\s*$/;
 
 /**
+ * An `it`/`test` call, including the `it.skipIf(cond)(` and `it.each(...)(`
+ * spellings. Deliberately not `describe`: a return in a `describe` body does
+ * not fake a passing assertion, it just stops registering tests.
+ */
+const TEST_CALLBACK_PATTERN = /\b(?:it|test)\s*(?:\.\s*\w+\s*\([\s\S]*?\))?\s*\(/;
+
+/**
  * The set of platforms a `cond ? whenTrue : whenFalse` runner selection
  * actually runs on, or `null` when neither branch is a recognisable runner.
  */
@@ -289,6 +296,56 @@ function ternaryRunPlatforms(condition, whenTrue, whenFalse) {
   if (trueRuns === null || falseRuns === null) return null;
   const matched = new Set(matching);
   return KNOWN_PLATFORMS.filter((platform) => (matched.has(platform) ? trueRuns : falseRuns));
+}
+
+/**
+ * Is the `if (process.platform === ...) return;` at `gateIndex` sitting directly
+ * inside a test body?
+ *
+ * The ban exists because such a return reports as a GREEN PASS while asserting
+ * nothing — which is true of a TEST callback and of nothing else. The same line
+ * inside a plain helper is ordinary control flow: `waitForSocket` polling for a
+ * unix socket has genuinely nothing to wait for when the transport is a Windows
+ * named pipe, and the test that calls it still runs every assertion it has.
+ * Flagging that told a lane to delete a correct early return, or to restructure
+ * a helper into `it.skipIf`, which is not a thing a helper can be.
+ *
+ * So the scan now matches the contract the baseline always stated in prose. It
+ * walks OUT from the gate to the first enclosing FUNCTION — stepping over the
+ * `for`, `if` and `try` blocks in between, which open braces but do not change
+ * who returns — and reports only when that function is an `it`/`test` callback.
+ *
+ * Line-based, like the rest of this file: a brace inside a string or a comment
+ * can misplace the walk. The failure is one-directional by construction — an
+ * unrecognised enclosing line yields `false`, so a miscount drops a real
+ * violation rather than inventing one — and `--registry` still prints every
+ * site for a human to check.
+ */
+export function isInsideTestCallback(lines, gateIndex) {
+  let depth = 0;
+  for (let index = gateIndex - 1; index >= 0; index -= 1) {
+    const line = lines[index];
+    let opensThisLine = false;
+    for (let column = line.length - 1; column >= 0; column -= 1) {
+      const char = line[column];
+      if (char === "}") depth += 1;
+      else if (char === "{") {
+        if (depth > 0) depth -= 1;
+        else {
+          opensThisLine = true;
+          break;
+        }
+      }
+    }
+    if (!opensThisLine) continue;
+    // A block that is not a function does not decide who returns; keep walking.
+    if (!/=>|function/.test(line)) continue;
+    // The callback and the `it(` that owns it are often on different lines, so
+    // read the opener plus the few lines above it that can hold the call.
+    const opener = lines.slice(Math.max(0, index - 3), index + 1).join("\n");
+    return TEST_CALLBACK_PATTERN.test(opener);
+  }
+  return false;
 }
 
 /**
@@ -362,8 +419,9 @@ export function collectGates(source, file) {
     }
   }
 
-  // `if (process.platform === "win32") return;` — reports as a GREEN PASS while
-  // asserting nothing.
+  // `if (process.platform === "win32") return;` INSIDE A TEST BODY — reports as
+  // a GREEN PASS while asserting nothing. The same line in a helper is ordinary
+  // control flow and is not a gate.
   for (let index = 0; index < lines.length; index += 1) {
     const inline = VACUOUS_RETURN_PATTERN.exec(lines[index]);
     let condition = inline?.[1] ?? null;
@@ -374,6 +432,9 @@ export function collectGates(source, file) {
       }
     }
     if (!condition) continue;
+    // Only a TEST body can pass green while asserting nothing. See
+    // `isInsideTestCallback`.
+    if (!isInsideTestCallback(lines, index)) continue;
     const matching = platformsMatching(condition);
     if (!matching) continue;
     const matched = new Set(matching);

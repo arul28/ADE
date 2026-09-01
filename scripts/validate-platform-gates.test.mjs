@@ -10,6 +10,7 @@ import {
   evaluateGates,
   gatedPlatformLabel,
   isFileCovered,
+  isInsideTestCallback,
   parseCiWorkflow,
   platformsMatching,
   runnerPlatform,
@@ -456,4 +457,97 @@ test("the baseline tolerates known violations, fails on growth, and fails when s
   );
   assert.equal(fresh.newViolations.length, 1);
   assert.equal(fresh.newViolations[0].file, "b.test.ts");
+});
+
+// The ban targets a return that fakes a passing assertion. That is a property of
+// a TEST body, so the scan must not fire on a helper's ordinary early return —
+// which is what sent a lane after `waitForSocket` in the audio bridge suite.
+test("flags a vacuous return inside a test body", () => {
+  const source = [
+    'it("does a thing", async () => {',
+    '  if (process.platform === "win32") return;',
+    "  assert.ok(true);",
+    "});",
+  ].join("\n");
+  const gates = collectGates(source, "apps/x/v.test.ts").filter((g) => g.form === "vacuous-return");
+  assert.equal(gates.length, 1);
+  assert.equal(gates[0].line, 2);
+  assert.deepEqual(gates[0].platforms, ["darwin", "linux"]);
+});
+
+test("still flags one nested inside a loop in a test body", () => {
+  const source = [
+    'it("does a thing", async () => {',
+    "  for (const item of items) {",
+    '    if (process.platform === "win32") return;',
+    "  }",
+    "});",
+  ].join("\n");
+  const gates = collectGates(source, "apps/x/v2.test.ts").filter((g) => g.form === "vacuous-return");
+  assert.equal(gates.length, 1);
+  assert.equal(gates[0].line, 3);
+});
+
+test("finds the it( when the callback opens on its own line", () => {
+  const source = [
+    'it.skipIf(someOtherCondition)(',
+    '  "does a thing",',
+    "  async () => {",
+    '    if (process.platform === "win32") return;',
+    "  },",
+    ");",
+  ].join("\n");
+  const gates = collectGates(source, "apps/x/v3.test.ts").filter((g) => g.form === "vacuous-return");
+  assert.equal(gates.length, 1);
+  assert.equal(gates[0].line, 4);
+});
+
+test("does not flag an early return in a helper function", () => {
+  // The real shape from apps/ade-cli/src/services/audio/desktopAudioBridgeClient.test.ts:
+  // a named pipe is not a filesystem path, so there is nothing to poll for. The
+  // test that calls this still runs every assertion it has.
+  const source = [
+    "const waitForSocket = async (socketPath) => {",
+    '  if (process.platform === "win32") return;',
+    "  for (let attempt = 0; attempt < 100; attempt += 1) {",
+    "    if (fs.existsSync(socketPath)) return;",
+    "  }",
+    "};",
+    'it("records through the real bridge", async () => {',
+    "  await waitForSocket(socketPath);",
+    "  assert.ok(true);",
+    "});",
+  ].join("\n");
+  const gates = collectGates(source, "apps/x/v4.test.ts").filter((g) => g.form === "vacuous-return");
+  assert.deepEqual(gates, []);
+});
+
+test("does not flag an early return in a plain function declaration", () => {
+  const source = [
+    "function bridgeSocketPath(prefix) {",
+    '  if (process.platform === "win32") return;',
+    "  return posixPath(prefix);",
+    "}",
+  ].join("\n");
+  const gates = collectGates(source, "apps/x/v5.test.ts").filter((g) => g.form === "vacuous-return");
+  assert.deepEqual(gates, []);
+});
+
+test("isInsideTestCallback walks out of nested blocks to the owning function", () => {
+  const testBody = [
+    'it("x", () => {',
+    "  if (a) {",
+    "    if (process.platform === \"win32\") return;",
+    "  }",
+    "});",
+  ];
+  assert.equal(isInsideTestCallback(testBody, 2), true);
+  const helperBody = [
+    "const helper = () => {",
+    "  if (a) {",
+    "    if (process.platform === \"win32\") return;",
+    "  }",
+    "};",
+  ];
+  assert.equal(isInsideTestCallback(helperBody, 2), false);
 });
