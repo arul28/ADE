@@ -32,7 +32,15 @@ Node built-ins:
 |---|---|
 | `apps/desktop/src/shared/plugins/manifest.ts` | `plugin.json` contract, strict-on-known/tolerant-of-unknown parser, id and relative-path validation, `minAdeVersion` gate, the `tab`/`pane`/`webview` surface kinds and the `entryHtml` rule |
 | `apps/desktop/src/shared/plugins/vocabulary.ts` | Panel schema v1: component union, `VOCAB_LIMITS`, degradation ladder, `parsePluginPanel`, the reserved bindings (`vocabReservedRows` over `$context` and `$state`), `collectVocabStateDeclarations` |
-| `apps/desktop/src/shared/plugins/vocabularyState.ts` | Client-evaluated panel state: the `segmented` control's declarations, the `where` grammar and its three-valued evaluator, the `$state` binding (`VOCAB_STATE_COLLECTION`), the signature/normalize/reset lifecycle, `readPluginActionResetState` |
+| `apps/desktop/src/shared/plugins/vocabularyNodes.ts` | The 16 v1 components and their parsers, `VOCAB_LIMITS`, the `group` node and `vocabGroupKey`, the row-action allowlist (`boundRowAction`) |
+| `apps/desktop/src/shared/plugins/vocabularyState.ts` | Client-evaluated panel state: the `segmented` control's declarations and its `optionsFrom` binding, the `where` grammar and its three-valued evaluator, the `$state` binding (`VOCAB_STATE_COLLECTION`), the row selection a `list.selectable` owns, the signature/normalize/reset lifecycle, `readPluginActionResetState` |
+| `apps/desktop/src/shared/plugins/vocabularyMarkdown.ts` | The `markdown` node's subset: a bounded block/span AST, `VOCAB_MARKDOWN_LIMITS`, `https:`-only links, and no HTML path at all |
+| `apps/desktop/src/shared/plugins/vocabularyPaging.ts` | One `list`'s page: `vocabListPage`, `vocabListNextPage`, the three-state `vocabListPageLabel`, and `VOCAB_LIST_SHOW_MORE_LABEL` |
+| `apps/desktop/src/shared/plugins/urlMatchers.ts` | The no-regex `pathPattern` grammar, the chip label template, the core-host refusal and the ownership relaxation (`coreSmartLinkBuiltinsOwnedBy`) |
+| `apps/desktop/src/shared/plugins/smartLinkMatchers.ts` | Compiling installed plugins' matchers and running them against a pasted URL; the chip and its deeplink |
+| `apps/desktop/src/shared/plugins/sessionSetup.ts` | `sessionSetup`: the static `ADE_PLUGIN_` key prefix, the reserved host names, the caps, and `parsePluginSessionSetup` |
+| `apps/desktop/src/shared/plugins/builtinSurfaces.ts` | `BUILTIN_SURFACE_OWNERS`: which plugin owns which compiled surface, its `presence`, its `actionDomains` and its `actionNames` |
+| `apps/desktop/src/shared/plugins/installDisclosure.ts` | `describeManifestAdds`: the one place every "Adds:" sentence is written, sign-in flows and credential handoffs included |
 | `apps/desktop/src/shared/plugins/webviewBridge.ts` | The `window.adePlugin` contract: bridge version, the `ade-plugin://` origin and per-plugin partition, `PLUGIN_WEBVIEW_CSP`, the closed method list |
 | `apps/desktop/src/shared/plugins/sockets.ts` | Socket kinds, surface ids, entity kinds, per-kind payload validation, deterministic placement ordering, row-badge overflow split |
 | `apps/desktop/src/shared/plugins/context.ts` | Read-only surface contexts (`pr`, `lane`, `session`, `file`, `surface`) and their contribution keys |
@@ -57,6 +65,12 @@ Host (daemon / main process):
 | `apps/desktop/src/main/services/plugins/pluginDataStore.ts` | Collections/contributions/panels reads and writes; delegates budget enforcement |
 | `apps/desktop/src/main/services/plugins/pluginSecretStore.ts` | `plugin:<id>:<NAME>` namespace in the machine credential store |
 | `apps/desktop/src/main/services/plugins/pluginEvents.ts` | Debounced `lane/pr/session/install.changed` fan-out to children |
+| `apps/desktop/src/main/services/plugins/pluginEntityChanges.ts` | The module-level bus the daemon's lane, PR and session producers emit on, plus `prTransitionsFromChanges` |
+| `apps/desktop/src/main/services/plugins/pluginAuthSessionService.ts` | The host half of `ade.auth.beginSession`: the authorize URL, the minted `state`, the loopback listener, the relay bounce, the TTL and the `auth.completed` settle |
+| `apps/desktop/src/main/services/plugins/pluginCredentialHandoff.ts` | The descriptor table, the consent card's copy, the recorded answer, and the copy into the plugin secret store |
+| `apps/desktop/src/main/services/plugins/pluginOfficialClients.ts` | `ade.auth.officialClient`: ADE's own public PKCE client id, lent to the owner of the surface it belongs to. `assertNoClientSecret` |
+| `apps/desktop/src/main/services/plugins/pluginSessionSetupStore.ts` | Writes the session's sidecar and context file, and builds the env the launched agent receives |
+| `apps/desktop/src/main/services/chat/pluginSessionSetupProvenance.ts` | The module-private symbol that carries the owning plugin id past `JSON.parse`, so `ADE_PLUGIN_SOURCE_ID` cannot be forged |
 | `apps/desktop/src/main/services/plugins/pluginWebhookIngressService.ts` | One relay drain for every plugin that declares `webhookIngress`: secret registration, the 45s poll, the pruned `plugin_ingress_events` ledger, signature verification, delivery and ack |
 | `apps/desktop/src/main/services/plugins/pluginWebviewProtocol.ts` | Serves `ade-plugin://<pluginId>/…` from the install directory: containment, directory rule, closed MIME map, CSP + `nosniff` on every response including refusals |
 | `apps/desktop/src/main/services/plugins/pluginWebviewBridgeServer.ts` | The host half of `window.adePlugin`: sender-pinned plugin id, the declared-collection rule, the write path that bypasses the action domain |
@@ -76,6 +90,8 @@ Sync and CLI:
 | `apps/ade-cli/src/services/plugins/pluginSyncMeter.ts` | Per-plugin wire byte counters |
 | `apps/ade-cli/src/services/plugins/pluginPanelBuilder.ts` | Materializes `plugin_panels` rows from manifest schema files |
 | `apps/ade-cli/src/commands/plugin.ts` | `ade plugin list/create/install/remove/enable/disable/reload/logs/dev`, `ade <pluginId> <cmd>` routing |
+| `apps/ade-cli/src/bootstrap.ts` | The daemon. Every `lane/pr/session.changed` producer, the `pr.changed` transition producer, and the plugin action gate (`pluginActionRefusalMessage`, `withPluginCallerProvenance`) |
+| `apps/webhook-relay/src/relay.ts` | `GET /plugin/auth/callback`, the per-plugin ingress routes, and `PLUGIN_WEBHOOK_STORED_HEADERS` |
 
 Renderer (desktop and web share this code):
 
@@ -98,8 +114,10 @@ iOS and TUI:
 | File | Responsibility |
 |---|---|
 | `apps/ios/ADE/Models/PluginVocabularyParsing.swift`, `PluginVocabularyState.swift`, `PluginRecords.swift` | Swift transcription of the panel, panel-state and socket contracts |
-| `apps/ios/ADE/Views/Plugins/PluginPaneStore.swift` | `PluginRenderSupport.renderableComponents` — the iOS renderable set |
-| `apps/ios/ADE/Views/Plugins/PluginVocabularyView.swift`, `PluginVocabFormView.swift`, `PluginVocabularyMediaViews.swift`, `PluginSocketViews.swift`, `PluginPaneSheet.swift`, `PluginEntryMenu.swift` | Native rendering and entry points |
+| `apps/ios/ADE/Views/Plugins/PluginPaneStore.swift` | `PluginRenderSupport.renderableComponents` — the iOS renderable set — plus the panel back stack (`PluginPanelStackEntry`) and the pane's auth, prompt and selection state |
+| `apps/ios/ADE/Views/Plugins/PluginPresenceGate.swift` | Is the owner installed and enabled on the ATTACHED machine, and does that draw or hide the compiled surface (`drawsBuiltin`) |
+| `apps/ios/ADE/Views/Plugins/PluginAuthSessionRunner.swift` | The phone's `ASWebAuthenticationSession` runner for a plugin sign-in, and the callback parameters it posts back |
+| `apps/ios/ADE/Views/Plugins/PluginVocabularyView.swift`, `PluginVocabFormView.swift`, `PluginVocabularyMediaViews.swift`, `PluginVocabularyMarkdownViews.swift`, `PluginSocketViews.swift`, `PluginPaneSheet.swift`, `PluginEntryMenu.swift` | Native rendering and entry points |
 | `apps/ade-cli/src/tuiClient/pluginPane.ts` | Panel schema → rows, Ink-free |
 | `apps/ade-cli/src/tuiClient/components/PluginPanelPane.tsx` | Right-pane rendering of those rows |
 | `apps/ade-cli/src/tuiClient/commands.ts` | The `/plugin-view` slash command |
@@ -274,6 +292,203 @@ path as the two above.
   renderer — are untouched.
 - `ade plugin doctor` grows a **Project secrets** rung: which names, or that the
   plugin reads none. Declaration only; it never reports whether a secret is set.
+
+### Signing in: the host runs the flow, the plugin holds the token
+
+A plugin cannot do OAuth by itself, and it must not be able to. The child is a
+plain Node process with no window, and on a phone there is no child at all. So
+the host owns every part of the dance that touches the user or the redirect, and
+the plugin owns the exchange. `pluginAuthSessionService.ts` is the host half.
+
+- A manifest declares `authSessions: [{ id, provider, authorizeUrl, clientId?,
+  callbacks, loopback? }]` — at most 2 per plugin
+  (`manifest.ts:1608`). `authorizeUrl` is `https:` only and must carry no query
+  and no fragment, because the host appends the query and two spellings would
+  fight (`manifest.ts:1639-1645`). `provider` is a display name, not a hostname:
+  the install card says "Signs you in to Linear", never "opens
+  linear.app/oauth/authorize" (`installDisclosure.ts:249-257`).
+- `authorizeUrl` is DECLARED rather than passed at call time. A plugin that could
+  choose its own authorize URL at runtime could send the user's browser anywhere
+  and call it a sign-in (`manifest.ts:560-564`).
+- `clientId` is optional and is the plugin's own PUBLIC client id. It is
+  validated as non-empty, whitespace-free and at most
+  `PLUGIN_AUTH_CLIENT_ID_MAX` (256) characters, and a present-but-bad value drops
+  the whole flow rather than being clipped — a clipped client id is one the
+  provider refuses, and the author would debug a rejected authorization instead
+  of reading a warning (`manifest.ts:1663-1678`).
+- `ade.auth.beginSession({sessionId, params?, transport?})` starts one flow. The
+  host mints `state` (32 random bytes) and `attempt` (a UUID), builds the URL,
+  and answers `{sessionId, attempt, transport, redirectUri, expiresAt}` — never
+  the URL. The action handler returns `{authSession: {sessionId}}`, and the host
+  stamps the live URL on the way to whichever client the user is on.
+- **`redirect_uri` and `state` are refused by name**
+  (`PLUGIN_AUTH_RESERVED_PARAMS`), not overwritten, so an author finds out which
+  half of the safety property the platform is holding
+  (`pluginAuthSessionService.ts:419-429`). `params` caps at
+  `PLUGIN_AUTH_PARAMS_MAX` (12) and each value at
+  `PLUGIN_AUTH_PARAM_VALUE_MAX` (512).
+- **The plugin never sees `state`**, outbound or inbound. The host mints it,
+  holds it and compares it; the `auth.completed` payload carries the provider's
+  own parameters MINUS `state`. A second copy in the child would invite a second,
+  weaker check that disagrees with the host's (`sdk.ts:879-886`).
+- **PKCE is the plugin's**, because only the plugin performs the exchange and so
+  only the plugin can hold the verifier. The host brokers the AUTHORIZATION and
+  never holds a token: a host that held one would have to refresh it, and
+  refreshing a grant it cannot use is a responsibility with no matching
+  capability (`sdk.ts:1396-1410`).
+
+**Two callback transports.** `loopback` binds `127.0.0.1:<port><path>` in the
+host process and catches the GET itself; nothing leaves the machine. `app` sends
+the provider to ADE's relay, which is stateless and does one thing — 302 the
+query string to `ade://plugin-auth`. The port is DECLARED rather than allocated,
+because every OAuth provider worth integrating matches `redirect_uri` exactly, so
+an ephemeral port is a redirect no provider accepts; declaring it also puts the
+collision on the install card instead of at the moment the user presses Connect
+(`manifest.ts:622-631`). A `loopback` callback with no declared port drops the
+whole flow at parse rather than downgrading it to `app`.
+
+The asking client picks the transport, among what the flow declares: a phone gets
+`app`, a desktop gets `loopback`, and an explicit `transport` argument is honoured
+or refused but never quietly redirected (`pluginAuthSessionService.ts:379-408`).
+
+**The relay route names no integration.** `GET /plugin/auth/callback` in
+`apps/webhook-relay/src/relay.ts:2740-2789` re-emits `code` (or `error` plus
+`error_description`), always emits `state` even when it is absent — an unroutable
+callback must reach the app looking unroutable rather than looking like another
+flow's — passes the remaining provider parameters through first-value-wins under
+`PLUGIN_AUTH_CALLBACK_MAX_PARAMS`, refuses rather than truncates past the query
+budget, and encodes spaces as `%20` so the provider's error text stays readable on
+the phone. One route serves every plugin's every flow, so a new plugin needs no
+relay deploy and the relay learns nothing about which plugin is signing in.
+
+**On the phone.** `PluginAuthSessionRunner.swift` opens an
+`ASWebAuthenticationSession` with the callback scheme the host sent on the invoke
+result, captures `ade://plugin-auth?…` in-session, and posts the parameters back
+with the `plugins.completeAuthSession` remote command. It carries every query
+item, unfiltered and capped at 24, because the phone serves every plugin's every
+provider and a field it has not heard of is a field it must still carry. It names
+no plugin and no session: the machine routes by the `state` it minted and never
+gave out, so a phone can only ever finish a flow that machine started. A
+`loopback` flow is refused before the browser opens, with a sentence saying where
+the sign-in does finish (`PluginPaneStore.swift:1436-1450`) — the machine's
+listener is on the machine's own `127.0.0.1`, and a redirect there from a phone
+lands on the phone.
+
+**How a flow ends.** `PLUGIN_AUTH_SESSION_TTL_MS` is 10 minutes, armed as a real
+timer rather than checked lazily, because nothing polls this service: without it a
+plugin whose user closed the tab would wait forever on an `auth.completed` that
+never came. `PluginAuthFailureReason` is `canceled | expired | denied |
+state_mismatch` — named outcomes, because a plugin acts differently on each. A
+second `begin` of a live flow is `auth_session_busy` rather than a supersede: the
+previous attempt is a browser window the user is looking at right now.
+
+### Inheriting a connection ADE already holds
+
+`credentialHandoff` is the release-day seam. `ade-linear` replaces ADE's compiled
+Linear integration, and every existing user already has a working Linear token in
+ADE's own machine credential store. Without this the day the plugin ships is the
+day all of them reconnect.
+
+- A manifest declares `credentialHandoff: ["linear"]` — at most 2, and it should
+  almost always be 1. It is honoured for OFFICIAL packages only, for the same
+  reason `surfaces[].builtin` is: this names a credential ADE already holds, and
+  a community package that could name one would be asking the user to approve a
+  card about a connection it had nothing to do with (`manifest.ts:1733-1755`).
+- WHICH official plugin may name a given surface is not decided at parse.
+  `parseCredentialHandoff` is pure and cannot import the owner table, so the HOST
+  checks ownership against `BUILTIN_SURFACE_OWNERS` and refuses a non-owner
+  (`pluginCredentialHandoff.ts:433-445`). `ade-graph` cannot ask for the Linear
+  token by declaring it.
+- **It is a COPY, not a move.** The card says so: "these are copied once and ADE
+  keeps its own copy — nothing is taken away from ADE"
+  (`pluginCredentialHandoff.ts:236-238`). Disabling the plugin leaves ADE's own
+  connection exactly as it was.
+- **The OAuth client SECRET is withheld, and the card names the withholding.**
+  ADE's Linear credential is five flat keys, and four move: the access token
+  (the anchor), the refresh token, the expiry, the auth mode, and the public
+  client id pulled out of the stored `linear.oauthClient.v1` blob. The
+  `clientSecret` sibling sits in that same blob and is never read out of it — it
+  is ADE's identity to Linear rather than the user's credential, and a plugin
+  holding it could mint tokens in ADE's name on every machine it is installed on.
+  It is not gated and not optional; it is absent from `fields` entirely
+  (`pluginCredentialHandoff.ts:88-163`). The card prints "Does not copy: ADE's own
+  OAuth client secret, which is ADE's identity to Linear rather than yours."
+- The client ID does move, because a refresh token is only ever redeemable by the
+  client it was issued to. Without it the plugin would inherit a connection it
+  could not renew — the reconnect the whole module exists to avoid.
+- **Asked once.** An answer, yes or no, is recorded per `(pluginId, builtin)` in a
+  plain JSON file beside the install registry, and a second `requestHandoff`
+  returns it without raising a second card: a plugin that could re-prompt on
+  every start would turn a consent card into a nag, and a nag is answered yes to
+  make it stop. The one exception is a recorded ACCEPT whose copy is gone — the
+  plugin deleted its own secrets — which re-asks, because a record saying
+  "already answered" beside an empty secret store is a dead end.
+- A `declined` is an ANSWER and never throws. The plugin is simply unconnected,
+  and its ordinary sign-in flow is still there. A machine with nobody to ask —
+  a headless brain with no desktop attached and no phone paired — answers
+  `auth_unavailable` rather than hanging or copying quietly.
+- Every word of the card is derived from the descriptor table and from the
+  manifest the host parsed. Nothing the plugin passes at call time reaches it,
+  because a plugin that could write the sentence could write a different one from
+  the transfer it is actually asking for.
+- The install card warns that the card is coming, in the same "Adds:" list as
+  everything else: "Asks to use the Linear connection you already set up in ADE"
+  — *asks to use*, never *uses*, because the install is not the consent
+  (`installDisclosure.ts:259-268`).
+- Uninstall calls `forget(pluginId)`, so a reinstall does not inherit an answer
+  given to a package that is no longer on the machine. See
+  [Connections leave with the plugin](#connections-leave-with-the-plugin) for the
+  other half: the stored token goes with the package too.
+
+### Borrowing ADE's own OAuth client
+
+The handoff moves a connection that already EXISTS. It does nothing for a fresh
+machine and nothing for a user who declined, and both were left with a Connect
+button that could not build an authorize URL — `client_id` identifies ADE to the
+provider and no verb handed a plugin ADE's. The only reachable path was a pasted
+API key, which is a real capability regression against the compiled integration
+the plugin replaces.
+
+`ade.auth.officialClient(provider)` answers `{provider, clientId, authorizeUrl?,
+scopes?}` and nothing else.
+
+- **Lending the id is safe because the id is already public.** ADE's bundled
+  Linear app is a public PKCE client: the id ships in the binary, no secret ships
+  at all, and the id is a query parameter of every authorize URL ADE has ever
+  opened. A plugin that wanted it could read it off one sign-in
+  (`pluginOfficialClients.ts:16-23`).
+- **A secret is a different object and cannot leak here by construction.** Every
+  entry resolves its id from a compile-time public constant and never touches the
+  credential store; `PluginOfficialOAuthClient` has no field to put a secret in;
+  and `assertNoClientSecret` re-checks the answer on the way out, refusing any key
+  whose name contains `secret`, `password` or `token`. Three independent reasons,
+  because "we simply never put one there" is the kind of invariant a later edit
+  breaks quietly (`pluginOfficialClients.ts:111-121`).
+- **Ownership, not a permission.** The caller must be the honoured owner of the
+  built-in surface ADE bundles the client for, read from `BUILTIN_SURFACE_OWNERS`
+  and never from anything the plugin says about itself. A plugin cannot become the
+  Linear plugin by declaring that it is.
+- A non-owner and a provider ADE bundles nothing for get the SAME `not_permitted`
+  code. They are different facts about the host but the same fact about the
+  plugin, and a plugin able to tell them apart could enumerate which providers ADE
+  has apps for by asking for each in turn (`pluginOfficialClients.ts:123-139`). A
+  build with the constant stripped answers `auth_unavailable` instead, because
+  that plugin IS permitted and there is simply nothing to lend.
+- The answer carries the scopes ADE's own integration asks for, when the
+  registration depends on them. Linear's list is `read, write, admin`, and `admin`
+  is not ambition: Linear only delivers data-change webhooks for a workspace whose
+  authorization carries it, so a connection made without it has an ingress channel
+  that silently never fires. A plugin borrowing the client id is borrowing that
+  registration, so it is told which grant the registration expects rather than
+  left to guess.
+- `resolveClientId` is a function rather than a string, so `ADE_LINEAR_CLIENT_ID`
+  is read at call time and a developer can point a build at a test app.
+- **A community plugin never calls this.** It registers its own app with the
+  provider and declares that app's public id in `authSessions[].clientId`, which
+  is why that field exists.
+
+There is nothing here to consent to — the value is already public — so unlike the
+credential handoff this raises no card and asks nobody.
 
 ### Webhooks arrive through the relay, and only to a plugin that asked
 
@@ -479,8 +694,23 @@ is tracker-specific residue that core stores and never interprets.
 | --- | --- |
 | `list()` | Every non-archived lane in the project this plugin is bound to, as `PluginLaneSummary` |
 | `get(laneId)` | One of them, or null |
+| `listSessionIssues(laneId)` | The issues linked to the SESSIONS inside one lane, grouped by session |
 | `linkIssue(input)` | Link an issue to a lane or a session. Answers the created `IssueLink` |
 | `unlinkIssue(input)` | Remove a link **this plugin created**. `false` when there was none |
+
+`listSessionIssues` is the half of the picture a lane summary cannot carry. A
+summary's `primaryIssue` and `issueLinks` are both LANE-scoped, and an issue a
+person attached to a single chat inside the lane lives in a different table and
+appears in neither — so a plugin reproducing ADE's "the merged PR moves its issues
+to Done" rule off a lane summary alone silently skips exactly those issues. Core
+does not skip them: it unions the lane's links with
+`listLinearIssuesForLaneSessions`, and this verb is that second half, made
+generic. It answers `{sessionId, issueLinks}` per session and returns the LINKS
+rather than bare refs, because `closeOnMerge` is the flag core filters session
+links on and it lives on the link (`sdk.ts:1229-1255`). Union it with the lane's
+own two fields, deduped by `provider:issueId`, to see what ADE's own rule sees. A
+lane with no session links and a lane this project does not have both answer an
+empty array: a plugin acting on a merged PR should not have to tell them apart.
 
 `PluginLaneSummary` is a fixed allowlist (`PLUGIN_LANE_SUMMARY_FIELDS` in
 `sdk.ts`), not `LaneSummary` with fields deleted: `worktreePath`,
@@ -518,7 +748,24 @@ default applies. A ref missing a non-empty `provider`, `issueId`, `key` or
 display or reference it. A host with no project bound answers
 `unsupported_method`, not an empty list.
 
-**Where it is stored, and why it is not a column.** The `IssueRef` rides inside
+**Where it is stored, and why it is not a column.** `issueRef.ts:42` states the
+rule as a warning to whoever reads it next:
+
+> DO NOT "FIX" THIS INTO A COLUMN OR A TABLE. It looks like schema hiding in a
+> TEXT column, and it is, deliberately.
+
+The reason is the sync layer, and all three options were weighed. A NEW TABLE is
+the worst of them: a peer on an older build has no such table, `applyChanges` in
+`kvDb.ts` throws `unknown_sync_table`, and it rolls the WHOLE batch back inside
+one `BEGIN IMMEDIATE` — that peer's replication then stops permanently, for every
+table at once. The plugin tables were only shippable because they added a
+hello-capability gate to go with them, and there is no such gate here. A NEW
+COLUMN is supported, but no peer exchanges a schema version and nothing filters an
+unknown column out of an inbound changeset, so it would work only if every peer
+upgraded first — which is not a property this system has. An unknown JSON KEY is
+inert on every build that does not know it. So:
+
+The `IssueRef` rides inside
 the EXISTING `issue_json` column of `lane_linear_issues`,
 `lane_linear_issue_links`, `session_linear_issues` and
 `session_github_issues`, under the reserved key `__issueRef`, beside a full
@@ -550,6 +797,214 @@ Two limits worth knowing before you build on it, both listed under
 [Accepted v1 limitations](#accepted-v1-limitations): the PR body still renders
 Linear references only, and `issueRefPrReference` emits a closing magic word
 only for `github` and `linear`.
+
+### A change event says what a pull request did
+
+`ade.events.on("lane.changed" | "pr.changed" | "session.changed", …)` was typed,
+validated, accepted by the host and emitted by nothing: only `install.changed`
+had a producer. A plugin that copied the skill's own "row badges from CI" recipe
+registered a listener, got no error, and never heard anything
+(`pluginEntityChanges.ts:4-12`). The three producers now live in the daemon
+(`apps/ade-cli/src/bootstrap.ts:1178`, `:1195`, `:1803-1824`, `:2108`, `:2205`)
+and publish on a module-level bus, so a lane write path carries no plugin
+dependency and a process with no host attached pays one set-size read.
+
+The bus's invariants are **identity and lifecycle position, never content** —
+entity ids, the checkout, and where an id moved from and to. No titles, no branch
+names, no diff, no message text. Emission is fire-and-forget, returns void,
+swallows every listener failure and does no I/O, because every call site is inside
+a write a user is waiting on.
+
+`pr.changed` carries the one narrowing: an optional `transitions` array of
+`PluginPrTransition` (`sdk.ts:669-675`).
+
+```jsonc
+{ "id": "<pr id>",
+  "from": { "state": "open",   "merged": false },
+  "to":   { "state": "merged", "merged": true } }
+```
+
+Two fields rather than one, because `state` is the provider's vocabulary and
+`merged` is the question every consumer actually asks — a plugin that only wants
+"did this just merge" compares `from.merged` with `to.merged` and never learns
+which spelling of `closed` a merge leaves behind.
+
+- **Only the daemon's PR poller produces it**, because `previousState` exists in
+  that one handler and nowhere else, and it is the same value ADE's own merge
+  handling compares against (`bootstrap.ts:2187-2211`). Re-deriving it by reading
+  each PR back is racy in both directions: a PR merged and reverted inside one
+  coalesce window reads as never-merged, and a plugin that lost its memory to a
+  restart treats every open PR as newly transitioned.
+- **A change with no known `previousState` is DROPPED**, never reported with its
+  current state as the `from`. The first tick after a restart and the tick that
+  discovers a PR both have no history, and a transition reading `merged → merged`
+  would say "it did not move" and suppress exactly the merge a plugin is waiting
+  for (`pluginEntityChanges.ts:117-121`).
+- **It is never present alongside `overflow`.** An overflowed delivery already
+  means "re-read the family"; a transition list covering only the ids that fitted
+  would be the one shape a reader could mistake for complete
+  (`pluginHostService.ts:2441-2449`).
+- Coalescing keeps the FIRST-seen `from` and the latest `to`, so a PR that moved
+  twice inside one window reports the whole journey rather than only its last
+  step.
+- The field is optional and additive: a plugin compiled against the older payload
+  keeps working, and a plugin written for this one still has to handle its
+  absence. Absence always means the same thing — read the entities named in
+  `ids`.
+
+### A plugin can set up the session it launches
+
+ADE's compiled Linear integration injects `ADE_LINEAR_ISSUE_IDS` and
+`ADE_LINEAR_CONTEXT_FILE` into any agent session launched from an issue, plus a
+per-session context file the agent reads with no Linear credentials. That reach is
+what makes the built-in feel native. `sessionSetup` is the same reach, generalized:
+`chat.createSession` and `chat.launchCli` both take
+`{env?, contextFile?}`, and the host validates, writes and injects them.
+
+```jsonc
+"sessionSetup": {
+  "env": { "ADE_PLUGIN_JIRA_ISSUE_KEYS": "PROJ-9,PROJ-14" },
+  "contextFile": { "name": "issue.md", "content": "…" }
+}
+```
+
+**One fixed `ADE_PLUGIN_` prefix, not a per-plugin namespace.** A namespace
+derived from an id the CALLER supplies is a suggestion rather than a namespace:
+the seam a plugin reaches this through (`actions.invoke`) is a deliberate
+pass-through that carries no plugin identity into the action layer, so plugin A
+would be free to claim `ADE_PLUGIN_JIRA_*`. The prefix is also what makes
+shadowing impossible rather than merely unlikely — no variable the host sets on a
+launched agent (`PATH`, `HOME`, `ADE_LANE_ID`, `ADE_CHAT_SESSION_ID`,
+`ANTHROPIC_*`, `OPENAI_*`) begins with it. A plugin that wants its own name in the
+variable puts it in the SUFFIX, which is documentation and not enforcement
+(`sessionSetup.ts:12-32`).
+
+Three more classes are refused: `RESERVED_PLUGIN_SESSION_ENV_KEYS`, the
+`ADE_PLUGIN_*` names the host itself owns, listed statically so a plugin cannot
+win a race by claiming one on a machine where the host happens not to set it; any
+key already present in the host env the caller passes in, so a host variable added
+later is covered without editing that list; and any value carrying a NUL byte.
+Keys are compared upper-cased, because a Windows environment block is
+case-insensitive and a validator matching only the exact spelling would leave a
+shadowing hole on one platform.
+
+Caps: `MAX_PLUGIN_SESSION_ENV_KEYS` 16, `MAX_PLUGIN_SESSION_ENV_VALUE_BYTES` 4
+KiB, `MAX_PLUGIN_SESSION_CONTEXT_FILE_BYTES` 256 KiB. The context file is ONE
+file with a single-segment name (no separators, no dot-files), written inside the
+session's own directory, resolved and re-checked for containment even though the
+name is already validated. Its path reaches the agent as
+`ADE_PLUGIN_CONTEXT_FILE`. A request that breaks a key policy or a cap THROWS and
+the launch is refused, rather than starting an agent with half of what the plugin
+asked for.
+
+**`ADE_PLUGIN_SOURCE_ID` is unforgeable.** It names the plugin whose setup
+produced the environment, and inside a launched agent it is exactly the kind of
+label a reader trusts. Three untrusted callers reach these two verbs — an agent
+through `run_ade_action`, an automation step, and a plugin child through
+`sdk.actions.invoke` — and all three hand the host plain JSON. So the owning
+plugin id does not travel in that JSON. It rides on a module-private Symbol
+stamped by the one bridge that knows which plugin is calling: the daemon's
+`invokeAdeAction`, whose `pluginId` comes from the supervisor that owns the child
+socket. A Symbol survives an in-process call and cannot survive `JSON.parse`,
+which is the boundary the untrusted callers sit on
+(`pluginSessionSetupProvenance.ts:1-24`, stamped at `bootstrap.ts:575-594`). A
+call with no stamp is not refused — an agent may legitimately set `ADE_PLUGIN_*`
+variables of its own — it simply gets no `ADE_PLUGIN_SOURCE_ID`, because the host
+has nobody to name.
+
+The sidecar is re-validated on every read, so a session resumed after someone
+edited the file on disk cannot introduce a key the live policy would refuse
+(`pluginSessionSetupStore.ts:138-150`).
+
+### A plugin's own links become chips
+
+A tracker plugin's URLs should read like ADE's own. `urlMatchers` is what a
+manifest declares so they do, and it is DATA: matching involves no callback into
+the plugin, no child process and no network. A matcher produces exactly three
+things — a chip label rendered from a bounded template over its own captures, a
+deeplink into a panel the plugin already publishes, and, when it declares one, an
+issue reference whose provider is fixed by the declaration
+(`urlMatchers.ts:17-26`).
+
+```jsonc
+{ "id": "issue",
+  "hosts": ["linear.app"],
+  "pathPattern": "/{workspace}/issue/{key}/**",
+  "chip": { "label": "{key}", "icon": "L" },
+  "panelId": "issue",
+  "entity": { "kind": "issue", "provider": "linear", "keyFrom": "key" } }
+```
+
+**`pathPattern` is not a regular expression**, and that is the whole point: a
+plugin that could ship a regex could ship a catastrophically backtracking one, and
+it would run on the main thread on every keystroke in the composer. The grammar
+has no alternation, no quantifiers and no character classes — a literal segment, a
+`{name}` capture of exactly one non-empty segment, a `*` that matches one segment
+and captures nothing, and a trailing `**` that matches the rest and may only be
+last, which is what makes a tracker's slug optional. Literals are escaped
+character by character on the way into the compiled regex, so `.` and `+` are a
+dot and a plus. Capture names are never written into the regex source: groups are
+numbered, so a name cannot be `constructor`, cannot collide with another matcher's
+group, and cannot smuggle regex syntax.
+
+Ceilings, all in `urlMatchers.ts`: 8 matchers per plugin, 4 hosts per matcher, a
+200-character pattern, 12 segments, 6 captures, a 64-character label template, 48
+characters per substituted capture, an 80-character rendered label, and a
+2-code-point glyph. Every invisible and bidi code point is stripped from a
+rendered value, written as numeric ranges rather than as literal characters
+because a source file that spells them literally cannot be reviewed, diffed or
+grepped — a right-to-left override inside a captured value does not corrupt the
+chip, it reorders the sentence around it.
+
+**Core's hosts are refused by name.** `github.com` and `linear.app` are in
+`CORE_SMART_LINK_HOSTS`, because a plugin claiming one would draw its own chip
+over ADE's links on machines where the user never installed a tracker plugin at
+all — a chip is drawn from the URL alone. The refusal names the owner, so an
+author reads who has it rather than shipping a matcher that silently never wins.
+
+**The one relaxation is keyed on OWNERSHIP.** `ade-linear` gates the compiled
+Linear pane, holds the Linear credential through the handoff, and is the package
+the tracker moves into; refusing it `linear.app` would mean the plugin can never
+carry the chip core draws today, so the extraction could never finish. Three
+things keep the relaxation narrow: only an EXACT host is relaxed (a wildcard stays
+refused for everyone, including the owner, because `*.linear.app` claims names
+core never parsed); only an official package can reach it at all; and WHICH
+package owns a surface is answered by `coreSmartLinkBuiltinsOwnedBy`, a
+hand-mirror of `BUILTIN_SURFACE_OWNERS` pinned by `builtinSurfaces.test.ts`.
+
+That last point is a repair, not a design flourish. The relaxation used to key on
+the honoured `surfaces[].builtin` field, and that stopped working the day `linear`
+became a SUPERSEDED surface: a plugin that supersedes may not name the surface
+with `builtin` at all, so `ade-linear` claimed nothing and lost its own domain.
+Ownership is the fact the relaxation always meant, and ownership survives both
+polarities (`urlMatchers.ts:136-156`). `github.com` is deliberately absent from
+the relaxation table: there is no gateable `github` built-in surface, so no plugin
+can ever claim it. `CORE_ISSUE_PROVIDERS` (`linear`, `github`, `core`) is likewise
+closed to a matcher's `entity.provider`.
+
+**Ownership of a tracker is derived from the same declarations.** A plugin that
+can recognise a tracker's URLs is a plugin that can draw that tracker's issues, so
+`issueProviderOwnersFromMatchers` reads `ade://issue/<provider>/<key>` routing off
+`urlMatchers` rather than asking for a second declaration the two answers could
+disagree on (`usePluginRegistry.ts:268-280`).
+
+Within the plugin tier the FIRST match wins, over matchers sorted by plugin id and
+then by declaration order — sorted rather than left in registry order, because
+registry order is install order and a chip that reads differently on a laptop than
+on a desktop is a bug nobody can reproduce. Core's tier runs ahead of the plugin
+tier. A matcher that no longer compiles is dropped silently inside the render
+rather than throwing: the manifest parser already refused it with a reason `ade
+plugin doctor` prints, and refusing it twice would turn a bad manifest into a
+blank composer.
+
+**iOS draws no plugin chip.** The phone's smart-link detector is a hardcoded
+four-provider host test (`WorkComposerTypedTriggers.swift:26-31`, `:106-116`), so
+a plugin-declared URL renders as a plain web link with no chip and no attribution.
+The root cause is the data path rather than the taxonomy: manifests never
+replicate to a phone, and no `plugins.*` command hands one over, so a phone sees a
+contribution exactly when the plugin PUBLISHED it and a manifest-only declaration
+is invisible there by construction (`PluginRecords.swift:297-303`). It is listed
+under [Accepted v1 limitations](#accepted-v1-limitations).
 
 ### Storage: four tables, frozen shapes
 
@@ -641,9 +1096,7 @@ is the node budget: a row hand-assembled out of `stack`, `badge`, `text` and
 `button` nodes cost about seven nodes, so `maxNodes: 200` capped a panel near 27
 rows. A list is one node however rich its rows are, which makes `maxListItems`
 (250) the ceiling that actually applies — of which a client draws
-`listPageSize` (100) at a time, with a "Showing 100 of 143 · Show more" row
-under them that extends the local cap a page at a time. That page count is
-client-local: it never enters panel state, a `where` or an action payload. The caps on `actions` and `overflow`
+`listPageSize` (100) at a time. The caps on `actions` and `overflow`
 count what survived parsing rather than what was offered, so a refused entry does
 not spend a slot a valid one needed — and every client counts the same way.
 Desktop, web and iOS draw the overflow behind a menu; the TUI draws `actions` and
@@ -669,6 +1122,117 @@ desktop and web that is structural: `useVocabActionRunner` in
 `vocabularyComponents.tsx` is the only path from a control to `dispatch`, so a
 list row cannot skip the prompt a button asks. iOS holds the same shape in
 `PluginPaneStore.perform`.
+
+**Paging a list, and saying so.** A plugin list used to stop dead at 100 rows
+while the built-in it replaced paged to 500, and it stopped SILENTLY — the reader
+saw a complete-looking list that was not one. `vocabularyPaging.ts` fixes both
+halves, in one place, so four clients cannot disagree: a list draws
+`listPageSize` (100) rows and adds another page each time the reader presses
+**Show more**, up to `maxListItems` (250).
+
+The sentence above the control follows what is actually KNOWABLE, and there are
+three readings (`vocabularyPaging.ts:109-126`):
+
+| what the client holds | the label |
+|---|---|
+| 143 rows, drawing 100 | `Showing 100 of 143` |
+| 250 rows — as many as it may — drawing 100 | `Showing 100` |
+| 250 rows, all drawn | `Showing the first 250` |
+| fewer than it may, all drawn | nothing to say |
+
+The middle reading is the honest one: there is no count read in the host's data
+store — `listCollection` returns rows and nothing else — so a total there would be
+a guess dressed as a fact. The last reading is what stopped a truncated list from
+looking complete.
+
+The page count is CLIENT-LOCAL. It never enters panel state, never reaches a
+`where`, never signs, and never rides on an action payload: how far down a list a
+reader has walked is a statement about their screen, not about which rows the
+panel is showing. A list is identified by what it READS (`vocabListKey`) — its
+binding, else its selection key, else its first row — never by its position, so a
+plugin republishing its panel with one more node above the list has not put the
+reader back on page one. **Filter first, page second**: a binding's `where` has
+already run by the time paging is called, so pressing Show more on a filtered list
+cannot hand the reader rows the filter rejected.
+
+`VOCAB_PANEL_READ_LIMIT` equals `maxListItems` on purpose. A client that drew up
+to 250 rows but fetched fewer would page into rows it did not have and stop early
+with no way to say why.
+
+### Folding a section: the `group` node
+
+A `group` is a `stack` with a disclosure triangle, and deliberately nothing more.
+It exists because the shape every issue browser has — seven state groups in a
+fixed rank order — used to cost seven `segmented` controls whose only job was to
+hide one section each: seven state keys against a ceiling of eight, and a filter
+strip nobody would want to look at.
+
+**Open or closed is client-local and is not panel state.** It never enters a state
+declaration, never signs, never reaches a `where`, and never rides on an action.
+Collapsing a section is a statement about the reader's screen, not about which
+rows the panel is showing, and a `where` that could read it would make the two
+indistinguishable. That is also what keeps a group FREE: a panel may hold as many
+as its node budget allows without spending a state key on any of them
+(`vocabularyNodes.ts:287-301`).
+
+Its identity across a re-publish is the declared `groupKey`, falling back to the
+title, and never the node's position — a plugin republishing its rows every few
+seconds must not re-open a section the reader just closed, which is exactly what a
+key of `body[2]` would do (`vocabularyNodes.ts:761-771`). `defaultOpen` is
+optional and absent means open: a section nobody has touched shows its contents.
+
+### Prose: the `markdown` node
+
+A plugin that shows an issue body or a comment thread needs prose with structure,
+and `text` cannot carry it — `text` is one string with one variant and it renders
+literally on every client. The `markdown` node is the smallest thing that fixes
+that without handing a plugin a document format.
+
+**It is an AST, not sanitized source.** The obvious shape was "strip the dangerous
+parts and hand the string to each client's markdown renderer". That defines the
+subset three times, in three grammars, and the subset is then whatever those three
+happen to agree on — and they do not: `remark-gfm` autolinks bare URLs and draws
+tables, Apple's parser does neither, and a terminal has no concept of either. One
+schema would have rendered a table on desktop and a row of pipes on a phone. So
+the subset is defined once, in `vocabularyMarkdown.ts`, as a bounded tree of
+blocks and inline runs. Every TypeScript client calls the same
+`parseVocabMarkdown`; iOS mirrors it arm for arm in
+`PluginVocabularyMarkdownViews.swift`.
+
+Blocks are `heading`, `paragraph`, fenced `code`, `quote`, `list` (ordered or not,
+with inert task checkboxes) and `rule`. Inline runs carry flat boolean flags —
+`bold`, `italic`, `strike`, `code`, `href` — rather than nesting, so a phone
+builds one `AttributedString`, a terminal sets Ink's props and desktop nests
+`<strong><em>`, all three reading the same list.
+
+**There is no HTML path to disable.** The parser never produces markup: it
+produces text runs with boolean flags, so `<script>alert(1)</script>` in a source
+document is a `text` run whose content is that string, and React, SwiftUI's `Text`
+and Ink all escape it. There is no raw-HTML pass-through, no sanitizer schema to
+keep in step with a renderer, and no client that can opt out. That is deliberately
+stronger than an allowlist: an allowlist is a list someone has to maintain, and
+this is a shape that cannot express the attack
+(`vocabularyMarkdown.ts:27-41`). Links are the one reach outside the document and
+pass the same `https:`-only gate the `openUrl` action verb passes; a
+`javascript:` or `data:` destination loses the link and keeps its text.
+
+Deliberately out of the subset: images (the vocabulary has an `image` node with a
+source ceiling and a per-client media path; `![alt](url)` renders as its alt
+text), tables (`table` is a node with columns a client can lay out), raw HTML,
+bare-URL autolinking (three clients, three URL-detection regexes, three answers
+about where a URL ends — write `[text](url)`), and setext headings and indented
+code, both of which people produce by accident.
+
+`VOCAB_MARKDOWN_LIMITS`: 4,000 source characters, 100 blocks, container depth 3,
+200 runs per block, a link destination capped at `PLUGIN_URL_MAX_CHARS`, and a
+32-character fence info string. **Over the character cap the node renders as PLAIN
+TEXT with a marker, on every client**, rather than as markdown. That is not
+squeamishness about length: a cut lands wherever the ceiling falls, regularly
+inside a fence, a link or an emphasis run, so the markdown of a truncated document
+is not the document's markdown — a half-open fence swallows the rest of it as
+code. Showing the source says "this was cut" in a way half-parsed prose cannot
+(`vocabularyNodes.ts:346-356`). A document stopped by the BLOCK budget instead
+reports `truncated` and the renderer says so, rather than ending mid-document.
 
 ### Client-evaluated panel state
 
@@ -787,11 +1351,97 @@ input beside its form values. iOS mirrors the module in
 `PluginVocabPanelStateTests` pinning the equality, membership, state-driven,
 inactive, composed and depth-refusal readings the TypeScript tests pin.
 
-Ceilings, in `VOCAB_STATE_LIMITS` and spread into `VOCAB_LIMITS`: 4 state keys
-per panel, 2–8 options per control, 4 top-level `where` clauses, depth 3, 24
-clauses in total, 20 literals per list. They are small on purpose — a predicate
-language with a generous budget is a query language, and a query language is what
-rule 3 exists to keep out of a panel schema.
+**A control's options may come from a collection.** A literal list of eight is
+right for "All / Active / Failed" and useless for "project", because a real
+workspace has thirty of those and the plugin cannot know their names when it
+writes the schema. It already materializes them — it is writing them into a
+collection for the list beside the control — so `optionsFrom` points the control
+at that collection instead of asking the author to inline a list they do not have.
+
+```jsonc
+"optionsFrom": { "collection": "projects", "keyPrefix": "p:",
+                 "valueField": "id", "labelField": "name" }
+```
+
+It is a binding minus the parts that would make it a second query language: no
+`limit` (the ceiling is the ceiling), no `where` (a filter over a filter's own
+options is a puzzle), and no `allowActions` (an option presses nothing). Which
+rows are options is decided by which rows the plugin writes. Resolved options cap
+at `maxBoundStateOptions` (50) rather than at the literal 8, because the two are
+different objects: a literal list is read at a glance and drawn as a strip of
+pills, where a bound one is a workspace's projects and is drawn as a menu. Fifty
+is where a flat menu stops being findable and the honest answer becomes a search
+field the vocabulary does not have yet — and it sits under `maxKeyValueRows` (60),
+so no client draws a longer list than one it already draws. A control past
+`maxStateOptions` (8) is drawn as a menu naming the current value rather than as a
+strip (`vocabStateControlStyle`).
+
+Two rules keep a bound control usable. A literal control still needs two options —
+one option is not a choice, and a control the reader cannot change is a filter
+permanently stuck wherever the author left it — but a BOUND control is exempt,
+because its second option is a row that has not arrived yet and failing it at
+parse would make "the collection is empty right now" a broken node
+(`vocabularyNodes.ts:1588-1594`). And a bound control **signs its BINDING, not its
+resolved options** (`vocabStateSignature`, `vocabularyState.ts:924-960`). Its
+options are DATA: a project created in another window, or the second page of a
+fetch landing, would otherwise change the signature and drop the reader's filter —
+an unusable control, for a change they did not make and cannot see. The binding is
+what the author declared, so it moves only when the schema does. The fine
+reconciliation still applies: a value that is no longer an option falls back
+through `vocabNormalizePanelState`.
+
+**Ticking rows: `list.selectable` and the bulk bar.** A `list` may declare
+`selectable: {stateKey, max?, actions}`, which puts a tick box on every row and a
+bar across the panel carrying the count, a Clear, and up to `maxBulkActions` (4)
+declared verbs. The selection is a SECOND map beside the panel state rather than a
+value inside it, because the two hold different shapes — one string against a
+closed option list, versus an open set of row keys — and folding a set into a
+delimited string would put a parser between the reader's tick and the panel's
+redraw, and would leak a hundred issue ids into `$state` and into the `state`
+payload. Everything else about the two is identical: same per-panel, per-viewer,
+session-only lifetime, same signature/normalize pair, same `{resetState}` verb.
+
+Four rules carry it:
+
+- **Refuse, never evict.** At `max` a new tick is REFUSED rather than dropping the
+  oldest. A silent eviction would take a row out of a batch the reader believes
+  they assembled, and the count on the bar is the only thing that could have told
+  them: untick is a gesture they have, a row vanishing from under them is not.
+  Unticking always works, cap or no cap (`vocabularyState.ts:1088-1110`). A
+  shift-click range unions rather than replacing, and fills to the cap and stops,
+  for the same reason.
+- **A batch is the visible intersection.** `vocabSelectedRowKeys` intersects the
+  stored set with the rows that actually rendered, in draw order, and that is what
+  the bar counts and what a bulk action is handed. A reader ticks four rows, moves
+  a filter that hides two, and presses a verb: the two they can see are the batch,
+  because acting on a row nobody can see is the one outcome a selection must never
+  produce. Moving the filter back brings the other two and their ticks with it,
+  which a prune at filter time would not (`vocabularyState.ts:1174-1191`).
+- **The signature is the LISTS, not their rows.** Row keys are deliberately absent
+  from it: a plugin republishing every few seconds changes which rows exist
+  constantly, and a selection that emptied on each of those would make a batch
+  impossible to assemble. What resets a selection is the CONTROL changing — a
+  different state key, a different cap, or a different set of bulk actions — all
+  of which mean the panel is offering something other than what the reader ticked
+  rows for.
+- **`maxSelectionKeys` is 2, not 8.** A selection owns a bar across the panel and
+  one word — "3 selected" — and two lists both claiming that bar is already a
+  panel that needs splitting. Two covers the one shape that is not a mistake: a
+  detail panel offering a batch over its issues and a batch over its pull
+  requests.
+
+Ceilings, in `VOCAB_STATE_LIMITS` and spread into `VOCAB_LIMITS`: **8** state keys
+per panel, 2–8 literal options per control and 50 resolved, 4 top-level `where`
+clauses, depth 3, 24 clauses in total, 20 literals per list, 2 selectable lists per
+panel, 100 selected rows per list, 4 bulk actions per bar. The predicate numbers
+are small on purpose — a predicate language with a generous budget is a query
+language, and a query language is what rule 3 exists to keep out of a panel
+schema. The key count is 8 rather than 4 because 4 was one filter axis short of
+the panels people actually write: an issue browser wants state, project, assignee,
+priority, sort and a text search. The `group` node deliberately spends no key, so
+a panel with seven collapsible sections still has its whole filter budget, and 8
+still fits in one `$state` `keyValue` node without scrolling
+(`vocabularyState.ts:94-106`).
 
 ### Context and navigation
 
@@ -948,11 +1598,31 @@ needs an in-process host (see *Accepted v1 limitations*).
 
 ### Sockets
 
-Seven kinds (`toolbar-action`, `row-badge`, `row-menu-item`, `detail-section`,
-`empty-state`, `filter-chip`, `file-viewer`) across six surfaces (`work`,
-`lanes`, `files`, `prs`, `automations`, `cto`). The taxonomy is closed and small
-so an author learns it once and iOS can implement it exhaustively at compile
-time; a seventh kind is a platform change with a parity cost on four clients.
+Eighteen kinds across eight surfaces (`PLUGIN_SOCKET_KINDS` and
+`PLUGIN_SURFACE_IDS` in `sockets.ts:41-93`), in five groups:
+
+| group | kinds |
+|---|---|
+| Rows, lists and detail panes | `toolbar-action`, `row-badge`, `row-menu-item`, `detail-section`, `empty-state`, `filter-chip`, `file-viewer` |
+| Chat and the agent | `composer-action`, `chat-header-action`, `chat-card`, `slash-command` |
+| Ambient placement | `command-palette-action`, `settings-section`, `work-rail-pane`, `drawer-tab`, `activity-entry` |
+| The canvas | `graph-node` |
+| Dialogs | `dialog-section` |
+
+The first six surfaces (`work`, `lanes`, `files`, `prs`, `automations`, `cto`)
+are ADE's list-shaped tabs, each with an entity kind behind it, which is what
+makes a per-entity contribution meaningful there. `app` and `settings` carry no
+entity at all: the command palette and the activity pane belong to the window
+rather than to a tab, and a settings section belongs to a page named in its
+payload. They are surfaces rather than a second concept because everything
+downstream — the manifest field, the contribution read, the per-slot cap, the
+ordering rule — is identical.
+
+The taxonomy is closed and small so an author learns it once and every client can
+implement it exhaustively at compile time; a nineteenth kind is a platform change
+with a parity cost on four clients. Which client draws which kind is a table
+(`PLUGIN_SOCKET_CLIENT_SUPPORT`, `sockets.ts:276-339`), and the rule it encodes is that
+**absent on a client is honest and readable, half-drawn is neither**.
 
 Placement is host-controlled and always **after** core content — `order` sorts
 plugins against each other and nothing more. Row badges cap at 2 visible with a
@@ -983,6 +1653,65 @@ what selects which entries the palette shows, so pointing it at a chat would
 quietly change the list. `"none"` is a real answer: a plugin told so can say
 "open a chat first" instead of writing against a guess, which is what tracking
 the last `turn.start` amounted to.
+
+**A `graph-node` is a shape on the Graph canvas.** It is its own group in the
+taxonomy because it is the one placement that is not a row, a control or a panel.
+It rides the `lanes` surface, and there is no `graph` surface id on purpose: the
+canvas is a second VIEW of the same lanes the Lanes tab lists, so both read one
+set, one rows store and one set of published rows. The socket KIND says the
+placement, the surface says the data domain — the same split `dialog-section` uses
+to put two dialogs on `lanes` (`WorkspaceGraphPage.tsx:1324-1336`).
+
+The payload is `{label, detail?, tone, icon?, actionId?, edges?}`. `label` caps at
+40 characters — the same 40 a button's label takes, because a node card is about
+as wide as a toolbar button — and `detail` at 80, longer because it carries the
+identifier a reader matches against something outside ADE. `actionId` is
+deliberately not required: a node that only labels something is a legitimate node,
+and demanding a press would make every purely informational one undeclarable. **A
+plugin never positions anything**: the anchor is the published row's entity, so a
+node published against a lane hangs beside that lane's card.
+
+**Edges only ever have the plugin's own node at one end.** `to` names the FAR end
+and nothing else, `to.kind` is `lane | pr`, and the near end always comes from the
+anchor. What this shape cannot express is an edge between two of ADE's own nodes —
+and that asymmetry is a safety property rather than a simplification. An edge
+between two lane nodes reads as a git relationship, and a plugin that could draw
+one would be asserting a topology it does not own, in a place where the user has
+no way to tell it apart from ADE's own (`sockets.ts:864-873`,
+`pluginGraphNodes.ts:16-20`). Edge kinds are `link | tracks | blocks`; an
+unreadable edge drops alone and the node keeps its remaining lines, rather than
+the contribution disappearing.
+
+Three caps, and they refuse three different failures:
+
+| constant | value | what it caps |
+|---|---|---|
+| `PLUGIN_GRAPH_NODE_EDGE_LIMIT` | 4 | extra edges on ONE node, beyond its anchor |
+| `PLUGIN_GRAPH_NODES_PER_PLUGIN_LIMIT` | 24 | nodes ONE plugin may draw on the canvas |
+| `PLUGIN_GRAPH_NODES_TOTAL_LIMIT` | 48 | nodes EVERY plugin combined may draw |
+
+Four, because the node is a glance: a plugin whose node relates to more than four
+lanes is describing a list, and a list belongs in a panel where it can be scrolled
+and read. Two node caps rather than one, because the per-plugin cap stops ONE
+plugin from burying the topology under its own annotations and the total stops
+three well-behaved plugins from doing it collectively, which no per-plugin number
+can prevent. Both are enforced AFTER the canvas has built every core node, so the
+thing dropped is always a plugin's — a lane never loses its node to a plugin's.
+
+The edge limit is enforced at WRITE time and the two node caps at DRAW time, which
+makes them the one ceiling on this platform an author cannot see from their own
+side: the rows store fine and the canvas withholds the surplus on a machine the
+author may not be sitting at. So `ade plugin doctor` prints the count, and the
+canvas draws a muted overflow line (`pluginDoctor.ts:388-403`).
+
+A DECLARED `graph-node` draws nothing, exactly as a declared `row-badge` does —
+one identical card beside every lane on the canvas is the same mistake with a
+bigger footprint (`contributionModel.ts:427-430`). Desktop and the hosted web
+client draw the kind, from the same compiled renderer at the same `/graph` route.
+iOS and the TUI do not, and that absence is a fact about a whole TAB rather than a
+missing renderer arm: the phone ships no Graph canvas at all and the terminal
+draws no canvas, so neither can grow an arm for this kind without first growing
+the tab.
 
 Static contributions come from the manifest; dynamic per-entity values come from
 `plugin_contributions` rows computed by the machine that owns the data. Actions
@@ -1086,11 +1815,24 @@ What is gated for Linear, on all four clients:
   the Linear pane sheet and its presentation flag, the lane issue badge, the
   copy-issue-link menu row and action, the chat header's attach-issue row, the
   Settings Linear connection card, and the `ade://linear-issue` deeplink.
-- TUI — every `/linear` command, through the `builtin` field on the command
+- TUI — all seven `/linear` commands, through the `builtin` field on the command
   spec.
+
+**The rule the list follows: gate entry points and connection UI; keep read-only
+rendering of data the user already has.** A quick-view button, a settings
+connection card, an attach row and a create-lane picker are doors into the
+compiled integration and they close. A badge showing the issue a lane already
+carries is data the user has, and it keeps rendering — it simply steps aside for
+the plugin's own badge so two Linear chips never sit on one row.
+
+`ade-linear` reaches its own connection through the two verbs the polarity makes
+necessary: [`credentialHandoff`](#inheriting-a-connection-ade-already-holds) on a
+machine that is already connected, and
+[`auth.officialClient`](#borrowing-ades-own-oauth-client) on one that is not.
 
 The compiled Linear code is NOT deleted by any of this. It is still there, still
 compiled, and still what the product runs on a machine without the plugin.
+Deletion is a later step — see [Program status](#program-status).
 
 ### Agent tooling
 
@@ -1241,11 +1983,31 @@ official plugins and layers a live index on top when one becomes reachable.
 | Client | Entry |
 |---|---|
 | Desktop | Plugin tabs below the nav divider; Marketplace above Account; panels via the vocabulary renderer. A `webview` surface joins the same rail and draws the plugin's own page instead of a panel |
-| Web | Same React renderer, view-scoped data over a roster-style `plugin_subscribe` stream; Marketplace and plugin tabs lazy-loaded and absent from the sign-in graph. A `plugin` deeplink has no hosted route — `targetToWebPath` answers null and each caller degrades where the user can see it |
-| iOS | Read and action-invoke only — no local CRR writes to `plugin_*`. Panes mount as a sheet from an overflow menu and the machine screen |
+| Web | Same React renderer, view-scoped data over a roster-style `plugin_subscribe` stream; Marketplace and plugin tabs lazy-loaded and absent from the sign-in graph. `/plugin/:id` is a route root, so a reload or a shared link lands in the App and `PluginTabPage` gives the real answer — the panel, "Not installed here", or "Turned off" — rather than dropping the reader at the welcome surface |
+| iOS | Read and action-invoke only — no local CRR writes to `plugin_*`. Panes mount as a sheet from an overflow menu and the machine screen, with a back stack over the plugin's panels |
 | TUI | `/plugin-view [plugin]` opens a panel in the right pane; forms go through the composer prompt line; `Ctrl+Y` copies an `ade://plugin/<id>/<panel>` link to the open panel (and still copies a lane or PR link when one of those rows is focused) |
 | CLI | `ade plugin …`, `ade <pluginId> <cmd>` for manifest-declared CLI words, and `ade link plugin <plugin-id> <panel-id> [--ctx '<json>']` to mint a panel link |
 | Chat | The `plugin_install` `ade_card` variant, for agent-built install flows. The whole lifecycle is reachable this way: `install` asks once per source, and `uninstall`/`enable`/`disable` ask every time |
+
+**The iOS back stack.** `navigate` used to REPLACE the pane in place and clear its
+state, so a plugin sending a reader from a list into a detail screen gave them no
+way back — and if they found one, handed back a panel with its filters reset, its
+ticks gone, its sections re-opened and its scroll at the top. A detail screen a
+reader cannot leave is not a detail screen. `PluginPanelStackEntry`
+(`PluginPaneStore.swift:164-180`) pushes a SNAPSHOT: the panel id, its title, its
+render context, the panel state, the row selection, the collapsed group
+overrides, the per-list page counts, the scroll offset — and the state and
+selection SIGNATURES beside the values. The signatures ride along because
+restoring values alone would put them in front of `adoptStateControls` with an
+empty signature, which reads as a fresh open and rebuilds them from the schema's
+defaults: the restore would silently undo itself.
+
+The schema is deliberately NOT snapshotted. `load()` re-derives the declarations
+from the schema as it stands now, and the restored signatures are what decide
+whether the restored values survive that. The stack is capped at 8 with the
+oldest dropped, so a plugin navigating in a loop cannot grow it without bound.
+The panel picker EMPTIES the stack rather than pushing onto it: it is a lateral
+move between the plugin's top-level panels, not a drill-down.
 
 A plugin panel is addressable: `ade://plugin/<plugin-id>/<panel-id>[?ctx=<json>]`,
 with the `https://ade-app.dev/open?type=plugin&plugin=…&panel=…` form alongside
@@ -1253,6 +2015,45 @@ it. It is the one target kind whose destination may genuinely not exist on the
 receiving machine — plugins are installed per machine — so clients say so
 plainly rather than redirecting to the Marketplace. Full grammar and routing
 ladder in [Deeplinks](../deeplinks/README.md).
+
+### Program status
+
+The platform exists to carry ADE's own compiled features out of the binary. This
+is where that stands today, on this branch.
+
+| plugin | polarity | own code | state |
+|---|---|---|---|
+| `ade-linear` | `supersedes` | 8,795 lines (14,296 with its tests) | A real plugin. Panels, sockets, tools, CLI words, automation triggers and steps, a webhook channel, a sign-in flow, a credential handoff and a URL matcher |
+| `ade-cursor-cloud` | `supersedes` | 3,439 lines (4,643 with tests) | A real plugin, with a chat runtime. 7 gaps still open: the `webhooks.status()` ledger read, secret reveal, navigate-to-settings, a tab badge, artifact download, the launch strip, and a CLI alias |
+| `ade-graph` | `enables` | 0 | A gating shell: `plugin.json`, an icon, a README and a one-panel schema |
+| `ade-review` | `enables` | 0 | Gating shell |
+| `ade-history` | `enables` | 0 | Gating shell |
+| `ade-ios-sim` | `enables` | 0 | Gating shell, plus an agent-skills directory |
+| `ade-app-control` | `enables` | 0 | Gating shell, plus an agent-skills directory |
+
+`plugins/` also holds two plugins that are not part of the extraction — `ade-voice`
+(1,659 lines) and `ade-log-viewer` (489) — plus three themes. They add capability
+rather than replacing a compiled surface, so neither polarity applies to them.
+
+A **gating shell** ships no executable code at all. It exists only so that
+installing it unlocks a surface ADE already compiled, and disabling it hides that
+surface again. Turning one into a real `supersedes` plugin — a plugin that
+re-implements the compiled feature on desktop AND mobile, so that the compiled
+version steps aside on install and returns on disable — is the remaining work.
+Linear is the worked example and its flip is the template.
+
+**The acceptance test.** One build, every plugin installable, and for each of
+them:
+
+1. Before install, ADE looks exactly as it always has — the compiled surface is
+   there, on the Mac and on the phone.
+2. Install the plugin.
+3. Every compiled surface it supersedes is gone, on the Mac and on the phone.
+4. Everything the compiled surface did works, from the plugin, on both.
+5. Disable the plugin, and the compiled version returns unchanged.
+
+Only when every plugin passes does the branch go to `main`. Deleting the compiled
+code is the step AFTER that, never before it.
 
 ## Accepted v1 limitations
 
@@ -1272,19 +2073,57 @@ oversight:
   needs to persist calls its own action and lets the child write. Routing the
   write instead would mean a write action on the closed `plugin` domain, which
   every client can call for every plugin.
-- **The hosted web client has no route for a plugin panel.** `/plugin/:id` is
-  deliberately absent from the shell's route roots because the tab is gated on a
-  host capability the shell cannot probe before its adapter is up, so
-  `targetToWebPath` answers null for a `plugin` target rather than landing the
-  reader on a plausible-looking empty shell.
-- **iOS draws two of the seven socket kinds.** `row-badge` and `row-menu-item`
-  render; `toolbar-action`, `detail-section`, `empty-state`, `filter-chip`, and
-  `file-viewer` decode as `.unsupported` and draw nothing. A later iOS build
-  adds the rendering arm with no wire change. PR rows are badges-only (no
-  four-section menu exists there yet) and lane child rows are unwired.
-- **iOS renders 12 of the 13 v1 components.** `chart` shows a named marker.
-- **The TUI renders 10 of 13 and no sockets.** `video`, `image`, and `chart`
-  show named placeholders; `/plugin-view` is the only plugin surface there.
+- **iOS draws 11 of the 18 socket kinds.** `slash-command`,
+  `command-palette-action`, `settings-section`, `work-rail-pane`, `drawer-tab`,
+  `dialog-section` and `graph-node` decode as `.unsupported` and draw nothing,
+  because the phone has no host for any of them. A later iOS build adds a
+  rendering arm with no wire change. `graph-node` is the one whose absence is a
+  fact about a whole TAB: the phone ships no Graph canvas, so the kind cannot be
+  grown without first growing the tab.
+- **The TUI draws 3 of the 18 socket kinds** — `row-badge`, `row-menu-item` and
+  `toolbar-action` — and only on the `lanes` and `work` surfaces, which are the
+  surfaces it lists rows for.
+- **iOS renders 15 of the 16 v1 components.** `chart` shows a named marker: a
+  sparse line or bar chart is the least useful thing to squeeze onto a
+  phone-width panel and the most expensive to draw well.
+- **The TUI renders 13 of 16.** `video`, `image` and `chart` show named
+  placeholders.
+- **The vocabulary has no sticky footer or action-bar region.** A panel's
+  controls scroll with its content, so a launch bar at the bottom of a phone
+  screen is not expressible. This is a node the vocabulary still owes.
+- **A plugin cannot ship a brand glyph.** The `brand:` icon namespace is a closed
+  five-token catalogue (`claude`, `codex`, `cursor`, `github`, `openai`), and
+  there is no path for a plugin to supply its own mono mark. `brand:linear` does
+  not exist on either client, so the Linear plugin draws a generic mark where the
+  compiled integration drew a logo.
+- **There is no nav-bar search field.** A panel searches through a `{prompt}`
+  round trip instead, which costs a tap and a dispatch where the compiled surface
+  typed into a field.
+- **A list pages to 250 by button, not by scroll.** `maxListItems` is 250 and
+  `listPageSize` is 100, extended by pressing Show more; the compiled issue
+  browser it replaces pages to 500 on scroll. Raising the ceiling needs byte math
+  against `maxSchemaBytes` for the inline case, and a scroll-to-load contract all
+  four clients can honour.
+- **A `markdown` node over 4,000 characters renders as plain text.** Deliberate —
+  see [Prose: the `markdown` node](#prose-the-markdown-node) — but it is still a
+  reduction against a surface that renders a whole issue body. Markdown also has
+  no images and no tables, and does not render inside a list row, so a comment
+  thread drawn as rows is plain text.
+- **Writes are round trips: there is no optimistic local echo.** A state control
+  that dispatches an action shows the new value when the plugin answers, not when
+  the reader presses it. Panel state is client-evaluated and instant, but anything
+  the plugin owns is not.
+- **There is no picker node.** A bound single-select — "link this to a lane" — has
+  no control, so a panel either offers a `segmented` over a bounded option list or
+  takes the first candidate.
+- **There is no hover card.** Desktop and web have nowhere to put the preview a
+  compiled surface shows on hover, so the equivalent is a `navigate` to a detail
+  panel.
+- **iOS renders a plugin's URLs as plain links.** The phone's smart-link detector
+  is a hardcoded four-provider host test and reads no `urlMatchers`, because
+  manifests never replicate to a phone — it sees a contribution only when the
+  plugin published one. So a plugin-declared URL gets no chip and no attribution
+  there, while desktop, the web client and the composer's tokenizer all draw it.
 - **iOS themes are accent-only.**
 - **Theme coverage is token-backed surfaces (~52%).** Raw hex and Tailwind
   colors elsewhere are unaffected; that cleanup is deferred.
@@ -1317,13 +2156,14 @@ oversight:
   provider gets `Refs` regardless of `closeOnMerge`, because `Fixes ABC-12` in a
   GitHub PR body is inert text and emitting it would advertise a state
   transition that never happens.
-- **Nothing registers a plugin as the owner of a tracker yet.**
-  `resolveIssueDeeplinkRouting` takes an `owners` list so an
-  `ade://issue/jira/…` link minted on one machine can open through whichever
-  Jira plugin the receiving machine has, and no caller populates it. Today the
-  routing falls back to the plugin the link names, or to a plugin whose id
-  equals the provider; `linear` with nobody claiming it goes to the compiled
-  Linear surface, exactly where `ade://linear-issue/…` has always gone.
+- **Tracker ownership is derived, never declared.** `resolveIssueDeeplinkRouting`
+  defaults its `owners` list to `issueProviderOwnersFromMatchers(input.plugins)`,
+  so an `ade://issue/jira/…` link opens through whichever plugin declares a
+  `urlMatchers` entity for `jira` on the receiving machine. There is no separate
+  "I own this tracker" field, on purpose — two declarations could disagree — so a
+  plugin that reads a tracker's issues but recognises none of its URLs owns
+  nothing. With nobody claiming `linear`, the link goes to the compiled Linear
+  surface, exactly where `ade://linear-issue/…` has always gone.
 - **iOS does not parse the `issue` deeplink kind.** `DeepLinkRouter.swift`
   knows `linear-issue` and not `issue`, so `ade://issue/jira/PROJ-9` falls to
   its `default` arm and opens nothing on a phone. Desktop, the web client and
@@ -1336,9 +2176,12 @@ oversight:
   create-a-lane-from-an-issue path writes. `role: "primary"` on a plugin's link
   is recorded and read back, but the link lands in `issueLinks`.
 - **A plugin cannot create a lane, only link to one.** `ade.lanes` is `list`,
-  `get`, `linkIssue`, `unlinkIssue`. `issueRefBranchName` / `issueRefLaneName`
-  exist and are proven byte-identical to the Linear derivation, but every lane
-  creation path still calls `linearIssueBranchName`.
+  `get`, `listSessionIssues`, `linkIssue`, `unlinkIssue`. `issueRefBranchName` /
+  `issueRefLaneName` exist and are proven byte-identical to the Linear
+  derivation, but every lane creation path still calls `linearIssueBranchName`.
+- **Only `pr.changed` carries transitions.** `lane.changed` and `session.changed`
+  are ids and a project root; their producers hold no previous state to compare
+  against. A plugin wanting a lane's lifecycle position re-reads the lane.
 
 ## Cross-links
 
