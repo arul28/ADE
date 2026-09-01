@@ -1,11 +1,56 @@
 {
   "name": "ade-linear",
-  "version": "1.0.1",
+  "version": "1.1.0",
   "displayName": "Linear",
-  "description": "Open and browse Linear issues without leaving ADE.",
+  "description": "Browse Linear issues, start a lane and an agent on one, and keep the issue moving \u2014 from ADE, on every device.",
   "icon": "list-checks",
   "accent": "#5E6AD2",
   "vocabVersion": 1,
+  "entry": "index.js",
+  "network": {
+    "hosts": [
+      "api.linear.app"
+    ]
+  },
+  "credentialHandoff": [
+    "linear"
+  ],
+  "authSessions": [
+    {
+      "id": "linear",
+      "provider": "Linear",
+      "authorizeUrl": "https://linear.app/oauth/authorize",
+      "callbacks": [
+        "loopback",
+        "app"
+      ],
+      "loopback": {
+        "port": 19837,
+        "path": "/oauth/callback"
+      }
+    }
+  ],
+  "webhookIngress": [
+    {
+      "id": "linear",
+      "label": "Linear issue events",
+      "description": "Paste this URL into Linear's webhook settings so an issue that changes wakes ADE."
+    }
+  ],
+  "urlMatchers": [
+    {
+      "id": "issue",
+      "hosts": [
+        "linear.app"
+      ],
+      "pathPattern": "/{workspace}/issue/{key}/**",
+      "chip": {
+        "label": "{key}",
+        "icon": "L"
+      },
+      "panelId": "issue"
+    }
+  ],
   "surfaces": [
     {
       "kind": "pane",
@@ -15,14 +60,447 @@
       "panelId": "main",
       "builtin": "linear",
       "mobile": true
+    },
+    {
+      "kind": "tab",
+      "id": "issues",
+      "title": "Linear",
+      "icon": "list-checks",
+      "panelId": "issues",
+      "order": 55,
+      "mobile": true
     }
   ],
   "panels": [
     {
       "id": "main",
       "schemaFile": "panels/main.json",
-      "title": "Linear"
+      "title": "Linear",
+      "icon": "list-checks"
+    },
+    {
+      "id": "issues",
+      "schemaFile": "panels/issues.json",
+      "title": "Linear",
+      "icon": "list-checks",
+      "refreshAction": "refreshIssues"
+    },
+    {
+      "id": "issue",
+      "schemaFile": "panels/issue.json",
+      "title": "Issue",
+      "icon": "list-checks",
+      "refreshAction": "refreshIssue"
+    },
+    {
+      "id": "settings",
+      "schemaFile": "panels/settings.json",
+      "title": "Linear connection",
+      "icon": "list-checks",
+      "refreshAction": "refreshConnection"
+    },
+    {
+      "id": "launch",
+      "schemaFile": "panels/launch.json",
+      "title": "Launch",
+      "icon": "rocket"
     }
+  ],
+  "sockets": [
+    {
+      "socket": "work-rail-pane",
+      "surface": "work",
+      "id": "issues-pane",
+      "label": "Linear",
+      "icon": "list-checks",
+      "panelId": "issues"
+    },
+    {
+      "socket": "composer-action",
+      "surface": "work",
+      "id": "attach-issue",
+      "label": "Attach a Linear issue",
+      "icon": "list-checks",
+      "actionId": "openIssues"
+    },
+    {
+      "socket": "chat-header-action",
+      "surface": "work",
+      "id": "chat-issue",
+      "label": "Linear issue",
+      "icon": "list-checks",
+      "actionId": "openSessionIssue",
+      "menu": [
+        {
+          "label": "Open in Linear",
+          "actionId": "openInLinear",
+          "icon": "external-link"
+        },
+        {
+          "label": "Comment progress on the issue",
+          "actionId": "commentProgress",
+          "icon": "message-square"
+        }
+      ]
+    },
+    {
+      "socket": "row-badge",
+      "surface": "lanes",
+      "id": "lane-issue",
+      "label": "Linear issue",
+      "icon": "list-checks"
+    },
+    {
+      "socket": "graph-node",
+      "surface": "lanes",
+      "id": "graph-issue",
+      "label": "Linear issue",
+      "icon": "list-checks"
+    },
+    {
+      "socket": "settings-section",
+      "surface": "settings",
+      "id": "connection",
+      "label": "Linear",
+      "icon": "list-checks",
+      "panelId": "settings"
+    },
+    {
+      "socket": "command-palette-action",
+      "surface": "app",
+      "id": "palette-issues",
+      "label": "Linear issues",
+      "icon": "list-checks",
+      "actionId": "openIssues"
+    }
+  ],
+  "collections": {
+    "issues": {
+      "sync": true
+    },
+    "comments": {
+      "sync": false
+    },
+    "teams": {
+      "sync": true
+    },
+    "states": {
+      "sync": true
+    },
+    "projects": {
+      "sync": true
+    },
+    "people": {
+      "sync": true
+    },
+    "viewer": {
+      "sync": true
+    },
+    "deliveries": {
+      "sync": false
+    }
+  },
+  "settings": [
+    {
+      "key": "moveToDoneOnMerge",
+      "kind": "toggle",
+      "label": "Move the issue to Done when its pull request merges",
+      "description": "Only issues linked to the lane with \"close on merge\" are moved.",
+      "default": false
+    },
+    {
+      "key": "moveToStartedOnLaunch",
+      "kind": "toggle",
+      "label": "Move the issue to In Progress when an agent starts on it",
+      "description": "Uses the team's first started workflow state.",
+      "default": false
+    },
+    {
+      "key": "defaultTeamKey",
+      "kind": "text",
+      "label": "Default team key",
+      "description": "Used when a command does not name a team, e.g. ENG."
+    }
+  ],
+  "automationTriggers": [
+    {
+      "id": "issue_created",
+      "label": "A Linear issue is created",
+      "description": "Fires when Linear reports a new issue."
+    },
+    {
+      "id": "issue_updated",
+      "label": "A Linear issue is updated",
+      "description": "Fires when any field of an issue changes."
+    },
+    {
+      "id": "issue_assigned",
+      "label": "A Linear issue is assigned",
+      "description": "Fires when an issue's assignee changes."
+    },
+    {
+      "id": "issue_status_changed",
+      "label": "A Linear issue changes state",
+      "description": "Fires when an issue moves to another workflow state."
+    },
+    {
+      "id": "issue_labeled",
+      "label": "A Linear issue is labeled",
+      "description": "Fires when a label is added to an issue."
+    }
+  ],
+  "automationSteps": [
+    {
+      "id": "set_issue_state",
+      "label": "Move a Linear issue to a state",
+      "action": "stepSetIssueState"
+    },
+    {
+      "id": "comment_on_issue",
+      "label": "Comment on a Linear issue",
+      "action": "stepCommentOnIssue"
+    },
+    {
+      "id": "assign_issue",
+      "label": "Assign a Linear issue",
+      "action": "stepAssignIssue"
+    },
+    {
+      "id": "close_issue_on_merge",
+      "label": "Move a merged lane's Linear issue to Done",
+      "action": "stepCloseIssueOnMerge"
+    }
+  ],
+  "searchProviders": [
+    {
+      "id": "issues",
+      "label": "Linear",
+      "action": "searchIssuesProvider"
+    }
+  ],
+  "keybindings": [
+    {
+      "action": "openIssues",
+      "binding": "Mod+Shift+L",
+      "label": "Open Linear issues"
+    }
+  ],
+  "tools": [
+    {
+      "name": "get_issue",
+      "description": "Fetch a Linear issue by its id or identifier (e.g. 'ABC-42'), with state, labels, assignee and description.",
+      "action": "getIssueTool",
+      "input": {
+        "type": "object",
+        "properties": {
+          "issueId": {
+            "type": "string",
+            "description": "The issue id (UUID) or identifier (e.g. 'PROJ-123')."
+          }
+        },
+        "required": [
+          "issueId"
+        ]
+      }
+    },
+    {
+      "name": "search_issues",
+      "description": "Search Linear issues by text, team, project, assignee, priority or state type.",
+      "action": "searchIssuesTool",
+      "input": {
+        "type": "object",
+        "properties": {
+          "query": {
+            "type": "string",
+            "description": "Free text matched against title and description."
+          },
+          "teamKey": {
+            "type": "string",
+            "description": "Team key, e.g. 'ENG'."
+          },
+          "projectId": {
+            "type": "string",
+            "description": "Linear project id."
+          },
+          "assigneeId": {
+            "type": "string",
+            "description": "Assignee user id."
+          },
+          "priority": {
+            "type": "integer",
+            "description": "Priority 0 (none) to 4 (low)."
+          },
+          "stateTypes": {
+            "type": "array",
+            "description": "State types to include.",
+            "items": {
+              "type": "string",
+              "enum": [
+                "triage",
+                "backlog",
+                "unstarted",
+                "started",
+                "completed",
+                "canceled"
+              ]
+            }
+          },
+          "limit": {
+            "type": "integer",
+            "description": "How many issues to return. Defaults to 50, at most 100."
+          }
+        },
+        "required": []
+      }
+    },
+    {
+      "name": "add_comment",
+      "description": "Post a comment on a Linear issue. Use it to report progress or document findings on the issue you are working on.",
+      "action": "addCommentTool",
+      "input": {
+        "type": "object",
+        "properties": {
+          "issueId": {
+            "type": "string",
+            "description": "The issue id or identifier."
+          },
+          "body": {
+            "type": "string",
+            "description": "The comment body, in markdown."
+          }
+        },
+        "required": [
+          "issueId",
+          "body"
+        ]
+      }
+    },
+    {
+      "name": "update_issue_state",
+      "description": "Move a Linear issue to another workflow state. Call list_states first to find the state id.",
+      "action": "updateIssueStateTool",
+      "input": {
+        "type": "object",
+        "properties": {
+          "issueId": {
+            "type": "string",
+            "description": "The issue id or identifier."
+          },
+          "stateId": {
+            "type": "string",
+            "description": "The target workflow state id (UUID)."
+          }
+        },
+        "required": [
+          "issueId",
+          "stateId"
+        ]
+      }
+    },
+    {
+      "name": "list_states",
+      "description": "List the workflow states of a Linear team. Use it to look up a state id before update_issue_state.",
+      "action": "listStatesTool",
+      "input": {
+        "type": "object",
+        "properties": {
+          "teamKey": {
+            "type": "string",
+            "description": "Team key, e.g. 'ENG'. Omit for every team."
+          }
+        },
+        "required": []
+      }
+    },
+    {
+      "name": "assign_issue",
+      "description": "Assign a Linear issue to a user, or clear its assignee.",
+      "action": "assignIssueTool",
+      "input": {
+        "type": "object",
+        "properties": {
+          "issueId": {
+            "type": "string",
+            "description": "The issue id or identifier."
+          },
+          "assigneeId": {
+            "type": "string",
+            "description": "The user id, or omit to clear the assignee."
+          }
+        },
+        "required": [
+          "issueId"
+        ]
+      }
+    },
+    {
+      "name": "add_label",
+      "description": "Add an existing label to a Linear issue, by label name.",
+      "action": "addLabelTool",
+      "input": {
+        "type": "object",
+        "properties": {
+          "issueId": {
+            "type": "string",
+            "description": "The issue id or identifier."
+          },
+          "labelName": {
+            "type": "string",
+            "description": "The label name, which must already exist."
+          }
+        },
+        "required": [
+          "issueId",
+          "labelName"
+        ]
+      }
+    },
+    {
+      "name": "create_lane_for_issue",
+      "description": "Create an ADE lane for a Linear issue, on the branch name Linear expects, and link the issue to it.",
+      "action": "createLaneForIssueTool",
+      "input": {
+        "type": "object",
+        "properties": {
+          "issueId": {
+            "type": "string",
+            "description": "The issue id or identifier."
+          },
+          "baseRef": {
+            "type": "string",
+            "description": "Branch to cut from. Defaults to the project's base branch."
+          }
+        },
+        "required": [
+          "issueId"
+        ]
+      }
+    },
+    {
+      "name": "graphql",
+      "description": "Run a raw GraphQL query or mutation against the Linear API, for anything the other tools do not cover.",
+      "action": "graphqlTool",
+      "input": {
+        "type": "object",
+        "properties": {
+          "query": {
+            "type": "string",
+            "description": "The GraphQL query or mutation."
+          },
+          "variables": {
+            "type": "object",
+            "description": "Variables for the operation.",
+            "properties": {}
+          }
+        },
+        "required": [
+          "query"
+        ]
+      }
+    }
+  ],
+  "cli": [
+    "linear"
   ],
   "skills": [
     "skills"

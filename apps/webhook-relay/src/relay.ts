@@ -268,6 +268,12 @@ export const PLUGIN_WEBHOOK_STORED_HEADERS = [
   "x-slack-signature",
   "x-slack-request-timestamp",
   "x-linear-event",
+  // Linear signs with an unprefixed header name, not an `x-` one. Without it
+  // stored, a plugin declaring `verify` against Linear would compare its HMAC
+  // to an empty string and drop every delivery — silently, since a failed
+  // verify never becomes a payload. Kept for the same reason as the rest: it
+  // is an HMAC over a body already at rest, not a bearer credential.
+  "linear-signature",
   "x-shopify-hmac-sha256",
 ];
 const MAX_PLUGIN_STORED_HEADER_VALUE_LENGTH = 1024;

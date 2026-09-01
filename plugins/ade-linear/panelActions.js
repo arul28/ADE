@@ -468,11 +468,15 @@ function bind(host) {
     /**
      * The detail panel's state control moved.
      *
-     * The new state id rides in `args` under the control's own state key, which
-     * names the issue — so the handler reads whichever key it was given rather
-     * than guessing at a name it would have to keep in step with the builder.
+     * NOT `setIssueState`, which is the automation step and the agent tool that
+     * `index.js` owns: that one reads `{issueId, stateId}` and wins the merge,
+     * and a `segmented` cannot produce it. What a control hands its handler is
+     * the panel's STATE MAP, where the new value sits under a key naming the
+     * issue — so this reads whichever key it was given rather than guessing at a
+     * name it would have to keep in step with the builder. Both paths end in the
+     * same `api.setIssueState` call, so a rule and a control cannot drift.
      */
-    async setIssueState(args) {
+    async changeIssueState(args) {
       const issueId = issueIdFrom(args);
       const stateId = readChangedValue(args, "issueState:");
       if (!issueId || !stateId) return { message: "That state could not be read.", ok: false };
@@ -480,7 +484,7 @@ function bind(host) {
     },
 
     /** The same shape, for priority. `0` is a real value and must survive. */
-    async setIssuePriority(args) {
+    async changeIssuePriority(args) {
       const issueId = issueIdFrom(args);
       const priority = readChangedValue(args, "issuePriority:");
       if (!issueId || priority === null) return { message: "That priority could not be read.", ok: false };
@@ -499,8 +503,13 @@ function bind(host) {
      * `{prompt}` is one field on every client and the vocabulary has no
      * multi-line composer; a reader who wants a paragraph writes it in Linear,
      * and the report says so rather than pretending otherwise.
+     *
+     * NOT `commentOnIssue`, for the reason `changeIssueState` is not
+     * `setIssueState`: that id is the automation step, it reads `{issueId, body}`
+     * and throws "A comment needs a body." on the first press — which is exactly
+     * the press that is supposed to ask the question.
      */
-    async commentOnIssue(args) {
+    async writeComment(args) {
       const issueId = issueIdFrom(args);
       if (!issueId) return { message: "Pick an issue first.", ok: false };
 
@@ -555,6 +564,19 @@ function bind(host) {
       const issueUrl = firstString(model.issue?.url);
       if (issueUrl) return { openUrl: issueUrl };
       return { message: "That issue has no Linear URL yet.", ok: false };
+    },
+
+    /**
+     * An `https:` link that is not an issue.
+     *
+     * `openInLinear` cannot serve this: the DATA half owns that id and answers
+     * it by looking up a stored issue row, so a settings link to
+     * `linear.app/settings/api` would be answered with "That issue has no Linear
+     * link." One id per shape is the smaller of the two evils.
+     */
+    async openExternal(args) {
+      const url = firstString(args?.url, args?.context?.url);
+      return url ? { openUrl: url } : { message: "That link is missing.", ok: false };
     },
 
     /* ── The connection ─────────────────────────────────────────────────── */

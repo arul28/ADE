@@ -103,6 +103,35 @@ export const CORE_SMART_LINK_HOSTS: Readonly<Record<string, string>> = {
 };
 
 /**
+ * The built-in surface whose OWNING plugin may claim a core host after all.
+ *
+ * The refusal above exists to stop a plugin drawing over ADE's own links. It
+ * says nothing useful to the one plugin that IS the surface: `ade-linear` gates
+ * the compiled Linear pane, holds the Linear credential through the handoff,
+ * and is the package the tracker moves into. Refusing it `linear.app` would
+ * mean the plugin can never carry the chip core draws today, so the extraction
+ * could never finish.
+ *
+ * Three things keep this narrow.
+ *
+ * - Only an EXACT host is relaxed. A wildcard stays refused for everyone,
+ *   including the owner: `*.linear.app` claims names core never parsed, and
+ *   `*.app` would otherwise reach this door through the suffix rule.
+ * - `surfaces[].builtin` is honoured only for an official package
+ *   (`manifest.ts`), so a community plugin cannot reach the relaxation at all.
+ * - WHICH official package may own a given surface is not decided here. That
+ *   table is `builtinSurfaces.ts`, which imports this module, and the host
+ *   refuses a non-owner. Parse-time this is "the manifest claims the surface";
+ *   install-time it is "and it is allowed to".
+ *
+ * `github.com` is deliberately absent: there is no gateable `github` built-in
+ * surface, so no plugin can ever claim it.
+ */
+export const CORE_SMART_LINK_HOST_BUILTINS: Readonly<Record<string, string>> = {
+  "linear.app": "linear",
+};
+
+/**
  * Issue providers core speaks for. A plugin may not claim one.
  *
  * Spelled here rather than imported from `issueRef.ts` for the reason stated at
@@ -298,13 +327,24 @@ export function isValidPluginUrlMatcherPattern(value: unknown): value is string 
  * `pluginNetworkHostAllowed` still decides the exact-and-wildcard question at
  * MATCH time, in `smartLinkMatchers.ts`. This is the parse-time claim check.
  */
-export function coreSmartLinkHostOwner(host: unknown): string | null {
+export function coreSmartLinkHostOwner(
+  host: unknown,
+  claimedBuiltins?: ReadonlySet<string>,
+): string | null {
   if (typeof host !== "string") return null;
   const entry = host.trim().toLowerCase();
   if (entry.length === 0) return null;
   const suffix = entry.startsWith("*.") ? entry.slice(2) : null;
   for (const [coreHost, owner] of Object.entries(CORE_SMART_LINK_HOSTS)) {
-    if (entry === coreHost) return owner;
+    if (entry === coreHost) {
+      // The owner of the built-in surface may claim its own host. See
+      // CORE_SMART_LINK_HOST_BUILTINS for why this is not a hole.
+      const builtin = CORE_SMART_LINK_HOST_BUILTINS[coreHost];
+      if (builtin && claimedBuiltins?.has(builtin)) continue;
+      return owner;
+    }
+    // A wildcard is refused for everyone, owner included. `*.app` reaches this
+    // branch through the suffix rule and is not a claim on Linear.
     if (suffix && (coreHost === suffix || coreHost.endsWith(`.${suffix}`))) return owner;
   }
   return null;

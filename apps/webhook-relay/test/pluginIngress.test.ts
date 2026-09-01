@@ -412,6 +412,34 @@ describe("plugin ingress deliveries", () => {
     expect(stored.cookie).toBeUndefined();
     expect(Object.keys(stored).every((name) => PLUGIN_WEBHOOK_STORED_HEADERS.includes(name))).toBe(true);
   });
+
+  /**
+   * Linear signs with an UNPREFIXED header name.
+   *
+   * Every other signature on the allowlist is `x-`-prefixed, so a reader
+   * scanning the list would not notice `linear-signature` missing — and the
+   * failure it causes is silent by construction: a channel declaring `verify`
+   * would compare its HMAC against an empty string, fail, and drop the
+   * delivery without it ever becoming a payload. That is why this is asserted
+   * by name rather than covered by the "only allowlisted headers" test above.
+   */
+  it("stores Linear's unprefixed signature header", async () => {
+    const env = makeEnv();
+    await register(env, "alpha", ALPHA_SECRET);
+    await handleRequest(
+      await webhookRequest({
+        pluginId: "alpha",
+        extraHeaders: { "linear-signature": "abc123", "linear-delivery": "should-not-persist" },
+      }),
+      env,
+    );
+
+    const stored = JSON.parse(env.DB.events[0]?.headers ?? "{}") as Record<string, string>;
+    expect(stored["linear-signature"]).toBe("abc123");
+    // The allowlist stays an allowlist: sharing a prefix with a stored header
+    // is not a reason to store a header.
+    expect(stored["linear-delivery"]).toBeUndefined();
+  });
 });
 
 describe("plugin ingress event drain", () => {

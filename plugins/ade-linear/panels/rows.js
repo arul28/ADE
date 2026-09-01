@@ -94,10 +94,12 @@ function issueListRow(issue, options = {}) {
       icon: "git-branch",
     });
   }
+  // `{issueId}`, never `{url}` — the DATA half owns `openInLinear` and resolves
+  // the URL from this row. See the same note in `issue.js`.
   if (source.url) {
     actions.push({
       action: ACTIONS.openInLinear,
-      args: { url: String(source.url) },
+      args: { issueId: id },
       label: COPY.openInLinear,
       kind: "quiet",
       icon: "link",

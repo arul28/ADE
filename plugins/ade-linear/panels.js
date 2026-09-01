@@ -86,9 +86,27 @@ function connectionOf(model) {
   return connection && typeof connection === "object" ? connection : {};
 }
 
+/**
+ * The filters, read under either spelling the data half uses.
+ *
+ * `data.js` calls the state preset `stateTab`, after the built-in's tab strip;
+ * the builders call it `statePreset`, after what it selects. Neither name is
+ * wrong and both halves are being written at once, so this reads both rather
+ * than making the primary filter of the whole panel depend on which of us
+ * renamed first — a mismatch there would silently pin the list to "All issues"
+ * with no error anywhere.
+ *
+ * The same for `hasTeams`, which `index.js` computes beside the filters rather
+ * than inside them.
+ */
 function filtersOf(model) {
-  const filters = model && typeof model === "object" ? model.filters : null;
-  return filters && typeof filters === "object" ? filters : {};
+  const source = model && typeof model === "object" ? model : {};
+  const filters = source.filters && typeof source.filters === "object" ? source.filters : {};
+  return {
+    ...filters,
+    statePreset: filters.statePreset ?? filters.stateTab ?? "all",
+    hasTeams: filters.hasTeams ?? source.hasTeams ?? false,
+  };
 }
 
 function isConnected(model) {
@@ -149,7 +167,7 @@ function buildIssuesPanel(model = {}) {
     error,
     groups,
     query: filters.text ?? null,
-    statePreset: filters.statePreset ?? "all",
+    statePreset: filters.statePreset,
     sort: filters.sort ?? "updated_desc",
     view: filters.view === "flat" ? "flat" : "grouped",
     filtersActive: filtersActive(filters),

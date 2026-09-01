@@ -115,15 +115,62 @@ const HISTORY = manifest({
   panels: [{ id: "main", schemaFile: "panels/main.json", title: "History" }],
 });
 
+/**
+ * Linear, as the real integration rather than a gate.
+ *
+ * The `pane` surface still carries `builtin: "linear"` and still gates the
+ * compiled browser — that binding is the extraction's own scaffolding and goes
+ * away with core. Everything beside it is ordinary: a `tab`, seven sockets, its
+ * own collections, its own credential. The one official-only thing left is the
+ * `urlMatchers` entry claiming `linear.app`, which only the plugin that OWNS
+ * the `linear` built-in surface may do.
+ */
 const LINEAR = manifest({
   name: "ade-linear",
-  version: "1.0.1",
+  version: "1.1.0",
   displayName: "Linear",
-  description: "Open and browse Linear issues without leaving ADE.",
+  description: "Browse Linear issues, start a lane and an agent on one, and keep the issue moving — from ADE, on every device.",
   icon: "list-checks",
   accent: "#5E6AD2",
-  surfaces: [{ kind: "pane", id: "linear", title: "Linear", icon: "list-checks", panelId: "main", builtin: "linear", mobile: true }],
-  panels: [{ id: "main", schemaFile: "panels/main.json", title: "Linear" }],
+  entry: "index.js",
+  network: { hosts: ["api.linear.app"] },
+  credentialHandoff: ["linear"],
+  webhookIngress: [{
+    id: "linear",
+    label: "Linear issue events",
+    description: "Paste this URL into Linear's webhook settings so an issue that changes wakes ADE.",
+  }],
+  surfaces: [
+    { kind: "pane", id: "linear", title: "Linear", icon: "list-checks", panelId: "main", builtin: "linear", mobile: true },
+    { kind: "tab", id: "issues", title: "Linear", icon: "list-checks", panelId: "issues", order: 55, mobile: true },
+  ],
+  sockets: [
+    { socket: "work-rail-pane", surface: "work", id: "issues-pane", label: "Linear", icon: "list-checks", panelId: "issues" },
+    { socket: "composer-action", surface: "work", id: "attach-issue", label: "Attach a Linear issue", icon: "list-checks", actionId: "openIssues" },
+    {
+      socket: "chat-header-action",
+      surface: "work",
+      id: "chat-issue",
+      label: "Linear issue",
+      icon: "list-checks",
+      actionId: "openSessionIssue",
+      menu: [
+        { label: "Open in Linear", actionId: "openInLinear", icon: "external-link" },
+        { label: "Comment progress on the issue", actionId: "commentProgress", icon: "message-square" },
+      ],
+    },
+    { socket: "row-badge", surface: "lanes", id: "lane-issue", label: "Linear issue", icon: "list-checks" },
+    { socket: "graph-node", surface: "lanes", id: "graph-issue", label: "Linear issue", icon: "list-checks" },
+    { socket: "settings-section", surface: "settings", id: "connection", label: "Linear", icon: "list-checks", panelId: "settings" },
+    { socket: "command-palette-action", surface: "app", id: "palette-issues", label: "Linear issues", icon: "list-checks", actionId: "openIssues" },
+  ],
+  panels: [
+    { id: "main", schemaFile: "panels/main.json", title: "Linear", icon: "list-checks" },
+    { id: "issues", schemaFile: "panels/issues.json", title: "Linear", icon: "list-checks", refreshAction: "refreshIssues" },
+    { id: "issue", schemaFile: "panels/issue.json", title: "Issue", icon: "list-checks", refreshAction: "refreshIssue" },
+    { id: "settings", schemaFile: "panels/settings.json", title: "Linear connection", icon: "list-checks", refreshAction: "refreshConnection" },
+    { id: "launch", schemaFile: "panels/launch.json", title: "Launch", icon: "rocket" },
+  ],
 });
 
 const IOS_SIM = manifest({

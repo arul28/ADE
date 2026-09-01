@@ -192,7 +192,7 @@ function disconnectCard(input = {}) {
     label: COPY.createKey,
     kind: "quiet",
     icon: "link",
-    onPress: { action: ACTIONS.openInLinear, args: { url: LINEAR_API_SETTINGS_URL } },
+    onPress: { action: ACTIONS.openExternal, args: { url: LINEAR_API_SETTINGS_URL } },
   });
 
   return body;
@@ -363,7 +363,66 @@ function ingressBlock(input = {}) {
     });
   }
 
+  block.push(...signingSecretBlock(ingress));
+
   return block;
+}
+
+/**
+ * The signing secret, which is what turns the webhook from open to verified.
+ *
+ * Without it a delivery is authenticated only by the relay's own per-plugin
+ * secret, so anyone who learns the URL can post a fake issue event and fire the
+ * user's automation rules. The manifest cannot simply declare `verify`: a
+ * channel that declares it and cannot find its secret FAILS CLOSED
+ * (`pluginWebhookIngressService.ts:429`) and silently drops every delivery — so
+ * the field has to exist before verification can be turned on, which is why this
+ * block ships first and the manifest change follows it.
+ *
+ * A `secret` field, masked on every client, because this is a credential. And a
+ * `submit` rather than `applyOnChange`, because a half-typed secret committed on
+ * blur would be stored as the secret and every delivery would then fail
+ * verification until somebody noticed.
+ */
+function signingSecretBlock(ingress = {}) {
+  const stored = ingress.secretStored === true;
+  return [
+    {
+      component: "keyValue",
+      rows: [
+        {
+          key: "Verification",
+          value: stored ? "Signed deliveries only" : "Not verified",
+          tone: stored ? "success" : "warning",
+        },
+      ],
+    },
+    {
+      component: "text",
+      variant: "caption",
+      text: prose(
+        stored
+          ? "ADE checks every delivery against this secret. Paste a new one here if you re-create the webhook in Linear."
+          : "Until you paste the signing secret, anyone who learns the URL above can post a fake issue event and fire your automation rules. Linear shows the secret once, when the webhook is created.",
+      ),
+    },
+    {
+      component: "form",
+      fields: [
+        {
+          kind: "secret",
+          id: "secret",
+          label: "Webhook signing secret",
+          placeholder: "lin_wh_...",
+          help: "Stored in this machine's keychain, namespaced to this plugin.",
+        },
+      ],
+      submit: {
+        label: stored ? "Replace the secret" : "Save the secret",
+        onPress: { action: ACTIONS.saveWebhookSecret },
+      },
+    },
+  ];
 }
 
 function settingsFallback(text) {
@@ -431,4 +490,5 @@ module.exports = {
   disconnectCard,
   ingressBlock,
   preferencesForm,
+  signingSecretBlock,
 };

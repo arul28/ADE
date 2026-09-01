@@ -1786,12 +1786,21 @@ function parseKeybindings(raw: unknown, ctx: ParseContext): PluginManifestKeybin
  * - A host core already parses is refused BY NAME. A plugin claiming
  *   `linear.app` would draw its chip over ADE's own Linear links on every
  *   machine that installed it, so the author is told who owns it instead of
- *   shipping a matcher that silently never wins.
+ *   shipping a matcher that silently never wins. The one exception is the
+ *   plugin that OWNS the built-in surface behind that host — it is the package
+ *   the tracker moves into, so refusing it its own domain would mean the
+ *   extraction could never finish. `claimedBuiltins` carries the honoured
+ *   `surfaces[].builtin` ids, which are official-only, and
+ *   `CORE_SMART_LINK_HOST_BUILTINS` says which host each one unlocks.
  * - A label template naming a capture the pattern does not declare is refused
  *   rather than rendered. A chip that reads `{key}` because nothing filled it is
  *   a bug the user sees and the author does not.
  */
-function parseUrlMatchers(raw: unknown, ctx: ParseContext): PluginManifestUrlMatcher[] {
+function parseUrlMatchers(
+  raw: unknown,
+  ctx: ParseContext,
+  claimedBuiltins: ReadonlySet<string>,
+): PluginManifestUrlMatcher[] {
   const entries = parseArray(raw, "urlMatchers", ctx, (entry, label) => {
     if (!isRecord(entry)) return ctx.drop(`${label} is not an object`);
     const id = parseIdentifier(entry.id);
@@ -1800,7 +1809,7 @@ function parseUrlMatchers(raw: unknown, ctx: ParseContext): PluginManifestUrlMat
     const declaredHosts = parseStringList(entry.hosts, `${label}.hosts`, ctx, isValidPluginNetworkHost);
     const hosts: string[] = [];
     for (const host of declaredHosts) {
-      const owner = coreSmartLinkHostOwner(host);
+      const owner = coreSmartLinkHostOwner(host, claimedBuiltins);
       if (owner) {
         ctx.warnings.push(
           `${label}.hosts declares "${host}", which ADE already parses as ${owner}.`
@@ -2252,7 +2261,12 @@ export function parsePluginManifest(raw: unknown): PluginManifestParseResult {
   const automationSteps = parseAutomationSteps(raw.automationSteps, ctx);
   const searchProviders = parseSearchProviders(raw.searchProviders, ctx);
   const keybindings = parseKeybindings(raw.keybindings, ctx);
-  const urlMatchers = parseUrlMatchers(raw.urlMatchers, ctx);
+  // Only the builtins the surface parser actually HONOURED, so a community
+  // package cannot unlock a core host by writing `builtin` into its manifest.
+  const claimedBuiltins = new Set<string>(
+    surfaces.map((surface) => surface.builtin).filter((builtin): builtin is PluginBuiltinSurfaceId => Boolean(builtin)),
+  );
+  const urlMatchers = parseUrlMatchers(raw.urlMatchers, ctx, claimedBuiltins);
   const chatRuntimes = parseChatRuntimes(raw.chatRuntimes, ctx);
   const webhookIngress = parseWebhookIngress(raw.webhookIngress, ctx);
   const network = parseNetwork(raw.network, ctx);

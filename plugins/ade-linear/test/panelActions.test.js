@@ -260,14 +260,14 @@ describe("writing back to Linear", () => {
     // The detail panel keys its controls on the issue's identifier, so the
     // handler cannot know the key's name in advance.
     const host = makeHost();
-    await bind(host).setIssueState({ issueId: "issue-1", "issueState:ADE-122": "state-2" });
+    await bind(host).changeIssueState({ issueId: "issue-1", "issueState:ADE-122": "state-2" });
     assert.deepEqual(host.calls.find((call) => call.path === "api.setIssueState").args, ["issue-1", "state-2"]);
   });
 
   it("treats priority 0 as a real value rather than as nothing", async () => {
     // "No priority" IS a priority in Linear, and a falsy check would drop it.
     const host = makeHost();
-    await bind(host).setIssuePriority({ issueId: "issue-1", "issuePriority:ADE-122": "0" });
+    await bind(host).changeIssuePriority({ issueId: "issue-1", "issuePriority:ADE-122": "0" });
     assert.deepEqual(host.calls.find((call) => call.path === "api.setIssuePriority").args, ["issue-1", 0]);
   });
 
@@ -275,7 +275,7 @@ describe("writing back to Linear", () => {
     // A control that moved optimistically shows the reader's intention. The
     // panel is the only thing that can put it back.
     const host = makeHost({ fail: ["api.setIssueState"] });
-    const result = await bind(host).setIssueState({ issueId: "issue-1", "issueState:ADE-122": "state-2" });
+    const result = await bind(host).changeIssueState({ issueId: "issue-1", "issueState:ADE-122": "state-2" });
     assert.equal(result.ok, false);
     assert.deepEqual(published(host), ["issue", "issues"]);
   });
@@ -284,11 +284,11 @@ describe("writing back to Linear", () => {
     const host = makeHost();
     const handlers = bind(host);
 
-    const asked = await handlers.commentOnIssue({ issueId: "issue-1" });
+    const asked = await handlers.writeComment({ issueId: "issue-1" });
     assert.equal(asked.prompt.id, contract.PROMPT_COMMENT);
     assert.deepEqual(asked.prompt.context, { issueId: "issue-1" });
 
-    await handlers.commentOnIssue({
+    await handlers.writeComment({
       issueId: "issue-1",
       prompt: { id: contract.PROMPT_COMMENT, text: "  Looking at it now.  " },
     });
@@ -301,7 +301,7 @@ describe("writing back to Linear", () => {
 
   it("posts nothing for an empty comment", async () => {
     const host = makeHost();
-    const result = await bind(host).commentOnIssue({
+    const result = await bind(host).writeComment({
       issueId: "issue-1",
       prompt: { id: contract.PROMPT_COMMENT, text: "   " },
     });

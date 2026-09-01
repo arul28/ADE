@@ -235,12 +235,23 @@ const ACTIONS = {
   submitLaunch: "submitLaunch",
 
   // Writing back to Linear.
+  //
+  // `changeIssueState` and `writeComment` are NOT `setIssueState` and
+  // `commentOnIssue`, and the difference is load-bearing. Those two ids are
+  // automation STEPS and agent TOOLS that `index.js` owns and merges in after
+  // this half's table, so they win any collision — and they read
+  // `{issueId, stateId}` and `{issueId, body}`, which is a shape a panel cannot
+  // produce. A `segmented` hands its handler the panel's state map, where the
+  // new value sits under a key naming the issue, and a comment needs a `{prompt}`
+  // round trip that a rule must never have. Two entry points, two payload
+  // shapes, one API call underneath — see `panelActions.js`.
   assignToMe: "assignToMe",
-  setIssueState: "setIssueState",
-  setIssuePriority: "setIssuePriority",
-  commentOnIssue: "commentOnIssue",
+  changeIssueState: "changeIssueState",
+  changeIssuePriority: "changeIssuePriority",
+  writeComment: "writeComment",
   loadComments: "loadComments",
   openInLinear: "openInLinear",
+  openExternal: "openExternal",
 
   // The connection.
   connectOAuth: "connectOAuth",
@@ -250,7 +261,32 @@ const ACTIONS = {
   applySettings: "applySettings",
   createAutolink: "createAutolink",
   copyWebhookUrl: "copyWebhookUrl",
+  saveWebhookSecret: "saveWebhookSecret",
 };
+
+/**
+ * Ids the DATA half owns, named here only so this table is the whole audit.
+ *
+ * `index.js` merges its own handlers in after this half's, so a schema
+ * dispatching one of these reaches that half and must send ITS payload shape.
+ * `openInLinear` is the one a panel still uses: it resolves the URL from the
+ * stored row, so a button passes `{issueId}` and never a `url`.
+ */
+const CORE_OWNED_ACTIONS = Object.freeze([
+  "refreshIssues",
+  "refreshIssue",
+  "refreshConnection",
+  "openIssue",
+  "openIssues",
+  "openSessionIssue",
+  "openInLinear",
+  "commentProgress",
+  "setIssueState",
+  "commentOnIssue",
+  "assignIssue",
+  "closeIssueOnMerge",
+  "saveWebhookSecret",
+]);
 
 /**
  * The ids a bound issue row may name, on any of its three action slots.
@@ -290,6 +326,7 @@ const PROMPT_API_KEY = "apikey";
 
 module.exports = {
   ACTIONS,
+  CORE_OWNED_ACTIONS,
   COLLECTION_COMMENTS,
   COLLECTION_ISSUES,
   COLLECTION_PEOPLE,

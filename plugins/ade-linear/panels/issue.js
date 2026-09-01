@@ -138,7 +138,7 @@ function inlineEditors(issue) {
         valueField: "id",
         labelField: "name",
       },
-      onChange: { action: ACTIONS.setIssueState, args: { issueId: String(issue.id) } },
+      onChange: { action: ACTIONS.changeIssueState, args: { issueId: String(issue.id) } },
     });
   }
 
@@ -148,7 +148,7 @@ function inlineEditors(issue) {
     label: COPY.propPriority,
     default: String(issue.priority ?? "0"),
     options: PRIORITIES.map((entry) => ({ value: entry.value, label: entry.label })),
-    onChange: { action: ACTIONS.setIssuePriority, args: { issueId: String(issue.id) } },
+    onChange: { action: ACTIONS.changeIssuePriority, args: { issueId: String(issue.id) } },
   });
 
   return { component: "stack", direction: "horizontal", gap: "sm", wrap: true, align: "center", children };
@@ -255,17 +255,22 @@ function issueActions(issue) {
       label: COPY.comment,
       kind: "quiet",
       icon: "chat",
-      onPress: { action: ACTIONS.commentOnIssue, args: { issueId: String(issue.id) } },
+      onPress: { action: ACTIONS.writeComment, args: { issueId: String(issue.id) } },
     },
   ];
 
+  // `{issueId}`, never `{url}`. `openInLinear` is the DATA half's handler — it
+  // wins the merge and resolves the URL from the stored row, so a button that
+  // passed a `url` would be answered with "That issue has no Linear link." The
+  // stored row is also the fresher source: an issue that moved workspace has a
+  // new URL there and an old one baked into a published schema.
   if (issue.url) {
     buttons.push({
       component: "button",
       label: COPY.openInLinear,
       kind: "quiet",
       icon: "link",
-      onPress: { action: ACTIONS.openInLinear, args: { url: String(issue.url) } },
+      onPress: { action: ACTIONS.openInLinear, args: { issueId: String(issue.id) } },
     });
   }
 

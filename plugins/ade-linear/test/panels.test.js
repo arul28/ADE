@@ -258,6 +258,35 @@ describe("the issue list panel", () => {
     assert.equal(empty.action.onPress.action, contract.ACTIONS.clearFilters);
   });
 
+  it("reads the state preset under either name the data half uses", () => {
+    // `data.js` calls it `stateTab`, the builders call it `statePreset`. A
+    // mismatch would silently pin the list to "All issues" with no error, so
+    // the reader takes both rather than depending on which half renamed first.
+    const byTab = panels.buildIssuesPanel(issuesModel({ filters: { stateTab: "active" } }));
+    const preset = nodesOf(byTab, "segmented").find((node) => node.stateKey === contract.STATE_PRESET);
+    assert.equal(preset.default, "active");
+
+    const byPreset = panels.buildIssuesPanel(issuesModel({ filters: { statePreset: "backlog" } }));
+    assert.equal(
+      nodesOf(byPreset, "segmented").find((node) => node.stateKey === contract.STATE_PRESET).default,
+      "backlog",
+    );
+
+    // And `hasTeams` beside the filters, which is where index.js computes it.
+    // Only as a FALLBACK: an explicit `filters.hasTeams: false` still wins, so
+    // the fixture omits it rather than setting it false.
+    const beside = panels.buildIssuesPanel({
+      connection: CONNECTION,
+      groups: GROUPS,
+      filters: { hasProjects: true, hasPeople: true },
+      hasTeams: true,
+    });
+    assert.ok(nodesOf(beside, "segmented").some((node) => node.stateKey === contract.STATE_TEAM));
+
+    const explicit = panels.buildIssuesPanel(issuesModel({ filters: { hasTeams: false } }));
+    assert.ok(!nodesOf(explicit, "segmented").some((node) => node.stateKey === contract.STATE_TEAM));
+  });
+
   it("says which filters are on when a search is live", () => {
     const panel = panels.buildIssuesPanel(issuesModel({ filters: { text: "handoff" } }));
     const labels = nodesOf(panel, "button").map((node) => node.label);
@@ -349,7 +378,7 @@ describe("the issue detail panel", () => {
     assert.ok(actions.includes(contract.ACTIONS.launchLaneAndAgent));
     assert.ok(actions.includes(contract.ACTIONS.launchLaneOnly));
     assert.ok(actions.includes(contract.ACTIONS.openInLinear));
-    assert.ok(actions.includes(contract.ACTIONS.commentOnIssue));
+    assert.ok(actions.includes(contract.ACTIONS.writeComment));
   });
 
   it("draws the loading body rather than the previous issue's words", () => {
@@ -377,8 +406,8 @@ describe("the settings panel", () => {
       settings: { moveToDoneOnMerge: true },
       teams: [{ key: "ADE", name: "Platform" }],
     });
-    const [form] = nodesOf(panel, "form");
-    assert.ok(form.applyOnChange, "settings must apply without an Apply button");
+    const form = nodesOf(panel, "form").find((node) => node.applyOnChange);
+    assert.ok(form, "settings must apply without an Apply button");
     for (const field of form.fields) {
       assert.ok(declared.has(field.id), `${field.id} is not declared in plugin.json`);
     }
@@ -610,5 +639,86 @@ describe("the issue row a list binds", () => {
     assert.equal(row.key, "c1");
     assert.ok(row.title.startsWith("Grace"));
     assert.ok(!row.subtitle.includes("\n"));
+  });
+});
+
+/* ── The seam with the data half ────────────────────────────────────────── */
+
+describe("the ids the two halves share", () => {
+  it("never dispatches a core-owned id with a shape that half cannot read", () => {
+    // `index.js` merges its handlers in AFTER this half's, so a collision goes
+    // to it. Three of its ids read a shape a panel cannot produce:
+    // `setIssueState` wants `{stateId}` where a `segmented` hands over a state
+    // map, `commentOnIssue` wants `{body}` where the first press must ask for
+    // one, and `openInLinear` resolves the URL from the stored row and ignores
+    // a `url` argument. This walks every action a panel declares and proves the
+    // schemas name the panel-owned verb instead.
+    const panelsToCheck = [
+      panels.buildIssuesPanel(issuesModel({ filters: { view: "flat" } })),
+      panels.buildIssuePanel({ connection: CONNECTION, issue: ISSUE }),
+      panels.buildSettingsPanel({ connection: CONNECTION, showAutolinks: true, autolinks: [] }),
+      panels.buildSettingsPanel({ connection: { connected: false } }),
+    ];
+
+    const dispatched = new Set();
+    const collect = (action) => {
+      if (action && typeof action.action === "string") dispatched.add(action.action);
+    };
+    for (const panel of panelsToCheck) {
+      for (const node of everyNode(panel.body)) {
+        collect(node.onPress);
+        collect(node.onChange);
+        collect(node.applyOnChange);
+        collect(node.action?.onPress ?? node.action);
+        collect(node.submit?.onPress);
+        for (const item of node.items ?? []) {
+          collect(item.onPress);
+          for (const entry of [...(item.actions ?? []), ...(item.overflow ?? [])]) collect(entry);
+        }
+        for (const entry of node.selectable?.actions ?? []) collect(entry);
+      }
+    }
+
+    assert.ok(!dispatched.has("setIssueState"), "a schema dispatches the automation step");
+    assert.ok(!dispatched.has("commentOnIssue"), "a schema dispatches the automation step");
+    assert.ok(dispatched.has(contract.ACTIONS.changeIssueState));
+    assert.ok(dispatched.has(contract.ACTIONS.writeComment));
+  });
+
+  it("passes an issue id, never a url, to the core-owned openInLinear", () => {
+    const row = issueListRow({ id: "i1", identifier: "ADE-1", title: "x", url: "https://linear.app/a/issue/ADE-1" });
+    const openInLinear = (row.actions ?? []).find((action) => action.action === "openInLinear");
+    assert.deepEqual(openInLinear.args, { issueId: "i1" });
+
+    const panel = panels.buildIssuePanel({ connection: CONNECTION, issue: ISSUE });
+    const button = nodesOf(panel, "button").find((node) => node.onPress.action === "openInLinear");
+    assert.deepEqual(button.onPress.args, { issueId: ISSUE.id });
+  });
+
+  it("uses an id the data half does not own for a link that is not an issue", () => {
+    // `openInLinear` answers by looking up a stored ISSUE row, so the settings
+    // link to linear.app/settings/api has to name a different verb or be told
+    // that the API settings page is not a Linear issue.
+    const panel = panels.buildSettingsPanel({ connection: { connected: false } });
+    const button = nodesOf(panel, "button").find((node) => node.onPress.args?.url);
+    assert.equal(button.onPress.action, contract.ACTIONS.openExternal);
+    assert.ok(!contract.CORE_OWNED_ACTIONS.includes(contract.ACTIONS.openExternal));
+  });
+
+  it("offers the signing secret the webhook channel cannot be verified without", () => {
+    // A channel that declares `verify` and cannot find its secret FAILS CLOSED
+    // and drops every delivery, so the field must exist before the manifest can
+    // declare verification.
+    const panel = panels.buildSettingsPanel({
+      connection: CONNECTION,
+      ingress: { status: "Connected", url: "https://relay.ade.dev/hook/abc", secretStored: false },
+    });
+    const form = nodesOf(panel, "form").find((node) => node.submit?.onPress.action === contract.ACTIONS.saveWebhookSecret);
+    assert.ok(form, "no signing-secret form");
+    assert.equal(form.fields[0].kind, "secret", "a credential must be masked");
+    assert.ok(!form.applyOnChange, "a half-typed secret must not commit on blur");
+    // The unverified state says what is actually at risk rather than "not configured".
+    const captions = nodesOf(panel, "text").map((node) => node.text).join(" ");
+    assert.ok(captions.includes("post a fake issue event"), captions);
   });
 });
