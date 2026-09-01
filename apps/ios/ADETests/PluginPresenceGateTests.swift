@@ -43,7 +43,32 @@ final class PluginPresenceGateTests: XCTestCase {
   }
 
   private func entry(_ pluginId: String, enabled: Bool = true) -> PluginPresenceListEntry {
-    PluginPresenceListEntry(pluginId: pluginId, version: "1.0.0", enabled: enabled, displayName: "Linear")
+    PluginPresenceListEntry(
+      pluginId: pluginId,
+      version: "1.0.0",
+      enabled: enabled,
+      displayName: pluginId
+    )
+  }
+
+  /// Every surface a plugin REPLACES rather than enables, read off the table
+  /// itself so a surface added with that polarity is covered the day it is
+  /// added rather than the day someone remembers to write six more tests.
+  ///
+  /// The emptiness check is not decoration: each state below is a loop, and a
+  /// loop over an empty list passes without asserting anything.
+  private func supersededSurfaces(
+    file: StaticString = #filePath,
+    line: UInt = #line
+  ) -> [PluginBuiltinSurface] {
+    let surfaces = PluginBuiltinSurface.allCases.filter { $0.presence == .supersedes }
+    XCTAssertFalse(
+      surfaces.isEmpty,
+      "No `.supersedes` surface left; these loops would pass vacuously.",
+      file: file,
+      line: line
+    )
+    return surfaces
   }
 
   // MARK: - Decision table
@@ -208,109 +233,131 @@ final class PluginPresenceGateTests: XCTestCase {
 
   // MARK: - Superseding plugins (the opposite polarity)
 
-  /// The whole point of `.supersedes`, stated once.
-  ///
-  /// `ade-cursor-cloud` ships the pane this app has drawn in compiled SwiftUI
-  /// since before the plugin existed, so installing it must REMOVE the built-in
-  /// rather than add a second way in. Both facts are asserted together because
-  /// they are the same fact read from two directions: the plugin is owned, and
-  /// precisely therefore the built-in is not drawn.
-  func testInstallingTheSupersedingPluginTakesTheBuiltinAway() async {
-    let sync = FakePresenceSync()
-    sync.reply = PluginPresenceListResult(plugins: [entry("ade-cursor-cloud")])
-    let gate = PluginPresenceGate(sync: sync)
+  // Every state below runs over every `.supersedes` surface, because the
+  // polarity belongs to the table rather than to Linear or to Cursor Cloud.
+  // Each ships a pane this app has drawn in compiled SwiftUI since before the
+  // plugin platform, so installing the plugin must REMOVE the built-in rather
+  // than add a second way in, and every unknown must leave it up: a machine
+  // that never heard of the plugin is the overwhelmingly common case, and
+  // deleting a shipped feature because a round trip is late would do it at
+  // every cold launch. `testSurfacePolarityMatchesTheSharedPresenceTable` pins
+  // which surfaces these are; Linear is one of them, and is the one that
+  // changed polarity, having started out as `.enables`.
 
-    await gate.refresh()
+  /// Both facts asserted together because they are one fact read from two
+  /// directions: the plugin is owned, and precisely therefore the built-in is
+  /// not drawn.
+  func testInstallingASupersedingPluginTakesTheBuiltinAway() async {
+    for surface in supersededSurfaces() {
+      let sync = FakePresenceSync()
+      sync.reply = PluginPresenceListResult(plugins: [entry(surface.ownerPluginId)])
+      let gate = PluginPresenceGate(sync: sync)
 
-    XCTAssertTrue(gate.owns(.cursorCloud))
-    XCTAssertFalse(
-      gate.drawsBuiltin(.cursorCloud),
-      "The plugin draws its own Cursor Cloud entry; the built-in one must be gone."
-    )
+      await gate.refresh()
+
+      XCTAssertTrue(gate.owns(surface), "\(surface.rawValue)")
+      XCTAssertFalse(
+        gate.drawsBuiltin(surface),
+        "\(surface.rawValue): the plugin draws its own entry; the built-in must be gone."
+      )
+    }
   }
 
-  /// Every unknown, and they all fall the other way from `.enables`.
-  ///
-  /// A machine that has never heard of the plugin is the overwhelmingly common
-  /// case, and on it the phone must behave exactly as it did before the plugin
-  /// shipped. So does a phone that has not had an answer yet, a host too old to
-  /// be asked, and a socket that dropped — hiding a shipped feature because a
-  /// round trip is late would delete Cursor Cloud from the product at every cold
-  /// launch.
   func testTheBuiltinIsDrawnBeforeAnyAnswerHasLanded() {
-    let sync = FakePresenceSync()
-    sync.reply = PluginPresenceListResult(plugins: [entry("ade-cursor-cloud")])
-    let gate = PluginPresenceGate(sync: sync)
+    for surface in supersededSurfaces() {
+      let sync = FakePresenceSync()
+      sync.reply = PluginPresenceListResult(plugins: [entry(surface.ownerPluginId)])
+      let gate = PluginPresenceGate(sync: sync)
 
-    XCTAssertTrue(gate.drawsBuiltin(.cursorCloud))
-    XCTAssertEqual(sync.fetchCount, 0, "Rendering must not fire a round trip of its own.")
+      // A cold launch renders here. The machine may well have the plugin — the
+      // point is that nothing has said so yet, and a late reply must not be the
+      // reason the built-in is missing.
+      XCTAssertTrue(gate.drawsBuiltin(surface), "\(surface.rawValue)")
+      XCTAssertEqual(sync.fetchCount, 0, "Rendering must not fire a round trip of its own.")
+    }
   }
 
   func testTheBuiltinIsDrawnOnAMachineWithoutThePlugin() async {
-    let sync = FakePresenceSync()
-    sync.reply = PluginPresenceListResult(plugins: [entry("ade-linear")])
-    let gate = PluginPresenceGate(sync: sync)
+    for surface in supersededSurfaces() {
+      let sync = FakePresenceSync()
+      // Another machine's plugin, positively answered. A reply that does not
+      // name this owner is as good as an empty one for this surface.
+      sync.reply = PluginPresenceListResult(plugins: [entry("ade-graph")])
+      let gate = PluginPresenceGate(sync: sync)
 
-    await gate.refresh()
+      await gate.refresh()
 
-    XCTAssertTrue(gate.drawsBuiltin(.cursorCloud))
+      XCTAssertTrue(gate.drawsBuiltin(surface), "\(surface.rawValue)")
+    }
   }
 
   func testDisablingTheSupersedingPluginHandsTheBuiltinBack() async {
-    let sync = FakePresenceSync()
-    sync.reply = PluginPresenceListResult(plugins: [entry("ade-cursor-cloud", enabled: false)])
-    let gate = PluginPresenceGate(sync: sync)
+    for surface in supersededSurfaces() {
+      let sync = FakePresenceSync()
+      sync.reply = PluginPresenceListResult(
+        plugins: [entry(surface.ownerPluginId, enabled: false)]
+      )
+      let gate = PluginPresenceGate(sync: sync)
 
-    await gate.refresh()
+      await gate.refresh()
 
-    // Disabling is the reversible half of uninstalling and has to restore
-    // exactly as much: with the plugin off there is no plugin pane to open, so
-    // hiding the built-in too would leave no Cursor Cloud anywhere on the phone.
-    XCTAssertFalse(gate.owns(.cursorCloud))
-    XCTAssertTrue(gate.drawsBuiltin(.cursorCloud))
+      // Disabling is the reversible half of uninstalling and has to restore
+      // exactly as much: with the plugin off there is no plugin pane to open,
+      // so hiding the built-in too would leave the feature nowhere on the phone.
+      XCTAssertFalse(gate.owns(surface), "\(surface.rawValue)")
+      XCTAssertTrue(gate.drawsBuiltin(surface), "\(surface.rawValue)")
+    }
   }
 
   func testAFailedAnswerLeavesTheBuiltinUp() async {
-    let sync = FakePresenceSync()
-    sync.reply = PluginPresenceListResult(plugins: [entry("ade-cursor-cloud")])
-    let gate = PluginPresenceGate(sync: sync)
-    await gate.refresh()
-    XCTAssertFalse(gate.drawsBuiltin(.cursorCloud))
+    for surface in supersededSurfaces() {
+      let sync = FakePresenceSync()
+      sync.reply = PluginPresenceListResult(plugins: [entry(surface.ownerPluginId)])
+      let gate = PluginPresenceGate(sync: sync)
+      await gate.refresh()
+      XCTAssertFalse(gate.drawsBuiltin(surface), "\(surface.rawValue)")
 
-    sync.failure = FetchFailure.unreachable
-    await gate.refresh()
+      // A dropped socket is not an answer, and deleting a shipped feature every
+      // time the socket blinks is worse than showing a pane the plugin replaced.
+      sync.failure = FetchFailure.unreachable
+      await gate.refresh()
 
-    XCTAssertTrue(gate.drawsBuiltin(.cursorCloud))
+      XCTAssertTrue(gate.drawsBuiltin(surface), "\(surface.rawValue)")
+    }
   }
 
   func testAHostTooOldToBeAskedKeepsTheBuiltin() async {
-    let sync = FakePresenceSync()
-    sync.supportsPluginPresenceList = false
-    let gate = PluginPresenceGate(sync: sync)
+    for surface in supersededSurfaces() {
+      let sync = FakePresenceSync()
+      sync.supportsPluginPresenceList = false
+      let gate = PluginPresenceGate(sync: sync)
 
-    await gate.refresh()
+      await gate.refresh()
 
-    // Every host that predates the plugin platform still has the compiled
-    // Cursor Cloud pane and no way to install a plugin that replaces it.
-    XCTAssertTrue(gate.drawsBuiltin(.cursorCloud))
-    XCTAssertEqual(sync.fetchCount, 0)
+      // Every host that predates the plugin platform still has the compiled
+      // pane and no way to install a plugin that replaces it.
+      XCTAssertTrue(gate.drawsBuiltin(surface), "\(surface.rawValue)")
+      XCTAssertEqual(sync.fetchCount, 0)
+    }
   }
 
   func testAttachingToAMachineWithoutThePluginBringsTheBuiltinBack() async {
-    let sync = FakePresenceSync()
-    sync.reply = PluginPresenceListResult(plugins: [entry("ade-cursor-cloud")])
-    let gate = PluginPresenceGate(sync: sync)
-    await gate.refresh()
-    XCTAssertFalse(gate.drawsBuiltin(.cursorCloud))
+    for surface in supersededSurfaces() {
+      let sync = FakePresenceSync()
+      sync.reply = PluginPresenceListResult(plugins: [entry(surface.ownerPluginId)])
+      let gate = PluginPresenceGate(sync: sync)
+      await gate.refresh()
+      XCTAssertFalse(gate.drawsBuiltin(surface), "\(surface.rawValue)")
 
-    // Plugins are installed per machine. The phone attaching elsewhere retires
-    // the previous machine's list immediately, and the built-in is what the new
-    // machine gets until it says otherwise.
-    sync.pluginPresenceTrigger = "machine-b|0"
-    sync.reply = PluginPresenceListResult(plugins: [])
-    await gate.refresh()
+      // Plugins are installed per machine. The phone attaching elsewhere retires
+      // the previous machine's list immediately, and the built-in is what the
+      // new machine gets until it says otherwise.
+      sync.pluginPresenceTrigger = "machine-b|0"
+      sync.reply = PluginPresenceListResult(plugins: [])
+      await gate.refresh()
 
-    XCTAssertTrue(gate.drawsBuiltin(.cursorCloud))
+      XCTAssertTrue(gate.drawsBuiltin(surface), "\(surface.rawValue)")
+    }
   }
 
   // MARK: - The `.enables` surfaces keep their polarity
@@ -379,99 +426,6 @@ final class PluginPresenceGateTests: XCTestCase {
       gate.drawsBuiltin(.linear),
       "One reply must move an enabled surface up and a superseded one down."
     )
-  }
-
-  // MARK: - Linear, the surface that changed polarity
-
-  /// Linear used to be an `.enables` surface and is now `.supersedes`, so these
-  /// six states are the ones a mistake would invert. ADE compiles a Linear pane
-  /// and has shipped it since before the plugin platform, so the pane is the
-  /// default and `ade-linear` is what takes it away.
-
-  func testTheCompiledLinearPaneIsDrawnBeforeAnyAnswerHasLanded() {
-    let sync = FakePresenceSync()
-    sync.reply = PluginPresenceListResult(plugins: [entry("ade-linear")])
-    let gate = PluginPresenceGate(sync: sync)
-
-    // A cold launch renders here. The machine may well have the plugin — the
-    // point is that nothing has said so yet, and a late reply must not be the
-    // reason the Linear button is missing from the top bar.
-    XCTAssertTrue(gate.drawsBuiltin(.linear))
-    XCTAssertEqual(sync.fetchCount, 0, "Rendering must not fire a round trip of its own.")
-  }
-
-  func testInstallingTheLinearPluginTakesTheCompiledPaneAway() async {
-    let sync = FakePresenceSync()
-    sync.reply = PluginPresenceListResult(plugins: [entry("ade-linear")])
-    let gate = PluginPresenceGate(sync: sync)
-
-    await gate.refresh()
-
-    // Both directions of the same fact: the plugin is owned, and precisely
-    // therefore the compiled pane is not drawn. `ade-linear` brings its own
-    // panels and its own Linear connection, so a second Linear entry point and
-    // a second connect card would be the confusion the gate exists to prevent.
-    XCTAssertTrue(gate.owns(.linear))
-    XCTAssertFalse(gate.drawsBuiltin(.linear))
-  }
-
-  func testDisablingTheLinearPluginHandsTheCompiledPaneBack() async {
-    let sync = FakePresenceSync()
-    sync.reply = PluginPresenceListResult(plugins: [entry("ade-linear", enabled: false)])
-    let gate = PluginPresenceGate(sync: sync)
-
-    await gate.refresh()
-
-    // Disabling is the reversible half of uninstalling and restores exactly as
-    // much: with the plugin off there are no plugin panels to open, so hiding
-    // the compiled pane too would leave no Linear anywhere on the phone.
-    XCTAssertFalse(gate.owns(.linear))
-    XCTAssertTrue(gate.drawsBuiltin(.linear))
-  }
-
-  func testAFailedAnswerLeavesTheCompiledLinearPaneUp() async {
-    let sync = FakePresenceSync()
-    sync.reply = PluginPresenceListResult(plugins: [entry("ade-linear")])
-    let gate = PluginPresenceGate(sync: sync)
-    await gate.refresh()
-    XCTAssertFalse(gate.drawsBuiltin(.linear))
-
-    // A dropped socket is not an answer, and deleting a shipped feature every
-    // time the socket blinks is worse than showing a pane the plugin replaced.
-    sync.failure = FetchFailure.unreachable
-    await gate.refresh()
-
-    XCTAssertTrue(gate.drawsBuiltin(.linear))
-  }
-
-  func testAHostTooOldToBeAskedKeepsTheCompiledLinearPane() async {
-    let sync = FakePresenceSync()
-    sync.supportsPluginPresenceList = false
-    let gate = PluginPresenceGate(sync: sync)
-
-    await gate.refresh()
-
-    // Every host that predates the plugin platform still has the compiled
-    // Linear pane and no way to install a plugin that replaces it.
-    XCTAssertTrue(gate.drawsBuiltin(.linear))
-    XCTAssertEqual(sync.fetchCount, 0)
-  }
-
-  func testAttachingToAMachineWithoutTheLinearPluginBringsTheCompiledPaneBack() async {
-    let sync = FakePresenceSync()
-    sync.reply = PluginPresenceListResult(plugins: [entry("ade-linear")])
-    let gate = PluginPresenceGate(sync: sync)
-    await gate.refresh()
-    XCTAssertFalse(gate.drawsBuiltin(.linear))
-
-    // Plugins are installed per machine. The phone attaching elsewhere retires
-    // the previous machine's list immediately, and the compiled pane is what the
-    // new machine gets until it says otherwise.
-    sync.pluginPresenceTrigger = "machine-b|0"
-    sync.reply = PluginPresenceListResult(plugins: [])
-    await gate.refresh()
-
-    XCTAssertTrue(gate.drawsBuiltin(.linear))
   }
 
   // MARK: - The awaited, polarity-aware twin
@@ -555,6 +509,53 @@ final class PluginPresenceGateTests: XCTestCase {
     XCTAssertTrue(linearWithoutPlugin, "The same empty reply moves the two surfaces apart.")
   }
 
+  // MARK: - A lane's issue ref, which is only sometimes Linear's
+
+  private func ref(provider: String) -> IssueRef {
+    IssueRef(
+      pluginId: provider == IssueRef.providerLinear ? IssueRef.corePluginId : "ade-\(provider)",
+      provider: provider,
+      issueId: "1",
+      key: "ABC-1",
+      title: "A ref"
+    )
+  }
+
+  /// A lane row carries whatever tracker wrote it, so the Linear polarity may
+  /// not be the question at all. `ade-linear` supersedes a Linear ref's badge
+  /// and menu row; a Jira ref is the Jira plugin's, and hiding it when
+  /// `ade-linear` arrives would delete another plugin's affordance.
+  func testOnlyALinearRefAnswersToTheLinearPlugin() async {
+    let sync = FakePresenceSync()
+    sync.reply = PluginPresenceListResult(plugins: [entry("ade-linear")])
+    let gate = PluginPresenceGate(sync: sync)
+
+    await gate.refresh()
+
+    XCTAssertFalse(gate.drawsBuiltinAffordance(for: ref(provider: IssueRef.providerLinear)))
+    XCTAssertTrue(gate.drawsBuiltinAffordance(for: ref(provider: "jira")))
+  }
+
+  /// The same unknowns as every other Linear affordance: the badge stays up.
+  func testALinearRefKeepsItsAffordanceUntilThePluginIsPositivelyThere() async {
+    let sync = FakePresenceSync()
+    let gate = PluginPresenceGate(sync: sync)
+    let linear = ref(provider: IssueRef.providerLinear)
+
+    // Before any answer.
+    XCTAssertTrue(gate.drawsBuiltinAffordance(for: linear))
+
+    // A machine that does not have the plugin.
+    sync.reply = PluginPresenceListResult(plugins: [])
+    await gate.refresh()
+    XCTAssertTrue(gate.drawsBuiltinAffordance(for: linear))
+
+    // A dropped socket.
+    sync.failure = FetchFailure.unreachable
+    await gate.refresh()
+    XCTAssertTrue(gate.drawsBuiltinAffordance(for: linear))
+  }
+
   // MARK: - Surface ids
 
   func testBuiltinSurfaceIdsMatchTheSharedManifestList() {
@@ -565,6 +566,13 @@ final class PluginPresenceGateTests: XCTestCase {
       PluginBuiltinSurface.allCases.map(\.rawValue),
       ["graph", "review", "history", "linear", "ios", "app-control", "cursor-cloud"]
     )
+    // Weaker than the check above it, and knowingly so. `rawValue` has a
+    // desktop mirror to disagree with; the surface-to-owner map has none, so
+    // this array is a hand-written copy of the switch it checks and it catches
+    // an accidental edit rather than a wrong id. The checkable source of truth
+    // is the directory names under `plugins/`, and reading those from a Swift
+    // test needs a cross-language check this branch does not have. Do not read
+    // a passing run as proof that these seven plugins exist.
     XCTAssertEqual(
       PluginBuiltinSurface.allCases.map(\.ownerPluginId),
       [

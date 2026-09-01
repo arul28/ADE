@@ -826,9 +826,9 @@ extension WorkRootScreen {
   /// plugin ARRIVES and every unknown leaves it in place.
   func copyLaneLinearLink(_ lane: LaneSummary) {
     guard let ref = primaryLaneIssueRef(for: lane) else { return }
-    // Only a Linear ref was ever gated on the Linear plugin; another tracker's
-    // link is owned by the plugin that wrote it. Same rule as the menu row.
-    guard !ref.isLinear || pluginGate.drawsBuiltin(.linear) else { return }
+    // The same predicate the badge renders on, so a row and the action it fires
+    // cannot disagree about one ref.
+    guard pluginGate.drawsBuiltinAffordance(for: ref) else { return }
     guard let url = ref.url, !url.isEmpty else { return }
     UIPasteboard.general.string = url
   }

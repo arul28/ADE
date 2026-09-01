@@ -75,11 +75,9 @@ struct LaneOpenChip: View {
 /// A Linear ref is gated the way every other compiled Linear affordance is, and
 /// `ade-linear` supersedes them all: the badge opens the issue, which is the
 /// same access the Work menu's Linear link row offers, and once the plugin is
-/// installed its own panels own that access. Note the polarity — `drawsBuiltin`,
-/// not `owns`. Every unknown leaves the badge up, so a lane on a machine without
-/// the plugin reads exactly as it always has. A ref from another tracker is not
-/// the Linear plugin's to gate — whatever plugin wrote it owns it — so it never
-/// hides.
+/// installed its own panels own that access. A ref from another tracker is not
+/// the Linear plugin's to gate. Note the polarity: `drawsBuiltin`, not `owns`.
+/// See `PluginPresenceGate.swift`.
 struct LaneLinearIssueBadge: View {
   @Environment(\.openURL) private var openURL
   @EnvironmentObject private var pluginGate: PluginPresenceGate
@@ -90,7 +88,7 @@ struct LaneLinearIssueBadge: View {
   private var ref: IssueRef { issue.issueRef }
 
   var body: some View {
-    if !ref.isLinear || pluginGate.drawsBuiltin(.linear) {
+    if pluginGate.drawsBuiltinAffordance(for: ref) {
       badge
     }
   }

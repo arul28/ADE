@@ -9790,7 +9790,9 @@ final class SyncService: ObservableObject {
   private func installedPluginIdsForContributions() -> Set<String>? {
     let gate = pluginPresenceGate
     guard gate.hasAnswer else { return nil }
-    return Set(gate.installedPlugins.map(\.pluginId))
+    // The gate's own set, not one derived here: this runs on every index build
+    // and the list behind it only changes on a reply.
+    return gate.installedPluginIds
   }
 
   // MARK: - Cursor Cloud fleet (global pane)

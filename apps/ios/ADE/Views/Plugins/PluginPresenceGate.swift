@@ -32,27 +32,17 @@ enum PluginBuiltinSurface: String, CaseIterable {
   case appControl = "app-control"
   case cursorCloud = "cursor-cloud"
 
-  /// The plugin that must be installed and enabled for this surface to exist.
-  /// Matches the `name` field of each manifest under `plugins/`, which is the
-  /// id `plugins.presenceList` reports.
-  var ownerPluginId: String {
-    switch self {
-    case .graph: return "ade-graph"
-    case .review: return "ade-review"
-    case .history: return "ade-history"
-    case .linear: return "ade-linear"
-    case .iosSimulator: return "ade-ios-sim"
-    case .appControl: return "ade-app-control"
-    case .cursorCloud: return "ade-cursor-cloud"
-    }
-  }
-
-  /// Which way round the owner plugin and the compiled screen relate.
+  /// Both facts a surface carries beyond its id, answered by one switch so a
+  /// new case cannot fill in one of them and forget the other.
   ///
-  /// Mirrors `PLUGIN_BUILTIN_SURFACE_PRESENCE` in
+  /// `ownerPluginId` is the plugin that must be installed and enabled for this
+  /// surface to exist. It matches the `name` field of each manifest under
+  /// `plugins/`, which is the id `plugins.presenceList` reports.
+  ///
+  /// `presence` is which way round that plugin and the compiled screen relate.
+  /// It mirrors `PLUGIN_BUILTIN_SURFACE_PRESENCE` in
   /// `apps/desktop/src/shared/plugins/manifest.ts`, and it exists because the
   /// two relationships are opposites and a single boolean cannot carry both.
-  ///
   /// See ``PluginSurfacePresence`` for what each polarity means at render time.
   /// The reason a surface picks one rather than the other is a product fact
   /// about who drew the screen first.
@@ -64,14 +54,23 @@ enum PluginBuiltinSurface: String, CaseIterable {
   /// and uninstalling it hands the feature back. The `.enables` surfaces are the
   /// ones this app never compiled — Graph, Review, History, iOS Simulator, App
   /// Control — where the plugin is the only reason a screen could exist at all.
-  var presence: PluginSurfacePresence {
+  var spec: (ownerPluginId: String, presence: PluginSurfacePresence) {
     switch self {
-    case .graph, .review, .history, .iosSimulator, .appControl:
-      return .enables
-    case .linear, .cursorCloud:
-      return .supersedes
+    case .graph: return ("ade-graph", .enables)
+    case .review: return ("ade-review", .enables)
+    case .history: return ("ade-history", .enables)
+    case .linear: return ("ade-linear", .supersedes)
+    case .iosSimulator: return ("ade-ios-sim", .enables)
+    case .appControl: return ("ade-app-control", .enables)
+    case .cursorCloud: return ("ade-cursor-cloud", .supersedes)
     }
   }
+
+  /// The owning plugin. See ``spec``.
+  var ownerPluginId: String { spec.ownerPluginId }
+
+  /// The polarity. See ``spec``.
+  var presence: PluginSurfacePresence { spec.presence }
 }
 
 /// The two directions a plugin can relate to a compiled surface.
@@ -139,6 +138,13 @@ final class PluginPresenceGate: ObservableObject {
   /// until a reply says otherwise — see the type comment.
   @Published private(set) var installedPlugins: [PluginPresenceListEntry] = []
 
+  /// `installedPlugins` as a set of ids, kept in step with it on every write.
+  ///
+  /// Every read of this gate is a membership test, and the contribution index
+  /// runs one per contribution row on every rebuild. Deriving the set at each
+  /// call rebuilt it for a list that only changes on a reply.
+  private(set) var installedPluginIds: Set<String> = []
+
   /// Whether `installedPlugins` reflects a real answer for the current trigger
   /// rather than the pre-answer default. Only decisions that cannot be redrawn
   /// later (a deep link is handled once) need to care.
@@ -162,7 +168,7 @@ final class PluginPresenceGate: ObservableObject {
   /// hidden. Views call this — a view that renders too early re-renders when the
   /// answer lands, so waiting here would only stall the frame.
   func isInstalled(_ pluginId: String) -> Bool {
-    installedPlugins.contains { $0.pluginId == pluginId }
+    installedPluginIds.contains(pluginId)
   }
 
   func owns(_ surface: PluginBuiltinSurface) -> Bool {
@@ -211,6 +217,20 @@ final class PluginPresenceGate: ObservableObject {
     case .supersedes:
       return !owns(surface)
     }
+  }
+
+  /// ``drawsBuiltin(_:)`` for an affordance that belongs to the Linear surface
+  /// only some of the time: a lane's issue reference.
+  ///
+  /// A lane can carry a ref from any tracker. Only a Linear ref is one of ADE's
+  /// compiled Linear affordances, so only a Linear ref answers to `ade-linear`;
+  /// a Jira or GitHub ref was written by whatever plugin owns that tracker and
+  /// is never this gate's to hide. Derived here rather than at each call site
+  /// because the badge that opens the issue and the menu action that copies its
+  /// link must not be able to disagree about the same ref.
+  func drawsBuiltinAffordance(for ref: IssueRef) -> Bool {
+    guard ref.isLinear else { return true }
+    return drawsBuiltin(.linear)
   }
 
   /// The one-shot answer, for decisions with no second chance: a deep link is
@@ -269,7 +289,7 @@ final class PluginPresenceGate: ObservableObject {
     // machine that may not have them — the exact false-positive this gate
     // exists to prevent.
     if trigger != resolvedTrigger {
-      installedPlugins = []
+      setPlugins([])
       hasAnswer = false
     }
 
@@ -317,10 +337,68 @@ final class PluginPresenceGate: ObservableObject {
     // the reply that lands describes a machine this phone is no longer talking
     // to. Drop it; the refresh for the new trigger is already on its way.
     guard sync.pluginPresenceTrigger == trigger else { return }
-    installedPlugins = plugins
+    setPlugins(plugins)
     resolvedTrigger = trigger
     hasAnswer = answered
+  }
+
+  /// The only writer of the list, so the id set can never fall behind it.
+  private func setPlugins(_ plugins: [PluginPresenceListEntry]) {
+    installedPlugins = plugins
+    installedPluginIds = Set(plugins.map(\.pluginId))
   }
 }
 
 extension SyncService: PluginPresenceGateSyncing {}
+
+extension View {
+  /// Hosts the sheet of a compiled pane a plugin can supersede. Both such panes
+  /// on this phone, Linear and Cursor Cloud, are presented through this.
+  ///
+  /// Gated at the host, not only at the button that opens it: `isPresented` is
+  /// public state that a deep link, a queued navigation or a future caller can
+  /// set, and a hidden button is not access control — the rule
+  /// ``PluginPresenceGate`` states, applied a second time.
+  ///
+  /// Three things happen here, each for its own reason.
+  ///
+  /// - The binding FILTERS. Written this way rather than as a plain
+  ///   `isPresented` for the case where the answer arrives WHILE the sheet is
+  ///   up — the phone attaches to a machine that has the plugin, or the user
+  ///   installs it from Marketplace mid-session. Reading false then flips the
+  ///   binding, which dismisses the superseded pane instead of leaving up a
+  ///   screen the plugin has taken over. The setter passes straight through, so
+  ///   anything inside the pane that closes it still works.
+  /// - The `onChange` CLEARS, which the filter does not. A filter only
+  ///   suppresses the sheet; it does not forget that something asked for it.
+  ///   Leaving the flag true under a superseding plugin would arm the pane to
+  ///   spring open later, the moment the plugin was disabled or the phone
+  ///   attached to a machine without it — a sheet appearing out of nowhere long
+  ///   after the tap that requested it. The write lives here rather than in the
+  ///   binding's getter because a getter runs during the view update, where
+  ///   mutating published state is not allowed.
+  /// - The content INHERITS `syncService`. A sheet is a separate presentation
+  ///   and does not carry the presenting view's environment objects into it.
+  @MainActor
+  func supersededBuiltinSheet<Content: View>(
+    _ surface: PluginBuiltinSurface,
+    isPresented: Binding<Bool>,
+    gate: PluginPresenceGate,
+    syncService: SyncService,
+    @ViewBuilder content: @escaping () -> Content
+  ) -> some View {
+    sheet(
+      isPresented: Binding(
+        get: { isPresented.wrappedValue && gate.drawsBuiltin(surface) },
+        set: { isPresented.wrappedValue = $0 }
+      )
+    ) {
+      content().environmentObject(syncService)
+    }
+    .onChange(of: gate.drawsBuiltin(surface)) { _, drawsBuiltin in
+      if !drawsBuiltin {
+        isPresented.wrappedValue = false
+      }
+    }
+  }
+}

@@ -141,27 +141,17 @@ struct ContentView: View {
           .environmentObject(syncService)
           .environmentObject(syncService.attentionDrawer)
       }
-      // Gated at the host, not only at the button: the flag is public state that
-      // a deep link, a queued navigation or a future caller can set, and a
-      // hidden button is not access control. The setter passes straight through
-      // so anything inside the pane that closes it still works.
-      .sheet(isPresented: linearPanePresentation) {
+      // ADE's compiled Linear pane, and the third place the same question is
+      // asked: the toolbar button hides itself, so does the button's own body,
+      // and so does this host. See `supersededBuiltinSheet` for why a host that
+      // filters is not enough on its own.
+      .supersededBuiltinSheet(
+        .linear,
+        isPresented: $syncService.linearPanePresented,
+        gate: pluginGate,
+        syncService: syncService
+      ) {
         LinearPaneSheet(syncService: syncService)
-          .environmentObject(syncService)
-          .environmentObject(pluginGate)
-      }
-      // Clearing the flag is separate from filtering it because the filter alone
-      // only suppresses the sheet, it does not forget that something asked for
-      // it. Leaving `linearPanePresented` true under a superseding plugin would
-      // arm the pane to spring open later, the moment the plugin was disabled or
-      // the phone attached to a machine without it — a sheet appearing out of
-      // nowhere long after the tap that requested it. The write is here rather
-      // than in the binding's getter because a getter runs during the view
-      // update, where mutating published state is not allowed.
-      .onChange(of: pluginGate.drawsBuiltin(.linear)) { _, drawsBuiltin in
-        if !drawsBuiltin {
-          syncService.linearPanePresented = false
-        }
       }
       // `item:` rather than a bool: which plugin AND which panel is showing is
       // part of the presentation, and a bool would keep the previous pane's
@@ -195,39 +185,14 @@ struct ContentView: View {
       // can finish. Hosted here rather than at the button, because by the time
       // the action answers, the menu the press came from has dismissed.
       .pluginPromptAlert(syncService: syncService)
-      // The built-in Cursor Cloud pane, and the third place the same question is
-      // asked. The toolbar button hides itself and so does the button's own
-      // body, but a hidden button is not access control: `cursorCloudPanePresented`
-      // is a plain published flag on `SyncService` that anything in the app can
-      // set, so the host of the sheet refuses too.
-      //
-      // The binding is written as a filter rather than a plain `isPresented`
-      // for the case where the answer arrives WHILE the sheet is up — the phone
-      // attaches to a machine that has `ade-cursor-cloud`, or the user installs
-      // it from Marketplace mid-session. Reading false then flips the binding,
-      // which dismisses the superseded pane instead of leaving a screen up that
-      // the plugin has taken over. Setting it back to false always clears the
-      // flag, so the "closed" path is unaffected.
-      .sheet(isPresented: Binding(
-        get: { syncService.cursorCloudPanePresented && pluginGate.drawsBuiltin(.cursorCloud) },
-        set: { syncService.cursorCloudPanePresented = $0 }
-      )) {
+      // The compiled Cursor Cloud pane, hosted exactly as the Linear one above.
+      .supersededBuiltinSheet(
+        .cursorCloud,
+        isPresented: $syncService.cursorCloudPanePresented,
+        gate: pluginGate,
+        syncService: syncService
+      ) {
         CursorCloudPaneSheet(syncService: syncService)
-          .environmentObject(syncService)
-          .environmentObject(pluginGate)
-      }
-      // Clearing the flag is separate from filtering it because the filter alone
-      // only suppresses the sheet, it does not forget that something asked for
-      // it. Leaving `cursorCloudPanePresented` true under a superseding plugin
-      // would arm the pane to spring open later, the moment the plugin was
-      // disabled or the phone attached to a machine without it — a sheet
-      // appearing out of nowhere long after the tap that requested it. The write
-      // is here rather than in the binding's getter because a getter runs during
-      // the view update, where mutating published state is not allowed.
-      .onChange(of: pluginGate.drawsBuiltin(.cursorCloud)) { _, drawsBuiltin in
-        if !drawsBuiltin {
-          syncService.cursorCloudPanePresented = false
-        }
       }
       // Presented rather than bound to the request itself: the card's stage
       // changes under a stable id as the wake runs, and `sheet(item:)` would
@@ -347,28 +312,6 @@ struct ContentView: View {
 
   private var hasMobileAccess: Bool {
     mobileLaunchAccess.hasAccess
-  }
-
-  /// `linearPanePresented`, filtered through the plugin gate. Reads false once
-  /// the machine positively has `ade-linear`, which draws its own Linear panels
-  /// in this pane's place, so a stray flag cannot put two Linear surfaces up at
-  /// once; writes are unfiltered so dismissal always lands.
-  ///
-  /// Note the polarity: `drawsBuiltin`, not `owns`. Every unknown — no answer
-  /// yet, an old host, a dropped socket, the gap after attaching elsewhere —
-  /// leaves the compiled pane presentable, because that is what the phone did
-  /// before the plugin existed.
-  ///
-  /// Written as a filter rather than a plain `isPresented` for the case where
-  /// the answer arrives WHILE the sheet is up: the user installs `ade-linear`
-  /// from Marketplace mid-session, or the phone attaches to a machine that has
-  /// it. Reading false then flips the binding, which dismisses the superseded
-  /// pane instead of leaving a screen up that the plugin has taken over.
-  private var linearPanePresentation: Binding<Bool> {
-    Binding(
-      get: { syncService.linearPanePresented && pluginGate.drawsBuiltin(.linear) },
-      set: { syncService.linearPanePresented = $0 }
-    )
   }
 
   private func captureCurrentRootScreen() {

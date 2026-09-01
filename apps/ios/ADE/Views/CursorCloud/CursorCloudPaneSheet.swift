@@ -42,9 +42,7 @@ struct CursorCloudPaneSheet: View {
 /// access control — the same rule the comments in `PluginPresenceGate.swift`
 /// state, and the reason the sheet in `ContentView` checks a third time.
 ///
-/// Note the polarity: this is `drawsBuiltin`, not `owns`. Every unknown — no
-/// answer yet, an old host, a dropped socket — leaves the built-in button up,
-/// so a machine without the plugin behaves exactly as it always has.
+/// Note the polarity: this is `drawsBuiltin`, not `owns`. See `PluginPresenceGate.swift`.
 struct CursorCloudPaneToolbarButton: View {
   @EnvironmentObject private var syncService: SyncService
   @EnvironmentObject private var pluginGate: PluginPresenceGate

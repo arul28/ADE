@@ -671,10 +671,6 @@ struct WorkRootScreen: View {
             // exists: the bell opens the Activity drawer, which bands needs-you
             // first with per-session navigation. Do not reintroduce a
             // replacement here, and do not re-derive the counts that fed it.
-            //
-            // Real-Linear-logo button, immediately left of the bell. Gated on
-            // the attached machine having the Linear plugin — not on the
-            // account's Linear connection, which the pane itself resolves.
             LinearPaneToolbarButton()
             // Contributed toolbar actions, before the plugin-pane slot: these
             // are verbs a plugin put on THIS surface, and the puzzle-piece
@@ -1013,9 +1009,8 @@ struct WorkRootScreen: View {
   /// `lanes.updateAppearance` or `lanes.rename` shows no colour or manage row at
   /// all rather than one that fails on tap, and a machine that HAS `ade-linear`
   /// shows no Linear row, because the plugin's own panels replace the compiled
-  /// Linear surface this row belongs to. The polarity runs that way round for
-  /// every Linear affordance on the phone: `drawsBuiltin`, not `owns`, so a
-  /// machine without the plugin keeps the row it has always had.
+  /// Linear surface this row belongs to. Note the polarity: `drawsBuiltin`, not
+  /// `owns`. See `PluginPresenceGate.swift`.
   var workLaneMenuActions: WorkSessionLaneMenuActions {
     WorkSessionLaneMenuActions(
       colorAvailable: syncService.canInvokeRemoteAction("lanes.updateAppearance"),

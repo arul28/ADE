@@ -15,10 +15,7 @@ import SwiftUI
 /// — the same rule the comments in `PluginPresenceGate.swift` state, and the
 /// reason the sheet host in `ContentView` checks a third time.
 ///
-/// Note the polarity: this is `drawsBuiltin`, not `owns`. Every unknown — no
-/// answer yet, an old host, a dropped socket, the gap right after attaching to
-/// another machine — leaves the built-in button up, so a machine without the
-/// plugin behaves exactly as it always has.
+/// Note the polarity: this is `drawsBuiltin`, not `owns`. See `PluginPresenceGate.swift`.
 ///
 /// The plugin check is not a connection check and the two must not be confused.
 /// The `ade linear` CLI keeps using the account connection headlessly whichever

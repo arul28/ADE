@@ -77,11 +77,11 @@ struct CtoSettingsScreen: View {
       .tint(ADEColor.ctoAccent)
       .refreshable { await reload() }
       // The answer can land while the sheet is up, or the phone can attach to a
-      // machine without the plugin. Either way the card reappears with nothing
-      // in it until something asks again, and the sheet's own `.task` has
-      // already run by then.
-      .onChange(of: pluginGate.drawsBuiltin(.linear)) { _, drawsBuiltin in
-        guard drawsBuiltin else { return }
+      // machine with a different set of plugins. Either way the sheet's own
+      // `.task` has already run, so re-ask on every change and let
+      // `loadLinearStatus` decide: it fetches for a visible card and clears the
+      // status for one the plugin has just taken over.
+      .onChange(of: pluginGate.drawsBuiltin(.linear)) { _, _ in
         Task { await loadLinearStatus() }
       }
       .task {
@@ -270,10 +270,7 @@ struct CtoSettingsScreen: View {
   /// would put two connect surfaces for one account in the app, each able to
   /// report a different state.
   ///
-  /// Note the polarity: `drawsBuiltin`, not `owns`. Every unknown — no answer
-  /// yet, an old host, a dropped socket, the gap right after attaching to
-  /// another machine — keeps the card, because that is the connection surface
-  /// the phone has always had and a late round trip must not remove it.
+  /// Note the polarity: `drawsBuiltin`, not `owns`. See `PluginPresenceGate.swift`.
   ///
   /// The whole section goes, header included: Linear is its only row, and a
   /// heading over nothing reads as a screen that failed to load.
