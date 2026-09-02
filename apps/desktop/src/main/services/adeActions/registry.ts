@@ -609,6 +609,7 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "getParallelLaunchState",
     "interrupt",
     "interruptWithQueueMode",
+    "stopTask",
     "recoverTurn",
     "recoverCodexTurn",
     "resolveUnprocessedMessage",

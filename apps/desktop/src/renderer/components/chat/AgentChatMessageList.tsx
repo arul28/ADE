@@ -92,6 +92,7 @@ import { ClaudeLogo, CodexLogo, CursorAgentLogo } from "../terminals/ToolLogos";
 import { ModelRowLogo, ProviderLogo } from "../shared/ProviderLogos";
 import { pendingInputHeaderLabel, providerDisplayLabel } from "../../../shared/pendingInputLabels";
 import { isHostResumedNoticeEvent, isHostSleepNoticeEvent } from "../../../shared/hostSleepNotice";
+import { isClaudeContextCategoryKind } from "../../../shared/claudeContextUsage";
 import type { ChatSubagentSnapshot } from "./chatExecutionSummary";
 import {
   ChatToolActivityDetails,
@@ -682,10 +683,13 @@ function renderNoticeDetail(detail: string | AgentChatNoticeDetail): React.React
   );
 }
 
-function formatTokenCount(value: number | null | undefined): string | null {
-  if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) return null;
-  if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1)}M`;
-  if (value >= 1_000) return `${(value / 1_000).toFixed(1)}k`;
+function formatContextK(value: number | null | undefined): string {
+  if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) return "0";
+  if (value >= 1_000_000) {
+    const millions = value / 1_000_000;
+    return `${Number.isInteger(millions) ? millions.toFixed(0) : millions.toFixed(1)}M`;
+  }
+  if (value >= 1_000) return `${Math.round(value / 1_000)}k`;
   return String(Math.round(value));
 }
 
@@ -2414,6 +2418,8 @@ function renderEvent(
     onCancelQueuedMessage?: (uuid: string) => void;
     onRestoreCancelledQueue?: (recoveryId: string) => Promise<boolean>;
     settledQueueRecoveryIds?: Set<string>;
+    /** Stop one running subagent / background task by provider task id. */
+    onStopSubagent?: (taskId: string) => void;
     /**
      * True for the single trailing streaming assistant text row of a visible
      * main transcript — the only row whose growth is paced.
@@ -2870,6 +2876,11 @@ function renderEvent(
       <SubagentSpawnCard
         event={event}
         laneId={options?.laneId ?? null}
+        onStop={
+          event.taskId && options?.onStopSubagent
+            ? (taskId) => options.onStopSubagent?.(taskId)
+            : undefined
+        }
         onJumpToResult={
           options?.onScrollToRowKey
             ? () => options!.onScrollToRowKey?.(`subagent-result:${event.agentKey}`)
@@ -3056,31 +3067,41 @@ function renderEvent(
     // Automatic "live" snapshots are filtered out of the row list upstream (see
     // isAutomaticContextUsageEvent); only user-requested `/context` reaches here.
     const usage = event.usage;
-    const totalLabel = formatTokenCount(usage.totalTokens) ?? "0";
-    const maxLabel = formatTokenCount(usage.maxTokens) ?? "0";
+    const totalLabel = formatContextK(usage.totalTokens);
+    const maxLabel = formatContextK(usage.maxTokens);
     const percent = Math.max(0, Math.min(100, usage.percentage));
     const categories = usage.categories.length ? usage.categories : [];
+    const modelLabel = usage.model?.trim() || null;
     return (
-      <div className="w-fit max-w-[var(--chat-content-width,52rem)] rounded-lg border border-cyan-300/14 bg-cyan-500/[0.035] px-3.5 py-3 font-sans text-[length:calc(var(--chat-font-size)*11/14)] text-cyan-50/78">
+      <div
+        data-testid="claude-context-card"
+        className="w-fit max-w-[var(--chat-content-width,52rem)] rounded-lg border border-cyan-300/14 bg-cyan-500/[0.035] px-3.5 py-3 font-sans text-[length:calc(var(--chat-font-size)*11/14)] text-cyan-50/78"
+      >
         <div className="flex flex-wrap items-center gap-2">
           <Brain size={13} weight="regular" className="text-cyan-200/70" />
-          <span className="font-medium text-cyan-50/90">Context usage</span>
-          <span className="font-mono text-[length:calc(var(--chat-font-size)*10/14)] text-cyan-100/50">
-            {totalLabel} / {maxLabel} tokens · {percent.toFixed(0)}%
+          <span className="font-medium text-cyan-50/90">
+            {`Context${modelLabel ? ` · ${modelLabel}` : ""} · ${totalLabel}/${maxLabel} (${percent.toFixed(0)}%)`}
           </span>
-          {usage.model ? <span className="rounded-md border border-cyan-200/10 px-1.5 py-0.5 font-mono text-[length:calc(var(--chat-font-size)*9/14)] text-cyan-100/45">{usage.model}</span> : null}
         </div>
         <div className="mt-3 h-1.5 overflow-hidden rounded-full bg-black/25">
           <div className="h-full rounded-full bg-cyan-300/65" style={{ width: `${percent}%` }} />
         </div>
         <div className="mt-3 space-y-1.5">
           {categories.map((category) => {
-            const categoryPercent = Math.max(0, Math.min(100, category.percentage));
+            const kind = isClaudeContextCategoryKind(category.kind) ? category.kind : "used";
+            const servers = category.mcpServers ?? [];
             return (
-              <div key={`${category.name}:${category.tokens}`} className="grid grid-cols-[minmax(8rem,1fr)_auto_4rem] items-center gap-3">
-                <span className="truncate text-cyan-50/74" title={category.name}>{category.name}</span>
-                <span className="font-mono text-cyan-100/50">{formatTokenCount(category.tokens) ?? "0"}</span>
-                <span className="text-right font-mono text-cyan-100/42">{categoryPercent.toFixed(categoryPercent < 10 && categoryPercent > 0 ? 1 : 0)}%</span>
+              <div key={`${category.name}:${category.tokens}:${kind}`} className="space-y-0.5">
+                <div className="grid grid-cols-[minmax(8rem,1fr)_auto_4.5rem] items-center gap-3">
+                  <span className="truncate text-cyan-50/74" title={category.name}>{category.name}</span>
+                  <span className="font-mono text-cyan-100/50">{formatContextK(category.tokens)}</span>
+                  <span className="text-right font-mono text-cyan-100/42">{kind}</span>
+                </div>
+                {servers.length ? (
+                  <div className="pl-3 font-mono text-[length:calc(var(--chat-font-size)*10/14)] text-cyan-100/42">
+                    {servers.map((server) => `${server.name} ${formatContextK(server.tokens)}`).join(" · ")}
+                  </div>
+                ) : null}
               </div>
             );
           })}
@@ -3212,6 +3233,22 @@ function renderEvent(
 
   /* ── System Notice ── */
   if (event.type === "system_notice") {
+    if (event.status === "model_switched") {
+      const message = event.message.trim() || "switched models";
+      return (
+        <div
+          className="my-3 flex items-center gap-2 font-sans text-fg/45"
+          data-testid="model-switched-divider"
+          aria-label={message}
+        >
+          <span className="h-px flex-1 bg-fg/[0.08]" />
+          <span className="shrink-0 px-1 text-[length:calc(var(--chat-font-size)*10.5/14)]">
+            {message}
+          </span>
+          <span className="h-px flex-1 bg-fg/[0.08]" />
+        </div>
+      );
+    }
     // Spawn notices. The "spawned" announcement is now carried by the unified,
     // navigable spawn-anchor card (SubagentSpawnCard) — do NOT render a second
     // quiet pill here. A `peer` child that finishes emits a `spawn_completed`
@@ -4588,6 +4625,8 @@ type EventRowProps = {
   onCancelQueuedMessage?: (uuid: string) => void;
   onRestoreCancelledQueue?: (recoveryId: string) => Promise<boolean>;
   settledQueueRecoveryIds?: Set<string>;
+  /** Stop one running subagent / background task by provider task id. */
+  onStopSubagent?: (taskId: string) => void;
   /** Proof captured during this turn — surfaced as a chip on the turn rule. */
   turnProof?: ComputerUseArtifactView[];
   /** Proof captured after this row but outside a completed turn window. */
@@ -4644,6 +4683,7 @@ const EventRow = React.memo(function EventRow({
   onCancelQueuedMessage,
   onRestoreCancelledQueue,
   settledQueueRecoveryIds,
+  onStopSubagent,
   turnProof,
   inlineProof,
   resolveProofThumbnailSrc,
@@ -4721,6 +4761,7 @@ const EventRow = React.memo(function EventRow({
             onCancelQueuedMessage,
             onRestoreCancelledQueue,
             settledQueueRecoveryIds,
+            onStopSubagent,
             pacedTextReveal,
           })}
       {envelope.event.type === "done" ? (
@@ -5227,6 +5268,7 @@ function AgentChatMessageListMain({
   onRewindFiles,
   onCancelQueuedMessage,
   onRestoreCancelledQueue,
+  onStopSubagent,
   turnDiffSummaries,
   sessionEnded = false,
   sessionProvider = null,
@@ -5271,6 +5313,8 @@ function AgentChatMessageListMain({
   /** Cancel an ADE-owned queued message by uuid (stop-receipt affordance). */
   onCancelQueuedMessage?: (uuid: string) => void;
   onRestoreCancelledQueue?: (recoveryId: string) => Promise<boolean>;
+  /** Stop one running Claude subagent / background task by provider task id. */
+  onStopSubagent?: (taskId: string) => void;
   turnDiffSummaries?: TurnDiffSummary[];
   respondingApprovalIds?: Set<string>;
   pendingApprovalIds?: Set<string>;
@@ -6763,6 +6807,7 @@ function AgentChatMessageListMain({
           onCancelQueuedMessage={onCancelQueuedMessage}
           onRestoreCancelledQueue={onRestoreCancelledQueue}
           settledQueueRecoveryIds={settledQueueRecoveryIds}
+          onStopSubagent={onStopSubagent}
           pacedTextReveal={envelope.key === pacedTextRowKey}
         />
       );
@@ -6820,10 +6865,11 @@ function AgentChatMessageListMain({
         onCancelQueuedMessage={onCancelQueuedMessage}
         onRestoreCancelledQueue={onRestoreCancelledQueue}
         settledQueueRecoveryIds={settledQueueRecoveryIds}
+        onStopSubagent={onStopSubagent}
         pacedTextReveal={envelope.key === pacedTextRowKey}
       />
     );
-  }, [activeTurnId, anchoredRowKey, assistantLabel, assistantTurnCopyByRowKey, surfaceMode, surfaceProfile, turnModelState, handleApproval, handleMeasure, openWorkspacePath, handleNavigateSuggestion, handleReviewChanges, onCodexRecovery, onRecoverContinuity, onRetryProviderFailure, onChooseProviderFailureModel, onRunUnprocessedMessage, onEditUnprocessedMessage, onDismissUnprocessedMessage, onInsertDraft, onRevealChatTerminal, onRewindFiles, turnDiffSummaries, respondingApprovalIds, pendingApprovalIds, resolvedInputStates, resolvedInputAnswers, laneId, sessionId, sessionTurnActive, sessionEnded, runtimeName, mosaic, scrollToRowKey, forkHistoryDividerRowKey, staleInterruptReceipts, settledQueueRecoveryIds, onCancelQueuedMessage, onRestoreCancelledQueue, transcriptToolActivity, turnEndDurationByRowKey, turnProofByRowKey, inlineProofByRowKey, resolveProofThumbnailSrc, onOpenProofDrawer, pacedTextRowKey]);
+  }, [activeTurnId, anchoredRowKey, assistantLabel, assistantTurnCopyByRowKey, surfaceMode, surfaceProfile, turnModelState, handleApproval, handleMeasure, openWorkspacePath, handleNavigateSuggestion, handleReviewChanges, onCodexRecovery, onRecoverContinuity, onRetryProviderFailure, onChooseProviderFailureModel, onRunUnprocessedMessage, onEditUnprocessedMessage, onDismissUnprocessedMessage, onInsertDraft, onRevealChatTerminal, onRewindFiles, turnDiffSummaries, respondingApprovalIds, pendingApprovalIds, resolvedInputStates, resolvedInputAnswers, laneId, sessionId, sessionTurnActive, sessionEnded, runtimeName, mosaic, scrollToRowKey, forkHistoryDividerRowKey, staleInterruptReceipts, settledQueueRecoveryIds, onCancelQueuedMessage, onRestoreCancelledQueue, onStopSubagent, transcriptToolActivity, turnEndDurationByRowKey, turnProofByRowKey, inlineProofByRowKey, resolveProofThumbnailSrc, onOpenProofDrawer, pacedTextRowKey]);
 
   // Compute the bottom spacer height for virtualized mode.
   const bottomSpacerHeight = useMemo(() => {

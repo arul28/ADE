@@ -21,6 +21,12 @@ import {
 } from "../../../desktop/src/shared/types/chat";
 import { providerDisplayLabel } from "../../../desktop/src/shared/pendingInputLabels";
 import {
+  parseAgentChatStopMode,
+  resolveAgentChatStopModeAlias,
+  stopModeClearsQueue,
+  stopModeStopsBackground,
+} from "../../../desktop/src/shared/chatStopModes";
+import {
   composerFileSearchQuery,
   composerTriggerForSelection,
   composerTriggerHasConfirmedPrefix,
@@ -1329,14 +1335,16 @@ function formatTokenSummary(stats: ReturnType<typeof latestTokenStats>): string 
 }
 
 function chatInterruptNotice(result: Awaited<ReturnType<typeof interruptChat>>): string {
-  if (result.mode === "stop_only") {
-    return "Stopped. Queued messages are preserved.";
+  const stoppedBackground = stopModeStopsBackground(parseAgentChatStopMode(result.mode));
+  const backgroundNote = stoppedBackground ? " Background jobs were stopped." : "";
+  if (!stopModeClearsQueue(parseAgentChatStopMode(result.mode))) {
+    return `Stopped. Queued messages are preserved.${backgroundNote}`;
   }
   if (result.cancelledQueuedCount > 0 && result.recoveryId) {
     const noun = result.cancelledQueuedCount === 1 ? "message" : "messages";
-    return `Stopped and cleared ${result.cancelledQueuedCount} queued ${noun}. Undo: /restore-queue ${result.recoveryId}`;
+    return `Stopped and cleared ${result.cancelledQueuedCount} queued ${noun}. Undo: /restore-queue ${result.recoveryId}${backgroundNote}`;
   }
-  return "Stopped.";
+  return `Stopped.${backgroundNote}`;
 }
 
 export function formatGoalBannerLine(goal: CodexThreadGoal | ClaudeActiveGoal | null): string | null {
@@ -12321,18 +12329,11 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
         return;
       }
       const normalizedMode = args.trim().toLowerCase();
-      let mode: AgentChatStopMode;
-      if (!normalizedMode || normalizedMode === "clear-queue" || normalizedMode === "--clear-queue") {
-        mode = "stop_and_clear";
-      } else if (
-        normalizedMode === "keep-queue"
-        || normalizedMode === "--keep-queue"
-        || normalizedMode === "stop-only"
-        || normalizedMode === "--stop-only"
-      ) {
-        mode = "stop_only";
-      } else {
-        addNotice("Usage: /stop [keep-queue|clear-queue]", "error");
+      const mode = normalizedMode
+        ? resolveAgentChatStopModeAlias(normalizedMode)
+        : "stop_and_clear";
+      if (!mode) {
+        addNotice("Usage: /stop [keep-queue|clear-queue|background|clear-and-background]", "error");
         return;
       }
       setStreaming(false);

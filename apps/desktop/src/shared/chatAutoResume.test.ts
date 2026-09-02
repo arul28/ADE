@@ -6,9 +6,11 @@ import {
   autoResumeFireAtMs,
   autoResumeScheduleId,
   formatAutoResumeTime,
+  formatUsageLimitResetLabel,
   isAutoResumeScheduledWork,
   isPendingAutoResumeScheduledWork,
   isUsageLimitChatError,
+  sessionAutoContinueAtUsageLimit,
 } from "./chatAutoResume";
 
 describe("isUsageLimitChatError", () => {
@@ -131,5 +133,28 @@ describe("formatAutoResumeTime", () => {
 
   it("returns an empty label rather than 'Invalid Date' for a bad instant", () => {
     expect(formatAutoResumeTime(Number.NaN)).toBe("");
+  });
+});
+
+describe("formatUsageLimitResetLabel", () => {
+  it("names the reset clock and remaining window", () => {
+    const resetAt = Date.parse("2026-08-29T15:40:00.000Z");
+    const now = resetAt - 47 * 60_000;
+    expect(formatUsageLimitResetLabel(resetAt, now)).toMatch(/^Reset at .+\(47 min\)$/);
+  });
+
+  it("omits the remaining window once the reset instant has passed", () => {
+    const resetAt = Date.parse("2026-08-29T15:40:00.000Z");
+    expect(formatUsageLimitResetLabel(resetAt, resetAt + 60_000)).toMatch(/^Reset at /);
+    expect(formatUsageLimitResetLabel(resetAt, resetAt + 60_000)).not.toMatch(/min\)|hr\)$/);
+  });
+});
+
+describe("sessionAutoContinueAtUsageLimit", () => {
+  it("defaults auto-continue on, with explicit false as the per-chat opt-out", () => {
+    expect(sessionAutoContinueAtUsageLimit(undefined)).toBe(true);
+    expect(sessionAutoContinueAtUsageLimit({})).toBe(true);
+    expect(sessionAutoContinueAtUsageLimit({ autoContinueAtUsageLimit: true })).toBe(true);
+    expect(sessionAutoContinueAtUsageLimit({ autoContinueAtUsageLimit: false })).toBe(false);
   });
 });

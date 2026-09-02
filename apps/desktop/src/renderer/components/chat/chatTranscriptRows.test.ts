@@ -2967,6 +2967,7 @@ describe("subagent two-row rendering", () => {
       status: "completed",
       statusLine: "Reading transcript rows",
       toolCount: 2,
+      taskId: "agent-a",
     });
     expect(remainingText?.event).toMatchObject({
       type: "text",

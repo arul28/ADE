@@ -788,6 +788,8 @@ struct AgentChatScheduledWorkItem: Codable, Identifiable, Equatable {
   var cancellable: Bool
   var late: Bool?
   var outcomeSummary: String?
+  /// Provenance for rows ADE armed itself. Older hosts omit it.
+  var source: String? = nil
 }
 
 struct AgentChatCancelScheduledWorkResult: Codable, Equatable {
@@ -892,6 +894,12 @@ struct AgentChatSessionSummary: Codable, Identifiable, Equatable {
   var scheduledWorkPaused: Bool? = nil
   /// Earliest armed, unpaused wake reported by the host. Older hosts omit it.
   var nextWakeAt: String? = nil
+  /// Claude SDK auto-continue after a claude.ai usage-limit reset. Older hosts omit it.
+  var autoContinueAtUsageLimit: Bool? = nil
+  /// ISO instant this chat is parked waiting for a usage-limit reset. Older hosts omit it.
+  var usageLimitParkedUntil: String? = nil
+  /// Live background tasks still running after the foreground turn. Older hosts omit it.
+  var activeBackgroundTaskCount: Int? = nil
   var threadId: String?
   var requestedCwd: String?
   // Orchestration-mode fields (populated when session is part of an orchestration run)
@@ -955,6 +963,9 @@ struct AgentChatSessionSummary: Codable, Identifiable, Equatable {
       && lhs.scheduledWork == rhs.scheduledWork
       && lhs.scheduledWorkPaused == rhs.scheduledWorkPaused
       && lhs.nextWakeAt == rhs.nextWakeAt
+      && lhs.autoContinueAtUsageLimit == rhs.autoContinueAtUsageLimit
+      && lhs.usageLimitParkedUntil == rhs.usageLimitParkedUntil
+      && lhs.activeBackgroundTaskCount == rhs.activeBackgroundTaskCount
       && lhs.threadId == rhs.threadId
       && lhs.requestedCwd == rhs.requestedCwd
       && lhs.orchestrationRunId == rhs.orchestrationRunId
@@ -2116,6 +2127,8 @@ struct AgentChatContextUsageCategory: Codable, Equatable {
   var percentage: Double
   var color: String?
   var isDeferred: Bool?
+  /// SDK `categories[].kind`. Classify by this, never by matching the name "free".
+  var kind: String?
 }
 
 struct AgentChatContextUsage: Codable, Equatable {
@@ -3591,14 +3604,21 @@ struct AgentChatCancelDispatchedSteerRequest: Codable, Equatable {
   var steerId: String
 }
 
-enum AgentChatStopMode: String, Codable, Equatable {
-  case stopAndClear = "stop_and_clear"
+enum AgentChatStopMode: String, Codable, Equatable, Hashable, CaseIterable {
   case stopOnly = "stop_only"
+  case stopAndClear = "stop_and_clear"
+  case stopAndBackground = "stop_and_background"
+  case stopAndClearAndBackground = "stop_and_clear_and_background"
 }
 
 struct AgentChatInterruptRequest: Codable, Equatable {
   var sessionId: String
   var mode: AgentChatStopMode? = nil
+}
+
+struct AgentChatStopTaskRequest: Codable, Equatable {
+  var sessionId: String
+  var taskId: String
 }
 
 struct AgentChatHandoffRequest: Codable, Equatable {
@@ -3695,6 +3715,7 @@ struct AgentChatUpdateSessionRequest: Codable, Equatable {
   var manuallyNamed: Bool?
   var spawnKind: String?
   var subagentTakeoverPromptShown: Bool?
+  var autoContinueAtUsageLimit: Bool?
 }
 
 struct AgentChatTranscriptEntry: Codable, Identifiable, Equatable {

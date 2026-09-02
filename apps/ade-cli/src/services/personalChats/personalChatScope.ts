@@ -461,6 +461,10 @@ export class PersonalChatScope {
         await this.requirePersonalSession(service, readSessionId(args));
         result = await service.interrupt(args as never);
         break;
+      case "stopTask":
+        await this.requirePersonalSession(service, readSessionId(args));
+        result = await service.stopTask(args as never);
+        break;
       case "restoreCancelledQueue":
         await this.requirePersonalSession(service, readSessionId(args));
         result = await service.restoreCancelledQueue(args as never);

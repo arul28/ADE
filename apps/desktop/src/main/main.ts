@@ -3910,6 +3910,23 @@ app.whenReady().then(async () => {
         analytics: productAnalyticsService,
         properties,
       }),
+      onUsageLimitAutoResumed: ({ sessionId, title }) => {
+        if (!Notification.isSupported()) return;
+        try {
+          const notification = new Notification({
+            title: "Chat resumed",
+            body: title?.trim()
+              ? `"${title.trim()}" continued after its usage limit reset.`
+              : "A chat continued after its usage limit reset.",
+          });
+          notification.show();
+        } catch (error) {
+          logger.warn("agent_chat.usage_limit_resume_notification_failed", {
+            sessionId,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+      },
       onSessionEnded: onTrackedSessionEnded,
       getDirtyFileTextForPath: async (absPath: string) => {
         const trimmed = absPath.trim();

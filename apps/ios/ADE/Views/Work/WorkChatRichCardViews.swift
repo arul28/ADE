@@ -2893,6 +2893,7 @@ struct WorkChatInfoDetailsSheet: View {
   let onSelect: @MainActor (WorkSubagentSnapshot) async -> Void
   let onCancelScheduledWork: (@MainActor (WorkScheduledWorkSnapshot) async -> Void)?
   let onSetScheduledWorkPaused: (@MainActor (Bool) async -> Void)?
+  var onStopTask: (@MainActor (String) async -> Void)? = nil
   @AppStorage private var paneUiRaw: String
   @AppStorage private var paneClearedRaw: String
   @State private var showAllSections: Set<String> = []
@@ -2920,7 +2921,8 @@ struct WorkChatInfoDetailsSheet: View {
     sessionModel: String? = nil,
     onSelect: @escaping @MainActor (WorkSubagentSnapshot) async -> Void,
     onCancelScheduledWork: (@MainActor (WorkScheduledWorkSnapshot) async -> Void)? = nil,
-    onSetScheduledWorkPaused: (@MainActor (Bool) async -> Void)? = nil
+    onSetScheduledWorkPaused: (@MainActor (Bool) async -> Void)? = nil,
+    onStopTask: (@MainActor (String) async -> Void)? = nil
   ) {
     self.sessionId = sessionId
     self.subagentSnapshots = subagentSnapshots
@@ -2935,6 +2937,7 @@ struct WorkChatInfoDetailsSheet: View {
     self.onSelect = onSelect
     self.onCancelScheduledWork = onCancelScheduledWork
     self.onSetScheduledWorkPaused = onSetScheduledWorkPaused
+    self.onStopTask = onStopTask
     self._paneUiRaw = AppStorage(
       wrappedValue: #"{"collapsed":{},"earlier":{}}"#,
       "ade.chat.paneUi.v1:\(sessionId)"
@@ -3183,7 +3186,15 @@ struct WorkChatInfoDetailsSheet: View {
                 clearedCount: backgroundPartition.clearedCount,
                 allClear: backgroundPartition.active.isEmpty && backgroundPartition.earlier.isEmpty && backgroundPartition.clearedCount > 0
               ) {
-                scalableSectionBody(title: "Background", sectionKey: "background", spacing: 8, partition: backgroundPartition, visible: visibleBackground) { item, _ in WorkBackgroundWorkRow(item: item) }
+                scalableSectionBody(title: "Background", sectionKey: "background", spacing: 8, partition: backgroundPartition, visible: visibleBackground) { item, _ in
+                  WorkBackgroundWorkRow(
+                    item: item,
+                    onStop: onStopTask.flatMap { stop in
+                      guard workBackgroundCanStopTask(item), let taskId = item.sourceTaskId else { return nil }
+                      return { Task { await stop(taskId) } }
+                    }
+                  )
+                }
               }
             }
             if !scheduleItems.isEmpty {
@@ -3245,7 +3256,11 @@ struct WorkChatInfoDetailsSheet: View {
       expanded: expandedTaskIds.contains(snapshot.taskId),
       sessionModel: sessionModel,
       treePrefix: workSubagentTreePrefix(snapshot, in: subagents),
-      onSelect: { Task { await onSelect(snapshot) } }
+      onSelect: { Task { await onSelect(snapshot) } },
+      onStop: onStopTask.flatMap { stop in
+        guard workSubagentCanStopTask(snapshot) else { return nil }
+        return { Task { await stop(snapshot.taskId) } }
+      }
     )
   }
 
@@ -3377,6 +3392,30 @@ struct WorkChatInfoDetailsSheet: View {
 /// A single subagent roster row inside Chat Info. Reuses the drawer row shape
 /// (glyph, name, subtitle, status chip, expandable detail). Background agents
 /// get a small "background" chip.
+private struct WorkSquareStopButton: View {
+  let label: String
+  let action: () -> Void
+
+  var body: some View {
+    Button(action: action) {
+      Image(systemName: "stop.fill")
+        .font(.system(size: 9, weight: .bold))
+        .foregroundStyle(ADEColor.danger.opacity(0.85))
+        .frame(width: 28, height: 28)
+        .background(
+          RoundedRectangle(cornerRadius: 6, style: .continuous)
+            .fill(ADEColor.danger.opacity(0.08))
+        )
+        .overlay {
+          RoundedRectangle(cornerRadius: 6, style: .continuous)
+            .stroke(ADEColor.danger.opacity(0.25), lineWidth: 1)
+        }
+    }
+    .buttonStyle(.plain)
+    .accessibilityLabel(label)
+  }
+}
+
 private struct WorkChatInfoSubagentRow: View {
   let snapshot: WorkSubagentSnapshot
   let selected: Bool
@@ -3385,6 +3424,7 @@ private struct WorkChatInfoSubagentRow: View {
   let sessionModel: String?
   var treePrefix: String = ""
   let onSelect: () -> Void
+  var onStop: (() -> Void)? = nil
 
   @State private var filesOpen = false
 
@@ -3472,6 +3512,13 @@ private struct WorkChatInfoSubagentRow: View {
         )
       }
       .buttonStyle(.plain)
+      .overlay(alignment: .topTrailing) {
+        if let onStop {
+          WorkSquareStopButton(label: workSubagentStopLabel(snapshot), action: onStop)
+            .padding(.top, 8)
+            .padding(.trailing, 8)
+        }
+      }
 
       if !filePaths.isEmpty {
         VStack(alignment: .leading, spacing: 4) {
@@ -3562,6 +3609,7 @@ private struct WorkChatInfoSubagentRow: View {
 /// dim cwd chip when the command carried a leading `cd <path> &&`.
 private struct WorkBackgroundWorkRow: View {
   let item: WorkScheduledWorkSnapshot
+  var onStop: (() -> Void)? = nil
 
   @State private var expanded = false
 
@@ -3624,6 +3672,13 @@ private struct WorkBackgroundWorkRow: View {
       )
     }
     .buttonStyle(.plain)
+    .overlay(alignment: .topTrailing) {
+      if let onStop {
+        WorkSquareStopButton(label: "Stop \(item.title)", action: onStop)
+          .padding(.top, 8)
+          .padding(.trailing, 8)
+      }
+    }
   }
 }
 
@@ -3937,6 +3992,7 @@ struct WorkSubagentTimelineRowView: View {
   /// Tapping a real spawn/result row opens the subagent detail/transcript, the
   /// same surface the Chat Info roster row opens. Background chips are inert.
   let onOpen: (@MainActor (WorkSubagentSnapshot) async -> Void)?
+  var onStop: (@MainActor (WorkSubagentSnapshot) async -> Void)? = nil
 
   var body: some View {
     switch row.kind {
@@ -3944,9 +4000,20 @@ struct WorkSubagentTimelineRowView: View {
       WorkSubagentBackgroundChipRow(row: row)
     case .spawn:
       tappable { WorkSubagentSpawnRow(row: row) }
+        .overlay(alignment: .trailing) {
+          if let spawnStopAction {
+            WorkSquareStopButton(label: workSubagentStopLabel(row.snapshot), action: spawnStopAction)
+              .padding(.trailing, 12)
+          }
+        }
     case .result:
       tappable { WorkSubagentResultRow(row: row) }
     }
+  }
+
+  private var spawnStopAction: (() -> Void)? {
+    guard let onStop, workSubagentCanStopTask(row.snapshot) else { return nil }
+    return { Task { await onStop(row.snapshot) } }
   }
 
   @ViewBuilder

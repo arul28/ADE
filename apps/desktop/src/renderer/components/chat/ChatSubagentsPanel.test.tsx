@@ -168,6 +168,45 @@ describe("ChatSubagentsPanel (pane variant)", () => {
     expect(arg.background).toBe(true);
   });
 
+  it("stops a running native subagent without taking over the row", () => {
+    const onStopSubagent = vi.fn();
+    const onSelectSubagent = vi.fn();
+    render(
+      <ChatSubagentsPanel
+        snapshots={[baseSnapshot]}
+        events={[]}
+        variant="pane"
+        capability={CLAUDE_CAP}
+        onSelectSubagent={onSelectSubagent}
+        onStopSubagent={onStopSubagent}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Stop code-reviewer" }));
+    expect(onStopSubagent).toHaveBeenCalledTimes(1);
+    expect(onStopSubagent.mock.calls[0]![0].taskId).toBe("task-1");
+    expect(onSelectSubagent).not.toHaveBeenCalled();
+  });
+
+  it("does not offer per-task stop on a spawned ADE chat row", () => {
+    const onStopSubagent = vi.fn();
+    render(
+      <ChatSubagentsPanel
+        snapshots={[{
+          ...baseSnapshot,
+          taskId: "chat:child-1",
+          childSessionId: "child-1",
+          description: "Codex Chat",
+        }]}
+        events={[]}
+        variant="pane"
+        onStopSubagent={onStopSubagent}
+      />,
+    );
+
+    expect(screen.queryByRole("button", { name: "Stop Codex Chat" })).toBeNull();
+  });
+
   it("takes over immediately without probing for running agents on a rich-metadata runtime (codex)", () => {
     const onSelectSubagent = vi.fn<[SubagentSelection], void>();
     const probeSubagentTranscript = vi.fn().mockResolvedValue(false);

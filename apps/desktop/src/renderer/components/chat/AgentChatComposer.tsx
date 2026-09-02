@@ -32,6 +32,12 @@ import {
   type PromptStashEntry,
 } from "../../../shared/types";
 import {
+  AGENT_CHAT_STOP_MODES,
+  chatStopModeCopy,
+  parseAgentChatStopMode,
+  stopModeClearsQueue,
+} from "../../../shared/chatStopModes";
+import {
   buildChatContextAttachmentPrompt,
   chatContextAttachmentKey,
   makeGitHubIssueContextAttachment,
@@ -1485,30 +1491,23 @@ function ActiveTurnSendButton({
   );
 }
 
-const ACTIVE_TURN_STOP_COPY: Record<AgentChatStopMode, { label: string; description: string }> = {
-  stop_and_clear: {
-    label: "Stop & clear queue",
-    description: "Stop the active turn and cancel messages already queued for Claude.",
-  },
-  stop_only: {
-    label: "Stop only",
-    description: "Stop the active turn but keep queued messages ready for Claude.",
-  },
-};
+const ACTIVE_TURN_STOP_MODES = AGENT_CHAT_STOP_MODES;
 
 function ActiveTurnStopButton({
   mode,
   allowQueueChoice,
+  backgroundJobCount,
   onModeChange,
   onStop,
 }: {
   mode: AgentChatStopMode;
   allowQueueChoice: boolean;
+  backgroundJobCount: number;
   onModeChange: (mode: AgentChatStopMode) => void;
   onStop: () => void;
 }) {
   const { caretRef, menuOpen, setMenuOpen } = useComposerSplitMenu("[data-active-stop-menu]");
-  const selectedCopy = ACTIVE_TURN_STOP_COPY[mode];
+  const selectedCopy = chatStopModeCopy(mode, backgroundJobCount);
 
   if (!allowQueueChoice) {
     return (
@@ -1535,10 +1534,10 @@ function ActiveTurnStopButton({
             aria-label={selectedCopy.label}
             onClick={onStop}
           >
-            {mode === "stop_and_clear" ? <Trash size={12} weight="bold" /> : <Square size={9} weight="fill" />}
+            {stopModeClearsQueue(mode) ? <Trash size={12} weight="bold" /> : <Square size={9} weight="fill" />}
           </button>
         </SmartTooltip>
-        <SmartTooltip forceEnabled content={{ label: "More stop options", description: "Choose whether queued Claude messages should be kept." }}>
+        <SmartTooltip forceEnabled content={{ label: "More stop options", description: "Choose whether queued messages and background jobs should be kept." }}>
           <button
             ref={caretRef}
             type="button"
@@ -1563,8 +1562,8 @@ function ActiveTurnStopButton({
                   className="fixed z-[100] overflow-hidden rounded-xl border border-white/[0.08] bg-[#13111A]/95 shadow-[0_18px_48px_rgba(0,0,0,0.55)] backdrop-blur-md"
                   style={composerSplitMenuPosition(caretRef.current)}
                 >
-                  {(["stop_and_clear", "stop_only"] as const).map((option, index) => {
-                    const copy = ACTIVE_TURN_STOP_COPY[option];
+                  {ACTIVE_TURN_STOP_MODES.map((option, index) => {
+                    const copy = chatStopModeCopy(option, backgroundJobCount);
                     const selected = option === mode;
                     return (
                       <button
@@ -1582,7 +1581,7 @@ function ActiveTurnStopButton({
                         )}
                       >
                         <span className="mt-0.5 inline-flex h-4 w-4 shrink-0 items-center justify-center text-red-400/75">
-                          {option === "stop_and_clear" ? <Trash size={12} weight="bold" /> : <Square size={9} weight="fill" />}
+                          {stopModeClearsQueue(option) ? <Trash size={12} weight="bold" /> : <Square size={9} weight="fill" />}
                         </span>
                         <span className="min-w-0 flex-1">
                           <span className="block text-[length:calc(var(--chat-font-size)*10/14)] font-medium text-fg/85">{copy.label}</span>
@@ -1675,6 +1674,7 @@ export function AgentChatComposer({
   backgroundLaunchBusy = false,
   backgroundLaunchLabel = "Background",
   onInterrupt,
+  backgroundJobCount = 0,
   onApproval,
   onAddAttachment,
   onRegisterDropTarget,
@@ -1850,6 +1850,8 @@ export function AgentChatComposer({
   backgroundLaunchBusy?: boolean;
   backgroundLaunchLabel?: string;
   onInterrupt: (mode?: AgentChatStopMode) => void;
+  /** Live background job count for stop-menu labels. */
+  backgroundJobCount?: number;
   onApproval: (
     decision: AgentChatApprovalDecision,
     responseText?: string | null,
@@ -2087,7 +2089,7 @@ export function AgentChatComposer({
       return;
     }
     const stored = window.localStorage.getItem(`ade.chat.stopMode.${sessionId}`);
-    setActiveTurnStopMode(stored === "stop_only" ? "stop_only" : "stop_and_clear");
+    setActiveTurnStopMode(parseAgentChatStopMode(stored));
   }, [sessionId]);
 
   const updateActiveTurnStopMode = useCallback((mode: AgentChatStopMode) => {
@@ -5700,6 +5702,7 @@ export function AgentChatComposer({
             <ActiveTurnStopButton
               mode={activeTurnStopMode}
               allowQueueChoice={sessionProvider === "claude"}
+              backgroundJobCount={backgroundJobCount}
               onModeChange={updateActiveTurnStopMode}
               onStop={() => onInterrupt(activeTurnStopMode)}
             />
@@ -6149,6 +6152,7 @@ export function AgentChatComposer({
                 <ActiveTurnStopButton
                   mode={activeTurnStopMode}
                   allowQueueChoice={sessionProvider === "claude"}
+                  backgroundJobCount={backgroundJobCount}
                   onModeChange={updateActiveTurnStopMode}
                   onStop={() => onInterrupt(activeTurnStopMode)}
                 />

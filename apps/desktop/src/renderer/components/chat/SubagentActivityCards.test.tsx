@@ -24,6 +24,7 @@ function spawnEvent(overrides: Partial<SubagentSpawnAnchorRenderEvent> = {}): Su
     childSessionId: "child-abc",
     spawnKind: "subagent",
     resultSummary: null,
+    taskId: null,
     ...overrides,
   };
 }
@@ -73,6 +74,29 @@ describe("SubagentSpawnCard", () => {
       .find((evt): evt is CustomEvent => evt instanceof CustomEvent && evt.type === "ade:work:select-session");
     expect(navEvent).toBeUndefined();
     expect(screen.queryByText("SUBAGENT")).toBeNull();
+  });
+
+  it("stops a running native subagent without navigating", () => {
+    const onStop = vi.fn();
+    const dispatchSpy = vi.spyOn(window, "dispatchEvent");
+    render(
+      <SubagentSpawnCard
+        event={spawnEvent({
+          childSessionId: null,
+          spawnKind: null,
+          agentType: "Explore",
+          taskId: "task-explore-1",
+        })}
+        onStop={onStop}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Stop Wave 2 UI" }));
+    expect(onStop).toHaveBeenCalledWith("task-explore-1");
+    const navEvent = dispatchSpy.mock.calls
+      .map(([evt]) => evt)
+      .find((evt): evt is CustomEvent => evt instanceof CustomEvent && evt.type === "ade:work:select-session");
+    expect(navEvent).toBeUndefined();
   });
 });
 

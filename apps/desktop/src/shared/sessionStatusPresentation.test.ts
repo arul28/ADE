@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { sessionElapsedAnchor, sessionElapsedLabel } from "./sessionStatusPresentation";
+import { sessionElapsedAnchor, sessionElapsedLabel, sessionStatusPresentation } from "./sessionStatusPresentation";
 
 /**
  * `sessionElapsedAnchor` is the shared answer to "how long", read by the
@@ -64,5 +64,26 @@ describe("sessionElapsedAnchor", () => {
     const fresh = { currentTurnStartedAt: null, lastActivityAt: null, startedAt: base.startedAt };
     expect(sessionElapsedAnchor(fresh, "running", "turn")).toBe(base.startedAt);
     expect(sessionElapsedAnchor(fresh, "ready", null)).toBe(base.startedAt);
+  });
+});
+
+describe("sessionStatusPresentation usage-limit park", () => {
+  it("reads Parked instead of Waiting or Done while a usage-limit reset is in the future", () => {
+    const nowMs = Date.parse("2026-08-17T12:00:00.000Z");
+    const parked = sessionStatusPresentation("idle", {}, {
+      usageLimitParkedUntil: "2026-08-17T12:47:00.000Z",
+      nextWakeAt: "2026-08-17T12:10:00.000Z",
+      nowMs,
+    });
+    expect(parked).toMatchObject({ label: "Parked", tone: "neutral" });
+  });
+
+  it("does not park after the reset instant has passed", () => {
+    const nowMs = Date.parse("2026-08-17T13:00:00.000Z");
+    const done = sessionStatusPresentation("idle", {}, {
+      usageLimitParkedUntil: "2026-08-17T12:47:00.000Z",
+      nowMs,
+    });
+    expect(done?.label).not.toBe("Parked");
   });
 });

@@ -13,6 +13,8 @@ import type { SessionBackgroundWork } from "../sessionCanonicalState";
 import type { RuntimeProcessSummary } from "./sessions";
 import type { SubagentCapability } from "../subagentCapabilities";
 import { providerDisplayLabel } from "../pendingInputLabels";
+import type { AgentChatStopMode as CanonicalAgentChatStopMode } from "../chatStopModes";
+import type { ClaudeContextCategoryKind } from "../claudeContextUsage";
 
 export type AgentChatProvider =
   | "codex"
@@ -1954,6 +1956,11 @@ export type AgentChatSession = {
   mcpCapability?: AgentChatMcpCapability;
   acpPermissionMode?: AgentChatAcpPermissionMode;
   acpConfigSnapshot?: AgentChatAcpConfigSnapshot | null;
+  /**
+   * Wait out a claude.ai usage-limit reset and continue. Default on; explicit
+   * `false` is the per-chat opt-out. Subscription limits only, not API billing.
+   */
+  autoContinueAtUsageLimit?: boolean;
   /** Durable Cursor Cloud agent id once this session has been promoted to cloud. */
   cursorCloudAgentId?: string;
   /** Default runtime for new turns in this session (set on promotion). */
@@ -2028,6 +2035,13 @@ export type AgentChatSessionSummary = {
   mcpCapability?: AgentChatMcpCapability;
   acpPermissionMode?: AgentChatAcpPermissionMode;
   acpConfigSnapshot?: AgentChatAcpConfigSnapshot | null;
+  autoContinueAtUsageLimit?: boolean;
+  /**
+   * ISO instant this chat is parked waiting for a usage-limit reset. Distinct
+   * from `nextWakeAt` (any scheduled wake) so the session list can read Parked
+   * instead of Waiting / Done.
+   */
+  usageLimitParkedUntil?: string | null;
   cursorCloudAgentId?: string;
   cursorRuntime?: AgentChatRuntime;
   cursorPromotedTurnId?: string;
@@ -2214,6 +2228,9 @@ export type AgentChatContextUsageCategory = {
   percentage: number;
   color?: string;
   isDeferred?: boolean;
+  /** SDK `categories[].kind`. Classify by this, never by matching the name "free". */
+  kind?: ClaudeContextCategoryKind;
+  mcpServers?: Array<{ name: string; tokens: number }>;
 };
 
 export type AgentChatContextUsage = {
@@ -3519,7 +3536,7 @@ export type AgentChatCancelDispatchedSteerResult = {
   cancelled: boolean;
 };
 
-export type AgentChatStopMode = "stop_and_clear" | "stop_only";
+export type AgentChatStopMode = CanonicalAgentChatStopMode;
 
 export type AgentChatInterruptArgs = {
   sessionId: string;
@@ -3532,6 +3549,18 @@ export type AgentChatInterruptResult = {
   cancelledQueuedCount: number;
   recoveryId?: string;
   recoveryExpiresAt?: string;
+};
+
+export type AgentChatStopTaskArgs = {
+  sessionId: string;
+  taskId: string;
+};
+
+export type AgentChatStopTaskResult = {
+  sessionId: string;
+  taskId: string;
+  stopped: boolean;
+  reason?: string;
 };
 
 export type AgentChatRestoreCancelledQueueArgs = {
@@ -3708,6 +3737,7 @@ export type AgentChatUpdateSessionArgs = {
   cursorConfigValues?: Record<string, AgentChatCursorConfigValue> | null;
   acpPermissionMode?: AgentChatAcpPermissionMode;
   acpConfigSnapshot?: AgentChatAcpConfigSnapshot | null;
+  autoContinueAtUsageLimit?: boolean;
 };
 
 export const AGENT_CHAT_SESSION_METADATA_FIELDS = ["title", "laneName", "statusLine"] as const;

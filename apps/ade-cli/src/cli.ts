@@ -79,6 +79,10 @@ import {
 } from "../../desktop/src/shared/types/chat";
 import type { AgentChatDispatchSteerMode } from "../../desktop/src/shared/types/chat";
 import {
+  isAgentChatStopMode,
+  type AgentChatStopMode,
+} from "../../desktop/src/shared/chatStopModes";
+import {
   chatTurnStatusExitCode,
   formatChatTurnStatus,
   type ChatTurnStatusPhase,
@@ -2175,10 +2179,14 @@ const HELP_BY_COMMAND: Record<string, string> = {
                                                     Detach one issue (or all) from a session
     $ ade chat linear-issues <session> --text       List issues attached to a session
     $ ade chat interrupt <session>                  Stop an active turn and clear its queued messages
+    $ ade chat interrupt <session> --keep-queue     Stop the turn but preserve queued messages
+    $ ade chat interrupt <session> --stop-background
+                                                    Also stop background jobs; combine with --keep-queue
+    $ ade chat interrupt <session> --mode <mode>    stop_and_clear | stop_only | stop_and_background | stop_and_clear_and_background
+    $ ade chat stop-task <session> <taskId>         Stop one Claude background task; siblings keep running
     $ ade chat demote <session>                     Take over a subagent: it becomes a peer and reports stop
     $ ade chat promote <session>                    Restore a peer as a subagent so it reports to its parent again
     $ ade chat keep-reporting <session>             Dismiss the takeover prompt without changing the report channel
-    $ ade chat interrupt <session> --keep-queue     Stop the turn but preserve queued messages
     $ ade chat restore-queue <session> <recovery>   Restore a recently cleared queue during its undo window
     $ ade chat slash <session> --text               List slash commands for a session
     $ ade new chat --mode cli --lane <lane> --parent <session> --type subagent --prompt "fix"
@@ -3219,21 +3227,28 @@ function readLaneId(args: string[]): string | null {
   return readValue(args, ["--lane", "--lane-id"]) ?? null;
 }
 
-function normalizeChatStopMode(value: unknown): "stop_and_clear" | "stop_only" {
-  if (value === "stop_and_clear" || value === "stop_only") return value;
-  throw new CliUsageError("chat interrupt --mode must be stop_and_clear or stop_only.");
+function normalizeChatStopMode(value: unknown): AgentChatStopMode {
+  if (isAgentChatStopMode(value)) return value;
+  throw new CliUsageError("chat interrupt --mode must be stop_and_clear, stop_only, stop_and_background, or stop_and_clear_and_background.");
 }
 
-function readChatStopMode(args: string[]): "stop_and_clear" | "stop_only" {
+function readChatStopMode(args: string[]): AgentChatStopMode {
   const explicitMode = readValue(args, ["--mode"]);
   const keepQueue = readFlag(args, ["--keep-queue", "--stop-only"]);
   const clearQueue = readFlag(args, ["--clear-queue", "--stop-and-clear"]);
-  const selected = [explicitMode, keepQueue ? "stop_only" : null, clearQueue ? "stop_and_clear" : null]
-    .filter((value): value is string => value !== null);
-  if (selected.length > 1) {
-    throw new CliUsageError("Use only one of --mode, --keep-queue, or --clear-queue.");
+  const stopBackground = readFlag(args, ["--stop-background"]);
+  if (explicitMode && (keepQueue || clearQueue || stopBackground)) {
+    throw new CliUsageError("Use --mode or the queue/background flags, not both.");
   }
-  return normalizeChatStopMode(selected[0] ?? "stop_and_clear");
+  if (keepQueue && clearQueue) {
+    throw new CliUsageError("Use only one of --keep-queue or --clear-queue.");
+  }
+  if (explicitMode) return normalizeChatStopMode(explicitMode);
+  if (keepQueue && stopBackground) return "stop_and_background";
+  if (clearQueue && stopBackground) return "stop_and_clear_and_background";
+  if (stopBackground) return "stop_and_background";
+  if (keepQueue) return "stop_only";
+  return "stop_and_clear";
 }
 
 /**
@@ -8074,6 +8089,27 @@ function buildChatPlan(args: string[]): CliPlan {
       ],
     };
   }
+  if (sub === "stop-task") {
+    const taskId = requireValue(
+      readValue(args, ["--task", "--task-id"]) ?? firstStandalonePositional(args),
+      "taskId",
+    );
+    return {
+      kind: "execute",
+      label: "chat stop task",
+      steps: [
+        actionStep(
+          "result",
+          "chat",
+          "stopTask",
+          withSession({
+            sessionId: requireValue(sessionId, "sessionId"),
+            taskId,
+          }),
+        ),
+      ],
+    };
+  }
   if (
     sub === "restore-queue"
     || sub === "restore-cancelled-queue"
@@ -8664,6 +8700,7 @@ function buildPersonalChatPlan(sub: string, args: string[]): CliPlan {
     "configure",
     "interrupt",
     "stop",
+    "stop-task",
     "restore-queue",
     "restore-cancelled-queue",
     "undo-stop",
@@ -8680,7 +8717,7 @@ function buildPersonalChatPlan(sub: string, args: string[]): CliPlan {
     "status",
   ]);
   if (!sessionSubcommands.has(sub)) {
-    throw new CliUsageError(`Personal chats support actions, action, list, create, show, read, send, steer, update, models, model-catalog, interrupt, restore-queue, recover, resolve-unprocessed, archive, unarchive, or delete; got '${sub}'.`);
+    throw new CliUsageError(`Personal chats support actions, action, list, create, show, read, send, steer, update, models, model-catalog, interrupt, stop-task, restore-queue, recover, resolve-unprocessed, archive, unarchive, or delete; got '${sub}'.`);
   }
 
   const sessionId = requireValue(
@@ -8768,6 +8805,20 @@ function buildPersonalChatPlan(sub: string, args: string[]): CliPlan {
       ...base,
       label: "personal chat interrupt",
       steps: [personalChatStep("interrupt", interruptArgs)],
+    };
+  }
+  if (sub === "stop-task") {
+    const taskId = requireValue(
+      readValue(args, ["--task", "--task-id"]) ?? firstStandalonePositional(args),
+      "taskId",
+    );
+    return {
+      ...base,
+      label: "personal chat stop task",
+      steps: [personalChatStep("stopTask", collectGenericObjectArgs(args, {
+        sessionId,
+        taskId,
+      }))],
     };
   }
   if (

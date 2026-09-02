@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { ArrowDown, ArrowUp, CaretDown, CaretRight, Check, Gear, Stop, X } from "@phosphor-icons/react";
+import { ArrowDown, ArrowUp, CaretDown, CaretRight, Check, Gear, Square, Stop, X } from "@phosphor-icons/react";
 import { cn } from "../ui/cn";
 import { formatSubagentDurationMs } from "../../lib/format";
 import { ChatSubagentGlyph, chatSubagentColor } from "./chatSubagentIdentity";
@@ -102,10 +102,12 @@ function glyphStatusFor(status: SubagentSpawnAnchorRenderEvent["status"]): ChatS
 export function SubagentSpawnCard({
   event,
   onJumpToResult,
+  onStop,
   laneId,
 }: {
   event: SubagentSpawnAnchorRenderEvent;
   onJumpToResult?: () => void;
+  onStop?: (taskId: string) => void;
   /** Lane of the spawner, forwarded to the navigation event when known. */
   laneId?: string | null;
 }) {
@@ -219,6 +221,22 @@ export function SubagentSpawnCard({
           open
           <CaretRight size={11} weight="bold" aria-hidden />
         </span>
+      ) : isRunning && onStop && event.taskId ? (
+        <button
+          type="button"
+          aria-label={`Stop ${event.description || "subagent"}`}
+          title="Stop this subagent"
+          onClick={(clickEvent) => {
+            clickEvent.preventDefault();
+            clickEvent.stopPropagation();
+            const taskId = event.taskId;
+            if (!taskId) return;
+            onStop(taskId);
+          }}
+          className="inline-flex h-7 w-7 shrink-0 items-center justify-center self-center rounded-md text-fg/40 transition-colors hover:bg-rose-500/10 hover:text-rose-200/90"
+        >
+          <Square size={10} weight="fill" aria-hidden />
+        </button>
       ) : !isRunning && onJumpToResult ? (
         <button
           type="button"

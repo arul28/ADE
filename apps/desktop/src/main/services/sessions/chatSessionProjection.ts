@@ -75,6 +75,7 @@ export function projectChatOntoSession(
     ...session,
     currentTurnStartedAt: chat.currentTurnStartedAt ?? null,
     nextWakeAt: chat.nextWakeAt,
+    ...(chat.usageLimitParkedUntil ? { usageLimitParkedUntil: chat.usageLimitParkedUntil } : {}),
     chatActivityMode: chat.interactionMode === "plan" ? "planning" : null,
     activeBackgroundTaskCount: chat.activeBackgroundTaskCount ?? 0,
     ...(chat.backgroundWork ? { backgroundWork: chat.backgroundWork } : {}),

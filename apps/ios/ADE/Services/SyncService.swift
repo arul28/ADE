@@ -13407,6 +13407,18 @@ final class SyncService: ObservableObject {
     )
   }
 
+  func stopChatTask(sessionId: String, taskId: String) async throws {
+    let action = chatActionName("chat.stopTask", sessionId: sessionId)
+    try requireInvokableRemoteAction(action)
+    let scope = chatCommandScope(for: sessionId)
+    _ = try await sendChatCommand(
+      action: action,
+      payload: AgentChatStopTaskRequest(sessionId: sessionId, taskId: taskId),
+      targetProjectId: scope.projectId,
+      targetProjectRootPath: scope.rootPath
+    )
+  }
+
   func handoffChatSession(
     sourceSessionId: String,
     targetModelId: String,
@@ -13860,7 +13872,8 @@ final class SyncService: ObservableObject {
     computerUse: RemoteJSONValue? = nil,
     manuallyNamed: Bool? = nil,
     spawnKind: String? = nil,
-    subagentTakeoverPromptShown: Bool? = nil
+    subagentTakeoverPromptShown: Bool? = nil,
+    autoContinueAtUsageLimit: Bool? = nil
   ) async throws -> AgentChatSession {
     let scope = chatCommandScope(for: sessionId)
     return try await sendDecodableChatCommand(
@@ -13885,7 +13898,8 @@ final class SyncService: ObservableObject {
         computerUse: computerUse,
         manuallyNamed: manuallyNamed,
         spawnKind: spawnKind,
-        subagentTakeoverPromptShown: subagentTakeoverPromptShown
+        subagentTakeoverPromptShown: subagentTakeoverPromptShown,
+        autoContinueAtUsageLimit: autoContinueAtUsageLimit
       ),
       targetProjectId: scope.projectId,
       targetProjectRootPath: scope.rootPath,

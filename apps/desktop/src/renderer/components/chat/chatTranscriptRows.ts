@@ -158,6 +158,8 @@ export type SubagentSpawnAnchorRenderEvent = {
    * subagent). The whole card becomes a button that navigates to this session.
    */
   childSessionId: string | null;
+  /** Provider task id for the per-task stop control; null when this card navigates. */
+  taskId: string | null;
   /** Cosmetic relationship + completion-report policy; null for runtime-native subagents. */
   spawnKind: AgentChatSpawnKind | null;
   /** Final result summary, surfaced on the card once the agent settles. */
@@ -397,6 +399,11 @@ type SubagentAnchorState = {
   error: string | null;
   /** Child session id for a spawned ADE chat (`chat:<id>` taskId); null otherwise. */
   childSessionId: string | null;
+  /**
+   * Provider task id for per-task stop. Null for spawned ADE chats (`chat:<id>`)
+   * — those navigate rather than stop in-place.
+   */
+  taskId: string | null;
   /** Spawn-kind carried on the `subagent_started` event; null for runtime-native subagents. */
   spawnKind: AgentChatSpawnKind | null;
   /** Result-only usage/worktree metadata surfaced on the result card. */
@@ -1421,6 +1428,7 @@ function spawnAnchorEvent(
     startedAt: state.startedAt,
     endedAt: state.endedAt,
     childSessionId: state.childSessionId,
+    taskId: state.taskId,
     spawnKind: state.spawnKind,
     resultSummary: state.resultSummary,
     parentLabel: anchors ? resolveParentLabel(state, anchors) : null,
@@ -1456,6 +1464,9 @@ function enrichSubagentStateFromEvent(
   const taskId = subagentText(event.taskId);
   if (taskId && taskId.startsWith("chat:") && !state.childSessionId) {
     state.childSessionId = subagentText(event.agentId) ?? (taskId.slice("chat:".length) || null);
+  }
+  if (taskId && !taskId.startsWith("chat:") && !state.taskId) {
+    state.taskId = taskId;
   }
   if (record.spawnKind === "subagent" || record.spawnKind === "peer") {
     state.spawnKind = record.spawnKind;
@@ -1531,6 +1542,7 @@ function handleSubagentLifecycleEvent(
       resultSummary: null,
       error: null,
       childSessionId: null,
+      taskId: taskId && !taskId.startsWith("chat:") ? taskId : null,
       spawnKind: null,
       totalTokens: null,
       toolUseCount: null,

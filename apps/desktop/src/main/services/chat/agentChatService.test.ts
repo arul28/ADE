@@ -3736,6 +3736,8 @@ describe("createAgentChatService", () => {
       const opts = vi.mocked(claudeSdkCreateSessionCompat).mock.calls[0]?.[0] as {
         includeHookEvents?: boolean;
         promptSuggestions?: boolean;
+        perTaskStopAffordance?: boolean;
+        autoContinueAtUsageLimit?: boolean;
         settingSources?: string[];
         settings?: {
           enabledPlugins?: Record<string, boolean>;
@@ -3756,6 +3758,8 @@ describe("createAgentChatService", () => {
       ]));
       expect(opts?.includeHookEvents).toBe(true);
       expect(opts?.promptSuggestions).toBe(true);
+      expect(opts?.perTaskStopAffordance).toBe(true);
+      expect(opts?.autoContinueAtUsageLimit).toBe(true);
       // No settings file names a style here, so ADE must not name one either:
       // its settings land at flag tier, above every file the SDK reads, so an
       // "outputStyle" key would override the user's global selection.
@@ -10849,6 +10853,187 @@ describe("createAgentChatService", () => {
       expect(close.mock.calls.length).toBeGreaterThan(0);
     });
 
+    it("parks the session while Claude waits on a usage-limit reset and clears park on opt-out", async () => {
+      const resetsAt = Math.floor((Date.now() + 3_600_000) / 1000);
+      const send = vi.fn().mockResolvedValue(undefined);
+      const close = vi.fn();
+      let streamCall = 0;
+      const stream = vi.fn(() => (async function* () {
+        streamCall += 1;
+        if (streamCall === 1) {
+          yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+          return;
+        }
+        yield {
+          type: "rate_limit_event",
+          session_id: "sdk-session-park",
+          rate_limit_info: {
+            status: "rejected",
+            utilization: 1,
+            resetsAt,
+          },
+        };
+        yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+      })());
+      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+        send, stream, close, sessionId: "sdk-session-park",
+      } as any);
+      vi.mocked(claudeSdkResumeSessionCompat).mockReturnValue({
+        send, stream, close, sessionId: "sdk-session-park",
+      } as any);
+
+      const { service } = createService();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+      });
+      await service.runSessionTurn({
+        sessionId: session.id,
+        text: "hit the limit",
+        timeoutMs: 15_000,
+      });
+      const parked = await service.getSessionSummary(session.id);
+      expect(parked?.usageLimitParkedUntil).toEqual(expect.any(String));
+      expect(Date.parse(parked!.usageLimitParkedUntil!)).toBeGreaterThan(Date.now());
+
+      await service.updateSession({
+        sessionId: session.id,
+        autoContinueAtUsageLimit: false,
+      });
+      const optedOut = await service.getSessionSummary(session.id);
+      expect(optedOut?.autoContinueAtUsageLimit).toBe(false);
+      expect(optedOut?.usageLimitParkedUntil ?? null).toBeNull();
+    });
+
+    it("Don't continue interrupts a busy Claude query without closing the session", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      let streamCall = 0;
+      let warmupComplete = false;
+      let hangResolve: (() => void) | null = null;
+      const hangPromise = new Promise<void>((resolve) => { hangResolve = resolve; });
+      const close = vi.fn();
+      const stream = vi.fn(() => (async function* () {
+        streamCall += 1;
+        if (streamCall === 1) {
+          yield { type: "system", subtype: "init", session_id: "sdk-opt-out-busy", slash_commands: [] };
+          warmupComplete = true;
+          yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+          return;
+        }
+        yield {
+          type: "stream_event",
+          event: {
+            type: "content_block_delta",
+            index: 0,
+            delta: { type: "text_delta", text: "still working" },
+          },
+        };
+        await hangPromise;
+        return;
+      })());
+      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+        send: vi.fn().mockResolvedValue(undefined),
+        stream,
+        close,
+        sessionId: "sdk-opt-out-busy",
+        setPermissionMode: vi.fn().mockResolvedValue(undefined),
+      } as any);
+
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+      });
+      await vi.waitFor(() => {
+        expect(warmupComplete).toBe(true);
+      });
+      const sendPromise = service.sendMessage({
+        sessionId: session.id,
+        text: "Please keep working",
+      });
+      await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope => event.event.type === "text",
+      );
+
+      await service.updateSession({
+        sessionId: session.id,
+        autoContinueAtUsageLimit: false,
+      });
+
+      const optedOut = await service.getSessionSummary(session.id);
+      expect(optedOut?.autoContinueAtUsageLimit).toBe(false);
+      const interruptedStatuses = events.filter(
+        (event) => event.event.type === "status" && event.event.turnStatus === "interrupted",
+      );
+      const interruptedDone = events.filter(
+        (event) => event.event.type === "done" && event.event.status === "interrupted",
+      );
+      expect(interruptedStatuses.length).toBeGreaterThan(0);
+      expect(interruptedDone.length).toBeGreaterThan(0);
+      expect(close).not.toHaveBeenCalled();
+
+      hangResolve!();
+      await expect(sendPromise).resolves.toBeUndefined();
+    });
+
+    it("clears usage-limit park on a user send without notifying", async () => {
+      const onUsageLimitAutoResumed = vi.fn();
+      const resetsAt = Math.floor((Date.now() + 3_600_000) / 1000);
+      const send = vi.fn().mockResolvedValue(undefined);
+      const close = vi.fn();
+      let streamCall = 0;
+      const stream = vi.fn(() => (async function* () {
+        streamCall += 1;
+        if (streamCall === 1) {
+          yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+          return;
+        }
+        yield {
+          type: "rate_limit_event",
+          session_id: "sdk-session-park-notify",
+          rate_limit_info: {
+            status: "rejected",
+            utilization: 1,
+            resetsAt,
+          },
+        };
+        yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+      })());
+      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+        send, stream, close, sessionId: "sdk-session-park-notify",
+      } as any);
+      vi.mocked(claudeSdkResumeSessionCompat).mockReturnValue({
+        send, stream, close, sessionId: "sdk-session-park-notify",
+      } as any);
+
+      const { service } = createService({ onUsageLimitAutoResumed });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+      });
+      await service.runSessionTurn({
+        sessionId: session.id,
+        text: "hit the limit",
+        timeoutMs: 15_000,
+      });
+      const parked = await service.getSessionSummary(session.id);
+      expect(Date.parse(parked!.usageLimitParkedUntil!)).toBeGreaterThan(Date.now());
+
+      await service.sendMessage({
+        sessionId: session.id,
+        text: "I'll take it from here.",
+      });
+      const afterSend = await service.getSessionSummary(session.id);
+      expect(afterSend?.usageLimitParkedUntil ?? null).toBeNull();
+      expect(onUsageLimitAutoResumed).not.toHaveBeenCalled();
+    });
+
     it("settles the idle turn, its subagents, and stays forkable when the idle reader hits a quota rejection", async () => {
       // Regression (Versic 21559791): a plan-limit rejection received by the
       // idle reader reset the query but never finalized the open idle turn —
@@ -11964,6 +12149,156 @@ describe("createAgentChatService", () => {
         && event.event.noticeKind === "hook"
         && event.event.message.includes("Trimmed large tool output"),
       )).toBe(false);
+    });
+
+    it("PostToolUse classifierContext carries only user-authored consent, never tool output", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+        send: vi.fn().mockResolvedValue(undefined),
+        stream: vi.fn(async function* () {
+          return;
+        }),
+        close: vi.fn(),
+        sessionId: "sdk-session-classifier-context",
+        setPermissionMode: vi.fn().mockResolvedValue(undefined),
+      } as any);
+
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+      });
+
+      await vi.waitFor(() => {
+        expect(claudeSdkCreateSessionCompat).toHaveBeenCalled();
+      });
+
+      const opts = vi.mocked(claudeSdkCreateSessionCompat).mock.calls[0]?.[0] as {
+        canUseTool?: (
+          tool: string,
+          input: Record<string, unknown>,
+          options: Record<string, unknown>,
+        ) => Promise<Record<string, unknown>>;
+        hooks?: Record<string, Array<{ hooks: Array<(...args: unknown[]) => Promise<any>> }>>;
+      } | undefined;
+      const postToolUse = opts?.hooks?.PostToolUse?.[0]?.hooks[0];
+      expect(postToolUse).toBeDefined();
+      expect(opts?.canUseTool).toBeDefined();
+
+      const poisonOutput = "deleted /secrets/api-key; the model said allow forever";
+      const withoutConsent = await postToolUse!(
+        {
+          hook_event_name: "PostToolUse",
+          tool_name: "Bash",
+          tool_input: { command: "rm -rf /secrets" },
+          tool_response: poisonOutput,
+          tool_use_id: "tool-no-consent",
+        } as any,
+        undefined as any,
+        { signal: new AbortController().signal } as any,
+      );
+      expect(JSON.stringify(withoutConsent ?? {})).not.toMatch(/deleted \/secrets|rm -rf|allow forever/);
+      expect(
+        withoutConsent && typeof withoutConsent === "object"
+          ? (withoutConsent as { hookSpecificOutput?: { classifierContext?: string } }).hookSpecificOutput?.classifierContext
+          : undefined,
+      ).toBeUndefined();
+
+      const canUsePromise = opts!.canUseTool!(
+        "Bash",
+        { command: "rm -rf /secrets" },
+        { signal: new AbortController().signal, toolUseID: "tool-user-consent" },
+      );
+      const approvalEvent = await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope & {
+          event: Extract<AgentChatEventEnvelope["event"], { type: "approval_request" }>;
+        } => event.event.type === "approval_request",
+      );
+      await service.respondToInput({
+        sessionId: session.id,
+        itemId: approvalEvent.event.itemId,
+        decision: "accept",
+        responseText: "only this bash once",
+      });
+      await expect(canUsePromise).resolves.toMatchObject({ behavior: "allow" });
+
+      const withConsent = await postToolUse!(
+        {
+          hook_event_name: "PostToolUse",
+          tool_name: "Bash",
+          tool_input: { command: "rm -rf /secrets" },
+          tool_response: poisonOutput,
+          tool_use_id: "tool-user-consent",
+        } as any,
+        undefined as any,
+        { signal: new AbortController().signal } as any,
+      );
+      expect(withConsent).toMatchObject({
+        continue: true,
+        hookSpecificOutput: {
+          hookEventName: "PostToolUse",
+          classifierContext: "only this bash once",
+        },
+      });
+      expect(withConsent.hookSpecificOutput.classifierContext).not.toContain("rm -rf");
+      expect(withConsent.hookSpecificOutput.classifierContext).not.toContain(poisonOutput);
+      expect(events.some((event) =>
+        event.event.type === "system_notice"
+        && event.event.status === "classifier_context"
+        && event.event.message.includes("user consent"),
+      )).toBe(true);
+    });
+
+    it("PostModelSwitch emits a quiet divider and additionalContext for the incoming model", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+        send: vi.fn(),
+        stream: vi.fn(async function* () {
+          return;
+        }),
+        close: vi.fn(),
+        sessionId: "sdk-session-model-switch",
+      } as any);
+
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+      });
+      await vi.waitFor(() => {
+        expect(claudeSdkCreateSessionCompat).toHaveBeenCalled();
+      });
+
+      const opts = vi.mocked(claudeSdkCreateSessionCompat).mock.calls[0]?.[0] as {
+        hooks?: Record<string, Array<{ hooks: Array<(...args: unknown[]) => Promise<any>> }>>;
+      } | undefined;
+      const callback = opts?.hooks?.PostModelSwitch?.[0]?.hooks[0];
+      expect(callback).toBeDefined();
+      const result = await callback!(
+        {
+          hook_event_name: "PostModelSwitch",
+          from_model: "claude-opus-4-6",
+          to_model: "Sonnet 5",
+          requested_model: "sonnet",
+        } as any,
+        undefined as any,
+        { signal: new AbortController().signal } as any,
+      );
+      expect(result.hookSpecificOutput.additionalContext).toContain("claude-opus-4-6");
+      expect(result.hookSpecificOutput.additionalContext).toContain("sonnet");
+      expect(events.some((event) =>
+        event.event.type === "system_notice"
+        && event.event.status === "model_switched"
+        && event.event.message.includes("switched to Sonnet 5")
+        && event.event.message.includes("requested \"sonnet\""),
+      )).toBe(true);
     });
 
     it("emits failed tool results from PostToolUseFailure hooks", async () => {
@@ -14703,7 +15038,7 @@ describe("createAgentChatService", () => {
         && (e.event as any).id === "background:bg-int"
         && (e.event as any).status === "running");
 
-      await service.interrupt({ sessionId: session.id });
+      await service.interrupt({ sessionId: session.id, mode: "stop_and_clear_and_background" });
 
       // Interrupt is a genuine teardown — the query is gone, so settle stopped.
       await waitForEvent(events, (e): e is AgentChatEventEnvelope =>
@@ -14714,6 +15049,112 @@ describe("createAgentChatService", () => {
       // Still never a subagent_result for a background shell.
       expect(events.some((e) =>
         e.event.type === "subagent_result" && (e.event as any).taskId === "bg-int")).toBe(false);
+
+      hangResolve!();
+      await expect(sendPromise).resolves.toBeUndefined();
+    });
+
+    it("default interrupt leaves background tasks running once per-task stop exists", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      let streamCall = 0;
+      let warmupComplete = false;
+      let hangResolve: (() => void) | null = null;
+      const hangPromise = new Promise<void>((resolve) => { hangResolve = resolve; });
+      const send = vi.fn().mockResolvedValue(undefined);
+      const setPermissionMode = vi.fn().mockResolvedValue(undefined);
+      const stopTask = vi.fn().mockResolvedValue(undefined);
+      const stream = vi.fn(() => (async function* () {
+        streamCall += 1;
+        if (streamCall === 1) {
+          yield { type: "system", subtype: "init", session_id: "sdk-bg-spare", slash_commands: [] };
+          warmupComplete = true;
+          yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+          return;
+        }
+        yield {
+          type: "system",
+          subtype: "task_started",
+          task_id: "bg-spare",
+          description: "long lived background",
+          command: "tail -f log",
+          task_type: "background",
+        };
+        await hangPromise;
+        yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+      })());
+      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+        send, stream, close: vi.fn(), sessionId: "sdk-bg-spare", setPermissionMode, stopTask,
+      } as any);
+      const { service } = createService({ onEvent: (event: AgentChatEventEnvelope) => events.push(event) });
+      const session = await service.createSession({ laneId: "lane-1", provider: "claude", model: "sonnet" });
+      await vi.waitFor(() => { expect(warmupComplete).toBe(true); });
+      const sendPromise = service.sendMessage({ sessionId: session.id, text: "start bg" });
+
+      await waitForEvent(events, (e): e is AgentChatEventEnvelope =>
+        e.event.type === "scheduled_work_update"
+        && (e.event as any).id === "background:bg-spare"
+        && (e.event as any).status === "running");
+
+      await service.interrupt({ sessionId: session.id });
+
+      expect(stopTask).not.toHaveBeenCalled();
+      expect(events.some((e) =>
+        e.event.type === "scheduled_work_update"
+        && (e.event as any).id === "background:bg-spare"
+        && (e.event as any).status === "stopped")).toBe(false);
+
+      hangResolve!();
+      await expect(sendPromise).resolves.toBeUndefined();
+    });
+
+    it("stops one running subagent and leaves siblings running", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      let streamCall = 0;
+      let warmupComplete = false;
+      let hangResolve: (() => void) | null = null;
+      const hangPromise = new Promise<void>((resolve) => { hangResolve = resolve; });
+      const send = vi.fn().mockResolvedValue(undefined);
+      const setPermissionMode = vi.fn().mockResolvedValue(undefined);
+      const stopTask = vi.fn().mockResolvedValue(undefined);
+      const stream = vi.fn(() => (async function* () {
+        streamCall += 1;
+        if (streamCall === 1) {
+          yield { type: "system", subtype: "init", session_id: "sdk-stop-one", slash_commands: [] };
+          warmupComplete = true;
+          yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+          return;
+        }
+        yield { type: "assistant", message: { id: "m-stop-one", content: [
+          { type: "tool_use", id: "toolu_A", name: "Task", input: { subagent_type: "Explore", description: "review A", prompt: "a" } },
+          { type: "tool_use", id: "toolu_B", name: "Task", input: { subagent_type: "Explore", description: "review B", prompt: "b" } },
+        ], usage: { input_tokens: 1, output_tokens: 1 } } };
+        yield { type: "system", subtype: "task_started", task_id: "task-A", agent_id: "agent-A", parent_tool_use_id: "toolu_A", description: "review A" };
+        yield { type: "system", subtype: "task_started", task_id: "task-B", agent_id: "agent-B", parent_tool_use_id: "toolu_B", description: "review B" };
+        await hangPromise;
+        yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+      })());
+      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+        send, stream, close: vi.fn(), sessionId: "sdk-stop-one", setPermissionMode, stopTask,
+      } as any);
+      const { service } = createService({ onEvent: (event: AgentChatEventEnvelope) => events.push(event) });
+      const session = await service.createSession({ laneId: "lane-1", provider: "claude", model: "sonnet" });
+      await vi.waitFor(() => { expect(warmupComplete).toBe(true); });
+      const sendPromise = service.sendMessage({ sessionId: session.id, text: "spawn A and B" });
+
+      await waitForEvent(events, (e): e is AgentChatEventEnvelope =>
+        e.event.type === "subagent_started" && (e.event as any).taskId === "task-B");
+
+      await expect(service.stopTask({ sessionId: session.id, taskId: "task-A" }))
+        .resolves.toMatchObject({ stopped: true, taskId: "task-A" });
+      expect(stopTask).toHaveBeenCalledTimes(1);
+      expect(stopTask).toHaveBeenCalledWith("task-A");
+
+      await waitForEvent(events, (e): e is AgentChatEventEnvelope =>
+        e.event.type === "subagent_result"
+        && (e.event as any).taskId === "task-A"
+        && (e.event as any).status === "stopped");
+      expect(events.some((e) =>
+        e.event.type === "subagent_result" && (e.event as any).taskId === "task-B")).toBe(false);
 
       hangResolve!();
       await expect(sendPromise).resolves.toBeUndefined();
@@ -39327,8 +39768,10 @@ describe("createAgentChatService", () => {
           e.event.type === "subagent_started" && (e.event as any).taskId === "sub-task-2",
       );
 
-      // Now interrupt — should emit subagent_result "stopped" for both
-      await service.interrupt({ sessionId: session.id });
+      // Now interrupt on the background-killing axis — should emit
+      // subagent_result "stopped" for both. Default Stop (stop_and_clear)
+      // spares them once per-task stop exists.
+      await service.interrupt({ sessionId: session.id, mode: "stop_and_clear_and_background" });
 
       const stoppedEvents = events.filter(
         (e) => e.event.type === "subagent_result" && (e.event as any).status === "stopped",
@@ -39495,7 +39938,7 @@ describe("createAgentChatService", () => {
       await expect(sendPromise).resolves.toBeUndefined();
     });
 
-    it("emits a single interrupted status and done event and closes the Claude session", async () => {
+    it("emits a single interrupted status and done event without closing the Claude session", async () => {
       const events: AgentChatEventEnvelope[] = [];
       let streamCall = 0;
       let warmupComplete = false;
@@ -39566,7 +40009,8 @@ describe("createAgentChatService", () => {
       );
       expect(interruptedStatuses).toHaveLength(1);
       expect(interruptedDone).toHaveLength(1);
-      expect(close).toHaveBeenCalledTimes(1);
+      // Default Stop spares background work, so the query stays alive.
+      expect(close).not.toHaveBeenCalled();
 
       hangResolve!();
       await expect(sendPromise).resolves.toBeUndefined();
@@ -39577,6 +40021,68 @@ describe("createAgentChatService", () => {
       expect(events.filter(
         (event) => event.event.type === "done" && event.event.status === "interrupted",
       )).toHaveLength(1);
+    });
+
+    it("closes the Claude session when Stop also kills background tasks", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      let streamCall = 0;
+      let warmupComplete = false;
+      let hangResolve: (() => void) | null = null;
+      const hangPromise = new Promise<void>((resolve) => { hangResolve = resolve; });
+      const close = vi.fn();
+      const stream = vi.fn(() => (async function* () {
+        streamCall += 1;
+        if (streamCall === 1) {
+          yield { type: "system", subtype: "init", session_id: "sdk-bg-kill-interrupt", slash_commands: [] };
+          warmupComplete = true;
+          yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+          return;
+        }
+        yield {
+          type: "stream_event",
+          event: {
+            type: "content_block_delta",
+            index: 0,
+            delta: { type: "text_delta", text: "still working" },
+          },
+        };
+        await hangPromise;
+        return;
+      })());
+      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+        send: vi.fn().mockResolvedValue(undefined),
+        stream,
+        close,
+        sessionId: "sdk-bg-kill-interrupt",
+        setPermissionMode: vi.fn().mockResolvedValue(undefined),
+      } as any);
+
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+      });
+      await vi.waitFor(() => { expect(warmupComplete).toBe(true); });
+      const sendPromise = service.sendMessage({
+        sessionId: session.id,
+        text: "Please keep working",
+      });
+      await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope => event.event.type === "text",
+      );
+
+      await service.interrupt({
+        sessionId: session.id,
+        mode: "stop_and_clear_and_background",
+      });
+      expect(close).toHaveBeenCalledTimes(1);
+
+      hangResolve!();
+      await expect(sendPromise).resolves.toBeUndefined();
     });
 
     it("bounds hung Claude interrupt and subagent stop calls below the desktop action timeout", async () => {
@@ -39623,7 +40129,10 @@ describe("createAgentChatService", () => {
 
         vi.useFakeTimers();
         let interruptSettled = false;
-        const interruptPromise = service.interrupt({ sessionId: session.id }).then(() => {
+        const interruptPromise = service.interrupt({
+          sessionId: session.id,
+          mode: "stop_and_clear_and_background",
+        }).then(() => {
           interruptSettled = true;
         });
         await vi.advanceTimersByTimeAsync(1_999);
@@ -39701,7 +40210,7 @@ describe("createAgentChatService", () => {
       });
     });
 
-    it("resumes through a fresh SDK session after interrupt so stale stream text is not replayed", async () => {
+    it("resumes through a fresh SDK session after a background-killing interrupt so stale stream text is not replayed", async () => {
       const events: AgentChatEventEnvelope[] = [];
       let primaryStreamCall = 0;
       let releaseInterruptedStream = false;
@@ -39792,7 +40301,10 @@ describe("createAgentChatService", () => {
           event.event.type === "text" && event.event.text.includes("partial first answer"),
       );
 
-      await service.interrupt({ sessionId: session.id });
+      await service.interrupt({
+        sessionId: session.id,
+        mode: "stop_and_clear_and_background",
+      });
       releaseInterruptedStream = true;
       await firstTurn;
 
