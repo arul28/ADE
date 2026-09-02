@@ -1,0 +1,189 @@
+{
+  "steps": [
+    {
+      "step": "cheap-ping",
+      "ok": true,
+      "usage": {
+        "inputTokens": 19364,
+        "outputTokens": 26,
+        "cachedReadTokens": 128,
+        "costUsdTicks": 131465760,
+        "costUsdNano": 0.13146576,
+        "stopReason": "end_turn",
+        "rawMeta": {
+          "sessionId": "01a056a6-14c4-7452-99d5-108f7fbb8365",
+          "requestId": "a3968883-8603-46d1-812d-2f6a0ed53971",
+          "promptId": "a3968883-8603-46d1-812d-2f6a0ed53971",
+          "totalTokens": 19390,
+          "modelId": "grok-4.5",
+          "inputTokens": 19364,
+          "outputTokens": 26,
+          "cachedReadTokens": 128,
+          "reasoningTokens": 25,
+          "usage": {
+            "inputTokens": 19364,
+            "outputTokens": 26,
+            "totalTokens": 19390,
+            "cachedReadTokens": 128,
+            "cacheCreationTokens": 0,
+            "reasoningTokens": 25,
+            "modelCalls": 1,
+            "apiDurationMs": 2075,
+            "costUsdTicks": 131465760,
+            "modelUsage": {
+              "grok-4.5-build": {
+                "inputTokens": 19364,
+                "outputTokens": 26,
+                "totalTokens": 19390,
+                "cachedReadTokens": 128,
+                "cacheCreationTokens": 0,
+                "reasoningTokens": 25,
+                "modelCalls": 1,
+                "apiDurationMs": 2075,
+                "costUsdTicks": 131465760
+              }
+            },
+            "numTurns": 1
+          }
+        },
+        "text": "ping"
+      },
+      "chunkCount": 1,
+      "sessionId": "01a056a6-14c4-7452-99d5-108f7fbb8365"
+    },
+    {
+      "step": "stream-chunks",
+      "ok": true,
+      "chunkCount": 15,
+      "joined": "1\n2\n3\n4\n5\n6\n7\n8",
+      "updateOrder": [
+        "_x.ai/sessions/changed",
+        "_x.ai/queue/changed",
+        "_x.ai/queue/changed",
+        "user_message_chunk",
+        "_x.ai/models/update",
+        "_x.ai/announcements/update",
+        "agent_thought_chunk",
+        "agent_thought_chunk",
+        "agent_thought_chunk",
+        "agent_thought_chunk",
+        "agent_thought_chunk",
+        "agent_thought_chunk",
+        "agent_thought_chunk",
+        "agent_thought_chunk",
+        "agent_thought_chunk",
+        "agent_thought_chunk",
+        "agent_thought_chunk",
+        "agent_thought_chunk",
+        "agent_thought_chunk",
+        "agent_thought_chunk",
+        "agent_thought_chunk",
+        "agent_thought_chunk",
+        "agent_thought_chunk",
+        "agent_thought_chunk",
+        "agent_thought_chunk",
+        "agent_thought_chunk",
+        "agent_thought_chunk",
+        "agent_thought_chunk",
+        "agent_thought_chunk",
+        "agent_thought_chunk",
+        "agent_thought_chunk",
+        "agent_thought_chunk",
+        "agent_thought_chunk",
+        "agent_thought_chunk",
+        "agent_thought_chunk",
+        "agent_thought_chunk",
+        "agent_message_chunk",
+        "agent_message_chunk",
+        "agent_message_chunk",
+        "agent_message_chunk"
+      ],
+      "stopReason": "end_turn",
+      "usage": {
+        "inputTokens": 20432,
+        "outputTokens": 52,
+        "cachedReadTokens": 128,
+        "costUsdTicks": 69672800,
+        "costUsdNano": 0.0696728,
+        "stopReason": "end_turn",
+        "rawMeta": {
+          "sessionId": "01a056a6-205b-7233-b6e1-4b4c01cbcf4f",
+          "requestId": "f2840e72-e448-417f-b25e-daf4aac447e8",
+          "promptId": "f2840e72-e448-417f-b25e-daf4aac447e8",
+          "totalTokens": 20486,
+          "modelId": "grok-4.6",
+          "inputTokens": 20432,
+          "outputTokens": 52,
+          "cachedReadTokens": 128,
+          "reasoningTokens": 33,
+          "usage": {
+            "inputTokens": 20432,
+            "outputTokens": 52,
+            "totalTokens": 20484,
+            "cachedReadTokens": 128,
+            "cacheCreationTokens": 0,
+            "reasoningTokens": 33,
+            "modelCalls": 1,
+            "apiDurationMs": 2174,
+            "costUsdTicks": 69672800,
+            "modelUsage": {
+              "grok-4.6-build": {
+                "inputTokens": 20432,
+                "outputTokens": 52,
+                "totalTokens": 20484,
+                "cachedReadTokens": 128,
+                "cacheCreationTokens": 0,
+                "reasoningTokens": 33,
+                "modelCalls": 1,
+                "apiDurationMs": 2174,
+                "costUsdTicks": 69672800
+              }
+            },
+            "numTurns": 1
+          }
+        }
+      }
+    },
+    {
+      "step": "permission-with-empty-claude-config-dir",
+      "ok": true,
+      "permissionRequests": 0,
+      "stopReason": "end_turn",
+      "claudeConfigDir": "/var/folders/ck/qnm27lyn4d3865_9s0xt26y80000gn/T/ade-grok-probe-8yRrY8/claude-empty",
+      "note": "A zero here means Grok still auto-allowed even with CLAUDE_CONFIG_DIR pointed at an empty home."
+    },
+    {
+      "step": "resume-after-close",
+      "ok": true,
+      "sessionId": "01a056a6-5386-7e00-b052-1204e09063c7",
+      "resumeOk": true,
+      "resumeError": null,
+      "loadOk": false,
+      "loadError": null,
+      "followupText": "beta",
+      "stopReason": "end_turn"
+    },
+    {
+      "step": "kill-mid-prompt",
+      "ok": true,
+      "promptOutcome": "rejected:grok-kill exited code=143 signal=null",
+      "exited": {
+        "code": 143,
+        "signal": null
+      },
+      "chunksBeforeKill": 5
+    },
+    {
+      "step": "two-models-two-pids",
+      "ok": true,
+      "first": {
+        "pid": 40092,
+        "modelId": "grok-4.6"
+      },
+      "second": {
+        "pid": 40160,
+        "modelId": "grok-4.5"
+      }
+    }
+  ]
+}

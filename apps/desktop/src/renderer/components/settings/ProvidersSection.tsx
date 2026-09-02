@@ -1,157 +1,65 @@
+/**
+ * Settings → Agents & Models.
+ *
+ * A grid of providers, and one page per provider. This file owns the data —
+ * one status probe, one set of handlers — and nothing about how any individual
+ * provider looks: that lives in `providers/descriptors.tsx`. Before the split,
+ * each provider was its own hand-written block here and the file had grown past
+ * 1800 lines with six different vocabularies for "connected".
+ */
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import type {
+  AgentChatPermissionMode,
   AiConfig,
   AiApiKeyVerificationResult,
-  AiClaudeAvailability,
-  AiProviderConnectionStatus,
   AiSettingsStatus,
   ProjectConfigSnapshot,
   CursorSdkAuthEvent,
   CursorSdkAuthStatus,
 } from "../../../shared/types";
 import type {
+  AcpProviderDiagnostics,
   AiCustomProviderConfig,
+  AiProviderPermissions,
   OpenCodeProviderAuthMethods,
 } from "../../../shared/types/config";
+import { toggleDisabledProvider } from "../../../shared/providerEnablement";
 import {
-  getLocalModelIdTail,
   getLocalProviderDefaultEndpoint,
-  getModelById,
   LOCAL_PROVIDER_LABELS,
-  parseLocalProviderFromModelId,
   type LocalProviderFamily,
 } from "../../../shared/modelRegistry";
-import {
-  ArrowsClockwise,
-  CheckCircle,
-  Copy,
-  Cpu,
-  Info,
-  WarningCircle,
-  X,
-  XCircle,
-} from "@phosphor-icons/react";
-import { ClaudeLogo, CodexLogo, CursorAgentLogo, OpenCodeLogo } from "../terminals/ToolLogos";
-import { PiLogo, ProviderLogo } from "../shared/ProviderLogos";
-import {
-  COLORS,
-  MONO_FONT,
-  SANS_FONT,
-  LABEL_STYLE,
-  SECTION_LABEL_STYLE,
-  outlineButton,
-  primaryButton,
-} from "../lanes/laneDesignTokens";
-import { cursorProviderAvailable, rendererPlatformAttribute } from "../../lib/platform";
-import { openExternalUrl } from "../../lib/openExternal";
-import { useCopyToClipboard } from "../../hooks/useCopyToClipboard";
+import { COLORS, LABEL_STYLE } from "../lanes/laneDesignTokens";
 import { invalidateAiDiscoveryCache } from "../../lib/aiDiscoveryCache";
 import { shouldRefreshAiStatusForChatEvent } from "../../lib/aiProviderStatus";
 import { showToast } from "../app/toast/toastStore";
-import { ClaudeLoginPromptButton, revealTerminalSessionInWork } from "../work/ClaudeLoginPromptButton";
+import { revealTerminalSessionInWork } from "../work/ClaudeLoginPromptButton";
 import {
   OpenCodeProviderDetailModal,
   type ApiKeySource,
   type OpenCodeProviderDetail,
 } from "./OpenCodeProviderDetailModal";
-import {
-  CollapsibleProviderCard,
-  ConnectedTag,
-  ProviderGrid,
-  ProviderSearchField,
-  ProviderTile,
-  ProviderTileBadge,
-  panel,
-} from "./providerSectionPrimitives";
-import { PiProvidersPanel, buildPiMessage, getPiTone } from "./PiProvidersPanel";
+import { ProviderGrid } from "./providerSectionPrimitives";
+import { availableProviderDescriptors, providerDescriptor } from "./providers/descriptors";
+import { ProviderTileCard } from "./providers/ProviderTileCard";
+import { ProviderDetailPage } from "./providers/ProviderDetailPage";
+import { ProviderSignInModal } from "./providers/ProviderSignInModal";
+import { acpLoginCommand, acpProviderLabel } from "./providers/acpProviders";
+import { AlertBanner, prettifyProviderId } from "./providers/providerUi";
+import type {
+  AcpSettingsProviderId,
+  CustomProviderDraft,
+  LocalProviderDraft,
+  LocalRuntimeRow,
+  ProvidersViewContext,
+  SettingsProviderId,
+} from "./providers/types";
 
-type CliName = "claude" | "codex" | "cursor" | "droid";
+export { openCodeInstallCommands } from "./providers/cliTools";
 
 const KIMI_PROVIDER_ID = "kimi-for-coding";
 const OPENCODE_CATALOG_EXCLUDED_IDS = new Set(["cursor", "ollama", "lmstudio"]);
-
-/**
- * OpenCode's own documented install methods, per platform. Windows has neither
- * Homebrew nor a POSIX shell to pipe the install script into, so it gets the
- * package managers OpenCode actually documents for Windows (npm, Scoop,
- * Chocolatey) instead of commands that cannot run there.
- */
-export function openCodeInstallCommands(
-  platform: ReturnType<typeof rendererPlatformAttribute> = rendererPlatformAttribute(),
-): string[] {
-  if (platform === "win32") {
-    return [
-      "npm i -g opencode-ai",
-      "scoop install opencode",
-      "choco install opencode",
-    ];
-  }
-  return [
-    "brew install anomalyco/tap/opencode",
-    "npm i -g opencode-ai",
-    "curl -fsSL https://opencode.ai/install | bash",
-  ];
-}
-
-const CUSTOM_PROVIDER_NPM_OPTIONS = [
-  "@ai-sdk/openai-compatible",
-  "@ai-sdk/openai",
-  "@ai-sdk/anthropic",
-];
-
-// Factory ships a native Windows build of `droid` with its own installer and
-// its own way of setting an environment variable — a POSIX `export` line and a
-// bare docs link leave a Windows user with nothing to run.
-// https://docs.factory.ai/cli/getting-started/quickstart
-const DROID_INSTALL_HINT = rendererPlatformAttribute() === "win32"
-  ? "irm https://app.factory.ai/cli/windows | iex — installs droid.exe into %USERPROFILE%\\bin and puts it on PATH"
-  : "curl -fsSL https://app.factory.ai/cli | sh — ensure `droid` is on PATH";
-const DROID_LOGIN_CMD = rendererPlatformAttribute() === "win32"
-  ? "setx FACTORY_API_KEY … (or sign in via `droid` interactive login)"
-  : "export FACTORY_API_KEY=… (or sign in via `droid` interactive login)";
-
-const CLI_TOOLS: Array<{
-  cli: CliName;
-  label: string;
-  authStory: string;
-  loginCmd: string;
-  installHint: string;
-  /** Used instead of installHint on Windows, where the vendor ships a different installer. */
-  windowsInstallHint?: string;
-}> = [
-  {
-    cli: "claude",
-    label: "Claude Code",
-    authStory: "Uses your claude login — Claude Pro/Max subscription or ANTHROPIC_API_KEY.",
-    loginCmd: "claude auth login or set ANTHROPIC_API_KEY",
-    installHint: "npm install -g @anthropic-ai/claude-code",
-    // Anthropic's documented Windows installs: the PowerShell native installer
-    // (drops claude.exe in %USERPROFILE%\.localin) or WinGet.
-    windowsInstallHint: "irm https://claude.ai/install.ps1 | iex (PowerShell), or winget install Anthropic.ClaudeCode",
-  },
-  {
-    cli: "codex",
-    label: "Codex CLI",
-    authStory: "Uses your ChatGPT sign-in — Plus/Pro subscription or OPENAI_API_KEY.",
-    loginCmd: "codex login",
-    installHint: "npm install -g @openai/codex",
-  },
-  {
-    cli: "cursor",
-    label: "Cursor",
-    authStory: "Sign in with Cursor or use a Cursor API key.",
-    loginCmd: "Sign in with Cursor or add a Cursor API key",
-    installHint: "Get a Cursor API key from https://cursor.com/dashboard/api",
-  },
-  {
-    cli: "droid",
-    label: "Droid",
-    authStory: "Uses your Factory login or FACTORY_API_KEY.",
-    loginCmd: DROID_LOGIN_CMD,
-    installHint: DROID_INSTALL_HINT,
-  },
-];
 
 const LOCAL_PROVIDER_SPECS: Array<{
   provider: LocalProviderFamily;
@@ -180,27 +88,11 @@ const API_KEY_PROVIDERS: Array<{
   { provider: "moonshotai", label: "Moonshot AI", envVar: "MOONSHOT_API_KEY", placeholder: "sk-..." },
 ];
 
-type LocalProviderDraft = {
-  enabled: boolean;
-  endpoint: string;
-  autoDetect: boolean;
-  preferredModelId: string;
-};
-
-type CustomProviderDraft = {
-  id: string;
-  name: string;
-  baseUrl: string;
-  npm: string;
-  slugs: string;
-  apiKey: string;
-};
-
 const EMPTY_CUSTOM_PROVIDER: CustomProviderDraft = {
   id: "",
   name: "",
   baseUrl: "",
-  npm: CUSTOM_PROVIDER_NPM_OPTIONS[0],
+  npm: "@ai-sdk/openai-compatible",
   slugs: "",
   apiKey: "",
 };
@@ -211,232 +103,6 @@ const groupLabelStyle: React.CSSProperties = {
   marginBottom: 0,
   color: COLORS.textSecondary,
 };
-
-/** Squared bordered surface — the shared "ledger" panel used across this section. */
-function prettifyProviderId(id: string): string {
-  return id
-    .split(/[-_/]/)
-    .filter(Boolean)
-    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
-    .join(" ");
-}
-
-function AlertBanner({
-  tone,
-  message,
-  onDismiss,
-}: {
-  tone: "success" | "error" | "warning";
-  message: string;
-  onDismiss: () => void;
-}) {
-  const color = tone === "success" ? COLORS.success : tone === "warning" ? COLORS.warning : COLORS.danger;
-  const token = tone === "success" ? "success" : tone === "warning" ? "warning" : "error";
-  return (
-    <div
-      role={tone === "error" ? "alert" : "status"}
-      style={{
-        padding: "8px 10px 8px 12px",
-        fontSize: 11,
-        fontFamily: MONO_FONT,
-        color,
-        background: `color-mix(in srgb, var(--color-${token}) 12%, transparent)`,
-        border: `1px solid color-mix(in srgb, var(--color-${token}) 30%, transparent)`,
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "space-between",
-        gap: 12,
-      }}
-    >
-      <span style={{ minWidth: 0, overflowWrap: "anywhere" }}>{message}</span>
-      <button
-        type="button"
-        aria-label={`Dismiss ${tone} message`}
-        onClick={onDismiss}
-        style={{
-          border: `1px solid color-mix(in srgb, ${color} 32%, transparent)`,
-          background: "transparent",
-          color,
-          width: 22,
-          height: 22,
-          display: "inline-flex",
-          alignItems: "center",
-          justifyContent: "center",
-          padding: 0,
-          cursor: "pointer",
-        }}
-      >
-        <X size={12} weight="bold" />
-      </button>
-    </div>
-  );
-}
-
-const SOURCE_BADGE_MAP: Record<ApiKeySource, { color: string; label: string }> = {
-  store: { color: COLORS.success, label: "Local Store" },
-  env: { color: COLORS.info, label: "Environment" },
-  config: { color: COLORS.warning, label: "Project Config" },
-};
-
-function SourceBadge({ source }: { source: ApiKeySource }) {
-  const { color, label } = SOURCE_BADGE_MAP[source];
-  return (
-    <span
-      style={{
-        display: "inline-flex",
-        alignItems: "center",
-        padding: "2px 8px",
-        fontSize: 10,
-        fontWeight: 700,
-        fontFamily: MONO_FONT,
-        textTransform: "uppercase",
-        letterSpacing: "1px",
-        color,
-        background: `${color}18`,
-        border: `1px solid ${color}30`,
-      }}
-    >
-      {label}
-    </span>
-  );
-}
-
-
-function OpenCodeProviderCard({
-  provider,
-  onOpen,
-}: {
-  provider: OpenCodeProviderDetail;
-  onOpen: () => void;
-}) {
-  const badge = provider.connected
-    ? "Connected"
-    : provider.hasKey
-      ? "Key"
-      : provider.methods.some((m) => m.type === "oauth")
-        ? "OAuth"
-        : "Add";
-  return (
-    <ProviderTile
-      id={provider.id}
-      name={provider.name}
-      ariaLabel={provider.connected || provider.hasKey ? `Open ${provider.name}` : `Connect ${provider.name}`}
-      badge={provider.connected ? <ConnectedTag /> : <ProviderTileBadge>{badge}</ProviderTileBadge>}
-      onOpen={onOpen}
-      footer={typeof provider.modelCount === "number" ? (
-        <div style={{ fontSize: 10, fontFamily: MONO_FONT, color: COLORS.textMuted }}>
-          {provider.modelCount} model{provider.modelCount === 1 ? "" : "s"}
-        </div>
-      ) : undefined}
-    />
-  );
-}
-
-function CopyableCommand({ command }: { command: string }) {
-  const { copy, copied } = useCopyToClipboard();
-  return (
-    <button
-      type="button"
-      onClick={() => void copy(command)}
-      title="Copy"
-      style={{
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "space-between",
-        gap: 8,
-        width: "100%",
-        textAlign: "left",
-        fontSize: 11,
-        fontFamily: MONO_FONT,
-        color: COLORS.textSecondary,
-        background: "color-mix(in srgb, var(--color-muted-fg) 12%, transparent)",
-        border: `1px solid ${COLORS.border}`,
-        padding: "8px 10px",
-        cursor: "pointer",
-      }}
-    >
-      <code style={{ overflowWrap: "anywhere", wordBreak: "break-all" }}>{command}</code>
-      {copied ? <CheckCircle size={13} weight="fill" style={{ flexShrink: 0, color: COLORS.success }} /> : <Copy size={13} weight="bold" style={{ flexShrink: 0 }} />}
-    </button>
-  );
-}
-
-function getStatusTone(connection: AiProviderConnectionStatus | null | undefined): { color: string; label: string } {
-  if (connection?.runtimeAvailable) return { color: COLORS.success, label: "Connected" };
-  if (connection?.runtimeDetected || connection?.authAvailable) return { color: COLORS.warning, label: "Sign-In Required" };
-  return { color: COLORS.textDim, label: "Not Detected" };
-}
-
-function getClaudeAvailabilityTone(availability: AiClaudeAvailability | null | undefined): { color: string; label: string } {
-  if (availability?.binary.present && availability.auth.ready) return { color: COLORS.success, label: "Ready" };
-  if (availability?.binary.present) return { color: COLORS.warning, label: "Sign-In Required" };
-  return { color: COLORS.textDim, label: "Binary Missing" };
-}
-
-function buildClaudeAvailabilityMessage(availability: AiClaudeAvailability | null | undefined): string {
-  if (!availability?.binary.present) {
-    return "Claude unavailable (binary missing; should not happen with bundled install; run /doctor).";
-  }
-  if (!availability.auth.ready) {
-    return availability.auth.detail || "Sign in to use Claude";
-  }
-  return "Ready";
-}
-
-function describeCredentialSource(connection: AiProviderConnectionStatus | null | undefined): string | null {
-  const localSource = connection?.sources.find((entry) => entry.kind === "local-credentials" && entry.detected);
-  if (!localSource?.source) return null;
-  if (localSource.source === "macos-keychain") return "Local credentials found in macOS Keychain.";
-  if (localSource.source === "claude-credentials-file") return "Local credentials found in ~/.claude/.credentials.json.";
-  if (localSource.source === "codex-auth-file") return "Local credentials found in ~/.codex/auth.json.";
-  if (localSource.source === "cursor-env") return "Detected via CURSOR_API_KEY environment variable.";
-  if (localSource.source === "cursor-api-key-store") return "Cursor API key is stored in ADE encrypted storage.";
-  if (localSource.source === "cursor-oauth") {
-    const email = connection?.accountEmail?.trim();
-    return email ? `Signed in as ${email}.` : "Signed in with Cursor.";
-  }
-  if (localSource.source === "factory-env") return "Detected via FACTORY_API_KEY environment variable.";
-  if (localSource.source === "pi-auth-file") return "Detected via ~/.pi/agent/auth.json.";
-  if (localSource.source === "pi-models-file") return "Detected via ~/.pi/agent/models.json.";
-  return null;
-}
-
-const isWindowsRenderer = rendererPlatformAttribute() === "win32";
-
-function installHintFor(tool: (typeof CLI_TOOLS)[number]): string {
-  return (isWindowsRenderer && tool.windowsInstallHint) || tool.installHint;
-}
-
-function buildCliMessage(tool: (typeof CLI_TOOLS)[number], connection: AiProviderConnectionStatus | null | undefined): string {
-  if (connection?.runtimeAvailable) {
-    return "Connection verified.";
-  }
-  if (connection?.blocker) {
-    return connection.blocker;
-  }
-  if (connection?.runtimeDetected && !connection.authAvailable) {
-    return `CLI detected but not signed in. Run: ${tool.loginCmd}`;
-  }
-  if (connection?.authAvailable && !connection.runtimeDetected) {
-    return `Local credentials exist but CLI not found in PATH. Install: ${installHintFor(tool)}`;
-  }
-  const pathAdvice = isWindowsRenderer
-    ? "If already installed, add its folder to your Windows PATH (System Properties -> Environment Variables), reopen ADE, and use Refresh."
-    : "If already installed, ensure it is on your shell PATH and use Refresh.";
-  return `CLI not found in PATH. Install: ${installHintFor(tool)}. ${pathAdvice}`;
-}
-
-function formatLocalModelLabel(modelId: string): string {
-  const descriptor = getModelById(modelId);
-  if (descriptor) return descriptor.displayName;
-  const provider = parseLocalProviderFromModelId(modelId);
-  if (provider) {
-    const tail = getLocalModelIdTail(modelId, provider);
-    const brand = LOCAL_PROVIDER_LABELS[provider];
-    return tail.length ? `${tail} (${brand})` : String(modelId ?? "").trim();
-  }
-  return String(modelId ?? "").trim();
-}
 
 function buildLocalProviderDrafts(
   snapshot: ProjectConfigSnapshot | null | undefined,
@@ -461,7 +127,17 @@ function buildLocalProviderDrafts(
   ) as Record<LocalProviderFamily, LocalProviderDraft>;
 }
 
-export function ProvidersSection({ forceRefreshOnMount = false }: { forceRefreshOnMount?: boolean }) {
+export function ProvidersSection({
+  forceRefreshOnMount = false,
+  providerParam = null,
+  onProviderChange,
+}: {
+  forceRefreshOnMount?: boolean;
+  /** `?provider=<id>` — which provider's page to show, if any. */
+  providerParam?: string | null;
+  /** Lets the settings shell keep the URL in step with the sub-view. */
+  onProviderChange?: (providerId: string | null) => void;
+} = {}) {
   const navigate = useNavigate();
   const [status, setStatus] = useState<AiSettingsStatus | null>(null);
   const [projectConfigSnapshot, setProjectConfigSnapshot] = useState<ProjectConfigSnapshot | null>(null);
@@ -491,12 +167,36 @@ export function ProvidersSection({ forceRefreshOnMount = false }: { forceRefresh
   const [cursorAuth, setCursorAuth] = useState<CursorSdkAuthStatus | null>(null);
   const [cursorLoginBusy, setCursorLoginBusy] = useState(false);
   const [cursorLoginUrl, setCursorLoginUrl] = useState<string | null>(null);
+  const [savingPermissionFor, setSavingPermissionFor] = useState<SettingsProviderId | null>(null);
+  const [savingDefaultModel, setSavingDefaultModel] = useState(false);
+  const [savingDisabledFor, setSavingDisabledFor] = useState<SettingsProviderId | null>(null);
+  // ACP CLI facts. Loaded when a provider's page opens, because reading them
+  // spawns the CLI — see `acpProviderDiagnostics` in main.
+  const [acpDiagnostics, setAcpDiagnostics] = useState<Partial<Record<AcpSettingsProviderId, AcpProviderDiagnostics>>>({});
+  const [acpDiagnosticsBusy, setAcpDiagnosticsBusy] = useState<AcpSettingsProviderId | null>(null);
+  const [acpDoctorBusy, setAcpDoctorBusy] = useState<AcpSettingsProviderId | null>(null);
+  const [acpDiagnosticsError, setAcpDiagnosticsError] = useState<Partial<Record<AcpSettingsProviderId, string>>>({});
+  const [signInProvider, setSignInProvider] = useState<SettingsProviderId | null>(null);
+  // Which provider's page is open. Seeded and re-seeded from `?provider=`, but
+  // owned here so the section works standalone (and in tests) without a router
+  // that writes search params.
+  const [selectedProviderId, setSelectedProviderId] = useState<string | null>(providerParam);
   const statusKnownRef = useRef(false);
   const pendingRefreshTimerRef = useRef<number | null>(null);
   // Seed the slugs field from config exactly once — saves send the full list
   // (replace semantics), so the field must start from what's persisted or a
   // save would silently wipe existing entries.
   const slugsSeededRef = useRef(false);
+
+  useEffect(() => {
+    setSelectedProviderId(providerParam);
+  }, [providerParam]);
+
+  const selectProvider = useCallback((next: string | null) => {
+    setSelectedProviderId(next);
+    onProviderChange?.(next);
+  }, [onProviderChange]);
+
   const revealClaudeLoginTerminalInWork = useCallback((terminal: { terminalId: string; laneId: string }) => {
     revealTerminalSessionInWork(navigate, terminal);
   }, [navigate]);
@@ -558,11 +258,12 @@ export function ProvidersSection({ forceRefreshOnMount = false }: { forceRefresh
   }, []);
 
   useEffect(() => {
-    void refreshStatus({
-      force: forceRefreshOnMount,
-      refreshOpenCodeInventory: true,
-    });
-    void loadAuthMethods();
+    // Cold paint is disk auth only. OpenCode inventory is a spawn and shares
+    // the 30s runtime budget; OpenCode's Re-check still refreshes it.
+    void (async () => {
+      await refreshStatus({ force: forceRefreshOnMount });
+      void loadAuthMethods();
+    })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [forceRefreshOnMount]);
 
@@ -613,18 +314,10 @@ export function ProvidersSection({ forceRefreshOnMount = false }: { forceRefresh
   }, [refreshStatus]);
 
   const detectedAuth = useMemo(() => status?.detectedAuth ?? [], [status?.detectedAuth]);
-  const providerConnections = status?.providerConnections;
-  const piInstallation = status?.piInstallation ?? null;
-  const piConnection = providerConnections?.pi ?? null;
-  // Keep provider cards neutral while the status payload is unavailable. A
-  // failed first probe must not be presented as a real "Binary Missing" state.
+  // Keep provider tiles neutral while the status payload is unavailable. A
+  // failed first probe must not be presented as a real "Not installed" state.
   const isInitialCheckInFlight = status == null;
-  const piStatusLoadFailed = isInitialCheckInFlight && !loading && statusLoadError !== null;
-  const opencodeStatusKnown = status !== null;
-  const opencodeStatusLoadFailed = !opencodeStatusKnown && !loading && statusLoadError !== null;
-  const opencodeInstalled = status?.opencodeBinaryInstalled !== false;
   const opencodeProviders = useMemo(() => status?.opencodeProviders ?? [], [status?.opencodeProviders]);
-  const providersStale = status?.opencodeProvidersStale === true;
 
   const apiKeySources = useMemo(() => {
     const map = new Map<string, ApiKeySource>();
@@ -646,7 +339,7 @@ export function ProvidersSection({ forceRefreshOnMount = false }: { forceRefresh
     [apiKeySources, storedProviders],
   );
 
-  const localRuntimes = useMemo(() => {
+  const localRuntimes = useMemo((): LocalRuntimeRow[] => {
     const availableModelIds = status?.availableModelIds ?? [];
     const runtimeConnections = status?.runtimeConnections ?? {};
     return LOCAL_PROVIDER_SPECS.map((spec) => {
@@ -791,19 +484,19 @@ export function ProvidersSection({ forceRefreshOnMount = false }: { forceRefresh
     setDetailProviderId(id);
   }, []);
 
-  const beginEditing = (provider: string) => {
+  const beginEditing = useCallback((provider: string) => {
     setEditingProvider(provider);
     setEditValue("");
     setError(null);
     setNotice(null);
-  };
+  }, []);
 
-  const cancelEditing = () => {
+  const cancelEditing = useCallback(() => {
     setEditingProvider(null);
     setEditValue("");
-  };
+  }, []);
 
-  const deleteApiKey = async (provider: string, options?: { alsoOpenCode?: boolean }) => {
+  const deleteApiKey = useCallback(async (provider: string, options?: { alsoOpenCode?: boolean }) => {
     setError(null);
     setNotice(null);
     try {
@@ -819,7 +512,7 @@ export function ProvidersSection({ forceRefreshOnMount = false }: { forceRefresh
         API_KEY_PROVIDERS.find((row) => row.provider === provider)?.label
         ?? (provider === KIMI_PROVIDER_ID ? "Kimi for Coding" : prettifyProviderId(provider));
       setNotice(`${label} disconnected.`);
-      if (editingProvider === provider) cancelEditing();
+      setEditingProvider((current) => (current === provider ? null : current));
       setVerificationByProvider((prev) => {
         const next = { ...prev };
         delete next[provider];
@@ -831,9 +524,9 @@ export function ProvidersSection({ forceRefreshOnMount = false }: { forceRefresh
       // Re-throw so nested modals (detail overlay) can show the failure in-dialog.
       throw err instanceof Error ? err : new Error(String(err));
     }
-  };
+  }, [refreshStatus]);
 
-  const verifyApiKey = async (provider: string) => {
+  const verifyApiKey = useCallback(async (provider: string) => {
     setError(null);
     setNotice(null);
     setVerifyingProvider(provider);
@@ -858,9 +551,9 @@ export function ProvidersSection({ forceRefreshOnMount = false }: { forceRefresh
     } finally {
       setVerifyingProvider(null);
     }
-  };
+  }, [refreshStatus]);
 
-  const saveCursorApiKey = async () => {
+  const saveCursorApiKey = useCallback(async () => {
     const trimmed = editValue.trim();
     if (!trimmed) return;
 
@@ -891,9 +584,9 @@ export function ProvidersSection({ forceRefreshOnMount = false }: { forceRefresh
     } finally {
       setVerifyingProvider(null);
     }
-  };
+  }, [cancelEditing, editValue, refreshStatus]);
 
-  const loginWithCursor = async () => {
+  const loginWithCursor = useCallback(async () => {
     setError(null);
     setNotice(null);
     setCursorLoginBusy(true);
@@ -921,9 +614,9 @@ export function ProvidersSection({ forceRefreshOnMount = false }: { forceRefresh
       setCursorLoginBusy(false);
       setVerifyingProvider(null);
     }
-  };
+  }, [refreshStatus]);
 
-  const logoutCursor = async () => {
+  const logoutCursor = useCallback(async () => {
     setError(null);
     setNotice(null);
     try {
@@ -943,9 +636,9 @@ export function ProvidersSection({ forceRefreshOnMount = false }: { forceRefresh
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     }
-  };
+  }, [refreshStatus]);
 
-  const cancelCursorLogin = async () => {
+  const cancelCursorLogin = useCallback(async () => {
     try {
       await window.ade.ai.cursorAuthCancel();
     } catch (err) {
@@ -953,9 +646,9 @@ export function ProvidersSection({ forceRefreshOnMount = false }: { forceRefresh
     } finally {
       setCursorLoginBusy(false);
     }
-  };
+  }, []);
 
-  const handleRefreshCatalog = async () => {
+  const handleRefreshCatalog = useCallback(async () => {
     setRefreshingCatalog(true);
     try {
       await window.ade.ai.refreshModelsDev();
@@ -965,7 +658,7 @@ export function ProvidersSection({ forceRefreshOnMount = false }: { forceRefresh
     } finally {
       setRefreshingCatalog(false);
     }
-  };
+  }, [refreshStatus]);
 
   const handleSubscriptionConnected = useCallback(async (providerId: string, providerName: string) => {
     const before = status?.availableModelIds?.length ?? 0;
@@ -982,7 +675,7 @@ export function ProvidersSection({ forceRefreshOnMount = false }: { forceRefresh
     });
   }, [status?.availableModelIds, refreshStatus, loadAuthMethods]);
 
-  const saveAdvancedProvider = async () => {
+  const saveAdvancedProvider = useCallback(async () => {
     const draft = customProviderDraft;
     const id = draft.id.trim();
     const baseURL = draft.baseUrl.trim();
@@ -1022,9 +715,9 @@ export function ProvidersSection({ forceRefreshOnMount = false }: { forceRefresh
     } finally {
       setSavingAdvanced(false);
     }
-  };
+  }, [customProviderDraft, refreshStatus, status?.customProviders]);
 
-  const saveCustomModelSlugs = async () => {
+  const saveCustomModelSlugs = useCallback(async () => {
     const slugs = customModelSlugs.split(",").map((s) => s.trim()).filter(Boolean);
     setSavingAdvanced(true);
     setError(null);
@@ -1041,7 +734,7 @@ export function ProvidersSection({ forceRefreshOnMount = false }: { forceRefresh
     } finally {
       setSavingAdvanced(false);
     }
-  };
+  }, [customModelSlugs, refreshStatus]);
 
   const updateLocalProviderDraft = useCallback((
     provider: LocalProviderFamily,
@@ -1095,8 +788,249 @@ export function ProvidersSection({ forceRefreshOnMount = false }: { forceRefresh
     }
   }, [localProviderDrafts, refreshStatus]);
 
+  const permissionDefaults: AiProviderPermissions = useMemo(
+    () => projectConfigSnapshot?.effective.ai?.permissions?.providers ?? {},
+    [projectConfigSnapshot],
+  );
+  const disabledProviders = useMemo(
+    () => new Set((projectConfigSnapshot?.effective.ai?.disabledProviders ?? []).map((id) => id.toLowerCase())),
+    [projectConfigSnapshot],
+  );
+
+  const setProviderDisabled = useCallback(async (
+    provider: SettingsProviderId,
+    disabled: boolean,
+  ) => {
+    const descriptor = providerDescriptor(provider);
+    setSavingDisabledFor(provider);
+    setError(null);
+    setNotice(null);
+    try {
+      // The whole authoritative list, not a delta: `mergeAiConfig` replaces
+      // this field, so a patch carrying only the change could never re-enable
+      // anything.
+      await window.ade.ai.updateConfig({
+        disabledProviders: toggleDisabledProvider(
+          projectConfigSnapshot?.effective.ai ?? null,
+          provider,
+          disabled,
+        ),
+      } as Partial<AiConfig>);
+      invalidateAiDiscoveryCache();
+      setNotice(`${descriptor?.label ?? provider} ${disabled ? "disabled" : "enabled"}.`);
+      await refreshStatus({ force: false, silent: true });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setSavingDisabledFor(null);
+    }
+  }, [projectConfigSnapshot, refreshStatus]);
+
+  const loadAcpDiagnostics = useCallback(async (provider: AcpSettingsProviderId) => {
+    const read = window.ade.ai.acpProviderDiagnostics;
+    if (!read) return;
+    setAcpDiagnosticsBusy(provider);
+    try {
+      const result = await read({ provider });
+      setAcpDiagnostics((prev) => ({ ...prev, [provider]: result }));
+      setAcpDiagnosticsError((prev) => {
+        const next = { ...prev };
+        delete next[provider];
+        return next;
+      });
+    } catch (err) {
+      setAcpDiagnosticsError((prev) => ({
+        ...prev,
+        [provider]: err instanceof Error ? err.message : String(err),
+      }));
+    } finally {
+      setAcpDiagnosticsBusy((current) => (current === provider ? null : current));
+    }
+  }, []);
+
+  const runAcpDoctor = useCallback(async (provider: AcpSettingsProviderId) => {
+    const read = window.ade.ai.acpProviderDiagnostics;
+    if (!read) {
+      setAcpDiagnosticsError((prev) => ({ ...prev, [provider]: "This window cannot run provider diagnostics." }));
+      return;
+    }
+    setAcpDoctorBusy(provider);
+    try {
+      const result = await read({ provider, runDoctor: true });
+      setAcpDiagnostics((prev) => ({ ...prev, [provider]: result }));
+      setAcpDiagnosticsError((prev) => {
+        const next = { ...prev };
+        delete next[provider];
+        return next;
+      });
+    } catch (err) {
+      setAcpDiagnosticsError((prev) => ({
+        ...prev,
+        [provider]: err instanceof Error ? err.message : String(err),
+      }));
+    } finally {
+      setAcpDoctorBusy((current) => (current === provider ? null : current));
+    }
+  }, []);
+
+  const openSignInTerminal = useCallback((provider: SettingsProviderId) => {
+    const command = acpLoginCommand(provider);
+    if (!command) return;
+    setSignInProvider(provider);
+  }, []);
+  const defaultModelId = projectConfigSnapshot?.effective.ai?.defaultModel ?? null;
+
+  const setPermissionDefault = useCallback(async (
+    provider: SettingsProviderId,
+    mode: AgentChatPermissionMode,
+  ) => {
+    const descriptor = providerDescriptor(provider);
+    if (!descriptor) return;
+    setSavingPermissionFor(provider);
+    setError(null);
+    setNotice(null);
+    try {
+      // The detail page writes the ABSTRACT mode only. Translating it to each
+      // runtime's native flags stays where it already lives — one way, at
+      // launch — so this cannot drift from what a chat actually does.
+      await window.ade.ai.updateConfig({
+        permissions: { providers: { [descriptor.permissions.key]: mode } },
+      } as Partial<AiConfig>);
+      setNotice(`${descriptor.label} permission default saved.`);
+      await refreshStatus({ force: false, silent: true });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setSavingPermissionFor(null);
+    }
+  }, [refreshStatus]);
+
+  const setDefaultModel = useCallback(async (modelId: string | null) => {
+    setSavingDefaultModel(true);
+    setError(null);
+    setNotice(null);
+    try {
+      await window.ade.ai.updateConfig({ defaultModel: (modelId ?? undefined) as AiConfig["defaultModel"] });
+      invalidateAiDiscoveryCache();
+      setNotice(modelId ? `Default model set to ${modelId}.` : "Default model cleared.");
+      await refreshStatus({ force: false, silent: true });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setSavingDefaultModel(false);
+    }
+  }, [refreshStatus]);
+
+  const ctx = useMemo((): ProvidersViewContext => ({
+    status,
+    projectConfigSnapshot,
+    loading,
+    statusLoadError,
+    isInitialCheckInFlight,
+    storedProviders,
+    apiKeySources,
+    hasKeyFor,
+    verificationByProvider,
+    verifyingProvider,
+    editingProvider,
+    editValue,
+    cursorAuth,
+    cursorLoginBusy,
+    cursorLoginUrl,
+    authMethods,
+    authMethodsError,
+    openCodeCatalog,
+    connectedOpenCodeProviders,
+    popularOpenCodeProviders,
+    searchableOpenCodeProviders,
+    providerSearch,
+    refreshingCatalog,
+    localRuntimes,
+    localProviderDrafts,
+    editingLocalProvider,
+    savingLocalProvider,
+    customProviderDraft,
+    customModelSlugs,
+    savingAdvanced,
+    permissionDefaults,
+    savingPermissionFor,
+    defaultModelId,
+    savingDefaultModel,
+    disabledProviders,
+    savingDisabledFor,
+    acpDiagnostics,
+    acpDiagnosticsBusy,
+    acpDoctorBusy,
+    acpDiagnosticsError,
+    actions: {
+      refreshStatus,
+      loadAuthMethods,
+      setError,
+      setNotice,
+      beginEditing,
+      cancelEditing,
+      setEditValue,
+      deleteApiKey,
+      verifyApiKey,
+      saveCursorApiKey,
+      loginWithCursor,
+      logoutCursor,
+      cancelCursorLogin,
+      setProviderSearch,
+      refreshCatalog: handleRefreshCatalog,
+      openOpenCodeProviderDetail: openProviderDetail,
+      updateLocalProviderDraft,
+      beginEditingLocalRuntime,
+      cancelEditingLocalRuntime,
+      saveLocalProvider,
+      setCustomProviderDraft,
+      setCustomModelSlugs,
+      saveAdvancedProvider,
+      saveCustomModelSlugs,
+      setPermissionDefault,
+      setDefaultModel,
+      revealClaudeLoginTerminal: revealClaudeLoginTerminalInWork,
+      setProviderDisabled,
+      loadAcpDiagnostics,
+      runAcpDoctor,
+      openSignInTerminal,
+    },
+  }), [
+    apiKeySources, authMethods, authMethodsError, beginEditing, beginEditingLocalRuntime, cancelCursorLogin, cancelEditing,
+    cancelEditingLocalRuntime, connectedOpenCodeProviders, cursorAuth, cursorLoginBusy,
+    cursorLoginUrl, customModelSlugs, customProviderDraft, defaultModelId, deleteApiKey, editValue,
+    editingLocalProvider, editingProvider, handleRefreshCatalog, hasKeyFor, isInitialCheckInFlight,
+    loadAuthMethods, loading, localProviderDrafts, localRuntimes, loginWithCursor, logoutCursor,
+    openCodeCatalog, openProviderDetail, permissionDefaults, popularOpenCodeProviders,
+    projectConfigSnapshot, providerSearch, refreshStatus, refreshingCatalog, saveAdvancedProvider,
+    saveCursorApiKey, saveCustomModelSlugs, saveLocalProvider, savingAdvanced, savingDefaultModel,
+    savingLocalProvider, savingPermissionFor, searchableOpenCodeProviders, setDefaultModel,
+    setPermissionDefault, status, statusLoadError, storedProviders, updateLocalProviderDraft,
+    verificationByProvider, verifyApiKey, verifyingProvider, revealClaudeLoginTerminalInWork,
+    disabledProviders, savingDisabledFor, setProviderDisabled, acpDiagnostics, acpDiagnosticsBusy,
+    acpDoctorBusy, acpDiagnosticsError, loadAcpDiagnostics, runAcpDoctor, openSignInTerminal,
+  ]);
+
+  const descriptors = useMemo(() => availableProviderDescriptors(), []);
+  const selectedDescriptor = selectedProviderId
+    ? descriptors.find((descriptor) => descriptor.id === selectedProviderId) ?? null
+    : null;
+
+  // Opening an ACP provider's page is what pays for its CLI facts. Loading them
+  // for the grid would spawn four CLIs to draw four tiles.
+  const selectedAcpProvider = selectedDescriptor && acpLoginCommand(selectedDescriptor.id)
+    ? (selectedDescriptor.id as AcpSettingsProviderId)
+    : null;
+  useEffect(() => {
+    if (!selectedAcpProvider) return;
+    if (acpDiagnostics[selectedAcpProvider]) return;
+    void loadAcpDiagnostics(selectedAcpProvider);
+  }, [acpDiagnostics, loadAcpDiagnostics, selectedAcpProvider]);
+
+  const signInCommand = signInProvider ? acpLoginCommand(signInProvider) : null;
+
   return (
-    <div id="ai-providers" style={{ display: "flex", flexDirection: "column", gap: 24 }}>
+    <div id="ai-providers" style={{ display: "flex", flexDirection: "column", gap: 20 }}>
       {notice && (
         <AlertBanner tone="success" message={notice} onDismiss={() => setNotice(null)} />
       )}
@@ -1113,678 +1047,55 @@ export function ProvidersSection({ forceRefreshOnMount = false }: { forceRefresh
         />
       )}
 
-      {/* ══ Coding Agents ══ */}
-      <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-        <div style={groupLabelStyle}>Coding Agents</div>
-
-        {/* ── Claude Code ── */}
-        {(() => {
-          const tool = CLI_TOOLS.find((t) => t.cli === "claude")!;
-          const connection = providerConnections?.[tool.cli] ?? null;
-          const availability = status?.availableProviders?.claude ?? null;
-          const credentialSourceDesc = describeCredentialSource(connection);
-          const tone = isInitialCheckInFlight ? { color: COLORS.info, label: "Checking" } : getClaudeAvailabilityTone(availability);
-          const message = isInitialCheckInFlight ? "Checking Claude SDK binary and login status." : buildClaudeAvailabilityMessage(availability);
-          const binaryPath = availability?.binary.path ?? connection?.path ?? null;
-          return (
-            <section style={panel({ borderLeft: `3px solid ${tone.color}`, padding: 14 })}>
-              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
-                <div style={{ display: "flex", alignItems: "center", gap: 10, minWidth: 0 }}>
-                  <ClaudeLogo size={26} />
-                  <div style={{ minWidth: 0 }}>
-                    <div style={{ fontSize: 13, fontFamily: SANS_FONT, fontWeight: 700, color: COLORS.textPrimary }}>Claude Code</div>
-                    <div style={{ fontSize: 10, fontFamily: MONO_FONT, color: COLORS.textMuted, lineHeight: 1.35 }}>{tool.authStory}</div>
-                  </div>
-                </div>
-                <div style={{ display: "flex", alignItems: "center", gap: 4, color: tone.color }}>
-                  {isInitialCheckInFlight ? <Info size={14} weight="fill" /> : availability?.auth.ready ? <CheckCircle size={14} weight="fill" /> : availability?.binary.present ? <WarningCircle size={14} weight="fill" /> : <XCircle size={14} weight="fill" />}
-                  <span style={{ fontSize: 9, fontFamily: MONO_FONT, textTransform: "uppercase", letterSpacing: "1px" }}>{tone.label}</span>
-                </div>
-              </div>
-              <div style={{ fontSize: 10, fontFamily: MONO_FONT, color: COLORS.textMuted, lineHeight: 1.5, marginTop: 10 }}>{message}</div>
-              {!isInitialCheckInFlight && availability?.binary.present && !availability.auth.ready ? (
-                <div style={{ display: "flex", marginTop: 10 }}>
-                  <ClaudeLoginPromptButton
-                    visible
-                    storageKey="settings:claude-auth"
-                    dismissible={false}
-                    onTerminalCreated={revealClaudeLoginTerminalInWork}
-                  />
-                </div>
-              ) : null}
-              {credentialSourceDesc && !availability?.auth.ready && !isInitialCheckInFlight ? <div style={{ fontSize: 10, fontFamily: MONO_FONT, color: COLORS.info, marginTop: 4 }}>{credentialSourceDesc}</div> : null}
-              {binaryPath && !isInitialCheckInFlight ? <code style={{ display: "block", marginTop: 6, fontSize: 10, fontFamily: MONO_FONT, color: COLORS.textSecondary, background: "color-mix(in srgb, var(--color-muted-fg) 12%, transparent)", border: `1px solid ${COLORS.border}`, padding: "6px 8px", overflowWrap: "anywhere", wordBreak: "break-all" }}>{binaryPath}</code> : null}
-            </section>
-          );
-        })()}
-
-        {/* ── Codex CLI ── */}
-        {(() => {
-          const tool = CLI_TOOLS.find((t) => t.cli === "codex")!;
-          const connection = providerConnections?.[tool.cli] ?? null;
-          const credentialSourceDesc = describeCredentialSource(connection);
-          const tone = isInitialCheckInFlight ? { color: COLORS.info, label: "Checking" } : getStatusTone(connection);
-          const message = isInitialCheckInFlight ? "Checking CLI availability and login status." : buildCliMessage(tool, connection);
-          return (
-            <section style={panel({ borderLeft: `3px solid ${tone.color}`, padding: 14 })}>
-              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
-                <div style={{ display: "flex", alignItems: "center", gap: 10, minWidth: 0 }}>
-                  <CodexLogo size={26} className="text-zinc-100" />
-                  <div style={{ minWidth: 0 }}>
-                    <div style={{ fontSize: 13, fontFamily: SANS_FONT, fontWeight: 700, color: COLORS.textPrimary }}>Codex CLI</div>
-                    <div style={{ fontSize: 10, fontFamily: MONO_FONT, color: COLORS.textMuted, lineHeight: 1.35 }}>{tool.authStory}</div>
-                  </div>
-                </div>
-                <div style={{ display: "flex", alignItems: "center", gap: 4, color: tone.color }}>
-                  {isInitialCheckInFlight ? <Info size={14} weight="fill" /> : connection?.runtimeAvailable ? <CheckCircle size={14} weight="fill" /> : connection?.authAvailable || connection?.runtimeDetected ? <WarningCircle size={14} weight="fill" /> : <XCircle size={14} weight="fill" />}
-                  <span style={{ fontSize: 9, fontFamily: MONO_FONT, textTransform: "uppercase", letterSpacing: "1px" }}>{tone.label}</span>
-                </div>
-              </div>
-              <div style={{ fontSize: 10, fontFamily: MONO_FONT, color: COLORS.textMuted, lineHeight: 1.5, marginTop: 10 }}>{message}</div>
-              {credentialSourceDesc && !connection?.runtimeAvailable && !isInitialCheckInFlight ? <div style={{ fontSize: 10, fontFamily: MONO_FONT, color: COLORS.info, marginTop: 4 }}>{credentialSourceDesc}</div> : null}
-              {connection?.path && !isInitialCheckInFlight ? <code style={{ display: "block", marginTop: 6, fontSize: 10, fontFamily: MONO_FONT, color: COLORS.textSecondary, background: "color-mix(in srgb, var(--color-muted-fg) 12%, transparent)", border: `1px solid ${COLORS.border}`, padding: "6px 8px", overflowWrap: "anywhere", wordBreak: "break-all" }}>{connection.path}</code> : null}
-            </section>
-          );
-        })()}
-
-        {/* ── Cursor ── */}
-        {/* Hidden entirely on Windows on ARM: @cursor/sdk has no win32-arm64
-            build, so the card could only ever offer a provider that cannot
-            start. See shared/providerPlatformSupport.ts. */}
-        {!cursorProviderAvailable() ? null : (() => {
-          const tool = CLI_TOOLS.find((t) => t.cli === "cursor")!;
-          const connection = providerConnections?.[tool.cli] ?? null;
-          const credentialSourceDesc = describeCredentialSource(connection);
-          const keySource = apiKeySources.get("cursor") ?? (storedProviders.includes("cursor") ? "store" : undefined);
-          const verification = verificationByProvider.cursor;
-          const isEditing = editingProvider === "cursor";
-          const isVerifying = verifyingProvider === "cursor";
-          const isVerified = !isVerifying && verification?.ok;
-          const isInvalid = !isVerifying && verification && !verification.ok;
-          const isKeyConnected = Boolean(isVerified || (!isInvalid && keySource && connection?.runtimeAvailable));
-          const signedInEmail = (cursorAuth?.email ?? connection?.accountEmail)?.trim() || null;
-          const oauthSignedIn = Boolean(
-            cursorAuth?.sdkStatus === "logged-in"
-            || cursorAuth?.credentialSource === "cursor-oauth"
-            || connection?.sources.some((entry) => entry.source === "cursor-oauth"),
-          );
-          const loginUrl = cursorLoginUrl ?? cursorAuth?.loginUrl ?? null;
-          const tone = isVerifying
-            ? { color: COLORS.info, label: "Verifying" }
-            : isVerified
-              ? { color: COLORS.success, label: "Connected" }
-              : isInvalid
-                ? { color: COLORS.danger, label: "Verification failed" }
-                : isInitialCheckInFlight ? { color: COLORS.info, label: "Checking" } : getStatusTone(connection);
-          const message = isVerifying
-            ? "Verifying Cursor API key with the Cursor SDK."
-            : isVerified
-              ? "Cursor SDK connected. ADE uses this key for Cursor chat and Cursor Cloud agents."
-              : isInvalid
-                ? verification.message
-                : isInitialCheckInFlight ? "Checking Cursor SDK API key." : (connection?.blocker ?? "Sign in with Cursor or enter a Cursor API key.");
-          return (
-            <section style={panel({ borderLeft: `3px solid ${tone.color}`, padding: 14 })}>
-              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
-                <div style={{ display: "flex", alignItems: "center", gap: 10, minWidth: 0 }}>
-                  <CursorAgentLogo size={26} />
-                  <div style={{ minWidth: 0 }}>
-                    <div style={{ fontSize: 13, fontFamily: SANS_FONT, fontWeight: 700, color: COLORS.textPrimary }}>Cursor</div>
-                    <div style={{ fontSize: 10, fontFamily: MONO_FONT, color: COLORS.textMuted, lineHeight: 1.35 }}>{tool.authStory}</div>
-                  </div>
-                </div>
-                <div style={{ display: "flex", alignItems: "center", gap: 4, color: tone.color }}>
-                  {isVerifying || isInitialCheckInFlight ? <Info size={14} weight="fill" /> : isVerified ? <CheckCircle size={14} weight="fill" /> : isInvalid ? <XCircle size={14} weight="fill" /> : connection?.runtimeAvailable ? <CheckCircle size={14} weight="fill" /> : connection?.authAvailable || connection?.runtimeDetected ? <WarningCircle size={14} weight="fill" /> : <XCircle size={14} weight="fill" />}
-                  <span style={{ fontSize: 9, fontFamily: MONO_FONT, textTransform: "uppercase", letterSpacing: "1px" }}>{tone.label}</span>
-                </div>
-              </div>
-              <div style={{ fontSize: 10, fontFamily: MONO_FONT, color: COLORS.textMuted, lineHeight: 1.5, marginTop: 10 }}>{message}</div>
-              {credentialSourceDesc && !connection?.runtimeAvailable && !isInitialCheckInFlight ? <div style={{ fontSize: 10, fontFamily: MONO_FONT, color: COLORS.info, marginTop: 4 }}>{credentialSourceDesc}</div> : null}
-              <div style={{ marginTop: 12, paddingTop: 12, borderTop: `1px solid ${COLORS.border}`, display: "flex", flexDirection: "column", gap: 16 }}>
-                <section style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-                  <div style={SECTION_LABEL_STYLE}>Sign in with Cursor</div>
-                  <div style={{ fontSize: 10, fontFamily: MONO_FONT, color: COLORS.textMuted, lineHeight: 1.5 }}>
-                    Opens a browser and mints a Cursor API key for ADE. Does not copy Cursor IDE cookies.
-                  </div>
-                  {oauthSignedIn ? (
-                    <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-                      <div style={{ display: "inline-flex", alignItems: "center", gap: 6, color: COLORS.success, fontSize: 11, fontFamily: MONO_FONT }}>
-                        <CheckCircle size={14} weight="fill" />
-                        {signedInEmail ? `Signed in as ${signedInEmail}` : "Signed in with Cursor"}
-                      </div>
-                      <button
-                        type="button"
-                        aria-label="Sign out of Cursor"
-                        style={{ ...outlineButton({ height: 28 }), color: COLORS.danger, alignSelf: "flex-start" }}
-                        disabled={cursorLoginBusy || isVerifying}
-                        onClick={() => void logoutCursor()}
-                      >
-                        Sign out
-                      </button>
-                    </div>
-                  ) : (
-                    <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
-                      <button
-                        type="button"
-                        aria-label="Sign in with Cursor"
-                        style={outlineButton({ height: 28 })}
-                        disabled={cursorLoginBusy || isVerifying}
-                        onClick={() => void loginWithCursor()}
-                      >
-                        {cursorLoginBusy ? "Signing in…" : "Sign in"}
-                      </button>
-                      {cursorLoginBusy ? (
-                        <button
-                          type="button"
-                          aria-label="Cancel Cursor sign-in"
-                          style={outlineButton({ height: 28 })}
-                          onClick={() => void cancelCursorLogin()}
-                        >
-                          Cancel
-                        </button>
-                      ) : null}
-                    </div>
-                  )}
-                  {loginUrl && cursorLoginBusy ? (
-                    <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-                      <div style={{ fontSize: 10, fontFamily: MONO_FONT, color: COLORS.textMuted }}>
-                        If a browser did not open, copy this URL:
-                      </div>
-                      <CopyableCommand command={loginUrl} />
-                    </div>
-                  ) : null}
-                </section>
-                <section style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-                  <div style={SECTION_LABEL_STYLE}>API key</div>
-                  <div style={{ fontSize: 10, fontFamily: MONO_FONT, color: COLORS.textMuted }}>CURSOR_API_KEY</div>
-                  <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr) auto", gap: 10, alignItems: "center" }}>
-                    <div style={{ minWidth: 0 }}>
-                      {isEditing ? (
-                        <input
-                          autoFocus
-                          aria-label="Cursor API key"
-                          value={editValue}
-                          onChange={(event) => setEditValue(event.target.value)}
-                          placeholder="crsr_..."
-                          type="password"
-                          disabled={isVerifying}
-                          style={{ width: "100%", background: COLORS.cardBg, border: `1px solid ${COLORS.border}`, padding: "8px 10px", fontSize: 11, fontFamily: MONO_FONT, color: COLORS.textPrimary, outline: "none" }}
-                        />
-                      ) : keySource ? (
-                        <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-                          <SourceBadge source={keySource} />
-                          {isVerifying ? (
-                            <span style={{ display: "inline-flex", alignItems: "center", gap: 4, color: COLORS.info, fontSize: 10, fontFamily: MONO_FONT }}>
-                              <Info size={12} weight="fill" />
-                              Verifying...
-                            </span>
-                          ) : isKeyConnected ? (
-                            <span style={{ display: "inline-flex", alignItems: "center", gap: 4, color: COLORS.success, fontSize: 10, fontFamily: MONO_FONT }}>
-                              <CheckCircle size={12} weight="fill" />
-                              Connected
-                            </span>
-                          ) : verification ? (
-                            <span style={{ display: "inline-flex", alignItems: "center", gap: 4, color: verification.ok ? COLORS.success : COLORS.danger, fontSize: 10, fontFamily: MONO_FONT }}>
-                              {verification.ok ? <CheckCircle size={12} weight="fill" /> : <XCircle size={12} weight="fill" />}
-                              {verification.ok ? "Verified" : verification.message}
-                            </span>
-                          ) : (
-                            <span style={{ fontSize: 10, fontFamily: MONO_FONT, color: COLORS.textMuted }}>
-                              {keySource === "env" ? "Loaded from environment" : keySource === "config" ? "Defined in project config" : "Stored locally"}
-                            </span>
-                          )}
-                        </div>
-                      ) : (
-                        <span style={{ fontSize: 10, fontFamily: MONO_FONT, color: COLORS.textDim }}>No Cursor API key configured</span>
-                      )}
-                    </div>
-                    <div style={{ display: "flex", alignItems: "center", gap: 8, justifyContent: "flex-end", flexWrap: "wrap" }}>
-                      {isEditing ? (
-                        <>
-                          <button type="button" aria-label="Save Cursor API key" style={outlineButton({ height: 28 })} disabled={isVerifying || !editValue.trim()} onClick={() => void saveCursorApiKey()}>
-                            {isVerifying ? "Verifying..." : "Save"}
-                          </button>
-                          <button type="button" style={outlineButton({ height: 28 })} disabled={isVerifying} onClick={cancelEditing}>Cancel</button>
-                        </>
-                      ) : keySource ? (
-                        <>
-                          {isKeyConnected ? (
-                            <ConnectedTag />
-                          ) : (
-                            <button type="button" aria-label="Verify Cursor API key" style={outlineButton({ height: 28 })} disabled={isVerifying} onClick={() => void verifyApiKey("cursor")}>
-                              {isVerifying ? "Verifying..." : "Verify"}
-                            </button>
-                          )}
-                          {keySource === "store" ? (
-                            <>
-                              <button type="button" style={outlineButton({ height: 28 })} disabled={isVerifying} onClick={() => beginEditing("cursor")}>Replace</button>
-                              <button type="button" style={outlineButton({ height: 28 })} disabled={isVerifying} onClick={() => void deleteApiKey("cursor").catch(() => undefined)}>Delete</button>
-                            </>
-                          ) : null}
-                        </>
-                      ) : (
-                        <button type="button" aria-label="Add Cursor API key" style={outlineButton({ height: 28 })} onClick={() => beginEditing("cursor")}>Add key</button>
-                      )}
-                    </div>
-                  </div>
-                </section>
-              </div>
-            </section>
-          );
-        })()}
-
-        {/* ── Droid ── */}
-        {(() => {
-          const tool = CLI_TOOLS.find((t) => t.cli === "droid")!;
-          const connection = providerConnections?.[tool.cli] ?? null;
-          const credentialSourceDesc = describeCredentialSource(connection);
-          const tone = isInitialCheckInFlight ? { color: COLORS.info, label: "Checking" } : getStatusTone(connection);
-          const message = isInitialCheckInFlight ? "Checking CLI availability and login status." : buildCliMessage(tool, connection);
-          return (
-            <section style={panel({ borderLeft: `3px solid ${tone.color}`, padding: 14 })}>
-              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
-                <div style={{ display: "flex", alignItems: "center", gap: 10, minWidth: 0 }}>
-                  <ProviderLogo family="factory" size={26} />
-                  <div style={{ minWidth: 0 }}>
-                    <div style={{ fontSize: 13, fontFamily: SANS_FONT, fontWeight: 700, color: COLORS.textPrimary }}>Droid</div>
-                    <div style={{ fontSize: 10, fontFamily: MONO_FONT, color: COLORS.textMuted, lineHeight: 1.35 }}>{tool.authStory}</div>
-                  </div>
-                </div>
-                <div style={{ display: "flex", alignItems: "center", gap: 4, color: tone.color }}>
-                  {isInitialCheckInFlight ? <Info size={14} weight="fill" /> : connection?.runtimeAvailable ? <CheckCircle size={14} weight="fill" /> : connection?.authAvailable || connection?.runtimeDetected ? <WarningCircle size={14} weight="fill" /> : <XCircle size={14} weight="fill" />}
-                  <span style={{ fontSize: 9, fontFamily: MONO_FONT, textTransform: "uppercase", letterSpacing: "1px" }}>{tone.label}</span>
-                </div>
-              </div>
-              <div style={{ fontSize: 10, fontFamily: MONO_FONT, color: COLORS.textMuted, lineHeight: 1.5, marginTop: 10 }}>{message}</div>
-              {credentialSourceDesc && !connection?.runtimeAvailable && !isInitialCheckInFlight ? <div style={{ fontSize: 10, fontFamily: MONO_FONT, color: COLORS.info, marginTop: 4 }}>{credentialSourceDesc}</div> : null}
-              {connection?.path && !isInitialCheckInFlight ? <code style={{ display: "block", marginTop: 6, fontSize: 10, fontFamily: MONO_FONT, color: COLORS.textSecondary, background: `${COLORS.textDim}12`, border: `1px solid ${COLORS.border}`, padding: "6px 8px", overflowWrap: "anywhere", wordBreak: "break-all" }}>{connection.path}</code> : null}
-            </section>
-          );
-        })()}
-
-        {(() => {
-          const tone = piStatusLoadFailed
-            ? { color: COLORS.danger, label: "Unavailable" }
-            : isInitialCheckInFlight ? { color: COLORS.info, label: "Checking" } : getPiTone(piConnection, piInstallation);
-          const message = piStatusLoadFailed
-            ? `Could not load Pi status: ${statusLoadError}`
-            : isInitialCheckInFlight
-            ? "Checking Pi installation and provider inventory."
-            : buildPiMessage(piConnection, piInstallation);
-          return (
-            <CollapsibleProviderCard
-              title="Pi"
-              summary="Uses Pi’s installed SDK package and redacted auth status from its native profile."
-              logo={<PiLogo size={26} />}
-              accentColor={tone.color}
-              status={(
-                <div style={{ display: "flex", alignItems: "center", gap: 4, color: tone.color }}>
-                  {isInitialCheckInFlight ? <Info size={14} weight="fill" /> : piConnection?.runtimeAvailable ? <CheckCircle size={14} weight="fill" /> : piConnection?.authAvailable || piConnection?.runtimeDetected ? <WarningCircle size={14} weight="fill" /> : <XCircle size={14} weight="fill" />}
-                  <span style={{ fontSize: 9, fontFamily: MONO_FONT, textTransform: "uppercase", letterSpacing: "1px" }}>{tone.label}</span>
-                </div>
-              )}
-            >
-              <div style={{ fontSize: 10, fontFamily: MONO_FONT, color: COLORS.textMuted, lineHeight: 1.5, marginTop: 10 }}>{message}</div>
-              {piStatusLoadFailed ? (
-                <button type="button" style={outlineButton({ height: 28, marginTop: 8 })} onClick={() => void refreshStatus({ force: true })}>
-                  Retry Pi status
-                </button>
-              ) : null}
-              {piInstallation?.error ? (
-                <div style={{ fontSize: 10, fontFamily: MONO_FONT, color: COLORS.warning, marginTop: 4 }}>
-                  Inventory fallback: {piInstallation.error}
-                </div>
-              ) : null}
-              {piInstallation?.version ? (
-                <div style={{ fontSize: 10, fontFamily: MONO_FONT, color: COLORS.textSecondary, marginTop: 4 }}>
-                  Version {piInstallation.version}{piInstallation.stale ? " · cached" : ""}
-                </div>
-              ) : null}
-              {piConnection?.path && !isInitialCheckInFlight ? <code style={{ display: "block", marginTop: 6, fontSize: 10, fontFamily: MONO_FONT, color: COLORS.textSecondary, background: `${COLORS.textDim}12`, border: `1px solid ${COLORS.border}`, padding: "6px 8px", overflowWrap: "anywhere", wordBreak: "break-all" }}>{piConnection.path}</code> : null}
-
-              {piInstallation ? (
-                <PiProvidersPanel
-                  installation={piInstallation}
-                  runtimeConnections={status?.runtimeConnections ?? {}}
-                  onSignedIn={() => void refreshStatus({ force: true })}
-                  onRefreshStatus={() => void refreshStatus({ force: true })}
-                />
-              ) : null}
-
-              {piInstallation ? (
-                <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", marginTop: 12, paddingTop: 12, borderTop: `1px solid ${COLORS.border}` }}>
-                  {!piInstallation.sdkAvailable ? (
-                    <button type="button" style={outlineButton({ height: 28 })} onClick={() => openExternalUrl("https://github.com/earendil-works/pi")}>Pi docs</button>
-                  ) : null}
-                  {piInstallation.settingsFileDetected ? (
-                    <button type="button" style={outlineButton({ height: 28 })} onClick={() => void window.ade.app.openPath(piInstallation.settingsPath).catch((reason) => setError(reason instanceof Error ? reason.message : String(reason)))}>
-                      Open settings.json
-                    </button>
-                  ) : (
-                    <span style={{ fontSize: 10, fontFamily: MONO_FONT, color: COLORS.textDim }}>settings.json not found</span>
-                  )}
-                  {piInstallation.authFileDetected ? (
-                    <button type="button" style={outlineButton({ height: 28 })} onClick={() => void window.ade.app.openPath(piInstallation.authPath).catch((reason) => setError(reason instanceof Error ? reason.message : String(reason)))}>
-                      Open auth.json
-                    </button>
-                  ) : (
-                    <span style={{ fontSize: 10, fontFamily: MONO_FONT, color: COLORS.textDim }}>auth.json not found</span>
-                  )}
-                  {piInstallation.modelsFileDetected ? (
-                    <button type="button" style={outlineButton({ height: 28 })} onClick={() => void window.ade.app.openPath(piInstallation.modelsPath).catch((reason) => setError(reason instanceof Error ? reason.message : String(reason)))}>
-                      Open models.json
-                    </button>
-                  ) : (
-                    <span style={{ fontSize: 10, fontFamily: MONO_FONT, color: COLORS.textDim }}>models.json not found</span>
-                  )}
-                </div>
-              ) : null}
-            </CollapsibleProviderCard>
-          );
-        })()}
-      </div>
-
-      {/* ══ OpenCode — Universal Model Access ══ */}
-      <section style={panel({ padding: 0 })}>
-        {/* Group header */}
-        <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 12, padding: 14, borderBottom: opencodeInstalled ? `1px solid ${COLORS.border}` : "none" }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 10, minWidth: 0 }}>
-            <OpenCodeLogo size={24} />
-            <div style={{ minWidth: 0 }}>
-              <div style={{ fontSize: 13, fontFamily: SANS_FONT, fontWeight: 700, color: COLORS.textPrimary }}>
-                OpenCode — Universal Model Access
-              </div>
-              <div style={{ fontSize: 10, fontFamily: MONO_FONT, color: COLORS.textMuted, lineHeight: 1.4 }}>
-                SuperGrok OAuth, ChatGPT, Copilot, or API keys — same /connect providers as OpenCode
-              </div>
-            </div>
-          </div>
-          <div style={{ display: "flex", alignItems: "center", gap: 4, color: !opencodeStatusKnown ? (opencodeStatusLoadFailed ? COLORS.danger : COLORS.info) : opencodeInstalled ? (status?.opencodeInventoryError ? COLORS.danger : COLORS.success) : COLORS.warning }}>
-            {!opencodeStatusKnown ? (opencodeStatusLoadFailed ? <XCircle size={14} weight="fill" /> : <Info size={14} weight="fill" />) : !opencodeInstalled ? <WarningCircle size={14} weight="fill" /> : status?.opencodeInventoryError ? <XCircle size={14} weight="fill" /> : <CheckCircle size={14} weight="fill" />}
-            <span style={{ fontSize: 9, fontFamily: MONO_FONT, textTransform: "uppercase", letterSpacing: "1px" }}>
-              {!opencodeStatusKnown ? (opencodeStatusLoadFailed ? "Error" : "Checking") : !opencodeInstalled ? "Not found" : status?.opencodeInventoryError ? "Error" : "Installed"}
-            </span>
-          </div>
+      {selectedDescriptor ? (
+        <div id={`ai-provider-${selectedDescriptor.id}`}>
+          <ProviderDetailPage
+            descriptor={selectedDescriptor}
+            ctx={ctx}
+            onBack={() => selectProvider(null)}
+          />
         </div>
+      ) : (
+        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+          <div style={groupLabelStyle}>Providers</div>
+          {/* 320, not 280: at this window width 280 fits five columns, and five
+              columns is where "GitHub Copilot" stopped fitting on one line. */}
+          <ProviderGrid minWidth={320} autoFit gap={10}>
+            {descriptors.map((descriptor) => (
+              <ProviderTileCard
+                key={descriptor.id}
+                descriptor={descriptor}
+                ctx={ctx}
+                onOpen={() => selectProvider(descriptor.id)}
+              />
+            ))}
+          </ProviderGrid>
+        </div>
+      )}
 
-        {!opencodeStatusKnown && opencodeStatusLoadFailed ? (
-          <div style={{ padding: 14, display: "flex", flexDirection: "column", gap: 10 }}>
-            <div style={{ fontSize: 11, fontFamily: MONO_FONT, color: COLORS.danger, lineHeight: 1.5 }}>
-              Could not load OpenCode status.
-            </div>
-            <button
-              type="button"
-              aria-label="Re-check OpenCode"
-              style={outlineButton()}
-              disabled={loading}
-              onClick={() => void refreshStatus({ force: true, refreshOpenCodeInventory: true })}
-            >
-              <ArrowsClockwise size={12} weight="bold" /> {loading ? "Checking..." : "Re-check OpenCode"}
-            </button>
-          </div>
-        ) : !opencodeStatusKnown ? (
-          <div style={{ padding: 14, fontSize: 11, fontFamily: MONO_FONT, color: COLORS.textMuted }}>
-            Checking OpenCode and its provider catalog…
-          </div>
-        ) : !opencodeInstalled ? (
-          /* Collapsed install card */
-          <div style={{ padding: 14, display: "flex", flexDirection: "column", gap: 12 }}>
-            <div style={{ fontSize: 11, fontFamily: MONO_FONT, color: COLORS.textMuted, lineHeight: 1.55 }}>
-              OpenCode powers every subscription, API key, and local model below. Install it, then re-check:
-            </div>
-            <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-              {openCodeInstallCommands().map((cmd) => (
-                <CopyableCommand key={cmd} command={cmd} />
-              ))}
-            </div>
-            <div>
-              <button
-                type="button"
-                style={outlineButton()}
-                disabled={loading}
-                onClick={() => void refreshStatus({ force: true, refreshOpenCodeInventory: true })}
-              >
-                <ArrowsClockwise size={12} weight="bold" /> {loading ? "Checking..." : "Re-check"}
-              </button>
-            </div>
-          </div>
-        ) : (
-          <div style={{ display: "flex", flexDirection: "column" }}>
-            <div style={{ display: "flex", alignItems: "center", justifyContent: "flex-end", gap: 12, flexWrap: "wrap", padding: "8px 14px", borderBottom: `1px solid ${COLORS.border}` }}>
-              {providersStale ? (
-                <span style={{ fontSize: 10, fontFamily: MONO_FONT, color: COLORS.textDim, fontStyle: "italic", marginRight: "auto" }}>
-                  Updating provider catalog…
-                </span>
-              ) : null}
-              <button
-                type="button"
-                onClick={() => void handleRefreshCatalog()}
-                disabled={refreshingCatalog}
-                title="Refresh the models.dev catalog"
-                style={{ display: "inline-flex", alignItems: "center", gap: 6, background: "transparent", border: "none", cursor: "pointer", fontSize: 10, fontFamily: MONO_FONT, color: COLORS.textMuted }}
-              >
-                <ArrowsClockwise size={11} weight="bold" />
-                {refreshingCatalog ? "syncing…" : `catalog · refresh`}
-              </button>
-            </div>
-
-            <div style={{ padding: 14, display: "flex", flexDirection: "column", gap: 22 }}>
-              {/* ── Connected ── */}
-              <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-                <div style={SECTION_LABEL_STYLE}>Connected</div>
-                {connectedOpenCodeProviders.length === 0 ? (
-                  <div style={{ fontSize: 11, fontFamily: MONO_FONT, color: COLORS.textDim }}>
-                    No providers connected yet. Pick one below to sign in or add a key.
-                  </div>
-                ) : (
-                  <ProviderGrid>
-                    {connectedOpenCodeProviders.map((row) => (
-                      <OpenCodeProviderCard key={row.id} provider={row} onOpen={() => openProviderDetail(row.id)} />
-                    ))}
-                  </ProviderGrid>
-                )}
-              </div>
-
-              {/* ── All providers ── */}
-              <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, flexWrap: "wrap" }}>
-                  <div style={SECTION_LABEL_STYLE}>All providers · {openCodeCatalog.length}</div>
-                  <ProviderSearchField
-                    label="Search all OpenCode providers"
-                    value={providerSearch}
-                    onChange={setProviderSearch}
-                  />
-                </div>
-
-                {!providerSearch.trim() ? (
-                  <>
-                    <div style={{ fontSize: 10, fontFamily: MONO_FONT, color: COLORS.textMuted }}>Popular</div>
-                    <ProviderGrid>
-                      {popularOpenCodeProviders.map((row) => (
-                        <OpenCodeProviderCard key={row.id} provider={row} onOpen={() => openProviderDetail(row.id)} />
-                      ))}
-                    </ProviderGrid>
-                  </>
-                ) : searchableOpenCodeProviders.length === 0 ? (
-                  <div style={{ fontSize: 10, fontFamily: MONO_FONT, color: COLORS.textDim }}>
-                    No providers match your search.
-                  </div>
-                ) : (
-                  <ProviderGrid>
-                    {searchableOpenCodeProviders.map((row) => (
-                      <OpenCodeProviderCard key={row.id} provider={row} onOpen={() => openProviderDetail(row.id)} />
-                    ))}
-                  </ProviderGrid>
-                )}
-              </div>
-
-              {/* ── Local Model Servers ── */}
-              <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
-                  <div style={SECTION_LABEL_STYLE}>Local Model Servers</div>
-                  <button
-                    type="button"
-                    style={outlineButton({ height: 26, padding: "0 10px", fontSize: 11 })}
-                    disabled={loading}
-                    onClick={() => void refreshStatus({ force: true, refreshOpenCodeInventory: true })}
-                  >
-                    <ArrowsClockwise size={11} weight="bold" /> {loading ? "Checking..." : "Refresh"}
-                  </button>
-                </div>
-                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 260px), 1fr))", gap: 8 }}>
-                  {localRuntimes.map((entry) => {
-                    const isEditing = editingLocalProvider === entry.provider;
-                    const isSaving = savingLocalProvider === entry.provider;
-                    const draft = localProviderDrafts[entry.provider];
-                    const hasReadyRuntime = entry.runtimeAvailable || (entry.detected && entry.hasModels);
-                    const needsModelLoad = !hasReadyRuntime && !entry.hasModels && (entry.health === "reachable" || entry.health === "reachable_no_models");
-                    const tone = hasReadyRuntime
-                      ? { color: COLORS.success, label: entry.hasModels ? "Ready" : "Connected" }
-                      : needsModelLoad
-                        ? { color: COLORS.warning, label: "Load a model" }
-                        : entry.blocker
-                          ? { color: COLORS.warning, label: "Blocked" }
-                          : { color: COLORS.warning, label: "Not detected" };
-                    const loadedModels = entry.modelIds.slice(0, 4);
-                    const extraModelCount = Math.max(0, entry.modelIds.length - loadedModels.length);
-                    const message = entry.blocker
-                      ? entry.blocker
-                      : entry.detected
-                        ? entry.hasModels
-                          ? `${entry.label} is reachable at ${entry.endpoint}. ADE can use ${entry.modelIds.length} loaded model${entry.modelIds.length === 1 ? "" : "s"} from this runtime${entry.health ? ` (${entry.health})` : ""}.`
-                          : `${entry.label} responded, but no loaded models were reported yet. Load a model in ${entry.label} and refresh.`
-                        : `${entry.label} was not detected. Start it, load at least one model, then refresh so ADE can discover its OpenAI-compatible server.`;
-
-                    return (
-                      <div
-                        key={entry.provider}
-                        style={{ border: `1px solid ${COLORS.border}`, borderLeft: `3px solid ${tone.color}`, background: COLORS.recessedBg, padding: 12, display: "flex", flexDirection: "column", gap: 8, minWidth: 0 }}
-                      >
-                        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
-                          <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
-                            <ProviderLogo family={entry.provider} size={20} />
-                            <div style={{ minWidth: 0 }}>
-                              <div style={{ fontSize: 12, fontFamily: SANS_FONT, fontWeight: 700, color: COLORS.textPrimary }}>{entry.label}</div>
-                              <div style={{ fontSize: 10, fontFamily: MONO_FONT, color: COLORS.textMuted, lineHeight: 1.35 }}>{entry.description}</div>
-                            </div>
-                          </div>
-                          <div style={{ display: "flex", alignItems: "center", gap: 4, color: tone.color }}>
-                            {hasReadyRuntime ? <CheckCircle size={14} weight="fill" /> : needsModelLoad || entry.blocker ? <WarningCircle size={14} weight="fill" /> : <XCircle size={14} weight="fill" />}
-                            <span style={{ fontSize: 9, fontFamily: MONO_FONT, textTransform: "uppercase", letterSpacing: "1px" }}>{tone.label}</span>
-                          </div>
-                        </div>
-
-                        <div style={{ fontSize: 10, fontFamily: MONO_FONT, color: COLORS.textMuted, lineHeight: 1.55, overflowWrap: "break-word", wordBreak: "break-word" }}>{message}</div>
-
-                        <code style={{ display: "block", width: "100%", boxSizing: "border-box", minWidth: 0, fontSize: 10, fontFamily: MONO_FONT, color: COLORS.textSecondary, background: "color-mix(in srgb, var(--color-muted-fg) 12%, transparent)", border: `1px solid ${COLORS.border}`, padding: "6px 8px", overflowWrap: "anywhere", wordBreak: "break-all" }}>
-                          {draft?.endpoint?.trim() || entry.endpoint}
-                        </code>
-
-                        <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
-                          {loadedModels.length > 0 ? (
-                            <>
-                              {loadedModels.map((modelId) => (
-                                <span key={modelId} style={{ display: "inline-flex", alignItems: "center", gap: 4, padding: "3px 8px", border: `1px solid ${COLORS.border}`, background: "color-mix(in srgb, var(--color-muted-fg) 10%, transparent)", fontSize: 10, fontFamily: MONO_FONT, color: COLORS.textPrimary }} title={modelId}>
-                                  <Cpu size={11} />
-                                  {formatLocalModelLabel(modelId)}
-                                </span>
-                              ))}
-                              {extraModelCount > 0 ? (
-                                <span style={{ display: "inline-flex", alignItems: "center", gap: 4, padding: "3px 8px", border: `1px solid ${COLORS.border}`, background: "color-mix(in srgb, var(--color-muted-fg) 10%, transparent)", fontSize: 10, fontFamily: MONO_FONT, color: COLORS.textMuted }}>
-                                  +{extraModelCount} more
-                                </span>
-                              ) : null}
-                            </>
-                          ) : (
-                            <span style={{ fontSize: 10, fontFamily: MONO_FONT, color: COLORS.textMuted }}>No loaded models reported yet.</span>
-                          )}
-                        </div>
-
-                        {isEditing && draft ? (
-                          <div style={{ display: "flex", flexDirection: "column", gap: 10, paddingTop: 4, borderTop: `1px solid ${COLORS.border}` }}>
-                            <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 11, color: COLORS.textSecondary }}>
-                              <input type="checkbox" checked={draft.enabled} onChange={(event) => updateLocalProviderDraft(entry.provider, { enabled: event.target.checked })} />
-                              Enable {entry.label}
-                            </label>
-                            <label style={{ display: "flex", flexDirection: "column", gap: 6, fontSize: 10, fontFamily: MONO_FONT, color: COLORS.textMuted }}>
-                              <span>Endpoint</span>
-                              <input value={draft.endpoint} onChange={(event) => updateLocalProviderDraft(entry.provider, { endpoint: event.target.value })} placeholder={getLocalProviderDefaultEndpoint(entry.provider)} style={{ width: "100%", border: `1px solid ${COLORS.border}`, background: COLORS.cardBgSolid, color: COLORS.textPrimary, padding: "8px 10px", fontSize: 11, fontFamily: MONO_FONT }} />
-                            </label>
-                            <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 11, color: COLORS.textSecondary }}>
-                              <input type="checkbox" checked={draft.autoDetect} onChange={(event) => updateLocalProviderDraft(entry.provider, { autoDetect: event.target.checked })} />
-                              Fall back to the default detected endpoint
-                            </label>
-                            <label style={{ display: "flex", flexDirection: "column", gap: 6, fontSize: 10, fontFamily: MONO_FONT, color: COLORS.textMuted }}>
-                              <span>Preferred model</span>
-                              <select value={draft.preferredModelId} onChange={(event) => updateLocalProviderDraft(entry.provider, { preferredModelId: event.target.value })} style={{ width: "100%", border: `1px solid ${COLORS.border}`, background: COLORS.cardBgSolid, color: COLORS.textPrimary, padding: "8px 10px", fontSize: 11, fontFamily: MONO_FONT }}>
-                                <option value="">Require explicit selection</option>
-                                {entry.modelIds.map((modelId) => (
-                                  <option key={modelId} value={modelId}>{formatLocalModelLabel(modelId)}</option>
-                                ))}
-                              </select>
-                            </label>
-                          </div>
-                        ) : null}
-
-                        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                          {isEditing ? (
-                            <>
-                              <button type="button" style={primaryButton()} disabled={isSaving} onClick={() => void saveLocalProvider(entry.provider)}>{isSaving ? "Saving..." : "Save"}</button>
-                              <button type="button" style={outlineButton()} disabled={isSaving} onClick={cancelEditingLocalRuntime}>Cancel</button>
-                            </>
-                          ) : (
-                            <>
-                              <button type="button" style={outlineButton({ height: 28 })} onClick={() => beginEditingLocalRuntime(entry.provider)}>Edit</button>
-                              <button type="button" style={outlineButton({ height: 28 })} disabled={loading} onClick={() => void refreshStatus({ force: true })}>Test</button>
-                            </>
-                          )}
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
-              </div>
-
-              {/* ── e. Advanced ── */}
-              <details style={{ border: `1px solid ${COLORS.border}`, background: COLORS.cardBg }}>
-                <summary style={{ cursor: "pointer", padding: "10px 12px", fontSize: 11, fontFamily: SANS_FONT, fontWeight: 600, color: COLORS.textSecondary, listStyle: "none" }}>
-                  Advanced — custom providers &amp; model slugs
-                </summary>
-                <div style={{ padding: 12, display: "flex", flexDirection: "column", gap: 18, borderTop: `1px solid ${COLORS.border}` }}>
-                  {/* Custom provider */}
-                  <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-                    <div style={SECTION_LABEL_STYLE}>Custom provider</div>
-                    <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 200px), 1fr))", gap: 8 }}>
-                      <input aria-label="Provider id" value={customProviderDraft.id} onChange={(e) => setCustomProviderDraft((d) => ({ ...d, id: e.target.value }))} placeholder="provider-id" style={{ background: COLORS.cardBg, border: `1px solid ${COLORS.border}`, padding: "8px 10px", fontSize: 11, fontFamily: MONO_FONT, color: COLORS.textPrimary, outline: "none" }} />
-                      <input aria-label="Provider name" value={customProviderDraft.name} onChange={(e) => setCustomProviderDraft((d) => ({ ...d, name: e.target.value }))} placeholder="Display name" style={{ background: COLORS.cardBg, border: `1px solid ${COLORS.border}`, padding: "8px 10px", fontSize: 11, fontFamily: SANS_FONT, color: COLORS.textPrimary, outline: "none" }} />
-                      <input aria-label="Base URL" value={customProviderDraft.baseUrl} onChange={(e) => setCustomProviderDraft((d) => ({ ...d, baseUrl: e.target.value }))} placeholder="https://api.example.com/v1" style={{ background: COLORS.cardBg, border: `1px solid ${COLORS.border}`, padding: "8px 10px", fontSize: 11, fontFamily: MONO_FONT, color: COLORS.textPrimary, outline: "none" }} />
-                      <select aria-label="npm package" value={customProviderDraft.npm} onChange={(e) => setCustomProviderDraft((d) => ({ ...d, npm: e.target.value }))} style={{ background: COLORS.cardBgSolid, border: `1px solid ${COLORS.border}`, padding: "8px 10px", fontSize: 11, fontFamily: MONO_FONT, color: COLORS.textPrimary }}>
-                        {CUSTOM_PROVIDER_NPM_OPTIONS.map((opt) => (
-                          <option key={opt} value={opt}>{opt}</option>
-                        ))}
-                      </select>
-                      <input aria-label="Model slugs" value={customProviderDraft.slugs} onChange={(e) => setCustomProviderDraft((d) => ({ ...d, slugs: e.target.value }))} placeholder="model-a, model-b" style={{ background: COLORS.cardBg, border: `1px solid ${COLORS.border}`, padding: "8px 10px", fontSize: 11, fontFamily: MONO_FONT, color: COLORS.textPrimary, outline: "none" }} />
-                      <input aria-label="Provider API key" value={customProviderDraft.apiKey} onChange={(e) => setCustomProviderDraft((d) => ({ ...d, apiKey: e.target.value }))} placeholder="API key (optional)" type="password" style={{ background: COLORS.cardBg, border: `1px solid ${COLORS.border}`, padding: "8px 10px", fontSize: 11, fontFamily: MONO_FONT, color: COLORS.textPrimary, outline: "none" }} />
-                    </div>
-                    <div>
-                      <button type="button" style={primaryButton()} disabled={savingAdvanced} onClick={() => void saveAdvancedProvider()}>{savingAdvanced ? "Saving…" : "Add provider"}</button>
-                    </div>
-                  </div>
-
-                  {/* Custom model slugs */}
-                  <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-                    <div style={SECTION_LABEL_STYLE}>Custom model slugs</div>
-                    <input aria-label="Custom model slugs" value={customModelSlugs} onChange={(e) => setCustomModelSlugs(e.target.value)} placeholder="provider/model-a, provider/model-b" style={{ background: COLORS.cardBg, border: `1px solid ${COLORS.border}`, padding: "8px 10px", fontSize: 11, fontFamily: MONO_FONT, color: COLORS.textPrimary, outline: "none" }} />
-                    <div>
-                      <button type="button" style={primaryButton()} disabled={savingAdvanced} onClick={() => void saveCustomModelSlugs()}>{savingAdvanced ? "Saving…" : "Save model slugs"}</button>
-                    </div>
-                  </div>
-                </div>
-              </details>
-            </div>
-          </div>
-        )}
-      </section>
+      {signInProvider && signInCommand ? (
+        <ProviderSignInModal
+          providerId={signInProvider}
+          providerLabel={acpProviderLabel(signInProvider) ?? signInProvider}
+          command={signInCommand}
+          onClose={() => {
+            setSignInProvider(null);
+            void refreshStatus({ force: true, silent: true });
+          }}
+          onSignedIn={() => {
+            setNotice(`Signed in to ${acpProviderLabel(signInProvider) ?? signInProvider}.`);
+            invalidateAiDiscoveryCache();
+          }}
+          checkSignedIn={async () => {
+            const next = await refreshStatus({ force: true, silent: true });
+            // `authAvailable` is the disk credential the login just wrote —
+            // that is the moment worth closing on. `runtimeAvailable` also
+            // waits on the protocol probe, which is right for the tile and too
+            // slow for a dialog someone is watching.
+            return next?.providerConnections?.[signInProvider as AcpSettingsProviderId]?.authAvailable === true;
+          }}
+        />
+      ) : null}
 
       {detailProvider ? (
         <OpenCodeProviderDetailModal

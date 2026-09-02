@@ -812,7 +812,10 @@ Renderer surfaces:
   (normalized `branchRef`, excluding `main`/`master`), they are parked next to
   each other and wrapped in a dashed hairline so the uncommon same-branch /
   two-machine case is visible without reorganizing the rest of the column. A
-  quiet sibling stays in the inbox when the other lane in that cluster still
+  lane with no rendered sessions or handoffs does not count as a cluster member,
+  so an empty or deleted sibling cannot leave a dashed hairline around the
+  remaining lane.
+  A quiet sibling stays in the inbox when the other lane in that cluster still
   has live work, instead of filing to Snoozed/Settled alone. Primaries never
   join a cluster — every machine has one, usually on `main`. Foreign lanes use the same active /
   snoozed / settled partition, collapsed-by-default fully quiet header, quiet
@@ -1396,11 +1399,11 @@ Renderer surfaces:
   **Open in**, optional singleton-lane actions, and fenced destructive rows;
   chat rows also expose a `Name & status` submenu for inline Rename and the
   three metadata-generation choices, while Copy, Snooze, Lane, and Open in
-  remain pointer/keyboard submenus. `openIn` is an `OpenInTarget` from
-  `resolveOpenInTarget`. Local singleton rows omit session-root Open in because
-  **Lane ▸** already renders it from `buildLaneMenuGroups`; headerless foreign
-  SSH rows keep session-root Open in because the Lane submenu cannot resolve a
-  remote editor from the local store. The lane-name choice is disabled for the
+  remain pointer/keyboard submenus. Every action row carries a duotone glyph.
+  `openIn` is an `OpenInTarget` from
+  `resolveOpenInTarget`. Local and headerless foreign singleton rows omit
+  session-root Open in because **Lane ▸** already renders it from
+  `buildLaneMenuGroups` with the row's own binding. The lane-name choice is disabled for the
   primary lane. Ended chat sessions get Delete chat wired to
   `ade.agentChat.delete`. Fixed-position menus measure and clamp to the
   renderer viewport.
@@ -1423,7 +1426,10 @@ Renderer surfaces:
   machine that owns it. `LaneActionsSubmenu` renders the same
   `buildLaneMenuGroups()` definitions as the lane divider's context menu
   (including **Open in** via `resolveOpenInTarget`), so the
-  two surfaces cannot drift.
+  two surfaces cannot drift. A foreign singleton supplies its lane summary and
+  runtime binding; **Start chat in lane** then sets `draftMachineId` so
+  `WorkStartSurface` resolves the lane on the connected machine rather than the
+  bound tab.
 - `apps/desktop/src/renderer/lib/sessionListCache.ts` — shared renderer
   cache for `ade.sessions.list` calls, keyed by `projectRoot/laneId/status`.
   Ordinary callers coalesce compatible in-flight reads; forced reads bypass
@@ -2086,8 +2092,8 @@ degrades to "no ADE prompt" rather than a failed launch.
   spawn a local editor against a remote path, and do not add **Open in**
   to projectless personal chats — they have no user-visible lane/repo/PR.
   Local singleton session rows put Open in under **Lane ▸**; headerless
-  foreign SSH rows keep it at session root because the Lane submenu cannot
-  see the remote editor target from the local store.
+  foreign SSH rows do the same, because the Lane submenu now receives the
+  row's binding and can resolve the remote editor itself.
 - **Snooze must never reach `canonicalSessionState()`.** The moment a phase is
   derived from `snoozed_until`, a snoozed row starts lying about what it is
   doing and every count, badge, and capsule downstream inherits the lie. Snooze

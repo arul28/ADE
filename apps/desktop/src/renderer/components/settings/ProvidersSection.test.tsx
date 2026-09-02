@@ -37,6 +37,7 @@ vi.mock("@lobehub/icons", () => {
     OpenAI: brand(),
     OpenCode: brand(),
     OpenRouter: brand(),
+    Qwen: brand(),
     XAI: brand(),
   };
 });
@@ -242,10 +243,15 @@ function buildPiInstallation(): NonNullable<AiSettingsStatus["piInstallation"]> 
   };
 }
 
-function renderProvidersSection() {
+/**
+ * Settings → Agents & Models is a grid of providers plus one page per provider.
+ * Passing an id renders that provider's page directly, which is what a
+ * `?provider=<id>` deeplink does; passing nothing renders the grid.
+ */
+function renderProvidersSection(providerId: string | null = null) {
   return render(
     <MemoryRouter>
-      <ProvidersSection />
+      <ProvidersSection providerParam={providerId} />
     </MemoryRouter>,
   );
 }
@@ -356,7 +362,7 @@ describe("ProvidersSection", () => {
   });
 
   it("refreshes provider status after an auth-related chat failure", async () => {
-    renderProvidersSection();
+    renderProvidersSection("claude");
     const ade = window.ade as any;
 
     await waitFor(() => {
@@ -365,7 +371,7 @@ describe("ProvidersSection", () => {
     });
     expect(ade.ai.getStatus).toHaveBeenNthCalledWith(1, {
       force: false,
-      refreshOpenCodeInventory: true,
+      refreshOpenCodeInventory: false,
     });
 
     expect((await screen.findAllByText("/Users/arul/ADE/apps/desktop/node_modules/@anthropic-ai/claude-agent-sdk-darwin-arm64/claude")).length).toBeGreaterThan(0);
@@ -386,25 +392,25 @@ describe("ProvidersSection", () => {
       expect(ade.ai.listApiKeys).toHaveBeenCalledTimes(2);
     }, { timeout: 2_000 });
 
-    expect(await screen.findByText("Sign-In Required")).toBeTruthy();
+    expect(await screen.findByText("Sign in required")).toBeTruthy();
     expect(screen.getByText("Sign in to use Claude")).toBeTruthy();
     expect(screen.getAllByText("/Users/arul/ADE/apps/desktop/node_modules/@anthropic-ai/claude-agent-sdk-darwin-arm64/claude").length).toBeGreaterThan(0);
   });
 
-  it("shows Ready while the bundled Claude runtime is authenticated", async () => {
-    renderProvidersSection();
+  it("shows Connected while the bundled Claude runtime is authenticated", async () => {
+    renderProvidersSection("claude");
 
     await waitFor(() => {
       expect(window.ade.ai.getStatus).toHaveBeenCalledTimes(1);
       expect(window.ade.ai.listApiKeys).toHaveBeenCalledTimes(1);
     });
 
-    expect((await screen.findAllByText("Ready")).length).toBeGreaterThan(0);
+    expect((await screen.findAllByText("Connected")).length).toBeGreaterThan(0);
     expect(screen.getByText("Uses your claude login — Claude Pro/Max subscription or ANTHROPIC_API_KEY.")).toBeTruthy();
     expect(screen.getAllByText("/Users/arul/ADE/apps/desktop/node_modules/@anthropic-ai/claude-agent-sdk-darwin-arm64/claude").length).toBeGreaterThan(0);
   });
 
-  it("shows Binary Missing when the Claude SDK native binary is unavailable", async () => {
+  it("shows Not installed when the Claude SDK native binary is unavailable", async () => {
     const getStatusMock = window.ade.ai.getStatus as ReturnType<typeof vi.fn>;
     getStatusMock.mockReset();
     getStatusMock.mockResolvedValue(buildStatus(false, [], {
@@ -412,19 +418,19 @@ describe("ProvidersSection", () => {
       claudeAuthReady: false,
     }));
 
-    renderProvidersSection();
+    renderProvidersSection("claude");
 
     await waitFor(() => {
       expect(window.ade.ai.getStatus).toHaveBeenCalledTimes(1);
       expect(window.ade.ai.listApiKeys).toHaveBeenCalledTimes(1);
     });
 
-    expect(await screen.findByText("Binary Missing")).toBeTruthy();
-    expect(screen.getByText("Claude unavailable (binary missing; should not happen with bundled install; run /doctor).")).toBeTruthy();
+    expect(await screen.findByText("Not installed")).toBeTruthy();
+    expect(screen.getAllByText("Claude unavailable (binary missing; should not happen with bundled install; run /doctor).").length).toBeGreaterThan(0);
   });
 
   it("renders local runtime details and loaded local models", async () => {
-    renderProvidersSection();
+    renderProvidersSection("opencode");
 
     await waitFor(() => {
       expect(window.ade.ai.getStatus).toHaveBeenCalledTimes(1);
@@ -450,7 +456,7 @@ describe("ProvidersSection", () => {
       }),
     );
 
-    const view = renderProvidersSection();
+    const view = renderProvidersSection("opencode");
     const current = within(view.container);
 
     await waitFor(() => {
@@ -473,7 +479,7 @@ describe("ProvidersSection", () => {
       .mockResolvedValueOnce([])
       .mockResolvedValue(["cursor"]);
 
-    renderProvidersSection();
+    renderProvidersSection("cursor");
 
     await waitFor(() => {
       expect(window.ade.ai.getStatus).toHaveBeenCalledTimes(1);
@@ -516,7 +522,7 @@ describe("ProvidersSection", () => {
       verifiedAt: "2026-03-17T19:00:00.000Z",
     });
 
-    renderProvidersSection();
+    renderProvidersSection("cursor");
 
     await waitFor(() => {
       expect(window.ade.ai.getStatus).toHaveBeenCalledTimes(1);
@@ -537,7 +543,9 @@ describe("ProvidersSection", () => {
     expect(alert.textContent).toContain("Cannot find package '@cursor/sdk'");
     expect(screen.queryByText("Cursor verification failed.")).toBeNull();
     expect(screen.queryByText("Invalid key")).toBeNull();
-    expect(screen.getByText("Verification failed")).toBeTruthy();
+    // The grid has exactly six status words; a failed verify is one of them,
+    // not a seventh phrase invented by the Cursor descriptor.
+    expect(screen.getByText("Needs attention")).toBeTruthy();
 
     await act(async () => {
       screen.getByLabelText("Dismiss error message").click();
@@ -550,7 +558,7 @@ describe("ProvidersSection", () => {
     getStatusMock.mockReset();
     getStatusMock.mockResolvedValue(buildStatus(true, []));
 
-    renderProvidersSection();
+    renderProvidersSection("cursor");
 
     await waitFor(() => {
       expect(window.ade.ai.getStatus).toHaveBeenCalledTimes(1);
@@ -560,6 +568,56 @@ describe("ProvidersSection", () => {
     expect(screen.getByLabelText("Sign in with Cursor")).toBeTruthy();
     expect(screen.getByLabelText("Add Cursor API key")).toBeTruthy();
     expect(screen.queryByLabelText("Sign out of Cursor")).toBeNull();
+  });
+
+  it("does not say Sign in required on the Cursor tile when Cursor OAuth is already logged in", async () => {
+    const getStatusMock = window.ade.ai.getStatus as ReturnType<typeof vi.fn>;
+    getStatusMock.mockReset();
+    const status = buildStatus(true, []);
+    const connections = status.providerConnections;
+    if (!connections) {
+      throw new Error("expected providerConnections on Cursor status");
+    }
+    getStatusMock.mockResolvedValue({
+      ...status,
+      availableProviders: { ...status.availableProviders, cursor: false },
+      providerConnections: {
+        ...connections,
+        cursor: {
+          provider: "cursor",
+          authAvailable: true,
+          runtimeDetected: true,
+          runtimeAvailable: false,
+          usageAvailable: false,
+          path: "@cursor/sdk",
+          blocker: "Verify the Cursor API key to enable Cursor chat.",
+          lastCheckedAt: "2026-03-17T19:00:00.000Z",
+          accountEmail: "ada@cursor.com",
+          sources: [
+            {
+              kind: "local-credentials",
+              detected: true,
+              source: "cursor-oauth",
+            },
+          ],
+        },
+      },
+    });
+    const cursorAuthStatus = window.ade.ai.cursorAuthStatus as ReturnType<typeof vi.fn>;
+    cursorAuthStatus.mockResolvedValue({
+      sdkStatus: "logged-in",
+      email: "ada@cursor.com",
+      adeKeyPresent: false,
+      credentialSource: "cursor-oauth",
+      loginInProgress: false,
+    });
+
+    renderProvidersSection();
+
+    const tile = await screen.findByLabelText("Open Cursor settings");
+    expect(await within(tile).findByText("Needs attention")).toBeTruthy();
+    expect(within(tile).queryByText("Sign in required")).toBeNull();
+    expect(within(tile).getByText("Verify the Cursor API key to enable Cursor chat.")).toBeTruthy();
   });
 
   it("signs in with Cursor, shows the login URL while pending, then signs out", async () => {
@@ -607,7 +665,7 @@ describe("ProvidersSection", () => {
     const cursorAuthStatus = window.ade.ai.cursorAuthStatus as ReturnType<typeof vi.fn>;
     const listApiKeysMock = window.ade.ai.listApiKeys as ReturnType<typeof vi.fn>;
 
-    renderProvidersSection();
+    renderProvidersSection("cursor");
 
     await waitFor(() => {
       expect(window.ade.ai.getStatus).toHaveBeenCalledTimes(1);
@@ -666,7 +724,7 @@ describe("ProvidersSection", () => {
     listApiKeysMock.mockReset();
     listApiKeysMock.mockResolvedValue(["cursor"]);
 
-    renderProvidersSection();
+    renderProvidersSection("cursor");
 
     await waitFor(() => {
       expect(window.ade.ai.getStatus).toHaveBeenCalledTimes(1);
@@ -686,16 +744,77 @@ describe("ProvidersSection", () => {
     });
   });
 
-  it("renders the Coding Agents section and OpenCode popular provider cards", async () => {
+  it("renders one labelled tile per provider on the grid", async () => {
     const getStatusMock = window.ade.ai.getStatus as ReturnType<typeof vi.fn>;
     getStatusMock.mockReset();
     getStatusMock.mockResolvedValue(buildStatus(true, []));
 
     renderProvidersSection();
 
-    expect(await screen.findByText("Coding Agents")).toBeTruthy();
-    expect(screen.getByText("OpenCode — Universal Model Access")).toBeTruthy();
-    expect(screen.getByText(/^All providers · \d+$/)).toBeTruthy();
+    for (const label of ["Claude Code", "Codex CLI", "Cursor", "Droid", "Pi", "OpenCode"]) {
+      expect(await screen.findByLabelText(`Open ${label} settings`), label).toBeTruthy();
+    }
+    // Status is a word, not a colour: every tile says which of the six it is.
+    expect(screen.getAllByText(/^(Connected|Sign in required|Needs attention|Not installed|Checking…|Disabled)$/).length)
+      .toBeGreaterThan(0);
+    // The catalogs are behind their provider, not spilled onto the grid.
+    expect(screen.queryByLabelText("Search all OpenCode providers")).toBeNull();
+  });
+
+  // "GitHub Copilot" is the longest name on the grid, and it used to render as
+  // "GitHub Co…" because the logo, the name, the Preview chip, and an uppercase
+  // letterspaced status chip all shared one 280px row. The fix has to hold at
+  // the markup level: whatever else the tile clips, it is not the name.
+  it("does not clip a long provider name on its tile", async () => {
+    const getStatusMock = window.ade.ai.getStatus as ReturnType<typeof vi.fn>;
+    getStatusMock.mockReset();
+    getStatusMock.mockResolvedValue(buildStatus(true, []));
+
+    renderProvidersSection();
+
+    const tile = await screen.findByLabelText("Open GitHub Copilot settings");
+    const name = within(tile).getByTestId("provider-tile-name-copilot");
+    expect(name.textContent).toBe("GitHub Copilot");
+    expect(name.style.textOverflow).toBe("");
+    expect(name.style.whiteSpace).toBe("");
+  });
+
+  // A status probe that has not answered is not the same claim as "this is not
+  // installed", and the grid has to say so while the first probe is out.
+  it("says Checking on every tile until the first status lands", async () => {
+    const getStatusMock = window.ade.ai.getStatus as ReturnType<typeof vi.fn>;
+    getStatusMock.mockReset();
+    getStatusMock.mockImplementation(() => new Promise(() => undefined));
+
+    renderProvidersSection();
+
+    expect((await screen.findAllByText("Checking…")).length).toBeGreaterThan(0);
+    expect(screen.queryByText("Not installed")).toBeNull();
+  });
+
+  it("does not leave Qwen on Checking after the first status probe fails", async () => {
+    const getStatusMock = window.ade.ai.getStatus as ReturnType<typeof vi.fn>;
+    getStatusMock.mockReset();
+    getStatusMock.mockRejectedValue(
+      new Error("Remote ADE service timed out waiting for method ade/actions/call (30000ms)."),
+    );
+
+    renderProvidersSection();
+
+    const tile = await screen.findByLabelText("Open Qwen Code settings");
+    expect(await within(tile).findByText("Needs attention")).toBeTruthy();
+    expect(within(tile).queryByText("Checking…")).toBeNull();
+    expect(screen.queryByText("Not installed")).toBeNull();
+  });
+
+  it("renders the OpenCode catalog on the OpenCode page", async () => {
+    const getStatusMock = window.ade.ai.getStatus as ReturnType<typeof vi.fn>;
+    getStatusMock.mockReset();
+    getStatusMock.mockResolvedValue(buildStatus(true, []));
+
+    renderProvidersSection("opencode");
+
+    expect(await screen.findByText(/^All providers · \d+$/)).toBeTruthy();
     expect(screen.getByLabelText("Search all OpenCode providers")).toBeTruthy();
     // Popular cards include Moonshot and Kimi.
     expect(screen.getByText("Moonshot AI")).toBeTruthy();
@@ -724,7 +843,7 @@ describe("ProvidersSection", () => {
     listApiKeysMock.mockReset();
     listApiKeysMock.mockResolvedValue([]);
 
-    renderProvidersSection();
+    renderProvidersSection("pi");
 
     expect(await screen.findByText("Pi")).toBeTruthy();
     expect(screen.getByText(/Uses Pi’s installed SDK package/)).toBeTruthy();
@@ -756,7 +875,7 @@ describe("ProvidersSection", () => {
       }),
     );
 
-    renderProvidersSection();
+    renderProvidersSection("pi");
 
     const signIn = await openPiProviderSignIn("xAI", "Sign in with SuperGrok — xAI");
     expect(screen.getByRole("button", { name: "Use an API key — xAI" })).toBeTruthy();
@@ -816,7 +935,7 @@ describe("ProvidersSection", () => {
       error: "That prompt has already been answered.",
     });
 
-    renderProvidersSection();
+    renderProvidersSection("pi");
 
     const signIn = await openPiProviderSignIn("xAI", "Sign in — xAI");
     await act(async () => {
@@ -851,7 +970,7 @@ describe("ProvidersSection", () => {
     const startMock = window.ade.ai.piLoginStart as ReturnType<typeof vi.fn>;
     startMock.mockResolvedValue({ ok: false, error: "Device code expired." });
 
-    renderProvidersSection();
+    renderProvidersSection("pi");
 
     const signIn = await openPiProviderSignIn("xAI", "Sign in with SuperGrok — xAI");
     await act(async () => {
@@ -880,7 +999,7 @@ describe("ProvidersSection", () => {
       }),
     );
 
-    renderProvidersSection();
+    renderProvidersSection("pi");
 
     const signIn = await openPiProviderSignIn("xAI", "Sign in — xAI");
     await act(async () => {
@@ -907,7 +1026,7 @@ describe("ProvidersSection", () => {
       { id: "openai-codex", name: "OpenAI Codex", authTypes: ["oauth"], configured: true },
     ]);
 
-    renderProvidersSection();
+    renderProvidersSection("pi");
 
     expect((await screen.findAllByText("OpenAI Codex")).length).toBe(1);
     expect(screen.getByText(/7 models/)).toBeTruthy();
@@ -927,7 +1046,7 @@ describe("ProvidersSection", () => {
       () => new Promise<{ ok: boolean; error?: string }>(() => undefined),
     );
 
-    const view = renderProvidersSection();
+    const view = renderProvidersSection("pi");
     const signIn = await openPiProviderSignIn("xAI", "Sign in — xAI");
     await act(async () => {
       signIn.click();
@@ -949,7 +1068,7 @@ describe("ProvidersSection", () => {
       { id: "xai", name: "xAI", authTypes: ["oauth"], configured: false },
     ]);
 
-    renderProvidersSection();
+    renderProvidersSection("pi");
     await screen.findByRole("button", { name: "Connect xAI in Pi" });
     getStatusMock.mockClear();
 
@@ -977,7 +1096,7 @@ describe("ProvidersSection", () => {
       }),
     );
 
-    renderProvidersSection();
+    renderProvidersSection("pi");
     const signIn = await openPiProviderSignIn("xAI", "Sign in — xAI");
     await act(async () => {
       signIn.click();
@@ -1009,7 +1128,7 @@ describe("ProvidersSection", () => {
       () => new Promise<{ ok: boolean; error?: string }>(() => undefined),
     );
 
-    renderProvidersSection();
+    renderProvidersSection("pi");
     const signIn = await openPiProviderSignIn("xAI", "Sign in — xAI");
     await act(async () => {
       signIn.click();
@@ -1055,7 +1174,7 @@ describe("ProvidersSection", () => {
       () => new Promise<{ ok: boolean; error?: string }>(() => undefined),
     );
 
-    renderProvidersSection();
+    renderProvidersSection("pi");
     const signIn = await openPiProviderSignIn("xAI", "Sign in — xAI");
     await act(async () => {
       signIn.click();
@@ -1100,7 +1219,7 @@ describe("ProvidersSection", () => {
     }));
     (window.ade.ai.piLoginProviders as ReturnType<typeof vi.fn>).mockResolvedValue([]);
 
-    renderProvidersSection();
+    renderProvidersSection("pi");
 
     const localServers = await screen.findByRole("group", { name: "Pi local model servers" });
     expect(within(localServers).getByText("Local Model Servers")).toBeTruthy();
@@ -1139,7 +1258,7 @@ describe("ProvidersSection", () => {
     }));
     (window.ade.ai.piLoginProviders as ReturnType<typeof vi.fn>).mockResolvedValue([]);
 
-    renderProvidersSection();
+    renderProvidersSection("pi");
 
     const localServers = await screen.findByRole("group", { name: "Pi local model servers" });
     expect(within(localServers).getByText("llama.cpp")).toBeTruthy();
@@ -1175,7 +1294,7 @@ describe("ProvidersSection", () => {
     }));
     (window.ade.ai.piLoginProviders as ReturnType<typeof vi.fn>).mockResolvedValue([]);
 
-    renderProvidersSection();
+    renderProvidersSection("pi");
     const localServers = await screen.findByRole("group", { name: "Pi local model servers" });
     getStatusMock.mockClear();
 
@@ -1195,7 +1314,7 @@ describe("ProvidersSection", () => {
       { id: "groq", name: "Groq", authTypes: ["api_key"], configured: false },
     ]);
 
-    renderProvidersSection();
+    renderProvidersSection("pi");
 
     const search = await screen.findByLabelText("Search all Pi providers");
     expect(screen.getByRole("button", { name: "Connect Groq in Pi" })).toBeTruthy();
@@ -1217,9 +1336,9 @@ describe("ProvidersSection", () => {
       },
     }));
 
-    renderProvidersSection();
+    renderProvidersSection("pi");
 
-    expect(await screen.findAllByText("Pi is installed, but ADE cannot load its package here.")).toHaveLength(1);
+    expect((await screen.findAllByText("Pi is installed, but ADE cannot load its package here.")).length).toBe(1);
     // ADE used to offer to open Pi and type `/login` into its TUI after a fixed
     // delay. That raced Pi's startup and submitted empty lines, so the branch
     // states the instruction rather than automating it.
@@ -1234,7 +1353,7 @@ describe("ProvidersSection", () => {
     getStatusMock.mockReset();
     getStatusMock.mockResolvedValue(buildStatus(true, [], { opencodeBinaryInstalled: false }));
 
-    renderProvidersSection();
+    renderProvidersSection("opencode");
 
     expect(await screen.findByText("npm i -g opencode-ai")).toBeTruthy();
     expect(screen.getByText("brew install anomalyco/tap/opencode")).toBeTruthy();
@@ -1261,7 +1380,7 @@ describe("ProvidersSection", () => {
       },
     });
 
-    renderProvidersSection();
+    renderProvidersSection("opencode");
 
     expect(await screen.findByLabelText("Connect OpenAI")).toBeTruthy();
     expect(screen.getByText(/Updating provider catalog/i)).toBeTruthy();
@@ -1294,7 +1413,7 @@ describe("ProvidersSection", () => {
       },
     });
 
-    renderProvidersSection();
+    renderProvidersSection("opencode");
 
     expect(await screen.findByLabelText("Connect OpenAI")).toBeTruthy();
     expect(screen.queryByLabelText("Connect Cursor")).toBeNull();
@@ -1307,7 +1426,7 @@ describe("ProvidersSection", () => {
     getStatusMock.mockReset();
     getStatusMock.mockRejectedValue(new Error("status probe unavailable"));
 
-    renderProvidersSection();
+    renderProvidersSection("opencode");
 
     expect(await screen.findByText("Could not load OpenCode status.")).toBeTruthy();
     expect(screen.getByRole("button", { name: "Re-check OpenCode" })).toBeTruthy();
@@ -1325,7 +1444,7 @@ describe("ProvidersSection", () => {
     authMethodsMock.mockReset();
     authMethodsMock.mockRejectedValue(new Error("catalog unavailable"));
 
-    renderProvidersSection();
+    renderProvidersSection("opencode");
 
     await waitFor(() => {
       expect(authMethodsMock).toHaveBeenCalledTimes(1);
@@ -1344,7 +1463,7 @@ describe("ProvidersSection", () => {
     const setProviderKeyMock = window.ade.ai.setOpencodeProviderKey as ReturnType<typeof vi.fn>;
     setProviderKeyMock.mockResolvedValue({ ok: false, error: "OpenCode rejected this key." });
 
-    renderProvidersSection();
+    renderProvidersSection("opencode");
 
     const openAiCard = await screen.findByLabelText("Connect OpenAI");
     await act(async () => {
@@ -1382,7 +1501,7 @@ describe("ProvidersSection", () => {
     authMethodsMock.mockReset();
     authMethodsMock.mockRejectedValue(new Error("catalog unavailable"));
 
-    renderProvidersSection();
+    renderProvidersSection("opencode");
 
     // Wait until stored keys hydrate so the card reflects key ownership.
     await waitFor(() => {
@@ -1422,7 +1541,7 @@ describe("ProvidersSection", () => {
       },
     });
 
-    renderProvidersSection();
+    renderProvidersSection("opencode");
 
     const openAiCard = await screen.findByLabelText("Connect OpenAI");
     await act(async () => {
@@ -1460,6 +1579,123 @@ describe("ProvidersSection", () => {
       expect(screen.queryByRole("dialog", { name: "Connect OpenAI" })).toBeNull();
     });
   });
+  // The four ACP providers plug into the same descriptor system as the six.
+  // These pin the parts a copy-paste port would get wrong.
+  describe("ACP providers", () => {
+    it("gives each ACP provider a tile on the grid", async () => {
+      const view = renderProvidersSection();
+      const current = within(view.container);
+      await waitFor(() => {
+        expect(window.ade.ai.getStatus).toHaveBeenCalled();
+      });
+      for (const label of ["Qwen Code", "Kimi", "Grok", "GitHub Copilot"]) {
+        expect(current.getByLabelText(`Open ${label} settings`), label).toBeTruthy();
+      }
+    });
+
+    it("says Kimi hides the usage meter, in plain words, on its page", async () => {
+      const view = renderProvidersSection("kimi");
+      const current = within(view.container);
+      expect(
+        (await current.findAllByText("Kimi does not report token usage; the usage meter stays hidden.")).length,
+      ).toBeGreaterThan(0);
+      expect(current.getByText(/--region global/)).toBeTruthy();
+      expect(current.getByText(/does not write that file/)).toBeTruthy();
+    });
+
+    it("says ADE reuses the Qwen CLI the user already set up", async () => {
+      const view = renderProvidersSection("qwen");
+      const current = within(view.container);
+      expect(await current.findByText(/does not write ~\/.qwen/)).toBeTruthy();
+      expect(current.getAllByText(/OPENAI_BASE_URL/).length).toBeGreaterThan(0);
+    });
+
+    // The chip is a claim about the models, so it must come from the registry's
+    // `previewTier`, not from a hand-maintained list of provider names.
+    it("marks only the preview-tier providers with a Preview chip", async () => {
+      for (const [provider, expected] of [["grok", true], ["copilot", true], ["qwen", false], ["kimi", false]] as const) {
+        const getStatusMock = window.ade.ai.getStatus as ReturnType<typeof vi.fn>;
+        getStatusMock.mockReset();
+        getStatusMock.mockResolvedValue(buildStatus(true));
+        const view = renderProvidersSection(provider);
+        const current = within(view.container);
+        await waitFor(() => {
+          expect(getStatusMock).toHaveBeenCalled();
+        });
+        expect(current.queryAllByText("Preview").length > 0, provider).toBe(expected);
+        cleanup();
+      }
+    });
+
+    it("runs the vendor doctor only where one exists", async () => {
+      const runDiagnostics = vi.fn().mockResolvedValue({
+        provider: "grok",
+        binaryPath: "/opt/homebrew/bin/grok",
+        binarySource: "path",
+        configHome: "/Users/ada/.grok",
+        version: "1.0.14",
+        versionError: null,
+        lastProbe: null,
+        doctor: { command: "grok doctor", exitCode: 0, output: "everything is fine" },
+        checkedAt: "2026-08-31T00:00:00.000Z",
+      });
+      (window.ade as any).ai.acpProviderDiagnostics = runDiagnostics;
+
+      const view = renderProvidersSection("grok");
+      const current = within(view.container);
+      const button = await current.findByRole("button", { name: "Run grok doctor" });
+      await act(async () => {
+        fireEvent.click(button);
+      });
+      await waitFor(() => {
+        expect(current.getByText("everything is fine")).toBeTruthy();
+      });
+      expect(runDiagnostics).toHaveBeenCalledWith({ provider: "grok", runDoctor: true });
+
+      cleanup();
+      // Qwen ships no `doctor`, so offering the button would run the word as a
+      // prompt.
+      const qwenView = renderProvidersSection("qwen");
+      await waitFor(() => {
+        expect(window.ade.ai.getStatus).toHaveBeenCalled();
+      });
+      expect(within(qwenView.container).queryByRole("button", { name: /doctor/ })).toBeNull();
+    });
+  });
+
+  describe("provider disable toggle", () => {
+    it("writes the whole disabled list and keeps the page reachable", async () => {
+      const view = renderProvidersSection("grok");
+      const current = within(view.container);
+      const disable = await current.findByRole("button", { name: "Disable Grok" });
+      await act(async () => {
+        fireEvent.click(disable);
+      });
+      expect(window.ade.ai.updateConfig).toHaveBeenCalledWith({ disabledProviders: ["grok"] });
+    });
+
+    it("shows Disabled on the tile and offers the way back on", async () => {
+      (window.ade as any).projectConfig.get = vi.fn().mockResolvedValue({
+        effective: { ai: { disabledProviders: ["grok"] } },
+      });
+
+      const grid = renderProvidersSection();
+      await waitFor(() => {
+        expect(window.ade.ai.getStatus).toHaveBeenCalled();
+      });
+      const tile = within(grid.container).getByLabelText("Open Grok settings");
+      await waitFor(() => {
+        expect(within(tile).getByText("Disabled")).toBeTruthy();
+      });
+
+      cleanup();
+      const page = renderProvidersSection("grok");
+      // The switch has to be findable from the page it turned off, or it is a
+      // one-way door.
+      expect(await within(page.container).findByRole("button", { name: "Enable Grok" })).toBeTruthy();
+    });
+  });
+
   // @cursor/sdk has no win32-arm64 build, so the Cursor card must be absent on
   // Windows on ARM rather than present and permanently unconnectable.
   // See apps/desktop/src/shared/providerPlatformSupport.ts.
@@ -1478,13 +1714,11 @@ describe("ProvidersSection", () => {
         expect(window.ade.ai.getStatus).toHaveBeenCalledTimes(1);
       });
 
-      expect(current.queryByText("Sign in with Cursor or use a Cursor API key.")).toBeNull();
-      expect(current.queryByLabelText("Add Cursor API key")).toBeNull();
-      expect(current.queryByLabelText("Verify Cursor API key")).toBeNull();
+      expect(current.queryByLabelText("Open Cursor settings")).toBeNull();
       // The other providers are untouched.
-      expect((await current.findAllByText("Claude Code")).length).toBeGreaterThan(0);
-      expect(current.getAllByText("Codex CLI").length).toBeGreaterThan(0);
-      expect(current.getAllByText("Droid").length).toBeGreaterThan(0);
+      expect(await current.findByLabelText("Open Claude Code settings")).toBeTruthy();
+      expect(current.getByLabelText("Open Codex CLI settings")).toBeTruthy();
+      expect(current.getByLabelText("Open Droid settings")).toBeTruthy();
     });
 
     it("keeps the Cursor card on Windows x64 and on macOS", async () => {
@@ -1493,7 +1727,7 @@ describe("ProvidersSection", () => {
         getStatusMock.mockReset();
         getStatusMock.mockResolvedValue(buildStatus(true));
         setRuntimeTarget(platform, arch);
-        const view = renderProvidersSection();
+        const view = renderProvidersSection("cursor");
         const current = within(view.container);
 
         expect(

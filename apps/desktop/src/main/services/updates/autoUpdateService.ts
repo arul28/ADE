@@ -527,11 +527,35 @@ export function createAutoUpdateService({
   let ignoredDownloadVersion: string | null = null;
   let readyRefreshInProgress = false;
   /**
-   * A user-initiated check while an update is already staged. The answer they
-   * want is "what is the newest version" — throwing away the update they have
-   * already downloaded in order to answer it is not a service.
+   * A feed check that started while an update was already staged, from any
+   * entry point. A strictly newer release supersedes the staged one, so this
+   * flag only protects the failure path: a check that cannot answer must leave
+   * the staged update, its version and its archive exactly as it found them.
+   * It is never set for the pre-install refresh, which owns its own failure
+   * handling through `readyRefreshInProgress`.
    */
-  let readyMetadataRefreshInProgress = false;
+  let readyCheckInProgress = false;
+  /**
+   * The shared failure guard for a check that started while an update was
+   * staged. The check asked what the newest version is and the feed did not
+   * answer. That is a reason to report nothing new, not a reason to throw away
+   * the update already downloaded: setErrorSnapshot would replace the `ready`
+   * snapshot and, with currentPhase already moved to "download" by
+   * `checking-for-update`, take the finished download with it. Once a supersede
+   * has started the status is no longer `ready`, so a failure of the new
+   * download flows through the normal error path instead.
+   *
+   * Returns true when the caller must return without touching the snapshot.
+   */
+  function preserveStagedUpdateOnCheckFailure(err: unknown): boolean {
+    if (!readyCheckInProgress || snapshot.status !== "ready") return false;
+    logger.warn("autoUpdate.ready_check_failed", {
+      message: formatErrorMessage(err),
+      kind: classifyUpdateError(err, currentPhase).kind,
+      readyVersion: snapshot.version,
+    });
+    return true;
+  }
   const readyRefreshFailure: {
     current: { error: unknown; phase: AutoUpdatePhase } | null;
   } = { current: null };
@@ -840,20 +864,10 @@ export function createAutoUpdateService({
         });
         return;
       }
-      if (readyMetadataRefreshInProgress) {
-        // electron-updater emits `update-available` BEFORE checkForUpdates()
-        // resolves, so without this the newer version would supersede the
-        // staged one here — deleting the finished download from the cache and
-        // leaving the resolve path free to start a fresh one — purely because
-        // someone pressed a button to ask a question.
-        ignoredDownloadVersion = info.version;
-        patchSnapshot({ latestKnownVersion: info.version });
-        logger.info("autoUpdate.update_available_metadata_only", {
-          version: info.version,
-          readyVersion: snapshot.version,
-        });
-        return;
-      }
+      // A strictly newer release supersedes the staged one, whichever check
+      // found it. Keeping the older archive would pin the app to a version the
+      // feed has already replaced until the next relaunch, which is the exact
+      // complaint this behavior exists to answer.
       if (!readyRefreshInProgress) {
         downloadedFilePath = null;
         cleanupUpdaterCacheDir({
@@ -1004,19 +1018,10 @@ export function createAutoUpdateService({
     }
     ignoredDownloadVersion = null;
     if (staleHandoffRecoveryInProgress && isStaleHandoffError(err)) return;
-    if (readyMetadataRefreshInProgress) {
-      // The user asked what the newest version is and the feed did not answer.
-      // That is a reason to tell them nothing new, not a reason to throw away
-      // the update they already downloaded: setErrorSnapshot would replace the
-      // `ready` snapshot and, with currentPhase already moved to "download" by
-      // `checking-for-update`, take the finished download with it.
-      logger.warn("autoUpdate.metadata_refresh_failed", {
-        message,
-        kind: classified.kind,
-        readyVersion: snapshot.version,
-      });
-      return;
-    }
+    // The pre-install refresh is tested first. It can piggyback on a periodic
+    // check that is already in flight, which leaves `readyCheckInProgress` set
+    // too. Recording the failure is what aborts the install; swallowing it here
+    // would let the install proceed on an unverified staged version.
     if (readyRefreshInProgress) {
       readyRefreshFailure.current = {
         error: err,
@@ -1024,6 +1029,7 @@ export function createAutoUpdateService({
       };
       return;
     }
+    if (preserveStagedUpdateOnCheckFailure(err)) return;
     if (snapshot.status === "installing") {
       if (
         isStaleHandoffError(err)
@@ -1054,13 +1060,21 @@ export function createAutoUpdateService({
   updater.on("update-cancelled", onUpdateCancelled);
   updater.on("error", onError);
 
-  async function runUpdateCheck(
-    args: { allowReady?: boolean; metadataOnlyWhenReady?: boolean } = {},
-  ): Promise<void> {
+  async function runUpdateCheck(): Promise<void> {
     if (checkPromise) {
       await checkPromise;
       return;
     }
+    const isReadyCheck = snapshot.status === "ready" && !readyRefreshInProgress;
+    // An install transaction holds the staged archive until it flips the
+    // snapshot to `installing`, and the status stays `ready` across the whole
+    // `beforeQuitAndInstall` service uninstall. A check started in that window
+    // would let a strictly newer feed answer supersede and wipe the archive the
+    // install is about to hand to Squirrel/NSIS. The `!readyRefreshInProgress`
+    // term is required: when `restorePromise` is non-null, `run()` suspends at
+    // `await restorePromise` before the pre-install refresh, so
+    // `quitAndInstallPromise` is already assigned when that refresh runs.
+    if (isReadyCheck && (quitAndInstallPromise != null || installQuitArmed)) return;
     if (
       snapshot.status === "checking"
       || snapshot.status === "downloading"
@@ -1068,11 +1082,16 @@ export function createAutoUpdateService({
     ) {
       return;
     }
-    if (!args.allowReady && snapshot.status === "ready") {
+    if (isReadyCheck) {
+      // A restore already owns the staged archive and drives the updater
+      // itself. Starting a feed check on top of it would race its download.
+      if (archiveRestoreInProgress) return;
+      // The archive is the thing the restart depends on. Put it back first and
+      // ask the feed on the next cycle, so one cycle never does both.
       if (!stagedArchiveStillPresent()) {
         void restoreStagedArchiveIfMissing("periodic_ready_check");
+        return;
       }
-      return;
     }
     const reusableDownloadedVersion = snapshot.status === "error"
       && snapshot.errorDetails?.preservesDownload
@@ -1081,8 +1100,7 @@ export function createAutoUpdateService({
     preservedDownloadRetry = reusableDownloadedVersion
       ? { version: reusableDownloadedVersion, releaseNotesUrl: snapshot.releaseNotesUrl }
       : null;
-    readyMetadataRefreshInProgress = args.metadataOnlyWhenReady === true
-      && snapshot.status === "ready";
+    readyCheckInProgress = isReadyCheck;
     checkPromise = updater.checkForUpdates()
       .then(async (result) => {
         const updateInfo = isUpdateCheckResultLike(result) ? result.updateInfo : undefined;
@@ -1123,15 +1141,8 @@ export function createAutoUpdateService({
         }
       })
       .catch((error) => {
-        // Same reasoning as onError: a metadata-only refresh must leave the
-        // staged update exactly as it found it, however it fails.
-        if (readyMetadataRefreshInProgress) {
-          logger.warn("autoUpdate.metadata_refresh_failed", {
-            message: formatErrorMessage(error),
-            readyVersion: snapshot.version,
-          });
-          return;
-        }
+        // Same ordering as onError: the pre-install refresh owns the failure
+        // first, then the guard that keeps a staged update intact.
         if (readyRefreshInProgress) {
           readyRefreshFailure.current = {
             error,
@@ -1139,6 +1150,7 @@ export function createAutoUpdateService({
           };
           return;
         }
+        if (preserveStagedUpdateOnCheckFailure(error)) return;
         // electron-updater normally emits `error` as well as rejecting. Keep
         // this fallback so synchronous filesystem failures cannot disappear.
         if (snapshot.status !== "error") {
@@ -1154,25 +1166,25 @@ export function createAutoUpdateService({
       .finally(() => {
         checkPromise = null;
         preservedDownloadRetry = null;
-        readyMetadataRefreshInProgress = false;
+        readyCheckInProgress = false;
       });
     await checkPromise;
   }
 
   /**
-   * `userInitiated` is what separates the Settings button from the startup and
-   * periodic timers. The automatic checks stay out of the way of an update that
-   * is already downloaded and waiting for a restart, but a person pressing
-   * "Check for updates" is asking a question, and answering it with an early
-   * return is indistinguishable from the button being broken — the version on
-   * screen just stays at whatever the last real check found.
-   *
-   * The `ready` branch of the check still returns before downloading, so this
-   * refreshes the newest known version without disturbing the staged download.
+   * Every entry point behaves the same way, whether it is the Settings button,
+   * the startup and periodic timers, the `ade update` CLI, or an ADE action.
+   * An update that is already staged does not stop the check: a strictly newer
+   * release supersedes the staged one and downloads in its place, a same or
+   * older release is ignored, and a check that fails leaves the staged update
+   * untouched. `userInitiated` is recorded for the logs only.
    */
   function checkForUpdates(options: { userInitiated?: boolean } = {}): void {
-    const userInitiated = options.userInitiated === true;
-    void runUpdateCheck({ allowReady: userInitiated, metadataOnlyWhenReady: userInitiated });
+    logger.info("autoUpdate.check_requested", {
+      userInitiated: options.userInitiated === true,
+      status: snapshot.status,
+    });
+    void runUpdateCheck();
   }
 
   async function refreshReadyUpdateBeforeInstall(): Promise<boolean> {
@@ -1182,7 +1194,7 @@ export function createAutoUpdateService({
     readyRefreshInProgress = true;
     readyRefreshFailure.current = null;
     try {
-      await runUpdateCheck({ allowReady: true });
+      await runUpdateCheck();
     } finally {
       readyRefreshInProgress = false;
     }

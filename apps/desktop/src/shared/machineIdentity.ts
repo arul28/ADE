@@ -58,3 +58,15 @@ export function machineNameForBinding(
   if (binding?.kind !== "remote") return THIS_MACHINE_NAME;
   return binding.runtimeName?.trim() || binding.displayName?.trim() || THIS_MACHINE_NAME;
 }
+
+/**
+ * The stable id of the machine a call-routing binding targets.
+ *
+ * Local / unbound tabs are This computer (`THIS_MACHINE_ID`), never `"local"`.
+ */
+export function machineIdForBinding(
+  binding: OpenProjectBinding | null | undefined,
+): string {
+  if (binding?.kind === "remote") return binding.targetId;
+  return THIS_MACHINE_ID;
+}

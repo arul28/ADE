@@ -5051,6 +5051,41 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(buildWorkSubagentSnapshots(from: transcript).first?.agentId, "agent-1")
   }
 
+  func testAgentChatEventEnvelopeDecodesModelHandoff() throws {
+    let json = """
+    {
+      "sessionId": "session-handoff",
+      "timestamp": "2026-09-01T00:00:00.000Z",
+      "sequence": 8,
+      "event": {
+        "type": "model_handoff",
+        "fromProvider": "codex",
+        "toProvider": "claude",
+        "fromModelId": "openai/gpt-5.4",
+        "toModelId": "anthropic/claude-sonnet-5",
+        "turnId": "turn-handoff"
+      }
+    }
+    """
+
+    let envelope = try JSONDecoder().decode(AgentChatEventEnvelope.self, from: Data(json.utf8))
+    guard case .modelHandoff(let fromProvider, let toProvider, let fromModelId, let toModelId, let turnId) = envelope.event else {
+      return XCTFail("Expected model_handoff event.")
+    }
+    XCTAssertEqual(fromProvider, "codex")
+    XCTAssertEqual(toProvider, "claude")
+    XCTAssertEqual(fromModelId, "openai/gpt-5.4")
+    XCTAssertEqual(toModelId, "anthropic/claude-sonnet-5")
+    XCTAssertEqual(turnId, "turn-handoff")
+
+    guard case .systemNotice(let kind, let message, _, let noticeTurnId, _) = makeWorkChatEvent(from: envelope.event) else {
+      return XCTFail("Expected model_handoff to map to a visible system notice.")
+    }
+    XCTAssertEqual(kind, "info")
+    XCTAssertEqual(message, "Model handoff · Codex → Claude")
+    XCTAssertEqual(noticeTurnId, "turn-handoff")
+  }
+
   func testAgentChatEventEnvelopeDecodesTokenUsageEvent() throws {
     let json = """
     {
@@ -15580,6 +15615,255 @@ final class ADETests: XCTestCase {
     XCTAssertFalse(workChatScrollPhaseIsUserDriven(.animating))
   }
 
+  func testFollowingViewportShrinkPinsToLatest() {
+    // Keyboard/composer shrink: same class of bug as
+    // `testKeyboardShrinkFlipsTailPredicateWithUnchangedOffset` on the
+    // terminal. Follow must re-glue rather than consult the inflated distance.
+    let viewportDelta = workChatLayoutViewportDelta(contentDelta: 0, scrollableDelta: 340)
+    XCTAssertEqual(viewportDelta, 340)
+    XCTAssertTrue(workChatLayoutWindowChanged(containerDelta: -340, viewportDelta: viewportDelta))
+    XCTAssertTrue(workChatLayoutWindowChanged(containerDelta: 0, viewportDelta: viewportDelta))
+    XCTAssertEqual(
+      workChatLayoutScrollAdjustment(
+        following: true,
+        mayWriteScrollOffset: true,
+        containerDelta: -340,
+        contentDelta: 0,
+        viewportDelta: viewportDelta,
+        previousOffsetY: 4200,
+        nextScrollableHeight: 4540
+      ),
+      .pinToLatest
+    )
+    XCTAssertEqual(
+      workChatLayoutScrollAdjustment(
+        following: true,
+        mayWriteScrollOffset: true,
+        containerDelta: 0,
+        contentDelta: 0,
+        viewportDelta: viewportDelta,
+        previousOffsetY: 4200,
+        nextScrollableHeight: 4540
+      ),
+      .pinToLatest
+    )
+  }
+
+  func testFollowingViewportGrowPinsToLatest() {
+    // Keyboard hide grows the window; a following viewport re-glues to the
+    // real end rather than sitting on the offset the smaller window left.
+    let viewportDelta = workChatLayoutViewportDelta(contentDelta: 0, scrollableDelta: -340)
+    XCTAssertEqual(
+      workChatLayoutScrollAdjustment(
+        following: true,
+        mayWriteScrollOffset: true,
+        containerDelta: 340,
+        contentDelta: 0,
+        viewportDelta: viewportDelta,
+        previousOffsetY: 4540,
+        nextScrollableHeight: 4200
+      ),
+      .pinToLatest
+    )
+  }
+
+  func testReadingHistoryViewportShrinkRestoresOffsetWithoutPinning() {
+    let viewportDelta = workChatLayoutViewportDelta(contentDelta: 0, scrollableDelta: 340)
+    XCTAssertEqual(
+      workChatLayoutScrollAdjustment(
+        following: false,
+        mayWriteScrollOffset: true,
+        containerDelta: -340,
+        contentDelta: 0,
+        viewportDelta: viewportDelta,
+        previousOffsetY: 1800,
+        nextScrollableHeight: 4540
+      ),
+      .restoreOffset(1800)
+    )
+  }
+
+  func testFollowingContentShrinkPinsToLatest() {
+    // Cards collapsing at turn-end shorten the tape under a following
+    // viewport. Pinning to the real end is what avoids the blank-tail look.
+    XCTAssertEqual(
+      workChatLayoutScrollAdjustment(
+        following: true,
+        mayWriteScrollOffset: true,
+        containerDelta: 0,
+        contentDelta: -400,
+        viewportDelta: 0,
+        previousOffsetY: 4200,
+        nextScrollableHeight: 3800
+      ),
+      .pinToLatest
+    )
+  }
+
+  func testReadingHistoryContentShrinkClampsOffsetToNewRange() {
+    XCTAssertEqual(
+      workChatLayoutScrollAdjustment(
+        following: false,
+        mayWriteScrollOffset: true,
+        containerDelta: 0,
+        contentDelta: -3000,
+        viewportDelta: 0,
+        previousOffsetY: 4000,
+        nextScrollableHeight: 1200
+      ),
+      .restoreOffset(1200)
+    )
+  }
+
+  func testReadingHistoryContentGrowthDoesNotMoveOffset() {
+    // Streaming into the tail while the reader is in history must not restore
+    // a stale offset or yank to latest. The prepend machinery owns insertion
+    // above; growth below should leave the reader put.
+    XCTAssertEqual(
+      workChatLayoutScrollAdjustment(
+        following: false,
+        mayWriteScrollOffset: true,
+        containerDelta: 0,
+        contentDelta: 240,
+        viewportDelta: 0,
+        previousOffsetY: 1800,
+        nextScrollableHeight: 4440
+      ),
+      .none
+    )
+    XCTAssertEqual(
+      workChatLayoutScrollAdjustment(
+        following: true,
+        mayWriteScrollOffset: true,
+        containerDelta: 0,
+        contentDelta: 240,
+        viewportDelta: 0,
+        previousOffsetY: 4200,
+        nextScrollableHeight: 4440
+      ),
+      .none
+    )
+  }
+
+  func testLayoutPinDefersToReaderDuringFling() {
+    XCTAssertEqual(
+      workChatLayoutScrollAdjustment(
+        following: true,
+        mayWriteScrollOffset: false,
+        containerDelta: -340,
+        contentDelta: 0,
+        viewportDelta: 340,
+        previousOffsetY: 4200,
+        nextScrollableHeight: 4540
+      ),
+      .none
+    )
+  }
+
+  func testKeyboardUserPhaseDoesNotReleaseFollow() {
+    XCTAssertTrue(
+      workChatShouldIgnoreUserScrollPhaseForLayout(
+        userDrivenPhase: true,
+        layoutAdjustedRecently: true
+      )
+    )
+    XCTAssertFalse(
+      workChatShouldReleaseFollowForUserScroll(
+        following: true,
+        userDrivenPhase: true,
+        layoutAdjustedRecently: true,
+        distanceFromBottom: 300,
+        offsetRetreat: 0
+      )
+    )
+    XCTAssertTrue(
+      workChatShouldReleaseFollowForUserScroll(
+        following: true,
+        userDrivenPhase: true,
+        layoutAdjustedRecently: true,
+        distanceFromBottom: 300,
+        offsetRetreat: 3
+      )
+    )
+    XCTAssertTrue(
+      workChatLayoutAdjustedRecently(
+        lastAdjustmentUptime: 10,
+        now: 10.2,
+        grace: workChatLayoutFollowGraceSeconds
+      )
+    )
+    XCTAssertFalse(
+      workChatLayoutAdjustedRecently(
+        lastAdjustmentUptime: 10,
+        now: 10.5,
+        grace: workChatLayoutFollowGraceSeconds
+      )
+    )
+  }
+
+  func testUserScrollPhaseReleasesFollowOnceLayoutIsStable() {
+    XCTAssertTrue(
+      workChatShouldReleaseFollowForUserScroll(
+        following: true,
+        userDrivenPhase: true,
+        layoutAdjustedRecently: false,
+        distanceFromBottom: 3,
+        offsetRetreat: 0
+      )
+    )
+    XCTAssertFalse(
+      workChatShouldReleaseFollowForUserScroll(
+        following: true,
+        userDrivenPhase: true,
+        layoutAdjustedRecently: false,
+        distanceFromBottom: 0,
+        offsetRetreat: 0
+      )
+    )
+    XCTAssertFalse(
+      workChatShouldReleaseFollowForUserScroll(
+        following: false,
+        userDrivenPhase: true,
+        layoutAdjustedRecently: false,
+        distanceFromBottom: 80,
+        offsetRetreat: 80
+      )
+    )
+    XCTAssertFalse(
+      workChatShouldIgnoreUserScrollPhaseForLayout(
+        userDrivenPhase: true,
+        layoutAdjustedRecently: false
+      )
+    )
+  }
+
+  func testKeyboardDoesNotReclaimFollowOnceTheReaderHasLeftTheTail() {
+    XCTAssertTrue(
+      workChatShouldReclaimFollowAfterWindowChange(
+        following: false,
+        distanceFromPreviousTail: 0
+      )
+    )
+    XCTAssertTrue(
+      workChatShouldReclaimFollowAfterWindowChange(
+        following: false,
+        distanceFromPreviousTail: workChatTouchScrollDeadband
+      )
+    )
+    XCTAssertFalse(
+      workChatShouldReclaimFollowAfterWindowChange(
+        following: false,
+        distanceFromPreviousTail: workChatTouchScrollDeadband + 1
+      )
+    )
+    XCTAssertFalse(
+      workChatShouldReclaimFollowAfterWindowChange(
+        following: true,
+        distanceFromPreviousTail: 0
+      )
+    )
+  }
+
   func testShortTranscriptRendersFromTheTop() {
     XCTAssertEqual(workChatTranscriptContentAlignment(contentFitsViewport: true), .topLeading)
     XCTAssertEqual(workChatTranscriptContentAlignment(contentFitsViewport: false), .bottomLeading)
@@ -20199,11 +20483,17 @@ final class ADETests: XCTestCase {
     )
   }
 
+  func testWorkModelCatalogUsesRequestedProviderOrder() {
+    let groups = workModelCatalogGroups(currentModelId: "", currentProvider: "codex")
+
+    XCTAssertEqual(groups.map(\.key), ["claude", "codex", "cursor", "opencode", "droid"])
+  }
+
   func testWorkModelCatalogIncludesFlagshipModelMetadata() {
     let groups = workModelCatalogGroups(currentModelId: "", currentProvider: "codex")
     let claudeGroup = groups.first(where: { $0.key == "claude" })
     let anthropicProvider = claudeGroup?.providers.first(where: { $0.key == "anthropic" })
-    let fable = anthropicProvider?.models.first(where: { $0.id == "claude-fable-5" })
+    let fable = anthropicProvider?.models.first(where: { $0.id == "claude-fable-5-1" })
     let opus5 = anthropicProvider?.models.first(where: { $0.id == "claude-opus-5" })
     let opus48 = anthropicProvider?.models.first(where: { $0.id == "claude-opus-4-8" })
     let openCodeAnthropic = groups
@@ -20220,26 +20510,31 @@ final class ADETests: XCTestCase {
     let gpt55 = openAIProvider?.models.first(where: { $0.id == "gpt-5.5" })
 
     XCTAssertEqual(anthropicProvider?.models.map(\.id), [
-      "claude-fable-5",
+      "claude-fable-5-1",
       "claude-opus-5",
       "claude-sonnet-5",
       "claude-haiku-4-5",
       "claude-opus-4-8",
-      "claude-opus-4-7-1m",
     ])
     XCTAssertEqual(openCodeAnthropic?.models.map(\.id), [
-      "opencode/anthropic/claude-fable-5",
+      "opencode/anthropic/claude-fable-5-1",
       "opencode/anthropic/claude-opus-5",
       "opencode/anthropic/claude-sonnet-5",
       "opencode/anthropic/claude-haiku-4-5",
       "opencode/anthropic/claude-opus-4-8",
-      "opencode/anthropic/claude-opus-4-7-1m",
     ])
-    XCTAssertEqual(workDefaultCatalogModelId(provider: "claude"), "claude-fable-5")
-    XCTAssertEqual(fable?.displayName, "Claude Fable 5")
+    XCTAssertEqual(workDefaultCatalogModelId(provider: "claude"), "claude-fable-5-1")
+    XCTAssertEqual(fable?.displayName, "Claude Fable 5.1")
     XCTAssertEqual(fable?.tier, .flagship)
     XCTAssertEqual(fable?.tagline, "Flagship · 1M context")
-    XCTAssertNotNil(ADEColor.modelBrand(for: "claude-fable-5"))
+    XCTAssertEqual(fable?.defaultReasoningEffort, "high")
+    XCTAssertNotNil(ADEColor.modelBrand(for: "claude-fable-5-1"))
+    XCTAssertTrue(workModelIdsEquivalent("opencode/anthropic/claude-fable-5-1", "claude-fable-5-1"))
+    XCTAssertTrue(workModelIdsEquivalent("fable-5", "claude-fable-5-1"))
+    XCTAssertEqual(workKnownModelDisplayName("fable-5"), "Claude Fable 5.1")
+    XCTAssertEqual(workKnownModelDisplayName("fable-5.0"), "Claude Fable 5.1")
+    XCTAssertEqual(workKnownModelDisplayName("opencode/anthropic/claude-fable-5-1"), "Claude Fable 5.1")
+    XCTAssertNotNil(ADEColor.modelBrand(for: "opencode/anthropic/claude-fable-5-1"))
     XCTAssertEqual(opus5?.displayName, "Claude Opus 5")
     XCTAssertEqual(opus5?.tagline, "Agentic coding · 1M context")
     XCTAssertEqual(opus5?.reasoningEfforts.map(\.effort), ["low", "medium", "high", "xhigh", "max"])
@@ -20251,7 +20546,7 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(droidOpus5?.reasoningEfforts.map(\.effort), ["low", "medium", "high", "xhigh", "max"])
     XCTAssertEqual(droidOpus5?.defaultReasoningEffort, "high")
     XCTAssertFalse(droidOpus5?.supportsCodexFastMode == true)
-    XCTAssertEqual(opus48?.displayName, "Claude Opus 4.8 1M")
+    XCTAssertEqual(opus48?.displayName, "Claude Opus 4.8")
     XCTAssertEqual(opus48?.tier, .flagship)
     XCTAssertEqual(opus48?.tagline, "Previous Opus · 1M context")
     XCTAssertNotNil(ADEColor.modelBrand(for: "claude-opus-4-8"))
@@ -20302,6 +20597,9 @@ final class ADETests: XCTestCase {
   }
 
   func testMobileComposerReasoningTiersMirrorDesktopRegistry() {
+    XCTAssertEqual(ADEColor.reasoningTiers(for: "anthropic/claude-fable-5-1"), ["low", "medium", "high", "xhigh", "max", "ultracode"])
+    XCTAssertEqual(ADEColor.reasoningTiers(for: "anthropic/claude-fable-5-1-api"), ["low", "medium", "high", "xhigh", "max", "ultracode"])
+    XCTAssertEqual(ADEColor.reasoningTiers(for: "claude-fable-5-1"), ["low", "medium", "high", "xhigh", "max", "ultracode"])
     XCTAssertEqual(ADEColor.reasoningTiers(for: "anthropic/claude-fable-5"), ["low", "medium", "high", "xhigh", "max", "ultracode"])
     XCTAssertEqual(ADEColor.reasoningTiers(for: "anthropic/claude-fable-5-api"), ["low", "medium", "high", "xhigh", "max", "ultracode"])
     XCTAssertEqual(ADEColor.reasoningTiers(for: "claude-fable-5"), ["low", "medium", "high", "xhigh", "max", "ultracode"])
@@ -20314,7 +20612,7 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(ADEColor.reasoningTiers(for: "claude-opus-4-8"), ["low", "medium", "high", "xhigh", "max", "ultracode"])
     XCTAssertEqual(ADEColor.reasoningTiers(for: "anthropic/claude-opus-4-7"), ["low", "medium", "high", "xhigh", "max", "ultracode"])
     XCTAssertEqual(ADEColor.reasoningTiers(for: "claude-opus-4-7"), ["low", "medium", "high", "xhigh", "max", "ultracode"])
-    XCTAssertEqual(ADEColor.reasoningTiers(for: "opus[1m]"), ["low", "medium", "high", "xhigh", "max"])
+    XCTAssertEqual(ADEColor.reasoningTiers(for: "opus[1m]"), ["low", "medium", "high", "xhigh", "max", "ultracode"])
     XCTAssertEqual(ADEColor.reasoningTiers(for: "anthropic/claude-sonnet-5"), ["low", "medium", "high", "max"])
     XCTAssertNil(ADEColor.reasoningTiers(for: "claude-haiku-4-5"))
     XCTAssertEqual(ADEColor.reasoningTiers(for: "sol"), ["low", "medium", "high", "xhigh", "max", "ultra"])
@@ -21056,6 +21354,7 @@ final class ADETests: XCTestCase {
     XCTAssertTrue(workModelIdsEquivalent("anthropic/claude-opus-5-api", "claude-opus-5"))
     XCTAssertTrue(workModelIdsEquivalent("opencode/anthropic/opus", "claude-opus-5"))
     XCTAssertTrue(workModelIdsEquivalent("opencode/anthropic/claude-opus-5", "claude-opus-5"))
+    XCTAssertTrue(workModelIdsEquivalent("opencode/anthropic/claude-opus-4-8", "claude-opus-4-8"))
     XCTAssertEqual(workKnownModelDisplayName("anthropic/claude-opus-5-api"), "Claude Opus 5")
     XCTAssertEqual(workKnownModelDisplayName("opencode/anthropic/opus"), "Claude Opus 5")
     XCTAssertTrue(workModelIdsEquivalent("claude-opus-4-6", "claude-opus-4-8"))
@@ -21065,7 +21364,7 @@ final class ADETests: XCTestCase {
     XCTAssertTrue(workModelIdsEquivalent("opus-4.6", "claude-opus-4-8"))
     XCTAssertTrue(workModelIdsEquivalent("claude-opus-4-6-1m", "claude-opus-4-7-1m"))
     XCTAssertTrue(workModelIdsEquivalent("claude-opus-4-6[1m]", "claude-opus-4-7-1m"))
-    XCTAssertEqual(workKnownModelDisplayName("anthropic/claude-opus-4-6"), "Claude Opus 4.8 1M")
+    XCTAssertEqual(workKnownModelDisplayName("anthropic/claude-opus-4-6"), "Claude Opus 4.8")
   }
 
   func testExtractWorkNavigationTargetsFindsFilePathsAndPullRequestNumbers() {

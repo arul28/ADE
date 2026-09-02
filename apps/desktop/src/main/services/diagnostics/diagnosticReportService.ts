@@ -6,6 +6,7 @@ import {
   buildDiagnosticIssueUrl,
   buildDiagnosticReport,
   diagnosticReportFilePath,
+  summarizeDiagnosticRemoteMachines,
   type DiagnosticLogTail,
   type DiagnosticReportContext,
   type DiagnosticVolumeSpace,
@@ -89,6 +90,8 @@ export type DiagnosticReportDeps = {
   /** Raw account user id; hashed here and never stored or sent verbatim. */
   accountUserId?: string | null;
   getLocalRuntimeStatus?: () => Promise<unknown> | unknown;
+  /** Raw snapshot is reduced to privacy-safe counts before report assembly. */
+  getRemoteRuntimeSnapshot?: () => Promise<unknown> | unknown;
   diagnoseProject?: (projectRoot: string) => Promise<unknown>;
   /** Deadline for each optional step above. Test seam; defaults to 8s. */
   stepTimeoutMs?: number;
@@ -187,10 +190,11 @@ export async function collectDiagnosticReport(
   // window and every IPC call for as long as they take, on a report the user
   // often did not ask for. The Electron-only extras below are the only thing
   // this report adds.
-  const [sources, osProductVersion, localRuntimeStatus, recoveryDiagnosis] = await Promise.all([
+  const [sources, osProductVersion, localRuntimeStatus, remoteRuntimeSnapshot, recoveryDiagnosis] = await Promise.all([
     collectMachineDiagnosticSourcesAsync({ env, projectRoot, readVolume: volumeEntry }),
     readMacProductVersion().catch(() => null),
     bestEffortStep(() => deps.getLocalRuntimeStatus?.() ?? null, deps.stepTimeoutMs),
+    bestEffortStep(() => deps.getRemoteRuntimeSnapshot?.() ?? null, deps.stepTimeoutMs),
     projectRoot && deps.diagnoseProject
       ? bestEffortStep(() => deps.diagnoseProject?.(projectRoot) ?? null, deps.stepTimeoutMs)
       : Promise.resolve(null),
@@ -268,6 +272,7 @@ export async function collectDiagnosticReport(
       lastWedge: sources.state.lastWedge,
       updateTransaction: request.updateTransaction ?? null,
     },
+    remoteMachines: summarizeDiagnosticRemoteMachines(remoteRuntimeSnapshot),
     storage: sources.storage,
     storageEnvironment: sources.storageEnvironment,
     logs,

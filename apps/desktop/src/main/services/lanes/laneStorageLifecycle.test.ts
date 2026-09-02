@@ -642,7 +642,23 @@ describe("lane storage lifecycle", () => {
  * spellings really are different directories, so the case runs only where the
  * platform agrees they are not.
  */
-const itOnCaseInsensitiveFs = it.runIf(process.platform === "win32" || process.platform === "darwin");
+function isCaseInsensitiveFilesystem(): boolean {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-case-sensitivity-probe-"));
+  try {
+    const original = path.join(root, "CaseProbe");
+    fs.mkdirSync(original);
+    return fs.existsSync(path.join(root, "caseprobe"));
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+}
+
+// The same OS can be configured with either a case-sensitive or
+// case-insensitive volume (macOS commonly has both), so platform alone is not
+// enough to decide whether the spelling-divergence scenario is valid.
+const itOnCaseInsensitiveFs = it.runIf(
+  (process.platform === "win32" || process.platform === "darwin") && isCaseInsensitiveFilesystem(),
+);
 
 describe("reclaim accepts either spelling of the managed worktrees folder", () => {
   async function caseDivergentFixture() {

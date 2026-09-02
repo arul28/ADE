@@ -57,7 +57,7 @@ export const ModelPickerRail = memo(function ModelPickerRail({
       role="tablist"
       aria-orientation="vertical"
       data-model-picker-rail="true"
-      className="flex w-12 shrink-0 flex-col gap-0.5 border-r border-white/[0.06] bg-black/[0.18] p-1"
+      className="flex w-12 shrink-0 flex-col gap-0.5 overflow-y-auto border-r border-white/[0.06] bg-black/[0.18] p-1"
     >
       {entries.map((entry, index) => {
         const key = entryKey(entry);

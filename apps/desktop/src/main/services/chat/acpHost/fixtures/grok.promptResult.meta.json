@@ -1,0 +1,36 @@
+{
+  "sessionId": "01a0568f-e9a4-7a70-8a81-b1f1ce7f8b95",
+  "requestId": "4f10edfb-d31a-4155-b57c-62b25520c627",
+  "promptId": "4f10edfb-d31a-4155-b57c-62b25520c627",
+  "totalTokens": 29837,
+  "modelId": "grok-4.6",
+  "inputTokens": 29805,
+  "outputTokens": 32,
+  "cachedReadTokens": 5888,
+  "reasoningTokens": 27,
+  "usage": {
+    "inputTokens": 29805,
+    "outputTokens": 32,
+    "totalTokens": 29837,
+    "cachedReadTokens": 5888,
+    "cacheCreationTokens": 0,
+    "reasoningTokens": 27,
+    "modelCalls": 1,
+    "apiDurationMs": 2765,
+    "costUsdTicks": 86649000,
+    "modelUsage": {
+      "grok-4.6-build": {
+        "inputTokens": 29805,
+        "outputTokens": 32,
+        "totalTokens": 29837,
+        "cachedReadTokens": 5888,
+        "cacheCreationTokens": 0,
+        "reasoningTokens": 27,
+        "modelCalls": 1,
+        "apiDurationMs": 2765,
+        "costUsdTicks": 86649000
+      }
+    },
+    "numTurns": 1
+  }
+}

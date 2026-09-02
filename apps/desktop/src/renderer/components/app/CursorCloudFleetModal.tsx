@@ -217,7 +217,6 @@ export function CursorCloudFleetModal({
       const opened = await window.ade.ai.cursorCloudOpenChat({
         cloudAgentId: agentId,
         laneId,
-        agentName: entry.agent.name,
       });
       if (opened.session) {
         announceWorkChatSessionCreated(projectRoot ?? "", opened.session);

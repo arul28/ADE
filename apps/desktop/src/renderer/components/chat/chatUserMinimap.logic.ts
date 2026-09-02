@@ -31,7 +31,7 @@ const ASSISTANT_PREVIEW_MAX_CHARS = 220;
 
 export type ChatUserMinimapTurnOutcome = "completed" | "interrupted" | "failed";
 
-export type ChatUserMinimapTickKind = "user" | "compact" | "queued";
+export type ChatUserMinimapTickKind = "user" | "queued";
 
 export type ChatUserMinimapSourceEntry = {
   /** Index in `groupedRows` for this user message. */
@@ -46,7 +46,7 @@ export type ChatUserMinimapSourceEntry = {
   assistantPreview: string | null;
   /** How this user message's turn ended; `null` while it is still running. */
   turnOutcome: ChatUserMinimapTurnOutcome | null;
-  /** Codex extras are smaller ticks; user ticks stay primary. */
+  /** Queued Codex follow-ups retain their own color while sharing tick geometry. */
   kind?: ChatUserMinimapTickKind;
 };
 
@@ -104,19 +104,6 @@ function collectCodexMinimapExtra(
       assistantPreview: null,
       turnOutcome: null,
       kind: "queued",
-    };
-  }
-  if (event.type === "context_compact" || event.type === "codex_context_compaction") {
-    if (event.state === "started") return null;
-    const failed = event.state === "failed";
-    return {
-      rowIndex,
-      key: `${row.key}:compact`,
-      preview: failed ? "Compaction failed" : "Context compacted",
-      fullUserOrdinal: Math.max(0, fullUserOrdinal - 1),
-      assistantPreview: null,
-      turnOutcome: failed ? "failed" : null,
-      kind: "compact",
     };
   }
   return null;

@@ -28,6 +28,10 @@ const PROVIDER_PROFILE_EXPECTATIONS: Record<AgentChatCliLaunchProvider, Record<s
   droid: { droidPermissionMode: "auto-high" },
   opencode: { opencodePermissionMode: "full-auto" },
   pi: { permissionMode: "full-auto" },
+  qwen: { acpPermissionMode: "yolo", permissionMode: "full-auto" },
+  kimi: { acpPermissionMode: "yolo", permissionMode: "full-auto" },
+  grok: { acpPermissionMode: "yolo", permissionMode: "full-auto" },
+  copilot: { acpPermissionMode: "yolo", permissionMode: "full-auto" },
 };
 
 describe("orchestrationRuntimePolicy", () => {

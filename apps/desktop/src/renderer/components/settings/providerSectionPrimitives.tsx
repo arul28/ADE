@@ -23,17 +23,26 @@ export function panel(overrides?: React.CSSProperties): React.CSSProperties {
 
 export function ProviderGrid({
   minWidth = 200,
+  autoFit = false,
+  gap = 8,
   children,
 }: {
   minWidth?: number;
+  /**
+   * `auto-fit` collapses the empty tracks so a short row stretches to fill the
+   * width; `auto-fill` keeps them, which is what a dense sub-provider catalog
+   * wants. The top-level provider grid is the first case.
+   */
+  autoFit?: boolean;
+  gap?: number;
   children: React.ReactNode;
 }) {
   return (
     <div
       style={{
         display: "grid",
-        gridTemplateColumns: `repeat(auto-fill, minmax(min(100%, ${minWidth}px), 1fr))`,
-        gap: 8,
+        gridTemplateColumns: `repeat(${autoFit ? "auto-fit" : "auto-fill"}, minmax(min(100%, ${minWidth}px), 1fr))`,
+        gap,
       }}
     >
       {children}
@@ -96,6 +105,11 @@ export function ProviderTile({
   badge,
   ariaLabel,
   footer,
+  logo,
+  accentColor,
+  padding = 10,
+  minHeight = 72,
+  wrapName = false,
   onOpen,
 }: {
   id: string;
@@ -104,6 +118,21 @@ export function ProviderTile({
   badge: React.ReactNode;
   ariaLabel: string;
   footer?: React.ReactNode;
+  /** Overrides the generic brand mark — the six first-class providers have their own. */
+  logo?: React.ReactNode;
+  /** Left status rule, used by the top-level provider grid. */
+  accentColor?: string;
+  padding?: number;
+  minHeight?: number;
+  /**
+   * Let a long name take a second line instead of clipping to an ellipsis.
+   *
+   * A dense sub-catalog of forty vendors wants every row the same height, so it
+   * clips. The top-level provider grid is the opposite case: there are ten
+   * cards, the name is the card's identity, and "GitHub Co…" is a worse tile
+   * than a two-line title.
+   */
+  wrapName?: boolean;
   onOpen: () => void;
 }) {
   return (
@@ -112,28 +141,31 @@ export function ProviderTile({
       onClick={onOpen}
       aria-label={ariaLabel}
       style={{
-        ...panel({ padding: 10 }),
+        ...panel({ padding }),
+        ...(accentColor ? { borderLeft: `3px solid ${accentColor}` } : {}),
         display: "flex",
         flexDirection: "column",
         gap: 8,
         textAlign: "left",
         cursor: "pointer",
         width: "100%",
-        minHeight: 72,
+        minHeight,
         background: COLORS.recessedBg,
       }}
     >
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
-          <ProviderLogo family={id} size={22} />
+        <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0, flex: 1 }}>
+          {logo ?? <ProviderLogo family={id} size={22} />}
           <span
+            data-testid={`provider-tile-name-${id}`}
             style={{
               fontSize: 12,
               fontFamily: SANS_FONT,
               color: COLORS.textPrimary,
-              overflow: "hidden",
-              textOverflow: "ellipsis",
-              whiteSpace: "nowrap",
+              minWidth: 0,
+              ...(wrapName
+                ? { overflowWrap: "anywhere", lineHeight: 1.3 }
+                : { overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }),
             }}
           >
             {name}

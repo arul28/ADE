@@ -1987,4 +1987,25 @@ describe("TerminalsPage chat session activation", () => {
     expect(banner.textContent).toContain("Refresh the list");
     confirmSpy.mockRestore();
   });
+
+  it("recovers a collapsed sessions list from a thin left rail", () => {
+    workMocks.currentWork = {
+      ...workMocks.baseWork,
+      workFocusSessionsHidden: true,
+      closingPtyIds: new Set<string>(),
+    };
+    Object.defineProperty(window, "ade", {
+      configurable: true,
+      value: { builtInBrowser: { onEvent: vi.fn(() => vi.fn()) } },
+    });
+
+    render(<TerminalsPage />);
+
+    expect(screen.queryByTestId("session-list-pane")).toBeNull();
+    const rail = screen.getByTestId("work-sessions-collapsed-rail");
+    const show = screen.getByRole("button", { name: "Show sessions" });
+    expect(rail.contains(show)).toBe(true);
+    fireEvent.click(show);
+    expect(workMocks.currentWork.setWorkFocusSessionsHidden).toHaveBeenCalledWith(false);
+  });
 });

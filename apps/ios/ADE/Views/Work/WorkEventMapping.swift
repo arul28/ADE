@@ -683,6 +683,14 @@ func makeWorkChatEvent(from event: AgentChatEvent) -> WorkChatEvent {
     // `timestamp` is stamped later by `buildWorkAdeCards` from the envelope —
     // this decoder has no envelope context.
     return .adeCard(card)
+  case .modelHandoff(let fromProvider, let toProvider, _, _, let turnId):
+    return .systemNotice(
+      kind: "info",
+      message: workModelHandoffNoticeMessage(fromProvider: fromProvider, toProvider: toProvider),
+      detail: nil,
+      turnId: turnId,
+      steerId: nil
+    )
   case .stepBoundary:
     return .unknown(type: "step_boundary")
   case .delegationState:

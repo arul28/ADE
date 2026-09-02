@@ -1475,9 +1475,17 @@ function coerceAiConfig(value: unknown): AiConfig | undefined {
     const providersRaw = isRecord(permissionsRaw.providers) ? permissionsRaw.providers : null;
     if (providersRaw) {
       const providers: NonNullable<NonNullable<AiConfig["permissions"]>["providers"]> = {};
-      const providerMode = (key: "claude" | "codex" | "cursor" | "droid" | "opencode" | "pi") => {
+      const providerMode = (
+        key: "claude" | "codex" | "cursor" | "droid" | "opencode" | "pi" | "qwen" | "kimi" | "grok" | "copilot",
+      ) => {
         const mode = asString(providersRaw[key])?.trim();
-        if (mode === "default" || mode === "plan" || mode === "edit" || mode === "full-auto" || mode === "config-toml") {
+        // "auto" belongs here: it is a member of `AgentChatPermissionMode` and
+        // the ACP providers offer it by name, so dropping it would let the
+        // picker show a choice the config layer refuses to keep.
+        if (
+          mode === "default" || mode === "plan" || mode === "edit"
+          || mode === "auto" || mode === "full-auto" || mode === "config-toml"
+        ) {
           providers[key] = mode;
         }
       };
@@ -1487,6 +1495,10 @@ function coerceAiConfig(value: unknown): AiConfig | undefined {
       providerMode("droid");
       providerMode("opencode");
       providerMode("pi");
+      providerMode("qwen");
+      providerMode("kimi");
+      providerMode("grok");
+      providerMode("copilot");
       const codexSandbox = asString(providersRaw.codexSandbox)?.trim();
       if (codexSandbox === "read-only" || codexSandbox === "workspace-write" || codexSandbox === "danger-full-access") {
         providers.codexSandbox = codexSandbox;
@@ -1653,6 +1665,14 @@ function coerceAiConfig(value: unknown): AiConfig | undefined {
     ?.map((slug) => slug.trim())
     .filter(Boolean);
   if (customModelSlugs?.length) out.customModelSlugs = customModelSlugs;
+
+  // Ids are lower-cased but not validated against today's provider list: this
+  // field crosses the sync wire, and dropping an id a newer build wrote would
+  // silently re-enable a provider the user switched off on another machine.
+  const disabledProviders = asStringArray(value.disabledProviders)
+    ?.map((provider) => provider.trim().toLowerCase())
+    .filter(Boolean);
+  if (disabledProviders?.length) out.disabledProviders = [...new Set(disabledProviders)];
 
   const workerSafety = coerceWorkerSafetyPolicy(value.workerSafety);
   if (workerSafety) out.workerSafety = workerSafety;
@@ -2011,6 +2031,10 @@ export function mergeAiConfig(sharedAi?: AiConfig, localAi?: Partial<AiConfig>):
   // would make removals impossible to persist. Absent = keep, [] = clear.
   const customProviders = localAi?.customProviders ?? sharedAi?.customProviders ?? [];
   const customModelSlugs = localAi?.customModelSlugs ?? sharedAi?.customModelSlugs ?? [];
+  // Same replace semantics, for the same reason: the toggle writes the whole
+  // authoritative list, so re-enabling a provider has to be expressible as a
+  // shorter list rather than as an absence a union would ignore.
+  const disabledProviders = localAi?.disabledProviders ?? sharedAi?.disabledProviders ?? [];
   const localProvidersEntries = (["ollama", "lmstudio"] as const)
     .map((provider) => {
       const mergedProvider = {
@@ -2039,6 +2063,7 @@ export function mergeAiConfig(sharedAi?: AiConfig, localAi?: Partial<AiConfig>):
     ...(Object.keys(apiKeys).length ? { apiKeys } : {}),
     ...(customProviders.length ? { customProviders } : {}),
     ...(customModelSlugs.length ? { customModelSlugs } : {}),
+    ...(disabledProviders.length ? { disabledProviders } : {}),
     ...(localProvidersEntries.length ? { localProviders } : {}),
     ...(workerSafety ? { workerSafety } : {}),
   };

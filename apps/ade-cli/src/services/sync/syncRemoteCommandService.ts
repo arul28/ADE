@@ -32,6 +32,7 @@ import {
   readPluginContributionEntityTag,
 } from "../../../../desktop/src/shared/plugins/sockets";
 import { projectAttachmentsDir } from "../../../../desktop/src/shared/chatAttachmentStagingFs";
+import { assertCursorCloudRenameAllowed } from "../../../../desktop/src/shared/cursorCloudNaming";
 import type { AttachmentUploadRegistry, AttachmentUploadTicket } from "./attachmentUploadService";
 import type {
   AgentChatCreateArgs,
@@ -3242,22 +3243,31 @@ function parseChatModelsArgs(value: Record<string, unknown>): {
   };
 }
 
+/**
+ * Providers a remote caller may ask the host to re-enumerate. Typed as the
+ * shared union so a provider added there is accepted here too, instead of being
+ * silently dropped from the request and leaving the phone's refresh a no-op.
+ */
+const MODEL_CATALOG_REFRESH_PROVIDERS = new Set<AgentChatModelCatalogRefreshProvider>([
+  "opencode",
+  "pi",
+  "cursor",
+  "droid",
+  "lmstudio",
+  "ollama",
+  "qwen",
+  "kimi",
+  "grok",
+  "copilot",
+]);
+
 function parseChatModelCatalogArgs(value: Record<string, unknown>): AgentChatModelCatalogArgs {
   const mode = asTrimmedString(value.mode) as AgentChatModelCatalogMode | null;
   const refreshProvider = asTrimmedString(value.refreshProvider) as AgentChatModelCatalogRefreshProvider | null;
   const cursorSource = parseCursorModelSource(value.cursorSource);
   return {
     ...(mode === "cached" || mode === "refresh-stale" || mode === "force" ? { mode } : {}),
-    ...(
-      refreshProvider === "opencode"
-      || refreshProvider === "pi"
-      || refreshProvider === "cursor"
-      || refreshProvider === "droid"
-      || refreshProvider === "lmstudio"
-      || refreshProvider === "ollama"
-        ? { refreshProvider }
-        : {}
-    ),
+    ...(refreshProvider && MODEL_CATALOG_REFRESH_PROVIDERS.has(refreshProvider) ? { refreshProvider } : {}),
     ...(cursorSource ? { cursorSource } : {}),
   };
 }
@@ -3762,7 +3772,19 @@ async function resolveChatCreateArgs<T extends AgentChatCreateArgs>(
   if (payload.model.trim().length > 0) return payload;
   const available = await service.getAvailableModels({
     provider: payload.provider,
-    ...(payload.provider === "opencode" || payload.provider === "pi" ? { activateRuntime: true } : {}),
+    // ACP providers are here for the same reason as OpenCode/Pi: their model
+    // rows are gated on a CLI auth pass, and `activateRuntime` refreshes that
+    // pass. It does not spawn an agent for them.
+    ...(
+      payload.provider === "opencode"
+      || payload.provider === "pi"
+      || payload.provider === "qwen"
+      || payload.provider === "kimi"
+      || payload.provider === "grok"
+      || payload.provider === "copilot"
+        ? { activateRuntime: true }
+        : {}
+    ),
   });
   const chosen = available[0];
   if (!chosen) {
@@ -4295,7 +4317,14 @@ function registerWorkRemoteCommands({ args, register }: RemoteCommandRegistratio
     args.sessionDeltaService?.getSessionDelta(parseSessionIdArgs(payload, "work.getSessionDelta").sessionId) ?? null);
   register("work.listSessions", { viewerAllowed: true }, async (payload) => listRemoteWorkSessions(args, parseListSessionsArgs(payload)));
   register("work.updateSessionMeta", { viewerAllowed: true, queueable: true }, async (payload) => {
-    args.sessionService.updateMeta(parseUpdateSessionMetaArgs(payload));
+    const parsed = parseUpdateSessionMetaArgs(payload);
+    await assertCursorCloudRenameAllowed(
+      args.agentChatService
+        ? (sessionId) => args.agentChatService!.getSessionSummary(sessionId)
+        : null,
+      parsed,
+    );
+    args.sessionService.updateMeta(parsed);
     return { ok: true };
   });
   // ---------------------------------------------------------------------
@@ -5626,15 +5655,20 @@ function registerMiscRemoteCommands({ args, register }: RemoteCommandRegistratio
     return { ok: true };
   });
   register("ai.openCursorCloudChat", { viewerAllowed: true, queueable: false }, async (payload) => {
-    const agentName = asTrimmedString(payload.agentName);
     const sessionId = asTrimmedString(payload.sessionId);
     const modelId = asTrimmedString(payload.modelId);
+    const reasoningEffort = asTrimmedString(payload.reasoningEffort);
+    const fastMode = asOptionalBoolean(payload.fastMode);
     return requireService(args.agentChatService, "Agent chat service not available.").openCursorCloudChat({
       cloudAgentId: requireString(payload.cloudAgentId, "ai.openCursorCloudChat requires cloudAgentId."),
       laneId: requireString(payload.laneId, "ai.openCursorCloudChat requires laneId."),
-      ...(agentName ? { agentName } : {}),
       ...(sessionId ? { sessionId } : {}),
       ...(modelId ? { modelId } : {}),
+      // `asTrimmedString` returns null, never undefined, so this has to test
+      // for null: forwarding it would clear the session's reasoning effort on
+      // every mobile, web, and relay call that omits the field.
+      ...(reasoningEffort !== null ? { reasoningEffort } : {}),
+      ...(fastMode !== undefined ? { fastMode } : {}),
     });
   });
   register("ai.watchCursorCloudMirror", { viewerAllowed: true, queueable: false }, async (payload) => {

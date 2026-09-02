@@ -270,6 +270,10 @@ func workChatSurfaceProviderName(_ source: String?) -> String {
   case "droid", "factory": return "Droid"
   case "opencode": return "OpenCode"
   case "pi": return "Pi"
+  case "qwen": return "Qwen"
+  case "kimi", "moonshot": return "Kimi"
+  case "grok", "xai": return "Grok"
+  case "copilot", "github-copilot": return "Copilot"
   case "ade": return "ADE"
   default:
     return raw
@@ -279,6 +283,12 @@ func workChatSurfaceProviderName(_ source: String?) -> String {
       .map { $0.prefix(1).uppercased() + $0.dropFirst() }
       .joined(separator: " ")
   }
+}
+
+func workModelHandoffNoticeMessage(fromProvider: String, toProvider: String) -> String {
+  let from = workChatSurfaceProviderName(fromProvider)
+  let to = workChatSurfaceProviderName(toProvider)
+  return "Model handoff · \(from) → \(to)"
 }
 
 func workChatPendingInputHeaderVerb(source: String?, fallbackProvider: String?, kind: String) -> String {
@@ -484,6 +494,18 @@ struct WorkActiveSendCapability: Equatable {
       return WorkActiveSendCapability(modes: [.inline, .queue, .interrupt], agentLabel: "Claude", interruptContinues: false)
     case "cursor":
       return WorkActiveSendCapability(modes: [.interrupt, .queue], agentLabel: "Cursor", interruptContinues: true)
+    // The four ACP providers are queue-only in `ACTIVE_TURN_DISPATCH_MODES`,
+    // which is what the default arm already gives them. They are listed anyway
+    // so the label reads with the provider's name instead of "the agent", and
+    // so the next person diffing this table against the TS one sees them here.
+    case "qwen":
+      return WorkActiveSendCapability(modes: [.queue], agentLabel: "Qwen", interruptContinues: false)
+    case "kimi":
+      return WorkActiveSendCapability(modes: [.queue], agentLabel: "Kimi", interruptContinues: false)
+    case "grok":
+      return WorkActiveSendCapability(modes: [.queue], agentLabel: "Grok", interruptContinues: false)
+    case "copilot":
+      return WorkActiveSendCapability(modes: [.queue], agentLabel: "GitHub Copilot", interruptContinues: false)
     default:
       return WorkActiveSendCapability(modes: [.queue], agentLabel: "the agent", interruptContinues: false)
     }

@@ -14,9 +14,9 @@ const resolveCodexExecutableMock = vi.fn(() => ({
   path: "C:\\Users\\me\\AppData\\Roaming\\npm\\codex.cmd",
   source: "path",
 }));
-const cursorAgentCreateMock = vi.fn();
-const cursorAgentResumeMock = vi.fn();
-const cursorAgentSendMock = vi.fn();
+const cursorLocalPromptMock = vi.fn();
+const assertCursorSdkSupportedMock = vi.fn();
+const getApiKeyMock = vi.fn((_provider: string): string | null => null);
 
 vi.mock("node:child_process", async () => {
   const actual = await vi.importActual<typeof childProcess>("node:child_process");
@@ -34,13 +34,18 @@ vi.mock("./codexExecutable", () => ({
   resolveCodexExecutable: () => resolveCodexExecutableMock(),
 }));
 
+// The real store reads the OS credential store, so a developer machine with a
+// Cursor key stored would silently skip the missing-key branch.
+vi.mock("./apiKeyStore", () => ({
+  getApiKey: (provider: string) => getApiKeyMock(provider),
+}));
+
 vi.mock("./cursorSdkLoader", () => ({
-  loadCursorSdk: async () => ({
-    Agent: {
-      create: (...args: unknown[]) => cursorAgentCreateMock(...args),
-      resume: (...args: unknown[]) => cursorAgentResumeMock(...args),
-    },
-  }),
+  assertCursorSdkSupportedOnThisPlatform: (...args: unknown[]) => assertCursorSdkSupportedMock(...args),
+}));
+
+vi.mock("../chat/cursorSdkPool", () => ({
+  runCursorSdkLocalPrompt: (...args: unknown[]) => cursorLocalPromptMock(...args),
 }));
 
 import { makeCodexCompatibleJsonSchema, runProviderTask } from "./providerTaskRunner";
@@ -121,9 +126,10 @@ afterEach(() => {
   spawnMock.mockReset();
   resolveClaudeCodeExecutableMock.mockClear();
   resolveCodexExecutableMock.mockClear();
-  cursorAgentCreateMock.mockReset();
-  cursorAgentResumeMock.mockReset();
-  cursorAgentSendMock.mockReset();
+  cursorLocalPromptMock.mockReset();
+  assertCursorSdkSupportedMock.mockReset();
+  getApiKeyMock.mockReset();
+  getApiKeyMock.mockReturnValue(null);
 });
 
 describe("runProviderTask", () => {
@@ -249,15 +255,8 @@ describe("runProviderTask", () => {
     }
   });
 
-  it("does not map Cursor full-auto onto local.force and omits default tools", async () => {
-    cursorAgentSendMock.mockResolvedValue({
-      wait: async () => ({ status: "finished", result: "ok" }),
-      cancel: async () => {},
-    });
-    cursorAgentCreateMock.mockResolvedValue({
-      agentId: "agent-1",
-      send: cursorAgentSendMock,
-    });
+  it("routes every Cursor task through the SDK worker pool with no policy of its own", async () => {
+    cursorLocalPromptMock.mockResolvedValue({ text: "ok", agentId: "agent-1" });
 
     const result = await runProviderTask({
       cwd: "/tmp/lane",
@@ -274,29 +273,26 @@ describe("runProviderTask", () => {
     });
 
     expect(result.text).toBe("ok");
-    expect(cursorAgentCreateMock).toHaveBeenCalledTimes(1);
-    const createOptions = cursorAgentCreateMock.mock.calls[0]![0] as Record<string, any>;
-    expect(createOptions.mode).toBe("agent");
-    expect(createOptions.mode).not.toBe("auto");
-    expect(createOptions.tools).toBeUndefined();
-    expect(createOptions.local).toMatchObject({
-      cwd: "/tmp/lane",
-      sandboxOptions: { enabled: false },
-      autoReview: false,
+    expect(result.sessionId).toBe("agent-1");
+    expect(assertCursorSdkSupportedMock).toHaveBeenCalledTimes(1);
+    expect(cursorLocalPromptMock).toHaveBeenCalledTimes(1);
+    const call = cursorLocalPromptMock.mock.calls[0]![0] as Record<string, any>;
+    expect(call).toMatchObject({
+      projectRoot: "/tmp/lane",
+      workspacePath: "/tmp/lane",
+      apiKey: "cursor-test-key",
+      modelSdkId: "composer-2",
+      promptText: "Ship the change.",
+      feature: "unit-test",
+      timeoutMs: 120_000,
     });
-    expect(createOptions.local.force).toBeUndefined();
-    expect(cursorAgentSendMock.mock.calls[0]![1]?.local?.force).toBeUndefined();
+    // A one-shot is a tool-less text task and the pool denies every tool call
+    // it makes, so `permissionMode` decides nothing: the pool owns the policy.
+    expect(call.policy).toBeUndefined();
   });
 
-  it("applies Cursor Auto-review for middle-trust edit tasks", async () => {
-    cursorAgentSendMock.mockResolvedValue({
-      wait: async () => ({ status: "finished", result: "ok" }),
-      cancel: async () => {},
-    });
-    cursorAgentCreateMock.mockResolvedValue({
-      agentId: "agent-2",
-      send: cursorAgentSendMock,
-    });
+  it("passes no policy for a middle-trust edit task either", async () => {
+    cursorLocalPromptMock.mockResolvedValue({ text: "ok", agentId: "agent-2" });
 
     await runProviderTask({
       cwd: "/tmp/lane",
@@ -312,30 +308,17 @@ describe("runProviderTask", () => {
       projectConfig: {} as any,
     });
 
-    const createOptions = cursorAgentCreateMock.mock.calls[0]![0] as Record<string, any>;
-    expect(createOptions.mode).toBe("agent");
-    expect(createOptions.local.autoReview).toBe(true);
-    // Middle-trust maps to Cursor "agent", where ADE has no sandbox opinion: an
-    // explicit false would make the SDK skip the user's ~/.cursor/sandbox.json.
-    expect(createOptions.local.sandboxOptions).toBeUndefined();
-    expect(createOptions.tools).toBeUndefined();
+    const call = cursorLocalPromptMock.mock.calls[0]![0] as Record<string, any>;
+    expect(call.policy).toBeUndefined();
   });
 
-  it("retries Cursor sandbox ConfigurationError without crashing", async () => {
-    cursorAgentSendMock.mockResolvedValue({
-      wait: async () => ({ status: "finished", result: "ok" }),
-      cancel: async () => {},
+  it("runs a read-only Cursor task in plan mode and parses its structured output", async () => {
+    cursorLocalPromptMock.mockResolvedValue({
+      text: '```json\n{"chatTitle":"Fix the namer"}\n```',
+      agentId: "agent-3",
     });
-    cursorAgentCreateMock
-      .mockRejectedValueOnce(new Error(
-        "Local SDK sandboxing was requested, but sandboxing is not supported in this environment. Disable local.sandboxOptions.enabled or remove ~/.cursor/sandbox.json to run without sandboxing.",
-      ))
-      .mockResolvedValueOnce({
-        agentId: "agent-3",
-        send: cursorAgentSendMock,
-      });
 
-    await runProviderTask({
+    const result = await runProviderTask({
       cwd: "/tmp/lane",
       descriptor: {
         family: "cursor",
@@ -343,22 +326,55 @@ describe("runProviderTask", () => {
         providerModelId: "composer-2",
       } as any,
       prompt: "What does this file do?",
+      system: "Be concise.",
+      jsonSchema: { type: "object" },
       feature: "unit-test",
       permissionMode: "read-only",
       auth: [{ type: "api-key", provider: "cursor", key: "cursor-test-key" }] as any,
       projectConfig: {} as any,
     });
 
-    expect(cursorAgentCreateMock).toHaveBeenCalledTimes(2);
-    expect(cursorAgentCreateMock.mock.calls[0]![0]).toMatchObject({
-      mode: "plan",
-      tools: ["read", "grep", "glob", "ls"],
-      local: { sandboxOptions: { enabled: true }, autoReview: false },
-    });
-    expect(cursorAgentCreateMock.mock.calls[1]![0]).toMatchObject({
-      mode: "plan",
-      tools: ["read", "grep", "glob", "ls"],
-      local: { sandboxOptions: { enabled: false }, autoReview: false },
-    });
+    expect(result.structuredOutput).toEqual({ chatTitle: "Fix the namer" });
+    const call = cursorLocalPromptMock.mock.calls[0]![0] as Record<string, any>;
+    expect(call.policy).toBeUndefined();
+    // System prompt and the schema instruction are folded into one prompt: the
+    // pool helper sends a single message, it has no system-prompt channel.
+    expect(call.promptText.startsWith("Be concise.\n\nWhat does this file do?")).toBe(true);
+    expect(call.promptText).toContain("Return only valid JSON matching this schema:");
+  });
+
+  it("surfaces a Cursor worker failure instead of swallowing it", async () => {
+    cursorLocalPromptMock.mockRejectedValue(new Error("Cursor SDK task failed."));
+
+    await expect(runProviderTask({
+      cwd: "/tmp/lane",
+      descriptor: {
+        family: "cursor",
+        isCliWrapped: false,
+        providerModelId: "composer-2",
+      } as any,
+      prompt: "Name this chat.",
+      feature: "unit-test",
+      permissionMode: "read-only",
+      auth: [{ type: "api-key", provider: "cursor", key: "cursor-test-key" }] as any,
+      projectConfig: {} as any,
+    })).rejects.toThrow("Cursor SDK task failed.");
+  });
+
+  it("never reaches the worker pool without a Cursor API key", async () => {
+    await expect(runProviderTask({
+      cwd: "/tmp/lane",
+      descriptor: {
+        family: "cursor",
+        isCliWrapped: false,
+        providerModelId: "composer-2",
+      } as any,
+      prompt: "Name this chat.",
+      feature: "unit-test",
+      permissionMode: "read-only",
+      auth: [] as any,
+      projectConfig: {} as any,
+    })).rejects.toThrow("Cursor tasks require a Cursor API key.");
+    expect(cursorLocalPromptMock).not.toHaveBeenCalled();
   });
 });

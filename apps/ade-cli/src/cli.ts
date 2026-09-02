@@ -1796,7 +1796,7 @@ const HELP_BY_COMMAND: Record<string, string> = {
     --type <subagent|peer>  Required for a parented agent spawn. Use subagent
                            whenever you will need, join, or review the result;
                            use peer only for fire-and-forget work.
-    --provider <name>      claude | codex | cursor | droid | opencode | pi. CLI mode also accepts shell.
+    --provider <name>      claude | codex | cursor | droid | opencode | pi | qwen | kimi | grok | copilot. CLI mode also accepts shell.
     --model <id>           Runtime model id.
     --reasoning-effort <v> Reasoning tier. Alias: --effort.
     --permissions <mode>   default | auto | plan | edit | full-auto | config-toml.
@@ -2199,7 +2199,7 @@ const HELP_BY_COMMAND: Record<string, string> = {
                                                     Start a tracked provider CLI session
 
   Create flags:
-    --provider <name>       claude | codex | cursor | droid | opencode | pi.
+    --provider <name>       claude | codex | cursor | droid | opencode | pi | qwen | kimi | grok | copilot.
     --model <id>            Model id, also sent as modelId for runtime parity.
     --reasoning-effort <v>  Reasoning tier when the selected model supports it.
                             Common tiers: minimal, low, medium, high, xhigh, ultra, ultracode.
@@ -2236,7 +2236,8 @@ const HELP_BY_COMMAND: Record<string, string> = {
     Claude, Codex, OpenCode, and Droid fork through the provider's own fork.
     Cursor has no fork surface, so ADE forks it by replaying this conversation
     into a fresh Cursor agent instead of copying a provider thread; the oldest
-    turns drop if the transcript exceeds the target model's context window.
+    turns drop if the transcript exceeds the target model's context window or
+    provider input limit.
 
   Personal chats attach to the machine-owned ADE brain and never register a
   project. They work with a desktopless brain and through the same
@@ -2258,7 +2259,7 @@ const HELP_BY_COMMAND: Record<string, string> = {
   Flags:
     --personal              Use machine-owned chats instead of a project/lane chat.
     --lane <lane>           Lane/worktree for the chat.
-    --provider <name>       claude | codex | cursor | droid | opencode | pi.
+    --provider <name>       claude | codex | cursor | droid | opencode | pi | qwen | kimi | grok | copilot.
     --model <id>            Model id, also sent as modelId for runtime parity.
     --reasoning-effort <v>  Reasoning tier when supported by the model.
     --effort <v>            Alias for --reasoning-effort.
@@ -5038,10 +5039,10 @@ function buildNewChatPlan(args: string[], defaultMode: "chat" | "cli"): CliPlan 
   const printConfig = readFlag(args, ["--print-config", "--dry-run"]);
 
   if (!isLaunchProfile(provider)) {
-    throw new CliUsageError("Provider must be claude, codex, cursor, droid, opencode, pi, or shell.");
+    throw new CliUsageError("Provider must be claude, codex, cursor, droid, opencode, pi, qwen, kimi, grok, copilot, or shell.");
   }
   if (mode === "chat" && provider === "shell") {
-    throw new CliUsageError("Chat mode provider must be claude, codex, cursor, droid, opencode, or pi.");
+    throw new CliUsageError("Chat mode provider must be claude, codex, cursor, droid, opencode, pi, qwen, kimi, grok, or copilot.");
   }
   if (mode === "cli") {
     const effectivePermissionMode = permissionMode ?? "default";
@@ -7005,7 +7006,7 @@ function buildCliSessionStartPlan(
   );
   if (!isLaunchProfile(rawProvider)) {
     throw new CliUsageError(
-      "provider must be one of claude, codex, cursor, droid, opencode, pi, or shell.",
+      "provider must be one of claude, codex, cursor, droid, opencode, pi, qwen, kimi, grok, copilot, or shell.",
     );
   }
   const provider: LaunchProfile = rawProvider;

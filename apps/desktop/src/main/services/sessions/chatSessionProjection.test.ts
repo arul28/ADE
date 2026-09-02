@@ -103,4 +103,22 @@ describe("chatSessionProjection", () => {
     expect(projected.lastActivityAt).toBe("2026-08-13T20:26:10.000Z");
     expect(projected.cursorCloudAgentId).toBe("bc-cloud-agent");
   });
+
+  it("projects model handoff history onto the Work row", () => {
+    const projected = projectChatOntoSession(session(), chat({
+      modelHandoffHistory: [{
+        fromProvider: "claude",
+        toProvider: "codex",
+        fromModelId: "anthropic/claude-sonnet-5",
+        toModelId: "openai/gpt-5.4",
+      }],
+    }));
+
+    expect(projected.modelHandoffHistory).toEqual([{
+      fromProvider: "claude",
+      toProvider: "codex",
+      fromModelId: "anthropic/claude-sonnet-5",
+      toModelId: "openai/gpt-5.4",
+    }]);
+  });
 });

@@ -4,6 +4,7 @@ import { PaneTilingLayout, type PaneConfig, type PaneSplit } from "../ui/PaneTil
 import { useWorkSessions } from "./useWorkSessions";
 import { SessionListPane } from "./SessionListPane";
 import { WorkViewArea } from "./WorkViewArea";
+import { WorkHeaderSidebarToggle } from "../work/WorkHeaderPaneToggles";
 import { WorkSidebar, type WorkSidebarContextTarget } from "./WorkSidebar";
 import { subscribeFilesOpenInTools } from "../files/v2/filesOpenRequests";
 import {
@@ -1339,9 +1340,6 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
         onContinueCliSession={handleContinueCliSession}
         onResumeCliSession={handleResumeCliSession}
         resolveSessionRuntimePin={resolveSessionRuntimePin}
-        sessionsPaneCollapsed={work.workFocusSessionsHidden}
-        onToggleSessionsPane={toggleSessionsPane}
-        sessionsPaneListCount={work.filtered.length}
         workSidebarOpen={work.workSidebarOpen}
         onToggleWorkSidebar={toggleWorkSidebar}
         terminalPaneOpen={terminalPaneOpen}
@@ -1380,12 +1378,9 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
       work.adoptImportedSession,
       work.openExistingImportedSession,
       work.closingPtyIds,
-      work.filtered.length,
-      work.workFocusSessionsHidden,
       work.workSidebarOpen,
       work.workSidebarTab,
       terminalPaneOpen,
-      toggleSessionsPane,
       toggleWorkSidebar,
       toggleTerminalPane,
       openTerminalPane,
@@ -1543,6 +1538,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
             reorderWorkLanes={work.reorderWorkLanes}
             handoffJobs={handoffLaunchJobs}
             crossMachineSyncActive={active}
+            onToggleSessionsPane={toggleSessionsPane}
           />
           </div>
         ),
@@ -1573,6 +1569,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
       handleContextMenu,
       handoffLaunchJobs,
       sessionsPaneRefCb,
+      toggleSessionsPane,
       workViewWithSidebar,
     ],
   );
@@ -1589,8 +1586,17 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
         </div>
       ) : null}
       {work.workFocusSessionsHidden ? (
-        <div className="min-h-0 flex-1 overflow-hidden" data-tour="work.viewArea">
-          {workViewWithSidebar}
+        <div className="flex min-h-0 flex-1 overflow-hidden">
+          <div
+            className="flex w-8 shrink-0 flex-col items-center border-r border-white/[0.06] pt-1.5"
+            style={{ background: "var(--work-session-sidebar-bg, var(--work-sidebar-bg))" }}
+            data-testid="work-sessions-collapsed-rail"
+          >
+            <WorkHeaderSidebarToggle collapsed onToggle={toggleSessionsPane} />
+          </div>
+          <div className="min-h-0 flex-1 overflow-hidden" data-tour="work.viewArea">
+            {workViewWithSidebar}
+          </div>
         </div>
       ) : (
         <div ref={unifiedChromeRef} className="ade-work-unified-chrome flex min-h-0 flex-1 flex-col">
@@ -1687,7 +1693,14 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
             refreshLabel: "metadata generation",
             onSuccess: (result) => {
               if (result.applied.length === 0) {
-                setSessionActionError("Metadata was not changed because the session or lane changed while it was generating.");
+                // Generation swallows a model failure and falls back to a
+                // deterministic name, so a zero-applied result is not proof of
+                // a concurrent edit. Name the real cause when the service
+                // reports one.
+                const reason = result.generationError?.trim();
+                setSessionActionError(reason
+                  ? `Generate name failed: ${reason}`
+                  : "Metadata was not changed because the session or lane changed while it was generating.");
                 window.setTimeout(() => setSessionActionError(null), 6000);
               }
             },

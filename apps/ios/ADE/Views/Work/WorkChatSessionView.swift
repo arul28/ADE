@@ -28,6 +28,116 @@ let workChatOlderHistoryScrollableDistance: CGFloat = 1
 /// How long the transcript's content size has to stay unchanged before the
 /// opening bottom pin is considered settled.
 let workChatInitialPinQuiescenceMilliseconds = 600
+/// Sub-point layout jitter is not a keyboard, composer, or collapse event.
+let workChatLayoutGeometrySlop: CGFloat = 1
+/// After a window or collapse layout pass, keep treating `.interacting` as the
+/// keyboard rather than the reader. Keyboard animation is ~250ms; this grace
+/// covers the last frame plus SwiftUI's trailing phase.
+let workChatLayoutFollowGraceSeconds: TimeInterval = 0.45
+
+/// How a layout pass should move the transcript.
+enum WorkChatLayoutScrollAdjustment: Equatable {
+  case none
+  /// Follow is on: glue the window to the real tail after the pass.
+  case pinToLatest
+  /// Follow is off: put the offset back to the pre-layout reading, clamped to
+  /// the new range, so a shorter window does not overscroll into blank and
+  /// does not let keyboard avoidance steal the reader's place.
+  case restoreOffset(CGFloat)
+}
+
+/// Isolates the window/inset contribution of a layout pass.
+///
+/// `scrollableHeight = contentHeight - containerHeight + insets`. A keyboard
+/// typically raises `scrollableHeight` without changing `contentHeight`.
+func workChatLayoutViewportDelta(contentDelta: CGFloat, scrollableDelta: CGFloat) -> CGFloat {
+  scrollableDelta - contentDelta
+}
+
+func workChatLayoutWindowChanged(containerDelta: CGFloat, viewportDelta: CGFloat) -> Bool {
+  abs(containerDelta) > workChatLayoutGeometrySlop
+    || abs(viewportDelta) > workChatLayoutGeometrySlop
+}
+
+func workChatLayoutAdjustedRecently(
+  lastAdjustmentUptime: TimeInterval,
+  now: TimeInterval,
+  grace: TimeInterval = workChatLayoutFollowGraceSeconds
+) -> Bool {
+  lastAdjustmentUptime > 0 && (now - lastAdjustmentUptime) < grace
+}
+
+/// Keyboard avoidance reports `.interacting`. That is not the reader taking
+/// over, and treating it as such both drops follow and blocks the pin write.
+func workChatShouldIgnoreUserScrollPhaseForLayout(
+  userDrivenPhase: Bool,
+  layoutAdjustedRecently: Bool
+) -> Bool {
+  userDrivenPhase && layoutAdjustedRecently
+}
+
+func workChatShouldReleaseFollowForUserScroll(
+  following: Bool,
+  userDrivenPhase: Bool,
+  layoutAdjustedRecently: Bool,
+  distanceFromBottom: CGFloat,
+  offsetRetreat: CGFloat
+) -> Bool {
+  guard following, userDrivenPhase else { return false }
+  // During keyboard/composer layout, `distanceFromBottom` is inflated with an
+  // unchanged offset — the terminal predicate flip. A real scroll-up still
+  // retreats `contentOffset` relative to the frozen pre-layout restore point.
+  if layoutAdjustedRecently {
+    return offsetRetreat > workChatTouchScrollDeadband
+  }
+  return distanceFromBottom > workChatTouchScrollDeadband
+}
+
+/// Keyboard `.interacting` can drop follow before the layout observer runs.
+/// Put it back only when the pre-keyboard offset was still at the tail — a
+/// reader who had already scrolled away keeps their place.
+func workChatShouldReclaimFollowAfterWindowChange(
+  following: Bool,
+  distanceFromPreviousTail: CGFloat
+) -> Bool {
+  !following && distanceFromPreviousTail <= workChatTouchScrollDeadband
+}
+
+/// Same class of layout pin the terminal already has: a following viewport
+/// re-glues across keyboard/composer shrink and card collapse; a reader who
+/// scrolled up keeps their place.
+func workChatLayoutScrollAdjustment(
+  following: Bool,
+  mayWriteScrollOffset: Bool,
+  containerDelta: CGFloat,
+  contentDelta: CGFloat,
+  viewportDelta: CGFloat,
+  previousOffsetY: CGFloat,
+  nextScrollableHeight: CGFloat
+) -> WorkChatLayoutScrollAdjustment {
+  guard mayWriteScrollOffset else { return .none }
+
+  let windowChanged = workChatLayoutWindowChanged(
+    containerDelta: containerDelta,
+    viewportDelta: viewportDelta
+  )
+  let contentShrunk = contentDelta < -workChatLayoutGeometrySlop
+  let windowShrunk = containerDelta < -workChatLayoutGeometrySlop
+    || viewportDelta > workChatLayoutGeometrySlop
+
+  if following {
+    // Content growth while following is already pinned by the timeline
+    // observers. Pinning on every streaming layout pass would cancel the
+    // in-flight pin Task and lag the tail. Keyboard, keyboard-hide, and
+    // collapse are the cases this observer uniquely owns.
+    guard windowChanged || contentShrunk else { return .none }
+    return .pinToLatest
+  }
+
+  guard windowShrunk || contentShrunk else { return .none }
+  let restored = min(max(0, previousOffsetY), nextScrollableHeight)
+  return .restoreOffset(restored)
+}
 
 struct WorkChatOlderHistoryLoadResult {
   let succeeded: Bool
@@ -156,6 +266,20 @@ final class WorkChatScrollMetrics {
   var distanceFromTop: CGFloat = 0
   var offsetY: CGFloat = 0
   var scrollableHeight: CGFloat = 0
+  var containerHeight: CGFloat = 0
+  var contentHeight: CGFloat = 0
+  /// Offset to restore across a layout pass. Updated only while the container
+  /// is stable so a keyboard animation cannot overwrite the place the reader
+  /// was looking.
+  var stableOffsetY: CGFloat = 0
+  /// `ProcessInfo.processInfo.systemUptime` of the last window or collapse
+  /// layout pass. 0 means no layout pin has run in this session.
+  var lastLayoutAdjustmentUptime: TimeInterval = 0
+  /// Raw scroll-phase bit, updated even while layout grace is ignoring the
+  /// phase for write-permission purposes. After the keyboard settles, a finger
+  /// that stayed on the transcript never emits a new transition — stickiness
+  /// still has to see that the reader is driving the offset.
+  var phaseIsUserDriven = false
   /// Position of the row currently being probed (the list's first row, or the
   /// armed row while a prepend is in flight), in the scroll coordinate space.
   var probeRowId: String?
@@ -180,6 +304,7 @@ struct WorkChatScrollGeometrySample: Equatable {
   /// Distance still to scroll to reach the last row. 0 at the very bottom.
   let distanceFromBottom: CGFloat
   let containerHeight: CGFloat
+  let contentHeight: CGFloat
 
   init(_ geometry: ScrollGeometry) {
     self.offsetY = (geometry.contentOffset.y * 2).rounded() / 2
@@ -192,21 +317,25 @@ struct WorkChatScrollGeometrySample: Equatable {
     let position = geometry.contentOffset.y + geometry.contentInsets.top
     self.distanceFromTop = max(0, (position * 2).rounded() / 2)
     self.distanceFromBottom = max(0, self.scrollableHeight - self.distanceFromTop)
-    self.containerHeight = geometry.containerSize.height
+    self.containerHeight = (geometry.containerSize.height * 2).rounded() / 2
+    self.contentHeight = (geometry.contentSize.height * 2).rounded() / 2
   }
 }
 
 /// The transcript's content size, sampled separately from the per-frame scroll
 /// position so layout-driven work (the opening pin, the short-transcript
-/// alignment) runs on content changes instead of on every scroll frame.
+/// alignment, the keyboard/collapse re-glue) runs on content and window
+/// changes instead of on every scroll frame.
 struct WorkChatContentSizeSample: Equatable {
   let contentHeight: CGFloat
+  let containerHeight: CGFloat
   let scrollableHeight: CGFloat
 
   var contentFitsViewport: Bool { scrollableHeight <= 0.5 }
 
   init(_ geometry: ScrollGeometry) {
     self.contentHeight = (geometry.contentSize.height * 2).rounded() / 2
+    self.containerHeight = (geometry.containerSize.height * 2).rounded() / 2
     let scrollable = geometry.contentSize.height - geometry.containerSize.height
       + geometry.contentInsets.top + geometry.contentInsets.bottom
     self.scrollableHeight = max(0, (scrollable * 2).rounded() / 2)
@@ -1672,15 +1801,28 @@ struct WorkChatSessionView: View {
           .scrollPosition($scrollPosition)
           .onScrollPhaseChange { _, phase in
             let userDriven = workChatScrollPhaseIsUserDriven(phase)
+            scrollMetrics.phaseIsUserDriven = userDriven
+            let layoutRecent = workChatLayoutAdjustedRecently(
+              lastAdjustmentUptime: scrollMetrics.lastLayoutAdjustmentUptime,
+              now: ProcessInfo.processInfo.systemUptime
+            )
+            if workChatShouldIgnoreUserScrollPhaseForLayout(
+              userDrivenPhase: userDriven,
+              layoutAdjustedRecently: layoutRecent
+            ) {
+              // Keyboard/composer geometry reports as `.interacting`. Keep
+              // follow and pin writes enabled; the layout observer re-glues.
+              return
+            }
             guard timelineScrollPhaseUserDriven != userDriven else { return }
             timelineScrollPhaseUserDriven = userDriven
             timelineDragActive = userDriven
             if userDriven {
-              // Let the native ScrollView own the whole interaction. The old
-              // zero-distance simultaneous DragGesture competed with it and
-              // could leave a tail-pinned chat one gesture away from moving.
-              cancelPendingInitialBottomPinForUserScroll()
-              releaseBottomStickinessForUserScroll(reason: "scroll-phase")
+              // Follow release is not decided here. Keyboard avoidance reports
+              // `.interacting` before the geometry sample lands; unsticking on
+              // the phase alone is what dropped follow and blocked the pin.
+              // `updateBottomStickiness` releases only when the container is
+              // stable and the reader has actually moved.
               return
             }
             // A fling that ended may have left a prepend correction waiting.
@@ -1692,24 +1834,52 @@ struct WorkChatSessionView: View {
             // Fires per scroll frame. Everything here is O(1) and writes to a
             // reference box or to state that only changes at a threshold — no
             // list scans, and nothing that invalidates the transcript per frame.
+            let contentDelta = sample.contentHeight - scrollMetrics.contentHeight
+            let scrollableDelta = sample.scrollableHeight - scrollMetrics.scrollableHeight
+            let viewportDelta = workChatLayoutViewportDelta(
+              contentDelta: contentDelta,
+              scrollableDelta: scrollableDelta
+            )
+            let containerDelta = sample.containerHeight - scrollMetrics.containerHeight
+            let hasLayoutBaseline = scrollMetrics.containerHeight > 1
+              || scrollMetrics.contentHeight > 1
+            let windowChanged = hasLayoutBaseline && workChatLayoutWindowChanged(
+              containerDelta: containerDelta,
+              viewportDelta: viewportDelta
+            )
+            let contentShrunk = hasLayoutBaseline
+              && contentDelta < -workChatLayoutGeometrySlop
             scrollMetrics.offsetY = sample.offsetY
             scrollMetrics.distanceFromTop = sample.distanceFromTop
             scrollMetrics.scrollableHeight = sample.scrollableHeight
+            // Stamp the layout grace on this frame — before stickiness runs —
+            // so a keyboard shrink cannot lose the race to `.interacting`.
+            // Freeze the restore point while the window is moving or the tape
+            // is collapsing so offsetRetreat can still see a real scroll-up.
+            // Inset-only keyboard (safe-area) shows up as viewportDelta.
+            if windowChanged || contentShrunk {
+              scrollMetrics.lastLayoutAdjustmentUptime = ProcessInfo.processInfo.systemUptime
+            } else {
+              scrollMetrics.stableOffsetY = sample.offsetY
+            }
             guard sample.containerHeight > 1 else { return }
             updateBottomStickiness(distanceFromBottom: sample.distanceFromBottom, proxy: proxy)
             continueAutomaticOlderHistoryIfNeeded()
             requestOlderHistoryIfScrolledNearTop(distanceFromTop: sample.distanceFromTop)
           }
-          // Content SIZE changes only — this observer never fires while the
-          // reader is merely scrolling, which is what keeps the tail scan in
-          // `resolvePendingInitialBottomPinAfterLayout` off the scroll path.
+          // Content SIZE and window changes only — this observer never fires
+          // while the reader is merely scrolling, which is what keeps the tail
+          // scan in `resolvePendingInitialBottomPinAfterLayout` off the scroll
+          // path. Keyboard shrink changes `containerHeight`/`scrollableHeight`
+          // here, which is why the layout pin lives on this observer.
           .onScrollGeometryChange(for: WorkChatContentSizeSample.self) { geometry in
             WorkChatContentSizeSample(geometry)
-          } action: { _, sample in
+          } action: { previous, sample in
             if transcriptContentFitsViewport != sample.contentFitsViewport {
               transcriptContentFitsViewport = sample.contentFitsViewport
             }
             resolvePendingInitialBottomPinAfterLayout(proxy, reason: "content-size")
+            applyLayoutGeometryScrollAdjustment(previous: previous, next: sample, proxy: proxy)
           }
           .coordinateSpace(name: workChatScrollCoordinateSpace)
           .background(

@@ -1,13 +1,16 @@
 import { useMemo } from "react";
+import { GitBranch } from "@phosphor-icons/react";
+import type { LaneSummary, OpenProjectBinding } from "../../../shared/types";
 import { useAppStore } from "../../state/appStore";
+import { LaneMenuGlyph, buildLaneMenuGroups, laneMenuActionsFromPlugin } from "../lanes/laneContextMenuItems";
 import { LaneMenuGroups, menuItemStyle } from "../lanes/LaneContextMenu";
-import { buildLaneMenuGroups } from "../lanes/laneContextMenuItems";
 import { COLORS } from "../lanes/laneDesignTokens";
 import { MenuSubmenu } from "../ui/MenuSubmenu";
 import { pluginLaneContext, usePluginMenuEntries } from "../plugins/sockets";
 import { useBuiltinSurfaceGate } from "../plugins/useBuiltinTabs";
 import { useLaneMenuActions } from "./useWorkLaneContextMenu";
 import { resolveOpenInTarget } from "../../../shared/editorTargets";
+import { machineIdForBinding } from "../../../shared/machineIdentity";
 
 /**
  * The lane menu, hosted as a submenu of a singleton lane's session menu.
@@ -18,30 +21,48 @@ import { resolveOpenInTarget } from "../../../shared/editorTargets";
  * previous design delegated to the real lane menu portal precisely so the two
  * could not disagree, and turning the row into a hover submenu must not buy
  * discoverability at the price of a second copy that silently falls behind.
+ *
+ * A foreign singleton passes its `lane` + `binding` in because that lane is
+ * not in this renderer's store. The fallback button remains only for a lane
+ * that still cannot be resolved at all.
  */
 export function LaneActionsSubmenu({
   laneId,
   laneName,
+  lane: laneProp = null,
+  binding = null,
+  machineId = null,
   onClose,
   onManageLane,
   onFallbackOpen,
   triggerClassName,
   anchor,
+  onToggleWorkPin,
+  workPinnedLaneIds,
+  workPinLaneId,
 }: {
   laneId: string;
   laneName: string;
+  lane?: LaneSummary | null;
+  binding?: OpenProjectBinding | null;
+  machineId?: string | null;
   /** Closes the parent session menu. */
   onClose: () => void;
   /** Hands the lane off to the session menu's manage-dialog host. */
-  onManageLane: (laneId: string) => void;
+  onManageLane: (
+    laneId: string,
+    extras?: { lane?: LaneSummary; binding?: OpenProjectBinding | null },
+  ) => void;
   /**
-   * Escape hatch for a lane this renderer cannot resolve (a cross-machine row,
-   * say): reopens the real lane menu at the session menu's anchor, exactly as
-   * the pre-submenu row did.
+   * Escape hatch for a lane this renderer cannot resolve: reopens the real
+   * lane menu at the session menu's anchor.
    */
   onFallbackOpen: (position: { x: number; y: number }) => void;
   triggerClassName: string;
   anchor: { x: number; y: number };
+  onToggleWorkPin?: (laneId: string) => void;
+  workPinnedLaneIds?: string[];
+  workPinLaneId?: string;
 }) {
   const lanes = useAppStore((s) => s.lanes);
   const isRemoteProject = useAppStore((s) => s.projectBinding?.kind === "remote");
@@ -51,8 +72,26 @@ export function LaneActionsSubmenu({
     for (const lane of lanes) map.set(lane.id, lane);
     return map;
   }, [lanes]);
-  const lane = lanesById.get(laneId) ?? null;
-  const actions = useLaneMenuActions({ close: onClose, onManageLane });
+  const lane = laneProp ?? lanesById.get(laneId) ?? null;
+  const menuLanesById = useMemo(() => {
+    if (!lane || lanesById.has(lane.id)) return lanesById;
+    const map = new Map(lanesById);
+    map.set(lane.id, lane);
+    return map;
+  }, [lane, lanesById]);
+  const boundMachineId = machineIdForBinding(projectBinding);
+  const startChatMachineId = machineId
+    ?? (binding?.kind === "remote" ? binding.targetId : null);
+  const isForeignLane = Boolean(
+    startChatMachineId && startChatMachineId !== boundMachineId,
+  );
+  const actions = useLaneMenuActions({
+    close: onClose,
+    onManageLane: (id) => onManageLane(id, {
+      ...(lane ? { lane } : {}),
+      ...(binding ? { binding } : {}),
+    }),
+  });
   // `includeExtend` for the same reason the lane divider's own menu carries it:
   // these are the same lane's actions, and the row that explains how to add more
   // of them cannot be present in one of the two menus and missing from the other.
@@ -67,28 +106,52 @@ export function LaneActionsSubmenu({
   const surfaceVisible = useBuiltinSurfaceGate();
 
   const groups = useMemo(() => {
-    const openIn = resolveOpenInTarget({ worktreePath: lane?.worktreePath, binding: projectBinding });
+    const openIn = resolveOpenInTarget({
+      worktreePath: lane?.worktreePath,
+      binding: binding ?? projectBinding,
+    });
     return buildLaneMenuGroups({
       laneId,
       lane,
-      lanesById,
-      // The card's lane is the only one this menu can speak for, matching what
-      // the Work sidebar passes its own lane menu.
+      lanesById: menuLanesById,
       visibleLaneIds: [laneId],
-      isRemoteProject,
+      isRemoteProject: isRemoteProject || binding?.kind === "remote",
       surfaceVisible,
       onClose,
       ...actions,
-      pluginEntries,
+      pluginEntries: laneMenuActionsFromPlugin(pluginEntries),
+      onStartChatInLane: (id) => actions.onStartChatInLane(id, { machineId: startChatMachineId }),
+      onToggleWorkPin,
+      workPinnedLaneIds,
+      workPinLaneId,
       ...(openIn ? { openIn } : {}),
+      runtimePin: binding,
+      omitTabActions: isForeignLane,
     });
-  }, [actions, isRemoteProject, lane, laneId, lanesById, onClose, pluginEntries, projectBinding, surfaceVisible]);
+  }, [
+    actions,
+    binding,
+    isForeignLane,
+    isRemoteProject,
+    lane,
+    laneId,
+    menuLanesById,
+    onClose,
+    onToggleWorkPin,
+    pluginEntries,
+    projectBinding,
+    startChatMachineId,
+    surfaceVisible,
+    workPinLaneId,
+    workPinnedLaneIds,
+  ]);
 
   return (
     <MenuSubmenu
       data-testid="session-menu-lane-actions"
       role="menuitem"
       label="Lane"
+      icon={<LaneMenuGlyph icon={GitBranch} />}
       hint={laneName}
       title={`Lane actions for ${laneName}`}
       className={triggerClassName}

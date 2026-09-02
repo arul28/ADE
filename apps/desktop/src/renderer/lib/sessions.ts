@@ -3,6 +3,10 @@
 import type { AgentChatProvider, AgentChatSession, TerminalSessionSummary, TerminalToolType } from "../../shared/types";
 import { chatSessionAgentLabel, PLUGIN_CHAT_PROVIDER } from "../../shared/types/chat";
 import { isProviderSlashCommandInput } from "../../shared/chatSlashCommands";
+import { stripElectronErrorWrapper } from "../../shared/codedError";
+import { cursorOwnsSessionName as cursorOwnsCloudAgentId } from "../../shared/cursorCloudNaming";
+
+export { CURSOR_CLOUD_RENAME_BLOCKED_MESSAGE } from "../../shared/cursorCloudNaming";
 
 /** Returns true if the tool type represents an AI chat session. */
 export function isChatToolType(toolType: string | null | undefined): boolean {
@@ -18,6 +22,18 @@ export function isChatToolType(toolType: string | null | undefined): boolean {
 }
 
 /**
+ * True when Cursor owns this chat's name, so ADE must not rename it.
+ *
+ * Wrapper over the shared id predicate so renderer menus keep passing a
+ * session object. A whitespace-only id is not a cloud agent.
+ */
+export function cursorOwnsSessionName(
+  session: Pick<TerminalSessionSummary, "cursorCloudAgentId">,
+): boolean {
+  return cursorOwnsCloudAgentId(session.cursorCloudAgentId);
+}
+
+/**
  * Agent CLI sessions whose PTY accepts pasted tool context (and, with it, an
  * attached terminal). Shells are excluded: they host terminals but are not a
  * context insertion target.
@@ -27,7 +43,11 @@ export function isPtyContextInsertableToolType(toolType: TerminalSessionSummary[
     || toolType === "codex"
     || toolType === "cursor-cli"
     || toolType === "droid"
-    || toolType === "opencode";
+    || toolType === "opencode"
+    || toolType === "qwen"
+    || toolType === "kimi"
+    || toolType === "grok"
+    || toolType === "copilot";
 }
 
 /**
@@ -42,10 +62,7 @@ export function isPtyContextInsertableToolType(toolType: TerminalSessionSummary[
  */
 export function formatSessionActionError(error: unknown, action: string): string {
   const raw = (error instanceof Error ? error.message : String(error ?? "")).trim();
-  const message = raw
-    .replace(/^Error invoking remote method '[^']+':\s*/i, "")
-    .replace(/^Error:\s*/i, "")
-    .trim();
+  const message = stripElectronErrorWrapper(raw);
   if (!message) return `${action} failed. Try again.`;
   if (/(?:session|chat) '[^']*' was not found\.?$/i.test(message)) {
     // The session belongs to a different machine than the one the call reached,
@@ -84,7 +101,17 @@ export function canBulkDeleteSession(session: Pick<TerminalSessionSummary, "stat
  * (a lookup here takes an arbitrary runtime tool type), so a typo or an omission
  * on that side compiles fine and is caught by the test, not the compiler.
  */
-export type KnownChatProvider = "claude" | "codex" | "cursor" | "droid" | "pi" | "opencode";
+export type KnownChatProvider =
+  | "claude"
+  | "codex"
+  | "cursor"
+  | "droid"
+  | "pi"
+  | "opencode"
+  | "qwen"
+  | "kimi"
+  | "grok"
+  | "copilot";
 
 export const CHAT_TOOL_TYPE_BY_PROVIDER: Record<KnownChatProvider, TerminalToolType> = {
   claude: "claude-chat",
@@ -93,6 +120,10 @@ export const CHAT_TOOL_TYPE_BY_PROVIDER: Record<KnownChatProvider, TerminalToolT
   droid: "droid-chat",
   pi: "pi-chat",
   opencode: "opencode-chat",
+  qwen: "qwen-chat",
+  kimi: "kimi-chat",
+  grok: "grok-chat",
+  copilot: "copilot-chat",
 };
 
 const CHAT_PROVIDER_BY_TOOL_TYPE: Record<string, KnownChatProvider> = {
@@ -102,6 +133,10 @@ const CHAT_PROVIDER_BY_TOOL_TYPE: Record<string, KnownChatProvider> = {
   "droid-chat": "droid",
   "pi-chat": "pi",
   "opencode-chat": "opencode",
+  "qwen-chat": "qwen",
+  "kimi-chat": "kimi",
+  "grok-chat": "grok",
+  "copilot-chat": "copilot",
 };
 
 /**
@@ -181,6 +216,14 @@ export function defaultSessionLabel(toolType: string | null | undefined): string
   if (toolType === "droid") return "Droid CLI session";
   if (toolType === "opencode") return "OpenCode CLI session";
   if (toolType === "droid-chat") return "Droid chat";
+  if (toolType === "qwen-chat") return "Qwen chat";
+  if (toolType === "kimi-chat") return "Kimi chat";
+  if (toolType === "grok-chat") return "Grok chat";
+  if (toolType === "copilot-chat") return "Copilot chat";
+  if (toolType === "qwen") return "Qwen CLI session";
+  if (toolType === "kimi") return "Kimi CLI session";
+  if (toolType === "grok") return "Grok CLI session";
+  if (toolType === "copilot") return "Copilot CLI session";
   if (toolType === "claude") return "Claude session";
   if (toolType === "codex") return "Codex session";
   return "Session";
@@ -253,6 +296,10 @@ const SHORT_TOOL_TYPE_LABELS: Record<string, string> = {
   droid: "Droid",
   opencode: "OpenCode",
   pi: "Pi",
+  qwen: "Qwen",
+  kimi: "Kimi",
+  grok: "Grok",
+  copilot: "Copilot",
   aider: "Aider",
   continue: "Continue",
 };
@@ -263,6 +310,10 @@ const SHORT_TOOL_TYPE_PREFIXES: readonly [string, string][] = [
   ["codex", "Codex"],
   ["opencode", "OpenCode"],
   ["pi", "Pi"],
+  ["qwen", "Qwen"],
+  ["kimi", "Kimi"],
+  ["grok", "Grok"],
+  ["copilot", "Copilot"],
 ];
 
 /** Resolve a short label via exact match, prefix match, or hyphen-to-space fallback. */
@@ -293,6 +344,14 @@ export function formatToolTypeLabel(toolType: string | null | undefined): string
   if (toolType === "droid") return "Droid CLI session";
   if (toolType === "opencode") return "OpenCode CLI session";
   if (toolType === "droid-chat") return "Droid chat";
+  if (toolType === "qwen-chat") return "Qwen chat";
+  if (toolType === "kimi-chat") return "Kimi chat";
+  if (toolType === "grok-chat") return "Grok chat";
+  if (toolType === "copilot-chat") return "Copilot chat";
+  if (toolType === "qwen") return "Qwen CLI session";
+  if (toolType === "kimi") return "Kimi CLI session";
+  if (toolType === "grok") return "Grok CLI session";
+  if (toolType === "copilot") return "Copilot CLI session";
   if (toolType === "claude") return "Claude session";
   if (toolType === "codex") return "Codex session";
   if (toolType === "shell") return "Terminal session";

@@ -330,6 +330,7 @@ function stripCloneAuthHeader(input: CloneProjectInput): CloneProjectInput {
 }
 
 export type RuntimeBridgeRegistration = {
+  snapshot(): RemoteRuntimeConnectionSnapshot;
   reconcileAccountOwnership(
     currentOwnerUserId: string | null,
   ): AccountMachineReconciliationResult;
@@ -474,6 +475,7 @@ export function registerRuntimeBridge({
   };
 
   const registration: RuntimeBridgeRegistration = {
+    snapshot: () => remoteConnectionService.snapshot(),
     reconcileAccountOwnership: (currentOwnerUserId) =>
       remoteConnectionService.reconcileAccountOwnership(currentOwnerUserId),
     getLocalMachineIdentity: () =>

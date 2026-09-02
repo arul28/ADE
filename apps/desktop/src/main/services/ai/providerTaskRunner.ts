@@ -14,9 +14,8 @@ import { getApiKey } from "./apiKeyStore";
 import { parseStructuredOutput } from "./utils";
 import { runOpenCodeTextPrompt } from "../opencode/openCodeRuntime";
 import { resolveCliSpawnInvocation, terminateProcessTree } from "../shared/processExecution";
-import { loadCursorSdk } from "./cursorSdkLoader";
-import { isCursorSdkSandboxUnsupportedError } from "../chat/cursorSdkErrors";
-import { buildCursorSdkLocalRunOptions, resolveCursorSdkPolicy } from "../chat/cursorSdkPolicy";
+import { assertCursorSdkSupportedOnThisPlatform } from "./cursorSdkLoader";
+import { runCursorSdkLocalPrompt } from "../chat/cursorSdkPool";
 import { codexReasoningEffortFlags, resolveCodexCliModelForLaunch } from "../../../shared/cliLaunch";
 
 export type ProviderTaskRunnerArgs = {
@@ -355,6 +354,22 @@ async function runCodexTask(args: ProviderTaskRunnerArgs): Promise<ProviderTaskR
   }
 }
 
+/**
+ * Run a one-off Cursor task on the same forked SDK worker pool every other
+ * Cursor feature uses.
+ *
+ * Every Cursor one-off runs on the pooled worker: it gets worker isolation, the
+ * sandbox-unsupported fallback, agent retries, trimmed setting sources, a
+ * throwaway state root, and an agent that is closed instead of leaked. Never
+ * call `Agent.create` in the host process.
+ *
+ * A one-shot is a tool-less text task, so it always runs under the pool's fixed
+ * `CURSOR_SDK_ONESHOT_POLICY` and `args.permissionMode` decides nothing here.
+ *
+ * `args.sessionId` is deliberately ignored here. It exists for the Claude
+ * branch's `--session-id`, no caller feeds a previous Cursor agent id back in,
+ * and a one-shot must not resume a conversation.
+ */
 async function runCursorTask(args: ProviderTaskRunnerArgs): Promise<ProviderTaskRunnerResult> {
   const prompt = appendStructuredOutputInstruction(args.prompt, args.jsonSchema);
   const combinedPrompt = args.system?.trim()
@@ -367,77 +382,22 @@ async function runCursorTask(args: ProviderTaskRunnerArgs): Promise<ProviderTask
   if (!apiKey) {
     throw new Error("Cursor tasks require a Cursor API key. Add one in Settings > AI Providers.");
   }
-  const { Agent } = await loadCursorSdk();
-  const policy = resolveCursorSdkPolicy({
-    cursorModeId:
-      args.permissionMode === "full-auto"
-        ? "full-auto"
-        : args.permissionMode === "read-only"
-          ? "ask"
-          : "agent",
+  // The pool forks a worker before it can report an unsupported platform, so
+  // keep the win32-arm64 blocker on the near side of the fork.
+  assertCursorSdkSupportedOnThisPlatform();
+  const result = await runCursorSdkLocalPrompt({
+    projectRoot: args.cwd,
+    workspacePath: args.cwd,
+    apiKey,
+    modelSdkId: args.descriptor.providerModelId,
+    promptText: combinedPrompt,
+    feature: args.feature,
+    timeoutMs: args.timeoutMs ?? 120_000,
   });
-  let sandboxSupported = true;
-  const buildOptions = () => {
-    const local = buildCursorSdkLocalRunOptions(policy, { sandboxSupported });
-    return {
-      apiKey,
-      model: { id: args.descriptor.providerModelId },
-      name: `ADE ${args.feature}`,
-      mode: local.mode,
-      ...(local.tools ? { tools: local.tools } : {}),
-      ...(local.disallowedTools ? { disallowedTools: local.disallowedTools } : {}),
-      local: {
-        cwd: args.cwd,
-        // See CursorSdkSandboxDirective: an explicit `false` makes the SDK skip
-        // the user's ~/.cursor/sandbox.json, so absence is not the same as off.
-        ...(local.sandboxDirective === "inherit"
-          ? {}
-          : { sandboxOptions: { enabled: local.sandboxDirective === "enable" } }),
-        autoReview: local.autoReview,
-      },
-    };
-  };
-  const createOrResume = async () => {
-    const options = buildOptions();
-    return args.sessionId?.trim()
-      ? await Agent.resume(args.sessionId.trim(), options)
-      : await Agent.create(options);
-  };
-  let agent;
-  try {
-    agent = await createOrResume();
-  } catch (error) {
-    if (!sandboxSupported || !isCursorSdkSandboxUnsupportedError(error)) throw error;
-    sandboxSupported = false;
-    agent = await createOrResume();
-  }
-  const run = await agent.send(combinedPrompt, {
-    model: { id: args.descriptor.providerModelId },
-  });
-  const timeoutMs = args.timeoutMs ?? 120_000;
-  let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
-  const result = await Promise.race([
-    run.wait(),
-    new Promise<never>((_, reject) => {
-      timeoutHandle = setTimeout(() => {
-        run.cancel().catch(() => {});
-        reject(new Error(`Cursor SDK task timed out after ${timeoutMs}ms.`));
-      }, timeoutMs);
-    }),
-  ]).finally(() => {
-    if (timeoutHandle) clearTimeout(timeoutHandle);
-  });
-  if (result.status === "error") {
-    throw new Error(result.result?.trim() || "Cursor SDK task failed.");
-  }
-  if (result.status === "cancelled") {
-    throw new Error("Cursor SDK task was cancelled.");
-  }
-  const text = (result.result ?? "").trim();
   return {
-    text,
-    structuredOutput: args.jsonSchema ? parseStructuredOutput(text) : null,
-    sessionId: agent.agentId,
+    text: result.text,
+    structuredOutput: args.jsonSchema ? parseStructuredOutput(result.text) : null,
+    sessionId: result.agentId,
   };
 }
 

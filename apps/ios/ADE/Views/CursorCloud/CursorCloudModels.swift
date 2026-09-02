@@ -1,5 +1,16 @@
 import Foundation
 
+/// Cursor owns the name of a cloud agent. ADE mirrors that name and must not
+/// offer a local rename. Same sentence as `CURSOR_CLOUD_RENAME_BLOCKED_MESSAGE`.
+enum CursorCloudNaming {
+  static let renameBlockedMessage =
+    "Cursor Cloud agent names are managed by Cursor. Rename this agent on cursor.com."
+
+  static func ownsName(_ agentId: String?) -> Bool {
+    !(agentId?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true)
+  }
+}
+
 /// Decoded payloads for the global Cursor Cloud pane. Mirrors
 /// `CursorCloudFleetResult` in desktop shared/types/config.ts; every field is
 /// optional-tolerant so an older host cannot crash the pane.

@@ -11,6 +11,7 @@ import {
   type ModelDescriptor,
   type ProviderFamily,
 } from "../../../../shared/modelRegistry";
+import type { ProviderGroupKey } from "../../../../shared/modelCatalog";
 import type { AgentChatModelCatalog } from "../../../../shared/types";
 import { PROVIDER_BADGE_COLORS } from "../providerModelSelectorGrouping";
 import {
@@ -193,22 +194,87 @@ export type RuntimeCatalogModelDescriptor = ModelDescriptor & {
   catalogRequiresConfiguration?: boolean;
 };
 
+const RUNTIME_DISCOVERED_ACP_FAMILIES: readonly ProviderFamily[] = [
+  "qwen",
+  "moonshot",
+  "xai",
+  "github-copilot",
+];
+
+/**
+ * Remove static ACP fallback rows once a live catalog has reported the models
+ * that provider can actually reach. Unauthenticated providers keep their
+ * curated rows (so the picker can still explain how to connect), while a
+ * connected provider such as Qwen no longer defaults to a stale catalog row.
+ */
+export function filterAcpFallbackModelsToRuntimeCatalog(
+  models: readonly ModelDescriptor[],
+  catalogModels: readonly RuntimeCatalogModelDescriptor[],
+): ModelDescriptor[] {
+  const availableByFamily = new Map<ProviderFamily, Set<string>>();
+  for (const model of catalogModels) {
+    if (
+      model.catalogAvailable !== true
+      || !RUNTIME_DISCOVERED_ACP_FAMILIES.includes(model.family)
+    ) {
+      continue;
+    }
+    const family = model.family;
+    const ids = availableByFamily.get(family) ?? new Set<string>();
+    ids.add(model.id);
+    availableByFamily.set(family, ids);
+  }
+
+  if (availableByFamily.size === 0) return [...models];
+  return models.filter((model) => {
+    const available = availableByFamily.get(model.family);
+    return !available || available.has(model.id);
+  });
+}
+
+/**
+ * Catalog group key -> the provider family the picker rails are keyed on.
+ * Exhaustive over `ProviderGroupKey`, so a new provider group cannot land here
+ * as an unlabelled OpenCode row: adding one is a compile error until it names
+ * its family.
+ */
+const PICKER_FAMILY_BY_CATALOG_GROUP: Record<ProviderGroupKey, ProviderFamily> = {
+  claude: "anthropic",
+  codex: "openai",
+  droid: "factory",
+  cursor: "cursor",
+  opencode: "opencode",
+  pi: "pi",
+  qwen: "qwen",
+  kimi: "moonshot",
+  grok: "xai",
+  copilot: "github-copilot",
+  ollama: "ollama",
+  lmstudio: "lmstudio",
+};
+
+/** Families a catalog row may claim directly when its group key is unknown. */
+const PICKER_FALLBACK_FAMILIES: readonly ProviderFamily[] = [
+  "ollama",
+  "lmstudio",
+  "cursor",
+  "factory",
+  "anthropic",
+  "openai",
+  "opencode",
+  "qwen",
+  "moonshot",
+  "xai",
+  "github-copilot",
+];
+
 function pickerFamilyForCatalogGroup(groupKey: string, fallbackFamily?: string): ProviderFamily {
-  if (groupKey === "claude") return "anthropic";
-  if (groupKey === "codex") return "openai";
-  if (groupKey === "droid") return "factory";
-  if (groupKey === "cursor") return "cursor";
-  if (groupKey === "opencode") return "opencode";
-  if (groupKey === "pi") return "pi";
-  if (groupKey === "ollama") return "ollama";
-  if (groupKey === "lmstudio") return "lmstudio";
-  if (fallbackFamily === "ollama" || fallbackFamily === "lmstudio" || fallbackFamily === "cursor" || fallbackFamily === "factory") {
-    return fallbackFamily;
-  }
-  if (fallbackFamily === "anthropic" || fallbackFamily === "openai" || fallbackFamily === "opencode") {
-    return fallbackFamily;
-  }
-  return "opencode";
+  const mapped = Object.hasOwn(PICKER_FAMILY_BY_CATALOG_GROUP, groupKey)
+    ? PICKER_FAMILY_BY_CATALOG_GROUP[groupKey as ProviderGroupKey]
+    : undefined;
+  if (mapped) return mapped;
+  const claimed = PICKER_FALLBACK_FAMILIES.find((family) => family === fallbackFamily);
+  return claimed ?? "opencode";
 }
 
 export function descriptorsFromAgentChatModelCatalog(

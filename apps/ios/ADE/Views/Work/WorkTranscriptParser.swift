@@ -1053,6 +1053,17 @@ func parseWorkChatTranscript(_ raw: String) -> [WorkChatEnvelope] {
             turnId: turnId
           )
         )
+      case "model_handoff":
+        event = .systemNotice(
+          kind: "info",
+          message: workModelHandoffNoticeMessage(
+            fromProvider: stringValue(eventDict["fromProvider"]),
+            toProvider: stringValue(eventDict["toProvider"])
+          ),
+          detail: nil,
+          turnId: turnId,
+          steerId: nil
+        )
       default:
         event = .unknown(type: type)
       }

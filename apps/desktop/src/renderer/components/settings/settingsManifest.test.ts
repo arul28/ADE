@@ -182,6 +182,58 @@ describe("settings manifest", () => {
     expect(new Set(groups).size).toBe(groups.length);
   });
 
+  // Settings → Agents & Models is a grid of providers with a page each, and the
+  // manifest is what makes those pages reachable from ⌘K and from a link.
+  it("gives every shipped provider its own reachable entry", () => {
+    for (const provider of [
+      "claude", "codex", "cursor", "droid", "pi", "opencode",
+      "qwen", "kimi", "grok", "copilot",
+    ]) {
+      const entry = SETTINGS_ENTRIES.find((candidate) => candidate.id === `agents.provider.${provider}`);
+      expect(entry, `no manifest entry for ${provider}`).toBeDefined();
+      expect(entry!.anchor).toBe(`ai-provider-${provider}`);
+      expect(entry!.tab).toBe("agents");
+      expect(resolveSettingsHash(entry!.anchor)?.id).toBe(entry!.id);
+      expect(settingsRouteFor(entry!.id)).toBe(`/settings?tab=agents#ai-provider-${provider}`);
+    }
+  });
+
+  it("routes brand names to the provider that serves them", () => {
+    // None of these words appear in a label, so without keywords a user typing
+    // the name they know reaches nothing.
+    const cases: [string, string][] = [
+      ["anthropic", "agents.provider.claude"],
+      ["openai", "agents.provider.codex"],
+      ["chatgpt", "agents.provider.codex"],
+      ["factory", "agents.provider.droid"],
+      // The four ACP brands now own their own pages. A user typing "moonshot"
+      // must reach Kimi's page, not the OpenCode catalog it used to hide in.
+      ["moonshot", "agents.provider.kimi"],
+      ["kimi", "agents.provider.kimi"],
+      ["grok", "agents.provider.grok"],
+      ["xai", "agents.provider.grok"],
+      ["copilot", "agents.provider.copilot"],
+      ["github copilot", "agents.provider.copilot"],
+      ["qwen", "agents.provider.qwen"],
+      // And OpenCode keeps the vendors it is still the only route to.
+      ["openrouter", "agents.provider.opencode"],
+      ["deepseek", "agents.provider.opencode"],
+    ];
+    for (const [query, expectedId] of cases) {
+      expect(searchSettingsEntries(query).map((entry) => entry.id), `"${query}" did not reach ${expectedId}`)
+        .toContain(expectedId);
+    }
+  });
+
+  it("keeps the pre-redesign providers deeplinks resolving", () => {
+    // `#ai-providers` and `?tab=ai` / `?tab=providers` shipped in tours,
+    // banners, and copied URLs long before the per-provider pages existed.
+    expect(resolveSettingsHash("ai-providers")?.id).toBe("agents.providers");
+    expect(resolveSettingsTab("ai")).toBe("agents");
+    expect(resolveSettingsTab("providers")).toBe("agents");
+    expect(settingsRouteFor("agents.providers")).toBe("/settings?tab=agents#ai-providers");
+  });
+
   it("only marks scope chips on settings whose storage would surprise", () => {
     // Team-scoped settings always warrant the chip: they are committed and
     // affect other people.

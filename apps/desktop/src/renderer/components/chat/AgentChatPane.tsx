@@ -115,6 +115,8 @@ import { CURSOR_AVAILABLE_MODE_IDS } from "../../../shared/cursorModes";
 import { cn } from "../ui/cn";
 import {
   AgentChatComposer,
+  CURSOR_CLOUD_MODEL_BLOCKED_MESSAGE,
+  CURSOR_CLOUD_MODELS_NOT_LOADED_MESSAGE,
   type ParallelComposerControlSlot,
 } from "./AgentChatComposer";
 import { ChatAttachmentDropOverlay } from "./ChatAttachmentDropOverlay";
@@ -123,13 +125,15 @@ import { collectAgentChatPromptHistory, type AgentChatPromptHistoryEntry } from 
 import { ChatLifecycleBanner, shouldRenderChatLifecycleBanner } from "./ChatLifecycleBanner";
 import { ChatAwayDigestCard } from "./ChatAwayDigestCard";
 import { ChatSubagentTakeoverBanner } from "./ChatSubagentTakeoverBanner";
-import { resolveModelDescriptorWithRuntimeCatalog, descriptorsFromAgentChatModelCatalog } from "../shared/ModelPicker/modelCatalog";
+import { resolveModelDescriptorWithRuntimeCatalog } from "../shared/ModelPicker/modelCatalog";
 import { latestContextUsageInput, toUsageViewModel, type ContextUsageViewModel } from "./usage/contextUsageModel";
 import { resolveContextCompactControl } from "../../../shared/contextCompaction";
 import {
   DEFAULT_RUNTIME_CATALOG_SCOPE,
-  getSharedRuntimeCatalog,
 } from "../shared/ModelPicker/runtimeCatalogCache";
+import { runtimeCatalogModelIds, useCursorCloudModelEligibility } from "./useCursorCloudModelEligibility";
+import { reconcileDraftModelControls } from "./draftModelControls";
+import { useLaneGitRemote } from "./useLaneGitRemote";
 import { familiesFromStatus } from "../shared/ModelPicker/useProviderAuthStatus";
 import {
   AgentChatMessageList,
@@ -199,6 +203,7 @@ import { ChatAppControlPanel } from "./ChatAppControlPanel";
 import { ChatSubagentsPanel } from "./ChatSubagentsPanel";
 import { RewindFilesConfirmDialog, type RewindFilesConfirmDialogState } from "./RewindFilesConfirmDialog";
 import { buildRewindPreviewFiles, deriveRewindDiffSummaries } from "./rewindFilesPreview";
+import { ChatCursorCloudPanel } from "./ChatCursorCloudPanel";
 import { getLaneAccent } from "../lanes/laneColorPalette";
 import { openLaneInLanesTabPath } from "../../lib/laneNavigation";
 import { ChatTerminalDrawer } from "./ChatTerminalDrawer";
@@ -277,7 +282,7 @@ import { WorkSurfaceHeader } from "../work/WorkSurfaceHeader";
 import { pluginSessionContext } from "../plugins/sockets";
 import { WorkActivityModule } from "../usage/ActivityModule";
 import { branchNameFromRef } from "../prs/shared/laneBranchTargets";
-import { cursorCloudAgentWebUrl, cursorCloudErrorMessage, resolveCursorCloudPrCreateFields } from "../../lib/cursorCloudUtils";
+import { cursorCloudAgentWebUrl, cursorCloudErrorMessage, resolveCursorCloudPrCreateFields, pushAutoCreatedLaneOriginForCursorCloud, ensureExistingLaneOriginReadyForCursorCloud } from "../../lib/cursorCloudUtils";
 import { openExternalUrl } from "../../lib/openExternal";
 import { shouldShowClaudeCacheTtl } from "../../lib/claudeCacheTtl";
 import {
@@ -1003,18 +1008,6 @@ function draftLaunchJobMessage(job: DraftLaunchJob): string {
     : `Ready to open ${draftLaunchKindLabel(job.draftKind)}${laneSuffix}.`;
 }
 
-function originHasLaneBranch(laneId: string): Promise<boolean> {
-  return window.ade.git.getOriginRemote({ laneId }).then(async (info) => {
-    const branch = info?.branch?.trim() || "";
-    if (!branch) return false;
-    const branches = await window.ade.git.listBranches({ laneId }).catch(() => []);
-    const originRef = `origin/${branch}`;
-    return branches.some((candidate) => (
-      candidate.isRemote && (candidate.name === originRef || candidate.name === branch)
-    ));
-  }).catch(() => false);
-}
-
 function staleDraftLaunchJobMessage(job: DraftLaunchJob): string {
   return `${draftLaunchJobMessage(job)} Still working. You can hide this status while ADE continues in the background.`;
 }
@@ -1641,10 +1634,32 @@ function defaultNativeControls(profile: ChatSurfaceProfile): NativeControlState 
   };
 }
 
-type ChatRuntimeProviderKey = "claude" | "codex" | "cursor" | "droid" | "opencode" | "pi";
+type ChatRuntimeProviderKey =
+  | "claude"
+  | "codex"
+  | "cursor"
+  | "droid"
+  | "opencode"
+  | "pi"
+  | "qwen"
+  | "kimi"
+  | "grok"
+  | "copilot";
 
 function resolveChatRuntimeProvider(desc: ModelDescriptor | null | undefined): ChatRuntimeProviderKey {
   return desc ? resolveProviderGroupForModel(desc) : "opencode";
+}
+
+function isDeferredComposerModelSelection(
+  composerModelId: string | null | undefined,
+  sessionModelId: string | null | undefined,
+  deferredSessionId: string | null | undefined,
+  currentSessionId: string | null | undefined,
+): boolean {
+  if (!deferredSessionId || !currentSessionId || deferredSessionId !== currentSessionId) {
+    return false;
+  }
+  return Boolean(composerModelId && sessionModelId && composerModelId !== sessionModelId);
 }
 
 function runtimeFacingModelId(desc: ModelDescriptor | null | undefined, registryModelId: string): string {
@@ -3168,9 +3183,6 @@ export function AgentChatPane({
   onLaneChange,
   initialDraftMachineId = null,
   onDraftMachineChange,
-  onToggleSessionsPane,
-  sessionsPaneCollapsed,
-  sessionsPaneCount,
   onToggleToolsPane,
   toolsPaneOpen,
   onToggleTerminalPane,
@@ -3260,10 +3272,6 @@ export function AgentChatPane({
   initialDraftMachineId?: string | null;
   /** Persists machine selection independently from the raw lane id. */
   onDraftMachineChange?: (machineId: string | null) => void;
-  /** Work tab: far-left session-list expander rendered in this chat's header. */
-  onToggleSessionsPane?: () => void;
-  sessionsPaneCollapsed?: boolean;
-  sessionsPaneCount?: number;
   /** Work tab: far-right Tools-pane toggle rendered in this chat's header. */
   onToggleToolsPane?: () => void;
   toolsPaneOpen?: boolean;
@@ -3687,13 +3695,7 @@ export function AgentChatPane({
   // whatever the user had on screen. It now only offers: a chip appears while a
   // simulator session is live and the drawer is closed.
   const [iosSimulatorSessionChip, setIosSimulatorSessionChip] = useState<{ deviceName: string | null } | null>(null);
-  // CURSOR-CLOUD-PANEL: the panel component itself is GONE — `ChatCursorCloudPanel.tsx` and
-  // `CursorCloudInlineLaunch.tsx` were deleted, so the commented mounts below cannot be restored by
-  // uncommenting them; recover the components from git history first. The state and its
-  // `setCursorCloudPaneOpen(false)` call sites stay wired because the close calls are harmless and
-  // the panel is being rebuilt as a plugin surface. Nothing sets it true.
   const [cursorCloudPaneOpen, setCursorCloudPaneOpen] = useState(false);
-  void cursorCloudPaneOpen;
   // Subagent drill-in: when set, the chat surface renders the named subagent's
   // transcript instead of the parent stream and the composer is disabled.
   const [subagentView, setSubagentView] = useState<{
@@ -3713,8 +3715,6 @@ export function AgentChatPane({
   const [cloudHydrateFailed, setCloudHydrateFailed] = useState(false);
   const [cloudBackfillNonce, setCloudBackfillNonce] = useState(0);
   const rewindConfirmResolveRef = useRef<((confirmed: boolean) => void) | null>(null);
-  const [laneGitRemote, setLaneGitRemote] = useState<string | null>(null);
-  const [laneGitBranch, setLaneGitBranch] = useState<string | null>(null);
   const [iosElementContextItems, setIosElementContextItems] = useState<IosElementContextItem[]>([]);
   const [appControlOpen, setAppControlOpen] = useState(
     () => readChatCompanionUiState(initialCompanionStateKey).appControlOpen,
@@ -3979,20 +3979,6 @@ export function AgentChatPane({
     () => (selectedSessionId ? sessions.find((session) => session.sessionId === selectedSessionId) ?? null : null),
     [sessions, selectedSessionId]
   );
-  // Does the composer's model actually describe the chat on screen? The
-  // model-derived accent inputs (the composer model descriptor's family and
-  // color, which give the chat its accent) trail a prop-driven switch, because
-  // the pane is not remounted — so those inputs are withheld until this holds,
-  // and a neutral fallback covers the gap. It gates only where it is read; it
-  // is not a blanket freshness test for everything keyed to `selectedSession`.
-  //
-  // Deliberately not `!chatSelectionTransitioning`: that one compares the
-  // composer id to the rendered id, which already agree in the frame where the
-  // incoming id is known but its row has not been listed yet. Here
-  // `selectedSession` is still null in that frame, so this stays false and the
-  // stale model args keep being withheld. A draft pane has no session at all,
-  // so `null === null` holds and it keeps its composer model color.
-  const composerModelDescribesRenderedChat = (selectedSession?.sessionId ?? null) === renderedSessionId;
   // Which atomic active-turn dispatch modes this session's backend accepts,
   // read off the canonical table in shared/types/chat.ts rather than restated
   // here.
@@ -4092,6 +4078,11 @@ export function AgentChatPane({
     if (!selectedSession) return null;
     return selectedSession.modelId ?? resolveRegistryModelId(selectedSession.model);
   }, [selectedSession]);
+  const composerModelIdRef = useRef(modelId);
+  composerModelIdRef.current = modelId;
+  const selectedSessionModelIdRef = useRef(selectedSessionModelId);
+  selectedSessionModelIdRef.current = selectedSessionModelId;
+  const deferredComposerSessionIdRef = useRef<string | null>(null);
   useEffect(() => {
     const api = window.ade?.iosSimulator;
     if (!api?.getStatus) return;
@@ -5311,6 +5302,13 @@ export function AgentChatPane({
 
   const modelSelectionDiffersFromSession = Boolean(selectedSession && selectedSessionModelId && selectedSessionModelId !== modelId);
 
+  // A model picked in an existing chat is a draft until the next message is
+  // sent. Keep model-derived chat accents on the committed session so the
+  // visual identity does not get ahead of the provider handoff.
+  const composerModelDescribesRenderedChat =
+    (selectedSession?.sessionId ?? null) === renderedSessionId
+    && (!selectedSession || !modelSelectionDiffersFromSession);
+
   const sessionProvider = useMemo(() => {
     if (selectedSession && !modelSelectionDiffersFromSession) return selectedSession.provider;
     return resolveChatRuntimeProvider(resolveScopedModelDescriptor(modelId, modelCatalogScopeKey));
@@ -5471,10 +5469,24 @@ export function AgentChatPane({
     [parallelConfiguringRow],
   );
 
+  const modelCatalogScopeKeyRef = useRef(modelCatalogScopeKey);
+  modelCatalogScopeKeyRef.current = modelCatalogScopeKey;
   const applyLaunchConfigToComposer = useCallback((config: LastLaunchConfig) => {
     setModelId(config.modelId);
-    setReasoningEffort(config.reasoningEffort);
-    setFastModeState(config.fastMode);
+    // Every caller of this hydrates a DRAFT, so the same rule as a draft model
+    // change applies: a persisted thinking level or fast flag must not survive a
+    // model that no longer exposes that control. Without this, a stale stored
+    // value reaches the launch snapshot and the main process refuses the run.
+    // Read the scope through a ref so this callback's identity stays stable when
+    // the composer machine changes. It is a dependency of the composer-draft
+    // hydration effect, which would otherwise re-read the persisted snapshot
+    // and clobber live typing / attachments.
+    const reconciledControls = reconcileDraftModelControls(
+      resolveScopedModelDescriptor(config.modelId, modelCatalogScopeKeyRef.current),
+      { reasoningEffort: config.reasoningEffort, fastMode: config.fastMode },
+    );
+    setReasoningEffort(reconciledControls.reasoningEffort);
+    setFastModeState(reconciledControls.fastMode);
     setExecutionMode(config.executionMode);
     setInteractionMode(config.controls.interactionMode);
     setClaudePermissionMode(config.controls.claudePermissionMode);
@@ -5489,6 +5501,11 @@ export function AgentChatPane({
 
   const syncComposerToSession = useCallback((session: AgentChatSessionSummary | null) => {
     if (!session) {
+      // Locked Work chats keep this pane mounted across switches. While the
+      // incoming session is still loading, do not seed last-launch into it.
+      if (lockSessionId) {
+        return;
+      }
       if (draftLaunchConfigTouchedKeyRef.current === draftLaunchConfigScopeKey) {
         return;
       }
@@ -5509,7 +5526,24 @@ export function AgentChatPane({
       setFastModeState(false);
       return;
     }
+    if (
+      deferredComposerSessionIdRef.current
+      && deferredComposerSessionIdRef.current !== session.sessionId
+    ) {
+      deferredComposerSessionIdRef.current = null;
+    }
     const nextModelId = session.modelId ?? resolveRegistryModelId(session.model);
+    if (isDeferredComposerModelSelection(
+      composerModelIdRef.current,
+      nextModelId,
+      deferredComposerSessionIdRef.current,
+      session.sessionId,
+    )) {
+      // A model picked in this chat is local until Send. Session permission
+      // fields still describe the previous provider, so hydrating from them
+      // would snap the new model's picker back to its default.
+      return;
+    }
     if (nextModelId) {
       setModelId(nextModelId);
     }
@@ -5544,6 +5578,7 @@ export function AgentChatPane({
     draftLaunchConfigScopeKey,
     initialNativeControls,
     lastLaunchConfigStorageKeys,
+    lockSessionId,
     setFastModeState,
   ]);
   const executionModeOptions = useMemo(
@@ -5639,16 +5674,8 @@ export function AgentChatPane({
       includeActiveSessionModel: !modelSelectionConstrained,
     });
     if (modelSelectionConstrained) return filterCursorModelIdsForDraftKind(base, workDraftKind, modelCatalogScopeKey);
-    // Union in the runtime catalog's dynamic ids (ollama, LM Studio, opencode,
-    // cursor) for the composer's OWN machine — reading the bound machine's
-    // catalog here would offer models the target machine cannot run.
-    const catalog = getSharedRuntimeCatalog(modelCatalogScopeKey);
-    if (!catalog) return filterCursorModelIdsForDraftKind(base, workDraftKind, modelCatalogScopeKey);
-    const runtimeIds = descriptorsFromAgentChatModelCatalog(
-      catalog,
-      undefined,
-      modelCatalogScopeKey,
-    ).availableModelIds;
+    // Union in the runtime catalog's dynamic ids (ollama, LM Studio, opencode, cursor).
+    const runtimeIds = runtimeCatalogModelIds(modelCatalogScopeKey);
     if (!runtimeIds.length) return filterCursorModelIdsForDraftKind(base, workDraftKind, modelCatalogScopeKey);
     const merged = new Set(base);
     for (const id of runtimeIds) merged.add(id);
@@ -5659,10 +5686,6 @@ export function AgentChatPane({
       ? familiesFromStatus(aiStatus, { allowCliOnlyModels: workDraftKind === "cli" })
       : undefined),
     [aiStatus, workDraftKind],
-  );
-  const cursorCloudModelIds = useMemo(
-    () => effectiveAvailableModelIds.filter((id) => id.startsWith("cursor/")),
-    [effectiveAvailableModelIds],
   );
   const draftCursorModelSelectionError = useMemo(() => {
     if (!forceDraft || selectedSessionId || lockSessionId || initialSessionId || !modelId) return null;
@@ -5696,19 +5719,19 @@ export function AgentChatPane({
    * machine without the plugin is unchanged.
    */
   const cursorCloudSurfaceVisible = useBuiltinSurfaceVisible("cursor-cloud");
-  const cursorCloudAvailable = Boolean(laneId)
+  const cursorCloudPanelAvailable = Boolean(laneId)
     && cursorCloudSurfaceVisible
-    && cursorCloudApiAvailable
+    && cursorCloudApiAvailable;
+  const cursorCloudAvailable = cursorCloudPanelAvailable
     && (selectedSession?.provider === "cursor" || (typeof modelId === "string" && modelId.startsWith("cursor/")));
   // Launch-to-cloud is only allowed for a fresh chat: no events yet AND not already promoted to a
   // cloud agent.
   const cursorCloudCanLaunch = cursorCloudAvailable
     && selectedEvents.length === 0
     && !selectedSession?.cursorCloudAgentId;
-  /* CURSOR-CLOUD-PANEL: temporarily disabled; returns in the dedicated cloud-panel PR.
   useEffect(() => {
-    if (!cursorCloudAvailable && cursorCloudPaneOpen) setCursorCloudPaneOpen(false);
-  }, [cursorCloudAvailable, cursorCloudPaneOpen]);
+    if (!cursorCloudPanelAvailable && cursorCloudPaneOpen) setCursorCloudPaneOpen(false);
+  }, [cursorCloudPanelAvailable, cursorCloudPaneOpen]);
   useEffect(() => {
     if (!cursorCloudPaneOpen) return;
     const onKey = (event: KeyboardEvent) => {
@@ -5717,29 +5740,25 @@ export function AgentChatPane({
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [cursorCloudPaneOpen]);
-  */
   // The lane's remote and branch feed ChatPrPane's branchName fallback as well as cloud launches.
-  // One read per lane, no polling.
-  useEffect(() => {
-    if (!laneId) return;
-    const getOriginRemote = window.ade.git?.getOriginRemote;
-    if (!getOriginRemote) return;
-    let cancelled = false;
-    void getOriginRemote({ laneId })
-      .then((info) => {
-        if (cancelled) return;
-        setLaneGitRemote(info?.remoteUrl ?? null);
-        setLaneGitBranch(info?.branch ?? null);
-      })
-      .catch(() => {
-        if (cancelled) return;
-        setLaneGitRemote(null);
-        setLaneGitBranch(null);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [laneId]);
+  // One read per lane, no polling — but a tri-state one, so a pending or failed
+  // read cannot be mistaken for "this lane has no remote".
+  // The auto-create row is not a lane yet: asking the brain for its remote fails with
+  // "Lane not found". Its branch is cut from the primary lane of the same repo, so cloud
+  // readiness reads the primary lane's remote instead. The launch itself creates the
+  // lane and pushes that branch before the agent starts.
+  const cloudReadinessLaneId = useMemo(() => {
+    if (!isAutoCreateLaneOptionId(draftLaunchTargetId)) return laneId;
+    const primary = lanes.find((lane) => lane.laneType === "primary") ?? null;
+    return primary?.id ?? laneId;
+  }, [draftLaunchTargetId, laneId, lanes]);
+  const {
+    remoteUrl: laneGitRemote,
+    branch: laneGitBranch,
+    status: laneGitRemoteStatus,
+    error: laneGitRemoteError,
+    refetch: refetchLaneGitRemote,
+  } = useLaneGitRemote(cloudReadinessLaneId, chatRuntimePin);
   const {
     cursorCloudMode,
     setCursorCloudMode,
@@ -5756,47 +5775,45 @@ export function AgentChatPane({
     refetchCursorCloudRepos,
   } = useCursorCloudDraftState({
     cursorCloudAvailable,
-    laneId,
+    laneId: cloudReadinessLaneId,
     laneGitRemote,
     laneGitBranch,
+    laneGitRemoteStatus,
+    laneGitRemoteError,
   });
+  // Opening the machine picker is the retry affordance for both probes the
+  // cloud row depends on: Cursor's repo list and this lane's git remote. Each
+  // re-runs only when it actually failed, so opening a healthy picker costs
+  // nothing.
+  const handleDraftMachinePickerOpen = useCallback(() => {
+    refetchCursorCloudRepos();
+    if (laneGitRemoteStatus === "error") refetchLaneGitRemote();
+  }, [laneGitRemoteStatus, refetchCursorCloudRepos, refetchLaneGitRemote]);
   // Cloud mode drops the moment the chat stops being launchable — a non-cursor model, a chat that
   // has started, or a lost Cursor connection all land here. That is also how "pick a non-cursor
   // model" turns the toggle off: `cursorCloudAvailable` requires a cursor model.
   useEffect(() => {
     if (!cursorCloudCanLaunch && cursorCloudMode) setCursorCloudMode(false);
   }, [cursorCloudCanLaunch, cursorCloudMode, setCursorCloudMode]);
-  /* CURSOR-CLOUD-PANEL: temporarily disabled; returns in the dedicated cloud-panel PR. This 20s
-     poll only fed the badge on the panel's entry point, so it is off while the panel is —
-     nothing in the composer counts running cloud agents today.
-  const [cursorCloudActiveCount, setCursorCloudActiveCount] = useState<number>(0);
-  useEffect(() => {
-    if (!cursorCloudAvailable) {
-      setCursorCloudActiveCount(0);
-      return;
-    }
-    let cancelled = false;
-    async function poll() {
-      try {
-        const result = await window.ade.ai.cursorCloudListAgents({ limit: 16 });
-        if (cancelled) return;
-        const active = result.items.filter((agent) => {
-          const s = (agent.status ?? "").toLowerCase();
-          return s === "running" || s === "creating";
-        }).length;
-        setCursorCloudActiveCount(active);
-      } catch {
-        // best-effort
-      }
-    }
-    void poll();
-    const interval = window.setInterval(poll, 20_000);
-    return () => {
-      cancelled = true;
-      window.clearInterval(interval);
-    };
-  }, [cursorCloudAvailable]);
-  */
+  const applyCursorCloudModelSwitch = useCallback((nextModelId: string) => {
+    setModelId(nextModelId);
+    setReasoningEffort(null);
+    setFastModeState(false);
+    // Mark the draft as touched, exactly like every other draft-state writer.
+    // Without it, a re-hydration of the saved launch config undoes the switch
+    // and the auto-switch fires again.
+    draftLaunchConfigTouchedKeyRef.current = draftLaunchConfigScopeKey;
+  }, [draftLaunchConfigScopeKey, setFastModeState]);
+  // Declared after `useCursorCloudDraftState` because it reads `cursorCloudMode` from it.
+  const { cursorCloudModelIds, cursorCloudModelReady } = useCursorCloudModelEligibility({
+    availableModelIds,
+    availableModelIdsOverride,
+    modelCatalogScopeKey,
+    modelId,
+    runtimeCatalogVersion,
+    cursorCloudMode,
+    onSwitchModel: applyCursorCloudModelSwitch,
+  });
   // Runtime tracks whether sends go to the local agent or to a promoted Cursor Cloud agent. The
   // value is derived purely from session state — the previous renderer-side override (split-send
   // chevron) was removed when launches were funneled through the dedicated cloud composer surface.
@@ -5804,16 +5821,7 @@ export function AgentChatPane({
     ?? (selectedSession?.cursorCloudAgentId ? "cloud" : "local");
   const handoffAvailableModelIds = useMemo(() => {
     const merged = new Set<string>(availableModelIds);
-    const catalog = getSharedRuntimeCatalog(modelCatalogScopeKey);
-    if (catalog) {
-      for (const id of descriptorsFromAgentChatModelCatalog(
-        catalog,
-        undefined,
-        modelCatalogScopeKey,
-      ).availableModelIds) {
-        merged.add(id);
-      }
-    }
+    for (const id of runtimeCatalogModelIds(modelCatalogScopeKey)) merged.add(id);
     if (selectedSessionModelId) {
       merged.add(selectedSessionModelId);
     }
@@ -7023,12 +7031,42 @@ export function AgentChatPane({
   }, [initialSessionSummary, lockSessionId, projectRoot, refreshAvailableModels, refreshSessions]);
 
   useEffect(() => {
-    const selectableModelIds = modelSelectionConstrained ? effectiveAvailableModelIds : availableModelIds;
+    const isFreshDraft = !selectedSessionId && selectedEvents.length === 0;
+    const selectableModelIds = modelSelectionConstrained || isFreshDraft
+      ? effectiveAvailableModelIds
+      : availableModelIds;
     if (loading || !selectableModelIds.length) return;
     // If the user hasn't picked a model yet, don't auto-select one.
     if (!modelId) return;
     if (selectableModelIds.includes(modelId)) return;
     if (modelSelectionConstrained) return;
+    if (isFreshDraft) {
+      const currentModelDesc = resolveScopedModelDescriptor(modelId, modelCatalogScopeKey);
+      const currentModelIsAcp = currentModelDesc?.family === "qwen"
+        || currentModelDesc?.family === "moonshot"
+        || currentModelDesc?.family === "xai"
+        || currentModelDesc?.family === "github-copilot";
+      const hasLiveAcpAlternative = Boolean(
+        currentModelIsAcp
+        && currentModelDesc
+        && effectiveAvailableModelIds.some((candidateId) => {
+          if (candidateId === modelId) return false;
+          return resolveScopedModelDescriptor(candidateId, modelCatalogScopeKey)?.family === currentModelDesc.family;
+        }),
+      );
+      // A known non-ACP model may be intentionally launchable even when the
+      // passive inventory has not reported it (for example, an installed CLI
+      // subscription). ACP models are different: once live discovery reports
+      // a same-provider alternative, a persisted curated row is stale and
+      // must not survive into a fresh draft.
+      if (currentModelDesc && !hasLiveAcpAlternative) return;
+      const preferred = readLastUsedModelId();
+      const nextModelId = preferred && selectableModelIds.includes(preferred)
+        ? preferred
+        : selectableModelIds[0]!;
+      if (nextModelId !== modelId) setModelId(nextModelId);
+      return;
+    }
     const modelDesc = resolveScopedModelDescriptor(modelId, modelCatalogScopeKey);
     // Runtime catalog can surface Cursor/Droid SDK models before ai status catches up.
     if (isKnownSelectableChatModelId(modelId) || modelDesc) return;
@@ -7042,7 +7080,7 @@ export function AgentChatPane({
     } else {
       setModelId(selectableModelIds[0]!);
     }
-  }, [loading, availableModelIds, effectiveAvailableModelIds, modelId, modelSelectionConstrained, selectedSessionModelId, modelCatalogScopeKey]);
+  }, [loading, availableModelIds, effectiveAvailableModelIds, modelId, modelSelectionConstrained, modelCatalogScopeKey, selectedEvents.length, selectedSessionId, selectedSessionModelId]);
 
   useEffect(() => {
     selectedSessionIdRef.current = selectedSessionId;
@@ -7485,7 +7523,13 @@ export function AgentChatPane({
     // command, not that it would like to see one. The composer invokes them as
     // plugin actions; a client without that path leaves the flag off rather
     // than listing rows that would send `/name` to the model as literal text.
-    const args = selectedSessionId
+    const pendingHandoff = isDeferredComposerModelSelection(
+      modelId,
+      selectedSessionModelId,
+      deferredComposerSessionIdRef.current,
+      selectedSessionId,
+    );
+    const args = selectedSessionId && !pendingHandoff
       ? { sessionId: selectedSessionId, projectRoot, includePluginCommands: true }
       : { laneId, provider: sessionProvider, projectRoot, includePluginCommands: true };
     const pin = selectedSessionId ? chatRuntimePinRef.current : draftExecutionBindingRef.current;
@@ -7497,7 +7541,7 @@ export function AgentChatPane({
       .then((cmds) => { if (!cancelled) setSdkSlashCommands(cmds); })
       .catch(() => { if (!cancelled) setSdkSlashCommands([]); });
     return () => { cancelled = true; };
-  }, [isTileActive, laneId, projectRoot, selectedSessionId, sessionProvider]);
+  }, [isTileActive, laneId, modelId, projectRoot, selectedSessionId, selectedSessionModelId, sessionProvider]);
 
   const sessionDeltaTurnActiveRef = useRef(false);
   const sessionDeltaSessionIdRef = useRef<string | null>(null);
@@ -7790,7 +7834,16 @@ export function AgentChatPane({
         const modeChanged = Object.keys(summaryPatch).some((key) =>
           key !== "title" && key !== "spawnKind" && key !== "subagentTakeoverPromptShownAt"
         );
-        if (modeChanged && envelope.sessionId === selectedSessionIdRef.current) {
+        if (
+          modeChanged
+          && envelope.sessionId === selectedSessionIdRef.current
+          && !isDeferredComposerModelSelection(
+            composerModelIdRef.current,
+            selectedSessionModelIdRef.current,
+            deferredComposerSessionIdRef.current,
+            selectedSessionIdRef.current,
+          )
+        ) {
           if (meta.interactionMode !== undefined) {
             setInteractionMode(meta.interactionMode ?? initialNativeControls.interactionMode);
           }
@@ -9901,7 +9954,6 @@ export function AgentChatPane({
       cloudAgentId: session.cursorCloudAgentId,
       laneId: session.laneId,
       sessionId: session.sessionId,
-      ...(session.title?.trim() ? { agentName: session.title.trim() } : {}),
     }).then((result) => {
       if (result.session) notifySessionCreated(result.session);
       loadedHistoryRef.current.delete(session.sessionId);
@@ -9988,6 +10040,13 @@ export function AgentChatPane({
         ?? "Connect this repo to Cursor before sending work to Cursor Cloud.");
       return false;
     }
+    const cloudModelId = modelId.startsWith("cursor/") ? modelId.slice("cursor/".length) : "";
+    if (!cloudModelId || !cursorCloudModelIds.includes(modelId)) {
+      setError(cursorCloudModelIds.length > 0
+        ? CURSOR_CLOUD_MODEL_BLOCKED_MESSAGE
+        : CURSOR_CLOUD_MODELS_NOT_LOADED_MESSAGE);
+      return false;
+    }
     if (draftMachineUnavailableRef.current) {
       setError("The selected machine is not currently available.");
       return false;
@@ -10003,7 +10062,6 @@ export function AgentChatPane({
     }
     if (cursorCloudLaunchInFlightRef.current) return false;
     cursorCloudLaunchInFlightRef.current = true;
-    const cloudModelId = modelId.startsWith("cursor/") ? modelId.slice("cursor/".length) : "";
     setError(null);
 
     // A cloud launch has the same shape as a local one — make the lane, start the agent, hand
@@ -10065,19 +10123,16 @@ export function AgentChatPane({
         createdLaneId = createdLane.autoCreated ? createdLane.laneId : null;
         targetLaneId = createdLane.laneId;
         patchDraftLaunchJob(jobId, { laneId: createdLane.laneId, laneName: createdLane.laneName });
-        // The cloud machine clones from origin, so the lane's branch has to exist there before
-        // the agent starts — a fresh worktree branch is local-only. A failed push aborts the
-        // send: an agent pointed at a branch origin has never heard of does nothing useful.
-        await window.ade.git.push({ laneId: createdLane.laneId });
+        await pushAutoCreatedLaneOriginForCursorCloud({
+          laneId: createdLane.laneId,
+          branchHint: createdLane.laneName,
+          git: window.ade.git,
+        });
       } else if (targetLaneId) {
-        // An existing lane already has its branch; it only needs to be on the remote. The push
-        // is a no-op when it is, so ask for it rather than probing first.
-        try {
-          await window.ade.git.push({ laneId: targetLaneId });
-        } catch (pushError) {
-          const presentOnOrigin = await originHasLaneBranch(targetLaneId);
-          if (!presentOnOrigin) throw pushError;
-        }
+        await ensureExistingLaneOriginReadyForCursorCloud({
+          laneId: targetLaneId,
+          git: window.ade.git,
+        });
       }
       if (!targetLaneId) throw new Error("Select a lane before sending.");
       const info = await window.ade.git.getOriginRemote({ laneId: targetLaneId }).catch(() => null);
@@ -10099,6 +10154,8 @@ export function AgentChatPane({
         repoUrl: cursorCloudRepoUrl,
         startingRef,
         modelId: cloudModelId || null,
+        reasoningEffort: snapshot.reasoningEffort,
+        fastMode: snapshot.fastMode,
         autoCreatePR: prFields.autoCreatePR,
         // Lane selection already decided the branch, so the agent always commits to it rather
         // than branching again underneath us. `prUrl` also implies the PR head branch.
@@ -10122,7 +10179,8 @@ export function AgentChatPane({
           laneId: targetLaneId,
           sessionId,
           ...(cloudModelId ? { modelId: cloudModelId } : {}),
-          ...(created.agent.name?.trim() ? { agentName: created.agent.name.trim() } : {}),
+          reasoningEffort: snapshot.reasoningEffort,
+          fastMode: snapshot.fastMode,
         });
       } catch {
         opened = { sessionId };
@@ -10178,6 +10236,7 @@ export function AgentChatPane({
     adoptCursorCloudChatSession,
     buildDraftLaunchSnapshotForCurrentState,
     cursorCloudAutoPr,
+    cursorCloudModelIds,
     cursorCloudRepoUrl,
     cursorCloudUnavailableReason,
     draftLaunchTargetIsAutoCreate,
@@ -11025,6 +11084,9 @@ export function AgentChatPane({
       const selectedFastModeChanged =
         Boolean(selectedSessionId)
         && (selectedSession?.fastMode === true) !== fastMode;
+      const selectedReasoningChanged =
+        Boolean(selectedSessionId)
+        && (selectedSession?.reasoningEffort ?? null) !== reasoningEffort;
       const selectedAttachments = isLiteralSlashCommand ? [] : attachmentsSnapshot;
       const selectedContextAttachments = isLiteralSlashCommand ? [] : contextAttachmentsSnapshot;
       const optimisticEnvelope = (nextSessionId: string): AgentChatEventEnvelope => ({
@@ -11052,11 +11114,22 @@ export function AgentChatPane({
         setOptimisticIfAllowed(sessionId);
         const modelUpdate = selectedModelChanged ? { modelId } : {};
         const fastModeUpdate = selectedFastModeChanged ? { fastMode } : {};
+        const reasoningUpdate = selectedReasoningChanged ? { reasoningEffort } : {};
+        const pendingNativeUpdate = selectedModelChanged
+          ? summarizeNativeControls(sessionProvider, nativeControlsRef.current)
+          : {};
+        const pendingCursorConfig = selectedModelChanged && sessionProvider === "cursor"
+          ? { cursorConfigValues: nativeControlsRef.current.cursorConfigValues }
+          : {};
         await window.ade.agentChat.updateSession({
           sessionId,
           ...modelUpdate,
           ...fastModeUpdate,
+          ...reasoningUpdate,
+          ...pendingNativeUpdate,
+          ...pendingCursorConfig,
         }, chatRuntimePinRef.current);
+        deferredComposerSessionIdRef.current = null;
         void refreshSessions().catch(() => {});
       } else if (!sessionId) {
         // No session yet — create one
@@ -11550,6 +11623,18 @@ export function AgentChatPane({
 
     if (!selectedSessionId) return;
 
+    if (isDeferredComposerModelSelection(
+      composerModelIdRef.current,
+      selectedSessionModelIdRef.current,
+      deferredComposerSessionIdRef.current,
+      selectedSessionId,
+    )) {
+      // Persist with the model handoff on Send. Writing now would apply the
+      // new provider's fields to the still-bound previous provider, then the
+      // session hydration would snap the picker back to its default.
+      return;
+    }
+
     const provider = selectedSession?.provider ?? sessionProvider;
     const nextSummary = {
       ...summarizeNativeControls(provider, nextControls),
@@ -11637,6 +11722,14 @@ export function AgentChatPane({
     setReasoningEffort(nextReasoningEffort);
     if (!selectedSessionId) return;
     if (isPersistentIdentitySurface && sessionMutationKind) return;
+    if (isDeferredComposerModelSelection(
+      composerModelIdRef.current,
+      selectedSessionModelIdRef.current,
+      deferredComposerSessionIdRef.current,
+      selectedSessionId,
+    )) {
+      return;
+    }
 
     const seq = ++reasoningEffortUpdateCounterRef.current;
     const targetSessionId = selectedSessionId;
@@ -11683,6 +11776,14 @@ export function AgentChatPane({
     setFastModeState(enabled);
     if (!selectedSessionId) return;
     if (isPersistentIdentitySurface && sessionMutationKind) return;
+    if (isDeferredComposerModelSelection(
+      composerModelIdRef.current,
+      selectedSessionModelIdRef.current,
+      deferredComposerSessionIdRef.current,
+      selectedSessionId,
+    )) {
+      return;
+    }
 
     const updateId = ++fastModeUpdateCounterRef.current;
     const targetSessionId = selectedSessionId;
@@ -11865,16 +11966,31 @@ export function AgentChatPane({
   const draftShelfLaneValue = draftLaunchTargetIsAutoCreate
     ? AUTO_CREATE_LANE_OPTION.id
     : (laneId ?? "");
+  const canUseThisComputerForDraft = laneMachineOptions.some(
+    (option) => option.id === THIS_MACHINE_ID,
+  );
+  const draftMachineRecoveryAvailable = draftMachineUnavailable && canUseThisComputerForDraft;
   /**
    * Cursor Cloud rides in the machine picker because "where does this run" is one question. It
    * appears whenever Cursor is connected and this draft could launch there; picking it is cloud
    * mode, and picking any real machine leaves it.
    */
   const draftShelfMachineOptions = useMemo<DraftMachineOption[]>(() => {
-    const machines: DraftMachineOption[] = laneMachineOptions.map((option) => ({
-      id: option.id,
-      name: option.name,
-    }));
+    const unavailableMachine = draftMachineRecoveryAvailable
+      && selectedDraftMachineId
+      ? {
+          id: selectedDraftMachineId,
+          name: "Unavailable machine",
+          unavailableReason: "This machine is disconnected. Choose This computer to continue.",
+        }
+      : null;
+    const machines: DraftMachineOption[] = [
+      ...(unavailableMachine ? [unavailableMachine] : []),
+      ...laneMachineOptions.map((option) => ({
+        id: option.id,
+        name: option.name,
+      })),
+    ];
     if (!cursorCloudCanLaunch) return machines;
     const withLocal = machines.length
       ? machines
@@ -11897,13 +12013,14 @@ export function AgentChatPane({
     boundLaneMachineId,
     cursorCloudCanLaunch,
     cursorCloudUnavailableReason,
+    draftMachineRecoveryAvailable,
     laneMachineOptions,
     parallelChatMode,
     selectedDraftMachineId,
   ]);
   const draftShelfMachineValue = cursorCloudMode
     ? CURSOR_CLOUD_MACHINE_ID
-    : (selectedDraftMachine?.id ?? null);
+    : selectedDraftMachineId;
   const handleDraftShelfMachineChange = useCallback((nextMachineId: string) => {
     if (nextMachineId === CURSOR_CLOUD_MACHINE_ID) {
       setError(null);
@@ -11913,6 +12030,11 @@ export function AgentChatPane({
     setCursorCloudMode(false);
     handleDraftMachineChange(nextMachineId);
   }, [handleDraftMachineChange, setCursorCloudMode]);
+  const useThisComputerForDraft = useCallback(() => {
+    setCursorCloudMode(false);
+    handleDraftMachineChange(THIS_MACHINE_ID);
+    setError(null);
+  }, [handleDraftMachineChange, setCursorCloudMode, setError]);
   draftExecutionLanesRef.current = draftExecutionLanes;
   draftExecutionMachineIdRef.current = selectedDraftMachineId;
   draftBoundMachineIdRef.current = boundLaneMachineId;
@@ -12040,12 +12162,12 @@ export function AgentChatPane({
     ? {
         subtitle: "Fork carries this whole conversation into a new chat. Brief summarizes it and starts fresh.",
         body: <>{handoffSourceProviderLabel} models start a new {handoffSourceProviderLabel} agent — {handoffSourceProviderLabel} threads can&rsquo;t be resumed twice — with the full transcript replayed verbatim. Any other model does the same{laneId ? <> in this lane ({laneDisplayLabel})</> : null}.</>,
-        footnote: <>Pick any catalog model. Oldest turns drop only if the transcript exceeds the target context window.</>,
+        footnote: <>Pick any catalog model. Oldest turns drop only if the transcript exceeds the target context window or provider input limit.</>,
       }
     : {
         subtitle: "Fork copies the whole conversation. Brief summarizes it and starts fresh.",
         body: <>Same-family models use {handoffSourceProviderLabel}&rsquo;s native fork. Any other model starts a new chat with the full transcript replayed verbatim{laneId ? <> in this lane ({laneDisplayLabel})</> : null}.</>,
-        footnote: <>Pick any catalog model. Oldest turns drop only if the transcript exceeds the target context window.</>,
+        footnote: <>Pick any catalog model. Oldest turns drop only if the transcript exceeds the target context window or provider input limit.</>,
       }
   ), [handoffForkReplaysTranscript, handoffSourceProviderLabel, laneId, laneDisplayLabel]);
 
@@ -12544,6 +12666,24 @@ export function AgentChatPane({
       sessionStatus={selectedSession?.status ?? null}
     />
   );
+  const cursorCloudPanelContent = (
+    <ChatCursorCloudPanel
+      cursorCloudAgentId={selectedSession?.cursorCloudAgentId ?? null}
+      cursorRuntime={cursorRuntime}
+      cursorModelIds={cursorCloudModelIds}
+      defaultRepoUrl={null}
+      defaultBranch={laneGitBranch}
+      defaultModelSdkId={modelId.startsWith("cursor/") ? modelId.slice("cursor/".length) : null}
+      laneGitRemote={laneGitRemote}
+      laneId={laneId ?? null}
+      onClose={() => setCursorCloudPaneOpen(false)}
+      onOpened={(result) => {
+        setCursorCloudPaneOpen(false);
+        adoptCursorCloudChatSession(result);
+      }}
+      onMissingFields={(message) => setError(message)}
+    />
+  );
   const terminalPanelContent = chatTerminalVisible ? (
     <ChatTerminalDrawer
       variant="panel"
@@ -12901,9 +13041,6 @@ export function AgentChatPane({
         pluginSession={chatHeaderPluginSession}
         pluginSocketsActive={isTileVisible}
         trailingActions={chatHeaderTrailingActions}
-        onToggleSessionsPane={onToggleSessionsPane}
-        sessionsPaneCollapsed={sessionsPaneCollapsed}
-        sessionsPaneCount={sessionsPaneCount}
         onToggleToolsPane={onToggleToolsPane}
         toolsPaneOpen={toolsPaneOpen}
         className="h-8 space-y-0 p-0"
@@ -13109,6 +13246,8 @@ export function AgentChatPane({
     : null;
 
   const composerMachineBinding = activeComposerRuntimeBinding;
+  const composerAvailableModelIds = cursorCloudMode ? cursorCloudModelIds : effectiveAvailableModelIds;
+  const composerConstrainModelSelection = modelSelectionConstrained || cursorCloudMode;
 
   const composerElement = (
       <AgentChatComposer
@@ -13122,16 +13261,15 @@ export function AgentChatPane({
             modelPickerOpenRequestKey={modelPickerOpenRequestKey}
             onModelPickerOpenRequestHandled={handleModelPickerOpenRequestHandled}
             // Cloud mode narrows the picker to the models Cursor Cloud can actually run. Leaving
-            // it (or picking a non-cursor model another way) restores the full list, because
-            // `cursorCloudAvailable` requires a cursor model and drops cloud mode without one.
-            availableModelIds={cursorCloudMode ? cursorCloudModelIds : effectiveAvailableModelIds}
-            constrainModelSelection={modelSelectionConstrained || cursorCloudMode}
-            modelUnavailableMessage={constrainedModelSelectionError ?? undefined}
+            // it (or picking a non-cursor model another way) restores the full list.
+            availableModelIds={composerAvailableModelIds}
+            constrainModelSelection={composerConstrainModelSelection}
+            modelUnavailableMessage={cursorCloudMode ? undefined : constrainedModelSelectionError ?? undefined}
             providerAuthStatus={modelPickerProviderAuthStatus}
             onRuntimeCatalogRefreshed={() => {
               setRuntimeCatalogVersion((version) => version + 1);
             }}
-            allowCliOnlyModels={workDraftKind === "cli"}
+            allowCliOnlyModels={workDraftKind === "cli" && !cursorCloudMode}
             reasoningEffort={reasoningEffort}
             fastMode={fastMode}
             usageViewModel={selectedUsageViewModel}
@@ -13146,6 +13284,9 @@ export function AgentChatPane({
             cursorRuntime={cursorRuntime}
             modelRuntimePin={activeComposerRuntimeBinding}
             attachmentPersistenceUnavailableReason={draftAttachmentUnavailableReason}
+            onUseThisComputer={draftMachineRecoveryAvailable
+              ? useThisComputerForDraft
+              : undefined}
             contextAttachments={contextAttachments}
             allowAttachmentOnlySubmit={workDraftKind === "cli"}
             pinnedLinearIssue={pinnedLinearIssue}
@@ -13241,95 +13382,51 @@ export function AgentChatPane({
             orchestratorModeActive={isOrchestratorDraft || isOrchestratorLead}
             orchestrationRole={isOrchestratorDraft ? "lead" : activeOrchestrationRole}
             onModelChange={(nextModelId, options) => {
-              const modelAllowed =
-                modelSelectionConstrained
-                  ? effectiveAvailableModelIds.includes(nextModelId)
-                  : (
-                      !effectiveAvailableModelIds.length
-                      || effectiveAvailableModelIds.includes(nextModelId)
-                      || isKnownSelectableChatModelId(nextModelId)
-                      || Boolean(resolveScopedModelDescriptor(nextModelId, modelCatalogScopeKey))
-                    );
+              const modelAllowed = composerConstrainModelSelection
+                ? composerAvailableModelIds.includes(nextModelId)
+                : (
+                    !effectiveAvailableModelIds.length
+                    || effectiveAvailableModelIds.includes(nextModelId)
+                    || isKnownSelectableChatModelId(nextModelId)
+                    || Boolean(resolveScopedModelDescriptor(nextModelId, modelCatalogScopeKey))
+                  );
               if (!modelAllowed) {
                 return;
               }
               if (isPersistentIdentitySurface && sessionMutationKind) {
                 return;
               }
+              const previousFastMode = fastModeRef.current;
+              const snapshot = buildModelSelectionSnapshot(nextModelId);
               if (!selectedSessionId) {
                 draftLaunchConfigTouchedKeyRef.current = draftLaunchConfigScopeKey;
-              }
-              const previousModelId = modelId;
-              const previousFastMode = fastModeRef.current;
-              if (options) {
+                // The draft owns its thinking level and fast flag, so a model
+                // change leaves behind a value the new model may not expose.
+                // Reconcile here, before launch: the launch snapshot reads this
+                // state raw, and the main process rejects an effort the model
+                // does not advertise. This is the rule the Cursor Cloud
+                // auto-switch already applies, generalized to every draft model
+                // change.
+                const reconciledControls = reconcileDraftModelControls(snapshot.nextDesc, {
+                  reasoningEffort,
+                  fastMode: options ? options.fastMode : previousFastMode,
+                });
+                setReasoningEffort(reconciledControls.reasoningEffort);
+                setFastModeState(reconciledControls.fastMode);
+              } else if (options) {
                 setFastModeState(options.fastMode);
               }
-              const snapshot = buildModelSelectionSnapshot(nextModelId);
               if (!selectedSessionId || turnActive) {
                 applyModelSelectionSnapshot(snapshot);
-                if (
-                  selectedSessionId
-                  && snapshot.nextDesc?.isCliWrapped
-                  && (snapshot.nextDesc.family === "anthropic" || snapshot.nextDesc.family === "cursor")
-                ) {
-                  window.ade.agentChat.warmupModel({
-                    sessionId: selectedSessionId,
-                    modelId: nextModelId,
-                  }, chatRuntimePinRef.current).catch(() => { /* warmup is best-effort */ });
-                }
                 return;
               }
 
-              setSessionMutationKind("model");
-              void window.ade.agentChat.updateSession({
-                sessionId: selectedSessionId,
-                modelId: nextModelId,
-                ...(options ? { fastMode: fastModeRef.current } : {}),
-              }, chatRuntimePinRef.current).then((updatedSession) => {
-                applyModelSelectionSnapshot(snapshot);
-                patchSessionSummary(selectedSessionId, {
-                  provider: updatedSession.provider,
-                  model: updatedSession.model,
-                  modelId: updatedSession.modelId,
-                  reasoningEffort: updatedSession.reasoningEffort ?? null,
-                  fastMode: updatedSession.fastMode === true,
-                  permissionMode: updatedSession.permissionMode,
-                  interactionMode: updatedSession.interactionMode ?? null,
-                  claudePermissionMode: updatedSession.claudePermissionMode,
-                  codexApprovalPolicy: updatedSession.codexApprovalPolicy,
-                  codexSandbox: updatedSession.codexSandbox,
-                  codexConfigSource: updatedSession.codexConfigSource,
-                  opencodePermissionMode: updatedSession.opencodePermissionMode,
-                  droidPermissionMode: updatedSession.droidPermissionMode,
-                  cursorModeId: updatedSession.cursorModeId,
-                  cursorModeSnapshot: updatedSession.cursorModeSnapshot,
-                });
-                getAgentChatSlashCommandsCached(
-                  // The model changed, not what this client can dispatch — so
-                  // the flag stays on. See the fetch effect above.
-                  { sessionId: selectedSessionId, projectRoot, includePluginCommands: true },
-                  { force: true, pin: chatRuntimePinRef.current },
-                )
-                  .then(setSdkSlashCommands)
-                  .catch(() => {});
-                if (
-                  snapshot.nextDesc?.isCliWrapped
-                  && (snapshot.nextDesc.family === "anthropic" || snapshot.nextDesc.family === "cursor")
-                ) {
-                  window.ade.agentChat.warmupModel({
-                    sessionId: selectedSessionId,
-                    modelId: nextModelId,
-                  }, chatRuntimePinRef.current).catch(() => { /* warmup is best-effort */ });
-                }
-                void refreshSessions().catch(() => {});
-              }).catch((err) => {
-                setModelId(previousModelId);
-                if (options) setFastModeState(previousFastMode);
-                void refreshSessions().catch(() => {});
-                setError(err instanceof Error ? err.message : String(err));
-              }).finally(() => {
-                setSessionMutationKind(null);
-              });
+              // Keep the selection local until submit(). Submit applies the
+              // existing updateSession handoff immediately before send(), so
+              // no provider runtime is torn down or rebound while the user is
+              // still choosing a model or typing.
+              deferredComposerSessionIdRef.current = selectedSessionId;
+              applyModelSelectionSnapshot(snapshot);
             }}
             onReasoningEffortChange={handleReasoningEffortChange}
             onFastModeChange={handleFastModeChange}
@@ -13483,11 +13580,23 @@ export function AgentChatPane({
               });
             }}
             cursorCloudCanLaunch={cursorCloudCanLaunch}
+            cursorCloudModelReady={cursorCloudModelReady}
+            cursorCloudHasEligibleModels={cursorCloudModelIds.length > 0}
             cursorCloudModeActive={cursorCloudMode}
-            // CURSOR-CLOUD-PANEL: the composer's cloud glyph, its menu, and "Open existing cloud
-            // chat" are temporarily disabled; they return in the dedicated cloud-panel PR. Cloud
-            // mode is entered only by picking "Cursor Cloud" in the launch shelf's machine
-            // picker, and the Send button carries the cloud glyph while it is on.
+            cursorCloudPanelAvailable={cursorCloudPanelAvailable}
+            cursorCloudPaneOpen={cursorCloudPaneOpen}
+            onToggleCursorCloudPanel={() => {
+              setCursorCloudPaneOpen((current) => {
+                const next = !current;
+                if (next) {
+                  setChatActionsOpen(false);
+                  setIosSimulatorOpen(false);
+                  setAppControlOpen(false);
+                  setTerminalDrawerOpen(false);
+                }
+                return next;
+              });
+            }}
             onSubmitToCloud={async (promptText) => {
               void copyPromptForLaunch(promptText);
               return launchCursorCloudRun(promptText);
@@ -13707,9 +13816,7 @@ export function AgentChatPane({
   // Electron Control) host their own input affordances, so the empty-state layout
   // shrinks the hero and moves the composer below.
   const appPanelOpen = effectiveIosSimulatorOpen || effectiveAppControlOpen;
-  /* CURSOR-CLOUD-PANEL: temporarily disabled; returns in the dedicated cloud-panel PR.
-  const effectiveCursorCloudPaneOpen = cursorCloudPaneOpen && cursorCloudAvailable;
-  */
+  const effectiveCursorCloudPaneOpen = cursorCloudPaneOpen && cursorCloudPanelAvailable;
   const terminalRightPaneOpen = chatTerminalVisible && !hasExternalTerminalPane && terminalDrawerOpen && Boolean(selectedSessionId);
   // Orchestration: derive runId / role from the active session. When set, mount
   // the right plan panel and (for "orchestrator-lead") wrap the chat surface in
@@ -13717,7 +13824,7 @@ export function AgentChatPane({
   const orchestrationRunId = selectedSession?.orchestrationRunId ?? null;
   const orchestrationRole = activeOrchestrationRole;
   const orchestrationPanelOpen = Boolean(orchestrationRunId);
-  const heavyRightPaneOpen = appPanelOpen || orchestrationPanelOpen || terminalRightPaneOpen;
+  const heavyRightPaneOpen = appPanelOpen || orchestrationPanelOpen || terminalRightPaneOpen || effectiveCursorCloudPaneOpen;
   const supportsSplit = layoutVariant !== "grid-tile";
   const chatActionsFloating = chatActionsOpen && supportsSplit && !heavyRightPaneOpen;
   const chatActionsRightPaneOpen = chatActionsOpen && !chatActionsFloating;
@@ -13877,6 +13984,15 @@ export function AgentChatPane({
         {error ? (
           <div className="flex flex-wrap items-center justify-between gap-2 border-b border-red-500/[0.08] bg-red-500/[0.03] px-4 py-2.5 font-sans text-[11px] text-red-300/80">
             <span className="min-w-0 flex-1 break-words">{error}</span>
+            {draftMachineRecoveryAvailable ? (
+              <button
+                type="button"
+                className="shrink-0 rounded-md border border-red-300/15 px-2 py-0.5 font-medium text-red-50/90 transition-colors hover:bg-red-300/[0.12]"
+                onClick={useThisComputerForDraft}
+              >
+                Use this computer
+              </button>
+            ) : null}
             {restorableErrorDraftLaunchJob ? (
               <button
                 type="button"
@@ -13892,7 +14008,7 @@ export function AgentChatPane({
           <div className="flex flex-wrap items-center justify-between gap-2 border-b border-amber-500/10 bg-amber-500/[0.04] px-4 py-2.5 font-sans text-[11px] text-amber-100/80">
             <span className="min-w-0 flex-1 break-words">
               {`Forked chat replayed ${replayForkDisclosure.keptTurnCount} ${replayForkDisclosure.keptTurnCount === 1 ? "turn" : "turns"}. `}
-              {`The ${replayForkDisclosure.truncatedTurnCount} oldest ${replayForkDisclosure.truncatedTurnCount === 1 ? "turn" : "turns"} didn't fit the new model's context window.`}
+              {`The ${replayForkDisclosure.truncatedTurnCount} oldest ${replayForkDisclosure.truncatedTurnCount === 1 ? "turn" : "turns"} didn't fit the new model's context window or provider input limit.`}
             </span>
             <button
               type="button"
@@ -14270,8 +14386,7 @@ export function AgentChatPane({
                   </AnimatePresence>
                   {effectiveIosSimulatorOpen ? renderRightPane(iosSimulatorPanelContent) : null}
                   {effectiveAppControlOpen ? renderRightPane(appControlPanelContent) : null}
-                  {/* CURSOR-CLOUD-PANEL: temporarily disabled; returns in the dedicated cloud-panel PR. */}
-                  {/* {effectiveCursorCloudPaneOpen ? renderRightPane(cursorCloudPanelContent) : null} */}
+                  {effectiveCursorCloudPaneOpen ? renderRightPane(cursorCloudPanelContent) : null}
                   {terminalRightPaneOpen && terminalPanelContent ? renderRightPane(terminalPanelContent) : null}
                   {orchestrationPanelOpen && orchestrationPanelContent ? renderRightPane(orchestrationPanelContent) : null}
                 </motion.div>
@@ -14371,7 +14486,7 @@ export function AgentChatPane({
                                 selectedMachineId={draftShelfMachineValue}
                                 onChange={handleDraftShelfMachineChange}
                                 disabled={shellLaunchBusy}
-                                onOpen={refetchCursorCloudRepos}
+                                onOpen={handleDraftMachinePickerOpen}
                               />
                               <LaneCombobox
                                 lanes={draftShelfLanes}
@@ -14505,8 +14620,7 @@ export function AgentChatPane({
                   {rightPaneDivider}
                   {effectiveIosSimulatorOpen ? renderRightPane(iosSimulatorPanelContent) : null}
                   {effectiveAppControlOpen ? renderRightPane(appControlPanelContent) : null}
-                  {/* CURSOR-CLOUD-PANEL: temporarily disabled; returns in the dedicated cloud-panel PR. */}
-                  {/* {effectiveCursorCloudPaneOpen ? renderRightPane(cursorCloudPanelContent) : null} */}
+                  {effectiveCursorCloudPaneOpen ? renderRightPane(cursorCloudPanelContent) : null}
                 </motion.div>
               )}
             </AnimatePresence>

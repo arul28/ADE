@@ -1,14 +1,21 @@
 import type { AgentChatModelCatalog, AgentChatModelCatalogRefreshProvider } from "../../../../shared/types";
 import type { ModelDescriptor, ProviderFamily } from "../../../../shared/modelRegistry";
 
+const REFRESH_PROVIDER_BY_FAMILY: Partial<Record<ProviderFamily, AgentChatModelCatalogRefreshProvider>> = {
+  opencode: "opencode",
+  ollama: "ollama",
+  lmstudio: "lmstudio",
+  cursor: "cursor",
+  pi: "pi",
+  factory: "droid",
+  qwen: "qwen",
+  moonshot: "kimi",
+  xai: "grok",
+  "github-copilot": "copilot",
+};
+
 export function refreshProviderForFamily(family: ProviderFamily): AgentChatModelCatalogRefreshProvider | null {
-  if (family === "opencode") return "opencode";
-  if (family === "ollama") return "ollama";
-  if (family === "lmstudio") return "lmstudio";
-  if (family === "cursor") return "cursor";
-  if (family === "pi") return "pi";
-  if (family === "factory") return "droid";
-  return null;
+  return REFRESH_PROVIDER_BY_FAMILY[family] ?? null;
 }
 
 const RUNTIME_CATALOG_REFRESH_TTL_MS = 30 * 60_000;
@@ -20,6 +27,10 @@ const REFRESH_PROVIDERS: AgentChatModelCatalogRefreshProvider[] = [
   "droid",
   "lmstudio",
   "ollama",
+  "qwen",
+  "kimi",
+  "grok",
+  "copilot",
 ];
 
 /**

@@ -23,6 +23,30 @@ import {
 // actually authenticated. Prior regression: hook checked a nonexistent
 // `runtimeAvailable` field and dimmed every Claude row even for working users.
 describe("familiesFromStatus", () => {
+  it("greys an ACP provider ADE has probed but not signed in, and leaves an unprobed one absent", () => {
+    const out = familiesFromStatus({
+      availableProviders: { claude: false, codex: false, cursor: false, droid: false, qwen: true },
+      providerConnections: {
+        qwen: { authAvailable: true, runtimeAvailable: true },
+        grok: { authAvailable: false, runtimeAvailable: false },
+      },
+    });
+    expect(out.qwen).toBe("ok");
+    expect(out.xai).toBe("unauthed");
+    // Never probed: absent, not signed out. An absent rail is "checking",
+    // which is a different thing from "sign in".
+    expect(out.moonshot).toBeUndefined();
+    expect(out["github-copilot"]).toBeUndefined();
+  });
+
+  it("marks an ACP provider ok from runtimeAvailable alone", () => {
+    const out = familiesFromStatus({
+      availableProviders: { claude: false, codex: false, cursor: false, droid: false },
+      providerConnections: { copilot: { authAvailable: true, runtimeAvailable: true } },
+    });
+    expect(out["github-copilot"]).toBe("ok");
+  });
+
   it("marks Claude as ok when auth.ready is true (no runtimeAvailable field)", () => {
     const out = familiesFromStatus({
       availableProviders: {

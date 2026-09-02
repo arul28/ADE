@@ -25,6 +25,7 @@ import {
 } from "./cliLaunch";
 import { ADE_CLI_AGENT_GUIDANCE } from "../../../shared/adeCliGuidance";
 import { ADE_AGENT_SKILLS_DIRS_ENV } from "../../../shared/agentSkillRoots";
+import { GROK_CLAUDE_MARKER_OVERRIDE_ENV } from "../../../shared/grokSupervision";
 import type { AgentChatPermissionMode, TerminalSessionSummary } from "../../../shared/types";
 
 const originalPlatform = process.platform;
@@ -330,6 +331,170 @@ describe("defaultTrackedCliStartupCommand", () => {
     expect(defaultTrackedCliStartupCommand("droid")).toBe("droid");
     expect(defaultTrackedCliStartupCommand("opencode")).toBe("opencode");
     expect(defaultTrackedCliStartupCommand("pi")).toBe("pi");
+  });
+
+  it("returns launch binaries for the ACP providers", () => {
+    expect(defaultTrackedCliStartupCommand("qwen")).toBe("qwen");
+    expect(defaultTrackedCliStartupCommand("kimi")).toBe("kimi");
+    expect(defaultTrackedCliStartupCommand("grok")).toBe("grok --no-alt-screen");
+    expect(defaultTrackedCliStartupCommand("copilot")).toBe("copilot --no-alt-screen");
+  });
+});
+
+describe("ACP CLI providers", () => {
+  it("assigns a Qwen session id and keeps --yolo off the approval-mode flag", () => {
+    const launch = withProcessPlatform("darwin", () => buildTrackedCliLaunchCommand({
+      provider: "qwen",
+      permissionMode: "full-auto",
+      sessionId: "11111111-2222-3333-4444-555555555555",
+      model: "qwen/qwen3-coder-plus",
+      initialPrompt: "Fix the failing test.",
+    }));
+    expect(launch.command).toBe("qwen");
+    expect(launch.assignedSessionId).toBe("11111111-2222-3333-4444-555555555555");
+    expect(launch.args).toContain("--session-id");
+    expect(launch.args).toEqual(expect.arrayContaining(["-m", "qwen3-coder-plus"]));
+    expect(launch.args).toEqual(expect.arrayContaining(["--approval-mode", "yolo"]));
+    expect(launch.args).not.toContain("--yolo");
+    // POSIX keeps the prompt in argv; the guidance blob stays off the shell line.
+    expect(launch.args).toEqual(expect.arrayContaining(["-i", "Fix the failing test."]));
+    expect(launch.startupCommand).not.toContain("--append-system-prompt");
+    expect(launch.initialInput).toBeUndefined();
+  });
+
+  it("moves the Qwen prompt onto the PTY on Windows", () => {
+    const launch = withProcessPlatform("win32", () => buildTrackedCliLaunchCommand({
+      provider: "qwen",
+      permissionMode: "default",
+      initialPrompt: "Fix the failing test.",
+    }));
+    expect(launch.args).not.toContain("-i");
+    expect(launch.initialInput).toBe("Fix the failing test.");
+    expect(launch.initialInputDelayMs).toBe(750);
+  });
+
+  it("gives Kimi no argv prompt and no assigned session id", () => {
+    const launch = withProcessPlatform("darwin", () => buildTrackedCliLaunchCommand({
+      provider: "kimi",
+      permissionMode: "plan",
+      sessionId: "11111111-2222-3333-4444-555555555555",
+      model: "moonshot/k3",
+      initialPrompt: "Review this lane.",
+    }));
+    expect(launch.command).toBe("kimi");
+    // `-m` takes a namespaced alias, so the registry prefix is replaced, not dropped.
+    expect(launch.args).toEqual(["-m", "kimi-code/k3", "--plan"]);
+    expect(launch.assignedSessionId).toBeUndefined();
+    expect(launch.startupCommand).not.toContain("Review this lane.");
+    expect(launch.initialInput).toBe("Review this lane.");
+    expect(launch.initialInputDelayMs).toBe(750);
+  });
+
+  it("assigns a Grok session with -s and never passes --worktree", () => {
+    const launch = withProcessPlatform("darwin", () => buildTrackedCliLaunchCommand({
+      provider: "grok",
+      permissionMode: "edit",
+      sessionId: "11111111-2222-3333-4444-555555555555",
+      model: "xai/grok-4-6",
+      reasoningEffort: "ultracode",
+      initialPrompt: "Ship it.",
+    }));
+    expect(launch.command).toBe("grok");
+    expect(launch.args).toEqual(expect.arrayContaining(["-s", "11111111-2222-3333-4444-555555555555"]));
+    expect(launch.args).toEqual(expect.arrayContaining(["-m", "grok-4-6"]));
+    // ADE's ladder runs past Grok's, so `ultracode` lands on its top tier.
+    expect(launch.args).toEqual(expect.arrayContaining(["--reasoning-effort", "xhigh"]));
+    expect(launch.args).toEqual(expect.arrayContaining(["--permission-mode", "acceptEdits"]));
+    expect(launch.args).not.toContain("-w");
+    expect(launch.args).not.toContain("--worktree");
+    expect(launch.args.at(-1)).toBe("Ship it.");
+    expect(launch.startupCommand).not.toContain("--rules");
+    // Both halves of the neutralization, on the tracked CLI too: the flag only
+    // overrides `~/.grok/config.toml`, and the marker only cancels the Claude
+    // settings import. Neither works alone.
+    expect(launch.env?.[GROK_CLAUDE_MARKER_OVERRIDE_ENV]).toBe("1");
+    expect(launch.args).toEqual(expect.arrayContaining(["--permission-mode", "acceptEdits"]));
+  });
+
+  it("carries the Grok claude-import kill switch on resume as well as on launch", () => {
+    // A resumed TUI re-reads the user's Claude settings on start, so a resume
+    // that dropped the variable would change the chat's posture on reattach.
+    const resumed = buildTrackedCliResumeLaunchCommand({
+      provider: "grok",
+      targetKind: "session",
+      targetId: "11111111-2222-3333-4444-555555555555",
+      launch: { permissionMode: "default" },
+    });
+    expect(resumed.env?.[GROK_CLAUDE_MARKER_OVERRIDE_ENV]).toBe("1");
+    expect(resumed.args).toEqual(expect.arrayContaining(["--permission-mode", "default"]));
+  });
+
+  it("assigns a Copilot session through --resume and maps plan to tool denials", () => {
+    const launch = withProcessPlatform("darwin", () => buildTrackedCliLaunchCommand({
+      provider: "copilot",
+      permissionMode: "plan",
+      sessionId: "11111111-2222-3333-4444-555555555555",
+      model: "github-copilot/gpt-5.4",
+      initialPrompt: "Plan the change.",
+    }));
+    expect(launch.command).toBe("copilot");
+    expect(launch.assignedSessionId).toBe("11111111-2222-3333-4444-555555555555");
+    expect(launch.args).toContain("--resume=11111111-2222-3333-4444-555555555555");
+    expect(launch.args).toEqual(expect.arrayContaining(["--model", "gpt-5.4"]));
+    expect(launch.args).toEqual(expect.arrayContaining(["--deny-tool=write", "--deny-tool=shell"]));
+    expect(launch.args).toEqual(expect.arrayContaining(["-i", "Plan the change."]));
+  });
+
+  it("rejects the permission modes each ACP provider has no mapping for", () => {
+    expect(() => validateLaunchProfilePermissionMode("copilot", "auto")).toThrow(/GitHub Copilot/u);
+    expect(() => validateLaunchProfilePermissionMode("kimi", "auto")).toThrow(/Kimi/u);
+    expect(() => validateLaunchProfilePermissionMode("qwen", "config-toml")).toThrow(/qwen/u);
+    expect(() => validateLaunchProfilePermissionMode("grok", "config-toml")).toThrow(/grok/u);
+    // Both providers with a native auto tier accept it.
+    expect(() => validateLaunchProfilePermissionMode("qwen", "auto")).not.toThrow();
+    expect(() => validateLaunchProfilePermissionMode("grok", "auto")).not.toThrow();
+  });
+
+  it("never emits an assign-at-launch session id on an ACP resume", () => {
+    const resumeMetadata = (provider: "qwen" | "kimi" | "grok" | "copilot") => ({
+      provider,
+      targetKind: "session" as const,
+      targetId: "11111111-2222-3333-4444-555555555555",
+      launch: { permissionMode: "default" as const },
+    });
+    const qwen = buildTrackedCliResumeLaunchCommand(resumeMetadata("qwen"));
+    expect(qwen.args).not.toContain("--session-id");
+    expect(qwen.args).toEqual(expect.arrayContaining(["--resume", "11111111-2222-3333-4444-555555555555"]));
+
+    const kimi = buildTrackedCliResumeLaunchCommand(resumeMetadata("kimi"));
+    expect(kimi.args).toEqual(expect.arrayContaining(["-S", "11111111-2222-3333-4444-555555555555"]));
+
+    const grok = buildTrackedCliResumeLaunchCommand(resumeMetadata("grok"));
+    expect(grok.args).not.toContain("-s");
+    expect(grok.args).toEqual(expect.arrayContaining(["--resume", "11111111-2222-3333-4444-555555555555"]));
+
+    const copilot = buildTrackedCliResumeLaunchCommand(resumeMetadata("copilot"));
+    expect(copilot.args).toContain("--resume=11111111-2222-3333-4444-555555555555");
+  });
+
+  it("continues the most recent ACP session when no target id was captured", () => {
+    for (const provider of ["qwen", "grok", "copilot"] as const) {
+      const launch = buildTrackedCliResumeLaunchCommand({
+        provider,
+        targetKind: "session",
+        targetId: null,
+        launch: { permissionMode: "default" },
+      });
+      expect(launch.args).toContain("--continue");
+    }
+    const kimi = buildTrackedCliResumeLaunchCommand({
+      provider: "kimi",
+      targetKind: "session",
+      targetId: null,
+      launch: { permissionMode: "default" },
+    });
+    // Kimi spells continue with a lowercase short flag, not `--continue`.
+    expect(kimi.args).toContain("-c");
   });
 });
 
@@ -694,21 +859,21 @@ describe("buildTrackedCliStartupCommand", () => {
         provider: "claude",
         permissionMode: "default",
         sessionId: "00000000-0000-0000-0000-000000000001",
-        model: "anthropic/claude-fable-5",
+        model: "anthropic/claude-fable-5-1",
         reasoningEffort: "ultracode",
         fastMode: true,
       });
 
       expect(launch.args).toEqual(expect.arrayContaining([
         "--model",
-        "claude-fable-5",
+        "claude-fable-5-1",
         "--effort",
         "xhigh",
         "--settings",
         JSON.stringify({ fastMode: true, ultracode: true }),
       ]));
       expect(launch.args).not.toEqual(expect.arrayContaining(["--effort", "ultracode"]));
-      expect(launch.startupCommand).toContain("--model claude-fable-5");
+      expect(launch.startupCommand).toContain("--model claude-fable-5-1");
       expect(launch.startupCommand).toContain("--effort xhigh");
       expect(launch.startupCommand).toContain("ultracode");
     });
@@ -1501,11 +1666,11 @@ describe("tracked CLI resume helpers", () => {
       targetId: "claude-session-1",
       launch: {
         permissionMode: "default",
-        model: "anthropic/claude-fable-5",
+        model: "anthropic/claude-fable-5-1",
         reasoningEffort: "ultracode",
       },
     })).toBe(
-      "claude --permission-mode default --model claude-fable-5 --effort xhigh --settings \"{\\\"ultracode\\\":true}\" --resume claude-session-1",
+      "claude --permission-mode default --model claude-fable-5-1 --effort xhigh --settings \"{\\\"ultracode\\\":true}\" --resume claude-session-1",
     );
 
     expect(buildTrackedCliResumeCommand({

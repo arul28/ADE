@@ -1498,6 +1498,30 @@ extension WorkChatSessionView {
     let distance = max(0, rawDistance)
     scrollMetrics.distanceFromBottom = distance
 
+    let layoutRecent = workChatLayoutAdjustedRecently(
+      lastAdjustmentUptime: scrollMetrics.lastLayoutAdjustmentUptime,
+      now: ProcessInfo.processInfo.systemUptime
+    )
+    if workChatShouldReleaseFollowForUserScroll(
+      following: isNearBottom,
+      userDrivenPhase: timelineDragActive || scrollMetrics.phaseIsUserDriven,
+      layoutAdjustedRecently: layoutRecent,
+      distanceFromBottom: distance,
+      offsetRetreat: scrollMetrics.stableOffsetY - scrollMetrics.offsetY
+    ) {
+      cancelPendingInitialBottomPinForUserScroll()
+      releaseBottomStickinessForUserScroll(reason: "user-scroll")
+      return
+    }
+
+    // Keyboard shrink inflates `distanceFromBottom` with an unchanged offset —
+    // the same predicate flip the terminal refuses to consult on layout. Skip
+    // resume/near-bottom inference until that pass has settled; the layout
+    // observer re-glues. A real scroll-up already returned above.
+    if layoutRecent {
+      return
+    }
+
     if bottomStickinessReleasedByUser {
       guard distance <= workChatStickResumeThreshold, !timelineDragActive else { return }
       bottomStickinessReleasedByUser = false
@@ -1512,9 +1536,11 @@ extension WorkChatSessionView {
       return
     }
 
+    // Once following, stay following until the reader actually moves (the
+    // deadband check above). A leftover `.interacting` phase from keyboard
+    // avoidance must not drop the pin.
     let nextIsNearBottom = isNearBottom
-      ? !timelineDragActive
-      : (!timelineDragActive && distance <= workChatStickResumeThreshold)
+      || (!timelineDragActive && distance <= workChatStickResumeThreshold)
 
     if nextIsNearBottom != isNearBottom {
       isNearBottom = nextIsNearBottom
@@ -1531,9 +1557,9 @@ extension WorkChatSessionView {
 
   /// The reader took the transcript over, so the initial bottom pin stands down.
   ///
-  /// A user-driven scroll phase is enough to stand down the opening pin. This
-  /// runs on the native scroll phase transition, so a small tap cannot strand a
-  /// freshly-opened chat while a real drag still cancels the pin immediately.
+  /// Called from stickiness once the container is stable and the reader has
+  /// actually moved past the 2pt deadband. Keyboard `.interacting` never
+  /// reaches here.
   @MainActor
   func cancelPendingInitialBottomPinForUserScroll() {
     guard pendingInitialBottomPinSessionId == session.id else { return }
@@ -1546,6 +1572,89 @@ extension WorkChatSessionView {
     guard isNearBottom else { return }
     bottomStickinessReleasedByUser = true
     isNearBottom = false
+  }
+
+  /// Re-glue or restore the transcript after a window/content layout pass.
+  ///
+  /// Lives on the content-size observer, not the per-frame position observer,
+  /// because a pin is a scroll write and a scan of the tail. Keyboard shrink
+  /// already changes `scrollableHeight`/`containerHeight` here; after the
+  /// opening pin disarms this was previously a no-op, which is what left the
+  /// newest lines cropped below the shorter window.
+  @MainActor
+  func applyLayoutGeometryScrollAdjustment(
+    previous: WorkChatContentSizeSample,
+    next: WorkChatContentSizeSample,
+    proxy: ScrollViewProxy
+  ) {
+    defer {
+      scrollMetrics.containerHeight = next.containerHeight
+      scrollMetrics.contentHeight = next.contentHeight
+    }
+
+    guard previous.containerHeight > 1 || previous.contentHeight > 1 else {
+      scrollMetrics.stableOffsetY = scrollMetrics.offsetY
+      return
+    }
+
+    let containerDelta = next.containerHeight - previous.containerHeight
+    let contentDelta = next.contentHeight - previous.contentHeight
+    let viewportDelta = workChatLayoutViewportDelta(
+      contentDelta: contentDelta,
+      scrollableDelta: next.scrollableHeight - previous.scrollableHeight
+    )
+    let windowChanged = workChatLayoutWindowChanged(
+      containerDelta: containerDelta,
+      viewportDelta: viewportDelta
+    )
+    let contentShrunk = contentDelta < -workChatLayoutGeometrySlop
+
+    if windowChanged || contentShrunk {
+      scrollMetrics.lastLayoutAdjustmentUptime = ProcessInfo.processInfo.systemUptime
+    }
+    // Reclaim write permission before the pin so keyboard `.interacting` cannot
+    // block the very scroll write that re-glues the tail.
+    if windowChanged {
+      if timelineScrollPhaseUserDriven {
+        timelineScrollPhaseUserDriven = false
+      }
+      if timelineDragActive {
+        timelineDragActive = false
+      }
+      // Phase-change can still mark the reader as having taken over before
+      // this observer runs. If they were at the tail, that was the keyboard,
+      // not a scroll-up — put follow back so the pin can run.
+      if workChatShouldReclaimFollowAfterWindowChange(
+        following: isNearBottom,
+        distanceFromPreviousTail: max(0, previous.scrollableHeight - scrollMetrics.stableOffsetY)
+      ) {
+        bottomStickinessReleasedByUser = false
+        isNearBottom = true
+      }
+    }
+
+    let adjustment = workChatLayoutScrollAdjustment(
+      following: isNearBottom,
+      mayWriteScrollOffset: canWriteAutomaticScrollOffset,
+      containerDelta: containerDelta,
+      contentDelta: contentDelta,
+      viewportDelta: viewportDelta,
+      previousOffsetY: scrollMetrics.stableOffsetY,
+      nextScrollableHeight: next.scrollableHeight
+    )
+    switch adjustment {
+    case .none:
+      break
+    case .pinToLatest:
+      pinToLatestAfterLayout(proxy, reason: "layout-geometry")
+    case .restoreOffset(let y):
+      guard abs(y - scrollMetrics.offsetY) > workChatLayoutGeometrySlop else { return }
+      var transaction = Transaction()
+      transaction.disablesAnimations = true
+      withTransaction(transaction) {
+        scrollPosition.scrollTo(y: y)
+      }
+    }
   }
 
   @MainActor

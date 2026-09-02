@@ -67,12 +67,13 @@ import {
   convertHeicBufferToJpeg,
   HeicAttachmentConversionError,
 } from "../chat/heicAttachmentConverter";
-import type { ConvertImageToJpegResult } from "../../../shared/types/chat";
+import type { AcpChatProvider, ConvertImageToJpegResult } from "../../../shared/types/chat";
 import { appendEvent as perfAppend, isRunActive as isPerfRunActive } from "../perf/perfLog";
 import { buildPrAiResolutionContextKey, isAdeUsageRangePreset, isAdeUsageScope } from "../../../shared/types";
 import { detectCliAuthStatuses } from "../ai/authDetector";
 import { resolveClaudeCodeExecutable } from "../ai/claudeCodeExecutable";
 import { buildProviderConnections } from "../ai/providerConnectionStatus";
+import { collectAcpProviderDiagnostics } from "../ai/acpProviderDiagnostics";
 import { resolvePiInstallation } from "../ai/piInstallation";
 import { pathsEqual } from "../shared/pathCompare";
 import { browseProjectDirectories } from "../projects/projectBrowserService";
@@ -99,6 +100,7 @@ import {
   resolveProjectIconPath,
   setProjectIconOverrideFromSelection,
 } from "../projects/projectIconResolver";
+import { assertCursorCloudRenameAllowed } from "../../../shared/cursorCloudNaming";
 import { launchAgentChatCli } from "../chat/agentChatCliLaunch";
 import {
   createPromptStash,
@@ -589,6 +591,7 @@ import type {
   AiDetectedAuth,
   AiFeatureKey,
   AiProviderConnections,
+  AcpProviderDiagnostics,
   AiApiKeyVerificationResult,
   AiConfig,
   AiSettingsStatus,
@@ -4773,6 +4776,7 @@ export function registerIpc({
         installId: productAnalyticsService?.getDistinctId() ?? null,
         accountUserId: getCurrentAccountOwnerId?.() ?? null,
         getLocalRuntimeStatus: () => localRuntimeConnectionPool?.getStatus() ?? null,
+        getRemoteRuntimeSnapshot: () => runtimeBridge.snapshot(),
         diagnoseProject: projectRecoveryService
           ? (root: string) => projectRecoveryService.diagnose(root)
           : undefined,
@@ -5128,6 +5132,24 @@ export function registerIpc({
       const ctx = getCtx();
       requireAppContextServices(ctx, ["aiIntegrationService"] as const);
       return await ctx.aiIntegrationService.verifyApiKeyConnection(arg.provider);
+    },
+  );
+
+  ipcMain.handle(
+    IPC.aiAcpProviderDiagnostics,
+    async (
+      _event,
+      arg: { provider: AcpChatProvider; runDoctor?: boolean },
+    ): Promise<AcpProviderDiagnostics> => {
+      const ctx = getCtx();
+      return await collectAcpProviderDiagnostics({
+        provider: arg.provider,
+        // Diagnostics are about this machine's install, so the project root is
+        // the right directory: probe verdicts are cached per `{provider, cwd}`
+        // and a lane worktree would key a second, emptier cache entry.
+        cwd: ctx.project.rootPath,
+        ...(arg.runDoctor === true ? { runDoctor: true } : {}),
+      });
     },
   );
 
@@ -5533,9 +5555,10 @@ export function registerIpc({
       return await ctx.agentChatService.openCursorCloudChat({
         cloudAgentId: arg.cloudAgentId,
         laneId: arg.laneId,
-        ...(arg.agentName ? { agentName: arg.agentName } : {}),
         ...(arg.sessionId ? { sessionId: arg.sessionId } : {}),
         ...(arg.modelId ? { modelId: arg.modelId } : {}),
+        ...(arg.reasoningEffort !== undefined ? { reasoningEffort: arg.reasoningEffort } : {}),
+        ...(arg.fastMode !== undefined ? { fastMode: arg.fastMode } : {}),
       });
     },
   );
@@ -7954,6 +7977,12 @@ export function registerIpc({
 
   ipcMain.handle(IPC.sessionsUpdateMeta, async (_event, arg: UpdateSessionMetaArgs): Promise<TerminalSessionSummary | null> => {
     const ctx = ensureSessionContext();
+    await assertCursorCloudRenameAllowed(
+      ctx.agentChatService
+        ? (sessionId) => ctx.agentChatService!.getSessionSummary(sessionId)
+        : null,
+      arg,
+    );
     return ctx.sessionService.updateMeta(arg);
   });
 
@@ -11931,8 +11960,8 @@ export function registerIpc({
   });
 
   ipcMain.handle(IPC.updateCheckForUpdates, () => {
-    // Only reachable from the Settings button, so it always counts as
-    // user-initiated: it must run even when an update is already staged.
+    // Only reachable from the Settings button. Every entry point now runs the
+    // same check, so `userInitiated` only labels the log line.
     getCtx().autoUpdateService?.checkForUpdates({ userInitiated: true });
   });
 

@@ -707,9 +707,20 @@ total-height correction the paragraph above exists to avoid. The force-pin
 remains as belt-and-braces, but it now stays armed until the content size has
 been quiet for 600ms rather than firing on a fixed retry ladder, because
 hydration routinely lands after that ladder ends. It stands down early only for
-a deliberate drag (16pt — the 2pt stickiness deadband is finger jitter on a
-freshly-opened chat). A transcript shorter than the viewport renders from the
-top, desktop-style; a one-entry chat skips the pin entirely.
+a deliberate scroll (the 2pt stickiness deadband — finger jitter and keyboard
+`.interacting` do not count). A transcript shorter than the viewport renders from
+the top, desktop-style; a one-entry chat skips the pin entirely.
+
+**Follow survives the keyboard the same way a terminal does.** Opening the
+composer or the system keyboard shrinks the transcript window. A reader who was
+glued to the live tail stays glued: the content-size observer re-pins to
+`chat-end` after that pass (`workChatLayoutScrollAdjustment`), and the
+keyboard's `.interacting` phase is not treated as the reader taking over —
+consulting `distanceFromBottom` there is the same predicate flip the terminal
+refuses to use on a layout resize. A reader who had scrolled up keeps that
+place; the pre-keyboard offset is restored and clamped so a shorter window
+cannot overscroll into blank. The same following re-pin runs when a finishing
+turn collapses cards and the tape shrinks under the viewport.
 
 **A message's truncation budget only ever grows.** The newest assistant message
 renders tail-anchored under a generous budget so a finishing turn is readable in
@@ -3470,9 +3481,9 @@ the stats and shows update guidance.
   (`WorkModelCatalog.swift`, mirroring desktop's
   `resolveCliProviderForModel`), so adding a provider means updating
   both the runtime registry and the phone's model-catalog grouping
-  together; the Claude picker order mirrors desktop (Fable 5, Opus 5,
-  Sonnet 5, Haiku 4.5, Opus 4.8 1M, Opus 4.7 1M) and legacy Sonnet 4.6 /
-  basic Opus 4.7 selections normalize forward instead of appearing as
+  together; the Claude picker order mirrors desktop (Fable 5.1, Opus 5,
+  Sonnet 5, Haiku 4.5, Opus 4.8) and legacy Sonnet 4.6 /
+  Fable 5 / Opus 4.7 selections normalize forward instead of appearing as
   rows, while the generic `opus` alias resolves to Opus 5. The OpenAI picker
   always promotes GPT-5.6 Sol, Terra, Luna in that
   order even when a host returns another order; Sol is the fallback default

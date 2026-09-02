@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.71] - 2026-09-01
+
+### Claude models
+
+- Claude Fable 5.1 is the default Claude model. Pickers list Fable 5.1, Opus 5, Sonnet 5, Haiku 4.5, then Opus 4.8. Opus 4.8 drops the 1M suffix. Fable 5 and Opus 4.7 ids, including the old 1M aliases, resolve forward and no longer appear as rows (#1197).
+
+### Remote machines
+
+- A disconnected remote no longer traps a draft. ADE falls back to this computer, keeps recovery visible, and offers a guarded way to send locally (#1196).
+
+### iOS
+
+- Work chat stays on-screen when the keyboard opens. Following the transcript re-pins across keyboard and composer shrink; scrolling up still keeps your place (#1198).
+
+## [1.2.70] - 2026-09-01
+
+### Cursor chat reliability
+
+- Cursor worker recovery keeps its replacement isolated. Each worker gets a private hook socket, even while its predecessor is shutting down, and recovery waits through the complete process teardown before starting the replacement. macOS socket paths stay within the platform limit, including installations with deep temporary directories (#1195).
+- Failed starts and recycled workers remove their per-instance socket directory without deleting the durable Cursor state needed by the next worker (#1195).
+
+### Chat handoffs
+
+- Codex fork replay stays within the provider input limit. ADE trims the oldest transcript content when needed and discloses the truncation instead of sending an oversized replay that the app server rejects (#1193).
+
 ## [1.2.69] - 2026-08-31
 
 ### Pull requests
@@ -1848,7 +1873,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Initial public release.
 
-[Unreleased]: https://github.com/arul28/ADE/compare/v1.2.69...HEAD
+[Unreleased]: https://github.com/arul28/ADE/compare/v1.2.71...HEAD
+[1.2.71]: https://github.com/arul28/ADE/compare/v1.2.70...v1.2.71
+[1.2.70]: https://github.com/arul28/ADE/compare/v1.2.69...v1.2.70
 [1.2.69]: https://github.com/arul28/ADE/compare/v1.2.68...v1.2.69
 [1.2.68]: https://github.com/arul28/ADE/compare/v1.2.67...v1.2.68
 [1.2.67]: https://github.com/arul28/ADE/compare/v1.2.66...v1.2.67

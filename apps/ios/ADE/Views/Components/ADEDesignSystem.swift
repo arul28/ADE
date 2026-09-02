@@ -130,6 +130,9 @@ enum ADEColor {
     case "deepseek": return brandDeepSeek
     case "xai", "grok": return brandXAI
     case "groq": return brandGroq
+    case "qwen": return ADESharedTheme.brandQwen
+    case "kimi", "moonshot", "moonshotai": return ADESharedTheme.brandKimi
+    case "copilot", "github-copilot": return ADESharedTheme.brandCopilot
     default: return purpleAccent
     }
   }
@@ -139,6 +142,9 @@ enum ADEColor {
   /// Keys cover both the registry id ("anthropic/claude-sonnet-5") and shortId ("sonnet").
   private static let modelColors: [String: UInt32] = [
     // Anthropic
+    "anthropic/claude-fable-5-1": 0xD97706,
+    "anthropic/claude-fable-5-1-api": 0xD97706,
+    "claude-fable-5-1": 0xD97706,
     "anthropic/claude-fable-5": 0xD97706,
     "anthropic/claude-fable-5-api": 0xD97706,
     "claude-fable-5": 0xD97706,
@@ -148,11 +154,6 @@ enum ADEColor {
     "opus": 0xD97706,
     "anthropic/claude-opus-4-8": 0xD97706,
     "claude-opus-4-8": 0xD97706,
-    "anthropic/claude-opus-4-7-1m": 0xB45309,
-    "claude-opus-4-7-1m": 0xB45309,
-    "opus-1m": 0xB45309,
-    "opus[1m]": 0xB45309,
-    "claude-opus-4-7[1m]": 0xB45309,
     "anthropic/claude-sonnet-5": 0x8B5CF6,
     "claude-sonnet-5": 0x8B5CF6,
     "sonnet": 0x8B5CF6,
@@ -222,32 +223,53 @@ enum ADEColor {
     case "gpt-5.4-mini", "gpt-5.4-mini-codex", "openai/gpt-5.4-mini", "openai/gpt-5.4-mini-codex":
       append("openai/gpt-5.4-mini")
       append("gpt-5.4-mini")
-    case "fable", "anthropic/claude-fable-5", "anthropic/claude-fable-5-api", "claude-fable-5":
+    case "fable", "fable-5.1", "fable-5-1", "fable-5", "fable-5.0",
+         "anthropic/claude-fable-5-1", "anthropic/claude-fable-5-1-api",
+         "claude-fable-5-1", "opencode/anthropic/claude-fable-5-1",
+         "anthropic/claude-fable-5", "anthropic/claude-fable-5-api", "claude-fable-5",
+         "opencode/anthropic/claude-fable-5":
+      append("anthropic/claude-fable-5-1")
+      append("anthropic/claude-fable-5-1-api")
+      append("claude-fable-5-1")
+      append("opencode/anthropic/claude-fable-5-1")
       append("anthropic/claude-fable-5")
       append("anthropic/claude-fable-5-api")
       append("claude-fable-5")
+      append("opencode/anthropic/claude-fable-5")
       append("fable")
     case "opus", "opus-5", "opus-5.0", "opus-5-0",
-         "anthropic/claude-opus-5", "anthropic/claude-opus-5-api", "claude-opus-5":
+         "anthropic/claude-opus-5", "anthropic/claude-opus-5-api", "claude-opus-5",
+         "opencode/anthropic/opus", "opencode/anthropic/claude-opus-5":
       append("anthropic/claude-opus-5")
       append("claude-opus-5")
+      append("opencode/anthropic/claude-opus-5")
       append("opus")
     case "anthropic/claude-opus-4-8", "anthropic/claude-opus-4-8-api", "claude-opus-4-8",
          "opus-4.8", "opus-4-8", "opus-4.8-1m", "opus-4.8[1m]", "opus-4-8-1m",
-         "anthropic/claude-opus-4-8-1m", "claude-opus-4-8-1m", "claude-opus-4-8[1m]":
+         "anthropic/claude-opus-4-8-1m", "claude-opus-4-8-1m", "claude-opus-4-8[1m]",
+         "opencode/anthropic/claude-opus-4-8":
       append("anthropic/claude-opus-4-8")
       append("claude-opus-4-8")
+      append("opencode/anthropic/claude-opus-4-8")
     case "anthropic/claude-opus-4-7", "anthropic/claude-opus-4-7-api", "claude-opus-4-7":
       append("anthropic/claude-opus-4-8")
       append("claude-opus-4-8")
     case "opus[1m]", "opus-1m", "anthropic/claude-opus-4-7-1m", "claude-opus-4-7-1m", "claude-opus-4-7[1m]":
-      append("anthropic/claude-opus-4-7-1m")
-      append("opus-1m")
+      append("anthropic/claude-opus-4-8")
+      append("claude-opus-4-8")
     case "sonnet", "anthropic/claude-sonnet-5", "claude-sonnet-5",
-         "anthropic/claude-sonnet-4-6", "claude-sonnet-4-6":
+         "anthropic/claude-sonnet-4-6", "claude-sonnet-4-6",
+         "opencode/anthropic/claude-sonnet-5":
       append("anthropic/claude-sonnet-5")
       append("claude-sonnet-5")
+      append("opencode/anthropic/claude-sonnet-5")
       append("sonnet")
+    case "haiku", "anthropic/claude-haiku-4-5", "claude-haiku-4-5",
+         "opencode/anthropic/claude-haiku-4-5":
+      append("anthropic/claude-haiku-4-5")
+      append("claude-haiku-4-5")
+      append("opencode/anthropic/claude-haiku-4-5")
+      append("haiku")
     default:
       break
     }
@@ -291,6 +313,9 @@ enum ADEColor {
   /// the same effort actions as desktop and the ADE TUI.
   private static let modelReasoningTiers: [String: [String]] = [
     // Claude
+    "anthropic/claude-fable-5-1": ["low", "medium", "high", "xhigh", "max", "ultracode"],
+    "anthropic/claude-fable-5-1-api": ["low", "medium", "high", "xhigh", "max", "ultracode"],
+    "claude-fable-5-1": ["low", "medium", "high", "xhigh", "max", "ultracode"],
     "anthropic/claude-fable-5": ["low", "medium", "high", "xhigh", "max", "ultracode"],
     "anthropic/claude-fable-5-api": ["low", "medium", "high", "xhigh", "max", "ultracode"],
     "claude-fable-5": ["low", "medium", "high", "xhigh", "max", "ultracode"],
@@ -300,11 +325,6 @@ enum ADEColor {
     "opus": ["low", "medium", "high", "xhigh", "max"],
     "anthropic/claude-opus-4-8": ["low", "medium", "high", "xhigh", "max", "ultracode"],
     "claude-opus-4-8": ["low", "medium", "high", "xhigh", "max", "ultracode"],
-    "anthropic/claude-opus-4-7-1m": ["low", "medium", "high", "xhigh", "max"],
-    "claude-opus-4-7-1m": ["low", "medium", "high", "xhigh", "max"],
-    "opus-1m": ["low", "medium", "high", "xhigh", "max"],
-    "opus[1m]": ["low", "medium", "high", "xhigh", "max"],
-    "claude-opus-4-7[1m]": ["low", "medium", "high", "xhigh", "max"],
     "anthropic/claude-sonnet-5": ["low", "medium", "high", "max"],
     "claude-sonnet-5": ["low", "medium", "high", "max"],
     "sonnet": ["low", "medium", "high", "max"],
@@ -368,6 +388,11 @@ enum ADEColor {
     "xai": 0xDC2626,
     "grok": 0xDC2626,
     "groq": 0x06B6D4,
+    "qwen": 0x6D4AFF,
+    "kimi": 0x1F1F1F,
+    "moonshot": 0x1F1F1F,
+    "copilot": 0x8B5CF6,
+    "github-copilot": 0x8B5CF6,
   ]
 
   /// Resolve the chat-surface accent for a session. Precedence: explicit hex

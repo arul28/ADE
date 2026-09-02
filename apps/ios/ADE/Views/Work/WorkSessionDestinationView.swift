@@ -634,6 +634,10 @@ private func workChatProviderFamilyFromToolType(_ toolType: String?) -> String? 
   if raw.hasPrefix("codex") { return "codex" }
   if raw.hasPrefix("opencode") { return "opencode" }
   if raw.hasPrefix("droid") || raw.hasPrefix("factory") { return "droid" }
+  if raw.hasPrefix("qwen") { return "qwen" }
+  if raw.hasPrefix("kimi") { return "kimi" }
+  if raw.hasPrefix("grok") { return "grok" }
+  if raw.hasPrefix("copilot") { return "copilot" }
   return raw
 }
 
@@ -1233,7 +1237,11 @@ struct WorkSessionDestinationView: View {
       pluginNames: chatHeaderPluginNames(session.id),
       pluginActionsEnabled: syncService.canInvokePluginActions,
       canAttachIssue: pluginGate.drawsBuiltin(.linear)
-        && syncService.canInvokeRemoteAction("lane.attachLinearIssueToSession")
+        && syncService.canInvokeRemoteAction("lane.attachLinearIssueToSession"),
+      showsRename: !CursorCloudNaming.ownsName(
+        composerChatSummary?.cursorCloudAgentId ?? session.cursorCloudAgentId
+      )
+
     )
   }
 

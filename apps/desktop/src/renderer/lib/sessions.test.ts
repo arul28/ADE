@@ -6,6 +6,7 @@ import {
   canBulkDeleteSession,
   canBulkStopSession,
   chatToolTypeForProvider,
+  cursorOwnsSessionName,
   formatSessionActionError,
   getStaleRunningCliSessionAgeHours,
   isChatToolType,
@@ -14,6 +15,15 @@ import {
   providerFromChatToolType,
   shortToolTypeLabel,
 } from "./sessions";
+
+describe("cursorOwnsSessionName", () => {
+  it("treats a real Cursor Cloud agent id as owned and ignores blanks", () => {
+    expect(cursorOwnsSessionName({ cursorCloudAgentId: "bc-1" })).toBe(true);
+    expect(cursorOwnsSessionName({ cursorCloudAgentId: "  " })).toBe(false);
+    expect(cursorOwnsSessionName({ cursorCloudAgentId: null })).toBe(false);
+    expect(cursorOwnsSessionName({ cursorCloudAgentId: undefined })).toBe(false);
+  });
+});
 
 describe("isChatToolType", () => {
   it("returns false for null, undefined, or empty input", () => {
@@ -223,7 +233,11 @@ describe("providerFromChatToolType", () => {
   });
 
   it("returns null for CLI/shell tool types and unknown input", () => {
-    for (const toolType of ["shell", "claude", "codex", "cursor-cli", "droid", "opencode", "not-a-tool", "", null, undefined]) {
+    for (const toolType of [
+      "shell", "claude", "codex", "cursor-cli", "droid", "opencode",
+      "qwen", "kimi", "grok", "copilot",
+      "not-a-tool", "", null, undefined,
+    ]) {
       expect(providerFromChatToolType(toolType)).toBeNull();
     }
   });

@@ -40,7 +40,20 @@ function truncateEnd(value: string, max: number): string {
 // a giant plan/diff from blowing past the card; the truncation marker tells the
 // user there's more.
 const PREVIEW_MAX_LINES = 12;
-const PROVIDER_ACCENT_SOURCES = new Set(["claude", "codex", "cursor", "droid", "opencode", "ollama", "lmstudio"]);
+const PROVIDER_ACCENT_SOURCES = new Set([
+  "claude",
+  "codex",
+  "cursor",
+  "droid",
+  "opencode",
+  "pi",
+  "qwen",
+  "kimi",
+  "grok",
+  "copilot",
+  "ollama",
+  "lmstudio",
+]);
 
 function previewLines(value: string, max: number): string[] {
   const rows = value.replace(/\r\n?/g, "\n").split("\n");

@@ -192,6 +192,26 @@ function canonicalDroidReplacementForAlias(
   const idPrefix = options?.customProxy ? "custom:" : "";
   const customProxy = options?.customProxy ? { customProxy: true } : {};
   if (
+    normalized === "claude-fable-5"
+    || normalized === "fable"
+    || normalized === "fable-5"
+    || normalized === "fable-5.0"
+    || normalized === "fable-5.1"
+    || normalized === "fable-5-1"
+    || (options?.customProxy && normalized === "claude-fable-5-1")
+  ) {
+    return {
+      id: `${idPrefix}claude-fable-5-1`,
+      displayName: "Fable 5.1",
+      ...customProxy,
+      contextWindow: 1_000_000,
+      maxOutputTokens: 128_000,
+      capabilities: CANONICAL_DROID_ANTHROPIC_CAPABILITIES,
+      reasoningTiers: ["low", "medium", "high", "xhigh", "max", "ultracode"],
+      defaultReasoningEffort: "high",
+    };
+  }
+  if (
     normalized === "claude-sonnet-4-6"
     || normalized === "sonnet-4-6"
     || (options?.customProxy && normalized === "claude-sonnet-5")
@@ -229,11 +249,15 @@ function canonicalDroidReplacementForAlias(
     || normalized === "claude-opus-4-6-fast"
     || normalized === "opus-4-6"
     || normalized === "opus-4.6"
+    || normalized === "claude-opus-4-7-1m"
+    || normalized === "claude-opus-4-7[1m]"
+    || normalized === "opus-1m"
+    || normalized === "opus[1m]"
     || (options?.customProxy && normalized === "claude-opus-4-8")
   ) {
     return {
       id: `${idPrefix}claude-opus-4-8`,
-      displayName: "Opus 4.8 1M",
+      displayName: "Opus 4.8",
       ...customProxy,
       contextWindow: 1_000_000,
       maxOutputTokens: 128_000,
@@ -365,7 +389,6 @@ export async function discoverDroidCliModelDescriptors(
     const row = normalizeDroidDiscoveredModel(rawRow);
     const trimmed = String(row.id ?? "").trim();
     if (!trimmed) continue;
-    const descriptorKey = trimmed.toLowerCase();
     const preferredDuplicateSource = rawRow.id.trim().toLowerCase() === trimmed.toLowerCase();
     const descriptor = createDynamicDroidCliModelDescriptor(trimmed, row.displayName, {
       customProxy: row.customProxy,
@@ -376,6 +399,7 @@ export async function discoverDroidCliModelDescriptors(
       ...(row.maxOutputTokens ? { maxOutputTokens: row.maxOutputTokens } : {}),
       ...(row.capabilities ? { capabilities: row.capabilities } : {}),
     });
+    const descriptorKey = descriptor.id.toLowerCase();
     const existingIndex = descriptorIds.get(descriptorKey);
     if (existingIndex !== undefined) {
       const existingPreferred = descriptorPreferredDuplicateSources.get(descriptorKey) ?? false;

@@ -23,6 +23,7 @@ import { providerDisplayLabel } from "../pendingInputLabels";
  * ~20 provider-keyed maps across four clients close over, and every one of them
  * would have to grow a case that no client could enumerate ahead of time.
  */
+
 export type AgentChatProvider =
   | "codex"
   | "claude"
@@ -31,7 +32,34 @@ export type AgentChatProvider =
   | "opencode"
   | "pi"
   | "plugin"
+  | "qwen"
+  | "kimi"
+  | "grok"
+  | "copilot"
   | (string & {});
+
+/**
+ * Providers ADE drives over the Agent Client Protocol. They share one host and
+ * one session-config shape, so surfaces branch on this list instead of naming
+ * the four providers again.
+ */
+export const ACP_CHAT_PROVIDERS = ["qwen", "kimi", "grok", "copilot"] as const;
+export type AcpChatProvider = (typeof ACP_CHAT_PROVIDERS)[number];
+
+export function isAcpChatProvider(
+  provider: AgentChatProvider | string | null | undefined,
+): provider is AcpChatProvider {
+  return provider != null && (ACP_CHAT_PROVIDERS as readonly string[]).includes(provider);
+}
+
+/** A completed model/provider transition recorded on a chat session. */
+export type AgentChatModelHandoff = {
+  fromProvider: AgentChatProvider;
+  toProvider: AgentChatProvider;
+  fromModelId?: ModelId;
+  toModelId?: ModelId;
+};
+
 
 export type AgentChatSessionStatus = "active" | "idle" | "ended";
 export type AgentChatSessionProfile = "light" | "workflow";
@@ -1434,6 +1462,15 @@ export type AgentChatEvent =
       turnId?: string;
     }
   | {
+      /** A completed provider/model transition in this chat's transcript. */
+      type: "model_handoff";
+      fromProvider: AgentChatProvider;
+      toProvider: AgentChatProvider;
+      fromModelId?: ModelId;
+      toModelId?: ModelId;
+      turnId?: string;
+    }
+  | {
       type: "completion_report";
       report: AgentChatCompletionReport;
       turnId?: string;
@@ -1601,6 +1638,8 @@ export type AgentChatEvent =
       cursorModeId?: string | null;
       cursorModeSnapshot?: AgentChatCursorModeSnapshot;
       cursorConfigValues?: Record<string, AgentChatCursorConfigValue> | null;
+      acpPermissionMode?: AgentChatAcpPermissionMode;
+      acpConfigSnapshot?: AgentChatAcpConfigSnapshot | null;
       spawnKind?: AgentChatSpawnKind;
       subagentTakeoverPromptShownAt?: string | null;
       // Accept turnId for uniformity with other variants — ignored by handlers.
@@ -1745,7 +1784,55 @@ export type AgentChatCursorModeSnapshot = {
   availableModelIds?: string[];
   configOptions?: AgentChatCursorConfigOption[];
 };
-export type PendingInputSource = "claude" | "codex" | "cursor" | "droid" | "opencode" | "pi" | "ade";
+/**
+ * ACP session configuration, shared by every ACP provider.
+ *
+ * One shape, not four. The protocol exposes session settings through
+ * `session/set_config_option`, whose option list is opaque and provider-owned,
+ * so ADE records what a dialect advertised rather than modelling each vendor's
+ * vocabulary. Mirrors the Cursor snapshot pattern
+ * (`AgentChatCursorModeSnapshot` / `AgentChatCursorConfigValue`), which is the
+ * only other runtime whose session controls are discovered at runtime.
+ */
+export type AgentChatAcpConfigValue = string | boolean | number;
+export type AgentChatAcpConfigSelectOption = {
+  value: string;
+  label: string;
+  description?: string | null;
+};
+export type AgentChatAcpConfigOption = {
+  id: string;
+  name: string;
+  description?: string | null;
+  category?: string | null;
+  type: "select" | "boolean";
+  currentValue: AgentChatAcpConfigValue | null;
+  options?: AgentChatAcpConfigSelectOption[];
+};
+export type AgentChatAcpConfigSnapshot = {
+  /** Provider-native session modes, when the dialect advertises them. */
+  currentModeId?: string | null;
+  availableModeIds?: string[];
+  /** Provider-native model ids, when the dialect advertises them. */
+  currentModelId?: string | null;
+  availableModelIds?: string[];
+  /** Everything else the dialect exposed, with its current value. */
+  configOptions?: AgentChatAcpConfigOption[];
+};
+
+/**
+ * The abstract permission posture ADE applies to an ACP session. Written once
+ * for all four providers; each dialect maps it to its own native flags (and
+ * rejects the modes it cannot honor) at the launch/spawn boundary.
+ */
+export type AgentChatAcpPermissionMode = "plan" | "default" | "auto-edit" | "auto" | "yolo";
+
+/**
+ * `"acp"` is one source for all four ACP providers: the permission round-trip
+ * is `session/request_permission` in every dialect, so a card cannot tell them
+ * apart and does not need to.
+ */
+export type PendingInputSource = "claude" | "codex" | "cursor" | "droid" | "opencode" | "pi" | "acp" | "ade";
 export type PendingInputKind = "approval" | "question" | "structured_question" | "permissions" | "plan_approval" | "model_selection";
 
 export type PendingInputOption = {
@@ -1841,6 +1928,8 @@ export type AgentChatSession = {
   /** Runtime-facing model token (CLI shortId or direct API model id), persisted as a plain string for compatibility. */
   model: string;
   modelId?: ModelId;
+  /** Completed model/provider transitions, oldest first. */
+  modelHandoffHistory?: AgentChatModelHandoff[];
   sessionProfile?: AgentChatSessionProfile;
   goal?: string | null;
   reasoningEffort?: string | null;
@@ -1896,6 +1985,8 @@ export type AgentChatSession = {
    * embedder learns "Pi ignored your servers" instead of assuming they landed.
    */
   mcpCapability?: AgentChatMcpCapability;
+  acpPermissionMode?: AgentChatAcpPermissionMode;
+  acpConfigSnapshot?: AgentChatAcpConfigSnapshot | null;
   /** Durable Cursor Cloud agent id once this session has been promoted to cloud. */
   cursorCloudAgentId?: string;
   /** Default runtime for new turns in this session (set on promotion). */
@@ -1941,6 +2032,8 @@ export type AgentChatSessionSummary = {
   provider: AgentChatProvider;
   model: string;
   modelId?: ModelId;
+  /** Completed model/provider transitions, oldest first. */
+  modelHandoffHistory?: AgentChatModelHandoff[];
   sessionProfile?: AgentChatSessionProfile;
   title?: string | null;
   goal?: string | null;
@@ -1971,6 +2064,8 @@ export type AgentChatSessionSummary = {
   strictMcpConfig?: boolean;
   /** What the provider could actually honor. Absent when no MCP was requested. */
   mcpCapability?: AgentChatMcpCapability;
+  acpPermissionMode?: AgentChatAcpPermissionMode;
+  acpConfigSnapshot?: AgentChatAcpConfigSnapshot | null;
   cursorCloudAgentId?: string;
   cursorRuntime?: AgentChatRuntime;
   cursorPromotedTurnId?: string;
@@ -2375,7 +2470,11 @@ export type AgentChatModelCatalogRefreshProvider =
   | "cursor"
   | "droid"
   | "lmstudio"
-  | "ollama";
+  | "ollama"
+  | "qwen"
+  | "kimi"
+  | "grok"
+  | "copilot";
 
 export type AgentChatModelCatalogMode = "cached" | "refresh-stale" | "force";
 
@@ -2478,6 +2577,8 @@ export type AgentChatCreateArgs = {
   droidPermissionMode?: AgentChatDroidPermissionMode;
   cursorModeId?: string | null;
   cursorConfigValues?: Record<string, AgentChatCursorConfigValue> | null;
+  acpPermissionMode?: AgentChatAcpPermissionMode;
+  acpConfigSnapshot?: AgentChatAcpConfigSnapshot | null;
   identityKey?: AgentChatIdentityKey;
   surface?: AgentChatSurface;
   automationId?: string | null;
@@ -2604,7 +2705,11 @@ export type AgentChatCliLaunchProvider =
   | "cursor"
   | "droid"
   | "opencode"
-  | "pi";
+  | "pi"
+  | "qwen"
+  | "kimi"
+  | "grok"
+  | "copilot";
 
 /**
  * Launch a tracked CLI/terminal agent (not the in-process chat SDK) with one or
@@ -2661,6 +2766,12 @@ export type AgentChatRuntimeMode = "interactive" | "print";
  * replayed into it verbatim (bounded by the target model's context window),
  * the same replay used when an agent rotates. Fork requires source and target
  * on the same provider; the model may still change within that provider.
+ *
+ * The ACP providers (qwen, kimi, grok, copilot) are deliberately absent. ACP
+ * has no fork method, and ADE cannot replay a transcript into an ACP session
+ * without a per-dialect load/resume path it does not yet have, so a handoff
+ * from one of them is brief-only. Adding one here would promise a copied thread
+ * that no dialect can produce.
  */
 export const HANDOFF_FORK_PROVIDERS = ["claude", "codex", "opencode", "droid", "cursor"] as const;
 
@@ -2726,6 +2837,8 @@ export type AgentChatHandoffArgs = {
   permissionMode?: AgentChatPermissionMode;
   cursorModeId?: string | null;
   cursorConfigValues?: Record<string, AgentChatCursorConfigValue> | null;
+  acpPermissionMode?: AgentChatAcpPermissionMode;
+  acpConfigSnapshot?: AgentChatAcpConfigSnapshot | null;
 };
 
 export type AgentChatHandoffResult = {
@@ -2734,7 +2847,8 @@ export type AgentChatHandoffResult = {
   /**
    * Present when the fork seeded the target via full-transcript replay
    * (cross-provider, or a provider without a native fork such as Cursor) and
-   * oldest turns were dropped to fit the target context window.
+   * oldest turns were dropped to fit the target context window or provider
+   * input limit.
    */
   replayFork?: AgentChatReplayForkDisclosure;
 };
@@ -2758,6 +2872,8 @@ export type AgentChatCrossMachineTargetConfig = {
   permissionMode?: AgentChatPermissionMode;
   cursorModeId?: string | null;
   cursorConfigValues?: Record<string, AgentChatCursorConfigValue> | null;
+  acpPermissionMode?: AgentChatAcpPermissionMode;
+  acpConfigSnapshot?: AgentChatAcpConfigSnapshot | null;
 };
 
 export type AgentChatCrossMachineHandoffCapsule = {
@@ -3028,10 +3144,18 @@ export type ActiveTurnSendMode = "queue" | AgentChatDispatchSteerMode;
  * Claude folds a message into the live query, so it has all three. Cursor's SDK
  * has no mid-run message API: its interrupt cancels the run and resends on the
  * same agent thread, so it has no "inline". Everything else is queue-only.
+ *
+ * The ACP providers are stated rather than left to the fallback. ACP has no
+ * mid-turn message method at all — `session/prompt` is one request per turn —
+ * so queue-only is a protocol fact, not a gap waiting to be filled.
  */
 export const ACTIVE_TURN_DISPATCH_MODES: Partial<Record<AgentChatProvider, readonly ActiveTurnSendMode[]>> = {
   claude: ["inline", "queue", "interrupt"],
   cursor: ["interrupt", "queue"],
+  qwen: ["queue"],
+  kimi: ["queue"],
+  grok: ["queue"],
+  copilot: ["queue"],
 };
 
 const QUEUE_ONLY_ACTIVE_TURN_MODES: readonly ActiveTurnSendMode[] = ["queue"];
@@ -3471,6 +3595,8 @@ export type AgentChatUpdateSessionArgs = {
   droidPermissionMode?: AgentChatDroidPermissionMode;
   cursorModeId?: string | null;
   cursorConfigValues?: Record<string, AgentChatCursorConfigValue> | null;
+  acpPermissionMode?: AgentChatAcpPermissionMode;
+  acpConfigSnapshot?: AgentChatAcpConfigSnapshot | null;
 };
 
 export const AGENT_CHAT_SESSION_METADATA_FIELDS = ["title", "laneName", "statusLine"] as const;
@@ -3499,6 +3625,16 @@ export type AgentChatRegenerateSessionMetadataResult = {
   applied: AgentChatSessionMetadataField[];
   skipped: AgentChatSessionMetadataField[];
   modelId: string | null;
+  /**
+   * The last model failure of the naming chain, when every attempt failed.
+   *
+   * Generation falls back to a deterministic name rather than throwing, so a
+   * caller that only sees `applied: []` cannot tell an auth failure from a
+   * concurrent rename. Null when a model answered.
+   */
+  generationError?: string | null;
+  /** True when no model answered and the deterministic name was used instead. */
+  usedDeterministicFallback?: boolean;
 };
 
 /**

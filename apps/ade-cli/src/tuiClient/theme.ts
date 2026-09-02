@@ -58,6 +58,9 @@ const OLLAMA = "#F0F0F2";
 const LMSTUDIO = "#8B5CF6";
 const SHELL = "#F59E0B";
 const COPILOT = "#A855F7";
+const QWEN = "#6D4AFF";
+const KIMI = "#F0F0F2";
+const GROK = "#DC2626";
 
 const TOOL = "cyan";
 const REASONING = T4;
@@ -99,6 +102,10 @@ const PROVIDER_THEME: Record<AdeCodeProvider, ProviderTheme> = {
   droid: { glyph: "✺", wordmark: "Droid", color: DROID, label: "Droid" },
   opencode: { glyph: "▣", wordmark: "OpenCode", color: OPENCODE, label: "OpenCode" },
   pi: { glyph: "◈", wordmark: "Pi", color: PI, label: "Pi" },
+  qwen: { glyph: "◇", wordmark: "Qwen", color: QWEN, label: "Qwen" },
+  kimi: { glyph: "◐", wordmark: "Kimi", color: KIMI, label: "Kimi" },
+  grok: { glyph: "✧", wordmark: "Grok", color: GROK, label: "Grok" },
+  copilot: { glyph: "⌬", wordmark: "Copilot", color: COPILOT, label: "GitHub Copilot" },
   ollama: { glyph: "◕", wordmark: "Ollama", color: OLLAMA, label: "Ollama" },
   lmstudio: { glyph: "≋", wordmark: "LM Studio", color: LMSTUDIO, label: "LM Studio" },
 };

@@ -166,6 +166,9 @@ import { transcriptEntriesFromEnvelopes } from "./chatTranscriptEntries";
 import {
   buildFittedTranscriptReplay,
   buildTranscriptReplayDocument,
+  CODEX_APP_SERVER_INPUT_MAX_CHARS,
+  fitTranscriptReplayTextToBudget,
+  replayMaxCharsForProvider,
   toReplayForkDisclosure,
 } from "./crossProviderReplayFork";
 import {
@@ -325,6 +328,7 @@ import type {
   AgentChatModelCatalogArgs,
   AgentChatModelCatalogRefreshProvider,
   AgentChatModelInfo,
+  AgentChatModelHandoff,
   AgentChatProvider,
   AgentChatPrepareCrossMachineHandoffArgs,
   AgentChatPrepareCrossMachineHandoffResult,
@@ -419,6 +423,7 @@ import {
   providerSupportsHandoffFork,
 } from "../../../shared/types";
 import {
+  isAcpChatProvider,
   spawnCompletedNoticeMessage,
   supportsActiveTurnDispatchMode,
   unsupportedActiveTurnDispatchModeMessage,
@@ -426,6 +431,10 @@ import {
   isAgentChatRuntimeRef,
   isPluginOwnedChatSession,
   PLUGIN_CHAT_PROVIDER,
+  type AcpChatProvider,
+  type AgentChatAcpConfigSnapshot,
+  type AgentChatAcpPermissionMode,
+
 } from "../../../shared/types/chat";
 import type { AgentChatRuntimeLabel, AgentChatRuntimeRef } from "../../../shared/types/chat";
 import { AGENT_CHAT_RUNTIME_EXTERNAL_ID_MAX } from "../../../shared/types/chat";
@@ -510,7 +519,10 @@ import {
   getModelById,
   getAvailableModels as getRegistryModels,
   getLocalProviderDefaultEndpoint,
+  createDynamicAcpModelDescriptor,
+  listAcpModelDescriptorsForProvider,
   listModelDescriptorsForProvider,
+  mergeDynamicAcpModelDescriptors,
   LOCAL_PROVIDER_LABELS,
   MODEL_REGISTRY,
   pickDefaultCursorDescriptorFromCliList,
@@ -526,11 +538,14 @@ import {
   type ModelProviderGroup,
 } from "../../../shared/modelRegistry";
 import { piSdkToolPolicyForPermissionMode } from "../../../shared/cliLaunch";
+import { isProviderDisabled } from "../../../shared/providerEnablement";
 import {
   buildProviderGroupBlocks,
   createModelOrderMap,
 } from "../../../shared/modelCatalog";
-import { detectAllAuth } from "../ai/authDetector";
+import { detectAllAuth, detectCliAuthStatuses } from "../ai/authDetector";
+import { probeAcpProviderAuth } from "../ai/acpAuthProbe";
+import { loadQwenUserSettings } from "../ai/qwenUserSettings";
 import type {
   AskUserToolInput,
   AskUserToolResult,
@@ -631,6 +646,7 @@ import {
   type TranscriptHistoryPageRead,
 } from "./chatTranscriptHistoryPager";
 import { extractLeadingSlashCommand, isProviderSlashCommandInput } from "../../../shared/chatSlashCommands";
+import { CURSOR_CLOUD_RENAME_BLOCKED_MESSAGE, cursorOwnsSessionName } from "../../../shared/cursorCloudNaming";
 import { isManualCompactCommand } from "../../../shared/contextCompaction";
 import {
   deriveDeterministicAutoLaneIdentity,
@@ -671,6 +687,29 @@ import {
 import { peekOpenCodeInventoryCache, probeOpenCodeProviderInventory } from "../opencode/openCodeInventory";
 import { inspectLocalProvider } from "../ai/localModelDiscovery";
 import { resolveDroidExecutable } from "../ai/droidExecutable";
+import { checkKimiWindowsPrerequisites, resolveAcpExecutable } from "../ai/acpExecutables";
+import { checkGrokPermissionNeutralization } from "../ai/grokPermissionPreflight";
+import { isAcpAuthError, recordAcpAuthProbeResult } from "../ai/acpAuthProbe";
+import {
+  acpDialectFor,
+  acpHasTranscript,
+  acpInvocationKey,
+  buildAcpPromptBlocks,
+  createAcpRuntime,
+  openAcpSession,
+  pendingPermissionToInputRequest,
+  textPromptBlock,
+  type AcpDialect,
+  type AcpPendingPermission,
+  type AcpSessionConfigOption,
+  type AcpSlashCommand,
+  type AcpRuntimeState,
+} from "./acpHost";
+import {
+  copilotConfigHome,
+  kimiCodeConfigHome,
+  qwenConfigHome,
+} from "../shared/providerConfigHomes";
 import {
   acquireCursorSdkConnection,
   isCursorSdkPooledAlive,
@@ -684,6 +723,9 @@ import {
   cloudConversationHasTurns,
   CURSOR_CLOUD_CONVERSATION_RETRY_ATTEMPTS,
   CURSOR_CLOUD_CONVERSATION_RETRY_MS,
+  CURSOR_CLOUD_EMPTY_TERMINAL_READ_LIMIT,
+  CURSOR_CLOUD_PLACEHOLDER_NAME_READ_LIMIT,
+  CURSOR_CLOUD_REMOTE_NAME_READ_TTL_MS,
   flattenCloudConversationMessages,
   fingerprintAlreadyHydrated,
   isCloudRunStillLive,
@@ -717,7 +759,9 @@ import {
   discoverCursorSdkModelDescriptors,
   mergeCursorModelDescriptorSources,
   resolveCachedCursorModelAvailability,
+  resolveCursorSdkModelSelectionFromCache,
   resolveCursorSdkModelSelectionParams,
+  verifyExplicitCursorModelSelection,
 } from "./cursorModelsDiscovery";
 import { discoverDroidSdkModelDescriptors } from "./droidModelsDiscovery";
 import {
@@ -1131,6 +1175,7 @@ type PersistedChatState = {
   provider: AgentChatProvider;
   model: string;
   modelId?: string;
+  modelHandoffHistory?: AgentChatModelHandoff[];
   sessionProfile?: "light" | "workflow";
   reasoningEffort?: string | null;
   fastMode?: boolean;
@@ -1173,6 +1218,23 @@ type PersistedChatState = {
   importedFrom?: AgentChatImportedFrom;
   /** Factory Droid SDK session id for Droid resume across app restarts (best-effort). */
   droidSdkSessionId?: string;
+  /**
+   * Agent-minted ACP session id. It is the only handle a restarted ADE has on
+   * an existing ACP conversation, so it is persisted for all four providers.
+   */
+  acpSessionId?: string;
+  /** Abstract permission posture the ACP session was opened with. */
+  acpPermissionMode?: AgentChatAcpPermissionMode;
+  /** Last config-option snapshot the agent reported, for the settings page. */
+  acpConfigSnapshot?: AgentChatAcpConfigSnapshot;
+  /** Degradation notes already shown for this chat, so each is emitted once. */
+  acpDegradationNotesShown?: string[];
+  /**
+   * True once ADE told this chat that its ACP agent approves its own writes.
+   * Persisted so the honest-degradation line stays once per chat rather than
+   * once per runtime start.
+   */
+  acpSupervisionNoticeShown?: boolean;
   /** Pi-native JSONL session pointer for SDK resume and CLI handoff. */
   piSessionId?: string;
   piSessionFile?: string;
@@ -1276,6 +1338,28 @@ type PersistedChatState = {
   updatedAt: string;
 };
 
+const MAX_MODEL_HANDOFF_HISTORY = 8;
+
+function normalizeModelHandoffHistory(value: unknown): AgentChatModelHandoff[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const history = value.flatMap((candidate): AgentChatModelHandoff[] => {
+    if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) return [];
+    const record = candidate as Record<string, unknown>;
+    const fromProvider = typeof record.fromProvider === "string" ? record.fromProvider.trim() : "";
+    const toProvider = typeof record.toProvider === "string" ? record.toProvider.trim() : "";
+    if (!fromProvider || !toProvider) return [];
+    const fromModelId = typeof record.fromModelId === "string" ? record.fromModelId.trim() : "";
+    const toModelId = typeof record.toModelId === "string" ? record.toModelId.trim() : "";
+    return [{
+      fromProvider,
+      toProvider,
+      ...(fromModelId ? { fromModelId } : {}),
+      ...(toModelId ? { toModelId } : {}),
+    }];
+  });
+  return history.length ? history.slice(-MAX_MODEL_HANDOFF_HISTORY) : undefined;
+}
+
 function normalizeContinuityRecovery(value: unknown): AgentChatContinuityRecovery | undefined {
   if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
   const record = value as Record<string, unknown>;
@@ -1309,6 +1393,15 @@ function normalizeContinuityRecovery(value: unknown): AgentChatContinuityRecover
       : {}),
   };
 }
+
+/** The abstract ACP permission ladder, in order. Mirrors `AgentChatAcpPermissionMode`. */
+const ACP_PERMISSION_MODES: readonly AgentChatAcpPermissionMode[] = [
+  "plan",
+  "default",
+  "auto-edit",
+  "auto",
+  "yolo",
+];
 
 function isPersistedChatStateShape(value: unknown): value is PersistedChatState {
   if (!value || typeof value !== "object") return false;
@@ -1376,8 +1469,13 @@ function normalizedPersistedPointer(value: unknown): string | null {
 }
 
 function persistedPointerState(state: Pick<PersistedChatState,
-  "provider" | "threadId" | "sdkSessionId" | "providerSessionId" | "droidSdkSessionId" | "piSessionId" | "piSessionFile" | "cursorSdkAgentId" | "cursorCloudAgentId"
+  "provider" | "threadId" | "sdkSessionId" | "providerSessionId" | "droidSdkSessionId" | "piSessionId" | "piSessionFile" | "cursorSdkAgentId" | "cursorCloudAgentId" | "acpSessionId"
 >): { provider: ThreadPointerLedgerEntry["provider"]; pointer: string | null } {
+  // Every ACP provider stores its pointer in the same field, so they share one
+  // arm rather than four identical ones.
+  if (isAcpChatProvider(state.provider)) {
+    return { provider: state.provider, pointer: normalizedPersistedPointer(state.acpSessionId) };
+  }
   switch (state.provider) {
     case "codex":
       return { provider: state.provider, pointer: normalizedPersistedPointer(state.threadId) };
@@ -1501,6 +1599,8 @@ type CodexRuntime = {
   activeTurnId: string | null;
   startedTurnId: string | null;
   awaitingTurnStart: boolean;
+  /** True while a pending replay/continuity prefix belongs to an in-flight turn/start. */
+  turnStartContextConsumed: boolean;
   threadResumed: boolean;
   canAttachResumedTurnStart: boolean;
   itemTurnIdByItemId: Map<string, string>;
@@ -2243,7 +2343,20 @@ type PiRuntime = {
   toolPolicyKey: string;
 };
 
-type ChatRuntime = CodexRuntime | ClaudeRuntime | OpenCodeRuntime | CursorRuntime | DroidRuntime | PiRuntime;
+/**
+ * One ACP chat, on one open ACP session.
+ *
+ * Deliberately thin. The `acpHost` module owns the protocol, the process pool,
+ * cancel accounting, and the permission round-trip; this record holds only what
+ * ADE needs to route a turn and to know when the runtime must be rebuilt.
+ *
+ * `invocationKey` is the reason a model or effort change restarts the process:
+ * Grok and Copilot take those as process-global spawn flags that `session/new`
+ * cannot override, so a chat that changed one may not keep its old process.
+ */
+type AcpRuntime = AcpRuntimeState<QueuedSteer>;
+
+type ChatRuntime = CodexRuntime | ClaudeRuntime | OpenCodeRuntime | CursorRuntime | DroidRuntime | PiRuntime | AcpRuntime;
 
 function cancelCursorPermissionWaiter(waiter: CursorPermissionWaiter, reason: string): void {
   waiter.resolve(denyCursorHook(reason));
@@ -2426,6 +2539,7 @@ function adoptCodexActiveTurnId(
     foundTurnId,
   });
   runtime.awaitingTurnStart = false;
+  runtime.turnStartContextConsumed = false;
   runtime.canAttachResumedTurnStart = false;
   runtime.activeTurnId = foundTurnId;
   if (options.markStarted !== false) {
@@ -2526,7 +2640,11 @@ function validateSessionReadyForTurn(managed: ManagedChatSession): { ready: true
   if (!managed.runtime) return { ready: false, reason: "No runtime initialized" };
   if (hasLivePendingInput(managed)) return { ready: false, reason: PENDING_INPUT_SEND_BLOCKED_MESSAGE };
   const rt = managed.runtime;
-  if ((rt.kind === "opencode" || rt.kind === "claude" || rt.kind === "cursor" || rt.kind === "droid" || rt.kind === "pi") && rt.busy) {
+  if (
+    (rt.kind === "opencode" || rt.kind === "claude" || rt.kind === "cursor" || rt.kind === "droid"
+      || rt.kind === "pi" || rt.kind === "acp")
+    && rt.busy
+  ) {
     return { ready: false, reason: "Turn already active" };
   }
   if (rt.kind === "opencode" && rt.pendingApprovals.size > 0) return { ready: false, reason: "Pending approvals not resolved" };
@@ -2545,7 +2663,9 @@ function hasLivePendingInput(managed: ManagedChatSession | null | undefined): bo
   if (runtime.kind === "claude") return runtime.approvals.size > 0;
   if (runtime.kind === "opencode") return runtime.pendingApprovals.size > 0;
   if (runtime.kind === "cursor" || runtime.kind === "droid") return runtime.permissionWaiters.size > 0;
-  if (runtime.kind === "pi") return false;
+  // Pi and the ACP providers both raise their cards through
+  // `localPendingInputs`, which the check above already covered.
+  if (runtime.kind === "pi" || runtime.kind === "acp") return false;
   return false;
 }
 
@@ -2621,6 +2741,10 @@ function runtimeBackgroundWork(runtime: ChatRuntime | null): SessionBackgroundWo
     case "opencode":
     case "droid":
     case "pi":
+    // ACP: a session is bounded by its prompt. No dialect exposes a background
+    // task, a scheduled run, or anything else that outlives a turn, and none is
+    // in `SUBAGENT_CAPABILITIES`. Zero here is a verified fact, not a default.
+    case "acp":
       return NO_BACKGROUND_WORK;
     default: {
       // A new harness must state whether it owns work that outlives a turn.
@@ -3342,6 +3466,18 @@ type ManagedChatSession = {
   seededDroidSdkSessionId?: string;
   seededPiSessionId?: string;
   seededPiSessionFile?: string;
+  seededAcpSessionId?: string;
+  /**
+   * Degradation notes already emitted for this chat. Mirrors the persisted set
+   * so a note stays once-per-session across a runtime restart, and so W6 does
+   * not have to reach into the runtime to know what was already said.
+   */
+  acpDegradationNotesShown?: Set<string>;
+  /**
+   * True once the ACP supervision notice fired for this chat. Mirrors the
+   * persisted flag so the line stays once per chat across a runtime restart.
+   */
+  acpSupervisionNoticeShown?: boolean;
 };
 
 type HandoffArtifacts = {
@@ -3783,6 +3919,32 @@ function codexModelInfoFromDescriptor(
   };
 }
 
+function acpModelInfoFromDescriptor(
+  descriptor: ModelDescriptor,
+  provider: AcpChatProvider,
+  index: number,
+): AgentChatModelInfo {
+  return {
+    id: descriptor.id,
+    displayName: descriptor.displayName,
+    description: `${descriptor.displayName} (${providerDisplayLabel(provider, provider)})`,
+    isDefault: index === 0,
+    reasoningEfforts: descriptor.reasoningTiers?.map((effort) => ({
+      effort,
+      description: `${effort} reasoning`,
+    })) ?? [],
+    modelId: descriptor.id,
+    family: descriptor.family,
+    supportsReasoning: descriptor.capabilities.reasoning,
+    supportsTools: descriptor.capabilities.tools,
+    ...(descriptor.defaultReasoningEffort
+      ? { defaultReasoningEffort: descriptor.defaultReasoningEffort }
+      : {}),
+    color: descriptor.color,
+    ...(descriptor.aliases?.length ? { aliases: descriptor.aliases } : {}),
+  };
+}
+
 const CODEX_FALLBACK_MODELS: AgentChatModelInfo[] = listModelDescriptorsForProvider("codex").map((descriptor) =>
   codexModelInfoFromDescriptor(descriptor)
 );
@@ -3958,10 +4120,11 @@ function cursorCatalogSupportsFastMode(
 function cachedCursorSdkParamsSupportFastMode(session: AgentChatSession): boolean {
   if (session.provider !== "cursor") return false;
   const modelSdkId = resolveCursorRuntimeModelSdkId(session);
-  return Boolean(resolveCursorSdkModelSelectionParams({
-    modelSdkId,
-    fastMode: true,
-  })?.length);
+  // Only a fully expressed selection answers "this model has a fast tier". A
+  // partial resolve is the case where the tier is exactly what ADE could not
+  // express, so its params must not read as support.
+  const selection = resolveCursorSdkModelSelectionFromCache({ modelSdkId, fastMode: true });
+  return selection.status === "ok" && selection.params.length > 0;
 }
 
 function sessionSupportsFastMode(
@@ -5694,10 +5857,9 @@ function resolveClaudeCliModelIdFromRuntimeValue(model: string): string | undefi
   const descriptors = listModelDescriptorsForProvider("claude");
 
   const exactMatch = descriptors.find((descriptor) => {
-    const descriptorShortId = descriptor.shortId.toLowerCase();
     const candidates = new Set([
       descriptor.id.toLowerCase(),
-      descriptorShortId,
+      descriptor.shortId.toLowerCase(),
       descriptor.providerModelId.toLowerCase(),
       descriptor.id.toLowerCase().replace(/^anthropic\//, ""),
       ...(descriptor.aliases ?? []).map((alias) => alias.toLowerCase()),
@@ -5707,20 +5869,14 @@ function resolveClaudeCliModelIdFromRuntimeValue(model: string): string | undefi
   });
   if (exactMatch) return exactMatch.id;
 
+  // Prefix-match dated snapshots (`claude-opus-5-20260301`) against the
+  // canonical provider id, not the short id. Short id `opus` would otherwise
+  // swallow every `claude-opus-*` runtime string, including retired 4.7 ids.
   return descriptors.find((descriptor) => {
-    const descriptorShortId = descriptor.shortId.toLowerCase();
-    return normalizedWithoutProvider === `claude-${descriptorShortId}`
-      || normalizedWithoutProvider.startsWith(`claude-${descriptorShortId}-`);
+    const providerModelId = descriptor.providerModelId.toLowerCase();
+    return normalizedWithoutProvider === providerModelId
+      || normalizedWithoutProvider.startsWith(`${providerModelId}-`);
   })?.id;
-}
-
-function isBareClaudeOpus47RuntimeValue(model: string): boolean {
-  const normalized = model.trim().toLowerCase()
-    .replace(/^anthropic\//, "")
-    .replace(/-api$/, "");
-  return normalized === "claude-opus-4-7"
-    || normalized === "opus-4-7"
-    || normalized === "opus-4.7";
 }
 
 function isBareClaudeOpusRuntimeAlias(model: string): boolean {
@@ -5854,21 +6010,7 @@ function resolveClaudeTurnModelPayload(
   } else if (sessionModelId) {
     selectedDescriptor = getModelById(sessionModelId);
   }
-  const selectedIsOpusOneMillion =
-    selectedDescriptor?.id === "anthropic/claude-opus-4-7-1m"
-    || selectedDescriptor?.shortId === "opus-1m"
-    || selectedDescriptor?.providerModelId.toLowerCase().includes("[1m]");
   const selectedIsOpus48 = selectedDescriptor?.id === "anthropic/claude-opus-4-8";
-  const shouldPreserveSelectedModel = (reportedModelId: string | undefined, reportedModel?: string): boolean => {
-    if (!reportedModelId || reportedModelId === session.modelId) return false;
-    const reportedDescriptor = getModelById(reportedModelId) ?? resolveModelAlias(reportedModelId);
-    if (selectedIsOpus48) {
-      return reportedDescriptor?.id === "anthropic/claude-opus-4-7-1m";
-    }
-    if (!selectedIsOpusOneMillion) return false;
-    if (reportedModel && isBareClaudeOpus47RuntimeValue(reportedModel)) return true;
-    return reportedDescriptor?.id === "anthropic/claude-opus-4-7-1m";
-  };
 
   for (const candidate of candidates) {
     const normalized = normalizeReportedModelName(candidate);
@@ -5881,7 +6023,7 @@ function resolveClaudeTurnModelPayload(
       if (selectedIsOpus48 && isBareClaudeOpusRuntimeAlias(normalized)) {
         return sessionPayload;
       }
-      if (shouldPreserveSelectedModel(resolvedCliModelId, normalized)) return sessionPayload;
+      if (sessionModelId && resolvedCliModelId === sessionModelId) return sessionPayload;
       const descriptor = getModelById(resolvedCliModelId);
       const reportedMatchesCanonical = descriptor?.providerModelId === normalizedCliModel;
       return {
@@ -5893,7 +6035,7 @@ function resolveClaudeTurnModelPayload(
       resolveModelIdFromStoredValue(normalized, "claude")
       ?? resolveModelIdFromStoredValue(normalizedCliModel, "claude");
     if (resolvedModelId) {
-      if (shouldPreserveSelectedModel(resolvedModelId, normalized)) return sessionPayload;
+      if (sessionModelId && resolvedModelId === sessionModelId) return sessionPayload;
       return { model: normalized, modelId: resolvedModelId };
     }
     return { model: normalized };
@@ -7160,6 +7302,7 @@ function enforceOrchestrationLockedPermissionMode(
     | "codexConfigSource"
     | "opencodePermissionMode"
     | "droidPermissionMode"
+    | "acpPermissionMode"
     | "cursorModeId"
   >,
 ): boolean {
@@ -8087,6 +8230,17 @@ export function createAgentChatService(args: {
    * tests.
    */
   runtimeBudget?: ChatRuntimeBudget;
+  /**
+   * Test seam. Replaces the real ACP agent spawn with a scripted process, so
+   * the conformance tests exercise the actual framing, request correlation and
+   * permission round-trip rather than a mock of the host.
+   */
+  acpSpawnOverride?: Parameters<typeof openAcpSession>[0]["spawnOverride"];
+  /**
+   * Test seam. A private ACP connection pool, so one test's scripted agent is
+   * never handed to the next test that happens to share a lane path.
+   */
+  acpSessionPool?: Parameters<typeof openAcpSession>[0]["pool"];
 }) {
   const runtimeBudget = args.runtimeBudget ?? createChatRuntimeBudget();
   const {
@@ -11629,15 +11783,20 @@ export function createAgentChatService(args: {
     managed: ManagedChatSession,
     sourceEnvelopes: readonly AgentChatEventEnvelope[],
     contextWindow: number | null | undefined,
+    targetProvider: AgentChatProvider,
   ): AgentChatReplayForkDisclosure | undefined => {
-    const fit = buildFittedTranscriptReplay(sourceEnvelopes, contextWindow);
+    const fit = buildFittedTranscriptReplay(
+      sourceEnvelopes,
+      contextWindow,
+      replayMaxCharsForProvider(targetProvider),
+    );
     managed.pendingTranscriptReplay = fit.text;
     persistChatState(managed);
     if (fit.truncated) {
       emitChatEvent(managed, {
         type: "system_notice",
         noticeKind: "info",
-        message: `Replayed the full prior transcript. Oldest ${fit.truncatedTurnCount} turn${fit.truncatedTurnCount === 1 ? " was" : "s were"} dropped to fit the target context window.`,
+        message: `Replayed the full prior transcript. Oldest ${fit.truncatedTurnCount} turn${fit.truncatedTurnCount === 1 ? " was" : "s were"} dropped to fit the target context window or provider input limit.`,
       });
     }
     return toReplayForkDisclosure(fit);
@@ -11652,13 +11811,35 @@ export function createAgentChatService(args: {
   const consumePendingTurnContextPrefix = (
     managed: ManagedChatSession,
     skip: boolean,
+    maxComposedChars?: number,
   ): ConsumedTurnContextPrefix | null => {
     if (skip) return null;
-    const replay = managed.pendingTranscriptReplay?.trim() ?? "";
-    const reconstruction = managed.pendingReconstructionContext?.trim() ?? "";
+    let replay = managed.pendingTranscriptReplay?.trim() ?? "";
+    let reconstruction = managed.pendingReconstructionContext?.trim() ?? "";
     if (!replay && !reconstruction) return null;
-    if (replay) managed.pendingTranscriptReplay = null;
-    if (reconstruction) managed.pendingReconstructionContext = null;
+    const hadReplay = replay.length > 0;
+    const hadReconstruction = reconstruction.length > 0;
+
+    if (maxComposedChars !== undefined) {
+      const budget = Number.isFinite(maxComposedChars)
+        ? Math.max(0, Math.floor(maxComposedChars))
+        : 0;
+      replay = fitTranscriptReplayTextToBudget(replay, budget);
+      const reconstructionPrefix = "System context (ADE continuity, do not echo verbatim):\n";
+      const separatorLength = replay && reconstruction ? 2 : 0;
+      const reconstructionBudget = Math.max(
+        0,
+        budget - replay.length - separatorLength - reconstructionPrefix.length,
+      );
+      if (reconstruction.length > reconstructionBudget) {
+        reconstruction = reconstructionBudget > 0
+          ? reconstruction.slice(-reconstructionBudget)
+          : "";
+      }
+    }
+
+    if (hadReplay) managed.pendingTranscriptReplay = null;
+    if (hadReconstruction) managed.pendingReconstructionContext = null;
     // Consumption has to be durable: `pendingTranscriptReplay` is restored on
     // reconstruct, so clearing it in memory alone would replay the whole
     // transcript a second time after a restart.
@@ -11991,6 +12172,12 @@ export function createAgentChatService(args: {
     return false;
   };
 
+  /** True while the session still carries an ADE default title ("Cursor Chat", "Cursor cloud agent", ...). */
+  const sessionTitleIsDefault = (managed: ManagedChatSession): boolean => {
+    const current = sessionService.get(managed.session.id)?.title ?? "";
+    return normalizeRuntimeSessionTitle(managed, current) === null;
+  };
+
   const normalizeRuntimeSessionTitle = (managed: ManagedChatSession, rawTitle: unknown): string | null => {
     const title = sanitizeAutoTitle(extractRuntimeTitle(rawTitle) ?? "");
     if (!title) return null;
@@ -12005,11 +12192,20 @@ export function createAgentChatService(args: {
     return sanitizeAutoTitle(sessionService.get(managed.session.id)?.title ?? "");
   };
 
+  /**
+   * The single writer of a session's title metadata.
+   *
+   * Cursor owns the name of a cloud chat, so the rule is enforced here rather
+   * than at each caller: a title writer added later inherits the protection
+   * instead of having to remember it. Cursor's own name arrives through
+   * `adoptCursorCloudSessionTitle`, which writes past this guard.
+   */
   const persistSessionTitleMetadata = (
     managed: ManagedChatSession,
     rawTitle: string,
     manuallyNamed: boolean,
   ): string | null => {
+    if (cursorOwnsSessionName(managed.session.cursorCloudAgentId)) return null;
     const title = rawTitle.trim();
     if (!title) return null;
 
@@ -12114,11 +12310,46 @@ export function createAgentChatService(args: {
     return appliedTitle;
   };
 
+  const adoptCursorCloudSessionTitle = (
+    managed: ManagedChatSession,
+    rawTitle: unknown,
+    source: string,
+  ): string | null => {
+    if (managed.deleted) return null;
+    const title = normalizeRuntimeSessionTitle(managed, rawTitle);
+    if (!title) return null;
+
+    const currentTitle = sessionService.get(managed.session.id)?.title ?? null;
+    if (currentTitle?.trim() !== title) {
+      sessionService.updateMeta({ sessionId: managed.session.id, title, manuallyNamed: false });
+      managed.sessionMetadataTitleRevision += 1;
+      emitTransientChatEnvelope(managed.session.id, {
+        type: "session_meta_updated",
+        title,
+        manuallyNamed: false,
+      });
+    }
+    managed.manuallyNamed = false;
+    managed.runtimeTitleAdopted = true;
+    managed.autoTitleStage = "initial";
+    logger.info("agent_chat.runtime_title_adopted", {
+      sessionId: managed.session.id,
+      provider: managed.session.provider,
+      source,
+      titleLength: title.length,
+    });
+    persistChatState(managed);
+    return title;
+  };
+
   const adoptRuntimeSessionTitle = (
     managed: ManagedChatSession,
     rawTitle: unknown,
     source: string,
   ): string | null => {
+    if (cursorOwnsSessionName(managed.session.cursorCloudAgentId)) {
+      return adoptCursorCloudSessionTitle(managed, rawTitle, source);
+    }
     if (managed.deleted) return null;
     if (sessionIsManuallyNamed(managed)) return null;
     const title = normalizeRuntimeSessionTitle(managed, rawTitle);
@@ -12188,6 +12419,7 @@ export function createAgentChatService(args: {
     args: { stage: "initial" | "final"; latestUserText?: string | null; summary?: string | null }
   ): Promise<void> => {
     if (managed.deleted) return;
+    if (cursorOwnsSessionName(managed.session.cursorCloudAgentId)) return;
     const config = resolveChatConfig();
     if (!config.titleGenerationEnabled) return;
     if (sessionIsManuallyNamed(managed)) return;
@@ -12298,9 +12530,16 @@ export function createAgentChatService(args: {
   };
 
   let sessionMetadataRegenerator: ReturnType<typeof createSessionMetadataRegenerator> | null = null;
-  const regenerateSessionMetadata = (
+  const regenerateSessionMetadata = async (
     args: AgentChatRegenerateSessionMetadataArgs,
   ): Promise<AgentChatRegenerateSessionMetadataResult> => {
+    // `async`, so `ensureManagedSession` rejects for an unknown session id like
+    // every other failure here rather than throwing at the call site.
+    const managed = ensureManagedSession(args.sessionId);
+    const requestedFields = args.fields ?? ["title", "laneName", "statusLine"];
+    if (cursorOwnsSessionName(managed.session.cursorCloudAgentId) && requestedFields.includes("title")) {
+      throw new Error(CURSOR_CLOUD_RENAME_BLOCKED_MESSAGE);
+    }
     sessionMetadataRegenerator ??= createSessionMetadataRegenerator<ManagedChatSession>({
       ensureManagedSession,
       getSession: (sessionId) => {
@@ -13634,6 +13873,9 @@ export function createAgentChatService(args: {
       provider: managed.session.provider,
       model: managed.session.model,
       ...(managed.session.modelId ? { modelId: managed.session.modelId } : {}),
+      ...(managed.session.modelHandoffHistory?.length
+        ? { modelHandoffHistory: managed.session.modelHandoffHistory }
+        : {}),
       ...(managed.session.sessionProfile ? { sessionProfile: managed.session.sessionProfile } : {}),
       ...(managed.session.reasoningEffort ? { reasoningEffort: managed.session.reasoningEffort } : {}),
       ...(managed.session.fastMode === true ? { fastMode: true } : {}),
@@ -13687,6 +13929,30 @@ export function createAgentChatService(args: {
         : !managed.runtimeInvalidated && (managed.seededDroidSdkSessionId || prevPersisted?.droidSdkSessionId)
           ? { droidSdkSessionId: managed.seededDroidSdkSessionId ?? prevPersisted?.droidSdkSessionId }
           : {}),
+      // ACP pointer. Same three-tier shape as Droid: the live runtime's id
+      // first, then the fork seed or the previous write, and nothing at all
+      // once the runtime has been invalidated.
+      ...(managed.runtime?.kind === "acp" && managed.runtime.session.sessionId
+        ? { acpSessionId: managed.runtime.session.sessionId }
+        : !managed.runtimeInvalidated && (managed.seededAcpSessionId || prevPersisted?.acpSessionId)
+          ? { acpSessionId: managed.seededAcpSessionId ?? prevPersisted?.acpSessionId }
+          : {}),
+      ...(managed.session.acpPermissionMode
+        ? { acpPermissionMode: managed.session.acpPermissionMode }
+        : prevPersisted?.acpPermissionMode ? { acpPermissionMode: prevPersisted.acpPermissionMode } : {}),
+      ...(managed.session.acpConfigSnapshot
+        ? { acpConfigSnapshot: managed.session.acpConfigSnapshot }
+        : prevPersisted?.acpConfigSnapshot ? { acpConfigSnapshot: prevPersisted.acpConfigSnapshot } : {}),
+      ...(managed.acpDegradationNotesShown?.size
+        ? { acpDegradationNotesShown: [...managed.acpDegradationNotesShown] }
+        : prevPersisted?.acpDegradationNotesShown?.length
+          ? { acpDegradationNotesShown: prevPersisted.acpDegradationNotesShown }
+          : {}),
+      // Latching: once said, always remembered. A live runtime that has not yet
+      // tripped the invariant must not erase a flag an earlier run set.
+      ...(managed.acpSupervisionNoticeShown || prevPersisted?.acpSupervisionNoticeShown
+        ? { acpSupervisionNoticeShown: true }
+        : {}),
       ...(managed.runtime?.kind === "pi" && !managed.runtimeInvalidated
         ? {
             ...(managed.runtime.sdk.sessionId ? { piSessionId: managed.runtime.sdk.sessionId } : {}),
@@ -13920,7 +14186,16 @@ export function createAgentChatService(args: {
       const record = recovered.value as Partial<PersistedChatState>;
       let provider = record.provider;
       if (provider === "unified") provider = "opencode";
-      if (provider !== "codex" && provider !== "claude" && provider !== "opencode" && provider !== "cursor" && provider !== "droid" && provider !== "pi") {
+      if (
+        provider !== "codex" && provider !== "claude" && provider !== "opencode"
+        && provider !== "cursor" && provider !== "droid" && provider !== "pi"
+        && !isAcpChatProvider(provider)
+      ) {
+        // A provider this build does not know is not a state ADE can hydrate.
+        // Returning null sends the caller to the pointer reconciler, which is
+        // right for corrupt state and wrong for a provider that simply was not
+        // on this list — which is how an ACP chat used to come back from a
+        // restart demanding continuity recovery it did not need.
         return null;
       }
       const laneId = String(record.laneId ?? "").trim();
@@ -13929,6 +14204,7 @@ export function createAgentChatService(args: {
       const modelId = storedModelId.length
         ? (getModelById(storedModelId) ?? resolveModelAlias(storedModelId))?.id
         : resolveModelIdFromStoredValue(model, provider);
+      const modelHandoffHistory = normalizeModelHandoffHistory(record.modelHandoffHistory);
       const sessionProfile = normalizeSessionProfile(record.sessionProfile);
       const reasoningEffort = normalizeReasoningEffort(record.reasoningEffort);
       const fastMode = readLegacyFastMode(record as Record<string, unknown>);
@@ -13987,6 +14263,22 @@ export function createAgentChatService(args: {
       const codexTokenUsage = codexTokenUsageRecord ? normalizeCodexThreadTokenUsage(codexTokenUsageRecord) : null;
       const importedFrom = normalizeImportedFrom(record.importedFrom);
       const continuityRecovery = normalizeContinuityRecovery(record.continuityRecovery);
+      // ACP: one pointer field, one abstract posture, one discovered-config
+      // snapshot, shared by all four providers.
+      const acpSessionId = typeof record.acpSessionId === "string" && record.acpSessionId.trim().length
+        ? record.acpSessionId.trim()
+        : null;
+      const acpPermissionMode = ACP_PERMISSION_MODES.includes(record.acpPermissionMode as AgentChatAcpPermissionMode)
+        ? record.acpPermissionMode as AgentChatAcpPermissionMode
+        : null;
+      const acpConfigSnapshotRecord = asRecord(record.acpConfigSnapshot);
+      const acpConfigSnapshot = acpConfigSnapshotRecord
+        ? acpConfigSnapshotRecord as AgentChatAcpConfigSnapshot
+        : null;
+      const acpDegradationNotesShown = Array.isArray(record.acpDegradationNotesShown)
+        ? record.acpDegradationNotesShown.filter((note): note is string => typeof note === "string" && note.length > 0)
+        : [];
+      const acpSupervisionNoticeShown = record.acpSupervisionNoticeShown === true;
       if (!laneId || !model) return null;
       const recentConversationEntries = Array.isArray(record.recentConversationEntries)
         ? record.recentConversationEntries
@@ -14128,6 +14420,7 @@ export function createAgentChatService(args: {
         provider,
         model,
         ...(modelId ? { modelId } : {}),
+        ...(modelHandoffHistory ? { modelHandoffHistory } : {}),
         ...(sessionProfile ? { sessionProfile } : {}),
         ...(reasoningEffort ? { reasoningEffort } : {}),
         ...(fastMode ? { fastMode: true } : {}),
@@ -14175,6 +14468,11 @@ export function createAgentChatService(args: {
         ...(sdkSessionId ? { sdkSessionId } : {}),
         ...(forkFromSdkSessionId ? { forkFromSdkSessionId } : {}),
         ...(providerSessionId ? { providerSessionId } : {}),
+        ...(acpSessionId ? { acpSessionId } : {}),
+        ...(acpPermissionMode ? { acpPermissionMode } : {}),
+        ...(acpConfigSnapshot ? { acpConfigSnapshot } : {}),
+        ...(acpDegradationNotesShown.length ? { acpDegradationNotesShown } : {}),
+        ...(acpSupervisionNoticeShown ? { acpSupervisionNoticeShown } : {}),
         ...(piSessionId ? { piSessionId } : {}),
         ...(piSessionFile ? { piSessionFile } : {}),
         ...(piProfileId ? { piProfileId } : {}),
@@ -14307,6 +14605,10 @@ export function createAgentChatService(args: {
       case "pi": return { piSessionId: candidate.pointer };
       case "cursor": return { cursorSdkAgentId: candidate.pointer };
       case "opencode": return { providerSessionId: candidate.pointer };
+      case "qwen":
+      case "kimi":
+      case "grok":
+      case "copilot": return { acpSessionId: candidate.pointer };
       default: return {};
     }
   };
@@ -14776,6 +15078,41 @@ export function createAgentChatService(args: {
     setSessionPreview(managed, event.text);
   };
 
+  /** Install command each ACP CLI documents. Only used to write the error card. */
+  const ACP_INSTALL_COMMANDS: Record<AcpChatProvider, string> = {
+    qwen: "npm install -g @qwen-code/qwen-code",
+    kimi: "curl -LsSf https://code.kimi.com/kimi-code/install.sh | bash",
+    grok: "npm install -g @xai-official/grok",
+    copilot: "npm install -g @github/copilot",
+  };
+
+  /**
+   * Turn an ACP failure into the same card shape the tracked CLIs produce.
+   *
+   * Only two verdicts are reachable here: the binary is missing, or the
+   * credential is not good. Anything else is a real error and keeps the red
+   * frame, because telling someone to log in when the agent crashed sends them
+   * to fix the wrong thing.
+   */
+  const acpAuthErrorMatch = (
+    provider: AgentChatProvider,
+    text: string,
+  ): ReturnType<typeof classifyAgentCliError> => {
+    if (!isAcpChatProvider(provider)) return null;
+    const dialect = acpDialectFor(provider);
+    const base = {
+      agent: provider,
+      displayName: dialect.displayName,
+      installCommand: ACP_INSTALL_COMMANDS[provider],
+      authCommand: dialect.authProbe.loginCommand,
+    };
+    if (/\b(command not found|not recognized|enoent|no such file or directory|was not found on this machine)\b/i.test(text)) {
+      return { ...base, category: "missing" as const };
+    }
+    if (isAcpAuthError(text)) return { ...base, category: "unauthenticated" as const };
+    return null;
+  };
+
   const decorateAgentCliError = (
     managed: ManagedChatSession,
     event: Extract<AgentChatEvent, { type: "error" }>,
@@ -14783,7 +15120,13 @@ export function createAgentChatService(args: {
     const existingInfo = typeof event.errorInfo === "object" && event.errorInfo ? event.errorInfo : null;
     if (existingInfo?.agentCli) return event;
 
-    const match = classifyAgentCliError(`${event.message}\n${event.detail ?? ""}`, managed.session.provider);
+    const text = `${event.message}\n${event.detail ?? ""}`;
+    const match = classifyAgentCliError(text, managed.session.provider)
+      // The agent-CLI registry that classifier reads is the TUI's, and it has
+      // no entries for the ACP providers. Without this the calm "sign in and
+      // retry" card never appears for them and a logged-out Qwen chat shows a
+      // red crash frame with a JSON-RPC string in it.
+      ?? acpAuthErrorMatch(managed.session.provider, text);
     if (!match) return event;
     if (managed.session.provider === "claude" && match.category === "missing") {
       const resolved = resolveClaudeCodeExecutable();
@@ -18269,7 +18612,11 @@ export function createAgentChatService(args: {
     }
 
     const preserveProviderResumeState =
-      (managed.runtime.kind === "claude" || managed.runtime.kind === "cursor" || managed.runtime.kind === "pi") && reasonAllowsPreservation;
+      (managed.runtime.kind === "claude" || managed.runtime.kind === "cursor" || managed.runtime.kind === "pi"
+        // Every ACP dialect can rejoin a session by id, so an idle or
+        // shutdown teardown must keep the pointer it would resume from.
+        || managed.runtime.kind === "acp")
+      && reasonAllowsPreservation;
     if (managed.runtime.kind === "codex") {
       const runtime = managed.runtime;
       failOpenCodexCompactions(managed, runtime, "teardown");
@@ -18429,6 +18776,25 @@ export function createAgentChatService(args: {
       }
       const lease = rt.lease;
       releasePiSdkConnection(rt.poolKey, rt.poolGeneration, () => lease?.release());
+      managed.runtime = null;
+    }
+    if (managed.runtime?.kind === "acp") {
+      const rt = managed.runtime;
+      rt.interrupted = true;
+      cancelQueuedSteers(managed, rt, "interrupted");
+      cancelPendingInputsFrom(managed, "acp", "ade");
+      // Persist before detaching: the ACP session id is this chat's only handle
+      // on the conversation, and a preserved teardown must not lose it.
+      if (preserveProviderResumeState) persistChatState(managed);
+      // `close` is idempotent. It sends `session/close` where the dialect has
+      // it, and ends the private process where it does not (Kimi).
+      void rt.session.close(openCodeReason).catch((error) => {
+        logger.warn("agent_chat.acp_close_failed", {
+          sessionId: managed.session.id,
+          provider: rt.provider,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      });
       managed.runtime = null;
     }
     managed.runtimeInvalidated = !preserveProviderResumeState;
@@ -18705,6 +19071,9 @@ export function createAgentChatService(args: {
         provider,
         model,
         ...(hydratedModelId ? { modelId: hydratedModelId } : {}),
+        ...(persisted?.modelHandoffHistory?.length
+          ? { modelHandoffHistory: persisted.modelHandoffHistory }
+          : {}),
         ...(persisted?.sessionProfile ? { sessionProfile: persisted.sessionProfile } : {}),
         ...(rowGoal ? { goal: rowGoal } : {}),
         reasoningEffort: persisted?.reasoningEffort ?? null,
@@ -18926,12 +19295,12 @@ export function createAgentChatService(args: {
     }
     const runtime = managed.runtime;
     const attachments = args.attachments ?? [];
-    const contextAttachments = args.contextAttachments ?? [];
     const resolvedAttachments = args.resolvedAttachments ?? attachments.map((attachment) => ({
       ...attachment,
       _resolvedPath: attachment.path,
       _rootPath: managed.laneWorktreePath,
     }));
+    const contextAttachments = args.contextAttachments ?? [];
     const displayText = args.displayText?.trim().length ? args.displayText.trim() : args.promptText;
     const userText = args.userText?.trim().length ? args.userText.trim() : displayText;
     let onDispatched = args.onDispatched;
@@ -19190,7 +19559,11 @@ export function createAgentChatService(args: {
 
     const pendingUserShell = parseCodexUserShellDraft(slashText) ?? parseCodexShellSlashCommand(slashText);
     const pendingMemoryCommand = parseCodexMemorySlashCommand(slashText);
-    if (runtime.activeTurnId && !pendingUserShell && !pendingMemoryCommand) {
+    if (
+      (runtime.activeTurnId || runtime.awaitingTurnStart || runtime.turnStartContextConsumed)
+      && !pendingUserShell
+      && !pendingMemoryCommand
+    ) {
       throw new Error("A turn is already active. Use steer or interrupt.");
     }
     const skipTurnStartForActiveComposerCommand = Boolean(
@@ -19600,62 +19973,78 @@ export function createAgentChatService(args: {
     const suppressTurnContext = providerSlashCommand && !planSlashCommand;
     const input: Array<Record<string, unknown>> = [];
 
-    const reconstructionContext = suppressTurnContext ? "" : consumePendingTurnContextPrefix(managed, false)?.composed ?? "";
-    if (reconstructionContext.length) {
-      input.push({
-        type: "text",
-        text: reconstructionContext,
-        text_elements: []
-      });
+    if (effectivePromptText.length > CODEX_APP_SERVER_INPUT_MAX_CHARS) {
+      throw new Error(
+        `Codex turn input exceeds the app-server maximum of ${CODEX_APP_SERVER_INPUT_MAX_CHARS} characters. Shorten the message and try again.`,
+      );
     }
-    const { codexPolicy } = resolveCodexThreadParams(managed);
-    await runtime.collaborationModesReady?.catch(() => {});
-    const requestedCollaborationMode = resolveRequestedCodexCollaborationMode(managed.session);
-    const collaborationMode = buildCodexCollaborationMode(
-      managed.session,
-      runtime.collaborationModes,
-      managed.laneWorktreePath,
-      resolveSessionLinearDirective(managed.session.id),
-    );
-    if (
-      requestedCollaborationMode === "plan"
-      && collaborationMode?.mode !== "plan"
-      && !runtime.planModeFallbackNotified
-    ) {
-      emitChatEvent(managed, {
-        type: "system_notice",
-        noticeKind: "info",
-        message: "Native Codex plan mode is unavailable for this session, so ADE is continuing in default collaboration mode.",
-      });
-      runtime.planModeFallbackNotified = true;
-    } else if (collaborationMode?.mode === "plan") {
-      runtime.planModeFallbackNotified = false;
-    }
-    input.push({
-      type: "text",
-      text: effectivePromptText,
-      text_elements: []
-    });
-
-    for (const attachment of resolvedAttachments) {
-      if (attachment.type === "image-url") {
-        input.push({ type: "image", url: attachment.url });
-        continue;
-      }
-      const stagedPath = await stageAttachmentForCodexInput(attachment);
-      if (attachment.type === "image") {
-        input.push({ type: "localImage", path: stagedPath });
-        continue;
-      }
-      const name = path.basename(attachment.path) || attachment.path;
-      input.push({ type: "mention", name, path: stagedPath });
-    }
+    let consumedTurnContext: ConsumedTurnContextPrefix | null = null;
     const planningApprovalGuarded = managed.session.permissionMode === "plan";
-    managed.runtime.awaitingTurnStart = true;
-    managed.runtime.pendingTurnPlanningApprovalGuarded = planningApprovalGuarded;
     let result: { turn?: { id?: string } };
     try {
-      result = await managed.runtime.request<{ turn?: { id?: string } }>("turn/start", {
+      const reconstructionContext = suppressTurnContext
+        ? ""
+        : (() => {
+          consumedTurnContext = consumePendingTurnContextPrefix(
+            managed,
+            false,
+            CODEX_APP_SERVER_INPUT_MAX_CHARS - effectivePromptText.length,
+          );
+          return consumedTurnContext?.composed ?? "";
+        })();
+      runtime.turnStartContextConsumed = consumedTurnContext !== null;
+      if (reconstructionContext.length) {
+        input.push({
+          type: "text",
+          text: reconstructionContext,
+          text_elements: []
+        });
+      }
+      const { codexPolicy } = resolveCodexThreadParams(managed);
+      await runtime.collaborationModesReady?.catch(() => {});
+      const requestedCollaborationMode = resolveRequestedCodexCollaborationMode(managed.session);
+      const collaborationMode = buildCodexCollaborationMode(
+        managed.session,
+        runtime.collaborationModes,
+        managed.laneWorktreePath,
+        resolveSessionLinearDirective(managed.session.id),
+      );
+      if (
+        requestedCollaborationMode === "plan"
+        && collaborationMode?.mode !== "plan"
+        && !runtime.planModeFallbackNotified
+      ) {
+        emitChatEvent(managed, {
+          type: "system_notice",
+          noticeKind: "info",
+          message: "Native Codex plan mode is unavailable for this session, so ADE is continuing in default collaboration mode.",
+        });
+        runtime.planModeFallbackNotified = true;
+      } else if (collaborationMode?.mode === "plan") {
+        runtime.planModeFallbackNotified = false;
+      }
+      input.push({
+        type: "text",
+        text: effectivePromptText,
+        text_elements: []
+      });
+
+      for (const attachment of resolvedAttachments) {
+        if (attachment.type === "image-url") {
+          input.push({ type: "image", url: attachment.url });
+          continue;
+        }
+        const stagedPath = await stageAttachmentForCodexInput(attachment);
+        if (attachment.type === "image") {
+          input.push({ type: "localImage", path: stagedPath });
+          continue;
+        }
+        const name = path.basename(attachment.path) || attachment.path;
+        input.push({ type: "mention", name, path: stagedPath });
+      }
+      runtime.awaitingTurnStart = true;
+      runtime.pendingTurnPlanningApprovalGuarded = planningApprovalGuarded;
+      result = await runtime.request<{ turn?: { id?: string } }>("turn/start", {
         threadId: managed.session.threadId,
         input,
         model: managed.session.model,
@@ -19669,10 +20058,18 @@ export function createAgentChatService(args: {
         ...(collaborationMode ? { collaborationMode } : {}),
       });
     } catch (error) {
-      managed.runtime.awaitingTurnStart = false;
-      managed.runtime.pendingTurnPlanningApprovalGuarded = null;
+      const contextToRestore = runtime.turnStartContextConsumed ? consumedTurnContext : null;
+      runtime.awaitingTurnStart = false;
+      runtime.turnStartContextConsumed = false;
+      runtime.pendingTurnPlanningApprovalGuarded = null;
+      if (contextToRestore) {
+        managed.pendingTranscriptReplay = contextToRestore.replay || null;
+        managed.pendingReconstructionContext = contextToRestore.reconstruction || null;
+        persistChatState(managed);
+      }
       throw error;
     }
+    runtime.turnStartContextConsumed = false;
     markDispatched();
     persistDeliveredLaneDirectiveKey(managed, args.laneDirectiveKey);
 
@@ -24145,6 +24542,598 @@ export function createAgentChatService(args: {
     }
   };
 
+  // ── ACP providers: qwen, kimi, grok, copilot ────────────────────────────────
+  //
+  // One adapter for four providers. Everything that differs between them lives
+  // in `acpHost/acpDialects`, so nothing below branches on a provider id except
+  // the places where ADE itself must: the config home each CLI honors, Kimi's
+  // Windows prerequisite check, and Grok's supervision preflight.
+
+  /** Config home to hand a dialect's spawn plan. Grok honors no override. */
+  const acpConfigHomeFor = (
+    provider: AcpChatProvider,
+    env: NodeJS.ProcessEnv,
+  ): string | null => {
+    switch (provider) {
+      case "qwen": return qwenConfigHome({ env });
+      case "kimi": return kimiCodeConfigHome({ env });
+      case "copilot": return copilotConfigHome({ env });
+      // Grok reads `~/.grok` and nothing else, so ADE sets nothing.
+      case "grok": return null;
+    }
+  };
+
+  /**
+   * The abstract permission posture for an ACP chat.
+   *
+  * The session's own `acpPermissionMode` wins when the user set one. Otherwise
+  * ADE's generic composer mode is collapsed onto the ACP vocabulary, which is
+  * the same five-step ladder every dialect maps from.
+  */
+  const acpPermissionModeFromLegacyPermissionMode = (
+    mode: AgentChatSession["permissionMode"] | undefined,
+  ): AgentChatAcpPermissionMode => {
+    switch (mode) {
+      case "plan": return "plan";
+      case "edit": return "auto-edit";
+      case "auto": return "auto";
+      case "full-auto": return "yolo";
+      default: return "default";
+    }
+  };
+
+  const resolveAcpPermissionMode = (session: AgentChatSession): AgentChatAcpPermissionMode =>
+    session.acpPermissionMode ?? acpPermissionModeFromLegacyPermissionMode(session.permissionMode);
+
+  /**
+   * True when ADE should answer a permission card itself rather than show it.
+   *
+   * Only the top of the ladder auto-approves, and only where the dialect could
+   * not be told to do it server-side. The answer is still emitted as a resolved
+   * pending-input row, so the transcript shows what was approved and by whom —
+   * the same contract as Pi's full-auto.
+   */
+  const acpAutoApprovesPermissions = (
+    dialect: AcpDialect,
+    mode: AgentChatAcpPermissionMode,
+  ): boolean => {
+    if (mode !== "yolo") return false;
+    // Qwen takes the whole posture through `session/set_config_option`, so the
+    // agent stops asking and there is nothing for ADE to auto-answer.
+    return !dialect.sessionConfig.declared;
+  };
+
+  /** Native `mode` value for a dialect that accepts one. Qwen's ladder. */
+  const acpNativeModeValue = (mode: AgentChatAcpPermissionMode): string => mode;
+
+  /** Provider-native model token for the spawn plan, when the user picked one. */
+  const acpModelTokenFor = (session: AgentChatSession): string | null => {
+    const descriptor = resolveSessionModelDescriptor(session);
+    const token = descriptor?.providerModelId?.trim() || session.model?.trim() || "";
+    return token.length ? token : null;
+  };
+
+  /**
+   * Emit each of a dialect's declared holes once per chat.
+   *
+   * The note is honest degradation, not an error: Kimi genuinely reports no
+   * usage, and a user who cannot see why the meter vanished assumes ADE broke.
+   * The shown-set is persisted so a runtime restart does not repeat it.
+   */
+  const emitAcpDegradationNotes = (managed: ManagedChatSession, dialect: AcpDialect): void => {
+    if (!dialect.degradationNotes.length) return;
+    if (!managed.acpDegradationNotesShown) {
+      managed.acpDegradationNotesShown = new Set(
+        readPersistedState(managed.session.id)?.acpDegradationNotesShown ?? [],
+      );
+    }
+    let emitted = false;
+    for (const note of dialect.degradationNotes) {
+      if (managed.acpDegradationNotesShown.has(note)) continue;
+      managed.acpDegradationNotesShown.add(note);
+      emitted = true;
+      emitChatEvent(managed, { type: "system_notice", noticeKind: "info", message: note });
+    }
+    if (emitted) persistChatState(managed);
+  };
+
+  /** Fold a config-option report into the session's snapshot and publish it. */
+  const applyAcpConfigOptions = (
+    managed: ManagedChatSession,
+    runtime: AcpRuntime,
+    snapshot: { options: AcpSessionConfigOption[]; currentModeId: string | null },
+  ): void => {
+    if (managed.runtime !== runtime) return;
+    // A `current_mode_update` carries only the mode, and a
+    // `config_option_update` carries only the options. Merging rather than
+    // replacing keeps whichever half this report did not mention.
+    if (snapshot.options.length) runtime.configOptions = snapshot.options;
+    if (snapshot.currentModeId) runtime.currentModeId = snapshot.currentModeId;
+
+    const modeOption = runtime.configOptions.find((option) => option.id === "mode");
+    const modelOption = runtime.configOptions.find((option) => option.id === "model");
+    const optionValues = (option: AcpSessionConfigOption | undefined): string[] =>
+      (option?.options ?? [])
+        .map((entry) => entry.id.trim())
+        .filter((value) => value.length > 0);
+    const currentValueOf = (
+      option: AcpSessionConfigOption | undefined,
+    ): NonNullable<AgentChatAcpConfigSnapshot["configOptions"]>[number]["currentValue"] => {
+      const value = option?.value;
+      return typeof value === "string" || typeof value === "boolean" || typeof value === "number"
+        ? value
+        : null;
+    };
+
+    const next: AgentChatAcpConfigSnapshot = {
+      currentModeId: runtime.currentModeId,
+      availableModeIds: optionValues(modeOption),
+      currentModelId: typeof currentValueOf(modelOption) === "string"
+        ? currentValueOf(modelOption) as string
+        : null,
+      availableModelIds: optionValues(modelOption),
+      configOptions: runtime.configOptions.map((option) => ({
+        id: option.id,
+        name: option.name,
+        description: option.description ?? null,
+        category: option.category ?? null,
+        type: option.type === "boolean" ? "boolean" as const : "select" as const,
+        currentValue: currentValueOf(option),
+        ...(option.options?.length
+          ? {
+              options: option.options.map((entry) => ({
+                value: entry.id,
+                label: entry.name,
+                ...(entry.description != null ? { description: entry.description } : {}),
+              })),
+            }
+          : {}),
+      })),
+    };
+    managed.session.acpConfigSnapshot = next;
+    persistChatState(managed);
+    emitChatEvent(managed, { type: "session_meta_updated", acpConfigSnapshot: next });
+
+    // Live model discovery. The agent named the models this account can reach,
+    // so they join the registry alongside the curated rows.
+    if (next.availableModelIds?.length) {
+      mergeDynamicAcpModelDescriptors(
+        runtime.provider,
+        next.availableModelIds.map((modelId) => createDynamicAcpModelDescriptor(runtime.provider, modelId)),
+      );
+    }
+  };
+
+  /**
+   * Raise one ACP permission request as an ADE pending-input card.
+   *
+   * The host is blocked on `pending.select` / `pending.cancel` until something
+   * answers, so every exit from here must end in one of the two. Teardown and
+   * interrupt drain `localPendingInputs`, which is why the card lives there
+   * rather than on the runtime: a card must survive the runtime it came from
+   * long enough to be answered.
+   */
+  const presentAcpPermissionRequest = (
+    managed: ManagedChatSession,
+    runtime: AcpRuntime,
+    pending: AcpPendingPermission,
+  ): void => {
+    if (managed.runtime !== runtime) {
+      pending.cancel();
+      return;
+    }
+    const request = pendingPermissionToInputRequest({
+      pending,
+      source: "acp",
+      providerLabel: runtime.dialect.displayName,
+    });
+    // `emitPendingInputRequest` advertises `itemId ?? requestId` as the card's
+    // id, and that is the id every answer path routes on. The waiter map must
+    // be keyed by the same value or the answer lands nowhere and the agent
+    // waits forever behind a card the user already dismissed.
+    const cardItemId = request.itemId ?? request.requestId;
+
+    if (acpAutoApprovesPermissions(runtime.dialect, runtime.permissionMode)) {
+      // Full auto on a dialect ADE could not configure server-side. Answer the
+      // agent immediately, but still write the card and its resolution into the
+      // transcript so "auto-approved" is visible rather than invisible.
+      const allow = pending.options.find((option) => option.kind === "allow_once")
+        ?? pending.options.find((option) => option.kind === "allow_always")
+        ?? pending.options[0];
+      if (allow) {
+        emitPendingInputRequest(managed, request, {
+          kind: "tool_call",
+          description: request.description ?? request.title ?? "Tool call",
+          detail: { acp: true, provider: runtime.provider, autoApproved: true },
+        });
+        pending.select(allow.optionId);
+        emitPendingInputResolved(managed, {
+          itemId: cardItemId,
+          decision: "accept",
+          turnId: pending.turnId,
+          questions: request.questions,
+        });
+        return;
+      }
+    }
+
+    runtime.openPermissionIds.add(cardItemId);
+    let answered = false;
+    managed.localPendingInputs.set(cardItemId, {
+      request,
+      resolve: (response) => {
+        // The agent holds one JSON-RPC request open against this card, so it
+        // must be answered exactly once whichever drain site got here first.
+        if (answered) return;
+        answered = true;
+        runtime.openPermissionIds.delete(cardItemId);
+        const decision = response.decision ?? "decline";
+        if (decision === "cancel") {
+          pending.cancel();
+          return;
+        }
+        const chosen = typeof response.responseText === "string" && response.responseText.trim().length
+          ? response.responseText.trim()
+          : typeof response.answers?.decision === "string"
+            ? response.answers.decision
+            : null;
+        const matched = chosen ? pending.options.find((option) => option.optionId === chosen) : null;
+        const fallback = decision === "accept" || decision === "accept_for_session"
+          ? (decision === "accept_for_session"
+              ? pending.options.find((option) => option.kind === "allow_always")
+                ?? pending.options.find((option) => option.kind === "allow_once")
+              : pending.options.find((option) => option.kind === "allow_once")
+                ?? pending.options.find((option) => option.kind === "allow_always"))
+          : pending.options.find((option) => option.kind === "reject_once")
+            ?? pending.options.find((option) => option.kind === "reject_always");
+        const option = matched ?? fallback;
+        // A decline with no reject option offered is a cancel, not a silent
+        // approve. Never fail open here.
+        if (option) pending.select(option.optionId);
+        else pending.cancel();
+      },
+    });
+    emitPendingInputRequest(managed, request, {
+      kind: "tool_call",
+      description: request.description ?? request.title ?? "Tool call",
+      detail: { acp: true, provider: runtime.provider },
+    });
+  };
+
+  /**
+   * Open (or reuse) the ACP session backing this chat.
+   *
+   * The order of operations is the one `acpHost/index.ts` documents, and it is
+   * not rearrangeable: dialect, spawn plan, then `openAcpSession`, then persist
+   * the id the agent minted. Nothing in here writes a provider's config home.
+   */
+  const ensureAcpSessionRuntime = async (managed: ManagedChatSession): Promise<AcpRuntime> => {
+    const provider = managed.session.provider;
+    if (!isAcpChatProvider(provider)) {
+      throw new Error(`Session '${managed.session.id}' is not an ACP chat.`);
+    }
+    const dialect = acpDialectFor(provider);
+    const runtimeEnv = buildAgentRuntimeEnv(managed);
+
+    if (provider === "kimi") {
+      const preflight = checkKimiWindowsPrerequisites({ env: runtimeEnv });
+      if (!preflight.ok) throw new Error(preflight.message);
+    }
+
+    const cliStatuses = await detectCliAuthStatuses({ skipAuthProbe: true }).catch(() => []);
+    const cli = cliStatuses.find((entry) => entry.cli === provider) ?? null;
+    const executable = resolveAcpExecutable(provider, {
+      env: runtimeEnv,
+      ...(cli?.path ? { auth: [{ type: "cli-subscription", cli: provider, path: cli.path, authenticated: cli.authenticated, verified: cli.verified }] } : {}),
+    });
+    if (executable.source === "fallback-command" && cli && !cli.installed) {
+      throw new Error(
+        `The ${dialect.displayName} CLI (\`${dialect.binaryNames[0]}\`) was not found on this machine. Install it, then refresh AI settings.`,
+      );
+    }
+
+    const configHome = acpConfigHomeFor(provider, runtimeEnv);
+    const permissionMode = resolveAcpPermissionMode(managed.session);
+    const modelToken = acpModelTokenFor(managed.session);
+    const spawnPlan = dialect.buildSpawnPlan({
+      binaryPath: executable.path,
+      cwd: managed.laneWorktreePath,
+      baseEnv: runtimeEnv,
+      modelId: modelToken,
+      reasoningEffort: managed.session.reasoningEffort ?? null,
+      permissionMode,
+      configHome,
+    });
+    const invocationKey = acpInvocationKey(spawnPlan);
+
+    const persisted = readPersistedState(managed.session.id);
+    const existingSessionId = managed.seededAcpSessionId?.trim()
+      || persisted?.acpSessionId?.trim()
+      || null;
+    if (managed.acpSupervisionNoticeShown === undefined) {
+      managed.acpSupervisionNoticeShown = persisted?.acpSupervisionNoticeShown === true;
+    }
+
+    // Grok's approval neutralization is a provider-specific pre-session check;
+    // the coordinator still owns the actual session lifecycle below.
+    const supervisionPreflight = provider === "grok" && !args.acpSpawnOverride
+      ? await checkGrokPermissionNeutralization({ spawnPlan, logger }).catch((error) => ({
+        ok: false,
+        detail: error instanceof Error ? error.message : String(error),
+      }))
+      : null;
+
+    const existing = managed.runtime;
+    const runtime = await createAcpRuntime<QueuedSteer>({
+      owner: managed,
+      provider,
+      dialect,
+      spawnPlan,
+      invocationKey,
+      permissionMode,
+      modelToken,
+      existingSessionId,
+      supervisionPreflight,
+      supervisionAlreadyNotified: managed.acpSupervisionNoticeShown === true,
+      mcpServers: [],
+      logger,
+      runtimeBudget,
+      existingRuntime: existing?.kind === "acp" ? existing : null,
+      runtimeInvalidated: managed.runtimeInvalidated,
+      hasExistingRuntime: existing !== null,
+      teardownExistingRuntime: () => teardownRuntime(managed, "handle_close"),
+      nativeModeValue: acpNativeModeValue(permissionMode),
+      setResumeCommand: (command) => sessionService.setResumeCommand(managed.session.id, command),
+      binarySource: executable.source,
+      ...(args.acpSpawnOverride ? { spawnOverride: args.acpSpawnOverride } : {}),
+      ...(args.acpSessionPool ? { pool: args.acpSessionPool } : {}),
+      callbacks: {
+        onEvents: (runtime, events) => {
+          if (!runtime || managed.runtime !== runtime) return;
+          for (const event of events) emitChatEvent(managed, event);
+        },
+        onPermissionRequested: (runtime, pending) => {
+          if (!runtime) {
+            pending.cancel();
+            return;
+          }
+          presentAcpPermissionRequest(managed, runtime, pending);
+        },
+        onPermissionSettled: (runtime, requestId) => {
+          runtime?.openPermissionIds.delete(requestId);
+        },
+        onSlashCommands: (runtime, commands) => {
+          if (!runtime || managed.runtime !== runtime) return;
+          runtime.slashCommands = commands;
+        },
+        onConfigOptions: (runtime, snapshot) => {
+          if (!runtime) return;
+          applyAcpConfigOptions(managed, runtime, snapshot);
+        },
+        onSessionInfo: (runtime, info) => {
+          if (!runtime || managed.runtime !== runtime) return;
+          adoptRuntimeSessionTitle(managed, info.title, "acp_session_info");
+        },
+        onProcessExit: (runtime, detail) => {
+          if (!runtime || managed.runtime !== runtime) return;
+          runtime.processFailed = true;
+          runtime.interrupted = true;
+          managed.runtimeInvalidated = true;
+          cancelPendingInputsFrom(managed, "acp", "ade");
+          logger.warn("agent_chat.acp_process_exit", {
+            sessionId: managed.session.id,
+            provider,
+            code: detail.code,
+            signal: detail.signal,
+            stderrTail: detail.stderrTail.slice(-500),
+          });
+        },
+        onRuntimeCreated: (runtime) => {
+          managed.runtime = runtime;
+          managed.runtimeInvalidated = false;
+          managed.seededAcpSessionId = runtime.session.sessionId;
+          managed.session.acpPermissionMode = permissionMode;
+        },
+        onOpenFailed: (error) => {
+          const message = error instanceof Error ? error.message : String(error);
+          recordAcpAuthProbeResult(
+            provider,
+            managed.laneWorktreePath,
+            isAcpAuthError(error)
+              ? { state: "auth-failed", message }
+              : { state: "runtime-failed", message },
+          );
+        },
+        onReady: () => {
+          recordAcpAuthProbeResult(provider, managed.laneWorktreePath, { state: "ready", message: null });
+          persistChatState(managed);
+        },
+      },
+    });
+    return runtime;
+  };
+
+  const runAcpTurn = async (
+    managed: ManagedChatSession,
+    args: {
+      promptText: string;
+      userText?: string;
+      displayText?: string;
+      attachments?: AgentChatFileRef[];
+      contextAttachments?: AgentChatContextAttachment[];
+      resolvedAttachments?: ResolvedAgentChatFileRef[];
+      metadata?: AgentChatEventMetadata | null | undefined;
+      laneDirectiveKey?: string | null;
+      onDispatched?: () => void;
+      onBackendDispatched?: () => void;
+    },
+  ): Promise<void> => {
+    const turnId = randomUUID();
+    const provider = managed.session.provider;
+    if (!isAcpChatProvider(provider)) {
+      throw new Error(`Session '${managed.session.id}' is not an ACP chat.`);
+    }
+    const doneModel = {
+      model: managed.session.model,
+      ...(managed.session.modelId ? { modelId: managed.session.modelId } : {}),
+    };
+
+    let runtime: AcpRuntime;
+    try {
+      runtime = await ensureAcpSessionRuntime(managed);
+      const validation = validateSessionReadyForTurn(managed);
+      if (!validation.ready) throw new Error(validation.reason);
+    } catch (error) {
+      // Setup failure. One visible error, then the terminal markers that
+      // release the composer — a chat that never reaches `done` stays stuck
+      // with no way for the user to see why.
+      markSessionIdleWithFreshCache(managed);
+      const message = error instanceof Error ? error.message : String(error);
+      reportProviderRuntimeFailure(provider, message);
+      emitChatEvent(managed, { type: "error", message, turnId });
+      emitChatEvent(managed, { type: "status", turnStatus: "failed", turnId });
+      emitChatEvent(managed, { type: "done", turnId, status: "failed", ...doneModel });
+      appendCtoTurnJournal(managed, { failureNote: `Turn failed: ${message}` });
+      persistChatState(managed);
+      return;
+    }
+
+    emitAcpDegradationNotes(managed, runtime.dialect);
+
+    runtime.busy = true;
+    runtime.activeTurnId = turnId;
+    runtime.interrupted = false;
+    setSessionActive(managed);
+
+    const attachments = args.attachments ?? [];
+    const resolvedAttachments = args.resolvedAttachments ?? attachments.map((attachment) => ({
+      ...attachment,
+      _resolvedPath: attachment.path,
+      _rootPath: managed.laneWorktreePath,
+    }));
+    const displayText = args.displayText?.trim().length ? args.displayText.trim() : args.promptText;
+    const userText = args.userText?.trim().length ? args.userText.trim() : displayText;
+    emitPreparedUserMessage(managed, {
+      text: userText,
+      displayText,
+      attachments,
+      contextAttachments: args.contextAttachments ?? [],
+      metadata: args.metadata,
+      turnId,
+      laneDirectiveKey: args.laneDirectiveKey,
+      onDispatched: args.onDispatched,
+    });
+    emitChatEvent(managed, { type: "status", turnStatus: "started", turnId });
+    captureTurnBeforeSha(managed);
+    emitChatEvent(managed, { type: "activity", ...initialTurnActivity(managed.session), turnId });
+
+    try {
+      let prompt = args.promptText;
+      const pendingContext = consumePendingTurnContextPrefix(managed, false)?.composed;
+      if (pendingContext) prompt = `${pendingContext}\n\n${prompt}`;
+      if (!isPersonalSession(managed.session) && managed.lastLaneDirectiveKey !== args.laneDirectiveKey) {
+        const guidance = buildAdeGuidanceForLane(managed.laneWorktreePath, managed.session);
+        if (guidance.trim()) prompt = `${guidance}\n\n${prompt}`;
+      }
+
+      const imagePrompt = runtime.dialect.imagePrompts.declared
+        ? runtime.dialect.imagePrompts.behavior
+        : null;
+      const blocks = await buildAcpPromptBlocks({
+        promptText: prompt,
+        attachments: resolvedAttachments,
+        agentSupportsImages: runtime.session.connection.initializeResult?.agentCapabilities?.promptCapabilities?.image === true,
+        imagePrompt,
+        readAttachmentBytes: readResolvedAttachmentBytes,
+      });
+      const outcome = await runtime.session.prompt({
+        turnId,
+        blocks,
+      });
+      args.onBackendDispatched?.();
+      // Usage rides the prompt result for Grok and Copilot, and does not exist
+      // at all for Kimi. `outcome.events` is empty in the latter case, so no
+      // usage row is fabricated.
+      for (const event of outcome.events) emitChatEvent(managed, event);
+
+      persistDeliveredLaneDirectiveKey(managed, args.laneDirectiveKey);
+      markSessionIdleWithFreshCache(managed);
+      // Client-side cancel accounting. Copilot reports a stopped turn as
+      // `end_turn`, so the agent's stopReason is never the deciding word.
+      const interrupted = outcome.interrupted || runtime.interrupted;
+      if (!interrupted) reportProviderRuntimeReady(provider);
+      void emitTurnDiffSummaryIfChanged(managed, turnId);
+      emitChatEvent(managed, {
+        type: "status",
+        turnStatus: interrupted ? "interrupted" : "completed",
+        turnId,
+      });
+      emitChatEvent(managed, {
+        type: "done",
+        turnId,
+        status: interrupted ? "interrupted" : "completed",
+        ...doneModel,
+      });
+      persistChatState(managed);
+    } catch (error) {
+      markSessionIdleWithFreshCache(managed);
+      const message = error instanceof Error ? error.message : String(error);
+      void emitTurnDiffSummaryIfChanged(managed, turnId);
+      if (runtime.interrupted && !runtime.processFailed) {
+        emitChatEvent(managed, { type: "status", turnStatus: "interrupted", turnId });
+        emitChatEvent(managed, { type: "done", turnId, status: "interrupted", ...doneModel });
+      } else {
+        reportProviderRuntimeFailure(provider, message);
+        emitChatEvent(managed, { type: "error", message, turnId });
+        emitChatEvent(managed, { type: "status", turnStatus: "failed", turnId });
+        emitChatEvent(managed, { type: "done", turnId, status: "failed", ...doneModel });
+        appendCtoTurnJournal(managed, { failureNote: `Turn failed: ${message}` });
+      }
+      persistChatState(managed);
+    } finally {
+      if (managed.runtime === runtime) {
+        runtime.busy = false;
+        runtime.activeTurnId = null;
+        runtime.interrupted = false;
+      }
+      // The host publishes the "this agent gates itself" notice at most once,
+      // and latching it here keeps that promise across a runtime restart.
+      if (runtime.session.unsupervised && !managed.acpSupervisionNoticeShown) {
+        managed.acpSupervisionNoticeShown = true;
+        logger.warn("agent_chat.acp_session_unsupervised", {
+          sessionId: managed.session.id,
+          provider,
+          permissionMode: runtime.permissionMode,
+        });
+        persistChatState(managed);
+      }
+      // A permission request that outlives its turn blocks the agent behind a
+      // card the user can no longer reach.
+      cancelPendingInputsFrom(managed, "acp");
+
+      // Permission mode is part of the provider runtime's process/session
+      // contract. If another client changed it while this turn was running,
+      // do not deliver a queued steer through the old, more-permissive runtime.
+      // Preserve the ACP session id so the next turn resumes the conversation
+      // with the new posture.
+      if (managed.runtime === runtime && (
+        managed.runtimeInvalidated
+        || runtime.permissionMode !== resolveAcpPermissionMode(managed.session)
+      )) {
+        teardownRuntime(managed, "pool_compaction");
+      }
+    }
+
+    if (!managed.closed && managed.runtime === runtime && runtime.pendingSteers.length) {
+      await deliverNextQueuedSteer(managed, runtime).catch((error) => {
+        logger.warn("agent_chat.acp_deliver_queued_steer_failed", {
+          sessionId: managed.session.id,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      });
+    }
+  };
+
   const runPiTurn = async (
     managed: ManagedChatSession,
     args: {
@@ -24297,6 +25286,9 @@ export function createAgentChatService(args: {
     if (runtimeKind === "pi" || managed.session.provider === "pi") {
       return runPiTurn(managed, args);
     }
+    if (runtimeKind === "acp" || isAcpChatProvider(managed.session.provider)) {
+      return runAcpTurn(managed, args);
+    }
     if (runtimeKind !== "opencode") {
       throw new Error(`Streaming runtime is not available for session '${managed.session.id}'.`);
     }
@@ -24402,8 +25394,10 @@ export function createAgentChatService(args: {
             `${args.promptText}${attachmentHint}`,
           ].filter((section): section is string => Boolean(section)).join("\n\n");
 
+      const previousEventAbort = runtime.eventAbortController;
       const abortController = new AbortController();
       runtime.eventAbortController = abortController;
+      previousEventAbort?.abort();
       runtime.textByPartId.clear();
       runtime.reasoningByPartId.clear();
       runtime.partTypeByPartId.clear();
@@ -24474,15 +25468,20 @@ export function createAgentChatService(args: {
         },
       });
 
+      let promptFailure: unknown = null;
       const promptAccepted = runtime.handle.client.session.promptAsync(
         openCodePromptBody,
         { throwOnError: true },
-      );
-
-      await promptAccepted;
-      if (args.onBackendDispatched) {
-        args.onBackendDispatched();
-      }
+      ).then(() => {
+        args.onBackendDispatched?.();
+      }).catch((error: unknown) => {
+        promptFailure = error;
+        abortController.abort();
+        throw error;
+      });
+      // Drain the live-only SSE immediately. Awaiting promptAsync first loses
+      // `message.updated` on fast follow-up turns; the role gate then drops
+      // every assistant part while `session.idle` still completes the turn.
 
       let stepNumber = 0;
       // Role of every message OpenCode tells us about, keyed by message id.
@@ -25343,6 +26342,12 @@ export function createAgentChatService(args: {
           continue;
         }
       }
+      try {
+        await promptAccepted;
+      } catch (error) {
+        if (!parentSessionIdle) throw promptFailure ?? error;
+      }
+      abortController.abort();
       if (!parentSessionIdle || runtime.subagentSessions.size > 0) {
         throw new Error("OpenCode event stream ended before the parent and child sessions became idle");
       }
@@ -26304,6 +27309,7 @@ export function createAgentChatService(args: {
     rememberInterruptedCodexTurn(runtime, interruptedTurnId);
     rememberTerminalCodexTurn(runtime, interruptedTurnId, managed);
     runtime.awaitingTurnStart = false;
+    runtime.turnStartContextConsumed = false;
     runtime.canAttachResumedTurnStart = false;
     runtime.activeTurnId = null;
     runtime.startedTurnId = null;
@@ -28857,6 +29863,7 @@ export function createAgentChatService(args: {
     markAcceptedCodexSteersUnprocessed(managed, runtime, turnId);
     rememberTerminalCodexTurn(runtime, turnId, managed);
     runtime.awaitingTurnStart = false;
+    runtime.turnStartContextConsumed = false;
     runtime.canAttachResumedTurnStart = false;
     runtime.activeTurnId = null;
     runtime.startedTurnId = null;
@@ -29210,6 +30217,7 @@ export function createAgentChatService(args: {
         });
       }
       runtime.awaitingTurnStart = false;
+      runtime.turnStartContextConsumed = false;
       runtime.canAttachResumedTurnStart = false;
       runtime.activeTurnId = null;
       runtime.startedTurnId = null;
@@ -29328,6 +30336,7 @@ export function createAgentChatService(args: {
         return;
       }
       runtime.awaitingTurnStart = false;
+      runtime.turnStartContextConsumed = false;
       runtime.canAttachResumedTurnStart = false;
       runtime.activeTurnId = turnId;
       if (runtime.pendingTurnPlanningApprovalGuarded !== null) {
@@ -29378,6 +30387,7 @@ export function createAgentChatService(args: {
       markAcceptedCodexSteersUnprocessed(managed, runtime, turnId);
       rememberTerminalCodexTurn(runtime, turnId, managed);
       runtime.awaitingTurnStart = false;
+      runtime.turnStartContextConsumed = false;
       runtime.canAttachResumedTurnStart = false;
       runtime.activeTurnId = null;
       runtime.startedTurnId = null;
@@ -29678,6 +30688,7 @@ export function createAgentChatService(args: {
       rememberInterruptedCodexTurn(runtime, turnId);
       rememberTerminalCodexTurn(runtime, turnId, managed);
       runtime.awaitingTurnStart = false;
+      runtime.turnStartContextConsumed = false;
       runtime.canAttachResumedTurnStart = false;
       runtime.activeTurnId = null;
       runtime.startedTurnId = null;
@@ -30033,6 +31044,7 @@ export function createAgentChatService(args: {
       activeTurnId: null,
       startedTurnId: null,
       awaitingTurnStart: false,
+      turnStartContextConsumed: false,
       threadResumed: false,
       canAttachResumedTurnStart: false,
       itemTurnIdByItemId: new Map<string, string>(),
@@ -31487,7 +32499,7 @@ export function createAgentChatService(args: {
 
   const deliverNextQueuedSteer = async (
     managed: ManagedChatSession,
-    runtime: CodexRuntime | ClaudeRuntime | OpenCodeRuntime | CursorRuntime | DroidRuntime | PiRuntime,
+    runtime: CodexRuntime | ClaudeRuntime | OpenCodeRuntime | CursorRuntime | DroidRuntime | PiRuntime | AcpRuntime,
   ): Promise<boolean> => {
     if (managed.closed) return false;
     // A user-selected priority dispatch owns the staged queue while its SDK
@@ -33646,6 +34658,7 @@ export function createAgentChatService(args: {
       const fit = buildFittedTranscriptReplay(
         readTranscriptEnvelopes(managed, { includeBuffered: true }),
         targetDescriptor.contextWindow,
+        replayMaxCharsForProvider(targetProvider),
       );
       createdManaged.pendingTranscriptReplay = fit.text;
       persistChatState(createdManaged);
@@ -33654,7 +34667,7 @@ export function createAgentChatService(args: {
         emitChatEvent(createdManaged, {
           type: "system_notice",
           noticeKind: "info",
-          message: `Forked with a full transcript replay. Oldest ${fit.truncatedTurnCount} turn${fit.truncatedTurnCount === 1 ? " was" : "s were"} dropped to fit the target context window.`,
+          message: `Forked with a full transcript replay. Oldest ${fit.truncatedTurnCount} turn${fit.truncatedTurnCount === 1 ? " was" : "s were"} dropped to fit the target context window or provider input limit.`,
         });
       }
     }
@@ -34426,7 +35439,16 @@ export function createAgentChatService(args: {
       try {
         const availableModels = await getAvailableModels({
           provider: targetProvider,
-          activateRuntime: targetProvider === "cursor" || targetProvider === "droid" || targetProvider === "opencode",
+          // Runtimes whose model list is discovered rather than static must be
+          // woken before the destination check can trust an empty answer.
+          activateRuntime:
+            targetProvider === "cursor"
+            || targetProvider === "droid"
+            || targetProvider === "opencode"
+            || targetProvider === "qwen"
+            || targetProvider === "kimi"
+            || targetProvider === "grok"
+            || targetProvider === "copilot",
           ...(targetProvider === "cursor" ? { cursorSource: "sdk" } : {}),
         });
         modelAvailable = availableModels.some((model) =>
@@ -36022,6 +37044,7 @@ export function createAgentChatService(args: {
         managed,
         seeded,
         options.targetDescriptor.contextWindow,
+        options.targetProvider,
       );
       persistChatState(managed);
       return await persistedImportedChatResult(managed, options.targetProvider, externalSessionId, replayFork);
@@ -36373,6 +37396,7 @@ export function createAgentChatService(args: {
       managed.runtime.activeTurnId = null;
       managed.runtime.startedTurnId = null;
       managed.runtime.awaitingTurnStart = false;
+      managed.runtime.turnStartContextConsumed = false;
       managed.runtime.canAttachResumedTurnStart = false;
       managed.runtime.pendingTurnPlanningApprovalGuarded = null;
       managed.runtime.itemTurnIdByItemId.clear();
@@ -36600,6 +37624,26 @@ export function createAgentChatService(args: {
       reasoningEffort: session.reasoningEffort,
       fastMode: session.fastMode === true,
     });
+
+  /**
+   * Resolve the model params for a NEW cloud agent, or refuse to create it.
+   *
+   * `verifyExplicitCursorModelSelection` owns the fail-closed rule that both
+   * cloud create paths obey, so this supplies only the fallback for a session
+   * that chose neither control: its ordinary best-effort params. A followup to
+   * an existing agent is unaffected, because its variant is already fixed.
+   */
+  const requireCursorCloudCreateModelParams = async (
+    session: Pick<AgentChatSession, "reasoningEffort" | "fastMode">,
+    modelSdkId: string,
+    apiKey: string,
+  ): Promise<Array<{ id: string; value: string }> | undefined> => (
+    await verifyExplicitCursorModelSelection(apiKey, {
+      modelSdkId,
+      reasoningEffort: session.reasoningEffort,
+      fastMode: session.fastMode ?? null,
+    })
+  ) ?? resolveCursorSdkModelParamsForSession(session, modelSdkId);
 
   const cursorModelParamsForLog = (
     modelParams?: Array<{ id: string; value: string }>,
@@ -39044,19 +40088,7 @@ export function createAgentChatService(args: {
     }
     const { promptText, images } = await buildCursorWorkerPrompt(cloudComposed, args.resolvedAttachments);
 
-    const cloudLogModelParams = runtime.modelSdkId
-      ? resolveCursorSdkModelParamsForSession(managed.session, runtime.modelSdkId)
-      : undefined;
     persistChatState(managed);
-    logger.info("agent_chat.cursor_cloud_prompt_start", {
-      sessionId: managed.session.id,
-      turnId,
-      isFollowUp,
-      hasAgentId: Boolean(managed.session.cursorCloudAgentId),
-      ...(runtime.modelSdkId ? { modelSdkId: runtime.modelSdkId } : {}),
-      ...(cloudLogModelParams?.length ? { modelParams: cursorModelParamsForLog(cloudLogModelParams) } : {}),
-      imageCount: images.length,
-    });
 
     if (args.onDispatched) {
       args.onDispatched();
@@ -39072,10 +40104,21 @@ export function createAgentChatService(args: {
     try {
       let result: unknown;
       const sdkMode = cursorSdkModeForPolicy(runtime.sdkPolicy ?? resolveCursorSdkPolicy(managed.session));
-      if (isFollowUp && managed.session.cursorCloudAgentId) {
-        const modelParams = runtime.modelSdkId
+      const modelParams = runtime.modelSdkId
+        ? (isFollowUp
           ? resolveCursorSdkModelParamsForSession(managed.session, runtime.modelSdkId)
-          : undefined;
+          : await requireCursorCloudCreateModelParams(managed.session, runtime.modelSdkId, apiKey))
+        : undefined;
+      logger.info("agent_chat.cursor_cloud_prompt_start", {
+        sessionId: managed.session.id,
+        turnId,
+        isFollowUp,
+        hasAgentId: Boolean(managed.session.cursorCloudAgentId),
+        ...(runtime.modelSdkId ? { modelSdkId: runtime.modelSdkId } : {}),
+        ...(modelParams?.length ? { modelParams: cursorModelParamsForLog(modelParams) } : {}),
+        imageCount: images.length,
+      });
+      if (isFollowUp && managed.session.cursorCloudAgentId) {
         const payload: CursorSdkCloudFollowupPayload = {
           apiKey,
           agentId: managed.session.cursorCloudAgentId,
@@ -39092,10 +40135,6 @@ export function createAgentChatService(args: {
         );
       } else {
         const repoUrl = await resolveCloudRepoUrl(managed, args.cloudOverrides);
-        const manualAgentName = manualSessionTitleForRuntime(managed);
-        const modelParams = runtime.modelSdkId
-          ? resolveCursorSdkModelParamsForSession(managed.session, runtime.modelSdkId)
-          : undefined;
         let linearIssueId = args.cloudOverrides?.linearIssueId?.trim() || null;
         if (!linearIssueId) {
           try {
@@ -39135,7 +40174,6 @@ export function createAgentChatService(args: {
           projectId: launch.projectId,
           linearIssueId: launch.linearIssueId,
           ...(Object.keys(launch.envVars).length > 0 ? { envVars: launch.envVars } : {}),
-          ...(manualAgentName ? { agentName: manualAgentName } : {}),
           ...(runtime.modelSdkId ? { modelSdkId: runtime.modelSdkId } : {}),
           ...(modelParams?.length ? { modelParams } : {}),
           ...(args.cloudOverrides?.startingRef ? { startingRef: args.cloudOverrides.startingRef } : {}),
@@ -39169,7 +40207,7 @@ export function createAgentChatService(args: {
       const innerResult = "result" in startedRecord ? startedRecord.result : startedRecord;
       const resultRecord = asRecord(innerResult) ?? asRecord(startedRecord) ?? null;
       const resultStatus = typeof resultRecord?.status === "string" ? resultRecord.status : "";
-      adoptRuntimeSessionTitle(managed, startedRecord, "cursor_cloud_agent_info");
+      adoptCursorCloudSessionTitle(managed, startedRecord, "cursor_cloud_agent_info");
 
       if (runStartedAgentId) {
         managed.session.cursorCloudAgentId = runStartedAgentId;
@@ -40617,6 +41655,34 @@ export function createAgentChatService(args: {
 
   const cursorCloudHydrateInFlight = new Set<string>();
   const cursorCloudHydratedRunIds = new Map<string, Set<string>>();
+  /** When this session last read its agent's remote name, per session id. */
+  const cursorCloudRemoteNameReadAt = new Map<string, number>();
+  /** Empty conversation reads of a terminal run, per session id and run id. */
+  const cursorCloudEmptyRunReads = new Map<string, Map<string, number>>();
+  /** Event-driven name reads made while the title was still a default, per session id. */
+  const cursorCloudPlaceholderNameReads = new Map<string, number>();
+
+  /**
+   * Forget one session's cloud hydration state.
+   *
+   * `cursorCloudHydrateInFlight` is deliberately absent: that marker has to
+   * survive a teardown until the request it guards settles.
+   */
+  const forgetCursorCloudHydrationState = (sessionId: string): void => {
+    cursorCloudHydratedRunIds.delete(sessionId);
+    cursorCloudRemoteNameReadAt.delete(sessionId);
+    cursorCloudEmptyRunReads.delete(sessionId);
+    cursorCloudPlaceholderNameReads.delete(sessionId);
+  };
+
+  /** Forget every session's cloud hydration state, for a whole-service dispose. */
+  const clearAllCursorCloudHydrationState = (): void => {
+    cursorCloudHydrateInFlight.clear();
+    cursorCloudHydratedRunIds.clear();
+    cursorCloudRemoteNameReadAt.clear();
+    cursorCloudEmptyRunReads.clear();
+    cursorCloudPlaceholderNameReads.clear();
+  };
 
   type CursorCloudLatestRun = {
     runId: string;
@@ -40667,6 +41733,39 @@ export function createAgentChatService(args: {
     const hydrateTurnId = randomUUID();
     let emittedVisible = false;
     try {
+      // Cursor owns the agent name. Read it on the first hydrate of a session
+      // and then at most once a minute: a watched mirror ticks every three
+      // seconds during an active run, and a rename on cursor.com is not worth
+      // twenty extra API calls a minute per chat.
+      const readRemoteName = async (): Promise<void> => {
+        // Stamped before the request, so a failing read is rate-limited too.
+        cursorCloudRemoteNameReadAt.set(managed.session.id, Date.now());
+        try {
+          const remoteAgent = await runCursorSdkCloudRequest<unknown>({
+            projectRoot,
+            workspacePath,
+            apiKey,
+            type: "cloud.agent.get",
+            payload: { agentId },
+            logger,
+          });
+          const remoteName = extractRuntimeTitle(remoteAgent);
+          if (remoteName) adoptCursorCloudSessionTitle(managed, remoteName, "cursor_cloud_agent");
+        } catch (error) {
+          logger.warn("agent_chat.cursor_cloud_agent_info_failed", {
+            sessionId: managed.session.id,
+            agentId,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+      };
+      const lastRemoteNameReadAt = cursorCloudRemoteNameReadAt.get(managed.session.id);
+      if (
+        lastRemoteNameReadAt === undefined
+        || Date.now() - lastRemoteNameReadAt >= CURSOR_CLOUD_REMOTE_NAME_READ_TTL_MS
+      ) {
+        await readRemoteName();
+      }
       let runs: CursorCloudLatestRun[] = [];
       const conversationByRunId = new Map<string, unknown>();
       for (let attempt = 0; attempt < CURSOR_CLOUD_CONVERSATION_RETRY_ATTEMPTS; attempt += 1) {
@@ -40719,15 +41818,57 @@ export function createAgentChatService(args: {
       }
 
       const hydrated = cursorCloudHydratedRunIds.get(managed.session.id) ?? new Set<string>();
+      const hydratedBefore = new Set(hydrated);
+      const emptyReads = cursorCloudEmptyRunReads.get(managed.session.id) ?? new Map<string, number>();
       for (const run of [...runs].reverse()) {
         const conversation = conversationByRunId.get(run.runId);
         if (!conversation) continue;
-        if (hydrateCursorCloudConversationEvents(managed, conversation, { turnId: hydrateTurnId })) {
+        const hasConversationTurns = cloudConversationHasTurns(conversation);
+        if (hasConversationTurns && hydrateCursorCloudConversationEvents(managed, conversation, { turnId: hydrateTurnId })) {
           emittedVisible = true;
         }
-        if (!isCloudRunStillLive(run.status)) hydrated.add(run.runId);
+        if (isCloudRunStillLive(run.status)) continue;
+        // Do not permanently mark an empty or unrecognised response as
+        // hydrated on the first read. Cursor can return a run before its
+        // conversation is materialized, and the next presence-gated refresh
+        // must be allowed to fetch it again once the VM has produced the
+        // transcript. Bound that retry: a terminal run that reads empty a few
+        // times in a row (an ERROR run with no visible turns never gets one)
+        // would otherwise be refetched on every mirror tick forever.
+        if (hasConversationTurns) {
+          hydrated.add(run.runId);
+          emptyReads.delete(run.runId);
+          continue;
+        }
+        const attempts = (emptyReads.get(run.runId) ?? 0) + 1;
+        if (attempts >= CURSOR_CLOUD_EMPTY_TERMINAL_READ_LIMIT) {
+          hydrated.add(run.runId);
+          emptyReads.delete(run.runId);
+        } else {
+          emptyReads.set(run.runId, attempts);
+        }
       }
       cursorCloudHydratedRunIds.set(managed.session.id, hydrated);
+      cursorCloudEmptyRunReads.set(managed.session.id, emptyReads);
+
+      // Cursor names the agent shortly after its first run produces output,
+      // which is usually after the read above. No polling: while the ADE title
+      // is still a default, re-read the name only on the tick that yields the
+      // first visible turn or sees a run reach a terminal status, and stop
+      // after a few attempts. The TTL rule above still applies afterwards.
+      const runReachedTerminalThisPass = runs.some((run) => (
+        !isCloudRunStillLive(run.status) && !hydratedBefore.has(run.runId) && hydrated.has(run.runId)
+      ));
+      if (
+        (emittedVisible || runReachedTerminalThisPass)
+        && sessionTitleIsDefault(managed)
+      ) {
+        const placeholderReads = cursorCloudPlaceholderNameReads.get(managed.session.id) ?? 0;
+        if (placeholderReads < CURSOR_CLOUD_PLACEHOLDER_NAME_READ_LIMIT) {
+          cursorCloudPlaceholderNameReads.set(managed.session.id, placeholderReads + 1);
+          await readRemoteName();
+        }
+      }
 
       if (emittedVisible) {
         flushBufferedReasoning(managed);
@@ -40870,9 +42011,10 @@ export function createAgentChatService(args: {
   const openCursorCloudChat = async (args: {
     cloudAgentId: string;
     laneId: string;
-    agentName?: string | null;
     sessionId?: string | null;
     modelId?: string | null;
+    reasoningEffort?: string | null;
+    fastMode?: boolean | null;
   }): Promise<{ sessionId: string; session: AgentChatSession }> => {
     const trimmedAgent = args.cloudAgentId.trim();
     const trimmedLane = args.laneId.trim();
@@ -40911,6 +42053,7 @@ export function createAgentChatService(args: {
       }
     }
 
+    const existedBefore = Boolean(managed);
     if (!managed) {
       const requestedModel = typeof args.modelId === "string" ? args.modelId.trim() : "";
       const sdkId = requestedModel.replace(/^cursor\//, "") || "composer-2";
@@ -40919,6 +42062,8 @@ export function createAgentChatService(args: {
         provider: "cursor",
         model: sdkId,
         modelId: `cursor/${sdkId}`,
+        ...(args.reasoningEffort !== undefined ? { reasoningEffort: args.reasoningEffort } : {}),
+        ...(args.fastMode !== undefined && args.fastMode !== null ? { fastMode: args.fastMode } : {}),
         ...(requestedId ? { sessionId: requestedId } : {}),
       });
       managed = managedSessions.get(created.id) ?? null;
@@ -40927,14 +42072,13 @@ export function createAgentChatService(args: {
 
     managed.session.cursorCloudAgentId = trimmedAgent;
     managed.session.cursorRuntime = "cloud";
-    if (typeof args.agentName === "string" && args.agentName.trim()) {
-      adoptRuntimeSessionTitle(managed, args.agentName.trim(), "cursor_cloud_agent");
-    }
     persistChatState(managed);
 
     // New launches return the ADE session immediately so the renderer can
-    // leave the draft pane. Reopening an existing empty cloud chat waits for
-    // hydrate so Retry/backfill does not time out on a fire-and-forget fetch.
+    // leave the draft pane; the launcher pre-assigns the session id, so "new"
+    // means the session did not exist before this call, not that no id was
+    // given. Reopening an existing empty cloud chat waits for hydrate so
+    // Retry/backfill does not time out on a fire-and-forget fetch.
     const hydratePromise = attachAndHydrateCursorCloudChat({
       managed,
       agentId: trimmedAgent,
@@ -40946,9 +42090,9 @@ export function createAgentChatService(args: {
         agentId: trimmedAgent,
         error: error instanceof Error ? error.message : String(error),
       });
-      if (requestedId) throw error;
+      if (existedBefore) throw error;
     });
-    if (requestedId) await hydratePromise;
+    if (existedBefore) await hydratePromise;
 
     return { sessionId: managed.session.id, session: managed.session };
   };
@@ -41536,6 +42680,28 @@ export function createAgentChatService(args: {
         laneDirectiveKey,
         turnId,
         optimisticDroidTurnStart,
+        onDispatched,
+        onBackendDispatched,
+      });
+      return;
+    }
+
+    if (isAcpChatProvider(managed.session.provider)) {
+      if (reasoningEffort !== undefined) {
+        managed.session.reasoningEffort = normalizeReasoningEffort(reasoningEffort);
+      }
+      // A slash command is ordinary prompt text for every ACP dialect: the
+      // agent advertises the list, ADE offers it, and the chosen text is sent
+      // unchanged. There is no dispatch verb to translate it into.
+      await runAcpTurn(managed, {
+        promptText,
+        userText: submittedText,
+        displayText: visibleText,
+        attachments,
+        contextAttachments,
+        resolvedAttachments,
+        metadata,
+        laneDirectiveKey,
         onDispatched,
         onBackendDispatched,
       });
@@ -43539,6 +44705,44 @@ export function createAgentChatService(args: {
       return result;
     }
 
+    if (managed.runtime?.kind === "acp") {
+      const rt = managed.runtime;
+      // Client-side accounting first. The turn body reads this flag, not the
+      // agent's stopReason, which Copilot is known to report wrongly and which
+      // Grok never sends at all because its cancel is a notification.
+      rt.interrupted = true;
+      rt.pendingSteers.length = 0;
+      // Answer the open permission cards before the cancel. `session.cancel`
+      // does the same for the host's own bridge; this drains ADE's side so a
+      // card cannot outlive the turn it belongs to.
+      cancelPendingInputsFrom(managed, "acp", "ade");
+      try {
+        await rt.session.cancel("the user stopped this turn");
+      } catch (error) {
+        logger.warn("agent_chat.acp_interrupt_failed", {
+          sessionId: managed.session.id,
+          provider: rt.provider,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+      if (mode === "stop_and_clear") cancelQueuedSteers(managed, rt, "interrupted");
+      persistChatState(managed);
+      return result;
+    }
+
+    if (isAcpChatProvider(managed.session.provider)) {
+      // The stop landed while the session was still opening, so there is no
+      // runtime to cancel. Clear the queue and idle the row, the same way the
+      // Pi no-runtime arm does.
+      if (mode === "stop_and_clear") {
+        cancelQueuedSteers(managed, { pendingSteers: [], activeTurnId: null }, "interrupted");
+      }
+      cancelPendingInputsFrom(managed, "acp", "ade");
+      setSessionIdle(managed);
+      persistChatState(managed);
+      return result;
+    }
+
     if (managed.runtime?.kind === "droid") {
       const rt = managed.runtime;
       rt.interrupted = true;
@@ -43932,6 +45136,18 @@ export function createAgentChatService(args: {
       managed.session.permissionMode = syncLegacyPermissionMode(managed.session) ?? managed.session.permissionMode;
       enforceManagedLocalHarnessPermissionMode(managed);
       sessionService.setResumeCommand(sessionId, `chat:pi:${sessionId}`);
+    } else if (isAcpChatProvider(managed.session.provider)) {
+      // Restore the pointer and the posture before opening: the session id is
+      // what turns `session/new` into a `session/resume`, so reading it after
+      // the open would start a second conversation instead of rejoining the
+      // first.
+      managed.seededAcpSessionId = persisted?.acpSessionId ?? managed.seededAcpSessionId;
+      managed.session.acpPermissionMode = persisted?.acpPermissionMode ?? managed.session.acpPermissionMode;
+      managed.session.acpConfigSnapshot = persisted?.acpConfigSnapshot ?? managed.session.acpConfigSnapshot;
+      const acpRuntime = await ensureAcpSessionRuntime(managed);
+      managed.session.permissionMode = syncLegacyPermissionMode(managed.session) ?? managed.session.permissionMode;
+      enforceManagedLocalHarnessPermissionMode(managed);
+      sessionService.setResumeCommand(sessionId, `chat:${acpRuntime.provider}:${sessionId}`);
     } else if (managed.session.provider === "cursor") {
       await ensureCursorSdkRuntime(managed);
       managed.session.opencodePermissionMode = persisted?.opencodePermissionMode ?? managed.session.opencodePermissionMode;
@@ -44729,6 +45945,9 @@ export function createAgentChatService(args: {
         return typeof permission === "string" && permission.trim().length ? permission : null;
       }
       case "pi":
+      case "acp":
+        // Both surface their cards through `localPendingInputs`, which the
+        // check at the top of this function already answered.
         return null;
     }
   };
@@ -44885,6 +46104,7 @@ export function createAgentChatService(args: {
       : undefined;
     const backgroundWork = runtimeBackgroundWork(liveManaged?.runtime ?? null);
     const activeBackgroundTaskCount = totalBackgroundWork(backgroundWork);
+    const modelHandoffHistory = liveSession?.modelHandoffHistory ?? persisted?.modelHandoffHistory;
     const backgroundWorkSince = runtimeBackgroundWorkSince(liveManaged?.runtime ?? null);
     // Reported even when nothing is live in the runtime's own bookkeeping: a
     // session holding an SDK process with no background work is exactly the
@@ -44918,6 +46138,7 @@ export function createAgentChatService(args: {
       provider,
       model,
       ...(hydratedModelId ? { modelId: hydratedModelId } : {}),
+      ...(modelHandoffHistory?.length ? { modelHandoffHistory } : {}),
       sessionProfile: liveSession?.sessionProfile ?? persisted?.sessionProfile,
       title: row.title ?? null,
       goal: row.goal ?? null,
@@ -45528,10 +46749,8 @@ export function createAgentChatService(args: {
     eventHistoryBySession.delete(sessionId);
     transcriptHistoryCacheBySession.delete(sessionId);
     resolvedTranscriptPathBySession.delete(sessionId);
-    // Belongs with the other per-session caches: the observer's turn bookkeeping
-    // is LRU-capped, so a deleted session left in it evicts a LIVE session's
-    // open turn and costs that turn its duration.
     pluginRuntimeHooks.forgetSession(sessionId);
+    forgetCursorCloudHydrationState(sessionId);
   };
 
   const countActiveForLane = (laneId: string): number => {
@@ -45973,6 +47192,12 @@ export function createAgentChatService(args: {
         runtime.permissionWaiters.clear();
         runtime.busy = false;
         runtime.activeTurnId = null;
+      } else if (runtime?.kind === "acp") {
+        // The cards already settled through `localPendingInputs` above, which
+        // answered the agent. Only the busy bookkeeping is left.
+        runtime.openPermissionIds.clear();
+        runtime.busy = false;
+        runtime.activeTurnId = null;
       }
     } finally {
       managed.pendingInputSettlementResolvedIds = undefined;
@@ -46370,6 +47595,13 @@ export function createAgentChatService(args: {
     "droid",
     "lmstudio",
     "ollama",
+    // ACP providers refresh on the same TTL. Without an entry here
+    // `shouldRefreshProvider` has no bookkeeping for them and a force refresh
+    // could re-probe on every catalog read.
+    "qwen",
+    "kimi",
+    "grok",
+    "copilot",
   ];
   let modelCatalogCache: AgentChatModelCatalog | null = null;
 
@@ -46642,6 +47874,52 @@ export function createAgentChatService(args: {
       }
     }
 
+    if (isAcpChatProvider(provider)) {
+      // Provider rows are gated on a real connection verdict. A passive
+      // catalog read uses the cached disk heuristic; an active provider
+      // refresh can perform the one-provider ACP handshake when no verdict is
+      // cached. That keeps the normal picker read cheap while making an
+      // explicit refresh capable of recovering keychain-backed logins such as
+      // Copilot's.
+      try {
+        const cliStatuses = await detectCliAuthStatuses({
+          skipAuthProbe: !args.activateRuntime,
+          ...(args.activateRuntime ? { force: true } : {}),
+        });
+        const cli = cliStatuses.find((entry) => entry.cli === provider) ?? null;
+        if (!cli?.installed) return [];
+        let health = getProviderRuntimeHealth(provider);
+        let authReady = health ? health.state === "ready" : cli.authenticated;
+        if (!authReady && !health && args.activateRuntime) {
+          const probe = await probeAcpProviderAuth({ provider, cwd: projectRoot, logger });
+          health = getProviderRuntimeHealth(provider);
+          authReady = probe.state === "ready" || health?.state === "ready";
+        }
+        if (!authReady) return [];
+        if (provider === "qwen") {
+          const settings = await loadQwenUserSettings();
+          if (settings.models.length) {
+            mergeDynamicAcpModelDescriptors(
+              "qwen",
+              settings.models.map((model) => createDynamicAcpModelDescriptor("qwen", model.id, {
+                displayName: model.displayName,
+              })),
+            );
+          }
+          const descriptors = listAcpModelDescriptorsForProvider(provider, {
+            ...(settings.models.length
+              ? { configuredModelIds: settings.models.map((model) => model.id) }
+              : {}),
+          });
+          return descriptors.map((descriptor, index) => acpModelInfoFromDescriptor(descriptor, provider, index));
+        }
+        const descriptors = listAcpModelDescriptorsForProvider(provider);
+        return descriptors.map((descriptor, index) => acpModelInfoFromDescriptor(descriptor, provider, index));
+      } catch {
+        return [];
+      }
+    }
+
     if (provider === "opencode") {
       try {
         const effectiveConfig = projectConfigService.get().effective;
@@ -46754,10 +48032,23 @@ export function createAgentChatService(args: {
     "claude",
     "codex",
     "cursor",
-    "droid",
-    "opencode",
     "pi",
+    "copilot",
+    "grok",
+    "droid",
+    "kimi",
+    "qwen",
   ] as const satisfies readonly AgentChatProvider[];
+
+  /**
+   * Providers the user switched off in Settings.
+   *
+   * Read fresh on every call rather than captured: the toggle writes through
+   * `ai.updateConfig` and the next model read has to see it, without a restart
+   * and without a cache-invalidation dance of its own.
+   */
+  const providerIsDisabled = (candidate: string): boolean =>
+    isProviderDisabled(projectConfigService.get().effective.ai, candidate);
 
   const getAvailableModels = async ({
     provider,
@@ -46769,6 +48060,11 @@ export function createAgentChatService(args: {
     cursorSource?: AgentChatCursorModelSource;
   } = {}): Promise<AgentChatModelInfo[]> => {
     const requestedProvider = provider?.trim() ? provider : undefined;
+    // The one gate for every model read. The aggregate branch below recurses
+    // through this same function, so filtering here covers the picker, the
+    // catalog, the `chat.getAvailableModels` action, and the `providerUsable`
+    // preflight in one place instead of four.
+    if (requestedProvider && providerIsDisabled(requestedProvider)) return [];
     const requestKey = `${requestedProvider ?? "all"}:${activateRuntime === true ? "active" : "passive"}:${cursorSource ?? "all"}`;
     const existingRequest = availableModelsRequests.get(requestKey);
     if (existingRequest) {
@@ -46818,7 +48114,19 @@ export function createAgentChatService(args: {
       || shouldRefreshProvider("ollama");
     const shouldRefreshPi = shouldRefreshProvider("pi") || (mode === "cached" && !modelCatalogCache);
 
-    const catalogProviders: ModelProviderGroup[] = ["claude", "codex", "cursor", "droid", "pi"];
+    // Disabled providers drop out before the fan-out, not after: `activateRuntime`
+    // would otherwise spin up a runtime for a provider the user switched off.
+    const catalogProviders: ModelProviderGroup[] = ([
+      "claude",
+      "codex",
+      "cursor",
+      "pi",
+      "copilot",
+      "grok",
+      "droid",
+      "kimi",
+      "qwen",
+    ] as ModelProviderGroup[]).filter((provider) => !providerIsDisabled(provider));
     const modelsByProvider = await Promise.all(
       catalogProviders.map(async (provider) => {
         try {
@@ -46829,7 +48137,8 @@ export function createAgentChatService(args: {
               activateRuntime:
                 (provider === "cursor" && shouldRefreshProvider("cursor"))
                 || (provider === "droid" && shouldRefreshProvider("droid"))
-                || (provider === "pi" && shouldRefreshPi),
+                || (provider === "pi" && shouldRefreshPi)
+                || (isAcpChatProvider(provider) && shouldRefreshProvider(provider)),
               ...(provider === "cursor" && catalogArgs?.cursorSource
                 ? { cursorSource: catalogArgs.cursorSource }
                 : {}),
@@ -46948,7 +48257,13 @@ export function createAgentChatService(args: {
     }
 
     const opencodeProviderById = new Map(opencodeInventory.providers.map((provider) => [provider.id, provider]));
-    const blocks = buildProviderGroupBlocks(descriptors, createModelOrderMap(), opencodeInventory.providers);
+    // Curated descriptors are in the registry whether or not a provider is
+    // installed, so a disabled provider would still produce a full group block
+    // here. Drop the whole group: the catalog is what the picker, the phone,
+    // and the relay all read, and "switched off" has to mean the same thing on
+    // each of them.
+    const blocks = buildProviderGroupBlocks(descriptors, createModelOrderMap(), opencodeInventory.providers)
+      .filter((group) => !providerIsDisabled(group.key));
 
     const catalog: AgentChatModelCatalog = {
       fetchedAt: nowIso(),
@@ -47278,6 +48593,7 @@ export function createAgentChatService(args: {
       ]);
       teardownRuntime(managed, "ended_session");
       managedSessions.delete(trimmedSessionId);
+      forgetCursorCloudHydrationState(trimmedSessionId);
     } else {
       clearSubagentSnapshots(trimmedSessionId);
     }
@@ -47345,11 +48661,18 @@ export function createAgentChatService(args: {
     sessionService.unarchiveSession(trimmedSessionId);
   };
 
-  const disposeAll = async (): Promise<void> => {
-    // First, before anything that can throw. The dispose tail is wrapped in a
-    // swallow by both hosts, so a rejection further down would leave this
-    // service registered — and a half-disposed service keeps counting runtimes
-    // that no longer exist, permanently shrinking the process budget.
+  /**
+   * The teardown every dispose path runs first.
+   *
+   * First, before anything that can throw. The dispose tail is wrapped in a
+   * swallow by both hosts, so a rejection further down would leave this service
+   * registered — and a half-disposed service keeps counting runtimes that no
+   * longer exist, permanently shrinking the process budget.
+   *
+   * One function, because `disposeAll` and `forceDisposeAll` ran identical
+   * copies and every new piece of per-service state had to be remembered twice.
+   */
+  const beginDispose = (): void => {
     runtimeBudget.unregister(runtimeBudgetParticipant);
     hostSleepChips.dispose();
     clearInterval(sessionCleanupTimer);
@@ -47362,12 +48685,15 @@ export function createAgentChatService(args: {
     pluginChatWriteBudget.clear();
     pluginChatFingerprints.clear();
     pluginChatHydrateSweeps.clear();
-    cursorCloudHydrateInFlight.clear();
-    cursorCloudHydratedRunIds.clear();
+    clearAllCursorCloudHydrationState();
     scheduledWorkScheduler?.dispose();
     autoResume.forgetAll();
     for (const recovery of cancelledQueueRecoveries.values()) clearTimeout(recovery.timer);
     cancelledQueueRecoveries.clear();
+  };
+
+  const disposeAll = async (): Promise<void> => {
+    beginDispose();
     for (const sessionId of [...managedSessions.keys()]) {
       try {
         await disposeManagedSession({ sessionId }, "detached");
@@ -47380,28 +48706,7 @@ export function createAgentChatService(args: {
   };
 
   const forceDisposeAll = (): void => {
-    // First, before anything that can throw. The dispose tail is wrapped in a
-    // swallow by both hosts, so a rejection further down would leave this
-    // service registered — and a half-disposed service keeps counting runtimes
-    // that no longer exist, permanently shrinking the process budget.
-    runtimeBudget.unregister(runtimeBudgetParticipant);
-    hostSleepChips.dispose();
-    clearInterval(sessionCleanupTimer);
-    clearCursorCloudMirrorWatches();
-    // Told, not merely forgotten: a plugin left believing somebody is watching
-    // polls a conversation nobody is looking at until its child restarts.
-    pluginChatPresence.clearAll();
-    detachPluginChatWriter();
-    pluginOwnedTurns.clear();
-    pluginChatWriteBudget.clear();
-    pluginChatFingerprints.clear();
-    pluginChatHydrateSweeps.clear();
-    cursorCloudHydrateInFlight.clear();
-    cursorCloudHydratedRunIds.clear();
-    scheduledWorkScheduler?.dispose();
-    autoResume.forgetAll();
-    for (const recovery of cancelledQueueRecoveries.values()) clearTimeout(recovery.timer);
-    cancelledQueueRecoveries.clear();
+    beginDispose();
     for (const sessionId of [...sessionTurnCollectors.keys()]) {
       rejectActiveSessionTurnCollector(sessionId, `Chat session '${sessionId}' was closed during shutdown.`);
     }
@@ -47559,17 +48864,24 @@ export function createAgentChatService(args: {
     droidPermissionMode,
     cursorModeId,
     cursorConfigValues,
+    acpPermissionMode: requestedAcpPermissionMode,
     permissionMode,
     spawnKind: requestedSpawnKind,
     subagentTakeoverPromptShown,
   }: AgentChatUpdateSessionArgs): Promise<AgentChatSession> => {
     const fastMode = requestedFastModeArg ?? requestedLegacyFastModeArg;
     const managed = ensureManagedSession(sessionId);
+    if (cursorOwnsSessionName(managed.session.cursorCloudAgentId) && (title !== undefined || manuallyNamed !== undefined)) {
+      throw new Error(CURSOR_CLOUD_RENAME_BLOCKED_MESSAGE);
+    }
     const chatConfig = resolveChatConfig();
     const isIdentitySession = Boolean(managed.session.identityKey);
     const identityPinned = isPrimaryPinnedIdentity(managed.session.identityKey);
     const orchestrationLockedMode = lockedOrchestrationPermissionMode(managed.session);
     const permissionsPinned = identityPinned || orchestrationLockedMode !== null;
+    const previousAcpPermissionMode = isAcpChatProvider(managed.session.provider)
+      ? resolveAcpPermissionMode(managed.session)
+      : null;
     const prevCodexApprovalPolicy = managed.session.codexApprovalPolicy;
     const prevCodexSandbox = managed.session.codexSandbox;
     const prevCodexConfigSource = managed.session.codexConfigSource;
@@ -47590,7 +48902,9 @@ export function createAgentChatService(args: {
       || opencodePermissionMode !== undefined
       || droidPermissionMode !== undefined
       || cursorModeId !== undefined
-      || cursorConfigValues !== undefined;
+      || cursorConfigValues !== undefined
+      || requestedAcpPermissionMode !== undefined;
+    let modelHandoff: AgentChatModelHandoff | null = null;
 
     if (modelId !== undefined) {
       const nextModelId = String(modelId ?? "").trim();
@@ -47612,6 +48926,9 @@ export function createAgentChatService(args: {
         });
       }
       const previousProvider = managed.session.provider;
+      const previousModelId = managed.session.modelId
+        ?? resolveModelIdFromStoredValue(managed.session.model, previousProvider)
+        ?? managed.session.model;
 
       // A model switch can cross providers, which means it can move a chat onto
       // a provider that cannot honor the MCP request the chat was created with.
@@ -47653,6 +48970,14 @@ export function createAgentChatService(args: {
         previousProvider !== nextProvider
         || managed.session.modelId !== descriptor.id
         || managed.session.model !== nextModel;
+      if (modelChanged) {
+        modelHandoff = {
+          fromProvider: previousProvider,
+          toProvider: nextProvider,
+          ...(previousModelId ? { fromModelId: previousModelId } : {}),
+          toModelId: descriptor.id,
+        };
+      }
 
       const previousCodexRuntime = managed.runtime?.kind === "codex" ? managed.runtime : null;
       const liveCodexSettings = previousProvider === "codex"
@@ -47705,6 +49030,7 @@ export function createAgentChatService(args: {
           managed,
           readTranscriptEnvelopes(managed, { includeBuffered: true }),
           descriptor.contextWindow,
+          nextProvider,
         );
       } else if (previousProvider === "codex" && !liveCodexSettings) {
         delete managed.session.threadId;
@@ -48022,6 +49348,32 @@ export function createAgentChatService(args: {
         await syncLiveCursorSdkPolicy(managed, managed.runtime, "session_update");
       }
     }
+
+    if (isAcpChatProvider(managed.session.provider) && !permissionsPinned) {
+      if (requestedAcpPermissionMode !== undefined) {
+        managed.session.acpPermissionMode = requestedAcpPermissionMode;
+      } else if (permissionMode !== undefined) {
+        // `acpPermissionMode` is a latched native value. A generic composer
+        // update is an explicit user choice, so it must replace any value
+        // captured when the current ACP runtime was opened.
+        managed.session.acpPermissionMode = acpPermissionModeFromLegacyPermissionMode(
+          managed.session.permissionMode,
+        );
+      }
+    }
+
+    const acpPermissionModeChanged = isAcpChatProvider(managed.session.provider)
+      && previousAcpPermissionMode !== resolveAcpPermissionMode(managed.session);
+    if (acpPermissionModeChanged && managed.runtime?.kind === "acp") {
+      if (managed.runtime.busy) {
+        // Let the current turn finish under the mode it was opened with. The
+        // ACP turn finalizer tears this runtime down before any queued steer
+        // can reuse it; the next turn resumes with the new mode.
+        managed.runtimeInvalidated = true;
+      } else {
+        teardownRuntime(managed, "pool_compaction");
+      }
+    }
     // Broadcast a transient meta patch so other clients (desktop refreshing a
     // session an iOS device just re-moded, or vice versa) update their composer
     // controls immediately. Emitted after the cursor policy sync above so
@@ -48044,6 +49396,9 @@ export function createAgentChatService(args: {
         ...(managed.session.cursorModeSnapshot ? { cursorModeSnapshot: managed.session.cursorModeSnapshot } : {}),
         ...(cursorConfigValues !== undefined || managed.session.cursorConfigValues != null
           ? { cursorConfigValues: managed.session.cursorConfigValues ?? null }
+          : {}),
+        ...(managed.session.acpPermissionMode !== undefined
+          ? { acpPermissionMode: managed.session.acpPermissionMode }
           : {}),
       });
     }
@@ -48104,15 +49459,25 @@ export function createAgentChatService(args: {
       dismissSubagentTakeoverPrompt({ sessionId });
     }
 
+    if (modelHandoff) {
+      managed.session.modelHandoffHistory = [
+        ...(managed.session.modelHandoffHistory ?? []),
+        modelHandoff,
+      ].slice(-MAX_MODEL_HANDOFF_HISTORY);
+      emitChatEvent(managed, {
+        type: "model_handoff",
+        ...modelHandoff,
+      });
+    }
+
     persistChatState(managed);
     return managed.session;
   };
 
   /**
-   * Trigger early warmup of the Claude query for an existing chat session.
-   * Called from the renderer when the user selects a Claude/Anthropic model in the
-   * model picker — before they've submitted a message — so the ~30s subprocess
-   * cold-start happens while they're still composing.
+   * Explicitly pre-warm a provider query for an existing chat session.
+   * Model selection itself stays local; callers opt into this only for flows
+   * that intentionally prepare a runtime before the next message is sent.
    */
   const warmupModel = async ({
     sessionId,
@@ -48346,6 +49711,24 @@ export function createAgentChatService(args: {
           source: "sdk" as const,
         }));
       return withPluginSlashCommands([cursorCommands, localCommands]);
+    }
+
+    if (isAcpChatProvider(provider)) {
+      // The agent advertises its own list through `available_commands_update`,
+      // and the dialect has already filtered out the commands only its terminal
+      // UI can run — Copilot's `/diff`, `/resume`, `/login` and friends would
+      // otherwise reach the model as prose and waste a turn. Grok re-sends its
+      // list on almost every turn, so `mergeSlashCommands` dedupes by name.
+      const runtimeCommands: AgentChatSlashCommand[] =
+        managed?.runtime?.kind === "acp"
+          ? managed.runtime.slashCommands.map((command) => ({
+              name: command.name.startsWith("/") ? command.name : `/${command.name}`,
+              description: command.description,
+              ...(command.inputHint ? { argumentHint: command.inputHint } : {}),
+              source: "sdk" as const,
+            }))
+          : [];
+      return mergeSlashCommands([filesystemBackedCommands(), localCommands, runtimeCommands]);
     }
 
     // Droid and OpenCode can both use the same filesystem-backed prompt and

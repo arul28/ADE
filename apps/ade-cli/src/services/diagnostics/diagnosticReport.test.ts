@@ -4,6 +4,7 @@ import {
   buildDiagnosticReport,
   projectPathLabel,
   redactDiagnosticText,
+  summarizeDiagnosticRemoteMachines,
   tailLogText,
 } from "./diagnosticReport";
 
@@ -188,6 +189,44 @@ describe("tailLogText", () => {
   });
 });
 
+describe("summarizeDiagnosticRemoteMachines", () => {
+  it("keeps remote diagnostics bounded and free of machine identity", () => {
+    const summary = summarizeDiagnosticRemoteMachines({
+      connections: [{
+        state: "error",
+        route: {
+          kind: "tailnet",
+          endpoint: "ws://192.168.1.240:8787",
+        },
+        target: {
+          id: "mac-studio-secret-id",
+          name: "Arul's Mac Studio",
+          hostname: "studio.tailnet.example",
+        },
+        projects: [{ projectId: "secret-project", rootPath: "/Users/arul/Projects/ADE" }],
+        lastError: "No space left on device at /Users/arul/.ade/secrets",
+        lastErrorInfo: {
+          kind: "disk_full",
+          message: "No space left on device",
+        },
+      }],
+    });
+
+    expect(summary).toEqual({
+      configuredCount: 1,
+      connectedCount: 0,
+      machines: [{
+        state: "error",
+        route: "tailnet",
+        projectCount: 1,
+        error: "disk_full",
+      }],
+    });
+    const serialized = JSON.stringify(summary);
+    expect(serialized).not.toMatch(/mac-studio-secret-id|Arul|studio\.tailnet|192\.168|secret-project|No space/i);
+  });
+});
+
 describe("buildDiagnosticReport", () => {
   function build() {
     return buildDiagnosticReport({
@@ -220,6 +259,11 @@ describe("buildDiagnosticReport", () => {
         localRuntimeStatus: { connectionState: "disconnected", runtimeMode: "primary", pid: 4321 },
         machineLastFailure: { code: "db_integrity", message: "cannot open /Users/ada/.ade/ade.db" },
       },
+      remoteMachines: {
+        configuredCount: 1,
+        connectedCount: 0,
+        machines: [{ state: "error", route: "tailnet", projectCount: 1, error: "timeout" }],
+      },
       storage: [{ label: "ADE home", path: "/Users/ada/.ade", freeBytes: 5 * 1024 ** 3, totalBytes: 500 * 1024 ** 3 }],
       logs: [
         {
@@ -244,6 +288,7 @@ describe("buildDiagnosticReport", () => {
       "## Technical detail",
       "## Runtime status",
       "## Last failure (machine)",
+      "## Remote machines",
       "## Disk space",
       "## Logs",
       "## Notes",

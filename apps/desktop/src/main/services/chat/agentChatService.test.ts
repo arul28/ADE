@@ -26,6 +26,9 @@ import {
   requirePluginChatWriteTarget,
   setPluginChatRuntimeDelivery,
 } from "./pluginChatRuntime";
+import { createMockAcpAgent, respondWithSession, type MockAcpAgent } from "./acpHost/mockAcpAgent";
+import { createAcpSessionPool } from "./acpHost/acpSessionPool";
+import type { AcpSessionUpdate } from "./acpHost/acpProtocolTypes";
 import { openKvDb } from "../state/kvDb";
 import { createCtoStateService } from "../cto/ctoStateService";
 import { createCtoMemoryService } from "../cto/ctoMemoryService";
@@ -37,6 +40,7 @@ import {
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { injectFsFault } from "../../../test/faultInjection";
 import { resolveBuiltInBrowserActorCapability } from "../builtInBrowser/builtInBrowserActorCapabilities";
+import { loadQwenUserSettings } from "../ai/qwenUserSettings";
 
 const streamText = vi.fn();
 const claudeSdkCreateSessionCompat = vi.hoisted(() => vi.fn());
@@ -92,6 +96,7 @@ const mockState = vi.hoisted(() => ({
     questionReject: ReturnType<typeof vi.fn>;
     permissionReply: ReturnType<typeof vi.fn>;
   }>(),
+  openCodePromptAsyncBarrier: null as Promise<void> | null,
   openCodeTitleForNextPrompt: null as string | null,
   openCodeQuestionForNextPrompt: null as null | {
     id: string;
@@ -442,6 +447,9 @@ vi.mock("../opencode/openCodeRuntime", async () => {
         // arrives alongside sessionID and directory.
         promptAsync: vi.fn(async (params: any = {}) => {
           state.promptBodies.push(params ?? {});
+          if (mockState.openCodePromptAsyncBarrier) {
+            await mockState.openCodePromptAsyncBarrier;
+          }
           void (async () => {
             if (mockState.openCodeTitleForNextPrompt) {
               pushEvent({
@@ -605,19 +613,39 @@ vi.mock("../opencode/openCodeRuntime", async () => {
       client,
     };
   }),
-  openCodeEventStream: vi.fn(async ({ client }: { client: { __sessionId?: string } }) => {
+  openCodeEventStream: vi.fn(async ({
+    client,
+    signal,
+  }: {
+    client: { __sessionId?: string };
+    signal?: AbortSignal;
+  }) => {
     const state = client.__sessionId ? mockState.openCodeSessions.get(client.__sessionId) : undefined;
     if (!state) {
       return (async function* () {})();
     }
     return (async function* () {
       while (true) {
+        if (signal?.aborted) return;
         if (state.events.length > 0) {
           yield state.events.shift();
           continue;
         }
         if (state.aborted) return;
-        await new Promise<void>((resolve) => state.waiters.push(resolve));
+        await new Promise<void>((resolve) => {
+          if (signal?.aborted) {
+            resolve();
+            return;
+          }
+          const finish = () => {
+            signal?.removeEventListener("abort", finish);
+            const index = state.waiters.indexOf(finish);
+            if (index >= 0) state.waiters.splice(index, 1);
+            resolve();
+          };
+          signal?.addEventListener("abort", finish, { once: true });
+          state.waiters.push(finish);
+        });
       }
     })();
   }),
@@ -723,6 +751,30 @@ vi.mock("./droidModelsDiscovery", () => ({
 
 vi.mock("../ai/authDetector", () => ({
   detectAllAuth: vi.fn(async () => []),
+  // The ACP adapter reads this to resolve a binary and to gate the catalog.
+  // Every ACP CLI reports installed and signed in unless a test says otherwise.
+  detectCliAuthStatuses: vi.fn(async () =>
+    ["qwen", "kimi", "grok", "copilot"].map((cli) => ({
+      cli,
+      installed: true,
+      path: `/usr/local/bin/${cli}`,
+      authenticated: true,
+      verified: false,
+    })),
+  ),
+}));
+
+vi.mock("../ai/qwenUserSettings", () => ({
+  loadQwenUserSettings: vi.fn(async () => ({
+    authenticated: false,
+    models: [],
+    defaultModelId: null,
+  })),
+  parseQwenUserSettings: vi.fn(() => ({
+    authenticated: false,
+    models: [],
+    defaultModelId: null,
+  })),
 }));
 
 vi.mock("../ai/localModelDiscovery", () => ({}));
@@ -960,7 +1012,7 @@ import {
   gunzipFromBase64,
 } from "./crossMachineForkTransport";
 import { spawn } from "node:child_process";
-import { detectAllAuth } from "../ai/authDetector";
+import { detectAllAuth, detectCliAuthStatuses } from "../ai/authDetector";
 import { buildCodingAgentSystemPrompt } from "../ai/tools/systemPrompt";
 import { createOrchestrationService } from "../orchestration/orchestrationService";
 import { runGit } from "../git/git";
@@ -969,7 +1021,10 @@ import { parseAgentChatTranscript } from "../../../shared/chatTranscript";
 import type { ChatScheduledWorkRecord, ChatScheduledWorkState } from "./chatScheduledWorkScheduler";
 import { mapPermissionToCodex } from "./permissionMapping";
 import { acquireCursorSdkConnection, releaseCursorSdkConnection } from "./cursorSdkPool";
-import { CROSS_PROVIDER_REPLAY_HEADER } from "./crossProviderReplayFork";
+import {
+  CODEX_REPLAY_MAX_CHARS,
+  CROSS_PROVIDER_REPLAY_HEADER,
+} from "./crossProviderReplayFork";
 import { acquireDroidSdkConnection } from "./droidSdkPool";
 import { clearCursorCliModelsCache } from "./cursorModelsDiscovery";
 import type { AgentChatCreateScheduledWorkArgs, AgentChatCrossMachineHandoffCapsule, AgentChatEventEnvelope, ComputerUseBackendStatus, LaneLinearIssue, PendingInputRequest } from "../../../shared/types";
@@ -2148,6 +2203,7 @@ beforeEach(() => {
   mockState.openCodeSessionCounter = 0;
   mockState.openCodeForkCalls = [];
   mockState.openCodeSessions.clear();
+  mockState.openCodePromptAsyncBarrier = null;
   mockState.openCodeTitleForNextPrompt = null;
   mockState.openCodeQuestionForNextPrompt = null;
   mockState.droidSessionCounter = 0;
@@ -3134,7 +3190,7 @@ describe("createAgentChatService", () => {
       expect(session.model).toBe("claude-sonnet-5");
     });
 
-    it("keeps legacy bracketed 1M model aliases on Claude Opus 4.7 1M", async () => {
+    it("maps retired Claude Opus 4.7 1M aliases onto Opus 4.8", async () => {
       const { service } = createService();
       const session = await service.createSession({
         laneId: "lane-1",
@@ -3142,8 +3198,8 @@ describe("createAgentChatService", () => {
         model: "claude-opus-4-7[1m]",
       });
 
-      expect(session.modelId).toBe("anthropic/claude-opus-4-7-1m");
-      expect(session.model).toBe("claude-opus-4-7[1m]");
+      expect(session.modelId).toBe("anthropic/claude-opus-4-8");
+      expect(session.model).toBe("claude-opus-4-8");
     });
 
     it.each([
@@ -3228,7 +3284,7 @@ describe("createAgentChatService", () => {
       expect((doneEvent!.event as any).modelId).toBe("anthropic/claude-opus-4-8");
     });
 
-    it("preserves selected Claude Opus 4.7 1M metadata when the SDK reports bare Opus 4.7", async () => {
+    it("maps retired Claude Opus 4.7 1M sessions onto Opus 4.8 even when the SDK reports bare Opus 4.7", async () => {
       const events: AgentChatEventEnvelope[] = [];
       let streamCall = 0;
       vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
@@ -3299,8 +3355,8 @@ describe("createAgentChatService", () => {
 
       const doneEvent = events.filter((event) => event.event.type === "done").at(-1);
       expect(doneEvent?.event.type).toBe("done");
-      expect((doneEvent!.event as any).model).toBe("claude-opus-4-7[1m]");
-      expect((doneEvent!.event as any).modelId).toBe("anthropic/claude-opus-4-7-1m");
+      expect((doneEvent!.event as any).model).toBe("claude-opus-4-8");
+      expect((doneEvent!.event as any).modelId).toBe("anthropic/claude-opus-4-8");
     });
 
     it("suppresses Claude EDE diagnostics without hiding real result errors", async () => {
@@ -4275,7 +4331,10 @@ describe("createAgentChatService", () => {
     });
 
     it("recomputes the MCP report when a model switch crosses providers", async () => {
-      const { service } = createService();
+      const events: AgentChatEventEnvelope[] = [];
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
       const created = await service.createSession({
         laneId: "lane-1",
         provider: "claude",
@@ -4297,6 +4356,26 @@ describe("createAgentChatService", () => {
         delivered: true,
       });
       expect(summary?.mcpCapability?.residual).toBeTruthy();
+      expect(summary?.modelHandoffHistory).toEqual([
+        expect.objectContaining({
+          fromProvider: "claude",
+          toProvider: "codex",
+          fromModelId: expect.any(String),
+          toModelId: expect.any(String),
+        }),
+      ]);
+      expect(events.map((event) => event.event)).toContainEqual(
+        expect.objectContaining({
+          type: "model_handoff",
+          fromProvider: "claude",
+          toProvider: "codex",
+        }),
+      );
+
+      const { service: restarted } = createService();
+      await expect(restarted.getSessionSummary(created.id)).resolves.toMatchObject({
+        modelHandoffHistory: summary?.modelHandoffHistory,
+      });
     });
 
     it("refuses a model switch onto a provider that cannot carry the injected servers", async () => {
@@ -5998,6 +6077,162 @@ describe("createAgentChatService", () => {
       expect(aiIntegrationService.summarizeTerminal).not.toHaveBeenCalledWith(
         expect.objectContaining({ taskType: "handoff_summary" }),
       );
+    });
+
+    it("regression: caps a Cursor-to-Codex replay below the app-server input limit", async () => {
+      const CODEX_APP_SERVER_INPUT_MAX_CHARS = 1_048_576;
+      installRealTranscriptParser();
+      const { service } = createService();
+      const source = await service.createSession({
+        laneId: "lane-1",
+        provider: "cursor",
+        model: "composer-2",
+        modelId: "cursor/composer-2",
+      });
+      writeTestTranscriptEnvelopes(source.id, [
+        {
+          sessionId: source.id,
+          sequence: 1,
+          timestamp: "2026-07-10T11:00:00.000Z",
+          event: { type: "user_message", text: `oldest ${"o".repeat(600_000)}` },
+        },
+        {
+          sessionId: source.id,
+          sequence: 2,
+          timestamp: "2026-07-10T11:01:00.000Z",
+          event: { type: "user_message", text: `newest ${"n".repeat(600_000)}` },
+        },
+      ]);
+
+      const result = await service.handoffSession({
+        sourceSessionId: source.id,
+        targetModelId: "openai/gpt-5.5",
+        mode: "fork",
+      });
+      const persisted = readPersistedChatState(result.session.id);
+
+      expect(result.replayFork?.truncated).toBe(true);
+      expect(persisted.pendingTranscriptReplay?.length).toBeLessThanOrEqual(CODEX_REPLAY_MAX_CHARS);
+      expect(persisted.pendingTranscriptReplay).toContain("newest");
+      expect(persisted.pendingTranscriptReplay).not.toContain("oldest");
+
+      await service.sendMessage({
+        sessionId: result.session.id,
+        text: `Continue from the replay. ${"f".repeat(500_000)}`,
+      }, { awaitDispatch: true });
+      const turnStart = await vi.waitFor(() => {
+        const payload = mockState.codexRequestPayloads
+          .slice()
+          .reverse()
+          .find((candidate) => candidate.method === "turn/start");
+        expect(payload).toBeDefined();
+        return payload as {
+          params?: { input?: Array<{ text?: unknown }> };
+        };
+      });
+      const textInputs = turnStart?.params?.input
+        ?.flatMap((entry) => typeof entry.text === "string" ? [entry.text] : []) ?? [];
+      const replayInputChars = textInputs.reduce((total, text) => total + text.length, 0);
+      expect(replayInputChars).toBeLessThanOrEqual(CODEX_APP_SERVER_INPUT_MAX_CHARS);
+      expect(textInputs.join("\n")).toContain("Continue from the replay.");
+    });
+
+    it("restores the bounded replay when Codex rejects the first turn", async () => {
+      installRealTranscriptParser();
+      const { service } = createService();
+      const source = await service.createSession({
+        laneId: "lane-1",
+        provider: "cursor",
+        model: "composer-2",
+        modelId: "cursor/composer-2",
+      });
+      writeTestTranscriptEnvelopes(source.id, [
+        {
+          sessionId: source.id,
+          sequence: 1,
+          timestamp: "2026-07-10T11:00:00.000Z",
+          event: { type: "user_message", text: "oldest" },
+        },
+        {
+          sessionId: source.id,
+          sequence: 2,
+          timestamp: "2026-07-10T11:01:00.000Z",
+          event: { type: "user_message", text: "newest" },
+        },
+      ]);
+
+      const result = await service.handoffSession({
+        sourceSessionId: source.id,
+        targetModelId: "openai/gpt-5.5",
+        mode: "fork",
+      });
+      mockState.codexResponseOverrides.set("turn/start", {
+        error: { code: -32_000, message: "input rejected" },
+      });
+
+      await expect(service.sendMessage({
+        sessionId: result.session.id,
+        text: "Try this turn.",
+      }, { awaitBackendDispatch: true })).rejects.toThrow("input rejected");
+
+      expect(readPersistedChatState(result.session.id).pendingTranscriptReplay)
+        .toContain("newest");
+    });
+
+    it("blocks an overlapping Codex send before it can race replay restoration", async () => {
+      installRealTranscriptParser();
+      const { service } = createService();
+      const source = await service.createSession({
+        laneId: "lane-1",
+        provider: "cursor",
+        model: "composer-2",
+        modelId: "cursor/composer-2",
+      });
+      writeTestTranscriptEnvelopes(source.id, [
+        {
+          sessionId: source.id,
+          sequence: 1,
+          timestamp: "2026-07-10T11:00:00.000Z",
+          event: { type: "user_message", text: "oldest" },
+        },
+        {
+          sessionId: source.id,
+          sequence: 2,
+          timestamp: "2026-07-10T11:01:00.000Z",
+          event: { type: "user_message", text: "newest" },
+        },
+      ]);
+
+      const result = await service.handoffSession({
+        sourceSessionId: source.id,
+        targetModelId: "openai/gpt-5.5",
+        mode: "fork",
+      });
+      mockState.delayedCodexMethods.add("turn/start");
+      mockState.codexResponseOverrides.set("turn/start", {
+        error: { code: -32_000, message: "input rejected" },
+      });
+
+      const firstSend = service.sendMessage({
+        sessionId: result.session.id,
+        text: "First turn.",
+      }, { awaitBackendDispatch: true });
+      await vi.waitFor(() => {
+        expect(mockState.codexRequestPayloads.filter((payload) => payload.method === "turn/start"))
+          .toHaveLength(1);
+      });
+
+      await expect(service.sendMessage({
+        sessionId: result.session.id,
+        text: "Overlapping turn.",
+      }, { awaitBackendDispatch: true })).rejects.toThrow("already active");
+      expect(mockState.codexRequestPayloads.filter((payload) => payload.method === "turn/start"))
+        .toHaveLength(1);
+
+      mockState.flushCodexResponses();
+      await expect(firstSend).rejects.toThrow("input rejected");
+      expect(readPersistedChatState(result.session.id).pendingTranscriptReplay)
+        .toContain("newest");
     });
 
     it("forks a Claude chat onto a Codex model with a full transcript replay", async () => {
@@ -28079,6 +28314,58 @@ describe("createAgentChatService", () => {
       expect(Array.isArray(models)).toBe(true);
     });
 
+    it("uses the Qwen CLI's configured model instead of unrelated curated rows", async () => {
+      vi.mocked(detectAllAuth).mockResolvedValue([
+        {
+          type: "cli-subscription",
+          cli: "qwen",
+          path: "/usr/local/bin/qwen",
+          authenticated: true,
+          verified: false,
+        },
+      ] as never);
+      vi.mocked(detectCliAuthStatuses).mockResolvedValue([
+        {
+          cli: "qwen",
+          installed: true,
+          path: "/usr/local/bin/qwen",
+          authenticated: true,
+          verified: false,
+        },
+      ] as never);
+      vi.mocked(loadQwenUserSettings).mockResolvedValue({
+        authenticated: true,
+        models: [{ id: "gpt-5.5", displayName: "gpt-5.5" }],
+        defaultModelId: "gpt-5.5",
+      });
+
+      const { service } = createService();
+      const models = await service.getAvailableModels({ provider: "qwen", activateRuntime: true });
+
+      expect(models.map((model) => model.id)).toEqual(["qwen/gpt-5.5"]);
+    });
+
+    // Settings can switch a provider off. That has to mean the same thing on
+    // every surface, so the gate lives on the one call every picker, the
+    // catalog, and the cross-machine action all funnel through.
+    it("offers nothing for a provider the user disabled, directly or in aggregate", async () => {
+      const { service } = createService({
+        projectConfigService: {
+          get: vi.fn(() => ({ effective: { ai: { disabledProviders: ["claude"] } } })),
+          getAll: vi.fn(() => ({})),
+          set: vi.fn(),
+        } as any,
+      });
+
+      expect(await service.getAvailableModels({ provider: "claude" })).toEqual([]);
+
+      const aggregate = await service.getAvailableModels({});
+      expect(aggregate.some((model) => model.family === "anthropic")).toBe(false);
+
+      const catalog = await service.getModelCatalog({ mode: "force" });
+      expect(catalog.groups.map((group) => group.key)).not.toContain("claude");
+    });
+
     it("returns Cursor CLI models without requiring a Cursor SDK API key", async () => {
       delete process.env.CURSOR_API_KEY;
       vi.mocked(detectAllAuth).mockResolvedValue([
@@ -41238,6 +41525,126 @@ describe("createAgentChatService", () => {
     await sendPromise.catch(() => undefined);
   });
 
+  it("renders OpenCode follow-up text whose message.updated arrives before promptAsync settles", async () => {
+    // The SSE is live-only. Awaiting promptAsync before draining it used to
+    // drop the role announcement on a fast follow-up; the role gate then
+    // swallowed every assistant part while session.idle still completed.
+    let pulling = false;
+    const liveQueue: any[] = [];
+    let liveWaiter: (() => void) | null = null;
+    const wakeLive = () => {
+      const waiter = liveWaiter;
+      liveWaiter = null;
+      waiter?.();
+    };
+    const pushLive = (...nextEvents: any[]) => {
+      if (!pulling) return;
+      liveQueue.push(...nextEvents);
+      wakeLive();
+    };
+
+    vi.mocked(streamText).mockReturnValue({
+      fullStream: (async function* () {})(),
+    } as any);
+    vi.mocked(openCodeEventStream).mockImplementationOnce((async () => {
+      return (async function* () {
+        pulling = true;
+        wakeLive();
+        while (true) {
+          if (liveQueue.length > 0) {
+            yield liveQueue.shift();
+            continue;
+          }
+          await new Promise<void>((resolve) => {
+            liveWaiter = resolve;
+            if (liveQueue.length > 0) {
+              liveWaiter = null;
+              resolve();
+            }
+          });
+        }
+      })();
+    }) as unknown as typeof openCodeEventStream);
+
+    let releasePrompt!: () => void;
+    mockState.openCodePromptAsyncBarrier = new Promise<void>((resolve) => {
+      releasePrompt = resolve;
+    });
+
+    const events: AgentChatEventEnvelope[] = [];
+    const { service } = createService({
+      onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+    });
+    const session = await service.createSession({
+      laneId: "lane-1",
+      provider: "opencode",
+      model: "opencode/openai/gpt-5.4",
+      modelId: "opencode/openai/gpt-5.4",
+    });
+    const sendPromise = service.sendMessage({
+      sessionId: session.id,
+      text: "What model are you now?",
+    });
+
+    await waitForEvent(
+      events,
+      (event): event is AgentChatEventEnvelope =>
+        event.event.type === "status" && event.event.turnStatus === "started",
+    );
+    await vi.waitFor(() => {
+      expect(pulling).toBe(true);
+    });
+    expect(mockState.openCodeSessions.values().next().value?.promptBodies.length ?? 0).toBe(1);
+
+    const sessionID = [...mockState.openCodeSessions.keys()][0]!;
+    pushLive(
+      {
+        type: "message.updated",
+        properties: { info: { id: "msg-fast-1", role: "assistant", sessionID } },
+      },
+      {
+        type: "message.part.updated",
+        properties: {
+          part: {
+            id: "text-fast-1",
+            type: "text",
+            text: "Still receiving messages.",
+            messageID: "msg-fast-1",
+            sessionID,
+          },
+        },
+      },
+      {
+        type: "message.part.updated",
+        properties: {
+          part: {
+            id: "finish-fast-1",
+            sessionID,
+            type: "step-finish",
+            tokens: { input: 20, output: 8, cache: { read: 0, write: 0 } },
+          },
+        },
+      },
+      {
+        type: "session.idle",
+        properties: { sessionID },
+      },
+    );
+
+    await waitForEvent(
+      events,
+      (event): event is AgentChatEventEnvelope =>
+        event.event.type === "text" && event.event.text.includes("Still receiving messages."),
+    );
+
+    releasePrompt();
+    await waitForEvent(
+      events,
+      (event): event is AgentChatEventEnvelope => event.event.type === "done",
+    );
+    await sendPromise;
+  });
+
 it("fails a cleanly ended OpenCode event stream and clears active child sessions", async () => {
     const events: AgentChatEventEnvelope[] = [];
     let releaseStream!: () => void;
@@ -44971,6 +45378,161 @@ it("fails a cleanly ended OpenCode event stream and clears active child sessions
       expect(sessionService.get(session.id)?.manuallyNamed).toBe(false);
     });
 
+    it("uses Cursor's remote name and hydrates a reopened cloud chat", async () => {
+      process.env.CURSOR_API_KEY = "cursor-test-key";
+      const events: AgentChatEventEnvelope[] = [];
+      const { service, sessionService } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "cursor",
+        model: "composer-2",
+        modelId: "cursor/composer-2",
+      });
+      await service.sendMessage({
+        sessionId: session.id,
+        text: "Create the cloud chat.",
+        runtime: "cloud",
+        cloudOverrides: { repoUrl: "https://github.com/example/repo.git" },
+      } as any, { awaitDispatch: true });
+      await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope & { event: Extract<AgentChatEventEnvelope["event"], { type: "done" }> } =>
+          event.event.type === "done" && event.sessionId === session.id,
+      );
+
+      mockState.cursorSdkCloudResponses.set("cloud.agent.get", {
+        name: "Plugin platform linear parity",
+      });
+      mockState.cursorSdkCloudResponses.set("cloud.runs.list", {
+        items: [{
+          runId: "cloud-run-1",
+          status: "finished",
+          model: { id: "grok-4.6" },
+        }],
+      });
+      mockState.cursorSdkCloudResponses.set("cloud.run.conversation", {
+        turns: [{
+          type: "agentConversationTurn",
+          turn: {
+            userMessage: { text: "Remote prompt" },
+            steps: [{ type: "assistantMessage", message: { text: "Remote answer" } }],
+          },
+        }],
+      });
+
+      await service.openCursorCloudChat({
+        cloudAgentId: "cloud-agent-1",
+        laneId: "lane-1",
+        sessionId: session.id,
+      });
+
+      expect(sessionService.get(session.id)?.title).toBe("Plugin platform linear parity");
+      expect(events.some((event) => event.event.type === "text" && event.event.text === "Remote answer")).toBe(true);
+      expect(mockState.cursorSdkCloudRequests.map((request) => request.type)).toEqual(
+        expect.arrayContaining(["cloud.agent.get", "cloud.runs.list", "cloud.run.conversation"]),
+      );
+    });
+
+    it("re-reads Cursor's name on the first visible turn while the ADE title is still a default", async () => {
+      process.env.CURSOR_API_KEY = "cursor-test-key";
+      const events: AgentChatEventEnvelope[] = [];
+      const { service, sessionService } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "cursor",
+        model: "composer-2",
+        modelId: "cursor/composer-2",
+      });
+      await service.sendMessage({
+        sessionId: session.id,
+        text: "Create the cloud chat.",
+        runtime: "cloud",
+        cloudOverrides: { repoUrl: "https://github.com/example/repo.git" },
+      } as any, { awaitDispatch: true });
+      await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope & { event: Extract<AgentChatEventEnvelope["event"], { type: "done" }> } =>
+          event.event.type === "done" && event.sessionId === session.id,
+      );
+      const agentGetCalls = () => mockState.cursorSdkCloudRequests.filter((request) => request.type === "cloud.agent.get").length;
+      // A launched cloud chat keeps ADE's default title until Cursor names it; this test
+      // session was auto-titled from its prompt because it started as a local chat.
+      sessionService.updateMeta({ sessionId: session.id, title: "Cursor Chat" });
+
+      // First hydrate: Cursor has not named the agent yet and the run has no visible turn.
+      mockState.cursorSdkCloudResponses.set("cloud.agent.get", {});
+      mockState.cursorSdkCloudResponses.set("cloud.runs.list", {
+        items: [{ runId: "cloud-run-1", status: "running", model: { id: "grok-4.6" } }],
+      });
+      mockState.cursorSdkCloudResponses.set("cloud.run.conversation", { turns: [] });
+      await service.openCursorCloudChat({ cloudAgentId: "cloud-agent-1", laneId: "lane-1", sessionId: session.id });
+      const readsAfterFirstHydrate = agentGetCalls();
+      expect(readsAfterFirstHydrate).toBeGreaterThan(0);
+      expect(sessionService.get(session.id)?.title ?? "").not.toBe("Named after the first turn");
+
+      // Next tick, well inside the 60 s TTL: the run now has a visible turn and Cursor has a
+      // name. The title is still a default, so this tick re-reads the name without polling.
+      mockState.cursorSdkCloudResponses.set("cloud.agent.get", { name: "Named after the first turn" });
+      mockState.cursorSdkCloudResponses.set("cloud.run.conversation", {
+        turns: [{
+          type: "agentConversationTurn",
+          turn: {
+            userMessage: { text: "Remote prompt" },
+            steps: [{ type: "assistantMessage", message: { text: "Remote answer" } }],
+          },
+        }],
+      });
+      await service.openCursorCloudChat({ cloudAgentId: "cloud-agent-1", laneId: "lane-1", sessionId: session.id });
+      expect(agentGetCalls()).toBe(readsAfterFirstHydrate + 1);
+      expect(sessionService.get(session.id)?.title).toBe("Named after the first turn");
+
+      // Once named, later ticks inside the TTL do not read the name again.
+      await service.openCursorCloudChat({ cloudAgentId: "cloud-agent-1", laneId: "lane-1", sessionId: session.id });
+      expect(agentGetCalls()).toBe(readsAfterFirstHydrate + 1);
+    });
+
+    it("rejects ADE title writes after a chat becomes a Cursor Cloud agent", async () => {
+      process.env.CURSOR_API_KEY = "cursor-test-key";
+      const events: AgentChatEventEnvelope[] = [];
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "cursor",
+        model: "composer-2",
+        modelId: "cursor/composer-2",
+      });
+
+      await service.sendMessage({
+        sessionId: session.id,
+        text: "Promote this chat.",
+        runtime: "cloud",
+        cloudOverrides: { repoUrl: "https://github.com/example/repo.git" },
+      } as any, { awaitDispatch: true });
+      await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope & { event: Extract<AgentChatEventEnvelope["event"], { type: "done" }> } =>
+          event.event.type === "done" && event.sessionId === session.id,
+      );
+
+      await expect(service.updateSession({
+        sessionId: session.id,
+        title: "ADE-owned title",
+        manuallyNamed: true,
+      })).rejects.toThrow("agent names are managed by Cursor");
+      await expect(service.regenerateSessionMetadata({
+        sessionId: session.id,
+        fields: ["title"],
+      })).rejects.toThrow("agent names are managed by Cursor");
+    });
+
     it("uses cloud.followup with the durable agentId on subsequent cloud sends", async () => {
       process.env.CURSOR_API_KEY = "cursor-test-key";
       const events: AgentChatEventEnvelope[] = [];
@@ -45098,6 +45660,237 @@ it("fails a cleanly ended OpenCode event stream and clears active child sessions
       expect(doneEvent.event.status).toBe("completed");
       const summary = await service.getSessionSummary(session.id);
       expect(summary?.cursorRuntime).toBe("cloud");
+    });
+
+    it("refuses to create a cloud agent it cannot give the chosen model settings", async () => {
+      process.env.CURSOR_API_KEY = "cursor-test-key";
+      // A catalog whose model DOES declare a reasoning control, but has no
+      // value for the effort the session chose. Cursor would silently pick one
+      // of the other values, so the create has to fail instead.
+      cursorModelsListMock.mockResolvedValue([{
+        id: "composer-2",
+        displayName: "Composer 2",
+        parameters: [{
+          id: "reasoning_effort",
+          displayName: "Reasoning effort",
+          values: [{ value: "high", displayName: "High" }],
+        }],
+      }]);
+      const events: AgentChatEventEnvelope[] = [];
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "cursor",
+        model: "composer-2",
+        modelId: "cursor/composer-2",
+        reasoningEffort: "xhigh",
+      } as any);
+
+      await service.sendMessage({
+        sessionId: session.id,
+        text: "Create the cloud agent.",
+        runtime: "cloud",
+        cloudOverrides: { repoUrl: "https://github.com/example/repo.git" },
+      } as any, { awaitDispatch: true });
+
+      const errorEvent = await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope & { event: Extract<AgentChatEventEnvelope["event"], { type: "error" }> } =>
+          event.event.type === "error" && event.sessionId === session.id,
+      );
+      expect(errorEvent.event.message).toContain("could not verify the selected model settings");
+      // Cursor Cloud substitutes its own default variant when `params` are
+      // omitted, so a create it cannot express must not be dispatched at all.
+      expect(mockState.cursorSdkCloudRequests.some((r) => r.type === "cloud.send.stream")).toBe(false);
+    });
+
+    it("creates a cloud agent on a model that declares no reasoning control", async () => {
+      process.env.CURSOR_API_KEY = "cursor-test-key";
+      // Cursor's row for this model has no reasoning parameter at all, so the
+      // effort left on the session by a previously chosen model is
+      // inapplicable, not unmet. There is no variant Cursor could substitute.
+      cursorModelsListMock.mockResolvedValue([{
+        id: "composer-2.5",
+        displayName: "Composer 2.5",
+        parameters: [{
+          id: "speed",
+          displayName: "Speed",
+          values: [
+            { value: "standard", displayName: "Standard" },
+            { value: "fast", displayName: "Fast" },
+          ],
+        }],
+      }]);
+      const events: AgentChatEventEnvelope[] = [];
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "cursor",
+        model: "composer-2.5",
+        modelId: "cursor/composer-2.5",
+        reasoningEffort: "xhigh",
+      } as any);
+
+      await service.sendMessage({
+        sessionId: session.id,
+        text: "Create the cloud agent.",
+        runtime: "cloud",
+        cloudOverrides: { repoUrl: "https://github.com/example/repo.git" },
+      } as any, { awaitDispatch: true });
+      await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope & { event: Extract<AgentChatEventEnvelope["event"], { type: "done" }> } =>
+          event.event.type === "done" && event.sessionId === session.id,
+      );
+
+      expect(events.some((event) => event.event.type === "error")).toBe(false);
+      const sent = mockState.cursorSdkCloudRequests.find((r) => r.type === "cloud.send.stream");
+      expect(sent).toBeTruthy();
+    });
+
+    it("creates the cloud agent with the verified model params", async () => {
+      process.env.CURSOR_API_KEY = "cursor-test-key";
+      cursorModelsListMock.mockResolvedValue([{
+        id: "composer-2",
+        displayName: "Composer 2",
+        parameters: [{
+          id: "reasoning_effort",
+          displayName: "Reasoning effort",
+          values: [{ value: "high", displayName: "High" }],
+        }],
+      }]);
+      const events: AgentChatEventEnvelope[] = [];
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "cursor",
+        model: "composer-2",
+        modelId: "cursor/composer-2",
+        reasoningEffort: "high",
+      } as any);
+
+      await service.sendMessage({
+        sessionId: session.id,
+        text: "Create the cloud agent.",
+        runtime: "cloud",
+        cloudOverrides: { repoUrl: "https://github.com/example/repo.git" },
+      } as any, { awaitDispatch: true });
+      await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope & { event: Extract<AgentChatEventEnvelope["event"], { type: "done" }> } =>
+          event.event.type === "done" && event.sessionId === session.id,
+      );
+
+      const sent = mockState.cursorSdkCloudRequests.find((r) => r.type === "cloud.send.stream");
+      expect(sent?.payload.modelParams).toEqual([{ id: "reasoning_effort", value: "high" }]);
+    });
+
+    it("treats a session that never chose a tier as having no tier opinion", async () => {
+      process.env.CURSOR_API_KEY = "cursor-test-key";
+      // A catalog whose only service tier is "fast": there is no standard value
+      // to express. A session that never chose a tier must not be verified as
+      // having asked for one, on either cloud create path.
+      cursorModelsListMock.mockResolvedValue([{
+        id: "composer-2",
+        displayName: "Composer 2",
+        parameters: [
+          {
+            id: "reasoning_effort",
+            displayName: "Reasoning effort",
+            values: [{ value: "high", displayName: "High" }],
+          },
+          {
+            id: "speed",
+            displayName: "Speed",
+            values: [{ value: "fast", displayName: "Fast" }],
+          },
+        ],
+      }]);
+      const events: AgentChatEventEnvelope[] = [];
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "cursor",
+        model: "composer-2",
+        modelId: "cursor/composer-2",
+        reasoningEffort: "high",
+      } as any);
+
+      await service.sendMessage({
+        sessionId: session.id,
+        text: "Create the cloud agent.",
+        runtime: "cloud",
+        cloudOverrides: { repoUrl: "https://github.com/example/repo.git" },
+      } as any, { awaitDispatch: true });
+      await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope & { event: Extract<AgentChatEventEnvelope["event"], { type: "done" }> } =>
+          event.event.type === "done" && event.sessionId === session.id,
+      );
+
+      const sent = mockState.cursorSdkCloudRequests.find((r) => r.type === "cloud.send.stream");
+      expect(sent?.payload.modelParams).toEqual([{ id: "reasoning_effort", value: "high" }]);
+    });
+
+    it("stops refetching a terminal cloud run that keeps reading back empty", async () => {
+      process.env.CURSOR_API_KEY = "cursor-test-key";
+      const events: AgentChatEventEnvelope[] = [];
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "cursor",
+        model: "composer-2",
+        modelId: "cursor/composer-2",
+      });
+      await service.sendMessage({
+        sessionId: session.id,
+        text: "Create the cloud chat.",
+        runtime: "cloud",
+        cloudOverrides: { repoUrl: "https://github.com/example/repo.git" },
+      } as any, { awaitDispatch: true });
+      await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope & { event: Extract<AgentChatEventEnvelope["event"], { type: "done" }> } =>
+          event.event.type === "done" && event.sessionId === session.id,
+      );
+
+      // A run that ended in error with no visible turns never produces one.
+      mockState.cursorSdkCloudResponses.set("cloud.runs.list", {
+        items: [{ runId: "cloud-run-empty", status: "error" }],
+      });
+      mockState.cursorSdkCloudResponses.set("cloud.run.conversation", { turns: [] });
+      mockState.cursorSdkCloudRequests.length = 0;
+
+      for (let attempt = 0; attempt < 5; attempt += 1) {
+        await service.openCursorCloudChat({
+          cloudAgentId: "cloud-agent-1",
+          laneId: "lane-1",
+          sessionId: session.id,
+        });
+      }
+
+      const conversationReads = mockState.cursorSdkCloudRequests.filter((r) => (
+        r.type === "cloud.run.conversation" && r.payload.runId === "cloud-run-empty"
+      ));
+      expect(conversationReads).toHaveLength(3);
+      // The remote name is read on the first hydrate of the session and then at
+      // most once a minute, not on every one of the five refreshes.
+      expect(mockState.cursorSdkCloudRequests.filter((r) => r.type === "cloud.agent.get")).toHaveLength(1);
     });
 
     it("includes the cursorSdkSystemPrompt directive in the first cloud send promptText", async () => {
@@ -47585,3 +48378,564 @@ describe("agentChatService plugin-owned conversations", () => {
     }
   });
 });
+// ---------------------------------------------------------------------------
+// ACP providers (qwen, kimi, grok, copilot)
+// ---------------------------------------------------------------------------
+//
+// These drive the real ACP host: the scripted agent is a fake child process, so
+// the framing, the request correlation and the permission round-trip under test
+// are the production ones. Only the operating system process is replaced.
+
+describe("acp chat runtime", () => {
+  type AcpHarness = Awaited<ReturnType<typeof openAcpHarness>>;
+
+  const acpTeardown: Array<() => void> = [];
+
+  afterEach(() => {
+    for (const dispose of acpTeardown.splice(0)) dispose();
+  });
+
+  async function openAcpHarness(options: {
+    provider: "qwen" | "kimi" | "grok" | "copilot";
+    modelId: string;
+    model: string;
+    /** Extra `session/new` result fields, for config-option tests. */
+    sessionExtra?: Record<string, unknown>;
+    /** Seeded persisted state, for the resume test. */
+    seedPersistedState?: Record<string, unknown>;
+    sessionOverrides?: Record<string, unknown>;
+  }) {
+    const agent = createMockAcpAgent();
+    agent.on("session/new", respondWithSession("acp-session-1", options.sessionExtra ?? {}));
+    agent.on("session/load", respondWithSession("acp-session-1", options.sessionExtra ?? {}));
+    agent.on("session/resume", respondWithSession("acp-session-1", options.sessionExtra ?? {}));
+    agent.on("session/close", () => ({ result: {} }));
+    agent.on("session/set_config_option", () => ({ result: {} }));
+    agent.on("session/cancel", () => ({ result: {} }));
+
+    const pool = createAcpSessionPool();
+    acpTeardown.push(() => pool.disposeAll("test teardown"));
+
+    const events: AgentChatEventEnvelope[] = [];
+    const harness = createService({
+      onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      acpSpawnOverride: () => agent.child,
+      acpSessionPool: pool,
+    });
+    const session = await harness.service.createSession({
+      laneId: "lane-1",
+      provider: options.provider,
+      model: options.model,
+      modelId: options.modelId,
+      ...(options.sessionOverrides ?? {}),
+    });
+    if (options.seedPersistedState) {
+      writePersistedChatState(session.id, {
+        ...readPersistedChatState(session.id),
+        ...options.seedPersistedState,
+      });
+    }
+    acpTeardown.push(() => { void harness.service.disposeAll(); });
+    return { agent, events, session, ...harness };
+  }
+
+  /** Types of the events emitted for one turn, in order. */
+  function eventTypes(harness: Pick<AcpHarness, "events">): string[] {
+    return harness.events.map((envelope) => envelope.event.type);
+  }
+
+  function eventsOfType<T extends string>(
+    harness: Pick<AcpHarness, "events">,
+    type: T,
+  ): Array<Record<string, any>> {
+    return harness.events
+      .map((envelope) => envelope.event as Record<string, any>)
+      .filter((event) => event.type === type);
+  }
+
+  /** Script one prompt turn: stream `updates`, then answer with `result`. */
+  function scriptPrompt(
+    agent: MockAcpAgent,
+    updates: AcpSessionUpdate[],
+    result: Record<string, unknown> = { stopReason: "end_turn" },
+  ): void {
+    agent.on("session/prompt", async (params) => {
+      const sessionId = (params as { sessionId: string }).sessionId;
+      for (const update of updates) agent.emitUpdate(sessionId, update);
+      return { result };
+    });
+  }
+
+  it("streams a turn as text then a terminal done, flushing text before the tool row", async () => {
+    // The flush invariant: buffered assistant text must be committed before any
+    // non-text event, or the tool row lands above the sentence that introduced
+    // it and the transcript reads backwards.
+    const harness = await openAcpHarness({
+      provider: "qwen",
+      model: "qwen3-coder-plus",
+      modelId: "qwen/qwen3-coder-plus",
+    });
+    scriptPrompt(harness.agent, [
+      { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "Reading the file." } },
+      {
+        sessionUpdate: "tool_call",
+        toolCallId: "tool-1",
+        title: "Read src/index.ts",
+        kind: "read",
+        status: "completed",
+        rawInput: { path: "src/index.ts" },
+      },
+      { sessionUpdate: "agent_message_chunk", content: { type: "text", text: " Done." } },
+    ]);
+
+    await harness.service.sendMessage({ sessionId: harness.session.id, text: "look at this" });
+    await vi.waitFor(() => {
+      expect(eventTypes(harness)).toContain("done");
+    });
+
+    const types = eventTypes(harness);
+    const firstText = types.indexOf("text");
+    const toolCall = types.indexOf("tool_call");
+    expect(firstText).toBeGreaterThanOrEqual(0);
+    expect(toolCall).toBeGreaterThan(firstText);
+    expect(types.indexOf("done")).toBeGreaterThan(toolCall);
+
+    const done = eventsOfType(harness, "done").at(-1);
+    expect(done?.status).toBe("completed");
+    const statuses = eventsOfType(harness, "status").map((event) => event.turnStatus);
+    expect(statuses).toContain("started");
+    expect(statuses).toContain("completed");
+  });
+
+  it("forwards image URL attachments in the ACP prompt payload", async () => {
+    const harness = await openAcpHarness({
+      provider: "qwen",
+      model: "qwen3-coder-plus",
+      modelId: "qwen/qwen3-coder-plus",
+    });
+    let promptParams: Record<string, unknown> | null = null;
+    harness.agent.on("session/prompt", async (params) => {
+      promptParams = params as Record<string, unknown>;
+      return { result: { stopReason: "end_turn" } };
+    });
+
+    void harness.service.sendMessage({
+      sessionId: harness.session.id,
+      text: "Review this image.",
+      attachments: [{
+        path: "https://example.test/review.webp",
+        type: "image-url",
+        url: "https://example.test/review.webp",
+      }],
+    });
+
+    await vi.waitFor(() => {
+      expect(promptParams).not.toBeNull();
+    });
+    await vi.waitFor(() => {
+      expect(eventTypes(harness)).toContain("done");
+    });
+
+    const sentPrompt = promptParams as unknown as Record<string, unknown>;
+    expect(sentPrompt.prompt).toEqual([
+      { type: "text", text: expect.stringContaining("Review this image.") },
+      {
+        type: "image",
+        data: "",
+        mimeType: "image/webp",
+        uri: "https://example.test/review.webp",
+      },
+    ]);
+  });
+
+  it("raises a permission request as a card and forwards the chosen option", async () => {
+    const harness = await openAcpHarness({
+      provider: "qwen",
+      model: "qwen3-coder-plus",
+      modelId: "qwen/qwen3-coder-plus",
+    });
+    let permissionAnswer: any = null;
+    harness.agent.on("session/prompt", async (params) => {
+      const sessionId = (params as { sessionId: string }).sessionId;
+      permissionAnswer = await harness.agent.callClient("session/request_permission", {
+        sessionId,
+        toolCall: { toolCallId: "tool-1", title: "Write src/index.ts", kind: "edit" },
+        options: [
+          { optionId: "allow", name: "Allow", kind: "allow_once" },
+          { optionId: "reject", name: "Reject", kind: "reject_once" },
+        ],
+      });
+      return { result: { stopReason: "end_turn" } };
+    });
+
+    void harness.service.sendMessage({ sessionId: harness.session.id, text: "edit it" });
+    await vi.waitFor(() => {
+      expect(eventsOfType(harness, "approval_request").length).toBe(1);
+    });
+    const card = eventsOfType(harness, "approval_request")[0]!;
+    const request = card.detail?.request as { requestId: string; source: string };
+    expect(request.source).toBe("acp");
+
+    await harness.service.respondToInput({
+      sessionId: harness.session.id,
+      itemId: card.itemId,
+      decision: "accept",
+    });
+
+    await vi.waitFor(() => {
+      expect(permissionAnswer).not.toBeNull();
+    });
+    expect(permissionAnswer.outcome).toEqual({ outcome: "selected", optionId: "allow" });
+    await vi.waitFor(() => {
+      expect(eventTypes(harness)).toContain("done");
+    });
+  });
+
+  it("sends the reject option when the user declines, never a silent allow", async () => {
+    const harness = await openAcpHarness({
+      provider: "qwen",
+      model: "qwen3-coder-plus",
+      modelId: "qwen/qwen3-coder-plus",
+    });
+    let permissionAnswer: any = null;
+    harness.agent.on("session/prompt", async (params) => {
+      const sessionId = (params as { sessionId: string }).sessionId;
+      permissionAnswer = await harness.agent.callClient("session/request_permission", {
+        sessionId,
+        toolCall: { toolCallId: "tool-1", title: "Run rm -rf", kind: "execute" },
+        options: [
+          { optionId: "allow", name: "Allow", kind: "allow_once" },
+          { optionId: "reject", name: "Reject", kind: "reject_once" },
+        ],
+      });
+      return { result: { stopReason: "end_turn" } };
+    });
+
+    void harness.service.sendMessage({ sessionId: harness.session.id, text: "clean up" });
+    await vi.waitFor(() => {
+      expect(eventsOfType(harness, "approval_request").length).toBe(1);
+    });
+    await harness.service.respondToInput({
+      sessionId: harness.session.id,
+      itemId: eventsOfType(harness, "approval_request")[0]!.itemId,
+      decision: "decline",
+    });
+
+    await vi.waitFor(() => {
+      expect(permissionAnswer).not.toBeNull();
+    });
+    expect(permissionAnswer.outcome).toEqual({ outcome: "selected", optionId: "reject" });
+  });
+
+  it("answers an open permission request when the turn is interrupted", async () => {
+    // A card that outlives its turn blocks the agent behind something the user
+    // can no longer see. The interrupt has to settle it.
+    const harness = await openAcpHarness({
+      provider: "qwen",
+      model: "qwen3-coder-plus",
+      modelId: "qwen/qwen3-coder-plus",
+    });
+    let permissionAnswer: any = null;
+    harness.agent.on("session/prompt", async (params) => {
+      const sessionId = (params as { sessionId: string }).sessionId;
+      permissionAnswer = await harness.agent.callClient("session/request_permission", {
+        sessionId,
+        toolCall: { toolCallId: "tool-1", title: "Write a file", kind: "edit" },
+        options: [{ optionId: "allow", name: "Allow", kind: "allow_once" }],
+      });
+      return { result: { stopReason: "cancelled" } };
+    });
+
+    void harness.service.sendMessage({ sessionId: harness.session.id, text: "edit it" });
+    await vi.waitFor(() => {
+      expect(eventsOfType(harness, "approval_request").length).toBe(1);
+    });
+
+    await harness.service.interrupt({ sessionId: harness.session.id });
+
+    await vi.waitFor(() => {
+      expect(permissionAnswer).not.toBeNull();
+    });
+    expect(permissionAnswer.outcome).toEqual({ outcome: "cancelled" });
+    await vi.waitFor(() => {
+      expect(eventsOfType(harness, "done").length).toBe(1);
+    });
+    // The composer is released only by a terminal marker. An interrupted turn
+    // must still reach one.
+    expect(eventsOfType(harness, "done").at(-1)?.status).toBe("interrupted");
+  });
+
+  it("reports a cancelled turn as interrupted even when the agent says end_turn", async () => {
+    // Copilot's known bug (github/copilot-cli #4561). ADE's own cancel record
+    // is the deciding source, never the agent's stopReason.
+    const harness = await openAcpHarness({
+      provider: "copilot",
+      model: "claude-sonnet-4.6",
+      modelId: "github-copilot/claude-sonnet-4.6",
+    });
+    let releasePrompt: (() => void) | null = null;
+    harness.agent.on("session/prompt", async () => {
+      await new Promise<void>((resolve) => { releasePrompt = resolve; });
+      return { result: { stopReason: "end_turn" } };
+    });
+
+    void harness.service.sendMessage({ sessionId: harness.session.id, text: "work" });
+    await vi.waitFor(() => {
+      expect(releasePrompt).not.toBeNull();
+    });
+    await harness.service.interrupt({ sessionId: harness.session.id });
+    releasePrompt!();
+
+    await vi.waitFor(() => {
+      expect(eventsOfType(harness, "done").length).toBe(1);
+    });
+    expect(eventsOfType(harness, "done").at(-1)?.status).toBe("interrupted");
+  });
+
+  it("reopens an ACP runtime when permission mode changes during a turn", async () => {
+    const harness = await openAcpHarness({
+      provider: "copilot",
+      model: "claude-sonnet-4.6",
+      modelId: "github-copilot/claude-sonnet-4.6",
+      sessionOverrides: { permissionMode: "full-auto" },
+    });
+    let releaseFirstPrompt: (() => void) | null = null;
+    let promptCount = 0;
+    let permissionAnswer: Record<string, unknown> | null = null;
+    harness.agent.on("session/prompt", async (params) => {
+      promptCount += 1;
+      const sessionId = (params as { sessionId: string }).sessionId;
+      if (promptCount === 1) {
+        await new Promise<void>((resolve) => { releaseFirstPrompt = resolve; });
+        return { result: { stopReason: "end_turn" } };
+      }
+      permissionAnswer = await harness.agent.callClient("session/request_permission", {
+        sessionId,
+        toolCall: { toolCallId: "tool-1", title: "Write src/index.ts", kind: "edit" },
+        options: [
+          { optionId: "allow", name: "Allow", kind: "allow_once" },
+          { optionId: "reject", name: "Reject", kind: "reject_once" },
+        ],
+      });
+      return { result: { stopReason: "end_turn" } };
+    });
+
+    void harness.service.sendMessage({ sessionId: harness.session.id, text: "first" });
+    await harness.agent.waitForMethod("session/prompt");
+    expect(harness.session.acpPermissionMode).toBe("yolo");
+
+    await harness.service.updateSession({ sessionId: harness.session.id, permissionMode: "plan" });
+    expect(harness.session.acpPermissionMode).toBe("plan");
+    releaseFirstPrompt!();
+    await vi.waitFor(() => {
+      expect(eventsOfType(harness, "done")).toHaveLength(1);
+    });
+
+    void harness.service.sendMessage({ sessionId: harness.session.id, text: "second" });
+    await vi.waitFor(() => {
+      expect(eventsOfType(harness, "approval_request")).toHaveLength(1);
+    });
+    // The old full-auto runtime would auto-approve this request. A second
+    // session entry proves the mode change rebuilt the provider boundary first;
+    // the resumed entry may be `session/resume` rather than `session/new`.
+    const sessionEntries = harness.agent.methodsReceived().filter((method) =>
+      method === "session/new" || method === "session/load" || method === "session/resume",
+    );
+    expect(sessionEntries).toHaveLength(2);
+
+    await harness.service.respondToInput({
+      sessionId: harness.session.id,
+      itemId: eventsOfType(harness, "approval_request")[0]!.itemId,
+      decision: "accept",
+    });
+    await vi.waitFor(() => {
+      expect(permissionAnswer).not.toBeNull();
+      expect(eventsOfType(harness, "done")).toHaveLength(2);
+    });
+    expect(permissionAnswer).toMatchObject({
+      outcome: { outcome: "selected", optionId: "allow" },
+    });
+  });
+
+  it("folds Grok's prompt-result usage into the turn", async () => {
+    const harness = await openAcpHarness({
+      provider: "grok",
+      model: "grok-4.6",
+      modelId: "xai/grok-4-6",
+    });
+    scriptPrompt(harness.agent, [], {
+      stopReason: "end_turn",
+      _meta: {
+        costUsdTicks: 2_500_000_000,
+        cachedReadTokens: 40,
+        modelUsage: { "grok-4.6": { inputTokens: 100, outputTokens: 20 } },
+      },
+    });
+
+    await harness.service.sendMessage({ sessionId: harness.session.id, text: "hi" });
+    await vi.waitFor(() => {
+      expect(eventTypes(harness)).toContain("done");
+    });
+
+    const tokens = eventsOfType(harness, "tokens").at(-1);
+    expect(tokens?.inputTokens).toBe(100);
+    expect(tokens?.outputTokens).toBe(20);
+    expect(tokens?.cacheReadTokens).toBe(40);
+  });
+
+  it("emits no usage for Kimi and says why once", async () => {
+    // Kimi 0.31.x reports nothing on the wire. Fabricating a zero would be a
+    // lie; saying nothing at all reads as a broken meter. So it says so.
+    const harness = await openAcpHarness({
+      provider: "kimi",
+      model: "kimi-code/k3",
+      modelId: "moonshot/k3",
+    });
+    scriptPrompt(harness.agent, [
+      { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "ok" } },
+    ]);
+
+    await harness.service.sendMessage({ sessionId: harness.session.id, text: "hi" });
+    await vi.waitFor(() => {
+      expect(eventTypes(harness)).toContain("done");
+    });
+
+    expect(eventsOfType(harness, "tokens")).toHaveLength(0);
+    const notices = eventsOfType(harness, "system_notice").map((event) => String(event.message));
+    expect(notices.filter((message) => message.includes("token usage"))).toHaveLength(1);
+
+    // Once per chat, not once per turn.
+    harness.events.length = 0;
+    await harness.service.sendMessage({ sessionId: harness.session.id, text: "again" });
+    await vi.waitFor(() => {
+      expect(eventTypes(harness)).toContain("done");
+    });
+    expect(
+      eventsOfType(harness, "system_notice")
+        .map((event) => String(event.message))
+        .filter((message) => message.includes("token usage")),
+    ).toHaveLength(0);
+  });
+
+  it("persists the agent's session id and rejoins with it after a restart", async () => {
+    const harness = await openAcpHarness({
+      provider: "qwen",
+      model: "qwen3-coder-plus",
+      modelId: "qwen/qwen3-coder-plus",
+    });
+    scriptPrompt(harness.agent, []);
+    await harness.service.sendMessage({ sessionId: harness.session.id, text: "hi" });
+    await vi.waitFor(() => {
+      expect(eventTypes(harness)).toContain("done");
+    });
+    expect(readPersistedChatState(harness.session.id).acpSessionId).toBe("acp-session-1");
+
+    // A second service over the same persisted state is the restart: it must
+    // rejoin by id rather than start a fresh agent session.
+    const agent = createMockAcpAgent();
+    const resumeCalls: unknown[] = [];
+    agent.on("session/resume", (params) => {
+      resumeCalls.push(params);
+      return { result: { sessionId: "acp-session-1" } };
+    });
+    agent.on("session/prompt", async () => ({ result: { stopReason: "end_turn" } }));
+    const pool = createAcpSessionPool();
+    acpTeardown.push(() => pool.disposeAll("test teardown"));
+    // Same lane and session services: a restart re-reads ADE's own state, and
+    // a fresh mock registry would look like a session ADE had never heard of
+    // and send the reconciler down the continuity-recovery path.
+    const restarted = createService({
+      acpSpawnOverride: () => agent.child,
+      acpSessionPool: pool,
+      laneService: harness.laneService,
+      sessionService: harness.sessionService,
+    });
+    acpTeardown.push(() => { void restarted.service.disposeAll(); });
+
+    await restarted.service.sendMessage({ sessionId: harness.session.id, text: "still here?" });
+    await vi.waitFor(() => {
+      expect(resumeCalls.length).toBe(1);
+    });
+    expect(resumeCalls[0]).toMatchObject({ sessionId: "acp-session-1" });
+    expect(agent.methodsReceived()).not.toContain("session/new");
+  });
+
+  it("offers the agent's advertised slash commands, deduped and TUI-filtered", async () => {
+    const harness = await openAcpHarness({
+      provider: "copilot",
+      model: "claude-sonnet-4.6",
+      modelId: "github-copilot/claude-sonnet-4.6",
+    });
+    harness.agent.on("session/prompt", async (params) => {
+      const sessionId = (params as { sessionId: string }).sessionId;
+      const availableCommands = [
+        { name: "review", description: "Review the diff" },
+        // Copilot's terminal-only commands would reach the model as prose.
+        { name: "diff", description: "Show the diff" },
+        { name: "login", description: "Sign in" },
+      ];
+      agentEmitCommands(harness.agent, sessionId, availableCommands);
+      // Re-sent on the same turn: the picker must not show it twice.
+      agentEmitCommands(harness.agent, sessionId, availableCommands);
+      return { result: { stopReason: "end_turn" } };
+    });
+
+    await harness.service.sendMessage({ sessionId: harness.session.id, text: "hi" });
+    await vi.waitFor(() => {
+      expect(eventTypes(harness)).toContain("done");
+    });
+
+    const commands = harness.service.getSlashCommands({ sessionId: harness.session.id });
+    const names = commands.map((command) => command.name);
+    expect(names.filter((name) => name === "/review")).toHaveLength(1);
+    expect(names).not.toContain("/diff");
+    expect(names).not.toContain("/login");
+  });
+
+  it("emits one visible error and a terminal done when the agent cannot start", async () => {
+    // A chat that never reaches `done` leaves the composer locked with nothing
+    // on screen explaining why.
+    const agent = createMockAcpAgent();
+    agent.on("session/new", () => ({
+      error: { code: -32000, message: "Authentication required: Use Qwen Code CLI to authenticate first." },
+    }));
+    const pool = createAcpSessionPool();
+    acpTeardown.push(() => pool.disposeAll("test teardown"));
+    const events: AgentChatEventEnvelope[] = [];
+    const harness = createService({
+      onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      acpSpawnOverride: () => agent.child,
+      acpSessionPool: pool,
+    });
+    acpTeardown.push(() => { void harness.service.disposeAll(); });
+    const session = await harness.service.createSession({
+      laneId: "lane-1",
+      provider: "qwen",
+      model: "qwen3-coder-plus",
+      modelId: "qwen/qwen3-coder-plus",
+    });
+
+    await harness.service.sendMessage({ sessionId: session.id, text: "hi" });
+    await vi.waitFor(() => {
+      expect(events.some((envelope) => envelope.event.type === "done")).toBe(true);
+    });
+
+    const errors = events.map((e) => e.event as Record<string, any>).filter((e) => e.type === "error");
+    expect(errors).toHaveLength(1);
+    expect(String(errors[0]?.message)).toContain("Authentication required");
+    expect(errors[0]?.errorInfo?.category).toBe("agent_cli_auth");
+    expect(errors[0]?.errorInfo?.agentCli?.agent).toBe("qwen");
+    expect(errors[0]?.errorInfo?.agentCli?.authCommand).toBe("qwen --auth-type=openai");
+    const done = events.map((e) => e.event as Record<string, any>).filter((e) => e.type === "done").at(-1);
+    expect(done?.status).toBe("failed");
+  });
+});
+
+/** Emit an `available_commands_update` for a scripted agent. */
+function agentEmitCommands(
+  agent: MockAcpAgent,
+  sessionId: string,
+  availableCommands: Array<{ name: string; description: string }>,
+): void {
+  agent.emitUpdate(sessionId, { sessionUpdate: "available_commands_update", availableCommands });
+}

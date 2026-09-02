@@ -34,7 +34,8 @@ differential cache copy — Squirrel pipes the pending ZIP recorded as
   service or calling native `quitAndInstall`, whenever the recorded
   `downloadedFile` or updater-cache ZIP/EXE is gone.
 - Re-downloads on the periodic ready check so a vanished cache does not sit
-  on the Install button until the user clicks it.
+  on the Install button until the user clicks it, and skips the feed check
+  for that cycle.
 - Treats install-phase `The network connection was lost` / `Cannot pipe` /
   `ENOENT` as a vanished local archive: restore the ZIP (which recreates the
   loopback server) and retry native handoff once. A second failure parks as
@@ -213,6 +214,43 @@ bytes, and re-downloading the whole release on every retry is pure cost. A
 second consecutive failure on the same version stops trusting the archive and
 clears the updater cache.
 
+## Checking while an update is staged
+
+A staged update does not pause update checks. The startup timer, the periodic
+timer, the Settings **Check for updates** button, `ade update`, and the
+`update.checkForUpdates` ADE action all reach the same code, and it behaves the
+same way for all of them while the status is `ready`:
+
+| Feed answer | Result |
+| --- | --- |
+| Same or older than the staged version | Ignored (`autoUpdate.update_available_ignored`). The status, the staged version, and the cached archive do not change; `latestKnownVersion` still records what the feed reported. |
+| Strictly newer | Supersedes. The recorded `downloadedFile` is dropped, the updater cache is wiped with reason `superseded_ready_update`, any auto-apply countdown for the old version is cancelled, and the snapshot runs `checking` → `downloading` → `ready` on the new version. The countdown re-arms on the new `ready`. |
+| The check fails | Nothing changes. Both the `error` event and a rejected `checkForUpdates()` return early while the status is still `ready`, logging `autoUpdate.ready_check_failed`. |
+
+Every entry point first logs `autoUpdate.check_requested` with the current
+status and a `userInitiated` label, so an operator can tell whether a check was
+requested at all and what state it found. The flag does not change whether the
+check runs.
+
+This is what stops the top-right pill from offering a release the feed has
+already replaced.
+
+A failure *after* a supersede has started is an ordinary download failure: the
+status is no longer `ready`, so it takes the normal error path. The old archive
+is already gone at that point, which matches what a relaunch would have done.
+
+When the staged archive has vanished, that cycle restores the archive and skips
+the feed check, so one cycle never runs a restore and a check at the same time.
+
+An install that is already running blocks the check entirely. The status stays
+`ready` for the whole `quitAndInstall()` transaction, across the
+`beforeQuitAndInstall` service uninstall, so a check started in that window
+could supersede and delete the archive the install is about to hand to
+Squirrel or NSIS. The pre-install refresh inside that transaction is the one
+exception, and it keeps its own failure handling: a feed failure there aborts
+the install with `parked.reason === "refresh_failed"` and returns the snapshot
+to `ready` on the staged version.
+
 ## Truthful version surfaces
 
 Every version surface reads from one shared snapshot so they can never disagree
@@ -232,7 +270,7 @@ user sees the version they will get after the next restart rather than a stale
 ## Transactional install and exceptional recovery banners
 
 `quitAndInstall()` is transactional. Before flipping the snapshot to
-`installing` it re-runs `updater.checkForUpdates({ allowReady: true })` to
+`installing` it re-runs `updater.checkForUpdates()` to
 confirm the staged installer is still the latest, verifies the staged ZIP or
 NSIS installer is still on disk (and re-downloads it if macOS or Windows
 removed it), and only then uninstalls the background service, persists

@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
+  createDynamicAcpModelDescriptor,
+  clearDynamicAcpModelDescriptors,
   createDynamicDroidCliModelDescriptor,
+  replaceDynamicAcpModelDescriptors,
   createDynamicLocalModelDescriptor,
   createDynamicOpenCodeModelDescriptor,
   createDynamicPiModelDescriptor,
@@ -18,16 +21,19 @@ import {
   getModelById,
   getModelDescriptorForPermissionMode,
   getRuntimeModelRefForDescriptor,
+  listAcpModelDescriptorsForProvider,
   listModelDescriptorsForProvider,
   MODEL_REGISTRY,
   replaceDynamicPiModelDescriptors,
   resolveModelAlias,
   resolveCursorCliModelVariant,
   resolveCliProviderForModel,
+  resolveProviderGroupForModel,
   resolveModelDescriptor,
   resolveModelDescriptorForProvider,
   resolveModelSlug,
   selectSupportedReasoningEffort,
+  normalizeAnthropicRuntimeAlias,
 } from "./modelRegistry";
 import type { ModelDescriptor, ProviderFamily } from "./modelRegistry";
 import { describeModelSource } from "../renderer/lib/modelOptions";
@@ -78,6 +84,76 @@ describe("modelRegistry", () => {
     expect(descriptor.piProviderId).toBe("openai-codex");
     expect(descriptor.piModelId).toBe("gpt-5.4");
     expect(descriptor.family).toBe("openai");
+  });
+
+  it("routes every ACP provider's curated rows to its own group", () => {
+    const expectations = [
+      { provider: "qwen", family: "qwen" },
+      { provider: "kimi", family: "moonshot" },
+      { provider: "grok", family: "xai" },
+      { provider: "copilot", family: "github-copilot" },
+    ] as const;
+    for (const { provider, family } of expectations) {
+      const models = listModelDescriptorsForProvider(provider);
+      expect(models.length).toBeGreaterThan(0);
+      for (const descriptor of models) {
+        expect(descriptor.family).toBe(family);
+        expect(descriptor.isCliWrapped).toBe(true);
+        expect(resolveCliProviderForModel(descriptor)).toBe(provider);
+        expect(resolveProviderGroupForModel(descriptor)).toBe(provider);
+        // The CLI flag needs the provider's own id, never ADE's registry id.
+        expect(getRuntimeModelRefForDescriptor(descriptor)).toBe(descriptor.providerModelId);
+      }
+      expect(getDefaultModelDescriptor(provider)).toBe(models[0]);
+    }
+  });
+
+  it("prefers a Qwen model discovered from the CLI settings over curated Alibaba rows", () => {
+    try {
+      replaceDynamicAcpModelDescriptors("qwen", [
+        createDynamicAcpModelDescriptor("qwen", "gpt-5.5"),
+      ]);
+      const models = listModelDescriptorsForProvider("qwen");
+      expect(models[0]?.providerModelId).toBe("gpt-5.5");
+      expect(getDefaultModelDescriptor("qwen")?.providerModelId).toBe("gpt-5.5");
+      expect(models.some((model) => model.providerModelId === "qwen3-coder-plus")).toBe(true);
+    } finally {
+      clearDynamicAcpModelDescriptors();
+    }
+  });
+
+  it("uses configured Qwen model ids instead of presenting unrelated curated rows", () => {
+    try {
+      replaceDynamicAcpModelDescriptors("qwen", [
+        createDynamicAcpModelDescriptor("qwen", "gpt-5.5"),
+      ]);
+      expect(listAcpModelDescriptorsForProvider("qwen", {
+        configuredModelIds: ["gpt-5.5"],
+      }).map((model) => model.providerModelId)).toEqual(["gpt-5.5"]);
+    } finally {
+      clearDynamicAcpModelDescriptors();
+    }
+  });
+
+  it("keeps OpenCode-routed xAI and Moonshot models out of the Grok and Kimi groups", () => {
+    // Family alone would misroute these: only `isCliWrapped` separates a Grok
+    // CLI row from an OpenCode-routed xAI row that shares its family.
+    for (const family of ["xai", "moonshot"] as const) {
+      const routed = MODEL_REGISTRY.filter((m) => m.family === family && !m.isCliWrapped);
+      for (const descriptor of routed) {
+        expect(resolveCliProviderForModel(descriptor)).toBeNull();
+        expect(resolveProviderGroupForModel(descriptor)).toBe("opencode");
+      }
+    }
+  });
+
+  it("marks the preview-tier ACP providers and leaves the first-class ones unmarked", () => {
+    for (const provider of ["grok", "copilot"] as const) {
+      expect(listModelDescriptorsForProvider(provider).every((m) => m.previewTier === true)).toBe(true);
+    }
+    for (const provider of ["qwen", "kimi"] as const) {
+      expect(listModelDescriptorsForProvider(provider).some((m) => m.previewTier === true)).toBe(false);
+    }
   });
 
   it("rejects ambiguous or incomplete Pi registry components", () => {
@@ -134,7 +210,7 @@ describe("modelRegistry", () => {
     });
     expect(opus).toMatchObject({
       id: "opencode/anthropic/claude-opus-4-8",
-      displayName: "Claude Opus 4.8 1M",
+      displayName: "Claude Opus 4.8",
       providerModelId: "anthropic/claude-opus-4-8",
       openCodeModelId: "claude-opus-4-8",
       contextWindow: 1_000_000,
@@ -393,29 +469,30 @@ describe("modelRegistry", () => {
 
   describe("Claude descriptors", () => {
     it("orders the Claude model registry for picker display", () => {
-      expect(MODEL_REGISTRY.filter((model) => model.family === "anthropic").slice(0, 6).map((model) => model.id)).toEqual([
-        "anthropic/claude-fable-5",
+      expect(MODEL_REGISTRY.filter((model) => model.family === "anthropic").slice(0, 5).map((model) => model.id)).toEqual([
+        "anthropic/claude-fable-5-1",
         "anthropic/claude-opus-5",
         "anthropic/claude-sonnet-5",
         "anthropic/claude-haiku-4-5",
         "anthropic/claude-opus-4-8",
-        "anthropic/claude-opus-4-7-1m",
       ]);
-      const fable = getModelById("anthropic/claude-fable-5");
+      const fable = getModelById("anthropic/claude-fable-5-1");
       expect(fable).toBeTruthy();
       expect(fable).toMatchObject({
-        displayName: "Claude Fable 5",
+        displayName: "Claude Fable 5.1",
         shortId: "fable",
         family: "anthropic",
         providerRoute: "claude-cli",
-        providerModelId: "claude-fable-5",
+        providerModelId: "claude-fable-5-1",
         contextWindow: 1_000_000,
         maxOutputTokens: 128_000,
         inputPricePer1M: 10,
         outputPricePer1M: 50,
+        defaultReasoningEffort: "high",
       });
       expect(fable?.reasoningTiers).toEqual(["low", "medium", "high", "xhigh", "max", "ultracode"]);
-      expect(resolveModelAlias("fable")?.id).toBe("anthropic/claude-fable-5");
+      expect(resolveModelAlias("fable")?.id).toBe("anthropic/claude-fable-5-1");
+      expect(resolveModelAlias("claude-fable-5")?.id).toBe("anthropic/claude-fable-5-1");
 
       const opus5 = getModelById("anthropic/claude-opus-5");
       expect(opus5).toBeTruthy();
@@ -439,8 +516,8 @@ describe("modelRegistry", () => {
       const opus48 = getModelById("anthropic/claude-opus-4-8");
       expect(opus48).toBeTruthy();
       expect(opus48).toMatchObject({
-        displayName: "Claude Opus 4.8 1M",
-        shortId: "opus-4.8-1m",
+        displayName: "Claude Opus 4.8",
+        shortId: "opus-4.8",
         family: "anthropic",
         providerRoute: "claude-cli",
         providerModelId: "claude-opus-4-8",
@@ -451,7 +528,7 @@ describe("modelRegistry", () => {
       });
       expect(opus48?.reasoningTiers).toEqual(["low", "medium", "high", "xhigh", "max", "ultracode"]);
       expect(opus48?.serviceTiers).toEqual(["fast"]);
-      expect(getDefaultModelDescriptor("claude")?.id).toBe("anthropic/claude-fable-5");
+      expect(getDefaultModelDescriptor("claude")?.id).toBe("anthropic/claude-fable-5-1");
     });
 
     it("uses the exact Claude Sonnet 5 runtime model id", () => {
@@ -467,22 +544,28 @@ describe("modelRegistry", () => {
       expect(getRuntimeModelRefForDescriptor(sonnet!, "claude")).toBe("claude-sonnet-5");
     });
 
-    it("removes Opus 4.7 basic while keeping Opus 4.7 1M selectable", () => {
+    it("drops Opus 4.7 entirely and forwards its aliases to Opus 4.8", () => {
       expect(MODEL_REGISTRY.some((model) => model.id === "anthropic/claude-opus-4-7")).toBe(false);
-      expect(getModelById("anthropic/claude-opus-4-7-1m")).toMatchObject({
-        displayName: "Claude Opus 4.7 1M",
-        shortId: "opus-1m",
-        providerModelId: "claude-opus-4-7[1m]",
-        contextWindow: 1_000_000,
-        serviceTiers: ["fast"],
-      });
-      expect(resolveModelAlias("opus[1m]")?.id).toBe("anthropic/claude-opus-4-7-1m");
+      expect(MODEL_REGISTRY.some((model) => model.id === "anthropic/claude-opus-4-7-1m")).toBe(false);
+      expect(resolveModelAlias("opus[1m]")?.id).toBe("anthropic/claude-opus-4-8");
       expect(resolveModelAlias("anthropic/claude-opus-4-6")?.id).toBe("anthropic/claude-opus-4-8");
       expect(resolveModelAlias("anthropic/claude-opus-4-7")?.id).toBe("anthropic/claude-opus-4-8");
-      expect(resolveModelAlias("anthropic/claude-opus-4-6-1m")?.id).toBe("anthropic/claude-opus-4-7-1m");
-      expect(resolveModelAlias("anthropic/claude-opus-4-7-1m")?.id).toBe("anthropic/claude-opus-4-7-1m");
+      expect(resolveModelAlias("anthropic/claude-opus-4-6-1m")?.id).toBe("anthropic/claude-opus-4-8");
+      expect(resolveModelAlias("anthropic/claude-opus-4-7-1m")?.id).toBe("anthropic/claude-opus-4-8");
       expect(getModelById("claude-opus-4-6")?.id).toBe("anthropic/claude-opus-4-8");
-      expect(getModelById("claude-opus-4-6[1m]")?.id).toBe("anthropic/claude-opus-4-7-1m");
+      expect(getModelById("claude-opus-4-6[1m]")?.id).toBe("anthropic/claude-opus-4-8");
+    });
+
+    it("canonicalizes Anthropic runtime aliases including Opus 4.8 1M forms", () => {
+      expect(normalizeAnthropicRuntimeAlias("claude-fable-5")?.modelId).toBe("claude-fable-5-1");
+      expect(normalizeAnthropicRuntimeAlias("fable-5.0")?.modelId).toBe("claude-fable-5-1");
+      expect(normalizeAnthropicRuntimeAlias("opus-4.8")?.modelId).toBe("claude-opus-4-8");
+      expect(normalizeAnthropicRuntimeAlias("opus-4.8-1m")?.modelId).toBe("claude-opus-4-8");
+      expect(normalizeAnthropicRuntimeAlias("claude-opus-4-8-1m")?.modelId).toBe("claude-opus-4-8");
+      expect(normalizeAnthropicRuntimeAlias("claude-opus-4-8[1m]")?.modelId).toBe("claude-opus-4-8");
+      expect(normalizeAnthropicRuntimeAlias("anthropic/claude-opus-4-8-1m")?.modelId).toBe("claude-opus-4-8");
+      expect(normalizeAnthropicRuntimeAlias("claude-opus-4-8")?.wasAlias).toBe(false);
+      expect(normalizeAnthropicRuntimeAlias("opus-4.8-1m")?.wasAlias).toBe(true);
     });
 
     it("maps removed Sonnet aliases forward without listing Sonnet 4.6 as a row", () => {
@@ -555,7 +638,7 @@ describe("modelRegistry", () => {
     expect(opus).toMatchObject({
       id: "droid/claude-opus-4-8",
       providerModelId: "claude-opus-4-8",
-      displayName: "Opus 4.8 1M",
+      displayName: "Opus 4.8",
       contextWindow: 1_000_000,
       maxOutputTokens: 128_000,
       reasoningTiers: ["low", "medium", "high", "xhigh", "max", "ultracode"],
@@ -564,7 +647,7 @@ describe("modelRegistry", () => {
     expect(getModelById("droid/claude-opus-4-6-fast")).toMatchObject({
       id: "droid/claude-opus-4-8",
       providerModelId: "claude-opus-4-8",
-      displayName: "Opus 4.8 1M",
+      displayName: "Opus 4.8",
     });
     expect(opus5).toMatchObject({
       id: "droid/claude-opus-5",

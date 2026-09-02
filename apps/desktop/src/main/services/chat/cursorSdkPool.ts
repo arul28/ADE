@@ -8,6 +8,8 @@ import type { Logger } from "../logging/logger";
 import { listPluginAgentSkillRoots } from "../plugins/pluginInstallService";
 import { buildPackagedRuntimeNodeModulePaths } from "../runtime/packagedNodePath";
 import { joinAdeAgentSkillRoots, splitAdeAgentSkillRoots } from "../../../shared/agentSkillRoots";
+import { pathKey } from "../shared/pathCompare";
+import { CURSOR_SDK_ONESHOT_POLICY } from "./cursorSdkPolicy";
 import { terminateChildProcessTree } from "../shared/utils";
 import type {
   CursorSdkCloudArtifactDescriptor,
@@ -106,8 +108,40 @@ const STALE_INIT_RETRY_LIMIT = 2;
  * closing the SDK agent, and on Windows it is the only orderly path there is.
  */
 const CURSOR_SDK_DISPOSE_GRACE_MS = 3_000;
-/** Cap how long a replacement waits for the previous worker of the same pool key. */
-export const CURSOR_SDK_REPLACE_WAIT_MS = CURSOR_SDK_DISPOSE_GRACE_MS + 500;
+/**
+ * Gap between SIGTERM and SIGKILL once the dispose grace expires.
+ *
+ * Named here rather than left to `terminateChildProcessTree`'s default, because
+ * the replacement wait below has to be derived from it: two independent numbers
+ * would drift, and the drift is only observable as a failed turn an hour into a
+ * session.
+ */
+const CURSOR_SDK_KILL_ESCALATION_MS = 1_500;
+/**
+ * Cap how long a replacement waits for the previous worker of the same pool key.
+ *
+ * This has to cover the whole teardown ladder, not just the dispose grace. A
+ * worker that answers the IPC `dispose` exits in milliseconds and never reaches
+ * this wait — but the worker the wait exists for is wedged (expired token,
+ * transport-poisoned agent thread), so it ignores the IPC request *and* the
+ * SIGTERM, and only dies at grace + escalation. Budgeting for the grace alone
+ * made the wait expire ~1.5s before the process could possibly exit, so every
+ * wedged recycle threw and failed the very turn it was recovering.
+ */
+export const CURSOR_SDK_REPLACE_WAIT_MS =
+  CURSOR_SDK_DISPOSE_GRACE_MS + CURSOR_SDK_KILL_ESCALATION_MS + 1_000;
+/**
+ * Budget for a hook socket path, in bytes.
+ *
+ * POSIX `sun_path` holds 104 bytes on macOS/BSD and 108 on Linux, and libuv
+ * rejects a longer `listen()` with EINVAL — not ENAMETOOLONG — so an over-long
+ * path reads as a mysterious "invalid argument" at bind time. The budget sits
+ * under the macOS limit to leave room for the trailing NUL and a tmpdir that is
+ * a few bytes longer than the usual `/var/folders/<2>/<30>/T`.
+ */
+export const MAX_CURSOR_SDK_SOCKET_PATH_BYTES = 100;
+/** Fallback socket root when the platform tmpdir is too deep to bind under. */
+const SHORT_SOCKET_ROOT = "/tmp";
 const CURSOR_SDK_WORKER_ENV_DENYLIST = [
   "CURSOR_API_KEY",
   "CURSOR_AUTH_TOKEN",
@@ -146,20 +180,35 @@ function resolveWorkerPath(): string {
   return candidates[0]!;
 }
 
-function socketPathFor(poolKey: string, instanceId: string): string {
+function socketPathFor(
+  poolKey: string,
+  instanceId: string,
+  tempDir: string = os.tmpdir(),
+  platform: NodeJS.Platform = process.platform,
+): string {
   const trimmedInstance = instanceId.trim();
   if (!trimmedInstance) {
     throw new Error("Cursor SDK worker instance id is required.");
   }
-  const name = hashKey(poolKey);
-  const instance = hashKey(trimmedInstance);
-  if (process.platform === "win32") {
-    return `\\\\.\\pipe\\ade-cursor-sdk-${name}-${instance}`;
+  if (platform === "win32") {
+    // Named pipes live in a flat kernel namespace with no `sun_path` budget, so
+    // the two hashes stay separate and readable there.
+    return `\\\\.\\pipe\\ade-cursor-sdk-${hashKey(poolKey)}-${hashKey(trimmedInstance)}`;
   }
   const userPart = typeof process.getuid === "function" ? String(process.getuid()) : hashKey(os.homedir());
-  // Per-instance directory so a dying worker's close()/unlink cannot delete
-  // the replacement's hook socket (same pool key, overlapping shutdown).
-  return path.join(os.tmpdir(), `ade-cursor-sdk-${userPart}`, name, instance, "hook.sock");
+  // One directory per worker instance, so a dying worker's close()/unlink and
+  // the pool's `rmSync` of the socket directory cannot delete the replacement's
+  // hook socket (same pool key, overlapping shutdown). Pool and instance share
+  // a single segment: a second directory level costs 17 bytes, and the default
+  // macOS tmpdir already spends 48 of the 104 `sun_path` bytes.
+  const tail = path.join(`ade-cursor-sdk-${userPart}`, hashKey(`${poolKey}\n${trimmedInstance}`), "hook.sock");
+  const preferred = path.join(tempDir, tail);
+  if (Buffer.byteLength(preferred, "utf8") <= MAX_CURSOR_SDK_SOCKET_PATH_BYTES) return preferred;
+  // A deep TMPDIR would otherwise fail at bind() with a bare EINVAL. `/tmp` is
+  // world-writable, but `ensurePrivateSocketPath` creates every level 0700 and
+  // refuses a directory this user does not own, so a squatter cannot answer
+  // the worker's connect.
+  return path.join(SHORT_SOCKET_ROOT, tail);
 }
 
 export function sanitizeCursorSdkWorkerBaseEnv(base: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
@@ -429,6 +478,10 @@ export function buildCursorSdkPaths(args: {
   instanceId: string;
   stateKey?: string;
   userHomeDir?: string;
+  /** Overridable so the deep-tmpdir fallback is testable from any platform. */
+  tempDir?: string;
+  /** Overridable so the Windows named-pipe branch is testable from POSIX. */
+  platform?: NodeJS.Platform;
 }): { userHomeDir: string; cacheRoot: string; stateRoot: string; socketPath: string } {
   const keyHash = hashKey(args.stateKey ?? args.poolKey);
   const cacheRoot = path.join(args.projectRoot, ".ade", "cache", "cursor-sdk", keyHash);
@@ -436,7 +489,12 @@ export function buildCursorSdkPaths(args: {
     userHomeDir: args.userHomeDir?.trim() || resolveCursorSdkUserHome(),
     cacheRoot,
     stateRoot: path.join(cacheRoot, "state"),
-    socketPath: socketPathFor(args.poolKey, args.instanceId),
+    socketPath: socketPathFor(
+      args.poolKey,
+      args.instanceId,
+      args.tempDir ?? os.tmpdir(),
+      args.platform ?? process.platform,
+    ),
   };
 }
 
@@ -694,7 +752,7 @@ async function createCursorSdkConnection(args: Parameters<typeof acquireCursorSd
       // the escalation must kill the whole tree rather than a single pid.
       const escalate = (): void => {
         if (child.exitCode != null || child.killed) return;
-        killTimer = terminateChildProcessTree(child, killTimer);
+        killTimer = terminateChildProcessTree(child, killTimer, CURSOR_SDK_KILL_ESCALATION_MS);
       };
       const sent = sendWorkerMessage({ type: "dispose", requestId: randomUUID() } as CursorSdkWorkerRequest);
       if (!sent) {
@@ -903,14 +961,16 @@ async function createCursorSdkConnection(args: Parameters<typeof acquireCursorSd
         timer.unref();
       }),
     ]).catch(() => {});
-    if (args.cleanupStateRoot) {
-      cleanupCursorSdkRuntimePaths({
-        cacheRoot: paths.cacheRoot,
-        stateRoot: paths.stateRoot,
-        socketPath: paths.socketPath,
-        cleanupStateRoot: true,
-      });
-    }
+    // Unconditional: the callee decides what a failed init may reclaim. The
+    // durable state is still gated on `cleanupStateRoot`, but this worker's
+    // instance socket directory is dead either way, and skipping the call
+    // entirely leaked one directory per failed init.
+    cleanupCursorSdkRuntimePaths({
+      cacheRoot: paths.cacheRoot,
+      stateRoot: paths.stateRoot,
+      socketPath: paths.socketPath,
+      cleanupStateRoot: args.cleanupStateRoot === true,
+    });
     throw error;
   }
   pooled.agentId = result.agentId;
@@ -957,14 +1017,23 @@ export function cleanupCursorSdkRuntimePaths(entry: {
   socketPath?: string;
   cleanupStateRoot: boolean;
 }): void {
-  if (!entry.cleanupStateRoot) return;
   const targets = new Set<string>();
-  targets.add(entry.cacheRoot ?? entry.stateRoot);
+  // The per-instance socket directory (`.../ade-cursor-sdk-<uid>/<instance>/hook.sock`)
+  // dies with its worker no matter what happens to the durable state: the next
+  // worker derives a fresh instance directory, so nothing can ever bind here
+  // again. `cleanupStateRoot` is false for every ordinary chat pool — gating the
+  // socket directory on it leaked one empty directory per worker into the
+  // tmpdir for the life of the machine.
+  //
+  // Do not walk up to the per-user root — a replacement worker may already be
+  // listening in a sibling directory there.
   if (process.platform !== "win32" && entry.socketPath) {
-    // Per-instance socket directory (`.../<pool>/<instance>/hook.sock`). Do not
-    // walk up to the pool directory — a replacement worker may already be
-    // listening there.
     targets.add(path.dirname(entry.socketPath));
+  }
+  // The durable Cursor state is the opposite: it has to survive a recycle, so
+  // only an explicit teardown removes it.
+  if (entry.cleanupStateRoot) {
+    targets.add(entry.cacheRoot ?? entry.stateRoot);
   }
   for (const target of targets) {
     removeCursorSdkRuntimePath(target);
@@ -989,6 +1058,9 @@ function clearCursorSdkIdleTimer(entry: CursorSdkPoolEntry): void {
 function disposeCursorSdkPoolEntry(poolKey: string, entry: CursorSdkPoolEntry): void {
   clearCursorSdkIdleTimer(entry);
   pools.delete(poolKey);
+  // The one-shot LRU stamp lives exactly as long as the entry it ranks. A
+  // delete of an absent key is free, so this needs no prefix guard.
+  localOneShotLastUsedAt.delete(poolKey);
   trackDepartingCursorSdkWorker(poolKey, entry.pooled.waitForExit());
   entry.pooled.dispose();
   cleanupCursorSdkRuntimePaths(entry);
@@ -1119,7 +1191,8 @@ type CursorSdkCloudOneShotType = Extract<
   }
 >["type"];
 
-export const CURSOR_SDK_CLOUD_ONESHOT_IDLE_MS = 60_000;
+/** How long a one-shot worker (cloud request or local prompt) stays warm. */
+export const CURSOR_SDK_ONESHOT_IDLE_MS = 60_000;
 
 export async function runCursorSdkCloudRequest<T = unknown>(
   args: {
@@ -1157,6 +1230,242 @@ export async function runCursorSdkCloudRequest<T = unknown>(
   try {
     return await pooled.request<T>(args.type, { apiKey: args.apiKey ?? null, ...args.payload });
   } finally {
-    releaseCursorSdkConnectionAfterIdle(poolKey, generation, CURSOR_SDK_CLOUD_ONESHOT_IDLE_MS);
+    releaseCursorSdkConnectionAfterIdle(poolKey, generation, CURSOR_SDK_ONESHOT_IDLE_MS);
   }
+}
+
+/**
+ * The SDK agent name every local one-shot worker is created with.
+ *
+ * Fixed rather than per-feature: one warm worker serves every feature that runs
+ * a one-shot on a workspace, and a pooled worker keeps the name it was created
+ * with.
+ */
+export const CURSOR_SDK_ONESHOT_AGENT_NAME = "ADE one-shot";
+
+/** Pool-key prefix for the warm workers that run ADE's one-off local prompts. */
+const CURSOR_SDK_LOCAL_ONESHOT_PREFIX = "local-oneshot:";
+
+/**
+ * How many warm one-shot workers this process keeps at once.
+ *
+ * Each one is a forked Node process holding a Cursor SDK agent, kept alive for
+ * `CURSOR_SDK_ONESHOT_IDLE_MS` after its last prompt. One worker per lane
+ * worktree with no cap meant ten active lanes naming their chats forked ten
+ * processes at once, so the set is bounded and the idle least-recently-used
+ * worker is released to make room. A busy worker is never evicted.
+ */
+export const CURSOR_SDK_LOCAL_ONESHOT_MAX_WORKERS = 2;
+
+/** Last acquire/release time per one-shot pool key, for the LRU choice above. */
+const localOneShotLastUsedAt = new Map<string, number>();
+
+/**
+ * The pool key for a local one-shot worker.
+ *
+ * `pathKey` folds the case of the workspace path, so two spellings of one
+ * Windows worktree share a worker instead of forking two. The API key is
+ * hashed into the key because a warm worker keeps the key it was created with:
+ * a rotated key has to fork a fresh worker rather than keep authenticating
+ * with the old one.
+ */
+function cursorSdkLocalOneShotPoolKey(workspacePath: string, apiKey?: string | null): string {
+  return `${CURSOR_SDK_LOCAL_ONESHOT_PREFIX}${pathKey(workspacePath)}:${hashKey(apiKey?.trim() || "").slice(0, 8)}`;
+}
+
+function touchLocalOneShotPoolKey(poolKey: string): void {
+  if (!poolKey.startsWith(CURSOR_SDK_LOCAL_ONESHOT_PREFIX)) return;
+  localOneShotLastUsedAt.set(poolKey, Date.now());
+}
+
+/**
+ * Release idle one-shot workers until `poolKey` can be added under the cap.
+ *
+ * Best-effort, like every other budget in the app: when every other worker is
+ * busy this yields rather than tearing down a live run.
+ */
+function enforceLocalOneShotWorkerBudget(poolKey: string): void {
+  if (pools.has(poolKey)) return;
+  for (;;) {
+    const candidates = [...pools.entries()].filter(([key]) => (
+      key !== poolKey && key.startsWith(CURSOR_SDK_LOCAL_ONESHOT_PREFIX)
+    ));
+    if (candidates.length < CURSOR_SDK_LOCAL_ONESHOT_MAX_WORKERS) return;
+    let lruKey: string | null = null;
+    let lruEntry: CursorSdkPoolEntry | null = null;
+    let lruAt = Number.POSITIVE_INFINITY;
+    for (const [key, entry] of candidates) {
+      if (entry.ref > 0) continue;
+      const at = localOneShotLastUsedAt.get(key) ?? 0;
+      if (at >= lruAt) continue;
+      lruKey = key;
+      lruEntry = entry;
+      lruAt = at;
+    }
+    if (!lruKey || !lruEntry) return;
+    disposeCursorSdkPoolEntry(lruKey, lruEntry);
+  }
+}
+
+/**
+ * Serializes the one-shot local prompts that share a pool key.
+ *
+ * A worker holds exactly one `currentRun`, and a `resetConversation` send
+ * replaces the agent underneath it, so two overlapping one-shots on the same
+ * workspace would cancel and mis-attribute each other's run. Chat never queues
+ * here: its pool keys carry the session id and it owns its worker outright.
+ */
+const cursorSdkLocalPromptQueues = new Map<string, Promise<unknown>>();
+
+function runCursorSdkLocalPromptQueued<T>(poolKey: string, run: () => Promise<T>): Promise<T> {
+  const prior = cursorSdkLocalPromptQueues.get(poolKey) ?? Promise.resolve();
+  const next = prior.then(run, run);
+  const tracked: Promise<unknown> = next.catch(() => undefined).finally(() => {
+    if (cursorSdkLocalPromptQueues.get(poolKey) === tracked) {
+      cursorSdkLocalPromptQueues.delete(poolKey);
+    }
+  });
+  cursorSdkLocalPromptQueues.set(poolKey, tracked);
+  return next;
+}
+
+export type CursorSdkLocalPromptResult = {
+  text: string;
+  agentId: string | null;
+};
+
+function readCursorSdkRunStatus(
+  result: unknown,
+): { status: string; text: string; errorMessage: string } {
+  const record = result && typeof result === "object" ? result as Record<string, unknown> : {};
+  const status = typeof record.status === "string" ? record.status : "";
+  const text = typeof record.result === "string" ? record.result.trim() : "";
+  // `RunResult.error` carries the terminal failure detail while `result` keeps
+  // whatever partial text the model produced, so an error must be reported from
+  // `error.message` rather than from the partial answer.
+  const errorRecord = record.error && typeof record.error === "object"
+    ? record.error as Record<string, unknown>
+    : null;
+  const errorMessage = typeof errorRecord?.message === "string" ? errorRecord.message.trim() : "";
+  return { status, text, errorMessage };
+}
+
+/**
+ * Run one self-contained local prompt on a pooled Cursor SDK worker.
+ *
+ * This is the only Cursor path for ADE's one-off model calls — titles, status
+ * lines, lane names, summaries, commit messages, PR descriptions. It exists so
+ * those calls get what chat already gets: a forked worker rather than the SDK
+ * inside the host process, the sandbox-unsupported fallback, agent retries,
+ * trimmed setting sources, a throwaway state root, and an agent that is closed
+ * instead of leaked.
+ *
+ * The worker stays warm for a short idle window, so a naming chain of three
+ * candidate models forks Node once. Each prompt still starts a fresh agent, so
+ * no one-shot ever sees another one-shot's conversation.
+ *
+ * Every one-shot runs under `CURSOR_SDK_ONESHOT_POLICY` and answers as
+ * `CURSOR_SDK_ONESHOT_AGENT_NAME`. Both are fixed because the worker is shared:
+ * a pooled worker keeps the policy and the name it was created with, so neither
+ * can be a per-call argument.
+ */
+export async function runCursorSdkLocalPrompt(args: {
+  projectRoot: string;
+  workspacePath: string;
+  apiKey?: string | null;
+  modelSdkId: string;
+  modelParams?: CursorSdkModelParameterValue[];
+  promptText: string;
+  feature: string;
+  timeoutMs: number;
+  logger?: Logger;
+}): Promise<CursorSdkLocalPromptResult> {
+  // One worker per workspace and API key. The model rides on the send rather
+  // than the pool key, because the worker applies
+  // `CursorSdkSendPrompt.modelSdkId` to the run it starts — the same mechanism
+  // a chat model switch uses.
+  const poolKey = cursorSdkLocalOneShotPoolKey(args.workspacePath, args.apiKey);
+  return await runCursorSdkLocalPromptQueued(poolKey, async () => {
+    enforceLocalOneShotWorkerBudget(poolKey);
+    const { pooled, generation } = await acquireCursorSdkConnection({
+      poolKey,
+      projectRoot: args.projectRoot,
+      workspacePath: args.workspacePath,
+      modelSdkId: args.modelSdkId,
+      ...(args.modelParams?.length ? { modelParams: args.modelParams } : {}),
+      apiKey: args.apiKey,
+      // A fixed name, because the warm worker is shared by every feature that
+      // runs a one-shot on this workspace.
+      agentName: CURSOR_SDK_ONESHOT_AGENT_NAME,
+      sessionId: `oneshot:${args.feature}`,
+      cleanupStateRoot: true,
+      policy: CURSOR_SDK_ONESHOT_POLICY,
+      logger: args.logger,
+    });
+    // A one-shot answers from its prompt: ADE hands the model every excerpt it
+    // needs. Deny tool calls with a reason the model can act on, rather than
+    // leaving the bridge unset and returning the pool's "ADE is not ready"
+    // default, which reads as a transient fault the model may retry.
+    pooled.bridge.onHookRequest = async () => ({
+      permission: "deny" as const,
+      user_message: "ADE one-shot tasks do not run tools.",
+      agent_message: "Tools are unavailable for this task. Answer from the prompt text alone.",
+    });
+    let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
+    /** Set by both failure causes below; the teardown reads it once. */
+    let discardWorker = false;
+    try {
+      const sendPromise = pooled.sendPrompt({
+        promptText: args.promptText,
+        modelSdkId: args.modelSdkId,
+        ...(args.modelParams?.length ? { modelParams: args.modelParams } : {}),
+        resetConversation: true,
+      });
+      // The timeout wins the race and the send keeps running until the cancel
+      // or the dispose lands. Claim its eventual rejection now, or it surfaces
+      // as an unhandled rejection after this function has already returned.
+      sendPromise.catch(() => undefined);
+      let raw: unknown;
+      try {
+        raw = await Promise.race([
+          sendPromise,
+          new Promise<never>((_, reject) => {
+            timeoutHandle = setTimeout(() => {
+              discardWorker = true;
+              pooled.cancel().catch(() => {});
+              reject(new Error(`Cursor SDK task timed out after ${args.timeoutMs}ms.`));
+            }, args.timeoutMs);
+          }),
+        ]);
+      } catch (error) {
+        // The send itself rejected rather than returning a run result. That is
+        // the worker reporting its own fault — a failed agent reset, a closed
+        // IPC channel — and the process stays alive through all of them, so the
+        // pool's liveness check would keep handing the same broken worker out.
+        discardWorker = true;
+        throw error;
+      }
+      const { status, text, errorMessage } = readCursorSdkRunStatus(raw);
+      if (status === "error") {
+        throw new Error(errorMessage || text || "Cursor SDK task failed.");
+      }
+      if (status === "cancelled") {
+        throw new Error("Cursor SDK task was cancelled.");
+      }
+      return { text, agentId: pooled.agentId };
+    } finally {
+      if (timeoutHandle) clearTimeout(timeoutHandle);
+      pooled.bridge.onHookRequest = null;
+      if (discardWorker) {
+        // Timed out: the run is still streaming inside a worker that already
+        // missed its deadline, and reusing it would hand the next one-shot a
+        // worker mid-cancel. Rejected: the worker reported a fault of its own.
+        // Either way the next one-shot has to fork a fresh worker.
+        poisonCursorSdkConnection(poolKey, generation);
+      } else {
+        touchLocalOneShotPoolKey(poolKey);
+        releaseCursorSdkConnectionAfterIdle(poolKey, generation, CURSOR_SDK_ONESHOT_IDLE_MS);
+      }
+    }
+  });
 }

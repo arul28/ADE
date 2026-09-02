@@ -12,6 +12,16 @@ const PROVIDER_DISPLAY_NAMES: Record<string, string> = {
   factory: "Droid",
   opencode: "OpenCode",
   pi: "Pi",
+  qwen: "Qwen",
+  kimi: "Kimi",
+  moonshot: "Kimi",
+  grok: "Grok",
+  xai: "Grok",
+  copilot: "GitHub Copilot",
+  "github-copilot": "GitHub Copilot",
+  // Every ACP provider raises permissions through the same protocol method, so
+  // the shared source needs a name a person recognises rather than "Acp".
+  acp: "Agent",
   ade: "ADE",
   agent: "Agent",
 };
@@ -41,6 +51,10 @@ const CHAT_PROVIDER_DISPLAY_NAMES: Record<string, string> = {
   // `chatSessionAgentLabel` in `types/chat.ts`, which reads it. This is what is
   // left when all somebody has is the provider string.
   plugin: "Plugin",
+  qwen: "Qwen",
+  kimi: "Kimi",
+  grok: "Grok",
+  copilot: "GitHub Copilot",
 };
 
 export function providerDisplayLabel(

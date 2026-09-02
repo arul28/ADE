@@ -26,6 +26,33 @@ function deps() {
 }
 
 describe("collectDiagnosticReport", () => {
+  it("includes a privacy-safe remote machine summary without raw target details", async () => {
+    const { report } = await collectDiagnosticReport(
+      {
+        ...deps(),
+        getRemoteRuntimeSnapshot: () => ({
+          connections: [{
+            state: "error",
+            route: { kind: "tailnet", endpoint: "ws://192.168.1.240:8787" },
+            target: {
+              id: "studio-secret-id",
+              name: "Mac Studio",
+              hostname: "studio.tailnet.example",
+            },
+            projects: [{ projectId: "project-secret", rootPath: "/Users/arul/Projects/ADE" }],
+            lastError: "connection timed out for studio-secret-id",
+            lastErrorInfo: { kind: "generic", message: "connection timed out" },
+          }],
+        }),
+      },
+      { surface: "project_recovery", projectRoot: null },
+    );
+
+    expect(report).toContain("## Remote machines");
+    expect(report).toContain("state=error; route=tailnet; projects=1; error=generic");
+    expect(report).not.toMatch(/studio-secret-id|Mac Studio|studio\.tailnet|192\.168|project-secret|connection timed out/i);
+  });
+
   // Regression: when the renderer named a project root main did not recognise,
   // the handler silently substituted the currently open project, so a report
   // about a failed open carried a different project's logs and diagnosis. It

@@ -11,6 +11,8 @@ import {
 import { COLORS, MONO_FONT } from "./laneDesignTokens";
 import {
   buildLaneMenuGroups,
+  LaneMenuGlyph,
+  laneMenuActionsFromPlugin,
   laneMenuHeaderStyle,
   type LaneMenuArgs,
   type LaneMenuEntry,
@@ -21,7 +23,9 @@ import { OpenInSubmenu } from "../ui/OpenInSubmenu";
 import { resolveOpenInTarget } from "../../../shared/editorTargets";
 
 export const menuItemStyle: React.CSSProperties = {
-  display: "block",
+  display: "flex",
+  alignItems: "center",
+  gap: 8,
   width: "100%",
   padding: "7px 14px",
   textAlign: "left",
@@ -105,6 +109,7 @@ function LaneMenuEntryView({
           dataTour={entry.dataTour}
           onClick={entry.onSelect}
         >
+          {entry.icon ? <LaneMenuGlyph icon={entry.icon} /> : null}
           {entry.label}
         </HoverButton>
       );
@@ -133,6 +138,7 @@ export function LaneMenuGroups({
             <MenuSubmenu
               role="menuitem"
               label={group.label ?? ""}
+              icon={group.icon ? <LaneMenuGlyph icon={group.icon} /> : undefined}
               style={submenuTriggerStyle}
               hoverBackground={COLORS.hoverBg}
               panelStyle={{ border: `1px solid ${COLORS.outlineBorder}`, padding: "4px 0" }}
@@ -242,7 +248,7 @@ export function LaneContextMenu({
     ...(onStartChatInLane ? { onStartChatInLane } : {}),
     ...(onToggleWorkPin ? { onToggleWorkPin } : {}),
     ...(workPinnedLaneIds ? { workPinnedLaneIds } : {}),
-    pluginEntries: [...pluginEntries, extendEntry],
+    pluginEntries: laneMenuActionsFromPlugin([...pluginEntries, extendEntry]),
     ...(openIn ? { openIn } : {}),
   };
 

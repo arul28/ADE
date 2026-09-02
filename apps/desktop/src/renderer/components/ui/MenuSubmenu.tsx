@@ -33,6 +33,8 @@ export type MenuSubmenuProps = {
   label: ReactNode;
   /** Right-aligned trailing hint on the row, rendered before the chevron. */
   hint?: ReactNode;
+  /** Optional leading glyph; hosts pass their own sized icon. */
+  icon?: ReactNode;
   /** Trigger row classes — pass the host menu's own item class. */
   className?: string;
   /** Trigger row inline style, for menus (the lane menu) that style inline. */
@@ -74,6 +76,7 @@ export type MenuSubmenuProps = {
 export function MenuSubmenu({
   label,
   hint,
+  icon,
   className,
   style,
   hoverBackground,
@@ -226,6 +229,7 @@ export function MenuSubmenu({
           }
         }}
       >
+        {icon}
         {label}
         {hint ? (
           <span className="ml-auto max-w-[10rem] shrink-0 truncate text-[10px] text-muted-fg/50">

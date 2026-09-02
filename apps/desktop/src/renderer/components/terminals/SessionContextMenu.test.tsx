@@ -36,6 +36,12 @@ const soloLane = {
 
 let storeLanes: LaneSummary[] = [soloLane];
 
+const { setWorkViewState, selectLane, refreshLanes } = vi.hoisted(() => ({
+  setWorkViewState: vi.fn(),
+  selectLane: vi.fn(),
+  refreshLanes: vi.fn(),
+}));
+
 vi.mock("../../state/appStore", async () => {
   const actual = await vi.importActual<typeof import("../../state/appStore")>("../../state/appStore");
   return {
@@ -45,8 +51,9 @@ vi.mock("../../state/appStore", async () => {
         lanes: storeLanes,
         project: { rootPath: "/project" },
         projectBinding: { kind: "local", key: "/project", rootPath: "/project" },
-        selectLane: vi.fn(),
-        setWorkViewState: vi.fn(),
+        selectLane,
+        setWorkViewState,
+        refreshLanes,
       }),
   };
 });
@@ -62,6 +69,9 @@ function unhover(element: Element, to: Element | null = null) {
 afterEach(() => {
   cleanup();
   storeLanes = [soloLane];
+  setWorkViewState.mockReset();
+  selectLane.mockReset();
+  refreshLanes.mockReset();
 });
 
 function makeSession(overrides: Partial<TerminalSessionSummary> = {}): TerminalSessionSummary {
@@ -233,8 +243,8 @@ describe("SessionContextMenu lane section", () => {
   });
 
   it("falls back to the real lane menu portal for a lane it cannot resolve", () => {
-    // A cross-machine row's lane is not in this renderer's store, so the only
-    // honest answer is still to hand off to the portal that owns it.
+    // A lane with neither a store row nor a passed-in summary still has to
+    // hand off to the portal that owns it.
     storeLanes = [];
     const open = vi.fn();
     const { onClose } = renderMenu(
@@ -247,6 +257,92 @@ describe("SessionContextMenu lane section", () => {
 
     expect(onClose).toHaveBeenCalledTimes(1);
     expect(open).toHaveBeenCalledWith({ x: 20, y: 20 });
+  });
+
+  it("renders the full lane menu for a foreign lane passed in by the host", () => {
+    storeLanes = [];
+    const foreignLane = {
+      ...soloLane,
+      id: "lane-studio",
+      name: "Studio lane",
+      worktreePath: "/Users/studio/ADE/.ade/worktrees/studio-lane",
+    } satisfies LaneSummary;
+    const binding: OpenProjectBinding = {
+      kind: "remote",
+      key: "remote:studio:ade",
+      targetId: "studio",
+      projectId: "ade",
+      rootPath: "/Users/studio/ADE",
+      displayName: "ADE",
+      runtimeName: "Studio",
+      hostname: "studio.local",
+    };
+    renderMenu(makeSession(), {
+      laneActions: {
+        laneId: foreignLane.id,
+        laneName: foreignLane.name,
+        lane: foreignLane,
+        binding,
+        machineId: "studio",
+        open: vi.fn(),
+      },
+    });
+
+    openSubmenuByHover(screen.getByTestId("session-menu-lane-actions"));
+
+    expect(screen.getByRole("menuitem", { name: "Start chat in lane" })).toBeTruthy();
+    expect(screen.getByRole("menuitem", { name: "Manage Lane" })).toBeTruthy();
+    expect(screen.queryByRole("menuitem", { name: "Open lane menu…" })).toBeNull();
+    expect(screen.queryByRole("menuitem", { name: /Select All Lanes/ })).toBeNull();
+  });
+
+  it("starts a chat draft on the owning machine from the Lane submenu", () => {
+    storeLanes = [];
+    const foreignLane = {
+      ...soloLane,
+      id: "lane-studio",
+      name: "Studio lane",
+    } satisfies LaneSummary;
+    renderMenu(makeSession(), {
+      laneActions: {
+        laneId: foreignLane.id,
+        laneName: foreignLane.name,
+        lane: foreignLane,
+        binding: {
+          kind: "remote",
+          key: "remote:studio:ade",
+          targetId: "studio",
+          projectId: "ade",
+          rootPath: "/Users/studio/ADE",
+          displayName: "ADE",
+          runtimeName: "Studio",
+        },
+        machineId: "studio",
+        open: vi.fn(),
+      },
+    });
+
+    openSubmenuByHover(screen.getByTestId("session-menu-lane-actions"));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Start chat in lane" }));
+
+    expect(setWorkViewState).toHaveBeenCalled();
+    const updater = setWorkViewState.mock.calls[0]?.[1] as (
+      prev: Record<string, unknown>,
+    ) => Record<string, unknown>;
+    expect(updater({})).toMatchObject({
+      draftKind: "chat",
+      draftLaneId: "lane-studio",
+      draftMachineId: "studio",
+      activeItemId: null,
+    });
+    expect(selectLane).not.toHaveBeenCalled();
+  });
+
+  it("puts a glanceable icon on every top-level action", () => {
+    renderMenu(makeSession());
+    for (const name of ["Rename", "Go to lane", "Snooze…", "Delete chat"]) {
+      expect(screen.getByRole("button", { name }).querySelector("[data-menu-icon]")).toBeTruthy();
+    }
   });
 
   it("omits the lane section for a row whose lane still has a divider", () => {
@@ -410,6 +506,17 @@ describe("SessionContextMenu grouped actions", () => {
 
     expect(onRename).toHaveBeenCalledWith(session, "A clearer title", null);
     expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it("hides ADE rename controls for Cursor Cloud agents but keeps status actions", () => {
+    const onRegenerateMetadata = vi.fn();
+    renderMenu(makeSession({ cursorCloudAgentId: "cloud-agent-1" }), { onRegenerateMetadata });
+
+    expect(screen.queryByRole("button", { name: "Rename" })).toBeNull();
+    openSubmenuByHover(screen.getByTestId("session-menu-name-status"));
+
+    expect(screen.queryByRole("button", { name: "Rename…" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Generate status line" })).toBeTruthy();
   });
 
   it("explains why lane-name generation is disabled for the primary lane", () => {

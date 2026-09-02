@@ -17,6 +17,12 @@ public enum ADESharedTheme {
     public static let brandXAI      = Color(red: 0xDC / 255.0, green: 0x26 / 255.0, blue: 0x26 / 255.0) // #DC2626
     public static let brandGroq     = Color(red: 0x06 / 255.0, green: 0xB6 / 255.0, blue: 0xD4 / 255.0) // #06B6D4
     public static let brandCTO      = Color(red: 0xC4 / 255.0, green: 0xB5 / 255.0, blue: 0xFD / 255.0) // #C4B5FD
+    // ACP providers. Hexes mirror PROVIDER_GROUP_COLORS in the desktop's
+    // `shared/modelCatalog.ts`; Grok reuses brandXAI, which already carries
+    // that vendor's #DC2626.
+    public static let brandQwen     = Color(red: 0x6D / 255.0, green: 0x4A / 255.0, blue: 0xFF / 255.0) // #6D4AFF
+    public static let brandKimi     = Color(red: 0x1F / 255.0, green: 0x1F / 255.0, blue: 0x1F / 255.0) // #1F1F1F
+    public static let brandCopilot  = Color(red: 0x8B / 255.0, green: 0x5C / 255.0, blue: 0xF6 / 255.0) // #8B5CF6
 
     /// Neutral fallback when the provider slug is unknown. Keeps parity with
     /// `ADEColor.purpleAccent` in the main design system.
@@ -61,7 +67,13 @@ public enum ADESharedTheme {
         if raw.hasPrefix("cursor") { return "cursor" }
         if raw == "factory" || raw.hasPrefix("droid") { return "droid" }
         if raw == "gemini" || raw.hasPrefix("google") { return "google" }
+        // Copilot before the bare `github` fold: `github-copilot` is the ACP
+        // provider, not the GitHub integration that fold was written for.
+        if raw == "github-copilot" || raw == "githubcopilot" || raw.hasPrefix("copilot") { return "copilot" }
         if raw.hasPrefix("github") { return "github" }
+        if raw.hasPrefix("qwen") { return "qwen" }
+        if raw == "moonshot" || raw == "moonshotai" || raw.hasPrefix("kimi") { return "kimi" }
+        if raw.hasPrefix("grok") { return "grok" }
         return raw
     }
 
@@ -82,6 +94,9 @@ public enum ADESharedTheme {
         case "xai", "grok":         return brandXAI
         case "groq":                return brandGroq
         case "cto":                 return brandCTO
+        case "qwen":                return brandQwen
+        case "kimi":                return brandKimi
+        case "copilot":             return brandCopilot
         default:                    return neutralAccent
         }
     }
@@ -105,6 +120,11 @@ public enum ADESharedTheme {
         case "droid", "factory":    return "ProviderDroid"
         case "pi":                   return nil
         case "github":              return "ProviderGitHub"
+        case "qwen":                return "ProviderQwen"
+        case "kimi":                return "ProviderKimi"
+        case "grok", "xai":         return "ProviderXAI"
+        // GitHub's own mark, already bundled for the GitHub surfaces.
+        case "copilot":             return "ProviderGitHub"
         default:                    return nil
         }
     }
@@ -131,6 +151,9 @@ public enum ADESharedTheme {
         case "groq":                return "Groq"
         case "cto":                 return "CTO"
         case "github":              return "GitHub"
+        case "qwen":                return "Qwen"
+        case "kimi":                return "Kimi"
+        case "copilot":             return "GitHub Copilot"
         case "ade":                 return "ADE"
         default:
             let value = providerSlug.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -144,6 +167,13 @@ public enum ADESharedTheme {
     public static func providerSlug(forModel model: String?) -> String? {
         guard let model else { return nil }
         let value = model.lowercased()
+        // ACP registry ids are namespaced and go first: `github-copilot/...`
+        // ids name the upstream vendor after the slash, so the vendor checks
+        // below would otherwise claim them.
+        if value.hasPrefix("github-copilot/") { return "copilot" }
+        if value.hasPrefix("qwen/") || value.contains("qwen") { return "qwen" }
+        if value.hasPrefix("moonshot/") || value.contains("kimi") { return "kimi" }
+        if value.hasPrefix("xai/") || value.contains("grok") { return "grok" }
         if value.contains("claude") || value.contains("anthropic") { return "claude" }
         if value.contains("codex") { return "codex" }
         if value.contains("gpt") || value.contains("openai") || value.hasPrefix("o3") || value.hasPrefix("o4") {

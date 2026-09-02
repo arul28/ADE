@@ -120,6 +120,8 @@ struct WorkChatHeaderMenuModel: Equatable {
   /// still draw, disabled, rather than vanishing while a phone reconnects.
   var pluginActionsEnabled: Bool = true
   var canAttachIssue: Bool = false
+  /// False for Cursor Cloud chats — Cursor owns the agent name.
+  var showsRename: Bool = true
 }
 
 /// Chat header overflow menu, extracted from `WorkSessionDestinationView` and
@@ -272,8 +274,10 @@ struct WorkChatHeaderMenu: View, Equatable {
 
   @ViewBuilder
   private var sessionItems: some View {
-    Button(action: onRename) {
-      Label("Rename", systemImage: "pencil")
+    if model.showsRename {
+      Button(action: onRename) {
+        Label("Rename", systemImage: "pencil")
+      }
     }
 
     Button(role: .destructive, action: onDelete) {

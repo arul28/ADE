@@ -279,12 +279,10 @@ export function createAccountRollupFetcher({
    *
    * A usage refresh is opportunistic; the durable rollups are the floor and
    * this only raises it. Calling a disconnected target routes through the
-   * remote connection service's implicit-reconnect path, where every failure
-   * counts against that machine's automatic-reconnect budget — ten of them and
-   * ADE stops automatically reconnecting to it at all, which would take remote
-   * projects, lanes, and chat down with it. This page refreshes on every usage
-   * update and every scope/preset change, so ten failures is one session's
-   * work. So: never spend that budget here.
+   * remote connection service's implicit-reconnect path and schedules that
+   * machine's bounded backoff. This page refreshes on every usage update and
+   * every scope/preset change, so an optional refresh should not compete with
+   * an interactive reconnect. So: only read a target that is already online.
    */
   isTargetConnected?: (targetId: string) => boolean;
   callMachineMethod: <T>(
@@ -328,7 +326,7 @@ export function createAccountRollupFetcher({
       const targetId = resolveTargetIdForMachineKey(machine.machineKey);
       if (!targetId) continue;
       // Not connected right now: leave it to its durable rollup rather than
-      // spending its automatic-reconnect budget on an optional page refresh.
+      // scheduling a reconnect for an optional page refresh.
       if (isTargetConnected && !isTargetConnected(targetId)) continue;
       candidates.push({ machine, targetId });
     }

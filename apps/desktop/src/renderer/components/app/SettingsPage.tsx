@@ -31,6 +31,7 @@ import { ProductAnalyticsSection } from "../settings/ProductAnalyticsSection";
 import { DiagnosticsSharingSection } from "../settings/DiagnosticsSharingSection";
 import { ProjectSection } from "../settings/ProjectSection";
 import { ProvidersSection } from "../settings/ProvidersSection";
+import { providerDescriptor } from "../settings/providers/descriptors";
 import { SecretsSection } from "../settings/SecretsSection";
 import { SessionLifecycleSection } from "../settings/SessionLifecycleSection";
 import { StorageSection } from "../settings/StorageSection";
@@ -123,6 +124,68 @@ function WebNoMachineNotice() {
   );
 }
 
+/** `#ai-provider-<id>` — the deeplink form of one provider's page. */
+const PROVIDER_ANCHOR_PREFIX = "ai-provider-";
+
+function providerIdFromHash(hash: string): string | null {
+  let raw = hash.replace(/^#/, "");
+  try {
+    raw = decodeURIComponent(raw);
+  } catch {
+    // A malformed hash should never break the settings page.
+  }
+  if (!raw.startsWith(PROVIDER_ANCHOR_PREFIX)) return null;
+  return raw.slice(PROVIDER_ANCHOR_PREFIX.length) || null;
+}
+
+/**
+ * Agents & Models. One provider's page is a sub-view of this tab rather than a
+ * route of its own: `?provider=<id>`, with `#ai-provider-<id>` accepted so the
+ * manifest entry for each provider deeplinks straight to it. While a provider
+ * is open the tab shows only that page — the background helpers and voice
+ * settings below it are not part of the provider you drilled into.
+ */
+function AgentsTabContent() {
+  const location = useLocation();
+  const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
+  const requested = searchParams.get("provider")?.trim() || providerIdFromHash(location.hash);
+  const providerId = requested && providerDescriptor(requested) ? requested : null;
+
+  const handleProviderChange = useCallback((next: string | null) => {
+    const nextParams = new URLSearchParams(searchParams);
+    if (next) nextParams.set("provider", next);
+    else nextParams.delete("provider");
+    navigate(
+      {
+        pathname: location.pathname,
+        search: `?${nextParams.toString()}`,
+        hash: next ? `#${PROVIDER_ANCHOR_PREFIX}${next}` : "",
+      },
+      { replace: true },
+    );
+  }, [location.pathname, navigate, searchParams]);
+
+  if (providerId) {
+    return (
+      <WebSettingsSection entryIds={[`agents.provider.${providerId}`]}>
+        <ProvidersSection forceRefreshOnMount providerParam={providerId} onProviderChange={handleProviderChange} />
+      </WebSettingsSection>
+    );
+  }
+
+  return (
+    <>
+      <WebSettingsSection entryIds={["agents.providers"]}>
+        <ProvidersSection forceRefreshOnMount providerParam={null} onProviderChange={handleProviderChange} />
+      </WebSettingsSection>
+      <WebSettingsSection entryIds={["agents.background-jobs", "agents.scheduled-work", "agents.budget"]}>
+        <AiFeaturesSection />
+      </WebSettingsSection>
+    </>
+  );
+}
+
 /**
  * Sections, each declaring which manifest settings it holds. On the desktop
  * `WebSettingsSection` is a passthrough and this renders exactly as it always
@@ -165,16 +228,7 @@ function TabContent({ tab }: { tab: SettingsTabId }) {
         </WebSettingsSection>
       );
     case "agents":
-      return (
-        <>
-          <WebSettingsSection entryIds={["agents.providers"]}>
-            <ProvidersSection />
-          </WebSettingsSection>
-          <WebSettingsSection entryIds={["agents.background-jobs", "agents.scheduled-work", "agents.budget"]}>
-            <AiFeaturesSection />
-          </WebSettingsSection>
-        </>
-      );
+      return <AgentsTabContent />;
     case "lanes-git":
       return (
         <>

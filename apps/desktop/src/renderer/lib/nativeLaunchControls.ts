@@ -19,7 +19,17 @@ import {
 import type { NativeControlState } from "./draftLaunchJobs";
 import { resolveModelDescriptorWithRuntimeCatalog } from "../components/shared/ModelPicker/modelCatalog";
 
-type ChatRuntimeProviderKey = "claude" | "codex" | "cursor" | "droid" | "opencode" | "pi";
+type ChatRuntimeProviderKey =
+  | "claude"
+  | "codex"
+  | "cursor"
+  | "droid"
+  | "opencode"
+  | "pi"
+  | "qwen"
+  | "kimi"
+  | "grok"
+  | "copilot";
 type CliProvider = ChatRuntimeProviderKey;
 
 export function defaultNativeControls(profile: ChatSurfaceProfile = "standard"): NativeControlState {

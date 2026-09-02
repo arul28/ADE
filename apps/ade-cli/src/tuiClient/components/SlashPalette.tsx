@@ -57,6 +57,10 @@ const PROVIDER_LABELS: Record<AgentChatProvider, string> = {
   // `runtimeLabel`; this palette filters by provider and has no session in
   // hand, so it says the category rather than guessing a plugin.
   plugin: "Plugin",
+  qwen: "Qwen",
+  kimi: "Kimi",
+  grok: "Grok",
+  copilot: "GitHub Copilot",
 };
 
 function providerLabel(provider?: AgentChatProvider | null): string {

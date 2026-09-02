@@ -1,0 +1,501 @@
+{
+  "capturedAt": "2026-08-31T14:06:05.138Z",
+  "binary": "copilot",
+  "note": "C and B do not touch config.json. A writes JSONC with the original comment header preserved. Previous rewrites of config.json (auth/state file) made every prompt return No model available. Run C opened on a tmp cwd; repeating C/A/B on a nested independent git repo under fixtures so system-temp auto-access cannot explain the result.",
+  "runs": [
+    {
+      "run": "C",
+      "description": "neither --add-dir nor trusted folder keys (tmp cwd)",
+      "addDir": false,
+      "seedTrusted": false,
+      "seedMode": false,
+      "disallowTempDir": false,
+      "cwdKind": "tmp",
+      "cwd": "/var/folders/ck/qnm27lyn4d3865_9s0xt26y80000gn/T/ade-copilot-trust-cwd-aMmwyP",
+      "copilotHome": "/Users/admin/.copilot",
+      "args": [
+        "--acp"
+      ],
+      "membership": {
+        "snakeCount": 0,
+        "camelCount": 2,
+        "cwdInSnake": false,
+        "cwdInCamel": false,
+        "cwdUnderTrustedAncestor": false,
+        "tmpUnderTrustedAncestor": false
+      },
+      "opened": true,
+      "deadlock": false,
+      "permissionCount": 0,
+      "permissions": [],
+      "wrote": "ping",
+      "stopReason": "end_turn",
+      "allowAll": "off",
+      "configOptions": [
+        {
+          "id": "mode",
+          "currentValue": "https://agentclientprotocol.com/protocol/session-modes#agent"
+        },
+        {
+          "id": "allow_all",
+          "currentValue": "off"
+        }
+      ],
+      "updateKinds": [
+        "available_commands_update",
+        "available_commands_update",
+        "session_info_update",
+        "config_option_update",
+        "usage_update",
+        "tool_call",
+        "agent_message_chunk",
+        "tool_call_update",
+        "usage_update",
+        "agent_message_chunk",
+        "agent_message_chunk"
+      ],
+      "stderrTrustHint": false,
+      "error": null,
+      "elapsedMs": 6429,
+      "sessionId": "6c922f5b-5740-4444-b566-d5786cd7a042",
+      "text": "Info: /var/folders/ck/qnm27lyn4d3865_9s0xt26y80000gn/T/ade-copilot-trust-cwd-aMmwyP/acp-trust-write.txtDone.",
+      "toolCalls": [
+        {
+          "sessionUpdate": "tool_call",
+          "kind": "edit",
+          "title": "Creating ...de-copilot-trust-cwd-aMmwyP/acp-trust-write.txt"
+        },
+        {
+          "sessionUpdate": "tool_call_update",
+          "kind": null,
+          "title": null
+        }
+      ],
+      "reverseRequestMethods": []
+    },
+    {
+      "run": "A",
+      "description": "trusted_folders snake_case only, no --add-dir (tmp cwd)",
+      "addDir": false,
+      "seedTrusted": true,
+      "seedMode": "snake",
+      "disallowTempDir": false,
+      "cwdKind": "tmp",
+      "cwd": "/var/folders/ck/qnm27lyn4d3865_9s0xt26y80000gn/T/ade-copilot-trust-cwd-84nTAD",
+      "copilotHome": "/Users/admin/.copilot",
+      "args": [
+        "--acp"
+      ],
+      "membership": {
+        "snakeCount": 1,
+        "camelCount": 2,
+        "cwdInSnake": true,
+        "cwdInCamel": false,
+        "cwdUnderTrustedAncestor": true,
+        "tmpUnderTrustedAncestor": false
+      },
+      "opened": true,
+      "deadlock": false,
+      "permissionCount": 0,
+      "permissions": [],
+      "wrote": "ping",
+      "stopReason": "end_turn",
+      "allowAll": "off",
+      "configOptions": [
+        {
+          "id": "mode",
+          "currentValue": "https://agentclientprotocol.com/protocol/session-modes#agent"
+        },
+        {
+          "id": "allow_all",
+          "currentValue": "off"
+        }
+      ],
+      "updateKinds": [
+        "available_commands_update",
+        "available_commands_update",
+        "session_info_update",
+        "config_option_update",
+        "usage_update",
+        "tool_call",
+        "agent_message_chunk",
+        "tool_call_update",
+        "usage_update",
+        "agent_message_chunk",
+        "agent_message_chunk"
+      ],
+      "stderrTrustHint": false,
+      "error": null,
+      "elapsedMs": 5822,
+      "sessionId": "562c3ee9-c2a4-41c5-9367-0189b0a1eed1",
+      "text": "Info: /var/folders/ck/qnm27lyn4d3865_9s0xt26y80000gn/T/ade-copilot-trust-cwd-84nTAD/acp-trust-write.txtDone.",
+      "toolCalls": [
+        {
+          "sessionUpdate": "tool_call",
+          "kind": "edit",
+          "title": "Creating ...de-copilot-trust-cwd-84nTAD/acp-trust-write.txt"
+        },
+        {
+          "sessionUpdate": "tool_call_update",
+          "kind": null,
+          "title": null
+        }
+      ],
+      "reverseRequestMethods": []
+    },
+    {
+      "run": "A-camel",
+      "description": "trustedFolders camelCase only, no --add-dir (tmp cwd)",
+      "addDir": false,
+      "seedTrusted": true,
+      "seedMode": "camel",
+      "disallowTempDir": false,
+      "cwdKind": "tmp",
+      "cwd": "/var/folders/ck/qnm27lyn4d3865_9s0xt26y80000gn/T/ade-copilot-trust-cwd-lTC8DY",
+      "copilotHome": "/Users/admin/.copilot",
+      "args": [
+        "--acp"
+      ],
+      "membership": {
+        "snakeCount": 0,
+        "camelCount": 3,
+        "cwdInSnake": false,
+        "cwdInCamel": true,
+        "cwdUnderTrustedAncestor": true,
+        "tmpUnderTrustedAncestor": false
+      },
+      "opened": true,
+      "deadlock": false,
+      "permissionCount": 0,
+      "permissions": [],
+      "wrote": "ping",
+      "stopReason": "end_turn",
+      "allowAll": "off",
+      "configOptions": [
+        {
+          "id": "mode",
+          "currentValue": "https://agentclientprotocol.com/protocol/session-modes#agent"
+        },
+        {
+          "id": "allow_all",
+          "currentValue": "off"
+        }
+      ],
+      "updateKinds": [
+        "available_commands_update",
+        "available_commands_update",
+        "session_info_update",
+        "config_option_update",
+        "usage_update",
+        "tool_call",
+        "agent_message_chunk",
+        "tool_call_update",
+        "usage_update",
+        "agent_message_chunk",
+        "agent_message_chunk"
+      ],
+      "stderrTrustHint": false,
+      "error": null,
+      "elapsedMs": 9705,
+      "sessionId": "1ea4f94f-440c-4bbc-87b1-46cff0a1aad2",
+      "text": "Info: /var/folders/ck/qnm27lyn4d3865_9s0xt26y80000gn/T/ade-copilot-trust-cwd-lTC8DY/acp-trust-write.txtDone.",
+      "toolCalls": [
+        {
+          "sessionUpdate": "tool_call",
+          "kind": "edit",
+          "title": "Creating ...de-copilot-trust-cwd-lTC8DY/acp-trust-write.txt"
+        },
+        {
+          "sessionUpdate": "tool_call_update",
+          "kind": null,
+          "title": null
+        }
+      ],
+      "reverseRequestMethods": []
+    },
+    {
+      "run": "B",
+      "description": "--add-dir as today, cwd not in either trust key (tmp cwd)",
+      "addDir": true,
+      "seedTrusted": false,
+      "seedMode": false,
+      "disallowTempDir": false,
+      "cwdKind": "tmp",
+      "cwd": "/var/folders/ck/qnm27lyn4d3865_9s0xt26y80000gn/T/ade-copilot-trust-cwd-yanlBL",
+      "copilotHome": "/Users/admin/.copilot",
+      "args": [
+        "--acp",
+        "--add-dir",
+        "/var/folders/ck/qnm27lyn4d3865_9s0xt26y80000gn/T/ade-copilot-trust-cwd-yanlBL"
+      ],
+      "membership": {
+        "snakeCount": 0,
+        "camelCount": 2,
+        "cwdInSnake": false,
+        "cwdInCamel": false,
+        "cwdUnderTrustedAncestor": false,
+        "tmpUnderTrustedAncestor": false
+      },
+      "opened": true,
+      "deadlock": false,
+      "permissionCount": 0,
+      "permissions": [],
+      "wrote": "ping",
+      "stopReason": "end_turn",
+      "allowAll": "off",
+      "configOptions": [
+        {
+          "id": "mode",
+          "currentValue": "https://agentclientprotocol.com/protocol/session-modes#agent"
+        },
+        {
+          "id": "allow_all",
+          "currentValue": "off"
+        }
+      ],
+      "updateKinds": [
+        "available_commands_update",
+        "available_commands_update",
+        "session_info_update",
+        "config_option_update",
+        "usage_update",
+        "tool_call",
+        "agent_message_chunk",
+        "tool_call_update",
+        "usage_update",
+        "agent_message_chunk",
+        "agent_message_chunk"
+      ],
+      "stderrTrustHint": false,
+      "error": null,
+      "elapsedMs": 10300,
+      "sessionId": "d2a78c24-ecb7-401e-9b5e-312bc92cc149",
+      "text": "Info: /var/folders/ck/qnm27lyn4d3865_9s0xt26y80000gn/T/ade-copilot-trust-cwd-yanlBL/acp-trust-write.txtDone.",
+      "toolCalls": [
+        {
+          "sessionUpdate": "tool_call",
+          "kind": "edit",
+          "title": "Creating ...de-copilot-trust-cwd-yanlBL/acp-trust-write.txt"
+        },
+        {
+          "sessionUpdate": "tool_call_update",
+          "kind": null,
+          "title": null
+        }
+      ],
+      "reverseRequestMethods": []
+    },
+    {
+      "run": "C-nested",
+      "description": "neither (nested git cwd under fixtures)",
+      "addDir": false,
+      "seedTrusted": false,
+      "seedMode": false,
+      "disallowTempDir": false,
+      "cwdKind": "nested",
+      "cwd": "/Users/admin/Projects/ADE/.ade/worktrees/acp-qwen-kimi-copilot-a0f67ad8/apps/desktop/src/main/services/chat/acpHost/fixtures/_trust-cwd-40206-1788185197495",
+      "copilotHome": "/Users/admin/.copilot",
+      "args": [
+        "--acp"
+      ],
+      "membership": {
+        "snakeCount": 0,
+        "camelCount": 2,
+        "cwdInSnake": false,
+        "cwdInCamel": false,
+        "cwdUnderTrustedAncestor": false,
+        "tmpUnderTrustedAncestor": false
+      },
+      "opened": true,
+      "deadlock": false,
+      "permissionCount": 0,
+      "permissions": [],
+      "wrote": "ping",
+      "stopReason": "end_turn",
+      "allowAll": "off",
+      "configOptions": [
+        {
+          "id": "mode",
+          "currentValue": "https://agentclientprotocol.com/protocol/session-modes#agent"
+        },
+        {
+          "id": "allow_all",
+          "currentValue": "off"
+        }
+      ],
+      "updateKinds": [
+        "available_commands_update",
+        "available_commands_update",
+        "session_info_update",
+        "config_option_update",
+        "usage_update",
+        "tool_call",
+        "agent_message_chunk",
+        "tool_call_update",
+        "usage_update",
+        "agent_message_chunk",
+        "agent_message_chunk"
+      ],
+      "stderrTrustHint": false,
+      "error": null,
+      "elapsedMs": 10027,
+      "sessionId": "e8dd402d-ab51-4fc2-ae79-e11422eb85a6",
+      "text": "Info: /Users/admin/Projects/ADE/.ade/worktrees/acp-qwen-kimi-copilot-a0f67ad8/apps/desktop/src/main/services/chat/acpHost/fixtures/_trust-cwd-40206-1788185197495/acp-trust-write.txtDone.",
+      "toolCalls": [
+        {
+          "sessionUpdate": "tool_call",
+          "kind": "edit",
+          "title": "Creating ...ust-cwd-40206-1788185197495/acp-trust-write.txt"
+        },
+        {
+          "sessionUpdate": "tool_call_update",
+          "kind": null,
+          "title": null
+        }
+      ],
+      "reverseRequestMethods": []
+    },
+    {
+      "run": "A-nested",
+      "description": "trusted_folders snake_case only (nested git cwd)",
+      "addDir": false,
+      "seedTrusted": true,
+      "seedMode": "snake",
+      "disallowTempDir": false,
+      "cwdKind": "nested",
+      "cwd": "/Users/admin/Projects/ADE/.ade/worktrees/acp-qwen-kimi-copilot-a0f67ad8/apps/desktop/src/main/services/chat/acpHost/fixtures/_trust-cwd-40206-1788185207550",
+      "copilotHome": "/Users/admin/.copilot",
+      "args": [
+        "--acp"
+      ],
+      "membership": {
+        "snakeCount": 1,
+        "camelCount": 2,
+        "cwdInSnake": true,
+        "cwdInCamel": false,
+        "cwdUnderTrustedAncestor": true,
+        "tmpUnderTrustedAncestor": false
+      },
+      "opened": true,
+      "deadlock": false,
+      "permissionCount": 0,
+      "permissions": [],
+      "wrote": "ping",
+      "stopReason": "end_turn",
+      "allowAll": "off",
+      "configOptions": [
+        {
+          "id": "mode",
+          "currentValue": "https://agentclientprotocol.com/protocol/session-modes#agent"
+        },
+        {
+          "id": "allow_all",
+          "currentValue": "off"
+        }
+      ],
+      "updateKinds": [
+        "available_commands_update",
+        "available_commands_update",
+        "session_info_update",
+        "config_option_update",
+        "usage_update",
+        "tool_call",
+        "agent_message_chunk",
+        "tool_call_update",
+        "usage_update",
+        "agent_message_chunk",
+        "agent_message_chunk"
+      ],
+      "stderrTrustHint": false,
+      "error": null,
+      "elapsedMs": 6720,
+      "sessionId": "b25c4330-7c5f-4f9a-b715-4d4308165274",
+      "text": "Info: /Users/admin/Projects/ADE/.ade/worktrees/acp-qwen-kimi-copilot-a0f67ad8/apps/desktop/src/main/services/chat/acpHost/fixtures/_trust-cwd-40206-1788185207550/acp-trust-write.txtDone.",
+      "toolCalls": [
+        {
+          "sessionUpdate": "tool_call",
+          "kind": "edit",
+          "title": "Creating ...ust-cwd-40206-1788185207550/acp-trust-write.txt"
+        },
+        {
+          "sessionUpdate": "tool_call_update",
+          "kind": null,
+          "title": null
+        }
+      ],
+      "reverseRequestMethods": []
+    },
+    {
+      "run": "B-nested",
+      "description": "--add-dir (nested git cwd)",
+      "addDir": true,
+      "seedTrusted": false,
+      "seedMode": false,
+      "disallowTempDir": false,
+      "cwdKind": "nested",
+      "cwd": "/Users/admin/Projects/ADE/.ade/worktrees/acp-qwen-kimi-copilot-a0f67ad8/apps/desktop/src/main/services/chat/acpHost/fixtures/_trust-cwd-40206-1788185214296",
+      "copilotHome": "/Users/admin/.copilot",
+      "args": [
+        "--acp",
+        "--add-dir",
+        "/Users/admin/Projects/ADE/.ade/worktrees/acp-qwen-kimi-copilot-a0f67ad8/apps/desktop/src/main/services/chat/acpHost/fixtures/_trust-cwd-40206-1788185214296"
+      ],
+      "membership": {
+        "snakeCount": 0,
+        "camelCount": 2,
+        "cwdInSnake": false,
+        "cwdInCamel": false,
+        "cwdUnderTrustedAncestor": false,
+        "tmpUnderTrustedAncestor": false
+      },
+      "opened": true,
+      "deadlock": false,
+      "permissionCount": 0,
+      "permissions": [],
+      "wrote": "ping",
+      "stopReason": "end_turn",
+      "allowAll": "off",
+      "configOptions": [
+        {
+          "id": "mode",
+          "currentValue": "https://agentclientprotocol.com/protocol/session-modes#agent"
+        },
+        {
+          "id": "allow_all",
+          "currentValue": "off"
+        }
+      ],
+      "updateKinds": [
+        "available_commands_update",
+        "available_commands_update",
+        "session_info_update",
+        "config_option_update",
+        "usage_update",
+        "tool_call",
+        "agent_message_chunk",
+        "tool_call_update",
+        "usage_update",
+        "agent_message_chunk",
+        "agent_message_chunk"
+      ],
+      "stderrTrustHint": false,
+      "error": null,
+      "elapsedMs": 10297,
+      "sessionId": "b92c0721-51d8-4caf-9d3f-e3f3daf1be44",
+      "text": "Info: /Users/admin/Projects/ADE/.ade/worktrees/acp-qwen-kimi-copilot-a0f67ad8/apps/desktop/src/main/services/chat/acpHost/fixtures/_trust-cwd-40206-1788185214296/acp-trust-write.txtDone.",
+      "toolCalls": [
+        {
+          "sessionUpdate": "tool_call",
+          "kind": "edit",
+          "title": "Creating ...ust-cwd-40206-1788185214296/acp-trust-write.txt"
+        },
+        {
+          "sessionUpdate": "tool_call_update",
+          "kind": null,
+          "title": null
+        }
+      ],
+      "reverseRequestMethods": []
+    }
+  ]
+}

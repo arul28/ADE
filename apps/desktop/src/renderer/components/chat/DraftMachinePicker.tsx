@@ -42,8 +42,9 @@ function machineIcon(option: DraftMachineOption) {
  * lanes. Choosing the machine first means the lane list beside it is always
  * flat, short, and unambiguous.
  *
- * Renders nothing with fewer than two machines: there is no choice to make, and
- * the shelf should not spend a control saying so.
+ * Renders nothing with fewer than two machines unless the current selection is
+ * unavailable. That exception keeps the recovery control visible when a
+ * persisted remote selection outlives its connection.
  */
 export function DraftMachinePicker({
   machines,
@@ -162,14 +163,24 @@ export function DraftMachinePicker({
     }
   }, [closeAndRestoreFocus]);
 
-  if (machines.length < 2) return null;
-
   const selected = machines.find((machine) => machine.id === selectedMachineId) ?? null;
   const displayed = selected ?? machines[0];
+  const selectionUnavailable = selectedMachineId != null && selected == null;
+  if (
+    machines.length < 2
+    && !selectionUnavailable
+    && !selected?.unavailableReason?.trim()
+  ) return null;
   if (!displayed) return null;
-  const triggerAriaLabel = selected
-    ? `${triggerLabel}, currently ${selected.name}`
-    : `${triggerLabel}, current machine unavailable; fallback ${displayed.name}`;
+  const availableFallback = machines.find((machine) => !machine.unavailableReason?.trim()) ?? displayed;
+  let triggerAriaLabel: string;
+  if (selected?.unavailableReason || selectionUnavailable) {
+    triggerAriaLabel = `${triggerLabel}, current machine unavailable; fallback ${availableFallback.name}`;
+  } else if (selected) {
+    triggerAriaLabel = `${triggerLabel}, currently ${selected.name}`;
+  } else {
+    triggerAriaLabel = `${triggerLabel}, current machine unavailable; fallback ${displayed.name}`;
+  }
   const hasCloudOption = machines.some((machine) => machine.kind === "cloud");
   const defaultTriggerDescription = hasCloudOption
     ? "Pick this computer, another paired computer, or Cursor Cloud. The lane list beside it follows your choice."
@@ -192,11 +203,15 @@ export function DraftMachinePicker({
           aria-expanded={open}
           aria-label={triggerAriaLabel}
           disabled={disabled}
-          onClick={() => setOpen((current) => {
-            const next = !current;
+          // `onOpen` runs outside the state updater on purpose. React may call
+          // an updater during another component's render and may call it twice,
+          // so a probe fired from inside it warns about updating the parent
+          // mid-render and can run twice per click.
+          onClick={() => {
+            const next = !open;
+            setOpen(next);
             if (next) onOpen?.();
-            return next;
-          })}
+          }}
           className={cn(
             "inline-flex h-7 min-w-0 shrink items-center gap-1.5 rounded-md border px-2",
             "font-sans text-[11px] font-medium transition-colors",

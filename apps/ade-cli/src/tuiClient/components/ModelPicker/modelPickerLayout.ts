@@ -1,3 +1,7 @@
+import {
+  MODEL_PICKER_PROVIDER_ORDER,
+  type ProviderGroupKey,
+} from "../../../../../desktop/src/shared/modelCatalog";
 import { scoreModelPickerSearch } from "../../../../../desktop/src/renderer/components/shared/ModelPicker/modelPickerSearch";
 import { sortModelItems } from "../../../../../desktop/src/renderer/components/shared/ModelPicker/modelOrdering";
 import type { AgentChatModelCatalog, AgentChatModelCatalogRefreshProvider, AgentChatModelInfo } from "../../../../../desktop/src/shared/types/chat";
@@ -21,18 +25,26 @@ import type {
 import type { SetupPaneRow, SetupPaneRowKind } from "../../types";
 import { normalizeProvider, providerFamilyLabel as providerLabel, titleCaseProviderName } from "../../providerMetadata";
 
-export const PROVIDER_ORDER: readonly AdeCodeProvider[] = [
-  "claude",
-  "codex",
-  "droid",
-  "cursor",
-  "opencode",
-  "pi",
-  "ollama",
-  "lmstudio",
-];
+export const PROVIDER_ORDER: readonly AdeCodeProvider[] = MODEL_PICKER_PROVIDER_ORDER;
 
 const RAIL_PROVIDER_ORDER: readonly AdeCodeProvider[] = PROVIDER_ORDER;
+
+/**
+ * The four ACP providers. They report through the same optional
+ * `availableProviders` / `providerConnections` / `models` slots, so one list
+ * drives the greying arm instead of four copies of it. Mirrors
+ * `ACP_PICKER_FAMILIES` in desktop's useProviderAuthStatus.
+ */
+const ACP_PROVIDERS: readonly Extract<AdeCodeProvider, "qwen" | "kimi" | "grok" | "copilot">[] = [
+  "qwen",
+  "kimi",
+  "grok",
+  "copilot",
+];
+
+function isAcpProvider(provider: AdeCodeProvider): provider is (typeof ACP_PROVIDERS)[number] {
+  return (ACP_PROVIDERS as readonly AdeCodeProvider[]).includes(provider);
+}
 const STATIC_REGISTRY_FALLBACK_PROVIDERS: readonly ModelProviderGroup[] = ["claude", "codex"];
 
 function openCodeProviderLabel(providerId: string): string {
@@ -46,7 +58,7 @@ function providerSignInHint(provider: AdeCodeProvider): string {
 
 function providerModelsCount(status: AiSettingsStatus | null | undefined, provider: AdeCodeProvider): number {
   if (!status) return 0;
-  if (provider === "claude" || provider === "codex" || provider === "cursor" || provider === "droid") {
+  if (provider === "claude" || provider === "codex" || provider === "cursor" || provider === "droid" || isAcpProvider(provider)) {
     return status.models?.[provider]?.length ?? 0;
   }
   if (provider === "pi") return status.piInstallation?.availableModelIds.length ?? 0;
@@ -105,6 +117,22 @@ export function modelPickerProviderAuthStatus(
     if (connection || status.piInstallation) return "unavailable";
     return "unknown";
   }
+  if (isAcpProvider(provider)) {
+    // CLI-backed: "ready" means the host found both the binary and a credential
+    // for it. A provider the host has not probed (or does not know about, e.g.
+    // an older machine across a remote connection) stays "unknown" so the rail
+    // does not claim the user is signed out.
+    const connection = status.providerConnections?.[provider];
+    if (
+      status.availableProviders?.[provider] === true
+      || connection?.authAvailable
+      || connection?.runtimeAvailable
+      || providerModelsCount(status, provider) > 0
+    ) {
+      return "ready";
+    }
+    return connection ? "unavailable" : "unknown";
+  }
   if (provider === "opencode") {
     if ((status.opencodeProviders ?? []).some((entry) => entry.connected) || status.opencodeBinaryInstalled === true) return "ready";
     if (status.opencodeBinaryInstalled === false || status.opencodeInventoryError) return "unavailable";
@@ -123,12 +151,31 @@ export function modelPickerProviderAuthStatus(
   return "unknown";
 }
 
+/**
+ * Every catalog group key the host can publish, mapped to the rail that owns
+ * it. Exhaustive over `ProviderGroupKey` on purpose: a new group added to the
+ * shared catalog is a compile error here rather than a rail of models that
+ * quietly files itself under Codex.
+ */
+const PROVIDER_BY_CATALOG_GROUP: Record<ProviderGroupKey, AdeCodeProvider> = {
+  claude: "claude",
+  codex: "codex",
+  cursor: "cursor",
+  droid: "droid",
+  pi: "pi",
+  qwen: "qwen",
+  kimi: "kimi",
+  grok: "grok",
+  copilot: "copilot",
+  opencode: "opencode",
+  ollama: "ollama",
+  lmstudio: "lmstudio",
+};
+
 function providerFromCatalogGroup(groupKey: string, fallbackFamily?: string): AdeCodeProvider {
   const normalized = groupKey.trim().toLowerCase();
-  if (normalized === "claude" || normalized === "codex" || normalized === "opencode" || normalized === "cursor" || normalized === "droid" || normalized === "pi") {
-    return normalized;
-  }
-  if (normalized === "ollama" || normalized === "lmstudio") return normalized;
+  const known = PROVIDER_BY_CATALOG_GROUP[normalized as ProviderGroupKey];
+  if (known) return known;
   return normalizeProvider(fallbackFamily ?? normalized);
 }
 
@@ -162,14 +209,16 @@ function entriesFromCatalog(
             ? subsection.label || model.providerName || provider.displayName || providerLabel(family)
             : family === "cursor" || family === "droid"
             ? subsection.label || model.providerName || provider.displayName || undefined
-            : family === "claude" || family === "codex"
+            : family === "claude" || family === "codex" || isAcpProvider(family)
+              // Single-vendor rails: one tab named after the provider, rather
+              // than a sub-tab per catalog subsection label.
               ? providerLabel(family)
               : model.providerName || provider.displayName || subsection.label || undefined;
           const catalogSubProviderKey = family === "pi"
             ? subsection.key || model.providerId || provider.key || family
             : family === "cursor" || family === "droid"
             ? subsection.key || model.providerId || provider.key || undefined
-            : family === "claude" || family === "codex"
+            : family === "claude" || family === "codex" || isAcpProvider(family)
               ? family
               : model.providerId || provider.key || subsection.key || undefined;
           entries.push({

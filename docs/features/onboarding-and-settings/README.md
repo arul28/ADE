@@ -1099,15 +1099,20 @@ banner):
   periodic update checks, while dev/source launches leave those timers off
   to avoid surfacing missing-updater-config errors; if the new build is strictly
   newer, the cached installer dir is wiped and the snapshot
-  transitions back through `downloading`. `quitAndInstall()` is
+  transitions back through `downloading`. A staged update never stops a check;
+  see
+  [Checking while an update is staged](./desktop-auto-update.md#checking-while-an-update-is-staged)
+  for what each entry point does with a same, newer, or failed feed answer.
+  `userInitiated` only labels `autoUpdate.check_requested`; it does not
+  change whether the check runs. `quitAndInstall()` is
   transactional and asynchronous: it gates on the current snapshot being `ready`,
-  re-runs `updater.checkForUpdates()` with `allowReady: true` to
+  re-runs `updater.checkForUpdates()` to
   confirm the staged installer is still the latest, and only then
   flips the snapshot to `installing`, persists the
   `pendingInstallUpdate` global-state row, and calls
-  `updater.quitAndInstall(false, true)`. If the refresh check fails,
-  it surfaces the error, drops the cache, and clears the pending
-  install. A consent that aborts before the native updater takes over sets
+  `updater.quitAndInstall(false, true)`. If the refresh check fails, it parks as `refresh_failed`, returns
+  the snapshot to `ready` on the staged version, and keeps the
+  archive. A consent that aborts before the native updater takes over sets
   `snapshot.parked` with a typed `AutoUpdateInstallAbortReason`
   (`refresh_failed`, `install_preflight_failed`, `prepare_failed`,
   `prepare_timeout`, `handoff_failed`) so the shell banner can offer a retry.
@@ -1730,19 +1735,23 @@ the previous two-way behaviour instead of reporting a state it cannot compute.
   exists — its settings moved into General + the top-bar Help menu.
 - **Auto-update install must refresh before quitting.**
   `quitAndInstall()` deliberately re-runs `updater.checkForUpdates()`
-  with `allowReady: true` before flipping to `installing`. Skipping
+  before flipping to `installing`. Skipping
   that step (e.g. a synchronous quitAndInstall) reintroduces the bug
   where ADE quits to install a stale download while a strictly newer
   build is available. Comparison goes through `compareUpdateVersions`
   — never `===` on the version string — because `v1.2.3` /
   `1.2.3-rc.1` / `1.2.3` all need consistent ordering on both the
   pending-install reconcile path and the supersede check.
-- **`installing` is a sticky status.** While the snapshot is
+- **`installing` is a sticky status; `ready` is not.** While the snapshot is
   `installing` the service ignores `update-not-available`,
   `checking-for-update`, and `error`, because the main process is in
-  the middle of quitAndInstall. New status checks should treat
-  `ready` and `installing` symmetrically when deciding whether to
-  cancel or override the staged update.
+  the middle of quitAndInstall. Checks keep running while status is `ready`
+  (same-or-older ignored, strictly newer supersedes, failed check leaves the
+  archive). Do not skip a check just because an update is staged. The one
+  window that *does* block a check is an already-running `quitAndInstall()`:
+  status stays `ready` until the native handoff, and a supersede in that
+  window would delete the archive about to be handed to Squirrel or NSIS. See
+  [Checking while an update is staged](./desktop-auto-update.md#checking-while-an-update-is-staged).
 - **A parked install is not a failure.** An aborted consent lands in
   `snapshot.parked`, not `error` — the download is still staged and the shell
   banner offers a **Restart now** retry. Keep parked distinct from the disk /

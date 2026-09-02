@@ -1173,6 +1173,35 @@ describe("createSyncRemoteCommandService", () => {
     expect(restoreCancelledQueue).toHaveBeenCalledTimes(1);
   });
 
+  it("forwards only a Cursor Cloud reasoning effort the caller actually sent", async () => {
+    const openCursorCloudChat = vi.fn(async (_args: Record<string, unknown>) => (
+      { sessionId: "chat-1", session: {} }
+    ));
+    const { service } = createService({ agentChatService: { openCursorCloudChat } });
+
+    await service.execute(makePayload("ai.openCursorCloudChat", {
+      cloudAgentId: "agt_1",
+      laneId: "lane-1",
+      reasoningEffort: "high",
+    }));
+    // An omitted control must leave the session default alone: forwarding it as
+    // null clears the reasoning effort on every mobile, web, and relay call.
+    await service.execute(makePayload("ai.openCursorCloudChat", {
+      cloudAgentId: "agt_1",
+      laneId: "lane-1",
+    }));
+
+    expect(openCursorCloudChat.mock.calls[0]?.[0]).toEqual({
+      cloudAgentId: "agt_1",
+      laneId: "lane-1",
+      reasoningEffort: "high",
+    });
+    expect(openCursorCloudChat.mock.calls[1]?.[0]).toEqual({
+      cloudAgentId: "agt_1",
+      laneId: "lane-1",
+    });
+  });
+
   it("routes all Codex recovery actions through the mobile sync command", async () => {
     const recoverCodexTurn = vi.fn(async (args) => ({
       action: args.action,
@@ -1996,6 +2025,46 @@ describe("createSyncRemoteCommandService", () => {
       runtimeState: "running",
       pendingInputItemId: null,
       attentionSource: null,
+    }));
+  });
+
+  it("refuses work.updateSessionMeta title writes when Cursor owns the chat name", async () => {
+    const updateMeta = vi.fn();
+    const getSessionSummary = vi.fn().mockResolvedValue({
+      sessionId: "cloud-session-1",
+      cursorCloudAgentId: "cloud-agent-1",
+    });
+    const { service } = createService({
+      sessionService: { updateMeta },
+      agentChatService: { getSessionSummary },
+    });
+
+    await expect(service.execute(makePayload("work.updateSessionMeta", {
+      sessionId: "cloud-session-1",
+      title: "ADE-owned title",
+      manuallyNamed: true,
+    }))).rejects.toThrow("agent names are managed by Cursor");
+    expect(updateMeta).not.toHaveBeenCalled();
+  });
+
+  it("still pins a Cursor Cloud chat through work.updateSessionMeta", async () => {
+    const updateMeta = vi.fn();
+    const getSessionSummary = vi.fn().mockResolvedValue({
+      sessionId: "cloud-session-1",
+      cursorCloudAgentId: "cloud-agent-1",
+    });
+    const { service } = createService({
+      sessionService: { updateMeta },
+      agentChatService: { getSessionSummary },
+    });
+
+    await expect(service.execute(makePayload("work.updateSessionMeta", {
+      sessionId: "cloud-session-1",
+      pinned: true,
+    }))).resolves.toEqual({ ok: true });
+    expect(updateMeta).toHaveBeenCalledWith(expect.objectContaining({
+      sessionId: "cloud-session-1",
+      pinned: true,
     }));
   });
 

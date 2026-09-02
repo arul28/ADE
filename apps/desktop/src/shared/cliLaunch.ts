@@ -23,13 +23,24 @@ import {
 } from "./adeCliGuidance";
 import { isProviderSlashCommandInput } from "./chatSlashCommands";
 import { resolveClaudeCliModelAlias } from "./claudeCliModels";
+import { grokSupervisionEnv } from "./grokSupervision";
 import { decodeOpenCodeRegistryId, decodePiRegistryId } from "./modelRegistry";
 import { effectiveOrchestrationPermissionMode } from "./orchestrationRuntimePolicy";
 import { commandArrayToLine, parseCommandLine, quoteShellArg } from "./shell";
 import type { PluginBuiltinSurfaceId } from "./plugins/manifest";
 import type { OrchestrationRole } from "./types/orchestration";
 
-export type CliProvider = "claude" | "codex" | "cursor" | "droid" | "opencode" | "pi";
+export type CliProvider =
+  | "claude"
+  | "codex"
+  | "cursor"
+  | "droid"
+  | "opencode"
+  | "pi"
+  | "qwen"
+  | "kimi"
+  | "grok"
+  | "copilot";
 export type LaunchProfile = CliProvider | "shell";
 export type TrackedCliLaunchCommand = {
   command?: string;
@@ -143,7 +154,19 @@ export function buildPtyContinuationLaunchFields(
   };
 }
 
-export const LAUNCH_PROFILES = ["claude", "codex", "cursor", "droid", "opencode", "pi", "shell"] as const satisfies readonly LaunchProfile[];
+export const LAUNCH_PROFILES = [
+  "claude",
+  "codex",
+  "cursor",
+  "droid",
+  "opencode",
+  "pi",
+  "qwen",
+  "kimi",
+  "grok",
+  "copilot",
+  "shell",
+] as const satisfies readonly LaunchProfile[];
 export const TRACKED_CLI_PERMISSION_MODES = ["default", "auto", "plan", "edit", "full-auto", "config-toml"] as const satisfies readonly AgentChatPermissionMode[];
 
 export function sanitizeTrackedCliResumeTargetId(value: string | null | undefined): string | null {
@@ -163,6 +186,10 @@ export const LAUNCH_PROFILE_TOOL_TYPE: Record<LaunchProfile, TerminalToolType> =
   droid: "droid",
   opencode: "opencode",
   pi: "pi",
+  qwen: "qwen",
+  kimi: "kimi",
+  grok: "grok",
+  copilot: "copilot",
   shell: "shell",
 };
 
@@ -174,6 +201,10 @@ export const LAUNCH_PROFILE_TITLE: Record<LaunchProfile, string> = {
   droid: "Factory Droid CLI",
   opencode: "OpenCode CLI",
   pi: "Pi CLI",
+  qwen: "Qwen Code CLI",
+  kimi: "Kimi Code CLI",
+  grok: "Grok CLI",
+  copilot: "GitHub Copilot CLI",
   shell: "Shell",
 };
 
@@ -328,6 +359,10 @@ const LAUNCH_PROFILE_TOOL_TYPES: Record<LaunchProfile, readonly TerminalToolType
   droid: ["droid", "droid-chat"],
   opencode: ["opencode", "opencode-orchestrated", "opencode-chat"],
   pi: ["pi"],
+  qwen: ["qwen", "qwen-chat"],
+  kimi: ["kimi", "kimi-chat"],
+  grok: ["grok", "grok-chat"],
+  copilot: ["copilot", "copilot-chat"],
   shell: ["shell"],
 };
 
@@ -356,6 +391,31 @@ export function validateLaunchProfilePermissionMode(
     // which Pi has no equivalent for, is rejected.
     if (mode === "auto") {
       throw new Error(`permissionMode ${mode} is not supported for Pi CLI sessions.`);
+    }
+    return;
+  }
+  // Qwen and Grok both have a native `auto` approval mode, so they accept the
+  // whole ADE ladder. Copilot has neither an `auto` tier nor a plan mode: its
+  // permissions are allow/deny tool lists, so ADE maps `plan` to write+shell
+  // denials and rejects `auto` rather than silently running as `default`.
+  if (profile === "qwen" || profile === "grok") {
+    if (mode === "config-toml") {
+      throw new Error(`permissionMode ${mode} is not supported for ${profile} CLI sessions.`);
+    }
+    return;
+  }
+  if (profile === "kimi") {
+    // Kimi's flags are `--plan`, `--auto`, and `--yolo`, which are mutually
+    // exclusive. There is no distinct read-only "edit" tier, and no config
+    // passthrough.
+    if (mode === "auto" || mode === "config-toml") {
+      throw new Error(`permissionMode ${mode} is not supported for Kimi CLI sessions.`);
+    }
+    return;
+  }
+  if (profile === "copilot") {
+    if (mode === "auto" || mode === "config-toml") {
+      throw new Error(`permissionMode ${mode} is not supported for GitHub Copilot CLI sessions.`);
     }
     return;
   }
@@ -564,6 +624,10 @@ export function defaultTrackedCliStartupCommand(provider: CliProvider): string {
   if (provider === "droid") return "droid";
   if (provider === "opencode") return "opencode";
   if (provider === "pi") return "pi";
+  if (provider === "qwen") return "qwen";
+  if (provider === "kimi") return "kimi";
+  if (provider === "grok") return "grok --no-alt-screen";
+  if (provider === "copilot") return "copilot --no-alt-screen";
   return "claude";
 }
 
@@ -851,6 +915,121 @@ export function buildTrackedCliLaunchCommand(args: {
     };
   }
 
+  if (args.provider === "qwen") {
+    const assignedSessionId = args.sessionId?.trim() || null;
+    const commandArgs: string[] = [];
+    if (assignedSessionId) {
+      // Same mutual exclusion as Claude: `--session-id` starts a NEW session
+      // with that id, so it can never appear beside `--resume`/`--continue`.
+      commandArgs.push("--session-id", assignedSessionId);
+    }
+    commandArgs.push(...qwenModelFlags(args.model));
+    commandArgs.push(...permissionModeToQwenFlags(permissionMode));
+    commandArgs.push("--append-system-prompt", buildAdeCliAgentGuidance(skillRoots));
+    // `qwen` is an npm bin, so on Windows it resolves to a `.cmd` shim and the
+    // prompt goes through `cmd.exe`, which expands `%NAME%`, flattens newlines,
+    // and caps the command line at ~8191 characters. Same rule as Claude:
+    // POSIX keeps the prompt in argv, Windows types it into the TUI.
+    const promptRidesInArgv = Boolean(initialPrompt) && currentPlatform() !== "win32";
+    if (initialPrompt && promptRidesInArgv) {
+      commandArgs.push("-i", initialPrompt);
+    }
+    const shellArgs = commandArgs.filter(
+      (arg, i, all) => arg !== "--append-system-prompt" && all[i - 1] !== "--append-system-prompt",
+    );
+    return {
+      command: "qwen",
+      args: commandArgs,
+      startupCommand: commandArrayToLine(["qwen", ...shellArgs], { platform: "linux" }),
+      ...(assignedSessionId ? { assignedSessionId } : {}),
+      ...(initialPrompt && !promptRidesInArgv
+        ? { initialInput: initialPrompt, initialInputDelayMs: 750 }
+        : {}),
+      ...(agentSkillEnv ? { env: agentSkillEnv } : {}),
+    };
+  }
+
+  if (args.provider === "kimi") {
+    // Kimi's interactive TUI takes no argv prompt at all, so the prompt is
+    // typed in after launch — the Cursor branch's shape. Kimi also cannot be
+    // handed a session id at launch; the id is captured from its sessions
+    // directory afterwards, so no `assignedSessionId` is returned here.
+    const commandArgs = [
+      ...kimiModelFlags(args.model),
+      ...permissionModeToKimiFlags(permissionMode),
+    ];
+    return {
+      command: "kimi",
+      args: commandArgs,
+      startupCommand: commandArrayToLine(["kimi", ...commandArgs], { platform: "linux" }),
+      ...(initialPrompt ? { initialInput: initialPrompt, initialInputDelayMs: 750 } : {}),
+      ...(agentSkillEnv ? { env: agentSkillEnv } : {}),
+    };
+  }
+
+  if (args.provider === "grok") {
+    const assignedSessionId = args.sessionId?.trim() || null;
+    const commandArgs: string[] = ["--no-alt-screen"];
+    if (assignedSessionId) {
+      // `-s` names a NEW session's UUID; with `--resume`/`--continue` it is
+      // only legal alongside `--fork-session`. Fresh launches only.
+      commandArgs.push("-s", assignedSessionId);
+    }
+    commandArgs.push(...grokModelFlags(args.model));
+    commandArgs.push(...grokReasoningEffortFlags(args.reasoningEffort));
+    commandArgs.push(...permissionModeToGrokFlags(permissionMode));
+    commandArgs.push("--rules", buildAdeCliAgentGuidance(skillRoots));
+    const promptRidesInArgv = Boolean(initialPrompt) && currentPlatform() !== "win32";
+    if (initialPrompt && promptRidesInArgv) {
+      commandArgs.push(initialPrompt);
+    }
+    const shellArgs = commandArgs.filter(
+      (arg, i, all) => arg !== "--rules" && all[i - 1] !== "--rules",
+    );
+    return {
+      command: "grok",
+      args: commandArgs,
+      startupCommand: commandArrayToLine(["grok", ...shellArgs], { platform: "linux" }),
+      ...(assignedSessionId ? { assignedSessionId } : {}),
+      ...(initialPrompt && !promptRidesInArgv
+        ? { initialInput: initialPrompt, initialInputDelayMs: 750 }
+        : {}),
+      // `--permission-mode` above only overrides `~/.grok/config.toml`. Without
+      // the Claude-import kill switch beside it, Grok still merges the user's
+      // `~/.claude/settings.json` `permissions.defaultMode` and auto-approves
+      // writes in its own TUI too. The two halves travel together everywhere.
+      env: { ...(agentSkillEnv ?? {}), ...grokSupervisionEnv() },
+    };
+  }
+
+  if (args.provider === "copilot") {
+    const assignedSessionId = args.sessionId?.trim() || null;
+    const commandArgs: string[] = ["--no-alt-screen"];
+    if (assignedSessionId) {
+      // Copilot has no separate assign flag: `--resume=<uuid>` starts a new
+      // session under that id when the id does not exist yet, and resumes it
+      // when it does. One spelling, both jobs.
+      commandArgs.push(`--resume=${assignedSessionId}`);
+    }
+    commandArgs.push(...copilotModelFlags(args.model));
+    commandArgs.push(...copilotReasoningEffortFlags(args.reasoningEffort));
+    commandArgs.push(...permissionModeToCopilotFlags(permissionMode));
+    const promptRidesInArgv = Boolean(initialPrompt) && currentPlatform() !== "win32";
+    if (initialPrompt && promptRidesInArgv) {
+      commandArgs.push("-i", initialPrompt);
+    }
+    return {
+      command: "copilot",
+      args: commandArgs,
+      startupCommand: commandArrayToLine(["copilot", ...commandArgs], { platform: "linux" }),
+      ...(assignedSessionId ? { assignedSessionId } : {}),
+      ...(initialPrompt && !promptRidesInArgv
+        ? { initialInput: initialPrompt, initialInputDelayMs: 750 }
+        : {}),
+      ...(agentSkillEnv ? { env: agentSkillEnv } : {}),
+    };
+  }
+
   // Only the user's own text rides `--prompt`. OpenCode submits that value as a
   // real user message and renders it in the TUI, so the ADE preamble that used
   // to be prepended here was displayed to the user verbatim on every launch —
@@ -1086,6 +1265,146 @@ function codexResumePermissionFlags(args: {
   }
   if (args.approvalPolicy || args.sandbox) return [];
   return permissionModeToCodexFlags(args.permissionMode);
+}
+
+/**
+ * ACP providers take the model id verbatim; ADE only strips its own registry
+ * prefix. None of the four publishes a fixed enum any more — every one resolves
+ * its catalog from the server at auth time — so an id ADE does not recognise is
+ * forwarded rather than rejected, and the CLI gives the real error.
+ */
+function stripRegistryPrefix(model: string | null | undefined, prefix: string): string | null {
+  const raw = normalizeCliFlagValue(model);
+  if (!raw) return null;
+  const slash = raw.indexOf("/");
+  if (slash > 0 && raw.slice(0, slash).toLowerCase() === prefix) {
+    return raw.slice(slash + 1).trim() || null;
+  }
+  return raw;
+}
+
+export function resolveQwenCliModelForLaunch(model: string | null | undefined): string | null {
+  return stripRegistryPrefix(model, "qwen");
+}
+
+/**
+ * Kimi's `-m` takes a config alias, not a raw model id, and the alias is always
+ * namespaced (`kimi-code/k3`). A bare `k3` fails with "Unknown model alias", so
+ * ADE restores the namespace when its own registry prefix stripped it away.
+ */
+export function resolveKimiCliModelForLaunch(model: string | null | undefined): string | null {
+  const raw = stripRegistryPrefix(model, "moonshot");
+  if (!raw) return null;
+  return raw.includes("/") ? raw : `kimi-code/${raw}`;
+}
+
+export function resolveGrokCliModelForLaunch(model: string | null | undefined): string | null {
+  return stripRegistryPrefix(model, "xai");
+}
+
+export function resolveCopilotCliModelForLaunch(model: string | null | undefined): string | null {
+  return stripRegistryPrefix(model, "github-copilot");
+}
+
+function qwenModelFlags(model: string | null | undefined): string[] {
+  const resolved = resolveQwenCliModelForLaunch(model);
+  return resolved ? ["-m", resolved] : [];
+}
+
+function kimiModelFlags(model: string | null | undefined): string[] {
+  const resolved = resolveKimiCliModelForLaunch(model);
+  return resolved ? ["-m", resolved] : [];
+}
+
+function grokModelFlags(model: string | null | undefined): string[] {
+  const resolved = resolveGrokCliModelForLaunch(model);
+  return resolved ? ["-m", resolved] : [];
+}
+
+function copilotModelFlags(model: string | null | undefined): string[] {
+  const resolved = resolveCopilotCliModelForLaunch(model);
+  return resolved ? ["--model", resolved] : [];
+}
+
+const GROK_REASONING_EFFORTS = ["low", "medium", "high", "xhigh"] as const;
+
+export function grokReasoningEffortFlags(reasoningEffort: string | null | undefined): string[] {
+  const effort = normalizeCliFlagValue(reasoningEffort)?.toLowerCase();
+  if (!effort) return [];
+  // ADE's ladder runs past Grok's: "max" and "ultracode" have no Grok tier, so
+  // they land on its highest rather than being passed through and rejected.
+  const mapped = effort === "max" || effort === "ultracode" ? "xhigh" : effort;
+  if (!(GROK_REASONING_EFFORTS as readonly string[]).includes(mapped)) return [];
+  return ["--reasoning-effort", mapped];
+}
+
+const COPILOT_REASONING_EFFORTS = ["low", "medium", "high", "xhigh"] as const;
+
+export function copilotReasoningEffortFlags(reasoningEffort: string | null | undefined): string[] {
+  const effort = normalizeCliFlagValue(reasoningEffort)?.toLowerCase();
+  if (!effort) return [];
+  const mapped = effort === "max" || effort === "ultracode" ? "xhigh" : effort;
+  if (!(COPILOT_REASONING_EFFORTS as readonly string[]).includes(mapped)) return [];
+  return ["--reasoning-effort", mapped];
+}
+
+/**
+ * Qwen's approval ladder is plan | default | auto-edit | auto | yolo, set with
+ * a single `--approval-mode`. `--yolo` is the older spelling of the same
+ * setting: passing both makes Qwen reject the launch, so ADE only ever emits
+ * `--approval-mode`.
+ */
+export function permissionModeToQwenFlags(
+  permissionMode: AgentChatPermissionMode | null | undefined,
+): string[] {
+  if (permissionMode == null) return [];
+  if (permissionMode === "full-auto") return ["--approval-mode", "yolo"];
+  if (permissionMode === "auto") return ["--approval-mode", "auto"];
+  if (permissionMode === "edit") return ["--approval-mode", "auto-edit"];
+  if (permissionMode === "plan") return ["--approval-mode", "plan"];
+  return ["--approval-mode", "default"];
+}
+
+/** Kimi's `--plan`, `--auto`, and `--yolo` are mutually exclusive switches. */
+export function permissionModeToKimiFlags(
+  permissionMode: AgentChatPermissionMode | null | undefined,
+): string[] {
+  if (permissionMode === "full-auto") return ["--yolo"];
+  if (permissionMode === "edit") return ["--auto"];
+  if (permissionMode === "plan") return ["--plan"];
+  return [];
+}
+
+/**
+ * Grok's own `--permission-mode` values line up with ADE's ladder one for one.
+ * ADE never passes `-w/--worktree`: Grok would create a second git worktree
+ * inside the lane worktree ADE already made.
+ */
+export function permissionModeToGrokFlags(
+  permissionMode: AgentChatPermissionMode | null | undefined,
+): string[] {
+  if (permissionMode == null) return [];
+  if (permissionMode === "full-auto") return ["--permission-mode", "bypassPermissions"];
+  if (permissionMode === "auto") return ["--permission-mode", "auto"];
+  if (permissionMode === "edit") return ["--permission-mode", "acceptEdits"];
+  if (permissionMode === "plan") return ["--permission-mode", "plan"];
+  return ["--permission-mode", "default"];
+}
+
+/**
+ * Copilot has no plan mode and no approval ladder — only allow/deny tool
+ * patterns. Plan becomes the two denials that make a session read-only
+ * (`write` covers every file-creating tool, `shell` every command), which is
+ * the closest honest equivalent. `validateLaunchProfilePermissionMode` already
+ * rejected the two modes with no mapping at all.
+ */
+export function permissionModeToCopilotFlags(
+  permissionMode: AgentChatPermissionMode | null | undefined,
+): string[] {
+  if (permissionMode === "full-auto") return ["--allow-all-tools"];
+  if (permissionMode === "edit") return ["--allow-tool=write"];
+  if (permissionMode === "plan") return ["--deny-tool=write", "--deny-tool=shell"];
+  return [];
 }
 
 function permissionModeToCursorFlags(permissionMode: AgentChatPermissionMode | null | undefined): string[] {
@@ -1565,6 +1884,89 @@ export function buildTrackedCliResumeLaunchCommand(
     // prompt in argv where it round-trips intact.
     const promptRidesInArgv = Boolean(prompt) && (options.platform ?? process.platform) !== "win32";
     if (prompt && promptRidesInArgv) parts.push(prompt);
+    return {
+      command: parts[0]!,
+      args: parts.slice(1),
+      startupCommand: commandArrayToLine(parts, { platform: "linux" }),
+      ...(prompt && !promptRidesInArgv ? { initialInput: prompt, initialInputDelayMs: 750 } : {}),
+    };
+  }
+
+  if (metadata.provider === "qwen") {
+    const parts = [
+      "qwen",
+      ...qwenModelFlags(model),
+      ...permissionModeToQwenFlags(permissionMode),
+    ];
+    // `--session-id` is never emitted here: it starts a new conversation and is
+    // mutually exclusive with the resume selector, exactly as with Claude.
+    if (targetId) parts.push("--resume", targetId);
+    else parts.push("--continue");
+    const promptRidesInArgv = Boolean(prompt) && (options.platform ?? process.platform) !== "win32";
+    if (prompt && promptRidesInArgv) parts.push("-i", prompt);
+    return {
+      command: parts[0]!,
+      args: parts.slice(1),
+      startupCommand: commandArrayToLine(parts, { platform: "linux" }),
+      ...(prompt && !promptRidesInArgv ? { initialInput: prompt, initialInputDelayMs: 750 } : {}),
+    };
+  }
+
+  if (metadata.provider === "kimi") {
+    const parts = [
+      "kimi",
+      ...kimiModelFlags(model),
+      ...permissionModeToKimiFlags(permissionMode),
+    ];
+    // Lowercase `-c`, and `-S` for a session id — Kimi's resume selectors do
+    // not follow the `--resume` spelling every other provider here uses.
+    if (targetId) parts.push("-S", targetId);
+    else parts.push("-c");
+    return {
+      command: parts[0]!,
+      args: parts.slice(1),
+      startupCommand: commandArrayToLine(parts, { platform: "linux" }),
+      // Kimi's TUI takes no argv prompt on resume either.
+      ...(prompt ? { initialInput: prompt, initialInputDelayMs: 750 } : {}),
+    };
+  }
+
+  if (metadata.provider === "grok") {
+    const parts = [
+      "grok",
+      "--no-alt-screen",
+      ...grokModelFlags(model),
+      ...grokReasoningEffortFlags(reasoningEffort),
+      ...permissionModeToGrokFlags(permissionMode),
+    ];
+    if (targetId) parts.push("--resume", targetId);
+    else parts.push("--continue");
+    const promptRidesInArgv = Boolean(prompt) && (options.platform ?? process.platform) !== "win32";
+    if (prompt && promptRidesInArgv) parts.push(prompt);
+    return {
+      command: parts[0]!,
+      args: parts.slice(1),
+      startupCommand: commandArrayToLine(parts, { platform: "linux" }),
+      ...(prompt && !promptRidesInArgv ? { initialInput: prompt, initialInputDelayMs: 750 } : {}),
+      // A resumed Grok TUI re-reads the user's Claude settings on start, so the
+      // kill switch has to ride the resume too. Fresh launch and resume must
+      // agree, or the same chat changes posture when it is reattached.
+      env: grokSupervisionEnv(),
+    };
+  }
+
+  if (metadata.provider === "copilot") {
+    const parts = [
+      "copilot",
+      "--no-alt-screen",
+      ...copilotModelFlags(model),
+      ...copilotReasoningEffortFlags(reasoningEffort),
+      ...permissionModeToCopilotFlags(permissionMode),
+    ];
+    if (targetId) parts.push(`--resume=${targetId}`);
+    else parts.push("--continue");
+    const promptRidesInArgv = Boolean(prompt) && (options.platform ?? process.platform) !== "win32";
+    if (prompt && promptRidesInArgv) parts.push("-i", prompt);
     return {
       command: parts[0]!,
       args: parts.slice(1),

@@ -9,6 +9,7 @@ import type {
   AgentChatCodexConfigSource,
   AgentChatCodexSandbox,
   AgentChatCliLaunchProvider,
+  AgentChatModelHandoff,
   AgentChatSpawnKind,
   AgentChatRuntimeRef,
   AgentChatRuntimeLabel,
@@ -51,6 +52,15 @@ export type TerminalToolType =
   | "cursor"
   | "droid-chat"
   | "pi-chat"
+  // ACP providers: tracked CLI terminal, then the ADE chat runtime.
+  | "qwen"
+  | "kimi"
+  | "grok"
+  | "copilot"
+  | "qwen-chat"
+  | "kimi-chat"
+  | "grok-chat"
+  | "copilot-chat"
   | "aider"
   | "continue"
   | "other";
@@ -62,6 +72,10 @@ export type TrackedAgentCliToolType =
   | "droid"
   | "opencode"
   | "pi"
+  | "qwen"
+  | "kimi"
+  | "grok"
+  | "copilot"
   | "claude-orchestrated"
   | "codex-orchestrated"
   | "opencode-orchestrated";
@@ -76,6 +90,19 @@ export function isPtySendPreDeliveryError(
     && error.code === PTY_SEND_PRE_DELIVERY_ERROR_CODE;
 }
 
+/**
+ * Is this terminal running an agent CLI ADE tracks?
+ *
+ * "Tracked" buys the session the whole agent-CLI apparatus: TUI turn markers,
+ * resume-target capture, scheduled turns, orchestration lineage — and two
+ * safety behaviours that are easy to miss, because both are about what
+ * *stops*. A tracked launch is refused when the disk is exhausted, and a
+ * tracked session's built-in-browser actor token is revoked when it closes.
+ * The token is issued unconditionally, so a tool type missing from this list
+ * gets a capability that outlives its terminal.
+ *
+ * Must stay in step with `TrackedAgentCliToolType` above.
+ */
 export function isTrackedAgentCliToolType(
   toolType: TerminalToolType | null | undefined,
 ): toolType is TrackedAgentCliToolType {
@@ -85,6 +112,10 @@ export function isTrackedAgentCliToolType(
     || toolType === "droid"
     || toolType === "opencode"
     || toolType === "pi"
+    || toolType === "qwen"
+    || toolType === "kimi"
+    || toolType === "grok"
+    || toolType === "copilot"
     || toolType === "claude-orchestrated"
     || toolType === "codex-orchestrated"
     || toolType === "opencode-orchestrated";
@@ -140,7 +171,17 @@ export function parseSessionSettleOverride(
   return undefined;
 }
 
-export type TerminalResumeProvider = "claude" | "codex" | "cursor" | "droid" | "opencode" | "pi";
+export type TerminalResumeProvider =
+  | "claude"
+  | "codex"
+  | "cursor"
+  | "droid"
+  | "opencode"
+  | "pi"
+  | "qwen"
+  | "kimi"
+  | "grok"
+  | "copilot";
 
 export type TerminalResumeTargetKind = "session" | "thread";
 
@@ -192,6 +233,8 @@ export type TerminalSessionSummary = {
   manuallyNamed?: boolean;
   goal: string | null;
   toolType: TerminalToolType | null;
+  /** Completed model/provider transitions for an ADE chat, oldest first. */
+  modelHandoffHistory?: AgentChatModelHandoff[];
   title: string;
   status: TerminalSessionStatus;
   startedAt: string;

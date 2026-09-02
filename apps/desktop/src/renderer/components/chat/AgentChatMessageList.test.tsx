@@ -42,6 +42,7 @@ vi.mock("@lobehub/icons", () => {
     OpenCode: brand(),
     Github: brand(),
     GithubCopilot: brand(),
+    Qwen: brand(),
   };
 });
 
@@ -87,6 +88,7 @@ import {
   sameSetContents,
   shouldAbsorbProgrammaticScrollEvent,
   stabilizeTranscriptToolActivity,
+  shouldKeepPinnedThroughViewportShrink,
   shouldStickToBottomAfterScroll,
 } from "./AgentChatMessageList";
 import { looksLikeWireframe } from "./questionOptionPreview";
@@ -1187,6 +1189,33 @@ describe("AgentChatMessageList transcript rendering", () => {
     expect(screen.queryByTestId("handoff-brief-chip")).toBeNull();
   });
 
+  it("renders a provider handoff divider with direction and provider marks", () => {
+    renderMessageList([
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:00.000Z",
+        event: {
+          type: "model_handoff",
+          fromProvider: "claude",
+          toProvider: "codex",
+          fromModelId: "anthropic/claude-sonnet-5",
+          toModelId: "openai/gpt-5.4",
+        },
+      },
+    ]);
+
+    const divider = screen.getByTestId("model-handoff-event");
+    expect(divider.getAttribute("aria-label")).toBe("Model handoff from Claude to Codex");
+    expect(divider.textContent).toContain("handoff");
+    expect([...divider.querySelectorAll("[data-model-handoff-provider]")].map((node) => (
+      node.getAttribute("data-model-handoff-provider")
+    ))).toEqual(["claude", "codex"]);
+    expect([...divider.querySelectorAll("[data-model-handoff-provider]")].every((node) => (
+      node.className.includes("h-5") && node.className.includes("w-5")
+    ))).toBe(true);
+    expect(divider.querySelector(".items-center.h-6")).toBeTruthy();
+  });
+
   it("draws exactly one fork-history divider between seeded history and the first live event", async () => {
     renderMessageList([
       {
@@ -2018,12 +2047,51 @@ describe("AgentChatMessageList transcript rendering", () => {
     fireEvent.scroll(transcript);
 
     const jumpButton = await screen.findByRole("button", { name: "Jump to latest message" });
+    expect(jumpButton.textContent).toContain("Jump To Latest");
     fireEvent.click(jumpButton);
     expect(onReturnToLatest).toHaveBeenCalledTimes(1);
 
     await waitFor(() => {
       expect(screen.queryByRole("button", { name: "Jump to latest message" })).toBeNull();
     });
+  });
+
+  it("stays pinned to latest when the composer grows and shrinks the transcript", async () => {
+    renderMessageList([
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:00.000Z",
+        event: {
+          type: "user_message",
+          text: "Keep typing",
+          deliveryState: "delivered",
+        },
+      },
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:01.000Z",
+        event: {
+          type: "text",
+          text: "Still at the bottom.",
+          itemId: "text-1",
+          turnId: "turn-1",
+        },
+      },
+    ]);
+
+    const transcript = document.querySelector(".ade-chat-timeline-pane") as HTMLDivElement;
+    Object.defineProperty(transcript, "scrollHeight", { configurable: true, value: 1_000 });
+    Object.defineProperty(transcript, "clientHeight", { configurable: true, value: 400 });
+    transcript.scrollTop = 600;
+    fireEvent.scroll(transcript);
+
+    Object.defineProperty(transcript, "clientHeight", { configurable: true, value: 200 });
+    // Layout left scrollTop where it was; distance-from-bottom is now 200px.
+    transcript.scrollTop = 600;
+    fireEvent.scroll(transcript);
+
+    expect(transcript.scrollTop).toBe(800);
+    expect(screen.queryByRole("button", { name: "Jump to latest message" })).toBeNull();
   });
 
   it("automatically backfills an underfilled transcript without requiring a scroll event", async () => {
@@ -2091,6 +2159,24 @@ describe("AgentChatMessageList transcript rendering", () => {
       distanceFromBottom: 12,
       wasStuckToBottom: false,
     })).toBe(true);
+  });
+
+  it("treats a shrinking transcript viewport as a pin, not a user scroll", () => {
+    expect(shouldKeepPinnedThroughViewportShrink({
+      wasStuckToBottom: true,
+      previousClientHeight: 400,
+      nextClientHeight: 200,
+    })).toBe(true);
+    expect(shouldKeepPinnedThroughViewportShrink({
+      wasStuckToBottom: false,
+      previousClientHeight: 400,
+      nextClientHeight: 200,
+    })).toBe(false);
+    expect(shouldKeepPinnedThroughViewportShrink({
+      wasStuckToBottom: true,
+      previousClientHeight: 0,
+      nextClientHeight: 200,
+    })).toBe(false);
   });
 
   it("lets upward wheel intent break bottom-follow before streaming output grows", async () => {
@@ -2281,8 +2367,8 @@ describe("AgentChatMessageList transcript rendering", () => {
       </MemoryRouter>,
     );
 
-    const pill = screen.getByRole("button", { name: "2 new · jump to latest" });
-    expect(pill.textContent).toContain("2 new · jump to latest");
+    const pill = screen.getByRole("button", { name: "2 new · Jump To Latest" });
+    expect(pill.textContent).toContain("2 new · Jump To Latest");
 
     fireEvent.click(pill);
     await waitFor(() => {

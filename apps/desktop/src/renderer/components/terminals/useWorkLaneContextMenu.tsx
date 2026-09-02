@@ -8,6 +8,8 @@ import {
   selectActiveProjectStateKey,
 } from "../../state/appStore";
 import { useStartChatInLane } from "../../hooks/useStartChatInLane";
+import { chatDraftMachineId, startChatDraftPatch } from "../../lib/workDraft";
+import { machineIdForBinding } from "../../../shared/machineIdentity";
 import { LaneContextMenu } from "../lanes/LaneContextMenu";
 import { ForeignLaneContextMenu } from "./ForeignLaneContextMenu";
 import { WorkManageLaneDialogHost } from "./WorkManageLaneDialogHost";
@@ -54,7 +56,7 @@ export type LaneMenuActions = {
   onCloseOtherSplits: (keepLaneId: string) => void;
   onSelectAll: () => void;
   onBatchManage: (laneIds: string[]) => void;
-  onStartChatInLane: (laneId: string) => void;
+  onStartChatInLane: (laneId: string, options?: { machineId?: string | null }) => void;
   onAppearanceChanged: () => Promise<void>;
 };
 
@@ -76,6 +78,7 @@ export function useLaneMenuActions(args: {
   const navigate = useNavigate();
   const selectLane = useAppStore((s) => s.selectLane);
   const projectStateKey = useAppStore(selectActiveProjectStateKey);
+  const projectBinding = useAppStore((s) => s.projectBinding);
   const setWorkViewState = useAppStore((s) => s.setWorkViewState);
   const refreshLanes = useAppStore((s) => s.refreshLanes);
 
@@ -95,6 +98,7 @@ export function useLaneMenuActions(args: {
     setWorkViewState,
     selectLane,
     navigate,
+    boundMachineId: machineIdForBinding(projectBinding),
   });
 
   return useMemo<LaneMenuActions>(() => ({
@@ -131,6 +135,7 @@ export function useWorkLaneContextMenu(options?: {
   const lanes = useAppStore((s) => s.lanes);
   const selectLane = useAppStore((s) => s.selectLane);
   const projectStateKey = useAppStore(selectActiveProjectStateKey);
+  const projectBinding = useAppStore((s) => s.projectBinding);
   const setWorkViewState = useAppStore((s) => s.setWorkViewState);
   const switchProjectToPath = useAppStore((s) => s.switchProjectToPath);
   const switchRemoteProject = useAppStore((s) => s.switchRemoteProject);
@@ -196,22 +201,21 @@ export function useWorkLaneContextMenu(options?: {
   }, []);
   const laneMenuActions = useLaneMenuActions({ close, onManageLane: openManageDialog });
 
+  const boundMachineId = machineIdForBinding(projectBinding);
   const startForeignChat = useCallback(() => {
     if (!foreignMenuState || !projectStateKey || !foreignMachineOnline) return;
     const laneId = foreignMenuState.lane.id;
     setWorkViewState(projectStateKey, (previous) => ({
       ...previous,
-      draftKind: "chat",
-      draftLaneId: laneId,
-      draftMachineId: foreignMenuState.binding.kind === "remote"
-        ? foreignMenuState.binding.targetId
-        : "this-mac",
-      activeItemId: null,
-      selectedItemId: null,
+      ...startChatDraftPatch(
+        laneId,
+        chatDraftMachineId(foreignMenuState.machineId, boundMachineId),
+      ),
     }));
     close();
     void navigate("/work");
   }, [
+    boundMachineId,
     close,
     foreignMachineOnline,
     foreignMenuState,

@@ -19,7 +19,10 @@ export type ProviderFamily =
   | "lmstudio"
   | "cursor"
   | "factory"
-  | "pi";
+  | "pi"
+  | "qwen"
+  | "moonshot"
+  | "github-copilot";
 
 export type LocalProviderFamily = Extract<ProviderFamily, "ollama" | "lmstudio">;
 
@@ -87,6 +90,11 @@ export type ModelDescriptor = {
   cursorAvailability?: CursorModelAvailability;
   /** Concrete Cursor CLI ids reachable from an abstract picker row. */
   cursorCliVariants?: CursorCliModelVariant[];
+  /**
+   * The provider ships in ADE behind a preview label. Settings renders the chip;
+   * pickers ignore it and render every provider identically.
+   */
+  previewTier?: boolean;
 };
 
 export type DynamicLocalModelDescriptorOptions = {
@@ -101,7 +109,31 @@ export type DynamicLocalModelDescriptorOptions = {
 };
 
 export type WorkerExecutionPath = "cli" | "api" | "local";
-export type ModelProviderGroup = "claude" | "codex" | "opencode" | "cursor" | "droid" | "pi";
+export type ModelProviderGroup =
+  | "claude"
+  | "codex"
+  | "opencode"
+  | "cursor"
+  | "droid"
+  | "pi"
+  | "qwen"
+  | "kimi"
+  | "grok"
+  | "copilot";
+
+/** Every provider group, in the order surfaces list them. */
+export const MODEL_PROVIDER_GROUPS = [
+  "claude",
+  "codex",
+  "cursor",
+  "opencode",
+  "pi",
+  "copilot",
+  "grok",
+  "droid",
+  "kimi",
+  "qwen",
+] as const satisfies readonly ModelProviderGroup[];
 
 /** Select a valid reasoning tier without duplicating fallback policy in each UI. */
 export function selectSupportedReasoningEffort(args: {
@@ -120,7 +152,7 @@ export function selectSupportedReasoningEffort(args: {
 }
 
 export function isModelProviderGroup(value: string | null | undefined): value is ModelProviderGroup {
-  return value === "claude" || value === "codex" || value === "opencode" || value === "cursor" || value === "droid" || value === "pi";
+  return value != null && (MODEL_PROVIDER_GROUPS as readonly string[]).includes(value);
 }
 
 export function modelSupportsServiceTier(
@@ -250,24 +282,32 @@ export const MODEL_REGISTRY: ModelDescriptor[] = [
   // Claude chat surfaces use the native Agent SDK effort ladder. Keep these
   // tiers aligned with the launch validation path.
   {
-    id: "anthropic/claude-fable-5",
+    id: "anthropic/claude-fable-5-1",
     shortId: "fable",
     aliases: [
       "fable",
+      "fable-5.1",
+      "fable-5-1",
+      "claude-fable-5-1",
+      "anthropic/claude-fable-5-1-api",
+      "fable-5",
+      "fable-5.0",
       "claude-fable-5",
+      "anthropic/claude-fable-5",
       "anthropic/claude-fable-5-api",
     ],
-    displayName: "Claude Fable 5",
+    displayName: "Claude Fable 5.1",
     family: "anthropic",
     authTypes: ["cli-subscription"],
     contextWindow: 1_000_000,
     maxOutputTokens: 128_000,
     capabilities: ALL_CAPS,
     reasoningTiers: ["low", "medium", "high", "xhigh", "max", "ultracode"],
+    defaultReasoningEffort: "high",
     serviceTiers: ["fast"],
     color: "#D97706",
     providerRoute: "claude-cli",
-    providerModelId: "claude-fable-5",
+    providerModelId: "claude-fable-5-1",
     cliCommand: "claude",
     isCliWrapped: true,
     inputPricePer1M: 10,
@@ -353,7 +393,7 @@ export const MODEL_REGISTRY: ModelDescriptor[] = [
   },
   {
     id: "anthropic/claude-opus-4-8",
-    shortId: "opus-4.8-1m",
+    shortId: "opus-4.8",
     aliases: [
       "claude-opus-4-8",
       "opus-4.8",
@@ -375,28 +415,6 @@ export const MODEL_REGISTRY: ModelDescriptor[] = [
       "anthropic/claude-opus-4-6-api",
       "anthropic/claude-opus-4-7",
       "anthropic/claude-opus-4-7-api",
-    ],
-    displayName: "Claude Opus 4.8 1M",
-    family: "anthropic",
-    authTypes: ["cli-subscription"],
-    contextWindow: 1_000_000,
-    maxOutputTokens: 128_000,
-    capabilities: ALL_CAPS,
-    reasoningTiers: ["low", "medium", "high", "xhigh", "max", "ultracode"],
-    serviceTiers: ["fast"],
-    color: "#D97706",
-    providerRoute: "claude-cli",
-    providerModelId: "claude-opus-4-8",
-    cliCommand: "claude",
-    isCliWrapped: true,
-    inputPricePer1M: 5,
-    outputPricePer1M: 25,
-    costTier: "very_high",
-  },
-  {
-    id: "anthropic/claude-opus-4-7-1m",
-    shortId: "opus-1m",
-    aliases: [
       "opus[1m]",
       "opus-1m",
       "opus-4-6-1m",
@@ -407,17 +425,17 @@ export const MODEL_REGISTRY: ModelDescriptor[] = [
       "anthropic/claude-opus-4-6-1m",
       "anthropic/claude-opus-4-7-1m",
     ],
-    displayName: "Claude Opus 4.7 1M",
+    displayName: "Claude Opus 4.8",
     family: "anthropic",
     authTypes: ["cli-subscription"],
     contextWindow: 1_000_000,
     maxOutputTokens: 128_000,
     capabilities: ALL_CAPS,
-    reasoningTiers: ["low", "medium", "high", "xhigh", "max"],
+    reasoningTiers: ["low", "medium", "high", "xhigh", "max", "ultracode"],
     serviceTiers: ["fast"],
-    color: "#B45309",
+    color: "#D97706",
     providerRoute: "claude-cli",
-    providerModelId: "claude-opus-4-7[1m]",
+    providerModelId: "claude-opus-4-8",
     cliCommand: "claude",
     isCliWrapped: true,
     inputPricePer1M: 5,
@@ -618,6 +636,233 @@ export const MODEL_REGISTRY: ModelDescriptor[] = [
     costTier: "medium",
   },
 
+  // ---- Qwen (CLI-wrapped via `qwen`, ACP) ----
+  // Curated Alibaba Cloud Coding Plan rows — the models a person actually
+  // picks, not the whole catalog. `qwen --model` is free-form, so live
+  // discovery adds anything else the account can reach.
+  {
+    id: "qwen/qwen3-coder-plus",
+    shortId: "qwen3-coder-plus",
+    aliases: ["qwen3-coder-plus", "qwen-coder"],
+    displayName: "Qwen3 Coder Plus",
+    family: "qwen",
+    authTypes: ["cli-subscription"],
+    contextWindow: 1_000_000,
+    maxOutputTokens: 65_536,
+    capabilities: NO_REASONING,
+    color: "#6D4AFF",
+    providerRoute: "qwen-acp",
+    providerModelId: "qwen3-coder-plus",
+    cliCommand: "qwen",
+    isCliWrapped: true,
+  },
+  {
+    id: "qwen/qwen3-coder-next",
+    shortId: "qwen3-coder-next",
+    aliases: ["qwen3-coder-next"],
+    displayName: "Qwen3 Coder Next",
+    family: "qwen",
+    authTypes: ["cli-subscription"],
+    contextWindow: 262_144,
+    maxOutputTokens: 65_536,
+    capabilities: NO_REASONING,
+    color: "#6D4AFF",
+    providerRoute: "qwen-acp",
+    providerModelId: "qwen3-coder-next",
+    cliCommand: "qwen",
+    isCliWrapped: true,
+  },
+  {
+    id: "qwen/qwen3.7-plus",
+    shortId: "qwen3.7-plus",
+    aliases: ["qwen3.7-plus", "qwen3-7-plus"],
+    displayName: "Qwen3.7 Plus",
+    family: "qwen",
+    authTypes: ["cli-subscription"],
+    contextWindow: 1_000_000,
+    maxOutputTokens: 65_536,
+    capabilities: ALL_CAPS,
+    color: "#5B3EE8",
+    providerRoute: "qwen-acp",
+    providerModelId: "qwen3.7-plus",
+    cliCommand: "qwen",
+    isCliWrapped: true,
+  },
+
+  // ---- Kimi (CLI-wrapped via `kimi`, ACP) ----
+  // `kimi -m` takes a config ALIAS, never a raw model id, and the alias is
+  // always namespaced. `providerModelId` therefore carries the whole
+  // `kimi-code/<id>` alias, which is what the launch flag needs.
+  {
+    id: "moonshot/k3",
+    shortId: "kimi-k3",
+    aliases: ["kimi-k3", "kimi-code/k3"],
+    displayName: "Kimi K3",
+    family: "moonshot",
+    authTypes: ["cli-subscription"],
+    contextWindow: 1_048_576,
+    maxOutputTokens: 65_536,
+    capabilities: ALL_CAPS,
+    reasoningTiers: ["low", "high", "max"],
+    defaultReasoningEffort: "max",
+    color: "#1F1F1F",
+    providerRoute: "kimi-acp",
+    providerModelId: "kimi-code/k3",
+    cliCommand: "kimi",
+    isCliWrapped: true,
+  },
+  {
+    id: "moonshot/kimi-for-coding",
+    shortId: "kimi-for-coding",
+    aliases: ["kimi-code/kimi-for-coding"],
+    displayName: "Kimi for Coding",
+    family: "moonshot",
+    authTypes: ["cli-subscription"],
+    contextWindow: 262_144,
+    maxOutputTokens: 65_536,
+    capabilities: ALL_CAPS,
+    color: "#1F1F1F",
+    providerRoute: "kimi-acp",
+    providerModelId: "kimi-code/kimi-for-coding",
+    cliCommand: "kimi",
+    isCliWrapped: true,
+  },
+  {
+    id: "moonshot/kimi-for-coding-highspeed",
+    shortId: "kimi-for-coding-highspeed",
+    aliases: ["kimi-code/kimi-for-coding-highspeed"],
+    displayName: "Kimi for Coding (High Speed)",
+    family: "moonshot",
+    authTypes: ["cli-subscription"],
+    contextWindow: 262_144,
+    maxOutputTokens: 65_536,
+    capabilities: ALL_CAPS,
+    color: "#3F3F46",
+    providerRoute: "kimi-acp",
+    providerModelId: "kimi-code/kimi-for-coding-highspeed",
+    cliCommand: "kimi",
+    isCliWrapped: true,
+  },
+
+  // ---- Grok (CLI-wrapped via `grok`, ACP, preview) ----
+  // Verified against the CLI's own live model cache: two visible models, both
+  // 500K context, and `xhigh` effort only on 4.6.
+  {
+    id: "xai/grok-4-6",
+    shortId: "grok-4.6",
+    aliases: ["grok-4.6", "grok"],
+    displayName: "Grok 4.6",
+    family: "xai",
+    authTypes: ["cli-subscription"],
+    contextWindow: 500_000,
+    maxOutputTokens: 64_000,
+    capabilities: NO_REASONING,
+    reasoningTiers: ["low", "medium", "high", "xhigh"],
+    defaultReasoningEffort: "high",
+    color: "#DC2626",
+    providerRoute: "grok-acp",
+    providerModelId: "grok-4.6",
+    cliCommand: "grok",
+    isCliWrapped: true,
+    previewTier: true,
+  },
+  {
+    id: "xai/grok-4-5",
+    shortId: "grok-4.5",
+    aliases: ["grok-4.5"],
+    displayName: "Grok 4.5",
+    family: "xai",
+    authTypes: ["cli-subscription"],
+    contextWindow: 500_000,
+    maxOutputTokens: 64_000,
+    capabilities: NO_REASONING,
+    reasoningTiers: ["low", "medium", "high"],
+    defaultReasoningEffort: "high",
+    color: "#B91C1C",
+    providerRoute: "grok-acp",
+    providerModelId: "grok-4.5",
+    cliCommand: "grok",
+    isCliWrapped: true,
+    previewTier: true,
+  },
+
+  // ---- GitHub Copilot (CLI-wrapped via `copilot`, ACP, preview) ----
+  // Copilot dropped its fixed `--model` enum: the list is server-driven per
+  // account. These four are the durable picks; anything else the account can
+  // reach arrives through live discovery and is forwarded verbatim.
+  {
+    id: "github-copilot/claude-sonnet-4.6",
+    shortId: "copilot-sonnet-4.6",
+    aliases: ["copilot-sonnet"],
+    displayName: "Claude Sonnet 4.6 (Copilot)",
+    family: "github-copilot",
+    authTypes: ["cli-subscription"],
+    contextWindow: 200_000,
+    maxOutputTokens: 64_000,
+    capabilities: ALL_CAPS,
+    reasoningTiers: ["low", "medium", "high", "xhigh"],
+    color: "#8B5CF6",
+    providerRoute: "copilot-acp",
+    providerModelId: "claude-sonnet-4.6",
+    cliCommand: "copilot",
+    isCliWrapped: true,
+    previewTier: true,
+  },
+  {
+    id: "github-copilot/claude-opus-4.6",
+    shortId: "copilot-opus-4.6",
+    aliases: ["copilot-opus"],
+    displayName: "Claude Opus 4.6 (Copilot)",
+    family: "github-copilot",
+    authTypes: ["cli-subscription"],
+    contextWindow: 200_000,
+    maxOutputTokens: 64_000,
+    capabilities: ALL_CAPS,
+    reasoningTiers: ["low", "medium", "high", "xhigh"],
+    color: "#7C3AED",
+    providerRoute: "copilot-acp",
+    providerModelId: "claude-opus-4.6",
+    cliCommand: "copilot",
+    isCliWrapped: true,
+    previewTier: true,
+  },
+  {
+    id: "github-copilot/gpt-5.4",
+    shortId: "copilot-gpt-5.4",
+    aliases: ["copilot-gpt"],
+    displayName: "GPT-5.4 (Copilot)",
+    family: "github-copilot",
+    authTypes: ["cli-subscription"],
+    contextWindow: 400_000,
+    maxOutputTokens: 128_000,
+    capabilities: ALL_CAPS,
+    reasoningTiers: ["low", "medium", "high", "xhigh"],
+    color: "#6D28D9",
+    providerRoute: "copilot-acp",
+    providerModelId: "gpt-5.4",
+    cliCommand: "copilot",
+    isCliWrapped: true,
+    previewTier: true,
+  },
+  {
+    id: "github-copilot/gpt-5.3-codex",
+    shortId: "copilot-gpt-5.3-codex",
+    aliases: ["copilot-codex"],
+    displayName: "GPT-5.3 Codex (Copilot)",
+    family: "github-copilot",
+    authTypes: ["cli-subscription"],
+    contextWindow: 400_000,
+    maxOutputTokens: 128_000,
+    capabilities: ALL_CAPS,
+    reasoningTiers: ["low", "medium", "high", "xhigh"],
+    color: "#5B21B6",
+    providerRoute: "copilot-acp",
+    providerModelId: "gpt-5.3-codex",
+    cliCommand: "copilot",
+    isCliWrapped: true,
+    previewTier: true,
+  },
+
   // ---- Cursor SDK models: discovered at runtime via @cursor/sdk (see cursorModelsDiscovery + getResolvedAvailableModels) ----
 
   // ---- Local (Ollama) ----
@@ -650,6 +895,9 @@ let dynamicOpenCodeById = new Map<string, ModelDescriptor>();
 let dynamicOpenCodeByAlias = new Map<string, ModelDescriptor>();
 let dynamicPiById = new Map<string, ModelDescriptor>();
 let dynamicPiByAlias = new Map<string, ModelDescriptor>();
+/** Live-discovered ACP models, one map per provider group. Curated rows win. */
+const dynamicAcpByProvider = new Map<AcpModelProviderGroup, Map<string, ModelDescriptor>>();
+let dynamicAcpByAlias = new Map<string, ModelDescriptor>();
 
 function rebuildIndexes() {
   byId = new Map<string, ModelDescriptor>();
@@ -973,7 +1221,7 @@ export function decodeOpenCodeRegistryId(id: string): { openCodeProviderId: stri
   }
 }
 
-function normalizeAnthropicRuntimeAlias(modelId: string): {
+export function normalizeAnthropicRuntimeAlias(modelId: string): {
   modelId: string;
   displayName: string;
   contextWindow: number;
@@ -986,6 +1234,27 @@ function normalizeAnthropicRuntimeAlias(modelId: string): {
 } | null {
   const normalized = modelId.trim().toLowerCase();
   if (!normalized.length) return null;
+  if (
+    normalized === "claude-fable-5-1"
+    || normalized === "fable"
+    || normalized === "fable-5.1"
+    || normalized === "fable-5-1"
+    || normalized === "fable-5"
+    || normalized === "fable-5.0"
+    || normalized === "claude-fable-5"
+  ) {
+    return {
+      modelId: "claude-fable-5-1",
+      displayName: "Claude Fable 5.1",
+      contextWindow: 1_000_000,
+      maxOutputTokens: 128_000,
+      capabilities: ALL_CAPS,
+      reasoningTiers: ["low", "medium", "high", "xhigh", "max", "ultracode"],
+      defaultReasoningEffort: "high",
+      serviceTiers: ["fast"],
+      wasAlias: normalized !== "claude-fable-5-1",
+    };
+  }
   if (
     normalized === "claude-sonnet-5"
     || normalized === "claude-sonnet-4-6"
@@ -1022,6 +1291,14 @@ function normalizeAnthropicRuntimeAlias(modelId: string): {
   }
   if (
     normalized === "claude-opus-4-8"
+    || normalized === "opus-4.8"
+    || normalized === "opus-4-8"
+    || normalized === "opus-4.8-1m"
+    || normalized === "opus-4.8[1m]"
+    || normalized === "opus-4-8-1m"
+    || normalized === "claude-opus-4-8-1m"
+    || normalized === "claude-opus-4-8[1m]"
+    || normalized === "anthropic/claude-opus-4-8-1m"
     || normalized === "claude-opus-4-7"
     || normalized === "opus-4-7"
     || normalized === "opus-4.7"
@@ -1029,10 +1306,17 @@ function normalizeAnthropicRuntimeAlias(modelId: string): {
     || normalized === "claude-opus-4-6-fast"
     || normalized === "opus-4-6"
     || normalized === "opus-4.6"
+    || normalized === "opus[1m]"
+    || normalized === "opus-1m"
+    || normalized === "opus-4-6-1m"
+    || normalized === "claude-opus-4-7[1m]"
+    || normalized === "claude-opus-4-7-1m"
+    || normalized === "claude-opus-4-6[1m]"
+    || normalized === "claude-opus-4-6-1m"
   ) {
     return {
       modelId: "claude-opus-4-8",
-      displayName: "Claude Opus 4.8 1M",
+      displayName: "Claude Opus 4.8",
       contextWindow: 1_000_000,
       maxOutputTokens: 128_000,
       capabilities: ALL_CAPS,
@@ -1177,6 +1461,158 @@ export function replaceDynamicOpenCodeModelDescriptors(descriptors: ModelDescrip
 
 export function getDynamicOpenCodeModelDescriptors(): ModelDescriptor[] {
   return [...dynamicOpenCodeById.values()];
+}
+
+// ---------------------------------------------------------------------------
+// ACP providers: live-discovered models
+// ---------------------------------------------------------------------------
+
+/** Provider groups whose models can arrive from a live ACP session. */
+export type AcpModelProviderGroup = "qwen" | "kimi" | "grok" | "copilot";
+
+const ACP_MODEL_PROVIDER_GROUPS = ["qwen", "kimi", "grok", "copilot"] as const;
+
+/** Family, route prefix, and brand color for each ACP provider group. */
+const ACP_GROUP_METADATA: Record<
+  AcpModelProviderGroup,
+  { family: ProviderFamily; providerRoute: string; cliCommand: string; color: string; previewTier: boolean }
+> = {
+  qwen: { family: "qwen", providerRoute: "qwen-acp", cliCommand: "qwen", color: "#6D4AFF", previewTier: false },
+  kimi: { family: "moonshot", providerRoute: "kimi-acp", cliCommand: "kimi", color: "#1F1F1F", previewTier: false },
+  grok: { family: "xai", providerRoute: "grok-acp", cliCommand: "grok", color: "#DC2626", previewTier: true },
+  copilot: {
+    family: "github-copilot",
+    providerRoute: "copilot-acp",
+    cliCommand: "copilot",
+    color: "#8B5CF6",
+    previewTier: true,
+  },
+};
+
+/**
+ * Cap on live rows per provider.
+ *
+ * A provider catalog crosses the sync wire to the phone. Shipping an unbounded
+ * discovered list is how 7238 OpenCode models once became a 4.85 MB payload, so
+ * discovery is bounded here rather than at each consumer.
+ */
+export const ACP_DYNAMIC_MODEL_LIMIT = 40;
+
+export function isAcpModelProviderGroup(value: string | null | undefined): value is AcpModelProviderGroup {
+  return value != null && (ACP_MODEL_PROVIDER_GROUPS as readonly string[]).includes(value);
+}
+
+/**
+ * Stable ADE id for a discovered ACP model.
+ *
+ * The shape matches the curated rows exactly (`<family>/<providerModelId>`), so
+ * a model that later graduates into the curated table keeps its id and every
+ * chat that already picked it keeps working.
+ */
+export function acpRegistryIdFor(provider: AcpModelProviderGroup, providerModelId: string): string {
+  return `${ACP_GROUP_METADATA[provider].family}/${providerModelId.trim()}`;
+}
+
+export type DynamicAcpModelDescriptorOptions = {
+  displayName?: string;
+  contextWindow?: number;
+  maxOutputTokens?: number;
+  capabilities?: Partial<ModelCapabilities>;
+  reasoningTiers?: string[];
+  defaultReasoningEffort?: string;
+};
+
+/**
+ * Build a descriptor for a model an ACP agent reported.
+ *
+ * `providerModelId` is forwarded verbatim: it is what the dialect puts on the
+ * command line or into `session/set_config_option`, so rewriting it here would
+ * make the launch fail.
+ */
+export function createDynamicAcpModelDescriptor(
+  provider: AcpModelProviderGroup,
+  providerModelId: string,
+  options?: DynamicAcpModelDescriptorOptions,
+): ModelDescriptor {
+  const metadata = ACP_GROUP_METADATA[provider];
+  const modelId = providerModelId.trim();
+  return {
+    id: acpRegistryIdFor(provider, modelId),
+    shortId: modelId,
+    displayName: options?.displayName?.trim() || formatOpenCodeDisplayName(modelId),
+    family: metadata.family,
+    authTypes: ["cli-subscription"],
+    contextWindow: options?.contextWindow ?? 200_000,
+    maxOutputTokens: options?.maxOutputTokens ?? 32_000,
+    capabilities: {
+      tools: options?.capabilities?.tools ?? true,
+      vision: options?.capabilities?.vision ?? false,
+      reasoning: options?.capabilities?.reasoning ?? false,
+      streaming: options?.capabilities?.streaming ?? true,
+    },
+    ...(options?.reasoningTiers?.length ? { reasoningTiers: [...options.reasoningTiers] } : {}),
+    ...(options?.defaultReasoningEffort ? { defaultReasoningEffort: options.defaultReasoningEffort } : {}),
+    color: metadata.color,
+    providerRoute: metadata.providerRoute,
+    providerModelId: modelId,
+    cliCommand: metadata.cliCommand,
+    isCliWrapped: true,
+    ...(metadata.previewTier ? { previewTier: true } : {}),
+  };
+}
+
+/**
+ * Replace the discovered model list for one ACP provider.
+ *
+ * Whole-map replacement per provider, the same contract the OpenCode and Pi
+ * replacers use, plus two rules of its own: a curated id always wins
+ * (`byId.has`), and the list is capped so a chatty agent cannot inflate the
+ * catalog the phone has to download.
+ */
+export function replaceDynamicAcpModelDescriptors(
+  provider: AcpModelProviderGroup,
+  descriptors: ModelDescriptor[],
+): void {
+  const next = new Map<string, ModelDescriptor>();
+  const expectedRoute = ACP_GROUP_METADATA[provider].providerRoute;
+  for (const descriptor of descriptors) {
+    if (next.size >= ACP_DYNAMIC_MODEL_LIMIT) break;
+    if (descriptor.providerRoute !== expectedRoute) continue;
+    // A curated row is the researched one. Live discovery adds; it never
+    // shadows.
+    if (byId.has(descriptor.id)) continue;
+    next.set(descriptor.id, descriptor);
+  }
+  dynamicAcpByProvider.set(provider, next);
+
+  dynamicAcpByAlias = new Map<string, ModelDescriptor>();
+  for (const map of dynamicAcpByProvider.values()) {
+    for (const descriptor of map.values()) {
+      for (const alias of descriptor.aliases ?? []) {
+        const normalized = alias.trim().toLowerCase();
+        if (normalized.length) dynamicAcpByAlias.set(normalized, descriptor);
+      }
+    }
+  }
+}
+
+export function getDynamicAcpModelDescriptors(provider: AcpModelProviderGroup): ModelDescriptor[] {
+  return [...(dynamicAcpByProvider.get(provider)?.values() ?? [])];
+}
+
+export function mergeDynamicAcpModelDescriptors(
+  provider: AcpModelProviderGroup,
+  descriptors: ModelDescriptor[],
+): void {
+  const existing = getDynamicAcpModelDescriptors(provider);
+  const incomingIds = new Set(descriptors.map((descriptor) => descriptor.id));
+  const rest = existing.filter((descriptor) => !incomingIds.has(descriptor.id));
+  replaceDynamicAcpModelDescriptors(provider, [...descriptors, ...rest]);
+}
+
+export function clearDynamicAcpModelDescriptors(): void {
+  dynamicAcpByProvider.clear();
+  dynamicAcpByAlias = new Map<string, ModelDescriptor>();
 }
 
 export function getLocalProviderDefaultEndpoint(provider: LocalProviderFamily): string {
@@ -1419,9 +1855,10 @@ function normalizeDroidEffortLabel(value: string): string {
 }
 
 const KNOWN_DROID_COMPACT_DISPLAY_NAMES: Record<string, string> = {
+  "claude-fable-5-1": "Fable 5.1",
   "claude-fable-5": "Fable 5",
   "claude-opus-5": "Opus 5",
-  "claude-opus-4-8": "Opus 4.8 1M",
+  "claude-opus-4-8": "Opus 4.8",
   "claude-opus-4-5-20251101": "Opus 4.5 (2x)",
   "claude-opus-4-6": "Opus 4.6 (2x)",
   "claude-opus-4-6-fast": "Opus 4.6 Fast Mode (12x)",
@@ -1581,12 +2018,19 @@ export function getModelById(id: string): ModelDescriptor | undefined {
   const normalizedLower = normalized.toLowerCase();
   const cached = byId.get(normalized) ?? byId.get(normalizedLower);
   if (cached) return cached;
-  const aliased = byAlias.get(normalizedLower) ?? dynamicOpenCodeByAlias.get(normalizedLower) ?? dynamicPiByAlias.get(normalizedLower);
+  const aliased = byAlias.get(normalizedLower)
+    ?? dynamicOpenCodeByAlias.get(normalizedLower)
+    ?? dynamicPiByAlias.get(normalizedLower)
+    ?? dynamicAcpByAlias.get(normalizedLower);
   if (aliased) return aliased;
   const dynamicOpenCode = dynamicOpenCodeById.get(normalized);
   if (dynamicOpenCode) return dynamicOpenCode;
   const dynamicPi = dynamicPiById.get(normalized);
   if (dynamicPi) return dynamicPi;
+  for (const map of dynamicAcpByProvider.values()) {
+    const dynamicAcp = map.get(normalized);
+    if (dynamicAcp) return dynamicAcp;
+  }
   const piDecoded = decodePiRegistryId(normalized);
   if (piDecoded) {
     return createDynamicPiModelDescriptor(piDecoded.providerId, piDecoded.modelId, { profileId: piDecoded.profileId });
@@ -1620,6 +2064,13 @@ export function getAvailableModels(
     google: "gemini",
     cursor: "cursor",
     factory: "droid",
+    // The ACP families. Without an entry each falls through to "any CLI
+    // subscription at all", which is how a Claude login would make Grok's
+    // models look available.
+    qwen: "qwen",
+    moonshot: "kimi",
+    xai: "grok",
+    "github-copilot": "copilot",
   };
 
   const hasMappedCli = (family: ProviderFamily): boolean => {
@@ -1685,6 +2136,7 @@ export function resolveModelAlias(alias: string): ModelDescriptor | undefined {
     ?? byAlias.get(normalized)
     ?? dynamicOpenCodeByAlias.get(normalized)
     ?? dynamicPiByAlias.get(normalized)
+    ?? dynamicAcpByAlias.get(normalized)
     ?? undefined;
 }
 
@@ -1780,13 +2232,24 @@ export function resolveModelIdForProvider(
   return resolveModelDescriptorForProvider(modelRef, providerHint)?.id;
 }
 
+/**
+ * The runtime that owns a descriptor's CLI.
+ *
+ * `isCliWrapped` is the gate, not the family: OpenCode routes xAI and Moonshot
+ * models too, and those descriptors share a family with the Grok and Kimi CLI
+ * rows. Only the CLI-wrapped ones belong to a provider runtime.
+ */
 export function resolveCliProviderForModel(
   descriptor: ModelDescriptor,
-): "claude" | "codex" | "cursor" | "droid" | "pi" | null {
+): "claude" | "codex" | "cursor" | "droid" | "pi" | "qwen" | "kimi" | "grok" | "copilot" | null {
   if (descriptor.providerRoute === "pi-sdk") return "pi";
   if (!descriptor.isCliWrapped) return null;
   if (descriptor.family === "cursor") return "cursor";
   if (descriptor.family === "factory") return "droid";
+  if (descriptor.family === "qwen") return "qwen";
+  if (descriptor.family === "moonshot") return "kimi";
+  if (descriptor.family === "xai") return "grok";
+  if (descriptor.family === "github-copilot") return "copilot";
   if (descriptor.family === "anthropic") return "claude";
   if (descriptor.family === "openai") return "codex";
   return null;
@@ -1823,7 +2286,16 @@ export function getRuntimeModelRefForDescriptor(
   if (provider === "claude") {
     return descriptor.providerModelId;
   }
-  if (provider === "codex" || provider === "cursor" || provider === "droid" || provider === "pi") {
+  if (
+    provider === "codex"
+    || provider === "cursor"
+    || provider === "droid"
+    || provider === "pi"
+    || provider === "qwen"
+    || provider === "kimi"
+    || provider === "grok"
+    || provider === "copilot"
+  ) {
     return descriptor.providerModelId;
   }
   return descriptor.id;
@@ -1843,14 +2315,25 @@ export function classifyWorkerExecutionPath(
 
 function listProviderModelsInternal(provider: ModelProviderGroup): ModelDescriptor[] {
   if (provider === "pi") return getDynamicPiModelDescriptors();
-  return MODEL_REGISTRY.filter((descriptor) => {
+  const curated = MODEL_REGISTRY.filter((descriptor) => {
     if (descriptor.deprecated) return false;
     if (provider === "claude") return descriptor.isCliWrapped && descriptor.family === "anthropic";
     if (provider === "codex") return descriptor.isCliWrapped && descriptor.family === "openai";
     if (provider === "cursor") return descriptor.family === "cursor";
     if (provider === "droid") return descriptor.isCliWrapped && descriptor.family === "factory";
+    if (provider === "qwen") return descriptor.isCliWrapped && descriptor.family === "qwen";
+    if (provider === "kimi") return descriptor.isCliWrapped && descriptor.family === "moonshot";
+    if (provider === "grok") return descriptor.isCliWrapped && descriptor.family === "xai";
+    if (provider === "copilot") return descriptor.isCliWrapped && descriptor.family === "github-copilot";
     return !descriptor.isCliWrapped;
   });
+  // Curated rows first, then anything a live ACP session reported. The
+  // replacer already dropped ids the curated table owns, so this cannot
+  // duplicate a row.
+  if (isAcpModelProviderGroup(provider)) {
+    return [...curated, ...getDynamicAcpModelDescriptors(provider)];
+  }
+  return curated;
 }
 
 function parseVersionSegments(value: string): number[] {
@@ -1885,6 +2368,9 @@ function pickPreferredModel(
 
 function pickDefaultClaudeModel(models: ModelDescriptor[]): ModelDescriptor | undefined {
   return pickPreferredModel(models, [
+    (model) =>
+      model.id === "anthropic/claude-fable-5-1"
+      || /fable-5-1|fable 5\.1/i.test(`${model.displayName} ${model.providerModelId}`),
     (model) => /\bfable\b/i.test(model.displayName) || /\bfable\b/i.test(model.providerModelId),
     (model) => /\bsonnet\b/i.test(model.displayName) || /\bsonnet\b/i.test(model.providerModelId),
     (model) => /\bopus\b/i.test(model.displayName) || /\bopus\b/i.test(model.providerModelId),
@@ -1920,7 +2406,8 @@ function pickDefaultCodexModel(models: ModelDescriptor[]): ModelDescriptor | und
 function pickDefaultOpenCodeModel(models: ModelDescriptor[]): ModelDescriptor | undefined {
   return pickPreferredModel(models, [
     (model) => model.family === "openai" && /\bgpt-5\.4\b/i.test(`${model.displayName} ${model.providerModelId}`),
-    (model) => model.id === "opencode/anthropic/claude-fable-5" || (model.family === "anthropic" && /\bfable\b/i.test(`${model.displayName} ${model.providerModelId}`)),
+    (model) => model.id === "opencode/anthropic/claude-fable-5-1" || (model.family === "anthropic" && /fable-5-1|fable 5\.1/i.test(`${model.displayName} ${model.providerModelId}`)),
+    (model) => model.family === "anthropic" && /\bfable\b/i.test(`${model.displayName} ${model.providerModelId}`),
     (model) => model.id === "opencode/anthropic/claude-sonnet-5" || (model.family === "anthropic" && model.providerRoute === "opencode"),
     (model) => model.family === "anthropic" && /\bsonnet\b/i.test(model.displayName),
     (model) => model.family === "anthropic",
@@ -1958,6 +2445,20 @@ function pickDefaultModelForProvider(
   if (provider === "cursor") return pickDefaultCursorDescriptorFromCliList(models);
   if (provider === "droid") return pickDefaultDroidDescriptorFromCliList(models);
   if (provider === "pi") return models[0];
+  // The ACP providers ship a short curated list in registry order, so the first
+  // row is already the one ADE wants selected. Restating a preference here
+  // would be a second place to keep in step with the list itself.
+  if (provider === "qwen") {
+    // Custom models the Qwen CLI already has (a local OpenAI-compatible
+    // server, OpenRouter, DashScope) outrank the curated Alibaba rows, because
+    // those curated ids 502 on a proxy that does not serve them.
+    const discovered = getDynamicAcpModelDescriptors("qwen")[0];
+    if (discovered) return models.find((model) => model.id === discovered.id) ?? models[0];
+    return models[0];
+  }
+  if (provider === "kimi" || provider === "grok" || provider === "copilot") {
+    return models[0];
+  }
   return pickDefaultOpenCodeModel(models);
 }
 
@@ -1976,6 +2477,18 @@ export function getDefaultModelDescriptor(
   return pickDefaultModelForProvider(provider, models);
 }
 
+/**
+ * Is every model this provider offers a preview-tier one?
+ *
+ * The tier lives on the model descriptors, not on a provider table, so this is
+ * the single source Settings reads for its Preview chip — the catalog would
+ * answer the same question from a cached copy that can be a refresh behind.
+ */
+export function providerTierIsPreview(provider: ModelProviderGroup): boolean {
+  const models = listProviderModelsInternal(provider);
+  return models.length > 0 && models.every((model) => model.previewTier === true);
+}
+
 export function listModelDescriptorsForProvider(
   provider: ModelProviderGroup,
 ): ModelDescriptor[] {
@@ -1983,6 +2496,29 @@ export function listModelDescriptorsForProvider(
   const preferred = pickDefaultModelForProvider(provider, models);
   if (!preferred) return models;
   return [preferred, ...models.filter((model) => model.id !== preferred.id)];
+}
+
+/**
+ * List ACP models after applying a provider's own configured model list.
+ *
+ * Qwen's CLI can point at any OpenAI-compatible endpoint, so its
+ * `settings.json` is a stronger catalog than ADE's short Alibaba fallback
+ * rows. Dynamic rows reported by a live session remain visible; only curated
+ * rows are removed when the provider has explicitly configured models.
+ */
+export function listAcpModelDescriptorsForProvider(
+  provider: AcpModelProviderGroup,
+  options?: { configuredModelIds?: readonly string[] },
+): ModelDescriptor[] {
+  const models = listModelDescriptorsForProvider(provider);
+  const configuredIds = (options?.configuredModelIds ?? [])
+    .map((modelId) => modelId.trim())
+    .filter(Boolean)
+    .map((modelId) => acpRegistryIdFor(provider, modelId));
+  if (!configuredIds.length) return models;
+
+  const configured = new Set(configuredIds);
+  return models.filter((model) => !byId.has(model.id) || configured.has(model.id));
 }
 
 // ---------------------------------------------------------------------------

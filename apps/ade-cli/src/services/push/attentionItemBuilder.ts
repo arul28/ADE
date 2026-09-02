@@ -151,6 +151,16 @@ export function providerDisplayName(provider: string | null | undefined): string
       return "OpenCode";
     case "gemini":
       return "Gemini";
+    case "qwen":
+      return "Qwen";
+    case "kimi":
+      return "Kimi";
+    case "grok":
+      return "Grok";
+    case "copilot":
+      // The default arm would title-case this to "Copilot"; the product name
+      // carries the vendor.
+      return "GitHub Copilot";
     default:
       return provider.charAt(0).toUpperCase() + provider.slice(1);
   }

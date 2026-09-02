@@ -160,9 +160,7 @@ export function usesToolPermissionModes(provider: AdeCodeProvider): boolean {
  * Interface=CLI launch path.
  */
 export function cliProviderForModelStateProvider(provider: AdeCodeProvider): CliTerminalProvider | null {
-  return provider === "claude" || provider === "codex" || provider === "cursor" || provider === "droid" || provider === "opencode" || provider === "pi"
-    ? provider
-    : null;
+  return provider === "ollama" || provider === "lmstudio" ? null : provider;
 }
 
 export function modelStatePatchForModel(provider: AdeCodeProvider, model: AgentChatModelInfo): Pick<AdeCodeModelState, "provider" | "model" | "modelId" | "displayName"> {

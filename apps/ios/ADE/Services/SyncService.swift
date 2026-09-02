@@ -9867,9 +9867,10 @@ final class SyncService: ObservableObject {
     return ["stopped": (payload["stopped"] as? Bool) ?? true]
   }
 
-  func openCursorCloudChat(agentId: String, laneId: String, agentName: String?) async throws -> CursorCloudOpenChatResult {
-    var args: [String: Any] = ["cloudAgentId": agentId, "laneId": laneId]
-    if let agentName, !agentName.isEmpty { args["agentName"] = agentName }
+  func openCursorCloudChat(agentId: String, laneId: String) async throws -> CursorCloudOpenChatResult {
+    // The host names the chat from Cursor's own agent record on hydration, so
+    // there is no name to send.
+    let args: [String: Any] = ["cloudAgentId": agentId, "laneId": laneId]
     return try await sendDecodableCommand(
       action: "ai.openCursorCloudChat",
       args: args,

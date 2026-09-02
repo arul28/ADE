@@ -146,6 +146,7 @@ vi.mock("@lobehub/icons", () => {
     OpenAI: brand(),
     OpenCode: brand(),
     OpenRouter: brand(),
+    Qwen: brand(),
     XAI: brand(),
   };
 });
@@ -5181,7 +5182,7 @@ describe("AgentChatPane submit recovery", () => {
     expect(await screen.findByRole("button", { name: "Login to Claude" })).toBeTruthy();
   });
 
-  it("keeps the committed model visible until the backend confirms the switch", async () => {
+  it("keeps model handoff local until the next message is sent", async () => {
     const session = buildSession("session-1", { status: "idle" });
     const sessions = [session];
     let resolveUpdateSession!: (value: AgentChatSessionSummary) => void;
@@ -5189,7 +5190,7 @@ describe("AgentChatPane submit recovery", () => {
       resolveUpdateSession = resolve;
     }));
     const warmupModel = vi.fn().mockResolvedValue(undefined);
-    installAdeMocks({
+    const { send } = installAdeMocks({
       sessions,
       includeClaudeModel: true,
     });
@@ -5199,6 +5200,9 @@ describe("AgentChatPane submit recovery", () => {
     renderPane(session);
 
     const trigger = await screen.findByRole("button", { name: /^Select model/ });
+    const chatChrome = document.querySelector("[data-chat-chrome-tint]") as HTMLElement | null;
+    expect(chatChrome).toBeTruthy();
+    const committedAccent = chatChrome?.style.getPropertyValue("--chat-accent");
     const currentLabel = getModelById(session.modelId ?? "")?.displayName ?? session.modelId ?? "";
     const nextLabel = getModelById("anthropic/claude-sonnet-5")?.displayName ?? "Claude Sonnet 5";
     const nextLabelPattern = new RegExp(escapeRegExp(nextLabel), "i");
@@ -5209,13 +5213,20 @@ describe("AgentChatPane submit recovery", () => {
     fireEvent.click(await screen.findByRole("tab", { name: /^Anthropic$/i }));
     await clickEnabledModelOption(nextLabelPattern);
 
+    expect(updateSession).not.toHaveBeenCalled();
+    expect(screen.getByRole("button", { name: /^Select model/ }).textContent ?? "").toContain(nextLabel);
+    expect(chatChrome?.style.getPropertyValue("--chat-accent")).toBe(committedAccent);
+    expect(warmupModel).not.toHaveBeenCalled();
+
+    fireEvent.change(await screen.findByRole("textbox"), { target: { value: "Use the new model." } });
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
     await waitFor(() => {
       expect(updateSession).toHaveBeenCalledWith(expect.objectContaining({
         sessionId: session.sessionId,
         modelId: "anthropic/claude-sonnet-5",
       }), null);
     });
-    expect(screen.getByRole("button", { name: /^Select model/ }).textContent ?? "").toContain(currentLabel);
+    expect(send).not.toHaveBeenCalled();
     expect(warmupModel).not.toHaveBeenCalled();
 
     const updatedSession: AgentChatSessionSummary = {
@@ -5232,21 +5243,226 @@ describe("AgentChatPane submit recovery", () => {
     resolveUpdateSession(updatedSession);
 
     await waitFor(() => {
-      expect(screen.getByRole("button", { name: /^Select model/ }).textContent ?? "").toContain(nextLabel);
+      expect(send).toHaveBeenCalled();
     });
+    expect(screen.getByRole("button", { name: /^Select model/ }).textContent ?? "").toContain(nextLabel);
+    expect(warmupModel).not.toHaveBeenCalled();
+  });
+
+  it("does not carry a pending model pick onto another locked chat", async () => {
+    const sessionA = buildSession("session-a", { status: "idle", title: "Chat A" });
+    const sessionB = buildSession("session-b", { status: "idle", title: "Chat B" });
+    const updateSession = vi.fn().mockResolvedValue(sessionB);
+    const { send } = installAdeMocks({
+      sessions: [sessionA, sessionB],
+      includeClaudeModel: true,
+    });
+    window.ade.agentChat.updateSession = updateSession as any;
+
+    const view = renderPane(sessionA);
+    const trigger = await screen.findByRole("button", { name: /^Select model/ });
+    const currentLabel = getModelById(sessionA.modelId ?? "")?.displayName ?? sessionA.modelId ?? "";
+    const nextLabel = getModelById("anthropic/claude-sonnet-5")?.displayName ?? "Claude Sonnet 5";
+    const nextLabelPattern = new RegExp(escapeRegExp(nextLabel), "i");
+    expect(trigger.textContent ?? "").toContain(currentLabel);
+
+    fireEvent.pointerDown(trigger, { button: 0 });
+    fireEvent.click(trigger);
+    fireEvent.click(await screen.findByRole("tab", { name: /^Anthropic$/i }));
+    await clickEnabledModelOption(nextLabelPattern);
+
+    expect(updateSession).not.toHaveBeenCalled();
+    expect(screen.getByRole("button", { name: /^Select model/ }).textContent ?? "").toContain(nextLabel);
+
+    view.rerender(
+      <MemoryRouter>
+        <AgentChatPane
+          laneId={sessionB.laneId}
+          lockSessionId={sessionB.sessionId}
+          hideSessionTabs
+          initialSessionSummary={sessionB}
+          onSessionCreated={vi.fn()}
+        />
+      </MemoryRouter>,
+    );
+
     await waitFor(() => {
-      expect(warmupModel).toHaveBeenCalledWith({
+      expect(screen.getByRole("button", { name: /^Select model/ }).textContent ?? "").toContain(currentLabel);
+    });
+    expect(screen.getByRole("button", { name: /^Select model/ }).textContent ?? "").not.toContain(nextLabel);
+
+    fireEvent.change(await screen.findByRole("textbox"), { target: { value: "Stay on B's model." } });
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+
+    await waitFor(() => {
+      expect(send).toHaveBeenCalledWith(expect.objectContaining({
+        sessionId: sessionB.sessionId,
+      }), null);
+    });
+    expect(updateSession).not.toHaveBeenCalledWith(expect.objectContaining({
+      sessionId: sessionB.sessionId,
+      modelId: "anthropic/claude-sonnet-5",
+    }), expect.anything());
+  });
+
+  it("keeps reasoning changes local until Send while a model handoff is pending", async () => {
+    const session = buildSession("session-1", { status: "idle", reasoningEffort: "medium" });
+    const sessions = [session];
+    let resolveUpdateSession!: (value: AgentChatSessionSummary) => void;
+    const updateSession = vi.fn().mockImplementation(() => new Promise((resolve) => {
+      resolveUpdateSession = resolve;
+    }));
+    const { send } = installAdeMocks({
+      sessions,
+      includeClaudeModel: true,
+    });
+    window.ade.agentChat.updateSession = updateSession as any;
+
+    renderPane(session);
+
+    const trigger = await screen.findByRole("button", { name: /^Select model/ });
+    const nextLabel = getModelById("anthropic/claude-sonnet-5")?.displayName ?? "Claude Sonnet 5";
+    const nextLabelPattern = new RegExp(escapeRegExp(nextLabel), "i");
+
+    fireEvent.pointerDown(trigger, { button: 0 });
+    fireEvent.click(trigger);
+    fireEvent.click(await screen.findByRole("tab", { name: /^Anthropic$/i }));
+    await clickEnabledModelOption(nextLabelPattern);
+
+    const reasoningTrigger = await screen.findByLabelText("Reasoning effort");
+    fireEvent.pointerDown(reasoningTrigger, { button: 0 });
+    fireEvent.click(reasoningTrigger);
+    fireEvent.click(await screen.findByRole("radio", { name: /^High/i }));
+
+    expect(updateSession).not.toHaveBeenCalled();
+
+    fireEvent.change(await screen.findByRole("textbox"), { target: { value: "Think harder on the new model." } });
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+    await waitFor(() => {
+      expect(updateSession).toHaveBeenCalledWith(expect.objectContaining({
         sessionId: session.sessionId,
         modelId: "anthropic/claude-sonnet-5",
-      }, null);
+        reasoningEffort: "high",
+      }), null);
+    });
+    expect(send).not.toHaveBeenCalled();
+
+    const updatedSession: AgentChatSessionSummary = {
+      ...session,
+      provider: "claude",
+      model: "claude-sonnet-5",
+      modelId: "anthropic/claude-sonnet-5",
+      reasoningEffort: "high",
+    };
+    sessions[0] = updatedSession;
+    resolveUpdateSession(updatedSession);
+
+    await waitFor(() => {
+      expect(send).toHaveBeenCalled();
     });
   });
 
-  it("keeps the committed model visible when the backend rejects a switch", async () => {
+  it("loads slash commands for the pending model from the lane, not the committed session", async () => {
+    const session = buildSession("session-1", { status: "idle" });
+    installAdeMocks({
+      sessions: [session],
+      includeClaudeModel: true,
+    });
+    vi.mocked(window.ade.agentChat.slashCommands).mockImplementation(async (args) => {
+      if (args.provider === "claude") {
+        return [{
+          name: "/agents",
+          description: "Manage agent configurations.",
+          source: "sdk",
+        }];
+      }
+      return [];
+    });
+
+    renderPane(session);
+
+    const trigger = await screen.findByRole("button", { name: /^Select model/ });
+    const nextLabel = getModelById("anthropic/claude-sonnet-5")?.displayName ?? "Claude Sonnet 5";
+    const nextLabelPattern = new RegExp(escapeRegExp(nextLabel), "i");
+
+    fireEvent.pointerDown(trigger, { button: 0 });
+    fireEvent.click(trigger);
+    fireEvent.click(await screen.findByRole("tab", { name: /^Anthropic$/i }));
+    await clickEnabledModelOption(nextLabelPattern);
+
+    await waitFor(() => {
+      const pendingFetch = vi.mocked(window.ade.agentChat.slashCommands).mock.calls.find((call) => {
+        const args = call[0] as { laneId?: string; provider?: string; sessionId?: string };
+        return args.provider === "claude" && args.laneId === "lane-1" && !args.sessionId;
+      });
+      expect(pendingFetch).toBeTruthy();
+    });
+  });
+
+  it("keeps the pending model's permission mode local until Send", async () => {
+    const session = buildSession("session-1", { status: "idle" });
+    const sessions = [session];
+    let resolveUpdateSession!: (value: AgentChatSessionSummary) => void;
+    const updateSession = vi.fn().mockImplementation(() => new Promise((resolve) => {
+      resolveUpdateSession = resolve;
+    }));
+    const { send } = installAdeMocks({
+      sessions,
+      includeClaudeModel: true,
+    });
+    window.ade.agentChat.updateSession = updateSession as any;
+
+    renderPane(session);
+
+    const trigger = await screen.findByRole("button", { name: /^Select model/ });
+    const nextLabel = getModelById("anthropic/claude-sonnet-5")?.displayName ?? "Claude Sonnet 5";
+    const nextLabelPattern = new RegExp(escapeRegExp(nextLabel), "i");
+
+    fireEvent.pointerDown(trigger, { button: 0 });
+    fireEvent.click(trigger);
+    fireEvent.click(await screen.findByRole("tab", { name: /^Anthropic$/i }));
+    await clickEnabledModelOption(nextLabelPattern);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Claude permission mode" }));
+    fireEvent.click(await screen.findByRole("option", { name: /^Bypass/ }));
+
+    expect(updateSession).not.toHaveBeenCalled();
+    expect(screen.getByRole("button", { name: "Claude permission mode" }).textContent ?? "").toMatch(/Bypass/i);
+
+    fireEvent.change(await screen.findByRole("textbox"), { target: { value: "Use bypass on the new model." } });
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+    await waitFor(() => {
+      expect(updateSession).toHaveBeenCalledWith(expect.objectContaining({
+        sessionId: session.sessionId,
+        modelId: "anthropic/claude-sonnet-5",
+        claudePermissionMode: "bypassPermissions",
+      }), null);
+    });
+    expect(send).not.toHaveBeenCalled();
+
+    const updatedSession: AgentChatSessionSummary = {
+      ...session,
+      provider: "claude",
+      model: "claude-sonnet-5",
+      modelId: "anthropic/claude-sonnet-5",
+      permissionMode: "full-auto",
+      interactionMode: "default",
+      claudePermissionMode: "bypassPermissions",
+    };
+    sessions[0] = updatedSession;
+    resolveUpdateSession(updatedSession);
+
+    await waitFor(() => {
+      expect(send).toHaveBeenCalled();
+    });
+    expect(screen.getByRole("button", { name: "Claude permission mode" }).textContent ?? "").toMatch(/Bypass/i);
+  });
+
+  it("does not attempt a failed model handoff before Send", async () => {
     const session = buildSession("session-1", { status: "idle", fastMode: true });
     const updateSession = vi.fn().mockRejectedValue(new Error("switch failed"));
     const warmupModel = vi.fn().mockResolvedValue(undefined);
-    installAdeMocks({
+    const { send } = installAdeMocks({
       sessions: [session],
       includeClaudeModel: true,
     });
@@ -5267,6 +5483,11 @@ describe("AgentChatPane submit recovery", () => {
     fireEvent.click(await screen.findByRole("tab", { name: /^Anthropic$/i }));
     await clickEnabledModelOption(nextLabelPattern);
 
+    expect(updateSession).not.toHaveBeenCalled();
+    expect(screen.getByRole("button", { name: /^Select model/ }).textContent ?? "").toContain(nextLabel);
+
+    fireEvent.change(await screen.findByRole("textbox"), { target: { value: "Try the handoff." } });
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
     await waitFor(() => {
       expect(updateSession).toHaveBeenCalledWith(expect.objectContaining({
         sessionId: session.sessionId,
@@ -5274,9 +5495,9 @@ describe("AgentChatPane submit recovery", () => {
       }), null);
     });
     await waitFor(() => {
-      expect(screen.getByRole("button", { name: /^Select model/ }).textContent ?? "").toContain(currentLabel);
+      expect(send).not.toHaveBeenCalled();
     });
-    expect(screen.getByRole("button", { name: /^Select model/ }).textContent ?? "").toContain("Fast");
+    expect(screen.getByRole("button", { name: /^Select model/ }).textContent ?? "").toContain(nextLabel);
     expect(warmupModel).not.toHaveBeenCalled();
   });
 
@@ -5697,9 +5918,10 @@ describe("AgentChatPane submit recovery", () => {
     await clickEnabledModelOption(new RegExp(escapeRegExp(claudeLabel), "i"));
 
     // The cross-family path is disclosed as a verbatim replay, truncated only
-    // when the transcript overflows the target model's context window.
+    // when the transcript exceeds the target model's context window or
+    // provider input limit.
     expect(screen.getByText(/full transcript replayed verbatim/i)).toBeTruthy();
-    expect(screen.getByText(/Oldest turns drop only if the transcript exceeds the target context window/i)).toBeTruthy();
+    expect(screen.getByText(/Oldest turns drop only if the transcript exceeds the target context window or provider input limit/i)).toBeTruthy();
 
     fireEvent.click(await screen.findByRole("button", { name: "Fork chat" }));
 
@@ -5744,7 +5966,7 @@ describe("AgentChatPane submit recovery", () => {
     // The pre-fork hint only predicts truncation; the completed fork has to
     // report what it actually dropped.
     expect(await screen.findByText(/Forked chat replayed 18 turns/i)).toBeTruthy();
-    expect(screen.getByText(/4 oldest turns didn't fit/i)).toBeTruthy();
+    expect(screen.getByText(/4 oldest turns didn't fit the new model's context window or provider input limit/i)).toBeTruthy();
   });
 
   it("routes a brief handoff into a newly auto-created lane", async () => {
@@ -6566,7 +6788,7 @@ describe("AgentChatPane submit recovery", () => {
     expect(onLaneChange).not.toHaveBeenCalled();
   });
 
-  it("keeps machine and lane unchanged for Auto-create on an unavailable machine", async () => {
+  it("falls back to this computer when a persisted draft machine is unavailable", async () => {
     installAdeMocks({ sessions: [] });
     const onDraftMachineChange = vi.fn();
     const onLaneChange = vi.fn();
@@ -6576,11 +6798,48 @@ describe("AgentChatPane submit recovery", () => {
       onLaneChange,
     });
 
+    await waitFor(() => expect(onDraftMachineChange).toHaveBeenCalledWith(null));
+
     fireEvent.click(await screen.findByRole("button", { name: "Select lane" }));
     fireEvent.click(await screen.findByRole("option", { name: /Auto-create lane/i }));
 
-    expect(onDraftMachineChange).not.toHaveBeenCalled();
+    expect(onDraftMachineChange).toHaveBeenCalledWith(null);
     expect(onLaneChange).not.toHaveBeenCalled();
+  });
+
+  it("does not offer local recovery when the remote-bound project has no local checkout", async () => {
+    installAdeMocks({ sessions: [] });
+    let resolveSnapshot: ((snapshot: unknown) => void) | null = null;
+    (window.ade as any).remoteRuntime = {
+      getConnectionSnapshot: vi.fn(() => new Promise((resolve) => {
+        resolveSnapshot = resolve;
+      })),
+      onConnectionSnapshotChanged: vi.fn(() => () => {}),
+    };
+    const remoteBinding: OpenProjectBinding = {
+      kind: "remote",
+      key: "remote:studio:project-1",
+      targetId: "studio",
+      runtimeName: "Mac Studio",
+      projectId: "project-1",
+      rootPath: "/Volumes/work/project-under-test",
+      displayName: "project-under-test",
+      gitOriginUrl: "https://github.com/acme/project-under-test",
+    };
+    renderAutoCreateDraftPane({
+      initialDraftMachineId: "disconnected-studio",
+      projectBinding: remoteBinding,
+    });
+
+    expect(screen.queryByRole("button", { name: "Use this computer" })).toBeNull();
+    expect(resolveSnapshot).not.toBeNull();
+
+    act(() => {
+      resolveSnapshot?.({ connections: [], connectedCount: 0, updatedAt: Date.now() });
+    });
+    await waitFor(() => {
+      expect(screen.queryByRole("button", { name: "Use this computer" })).toBeNull();
+    });
   });
 
   it("rejects an unavailable draft lane instead of launching against the bound project", async () => {
@@ -6727,19 +6986,6 @@ describe("AgentChatPane submit recovery", () => {
     fireEvent.click(modelTrigger);
     fireEvent.click(await screen.findByRole("tab", { name: /^OpenAI$/i }));
     await clickEnabledModelOption(new RegExp(escapeRegExp(codexLabel), "i"));
-    // Machine and lane are separate shelf controls now, so routing an
-    // auto-create launch onto this computer is two choices rather than one
-    // machine-qualified row inside the lane list.
-    const unavailableTrigger = await screen.findByRole("button", {
-      name: /current machine unavailable; fallback Mac Studio/i,
-    });
-    fireEvent.click(unavailableTrigger);
-    const studioOption = await screen.findByRole("menuitemradio", { name: /Mac Studio/ });
-    await waitFor(() => expect(document.activeElement).toBe(studioOption));
-    fireEvent.keyDown(studioOption, { key: "Enter" });
-    expect(onDraftMachineChange).toHaveBeenCalledWith(null);
-    await waitFor(() => expect(document.activeElement).toBe(unavailableTrigger));
-
     const selectedTrigger = await screen.findByRole("button", { name: /currently Mac Studio/i });
     fireEvent.click(selectedTrigger);
     const selectedStudioOption = await screen.findByRole("menuitemradio", { name: /Mac Studio/ });
@@ -11507,20 +11753,27 @@ describe("AgentChatPane Cursor Cloud composer mode", () => {
     await screen.findByRole("button", { name: "Send to Cursor Cloud" });
   }
 
-  function renderCursorCloudDraft(args?: Parameters<typeof renderAutoCreateDraftPane>[0]) {
+  function renderCursorCloudDraft(
+    args?: Parameters<typeof renderAutoCreateDraftPane>[0] & {
+      pinnedModelId?: string;
+      pinnedReasoningEffort?: string | null;
+    },
+  ) {
     // Pin the draft to the Cursor chat model the way a returning user's saved launch config does;
     // cloud mode is only offered for a Cursor model.
+    const { pinnedModelId, pinnedReasoningEffort, ...paneArgs } = args ?? {};
+    const workDraftKind = paneArgs.workDraftKind ?? "chat";
     const launchConfigKey = [
       "ade.chat.lastLaunchConfig.v1",
       "/tmp/project-under-test",
       "lane-1",
       "standard",
-      "chat",
+      workDraftKind,
     ].map(encodeURIComponent).join(":");
     window.localStorage.setItem(launchConfigKey, JSON.stringify({
       version: 1,
-      modelId: CURSOR_MODEL_ID,
-      reasoningEffort: null,
+      modelId: pinnedModelId ?? CURSOR_MODEL_ID,
+      reasoningEffort: pinnedReasoningEffort ?? null,
       fastMode: false,
       executionMode: "focused",
       updatedAt: "2026-05-26T12:00:00.000Z",
@@ -11536,7 +11789,7 @@ describe("AgentChatPane Cursor Cloud composer mode", () => {
         cursorConfigValues: {},
       },
     }));
-    return renderAutoCreateDraftPane(args);
+    return renderAutoCreateDraftPane(paneArgs);
   }
 
   beforeEach(() => {
@@ -11558,6 +11811,20 @@ describe("AgentChatPane Cursor Cloud composer mode", () => {
     expect(await screen.findByRole("button", { name: "Send to Cursor Cloud" })).toBeTruthy();
   });
 
+  it("opens the all-agents Cursor Cloud panel from the composer overflow", async () => {
+    installAdeMocks({ sessions: [], cursorModels: [{ id: "composer-cloud" }], aiStatus: cursorAvailableAiStatus() });
+    const { listRepositories } = installCursorCloudMocks();
+    renderCursorCloudDraft();
+
+    await selectCursorCloudMachine();
+    fireEvent.click(await screen.findByRole("button", { name: "More composer controls" }));
+    fireEvent.click(await screen.findByRole("menuitemcheckbox", { name: "Open Cursor Cloud agents" }));
+
+    expect(await screen.findByText("Cursor Cloud agents")).toBeTruthy();
+    expect(listRepositories).toHaveBeenCalled();
+    expect(window.ade.ai.cursorCloudListAgents).toHaveBeenCalled();
+  });
+
   it("keeps an existing lane's branch as the cloud agent's starting ref", async () => {
     installAdeMocks({ sessions: [], cursorModels: [{ id: "composer-cloud" }], aiStatus: cursorAvailableAiStatus() });
     const { createRun, openChat } = installCursorCloudMocks();
@@ -11575,11 +11842,30 @@ describe("AgentChatPane Cursor Cloud composer mode", () => {
       workOnCurrentBranch: true,
       autoCreatePR: false,
     }));
-    // Cursor's own name for the agent becomes the ADE session title.
+    // The created chat keeps the exact launch settings; Cursor remains the title authority.
     await waitFor(() => expect(openChat).toHaveBeenCalledWith(expect.objectContaining({
       cloudAgentId: "cloud-agent-1",
       laneId: "lane-1",
-      agentName: "Tidy the cloud composer",
+      modelId: "composer-cloud",
+      reasoningEffort: null,
+      fastMode: false,
+    })));
+  });
+
+  it("sends a CLI-kind draft to Cursor Cloud when the machine is switched to cloud", async () => {
+    installAdeMocks({ sessions: [], cursorModels: [{ id: "composer-cloud" }], aiStatus: cursorAvailableAiStatus() });
+    const { createRun } = installCursorCloudMocks();
+    renderCursorCloudDraft({ workDraftKind: "cli" });
+
+    await selectCursorCloudMachine();
+    fireEvent.change(await screen.findByRole("textbox"), { target: { value: "Run this in Cursor Cloud." } });
+    fireEvent.click(await screen.findByRole("button", { name: "Send to Cursor Cloud" }));
+
+    await waitFor(() => expect(createRun).toHaveBeenCalledWith(expect.objectContaining({
+      promptText: "Run this in Cursor Cloud.",
+      modelId: "composer-cloud",
+      reasoningEffort: null,
+      fastMode: false,
     })));
   });
 
@@ -11618,7 +11904,108 @@ describe("AgentChatPane Cursor Cloud composer mode", () => {
     fireEvent.change(await screen.findByRole("textbox"), { target: { value: "Start something new." } });
     fireEvent.click(await screen.findByRole("button", { name: "Send to Cursor Cloud" }));
 
-    expect((await screen.findAllByText(/remote: permission denied/)).length).toBeGreaterThan(0);
+    // git's stderr is rewritten into one plain sentence before it reaches the banner.
+    expect((await screen.findAllByText(/GitHub refused the push/)).length).toBeGreaterThan(0);
+    expect(screen.queryByText(/remote: permission denied/)).toBeNull();
+    expect(createRun).not.toHaveBeenCalled();
+  });
+
+  it("reads the primary lane's remote for the auto-create row instead of a lane that does not exist yet", async () => {
+    installAdeMocks({ sessions: [], cursorModels: [{ id: "composer-cloud" }], aiStatus: cursorAvailableAiStatus() });
+    const { getOriginRemote } = installCursorCloudMocks();
+    renderCursorCloudDraft();
+    await selectCursorCloudMachine();
+
+    fireEvent.click(await screen.findByRole("button", { name: "Select lane" }));
+    fireEvent.click(await screen.findByRole("option", { name: /Auto-create lane/i }));
+
+    // The readiness probe targets the primary lane; the synthetic auto-create id never
+    // reaches the brain. Cloud mode survives the lane switch.
+    await waitFor(() => expect(getOriginRemote).toHaveBeenCalledWith({ laneId: "lane-primary" }));
+    expect(getOriginRemote.mock.calls.some(([args]) => String((args as { laneId: string }).laneId).includes("__ade_auto_create_lane__"))).toBe(false);
+    expect(await screen.findByRole("button", { name: "Send to Cursor Cloud" })).toBeTruthy();
+  });
+
+  it("skips the pre-launch push when the lane's branch is only behind origin", async () => {
+    installAdeMocks({ sessions: [], cursorModels: [{ id: "composer-cloud" }], aiStatus: cursorAvailableAiStatus() });
+    const { createRun, push } = installCursorCloudMocks();
+    const getSyncStatus = vi.fn().mockResolvedValue({
+      hasUpstream: true,
+      upstreamState: "tracking",
+      upstreamRef: "origin/current-lane",
+      ahead: 0,
+      behind: 3,
+      diverged: false,
+      recommendedAction: "pull",
+    });
+    Object.assign(window.ade.git, { getSyncStatus });
+    renderCursorCloudDraft();
+    await selectCursorCloudMachine();
+
+    fireEvent.change(await screen.findByRole("textbox"), { target: { value: "Use what origin has." } });
+    fireEvent.click(await screen.findByRole("button", { name: "Send to Cursor Cloud" }));
+
+    // Origin is newer than the lane, and the cloud clones origin: nothing to push, no scary
+    // non-fast-forward banner, the launch goes ahead.
+    await waitFor(() => expect(createRun).toHaveBeenCalled());
+    expect(getSyncStatus).toHaveBeenCalledWith({ laneId: "lane-1" });
+    expect(push).not.toHaveBeenCalled();
+  });
+
+  it("blocks the cloud send when the lane's branch has diverged from origin", async () => {
+    installAdeMocks({ sessions: [], cursorModels: [{ id: "composer-cloud" }], aiStatus: cursorAvailableAiStatus() });
+    const { createRun, push } = installCursorCloudMocks();
+    Object.assign(window.ade.git, {
+      getSyncStatus: vi.fn().mockResolvedValue({
+        hasUpstream: true,
+        upstreamState: "tracking",
+        upstreamRef: "origin/current-lane",
+        ahead: 2,
+        behind: 3,
+        diverged: true,
+        recommendedAction: "rebase",
+      }),
+    });
+    renderCursorCloudDraft();
+    await selectCursorCloudMachine();
+
+    fireEvent.change(await screen.findByRole("textbox"), { target: { value: "Try to launch anyway." } });
+    fireEvent.click(await screen.findByRole("button", { name: "Send to Cursor Cloud" }));
+
+    expect((await screen.findAllByText(/behind origin and also has local commits/)).length).toBeGreaterThan(0);
+    expect(push).not.toHaveBeenCalled();
+    expect(createRun).not.toHaveBeenCalled();
+  });
+
+  it("aborts an existing-lane cloud send when the push fails even if origin already lists the branch", async () => {
+    installAdeMocks({ sessions: [], cursorModels: [{ id: "composer-cloud" }], aiStatus: cursorAvailableAiStatus() });
+    const push = vi.fn().mockRejectedValue(new Error("remote: permission denied"));
+    const { createRun } = installCursorCloudMocks({ push });
+    Object.assign(window.ade.git, {
+      getSyncStatus: vi.fn().mockResolvedValue({
+        hasUpstream: true,
+        upstreamState: "tracking",
+        upstreamRef: "origin/current-lane",
+        ahead: 2,
+        behind: 0,
+        diverged: false,
+        recommendedAction: "push",
+      }),
+      listBranches: vi.fn().mockResolvedValue([
+        { name: "current-lane", isRemote: false, isCurrent: true, upstream: "origin/current-lane" },
+        { name: "origin/current-lane", isRemote: true, isCurrent: false, upstream: null },
+      ]),
+    });
+    renderCursorCloudDraft();
+    await selectCursorCloudMachine();
+
+    fireEvent.change(await screen.findByRole("textbox"), { target: { value: "Ship the unpushed commits." } });
+    fireEvent.click(await screen.findByRole("button", { name: "Send to Cursor Cloud" }));
+
+    // Origin listing the branch is not proof it has these commits; a failed push
+    // used to be swallowed and the cloud agent cloned the stale remote.
+    expect((await screen.findAllByText(/GitHub refused the push/)).length).toBeGreaterThan(0);
+    expect(push).toHaveBeenCalledWith({ laneId: "lane-1" });
     expect(createRun).not.toHaveBeenCalled();
   });
 
@@ -11645,6 +12032,298 @@ describe("AgentChatPane Cursor Cloud composer mode", () => {
     await act(async () => { releaseCreate?.(); await Promise.resolve(); });
     expect(await screen.findByText(/Connecting to Cursor Cloud/)).toBeTruthy();
     await act(async () => { releaseOpen?.(); await Promise.resolve(); });
+  });
+
+  /**
+   * Seed the work pane catalog with both an SDK-capable Cursor model and one Cursor reports as
+   * CLI-only, so a test can prove the cloud surface drops the CLI-only one.
+   */
+  function seedCursorCloudCatalogWithCliOnlyModel(): { cloudId: string; cliOnlyId: string } {
+    const cloud = createDynamicCursorCliModelDescriptor("composer-cloud", "Composer Cloud", {
+      cursorAvailability: { cli: true, sdk: true },
+    });
+    const cliOnly = createDynamicCursorCliModelDescriptor("composer-cli-only", "Composer CLI Only", {
+      cursorAvailability: { cli: true, sdk: false },
+    });
+    const models = [cloud, cliOnly];
+    rememberWorkPaneCatalog({
+      fetchedAt: "2026-05-22T00:00:00.000Z",
+      groups: [{
+        key: "cursor",
+        displayName: "Cursor",
+        providers: [{
+          key: "cursor",
+          displayName: "Cursor",
+          badgeColor: "#8B5CF6",
+          modelCount: models.length,
+          subsections: [{
+            key: "cursor",
+            label: "Cursor",
+            models: models.map((model, index) => ({
+              id: model.id,
+              runtimeModelId: model.providerModelId,
+              provider: "cursor",
+              providerKey: "cursor",
+              groupKey: "cursor",
+              displayName: model.displayName,
+              isDefault: index === 0,
+              isAvailable: true,
+              cursorAvailability: model.cursorAvailability,
+            })),
+          }],
+        }],
+      }],
+    } as AgentChatModelCatalog);
+    return { cloudId: cloud.id, cliOnlyId: cliOnly.id };
+  }
+
+  it("keeps a Cursor model of unknown availability sendable to the cloud", async () => {
+    // Cursor's verified SDK catalog arrives asynchronously. Until it does, a Cursor model carries
+    // no availability flags at all. Treating that as "not cloud capable" empties the cloud picker
+    // and blocks every send on a cold start, so the unknown model stays eligible here and the main
+    // process rejects it later if Cursor turns out not to run it.
+    const model = createDynamicCursorCliModelDescriptor("composer-cloud", "Composer Cloud");
+    expect(model.cursorAvailability).toBeUndefined();
+    rememberWorkPaneCatalog({
+      fetchedAt: "2026-05-22T00:00:00.000Z",
+      groups: [{
+        key: "cursor",
+        displayName: "Cursor",
+        providers: [{
+          key: "cursor",
+          displayName: "Cursor",
+          badgeColor: "#8B5CF6",
+          modelCount: 1,
+          subsections: [{
+            key: "cursor",
+            label: "Cursor",
+            models: [{
+              id: model.id,
+              runtimeModelId: model.providerModelId,
+              provider: "cursor",
+              providerKey: "cursor",
+              groupKey: "cursor",
+              displayName: model.displayName,
+              isDefault: true,
+              isAvailable: true,
+            }],
+          }],
+        }],
+      }],
+    } as AgentChatModelCatalog);
+    installAdeMocks({
+      sessions: [],
+      cursorModels: [{ id: "composer-cloud" }],
+      aiStatus: cursorAvailableAiStatus(),
+    });
+    const { createRun } = installCursorCloudMocks();
+    renderCursorCloudDraft();
+
+    await selectCursorCloudMachine();
+    fireEvent.change(await screen.findByRole("textbox"), { target: { value: "Send before the catalog lands." } });
+    fireEvent.click(await screen.findByRole("button", { name: "Send to Cursor Cloud" }));
+
+    await waitFor(() => expect(createRun).toHaveBeenCalledWith(expect.objectContaining({
+      modelId: "composer-cloud",
+    })));
+  });
+
+  it("drops a CLI-only Cursor model from cloud mode and sends the SDK-capable one", async () => {
+    const { cloudId, cliOnlyId } = seedCursorCloudCatalogWithCliOnlyModel();
+    const status = cursorAvailableAiStatus();
+    (status as unknown as { availableModelIds: string[] }).availableModelIds = [cloudId, cliOnlyId];
+    installAdeMocks({
+      sessions: [],
+      cursorModels: [{ id: "composer-cloud" }, { id: "composer-cli-only" }],
+      aiStatus: status,
+    });
+    const { createRun } = installCursorCloudMocks();
+    // The saved launch config pins the CLI-only model, the way a user who last worked in the CLI
+    // would return. Cloud mode must move off it rather than offer it.
+    renderCursorCloudDraft({ pinnedModelId: cliOnlyId });
+
+    await selectCursorCloudMachine();
+
+    fireEvent.click(await findModelTrigger());
+    await waitFor(() => expect(screen.getAllByText("Composer Cloud").length).toBeGreaterThan(0));
+    expect(screen.queryByText("Composer CLI Only")).toBeNull();
+    fireEvent.keyDown(document, { key: "Escape" });
+
+    fireEvent.change(await screen.findByRole("textbox"), { target: { value: "Cloud only, please." } });
+    fireEvent.click(await screen.findByRole("button", { name: "Send to Cursor Cloud" }));
+
+    await waitFor(() => expect(createRun).toHaveBeenCalledWith(expect.objectContaining({
+      modelId: "composer-cloud",
+    })));
+  });
+
+  /**
+   * Seed two SDK-capable Cursor models: one that advertises thinking levels and one that reports
+   * `reasoningEfforts: []`, i.e. a model with no thinking control at all.
+   */
+  function seedCursorCloudCatalogWithAndWithoutReasoning(): { thinkingId: string; plainId: string } {
+    const thinking = createDynamicCursorCliModelDescriptor("grok-4.6", "Grok 4.6", {
+      reasoningTiers: ["low", "medium", "high", "xhigh"],
+      cursorAvailability: { cli: true, sdk: true },
+    });
+    const plain = createDynamicCursorCliModelDescriptor("composer-2.5", "Composer 2.5", {
+      cursorAvailability: { cli: true, sdk: true },
+    });
+    const models = [thinking, plain];
+    rememberWorkPaneCatalog({
+      fetchedAt: "2026-05-22T00:00:00.000Z",
+      groups: [{
+        key: "cursor",
+        displayName: "Cursor",
+        providers: [{
+          key: "cursor",
+          displayName: "Cursor",
+          badgeColor: "#8B5CF6",
+          modelCount: models.length,
+          subsections: [{
+            key: "cursor",
+            label: "Cursor",
+            models: models.map((model, index) => ({
+              id: model.id,
+              runtimeModelId: model.providerModelId,
+              provider: "cursor",
+              providerKey: "cursor",
+              groupKey: "cursor",
+              displayName: model.displayName,
+              isDefault: index === 0,
+              isAvailable: true,
+              reasoningEfforts: (model.reasoningTiers ?? []).map((effort) => ({
+                effort,
+                description: `${effort} reasoning`,
+              })),
+              cursorAvailability: model.cursorAvailability,
+            })),
+          }],
+        }],
+      }],
+    } as AgentChatModelCatalog);
+    return { thinkingId: thinking.id, plainId: plain.id };
+  }
+
+  it("drops a thinking level the newly picked draft model does not offer", async () => {
+    // Reproduces the production bug: a draft pinned to a Cursor model with thinking levels kept
+    // `xhigh` after the user picked a model that reports no thinking levels. The control is gone
+    // from the composer at that point, so the user cannot clear it, and the launch snapshot
+    // carried the dead value into Cursor Cloud, where the main process refused the run.
+    const { thinkingId, plainId } = seedCursorCloudCatalogWithAndWithoutReasoning();
+    const status = cursorAvailableAiStatus();
+    (status as unknown as { availableModelIds: string[] }).availableModelIds = [thinkingId, plainId];
+    installAdeMocks({
+      sessions: [],
+      cursorModels: [{ id: "grok-4.6" }, { id: "composer-2.5" }],
+      aiStatus: status,
+    });
+    const { createRun } = installCursorCloudMocks();
+    renderCursorCloudDraft({ pinnedModelId: thinkingId, pinnedReasoningEffort: "xhigh" });
+
+    await selectCursorCloudMachine();
+    // The pinned model still offers `xhigh`, so hydration keeps it.
+    await waitFor(() => {
+      expect(screen.getByLabelText("Reasoning effort").textContent).toContain("XH");
+    });
+
+    fireEvent.click(await findModelTrigger());
+    // Search rather than trust the rail the picker opens on. With recents
+    // present it opens on "Recents", which lists neither seeded model; the
+    // search box always looks at every model in the catalog.
+    fireEvent.change(await screen.findByLabelText(/Search models/i), {
+      target: { value: "Composer 2.5" },
+    });
+    await clickEnabledModelOption(/Composer 2\.5/i);
+    fireEvent.keyDown(document, { key: "Escape" });
+
+    // The thinking control is gone with the model that offered it.
+    await waitFor(() => {
+      expect(screen.queryByLabelText("Reasoning effort")).toBeNull();
+    });
+
+    fireEvent.change(await screen.findByRole("textbox"), { target: { value: "No thinking level, please." } });
+    fireEvent.click(await screen.findByRole("button", { name: "Send to Cursor Cloud" }));
+
+    await waitFor(() => expect(createRun).toHaveBeenCalledWith(expect.objectContaining({
+      modelId: "composer-2.5",
+      reasoningEffort: null,
+      fastMode: false,
+    })));
+  });
+
+  /**
+   * Seed the work pane catalog with a CLI-only Cursor model and nothing else, so the cloud
+   * candidate list comes out empty and the auto-switch effect has nothing to switch to.
+   */
+  function seedCursorCloudCatalogWithNoCloudModel(): string {
+    const cliOnly = createDynamicCursorCliModelDescriptor("composer-cli-only", "Composer CLI Only", {
+      cursorAvailability: { cli: true, sdk: false },
+    });
+    rememberWorkPaneCatalog({
+      fetchedAt: "2026-05-22T00:00:00.000Z",
+      groups: [{
+        key: "cursor",
+        displayName: "Cursor",
+        providers: [{
+          key: "cursor",
+          displayName: "Cursor",
+          badgeColor: "#8B5CF6",
+          modelCount: 1,
+          subsections: [{
+            key: "cursor",
+            label: "Cursor",
+            models: [{
+              id: cliOnly.id,
+              runtimeModelId: cliOnly.providerModelId,
+              provider: "cursor",
+              providerKey: "cursor",
+              groupKey: "cursor",
+              displayName: cliOnly.displayName,
+              isDefault: true,
+              isAvailable: true,
+              cursorAvailability: cliOnly.cursorAvailability,
+            }],
+          }],
+        }],
+      }],
+    } as AgentChatModelCatalog);
+    return cliOnly.id;
+  }
+
+  it("blocks the send instead of running the prompt locally when the cloud model list is empty", async () => {
+    // Cloud mode is on, the machine picker reads "Cursor Cloud", and the only Cursor model this
+    // machine reports is one Cursor runs on the CLI only. There is nothing to auto-switch to, so
+    // the send must be BLOCKED with a reason. Falling through to the local runtime would run the
+    // prompt on a machine the user did not choose, with no indication it happened. The reason
+    // names the empty catalog, because telling the user to choose another model would point at
+    // an empty picker.
+    const cliOnlyId = seedCursorCloudCatalogWithNoCloudModel();
+    const status = cursorAvailableAiStatus();
+    (status as unknown as { availableModelIds: string[] }).availableModelIds = [cliOnlyId];
+    installAdeMocks({
+      sessions: [],
+      cursorModels: [{ id: "composer-cli-only" }],
+      aiStatus: status,
+    });
+    const { createRun } = installCursorCloudMocks();
+    const onLaunchCliSession = vi.fn().mockResolvedValue({ sessionId: "terminal-1", ptyId: "pty-1" });
+    renderCursorCloudDraft({ workDraftKind: "cli", pinnedModelId: cliOnlyId, onLaunchCliSession });
+
+    await selectCursorCloudMachine();
+
+    const textbox = await screen.findByRole("textbox");
+    fireEvent.change(textbox, { target: { value: "This must not run locally." } });
+
+    expect((await screen.findByRole("button", { name: "Send to Cursor Cloud" }) as HTMLButtonElement).disabled).toBe(true);
+
+    // Enter bypasses the disabled button, so it is the path that could silently send locally.
+    fireEvent.keyDown(textbox, { key: "Enter" });
+
+    expect((await screen.findAllByText(/Cursor's model list has not loaded yet/)).length).toBeGreaterThan(0);
+    expect(screen.queryByText(/Choose a Cursor Cloud model first/)).toBeNull();
+    expect(onLaunchCliSession).not.toHaveBeenCalled();
+    expect(createRun).not.toHaveBeenCalled();
   });
 
   it("narrows the model picker to Cursor models in cloud mode", async () => {
@@ -11799,6 +12478,81 @@ describe("AgentChatPane Cursor Cloud composer mode", () => {
     expect(listRepositories).toHaveBeenCalled();
   });
 
+  it("says the lane remote is still being read instead of claiming the lane has none", async () => {
+    // The production bug: the origin read had not answered yet, and the row said
+    // "This lane has no GitHub remote" for a lane that has one.
+    installAdeMocks({ sessions: [], cursorModels: [{ id: "composer-cloud" }], aiStatus: cursorAvailableAiStatus() });
+    const { getOriginRemote } = installCursorCloudMocks();
+    getOriginRemote.mockReset();
+    getOriginRemote.mockImplementation(() => new Promise(() => {}));
+    renderCursorCloudDraft();
+
+    fireEvent.click(await screen.findByRole("button", { name: /Choose machine/ }));
+    const cloudRow = await screen.findByRole("menuitemradio", { name: /Cursor Cloud/ });
+    expect((cloudRow as HTMLButtonElement).disabled).toBe(true);
+    await revealRowTooltip(cloudRow);
+    expect(await screen.findByText("Checking this lane's git remote…")).toBeTruthy();
+    expect(screen.queryByText(/no GitHub remote/)).toBeNull();
+  });
+
+  it("names a failed lane remote read and enables the row once a retry succeeds", async () => {
+    // The production bug: a transient failure of this read disabled Cursor Cloud
+    // with "This lane has no GitHub remote" until the user switched lanes.
+    installAdeMocks({ sessions: [], cursorModels: [{ id: "composer-cloud" }], aiStatus: cursorAvailableAiStatus() });
+    const { getOriginRemote } = installCursorCloudMocks();
+    getOriginRemote.mockReset();
+    getOriginRemote.mockRejectedValue(
+      new Error("Error invoking remote method 'git:getOriginRemote': origin is unreachable"),
+    );
+    renderCursorCloudDraft();
+
+    const machineTrigger = await screen.findByRole("button", { name: /Choose machine/ });
+    fireEvent.click(machineTrigger);
+    const failedRow = await screen.findByRole("menuitemradio", { name: /Cursor Cloud/ });
+    await waitFor(() => expect((failedRow as HTMLButtonElement).disabled).toBe(true));
+    await revealRowTooltip(failedRow);
+    // The failure is named. It is not reported as a lane without a remote.
+    expect(
+      await screen.findByText("Could not read this lane's git remote: origin is unreachable"),
+    ).toBeTruthy();
+    expect(screen.queryByText(/no GitHub remote/)).toBeNull();
+
+    // Reopening the picker is the retry affordance, and it retries the remote
+    // read as well as the Cursor repo list.
+    getOriginRemote.mockResolvedValue({
+      remoteUrl: "git@github.com:acme/project.git",
+      branch: "current-lane",
+    });
+    const callsBeforeRetry = getOriginRemote.mock.calls.length;
+    fireEvent.click(machineTrigger);
+    fireEvent.click(machineTrigger);
+
+    await waitFor(() => expect(getOriginRemote.mock.calls.length).toBeGreaterThan(callsBeforeRetry));
+    await waitFor(() => {
+      expect(
+        (screen.getByRole("menuitemradio", { name: /Cursor Cloud/ }) as HTMLButtonElement).disabled,
+      ).toBe(false);
+    });
+  });
+
+  it("keeps the no-remote sentence for a lane whose read really came back empty", async () => {
+    installAdeMocks({ sessions: [], cursorModels: [{ id: "composer-cloud" }], aiStatus: cursorAvailableAiStatus() });
+    const { getOriginRemote } = installCursorCloudMocks();
+    getOriginRemote.mockReset();
+    getOriginRemote.mockResolvedValue({ remoteUrl: null, branch: "main" });
+    renderCursorCloudDraft();
+
+    fireEvent.click(await screen.findByRole("button", { name: /Choose machine/ }));
+    const cloudRow = await screen.findByRole("menuitemradio", { name: /Cursor Cloud/ });
+    await waitFor(() => expect((cloudRow as HTMLButtonElement).disabled).toBe(true));
+    await revealRowTooltip(cloudRow);
+    expect(
+      await screen.findByText(
+        "This lane has no GitHub remote, so there is nothing for Cursor Cloud to clone.",
+      ),
+    ).toBeTruthy();
+  });
+
   it("disables Cursor Cloud when a remote draft machine is selected", async () => {
     installAdeMocks({ sessions: [], cursorModels: [{ id: "composer-cloud" }], aiStatus: cursorAvailableAiStatus() });
     installCursorCloudMocks();
@@ -11951,7 +12705,7 @@ describe("AgentChatPane Cursor Cloud composer mode", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Advanced" }));
     expect(await screen.findByRole("menuitemcheckbox", { name: "NPM_TOKEN" })).toBeTruthy();
     expect(screen.queryByRole("menuitemcheckbox", { name: "CURSOR_API_KEY" })).toBeNull();
-    fireEvent.click(screen.getByRole("menuitemcheckbox", { name: "NPM_TOKEN" }));
+    fireEvent.click(screen.getByRole("menuitemcheckbox", { name: "Select all attachable secrets" }));
     fireEvent.click(screen.getByRole("checkbox", { name: "Remember for this lane" }));
 
     fireEvent.change(await screen.findByRole("textbox"), { target: { value: "Use the token." } });
@@ -11959,7 +12713,7 @@ describe("AgentChatPane Cursor Cloud composer mode", () => {
 
     await waitFor(() => expect(createRun).toHaveBeenCalled());
     expect(createRun).toHaveBeenCalledWith(expect.objectContaining({
-      secretNames: ["NPM_TOKEN"],
+      secretNames: ["NPM_TOKEN", "GH_TOKEN"],
       rememberSecretNames: true,
     }));
   });

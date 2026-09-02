@@ -415,7 +415,7 @@ export async function runSessionMetadataGeneration(args: {
   normalizeStatusLine: (value: string) => string | null;
   shouldStop?: () => boolean;
   onFailure: (failure: NamingAttemptFailure) => void;
-}): Promise<{ result: GeneratedSessionMetadata | null; attemptCount: number; selectedModelId: string | null }> {
+}): Promise<NamingRunOutcome<GeneratedSessionMetadata>> {
   // Walk the caller's setting-then-session candidates only. Cursor Grok (and
   // other non-schema models) often return unusable JSON; the next candidate
   // still gets a turn. ADE already holds the transcript excerpt.
@@ -528,6 +528,24 @@ export type NamingAttemptFailure = {
 };
 
 /**
+ * The last attempt that threw, in a shape a caller can show to the user.
+ *
+ * Naming swallows every attempt error and falls back to a deterministic slug,
+ * so without this the UI could only say "nothing changed" and had to guess why.
+ */
+export type NamingLastFailure = {
+  modelId: string;
+  error: string;
+};
+
+export type NamingRunOutcome<T> = {
+  result: T | null;
+  attemptCount: number;
+  selectedModelId: string | null;
+  lastFailure: NamingLastFailure | null;
+};
+
+/**
  * Walk the candidate chain until one model returns a usable result. A
  * provider-level failure condemns every remaining model behind that provider.
  * `run` returning null means "this model answered, but unusably" — the next
@@ -541,10 +559,11 @@ export async function runNamingAcrossProviders<T>(
     run: (descriptor: ModelDescriptor) => Promise<T | null>;
     onFailure: (failure: NamingAttemptFailure) => void;
   },
-): Promise<{ result: T | null; attemptCount: number; selectedModelId: string | null }> {
+): Promise<NamingRunOutcome<T>> {
   const exhaustedProviders = new Set<ModelProviderGroup>();
   let attemptCount = 0;
   let selectedModelId: string | null = null;
+  let lastFailure: NamingLastFailure | null = null;
 
   for (const candidateModelId of candidateModelIds) {
     if (attemptCount >= MAX_NAMING_ATTEMPTS) break;
@@ -559,14 +578,18 @@ export async function runNamingAcrossProviders<T>(
       const result = await options.run(descriptor);
       if (options.shouldStop?.()) break;
       if (result !== null) {
-        return { result, attemptCount, selectedModelId };
+        return { result, attemptCount, selectedModelId, lastFailure: null };
       }
     } catch (error) {
       const providerLevelFailure = isProviderLevelNamingFailure(error);
       if (providerLevelFailure) exhaustedProviders.add(provider);
+      lastFailure = {
+        modelId: descriptor.id,
+        error: error instanceof Error ? error.message : String(error),
+      };
       options.onFailure({ descriptor, provider, providerLevelFailure, attemptCount, error });
     }
   }
 
-  return { result: null, attemptCount, selectedModelId };
+  return { result: null, attemptCount, selectedModelId, lastFailure };
 }

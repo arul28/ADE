@@ -169,6 +169,38 @@ describe("createSessionMetadataRegenerator", () => {
     expect(renameLane).toHaveBeenCalled();
   });
 
+  it("reports the model failure that forced a deterministic name", async () => {
+    const { regenerate } = createHarness({
+      summary: "Wired project aiSummary into RAG excerpts so Cmd+K answers from the overview",
+      runPrompt: vi.fn(async () => {
+        throw new Error("Local SDK sandboxing was requested, but sandboxing is not supported in this environment.");
+      }),
+    });
+
+    const result = await regenerate({ sessionId: "sess-1" });
+    expect(result.usedDeterministicFallback).toBe(true);
+    expect(result.generationError).toContain("sandboxing is not supported");
+  });
+
+  it("reports no generation error when a model answered", async () => {
+    const { regenerate } = createHarness();
+
+    const result = await regenerate({ sessionId: "sess-1" });
+    expect(result.generationError).toBeNull();
+    expect(result.usedDeterministicFallback).toBe(false);
+  });
+
+  it("reports the deterministic fallback with no error when no model was available", async () => {
+    const { regenerate } = createHarness({
+      summary: "Wired project aiSummary into RAG excerpts so Cmd+K answers from the overview",
+      resolveModelCandidates: async () => [],
+    });
+
+    const result = await regenerate({ sessionId: "sess-1" });
+    expect(result.usedDeterministicFallback).toBe(true);
+    expect(result.generationError).toBeNull();
+  });
+
   it("sends the full thread, latest assistant paragraphs, lane threads, and git work in one call", async () => {
     const { regenerate, runPrompt } = createHarness({
       conversation: [

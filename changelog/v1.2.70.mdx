@@ -1,0 +1,17 @@
+---
+title: "v1.2.70"
+description: "Release notes for ADE v1.2.70 - September 1, 2026"
+---
+
+Cursor chats stay connected through worker recovery, and Codex transcript replay stays within the provider's input limit when you fork a chat.
+
+---
+
+## Cursor chat reliability
+
+- **Cursor worker recovery keeps its replacement isolated.** Each worker gets a private hook socket, even while its predecessor is shutting down, and recovery waits through the complete process teardown before starting the replacement. macOS socket paths stay within the platform limit, including installations with deep temporary directories.
+- **Cursor runtime cleanup is bounded.** Failed starts and recycled workers remove their per-instance socket directory without deleting the durable Cursor state needed by the next worker.
+
+## Chat handoffs
+
+- **Codex fork replay stays within the provider input limit.** ADE trims the oldest transcript content when needed and discloses the truncation instead of sending an oversized replay that the app server rejects.

@@ -102,6 +102,31 @@ describe("formatRelativePastTime", () => {
 });
 
 describe("renderChatLines", () => {
+  it("renders model handoffs as directional notice lines", () => {
+    const lines = renderChatLines({
+      activeSession: null,
+      notices: [],
+      events: [{
+        sessionId: "s1",
+        timestamp: "2026-01-01T12:00:00.000Z",
+        sequence: 1,
+        event: {
+          type: "model_handoff",
+          fromProvider: "claude",
+          toProvider: "codex",
+          fromModelId: "anthropic/claude-sonnet-5",
+          toModelId: "openai/gpt-5.4",
+        },
+      }],
+    });
+
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toMatchObject({
+      tone: "notice",
+      body: "[model] Claude → Codex",
+    });
+  });
+
   it("LRU-caches assistant markdown parses by message text", () => {
     __clearAssistantMarkdownCacheForTests();
     const text = "Paragraph text\n\n```ts\nconst value = 1;\n```";

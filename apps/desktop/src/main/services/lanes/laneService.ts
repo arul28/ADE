@@ -314,7 +314,15 @@ async function managedTreeBytes(targetPath: string): Promise<number> {
 async function hasSymlinkInManagedPath(rootPath: string, targetPath: string): Promise<boolean> {
   const root = normAbs(rootPath);
   const target = normAbs(targetPath);
-  const relative = path.relative(root, target);
+  // `path.relative` is lexical on POSIX, even when the underlying macOS
+  // volume is case-insensitive. Resolve existing ancestors for the containment
+  // calculation so ADE's and Git's spellings of the same managed folder do not
+  // look like an escape. Keep the original spellings below so lstat still
+  // catches a symlink in the path rather than hiding it behind realpath.
+  const relative = path.relative(
+    stablePathThroughExistingAncestor(root),
+    stablePathThroughExistingAncestor(target),
+  );
   if (relative.startsWith("..") || path.isAbsolute(relative)) return true;
   const segments = relative ? relative.split(path.sep) : [];
   let candidate = root;

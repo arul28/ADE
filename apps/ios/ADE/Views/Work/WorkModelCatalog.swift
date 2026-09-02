@@ -206,6 +206,10 @@ func workResolveCliProvider(for modelId: String, provider: String) -> String {
   case "cursor": return "cursor"
   case "droid": return "droid"
   case "pi": return "pi"
+  case "qwen": return "qwen"
+  case "kimi": return "kimi"
+  case "grok": return "grok"
+  case "copilot": return "copilot"
   default: return "opencode"
   }
 }
@@ -272,12 +276,12 @@ struct WorkModelProvider: Identifiable, Hashable {
   let models: [WorkModelOption]
 }
 
-/// Top-level catalog group: one of CLAUDE / CODEX / CURSOR / OPENCODE. This
-/// drives the first-level tab strip in the mobile picker. Exactly mirrors
-/// the desktop `ModelCatalogPanel` group layout.
+/// Top-level catalog group: one of the runtime/provider keys listed in
+/// `workModelGroupOrder`. This drives the first-level tab strip in the mobile
+/// picker and mirrors the desktop `ModelCatalogPanel` group layout.
 struct WorkModelCatalogGroup: Identifiable, Hashable {
   var id: String { key }
-  /// Runtime key: "claude" | "codex" | "cursor" | "droid" | "pi" | "opencode".
+  /// Runtime key such as "claude", "codex", "cursor", or "opencode".
   let key: String
   let displayName: String
   let providers: [WorkModelProvider]
@@ -299,7 +303,51 @@ struct WorkModelCatalogGroupLegacyView: Identifiable, Hashable {
   let models: [WorkModelOption]
 }
 
-private let workModelGroupOrder = ["claude", "codex", "pi", "cursor", "droid", "opencode", "ollama", "lmstudio"]
+/// Group keys, in the order the picker lists them. A group missing from this
+/// list is dropped from the phone's catalog entirely, so it must carry every
+/// `ModelProviderGroup` the host can publish (see `MODEL_PROVIDER_GROUPS` in
+/// `apps/desktop/src/shared/modelRegistry.ts`) plus the two OpenCode-routed
+/// local groups.
+private let workModelGroupOrder = [
+  "claude",
+  "codex",
+  "cursor",
+  "opencode",
+  "pi",
+  "copilot",
+  "grok",
+  "droid",
+  "kimi",
+  "qwen",
+  "ollama",
+  "lmstudio",
+]
+
+private func workModelGroupComesBefore(_ lhs: String, _ rhs: String) -> Bool {
+  let lhsOrder = workModelGroupOrder.firstIndex(of: lhs) ?? workModelGroupOrder.count
+  let rhsOrder = workModelGroupOrder.firstIndex(of: rhs) ?? workModelGroupOrder.count
+  if lhsOrder != rhsOrder { return lhsOrder < rhsOrder }
+  return lhs.localizedCaseInsensitiveCompare(rhs) == .orderedAscending
+}
+
+private func workOrderedModelCatalogGroups(_ groups: [WorkModelCatalogGroup]) -> [WorkModelCatalogGroup] {
+  groups.sorted { workModelGroupComesBefore($0.key, $1.key) }
+}
+
+private func workOrderedAgentChatModelCatalogGroups(
+  _ groups: [AgentChatModelCatalogGroup]
+) -> [AgentChatModelCatalogGroup] {
+  groups.sorted { workModelGroupComesBefore($0.key, $1.key) }
+}
+
+private func workClaudeFableReasoningEfforts() -> [AgentChatModelReasoningEffort] {
+  workClaudeOpus5ReasoningEfforts() + [
+    AgentChatModelReasoningEffort(
+      effort: "ultracode",
+      description: "Maximum Claude Code reasoning for long-horizon work"
+    ),
+  ]
+}
 
 private func workClaudeOpus5ReasoningEfforts() -> [AgentChatModelReasoningEffort] {
   [
@@ -428,7 +476,16 @@ private func workCuratedModelCatalogGroups() -> [WorkModelCatalogGroup] {
         key: "anthropic",
         displayName: "Anthropic",
         models: [
-          WorkModelOption(id: "claude-fable-5", displayName: "Claude Fable 5", tier: .flagship, tagline: "Flagship · 1M context", provider: "claude", serviceTiers: ["fast"]),
+          WorkModelOption(
+            id: "claude-fable-5-1",
+            displayName: "Claude Fable 5.1",
+            tier: .flagship,
+            tagline: "Flagship · 1M context",
+            provider: "claude",
+            reasoningEfforts: workClaudeFableReasoningEfforts(),
+            defaultReasoningEffort: "high",
+            serviceTiers: ["fast"]
+          ),
           WorkModelOption(
             id: "claude-opus-5",
             displayName: "Claude Opus 5",
@@ -441,8 +498,7 @@ private func workCuratedModelCatalogGroups() -> [WorkModelCatalogGroup] {
           ),
           WorkModelOption(id: "claude-sonnet-5", displayName: "Claude Sonnet 5", tier: .balanced, tagline: "Balanced · 1M context", provider: "claude"),
           WorkModelOption(id: "claude-haiku-4-5", displayName: "Claude Haiku 4.5", tier: .fast, tagline: "Fastest · cheapest", provider: "claude"),
-          WorkModelOption(id: "claude-opus-4-8", displayName: "Claude Opus 4.8 1M", tier: .flagship, tagline: "Previous Opus · 1M context", provider: "claude", serviceTiers: ["fast"]),
-          WorkModelOption(id: "claude-opus-4-7-1m", displayName: "Claude Opus 4.7 1M", tier: .flagship, tagline: "1M-token context window", provider: "claude", serviceTiers: ["fast"]),
+          WorkModelOption(id: "claude-opus-4-8", displayName: "Claude Opus 4.8", tier: .flagship, tagline: "Previous Opus · 1M context", provider: "claude", serviceTiers: ["fast"]),
         ]
       )
     ]
@@ -505,6 +561,8 @@ private func workCuratedModelCatalogGroups() -> [WorkModelCatalogGroup] {
         key: "anthropic",
         displayName: "Anthropic",
         models: [
+          WorkModelOption(id: "claude-fable-5-1-thinking-high", displayName: "Claude Fable 5.1 Thinking High", tier: .flagship, tagline: "Cursor-routed Fable", provider: "claude"),
+          WorkModelOption(id: "claude-fable-5-1-thinking-xhigh", displayName: "Claude Fable 5.1 Thinking XHigh", tier: .flagship, tagline: "Cursor-routed Fable", provider: "claude"),
           WorkModelOption(id: "claude-fable-5-thinking-high", displayName: "Claude Fable 5 Thinking High", tier: .flagship, tagline: "Cursor-routed Fable", provider: "claude"),
           WorkModelOption(id: "claude-fable-5-thinking-xhigh", displayName: "Claude Fable 5 Thinking XHigh", tier: .flagship, tagline: "Cursor-routed Fable", provider: "claude"),
           WorkModelOption(id: "cursor/claude-4.6-sonnet-medium", displayName: "Claude Sonnet 5", tier: .balanced, tagline: "Balanced · 1M context", provider: "cursor"),
@@ -596,7 +654,16 @@ private func workCuratedModelCatalogGroups() -> [WorkModelCatalogGroup] {
         key: "anthropic",
         displayName: "Anthropic",
         models: [
-          WorkModelOption(id: "opencode/anthropic/claude-fable-5", displayName: "Claude Fable 5", tier: .flagship, tagline: "Flagship · 1M context", provider: "claude", serviceTiers: ["fast"]),
+          WorkModelOption(
+            id: "opencode/anthropic/claude-fable-5-1",
+            displayName: "Claude Fable 5.1",
+            tier: .flagship,
+            tagline: "Flagship · 1M context",
+            provider: "claude",
+            reasoningEfforts: workClaudeFableReasoningEfforts(),
+            defaultReasoningEffort: "high",
+            serviceTiers: ["fast"]
+          ),
           WorkModelOption(
             id: "opencode/anthropic/claude-opus-5",
             displayName: "Claude Opus 5",
@@ -609,8 +676,7 @@ private func workCuratedModelCatalogGroups() -> [WorkModelCatalogGroup] {
           ),
           WorkModelOption(id: "opencode/anthropic/claude-sonnet-5", displayName: "Claude Sonnet 5", tier: .balanced, tagline: "Balanced coder · 1M context", provider: "claude"),
           WorkModelOption(id: "opencode/anthropic/claude-haiku-4-5", displayName: "Claude Haiku 4.5", tier: .fast, tagline: "Fastest Anthropic", provider: "claude"),
-          WorkModelOption(id: "opencode/anthropic/claude-opus-4-8", displayName: "Claude Opus 4.8 1M", tier: .flagship, tagline: "Previous Opus · 1M context", provider: "claude", serviceTiers: ["fast"]),
-          WorkModelOption(id: "opencode/anthropic/claude-opus-4-7-1m", displayName: "Claude Opus 4.7 1M", tier: .flagship, tagline: "1M-token context window", provider: "claude", serviceTiers: ["fast"]),
+          WorkModelOption(id: "opencode/anthropic/claude-opus-4-8", displayName: "Claude Opus 4.8", tier: .flagship, tagline: "Previous Opus · 1M context", provider: "claude", serviceTiers: ["fast"]),
         ]
       ),
       WorkModelProvider(
@@ -648,7 +714,7 @@ private func workCuratedModelCatalogGroups() -> [WorkModelCatalogGroup] {
     ]
   ))
 
-  return groups
+  return workOrderedModelCatalogGroups(groups)
 }
 
 /// Curated catalog with the current live model injected when needed.
@@ -726,7 +792,7 @@ func workModelCatalogGroups(
   currentModelId: String,
   currentProvider: String
 ) -> [WorkModelCatalogGroup] {
-  let groups = hostCatalog.groups.map { group in
+  let groups = workOrderedAgentChatModelCatalogGroups(hostCatalog.groups).map { group in
     let isPiGroup = group.key.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "pi"
     var providers: [WorkModelProvider]
     if isPiGroup {
@@ -972,26 +1038,32 @@ private func workModelLookupKeys(_ raw: String?) -> [String] {
 
 private func workCanonicalClaudeRegistryId(for raw: String) -> String? {
   switch raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
-  case "fable", "claude-fable-5", "anthropic/claude-fable-5", "anthropic/claude-fable-5-api":
-    return "anthropic/claude-fable-5"
+  case "fable", "fable-5.1", "fable-5-1", "claude-fable-5-1", "anthropic/claude-fable-5-1",
+       "anthropic/claude-fable-5-1-api", "fable-5", "fable-5.0",
+       "claude-fable-5", "anthropic/claude-fable-5", "anthropic/claude-fable-5-api",
+       "opencode/anthropic/claude-fable-5-1", "opencode/anthropic/claude-fable-5":
+    return "anthropic/claude-fable-5-1"
   case "opus", "opus-5", "opus-5.0", "opus-5-0",
        "claude-opus-5", "anthropic/claude-opus-5", "anthropic/claude-opus-5-api",
        "opencode/anthropic/opus", "opencode/anthropic/claude-opus-5":
     return "anthropic/claude-opus-5"
   case "claude-opus-4-8", "anthropic/claude-opus-4-8", "anthropic/claude-opus-4-8-api",
        "opus-4.8", "opus-4-8", "opus-4.8-1m", "opus-4.8[1m]", "opus-4-8-1m",
-       "claude-opus-4-8-1m", "claude-opus-4-8[1m]", "anthropic/claude-opus-4-8-1m":
+       "claude-opus-4-8-1m", "claude-opus-4-8[1m]", "anthropic/claude-opus-4-8-1m",
+       "opencode/anthropic/claude-opus-4-8":
     return "anthropic/claude-opus-4-8"
   case "claude-opus-4-7", "anthropic/claude-opus-4-7", "anthropic/claude-opus-4-7-api",
        "opus-4.6", "opus-4-6", "claude-opus-4-6", "anthropic/claude-opus-4-6":
     return "anthropic/claude-opus-4-8"
   case "opus[1m]", "opus-1m", "claude-opus-4-7-1m", "claude-opus-4-7[1m]", "anthropic/claude-opus-4-7-1m",
        "opus-4-6-1m", "claude-opus-4-6-1m", "claude-opus-4-6[1m]", "anthropic/claude-opus-4-6-1m":
-    return "anthropic/claude-opus-4-7-1m"
+    return "anthropic/claude-opus-4-8"
   case "sonnet", "claude-sonnet-5", "anthropic/claude-sonnet-5",
-       "claude-sonnet-4-6", "anthropic/claude-sonnet-4-6":
+       "claude-sonnet-4-6", "anthropic/claude-sonnet-4-6",
+       "opencode/anthropic/claude-sonnet-5":
     return "anthropic/claude-sonnet-5"
-  case "haiku", "claude-haiku-4-5", "anthropic/claude-haiku-4-5":
+  case "haiku", "claude-haiku-4-5", "anthropic/claude-haiku-4-5",
+       "opencode/anthropic/claude-haiku-4-5":
     return "anthropic/claude-haiku-4-5"
   default:
     return nil
@@ -1000,26 +1072,32 @@ private func workCanonicalClaudeRegistryId(for raw: String) -> String? {
 
 private func workClaudeRuntimeModelId(for raw: String) -> String? {
   switch raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
-  case "fable", "claude-fable-5", "anthropic/claude-fable-5", "anthropic/claude-fable-5-api":
-    return "claude-fable-5"
+  case "fable", "fable-5.1", "fable-5-1", "claude-fable-5-1", "anthropic/claude-fable-5-1",
+       "anthropic/claude-fable-5-1-api", "fable-5", "fable-5.0",
+       "claude-fable-5", "anthropic/claude-fable-5", "anthropic/claude-fable-5-api",
+       "opencode/anthropic/claude-fable-5-1", "opencode/anthropic/claude-fable-5":
+    return "claude-fable-5-1"
   case "opus", "opus-5", "opus-5.0", "opus-5-0",
        "claude-opus-5", "anthropic/claude-opus-5", "anthropic/claude-opus-5-api",
        "opencode/anthropic/opus", "opencode/anthropic/claude-opus-5":
     return "claude-opus-5"
   case "claude-opus-4-8", "anthropic/claude-opus-4-8", "anthropic/claude-opus-4-8-api",
        "opus-4.8", "opus-4-8", "opus-4.8-1m", "opus-4.8[1m]", "opus-4-8-1m",
-       "claude-opus-4-8-1m", "claude-opus-4-8[1m]", "anthropic/claude-opus-4-8-1m":
+       "claude-opus-4-8-1m", "claude-opus-4-8[1m]", "anthropic/claude-opus-4-8-1m",
+       "opencode/anthropic/claude-opus-4-8":
     return "claude-opus-4-8"
   case "claude-opus-4-7", "anthropic/claude-opus-4-7", "anthropic/claude-opus-4-7-api",
        "opus-4.6", "opus-4-6", "claude-opus-4-6", "anthropic/claude-opus-4-6":
     return "claude-opus-4-8"
   case "opus[1m]", "opus-1m", "claude-opus-4-7-1m", "claude-opus-4-7[1m]", "anthropic/claude-opus-4-7-1m",
        "opus-4-6-1m", "claude-opus-4-6-1m", "claude-opus-4-6[1m]", "anthropic/claude-opus-4-6-1m":
-    return "claude-opus-4-7[1m]"
+    return "claude-opus-4-8"
   case "sonnet", "claude-sonnet-5", "anthropic/claude-sonnet-5",
-       "claude-sonnet-4-6", "anthropic/claude-sonnet-4-6":
+       "claude-sonnet-4-6", "anthropic/claude-sonnet-4-6",
+       "opencode/anthropic/claude-sonnet-5":
     return "claude-sonnet-5"
-  case "haiku", "claude-haiku-4-5", "anthropic/claude-haiku-4-5":
+  case "haiku", "claude-haiku-4-5", "anthropic/claude-haiku-4-5",
+       "opencode/anthropic/claude-haiku-4-5":
     return "claude-haiku-4-5"
   default:
     return nil
@@ -1105,26 +1183,32 @@ struct WorkModelIdMatcher {
 
 func workKnownModelDisplayName(_ raw: String?) -> String? {
   switch raw?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? "" {
-  case "fable", "anthropic/claude-fable-5", "claude-fable-5", "opencode/anthropic/claude-fable-5":
-    return "Claude Fable 5"
+  case "fable", "fable-5.1", "fable-5-1", "fable-5", "fable-5.0",
+       "anthropic/claude-fable-5-1", "anthropic/claude-fable-5-1-api", "claude-fable-5-1",
+       "opencode/anthropic/claude-fable-5-1", "anthropic/claude-fable-5", "anthropic/claude-fable-5-api",
+       "claude-fable-5", "opencode/anthropic/claude-fable-5":
+    return "Claude Fable 5.1"
   case "opus", "opus-5", "opus-5.0", "opus-5-0",
        "anthropic/claude-opus-5", "anthropic/claude-opus-5-api", "claude-opus-5",
        "opencode/anthropic/opus", "opencode/anthropic/claude-opus-5":
     return "Claude Opus 5"
   case "anthropic/claude-opus-4-8", "anthropic/claude-opus-4-8-api", "claude-opus-4-8",
        "opus-4.8", "opus-4-8", "opus-4.8-1m", "opus-4.8[1m]", "opus-4-8-1m",
-       "anthropic/claude-opus-4-8-1m", "claude-opus-4-8-1m", "claude-opus-4-8[1m]":
-    return "Claude Opus 4.8 1M"
+       "anthropic/claude-opus-4-8-1m", "claude-opus-4-8-1m", "claude-opus-4-8[1m]",
+       "opencode/anthropic/claude-opus-4-8":
+    return "Claude Opus 4.8"
   case "anthropic/claude-opus-4-7", "anthropic/claude-opus-4-7-api", "claude-opus-4-7",
        "opus-4.6", "opus-4-6", "anthropic/claude-opus-4-6", "claude-opus-4-6":
-    return "Claude Opus 4.8 1M"
+    return "Claude Opus 4.8"
   case "opus[1m]", "opus-1m", "anthropic/claude-opus-4-7-1m", "claude-opus-4-7-1m", "claude-opus-4-7[1m]",
        "opus-4-6-1m", "anthropic/claude-opus-4-6-1m", "claude-opus-4-6-1m", "claude-opus-4-6[1m]":
-    return "Claude Opus 4.7 1M"
+    return "Claude Opus 4.8"
   case "sonnet", "anthropic/claude-sonnet-5", "claude-sonnet-5", "cursor/claude-4.6-sonnet-medium",
-       "anthropic/claude-sonnet-4-6", "claude-sonnet-4-6":
+       "anthropic/claude-sonnet-4-6", "claude-sonnet-4-6",
+       "opencode/anthropic/claude-sonnet-5":
     return "Claude Sonnet 5"
-  case "haiku", "anthropic/claude-haiku-4-5", "claude-haiku-4-5":
+  case "haiku", "anthropic/claude-haiku-4-5", "claude-haiku-4-5",
+       "opencode/anthropic/claude-haiku-4-5":
     return "Claude Haiku 4.5"
   case "sol", "gpt-5.6-sol", "openai/gpt-5.6-sol":
     return "GPT-5.6 Sol"
@@ -1183,6 +1267,10 @@ private func workProviderDisplayName(
   case "together": return "Together"
   case "cursor": return "Cursor"
   case "factory": return "Droid Core"
+  case "qwen": return "Qwen"
+  case "moonshot", "moonshotai", "kimi": return "Kimi"
+  case "grok": return "Grok"
+  case "copilot", "github-copilot": return "GitHub Copilot"
   default: return providerKey.capitalized
   }
 }
@@ -1409,6 +1497,19 @@ private func workModelProviderKey(for model: AgentChatModelInfo, topLevelProvide
       return "xai"
     }
     return normalizedFamily.isEmpty ? "cursor" : normalizedFamily
+  case "copilot":
+    // Copilot resells other vendors' models, so split it by upstream brand the
+    // way Cursor and Droid are split rather than showing one flat list.
+    if normalizedId.contains("claude") || normalizedId.contains("sonnet") || normalizedId.contains("opus") || normalizedId.contains("haiku") {
+      return "anthropic"
+    }
+    if normalizedId.contains("gpt") || normalizedId.contains("codex") {
+      return "openai"
+    }
+    if normalizedId.contains("gemini") {
+      return "google"
+    }
+    return "github-copilot"
   default:
     return topLevelProvider
   }
@@ -1638,7 +1739,7 @@ private func injectCurrentWorkModelIfNeeded(
     }
   }
 
-  return groups
+  return workOrderedModelCatalogGroups(groups)
 }
 
 func workModelCatalogGroupKey(for currentModelId: String, currentProvider: String) -> String {
@@ -1665,6 +1766,23 @@ func workModelCatalogGroupKey(for currentModelId: String, currentProvider: Strin
   }
   if modelId.hasPrefix("opencode/") || provider == "opencode" {
     return "opencode"
+  }
+  // ACP providers, before the model-name heuristics below. Their registry ids
+  // carry the upstream vendor — `github-copilot/claude-sonnet-4.6` contains
+  // "claude", `github-copilot/gpt-5.4` contains "gpt" — so checking them later
+  // would file a Copilot model under Claude or Codex. The OpenCode checks stay
+  // ahead of these, because an OpenCode-routed Kimi or Grok belongs to OpenCode.
+  if provider == "qwen" || modelId.hasPrefix("qwen/") {
+    return "qwen"
+  }
+  if provider == "kimi" || provider == "moonshot" || modelId.hasPrefix("moonshot/") {
+    return "kimi"
+  }
+  if provider == "grok" || modelId.hasPrefix("xai/") {
+    return "grok"
+  }
+  if provider == "copilot" || provider == "github-copilot" || modelId.hasPrefix("github-copilot/") {
+    return "copilot"
   }
   if workCanonicalCodexRegistryId(for: modelId) != nil {
     return "codex"

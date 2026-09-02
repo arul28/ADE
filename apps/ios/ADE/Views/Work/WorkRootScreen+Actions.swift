@@ -551,6 +551,13 @@ extension WorkRootScreen {
       errorMessage = "Session title cannot be empty."
       return
     }
+    if CursorCloudNaming.ownsName(
+      chatSummaries[renameTarget.id]?.cursorCloudAgentId ?? renameTarget.cursorCloudAgentId
+    ) {
+      ADEHaptics.error()
+      errorMessage = CursorCloudNaming.renameBlockedMessage
+      return
+    }
     do {
       try await syncService.updateSessionMeta(
         sessionId: renameTarget.id,
@@ -912,7 +919,8 @@ extension WorkRootScreen {
       runtimeState: normalizedRuntimeState(for: summary),
       resumeCommand: nil,
       resumeMetadata: nil,
-      chatIdleSinceAt: summary.idleSinceAt
+      chatIdleSinceAt: summary.idleSinceAt,
+      cursorCloudAgentId: summary.cursorCloudAgentId
     )
   }
 
@@ -928,6 +936,10 @@ private func cliProviderForTerminalSession(_ session: TerminalSessionSummary) ->
   if toolType.hasPrefix("cursor") { return "cursor" }
   if toolType.hasPrefix("droid") { return "droid" }
   if toolType.hasPrefix("opencode") { return "opencode" }
+  if toolType.hasPrefix("qwen") { return "qwen" }
+  if toolType.hasPrefix("kimi") { return "kimi" }
+  if toolType.hasPrefix("grok") { return "grok" }
+  if toolType.hasPrefix("copilot") { return "copilot" }
   return "shell"
 }
 
