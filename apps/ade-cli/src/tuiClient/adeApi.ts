@@ -912,7 +912,10 @@ export async function cancelSteerMessage(
   sessionId: string,
   steerId: string,
 ): Promise<void> {
-  await connection.action("chat", "cancelSteer", { sessionId, steerId });
+  // This helper is only used for rows already rendered in the staged-steer
+  // strip. Refuse a delivery race instead of reporting success after the row
+  // has already left the queue.
+  await connection.action("chat", "cancelSteer", { sessionId, steerId, requireQueued: true });
 }
 
 /**

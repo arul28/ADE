@@ -75,6 +75,7 @@ import { BUILT_IN_BROWSER_ACTOR_CAPABILITY_PARAM } from "./services/builtInBrows
 import { resolveCodexComputerUseMcpConfig } from "../../desktop/src/main/utils/codexComputerUse";
 import { parseTrackedCliLaunchConfig } from "../../desktop/src/main/utils/terminalSessionSignals";
 import { RUNTIME_COMPAT_LEVEL } from "../../desktop/src/shared/adeRuntimeProtocol";
+import { AGENT_CHAT_DROID_PERMISSION_MODE_VALUES } from "../../desktop/src/shared/types/chat";
 
 // Cross-surface (desktop + TUI + iOS) model picker favorites & recents.
 // Backed by the per-project cr-sqlite CRR DB (runtime.db) so the three surfaces
@@ -1244,7 +1245,7 @@ const CTO_OPERATOR_TOOL_SPECS: ToolSpec[] = [
         modelId: { type: "string" },
         reasoningEffort: { type: "string" },
         permissionMode: { type: "string", enum: ["default", "auto", "plan", "edit", "full-auto", "config-toml"] },
-        droidPermissionMode: { type: "string", enum: ["read-only", "auto-low", "auto-medium", "auto-high"] },
+        droidPermissionMode: { type: "string", enum: [...AGENT_CHAT_DROID_PERMISSION_MODE_VALUES] },
         title: { type: "string" },
         initialPrompt: { type: "string" },
         openInUi: { type: "boolean" }

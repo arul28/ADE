@@ -10,6 +10,7 @@ import type {
   TerminalToolType,
   WindowsShellKind,
 } from "./types";
+import { AGENT_CHAT_PERMISSION_MODE_VALUES } from "./types/chat";
 import {
   ADE_AGENT_SKILLS_DIRS_ENV,
   getAdeAgentSkillRootsForPrompt,
@@ -162,7 +163,7 @@ export const LAUNCH_PROFILES = [
   "copilot",
   "shell",
 ] as const satisfies readonly LaunchProfile[];
-export const TRACKED_CLI_PERMISSION_MODES = ["default", "auto", "plan", "edit", "full-auto", "config-toml"] as const satisfies readonly AgentChatPermissionMode[];
+export const TRACKED_CLI_PERMISSION_MODES = AGENT_CHAT_PERMISSION_MODE_VALUES;
 
 export function sanitizeTrackedCliResumeTargetId(value: string | null | undefined): string | null {
   const target = String(value ?? "").trim();

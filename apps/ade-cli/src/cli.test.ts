@@ -3789,6 +3789,53 @@ describe("ADE CLI", () => {
     });
   });
 
+  it("previews the Cursor mode a create actually persists", () => {
+    const cursorMode = (permissions: string) => {
+      const plan = buildCliPlan([
+        "chat",
+        "create",
+        "--lane",
+        "lane-1",
+        "--provider",
+        "cursor",
+        "--model",
+        "cursor/composer-2",
+        "--permissions",
+        permissions,
+        "--print-config",
+      ]);
+      return (expectStaticPlan(plan).value as { resolved: { cursorMode: string } }).resolved.cursorMode;
+    };
+
+    expect(cursorMode("full-auto")).toBe("full-auto");
+    expect(cursorMode("plan")).toBe("plan");
+    // `edit` previewed as "ask" — a read-only mode no create path has ever
+    // persisted. Cursor runs both `edit` and `default` as `agent`.
+    expect(cursorMode("edit")).toBe("agent");
+    expect(cursorMode("default")).toBe("agent");
+  });
+
+  it("preserves an explicit Droid autonomy tier in the create preview", () => {
+    const plan = buildCliPlan([
+      "chat",
+      "create",
+      "--lane",
+      "lane-1",
+      "--provider",
+      "droid",
+      "--model",
+      "droid/model",
+      "--permissions",
+      "edit",
+      "--droid-permission-mode",
+      "auto-high",
+      "--print-config",
+    ]);
+
+    expect((expectStaticPlan(plan).value as { resolved: { droidPermissionMode: string } }).resolved.droidPermissionMode)
+      .toBe("auto-high");
+  });
+
   it("prints chat create from Linear dry-run with attachment flags", () => {
     const plan = buildCliPlan([
       "chat",
@@ -8539,6 +8586,53 @@ describe("ADE CLI", () => {
     const sendArgs = (sendParams.arguments as { args: { text: string } }).args;
     expect(sendArgs.text).toContain("ENG-431");
     expect(sendArgs.text).toContain("https://linear.app/x/ENG-431");
+  });
+
+  it("forwards provider-native Droid autonomy through Linear and personal launches", () => {
+    const linearPlan = expectExecutePlan(buildCliPlan([
+      "lanes",
+      "create-from-linear",
+      "--linear-issue-json",
+      '{"id":"issue-1","identifier":"ENG-431","title":"Fix OAuth"}',
+      "--start-chat",
+      "--provider",
+      "droid",
+      "--model",
+      "droid/model",
+      "--droid-permission-mode",
+      "auto-high",
+    ]));
+    const chatParams = (linearPlan.steps[1]?.params as (v: Record<string, unknown>) => Record<string, unknown>)({
+      lane: { domain: "lane", action: "create", result: { lane: { id: "lane-new" } } },
+    });
+    expect(chatParams).toMatchObject({
+      arguments: {
+        args: {
+          provider: "droid",
+          droidPermissionMode: "auto-high",
+        },
+      },
+    });
+
+    const personalPlan = expectExecutePlan(buildCliPlan([
+      "chat",
+      "create",
+      "--personal",
+      "--provider",
+      "droid",
+      "--model",
+      "droid/model",
+      "--droid-permission-mode",
+      "auto-medium",
+    ]));
+    expect(personalPlan.steps[0]).toMatchObject({
+      params: {
+        action: "create",
+        args: {
+          droidPermissionMode: "auto-medium",
+        },
+      },
+    });
   });
 
   it("requires and persists a spawn type when create-from-linear starts a child chat", () => {

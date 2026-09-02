@@ -8159,7 +8159,13 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
           codexConfigSource: configSession.codexConfigSource ?? prev.codexConfigSource,
           opencodePermissionMode: configSession.opencodePermissionMode ?? prev.opencodePermissionMode,
           droidPermissionMode: configSession.droidPermissionMode ?? prev.droidPermissionMode,
-          cursorModeId: configSession.cursorModeId ?? configSession.cursorModeSnapshot?.currentModeId ?? prev.cursorModeId,
+          // `null` is an intentional clear for the legacy permission-only
+          // paths. Only an omitted field should fall back to the snapshot or
+          // the previous chat's value; `??` would leak the previous Cursor
+          // mode into a newly hydrated session.
+          cursorModeId: configSession.cursorModeId !== undefined
+            ? configSession.cursorModeId
+            : configSession.cursorModeSnapshot?.currentModeId ?? prev.cursorModeId,
           cursorAvailableModeIds: configSession.cursorModeSnapshot?.availableModeIds ?? prev.cursorAvailableModeIds,
           cursorConfigValues: configSession.cursorConfigValues ?? prev.cursorConfigValues,
         }));

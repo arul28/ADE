@@ -6408,6 +6408,15 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(steer["sessionId"] as? String, "session-1")
     XCTAssertEqual(steer["text"] as? String, "Keep going")
 
+    let cancel = try jsonDictionary(from: AgentChatCancelSteerRequest(
+      sessionId: "session-1",
+      steerId: "steer-1",
+      requireQueued: true
+    ))
+    XCTAssertEqual(cancel["sessionId"] as? String, "session-1")
+    XCTAssertEqual(cancel["steerId"] as? String, "steer-1")
+    XCTAssertEqual(cancel["requireQueued"] as? Bool, true)
+
     let sessionId = try jsonDictionary(from: AgentChatSessionIdRequest(sessionId: "session-1"))
     XCTAssertEqual(sessionId["sessionId"] as? String, "session-1")
 

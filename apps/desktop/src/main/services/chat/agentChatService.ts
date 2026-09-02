@@ -794,7 +794,7 @@ import {
 } from "./cursorSdkSystemPrompt";
 import { promises as fsPromises } from "node:fs";
 import { mapStopReasonToTerminalEvents } from "./stopReasonEvents";
-import { CURSOR_AVAILABLE_MODE_IDS } from "../../../shared/cursorModes";
+import { CURSOR_AVAILABLE_MODE_IDS, legacyPermissionModeToCursorModeId } from "../../../shared/cursorModes";
 import { getApiKey } from "../ai/apiKeyStore";
 import type { createOrchestrationService } from "../orchestration/orchestrationService";
 import {
@@ -5418,6 +5418,35 @@ function reopenSteerSettlement(managed: ManagedChatSession, steerId: string): vo
   settledSteerIds.get(managed)?.delete(steerId);
 }
 
+/**
+ * Steers cancelled while the session had no runtime to cancel them on.
+ *
+ * `persistChatState` carries the previous file's `pendingSteers` forward
+ * verbatim whenever the live runtime is not Claude, which includes "there is no
+ * runtime". Without this set a cancel on a torn-down session clears the chip and
+ * the next Claude runtime hydrates the steer straight back onto the queue, so
+ * the cancel reads as a UI glitch and the message is still sent.
+ */
+const cancelledPersistedSteerIds = new WeakMap<ManagedChatSession, Set<string>>();
+
+function forgetPersistedSteer(managed: ManagedChatSession, steerId: string): void {
+  let ids = cancelledPersistedSteerIds.get(managed);
+  if (!ids) {
+    ids = new Set<string>();
+    cancelledPersistedSteerIds.set(managed, ids);
+  }
+  ids.add(steerId);
+}
+
+function survivingPersistedSteers(
+  managed: ManagedChatSession,
+  steers: readonly PersistedPendingSteer[],
+): PersistedPendingSteer[] {
+  const cancelled = cancelledPersistedSteerIds.get(managed);
+  if (!cancelled?.size) return [...steers];
+  return steers.filter((steer) => !cancelled.has(steer.steerId));
+}
+
 function cursorSdkSilentRunError(): Error {
   const error = new Error(CURSOR_SDK_SILENT_RUN_MESSAGE);
   error.name = CURSOR_SDK_SILENT_RUN_ERROR_NAME;
@@ -6990,7 +7019,7 @@ function syncLegacyPermissionMode(session: Pick<
 function applyLegacyPermissionModeToNativeControls(
   session: Pick<
     AgentChatSession,
-    "provider" | "permissionMode" | "interactionMode" | "claudePermissionMode" | "codexApprovalPolicy" | "codexSandbox" | "codexConfigSource" | "opencodePermissionMode" | "droidPermissionMode"
+    "provider" | "permissionMode" | "interactionMode" | "claudePermissionMode" | "codexApprovalPolicy" | "codexSandbox" | "codexConfigSource" | "opencodePermissionMode" | "droidPermissionMode" | "cursorModeId"
   >,
   mode: AgentChatSession["permissionMode"] | undefined,
 ): void {
@@ -7019,6 +7048,12 @@ function applyLegacyPermissionModeToNativeControls(
   if (session.provider === "pi") return;
 
   session.opencodePermissionMode = legacyPermissionModeToOpenCodePermissionMode(mode);
+  if (session.provider === "cursor") {
+    // Overwrite, never fill: this runs when the caller explicitly changed
+    // `permissionMode`, so a stale `full-auto` from an earlier request has to
+    // clear rather than outlive the mode that set it.
+    session.cursorModeId = legacyPermissionModeToCursorModeId(mode);
+  }
 }
 
 type ClaudePlanModeTransition = "entered_plan_mode" | "exited_plan_mode";
@@ -7047,10 +7082,25 @@ function buildClaudePlanModeNoticeDetail(
 }
 
 
+/**
+ * Fill an absent Cursor mode from the legacy `permissionMode` the session was
+ * created or updated with. Fill only — an explicit mode is the user's own
+ * selection and outranks whatever the legacy field says, which is how picking
+ * `agent` on a `full-auto` chat stays `agent`.
+ */
+function applyCursorModeIdFromLegacyPermissionMode(
+  session: Pick<AgentChatSession, "provider" | "permissionMode" | "cursorModeId">,
+): void {
+  if (session.provider !== "cursor") return;
+  if (typeof session.cursorModeId === "string" && session.cursorModeId.trim().length) return;
+  const derived = legacyPermissionModeToCursorModeId(session.permissionMode);
+  if (derived) session.cursorModeId = derived;
+}
+
 function hydrateNativePermissionControls(
   session: Pick<
     AgentChatSession,
-    "provider" | "permissionMode" | "interactionMode" | "claudePermissionMode" | "codexApprovalPolicy" | "codexSandbox" | "codexConfigSource" | "opencodePermissionMode" | "droidPermissionMode"
+    "provider" | "permissionMode" | "interactionMode" | "claudePermissionMode" | "codexApprovalPolicy" | "codexSandbox" | "codexConfigSource" | "opencodePermissionMode" | "droidPermissionMode" | "cursorModeId"
   >,
 ): void {
   const orchestrationMode = isOrchestrationInteractionMode(session.interactionMode)
@@ -7076,6 +7126,7 @@ function hydrateNativePermissionControls(
   } else {
     if (orchestrationMode) session.interactionMode = orchestrationMode;
     session.opencodePermissionMode = session.opencodePermissionMode ?? legacyPermissionModeToOpenCodePermissionMode(session.permissionMode);
+    applyCursorModeIdFromLegacyPermissionMode(session);
   }
 
   session.permissionMode = syncLegacyPermissionMode(session);
@@ -7866,7 +7917,7 @@ function normalizeDroidReportedModelId(
 function normalizeSessionNativePermissionControls(
   session: Pick<
     AgentChatSession,
-    "provider" | "permissionMode" | "interactionMode" | "claudePermissionMode" | "codexApprovalPolicy" | "codexSandbox" | "codexConfigSource" | "opencodePermissionMode" | "droidPermissionMode"
+    "provider" | "permissionMode" | "interactionMode" | "claudePermissionMode" | "codexApprovalPolicy" | "codexSandbox" | "codexConfigSource" | "opencodePermissionMode" | "droidPermissionMode" | "cursorModeId"
   >,
   config: ResolvedChatConfig,
 ): void {
@@ -7904,6 +7955,7 @@ function normalizeSessionNativePermissionControls(
     if (orchestrationMode) session.interactionMode = orchestrationMode;
     else delete session.interactionMode;
     session.opencodePermissionMode = resolveSessionOpenCodePermissionMode(session, config.opencodePermissionMode);
+    applyCursorModeIdFromLegacyPermissionMode(session);
   }
 
   session.permissionMode = syncLegacyPermissionMode(session);
@@ -13801,6 +13853,9 @@ export function createAgentChatService(args: {
       managed.eventSequence,
       prevPersisted?.eventSequence,
     );
+    const survivingPreviousPendingSteers = prevPersisted?.pendingSteers?.length
+      ? survivingPersistedSteers(managed, prevPersisted.pendingSteers)
+      : [];
     const payload: PersistedChatState = {
       version: 2,
       sessionId: managed.session.id,
@@ -13933,7 +13988,11 @@ export function createAgentChatService(args: {
               })),
             }
           : {}
-        : prevPersisted?.pendingSteers?.length ? { pendingSteers: prevPersisted.pendingSteers } : {}),
+        : prevPersisted?.pendingSteers?.length
+          ? survivingPreviousPendingSteers.length
+            ? { pendingSteers: survivingPreviousPendingSteers }
+            : {}
+          : {}),
       ...(managed.runtime?.kind === "opencode"
         ? { providerSessionId: managed.runtime.handle.sessionId }
         : managed.session.provider === "opencode"
@@ -28506,6 +28565,16 @@ export function createAgentChatService(args: {
     return stringOrNull(queued?.id) ?? stringOrNull(record.id);
   };
 
+  type CodexQueueSubmission = { id?: string; clientUserMessageId?: string };
+  type CodexQueueListResponse = { queuedSubmissions?: CodexQueueSubmission[] };
+  const listCodexQueueSubmissions = async (
+    runtime: CodexRuntime,
+    threadId: string,
+  ): Promise<CodexQueueSubmission[]> => {
+    const listed = await runtime.request<CodexQueueListResponse>("thread/queue/list", { threadId });
+    return listed.queuedSubmissions ?? [];
+  };
+
   const startCodexQueuedFollowUp = async (
     managed: ManagedChatSession,
     runtime: CodexRuntime,
@@ -30053,11 +30122,9 @@ export function createAgentChatService(args: {
       const threadId = managed.session.threadId;
       if (!threadId) return;
       try {
-        const listed = await runtime.request<{
-          queuedSubmissions?: Array<{ id?: string; clientUserMessageId?: string }>;
-        }>("thread/queue/list", { threadId });
+        const queuedSubmissions = await listCodexQueueSubmissions(runtime, threadId);
         const liveIds = new Set(
-          (listed.queuedSubmissions ?? [])
+          queuedSubmissions
             .map((submission) => String(submission.id ?? "").trim())
             .filter(Boolean),
         );
@@ -43030,73 +43097,124 @@ export function createAgentChatService(args: {
     };
   };
 
-  const cancelSteer = async ({ sessionId, steerId, requireQueued = false }: AgentChatCancelSteerArgs): Promise<void> => {
-    const managed = ensureManagedSession(sessionId);
-    const runtime = managed.runtime;
-    if (runtime?.kind === "codex") {
-      const submissionId = runtime.queuedSubmissionBySteerId.get(steerId);
-      if (!submissionId) {
-        if (requireQueued) throw new Error("This message is no longer queued.");
-        return;
+  /**
+   * Re-derive a Codex queue submission id from the app-server.
+   *
+   * `queuedSubmissionBySteerId` lives only in the runtime object, so a restart,
+   * a rehydration, or a cancel routed in from another machine arrives with it
+   * empty while the transcript still renders the staged chip. Every queue entry
+   * carries the ADE steerId ADE sent as `clientUserMessageId`, so the server is
+   * the durable side of the mapping — read it back rather than concluding the
+   * message is gone.
+   */
+  const recoverCodexQueueSubmissionId = async (
+    managed: ManagedChatSession,
+    runtime: CodexRuntime,
+    steerId: string,
+  ): Promise<string | null> => {
+    const threadId = managed.session.threadId;
+    if (!threadId) return null;
+    if (!codexServerSupportsThreadQueue(runtime.serverVersion)) return null;
+    try {
+      const queuedSubmissions = await listCodexQueueSubmissions(runtime, threadId);
+      for (const submission of queuedSubmissions) {
+        if (String(submission.clientUserMessageId ?? "").trim() !== steerId) continue;
+        const id = String(submission.id ?? "").trim();
+        if (!id) continue;
+        runtime.queuedSubmissionBySteerId.set(steerId, id);
+        return id;
       }
-      const threadId = managed.session.threadId;
-      if (threadId) {
-        try {
-          await runtime.request("thread/queue/delete", { threadId, id: submissionId });
-        } catch (error) {
-          if (requireQueued) throw error;
-          logger.warn("codex.queue.delete_failed", {
-            sessionId,
-            error: error instanceof Error ? error.message : String(error),
-          });
-        }
-      }
-      runtime.queuedSubmissionBySteerId.delete(steerId);
-      emitChatEvent(managed, {
-        type: "system_notice",
-        noticeKind: "info",
-        steerId,
-        message: "Queued message cancelled.",
-        turnId: runtime.activeTurnId ?? undefined,
+    } catch (error) {
+      logger.debug("codex.queue.recover_failed", {
+        sessionId: managed.session.id,
+        error: error instanceof Error ? error.message : String(error),
       });
-      persistChatState(managed);
-      return;
+      // A failed queue read is not evidence that the submission disappeared.
+      // Keep the staged row and let the caller surface a retryable error rather
+      // than reporting a cancellation while the app-server may still deliver it.
+      throw new Error(
+        `Could not inspect Codex's queued messages: ${error instanceof Error ? error.message : String(error)}`,
+      );
     }
-    if (!runtime) {
-      if (requireQueued) throw new Error("This message is no longer queued.");
-      return;
-    }
+    return null;
+  };
 
-    const queue = runtime.pendingSteers;
-    // Both runtimes that track in-flight dispatches splice the row out of the
-    // queue before the dispatch completes, so without this the user would be
-    // told the message is "no longer queued" while it is in fact being sent.
-    if (
-      requireQueued
-      && (runtime.kind === "claude" || runtime.kind === "cursor")
-      && runtime.dispatchingSteerIds.has(steerId)
-    ) {
-      throw new Error("This message is already being dispatched.");
-    }
-    const idx = queue.findIndex((s) => s.steerId === steerId);
-    if (idx !== -1) {
-      const [removed] = queue.splice(idx, 1);
-      if (runtime.kind === "claude" && removed) runtime.knownQueuedMessages.delete(removed.uuid);
-    } else if (requireQueued) {
-      throw new Error("This message is no longer queued.");
-    }
-    // Always emit the cancelled notice — even when the steer already left the
-    // server-side queue (e.g. dispatched inline before this call landed) — so
-    // the client display clears the staged chip on the delete-button path.
+  const finalizeCancelledSteer = (
+    managed: ManagedChatSession,
+    steerId: string,
+    turnId?: string | null,
+  ): void => {
+    forgetPersistedSteer(managed, steerId);
     claimSteerSettlement(managed, steerId);
     emitChatEvent(managed, {
       type: "system_notice",
       noticeKind: "info",
       steerId,
       message: "Queued message cancelled.",
-      turnId: runtime.activeTurnId ?? undefined,
+      turnId: turnId ?? undefined,
     });
     persistChatState(managed);
+  };
+
+  const cancelSteer = async ({ sessionId, steerId, requireQueued = false }: AgentChatCancelSteerArgs): Promise<void> => {
+    const managed = ensureManagedSession(sessionId);
+    const runtime = managed.runtime;
+    if (runtime?.kind === "codex") {
+      const submissionId = runtime.queuedSubmissionBySteerId.get(steerId)
+        ?? await recoverCodexQueueSubmissionId(managed, runtime, steerId);
+      const threadId = managed.session.threadId;
+      if (submissionId && threadId) {
+        try {
+          await runtime.request("thread/queue/delete", { threadId, id: submissionId });
+        } catch (error) {
+          // The submission is still on the app-server queue and will run when
+          // the turn ends. Clearing the chip here would report a cancellation
+          // that did not happen, so keep the mapping and raise instead.
+          runtime.queuedSubmissionBySteerId.set(steerId, submissionId);
+          logger.warn("codex.queue.delete_failed", {
+            sessionId,
+            error: error instanceof Error ? error.message : String(error),
+          });
+          throw new Error(
+            `Codex would not drop the queued message: ${error instanceof Error ? error.message : String(error)}`,
+          );
+        }
+      } else if (requireQueued) {
+        throw new Error("This message is no longer queued.");
+      }
+      // No submission means no queue holds the message — clear the chip rather
+      // than leaving a control that does nothing every time it is pressed.
+      runtime.queuedSubmissionBySteerId.delete(steerId);
+    } else if (!runtime) {
+      if (requireQueued) throw new Error("This message is no longer queued.");
+      // A torn-down session holds no local queue, so the staged chip is the
+      // only thing left to cancel. The shared finalizer also drops the steer
+      // from persisted state before a future runtime can hydrate it.
+    } else {
+      const queue = runtime.pendingSteers;
+      // Both runtimes that track in-flight dispatches splice the row out of the
+      // queue before the dispatch completes, so without this the user would be
+      // told the message is "no longer queued" while it is in fact being sent.
+      if (
+        requireQueued
+        && (runtime.kind === "claude" || runtime.kind === "cursor")
+        && runtime.dispatchingSteerIds.has(steerId)
+      ) {
+        throw new Error("This message is already being dispatched.");
+      }
+      const idx = queue.findIndex((s) => s.steerId === steerId);
+      if (idx !== -1) {
+        const [removed] = queue.splice(idx, 1);
+        if (runtime.kind === "claude" && removed) runtime.knownQueuedMessages.delete(removed.uuid);
+      } else if (requireQueued) {
+        throw new Error("This message is no longer queued.");
+      }
+    }
+
+    // Always emit the cancelled notice — even when the steer already left the
+    // server-side queue (e.g. dispatched inline before this call landed) — so
+    // the client display clears the staged chip on the delete-button path.
+    finalizeCancelledSteer(managed, steerId, runtime?.activeTurnId);
   };
 
   const editSteer = async ({ sessionId, steerId, text }: AgentChatEditSteerArgs): Promise<void> => {
@@ -43104,7 +43222,11 @@ export function createAgentChatService(args: {
     const managed = ensureManagedSession(sessionId);
     const runtime = managed.runtime;
     if (runtime?.kind === "codex") {
-      const submissionId = runtime.queuedSubmissionBySteerId.get(steerId);
+      // Same lost-mapping case as cancelSteer: recover from the server queue
+      // before deciding the message is gone, or an edit after a restart is a
+      // silent no-op.
+      const submissionId = runtime.queuedSubmissionBySteerId.get(steerId)
+        ?? await recoverCodexQueueSubmissionId(managed, runtime, steerId);
       if (!submissionId) return;
       const threadId = managed.session.threadId;
       if (!threadId) return;

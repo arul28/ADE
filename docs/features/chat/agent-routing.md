@@ -12,6 +12,7 @@ where the machinery lives.
 | `apps/desktop/src/shared/modelProfiles.ts` | Curated selection helpers (task routing, default pickers). |
 | `apps/desktop/src/shared/chatModelSwitching.ts` | `canSwitchChatSessionModel` / `filterChatModelIdsForSession` -- rules for mid-session model changes. |
 | `apps/desktop/src/main/services/chat/agentChatService.ts` | `handoffSession`, permission translation, per-provider adapter. |
+| `apps/desktop/src/shared/cursorModes.ts` | Canonical Cursor mode vocabulary and compatibility mapping from the legacy ADE permission field; permission-only full-auto/plan launches persist the native mode that the UI and later clients read. |
 | `apps/desktop/src/main/utils/codexComputerUse.ts` | macOS-only signed Codex Computer Use MCP resolver. Requires explicit Codex config opt-in and verifies the standalone OpenAI client before it can be injected into a chat or CLI runtime. |
 | `apps/desktop/src/shared/cliLaunch.ts` | Tracked provider CLI start/resume builders, including model/reasoning/permission flags and the canonical `computer_use` MCP overrides for Codex. Reasoning/fast variants are per-provider: Claude/Codex/Droid/Pi keep their flags, but tracked OpenCode launches always run the root TUI (`opencode [-m model] [--agent plan] [--prompt …]`) — no `run --interactive` branch and no `--variant`, because the root command silently drops unknown args; variants remain a chat-runtime feature. |
 | `apps/desktop/src/main/services/ai/providerRuntimeHealth.ts` | Tracks provider readiness/auth/network failures so the UI can surface degraded states. |
@@ -764,13 +765,31 @@ OpenCode, Pi and Droid keeps its `stop_and_clear` contract.
 
 ### Abstract-to-native mapping
 
-`AgentChatPermissionMode` is `default | plan | edit | full-auto | config-toml`.
+`AgentChatPermissionMode` is `default | auto | plan | edit | full-auto | config-toml`.
 `providerOptions.ts` exposes `mapPermissionModeToNativeFields()`, which
 translates the abstract value into the correct provider-native fields:
 
 - `claude`: `claudePermissionMode = "default" | "auto" | "plan" | "acceptEdits" | "bypassPermissions"`. The `auto` mode hands permission decisions to the SDK's automatic gate and surfaces in the desktop and `ade code` permission pickers alongside the existing modes.
 - `codex`: `codexApprovalPolicy` + `codexSandbox` pair.
 - `opencode`: `opencodePermissionMode = "plan" | "edit" | "full-auto"`.
+- `cursor`: `opencodePermissionMode` carries the collapsed level, and
+  `cursorModeId` carries the native mode Cursor itself names.
+  `legacyPermissionModeToCursorModeId` (`shared/cursorModes.ts`) maps
+  `full-auto` -> `"full-auto"` and `plan` -> `"plan"`, and returns **null** for
+  everything else: `default` and `edit` both run as Cursor `agent`, and `ask` is
+  a deliberate user choice with no legacy spelling. Returning null keeps absence
+  absent for the same reason Droid does — a materialised `agent` is read back as
+  a real selection on the next launch and pins the chat to it. The derivation
+  fills only when the caller named no mode
+  (`applyCursorModeIdFromLegacyPermissionMode`, run from both
+  `normalizeSessionNativePermissionControls` and
+  `hydrateNativePermissionControls`), so an explicit `cursorModeId` always wins;
+  an explicit `permissionMode` **update** overwrites through
+  `applyLegacyPermissionModeToNativeControls`, so lowering the level clears a
+  derived `full-auto` instead of leaving it pinned. Without this a
+  `permissionMode`-only create — `ade new chat --provider cursor --permissions
+  full-auto`, `chat.createSession`, mobile/web `chat.create`, the `@ade-dev`
+  SDK — ran full-auto while every mode-reading surface reported `agent`.
 - `droid`: `droidPermissionMode = "read-only" | "auto-low" | "auto-medium" | "auto-high" | "agi"`, or **absent** when the user has picked nothing. Absent is meaningful: it lets `~/.factory/settings.json` resolve autonomy, so nothing materialises a fallback onto the session. See [Provider config ownership](#provider-config-ownership).
 - `pi`: no provider-specific permission field — the abstract `permissionMode`
   *is* Pi's native field. It is read directly by

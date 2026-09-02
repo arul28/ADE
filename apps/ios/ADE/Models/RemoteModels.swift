@@ -3503,6 +3503,10 @@ struct AgentChatSteerRequest: Codable, Equatable {
 struct AgentChatCancelSteerRequest: Codable, Equatable {
   var sessionId: String
   var steerId: String
+  /// The staged-row cancel path must fail if the host already delivered the
+  /// steer; otherwise a mobile refresh/cancel race can leave the user thinking
+  /// the message was removed while it still runs.
+  var requireQueued: Bool? = nil
 }
 
 struct AgentChatEditSteerRequest: Codable, Equatable {

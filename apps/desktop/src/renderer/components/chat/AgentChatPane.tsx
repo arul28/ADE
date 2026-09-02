@@ -13391,7 +13391,14 @@ export function AgentChatPane({
             pendingSteers={pendingSteers}
             onCancelSteer={(steerId) => {
               if (selectedSessionId) {
-                void window.ade.agentChat.cancelSteer({ sessionId: selectedSessionId, steerId }, chatRuntimePinRef.current);
+                // A cancel that fails leaves the message queued and the agent
+                // will still send it. Report it the way the edit and dispatch
+                // paths do rather than dropping the rejection on the floor.
+                void window.ade.agentChat
+                  .cancelSteer({ sessionId: selectedSessionId, steerId }, chatRuntimePinRef.current)
+                  .catch((error: unknown) => {
+                    setError(`Couldn't remove the queued message: ${error instanceof Error ? error.message : String(error)}`);
+                  });
               }
             }}
             onEditSteer={(steerId, text, queuedAttachments, queuedContextAttachments) => {

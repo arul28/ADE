@@ -1663,7 +1663,7 @@ describe("steer helpers", () => {
     expect(calls).toEqual([
       { domain: "chat", action: "steer", args: { sessionId: "chat-1", text: "while busy" } },
       { domain: "chat", action: "editSteer", args: { sessionId: "chat-1", steerId: "steer-1", text: "updated" } },
-      { domain: "chat", action: "cancelSteer", args: { sessionId: "chat-1", steerId: "steer-1" } },
+      { domain: "chat", action: "cancelSteer", args: { sessionId: "chat-1", steerId: "steer-1", requireQueued: true } },
       { domain: "chat", action: "dispatchSteer", args: { sessionId: "chat-1", steerId: "steer-1", mode: "inline" } },
     ]);
   });

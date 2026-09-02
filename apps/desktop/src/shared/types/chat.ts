@@ -207,6 +207,14 @@ export type AgentChatCodexSandbox = "read-only" | "workspace-write" | "danger-fu
 export type AgentChatCodexConfigSource = "flags" | "config-toml";
 export type AgentChatOpenCodePermissionMode = "plan" | "edit" | "full-auto" | "config-toml";
 export type AgentChatDroidPermissionMode = "read-only" | "auto-low" | "auto-medium" | "auto-high" | "agi";
+/** Public Droid-native permission values accepted by chat creation surfaces. */
+export const AGENT_CHAT_DROID_PERMISSION_MODE_VALUES = [
+  "read-only",
+  "auto-low",
+  "auto-medium",
+  "auto-high",
+  "agi",
+] as const satisfies readonly AgentChatDroidPermissionMode[];
 
 export type AgentChatResumeFailureKind = "thread_missing" | "provider_environment" | "transient" | "unknown";
 export type AgentChatSpawnKind = "subagent" | "peer";
@@ -1609,6 +1617,15 @@ export type AgentChatEventHistoryPage = {
 };
 
 export type AgentChatPermissionMode = "default" | "auto" | "plan" | "edit" | "full-auto" | "config-toml";
+/** Runtime vocabulary shared by chat creation, CLI launches, and CTO tools. */
+export const AGENT_CHAT_PERMISSION_MODE_VALUES = [
+  "default",
+  "auto",
+  "plan",
+  "edit",
+  "full-auto",
+  "config-toml",
+] as const satisfies readonly AgentChatPermissionMode[];
 export type AgentChatExecutionMode = "focused" | "parallel" | "subagents" | "teams";
 export type AgentChatInteractionMode =
   | "default"

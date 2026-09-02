@@ -1,5 +1,6 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
 import { createCtoOperatorTools, type CtoOperatorToolDeps } from "./ctoOperatorTools";
+import { AGENT_CHAT_PERMISSION_MODE_VALUES } from "../../../../shared/types/chat";
 
 // Mock only execFileSync on node:child_process so searchCodebase can exercise it deterministically.
 // Preserve the rest of the module (e.g. spawn, exec) for unrelated tests.
@@ -341,6 +342,60 @@ describe("createCtoOperatorTools", () => {
         count: 1,
         truncated: false,
       });
+    });
+
+    it("forwards an explicit spawnChat permissionMode to the chat create contract", async () => {
+      const deps = buildDeps();
+      const tools = createCtoOperatorTools(deps);
+
+      await (tools.spawnChat as any).execute({
+        title: "Full auto worker",
+        permissionMode: "full-auto",
+      });
+
+      expect(deps.createChat).toHaveBeenCalledWith(expect.objectContaining({
+        permissionMode: "full-auto",
+      }));
+    });
+
+    it("forwards a provider-native Droid permission tier", async () => {
+      const deps = buildDeps();
+      const tools = createCtoOperatorTools(deps);
+
+      await (tools.spawnChat as any).execute({
+        droidPermissionMode: "auto-high",
+      });
+
+      expect(deps.createChat).toHaveBeenCalledWith(expect.objectContaining({
+        droidPermissionMode: "auto-high",
+      }));
+    });
+
+    it("omits permissionMode entirely when spawnChat is not given one", async () => {
+      const deps = buildDeps();
+      const tools = createCtoOperatorTools(deps);
+
+      await (tools.spawnChat as any).execute({ title: "Default worker" });
+
+      // A substituted default here would be persisted as a real selection and
+      // pin the spawned chat to it. Absence has to stay absent.
+      expect(deps.createChat).toHaveBeenCalledWith(
+        expect.not.objectContaining({ permissionMode: expect.anything() }),
+      );
+    });
+
+    it("exposes the complete ADE permission contract at the schema layer", () => {
+      const tools = createCtoOperatorTools(buildDeps());
+
+      // The model reads the schema as the contract; values that fail deeper in
+      // the stack burn a turn. Keep this in lockstep with AgentChatPermissionMode
+      // and the ADE RPC spawnChat action.
+      for (const permissionMode of AGENT_CHAT_PERMISSION_MODE_VALUES) {
+        expect((tools.spawnChat as any).inputSchema.safeParse({ permissionMode }).success).toBe(true);
+      }
+      expect((tools.spawnChat as any).inputSchema.safeParse({ droidPermissionMode: "auto-high" }).success).toBe(true);
+      expect((tools.spawnChat as any).inputSchema.safeParse({ permissionMode: "yolo" }).success).toBe(false);
+      expect((tools.spawnChat as any).inputSchema.safeParse({}).success).toBe(true);
     });
 
     it("persists a requested chat title and returns navigation metadata when spawning chats", async () => {

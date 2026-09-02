@@ -3717,6 +3717,41 @@ describe("AgentChatPane submit recovery", () => {
     });
   });
 
+  it("reports a failed queued-message removal instead of dropping the rejection", async () => {
+    const session = buildSession("session-1", {
+      provider: "codex",
+      model: "gpt-5.4",
+    });
+    const { cancelSteer, emitChatEvent } = installAdeMocks({
+      sessions: [session],
+      transcript: buildStatusStartedTranscript(session.sessionId),
+    });
+    // A cancel that fails leaves the message queued and the agent still sends
+    // it, so a swallowed rejection reads as a cancellation that never happened.
+    cancelSteer.mockRejectedValueOnce(new Error("Codex would not drop the queued message: queue is locked"));
+
+    renderTabbedPane(session);
+    await screen.findByPlaceholderText("Steer the active turn...");
+
+    act(() => {
+      emitChatEvent({
+        sessionId: session.sessionId,
+        timestamp: "2026-03-24T05:57:46.000Z",
+        event: {
+          type: "user_message",
+          steerId: "steer-doomed",
+          deliveryState: "queued",
+          text: "Cancel me.",
+        },
+      });
+    });
+
+    fireEvent.click(await screen.findByRole("button", { name: "Remove queued message" }));
+
+    expect(await screen.findByText(/Couldn't remove the queued message/)).toBeTruthy();
+    expect(await screen.findByText(/queue is locked/)).toBeTruthy();
+  });
+
   it("selects Interrupt & send, then sends it atomically", async () => {
     const session = buildSession("session-1", {
       provider: "claude",
