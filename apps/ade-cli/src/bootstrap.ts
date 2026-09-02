@@ -137,6 +137,7 @@ import {
   captureAgentTurnSettledAnalytics,
   captureChatAutoResumeAnalytics,
   captureChatMentionsExpandedAnalytics,
+  captureClaudeHooksIgnoredAnalytics,
   captureSessionMetadataRegeneratedAnalytics,
 } from "../../desktop/src/main/services/analytics/agentTurnProductAnalytics";
 import { createSessionDeltaService } from "../../desktop/src/main/services/sessions/sessionDeltaService";
@@ -1438,6 +1439,11 @@ export async function createAdeRuntime(args: {
           pushEvent("runtime", event as unknown as Record<string, unknown>);
         },
         onTurnSettled: (event) => captureAgentTurnSettledAnalytics({
+          analytics: productAnalyticsService,
+          projectId,
+          event,
+        }),
+        onClaudeHooksIgnored: (event) => captureClaudeHooksIgnoredAnalytics({
           analytics: productAnalyticsService,
           projectId,
           event,

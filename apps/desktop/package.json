@@ -72,7 +72,7 @@
   },
   "//dependencies": "Only packages the PACKAGED runtime resolves from node_modules belong here: electron-builder ships every production dependency into app.asar. main/preload are bundled by tsup (dependencies stay external, so a bare require() in dist/main or dist/preload means the package must ship), the packaged ade-cli resolves its own externals through NODE_PATH into app.asar[.unpacked]/node_modules (see src/main/services/runtime/packagedNodePath.ts), and a few binaries are located by path. Everything the renderer uses is inlined into dist/renderer by Vite and belongs in devDependencies.",
   "dependencies": {
-    "@anthropic-ai/claude-agent-sdk": "0.3.220",
+    "@anthropic-ai/claude-agent-sdk": "0.3.258",
     "@cursor/sdk": "1.0.27",
     "@factory/droid-sdk": "0.2.0",
     "@linear/sdk": "^84.0.0",

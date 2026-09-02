@@ -13,6 +13,7 @@ import {
 } from "../../../shared/types/productAnalytics";
 import {
   captureAgentTurnSettledAnalytics,
+  captureClaudeHooksIgnoredAnalytics,
   captureSessionMetadataRegeneratedAnalytics,
 } from "./agentTurnProductAnalytics";
 import { sanitizeProductAnalyticsProperties } from "./productAnalyticsPolicy";
@@ -315,6 +316,81 @@ describe("productAnalyticsService", () => {
       surface: "api",
       properties: { feature: "chat", action: "mention_expanded", outcome: "completed", source: "runtime" },
       dedupeKey: "chat_mention_expanded",
+      minimumIntervalMs: 60 * 60_000,
+    })).toEqual({ accepted: false, reason: "duplicate" });
+    fs.rmSync(harness.root, { recursive: true, force: true });
+  });
+
+  it("accepts the chat hooks_ignored fact and bounds repeats by session dedupe", () => {
+    const captures: ProductAnalyticsCapture[] = [];
+    const analytics = settledAnalytics(captures);
+
+    captureClaudeHooksIgnoredAnalytics({
+      analytics,
+      projectId: "project-1",
+      event: { sessionId: "session-1" },
+    });
+
+    expect(captures).toEqual([{
+      event: "ade_feature_used",
+      surface: "api",
+      projectId: "project-1",
+      sessionId: "session-1",
+      dedupeKey: "chat_hooks_ignored:session-1",
+      minimumIntervalMs: 60 * 60_000,
+      properties: {
+        feature: "chat",
+        action: "hooks_ignored",
+        outcome: "failed",
+        provider: "claude",
+        source: "runtime",
+      },
+    }]);
+
+    expect(sanitizeProductAnalyticsProperties("ade_feature_used", {
+      feature: "chat",
+      action: "hooks_ignored",
+      outcome: "failed",
+      provider: "claude",
+      source: "runtime",
+      hook_name: "PreToolUse",
+    })).toEqual({
+      feature: "chat",
+      action: "hooks_ignored",
+      outcome: "failed",
+      provider: "claude",
+      source: "runtime",
+    });
+
+    const harness = makeHarness();
+    expect(harness.service.captureInternal({
+      event: "ade_feature_used",
+      surface: "api",
+      projectId: "project-1",
+      sessionId: "session-1",
+      properties: {
+        feature: "chat",
+        action: "hooks_ignored",
+        outcome: "failed",
+        provider: "claude",
+        source: "runtime",
+      },
+      dedupeKey: "chat_hooks_ignored:session-1",
+      minimumIntervalMs: 60 * 60_000,
+    })).toEqual({ accepted: true, reason: "accepted" });
+    expect(harness.service.captureInternal({
+      event: "ade_feature_used",
+      surface: "api",
+      projectId: "project-1",
+      sessionId: "session-1",
+      properties: {
+        feature: "chat",
+        action: "hooks_ignored",
+        outcome: "failed",
+        provider: "claude",
+        source: "runtime",
+      },
+      dedupeKey: "chat_hooks_ignored:session-1",
       minimumIntervalMs: 60 * 60_000,
     })).toEqual({ accepted: false, reason: "duplicate" });
     fs.rmSync(harness.root, { recursive: true, force: true });

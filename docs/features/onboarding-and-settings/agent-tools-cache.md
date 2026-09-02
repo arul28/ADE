@@ -128,7 +128,7 @@ profile — 650 MB must never roam.
   @openai/codex-darwin-arm64/0.144.5-darwin-arm64/
     vendor/aarch64-apple-darwin/bin/codex
     .install-complete
-  @anthropic-ai/claude-agent-sdk-darwin-arm64/0.3.220/
+  @anthropic-ai/claude-agent-sdk-darwin-arm64/0.3.258/
   opencode-darwin-arm64/1.18.14/
   .staging/
   .locks/
