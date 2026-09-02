@@ -63,6 +63,7 @@ const {
 const { catalogControlOptions, readCatalog, verifyCreateModel } = require("./modelSelection");
 const { createChatRuntime } = require("./runtime");
 const { clampFleetBudget } = require("./repoMatch");
+const tabBadge = require("./tabBadge");
 
 /** How long a fleet read is believed before an action refetches it. */
 const FLEET_CACHE_MS = 20_000;
@@ -78,11 +79,35 @@ let disposed = false;
 /** Unsubscribe functions for every event this plugin listens to. */
 const subscriptions = [];
 
+/** Finished runs the reader has not opened the fleet for. Cleared on view. */
+let unreadFinished = 0;
+/** How many hosts currently have the fleet panel on screen. */
+let fleetViewers = 0;
+
 /** The last assembled fleet, so an action does not refetch what it just read. */
 let cache = { at: 0, grouped: null, items: [], archivedCount: 0, lanes: [], webhookUrl: null };
 
 function log(level, message, fields) {
   sdk?.log(level, message, fields);
+}
+
+async function publishTabBadge() {
+  if (!sdk) return;
+  try {
+    await sdk.contributions.publish(
+      "surface",
+      tabBadge.TAB_ENTITY_ID,
+      "row-badge",
+      tabBadge.tabBadgePayload(unreadFinished),
+    );
+  } catch (error) {
+    log("debug", `Could not publish the tab badge: ${error?.message ?? error}`);
+  }
+}
+
+async function clearTabBadge() {
+  unreadFinished = 0;
+  await publishTabBadge();
 }
 
 /* ── The host, as this plugin uses it ────────────────────────────────────── */
@@ -426,7 +451,13 @@ exports.activate = async (ade) => {
     runtime.handleWebhook(payload)
       .then((result) => {
         // A status that changed a row is a fleet that changed too.
-        if (result && !result.duplicate && !result.unreadable) void refreshFleet();
+        if (result && !result.duplicate && !result.unreadable) {
+          if (result.triggerId === "cloud_finished" && fleetViewers === 0) {
+            unreadFinished = tabBadge.nextUnreadCount(unreadFinished, 1);
+            void publishTabBadge();
+          }
+          void refreshFleet();
+        }
       })
       .catch((error) => log("warn", `Could not handle a Cursor webhook: ${error?.message ?? error}`));
   }));
@@ -445,6 +476,8 @@ exports.activate = async (ade) => {
 
 exports.deactivate = async () => {
   disposed = true;
+  unreadFinished = 0;
+  fleetViewers = 0;
   runtime?.stopAllLadders();
   while (subscriptions.length) {
     try {
@@ -480,8 +513,19 @@ exports.actions = {
 
   /** Go to the fleet — the chat header button, the palette and the CLI. */
   async openFleet() {
+    void clearTabBadge();
     void refreshFleet();
     return { navigate: { panelId: "fleet" } };
+  },
+
+  /**
+   * The host fires this when the fleet panel is on screen. `{ viewed: false }`
+   * is the matching hide. Refcounted so a Work rail pane going idle while the
+   * tab is open does not start counting again.
+   */
+  async ackTabBadge(args) {
+    fleetViewers = tabBadge.applyViewerCount(fleetViewers, args?.viewed !== false);
+    if (fleetViewers > 0) await clearTabBadge();
   },
 
   /** One agent's detail page. The row's `onPress`. */

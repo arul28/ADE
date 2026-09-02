@@ -569,6 +569,35 @@ final class PluginPaneStore: ObservableObject {
   /// drops, which resets the reader's scroll position for no reason.
   var refreshAction: String? { selectedPanel?.refreshAction }
 
+  /// The action a visible pane dispatches so the plugin can clear a tab badge.
+  /// Independent of ``canInvoke`` for the same reason ``refreshAction`` is: the
+  /// declaration exists whether the socket can run it right now.
+  var viewAction: String? { selectedPanel?.viewAction }
+
+  /// Tell the plugin this pane is (or is not) on screen.
+  ///
+  /// Silent: a missing handler must not raise a banner — most plugins never
+  /// declare `viewAction`. Refcounted on the plugin side so a Work-rail host
+  /// going idle while this sheet is open does not clear a badge the reader is
+  /// still looking at.
+  func acknowledgeView(viewed: Bool) {
+    guard let actionId = viewAction, canInvoke else { return }
+    let pluginId = self.pluginId
+    let panelId = selectedPanelId ?? ""
+    Task { [weak self] in
+      guard let self else { return }
+      do {
+        _ = try await self.sync.invokePluginAction(
+          pluginId: pluginId,
+          actionId: actionId,
+          payload: ["panelId": panelId, "viewed": viewed]
+        )
+      } catch {
+        // A view ack that fails is not a control the reader pressed.
+      }
+    }
+  }
+
   /// Whether a pull gesture has anything to do.
   ///
   /// Two ways it does: the panel declared a refresh action, or this pane may ask

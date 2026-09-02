@@ -505,6 +505,34 @@ export function selectContributions<K extends PluginSocketKind>(
 }
 
 /**
+ * How many badges a plugin tab may show on the rail. One: a count, not a strip.
+ *
+ * Row badges stay at {@link PLUGIN_CONTRIBUTIONS_PER_SLOT_LIMIT} / the visible
+ * row cap of 2. A rail icon is 20px and cannot host a second chip.
+ */
+export const PLUGIN_TAB_BADGE_VISIBLE_LIMIT = 1;
+
+/**
+ * The one `row-badge` a plugin published for its own rail tab, or null.
+ *
+ * Reads the plugin-tab entity (`<pluginId>/<tabSurfaceId>`), keeps only rows
+ * that plugin owns, and takes the first after the host's order. A second
+ * plugin publishing against the same address does not appear on this tab.
+ */
+export function selectPluginTabBadge(
+  set: SurfaceContributionSet,
+  pluginId: string,
+  tabSurfaceId: string,
+): PluginContribution<"row-badge"> | null {
+  const badges = selectContributions(set, "row-badge", {
+    kind: "plugin-tab",
+    pluginId,
+    surfaceId: tabSurfaceId,
+  }).filter((entry) => entry.pluginId === pluginId);
+  return badges[0] ?? null;
+}
+
+/**
  * A context's identity, for memo dependencies.
  *
  * Contexts are rebuilt from row data on every render, so their object identity

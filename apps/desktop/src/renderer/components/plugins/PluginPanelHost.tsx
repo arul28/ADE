@@ -63,6 +63,7 @@ import {
   readPluginActionNavigation,
   readPluginActionPrompt,
   readPluginPanelRefreshAction,
+  readPluginPanelViewAction,
   type PluginActionMessage,
 } from "../../../shared/plugins/sdk";
 import { applyPluginDialogEdit } from "./sockets/dialogTarget";
@@ -696,6 +697,23 @@ export function PluginPanelHost({
   // Declared on the manifest and stamped onto the stored schema by the writer,
   // so a plugin cannot mint the gesture for an action it never declared.
   const refreshAction = readPluginPanelRefreshAction(state.record?.schema);
+  const viewAction = readPluginPanelViewAction(state.record?.schema);
+
+  /**
+   * Tell the plugin this panel is (or is not) on screen.
+   *
+   * Silent: a missing handler is `unsupported_method` and must not toast —
+   * most plugins never declare `viewAction`. Refcounted on the plugin side so
+   * a Work-rail host going idle while the tab host is active does not clear
+   * a badge the reader is still looking at.
+   */
+  React.useEffect(() => {
+    if (!viewAction || !active) return;
+    void invokePluginAction(pluginId, viewAction, { panelId, viewed: true }).catch(() => {});
+    return () => {
+      void invokePluginAction(pluginId, viewAction, { panelId, viewed: false }).catch(() => {});
+    };
+  }, [active, viewAction, pluginId, panelId]);
 
   /**
    * Run the declared refresh action, then refetch.

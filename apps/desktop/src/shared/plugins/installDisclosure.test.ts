@@ -81,6 +81,13 @@ describe("socket kind labels", () => {
         .toBe(`Toolbar button in ${PLUGIN_SURFACE_LABELS[surface]}`);
     }
   });
+
+  it("names a row-badge on app as a notification on the plugin's tab", () => {
+    expect(describePluginContributionPlacement("row-badge", "app"))
+      .toBe("Notification badge on its tab");
+    expect(describePluginContributionPlacement("row-badge", "lanes"))
+      .toBe("Row badge in Lanes");
+  });
 });
 
 /**

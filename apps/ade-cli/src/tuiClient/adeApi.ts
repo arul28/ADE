@@ -1676,7 +1676,11 @@ export async function loadPluginTuiContributions(
   const records = await Promise.all(
     PLUGIN_TUI_SURFACES.map((target) => readPluginContributionRecords(connection, target)),
   );
-  const rowsBySurface = { lanes: [], work: [] } as { lanes: PluginContributionRow[]; work: PluginContributionRow[] };
+  const rowsBySurface = { lanes: [], work: [], app: [] } as {
+    lanes: PluginContributionRow[];
+    work: PluginContributionRow[];
+    app: PluginContributionRow[];
+  };
   PLUGIN_TUI_SURFACES.forEach((target, index) => {
     rowsBySurface[target.surface] = pluginContributionRows(records[index] ?? []);
   });

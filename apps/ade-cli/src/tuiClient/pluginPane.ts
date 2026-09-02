@@ -90,7 +90,7 @@ import {
   type VocabTableColumn,
   type VocabTone,
 } from "../../../desktop/src/shared/plugins/vocabulary";
-import { readPluginPanelRefreshAction } from "../../../desktop/src/shared/plugins/sdk";
+import { readPluginPanelRefreshAction, readPluginPanelViewAction } from "../../../desktop/src/shared/plugins/sdk";
 import type {
   PluginCollectionRow,
   PluginPanelRecord as HostPluginPanelRecord,
@@ -625,6 +625,12 @@ export type PluginPaneModel = {
    * and refusing the gesture there would strand the reader on the card.
    */
   refreshAction: string | null;
+  /**
+   * The plugin action this pane dispatches when it is on screen, when the
+   * manifest declared one. `null` means the host does not tell the plugin the
+   * reader is looking. Fired on open, never on the 10s poll.
+   */
+  viewAction: string | null;
   /**
    * Rows at the top that stay on screen: search, then nav actions.
    *
@@ -1620,6 +1626,7 @@ export function buildPluginPaneModel(input: PluginPaneInput): PluginPaneModel {
     // No row means no schema to read a declaration off, so `r` stays the plain
     // refetch it has always been.
     refreshAction: null as string | null,
+    viewAction: null as string | null,
     chromeHeaderCount: 0,
     chromeFooterCount: 0,
   };
@@ -1663,6 +1670,7 @@ export function buildPluginPaneModel(input: PluginPaneInput): PluginPaneModel {
       fallback,
       rows,
       refreshAction: readPluginPanelRefreshAction(record.schema),
+      viewAction: readPluginPanelViewAction(record.schema),
     };
   }
 
@@ -1740,6 +1748,7 @@ export function buildPluginPaneModel(input: PluginPaneInput): PluginPaneModel {
     fallback: parsed.panel.fallback,
     status: "ok",
     refreshAction: readPluginPanelRefreshAction(record.schema),
+    viewAction: readPluginPanelViewAction(record.schema),
     chromeHeaderCount,
     chromeFooterCount,
   };

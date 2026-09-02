@@ -5,8 +5,18 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { TabNav } from "./TabNav";
-import { useAppStore } from "../../state/appStore";
+import { useAppStore, rootAppStoreApi } from "../../state/appStore";
 import { resetBuiltinSurfacePlugins, seedBuiltinSurfacePlugins } from "../../../test/builtinSurfaces";
+
+const { tabBadgeState } = vi.hoisted(() => ({
+  tabBadgeState: {
+    map: new Map<string, { text: string; tone: "accent"; tooltip: string | null }>(),
+  },
+}));
+
+vi.mock("../plugins/sockets/usePluginTabBadges", () => ({
+  usePluginTabBadges: () => tabBadgeState.map,
+}));
 
 function resetStore() {
   useAppStore.setState({
@@ -52,6 +62,7 @@ describe("TabNav", () => {
   afterEach(() => {
     vi.useRealTimers();
     cleanup();
+    tabBadgeState.map.clear();
     resetBuiltinSurfacePlugins();
     window.localStorage.clear();
     Object.defineProperty(globalThis.window, "ade", {
@@ -220,5 +231,55 @@ describe("TabNav", () => {
     expect(screen.getByRole("link", { name: "Settings" }).getAttribute("href")).toBe(
       "/settings?tab=appearance#chat-launch-clipboard",
     );
+  });
+
+  it("draws a published plugin-tab badge and hides it while that tab is active", () => {
+    Object.defineProperty(globalThis.window, "ade", {
+      configurable: true,
+      writable: true,
+      value: {
+        ...((globalThis.window as unknown as { ade?: Record<string, unknown> }).ade ?? {}),
+        plugins: {
+          getPanel: async () => null,
+          getCollection: async () => [],
+        },
+      },
+    });
+    rootAppStoreApi.setState({
+      installedPlugins: [{
+        pluginId: "acme-notes",
+        displayName: "Notes",
+        version: "1.0.0",
+        enabled: true,
+        icon: null,
+        accent: null,
+        status: "running",
+        tabs: [{ id: "inbox", title: "Notes", panelId: "inbox" }],
+        theme: null,
+      }],
+      pluginsLoaded: true,
+    });
+    tabBadgeState.map.set("acme-notes", {
+      text: "3",
+      tone: "accent",
+      tooltip: "3 notes you have not opened",
+    });
+
+    const idle = render(
+      <MemoryRouter initialEntries={["/work"]}>
+        <TabNav />
+      </MemoryRouter>,
+    );
+    expect(screen.getByRole("link", { name: "Notes, 3 notes you have not opened" })).toBeTruthy();
+    expect(screen.getByText("3")).toBeTruthy();
+    idle.unmount();
+
+    render(
+      <MemoryRouter initialEntries={["/plugin/acme-notes"]}>
+        <TabNav />
+      </MemoryRouter>,
+    );
+    expect(screen.getByRole("link", { name: "Notes" }).getAttribute("data-active")).toBe("true");
+    expect(screen.queryByText("3")).toBeNull();
   });
 });

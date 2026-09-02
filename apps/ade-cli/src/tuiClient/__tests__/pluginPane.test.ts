@@ -224,6 +224,17 @@ describe("plugin pane model", () => {
     expect(build({ state: "missing" }).refreshAction).toBeNull();
   });
 
+  it("carries the panel's view action so opening the pane can ack a tab badge", () => {
+    expect(build(panel([], { viewAction: "ackTabBadge" })).viewAction).toBe("ackTabBadge");
+    expect(build(panel([])).viewAction).toBeNull();
+
+    const unreadable = build(panel([], { v: 99, viewAction: "ackTabBadge" }));
+    expect(unreadable.status).toBe("fallback");
+    expect(unreadable.viewAction).toBe("ackTabBadge");
+
+    expect(build({ state: "missing" }).viewAction).toBeNull();
+  });
+
   it("draws a rich row's badge and mono line, and its actions as numbered keys", () => {
     const model = build(panel([{
       component: "list",

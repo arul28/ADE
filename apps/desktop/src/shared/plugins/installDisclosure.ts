@@ -93,6 +93,12 @@ export function describePluginContributionPlacement(
   socket: PluginSocketKind,
   surface: PluginSurfaceId,
 ): string {
+  // A `row-badge` on `app` is the notification pill on the plugin's own tab,
+  // not a chip on an App row — App has no rows. Said that way so the install
+  // sheet and the per-contribution switch do not read as "Row badge in App".
+  if (socket === "row-badge" && surface === "app") {
+    return "Notification badge on its tab";
+  }
   return `${PLUGIN_SOCKET_KIND_LABELS[socket]} in ${PLUGIN_SURFACE_LABELS[surface]}`;
 }
 

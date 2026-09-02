@@ -1080,6 +1080,7 @@ export function createPluginSdkServer(deps: {
             // panel cannot mint a refresh gesture for an action it did not
             // declare, and a panel that dropped the declaration loses it here.
             refreshAction: declared?.refreshAction ?? null,
+            viewAction: declared?.viewAction ?? null,
             schema: params.schema,
             vocabVersion: manifest.vocabVersion,
           });

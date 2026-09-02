@@ -340,7 +340,10 @@ describe("what the manifest promises the platform", () => {
         ...(socket.actionId ? [socket.actionId] : []),
         ...(socket.menu ?? []).map((item) => item.actionId),
       ]),
-      ...parsed.panels.flatMap((panel) => (panel.refreshAction ? [panel.refreshAction] : [])),
+      ...parsed.panels.flatMap((panel) => [
+        ...(panel.refreshAction ? [panel.refreshAction] : []),
+        ...(panel.viewAction ? [panel.viewAction] : []),
+      ]),
       ...parsed.tools.map((tool) => tool.action ?? tool.name),
       ...parsed.automationSteps.map((step) => step.action),
       ...parsed.searchProviders.map((provider) => provider.action),
@@ -419,6 +422,7 @@ describe("installing it the way a user does", () => {
       "chat-header-action",
       "work-rail-pane",
       "command-palette-action",
+      "row-badge",
     ]);
     // Nothing here gates a compiled-in tab: the whole point of the extraction
     // is that a community author could have written this package.

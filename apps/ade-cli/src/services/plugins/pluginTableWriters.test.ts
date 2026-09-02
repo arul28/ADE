@@ -474,6 +474,42 @@ describe("plugin table writers", () => {
     expect(schema("forged")).toEqual({ v: 1, body: [], mobile: true, refreshAction: "refresh-fleet" });
   });
 
+  it("stamps the manifest's view action, and never the plugin's own", () => {
+    const schema = (panelId: string) => JSON.parse(db.get<{ schema_json: string }>(
+      "select schema_json from plugin_panels where plugin_id = ? and panel_id = ?",
+      ["graph", panelId],
+    )?.schema_json ?? "null") as Record<string, unknown>;
+    const put = (panelId: string, args: { schemaJson?: string; viewAction?: string | null }) =>
+      putPluginPanel(db, {
+        pluginId: "graph",
+        panelId,
+        title: "Panel",
+        icon: "graph",
+        surface: "work",
+        schemaJson: args.schemaJson ?? '{"v":1,"body":[]}',
+        vocabVersion: 1,
+        ...(args.viewAction === undefined ? {} : { viewAction: args.viewAction }),
+        nowIso: NOW,
+      });
+
+    put("fleet", { viewAction: "ack-tab-badge" });
+    expect(schema("fleet")).toEqual({ v: 1, body: [], mobile: true, viewAction: "ack-tab-badge" });
+
+    put("plain", {});
+    expect(schema("plain")).toEqual({ v: 1, body: [], mobile: true });
+
+    put("fleet", { viewAction: null });
+    expect(schema("fleet")).toEqual({ v: 1, body: [], mobile: true });
+
+    put("forged", { schemaJson: '{"v":1,"body":[],"viewAction":"delete-everything"}' });
+    expect(schema("forged")).toEqual({ v: 1, body: [], mobile: true });
+    put("forged", {
+      schemaJson: '{"v":1,"body":[],"viewAction":"delete-everything"}',
+      viewAction: "ack-tab-badge",
+    });
+    expect(schema("forged")).toEqual({ v: 1, body: [], mobile: true, viewAction: "ack-tab-badge" });
+  });
+
   it("keeps a schema it cannot stamp byte-identical", () => {
     // Not an object: there is nowhere to put the key, and inventing a wrapper
     // would turn an unrenderable panel into a differently unrenderable one.

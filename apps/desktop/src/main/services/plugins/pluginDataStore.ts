@@ -82,6 +82,11 @@ export type PluginDataStore = {
        * has no refresh gesture — see {@link PluginManifestPanel.refreshAction}.
        */
       refreshAction?: string | null;
+      /**
+       * The manifest's view action for this panel. Omitted means the host does
+       * not tell the plugin when this panel is on screen.
+       */
+      viewAction?: string | null;
     },
   ): void;
   /** The materialized panel row, which is what every client actually renders. */
@@ -300,6 +305,7 @@ export function createPluginDataStore(deps: {
           vocabVersion: Math.trunc(args.vocabVersion),
           ...(args.mobile === undefined ? {} : { mobile: args.mobile }),
           ...(args.refreshAction === undefined ? {} : { refreshAction: args.refreshAction }),
+          ...(args.viewAction === undefined ? {} : { viewAction: args.viewAction }),
           nowIso: nowIso(),
         });
       });

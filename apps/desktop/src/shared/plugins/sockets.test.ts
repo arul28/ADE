@@ -31,8 +31,10 @@ import {
   type PluginSocketKind,
 } from "./sockets";
 import {
+  parsePluginTabContributionEntityId,
   pluginContributionKeyForContext,
   pluginSurfaceContributionKey,
+  pluginTabContributionKey,
   type PluginActivityContext,
   type PluginComposerContext,
   type PluginDialogContext,
@@ -1108,6 +1110,34 @@ describe("surface-scoped dynamic rows", () => {
       expect(key.entityId).toBe(surface);
       expect(isPluginEntityKind(key.entityKind)).toBe(true);
     }
+  });
+});
+
+describe("plugin tab contribution addresses", () => {
+  it("round-trips pluginId/surfaceId and refuses ADE surface ids", () => {
+    expect(pluginTabContributionKey("ade-cursor-cloud", "fleet")).toEqual({
+      entityKind: "surface",
+      entityId: "ade-cursor-cloud/fleet",
+    });
+    expect(parsePluginTabContributionEntityId("ade-cursor-cloud/fleet")).toEqual({
+      pluginId: "ade-cursor-cloud",
+      surfaceId: "fleet",
+    });
+    for (const id of PLUGIN_SURFACE_IDS) {
+      expect(parsePluginTabContributionEntityId(id), id).toBeNull();
+    }
+    expect(parsePluginTabContributionEntityId("a/b/c")).toBeNull();
+    expect(parsePluginTabContributionEntityId("/fleet")).toBeNull();
+    expect(parsePluginTabContributionEntityId("cloud/")).toBeNull();
+    expect(parsePluginTabContributionEntityId("")).toBeNull();
+  });
+
+  it("keys a plugin-tab context the same way a publish does", () => {
+    expect(pluginContributionKeyForContext({
+      kind: "plugin-tab",
+      pluginId: "ade-cursor-cloud",
+      surfaceId: "fleet",
+    })).toEqual(pluginTabContributionKey("ade-cursor-cloud", "fleet"));
   });
 });
 

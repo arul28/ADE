@@ -114,6 +114,23 @@ describe("parsePluginManifest", () => {
     expect(parsePluginManifest(validManifest()).manifest?.panels[0]?.refreshAction).toBeUndefined();
   });
 
+  it("reads a panel's view action, and keeps the panel when it is malformed", () => {
+    const declared = parsePluginManifest(validManifest({
+      panels: [{ id: "fleet", schemaFile: "panels/fleet.json", viewAction: "ack-tab-badge" }],
+    }));
+    expect(declared.manifest?.panels[0]?.viewAction).toBe("ack-tab-badge");
+
+    for (const bad of [7, "", "not an identifier!", null]) {
+      const result = parsePluginManifest(validManifest({
+        panels: [{ id: "fleet", schemaFile: "panels/fleet.json", viewAction: bad }],
+      }));
+      expect(result.manifest?.panels[0]?.id, `${String(bad)} dropped the panel`).toBe("fleet");
+      expect(result.manifest?.panels[0]?.viewAction).toBeUndefined();
+    }
+
+    expect(parsePluginManifest(validManifest()).manifest?.panels[0]?.viewAction).toBeUndefined();
+  });
+
   // A badge with no label renders nothing. It used to parse clean and then
   // vanish downstream, which left an author with a manifest ADE said was fine
   // and a surface that never showed their contribution.

@@ -12,6 +12,7 @@ import {
   pluginRowBadgeStrip,
   pluginSocketSources,
   pluginSocketSupportedInTui,
+  pluginTabBadgeText,
   tuiLaneContext,
   tuiSessionContext,
 } from "../pluginSockets";
@@ -324,5 +325,39 @@ describe("the plugin actions pane", () => {
 
     await expect(invokePluginAction(connection, "graph", "auditLane", {}))
       .rejects.toThrow("plugin handler threw");
+  });
+});
+
+describe("plugin tab badges", () => {
+  it("reads the published unread mark for a plugin's first tab", () => {
+    const cloud = summary({
+      pluginId: "ade-cursor-cloud",
+      displayName: "Cursor Cloud",
+      surfaces: [{ kind: "tab", id: "fleet", title: "Cursor Cloud", panelId: "fleet" }],
+    });
+    const set = buildPluginTuiContributions(
+      pluginSocketSources(
+        [cloud],
+        new Map([["ade-cursor-cloud", {
+          sockets: [{ socket: "row-badge", surface: "app", id: "tab-badge", label: "Unread" }],
+        }]]),
+      ),
+      {
+        lanes: [],
+        work: [],
+        app: pluginContributionRows([{
+          entityKind: "surface",
+          entityId: "ade-cursor-cloud/fleet",
+          pluginId: "ade-cursor-cloud",
+          socket: "row-badge",
+          surface: "app",
+          socketId: "tab-badge",
+          payload: { text: "3", tone: "accent", id: "tab-badge" },
+          updatedAt: "2026-09-02T00:00:00.000Z",
+        }]),
+      },
+    );
+    expect(pluginTabBadgeText(set.app, cloud)).toBe("3");
+    expect(pluginTabBadgeText(set.app, summary())).toBeNull();
   });
 });

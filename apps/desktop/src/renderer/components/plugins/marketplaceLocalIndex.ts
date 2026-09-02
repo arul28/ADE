@@ -777,7 +777,7 @@ const VOICE = manifest({
  */
 const CURSOR_CLOUD = manifest({
   name: "ade-cursor-cloud",
-  version: "1.0.0",
+  version: "1.1.0",
   displayName: "Cursor Cloud",
   description: "Launch, watch and adopt Cursor Cloud agents from ADE. Needs a Cursor API key.",
   icon: "brand:cursor",
@@ -806,7 +806,7 @@ const CURSOR_CLOUD = manifest({
     mobile: true,
   }],
   panels: [
-    { id: "fleet", schemaFile: "panels/fleet.json", title: "Cursor Cloud", icon: "cloud", refreshAction: "refreshFleet" },
+    { id: "fleet", schemaFile: "panels/fleet.json", title: "Cursor Cloud", icon: "cloud", refreshAction: "refreshFleet", viewAction: "ackTabBadge" },
     { id: "agent", schemaFile: "panels/agent.json", title: "Agent", icon: "cloud", refreshAction: "refreshAgent" },
     { id: "launch", schemaFile: "panels/launch.json", title: "Launch in Cursor Cloud", icon: "cloud" },
   ],
@@ -850,6 +850,12 @@ const CURSOR_CLOUD = manifest({
       label: "Cursor Cloud fleet",
       icon: "cloud",
       actionId: "openFleet",
+    },
+    {
+      socket: "row-badge",
+      surface: "app",
+      id: "tab-badge",
+      label: "Unread finished agents",
     },
   ],
   // `laneSecrets` and `deliveries` stay local: one holds per-machine secrets

@@ -22,6 +22,9 @@ import { pluginOwnsBuiltinTab } from "../plugins/builtinTabs";
 import { useVisibleBuiltinRoutes } from "../plugins/useBuiltinTabs";
 import { revealLabel } from "../../lib/platform";
 import { isWebClientMode, pluginTabsAvailable, WEB_CLIENT_TAB_PATHS } from "../../lib/webClientMode";
+import { SOCKET_TONE_COLOR } from "../plugins/sockets/socketUi";
+import { usePluginTabBadges } from "../plugins/sockets/usePluginTabBadges";
+import type { PluginBadgeTone } from "../../../shared/plugins/sockets";
 import {
   accountAvatarImage,
   accountInitials,
@@ -50,6 +53,8 @@ type TabNavItem = {
   accent?: string | null;
   /** Plugin tabs only: draws the attention dot. */
   attention?: boolean;
+  /** Plugin tabs only: a published `row-badge` on this tab. Hidden while active. */
+  badge?: { text: string; tone: PluginBadgeTone; tooltip: string | null } | null;
 };
 
 const mainItems: TabNavItem[] = [
@@ -314,8 +319,18 @@ export function TabNav({ githubStatus }: { githubStatus?: GitHubStatus | null })
           {/* Plugin attention dot. Same socket as Work and CTO above, but driven
               by the plugin registry rather than a bespoke store field — a plugin
               sets `attention` and the rail shows a dot. Off unless a plugin asks
-              for it. */}
-          {it.attention ? (
+              for it. A published tab badge wins: a count and a dot on a 20px
+              icon is two signals for one fact. */}
+          {it.badge && !(isActiveAllowed && isActive) ? (
+            <span
+              title={it.badge.tooltip || `${it.label}: ${it.badge.text}`}
+              aria-hidden="true"
+              className="absolute -right-1.5 -top-1.5 inline-flex min-w-[13px] h-[13px] items-center justify-center rounded-full px-[3px] font-mono font-bold leading-none text-[8px] text-white"
+              style={{ background: SOCKET_TONE_COLOR[it.badge.tone] }}
+            >
+              {it.badge.text}
+            </span>
+          ) : it.attention ? (
             <span
               title={`${it.label} needs your attention`}
               className="absolute -right-1 -top-1 ade-status-dot ade-status-dot-warning"
@@ -325,10 +340,16 @@ export function TabNav({ githubStatus }: { githubStatus?: GitHubStatus | null })
       </span>
     );
 
+    const visibleBadge = it.badge && !(isActiveAllowed && isActive) ? it.badge : null;
+    const tabAriaLabel = visibleBadge
+      ? `${it.label}, ${visibleBadge.tooltip || visibleBadge.text}`
+      : undefined;
+
     const row = isActiveAllowed ? (
       <NavLink
         to={navTarget}
         data-active={isActive ? "true" : undefined}
+        aria-label={tabAriaLabel}
         onClick={() => {
           logRendererDebugEvent("renderer.tab_nav.click", {
             projectRoot: activeProjectRoot,
@@ -363,6 +384,7 @@ export function TabNav({ githubStatus }: { githubStatus?: GitHubStatus | null })
       <div
         role="link"
         aria-disabled="true"
+        aria-label={tabAriaLabel}
         tabIndex={0}
         className="ade-shell-sidebar-item group relative flex w-full cursor-not-allowed items-center transition-colors duration-100 opacity-40"
       >
@@ -414,29 +436,38 @@ export function TabNav({ githubStatus }: { githubStatus?: GitHubStatus | null })
   // client never shows a nav item that opens an empty shell.
   const installedPlugins = useRootAppStore((s) => s.installedPlugins);
   const canServePluginTabs = pluginTabsAvailable();
-  const pluginItems = React.useMemo<TabNavItem[]>(
+  const pluginTabSpecs = React.useMemo(
     () =>
       canServePluginTabs
         ? installedPlugins
-            // A plugin that gates a built-in tab has no panel of its own, and
-            // the tab it owns is already drawn above — a second entry would open
-            // an empty plugin page wearing the same name.
             .filter((plugin) => plugin.enabled
               && (plugin.tabs?.length ?? 0) > 0
               && !pluginOwnsBuiltinTab(plugin))
-            .map((plugin) => {
-              const tab = plugin.tabs[0]!;
-              return {
-                to: `/plugin/${plugin.pluginId}`,
-                label: tab.title || plugin.displayName,
-                icon: pluginIcon(tab.icon ?? plugin.icon, plugin.brandIcons),
-                accent: plugin.accent,
-                attention: plugin.attention === true,
-                description: `A tab from the ${plugin.displayName} plugin.`,
-              };
-            })
+            .map((plugin) => ({
+              pluginId: plugin.pluginId,
+              surfaceId: plugin.tabs[0]!.id,
+              plugin,
+            }))
         : [],
     [canServePluginTabs, installedPlugins],
+  );
+  const pluginTabBadges = usePluginTabBadges(pluginTabSpecs);
+  const pluginItems = React.useMemo<TabNavItem[]>(
+    () =>
+      pluginTabSpecs.map(({ plugin }) => {
+        const tab = plugin.tabs[0]!;
+        const badge = pluginTabBadges.get(plugin.pluginId) ?? null;
+        return {
+          to: `/plugin/${plugin.pluginId}`,
+          label: tab.title || plugin.displayName,
+          icon: pluginIcon(tab.icon ?? plugin.icon, plugin.brandIcons),
+          accent: plugin.accent,
+          attention: plugin.attention === true,
+          badge,
+          description: `A tab from the ${plugin.displayName} plugin.`,
+        };
+      }),
+    [pluginTabBadges, pluginTabSpecs],
   );
 
   return (

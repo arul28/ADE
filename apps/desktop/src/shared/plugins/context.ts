@@ -23,6 +23,16 @@
 
 import type { PluginDialogKind, PluginEntityKind, PluginSurfaceId } from "./sockets";
 
+/**
+ * The ADE surface a plugin declares its tab badge on.
+ *
+ * Window chrome, same family as the command palette and the activity pane: the
+ * badge is not a row on Work or Lanes, it is a mark on the plugin's own rail
+ * item. Publishing against `app` is what lets every client load it with the
+ * other window-scoped contributions.
+ */
+export const PLUGIN_TAB_BADGE_SURFACE: PluginSurfaceId = "app";
+
 export type PluginPrContext = {
   kind: "pr";
   number: number;
@@ -180,6 +190,21 @@ export type PluginSurfaceOnlyContext = {
 };
 
 /**
+ * A plugin's own rail tab, for a `row-badge` published against that tab.
+ *
+ * Distinct from {@link PluginSurfaceOnlyContext}: `{kind: "surface", surface: "app"}`
+ * selects contributions addressed to the App chrome itself (palette, activity).
+ * A tab badge is addressed to one plugin's tab, under
+ * `{entityKind: "surface", entityId: "<pluginId>/<tabSurfaceId>"}`. ADE's own
+ * surface ids have no slash, so the two addresses cannot collide.
+ */
+export type PluginTabContext = {
+  kind: "plugin-tab";
+  pluginId: string;
+  surfaceId: string;
+};
+
+/**
  * What the reader was looking at when they fired an ambient control.
  *
  * The command palette is the case this exists for. A ⌘K entry belongs to the
@@ -209,7 +234,8 @@ export type PluginSurfaceContext =
   | PluginComposerContext
   | PluginDialogContext
   | PluginActivityContext
-  | PluginSurfaceOnlyContext;
+  | PluginSurfaceOnlyContext
+  | PluginTabContext;
 
 /** Lowercase extension including the dot, derived from a path. */
 export function pluginFileExtension(filePath: string): string | null {
@@ -255,7 +281,37 @@ export function pluginContributionKeyForContext(
     case "activity":
     case "surface":
       return null;
+    case "plugin-tab":
+      return pluginTabContributionKey(context.pluginId, context.surfaceId);
   }
+}
+
+/**
+ * The `(entityKind, entityId)` a plugin-tab badge is published under.
+ *
+ * `entityId` is `"<pluginId>/<tabSurfaceId>"` with exactly one slash. ADE
+ * surface ids (`work`, `app`, …) contain none, so a row addressed here cannot
+ * be mistaken for a toolbar contribution on an ADE tab.
+ */
+export function pluginTabContributionKey(
+  pluginId: string,
+  surfaceId: string,
+): { entityKind: PluginEntityKind; entityId: string } {
+  return { entityKind: "surface", entityId: `${pluginId}/${surfaceId}` };
+}
+
+/**
+ * Split a plugin-tab contribution entity id. Null when it is not one — an ADE
+ * surface id, a path, or anything with zero or two-plus slashes.
+ */
+export function parsePluginTabContributionEntityId(
+  entityId: string,
+): { pluginId: string; surfaceId: string } | null {
+  const slash = entityId.indexOf("/");
+  if (slash <= 0 || slash !== entityId.lastIndexOf("/") || slash === entityId.length - 1) {
+    return null;
+  }
+  return { pluginId: entityId.slice(0, slash), surfaceId: entityId.slice(slash + 1) };
 }
 
 /**

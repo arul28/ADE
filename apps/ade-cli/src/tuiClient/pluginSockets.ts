@@ -43,6 +43,7 @@ import {
   buildContributionSet,
   contributionKey,
   selectContributions,
+  selectPluginTabBadge,
   EMPTY_CONTRIBUTION_SET,
   type PluginSocketIdentity,
   type SurfaceContributionSet,
@@ -90,6 +91,7 @@ export const PLUGIN_TUI_SOCKET_KINDS: readonly PluginSocketKind[] =
 export const PLUGIN_TUI_SURFACES = [
   { surface: "lanes", entityKind: "lane" },
   { surface: "work", entityKind: "session" },
+  { surface: "app", entityKind: "surface" },
 ] as const satisfies readonly { surface: PluginSurfaceId; entityKind: PluginEntityKind }[];
 
 export function pluginSocketSupportedInTui(socket: PluginSocketKind): boolean {
@@ -100,11 +102,13 @@ export function pluginSocketSupportedInTui(socket: PluginSocketKind): boolean {
 export type PluginTuiContributions = {
   lanes: SurfaceContributionSet;
   work: SurfaceContributionSet;
+  app: SurfaceContributionSet;
 };
 
 export const EMPTY_PLUGIN_TUI_CONTRIBUTIONS: PluginTuiContributions = {
   lanes: EMPTY_CONTRIBUTION_SET,
   work: EMPTY_CONTRIBUTION_SET,
+  app: EMPTY_CONTRIBUTION_SET,
 };
 
 /* ── Sources ────────────────────────────────────────────────────────────── */
@@ -158,12 +162,31 @@ export function pluginContributionRows(
 
 export function buildPluginTuiContributions(
   sources: readonly PluginSocketSource[],
-  rowsBySurface: { lanes: readonly PluginContributionRow[]; work: readonly PluginContributionRow[] },
+  rowsBySurface: {
+    lanes: readonly PluginContributionRow[];
+    work: readonly PluginContributionRow[];
+    app?: readonly PluginContributionRow[];
+  },
 ): PluginTuiContributions {
   return {
     lanes: buildContributionSet(sources, rowsBySurface.lanes, "lanes"),
     work: buildContributionSet(sources, rowsBySurface.work, "work"),
+    app: buildContributionSet(sources, rowsBySurface.app ?? [], "app"),
   };
+}
+
+/**
+ * The unread mark a plugin published for its rail tab, as text for a picker row.
+ *
+ * Null when the plugin has no tab surface or has not published a badge.
+ */
+export function pluginTabBadgeText(
+  set: SurfaceContributionSet,
+  plugin: Pick<PluginSummary, "pluginId" | "surfaces">,
+): string | null {
+  const tab = plugin.surfaces.find((surface) => surface.kind === "tab");
+  if (!tab) return null;
+  return selectPluginTabBadge(set, plugin.pluginId, tab.id)?.payload.text ?? null;
 }
 
 /* ── Contexts ───────────────────────────────────────────────────────────── */

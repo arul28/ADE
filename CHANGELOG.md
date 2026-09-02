@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Plugins
 
+- Plugins can badge their own rail tab. Declare `row-badge` on `app` and publish against `<pluginId>/<tabSurfaceId>`; looking at the panel fires optional `viewAction`. Cursor Cloud uses it for unread finished agents.
 - A `composer-action` can claim Send (`ownsSend`). Cursor Cloud uses it so Enter launches the cloud agent from the live draft, and Advanced still opens the form. Fleet Automations reads the host webhook ledger. `{openSettings}` can open the host Secrets tab so a launch form never carries a secret value.
 - Review is a real `supersedes` plugin. Install `ade-review` and the compiled Review tab, the PR "ADE review" button and `ade review` talk to its panels; disable it and the compiled page comes back. The engine stays in core.
 - History is a real `supersedes` plugin. Install `ade-history` and the compiled History tab talks to its commit DAG and activity panels; disable it and the compiled page comes back. Git and operation engines stay in core.

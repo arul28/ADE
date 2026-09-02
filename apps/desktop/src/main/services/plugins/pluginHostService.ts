@@ -1688,6 +1688,7 @@ function createHost(args: PluginHostServiceArgs): PluginHostService {
         ...(surface ? { surface: surface.id } : {}),
         mobile,
         refreshAction: panel.refreshAction ?? null,
+        viewAction: panel.viewAction ?? null,
       };
       for (const attached of projects.values()) {
         try {
@@ -1701,7 +1702,12 @@ function createHost(args: PluginHostServiceArgs): PluginHostService {
             // is rewritten onto the schema the row already holds instead.
             const stored = isRecord(existing.schema) ? existing.schema : null;
             const storedRefresh = typeof stored?.refreshAction === "string" ? stored.refreshAction : null;
-            if (!stored || (stored.mobile === mobile && storedRefresh === (panel.refreshAction ?? null))) continue;
+            const storedView = typeof stored?.viewAction === "string" ? stored.viewAction : null;
+            if (!stored || (
+              stored.mobile === mobile
+              && storedRefresh === (panel.refreshAction ?? null)
+              && storedView === (panel.viewAction ?? null)
+            )) continue;
             attached.data.updatePanel(pluginId, panel.id, {
               ...declared,
               schema: existing.schema,

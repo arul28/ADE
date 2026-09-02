@@ -40,7 +40,7 @@ noticed the next time you look.
 
 | Where | What |
 |---|---|
-| Rail tab **Cursor Cloud** | The fleet: active runs, agents by lane, everything unlinked. |
+| Rail tab **Cursor Cloud** | The fleet: active runs, agents by lane, everything unlinked. An unread pill appears when a run finishes while you are not looking. |
 | Work rail pane | The same fleet, beside a chat. |
 | Chat composer | **Launch in Cursor Cloud** → the launch form. |
 | Chat header | **Cursor Cloud fleet**, with "Pull this run into the lane" and "Stop this cloud run" behind it. |

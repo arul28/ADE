@@ -113,6 +113,10 @@ struct PluginPanelRecord: Equatable, Identifiable {
   /// a panel whose rows come from the plugin's own collections is already live
   /// and needs no gesture. Mirrors `PluginManifestPanel.refreshAction`.
   var refreshAction: String?
+  /// The plugin action this pane dispatches when it is on screen, when the
+  /// manifest declared one. `nil` means the host does not tell the plugin the
+  /// reader is looking. Mirrors `PluginManifestPanel.viewAction`.
+  var viewAction: String? = nil
 
   var displayTitle: String {
     title.isEmpty ? panelId : title
@@ -159,6 +163,20 @@ struct PluginPanelRecord: Equatable, Identifiable {
     }
     return PluginPanelParser.cleanString(object["refreshAction"], max: PluginVocabLimits.maxIdChars)
   }
+
+  /// Read the view action the host stamped into `schema_json`.
+  ///
+  /// Same shape and same fast path as ``refreshAction(inSchemaJSON:)``. A row
+  /// written before the key existed answers `nil`, which is the pane it always
+  /// had: the plugin is not told when the reader is looking.
+  static func viewAction(inSchemaJSON schemaJSON: String) -> String? {
+    guard schemaJSON.contains("\"viewAction\"") else { return nil }
+    guard let data = schemaJSON.data(using: .utf8),
+          let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+      return nil
+    }
+    return PluginPanelParser.cleanString(object["viewAction"], max: PluginVocabLimits.maxIdChars)
+  }
 }
 
 extension PluginPanelRecord {
@@ -178,7 +196,7 @@ extension PluginPanelRecord {
   /// from `title` and the sheet is the surface — so they stay empty rather than
   /// being invented.
   ///
-  /// `mobile` and `refreshAction` are read out of the schema exactly as the
+  /// `mobile`, `refreshAction` and `viewAction` are read out of the schema exactly as the
   /// mirror path reads them (`Database.fetchPluginPanels`), which is what keeps
   /// a fetched panel and a replicated one the same panel: the host stamps both
   /// into `schema_json`, and an absent `mobile` means shown.
@@ -211,7 +229,8 @@ extension PluginPanelRecord {
       vocabVersion: (object["vocabVersion"] as? NSNumber)?.intValue ?? PluginVocabulary.version,
       updatedAt: (object["updatedAt"] as? String) ?? "",
       mobile: PluginPanelRecord.mobileFlag(inSchemaJSON: schemaJSON),
-      refreshAction: PluginPanelRecord.refreshAction(inSchemaJSON: schemaJSON)
+      refreshAction: PluginPanelRecord.refreshAction(inSchemaJSON: schemaJSON),
+      viewAction: PluginPanelRecord.viewAction(inSchemaJSON: schemaJSON)
     )
   }
 }
@@ -1180,6 +1199,16 @@ struct PluginContributionIndex: Equatable {
     contributions(.surface, surface.rawValue)
   }
 
+  /// The one `row-badge` a plugin published for its own tab, or nil.
+  ///
+  /// Addressed at `<pluginId>/<surfaceId>` under ``PluginEntityKind/surface``.
+  /// Only that plugin's own rows count: another plugin publishing against the
+  /// same address does not appear on this glyph.
+  func tabBadge(pluginId: String, surfaceId: String) -> PluginContribution? {
+    contributions(.surface, "\(pluginId)/\(surfaceId)")
+      .first { $0.pluginId == pluginId && $0.badge != nil && !$0.isDeclaration }
+  }
+
   /// The badges a row shows, already capped, plus how many did not fit.
   func badges(_ kind: PluginEntityKind, _ entityId: String) -> PluginRowBadges {
     let all = contributions(kind, entityId).filter { $0.badge != nil }
@@ -1407,7 +1436,16 @@ struct PluginSocketDeclarations: Equatable {
   /// another's join.
   static func surfaceRaw(entityKind: PluginEntityKind, entityId: String) -> String? {
     if entityKind == .surface {
-      return PluginSurfaceId(rawValue: entityId)?.rawValue
+      if let surface = PluginSurfaceId(rawValue: entityId) {
+        return surface.rawValue
+      }
+      // A plugin-tab badge is published against `<pluginId>/<tabSurfaceId>`
+      // and declared on `app`. ADE surface ids have no slash, so this cannot
+      // steal a toolbar row addressed to Work or Lanes.
+      if entityId.contains("/") {
+        return PluginSurfaceId.app.rawValue
+      }
+      return nil
     }
     return PluginSurfaceId.allCases.first { pluginSurfaceEntityKind($0) == entityKind }?.rawValue
   }

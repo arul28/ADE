@@ -3357,6 +3357,18 @@ final class PluginActionResponseTests: XCTestCase {
     XCTAssertNil(PluginPanelRecord.refreshAction(inSchemaJSON: "not json"))
     XCTAssertNil(PluginPanelRecord.refreshAction(inSchemaJSON: "[1,2]"))
   }
+
+  func testViewActionIsReadOffTheStoredSchema() {
+    XCTAssertEqual(
+      PluginPanelRecord.viewAction(inSchemaJSON: #"{"v":1,"body":[],"viewAction":"ackTabBadge"}"#),
+      "ackTabBadge"
+    )
+    XCTAssertNil(PluginPanelRecord.viewAction(inSchemaJSON: #"{"v":1,"body":[]}"#))
+    XCTAssertNil(PluginPanelRecord.viewAction(inSchemaJSON: #"{"v":1,"viewAction":""}"#))
+    XCTAssertNil(PluginPanelRecord.viewAction(inSchemaJSON: #"{"v":1,"viewAction":7}"#))
+    XCTAssertNil(PluginPanelRecord.viewAction(inSchemaJSON: "not json"))
+    XCTAssertNil(PluginPanelRecord.viewAction(inSchemaJSON: "[1,2]"))
+  }
 }
 
 /// The pane's answer when the mirror does not have the panel.

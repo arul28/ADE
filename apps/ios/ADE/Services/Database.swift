@@ -560,7 +560,8 @@ final class DatabaseService {
           vocabVersion: Int(sqlite3_column_int64(statement, 6)),
           updatedAt: stringValue(statement, index: 7) ?? "",
           mobile: PluginPanelRecord.mobileFlag(inSchemaJSON: schemaJSON),
-          refreshAction: PluginPanelRecord.refreshAction(inSchemaJSON: schemaJSON)
+          refreshAction: PluginPanelRecord.refreshAction(inSchemaJSON: schemaJSON),
+          viewAction: PluginPanelRecord.viewAction(inSchemaJSON: schemaJSON)
         )
       }
       .filter { !$0.pluginId.isEmpty && !$0.panelId.isEmpty }

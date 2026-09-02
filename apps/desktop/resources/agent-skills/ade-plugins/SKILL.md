@@ -94,6 +94,7 @@ Nobody asks for a `composer-action`. They ask for "a button next to where I type
 | "a button at the top of the Lanes / PRs / Files list" | `toolbar-action` | That surface's toolbar. All four clients |
 | "a button in the window's top bar, not tied to a tab" | `toolbar-action` on surface `app` | The top bar's trailing cluster, beside feedback/help/zoom. Its context is the window (`{surface: "app"}`), not whatever tab is open |
 | "a little tag on each row" | `row-badge` | On the row a value was PUBLISHED for. 2 visible, rest behind a "+N". On `lanes` it also rides the per-lane header strip in the multi-lane column view, so splitting Lanes into columns no longer loses it |
+| "unread number on my plugin tab" | `row-badge` on `app` | Publish against `<pluginId>/<tabSurfaceId>` (exactly one slash). Cap 1, hidden while that tab is active. Declare `viewAction` on the panel so looking at it clears the count |
 | "an option when I right-click a row" | `row-menu-item` | That row's context menu |
 | "a way to filter the list by my thing" | `filter-chip` + `filterKey` on the rows | The filter row. Publish the tags first or it filters everything out |
 | "extra help when the list is empty" | `empty-state` | Below the surface's own empty state |
@@ -1636,7 +1637,7 @@ Eight surfaces: the six list-shaped tabs — `work`, `lanes`, `files`, `prs`, `a
 | Socket kind | Surface | Payload | What it draws |
 |---|---|---|---|
 | `toolbar-action` | any | `{label, actionId, icon?, disabled?, menu?, color?}` | A button in a surface's toolbar |
-| `row-badge` | any | `{text, tone, icon?, tooltip?}` | A badge on the row you published it for. The manifest declaration reserves the slot and draws nothing — see *A declared badge marks no rows* |
+| `row-badge` | any | `{text, tone, icon?, tooltip?}` | A badge on the row you published it for. On `app`, a notification pill on your own rail tab — publish against `<pluginId>/<tabSurfaceId>`. The manifest declaration reserves the slot and draws nothing — see *A declared badge marks no rows* |
 | `row-menu-item` | any | `{label, actionId, icon?, danger?}` | An entry in a row's context menu |
 | `detail-section` | any | `{panelId, title?}` | A panel rendered as a section in a detail view |
 | `empty-state` | any | `{title, body?, actionId?, actionLabel?}` | Extra content on a surface's empty state |
@@ -1849,6 +1850,16 @@ await ade.contributions.publish("lane", lane.id, "row-badge", {
 ```
 
 To take a badge back off a row, publish `null` for it. Do that rather than leaving a stale count on screen — a badge nobody updated is a wrong badge, and a reader cannot tell the difference.
+
+**A badge on your own tab** is the same socket on `app`. Declare `{ "socket": "row-badge", "surface": "app", "id": "tab-badge", "label": "Unread" }`, then publish against `"<yourPluginId>/<yourTabSurfaceId>"` — exactly one slash, so it cannot collide with ADE's own surface ids (`work`, `app`, …). Cap 1. The pill is hidden while that tab is active in this window; that hide is not a durable clear. For the count to stay gone after the reader leaves, declare `viewAction` on the panel the tab shows. The host invokes it with `{ viewed: true }` when the panel is visible and `{ viewed: false }` when it is hidden, silently — a missing handler must not toast.
+
+```js
+await ade.contributions.publish("surface", "my-plugin/inbox", "row-badge", {
+  id: "tab-badge",
+  text: unread > 9 ? "9+" : String(unread),
+  tone: "accent",
+});
+```
 
 ### A node on the Graph
 

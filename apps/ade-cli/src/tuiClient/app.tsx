@@ -493,6 +493,7 @@ import {
 import {
   buildPluginActionsPane,
   pluginRowBadgeStrip,
+  pluginTabBadgeText,
   tuiLaneContext,
   tuiSessionContext,
   EMPTY_PLUGIN_TUI_CONTRIBUTIONS,
@@ -10858,6 +10859,28 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     return () => clearInterval(timer);
   }, [connection, refreshPluginPane, rightOpen, rightPane.kind]);
 
+  const pluginPaneView = rightPane.kind === "plugin-panel" && rightOpen
+    ? {
+      pluginId: rightPane.state.pluginId,
+      panelId: rightPane.state.panelId,
+      viewAction: rightPane.model.viewAction,
+    }
+    : null;
+
+  /**
+   * Tell the plugin this pane is on screen. Not the 10s poll: that is a read,
+   * and a view ack on a timer would clear a badge nobody asked to clear.
+   */
+  useEffect(() => {
+    if (!pluginPaneView?.viewAction || !connection) return;
+    const { pluginId, panelId, viewAction } = pluginPaneView;
+    const conn = connection;
+    void invokePluginAction(conn, pluginId, viewAction, { panelId, viewed: true }).catch(() => {});
+    return () => {
+      void invokePluginAction(conn, pluginId, viewAction, { panelId, viewed: false }).catch(() => {});
+    };
+  }, [connection, pluginPaneView?.panelId, pluginPaneView?.pluginId, pluginPaneView?.viewAction]);
+
   // A refresh that dropped the armed action disarms it: the sentence the user
   // was asked to confirm described a row that is no longer in the panel. An
   // action that merely moved keeps its arm, because it is still the same action.
@@ -10917,14 +10940,16 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       title: "Plugins",
       rows: enabled.map((plugin) => {
         const status = plugin.status === "running" ? "" : ` · ${plugin.status}`;
-        return `${plugin.displayName} · ${plugin.version}${status}`;
+        const badge = pluginTabBadgeText(pluginContributions.app, plugin);
+        const badgeText = badge ? ` · ${badge}` : "";
+        return `${plugin.displayName} · ${plugin.version}${status}${badgeText}`;
       }),
       emptyText: roster.plugins.length > 0
         ? "Every installed plugin is disabled. Enable one with ade plugin enable."
         : "No plugins installed. Add one with ade plugin install.",
       action: { kind: "plugin-view", ids: enabled.map((plugin) => plugin.pluginId) },
     });
-  }, [addNotice, loadPluginPane, prospectiveRightPaneWidth]);
+  }, [addNotice, loadPluginPane, pluginContributions.app, prospectiveRightPaneWidth]);
 
   /**
    * Apply a composer edit an action asked for, or say why it was ignored.

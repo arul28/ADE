@@ -3694,8 +3694,27 @@ export type PluginPanelRecord = {
  * not declare.
  */
 export function readPluginPanelRefreshAction(schema: unknown): string | null {
+  return readPluginPanelStampedIdentifier(schema, "refreshAction");
+}
+
+/**
+ * The view action the host stamped onto a stored panel schema, if any.
+ *
+ * Same home as {@link readPluginPanelRefreshAction} and for the same reason:
+ * `plugin_panels` cannot grow a column. The value is the manifest's, never the
+ * plugin payload's. Absent means the host does not tell the plugin when this
+ * panel is on screen.
+ */
+export function readPluginPanelViewAction(schema: unknown): string | null {
+  return readPluginPanelStampedIdentifier(schema, "viewAction");
+}
+
+function readPluginPanelStampedIdentifier(
+  schema: unknown,
+  key: "refreshAction" | "viewAction",
+): string | null {
   if (!isRecord(schema)) return null;
-  const raw = schema.refreshAction;
+  const raw = schema[key];
   if (typeof raw !== "string") return null;
   const trimmed = raw.trim();
   return trimmed ? trimmed : null;

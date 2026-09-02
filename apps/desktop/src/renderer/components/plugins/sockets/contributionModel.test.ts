@@ -17,6 +17,7 @@ import {
   pluginViewerKind,
   pluginViewerRegistrations,
   selectContributions,
+  selectPluginTabBadge,
   surfaceContributionEntityKinds,
 } from "./contributionModel";
 
@@ -1067,5 +1068,62 @@ describe("file viewer resolution", () => {
   it("matches an extension whether or not the caller included the dot", () => {
     expect(matchPluginViewer(viewers, "glb")?.panelId).toBe("play");
     expect(matchPluginViewer(viewers, ".GLB")?.panelId).toBe("play");
+  });
+});
+
+/**
+ * A `row-badge` on `app` is a mark on the plugin's own rail tab, not a chip
+ * on an App row — App has none. The declaration still reserves the slot and
+ * draws nothing; only a published row against `<pluginId>/<tabSurfaceId>`
+ * appears, and only that plugin's own rows count.
+ */
+describe("plugin tab badges on the app surface", () => {
+  const declaration = {
+    socket: "row-badge",
+    surface: "app",
+    id: "tab-badge",
+    label: "Unread",
+  };
+
+  function tabBadgeRow(
+    pluginId: string,
+    tabSurfaceId: string,
+    payload: Record<string, unknown>,
+    owner = pluginId,
+  ): PluginContributionRow {
+    return {
+      entityKind: "surface",
+      entityId: `${pluginId}/${tabSurfaceId}`,
+      pluginId: owner,
+      socket: "row-badge",
+      surface: "app",
+      socketId: "tab-badge",
+      payload,
+      updatedAt: "2026-09-02T00:00:00.000Z",
+    };
+  }
+
+  it("draws nothing from the declaration alone", () => {
+    const set = buildContributionSet([source("cloud", [declaration])], [], "app");
+    expect(selectPluginTabBadge(set, "cloud", "fleet")).toBeNull();
+  });
+
+  it("draws the published badge for that plugin's tab", () => {
+    const set = buildContributionSet(
+      [source("cloud", [declaration])],
+      [tabBadgeRow("cloud", "fleet", { text: "3", tone: "accent", id: "tab-badge" })],
+      "app",
+    );
+    expect(selectPluginTabBadge(set, "cloud", "fleet")?.payload.text).toBe("3");
+    expect(selectPluginTabBadge(set, "cloud", "other")).toBeNull();
+  });
+
+  it("does not show another plugin's row on this tab", () => {
+    const set = buildContributionSet(
+      [source("cloud", [declaration]), source("intruder", [declaration])],
+      [tabBadgeRow("cloud", "fleet", { text: "9", tone: "warning", id: "tab-badge" }, "intruder")],
+      "app",
+    );
+    expect(selectPluginTabBadge(set, "cloud", "fleet")).toBeNull();
   });
 });

@@ -1678,11 +1678,13 @@ Eighteen kinds across eight surfaces (`PLUGIN_SOCKET_KINDS` and
 The first six surfaces (`work`, `lanes`, `files`, `prs`, `automations`, `cto`)
 are ADE's list-shaped tabs, each with an entity kind behind it, which is what
 makes a per-entity contribution meaningful there. `app` and `settings` carry no
-entity at all: the command palette and the activity pane belong to the window
-rather than to a tab, and a settings section belongs to a page named in its
-payload. They are surfaces rather than a second concept because everything
-downstream — the manifest field, the contribution read, the per-slot cap, the
-ordering rule — is identical.
+list entity of their own: the command palette and the activity pane belong to the
+window rather than to a tab, and a settings section belongs to a page named in
+its payload. A plugin's own rail tab is the exception on `app`: a `row-badge`
+published against `{entityKind: "surface", entityId: "<pluginId>/<tabSurfaceId>"}`
+is a notification pill on that tab. They are surfaces rather than a second
+concept because everything downstream — the manifest field, the contribution
+read, the per-slot cap, the ordering rule — is identical.
 
 **A `composer-action` may claim Send** with `ownsSend: true`. A click then arms
 the button instead of invoking; Enter/Send invokes that action with
@@ -1718,6 +1720,14 @@ unchanged — a declared `row-menu-item` is still on every row, because a menu
 item is a verb rather than a value. iOS mirrors this by returning nil from the
 `.rowBadge` arm of `PluginSocketDeclarations.payload(for:wire:)`, and the TUI
 inherits it by sharing `selectContributions`.
+
+**A `row-badge` on `app` is a notification on the plugin's own rail tab.** Declare
+`{ socket: "row-badge", surface: "app", id: "tab-badge", label: "…" }` and publish
+against `"<pluginId>/<tabSurfaceId>"` — exactly one slash, so the address cannot
+collide with ADE's own surface ids. Cap 1; the pill is hidden while that tab is
+active in this window. Durable clear is optional `viewAction` on the panel: the
+host invokes `{ viewed: true }` when the panel is visible and `{ viewed: false }`
+when it is hidden, silently. Cursor Cloud uses this for unread finished agents.
 
 **A `command-palette-action` receives `args.subject`** (the ledger's B5): the
 focused chat, else the selected lane, else `{kind: "none"}`, built by
@@ -2137,7 +2147,7 @@ is where that stands today, on this branch.
 | plugin | polarity | own code | state |
 |---|---|---|---|
 | `ade-linear` | `supersedes` | 8,795 lines (14,296 with its tests) | A real plugin. Panels, sockets, tools, CLI words, automation triggers and steps, a webhook channel, a sign-in flow, a credential handoff and a URL matcher |
-| `ade-cursor-cloud` | `supersedes` | 3,439 lines (4,643 with tests) | A real plugin, with a chat runtime. Composer Send is claimed via `ownsSend` (Enter launches the cloud agent from the live draft; Advanced still opens the form). Fleet Automations strip reads `webhooks.status()`. `{openSettings}` opens the Cursor provider page or the host Secrets tab. Remaining gap: a tab badge (spec-optional). Landed: `ade cursor cloud` aliases the plugin's CLI words when it is installed; plugin-owned cloud chats stamp `cursorCloudAgentId` so Cursor's rename lock applies; create sends REST `model: { id, params? }` and fails closed when the form named reasoning or speed the catalog cannot express; finished-run artifact files are host-fetched into the lane cache. |
+| `ade-cursor-cloud` | `supersedes` | 3,439 lines (4,643 with tests) | A real plugin, with a chat runtime. Composer Send is claimed via `ownsSend` (Enter launches the cloud agent from the live draft; Advanced still opens the form). Fleet Automations strip reads `webhooks.status()`. `{openSettings}` opens the Cursor provider page or the host Secrets tab. The rail tab carries an unread-finished badge (`row-badge` on `app`, cleared by `viewAction`). Landed: `ade cursor cloud` aliases the plugin's CLI words when it is installed; plugin-owned cloud chats stamp `cursorCloudAgentId` so Cursor's rename lock applies; create sends REST `model: { id, params? }` and fails closed when the form named reasoning or speed the catalog cannot express; finished-run artifact files are host-fetched into the lane cache. |
 | `ade-graph` | `supersedes` | real plugin | A real plugin. Desktop mounts ADE's compiled workspace Graph (`canvas` / `workspace`); phone and TUI list the same bound lane rows. The React Flow engine stays in core. Phone and TUI get vocabulary panels; compiled Graph was desktop-only. |
 | `ade-review` | `supersedes` | real plugin | A real plugin. Run list, launch form, findings, learnings, PR toolbar, agent tools and `ade review`. The engine stays in core. Phone and TUI get vocabulary panels; compiled Review was desktop-only. |
 | `ade-history` | `supersedes` | real plugin | A real plugin. Commit DAG (`canvas` / `git-dag`), activity list, commit git verbs, agent tools and `ade history activity`. The git and operation engines stay in core. Phone and TUI get vocabulary panels; compiled History was desktop-only. |

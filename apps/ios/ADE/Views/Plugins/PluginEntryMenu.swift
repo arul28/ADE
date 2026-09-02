@@ -7,6 +7,9 @@ struct PluginEntry: Identifiable, Equatable {
   var pluginId: String
   var label: String
   var icon: String?
+  /// The tab surface id a plugin-tab badge is published against, typically
+  /// the first panel's `surface` column (Cursor Cloud: `fleet`).
+  var surfaceId: String
 }
 
 /// Resolves which plugins this phone can open right now.
@@ -42,19 +45,22 @@ final class PluginEntryListModel: ObservableObject {
     await gate.refresh()
 
     let catalog = sync.pluginPresenceCatalog()
-    let panelCounts = Dictionary(grouping: sync.pluginPanels(pluginId: nil), by: \.pluginId)
-      .mapValues(\.count)
+    let panelsByPlugin = Dictionary(grouping: sync.pluginPanels(pluginId: nil), by: \.pluginId)
 
     entries = gate.installedPlugins
       .compactMap { plugin in
-        let panelCount = panelCounts[plugin.pluginId] ?? 0
-        guard panelCount > 0 else { return nil }
+        let panels = panelsByPlugin[plugin.pluginId] ?? []
+        guard !panels.isEmpty else { return nil }
         let record = catalog.record(for: plugin.pluginId)
         let icon = plugin.icon.isEmpty ? record?.icon : plugin.icon
+        let surfaceId = panels.first { !$0.surface.isEmpty }?.surface
+          ?? panels.first?.panelId
+          ?? plugin.pluginId
         return PluginEntry(
           pluginId: plugin.pluginId,
           label: plugin.label,
-          icon: icon.flatMap { $0.isEmpty ? nil : $0 }
+          icon: icon.flatMap { $0.isEmpty ? nil : $0 },
+          surfaceId: surfaceId
         )
       }
       .sorted { $0.label.localizedCaseInsensitiveCompare($1.label) == .orderedAscending }
@@ -80,6 +86,7 @@ extension SyncService: PluginEntryListSyncing {}
 struct PluginEntryMenuButton: View {
   @EnvironmentObject private var syncService: SyncService
   @StateObject private var model: PluginEntryListModel
+  @State private var pluginContributions = PluginContributionIndex()
 
   init(syncService: SyncService) {
     _model = StateObject(wrappedValue: PluginEntryListModel(
@@ -90,6 +97,7 @@ struct PluginEntryMenuButton: View {
 
   var body: some View {
     content
+      .loadPluginContributions(.surface, into: $pluginContributions)
       // Re-resolves when plugin rows change (install, uninstall, a new panel)
       // and when the phone attaches to a different machine, which is the case
       // that actually changes the answer.
@@ -106,9 +114,12 @@ struct PluginEntryMenuButton: View {
         open(entry)
       } label: {
         label(for: entry)
+          .overlay(alignment: .topTrailing) {
+            tabBadgeOverlay(for: entry)
+          }
       }
       .buttonStyle(.plain)
-      .accessibilityLabel(entry.label)
+      .accessibilityLabel(accessibilityLabel(for: entry))
     } else if !model.entries.isEmpty {
       Menu {
         ForEach(model.entries) { entry in
@@ -120,7 +131,14 @@ struct PluginEntryMenuButton: View {
             // to a bundled logo, not to a symbol name. Ordinary tokens still end
             // up as `Image(systemName:)` — see `PluginSymbol.image(_:fallback:)`.
             Label {
-              Text(entry.label)
+              HStack {
+                Text(entry.label)
+                if let text = tabBadge(for: entry)?.badge?.text {
+                  Text(text)
+                    .font(.caption.monospacedDigit().weight(.bold))
+                    .foregroundStyle(.secondary)
+                }
+              }
             } icon: {
               PluginSymbol.image(entry.icon, fallback: "puzzlepiece.extension")
             }
@@ -132,8 +150,16 @@ struct PluginEntryMenuButton: View {
           .foregroundStyle(ADEColor.textSecondary)
           .frame(width: 38, height: 34)
           .contentShape(Rectangle())
+          .overlay(alignment: .topTrailing) {
+            if model.entries.contains(where: { tabBadge(for: $0) != nil }) {
+              Circle()
+                .fill(ADEColor.warning)
+                .frame(width: 8, height: 8)
+                .offset(x: -4, y: 4)
+            }
+          }
       }
-      .accessibilityLabel("Plugins")
+      .accessibilityLabel(menuAccessibilityLabel)
     }
   }
 
@@ -151,6 +177,38 @@ struct PluginEntryMenuButton: View {
 
   private func open(_ entry: PluginEntry) {
     syncService.presentedPluginPane = PluginPaneRequest(pluginId: entry.pluginId, title: entry.label)
+  }
+
+  private func tabBadge(for entry: PluginEntry) -> PluginContribution? {
+    pluginContributions.tabBadge(pluginId: entry.pluginId, surfaceId: entry.surfaceId)
+  }
+
+  private func accessibilityLabel(for entry: PluginEntry) -> String {
+    guard let text = tabBadge(for: entry)?.badge?.text else { return entry.label }
+    return "\(entry.label), \(text)"
+  }
+
+  private var menuAccessibilityLabel: String {
+    let marked = model.entries.compactMap { entry -> String? in
+      guard let text = tabBadge(for: entry)?.badge?.text else { return nil }
+      return "\(entry.label) \(text)"
+    }
+    if marked.isEmpty { return "Plugins" }
+    return "Plugins, \(marked.joined(separator: ", "))"
+  }
+
+  @ViewBuilder
+  private func tabBadgeOverlay(for entry: PluginEntry) -> some View {
+    if let badge = tabBadge(for: entry)?.badge {
+      Text(badge.text)
+        .font(.system(size: 9, weight: .bold, design: .monospaced))
+        .foregroundStyle(.white)
+        .padding(.horizontal, 3)
+        .frame(minWidth: 14, minHeight: 14)
+        .background(badge.tone.color, in: Capsule())
+        .offset(x: 4, y: -2)
+        .accessibilityHidden(true)
+    }
   }
 
   /// Cheap identity for the refresh trigger: which machine, and how many times

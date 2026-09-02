@@ -114,6 +114,39 @@ final class PluginContributionTests: XCTestCase {
     XCTAssertNil(badge(plugin: "p", text: "x", kind: "spaceship"))
   }
 
+  func testPluginTabEntityJoinsAppAndKeepsAdeSurfaceIds() {
+    XCTAssertEqual(
+      PluginSocketDeclarations.surfaceRaw(entityKind: .surface, entityId: "work"),
+      "work"
+    )
+    XCTAssertEqual(
+      PluginSocketDeclarations.surfaceRaw(entityKind: .surface, entityId: "ade-cursor-cloud/fleet"),
+      "app"
+    )
+    XCTAssertNil(PluginSocketDeclarations.surfaceRaw(entityKind: .surface, entityId: "not-a-surface"))
+  }
+
+  func testTabBadgeReadsOnlyThatPluginsPublishedRow() throws {
+    let mine = try XCTUnwrap(badge(
+      plugin: "ade-cursor-cloud",
+      text: "3",
+      entityId: "ade-cursor-cloud/fleet",
+      kind: "surface"
+    ))
+    let theirs = try XCTUnwrap(badge(
+      plugin: "intruder",
+      text: "9",
+      entityId: "ade-cursor-cloud/fleet",
+      kind: "surface"
+    ))
+    let index = PluginContributionIndex(contributions: [mine, theirs])
+    XCTAssertEqual(
+      index.tabBadge(pluginId: "ade-cursor-cloud", surfaceId: "fleet")?.badge?.text,
+      "3"
+    )
+    XCTAssertNil(index.tabBadge(pluginId: "intruder", surfaceId: "fleet"))
+  }
+
   func testMalformedPayloadJSONIsSkipped() {
     XCTAssertNil(PluginContributionParser.parse(
       entityKind: "pr", entityId: "42", pluginId: "p",

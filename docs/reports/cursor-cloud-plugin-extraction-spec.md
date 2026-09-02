@@ -706,18 +706,19 @@ limit (`sdk.ts:1352-1353`) extends to transcript writes.
 conversation, where typing a follow-up reaches Cursor Cloud and the reply streams into the
 transcript — with **no Cursor-specific code in `agentChatService.ts`**.
 
-## PX-11 — A rail badge for a plugin tab · **S** · optional
+## PX-11 — A rail badge for a plugin tab · **S** · landed
 
 **Problem.** The quick-view button carries an unread-finished count
 (`CursorCloudQuickViewButton.tsx:136-144`). A plugin tab in the rail has no count.
 
-**Change.** Let a plugin publish a `row-badge` contribution against the reserved entity
-`{kind: "surface", id: "<pluginId>/<surfaceId>"}` — the `surface` entity kind already exists
-(`sockets.ts:92`) — and have `TabNav.tsx` draw it on the rail item. Cap it at one badge.
+**Change.** A plugin publishes a `row-badge` contribution against
+`{kind: "surface", id: "<pluginId>/<surfaceId>"}` — the `surface` entity kind
+already exists (`sockets.ts`) — and `TabNav.tsx` draws it on the rail item.
+Cap 1. Optional panel `viewAction` is the durable clear: the host invokes
+`{ viewed: true }` when the panel is visible. Cursor Cloud declares
+`viewAction: "ackTabBadge"` on the fleet panel.
 
-**Verdict.** Optional. Judge it against the no-regression checklist in Part 5; the owner may accept
-losing the badge in exchange for a rail entry that is always visible, which the quick-view button is
-not (it hides for 4 seconds at startup and never appears in the web client at all).
+**Verdict.** Landed. Not a nineteenth socket kind. Reuses `row-badge` on `app`.
 
 ## PX-12 — A deeplink on a plugin notification · **S** · optional
 
@@ -1113,7 +1114,7 @@ listed before core code is deleted.
 9. See the empty state with its exact copy. (desktop, iOS)
 10. See the "Connect Cursor first" state and reach the AI-connections settings page from it. (desktop, iOS shows the sentence)
 11. Auto-refresh when an agent finishes, while the panel is visible. (desktop)
-12. See the unread-finished badge on the entry button. (desktop — **at risk, PX-11**)
+12. See the unread-finished badge on the entry button. (desktop, iOS plugin entry, TUI `/plugin-view` — **PX-11, landed**)
 
 **Row actions**
 13. Open an agent as an ADE cloud chat, creating a lane if it is unlinked. (desktop, iOS)

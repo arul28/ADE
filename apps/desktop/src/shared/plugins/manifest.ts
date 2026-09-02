@@ -223,6 +223,21 @@ export type PluginManifestPanel = {
    * before refetching. When it is absent, nothing changes on any client.
    */
   refreshAction?: string;
+  /**
+   * The plugin action a client dispatches when this panel is on screen.
+   *
+   * A tab badge is a published row: it stays until the plugin unpublishes it.
+   * Hiding the pill while the tab is active is window-local and would bring
+   * the synced count back the moment the reader left. Declaring this is how a
+   * plugin says "the reader is looking at this panel" — typically to clear a
+   * notification badge — without every other plugin having to name a magic
+   * action the host would invoke and warn on.
+   *
+   * Fired with `{ viewed: true }` when the panel becomes visible and
+   * `{ viewed: false }` when it is hidden. Malformed values drop the field
+   * rather than the panel, the same judgement `refreshAction` gets.
+   */
+  viewAction?: string;
 };
 
 export type PluginManifestSocket = {
@@ -1114,12 +1129,14 @@ function parsePanels(raw: unknown, ctx: ParseContext): PluginManifestPanel[] {
     // panel: a panel that cannot be refreshed by gesture is still a perfectly
     // good panel, and the same judgement `menu` and `color` get on a socket.
     const refreshAction = parseIdentifier(entry.refreshAction);
+    const viewAction = parseIdentifier(entry.viewAction);
     return {
       id,
       ...(schemaFile !== null ? { schemaFile: schemaFile as string } : {}),
       ...(trimmedString(entry.title) ? { title: trimmedString(entry.title)! } : {}),
       ...(trimmedString(entry.icon) ? { icon: trimmedString(entry.icon)! } : {}),
       ...(refreshAction ? { refreshAction } : {}),
+      ...(viewAction ? { viewAction } : {}),
     };
   });
 }

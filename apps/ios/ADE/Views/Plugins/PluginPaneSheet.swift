@@ -102,6 +102,8 @@ struct PluginPaneSheet: View {
     }
     // The `{prompt}` verb, asked inside the pane the button was pressed in.
     .pluginPromptAlert(store: store)
+    .onAppear { store.acknowledgeView(viewed: true) }
+    .onDisappear { store.acknowledgeView(viewed: false) }
   }
 
   private var closeButton: some View {
