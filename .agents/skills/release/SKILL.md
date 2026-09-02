@@ -73,6 +73,62 @@ without burning a notarization, TestFlight upload, or build number.
 - **Do not wait forever.** If GitHub notarization or TestFlight processing
   exceeds its normal window by a lot, preserve state, retry only the failed
   phase when possible, or stop with a clear recovery command.
+- **Do not serialize independent tiers.** Desktop GitHub Actions, iOS
+  TestFlight, and Cloudflare are independent once the shared docs/`ci-pass`
+  gate is behind you. Numbered phases are a catalog, not a queue. Follow
+  **Parallel schedule** below whenever more than one is in scope.
+
+## Parallel schedule
+
+This overrides the Phase 4 → 5 → 5.5 order when more than one tier is in
+scope. Exclusive `gh run watch` is forbidden while another leg can make
+progress — poll the run and keep working.
+
+Stay serial only for:
+
+1. Docs merge → green `ci-pass` on that SHA → desktop `v*` tag. Tagging
+   before `ci-pass` fails `verify`.
+2. Draft asset verification → `--draft=false`. npm versions are immutable.
+3. iOS IPA inspect / `altool --validate-app` → upload → `asc builds wait` →
+   group attach.
+4. A Windows release host cannot archive iOS. Keep desktop and Cloudflare
+   in flight and say iOS needs a macOS host. Do not call the release done.
+
+### During the `ci-pass` wait (docs PR just landed)
+
+- Cloudflare: `deploy-web.yml` is already running for that SHA. Start
+  Phase 5.5 verification. Do not wait for a desktop tag.
+- iOS: `asc doctor` and the App Clip preflight. Do not archive yet — a red
+  `ci-pass` would burn a build number.
+
+### After the desktop tag (or immediately if desktop is out of scope)
+
+Start every in-scope leg:
+
+- Desktop: poll `release.yml` until the draft exists. If iOS or Cloudflare
+  is also in scope, do **not** sit in `gh run watch`.
+- iOS (macOS host): archive, export, inspect, validate, upload against
+  `RELEASE_SHA`. TestFlight does not need the GitHub draft.
+- Cloudflare: finish any remaining reconcile or manual deploy.
+
+### Join before undraft
+
+If desktop is in scope, the draft must be verified before it goes public.
+iOS may still be in `asc builds wait`. Cloudflare may still be verifying.
+That is expected — do not stall undraft on them.
+
+### After undraft
+
+Poll `publish-runtime-packages.yml` and `update-brew-tap.yml` together and
+join both. Keep polling iOS processing and Cloudflare if those legs are not
+done. Desktop is not done until `npm view @ade-dev/runtime version` equals
+the tag.
+
+### Join before `phase=done`
+
+Every in-scope leg is green. A green GitHub release with a missing npm
+package, a missing TestFlight build, or a drifted Worker is not a finished
+release.
 
 ## Machine Notes
 
@@ -421,7 +477,10 @@ changelog. An SDK-docs-only commit does not get a `v*` tag.
 
 ## Phase 4: Desktop GitHub Workflow Release
 
-Do this only if desktop scope is `yes`.
+Do this only if desktop scope is `yes`. If iOS or Cloudflare is also in
+scope, start those legs as soon as the tag exists — see **Parallel
+schedule**. This phase is the desktop leg, not a barrier in front of the
+others.
 
 The desktop happy path is GitHub Actions. Do not run local desktop release
 commands such as `release:mac:local`, `dist:mac:universal:signed`,
@@ -473,7 +532,7 @@ gh run rerun "$RUN_ID" --repo arul28/ADE --failed
 The pushed tag triggers `.github/workflows/release.yml`, which calls
 `.github/workflows/release-core.yml` and creates a draft GitHub Release.
 
-### Find and watch the workflow run
+### Find and poll the workflow run
 
 Find the run for the pushed tag/SHA:
 
@@ -484,11 +543,22 @@ gh run list --repo arul28/ADE --workflow release.yml --event push \
 ```
 
 Choose the run whose `headBranch` is `v<VERSION>` or whose `headSha` matches
-`RELEASE_SHA`, then watch it:
+`RELEASE_SHA`.
+
+If this is a desktop-only release, `gh run watch` is fine:
 
 ```bash
 gh run view "$RUN_ID" --repo arul28/ADE --json status,conclusion,url,jobs
 gh run watch "$RUN_ID" --repo arul28/ADE --interval 60
+```
+
+If iOS or Cloudflare is also in scope, poll instead and keep those legs
+moving. `gh run watch` blocks the conductor for the whole notarization
+window.
+
+```bash
+gh run view "$RUN_ID" --repo arul28/ADE --json status,conclusion,url,jobs
+# Poll on a timer between iOS/Cloudflare steps; do not exclusive-watch.
 ```
 
 Expected shape:
@@ -503,7 +573,8 @@ Expected shape:
   draft
 - `update-brew-tap` and `Publish ADE runtime packages` both run after the
   GitHub release is made public (`release.published`), not when the draft is
-  created. The conductor waits for the runtime npm job after undraft.
+  created. After undraft, poll both runs together and join both. Do not
+  finish the npm wait before starting the brew wait, or the reverse.
 
 If `platforms=mac,win` and `build-win-release` did not run, stop. The gate and
 the run disagree, and publishing would ship a macOS-only release under a
@@ -620,41 +691,59 @@ gh api repos/arul28/ADE/releases/latest \
 ```
 
 Undrafting publishes the GitHub release. That event starts
-`publish-runtime-packages.yml`, which downloads this tag's runtime assets,
-checksums them, and publishes `@ade-dev/runtime*` at the same version. npm
+`publish-runtime-packages.yml` and `update-brew-tap.yml`. Poll both. npm
 versions are immutable, which is why this waits for `--draft=false` instead of
-the tag push. Do not treat desktop release as done until that job succeeds.
+the tag push. Desktop is not done until the npm job succeeds and
+`npm view @ade-dev/runtime version` equals this tag.
+
+Do not exclusive-watch either run if iOS processing or Cloudflare is still
+in flight — poll both GitHub jobs while those legs continue.
 
 ```bash
-# The release event can take a few seconds to enqueue the run.
+# The release event can take a few seconds to enqueue the runs.
+find_run() {
+  local workflow="$1"
+  gh run list --repo arul28/ADE --workflow "$workflow" --event release \
+    --json databaseId,headBranch,status,conclusion,url \
+    --jq "[.[] | select(.headBranch==\"v<VERSION>\")][0].databaseId"
+}
 for _ in 1 2 3 4 5 6; do
-  NPM_RUN_ID=$(gh run list --repo arul28/ADE \
-    --workflow publish-runtime-packages.yml --event release \
-    --json databaseId,headBranch,status,conclusion,url,createdAt \
-    --jq "[.[] | select(.headBranch==\"v<VERSION>\")][0].databaseId")
-  [ -n "$NPM_RUN_ID" ] && [ "$NPM_RUN_ID" != "null" ] && break
+  NPM_RUN_ID=$(find_run publish-runtime-packages.yml)
+  BREW_RUN_ID=$(find_run update-brew-tap.yml)
+  [ -n "$NPM_RUN_ID" ] && [ "$NPM_RUN_ID" != "null" ] && \
+    [ -n "$BREW_RUN_ID" ] && [ "$BREW_RUN_ID" != "null" ] && break
   sleep 10
 done
 if [ -z "$NPM_RUN_ID" ] || [ "$NPM_RUN_ID" = "null" ]; then
   echo "Publish ADE runtime packages did not start for v<VERSION>"
   exit 1
 fi
-gh run watch "$NPM_RUN_ID" --repo arul28/ADE --interval 30
+# Poll both to completion. If this is desktop-only, watch is fine.
+gh run watch "$NPM_RUN_ID" --repo arul28/ADE --interval 30 &
+NPM_WATCH=$!
+if [ -n "$BREW_RUN_ID" ] && [ "$BREW_RUN_ID" != "null" ]; then
+  gh run watch "$BREW_RUN_ID" --repo arul28/ADE --interval 30 &
+  BREW_WATCH=$!
+fi
+wait "$NPM_WATCH"
+[ -n "${BREW_WATCH:-}" ] && wait "$BREW_WATCH"
 gh run view "$NPM_RUN_ID" --repo arul28/ADE --json conclusion,url
 npm view @ade-dev/runtime version
 npm view @ade-dev/runtime-darwin-arm64 version
 ```
 
-If the run fails because Trusted Publisher / `RUNTIME_TRUSTED_PUBLISHING` is
+If the npm run fails because Trusted Publisher / `RUNTIME_TRUSTED_PUBLISHING` is
 not configured, that is a release blocker, not a skip. `workflow_dispatch` on
 the same workflow (tag + confirm `publish`) is recovery only.
 
-The brew tap bump is the same `release.published` event. Watch it if it is
-still in progress; do not block the npm wait on it.
+A missing brew run is not a skip when `HOMEBREW_TAP_DEPLOY_KEY` is configured;
+treat a failed tap bump as a desktop-leg failure.
 
 ## Phase 5: iOS TestFlight Build and Distribution
 
-Do this only if iOS scope is `yes`.
+Do this only if iOS scope is `yes`. Start it after the shared `ci-pass` +
+tag gate (or immediately on an iOS-only release). Do **not** wait for the
+desktop draft, undraft, npm publish, or brew tap — see **Parallel schedule**.
 
 Preflight:
 
@@ -742,6 +831,11 @@ asc builds wait \
   --timeout 40m
 ```
 
+When desktop is also in scope, do not park the whole conductor on this wait
+if the IPA is already uploaded. Poll `asc builds list` until
+`processingState=VALID` while undraft, npm, and brew proceed. `asc builds wait`
+is the iOS-only happy path.
+
 If automatic export fails due signing, use the repo's signing gotchas in
 `AGENTS.md` and the `asc-*` skills. Fix signing/profiles; do not silently remove
 targets.
@@ -799,6 +893,10 @@ The GitHub desktop workflow and TestFlight do NOT touch the hosted web tier.
 Every release reconciles it, or production silently drifts (this bit v1.2.28 and
 v1.2.29: a rewritten web client and two changed Workers sat undeployed while the
 desktop shipped).
+
+Start this phase as soon as the docs PR (or any in-scope `main` push) lands.
+`deploy-web.yml` runs on that push. Do not wait for the desktop tag, the
+draft, npm, or TestFlight — see **Parallel schedule**.
 
 **A Cloudflare surface has two halves, and only one of them is in git.** The code
 half is `wrangler.jsonc` plus `src/`. The account half — whether the R2 bucket
