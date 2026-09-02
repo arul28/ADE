@@ -1,4 +1,9 @@
-import { foldsCase, pathApiFor, stripExtendedLengthPrefix } from "../../../shared/pathContainment";
+// The Pi lease child loads this file through Node's strip-types loader
+// (`piSessionLease.ts` imports `pathCompare.ts` by explicit source
+// extension). Extensionless specifiers fail that load with empty stdout and
+// exit 1, which is the CI failure this comment exists to prevent.
+// @ts-expect-error TS5097: the strip-types child loader requires the source extension.
+import { foldsCase, pathApiFor, stripExtendedLengthPrefix } from "../../../shared/pathContainment.ts";
 
 export { stripExtendedLengthPrefix };
 

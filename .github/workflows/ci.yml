@@ -639,6 +639,7 @@ jobs:
           src/main/windowAppearance.test.ts
           src/renderer/lib/pathUtils.test.ts
           src/main/services/shared/pathCompare.test.ts
+          src/main/services/chat/codexApprovalContainment.test.ts
           src/main/services/externalSessions/discoveryUtils.test.ts
           src/main/services/externalSessions/externalSessionsService.test.ts
           src/main/services/lanes/laneStorageLifecycle.test.ts
