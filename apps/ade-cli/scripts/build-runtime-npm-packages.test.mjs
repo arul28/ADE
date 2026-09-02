@@ -23,6 +23,8 @@ import {
   verifyPackedRuntimeFiles,
 } from "./build-runtime-npm-packages.mjs";
 
+const ADE_CODE_MODULE = "native/tuiClient/cli.mjs";
+
 /**
  * The cr-sqlite extension that target's loader can `dlopen`.
  *
@@ -55,6 +57,11 @@ function writeFakeArtifacts(dir, target) {
     );
     fs.mkdirSync(path.join(staging, "vendor", "crsqlite", target), { recursive: true });
     fs.writeFileSync(path.join(staging, "vendor", "crsqlite", target, crsqliteName(target)), "binary");
+    fs.mkdirSync(path.join(staging, "tuiClient"), { recursive: true });
+    fs.writeFileSync(
+      path.join(staging, "tuiClient", "cli.mjs"),
+      "export async function runAdeCodeCli() { return 0; }\n",
+    );
     execFileSync("tar", ["-czf", path.join(dir, archiveAsset), "-C", staging, "."], {
       windowsHide: true,
     });
@@ -92,6 +99,7 @@ test("builds the documented platform-package layout", () => {
       "bin/ade",
       "native/node_modules/better-sqlite3/index.js",
       "native/vendor/crsqlite/linux-x64/crsqlite.so",
+      ADE_CODE_MODULE,
       "LICENSE",
       "RUNTIME-EMBEDDING-EXCEPTION.md",
       "README.md",
@@ -171,8 +179,12 @@ test("publish workflow runs when a GitHub release is published, not only on disp
     new URL("../../../.github/workflows/publish-runtime-packages.yml", import.meta.url),
     "utf8",
   );
+  const collapsed = workflow.replace(/\s+/g, " ");
   assert.match(workflow, /\n  release:\n    types: \[published\]/);
-  assert.match(workflow, /github\.event_name == 'release'/);
+  assert.match(
+    collapsed,
+    /\(github\.event_name == 'release' && !github\.event\.release\.prerelease\) \|\| \(github\.event_name == 'workflow_dispatch' && inputs\.confirm == 'publish'\)/,
+  );
   assert.match(workflow, /github\.event\.release\.tag_name/);
   assert.match(workflow, /refusing to skip a runtime npm publish/);
   assert.doesNotMatch(workflow, /MANUAL ONLY/);
@@ -302,8 +314,39 @@ test("does not fail the build when npm-packlist omits an ignore file", () => {
         "bin/ade",
         "native/node_modules/better-sqlite3/index.js",
         "native/vendor/crsqlite/linux-x64/crsqlite.so",
+        ADE_CODE_MODULE,
       ]),
     });
+  });
+});
+
+test("fails the build when the packed tarball drops ADE Code", () => {
+  withTempDirs(({ artifacts, out }) => {
+    writeFakeArtifacts(artifacts, "linux-x64");
+    const packageDir = buildRuntimePackage({
+      target: "linux-x64",
+      artifactsDir: artifacts,
+      outDir: out,
+      version: "1.2.3",
+      license: "L",
+      exception: "EXCEPTION TEXT",
+    });
+    assert.throws(
+      () =>
+        verifyPackedRuntimeFiles({
+          packageDir,
+          runPack: packedListing([
+            "package.json",
+            "LICENSE",
+            "RUNTIME-EMBEDDING-EXCEPTION.md",
+            "README.md",
+            "bin/ade",
+            "native/node_modules/better-sqlite3/index.js",
+            "native/vendor/crsqlite/linux-x64/crsqlite.so",
+          ]),
+        }),
+      /native\/tuiClient\/cli\.mjs/,
+    );
   });
 });
 
@@ -394,6 +437,7 @@ test("fails the build when the packed tarball carries no launcher", () => {
             "LICENSE",
             "RUNTIME-EMBEDDING-EXCEPTION.md",
             "README.md",
+            ADE_CODE_MODULE,
             "native/node_modules/better-sqlite3/index.js",
             "native/vendor/crsqlite/linux-x64/crsqlite.so",
           ]),
@@ -431,6 +475,7 @@ test("fails the build when the packed tarball carries no cr-sqlite extension", (
             "README.md",
             "bin/ade",
             "native/node_modules/better-sqlite3/index.js",
+            ADE_CODE_MODULE,
           ]),
         }),
       /carries no native\/vendor\/crsqlite\/linux-x64\/crsqlite\.so/,
@@ -460,6 +505,7 @@ test("accepts the cr-sqlite extension at the exact path its target implies", () 
         "bin/ade",
         "native/node_modules/better-sqlite3/index.js",
         "native/vendor/crsqlite/linux-x64/crsqlite.so",
+        ADE_CODE_MODULE,
       ]),
     });
   });
@@ -498,6 +544,7 @@ test("refuses another platform's cr-sqlite extension in a target's own directory
             "bin/ade.exe",
             "native/node_modules/better-sqlite3/index.js",
             "native/vendor/crsqlite/win32-x64/crsqlite.so",
+            ADE_CODE_MODULE,
           ]),
         }),
       /carries no native\/vendor\/crsqlite\/win32-x64\/crsqlite\.dll/,
@@ -552,6 +599,7 @@ test("requires the launcher name the target implies, not either one", () => {
       "README.md",
       "native/node_modules/better-sqlite3/index.js",
       "native/vendor/crsqlite/win32-x64/crsqlite.dll",
+      ADE_CODE_MODULE,
     ];
     assert.throws(
       () => verifyPackedRuntimeFiles({ packageDir, runPack: packedListing([...listing, "bin/ade"]) }),
@@ -685,6 +733,7 @@ test("fails the build when the packed tarball drops LICENSE, the exception, or R
       "bin/ade",
       "native/node_modules/better-sqlite3/index.js",
       "native/vendor/crsqlite/linux-x64/crsqlite.so",
+      ADE_CODE_MODULE,
     ];
     assert.throws(
       () =>

@@ -342,6 +342,7 @@ function isRuntimeCriticalPackedFile(relativePath) {
   if (relativePath.startsWith("bin/")) return true;
   if (relativePath.startsWith("native/vendor/")) return true;
   if (relativePath === "native/manifest.json") return true;
+  if (relativePath === "native/tuiClient/cli.mjs") return true;
   return relativePath.endsWith(".node");
 }
 
@@ -504,6 +505,15 @@ export function verifyPackedRuntimeFiles({ packageDir, runPack = defaultPackRunn
         `find ${launcher}, and the embedder's app would then die at dlopen. Carrying another ` +
         `platform's extension there is the same failure: found: ` +
         `${packedFiles.filter((file) => file.startsWith("native/vendor/crsqlite/")).join(", ") || "nothing under native/vendor/crsqlite/"}.`,
+    );
+  }
+  // ADE Code loads this module from ADE_RUNTIME_ROOT. The launcher and
+  // native-module checks do not mention it, so a packlist omit still published.
+  if (!packedFiles.includes("native/tuiClient/cli.mjs")) {
+    throw new Error(
+      `${packageDir}: the packed tarball carries no native/tuiClient/cli.mjs. runAdeCode() ` +
+        `imports that module from ADE_RUNTIME_ROOT, so the package would install and then fail ` +
+        `the first \`ade code\` invocation.`,
     );
   }
   for (const required of ["LICENSE", EXCEPTION_FILE_NAME, "README.md", "package.json"]) {

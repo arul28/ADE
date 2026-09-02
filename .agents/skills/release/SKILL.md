@@ -697,9 +697,12 @@ the tag push. Desktop is not done until the npm job succeeds and
 `npm view @ade-dev/runtime version` equals this tag.
 
 Do not exclusive-watch either run if iOS processing or Cloudflare is still
-in flight — poll both GitHub jobs while those legs continue.
+in flight. Keep the run IDs and poll them between those legs. `gh run watch`
+belongs only to a desktop-only release, or to the join after the other legs
+have finished.
 
 ```bash
+set -euo pipefail
 # The release event can take a few seconds to enqueue the runs.
 find_run() {
   local workflow="$1"
@@ -707,29 +710,64 @@ find_run() {
     --json databaseId,headBranch,status,conclusion,url \
     --jq "[.[] | select(.headBranch==\"v<VERSION>\")][0].databaseId"
 }
+run_id_ready() {
+  [ -n "${1:-}" ] && [ "$1" != "null" ]
+}
+BREW_EXPECTED=0
+if [ "$(gh secret list --repo arul28/ADE --json name --jq 'any(.[]; .name == "HOMEBREW_TAP_DEPLOY_KEY")')" = "true" ]; then
+  BREW_EXPECTED=1
+fi
 for _ in 1 2 3 4 5 6; do
   NPM_RUN_ID=$(find_run publish-runtime-packages.yml)
   BREW_RUN_ID=$(find_run update-brew-tap.yml)
-  [ -n "$NPM_RUN_ID" ] && [ "$NPM_RUN_ID" != "null" ] && \
-    [ -n "$BREW_RUN_ID" ] && [ "$BREW_RUN_ID" != "null" ] && break
+  if run_id_ready "$NPM_RUN_ID"; then
+    if [ "$BREW_EXPECTED" != "1" ] || run_id_ready "$BREW_RUN_ID"; then
+      break
+    fi
+  fi
   sleep 10
 done
-if [ -z "$NPM_RUN_ID" ] || [ "$NPM_RUN_ID" = "null" ]; then
+if ! run_id_ready "${NPM_RUN_ID:-}"; then
   echo "Publish ADE runtime packages did not start for v<VERSION>"
   exit 1
 fi
-# Poll both to completion. If this is desktop-only, watch is fine.
-gh run watch "$NPM_RUN_ID" --repo arul28/ADE --interval 30 &
+if [ "$BREW_EXPECTED" = "1" ] && ! run_id_ready "${BREW_RUN_ID:-}"; then
+  echo "update-brew-tap did not start for v<VERSION>"
+  exit 1
+fi
+```
+
+While iOS or Cloudflare is still in flight, poll — do not `wait` yet:
+
+```bash
+gh run view "$NPM_RUN_ID" --repo arul28/ADE --json status,conclusion,url
+if [ -n "${BREW_RUN_ID:-}" ] && [ "$BREW_RUN_ID" != "null" ]; then
+  gh run view "$BREW_RUN_ID" --repo arul28/ADE --json status,conclusion,url
+fi
+```
+
+Desktop-only, or joining after the other legs finished. Watch both in
+parallel so neither wait starts only after the other has already completed:
+
+```bash
+gh run watch "$NPM_RUN_ID" --repo arul28/ADE --interval 30 --exit-status &
 NPM_WATCH=$!
-if [ -n "$BREW_RUN_ID" ] && [ "$BREW_RUN_ID" != "null" ]; then
-  gh run watch "$BREW_RUN_ID" --repo arul28/ADE --interval 30 &
+if [ -n "${BREW_RUN_ID:-}" ] && [ "$BREW_RUN_ID" != "null" ]; then
+  gh run watch "$BREW_RUN_ID" --repo arul28/ADE --interval 30 --exit-status &
   BREW_WATCH=$!
 fi
 wait "$NPM_WATCH"
 [ -n "${BREW_WATCH:-}" ] && wait "$BREW_WATCH"
-gh run view "$NPM_RUN_ID" --repo arul28/ADE --json conclusion,url
-npm view @ade-dev/runtime version
-npm view @ade-dev/runtime-darwin-arm64 version
+gh run view "$NPM_RUN_ID" --repo arul28/ADE --json conclusion,url --exit-status
+if [ -n "${BREW_RUN_ID:-}" ] && [ "$BREW_RUN_ID" != "null" ]; then
+  gh run view "$BREW_RUN_ID" --repo arul28/ADE --json conclusion,url --exit-status
+fi
+RUNTIME_VERSION=$(npm view @ade-dev/runtime version)
+DARWIN_VERSION=$(npm view @ade-dev/runtime-darwin-arm64 version)
+if [ "$RUNTIME_VERSION" != "<VERSION>" ] || [ "$DARWIN_VERSION" != "<VERSION>" ]; then
+  echo "expected @ade-dev/runtime@<VERSION> and @ade-dev/runtime-darwin-arm64@<VERSION>, got $RUNTIME_VERSION / $DARWIN_VERSION"
+  exit 1
+fi
 ```
 
 If the npm run fails because Trusted Publisher / `RUNTIME_TRUSTED_PUBLISHING` is
