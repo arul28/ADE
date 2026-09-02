@@ -91,16 +91,17 @@ function parseSkillFile(content: string, fallbackName: string): ParsedSkillFile 
 function bundledSkillRoots(): string[] {
   // Prefer roots that actually exist and contain at least one <skill>/SKILL.md.
   //
-  // Installed plugins contribute skill roots too, and they come LAST so ADE's
-  // own copy of a name always wins the de-dupe below. Listing them here is what
-  // keeps `ade skill list` honest: a plugin-owned skill (ade-linear,
-  // ade-ios-simulator, ade-app-control) is exactly as present to this catalogue
-  // as it is to the runtimes, which read the same roots off
-  // ADE_AGENT_SKILLS_DIRS — present when the owning plugin is installed and
-  // enabled, absent when it is not.
+  // Installed plugins contribute skill roots too, and they come FIRST, because
+  // every official plugin SUPERSEDES the compiled surface it owns. ADE still
+  // bundles `ade-linear`, `ade-ios-simulator` and `ade-app-control`, and a
+  // machine with no plugin installed keeps reading exactly those copies. Install
+  // the plugin and the plugin's own copy is what this catalogue returns: the
+  // de-dupe below keeps the first sighting of a name, so ordering is the whole
+  // mechanism. Two copies of one skill name must never both be listed — an agent
+  // told a skill exists twice cannot tell which one it opened.
   const candidates = [
-    ...getAdeAgentSkillRootCandidates({ includeDeepSourceFallbacks: true }),
     ...listPluginAgentSkillRoots(),
+    ...getAdeAgentSkillRootCandidates({ includeDeepSourceFallbacks: true }),
   ];
   const existing: string[] = [];
   const seen = new Set<string>();
@@ -141,7 +142,8 @@ function readSkillEntries(): SkillEntry[] {
       }
       const parsed = parseSkillFile(content, dirent.name);
       const name = parsed.name ?? dirent.name;
-      // De-dupe by name: first root wins (candidate order = bundled preference).
+      // De-dupe by name: first root wins, and plugin roots are first, so an
+      // installed plugin's copy supersedes ADE's compiled one.
       if (byName.has(name)) continue;
       byName.set(name, {
         name,

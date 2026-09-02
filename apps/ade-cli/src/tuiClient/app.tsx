@@ -83,6 +83,8 @@ import { builtinSurfaceDrawn } from "../../../desktop/src/shared/plugins/builtin
 import type { PluginSurfaceContext } from "../../../desktop/src/shared/plugins/context";
 import {
   pluginPromptAnswerArgs,
+  pluginPromptChoiceLines,
+  pluginPromptHiddenChoiceCount,
   pluginPromptHint,
   pluginPromptOutcome,
   pluginPromptPlaceholder,
@@ -92,6 +94,7 @@ import {
   pluginPromptUnknownChoiceNotice,
   type PluginPromptRequest,
 } from "./pluginPrompt";
+import { PLUGIN_BRAND_ICONS_COLLECTION } from "../../../desktop/src/shared/plugins/vocabularyBrandIcons";
 import { rollupPrChecks } from "../../../desktop/src/shared/prChecksRollup";
 import type { GitHubPrStackMembership, PrChecksStatus } from "../../../desktop/src/shared/types/prs";
 import {
@@ -470,6 +473,7 @@ import {
   buildPluginPaneModel,
   cyclePluginFieldValue,
   distinctBindings,
+  type PluginPaneCollectionRow,
   movePluginPaneSelection,
   pluginFieldRawValue,
   pluginFieldUsesComposer,
@@ -10590,7 +10594,16 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     const context = target.context ?? null;
     const fetched = await readPluginPanel(conn, target.pluginId, target.panelId);
     const collections: PluginPaneCollectionMap = new Map();
+    // The plugin's own brand glyphs, read once beside the panel. The rows are
+    // vector paths this client cannot draw, and it does not try: it reads them
+    // only to tell a `brand:*` token the plugin actually shipped from one it
+    // did not, so the pane prints a mark or a puzzle piece instead of the token.
+    // The collection is the host's reserved one, so this is never plugin text.
+    let brandIcons: PluginPaneCollectionRow[] = [];
     if (fetched.state === "ok") {
+      brandIcons = await readPluginCollection(conn, target.pluginId, {
+        collection: PLUGIN_BRAND_ICONS_COLLECTION,
+      });
       // Sequential on purpose: a panel binds a handful of collections at most
       // and they share one socket, so a burst of parallel reads buys nothing
       // and makes a slow plugin harder to read in the logs.
@@ -10615,6 +10628,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
         panelId: target.panelId,
         fetch: fetched,
         collections,
+        brandIcons,
         context,
         values: samePanel ? current.state.values : {},
         // A filter the reader set survives the 10s poll: the plugin republishes
@@ -18053,6 +18067,15 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     && (pluginPrompt != null
       || (activePane === "chat" && footerControl == null)
       || (activePane === "details" && rightPane.kind === "form"));
+  // The choices a closed plugin question draws, with the current typing marked
+  // so the reader sees which row their partial name already resolves to.
+  const pluginPromptChoices = useMemo(
+    () => (pluginPrompt ? pluginPromptChoiceLines(pluginPrompt.request, { text: prompt }) : []),
+    [pluginPrompt, prompt],
+  );
+  const pluginPromptHiddenChoices = pluginPrompt
+    ? pluginPromptHiddenChoiceCount(pluginPrompt.request)
+    : 0;
   const drawerFooterSelected = footerControl === "drawer";
   const detailsFooterSelected = footerControl === "details";
   const agentsFooterSelected = footerControl === "agents";
@@ -19255,6 +19278,26 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
             <Text wrap="truncate-end">
               <Text color={PURPLE} bold>{pluginPromptTitle(pluginPrompt.request)}</Text>
               <Text color={theme.color.mutedFg} dimColor>{`  ${pluginPromptHint(pluginPrompt.request)}`}</Text>
+            </Text>
+          ) : null}
+          {/* A closed question draws its choices. Without them the reader is
+              told to type a name from a list nobody showed them, which is not a
+              picker. The number on the left is an answer too — a terminal has no
+              click, and retyping "staging-europe-west" to pick the third of four
+              is worse than pressing 3. */}
+          {pluginPromptChoices.map((choice) => (
+            <Text key={`plugin-prompt-choice-${choice.value}`} wrap="truncate-end">
+              <Text color={choice.selected ? PURPLE : theme.color.mutedFg} bold={choice.selected}>
+                {`  ${choice.number}. `}
+              </Text>
+              <Text color={choice.selected ? PURPLE : undefined} bold={choice.selected}>
+                {choice.text}
+              </Text>
+            </Text>
+          ))}
+          {pluginPromptHiddenChoices > 0 ? (
+            <Text color={theme.color.mutedFg} dimColor wrap="truncate-end">
+              {`  +${pluginPromptHiddenChoices} more · type its name`}
             </Text>
           ) : null}
           {promptRows.map((line, index) => {

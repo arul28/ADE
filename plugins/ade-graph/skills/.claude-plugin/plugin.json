@@ -1,0 +1,9 @@
+{
+  "name": "ade-graph",
+  "description": "Graph capabilities contributed by the ADE ade-graph plugin",
+  "version": "1.0.0",
+  "author": {
+    "name": "ADE"
+  },
+  "skills": "./"
+}

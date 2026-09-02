@@ -360,4 +360,50 @@ describe("plugin tab badges", () => {
     expect(pluginTabBadgeText(set.app, cloud)).toBe("3");
     expect(pluginTabBadgeText(set.app, summary())).toBeNull();
   });
+
+  /**
+   * A tab badge is addressed by `"<pluginId>/<surfaceId>"`, so which surface
+   * counts as the rail tab decides which pill is read. The terminal used to
+   * take the first `kind === "tab"` while the desktop takes the first RAIL
+   * surface, so a plugin whose webview came first published its badge against
+   * one address and the terminal looked up another — the pill showed on the
+   * desktop and never in the terminal, from one manifest.
+   */
+  it("addresses the badge at the rail surface, webview included", () => {
+    const plugin = summary({
+      pluginId: "ade-cursor-cloud",
+      displayName: "Cursor Cloud",
+      surfaces: [
+        { kind: "webview", id: "console", title: "Console", panelId: "console" },
+        { kind: "tab", id: "fleet", title: "Cursor Cloud", panelId: "fleet" },
+      ],
+    });
+    const badgeFor = (entityId: string) => buildPluginTuiContributions(
+      pluginSocketSources(
+        [plugin],
+        new Map([["ade-cursor-cloud", {
+          sockets: [{ socket: "row-badge", surface: "app", id: "tab-badge", label: "Unread" }],
+        }]]),
+      ),
+      {
+        lanes: [],
+        work: [],
+        app: pluginContributionRows([{
+          entityKind: "surface",
+          entityId,
+          pluginId: "ade-cursor-cloud",
+          socket: "row-badge",
+          surface: "app",
+          socketId: "tab-badge",
+          payload: { text: "7", tone: "accent", id: "tab-badge" },
+          updatedAt: "2026-09-02T00:00:00.000Z",
+        }]),
+      },
+    );
+
+    // The webview is first in manifest order, so that is the address.
+    expect(pluginTabBadgeText(badgeFor("ade-cursor-cloud/console").app, plugin)).toBe("7");
+    // The later tab is not the rail surface, and its address reads nothing.
+    expect(pluginTabBadgeText(badgeFor("ade-cursor-cloud/fleet").app, plugin)).toBeNull();
+  });
 });

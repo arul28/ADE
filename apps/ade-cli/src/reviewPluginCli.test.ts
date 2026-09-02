@@ -100,6 +100,33 @@ describe("ADE CLI review plugin alias", () => {
     expect(flagged.text).toContain("ade review launch");
   });
 
+  /**
+   * The alias used to take the first token that did not start with a dash,
+   * which in `--repo runs launch` is the VALUE of `--repo`. It then rewrote
+   * that value in place, so the command that ran was not the one typed: the
+   * repository was renamed and the verb was never read.
+   */
+  it("skips a value-carrying flag's value when it reads the subcommand", () => {
+    writeReviewPlugin();
+    const plan = buildCliPlan(["review", "--repo", "runs", "launch"]);
+    expect(plan.kind).toBe("execute");
+    if (plan.kind !== "execute") return;
+    expect(plan.label).toBe(`plugin ${REVIEW_PLUGIN_ID} launch`);
+    const args = (plan.steps[0]?.params as { arguments: { args: { action: string; argv: string[] } } })
+      .arguments.args;
+    expect(args.action).toBe("launch");
+    // The flag's value is carried through untouched.
+    expect(args.argv).toEqual(["--repo", "runs", "launch"]);
+  });
+
+  it("reads the subcommand after a --flag=value, which carries its own value", () => {
+    writeReviewPlugin();
+    const plan = buildCliPlan(["review", "--repo=acme", "runs"]);
+    expect(plan.kind).toBe("execute");
+    if (plan.kind !== "execute") return;
+    expect(plan.label).toBe(`plugin ${REVIEW_PLUGIN_ID} runs`);
+  });
+
   it("keeps the unknown path when the plugin is installed but disabled", () => {
     writeReviewPlugin({ enabled: false });
     expect(() => buildCliPlan(["review", "launch"])).toThrowError(/Unknown command 'review'/);

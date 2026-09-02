@@ -1473,7 +1473,13 @@ export function createSyncService(args: SyncServiceArgs) {
               })
             : null,
         connectedPeers,
-        connectingPeerCount: hostService?.getBrainStatusSnapshot().metrics.connectingPeerCount ?? 0,
+        // Null-safe the whole chain, not just the host. This machine may host
+        // nothing (no `hostService`), the host may predate the snapshot verb, and
+        // an older host answers without a `metrics` block. Every one of those
+        // means the same thing the count exists to say: no socket is mid-
+        // handshake here, so report zero rather than throwing on the read.
+        connectingPeerCount:
+          hostService?.getBrainStatusSnapshot?.()?.metrics?.connectingPeerCount ?? 0,
         tailnetDiscovery,
         routeHealth,
         client,

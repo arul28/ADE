@@ -1124,7 +1124,12 @@ describe("ADE CLI", () => {
       ownerProcess.kill("SIGKILL");
       fs.rmSync(adeHome, { recursive: true, force: true });
     }
-  });
+    // A real brain, a real sync-host singleton and a real socket. The default
+    // 5s is not a budget for any of that: this test passes alone and times out
+    // only under the full parallel suite, which is the shape of a missing
+    // timeout rather than of a slow product. Its sibling below already carries
+    // one for the same reason.
+  }, 150_000);
 
   /**
    * `ade serve` publishes its RPC socket BEFORE the mobile sync host is up.

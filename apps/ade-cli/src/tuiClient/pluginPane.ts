@@ -91,6 +91,11 @@ import {
   type VocabTone,
 } from "../../../desktop/src/shared/plugins/vocabulary";
 import { readPluginPanelRefreshAction, readPluginPanelViewAction } from "../../../desktop/src/shared/plugins/sdk";
+import {
+  parsePluginBrandGlyph,
+  pluginBrandTokenKey,
+  PLUGIN_BRAND_ICON_LIMITS,
+} from "../../../desktop/src/shared/plugins/vocabularyBrandIcons";
 import type {
   PluginCollectionRow,
   PluginPanelRecord as HostPluginPanelRecord,
@@ -176,6 +181,11 @@ export type PluginPaneInlinePart = {
   tone: VocabTone;
   /** Badges get bracketed; plain text does not. */
   badge: boolean;
+  /**
+   * The resolved icon glyph, already through {@link pluginPaneIconText}, or
+   * null. Never a raw `brand:*` token — see that function.
+   */
+  icon?: string | null;
 };
 
 export type PluginPaneButton = {
@@ -184,6 +194,8 @@ export type PluginPaneButton = {
   disabled: boolean;
   /** Index into {@link PluginPaneModel.interactives}, or null when disabled. */
   selection: number | null;
+  /** Resolved icon glyph, already through {@link pluginPaneIconText}, or null. */
+  icon?: string | null;
 };
 
 export type PluginPaneRow =
@@ -230,6 +242,11 @@ export type PluginPaneRow =
        * shipped `avatar.src` still draws the letters.
        */
       avatar: string | null;
+      /**
+       * Resolved icon glyph, drawn before the title. Already through
+       * {@link pluginPaneIconText}, so it is never a raw `brand:*` token.
+       */
+      icon?: string | null;
     }
   | { kind: "tableHead"; key: string; indent: number; cells: string[]; widths: number[]; aligns: ("left" | "right")[] }
   | { kind: "tableRow"; key: string; indent: number; cells: string[]; widths: number[]; aligns: ("left" | "right")[] }
@@ -748,6 +765,81 @@ function placeholderHint(hasDeeplink: boolean): string {
   return hasDeeplink ? "Ctrl+Y copies a link that opens it" : "Run ade open to view it in the app";
 }
 
+/* ── Icons ──────────────────────────────────────────────────────────────── */
+
+/**
+ * The five vendor marks ADE itself ships, which need no plugin collection.
+ *
+ * Listed so a `brand:github` on a plugin that shipped no glyph of its own still
+ * resolves — the mark is ADE's, and the terminal knows it exists even though it
+ * cannot draw a logo.
+ */
+const ADE_BRAND_ICON_TOKENS: ReadonlySet<string> = new Set([
+  "claude",
+  "codex",
+  "cursor",
+  "github",
+  "openai",
+]);
+
+/** A resolved brand mark. One glyph for every vendor: a terminal has no logos. */
+const BRAND_ICON_GLYPH = "◆";
+
+/** A `brand:*` token nobody shipped — the terminal's puzzle piece. */
+const UNKNOWN_BRAND_ICON_GLYPH = "◇";
+
+/**
+ * The brand tokens this plugin actually ships, read off its reserved
+ * `ade.brandIcons` collection rows.
+ *
+ * The rows are written by the host from the manifest's `brandIcons` and are
+ * sanitized vector paths, which a terminal cannot draw. What the terminal needs
+ * from them is only the QUESTION they answer: does `brand:linear` name a mark
+ * that exists here? A row whose value is not a well-formed glyph is dropped, the
+ * same way every other client drops it, so the terminal never claims a mark the
+ * desktop would refuse to draw.
+ */
+export function pluginPaneBrandIconTokens(
+  rows: readonly PluginPaneCollectionRow[] | undefined,
+): ReadonlySet<string> {
+  const tokens = new Set<string>();
+  for (const row of rows ?? []) {
+    if (!PLUGIN_BRAND_ICON_LIMITS.tokenPattern.test(row.key)) continue;
+    if (!parsePluginBrandGlyph(row.value)) continue;
+    tokens.add(row.key);
+  }
+  return tokens;
+}
+
+/**
+ * What a terminal prints for a named icon token.
+ *
+ * A `brand:*` token is NEVER printed raw. `brand:linear` in front of a row title
+ * is not a picture and not a word — it is an implementation detail of the icon
+ * catalogue, and a reader has no way to know it was ever meant to be a logo. It
+ * resolves to one mono mark instead, and an unshipped token to the terminal's
+ * puzzle piece, so the row reads the same way the desktop's does: something is
+ * here, or something is missing.
+ *
+ * Every other token — the generic catalogue, `check`, `priority-high` — keeps
+ * printing its own name, which is already words a reader can act on.
+ */
+export function pluginPaneIconText(
+  name: string | null | undefined,
+  brandIcons: ReadonlySet<string> | undefined,
+): string | null {
+  const raw = (name ?? "").trim();
+  if (!raw) return null;
+  const token = pluginBrandTokenKey(raw);
+  if (token === null) {
+    // A malformed `brand:` prefix is still a brand token to the reader's eye,
+    // and printing it raw is the bug this function exists to close.
+    return raw.toLowerCase().startsWith("brand:") ? UNKNOWN_BRAND_ICON_GLYPH : raw;
+  }
+  if (ADE_BRAND_ICON_TOKENS.has(token) || brandIcons?.has(token)) return BRAND_ICON_GLYPH;
+  return UNKNOWN_BRAND_ICON_GLYPH;
+}
+
 /* ── Table layout ───────────────────────────────────────────────────────── */
 
 /**
@@ -773,6 +865,21 @@ export function pluginTableWidths(
   // so the row exactly fills the pane rather than leaving a ragged edge.
   const scale = budget / total;
   const shrunk = natural.map((width) => Math.max(3, Math.floor(width * scale)));
+  // The three-character floor can push the scaled row back OVER the budget when
+  // most columns are narrow. Take the overflow off the widest column each pass,
+  // never below the floor, so the finished line fits the pane it was sized for.
+  // Once every column sits at the floor the table cannot narrow any further,
+  // and the loop stops rather than spinning.
+  let overflow = shrunk.reduce((sum, width) => sum + width, 0) - budget;
+  while (overflow > 0) {
+    let widest = 0;
+    for (let index = 1; index < shrunk.length; index += 1) {
+      if ((shrunk[index] ?? 0) > (shrunk[widest] ?? 0)) widest = index;
+    }
+    if ((shrunk[widest] ?? 3) <= 3) break;
+    shrunk[widest] = (shrunk[widest] ?? 3) - 1;
+    overflow -= 1;
+  }
   let slack = budget - shrunk.reduce((sum, width) => sum + width, 0);
   while (slack > 0) {
     let widest = 0;
@@ -806,6 +913,8 @@ type WalkContext = {
   editing: number | null;
   inner: number;
   hasDeeplink: boolean;
+  /** Brand tokens this plugin ships, so `brand:*` never prints raw. */
+  brandIcons: ReadonlySet<string>;
 };
 
 function push(ctx: WalkContext, row: PluginPaneRow): void {
@@ -818,12 +927,17 @@ function addInteractive(ctx: WalkContext, interactive: PluginPaneInteractive): n
 }
 
 /** Text and badges are the only nodes a horizontal stack can fold onto one line. */
-function inlinePart(node: VocabNode): PluginPaneInlinePart | null {
+function inlinePart(node: VocabNode, brandIcons: ReadonlySet<string>): PluginPaneInlinePart | null {
   if (node.component === "text") {
     return { text: node.text, tone: node.tone ?? "neutral", badge: false };
   }
   if (node.component === "badge") {
-    return { text: node.text, tone: node.tone ?? "neutral", badge: true };
+    return {
+      text: node.text,
+      tone: node.tone ?? "neutral",
+      badge: true,
+      icon: pluginPaneIconText(node.icon, brandIcons),
+    };
   }
   return null;
 }
@@ -922,7 +1036,10 @@ function walkMarkdown(
         push(ctx, { kind: "divider", key: blockKey, indent, label: null });
         return;
       case "table": {
-        const lines = formatMarkdownTable(block);
+        // Sized to the pane, exactly like the vocabulary `table` node: a table
+        // laid out by content alone soft-wraps at the terminal edge, and a
+        // wrapped row turns a grid into a paragraph.
+        const lines = formatMarkdownTable(block, Math.max(12, ctx.inner - indent * 2));
         lines.forEach((line, lineIndex) => {
           push(ctx, {
             kind: "markdown",
@@ -944,28 +1061,66 @@ function walkMarkdown(
   });
 }
 
+/**
+ * A markdown cell's text, with the parts a bare `span.text` join would drop.
+ *
+ * A link's destination is printed beside its words and an image becomes its
+ * alt, the same two shapes `PluginPanelPane` draws for markdown OUTSIDE a
+ * table. Joining only `span.text` reduced "[the run](https://…)" to "the run"
+ * — a reader inside a table could see that a link existed and had no way to
+ * reach it, while the identical link one line above the table printed its URL.
+ */
+function markdownCellText(cells: readonly VocabMarkdownSpan[]): string {
+  return cells
+    .map((span) => {
+      const base = span.src !== undefined ? `[image: ${span.text}]` : span.text;
+      return span.href !== undefined ? `${base} (${span.href})` : base;
+    })
+    .join("");
+}
+
+/** Cut rather than wrap, with an ellipsis so the reader knows it was cut. */
+function truncateCellText(value: string, max: number): string {
+  if (value.length <= max) return value;
+  if (max <= 1) return value.slice(0, Math.max(0, max));
+  return `${value.slice(0, max - 1)}…`;
+}
+
 function formatMarkdownTable(
   block: Extract<VocabMarkdownBlock, { kind: "table" }>,
+  inner: number,
 ): string[] {
-  const cellText = (cells: readonly VocabMarkdownSpan[]): string =>
-    cells.map((span) => span.text).join("");
-  const header = block.header.map(cellText);
-  const body = block.rows.map((row) => row.map(cellText));
+  const header = block.header.map(markdownCellText);
+  const body = block.rows.map((row) => row.map(markdownCellText));
   const columns = header.length;
-  const widths = Array.from({ length: columns }, (_u, index) => Math.max(
-    header[index]?.length ?? 0,
-    ...body.map((row) => row[index]?.length ?? 0),
-    1,
-  ));
+  // The node table's own sizer, reused rather than reimplemented: one table
+  // layout in this client, whether the rows came from a schema or from prose.
+  // `center` has no place in the column type and only affects padding, so it
+  // sizes as `left`.
+  // The sizer budgets ONE column of gap between cells; this table joins with
+  // `" | "`, which is three. Hand it the narrower pane so the finished line fits
+  // the real one — a row two characters over the edge wraps, and a wrapped row
+  // is the whole failure this sizing exists to prevent.
+  const gaps = Math.max(0, columns - 1);
+  const widths = pluginTableWidths(
+    header.map((label, index) => ({
+      key: String(index),
+      label,
+      ...(block.align[index] === "right" ? { align: "right" as const } : {}),
+    })),
+    body,
+    Math.max(columns * 3, inner - gaps * 2),
+  );
   const padCell = (value: string, index: number): string => {
-    const width = widths[index] ?? 1;
+    const width = widths[index] ?? 3;
+    const cut = truncateCellText(value, width);
     const align = block.align[index] ?? "left";
-    if (align === "right") return value.padStart(width);
+    if (align === "right") return cut.padStart(width);
     if (align === "center") {
-      const pad = width - value.length;
-      return `${" ".repeat(Math.floor(pad / 2))}${value}${" ".repeat(Math.ceil(pad / 2))}`;
+      const pad = width - cut.length;
+      return `${" ".repeat(Math.floor(pad / 2))}${cut}${" ".repeat(Math.ceil(pad / 2))}`;
     }
-    return value.padEnd(width);
+    return cut.padEnd(width);
   };
   const line = (cells: readonly string[]) =>
     Array.from({ length: columns }, (_u, index) => padCell(cells[index] ?? "", index)).join(" | ");
@@ -987,7 +1142,7 @@ function walkNode(node: VocabNode, key: string, indent: number, ctx: WalkContext
       // a layout bug. Anything else falls back to vertical, because a terminal
       // cannot put two lists side by side at 30 columns.
       if (node.direction === "horizontal") {
-        const parts = node.children.map(inlinePart);
+        const parts = node.children.map((child) => inlinePart(child, ctx.brandIcons));
         if (parts.length > 0 && parts.every((part): part is PluginPaneInlinePart => part !== null)) {
           push(ctx, { kind: "inline", key, indent, parts });
           return;
@@ -1019,7 +1174,7 @@ function walkNode(node: VocabNode, key: string, indent: number, ctx: WalkContext
         groupKey,
         title: node.title,
         badge: node.badge ?? null,
-        icon: node.icon ?? null,
+        icon: pluginPaneIconText(node.icon, ctx.brandIcons),
         open,
         selection,
       });
@@ -1057,7 +1212,12 @@ function walkNode(node: VocabNode, key: string, indent: number, ctx: WalkContext
         kind: "inline",
         key,
         indent,
-        parts: [{ text: node.text, tone: node.tone ?? "neutral", badge: true }],
+        parts: [{
+          text: node.text,
+          tone: node.tone ?? "neutral",
+          badge: true,
+          icon: pluginPaneIconText(node.icon, ctx.brandIcons),
+        }],
       });
       return;
     }
@@ -1134,6 +1294,7 @@ function walkNode(node: VocabNode, key: string, indent: number, ctx: WalkContext
           badge: item.badge ? { text: item.badge.text, tone: item.badge.tone ?? "neutral" } : null,
           mono: item.mono ?? null,
           avatar: item.avatar ? vocabAvatarInitials(item.avatar.name) : null,
+          icon: pluginPaneIconText(item.icon, ctx.brandIcons),
         });
         // The row's buttons, on their own indented line beneath it.
         //
@@ -1236,7 +1397,15 @@ function walkNode(node: VocabNode, key: string, indent: number, ctx: WalkContext
         push(ctx, { kind: "note", key, indent, text: node.emptyText ?? "Nothing here yet." });
         return;
       }
-      items.forEach((item, index) => {
+      // Paged exactly like the `list` arm, and for the same reason: a canvas
+      // may hold a thousand nodes, and a terminal that drew all of them would
+      // push the rest of the panel — and the pane's own footer — out of the
+      // window with no line saying how many rows it had spent. The key is
+      // namespaced away from a list's, so a canvas and a list bound to the same
+      // collection keep their own page counts.
+      const canvasKey = `canvas:${bindingKey(node.bind)}`;
+      const page = vocabListPage(items.length, ctx.listPages[canvasKey] ?? 1);
+      items.slice(0, page.drawn).forEach((item, index) => {
         const selectAction = item.onPress
           ?? (node.onSelect && item.key
             ? { ...node.onSelect, args: { ...node.onSelect.args, id: item.key } }
@@ -1257,6 +1426,7 @@ function walkNode(node: VocabNode, key: string, indent: number, ctx: WalkContext
           badge: item.badge ? { text: item.badge.text, tone: item.badge.tone ?? "neutral" } : null,
           mono: item.mono ?? null,
           avatar: item.avatar ? vocabAvatarInitials(item.avatar.name) : null,
+          icon: pluginPaneIconText(item.icon, ctx.brandIcons),
         });
         pushRowActions(
           [...(item.actions ?? []), ...(item.overflow ?? [])],
@@ -1265,6 +1435,23 @@ function walkNode(node: VocabNode, key: string, indent: number, ctx: WalkContext
           ctx,
         );
       });
+      const canvasPageLabel = vocabListPageLabel(page);
+      if (canvasPageLabel !== null) {
+        push(ctx, {
+          kind: "listPage",
+          key: `${key}.page`,
+          indent,
+          label: page.hasMore ? `${canvasPageLabel} · ${VOCAB_LIST_SHOW_MORE_LABEL}` : canvasPageLabel,
+          selection: page.hasMore
+            ? addInteractive(ctx, {
+              kind: "listPage",
+              listKey: canvasKey,
+              label: VOCAB_LIST_SHOW_MORE_LABEL,
+              total: items.length,
+            })
+            : null,
+        });
+      }
       return;
     }
     case "table": {
@@ -1416,7 +1603,18 @@ function walkNode(node: VocabNode, key: string, indent: number, ctx: WalkContext
       return;
     }
     case "emptyState": {
-      push(ctx, { kind: "text", key: `${key}.title`, indent, text: node.title, variant: "subtitle", tone: "neutral" });
+      // The icon leads the title on one line rather than taking a line of its
+      // own: an empty state is already the pane saying "nothing here", and a
+      // lone glyph above it would read as a row.
+      const emptyIcon = pluginPaneIconText(node.icon, ctx.brandIcons);
+      push(ctx, {
+        kind: "text",
+        key: `${key}.title`,
+        indent,
+        text: emptyIcon ? `${emptyIcon} ${node.title}` : node.title,
+        variant: "subtitle",
+        tone: "neutral",
+      });
       if (node.description) {
         push(ctx, { kind: "note", key: `${key}.description`, indent, text: node.description });
       }
@@ -1498,7 +1696,13 @@ function pushButtons(nodes: readonly VocabNode[], key: string, indent: number, c
     const selection = disabled
       ? null
       : addInteractive(ctx, { kind: "action", label: node.label, action: node.onPress });
-    buttons.push({ label: node.label, kind: node.kind ?? "default", disabled, selection });
+    buttons.push({
+      label: node.label,
+      kind: node.kind ?? "default",
+      disabled,
+      selection,
+      icon: pluginPaneIconText(node.icon, ctx.brandIcons),
+    });
   }
   if (buttons.length > 0) push(ctx, { kind: "buttons", key, indent, buttons });
 }
@@ -1586,6 +1790,16 @@ export type PluginPaneInput = {
    * absent key means one page, which is the first draw.
    */
   listPages?: Readonly<Record<string, number>>;
+  /**
+   * The plugin's own `ade.brandIcons` rows, so a `brand:*` token can be told
+   * apart from one nobody shipped.
+   *
+   * Absent is not "no icons": it is "not read", and every `brand:*` then draws
+   * the unknown mark rather than a mark this client cannot vouch for. The
+   * reserved collection is the host's, so these rows are never plugin-authored
+   * text — see `vocabularyBrandIcons.ts`.
+   */
+  brandIcons?: readonly PluginPaneCollectionRow[];
   /** Interactive index that currently owns the composer, if any. */
   editing?: number | null;
   /** Pane content width in columns. */
@@ -1715,6 +1929,7 @@ export function buildPluginPaneModel(input: PluginPaneInput): PluginPaneModel {
     editing: input.editing ?? null,
     inner,
     hasDeeplink: Boolean(parsed.panel.fallback.deeplink),
+    brandIcons: pluginPaneBrandIconTokens(input.brandIcons),
   };
   walkChrome(parsed.panel.chrome, ctx);
   const chromeHeaderCount = ctx.rows.length;

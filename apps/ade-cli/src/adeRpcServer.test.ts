@@ -36,12 +36,13 @@ const originalAdeEnv = new Map<string, string | undefined>(
 /**
  * Point the machine ADE dir at a scratch plugin registry.
  *
- * Plugin-owned action domains — Linear's, the iOS Simulator's, Electron Control's —
- * are refused on a machine whose plugin is not installed. Without this the
- * suite would describe whatever plugins the developer running it happens to
- * have, and `linear_issue_tracker.createComment` would pass or fail by
- * accident. Most of this file describes a fully equipped machine, so that is
- * what it installs; the gating block below flips it to a bare one.
+ * Every registered surface supersedes, so an installed plugin takes the
+ * compiled verbs out of the ADVERTISED catalog while dispatch stays open.
+ * Without this the suite would describe whatever plugins the developer running
+ * it happens to have, and `list_ade_actions` would list or hide
+ * `linear_issue_tracker.createComment` by accident. Most of this file describes
+ * a fully equipped machine, so that is what it installs; the gating block below
+ * flips it to a bare one.
  */
 const pluginScratchDirs: string[] = [];
 const originalAdeHome = process.env.ADE_HOME;
@@ -7238,61 +7239,62 @@ describe("run_ade_action plugin domain", () => {
 
 describe("plugin-gated action domains", () => {
   /**
-   * The refusal has to be POLICY. `methodNotFound` reads as "this host is too
-   * old" and sends a client down a legacy fallback — the exact way a scope
-   * denial once turned into a silent wrong path in this codebase — so the two
-   * assertions that matter most here are the code and the message, not the
-   * mere fact that the call failed.
+   * Every registered surface SUPERSEDES today, so no domain is refused. ADE
+   * compiled `linear_issue_tracker` long before `ade-linear` existed, and a
+   * machine without the plugin is the product it has always been: the verbs
+   * dispatch, and the catalog advertises them.
+   *
+   * The refusal machinery below it stays for a future `enables` vertical, and
+   * the shape it must keep is POLICY. `methodNotFound` reads as "this host is
+   * too old" and sends a client down a legacy fallback — the exact way a scope
+   * denial once turned into a silent wrong path in this codebase.
    */
-  it("refuses a domain whose plugin is not installed, naming the plugin that provides it", async () => {
+  it("keeps a superseded domain dispatching on a machine with no plugin installed", async () => {
     useMachineWithPlugins([], { catalog: true });
     const fixture = createRuntime();
     const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
     await initialize(handler, { role: "agent", chatSessionId: "session-1" });
 
-    const denied = await callTool(handler, "run_ade_action", {
+    const served = await callTool(handler, "run_ade_action", {
       domain: "linear_issue_tracker",
       action: "createComment",
       argsList: ["ENG-431", "All green"],
     });
 
-    expect(denied?.isError).toBe(true);
-    const text = JSON.stringify(denied);
-    expect(text).toContain("ade-linear plugin");
-    expect(text).toContain("Marketplace");
-    expect(fixture.runtime.linearIssueTracker.createComment).not.toHaveBeenCalled();
+    expect(served?.isError).toBeUndefined();
+    expect(fixture.runtime.linearIssueTracker.createComment).toHaveBeenCalledWith("ENG-431", "All green");
+    expect(JSON.stringify(served)).not.toContain("Marketplace");
   });
 
-  it("raises policyDenied rather than methodNotFound", async () => {
+  it("never answers a missing plugin with a refusal on a superseded domain", async () => {
     useMachineWithPlugins([], { catalog: true });
     const fixture = createRuntime();
     const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
     await initialize(handler, { role: "agent", chatSessionId: "session-1" });
 
-    const refused: any = await (handler as any)({
+    const answered: any = await (handler as any)({
       jsonrpc: "2.0",
       id: 1,
       method: "ade/actions/call",
       params: {
         name: "run_ade_action",
-        arguments: { domain: "ios_simulator", action: "listDevices" },
+        arguments: {
+          domain: "linear_issue_tracker",
+          action: "getStatus",
+        },
       },
     });
 
-    expect(refused.error.code).toBe(JsonRpcErrorCode.policyDenied);
-    expect(refused.error.code).not.toBe(JsonRpcErrorCode.methodNotFound);
-    expect(refused.error.data).toMatchObject({
-      kind: "plugin_not_installed",
-      domain: "ios_simulator",
-      pluginId: "ade-ios-sim",
-    });
+    expect(answered.error?.code).not.toBe(JsonRpcErrorCode.policyDenied);
+    expect(answered.error?.code).not.toBe(JsonRpcErrorCode.methodNotFound);
+    expect(JSON.stringify(answered)).not.toContain("plugin_not_installed");
   });
 
   it("keeps its own generic error when no catalog can name the owner", async () => {
-    // The refusal still happens — what is withheld is the ADVICE. Telling a
-    // user to install something ADE cannot name is worse than a plain error,
-    // so with no catalog reachable the call falls back to the ordinary
-    // unavailable-domain message and invents nothing.
+    // A domain this runtime genuinely cannot serve still fails, and the failure
+    // still invents nothing. Telling a user to install something ADE cannot
+    // name is worse than a plain error, so with no catalog reachable the call
+    // falls back to the ordinary unavailable-domain message.
     useMachineWithPlugins([]);
     const fixture = createRuntime();
     const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
@@ -7313,7 +7315,7 @@ describe("plugin-gated action domains", () => {
     expect(refused.error.message).not.toContain("plugin");
   });
 
-  it("keeps the domain out of the advertised action list while it is refused", async () => {
+  it("advertises a superseded domain while its plugin is absent", async () => {
     useMachineWithPlugins([]);
     const fixture = createRuntime();
     const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
@@ -7324,17 +7326,28 @@ describe("plugin-gated action domains", () => {
       (listed.structuredContent.actions as { domain: string }[]).map((entry) => entry.domain),
     );
 
-    expect(domains.has("linear_issue_tracker")).toBe(false);
-    expect(domains.has("app_control")).toBe(false);
+    expect(domains.has("linear_issue_tracker")).toBe(true);
     // ADE's own domains are untouched by any of this.
     expect(domains.has("lane")).toBe(true);
   });
 
-  it("serves the domain again once the plugin is installed", async () => {
+  it("stops advertising the compiled verbs once the plugin is installed, and still dispatches them", async () => {
+    // The plugin's own tools take the advertisement. Dispatch stays open so a
+    // chat or automation already mid-way through a Linear call does not fail
+    // the instant the user installs the plugin.
     useMachineWithPlugins(["ade-linear"]);
     const fixture = createRuntime();
     const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
     await initialize(handler, { role: "agent", chatSessionId: "session-1" });
+
+    const listed = await callTool(handler, "list_ade_actions", { domain: "all" });
+    const names = new Set(
+      (listed.structuredContent.actions as { domain: string; action: string }[]).map(
+        (entry) => `${entry.domain}.${entry.action}`,
+      ),
+    );
+    expect(names.has("linear_issue_tracker.createComment")).toBe(false);
+    expect(names.has("lane.list")).toBe(true);
 
     const comment = await callTool(handler, "run_ade_action", {
       domain: "linear_issue_tracker",

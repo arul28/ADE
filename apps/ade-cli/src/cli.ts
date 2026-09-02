@@ -3,6 +3,7 @@
 // pull in `node:sqlite`, whose experimental-feature warning would otherwise
 // print on every single `ade` invocation. See ./lib/nodeWarnings.
 import "./lib/nodeWarnings";
+import { VALUE_CARRIER_FLAGS, firstStandalonePositionalIndex } from "./cliArgScan";
 import { Buffer } from "node:buffer";
 import { spawn, spawnSync } from "node:child_process";
 import fs from "node:fs";
@@ -12748,229 +12749,7 @@ function buildUpdatePlan(args: string[]): CliPlan {
   };
 }
 
-const VALUE_CARRIER_FLAGS: ReadonlySet<string> = new Set([
-  // Only flags that actually take a following value (readValue / readIntOption
-  // callers) belong here. Boolean-only flags consumed via readFlag must be
-  // excluded, otherwise the next positional would be swallowed as their value.
-  "-b",
-  "-m",
-  "-q",
-  "-t",
-  "--additional-instructions",
-  "--app",
-  "--action",
-  "--app-bundle",
-  "--at",
-  "--arg",
-  "--arg-json",
-  "--arg-value",
-  "--arg-value-json",
-  "--args-list-json",
-  "--attempt",
-  "--attempt-id",
-  "--automation",
-  "--autonomy",
-  "--backend",
-  "--base",
-  "--base-branch",
-  "--base-branch-ref",
-  "--base-ref",
-  "--body",
-  "--branch",
-  "--branch-name",
-  "--branch-ref",
-  "--bundle",
-  "--bundle-id",
-  "--category",
-  "--color",
-  "--cols",
-  "--command",
-  "--comment",
-  "--comment-id",
-  "--commit",
-  "--compare-ref",
-  "--caption",
-  "--cdp-port",
-  "--chat-session",
-  "--chat-session-id",
-  "--compare-to",
-  "--content",
-  "--context-file",
-  "--cron",
-  "--cwd",
-  "--data",
-  "--cpu",
-  "--cpu-cores",
-  "--debug-port",
-  "--depth",
-  "--desc",
-  "--device",
-  "--dispatch",
-  "--dispatch-mode",
-  "--disk",
-  "--disk-size",
-  "--display",
-  "--duration",
-  "--duration-ms",
-  "--description",
-  "--domain",
-  "--droid-autonomy",
-  "--droid-permission-mode",
-  "--duration-sec",
-  "--enabled",
-  "--event",
-  "--end-x",
-  "--end-y",
-  "--expected-head",
-  "--expected-head-branch",
-  "--delivery",
-  "--file",
-  "--for",
-  "--fps",
-  "--from",
-  "--from-file",
-  "--group",
-  "--group-id",
-  "--head",
-  "--icon",
-  "--id",
-  "--image",
-  "--image-url",
-  "--in",
-  "--index",
-  "--initial-input",
-  "--input",
-  "--input-json",
-  "--input-text",
-  "--interval-ms",
-  "--instructions",
-  "--kind",
-  "--json-input",
-  "--lane",
-  "--lane-id",
-  "--limit",
-  "--max-bytes",
-  "--line",
-  "--max-log-bytes",
-  "--max-prompt-chars",
-  "--max-rounds",
-  "--memory",
-  "--merge-method",
-  "--message",
-  "--method",
-  "--mode",
-  "--model",
-  "--model-id",
-  "--name",
-  "--new",
-  "--new-path",
-  "--number",
-  "--old",
-  "--old-path",
-  "--owner",
-  "--owner-id",
-  "--owner-kind",
-  "--outcome",
-  "--output",
-  "--oid",
-  "--params-json",
-  "--parent",
-  "--parent-lane",
-  "--parent-lane-id",
-  "--path",
-  "--permission-mode",
-  "--permissions",
-  "--port",
-  "--pr",
-  "--pr-id",
-  "--pr-number",
-  "--pr-url",
-  "--project",
-  "--project-root",
-  "--poll-interval-ms",
-  "--prompt",
-  "--provider",
-  "--pty",
-  "--pty-id",
-  "--query",
-  "--question",
-  "--reason",
-  "--reasoning",
-  "--recovery-action",
-  "--recent-limit",
-  "--ref",
-  "--require-dpop",
-  "--role",
-  "--root",
-  "--root-lane",
-  "--round",
-  "--rounds",
-  "--rows",
-  "--rule",
-  "--run",
-  "--run-id",
-  "--scalar",
-  "--scalar-json",
-  "--scope",
-  "--seconds",
-  "--session",
-  "--session-id",
-  "--set",
-  "--set-json",
-  "--sha",
-  "--signal",
-  "--since",
-  "--source",
-  "--source-lane",
-  "--spawn-type",
-  "--stack",
-  "--stack-base",
-  "--stack-base-branch",
-  "--stack-id",
-  "--scheme",
-  "--socket",
-  "--start-point",
-  "--start-x",
-  "--start-y",
-  "--stash-oid",
-  "--stash-ref",
-  "--step",
-  "--step-id",
-  "--suite",
-  "--suite-id",
-  "--surface",
-  "--state",
-  "--tab",
-  "--tab-identifier",
-  "--target",
-  "--target-id",
-  "--terminal",
-  "--terminal-id",
-  "--thread",
-  "--thread-id",
-  "--turn",
-  "--turn-id",
-  "--timeout",
-  "--timeout-ms",
-  "--title",
-  "--tool-type",
-  "--title-query",
-  "--type",
-  "--udid",
-  "--url",
-  "--until",
-  "--until-iso",
-  "--value",
-  "--window-title",
-  "--workspace",
-  "--workspace-id",
-  "--workspace-root",
-  "--coordinate-space",
-  "--coords",
-  "--x",
-  "--xcodeproj",
-  "--y",
-]);
+
 
 function hasHelpFlag(args: string[]): boolean {
   const terminatorIndex = args.indexOf("--");
@@ -13535,19 +13314,33 @@ const CURSOR_CLOUD_PLUGIN_CLI_WORDS: Record<string, string> = {
   user: "me",
 };
 
-function cursorCloudPluginCliArgs(args: readonly string[]): string[] | null {
-  const word = args.find((arg) => arg !== "--" && !arg.startsWith("-")) ?? null;
-  if (word === null) return [...args];
-  const canonical = CURSOR_CLOUD_PLUGIN_CLI_WORDS[word.toLowerCase()];
+/**
+ * Rewrite a plugin alias's first word to the plugin's own canonical word.
+ *
+ * By INDEX, never by value: replacing the first token that happens to equal the
+ * word would rewrite a flag's value that spelled the same thing.
+ *
+ * `null` means "this is not a word the plugin claims", and the caller keeps the
+ * compiled command. `missingWord` is the answer for an alias with no word at
+ * all: Cursor Cloud wants the plugin's own usage text, Review and History want
+ * the compiled path.
+ */
+function pluginAliasArgs(
+  args: readonly string[],
+  words: Record<string, string>,
+  missingWord: "pass-through" | "reject",
+): string[] | null {
+  const index = firstStandalonePositionalIndex(args);
+  if (index < 0) return missingWord === "pass-through" ? [...args] : null;
+  const canonical = words[args[index]!.toLowerCase()];
   if (!canonical) return null;
-  let replaced = false;
-  return args.map((arg) => {
-    if (!replaced && arg === word) {
-      replaced = true;
-      return canonical;
-    }
-    return arg;
-  });
+  const next = [...args];
+  next[index] = canonical;
+  return next;
+}
+
+function cursorCloudPluginCliArgs(args: readonly string[]): string[] | null {
+  return pluginAliasArgs(args, CURSOR_CLOUD_PLUGIN_CLI_WORDS, "pass-through");
 }
 
 function cursorCloudPluginAliasUsageText(): string {
@@ -13613,18 +13406,7 @@ const REVIEW_PLUGIN_CLI_WORDS: Record<string, string> = {
 };
 
 function reviewPluginCliArgs(args: readonly string[]): string[] | null {
-  const word = args.find((arg) => arg !== "--" && !arg.startsWith("-")) ?? null;
-  if (word === null) return [...args];
-  const canonical = REVIEW_PLUGIN_CLI_WORDS[word.toLowerCase()];
-  if (!canonical) return null;
-  let replaced = false;
-  return args.map((arg) => {
-    if (!replaced && arg === word) {
-      replaced = true;
-      return canonical;
-    }
-    return arg;
-  });
+  return pluginAliasArgs(args, REVIEW_PLUGIN_CLI_WORDS, "pass-through");
 }
 
 function reviewPluginAliasUsageText(): string {
@@ -13665,18 +13447,7 @@ const HISTORY_PLUGIN_CLI_WORDS: Record<string, string> = {
 };
 
 function historyPluginCliArgs(args: readonly string[]): string[] | null {
-  const word = args.find((arg) => arg !== "--" && !arg.startsWith("-")) ?? null;
-  if (word === null) return null;
-  const canonical = HISTORY_PLUGIN_CLI_WORDS[word.toLowerCase()];
-  if (!canonical) return null;
-  let replaced = false;
-  return args.map((arg) => {
-    if (!replaced && arg === word) {
-      replaced = true;
-      return canonical;
-    }
-    return arg;
-  });
+  return pluginAliasArgs(args, HISTORY_PLUGIN_CLI_WORDS, "reject");
 }
 
 function historyPluginAliasUsageText(): string {

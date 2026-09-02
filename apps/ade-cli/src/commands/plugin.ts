@@ -54,6 +54,7 @@ import {
   type PluginDoctorLive,
 } from "./pluginDoctor";
 import { resolveMachineAdeLayout } from "../services/projects/machineLayout";
+import { firstStandalonePositionalWord } from "../cliArgScan";
 
 export class CliPluginUsageError extends Error {}
 
@@ -165,7 +166,10 @@ export function resolvePluginCliRoute(
   if (!record || !record.enabled) return null;
   const { manifest } = readPluginManifestAt(path.join(pluginsRoot, primary));
   if (!manifest || manifest.cli.length === 0) return null;
-  const word = args.find((arg) => arg !== "--" && !arg.startsWith("-")) ?? null;
+  // Not the first token without a dash: in `--repo runs launch` that token is
+  // the VALUE of `--repo`, and routing on it sends the command somewhere the
+  // reader never asked for. See `cliArgScan.ts`.
+  const word = firstStandalonePositionalWord(args);
   // A bare `ade <id>` still routes: the plugin owns its own usage text, and
   // refusing it here would answer "Unknown command" for a command that exists.
   if (word !== null && !manifest.cli.includes(word)) return null;

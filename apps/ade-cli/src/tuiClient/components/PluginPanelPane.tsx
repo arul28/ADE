@@ -121,6 +121,9 @@ function PluginRow({
           {row.parts.map((part, index) => (
             <Text key={`${part.text}:${index}`}>
               {index > 0 ? <Text color={theme.color.t5}>{" "}</Text> : null}
+              {/* The glyph is already resolved by the model — a `brand:*` token
+                  never reaches this file as text. */}
+              {part.icon ? <Text color={TONE_COLOR[part.tone]}>{`${part.icon} `}</Text> : null}
               {part.badge
                 ? <Chip value={`[${part.text}]`} valueColor={TONE_COLOR[part.tone]} />
                 : <Text color={TONE_COLOR[part.tone]}>{part.text}</Text>}
@@ -165,6 +168,8 @@ function PluginRow({
       // a missing one in others, and a checkbox that shifts the whole line by a
       // column as it is ticked is worse than one that never moves.
       const box = row.tick ? `${row.tick.checked ? "[x]" : "[ ]"} ` : "";
+      // Resolved by the model, so a `brand:*` token can never print itself here.
+      const icon = row.icon ? `${row.icon} ` : "";
       return (
         <Box flexDirection="column">
           <Text
@@ -179,7 +184,7 @@ function PluginRow({
                 {` ${box}`}
               </Text>
             ) : null}
-            {`${box ? "" : " "}${row.avatar ? `[${row.avatar}] ` : ""}${endTruncate(`${row.title}${badge}${meta}`, Math.max(4, inner - 2 - box.length - (row.avatar ? row.avatar.length + 4 : 0)))}`}
+            {`${box ? "" : " "}${row.avatar ? `[${row.avatar}] ` : ""}${icon}${endTruncate(`${row.title}${badge}${meta}`, Math.max(4, inner - 2 - box.length - icon.length - (row.avatar ? row.avatar.length + 4 : 0)))}`}
           </Text>
           {row.subtitle ? (
             <Text color={theme.color.t4} dimColor wrap="truncate-end">
@@ -239,7 +244,7 @@ function PluginRow({
             <Text key={`${button.label}:${index}`}>
               {index > 0 ? <Text>{" "}</Text> : null}
               <Pill
-                label={button.label}
+                label={button.icon ? `${button.icon} ${button.label}` : button.label}
                 active={button.selection !== null && button.selection === selectionIndex}
                 disabled={button.disabled}
               />

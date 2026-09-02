@@ -1,0 +1,9 @@
+{
+  "name": "ade-review",
+  "description": "Review capabilities contributed by the ADE ade-review plugin",
+  "version": "1.0.0",
+  "author": {
+    "name": "ADE"
+  },
+  "skills": "./"
+}

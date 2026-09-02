@@ -67,6 +67,7 @@ import type {
   PluginSurfaceContext,
 } from "../../../desktop/src/shared/plugins/context";
 import type { VocabTone } from "../../../desktop/src/shared/plugins/vocabulary";
+import { pluginRailTabSurface } from "../../../desktop/src/shared/plugins/manifest";
 import type { PluginContributionRecord, PluginSummary } from "../../../desktop/src/shared/plugins/sdk";
 
 export { EMPTY_CONTRIBUTION_SET };
@@ -178,13 +179,19 @@ export function buildPluginTuiContributions(
 /**
  * The unread mark a plugin published for its rail tab, as text for a picker row.
  *
- * Null when the plugin has no tab surface or has not published a badge.
+ * Null when the plugin has no rail surface or has not published a badge.
+ *
+ * The address is `"<pluginId>/<surfaceId>"`, so which surface counts as the tab
+ * is not a cosmetic choice: taking the first `kind === "tab"` here while the
+ * desktop takes the first RAIL surface read two different addresses for one
+ * pill, and a plugin whose webview comes first showed its badge on one client
+ * and not the other. `pluginRailTabSurface` is the one rule both now follow.
  */
 export function pluginTabBadgeText(
   set: SurfaceContributionSet,
   plugin: Pick<PluginSummary, "pluginId" | "surfaces">,
 ): string | null {
-  const tab = plugin.surfaces.find((surface) => surface.kind === "tab");
+  const tab = pluginRailTabSurface(plugin.surfaces);
   if (!tab) return null;
   return selectPluginTabBadge(set, plugin.pluginId, tab.id)?.payload.text ?? null;
 }

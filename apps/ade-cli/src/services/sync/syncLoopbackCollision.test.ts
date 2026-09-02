@@ -297,6 +297,10 @@ describe("sync loopback collision recovery", () => {
         else process.env.ADE_SYNC_HOST_LOCK_PATH = previousLockPath;
       }
     },
+    // Binds real loopback sockets, so it needs the same 15s the socket tests
+    // at the foot of this file already take. It passes alone in about two
+    // seconds and misses the 5s default only under the full parallel suite.
+    15_000,
   );
 
   it("does not publish or persist a candidate until its loopback check passes", async () => {
@@ -359,7 +363,8 @@ describe("sync loopback collision recovery", () => {
       if (previousLockPath === undefined) delete process.env.ADE_SYNC_HOST_LOCK_PATH;
       else process.env.ADE_SYNC_HOST_LOCK_PATH = previousLockPath;
     }
-  });
+    // Same reason as above: real sockets, and 5s is not a budget for them.
+  }, 15_000);
 
   // Regression for PR #816: when relay is participating and the loopback listener is
   // genuinely ADE-validated, but the relay bridge has NOT been validated against

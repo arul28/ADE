@@ -39,6 +39,7 @@ import {
 } from "../../../desktop/src/shared/plugins/keybindings";
 import {
   PLUGIN_PROVIDER_KEY_LABELS,
+  PLUGIN_RAIL_TAB_SURFACE_KINDS,
   type PluginManifest,
 } from "../../../desktop/src/shared/plugins/manifest";
 import { PLUGIN_NETWORK_REFUSAL_LOG_CODE } from "../../../desktop/src/shared/plugins/network";
@@ -281,8 +282,10 @@ function runningLayer(snapshot: PluginDoctorSnapshot): PluginDoctorLayer {
  * only the page itself cares which it draws.
  */
 function railSurfaces(manifest: PluginManifest | null): PluginManifest["surfaces"] {
+  // The kind list itself lives in `manifest.ts` beside `pluginRailTabSurface`,
+  // so "which kinds are rail kinds" has one home rather than a copy per client.
   return (manifest?.surfaces ?? []).filter(
-    (surface) => surface.kind === "tab" || surface.kind === "webview",
+    (surface) => PLUGIN_RAIL_TAB_SURFACE_KINDS.some((kind) => kind === surface.kind),
   );
 }
 

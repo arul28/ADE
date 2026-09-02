@@ -122,9 +122,65 @@ export function pluginPromptSubmitLabel(request: PluginPromptRequest): string {
 export function pluginPromptHint(request: PluginPromptRequest): string {
   const options = request.prompt.options ?? [];
   if (options.length > 0) {
-    return `type a name · ↵ ${pluginPromptSubmitLabel(request)} · esc cancel`;
+    return `type a number or a name · ↵ ${pluginPromptSubmitLabel(request)} · esc cancel`;
   }
   return `↵ ${pluginPromptSubmitLabel(request)} · esc cancel`;
+}
+
+/**
+ * How many choices the terminal draws before it stops and counts the rest.
+ *
+ * A picker is a question, not a pane: a plugin that hands the reader forty lanes
+ * would push the composer off the screen, and the field still accepts a typed
+ * name for any of them, drawn or not.
+ */
+export const PLUGIN_PROMPT_MAX_VISIBLE_CHOICES = 8;
+
+/** One drawn choice row: its number, its words, and whether the typed text hits it. */
+export type PluginPromptChoiceLine = {
+  value: string;
+  /** 1-based, and the number the reader may type instead of the name. */
+  number: number;
+  text: string;
+  selected: boolean;
+};
+
+/**
+ * The choices to draw under a closed question, with the current typing marked.
+ *
+ * A closed question that draws only its title and its hint is unanswerable: the
+ * reader is told to type a name from a list they were never shown. So the list
+ * is drawn, numbered, and the number is an answer in its own right — a terminal
+ * has no click, and asking someone to retype "staging-europe-west" to pick the
+ * third of four is not a picker.
+ *
+ * Returns an empty array for a free-text question, which draws no list at all.
+ */
+export function pluginPromptChoiceLines(
+  request: PluginPromptRequest,
+  input?: { text?: string; maxVisible?: number },
+): PluginPromptChoiceLine[] {
+  const options = request.prompt.options ?? [];
+  if (options.length === 0) return [];
+  const maxVisible = input?.maxVisible ?? PLUGIN_PROMPT_MAX_VISIBLE_CHOICES;
+  const typed = (input?.text ?? "").trim();
+  const resolved = typed ? pluginPromptResolveChoice(request, typed) : null;
+  return options.slice(0, Math.max(0, maxVisible)).map((option, index) => ({
+    value: option.value,
+    number: index + 1,
+    text: option.label ?? option.value,
+    selected: resolved != null && resolved === option.value,
+  }));
+}
+
+/** How many choices exist beyond the drawn ones. Zero when all of them fit. */
+export function pluginPromptHiddenChoiceCount(
+  request: PluginPromptRequest,
+  input?: { maxVisible?: number },
+): number {
+  const options = request.prompt.options ?? [];
+  const maxVisible = input?.maxVisible ?? PLUGIN_PROMPT_MAX_VISIBLE_CHOICES;
+  return Math.max(0, options.length - Math.max(0, maxVisible));
 }
 
 /**
@@ -145,6 +201,13 @@ export function pluginPromptResolveChoice(request: PluginPromptRequest, text: st
   if (exactValue) return exactValue.value;
   const exactLabel = options.find((option) => (option.label ?? option.value).toLowerCase() === lower);
   if (exactLabel) return exactLabel.value;
+  // The drawn number, and only AFTER the two exact matches: an option whose own
+  // value or label is "2" still wins its own digit, so numbering a list can
+  // never change what an existing answer means.
+  if (/^\d+$/.test(typed)) {
+    const picked = options[Number(typed) - 1];
+    if (picked) return picked.value;
+  }
   const prefixed = options.filter((option) => {
     const label = (option.label ?? option.value).toLowerCase();
     return option.value.toLowerCase().startsWith(lower) || label.startsWith(lower);
@@ -154,7 +217,7 @@ export function pluginPromptResolveChoice(request: PluginPromptRequest, text: st
 
 /** What the reader is told when they typed something that is not a choice. */
 export function pluginPromptUnknownChoiceNotice(request: PluginPromptRequest): string {
-  return `${pluginPromptTitle(request)}: that is not one of the choices. Type a name from the list and press enter.`;
+  return `${pluginPromptTitle(request)}: that is not one of the choices. Type a number or a name from the list and press enter.`;
 }
 
 /**

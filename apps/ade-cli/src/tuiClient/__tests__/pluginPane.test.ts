@@ -30,7 +30,10 @@ import {
 import { defaultPluginPanelId, invokePluginAction, resolvePluginByName } from "../adeApi";
 import {
   pluginPromptAnswerArgs,
+  pluginPromptChoiceLines,
+  pluginPromptHiddenChoiceCount,
   pluginPromptHint,
+  PLUGIN_PROMPT_MAX_VISIBLE_CHOICES,
   pluginPromptOutcome,
   pluginPromptPlaceholder,
   pluginPromptResolveChoice,
@@ -76,6 +79,8 @@ function build(
     selectionSignature?: string;
     openGroups?: Record<string, boolean>;
     listPages?: Record<string, number>;
+    brandIcons?: readonly { key: string; value: unknown }[];
+    width?: number;
   } = {},
 ): PluginPaneModel {
   const input: PluginPaneInput = {
@@ -94,7 +99,8 @@ function build(
       : {}),
     ...(options.openGroups !== undefined ? { openGroups: options.openGroups } : {}),
     ...(options.listPages !== undefined ? { listPages: options.listPages } : {}),
-    width: 40,
+    ...(options.brandIcons !== undefined ? { brandIcons: options.brandIcons } : {}),
+    width: options.width ?? 40,
   };
   return buildPluginPaneModel(input);
 }
@@ -1016,11 +1022,29 @@ describe("plugin lookup", () => {
     expect(resolvePluginByName(plugins, "nope")).toBeNull();
   });
 
-  it("opens the plugin's first tab surface, defaulting to main", () => {
+  it("opens the plugin's rail surface, webview included, defaulting to main", () => {
     expect(defaultPluginPanelId(summary({
       surfaces: [{ kind: "tab", id: "graph", title: "Graph", panelId: "overview" }],
     }))).toBe("overview");
     expect(defaultPluginPanelId(summary({ surfaces: [] }))).toBe("main");
+
+    // A webview IS a rail surface, and manifest order decides. The terminal used
+    // to take the first `kind === "tab"` and skip the webview, so this plugin
+    // opened `overview` here and `console` on the desktop, from one manifest.
+    expect(defaultPluginPanelId(summary({
+      surfaces: [
+        { kind: "webview", id: "console", title: "Console", panelId: "console" },
+        { kind: "tab", id: "graph", title: "Graph", panelId: "overview" },
+      ],
+    }))).toBe("console");
+
+    // A non-rail surface never wins the address, whatever order it sits in.
+    expect(defaultPluginPanelId(summary({
+      surfaces: [
+        { kind: "settings", id: "prefs", title: "Prefs", panelId: "prefs" },
+        { kind: "tab", id: "graph", title: "Graph", panelId: "overview" },
+      ],
+    }))).toBe("overview");
   });
 });
 
@@ -1293,7 +1317,7 @@ describe("the plugin action prompt", () => {
       label: "Link to a lane",
     });
     if (asked.kind !== "ask") throw new Error("expected a picker");
-    expect(pluginPromptHint(asked.request)).toBe("type a name · ↵ Submit · esc cancel");
+    expect(pluginPromptHint(asked.request)).toBe("type a number or a name · ↵ Submit · esc cancel");
     expect(pluginPromptPlaceholder(asked.request)).toBe("type a name from the list");
     expect(pluginPromptResolveChoice(asked.request, "lane-2")).toBe("lane-2");
     expect(pluginPromptResolveChoice(asked.request, "alpha")).toBe("lane-1");
@@ -1301,6 +1325,110 @@ describe("the plugin action prompt", () => {
     expect(pluginPromptResolveChoice(asked.request, "al")).toBeNull();
     expect(pluginPromptResolveChoice(asked.request, "nope")).toBeNull();
     expect(pluginPromptAnswerArgs(asked.request, "nope")).toBeNull();
+  });
+
+  it("draws the choices a closed question offers, numbered, and marks the typed one", () => {
+    // The bug this pins: the terminal used to draw the title and the hint and
+    // nothing else, so "type a name from the list" named a list the reader had
+    // never seen.
+    const asked = pluginPromptOutcome({
+      result: {
+        prompt: {
+          id: "lane",
+          title: "Link to a lane",
+          options: [
+            { value: "lane-1", label: "Alpha" },
+            { value: "lane-2", label: "Beta" },
+            { value: "lane-3" },
+          ],
+        },
+      },
+      pluginId: "linear",
+      displayName: "Linear",
+      actionId: "linkToLane",
+      args: {},
+      label: "Link to a lane",
+    });
+    if (asked.kind !== "ask") throw new Error("expected a picker");
+
+    expect(pluginPromptChoiceLines(asked.request)).toEqual([
+      { value: "lane-1", number: 1, text: "Alpha", selected: false },
+      { value: "lane-2", number: 2, text: "Beta", selected: false },
+      // No label: the value is the words, never a blank row.
+      { value: "lane-3", number: 3, text: "lane-3", selected: false },
+    ]);
+
+    // Partial typing marks the row it already resolves to.
+    expect(pluginPromptChoiceLines(asked.request, { text: "Be" }).map((line) => line.selected))
+      .toEqual([false, true, false]);
+    expect(pluginPromptChoiceLines(asked.request, { text: "nope" }).map((line) => line.selected))
+      .toEqual([false, false, false]);
+
+    // The number is an answer.
+    expect(pluginPromptResolveChoice(asked.request, "2")).toBe("lane-2");
+    expect(pluginPromptResolveChoice(asked.request, "4")).toBeNull();
+    expect(pluginPromptResolveChoice(asked.request, "0")).toBeNull();
+
+    // A free-text question draws no list at all.
+    const free = pluginPromptOutcome({
+      result: NOTE_PROMPT,
+      pluginId: "journal",
+      displayName: "Work Journal",
+      actionId: "logNote",
+      args: {},
+      label: "Log it",
+    });
+    if (free.kind !== "ask") throw new Error("expected a question");
+    expect(pluginPromptChoiceLines(free.request)).toEqual([]);
+    expect(pluginPromptHiddenChoiceCount(free.request)).toBe(0);
+  });
+
+  it("stops drawing a long option list and counts the rest, without refusing them", () => {
+    const asked = pluginPromptOutcome({
+      result: {
+        prompt: {
+          id: "lane",
+          title: "Link to a lane",
+          options: Array.from({ length: 12 }, (_unused, index) => ({ value: `lane-${index + 1}` })),
+        },
+      },
+      pluginId: "linear",
+      displayName: "Linear",
+      actionId: "linkToLane",
+      args: {},
+      label: "Link to a lane",
+    });
+    if (asked.kind !== "ask") throw new Error("expected a picker");
+
+    expect(pluginPromptChoiceLines(asked.request)).toHaveLength(PLUGIN_PROMPT_MAX_VISIBLE_CHOICES);
+    expect(pluginPromptHiddenChoiceCount(asked.request)).toBe(12 - PLUGIN_PROMPT_MAX_VISIBLE_CHOICES);
+    // An undrawn choice is still answerable by name — the list is a convenience,
+    // never the set of legal answers.
+    expect(pluginPromptResolveChoice(asked.request, "lane-12")).toBe("lane-12");
+  });
+
+  it("lets an option keep its own digit as a value or a label", () => {
+    const asked = pluginPromptOutcome({
+      result: {
+        prompt: {
+          id: "pick",
+          title: "Pick one",
+          options: [
+            { value: "alpha", label: "2" },
+            { value: "beta", label: "Beta" },
+          ],
+        },
+      },
+      pluginId: "journal",
+      displayName: "Work Journal",
+      actionId: "pick",
+      args: {},
+      label: "Pick one",
+    });
+    if (asked.kind !== "ask") throw new Error("expected a picker");
+
+    // "2" is the first option's LABEL, and an exact label beats the row number.
+    expect(pluginPromptResolveChoice(asked.request, "2")).toBe("alpha");
   });
 
   it("re-invokes a picker with the option value, not the typed label", async () => {
@@ -1345,7 +1473,7 @@ describe("the plugin action prompt", () => {
 
     expect(calls).toHaveLength(1);
     expect(run.notices).toEqual([
-      "Link to a lane: that is not one of the choices. Type a name from the list and press enter.",
+      "Link to a lane: that is not one of the choices. Type a number or a name from the list and press enter.",
     ]);
   });
 });
@@ -2119,5 +2247,129 @@ describe("panel chrome", () => {
     const windowed = pluginPaneWindow(model, 0, 4);
     expect(windowed.rows[0]?.kind).toBe("search");
     expect(windowed.rows[windowed.rows.length - 1]?.kind).toBe("buttons");
+  });
+});
+
+/**
+ * The three things the terminal used to drop on its way from a schema to a row.
+ *
+ * Each one is the same failure in a different node: the pane knew something and
+ * printed a worse version of it. A table sized by its own content instead of by
+ * the pane it sits in. A link inside a table cell reduced to its words while the
+ * identical link one line above printed its URL. A `brand:linear` token printed
+ * as the literal text `brand:linear`. And a canvas that drew a thousand rows
+ * with no line saying it had.
+ */
+describe("what the terminal used to drop", () => {
+  const markdownLines = (model: PluginPaneModel): string[] =>
+    model.rows.flatMap((row) =>
+      row.kind === "markdown" ? [row.parts.map((span) => span.text).join("")] : []);
+
+  it("sizes a markdown table to the pane rather than to its own content", () => {
+    const text = [
+      "| Lane | Note |",
+      "| --- | --- |",
+      "| lane-1 | " + "x".repeat(200) + " |",
+    ].join("\n");
+    const model = build(panel([{ component: "markdown", text }]), { width: 40 });
+    const lines = markdownLines(model);
+
+    expect(lines.length).toBe(2);
+    // Every row fits the pane, so Ink never soft-wraps a grid into a paragraph.
+    for (const line of lines) expect(line.length).toBeLessThanOrEqual(36);
+    // The long cell is cut and says it was cut, rather than silently ending.
+    expect(lines[1]).toContain("…");
+    // A wide pane keeps the whole cell.
+    const wide = markdownLines(build(panel([{ component: "markdown", text }]), { width: 400 }));
+    expect(wide[1]).toContain("x".repeat(200));
+  });
+
+  it("keeps a link's URL and an image's alt inside a table cell", () => {
+    const text = [
+      "| Run | Shot |",
+      "| --- | --- |",
+      "| [the run](https://ade.dev/r/1) | ![a chart](https://ade.dev/c.png) |",
+    ].join("\n");
+    const model = build(panel([{ component: "markdown", text }]), { width: 200 });
+    const lines = markdownLines(model);
+
+    expect(lines[1]).toContain("the run (https://ade.dev/r/1)");
+    expect(lines[1]).toContain("[image: a chart]");
+  });
+
+  it("never prints a brand token, and says when nobody shipped the mark", () => {
+    const glyph = { viewBox: "0 0 24 24", paths: [{ d: "M0 0h24v24H0z" }] };
+    const withIcon = build(
+      panel([
+        { component: "group", title: "Issues", icon: "brand:linear", children: [] },
+        { component: "badge", text: "Open", icon: "brand:linear" },
+        { component: "button", label: "Sync", icon: "brand:linear", onPress: { action: "sync" } },
+        {
+          component: "list",
+          items: [{ title: "ENG-1", icon: "brand:linear" }],
+        },
+        { component: "emptyState", title: "Nothing linked", icon: "brand:linear" },
+      ]),
+      { brandIcons: [{ key: "linear", value: glyph }] },
+    );
+
+    const rendered = JSON.stringify(withIcon.rows);
+    expect(rendered).not.toContain("brand:linear");
+
+    const group = withIcon.rows.find((row) => row.kind === "group");
+    expect(group?.kind === "group" ? group.icon : null).toBe("◆");
+    const badge = withIcon.rows.find((row) => row.kind === "inline");
+    expect(badge?.kind === "inline" ? badge.parts[0]?.icon : null).toBe("◆");
+    const buttons = withIcon.rows.find((row) => row.kind === "buttons");
+    expect(buttons?.kind === "buttons" ? buttons.buttons[0]?.icon : null).toBe("◆");
+    const item = withIcon.rows.find((row) => row.kind === "listItem");
+    expect(item?.kind === "listItem" ? item.icon : null).toBe("◆");
+    const empty = withIcon.rows.find((row) => row.kind === "text" && row.text.includes("Nothing linked"));
+    expect(empty?.kind === "text" ? empty.text : "").toBe("◆ Nothing linked");
+
+    // Nobody shipped the mark: the puzzle piece, never the token.
+    const without = build(panel([
+      { component: "group", title: "Issues", icon: "brand:linear", children: [] },
+    ]));
+    const bare = without.rows.find((row) => row.kind === "group");
+    expect(bare?.kind === "group" ? bare.icon : null).toBe("◇");
+
+    // ADE ships these five itself, so they resolve with no plugin collection.
+    const shipped = build(panel([
+      { component: "group", title: "Repo", icon: "brand:github", children: [] },
+    ]));
+    const known = shipped.rows.find((row) => row.kind === "group");
+    expect(known?.kind === "group" ? known.icon : null).toBe("◆");
+
+    // A generic catalogue token is words already, and keeps printing them.
+    const generic = build(panel([
+      { component: "group", title: "Repo", icon: "git-branch", children: [] },
+    ]));
+    const plain = generic.rows.find((row) => row.kind === "group");
+    expect(plain?.kind === "group" ? plain.icon : null).toBe("git-branch");
+  });
+
+  it("pages a canvas the way it pages a list", () => {
+    const collections: PluginPaneCollectionMap = new Map([
+      [bindingKey({ collection: "nodes" }), Array.from({ length: 143 }, (_unused, index) => ({
+        key: `n${index}`,
+        value: { title: `node-${index}` },
+      }))],
+    ]);
+    const canvas = panel([{ component: "canvas", engine: "graph", bind: { collection: "nodes" } }]);
+
+    const first = build(canvas, { collections });
+    expect(first.rows.filter((row) => row.kind === "listItem")).toHaveLength(VOCAB_LIMITS.listPageSize);
+    const page = first.rows.find((row) => row.kind === "listPage");
+    if (page?.kind !== "listPage" || page.selection === null) return expect.fail("expected a page row");
+    expect(page.label).toBe("Showing 100 of 143 · Show more");
+
+    const control = first.interactives[page.selection];
+    if (control?.kind !== "listPage") return expect.fail("expected a page control");
+    const listPages = pluginPaneShowMore(first, control.listKey, control.total);
+
+    const second = build(canvas, { collections, listPages });
+    expect(second.rows.filter((row) => row.kind === "listItem")).toHaveLength(143);
+    expect(second.rows.find((row) => row.kind === "listPage")).toBeUndefined();
   });
 });

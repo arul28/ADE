@@ -1,0 +1,9 @@
+{
+  "name": "ade-cursor-cloud",
+  "description": "Cursor Cloud capabilities contributed by the ADE ade-cursor-cloud plugin",
+  "version": "1.0.0",
+  "author": {
+    "name": "ADE"
+  },
+  "skills": "./"
+}

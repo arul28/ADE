@@ -82,6 +82,7 @@ import {
   LEGACY_RECOVERY_ACTION_BY_NEUTRAL,
 } from "../chatRecovery";
 import { VOCAB_PANEL_READ_LIMIT } from "../../../desktop/src/shared/plugins/vocabulary";
+import { pluginRailTabSurface } from "../../../desktop/src/shared/plugins/manifest";
 import type { PluginContributionRecord, PluginSummary } from "../../../desktop/src/shared/plugins/sdk";
 import type { PluginEntityKind, PluginSurfaceId } from "../../../desktop/src/shared/plugins/sockets";
 import type { PluginPaneCollectionRow, PluginPanelFetch, PluginPanelRecord } from "./pluginPane";
@@ -1710,11 +1711,20 @@ export function resolvePluginByName(plugins: PluginSummary[], query: string): Pl
 }
 
 /**
- * The panel `/plugin-view <name>` opens: the plugin's first tab surface, since
- * that is the one it considers its front door. A plugin with no tab surface
+ * The panel `/plugin-view <name>` opens: the plugin's rail tab surface, since
+ * that is the one it considers its front door. A plugin with no rail surface
  * still has panels, so `main` is the documented default.
+ *
+ * `pluginRailTabSurface` rather than the first `kind === "tab"`, because a
+ * `webview` is a rail surface too. A plugin whose webview comes first used to
+ * open one panel on the desktop and a different one here, against one manifest.
  */
 export function defaultPluginPanelId(plugin: PluginSummary): string {
-  const tab = plugin.surfaces.find((surface) => surface.kind === "tab" && surface.panelId);
-  return tab?.panelId ?? plugin.surfaces[0]?.panelId ?? "main";
+  // The rail surface is picked FIRST and its panel read second, exactly as
+  // `PluginTabPage` does. Filtering to surfaces that carry a panel before
+  // picking would let a later surface win the address, which is the divergence
+  // this helper exists to end.
+  return pluginRailTabSurface(plugin.surfaces)?.panelId
+    ?? plugin.surfaces.find((surface) => surface.panelId)?.panelId
+    ?? "main";
 }

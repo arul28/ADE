@@ -76,11 +76,12 @@ describe("ade skill (bundled agent skills)", () => {
 /**
  * The catalogue has to answer the same way the runtimes do.
  *
- * Three skills describe surfaces an official plugin owns and ship inside that
- * plugin's package, so they exist on a machine only while the plugin is
- * installed. `ade skill list` reads the installed-plugin roots for exactly that
- * reason: an agent that is told a skill exists and then cannot open it is worse
- * off than one that was never told.
+ * Three skills describe surfaces an official plugin SUPERSEDES, and they ship
+ * twice: once compiled into ADE, once inside the plugin package. With no plugin
+ * installed the compiled copy is the product, exactly as before the plugin
+ * existed. Install the plugin and its own copy replaces the compiled one, and
+ * the name is still listed exactly once — an agent that sees a skill twice
+ * cannot tell which one it opened.
  */
 describe("plugin-owned skills follow the install state", () => {
   const repoPluginsRoot = path.resolve(
@@ -132,29 +133,70 @@ describe("plugin-owned skills follow the install state", () => {
       .map((entry) => entry.name);
   }
 
-  it("omits ade-linear when the ade-linear plugin is not installed", () => {
+  it("keeps the compiled ade-linear skill when the ade-linear plugin is not installed", () => {
     adeHomeWithInstalledPlugins([]);
 
-    expect(listedSkillNames()).not.toContain("ade-linear");
-    expect(() => runSkillShow(["ade-linear"])).toThrowError(/Unknown skill/);
+    // Supersedes, not enables: a machine without the plugin is the product ADE
+    // has always been, and the compiled skill is what it serves.
+    expect(listedSkillNames()).toContain("ade-linear");
+    const shown = runSkillShow(["ade-linear", "--json"]) as { output: string; exitCode: number };
+    expect(shown.exitCode).toBe(0);
+    expect((JSON.parse(shown.output) as { path: string }).path)
+      .not.toContain(path.join("plugins", "ade-linear", "skills"));
   });
 
-  it("lists and shows ade-linear once its plugin is installed", () => {
+  it("serves the plugin's own ade-linear skill once its plugin is installed", () => {
     adeHomeWithInstalledPlugins(["ade-linear"]);
 
-    expect(listedSkillNames()).toContain("ade-linear");
+    // Listed exactly once, and it is the plugin's copy — the compiled one steps
+    // aside the same way the compiled UI does.
+    expect(listedSkillNames().filter((name) => name === "ade-linear")).toEqual(["ade-linear"]);
     const shown = runSkillShow(["ade-linear", "--json"]) as { output: string; exitCode: number };
     expect(shown.exitCode).toBe(0);
     expect((JSON.parse(shown.output) as { path: string }).path)
       .toContain(path.join("plugins", "ade-linear", "skills", "ade-linear"));
   });
 
-  it("gates ade-ios-simulator and ade-app-control on their own plugins", () => {
+  it("supersedes ade-ios-simulator and leaves ade-app-control compiled", () => {
     adeHomeWithInstalledPlugins(["ade-ios-sim"]);
 
     // The skill directory and the plugin id are deliberately different words.
-    expect(listedSkillNames()).toContain("ade-ios-simulator");
-    expect(listedSkillNames()).not.toContain("ade-app-control");
+    const names = listedSkillNames();
+    expect(names.filter((name) => name === "ade-ios-simulator")).toEqual(["ade-ios-simulator"]);
+    // No `ade-app-control` plugin here, so ADE's compiled skill is still the one.
+    expect(names).toContain("ade-app-control");
+    const control = runSkillShow(["ade-app-control", "--json"]) as { output: string; exitCode: number };
+    expect((JSON.parse(control.output) as { path: string }).path)
+      .not.toContain(path.join("plugins", "ade-app-control", "skills"));
+    const simulator = runSkillShow(["ade-ios-simulator", "--json"]) as { output: string; exitCode: number };
+    expect((JSON.parse(simulator.output) as { path: string }).path)
+      .toContain(path.join("plugins", "ade-ios-sim", "skills", "ade-ios-simulator"));
+  });
+
+  /**
+   * Claude never reads `ADE_AGENT_SKILLS_DIRS`. A plugin-owned skill reaches a
+   * Claude runtime only as a Claude PLUGIN root, and `canonicalClaudePluginRoot`
+   * in the desktop `agentSkillRuntimeService` accepts a root only when it holds
+   * a `.claude-plugin/plugin.json`. Without the marker the skill loads on every
+   * other runtime and silently never loads on Claude, which is the failure that
+   * is hardest to notice.
+   */
+  it("gives every plugin skills root the Claude plugin marker", () => {
+    const pluginIds = fs
+      .readdirSync(repoPluginsRoot, { withFileTypes: true })
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => entry.name)
+      .filter((pluginId) => fs.existsSync(path.join(repoPluginsRoot, pluginId, "skills")));
+
+    expect(pluginIds.length).toBeGreaterThan(0);
+    for (const pluginId of pluginIds) {
+      const marker = path.join(repoPluginsRoot, pluginId, "skills", ".claude-plugin", "plugin.json");
+      expect(fs.existsSync(marker), `${pluginId} is missing ${marker}`).toBe(true);
+      const parsed = JSON.parse(fs.readFileSync(marker, "utf8")) as { name?: string; skills?: string };
+      expect(parsed.name).toBe(pluginId);
+      // The skills live directly under the root the marker sits in.
+      expect(parsed.skills).toBe("./");
+    }
   });
 
   it("keeps the ungated bundled skills present whatever is installed", () => {
