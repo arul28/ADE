@@ -55,6 +55,8 @@ import {
   PersonalChatScope,
   summarizeRuntimeActivity,
 } from "./services/personalChats/personalChatScope";
+import type { ProviderStatusReport } from "../../desktop/src/main/services/ai/providerStatusProbe";
+import { PROVIDER_STATUS_CACHE_TTL_MS } from "../../desktop/src/main/services/ai/providerStatusDetails";
 import { createHeadlessGitHubService } from "./headlessLinearServices";
 import {
   callerHasRoleAtLeast,
@@ -184,6 +186,53 @@ export type MachinePowerTransitionOutcome = {
   reason?: string;
 };
 
+/**
+ * The provider-detection surface the machine RPC exposes.
+ *
+ * An interface rather than the probe module itself so the handler never
+ * hard-depends on the desktop's resolvers: tests inject a stub, and a runtime
+ * that cannot load them still constructs.
+ */
+export type ProviderStatusService = {
+  status(args?: { refresh?: boolean }): Promise<ProviderStatusReport>;
+  /** Advertised on `ade/initialize` so an SDK can feature-detect before calling. */
+  capabilities(): { status: true; cacheTtlMs: number };
+};
+
+/**
+ * The cache lifetime `providers.status` advertises, in milliseconds.
+ *
+ * Re-exported from `providerStatusDetails`, which is a zero-import leaf: five
+ * numbers and one frozen table of `detail` sentences. Importing it costs the
+ * brain's startup nothing, so the constant does not need to be copied.
+ *
+ * It is deliberately NOT imported from `providerStatusProbe`. That would be a
+ * value import of the whole detector and every provider resolver it pulls in,
+ * which is exactly what the lazy `await import` below exists to avoid;
+ * `capabilities()` is synchronous and cannot await.
+ */
+export { PROVIDER_STATUS_CACHE_TTL_MS } from "../../desktop/src/main/services/ai/providerStatusDetails";
+
+/**
+ * The real detector, loaded on first call.
+ *
+ * Deliberately lazy: a brain that never serves `providers.status` does not pay
+ * for the provider resolvers at startup, and the failure mode of a missing
+ * module is a JSON-RPC error on one method rather than a runtime that will not
+ * boot.
+ */
+export function createProviderStatusService(): ProviderStatusService {
+  return {
+    capabilities: () => ({ status: true, cacheTtlMs: PROVIDER_STATUS_CACHE_TTL_MS }),
+    async status(args) {
+      const { probeProviderStatuses } = await import(
+        "../../desktop/src/main/services/ai/providerStatusProbe"
+      );
+      return await probeProviderStatuses({ refresh: args?.refresh === true });
+    },
+  };
+}
+
 export type MultiProjectRpcHandlerOptions = {
   serverVersion: string;
   projectRegistry?: ProjectRegistry;
@@ -194,6 +243,14 @@ export type MultiProjectRpcHandlerOptions = {
     PersonalChatScope,
     "capabilities" | "call" | "streamEvents" | "dispose"
   > & Partial<Pick<PersonalChatScope, "activitySummary" | "subscribeEvents">>;
+  /**
+   * Backs `providers.status`: what each CLI-backed provider actually is on this
+   * machine (installed, where, which version, signed in). Injected like
+   * `personalChatScope` so a test can answer without touching the real
+   * filesystem, and defaulted so every runtime profile — chat and embedded —
+   * answers the method rather than 404ing an embedder's setup screen.
+   */
+  providerStatus?: ProviderStatusService;
   accountAuthService?: AccountAuthService;
   productAnalyticsService?: AccountAnalyticsIdentity;
   getAccountDirectoryHealth?: () => SyncAccountDirectoryHealth;
@@ -291,6 +348,7 @@ const RUNTIME_METHODS = new Set([
   "runtime.activitySummary",
   "account.call",
   "attention.call",
+  "providers.status",
   "personalChats.call",
   "personalChats.streamEvents",
   "personalChats.subscribeEvents",
@@ -844,6 +902,7 @@ export function createMultiProjectRpcRequestHandler(
   };
   const ownsPersonalChatScope = options.personalChatScope == null;
   const personalChatScope = options.personalChatScope ?? createPersonalChatScope();
+  const providerStatus = options.providerStatus ?? createProviderStatusService();
   const handlers = new Map<ProjectId, Promise<HandlerEntry>>();
   const eventSubscriptions = new Map<string, RuntimeEventSubscription>();
   /**
@@ -1438,6 +1497,10 @@ export function createMultiProjectRpcRequestHandler(
             listMyGitHubRepos: true,
           },
           personalChats: personalChatScope.capabilities(),
+          // An older runtime omits this key entirely, which is the SDK's cue to
+          // fall back to deriving provider status from the model catalog and
+          // to say `source: "derived"` instead of claiming a probe.
+          providers: providerStatus.capabilities(),
           account: true,
         },
       };
@@ -1839,6 +1902,13 @@ export function createMultiProjectRpcRequestHandler(
         JsonRpcErrorCode.methodNotFound,
         `Unknown Activity action: ${action || "(empty)"}`,
       );
+    }
+
+    // No role gate, matching `personalChats.call`: this reports what is
+    // installed on the machine, which any caller that can open a chat can
+    // already infer from whether that chat starts.
+    if (method === "providers.status") {
+      return await providerStatus.status({ refresh: params.refresh === true });
     }
 
     if (method === "personalChats.call") {

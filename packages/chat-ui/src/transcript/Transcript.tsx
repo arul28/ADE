@@ -23,6 +23,7 @@ import {
 import type { ActivityLabelConfig } from "../activity/labels";
 import { resolveActivityLabel, DEFAULT_THINKING_LABEL } from "../activity/labels";
 import type { ThreadStatus } from "../sdkTypes";
+import { ApprovalCard, type ApprovalRespond, type ApprovalUiOptions } from "./ApprovalCard";
 import { renderMarkdown as defaultRenderMarkdown } from "./markdown";
 import { ToolChip } from "./ToolChip";
 import type { TranscriptRow } from "./transcriptRows";
@@ -40,12 +41,27 @@ export type TranscriptProps = {
   expandReasoning?: boolean;
   /** Replace the built-in markdown renderer. */
   renderMarkdown?: (text: string) => ReactNode;
+  /**
+   * Answer an approval. Omit when the thread has no `approve`: approval cards
+   * then render read-only with a line saying why.
+   */
+  onApprove?: ApprovalRespond;
+  /** Custom approval card renderer and button wording. */
+  approvals?: ApprovalUiOptions;
   /** Shown when there are no rows. */
   emptyState?: ReactNode;
   className?: string;
 };
 
 const BOTTOM_THRESHOLD_PX = 32;
+
+/**
+ * Replaces the thinking label while an approval sits unanswered at the tail.
+ *
+ * "Working…" under a card that is waiting on the reader is a lie, and the
+ * reason a blocked turn reads as a hung one.
+ */
+export const DEFAULT_APPROVAL_WAITING_LABEL = "Waiting for your approval…";
 
 export function Transcript({
   rows,
@@ -55,6 +71,8 @@ export function Transcript({
   hideReasoning = false,
   expandReasoning = false,
   renderMarkdown = defaultRenderMarkdown,
+  onApprove,
+  approvals,
   emptyState,
   className,
 }: TranscriptProps) {
@@ -81,9 +99,14 @@ export function Transcript({
     return row.event.type !== "status";
   });
 
+  const tail = visible[visible.length - 1];
+  // An unanswered approval is shown as waiting even when the host reports the
+  // thread idle: the request is still on screen and still answerable, and
+  // silence under it reads as a hang.
+  const awaitingApproval = tail?.event.type === "approval" && tail.event.state === "pending";
   const showActivity =
-    status === "running"
-    && (visible.length === 0 || visible[visible.length - 1]!.event.type !== "tool_chip");
+    awaitingApproval
+    || (status === "running" && (visible.length === 0 || tail!.event.type !== "tool_chip"));
 
   return (
     <div
@@ -105,10 +128,17 @@ export function Transcript({
           {...(labels ? { labels } : {})}
           expandReasoning={expandReasoning}
           renderMarkdown={renderMarkdown}
+          {...(onApprove ? { onApprove } : {})}
+          {...(approvals ? { approvals } : {})}
         />
       ))}
 
-      {showActivity ? <ActivityIndicator labels={labels} /> : null}
+      {showActivity ? (
+        <ActivityIndicator
+          labels={labels}
+          {...(awaitingApproval ? { label: DEFAULT_APPROVAL_WAITING_LABEL } : {})}
+        />
+      ) : null}
     </div>
   );
 }
@@ -118,13 +148,29 @@ function TranscriptRowView({
   labels,
   expandReasoning,
   renderMarkdown,
+  onApprove,
+  approvals,
 }: {
   row: TranscriptRow;
   labels?: ActivityLabelConfig | undefined;
   expandReasoning: boolean;
   renderMarkdown: (text: string) => ReactNode;
+  onApprove?: ApprovalRespond | undefined;
+  approvals?: ApprovalUiOptions | undefined;
 }) {
   const event = row.event;
+
+  if (event.type === "approval") {
+    return (
+      <div className="adechat-row">
+        <ApprovalCard
+          row={event}
+          {...(onApprove ? { onApprove } : {})}
+          {...(approvals ? { options: approvals } : {})}
+        />
+      </div>
+    );
+  }
 
   if (event.type === "user_message") {
     const text = event.displayText ?? event.text;
@@ -203,7 +249,14 @@ function ReasoningRow({ text, defaultExpanded }: { text: string; defaultExpanded
 }
 
 /** Inline "the agent is working" line, shown at the tail of a running turn. */
-export function ActivityIndicator({ labels }: { labels?: ActivityLabelConfig | undefined }) {
+export function ActivityIndicator({
+  labels,
+  label: labelOverride,
+}: {
+  labels?: ActivityLabelConfig | undefined;
+  /** Replaces the resolved label outright (the approval wait uses this). */
+  label?: string | undefined;
+}) {
   const [dots, setDots] = useState(0);
   const reducedMotion = usePrefersReducedMotion();
 
@@ -214,7 +267,8 @@ export function ActivityIndicator({ labels }: { labels?: ActivityLabelConfig | u
   }, [reducedMotion]);
 
   const label =
-    resolveActivityLabel({ kind: "thinking", tool: null, phase: "running", event: null }, labels)
+    labelOverride
+    ?? resolveActivityLabel({ kind: "thinking", tool: null, phase: "running", event: null }, labels)
     ?? DEFAULT_THINKING_LABEL;
 
   return (

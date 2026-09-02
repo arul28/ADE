@@ -15,6 +15,8 @@ const thread = await ade.threads.open("support", {
 
 `open(key)` is **open-or-resume**. The first call creates; later calls with the same key return a handle onto the same conversation. Resume does not require provider/model — those come from the stored record.
 
+A resume re-applies the values the key was **created** with. `cwd`, `instructions`, `settingSources`, `permissions`, `mcpServers` and `loadUserMcpServers` are read off the stored record, not off this call: passing a different value is not an error and does not change the thread, and the SDK logs one line naming each option it ignored. To run under different host configuration or a different tool surface, open a different key.
+
 If the stored session is gone (wiped home, copied machine, deleted chat), the SDK drops the stale key and **creates a new conversation** under that key. Reusing a key is not proof the old transcript is still there.
 
 ```ts
@@ -48,6 +50,90 @@ thread.on("usage", (envelope) => { /* token usage */ });
 Each `on` returns an unsubscribe function. Unknown event types are ignored, not rendered — the runtime can add kinds without breaking listeners.
 
 `history({ limit })` returns envelopes in transcript order (`sequence`, then `timestamp`). Provider clocks are not trusted.
+
+## Instructions
+
+Give a thread its own system instructions. They never appear in the transcript: `exportThread` returns no user message carrying them, which is the whole difference from the hidden-first-message trick this replaces.
+
+```ts
+const thread = await ade.threads.open("assistant", {
+  provider: "claude",
+  model: "claude-sonnet-4-5",
+  instructions: { mode: "replace", text: "You are Ada, MyApp's assistant." },
+});
+```
+
+- `{ mode: "append", text }` keeps ADE's own personal-chat prompt and adds yours after it. Use this when you want ADE's safety framing.
+- `{ mode: "replace", text }` uses your text alone. Use this when the chat is branded as your assistant and must not mention ADE.
+- A bare string is shorthand for `{ mode: "append", text }`.
+
+Append appends to **ADE's personal-chat prompt**, not to Claude Code's own preset. Passing `instructions` at the client level sets a default for every thread; a per-thread value replaces it rather than being merged with it.
+
+| Provider | Level | Mechanism |
+|---|---|---|
+| claude | applied | Agent SDK `systemPrompt` |
+| codex | applied | `developerInstructions` on `thread/start` |
+| opencode | applied | the wire `system` field |
+| pi | applied | `systemPromptOverride` |
+| cursor | best-effort | merged into the system text ADE already prefixes to the first turn |
+| droid | best-effort | merged into the harness prompt ADE prefixes on every turn |
+
+`best-effort` means ADE reuses a channel it already owns rather than a first-class one the provider offers. The text reaches the model; it shares a prompt with ADE's own.
+
+```ts
+if (thread.instructionsCapability?.level !== "applied") {
+  console.warn(thread.instructionsCapability?.detail);
+}
+```
+
+`instructionsCapability` is `null` when the thread asked for none, and also when an older runtime reported nothing — treat the second case as possibly not delivered.
+
+## Working directory
+
+```ts
+const thread = await ade.threads.open("assistant", {
+  provider: "claude",
+  model: "claude-sonnet-4-5",
+  cwd: "/Users/me/Library/Application Support/MyApp/work",
+});
+```
+
+The directory the provider CLI runs in, and what its shell and file tools resolve against. Created recursively at mode `0755` when missing.
+
+The default is the runtime's own scratch workspace at `<home>/personal-chats/workspaces`. Omitting `cwd` keeps exactly that, so this option cannot move an existing embedder's files.
+
+Refused with `invalid_option`, each naming the rule:
+
+- A relative path. It would resolve against the **runtime's** working directory, which you cannot see and did not choose.
+- A path starting with `~`. It is not expanded.
+- A filesystem root, including a Windows drive root and a bare UNC share root.
+- The user's home directory itself.
+- Anything inside the SDK's own `home`, which holds the runtime's state.
+
+The path is canonicalized before those rules are applied — symlinks resolved, and on Windows the real casing — by the SDK client-side and by the runtime again, to the same answer. The chat runs in that canonical directory. Two spellings of one directory are therefore one directory: a symlink cannot be used to step around the refusals above, `permissions.sandboxRoot` containment is judged on the resolved form, and reopening a key with a different spelling of the same directory is correctly seen as no change. The provider may report a working directory that differs textually from the string you passed.
+
+`cwd` is a working directory, not a sandbox. For containment use `permissions.sandboxRoot`, and read what it does per provider first: on Claude under `fallback: "deny"` the unnamed tool is refused outright instead of being contained. See [Permissions](/sdk/permissions).
+
+## Configuration layers
+
+```ts
+settingSources: "project"   // "none" (default) | "project" | "user" | "all"
+```
+
+Which on-disk configuration the provider loads. `"none"` is the default and is what every 0.1.x thread got: no filesystem settings. `"project"` loads files in `cwd`, such as a `CLAUDE.md` your app ships. `"user"` loads the machine user's own global config. `"all"` loads user, project and local.
+
+`"project"` is usually right for an embedder. Loading a user's personal `~/.claude` into an app-branded assistant is a surprise, and it should take an explicit `"user"` or `"all"` to get it.
+
+| Provider | What happens |
+|---|---|
+| claude | Applied. The value is set explicitly in all four cases, so the behavior is ADE's rather than a dependency's default. |
+| codex | Best-effort for `"project"` and `"all"`: Codex reads `AGENTS.md` from `cwd`, and always also reads `~/.codex/AGENTS.md`. Ignored for `"none"` and `"user"` — Codex has no switch to stop reading `AGENTS.md`. |
+| cursor | Ignored. ADE pins the Cursor SDK's own `settingSources` from the session permission policy, because dropping the user layer would also drop ADE's tool-gate hook. |
+| droid | Ignored. The Factory SDK resolves `~/.factory/settings.json` itself and offers no per-session override. |
+| opencode | Ignored. ADE runs a dedicated OpenCode server with an ADE-authored config and project config disabled. There is no per-session switch. |
+| pi | Ignored. The Pi SDK exposes no configuration-layer switch. |
+
+Read `thread.settingSourcesCapability` for the answer on the thread you actually got.
 
 ## Switch models
 
@@ -86,6 +172,11 @@ await thread.send("Look at this screenshot", {
 
 ## Next
 
-<Card title="MCP servers" href="/sdk/mcp" icon="plug" horizontal>
-  Inject tools and read the strict-mode honesty table.
-</Card>
+<Columns cols={2}>
+  <Card title="MCP servers" href="/sdk/mcp" icon="plug" horizontal>
+    Inject tools and read the strict-mode honesty table.
+  </Card>
+  <Card title="Permissions" href="/sdk/permissions" icon="shield-check" horizontal>
+    Per-tool rules, and answering an approval before it blocks the turn.
+  </Card>
+</Columns>

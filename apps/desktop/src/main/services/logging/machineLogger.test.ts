@@ -139,6 +139,18 @@ describe("logMachineEvent", () => {
 });
 
 describe("rotation", () => {
+  async function waitUntil(predicate: () => boolean, label: string): Promise<void> {
+    for (let attempt = 0; attempt < 5_000; attempt += 1) {
+      try {
+        if (predicate()) return;
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+      }
+      await new Promise<void>((resolve) => setImmediate(resolve));
+    }
+    throw new Error(`timed out waiting for ${label}`);
+  }
+
   // Bounded by the shared file logger's scheme, the same one that bounds
   // brain.jsonl: at the cap the live file is renamed to `.1.jsonl`. A log that
   // exists from process start on every launch may not grow without limit.
@@ -146,16 +158,27 @@ describe("rotation", () => {
     const adeHome = path.join(tempHome(), ".ade");
     const logger = createMachineMainLogger({
       env: { ADE_HOME: adeHome },
-      fileLogger: { maxFileBytes: 512, rotationCheckWriteInterval: 1, flushIntervalMs: 1 },
+      fileLogger: {
+        maxFileBytes: 512,
+        rotationCheckWriteInterval: 1,
+        flushIntervalMs: 1,
+        flushBatchSize: 1,
+      },
     });
     const logPath = machineMainLogPath({ ADE_HOME: adeHome });
+    const rotatedPath = path.join(path.dirname(logPath), "desktop-main.1.jsonl");
 
-    for (let index = 0; index < 40; index += 1) {
+    // Rotation is async (stream close + write). Queue enough bytes, then wait
+    // on the renamed file — CI lost a fixed 40×2ms sleep before the first flush.
+    for (let index = 0; index < 200; index += 1) {
       logger.info("desktop.main_started", { index, padding: "x".repeat(64) });
-      await new Promise((resolve) => setTimeout(resolve, 2));
+      if (fs.existsSync(rotatedPath)) break;
+      await new Promise<void>((resolve) => setImmediate(resolve));
     }
 
-    expect(fs.existsSync(path.join(path.dirname(logPath), "desktop-main.1.jsonl"))).toBe(true);
-    expect(fs.statSync(logPath).size).toBeLessThanOrEqual(512);
+    await waitUntil(() => fs.existsSync(rotatedPath), "desktop-main.1.jsonl rotation");
+    // renameSync unlinks the live path; wait until a post-rotation flush has
+    // recreated it under the cap (ENOENT during that window is ignored).
+    await waitUntil(() => fs.existsSync(logPath) && fs.statSync(logPath).size <= 512, "capped live desktop-main.jsonl");
   });
 });

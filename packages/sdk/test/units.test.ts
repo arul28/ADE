@@ -19,7 +19,34 @@ import {
   serializeChannelMarker,
 } from "../src/download.js";
 import { chatEnvelopeFromBufferedEvent, isBufferedEvent } from "../src/eventStream.js";
-import { permissionArgs } from "../src/permissions.js";
+import {
+  individualMcpToolEntries,
+  isPermissionPolicy,
+  mcpServersNotCoveredByPolicy,
+  normalizePermissionPolicy,
+  permissionArgs,
+  resolvePermissionArgs,
+} from "../src/permissions.js";
+import {
+  approvalFromObserved,
+  approvalFromPendingInput,
+  engineApprovalDecision,
+  isApprovalShaped,
+  observedApprovalFromEvent,
+  readPendingInputKind,
+} from "../src/approvals.js";
+import {
+  normalizeInstructions,
+  normalizeInstructionsCapability,
+  normalizePermissionCapability,
+  normalizeSettingSources,
+  normalizeSettingSourcesCapability,
+  isFilesystemRoot,
+  validateThreadCwd,
+} from "../src/hostConfig.js";
+import { ADE_ERROR_CODES, AdeError, readAdeErrorCode } from "../src/errors.js";
+import { probeRuntimeSignature } from "../src/runtimeSignature.js";
+import { mergeHistoryWithBuffer } from "../src/electron/protocol.js";
 import { SDK_VERSION } from "../src/version.js";
 import {
   createExitHooks,
@@ -40,7 +67,6 @@ import {
   resolveSpawnInvocation,
   shouldUseWindowsCmdWrapper,
 } from "../src/windowsInvocation.js";
-import { deriveProviderStatus, flattenCatalog } from "../src/providers.js";
 import {
   MAX_UNIX_SOCKET_PATH_BYTES,
   currentUserIdentity,
@@ -188,23 +214,434 @@ describe("permission presets", () => {
   });
 });
 
-describe("catalog derivation", () => {
-  it("flattens every model across groups, providers and subsections", () => {
-    const rows = flattenCatalog(defaultCatalog() as never);
-    expect(rows).toHaveLength(3);
-    expect(rows[2]).toMatchObject({ id: "gpt-5-codex", provider: "codex", connected: false });
+describe("permission policy", () => {
+  it("tells a policy object apart from the two presets", () => {
+    expect(isPermissionPolicy("default")).toBe(false);
+    expect(isPermissionPolicy("always-allow")).toBe(false);
+    expect(isPermissionPolicy(undefined)).toBe(false);
+    expect(isPermissionPolicy({ fallback: "deny" })).toBe(true);
   });
 
-  it("treats a null catalog as no models and no providers", () => {
-    expect(flattenCatalog(null)).toEqual([]);
-    expect(deriveProviderStatus(null)).toEqual({});
+  it("requires a fallback, because guessing one would reintroduce the hang", () => {
+    // A policy with no fallback has no answer for an unmatched tool. Guessing
+    // "ask" parks the turn for a host that built no approval card, which is the
+    // exact failure the policy surface exists to remove.
+    expect(() => normalizePermissionPolicy({} as never)).toThrow(AdeError);
+    expect(() => normalizePermissionPolicy({ fallback: "maybe" } as never)).toThrow(/fallback/);
   });
 
-  it("marks a provider unauthenticated when nothing reports connected", () => {
-    const status = deriveProviderStatus(defaultCatalog() as never);
-    expect(status.claude!.authenticated).toBe(true);
-    expect(status.codex!.authenticated).toBe(false);
-    expect(status.codex!.requiresConfiguration).toBe(true);
+  it("refuses a relative or tilde sandboxRoot rather than resolving it", () => {
+    expect(() => normalizePermissionPolicy({ fallback: "ask", sandboxRoot: "./work" })).toThrow(
+      /absolute/,
+    );
+    expect(() => normalizePermissionPolicy({ fallback: "ask", sandboxRoot: "~/work" })).toThrow(
+      /absolute/,
+    );
+  });
+
+  it("refuses a tool list that is not strings", () => {
+    expect(() =>
+      normalizePermissionPolicy({ fallback: "ask", allowedTools: ["ok", ""] }),
+    ).toThrow(/allowedTools/);
+    expect(() =>
+      normalizePermissionPolicy({ fallback: "ask", deniedTools: [7] as never }),
+    ).toThrow(/deniedTools/);
+  });
+
+  it("trims names and keeps only the fields that were supplied", () => {
+    expect(
+      normalizePermissionPolicy({
+        fallback: "deny",
+        allowedTools: [" mcp:tools:* "],
+        sandboxRoot: "/tmp/work",
+      }),
+    ).toEqual({
+      allowedTools: ["mcp:tools:*"],
+      sandboxRoot: path.resolve("/tmp/work"),
+      fallback: "deny",
+    });
+  });
+
+  it("sends a policy as permissionMode default plus the policy", () => {
+    // NOT full-auto. A runtime that ignores `permissionPolicy` then behaves
+    // like today's "default" — more prompting — rather than like always-allow.
+    expect(resolvePermissionArgs("claude", { fallback: "deny" })).toEqual({
+      permissionMode: "default",
+      permissionPolicy: { fallback: "deny" },
+    });
+    expect(resolvePermissionArgs("codex", "always-allow")).toMatchObject({
+      permissionMode: "full-auto",
+      codexSandbox: "danger-full-access",
+    });
+  });
+
+  it("refuses an unknown preset string", () => {
+    expect(() => resolvePermissionArgs("claude", "yolo" as never)).toThrow(AdeError);
+  });
+
+  it("finds the supplied MCP servers a policy never names", () => {
+    const policy = {
+      fallback: "deny" as const,
+      allowedTools: ["mcp:catalog:*", "mcp:studio:render", "Read", "Bash"],
+      autoApproveMcpServers: ["metrics"],
+    };
+    // A single-tool entry still counts: the caller clearly knows the server
+    // exists, so the "you injected this and denied all of it" warning does not
+    // apply to it.
+    expect(
+      mcpServersNotCoveredByPolicy(policy, ["catalog", "studio", "metrics", "archive"]),
+    ).toEqual(["archive"]);
+    expect(mcpServersNotCoveredByPolicy({ fallback: "deny" }, ["a", "b"])).toEqual(["a", "b"]);
+    expect(mcpServersNotCoveredByPolicy(policy, [])).toEqual([]);
+  });
+
+  it("finds the allowed-tool entries that name one MCP tool rather than a server", () => {
+    expect(
+      individualMcpToolEntries({
+        fallback: "deny",
+        allowedTools: ["mcp:catalog:search", "mcp:studio:*", "Edit", "mcp:studio:render"],
+      }),
+    ).toEqual(["mcp:catalog:search", "mcp:studio:render"]);
+    // A whole-server entry and a built-in name are not tool-level entries.
+    expect(
+      individualMcpToolEntries({ fallback: "deny", allowedTools: ["mcp:studio:*", "Bash"] }),
+    ).toEqual([]);
+    expect(individualMcpToolEntries({ fallback: "deny" })).toEqual([]);
+  });
+});
+
+describe("host instructions and setting sources", () => {
+  it("reads a bare string as an append", () => {
+    expect(normalizeInstructions("be brief")).toEqual({ mode: "append", text: "be brief" });
+    expect(normalizeInstructions({ mode: "replace", text: "X" })).toEqual({
+      mode: "replace",
+      text: "X",
+    });
+    expect(normalizeInstructions(undefined)).toBeUndefined();
+  });
+
+  it("refuses empty text and an unknown mode", () => {
+    expect(() => normalizeInstructions("   ")).toThrow(/empty/);
+    expect(() => normalizeInstructions({ mode: "prepend", text: "X" } as never)).toThrow(/mode/);
+    expect(() => normalizeInstructions({ mode: "append", text: "" })).toThrow(/text/);
+  });
+
+  it("accepts exactly the four setting-source layers", () => {
+    for (const value of ["none", "project", "user", "all"] as const) {
+      expect(normalizeSettingSources(value)).toBe(value);
+    }
+    expect(normalizeSettingSources(undefined)).toBeUndefined();
+    expect(() => normalizeSettingSources("local")).toThrow(/settingSources/);
+  });
+});
+
+describe("cwd validation", () => {
+  const home = path.join(os.tmpdir(), "ade-sdk-cwd-home");
+
+  it("passes an absolute path through, resolved and canonicalized", () => {
+    // Canonicalized, not merely resolved. The engine realpaths `requestedCwd`
+    // before it stores it and the SDK records what the engine stored, so a
+    // client that kept the caller's spelling would compare two names for one
+    // directory on the next resume and report the caller's own `cwd` as
+    // ignored. On macOS everything under the temp root has two spellings, so
+    // that is the ordinary path, not an exotic one.
+    const dir = path.join(os.tmpdir(), "ade-cwd", "work");
+    expect(validateThreadCwd(dir, home)).toBe(
+      path.join(fs.realpathSync.native(os.tmpdir()), "ade-cwd", "work"),
+    );
+  });
+
+  it("returns the same answer for both spellings of one directory", () => {
+    // The round trip that the resume comparison depends on: create with one
+    // spelling, reopen with the same string, and the two must agree. A raw
+    // string compare of an unresolved path against a stored realpath is the
+    // bug this pins.
+    const viaLink = path.join(os.tmpdir(), "ade-cwd-roundtrip", "work");
+    const viaReal = path.join(fs.realpathSync.native(os.tmpdir()), "ade-cwd-roundtrip", "work");
+    expect(validateThreadCwd(viaLink, home)).toBe(validateThreadCwd(viaReal, home));
+  });
+
+  it("still refuses the SDK home reached through a symlinked spelling", () => {
+    // The reason canonicalization happens BEFORE the refusals rather than
+    // after: the containment check compares strings, so an unresolved spelling
+    // of the state root would walk straight past the guard that exists to keep
+    // an agent out of it.
+    const realHome = fs.mkdtempSync(path.join(fs.realpathSync.native(os.tmpdir()), "ade-cwd-home-"));
+    try {
+      const linkedInside = path.join(os.tmpdir(), path.basename(realHome), "chats");
+      expect(() => validateThreadCwd(linkedInside, realHome)).toThrow(/inside the SDK home/);
+    } finally {
+      fs.rmSync(realHome, { recursive: true, force: true });
+    }
+  });
+
+  it("refuses a relative path rather than resolving it against the runtime", () => {
+    // The runtime's own working directory is not the caller's, and is not
+    // something the caller can see. Resolving quietly would put the agent
+    // somewhere nobody chose.
+    expect(() => validateThreadCwd("work", home)).toThrow(/absolute/);
+    expect(() => validateThreadCwd("./work", home)).toThrow(/absolute/);
+  });
+
+  it("refuses `~` rather than expanding it", () => {
+    expect(() => validateThreadCwd("~/work", home)).toThrow(/not expanded/);
+    expect(() => validateThreadCwd("~", home)).toThrow(/not expanded/);
+    expect(() => validateThreadCwd("~\\work", home)).toThrow(/not expanded/);
+  });
+
+  it("accepts a directory whose NAME merely starts with a tilde", () => {
+    // The engine refuses `~`, `~/` and `~\\` only. A bare `startsWith("~")`
+    // refused `~backup`, a real directory name the runtime accepts, so the two
+    // copies of this rule disagreed on a path the agent could have run in.
+    const target = path.join(path.parse(process.cwd()).root, "srv", "~backup");
+    expect(validateThreadCwd(target, home)).toBe(path.resolve(target));
+  });
+
+  it("refuses a filesystem root and the user's home directory itself", () => {
+    expect(() => validateThreadCwd(path.parse(process.cwd()).root, home)).toThrow(/root/);
+    expect(() => validateThreadCwd(os.homedir(), home)).toThrow(/home directory/);
+  });
+
+  it("refuses a path inside the SDK home, which holds the runtime's own state", () => {
+    expect(() => validateThreadCwd(path.join(home, "scratch"), home)).toThrow(/SDK home/);
+    expect(() => validateThreadCwd(home, home)).toThrow(/SDK home/);
+  });
+
+  it("refuses an empty value", () => {
+    expect(() => validateThreadCwd("", home)).toThrow(AdeError);
+  });
+
+  it("refuses a bare UNC share root on Windows, which is a whole file server", () => {
+    // `path.win32.parse("\\\\srv\\share").root` is "\\", so the ordinary root
+    // comparison reads a share root as an ordinary folder and admits it. The
+    // engine already refuses this; the client-side check now matches.
+    expect(isFilesystemRoot("\\\\srv\\share", path.win32)).toBe(true);
+    expect(isFilesystemRoot("\\\\srv\\share\\", path.win32)).toBe(true);
+    expect(isFilesystemRoot("\\\\srv", path.win32)).toBe(true);
+    expect(isFilesystemRoot("\\\\srv\\share\\team", path.win32)).toBe(false);
+  });
+
+  it("still refuses a Windows drive root and admits an ordinary Windows folder", () => {
+    expect(isFilesystemRoot("C:\\", path.win32)).toBe(true);
+    expect(isFilesystemRoot("C:\\work", path.win32)).toBe(false);
+  });
+
+  it("refuses a Windows extended-length spelling of a drive root or UNC share root", () => {
+    expect(isFilesystemRoot("\\\\?\\C:\\", path.win32)).toBe(true);
+    expect(isFilesystemRoot("\\\\?\\UNC\\server\\share", path.win32)).toBe(true);
+    expect(isFilesystemRoot("\\\\?\\C:\\work", path.win32)).toBe(false);
+  });
+
+  it("refuses the POSIX root and admits an ordinary POSIX folder", () => {
+    expect(isFilesystemRoot("/", path.posix)).toBe(true);
+    expect(isFilesystemRoot("/srv/app", path.posix)).toBe(false);
+  });
+
+  const CASE_INSENSITIVE = process.platform === "win32" || process.platform === "darwin";
+
+  it("folds case on win32 and darwin, so a capitalised home is still the home", () => {
+    // macOS volumes are case-insensitive by default, so `/USERS/alice` IS the
+    // user's home directory. Comparing raw let a capital letter walk straight
+    // past the refusal.
+    const shouted = os.homedir().toUpperCase();
+    if (CASE_INSENSITIVE) {
+      expect(() => validateThreadCwd(shouted, home)).toThrow(/home directory/);
+    } else {
+      expect(validateThreadCwd(shouted, home)).toBe(path.resolve(shouted));
+    }
+  });
+
+  it("folds case when testing containment in the SDK home", () => {
+    const shouted = path.join(home.toUpperCase(), "SCRATCH");
+    if (CASE_INSENSITIVE) {
+      expect(() => validateThreadCwd(shouted, home)).toThrow(/SDK home/);
+    } else {
+      expect(validateThreadCwd(shouted, home)).toBe(path.resolve(shouted));
+    }
+  });
+});
+
+describe("host config capability normalization", () => {
+  it("reports null for a capability nobody asked for", () => {
+    const report = { level: "applied", mode: "append", mechanism: "x", detail: null };
+    expect(normalizeInstructionsCapability(report, false)).toBeNull();
+    expect(normalizeSettingSourcesCapability({ level: "applied", value: "all" }, false)).toBeNull();
+    expect(normalizePermissionCapability({ level: "enforced" }, false)).toBeNull();
+  });
+
+  it("reports null when the request was made and the runtime said nothing", () => {
+    // An older runtime omits the field. Inventing "applied" here would promise
+    // a guarantee that was never verified.
+    expect(normalizeInstructionsCapability(undefined, true)).toBeNull();
+    expect(normalizeInstructionsCapability({ mechanism: "x" }, true)).toBeNull();
+    expect(normalizeSettingSourcesCapability({ level: "nope" }, true)).toBeNull();
+    expect(normalizePermissionCapability({ level: "best" }, true)).toBeNull();
+  });
+
+  it("normalizes a real report and defaults the soft fields", () => {
+    expect(
+      normalizeInstructionsCapability(
+        { level: "best-effort", mode: "replace", detail: "merged into the prefix" },
+        true,
+      ),
+    ).toEqual({
+      requested: true,
+      level: "best-effort",
+      mode: "replace",
+      mechanism: "",
+      detail: "merged into the prefix",
+    });
+    expect(
+      normalizeSettingSourcesCapability({ level: "ignored", value: "weird", detail: "" }, true),
+    ).toEqual({
+      requested: true,
+      level: "ignored",
+      // An unrecognised layer reads back as "none": the conservative direction,
+      // because it understates what loaded rather than overstating it.
+      value: "none",
+      mechanism: "",
+      detail: null,
+    });
+    expect(
+      normalizePermissionCapability({ level: "unsupported", mechanism: "none" }, true),
+    ).toEqual({ level: "unsupported", mechanism: "none", residual: null });
+  });
+});
+
+describe("approvals", () => {
+  it("maps the SDK's three decisions onto the engine's spelling", () => {
+    expect(engineApprovalDecision("accept")).toBe("accept");
+    expect(engineApprovalDecision("accept_always")).toBe("accept_for_session");
+    expect(engineApprovalDecision("reject")).toBe("decline");
+    expect(engineApprovalDecision("cancel" as never)).toBeNull();
+  });
+
+  it("names the two kinds approve() can actually settle", () => {
+    expect(isApprovalShaped("approval")).toBe(true);
+    expect(isApprovalShaped("permissions")).toBe(true);
+    for (const kind of ["question", "structured_question", "plan_approval", "model_selection"] as const) {
+      expect(isApprovalShaped(kind)).toBe(false);
+    }
+  });
+
+  it("reads an approval_request event and ignores everything else", () => {
+    expect(
+      observedApprovalFromEvent({
+        type: "approval_request",
+        itemId: "i1",
+        logicalItemId: "L1",
+        kind: "command",
+        description: "Run ls",
+        detail: { command: "ls" },
+        requestKind: "approval",
+      }),
+    ).toEqual({
+      itemId: "i1",
+      logicalItemId: "L1",
+      kind: "command",
+      description: "Run ls",
+      detail: { command: "ls" },
+      requestKind: "approval",
+    });
+    expect(observedApprovalFromEvent({ type: "text", text: "hi" })).toBeNull();
+    // No itemId means nothing can be answered, so there is nothing to record.
+    expect(observedApprovalFromEvent({ type: "approval_request", kind: "command" })).toBeNull();
+  });
+
+  it("infers a kind from the provider payload when no event was seen", () => {
+    const base = {
+      requestId: "r1",
+      source: "codex" as const,
+      kind: "approval" as const,
+      questions: [],
+      allowsFreeform: false,
+      blocking: true,
+      canProceedWithoutAnswer: false,
+    };
+    expect(
+      approvalFromPendingInput({ ...base, providerMetadata: { command: "ls" } }, "codex").kind,
+    ).toBe("command");
+    expect(
+      approvalFromPendingInput({ ...base, providerMetadata: { path: "/tmp/a" } }, "codex").kind,
+    ).toBe("file_change");
+    expect(approvalFromPendingInput(base, "codex").kind).toBe("tool_call");
+  });
+
+  it("prefers the engine's own kind from the observed event over the inference", () => {
+    const request = {
+      requestId: "r1",
+      itemId: "i1",
+      source: "codex" as const,
+      kind: "approval" as const,
+      description: "Apply a patch",
+      questions: [],
+      allowsFreeform: false,
+      blocking: true,
+      canProceedWithoutAnswer: false,
+      providerMetadata: { command: "patch" },
+    };
+    const mapped = approvalFromPendingInput(request, "codex", {
+      itemId: "i1",
+      logicalItemId: "L1",
+      kind: "file_change",
+      description: "Apply a patch",
+    });
+    expect(mapped.kind).toBe("file_change");
+    expect(mapped.logicalItemId).toBe("L1");
+    expect(mapped.requestKind).toBe("approval");
+  });
+
+  it("attributes an acp or ade request to the thread's own provider", () => {
+    // `AdeProvider` is closed and "acp" covers four dialects at once, so the
+    // thread's provider is the only honest answer available.
+    const mapped = approvalFromPendingInput(
+      {
+        requestId: "r1",
+        source: "acp",
+        kind: "permissions",
+        title: "Grant filesystem access",
+        questions: [],
+        allowsFreeform: false,
+        blocking: true,
+        canProceedWithoutAnswer: false,
+      },
+      "opencode",
+    );
+    expect(mapped.provider).toBe("opencode");
+    expect(mapped.description).toBe("Grant filesystem access");
+    expect(mapped.itemId).toBe("r1");
+  });
+
+  it("keeps a question's requestKind so a host can render it read-only", () => {
+    const mapped = approvalFromPendingInput(
+      {
+        requestId: "q1",
+        source: "claude",
+        kind: "question",
+        questions: [{ id: "a", question: "Which branch?" }],
+        allowsFreeform: true,
+        blocking: true,
+        canProceedWithoutAnswer: false,
+      },
+      "claude",
+    );
+    expect(mapped.requestKind).toBe("question");
+    expect(mapped.description).toBe("Which branch?");
+  });
+
+  it("maps an observed event straight through for the no-RPC path", () => {
+    expect(
+      approvalFromObserved(
+        { itemId: "i1", kind: "command", description: "Run ls", turnId: "t1" },
+        "codex",
+      ),
+    ).toEqual({
+      itemId: "i1",
+      kind: "command",
+      description: "Run ls",
+      turnId: "t1",
+      provider: "codex",
+    });
   });
 });
 
@@ -293,9 +730,74 @@ describe("thread store", () => {
       fs.rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  it("round-trips the host configuration a recreate has to rebuild", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-sdk-store-"));
+    try {
+      const file = path.join(dir, "threads.json");
+      const store = new ThreadStore(file);
+      await store.put({
+        key: "a",
+        sessionId: "s1",
+        provider: "claude",
+        model: "m",
+        createdAt: "t",
+        lastOpenedAt: "t",
+        instructions: { mode: "replace", text: "You are Ada." },
+        cwd: "/tmp/work",
+        settingSources: "project",
+        permissionPolicy: { fallback: "deny", allowedTools: ["mcp:tools:*"] },
+      });
+      const reopened = await new ThreadStore(file).get("a");
+      expect(reopened).toMatchObject({
+        instructions: { mode: "replace", text: "You are Ada." },
+        cwd: "/tmp/work",
+        settingSources: "project",
+        permissionPolicy: { fallback: "deny", allowedTools: ["mcp:tools:*"] },
+      });
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("drops a malformed host configuration rather than replaying it", async () => {
+    // This file is written by older SDKs and edited by hand. A policy that lost
+    // its `fallback` is not a narrower policy — it is one with no answer for an
+    // unmatched tool, so it must not reach a create call.
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-sdk-store-"));
+    try {
+      const file = path.join(dir, "threads.json");
+      fs.writeFileSync(
+        file,
+        JSON.stringify({
+          version: 1,
+          threads: {
+            a: {
+              key: "a",
+              sessionId: "s1",
+              provider: "claude",
+              model: "m",
+              instructions: { mode: "sideways", text: "x" },
+              settingSources: "local",
+              permissionPolicy: { allowedTools: ["Bash"] },
+              cwd: 42,
+            },
+          },
+        }),
+      );
+      const record = await new ThreadStore(file).get("a");
+      expect(record).toBeTruthy();
+      expect(record!.instructions).toBeUndefined();
+      expect(record!.settingSources).toBeUndefined();
+      expect(record!.permissionPolicy).toBeUndefined();
+      expect(record!.cwd).toBeUndefined();
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });
 
-describe("windows invocation (A6 — CVE-2024-27980)", () => {
+describe("windows invocation (CVE-2024-27980)", () => {
   it("is the identity on POSIX and for a real .exe", () => {
     expect(resolveSpawnInvocation("/usr/bin/ade", ["runtime"], {}, "darwin")).toEqual({
       command: "/usr/bin/ade",
@@ -343,7 +845,7 @@ describe("windows invocation (A6 — CVE-2024-27980)", () => {
   });
 });
 
-describe("sidecar environment (A13)", () => {
+describe("sidecar environment", () => {
   it("drops the host's ADE_* config but keeps what the sidecar sets", () => {
     const scrubbed = scrubAdeEnv({
       PATH: "/usr/bin",
@@ -371,7 +873,7 @@ describe("sidecar environment (A13)", () => {
   });
 });
 
-describe("download retry and channel cache (A12, A17)", () => {
+describe("download retry and channel cache", () => {
   it("classifies only the transient Windows lock errors as retryable", () => {
     for (const code of ["EPERM", "EACCES", "EBUSY", "ENOTEMPTY"]) {
       expect(isTransientRemoveError(Object.assign(new Error("x"), { code }))).toBe(true);
@@ -385,7 +887,7 @@ describe("download retry and channel cache (A12, A17)", () => {
   });
 });
 
-describe("Windows system tools are kernel-resolved (F3, F4, A3-3)", () => {
+describe("Windows system tools are kernel-resolved", () => {
   const CANONICAL_ROOT = "C:\\Windows\\System32";
 
   /** A host whose System32 resolves normally through the GLOBALROOT alias. */
@@ -480,7 +982,7 @@ describe("Windows system tools are kernel-resolved (F3, F4, A3-3)", () => {
   });
 });
 
-describe("Windows tree kill (F3)", () => {
+describe("Windows tree kill", () => {
   it("tears down the whole tree through a kernel-resolved taskkill", () => {
     // POSIX gets descendants from the process group; Windows has none, so
     // without /T the runtime's provider CLIs survive every dispose.
@@ -509,7 +1011,7 @@ describe("Windows tree kill (F3)", () => {
   });
 });
 
-describe("signal hooks give the host its Ctrl-C back (F9)", () => {
+describe("signal hooks give the host its Ctrl-C back", () => {
   type Listener = (...args: never[]) => void;
 
   function fakeHost(preexisting: Record<string, number> = {}) {
@@ -577,7 +1079,7 @@ describe("signal hooks give the host its Ctrl-C back (F9)", () => {
     expect(env.raised).toEqual([]);
   });
 
-  it("does not double-fire a host handler registered AFTER the SDK (A3-4)", () => {
+  it("does not double-fire a host handler registered AFTER the SDK", () => {
     // An install-time snapshot would say "I am the only listener", we would
     // re-raise, and this handler would run a second time — while the default
     // exit still did not apply, because the handler is attached. The count has
@@ -625,7 +1127,7 @@ describe("signal hooks give the host its Ctrl-C back (F9)", () => {
   });
 });
 
-describe("tmpdir socket is per-user (F10, F11)", () => {
+describe("tmpdir socket is per-user", () => {
   it("puts the shared-tmpdir fallback in a per-user subdirectory", () => {
     // /tmp is world-writable on Linux. A guessable `ade-sdk-<hash>.sock`
     // directly in it can be pre-planted by another local user, who then answers
@@ -704,7 +1206,7 @@ describe("tmpdir socket is per-user (F10, F11)", () => {
   });
 });
 
-describe("cached install provenance (F16)", () => {
+describe("cached install provenance", () => {
   it("round-trips the verification outcome through the channel marker", () => {
     const marker = { channel: "v1.2.3", checksumVerified: true };
     expect(parseChannelMarker(serializeChannelMarker(marker))).toEqual(marker);
@@ -751,14 +1253,14 @@ describe("cached install provenance (F16)", () => {
           throw new Error("must not download");
         },
       });
-      expect(resolved).toMatchObject({ source: "cache", checksumVerified: true });
+      expect(resolved).toMatchObject({ source: "cached-download", checksumVerified: true });
     } finally {
       fs.rmSync(home, { recursive: true, force: true });
     }
   });
 });
 
-describe("PATH discovery requires an executable (F17)", () => {
+describe("PATH discovery requires an executable", () => {
   it("skips a non-executable candidate and keeps looking", () => {
     if (process.platform === "win32") return;
     const first = fs.mkdtempSync(path.join(os.tmpdir(), "ade-sdk-path-a-"));
@@ -779,7 +1281,7 @@ describe("PATH discovery requires an executable (F17)", () => {
   });
 });
 
-describe("stopChild teardown per platform (B3-4, B3-5)", () => {
+describe("stopChild teardown per platform", () => {
   type FakeChild = { signals: string[]; kill(signal: string): boolean };
 
   function fakeChild(): FakeChild {
@@ -875,5 +1377,145 @@ describe("SDK_VERSION", () => {
 
   it("is a plain semver string, not a placeholder", () => {
     expect(SDK_VERSION).toMatch(/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/);
+  });
+});
+
+
+describe("runtime signature probe honesty", () => {
+  const ok = (stderr: string) => ({ code: 0, stdout: "", stderr });
+
+  it("reports a signed binary from codesign's stderr report", async () => {
+    const signature = await probeRuntimeSignature("/bin/whatever", {
+      platform: "darwin",
+      spawn: async (command) =>
+        command.endsWith("codesign")
+          ? ok("Authority=Developer ID Application: Example\nTeamIdentifier=ABCDE12345")
+          : { code: 0, stdout: "", stderr: "" },
+    });
+    expect(signature).toEqual({
+      signed: true,
+      authority: "Developer ID Application: Example",
+      accepted: true,
+    });
+  });
+
+  it("still reports `not signed` for a codesign run that answered non-zero", async () => {
+    const signature = await probeRuntimeSignature("/bin/whatever", {
+      platform: "darwin",
+      spawn: async () => ({ code: 1, stdout: "", stderr: "code object is not signed at all" }),
+    });
+    expect(signature).toEqual({ signed: false });
+  });
+
+  it("reports `not known` (null) when codesign timed out rather than answered", async () => {
+    // The failure this exists for: `codesign` taking more than 10 s on a large
+    // binary used to read back as `signed: false`, and an embedder concluded
+    // their signing pipeline was broken when it was not.
+    const signature = await probeRuntimeSignature("/bin/whatever", {
+      platform: "darwin",
+      spawn: async () => ({ code: 1, stdout: "", stderr: "", failed: true }),
+    });
+    expect(signature).toBeNull();
+  });
+
+  it("leaves acceptance unknown when Gatekeeper could not be consulted", async () => {
+    const signature = await probeRuntimeSignature("/bin/whatever", {
+      platform: "darwin",
+      spawn: async (command) =>
+        command.endsWith("codesign")
+          ? ok("Authority=Example")
+          : { code: 1, stdout: "", stderr: "", failed: true },
+    });
+    expect(signature).toEqual({ signed: true, authority: "Example" });
+  });
+
+  it("reports `not known` for a Windows probe that did not run", async () => {
+    const signature = await probeRuntimeSignature("C:\\ade.exe", {
+      platform: "win32",
+      spawn: async () => ({ code: 0, stdout: "status=Valid", stderr: "", failed: true }),
+    });
+    expect(signature).toBeNull();
+  });
+});
+
+describe("envelope merge keeps un-numbered envelopes", () => {
+  const envelope = (over: Record<string, unknown> = {}) => ({
+    sessionId: "s1",
+    timestamp: "2026-01-01T00:00:00.000Z",
+    event: { type: "text", text: "x" },
+    ...over,
+  }) as never;
+
+  it("keeps two sequence-less envelopes that share a timestamp and type", () => {
+    // Two text deltas in one millisecond from a runtime that does not number
+    // its envelopes used to collapse to one, leaving a hole in the transcript.
+    const merged = mergeHistoryWithBuffer([envelope(), envelope()], []);
+    expect(merged).toHaveLength(2);
+  });
+
+  it("still collapses the history/live overlap the key exists for", () => {
+    const shared = envelope();
+    expect(mergeHistoryWithBuffer([shared], [shared])).toHaveLength(1);
+  });
+
+  it("still collapses an overlap that carries a sequence", () => {
+    const shared = envelope({ sequence: 7 });
+    expect(mergeHistoryWithBuffer([shared], [shared])).toHaveLength(1);
+  });
+
+  it("orders the merged list by sequence, then timestamp", () => {
+    const merged = mergeHistoryWithBuffer(
+      [envelope({ sequence: 3 })],
+      [envelope({ sequence: 1 }), envelope({ sequence: 2 })],
+    );
+    expect(merged.map((item) => (item as { sequence: number }).sequence)).toEqual([1, 2, 3]);
+  });
+});
+
+describe("error codes", () => {
+  it("validates a code that crossed a process boundary instead of casting it", () => {
+    expect(readAdeErrorCode("approval_not_found")).toBe("approval_not_found");
+    expect(readAdeErrorCode("not_a_code")).toBeNull();
+    expect(readAdeErrorCode(undefined)).toBeNull();
+  });
+
+  it("lists every declared code", () => {
+    expect(ADE_ERROR_CODES).toContain("unauthorized");
+    expect(new Set(ADE_ERROR_CODES).size).toBe(ADE_ERROR_CODES.length);
+  });
+});
+
+describe("pending input kinds", () => {
+  it("reads a known kind and rejects anything else", () => {
+    expect(readPendingInputKind("plan_approval")).toBe("plan_approval");
+    expect(readPendingInputKind("something_new")).toBeUndefined();
+    expect(readPendingInputKind(7)).toBeUndefined();
+  });
+
+  it("drops an unknown kind from a pending request too", () => {
+    const mapped = approvalFromPendingInput(
+      {
+        requestId: "r1",
+        itemId: "i1",
+        source: "codex",
+        kind: "something_new" as never,
+        questions: [],
+        allowsFreeform: false,
+        blocking: true,
+        canProceedWithoutAnswer: false,
+      },
+      "codex",
+    );
+    expect(mapped.requestKind).toBeUndefined();
+  });
+
+  it("drops an unknown requestKind rather than putting it in the union", () => {
+    const observed = observedApprovalFromEvent({
+      type: "approval_request",
+      itemId: "i1",
+      description: "d",
+      requestKind: "something_new",
+    });
+    expect(observed?.requestKind).toBeUndefined();
   });
 });

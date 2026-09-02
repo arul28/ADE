@@ -1,0 +1,212 @@
+# Publish the `@ade-dev/runtime-*` npm platform packages for one ADE release.
+#
+# WHAT THIS IS FOR. `@ade-dev/sdk` downloads its runtime from a GitHub release
+# on first run. An embedder shipping a signed, notarized application cannot do
+# that: the bundle is one signed artifact, and an executable that appears in
+# `userData` afterwards is outside it. So the same released bytes are also
+# published as npm platform packages — the pattern esbuild and swc use — and
+# the SDK resolves them with `resolveBundledRuntime()` before it ever considers
+# the network.
+#
+# Six packages come out of one run:
+#   @ade-dev/runtime-darwin-arm64   @ade-dev/runtime-darwin-x64
+#   @ade-dev/runtime-linux-x64      @ade-dev/runtime-linux-arm64
+#   @ade-dev/runtime-win32-x64      @ade-dev/runtime  (the meta package)
+#
+# MANUAL ONLY, and deliberately so. This publishes the bytes of an EXISTING
+# GitHub release, so it must run after that release is public and its assets
+# are final. It never builds a runtime; it downloads one, verifies it against
+# the release's own SHA256SUMS, and repackages it. The version published is the
+# release tag with the leading `v` removed, which keeps the npm version and the
+# ADE release version identical by construction.
+#
+# Credentials — the same two modes as publish-sdk-packages.yml:
+#
+# 1. Trusted publishing (OIDC, no secret). Configure per package on npmjs.com →
+#    Settings → Trusted Publisher: repository `arul28/ADE`, workflow
+#    `publish-runtime-packages.yml`. npm requires the package to already exist
+#    to configure it, so the FIRST version of each of the six ships by mode 2
+#    (or from a maintainer machine). Then set the repo variable
+#    `RUNTIME_TRUSTED_PUBLISHING=true`.
+# 2. `NPM_TOKEN` secret — a granular access token scoped to the `@ade-dev`
+#    packages, with an expiry.
+#
+# With neither configured the run ends early with a notice instead of failing.
+
+name: Publish ADE runtime packages
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: The published release tag to repackage, e.g. v1.2.69
+        required: true
+        type: string
+      confirm:
+        description: Type "publish" to publish these packages to npm
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: publish-runtime-packages
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    if: ${{ inputs.confirm == 'publish' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+
+      - name: Upgrade npm for trusted publishing
+        # Node 22 bundles npm 10.x; OIDC needs >= 11.5.1. Harmless on the token
+        # path, so it runs unconditionally rather than being another branch to
+        # get wrong.
+        run: npm install -g npm@latest && npm --version
+
+      - name: Resolve the release version
+        id: version
+        env:
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          case "$RELEASE_TAG" in
+            v*) VERSION="${RELEASE_TAG#v}" ;;
+            *) echo "::error::The tag must start with 'v', got '$RELEASE_TAG'."; exit 1 ;;
+          esac
+          if ! printf '%s' "$VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$'; then
+            echo "::error::'$RELEASE_TAG' does not carry a semantic version."
+            exit 1
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Resolve publish credentials
+        id: token
+        # The secret arrives through env, never interpolated into the script
+        # body: `${{ secrets.* }}` inside `run:` puts the value in the rendered
+        # command line, where a `set -x` or a crash dump can echo it.
+        env:
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+          TRUSTED: ${{ vars.RUNTIME_TRUSTED_PUBLISHING }}
+        run: |
+          if [ "$TRUSTED" = "true" ]; then
+            echo "Publishing via trusted publisher (OIDC); no token used." >> "$GITHUB_STEP_SUMMARY"
+            echo "present=true" >> "$GITHUB_OUTPUT"
+            echo "mode=oidc" >> "$GITHUB_OUTPUT"
+          elif [ -n "$NPM_TOKEN" ]; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+            echo "mode=token" >> "$GITHUB_OUTPUT"
+          else
+            echo "Neither RUNTIME_TRUSTED_PUBLISHING nor NPM_TOKEN is configured; skipping publish." >> "$GITHUB_STEP_SUMMARY"
+            echo "present=false" >> "$GITHUB_OUTPUT"
+            echo "mode=none" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Download the release artifacts
+        if: steps.token.outputs.present == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          mkdir -p release-artifacts
+          gh release download "$RELEASE_TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --dir release-artifacts \
+            --pattern 'ade-*' \
+            --pattern 'SHA256SUMS'
+          ls -la release-artifacts
+
+      - name: Verify the published checksums
+        if: steps.token.outputs.present == 'true'
+        run: |
+          set -euo pipefail
+          cd release-artifacts
+          if [ ! -s SHA256SUMS ]; then
+            echo "::error::The release published no SHA256SUMS; refusing to repackage unverified bytes."
+            exit 1
+          fi
+          # Only the ten runtime assets are checked: the release also carries
+          # desktop artifacts this workflow never downloads, and `-c` fails on a
+          # manifest line whose file is absent.
+          # `|| true` on every grep. Under `set -euo pipefail` a grep that
+          # matches nothing exits 1 and aborts the step with no message, which
+          # is the most likely failure here (a renamed release asset) and the
+          # one the count diagnostic below exists to explain.
+          : > expected.sums
+          for TARGET in darwin-arm64 darwin-x64 linux-x64 linux-arm64; do
+            grep -E "  ade-${TARGET}(\.native\.tar\.gz)?$" SHA256SUMS >> expected.sums || true
+          done
+          grep -E "  ade-win32-x64\.exe(\.native\.tar\.gz)?$" SHA256SUMS >> expected.sums || true
+          if [ "$(wc -l < expected.sums)" -ne 10 ]; then
+            echo "::error::Expected 10 runtime entries in SHA256SUMS, found $(wc -l < expected.sums)."
+            cat expected.sums
+            exit 1
+          fi
+          sha256sum -c expected.sums
+          rm expected.sums
+
+      - name: Build the platform packages
+        if: steps.token.outputs.present == 'true'
+        run: |
+          set -euo pipefail
+          node apps/ade-cli/scripts/build-runtime-npm-packages.mjs \
+            --artifacts-dir release-artifacts \
+            --version "${{ steps.version.outputs.version }}" \
+            --out-dir runtime-packages
+          ls -la runtime-packages
+
+      # Between build and publish, never after. npm-packlist honors a
+      # `.gitignore` or `.npmignore` shipped inside a packed subdirectory, so a
+      # dependency bump can drop a native module from the tarball while every
+      # file is still present on disk. The embedder's app then dies at `dlopen`.
+      - name: Verify every runtime file survives npm pack
+        if: steps.token.outputs.present == 'true'
+        run: |
+          set -euo pipefail
+          for DIR in runtime-packages/runtime-*/; do
+            node apps/ade-cli/scripts/verify-runtime-package-contents.mjs "$DIR"
+          done
+
+      - name: Publish every package
+        if: steps.token.outputs.present == 'true'
+        env:
+          # In OIDC mode NODE_AUTH_TOKEN is deliberately empty: npm then mints a
+          # short-lived credential from this workflow's identity. --provenance is
+          # implied there, and harmless to state.
+          NODE_AUTH_TOKEN: ${{ steps.token.outputs.mode == 'token' && secrets.NPM_TOKEN || '' }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          # The meta package goes LAST: it names the five as
+          # optionalDependencies, so publishing it first would leave a window in
+          # which installing it resolves nothing.
+          ORDER=""
+          for DIR in runtime-packages/*/; do
+            case "$DIR" in
+              runtime-packages/runtime/) ;;
+              *) ORDER="$ORDER $DIR" ;;
+            esac
+          done
+          ORDER="$ORDER runtime-packages/runtime/"
+
+          # Skip-if-exists, matching publish-sdk-packages.yml's auto route: a
+          # re-run after a partial failure must publish only what is missing
+          # rather than abort on the packages that already landed.
+          for DIR in $ORDER; do
+            PKG=$(node -p "require('./${DIR}package.json').name")
+            if npm view "$PKG@$VERSION" version >/dev/null 2>&1; then
+              echo "$PKG@$VERSION already published; skipping." >> "$GITHUB_STEP_SUMMARY"
+              continue
+            fi
+            (cd "$DIR" && npm publish --access public --provenance)
+            echo "Published $PKG@$VERSION." >> "$GITHUB_STEP_SUMMARY"
+          done

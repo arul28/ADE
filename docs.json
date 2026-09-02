@@ -156,15 +156,19 @@
             "pages": [
               "sdk/threads",
               "sdk/mcp",
+              "sdk/permissions",
               "sdk/chat-ui",
-              "sdk/runtime"
+              "sdk/electron",
+              "sdk/runtime",
+              "sdk/bundling"
             ]
           },
           {
             "group": "Reference",
             "icon": "code",
             "pages": [
-              "sdk/reference"
+              "sdk/reference",
+              "sdk/license"
             ]
           }
         ]

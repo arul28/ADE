@@ -19,6 +19,11 @@ export type ProviderCardProps = {
   renderAction?: (command: string, kind: "install" | "login") => ReactNode;
   /** Override the clipboard write; defaults to `navigator.clipboard`. */
   onCopy?: (command: string) => void | Promise<void>;
+  /**
+   * Show the probed version and binary path. Off by default: most hosts read a
+   * filesystem path as noise, and the ones building a setup screen need it.
+   */
+  showDetail?: boolean;
   className?: string;
 };
 
@@ -36,7 +41,45 @@ const STATE_COPY: Record<ProviderState, string> = {
   not_installed: "Not installed",
 };
 
-export function ProviderCard({ status, renderAction, onCopy, className }: ProviderCardProps) {
+/**
+ * What the card calls a provider it does not have.
+ *
+ * "Not installed" is a claim about the filesystem, and only a runtime that
+ * probed one may make it. When the status was derived from the model catalog
+ * nobody looked, so the card says "Not detected" — the honest report of an
+ * absence of evidence rather than evidence of an absence.
+ */
+export function resolveStateCopy(status: ProviderStatus): string {
+  const state = resolveState(status);
+  if (state === "not_installed" && status.source === "derived") return "Not detected";
+  return STATE_COPY[state];
+}
+
+/**
+ * Shorten a binary path while keeping the part that identifies it.
+ *
+ * The basename is never cut: "…/claude" tells the reader which binary this is,
+ * where a head-first truncation ("/usr/local/lib/node_modules/@anthr…") tells
+ * them nothing. Windows separators are handled, because the same card renders
+ * there.
+ */
+export function truncateBinaryPath(value: string, maxLength = 44): string {
+  if (value.length <= maxLength) return value;
+  const separator = value.lastIndexOf("\\") > value.lastIndexOf("/") ? "\\" : "/";
+  const index = value.lastIndexOf(separator);
+  if (index <= 0) return `…${value.slice(value.length - maxLength + 1)}`;
+  const tail = value.slice(index);
+  if (tail.length + 1 >= maxLength) return `…${tail}`;
+  return `${value.slice(0, maxLength - tail.length - 1)}…${tail}`;
+}
+
+export function ProviderCard({
+  status,
+  renderAction,
+  onCopy,
+  showDetail = false,
+  className,
+}: ProviderCardProps) {
   const state = resolveState(status);
   const command =
     state === "not_installed"
@@ -58,10 +101,19 @@ export function ProviderCard({ status, renderAction, onCopy, className }: Provid
           aria-hidden="true"
         />
         <span className="adechat-providercard-name">{status.displayName ?? status.id}</span>
-        <span className="adechat-providercard-state">{STATE_COPY[state]}</span>
+        <span className="adechat-providercard-state">{resolveStateCopy(status)}</span>
       </div>
 
       {status.detail ? <p className="adechat-providercard-detail">{status.detail}</p> : null}
+
+      {showDetail && (status.version || status.binaryPath) ? (
+        <p className="adechat-providercard-probe">
+          {status.version ? <span>{status.version}</span> : null}
+          {status.binaryPath ? (
+            <code title={status.binaryPath}>{truncateBinaryPath(status.binaryPath)}</code>
+          ) : null}
+        </p>
+      ) : null}
 
       {command
         ? (renderAction?.(command, commandKind) ?? (
@@ -129,6 +181,8 @@ export type ProviderCardsProps = {
   onlyNeedsAttention?: boolean;
   renderAction?: ProviderCardProps["renderAction"];
   onCopy?: ProviderCardProps["onCopy"];
+  /** Forwarded to every card. Off by default. */
+  showDetail?: ProviderCardProps["showDetail"];
   className?: string;
 };
 
@@ -151,6 +205,7 @@ function ProviderCardsView({
   onlyNeedsAttention = true,
   renderAction,
   onCopy,
+  showDetail,
   className,
 }: ProviderCardsProps) {
   const visible = onlyNeedsAttention
@@ -167,6 +222,7 @@ function ProviderCardsView({
           status={status}
           {...(renderAction ? { renderAction } : {})}
           {...(onCopy ? { onCopy } : {})}
+          {...(showDetail !== undefined ? { showDetail } : {})}
           {...(className ? { className } : {})}
         />
       ))}

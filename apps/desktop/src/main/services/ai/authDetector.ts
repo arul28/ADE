@@ -343,7 +343,13 @@ type ParsedJsonAuthStatus = {
   json: Record<string, unknown>;
 } | null;
 
-function parseJsonAuthStatus(stdout: string): ParsedJsonAuthStatus {
+/**
+ * Exported for `providerStatusProbe.ts`, which runs the same
+ * `claude auth status --json` as a last resort and must read the answer the
+ * same way. A second parser would let the status RPC and the auth detector
+ * disagree about one CLI's login state.
+ */
+export function parseJsonAuthStatus(stdout: string): ParsedJsonAuthStatus {
   try {
     const json = JSON.parse(stdout.trim() || "");
     if (typeof json !== "object" || json === null) return null;

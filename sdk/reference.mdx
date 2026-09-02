@@ -15,9 +15,15 @@ function createAdeChat(options: CreateAdeChatOptions): Promise<AdeChatClient>
 | Option | Type | |
 |---|---|---|
 | `home` | `string` | Required. Isolated state root. Created if missing. |
-| `binaryPath` | `string` | Pin an `ade` binary. Skips PATH and download. |
+| `binaryPath` | `string` | Pin an `ade` binary. Skips every later resolution step. |
+| `runtimeNodeModules` | `string` | `ADE_RUNTIME_NODE_MODULES`. Required with `binaryPath` when the native modules are not beside the binary. |
+| `runtimeRoot` | `string` | `ADE_RUNTIME_ROOT`. Defaults to the parent of `runtimeNodeModules`. |
+| `allowDownload` | `boolean` | Default `true`. `false` throws `runtime_unavailable` instead of reaching the network. |
 | `channel` | `string` | Downloader channel: `latest` (default) or a release tag. |
 | `logger` | `(line: string) => void` | Sidecar / client log sink. |
+| `instructions` | `string \| { mode, text }` | Default instructions for every thread. A per-thread value replaces it. |
+
+Runtime resolution runs in five steps: `binaryPath`, then an installed `@ade-dev/runtime-<target>` package, then the home cache, then `ade` on `PATH`, then a download. See [Bundling](/sdk/bundling).
 
 ## `AdeChatClient`
 
@@ -25,8 +31,9 @@ function createAdeChat(options: CreateAdeChatOptions): Promise<AdeChatClient>
 |---|---|
 | `threads.open(key, opts?)` | Open-or-resume. Create requires `provider` + `model`. Resume reads the stored record. |
 | `threads.list()` | Tracked threads for this home. |
-| `providers.status()` | Map of provider id → `{ installed, authenticated, … }`. |
-| `providers.onChange(cb)` | Full status list on each change. Returns unsubscribe. |
+| `providers.status()` | Map of provider id → [`ProviderStatus`](#providerstatus). Served from the runtime's probe cache. |
+| `providers.refresh()` | The same map with the probe cache bypassed. Spawns `--version` per provider. |
+| `providers.onChange(cb)` | Full status list on each change. Never bypasses the cache. Returns unsubscribe. |
 | `models.list()` | Catalog. `providerId` must match a status entry to be selectable in chat-ui. |
 | `doctor()` | Structured health check. |
 | `exportThread(key)` | Transcript as JSONL. |
@@ -38,9 +45,30 @@ function createAdeChat(options: CreateAdeChatOptions): Promise<AdeChatClient>
 |---|---|
 | `provider` | `claude` \| `codex` \| `cursor` \| `droid` \| `opencode` \| `pi` |
 | `model` | Catalog id (aliases resolved by the runtime). |
-| `permissions` | `"always-allow"` \| `"default"` |
+| `permissions` | `"always-allow"` \| `"default"` \| `ThreadPermissionPolicy`. See [Permissions](/sdk/permissions). |
+| `instructions` | `string \| { mode: "append" \| "replace", text }`. A bare string means append. |
+| `cwd` | Absolute path the provider runs in. Created at mode `0755`. Defaults to `<home>/personal-chats/workspaces`. |
+| `settingSources` | `"none"` (default) \| `"project"` \| `"user"` \| `"all"`. |
+| `reasoningEffort` | Provider-native effort token, when the model offers one. |
+| `title` | Display title stored on the thread record. |
 | `mcpServers` | Caller-owned servers for this thread. See [MCP](/sdk/mcp). |
 | `loadUserMcpServers` | Opt the user's MCP back in. Explicit `false` ≠ omitting the field. |
+
+All four host-configuration options persist on the thread record, so a resume that has to recreate a lost session rebuilds the same thread.
+
+They apply on **create only**. A resume reads `cwd`, `instructions`, `settingSources`, `permissions`, `mcpServers` and `loadUserMcpServers` off the stored record and ignores what this call passed, logging one line per differing option. Open a different key to run under different configuration.
+
+```ts
+type ThreadPermissionPolicy = {
+  allowedTools?: string[];          // exact names, or a trailing `*`
+  deniedTools?: string[];           // wins over allowedTools
+  autoApproveMcpServers?: string[]; // same as `mcp:<server>:*`
+  sandboxRoot?: string;             // absolute; containment, not a working dir
+  fallback: "ask" | "deny";         // required
+};
+```
+
+What a policy is worth depends on the provider and, on Claude, on `fallback`. A deny fallback removes the unnamed mutating built-ins and scopes MCP to the servers the policy names. An ask fallback relies on the Agent SDK's permission prompt. Read `thread.permissionCapability` and see [Permissions](/sdk/permissions).
 
 ## `AdeThread`
 
@@ -53,7 +81,40 @@ function createAdeChat(options: CreateAdeChatOptions): Promise<AdeChatClient>
 | `interrupt()` | Stop the in-flight turn. |
 | `setModel(id, opts?)` | Switch model/provider. Refused mid-turn unless `{ force: true }`. |
 | `history({ limit }?)` | Envelopes in transcript order. |
+| `approve(itemId, decision, responseText?)` | Answer an approval. `"accept"` \| `"accept_always"` \| `"reject"`. Throws `approval_not_found` when it is already settled, and `invalid_option` for a question-shaped request. |
+| `pendingApprovals()` | Outstanding requests, so a reload can restore cards. |
+| `instructionsCapability` | `{ requested, level, mode, mechanism, detail }` or `null`. |
+| `settingSourcesCapability` | `{ requested, level, value, mechanism, detail }` or `null`. |
+| `permissionCapability` | `{ level, mechanism, residual }` or `null`. Refreshed after `setModel`. |
 | `on("event" \| "status" \| "usage", cb)` | Subscribe. Returns unsubscribe. |
+
+The three capability fields are `null` when the thread requested nothing, **and** when an older runtime reported nothing. `level` is `"applied"` \| `"best-effort"` \| `"ignored"` for the two host-config reports, and `"enforced"` \| `"best-effort"` \| `"unsupported"` for the permission one.
+
+## `ProviderStatus` {#providerstatus}
+
+```ts
+type ProviderStatus = {
+  provider: string;
+  displayName: string;
+  installed: boolean;
+  binaryPath: string | null;
+  version: string | null;
+  authenticated: boolean;
+  authMethod?: string | null;
+  installCommand: string | null;
+  loginCommand: string | null;
+  docsUrl: string | null;
+  available: boolean;
+  requiresConfiguration: boolean;
+  modelCount: number;
+  stale: boolean;
+  source: "probed" | "derived";
+  checkedAt: string;
+  detail?: string | null;
+};
+```
+
+`source` is the field to read first. On a `"derived"` record — an older runtime with no `providers.status` RPC — `installed` is `modelCount > 0`, and `binaryPath`, `version` and the three remediation fields are `null`. `stale` is true when either the probe or the model catalog behind the verdict was served from the cache rather than produced by this call. It is not a claim that the record is past the runtime's TTL: a record served from inside the TTL is stale by this definition too.
 
 ## `doctor()` {#doctor}
 
@@ -65,6 +126,22 @@ type DoctorReport = {
     path: string;
     version: string | null;
     source: "option" | "path" | "download" | "cache";
+    checksumVerified: boolean;
+  };
+  runtime: {
+    source:
+      | "explicit"
+      | "bundled-package"
+      | "cached-download"
+      | "path"
+      | "downloaded"
+      | "attached";
+    binaryPath: string;
+    version: string | null;
+    runtimeRoot: string | null;
+    nodeModulesPath: string | null;
+    signature: { signed: boolean; authority?: string; accepted?: boolean } | null;
+    downloadedThisSession: boolean;
     checksumVerified: boolean;
   };
   socket: {
@@ -86,13 +163,17 @@ type DoctorReport = {
 
 `sdkVersion` is injected at package build time from `package.json`. Compare it to `socket.runtimeVersion` when versions disagree.
 
+`binary` is the 0.1.x view and keeps its four `source` values. `runtime` is the 0.2 view: which of the five resolution steps produced the binary, and what the OS thinks of its signature. `runtime.signature` is `null` for "not known", never for "not signed" — see [Runtime](/sdk/runtime#doctorruntime).
+
 ## Errors
 
 `AdeError` with `code`:
 
-`binary_not_found` · `download_failed` · `checksum_mismatch` · `spawn_failed` · `connect_failed` · `handshake_failed` · `rpc_error` · `rpc_timeout` · `transport_closed` · `protocol_error` · `thread_not_found` · `invalid_option` · `disposed`
+`binary_not_found` · `download_failed` · `checksum_mismatch` · `spawn_failed` · `connect_failed` · `handshake_failed` · `rpc_error` · `rpc_timeout` · `transport_closed` · `protocol_error` · `thread_not_found` · `invalid_option` · `runtime_unavailable` · `approval_not_found` · `unauthorized` · `disposed`
 
-`setModel` mid-turn without `{ force: true }` throws `invalid_option`.
+`setModel` mid-turn without `{ force: true }` throws `invalid_option`. So does a relative or refused `cwd`, a policy with no `fallback`, a `sandboxRoot` that is not absolute, and an `approve()` naming a question-shaped request — the SDK checks those before any RPC, and the engine's own `invalid_argument:` refusals are mapped onto the same code.
+
+`approve()` throws `approval_not_found` when the item is already settled. `unauthorized` comes from an Electron bridge whose `authorize` hook refused the call.
 
 ## MCP capability
 

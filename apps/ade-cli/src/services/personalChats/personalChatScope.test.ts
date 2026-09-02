@@ -5,7 +5,11 @@ import { gzipSync } from "node:zlib";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AdeRuntime } from "../../bootstrap";
 import { createEventBuffer } from "../../eventBuffer";
-import { PersonalChatScope } from "./personalChatScope";
+import {
+  isPersonalChatActionQueueable,
+  isPersonalChatActionViewerAllowed,
+} from "../../../../desktop/src/shared/types/personalChats";
+import { PersonalChatScope, validatePersonalHostCwd } from "./personalChatScope";
 
 describe("PersonalChatScope", () => {
   let adeHome: string;
@@ -72,6 +76,19 @@ describe("PersonalChatScope", () => {
       })),
       respondToInput: vi.fn(async () => undefined),
       approveToolUse: vi.fn(async () => undefined),
+      listPendingInputs: vi.fn(({ sessionId }: { sessionId: string }) => ({
+        requests: [{
+          requestId: "req-1",
+          itemId: "item-1",
+          source: "claude",
+          kind: "approval",
+          description: `Allow Bash on ${sessionId}?`,
+          questions: [],
+          allowsFreeform: false,
+          blocking: true,
+          canProceedWithoutAnswer: false,
+        }],
+      })),
       createScheduledWork: vi.fn(async ({ sessionId, cron, runAt, prompt }: {
         sessionId: string;
         cron?: string;
@@ -172,7 +189,6 @@ describe("PersonalChatScope", () => {
       provider: "codex",
       model: "gpt-5",
       laneId: "attacker-lane",
-      requestedCwd: "/tmp/outside",
       surface: "work",
       sessionProfile: "workflow",
       kickoffText: "hello",
@@ -185,6 +201,9 @@ describe("PersonalChatScope", () => {
       sessionProfile: "light",
       permissionMode: "default",
     }));
+    // No host cwd was named, so the chat stays in the runtime's own scratch
+    // workspace. This is the regression guard for every existing embedder:
+    // adding the option must not move anyone's files.
     expect(service.createSession).not.toHaveBeenCalledWith(expect.objectContaining({ requestedCwd: expect.anything() }));
     expect(service.sendMessage).toHaveBeenCalledWith(
       { sessionId: "chat-1", text: "hello" },
@@ -197,6 +216,73 @@ describe("PersonalChatScope", () => {
     expect(runtimeArgs?.projectRoot).not.toBe(runtimeArgs?.primaryWorktreePath);
     expect(runtimeArgs.runtimeProfile).toBe("chat");
     expect(runtimeArgs.publishPushEvents).toBe(false);
+  });
+
+  it("validates a host cwd, creates it, and forwards it to the chat service", async () => {
+    const { service, createRuntime } = fixture();
+    const scope = new PersonalChatScope({ createRuntime });
+    const hostCwd = path.join(os.tmpdir(), `ade-host-cwd-${process.pid}-${Date.now()}`, "Music");
+
+    await scope.call("create", {
+      provider: "claude",
+      model: "sonnet",
+      requestedCwd: hostCwd,
+    });
+
+    // The CANONICAL path is forwarded, not the caller's spelling. On macOS
+    // `os.tmpdir()` sits under `/var`, which is itself a symlink, and the
+    // guards below only mean anything when they run on the real directory.
+    expect(fs.existsSync(hostCwd)).toBe(true);
+    expect(service.createSession).toHaveBeenCalledWith(expect.objectContaining({
+      requestedCwd: fs.realpathSync.native(hostCwd),
+    }));
+    // 0755, not the runtime's own 0700: the point of a host cwd is a folder
+    // the user can open, so the agent's files are somewhere they can find.
+    // `existsSync` passes at any mode, so the mode is what has to be asserted.
+    if (process.platform !== "win32") {
+      expect(fs.statSync(hostCwd).mode & 0o777).toBe(0o755);
+    }
+    fs.rmSync(path.dirname(hostCwd), { recursive: true, force: true });
+    await scope.dispose();
+  });
+
+  it.each([
+    ["a relative path", "relative/folder"],
+    ["a bare tilde", "~"],
+    ["a tilde path", "~/Music"],
+    ["the filesystem root", path.sep],
+  ])("refuses %s as a host cwd, before any session row exists", async (_label, requestedCwd) => {
+    const { service, createRuntime } = fixture();
+    const scope = new PersonalChatScope({ createRuntime });
+
+    await expect(scope.call("create", {
+      provider: "claude",
+      model: "sonnet",
+      requestedCwd,
+    })).rejects.toThrow(/^invalid_argument:/);
+    expect(service.createSession).not.toHaveBeenCalled();
+    await scope.dispose();
+  });
+
+  it("refuses a host cwd inside ADE's own state directory", async () => {
+    const { service, createRuntime } = fixture();
+    const scope = new PersonalChatScope({ createRuntime });
+
+    await expect(scope.call("create", {
+      provider: "claude",
+      model: "sonnet",
+      requestedCwd: path.join(adeHome, "personal-chats", "state"),
+    })).rejects.toThrow(/^invalid_argument:/);
+    expect(service.createSession).not.toHaveBeenCalled();
+    await scope.dispose();
+  });
+
+  it("refuses the home directory itself but allows a folder inside it", () => {
+    const home = os.homedir();
+    expect(() => validatePersonalHostCwd(home, { adeDir: adeHome, homeDir: home }))
+      .toThrow(/^invalid_argument:/);
+    expect(validatePersonalHostCwd(path.join(home, "Music"), { adeDir: adeHome, homeDir: home }))
+      .toBe(path.join(home, "Music"));
   });
 
   it("forwards caller-injected MCP servers and the strict flag to the chat service", async () => {
@@ -666,6 +752,41 @@ describe("PersonalChatScope", () => {
       .rejects.toThrow("Personal terminal 'pty-personal' was not found");
   });
 
+  it("lists the pending inputs of a personal session", async () => {
+    const { service, createRuntime } = fixture();
+    const scope = new PersonalChatScope({ createRuntime });
+
+    await expect(scope.call("pendingInputs", { sessionId: "chat-1" })).resolves.toMatchObject({
+      action: "pendingInputs",
+      result: {
+        requests: [{ itemId: "item-1", kind: "approval", blocking: true }],
+      },
+    });
+    expect(service.listPendingInputs).toHaveBeenCalledWith({ sessionId: "chat-1" });
+    // The same guard every other session-scoped action runs: a work-surface
+    // session must not be readable through the machine scope.
+    expect(service.getSessionSummary).toHaveBeenCalledWith("chat-1");
+    await scope.dispose();
+  });
+
+  it("refuses pendingInputs without a sessionId", async () => {
+    const { createRuntime } = fixture();
+    const scope = new PersonalChatScope({ createRuntime });
+
+    await expect(scope.call("pendingInputs", {})).rejects.toThrow("sessionId is required");
+    await scope.dispose();
+  });
+
+  it("advertises pendingInputs as a viewer-allowed, non-queueable action", async () => {
+    const { createRuntime } = fixture();
+    const scope = new PersonalChatScope({ createRuntime });
+
+    expect(scope.capabilities().actions).toContain("pendingInputs");
+    expect(isPersonalChatActionViewerAllowed("pendingInputs")).toBe(true);
+    expect(isPersonalChatActionQueueable("pendingInputs")).toBe(false);
+    await scope.dispose();
+  });
+
   it("saves validated image attachments only inside hidden state", async () => {
     const { createRuntime } = fixture();
     const scope = new PersonalChatScope({ createRuntime });
@@ -695,5 +816,189 @@ describe("PersonalChatScope", () => {
       mimeType: "image/png",
       base64: Buffer.from("not an image").toString("base64"),
     })).rejects.toThrow(/MIME type does not match/);
+  });
+});
+
+describe("validatePersonalHostCwd", () => {
+  // Both platforms are exercised on whichever machine runs the suite: the
+  // Windows rules are not the same rules with different separators, and a
+  // macOS-only run would never see the drive-root or UNC cases at all.
+  // The filesystem is injected in every case below, so these assertions are
+  // about the rules and not about whatever the machine running the suite has
+  // on disk. (`/home` really is a symlink on macOS, which is exactly the class
+  // of surprise the canonicalization exists to catch in production.)
+  const noSymlinks = { realpathSync: (target: string) => target };
+
+  describe("on posix", () => {
+    const context = {
+      adeDir: "/home/producer/.ade",
+      homeDir: "/home/producer",
+      platform: "linux" as const,
+      fs: noSymlinks,
+    };
+
+    it("returns undefined when nothing was asked for", () => {
+      expect(validatePersonalHostCwd(undefined, context)).toBeUndefined();
+      expect(validatePersonalHostCwd(null, context)).toBeUndefined();
+      expect(validatePersonalHostCwd("   ", context)).toBeUndefined();
+    });
+
+    it("accepts an absolute path and normalizes it", () => {
+      expect(validatePersonalHostCwd("/home/producer/Music/", context)).toBe("/home/producer/Music");
+      expect(validatePersonalHostCwd("/home/producer/Music/../Audio", context))
+        .toBe("/home/producer/Audio");
+    });
+
+    it.each([
+      ["the root", "/"],
+      ["a relative path", "Music"],
+      ["a dot-relative path", "./Music"],
+      ["a bare tilde", "~"],
+      ["a tilde path", "~/Music"],
+      ["the home directory itself", "/home/producer"],
+      ["the ADE state directory", "/home/producer/.ade"],
+      ["a path inside the ADE state directory", "/home/producer/.ade/personal-chats/state"],
+      ["a non-string", 42],
+    ])("refuses %s", (_label, value) => {
+      expect(() => validatePersonalHostCwd(value, context)).toThrow(/^invalid_argument:/);
+    });
+  });
+
+  describe("on win32", () => {
+    const context = {
+      adeDir: "C:\\Users\\Producer\\.ade",
+      homeDir: "C:\\Users\\Producer",
+      platform: "win32" as const,
+      fs: noSymlinks,
+    };
+
+    it("accepts a drive-absolute path", () => {
+      expect(validatePersonalHostCwd("C:\\Users\\Producer\\Music", context))
+        .toBe("C:\\Users\\Producer\\Music");
+    });
+
+    it("accepts a UNC path below the share root", () => {
+      expect(validatePersonalHostCwd("\\\\studio\\audio\\Sessions", context))
+        .toBe("\\\\studio\\audio\\Sessions");
+    });
+
+    // path.win32.parse reports a UNC root as "\\", so the share root needs its
+    // own test or a whole file server passes as an ordinary folder.
+    it.each([
+      ["a drive root", "C:\\"],
+      ["a drive root with a forward slash", "C:/"],
+      ["a bare UNC share root", "\\\\studio\\audio"],
+      ["a UNC share root with a trailing separator", "\\\\studio\\audio\\"],
+      ["a relative path", "Music\\Sessions"],
+      ["a tilde path", "~\\Music"],
+      ["the home directory itself", "C:\\Users\\Producer"],
+      ["the ADE state directory", "C:\\Users\\Producer\\.ade\\personal-chats"],
+    ])("refuses %s", (_label, value) => {
+      expect(() => validatePersonalHostCwd(value, context)).toThrow(/^invalid_argument:/);
+    });
+
+    // Windows paths are case-insensitive, so a differently-cased spelling of
+    // the ADE directory is the same directory and must be refused too.
+    it("refuses the ADE state directory under a different case", () => {
+      expect(() => validatePersonalHostCwd("c:\\users\\producer\\.ADE\\state", context))
+        .toThrow(/^invalid_argument:/);
+    });
+
+    // Codex records cwd as `\\?\C:\...`. Node treats that as UNC, so a lexical
+    // home / ADE-state / share-root check against the unprefixed spelling
+    // misses unless the prefix is stripped before the refusals.
+    it("refuses a prefixed spelling of the home directory", () => {
+      expect(() => validatePersonalHostCwd("\\\\?\\C:\\Users\\Producer", context))
+        .toThrow(/must not be the home directory itself/);
+    });
+
+    it("refuses a prefixed spelling of a UNC share root", () => {
+      expect(() => validatePersonalHostCwd("\\\\?\\UNC\\studio\\audio", context))
+        .toThrow(/must not be a filesystem root/);
+    });
+
+    it("accepts a prefixed path below home and returns the unprefixed spelling", () => {
+      expect(validatePersonalHostCwd("\\\\?\\C:\\Users\\Producer\\Music", context))
+        .toBe("C:\\Users\\Producer\\Music");
+    });
+  });
+
+  // macOS volumes are case-insensitive by default, so a differently-cased
+  // spelling names the same directory there exactly as it does on Windows.
+  // Folding only on win32 left the guard skipped while the OS opened the very
+  // same folder.
+  describe("on darwin", () => {
+    const context = {
+      adeDir: "/Users/producer/.ade",
+      homeDir: "/Users/producer",
+      platform: "darwin" as const,
+      fs: noSymlinks,
+    };
+
+    it("refuses the ADE state directory spelled in a different case", () => {
+      expect(() => validatePersonalHostCwd("/Users/producer/.ADE/state", context))
+        .toThrow(/ADE's own state directory/);
+    });
+
+    it("refuses the home directory spelled in a different case", () => {
+      expect(() => validatePersonalHostCwd("/users/Producer", context))
+        .toThrow(/must not be the home directory itself/);
+    });
+
+    it("still accepts an ordinary folder", () => {
+      expect(validatePersonalHostCwd("/Users/producer/Music", context))
+        .toBe("/Users/producer/Music");
+    });
+  });
+
+  // A lexical check reads the symlink's own name and admits it; the agent then
+  // runs with its working directory inside ADE's state, or at the filesystem
+  // root. Canonicalizing the deepest existing ancestor is what closes it.
+  describe("symlink canonicalization", () => {
+    const links: Record<string, string> = {
+      "/home/producer/work/ade-shortcut": "/home/producer/.ade",
+      "/home/producer/work/root-shortcut": "/",
+      "/home/producer/work/home-shortcut": "/home/producer",
+    };
+    const context = {
+      adeDir: "/home/producer/.ade",
+      homeDir: "/home/producer",
+      platform: "linux" as const,
+      fs: {
+        realpathSync: (target: string): string => {
+          if (target in links) return links[target] as string;
+          const existing = ["/", "/home", "/home/producer", "/home/producer/.ade", "/home/producer/work"];
+          if (existing.includes(target)) return target;
+          throw Object.assign(new Error("ENOENT"), { code: "ENOENT" });
+        },
+      },
+    };
+
+    it("refuses a symlink that points into ADE's state directory", () => {
+      expect(() => validatePersonalHostCwd("/home/producer/work/ade-shortcut", context))
+        .toThrow(/ADE's own state directory/);
+    });
+
+    it("refuses a symlink whose target is inside ADE's state directory", () => {
+      expect(() => validatePersonalHostCwd("/home/producer/work/ade-shortcut/state", context))
+        .toThrow(/ADE's own state directory/);
+    });
+
+    it("refuses a symlink to the filesystem root", () => {
+      expect(() => validatePersonalHostCwd("/home/producer/work/root-shortcut", context))
+        .toThrow(/must not be a filesystem root/);
+    });
+
+    it("refuses a symlink to the home directory itself", () => {
+      expect(() => validatePersonalHostCwd("/home/producer/work/home-shortcut", context))
+        .toThrow(/must not be the home directory itself/);
+    });
+
+    it("returns the canonical path for a directory that does not exist yet", () => {
+      // The create path mkdirs the directory AFTER this returns, so the walk
+      // must resolve the deepest existing ancestor and re-join the tail.
+      expect(validatePersonalHostCwd("/home/producer/work/new-project/nested", context))
+        .toBe("/home/producer/work/new-project/nested");
+    });
   });
 });

@@ -1,0 +1,273 @@
+---
+title: "Bundling"
+description: "Ship the ADE runtime inside your signed app: npm platform packages, the exact codesign lines, hardened-runtime entitlements, Authenticode, and an electron-builder fragment."
+icon: "box"
+---
+
+By default the SDK downloads its runtime from a GitHub release on first run. For a signed, notarized application that is the wrong shape: your bundle is one signed artifact, and an executable that appears in `userData` afterwards is outside it.
+
+Instead, install the runtime from npm, copy it into your bundle, sign it with your own identity, and turn the downloader off.
+
+## Install the platform package
+
+```bash
+npm install @ade-dev/runtime
+```
+
+`@ade-dev/runtime` is a meta package. It lists five platform packages as `optionalDependencies`, each carrying `os` and `cpu`, so npm installs exactly the one that matches the machine. This is the pattern esbuild and swc use.
+
+| Package | `os` | `cpu` |
+|---|---|---|
+| `@ade-dev/runtime-darwin-arm64` | `darwin` | `arm64` |
+| `@ade-dev/runtime-darwin-x64` | `darwin` | `x64` |
+| `@ade-dev/runtime-linux-x64` | `linux` | `x64` |
+| `@ade-dev/runtime-linux-arm64` | `linux` | `arm64` |
+| `@ade-dev/runtime-win32-x64` | `win32` | `x64` |
+
+Install a specific platform package directly when you cross-build: `npm install @ade-dev/runtime-darwin-arm64 --force` on a Linux CI runner, for instance.
+
+<Note>
+Install with a version that matches the ADE release you tested against. The npm version of a runtime package is the ADE release version.
+</Note>
+
+## The layout
+
+```
+@ade-dev/runtime-darwin-arm64/
+  package.json          { "os": ["darwin"], "cpu": ["arm64"] }
+  bin/ade               the runtime binary (ade.exe on Windows), mode 0755
+  native/               ADE_RUNTIME_ROOT
+    node_modules/       ADE_RUNTIME_NODE_MODULES — the modules the binary dlopens
+    vendor/crsqlite/…   the cr-sqlite extension
+    tuiClient/
+  LICENSE
+  RUNTIME-EMBEDDING-EXCEPTION.md
+  README.md
+```
+
+**The binary alone is not runnable.** It dlopens its native modules out of `native/node_modules` and resolves that directory from `ADE_RUNTIME_NODE_MODULES`, so both halves must travel together and both must be reachable at runtime.
+
+## Resolve it with no configuration
+
+With the package installed, the SDK finds it on its own. `resolveBundledRuntime()` is step 2 of the resolution order and sits above the cache, `PATH`, and any download.
+
+```ts
+import { createAdeChat } from "@ade-dev/sdk";
+
+const ade = await createAdeChat({
+  home: path.join(app.getPath("userData"), "ade"),
+  allowDownload: false,
+});
+```
+
+`allowDownload: false` is the important half. Without it a packaging mistake works on your machine through a silent download and fails on a locked-down user's. With it, the same mistake throws `runtime_unavailable` in QA with a message listing everything that was tried.
+
+Inside a packaged app the runtime is no longer under `node_modules`, so point at it explicitly:
+
+```ts
+const runtime = path.join(process.resourcesPath, "ade-runtime");
+
+const ade = await createAdeChat({
+  home: path.join(app.getPath("userData"), "ade"),
+  binaryPath: path.join(runtime, "bin", "ade"),
+  runtimeNodeModules: path.join(runtime, "native", "node_modules"),
+  allowDownload: false,
+});
+```
+
+`runtimeRoot` defaults to the parent of `runtimeNodeModules`, so you only pass it when you split the two halves. Both directories are validated at `createAdeChat`, not at spawn: a wrong path fails with `binary_not_found` naming the path, rather than with a dlopen error from inside a child process.
+
+**Paths with spaces are safe.** `/Applications/My App.app/Contents/Resources/…` needs no quoting anywhere: every path is composed with `path.join`, every spawn is argv-based, and no shell string is ever built.
+
+### Checksums
+
+The `binaryPath` and bundled-package routes deliberately skip `SHA256SUMS`. That check exists to establish the provenance of bytes fetched over the network. Bytes you signed into your own bundle are verified by the OS, and re-checking them against a GitHub release would prove nothing about what you shipped. `doctor().runtime.checksumVerified` is `false` on those routes by design.
+
+## macOS: signing
+
+Sign the runtime with **your own** Developer ID, as part of your own bundle. The packages ship the released binaries, which carry ADE's signature; a binary signed by ADE inside your app invites a Team ID mismatch and forces `disable-library-validation` on your host app.
+
+The binary is a Node single-executable build, so it needs the JIT entitlement:
+
+```bash
+codesign --force --options runtime --timestamp \
+  --entitlements entitlements.runtime.plist \
+  --sign "$IDENTITY" \
+  "$RESOURCES/ade-runtime/bin/ade"
+```
+
+with `entitlements.runtime.plist` carrying exactly one key:
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+  <dict>
+    <key>com.apple.security.cs.allow-jit</key>
+    <true/>
+  </dict>
+</plist>
+```
+
+Then sign every Mach-O file under `native/` **individually and with no entitlements**. `--deep` is not the answer here, and Apple says so:
+
+```bash
+codesign --force --options runtime --timestamp --sign "$IDENTITY" "$file"
+```
+
+Find those files by magic number rather than by extension. ADE's own notarizer sniffs `feedface`, `feedfacf`, `cefaedfe`, `cffaedfe`, `cafebabe`, `bebafeca`, `cafebabf`, `bfbafeca`; the `.node` addons, `node-pty`'s `spawn-helper`, and the cr-sqlite `.dylib` are all in that set.
+
+Verify with `codesign --verify --strict --verbose=4`.
+
+## macOS: entitlements, precisely
+
+The question every embedder asks, answered against ADE's own build:
+
+| Entitlement | Needed? | Why |
+|---|---|---|
+| `com.apple.security.cs.allow-jit` | **Required** on the runtime binary | It is the one key in ADE's own runtime entitlements, and ADE's notarizer asserts its presence. |
+| `com.apple.security.cs.allow-unsigned-executable-memory` | **Not required, and do not add it** | ADE's notarizer keeps it on a forbidden list and fails the build if `codesign --display --entitlements -` reports it. `allow-jit` is sufficient. |
+| `com.apple.security.cs.allow-dyld-environment-variables` | **Not needed** | The SDK sets exactly `ADE_HOME`, `ADE_EMBEDDED_PARENT_PID`, `ADE_DEFAULT_ROLE`, `ADE_RUNTIME_ROOT`, `ADE_RUNTIME_NODE_MODULES` and `NODE_PATH`. No `DYLD_*` variable is set on any path. |
+| `com.apple.security.cs.disable-library-validation` | **Required on the HOST app only when the `.node` modules carry a different Team ID than the host.** Avoidable. | If you sign the binary and every Mach-O under `native/` with your own identity, as above, every loaded library shares your Team ID and library validation passes. This is worth doing: the entitlement is a meaningfully weaker posture, and re-signing is the way to avoid needing it. |
+| `com.apple.security.inherit` | On your **helper** entitlements, if you already use inherited entitlements for child processes | The runtime is spawned as an ordinary child. Whatever your app already does for helpers applies. |
+
+## macOS: notarization
+
+The embedded runtime is covered by **your** app's notarization submission. It is inside the bundle you submit, so it is scanned and ticketed with everything else. You do not notarize it separately.
+
+<Warning>
+Do not plan on stapling a ticket to the bare runtime binary. `xcrun stapler` rejects non-bundle executables, and ADE's own release treats stapling the standalone binary as best-effort for exactly that reason. Offline Gatekeeper validation rides on your app bundle's own stapled ticket, which is another reason to embed rather than to ship the binary loose.
+</Warning>
+
+## Windows: Authenticode
+
+Sign the runtime as part of your normal signing step, the same way you sign your own `.exe` and DLLs. Under electron-builder, `azureSignOptions` (or your `signtoolOptions` equivalent) sits above electron-builder's single signing chokepoint, so files under `extraResources` are covered without a separate pass.
+
+**You do not need `signtool remove`.** ADE's build strips the vendor Node signature before injecting the SEA blob, because signing a postject-modified binary that still carries the original signature fails with `0x800700C1` (`ERROR_BAD_EXE_FORMAT`). The binary you install from npm is already stripped and re-signed, so it signs cleanly as-is.
+
+Timestamp the signature. An expired certificate invalidates every signature it made unless they were timestamped.
+
+## electron-builder
+
+Copy the platform package into `Contents/Resources` (or the Windows `resources` directory) with `extraResources`:
+
+```json
+{
+  "build": {
+    "extraResources": [
+      {
+        "from": "node_modules/@ade-dev/runtime-darwin-arm64",
+        "to": "ade-runtime",
+        "filter": ["bin/**", "native/**"]
+      }
+    ],
+    "mac": {
+      "hardenedRuntime": true,
+      "entitlements": "build/entitlements.mac.plist",
+      "entitlementsInherit": "build/entitlements.mac.inherit.plist",
+      "notarize": true
+    },
+    "afterSign": "./scripts/sign-ade-runtime.cjs"
+  }
+}
+```
+
+The `filter` matters: it keeps `package.json`, `README.md`, `LICENSE` and `RUNTIME-EMBEDDING-EXCEPTION.md` out of the bundle, so the only files inside are ones you sign. Those two license documents still have to reach your users. Put them wherever your application shows its third-party notices.
+
+electron-builder does not sign files under `extraResources` on macOS, so do it in `afterSign`:
+
+```js
+// scripts/sign-ade-runtime.cjs
+const { execFileSync } = require("node:child_process");
+const fs = require("node:fs");
+const path = require("node:path");
+
+const MACHO_MAGIC = new Set([
+  "feedface", "feedfacf", "cefaedfe", "cffaedfe",
+  "cafebabe", "bebafeca", "cafebabf", "bfbafeca",
+]);
+
+function isMachO(file) {
+  const handle = fs.openSync(file, "r");
+  try {
+    const head = Buffer.alloc(4);
+    if (fs.readSync(handle, head, 0, 4, 0) < 4) return false;
+    return MACHO_MAGIC.has(head.toString("hex"));
+  } finally {
+    fs.closeSync(handle);
+  }
+}
+
+function* walk(dir) {
+  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    const full = path.join(dir, entry.name);
+    if (entry.isDirectory()) yield* walk(full);
+    else if (entry.isFile()) yield full;
+  }
+}
+
+exports.default = async function signAdeRuntime(context) {
+  if (context.electronPlatformName !== "darwin") return;
+  const identity = process.env.CSC_NAME;
+  const runtime = path.join(
+    context.appOutDir,
+    `${context.packager.appInfo.productFilename}.app`,
+    "Contents",
+    "Resources",
+    "ade-runtime",
+  );
+
+  // The native modules first: codesign seals a directory's contents, so a file
+  // signed after its container invalidates the container's signature.
+  for (const file of walk(path.join(runtime, "native"))) {
+    if (!isMachO(file)) continue;
+    execFileSync("codesign", [
+      "--force", "--options", "runtime", "--timestamp", "--sign", identity, file,
+    ], { stdio: "inherit" });
+  }
+
+  execFileSync("codesign", [
+    "--force", "--options", "runtime", "--timestamp",
+    "--entitlements", path.join(__dirname, "..", "build", "entitlements.runtime.plist"),
+    "--sign", identity,
+    path.join(runtime, "bin", "ade"),
+  ], { stdio: "inherit" });
+};
+```
+
+Then point the client at the copied tree, as in [Resolve it with no configuration](#resolve-it-with-no-configuration) above.
+
+## Confirm what shipped
+
+`doctor().runtime` names the path that was actually taken. Put `source` and `signature` in your support bundle on day one: together they separate "this app is running the runtime we signed and shipped" from "this app quietly downloaded one on this machine", which you cannot otherwise see.
+
+```ts
+const report = await ade.doctor();
+console.log(report.runtime.source);     // "explicit" in a packaged app
+console.log(report.runtime.signature);  // { signed: true, authority: "…", accepted: true }
+```
+
+| Field | Meaning |
+|---|---|
+| `source` | `explicit`, `bundled-package`, `cached-download`, `path`, `downloaded`, or `attached` |
+| `binaryPath` | The binary that was spawned |
+| `runtimeRoot` / `nodeModulesPath` | `ADE_RUNTIME_ROOT` and `ADE_RUNTIME_NODE_MODULES` as spawned |
+| `signature` | macOS and Windows only. `null` on Linux and whenever the check could not run, which means "not known", never "not signed" |
+| `downloadedThisSession` | True only when this client downloaded a runtime |
+| `checksumVerified` | False on the bundled and pinned routes by design |
+
+A packaged build that reports `source: "downloaded"` is a packaging bug. `allowDownload: false` turns that bug into a `runtime_unavailable` throw at startup instead.
+
+## Before you redistribute it
+
+The runtime binary is AGPL-3.0-only, and putting it inside your bundle is redistribution. The ADE Runtime Embedding Exception permits it when the binary is unmodified and your application consumes it through the documented `@ade-dev/sdk` interface. Re-signing it with your own identity, as this page instructs, does not count as modifying it. Read the exact conditions before you redistribute.
+
+<Card title="License" href="/sdk/license" icon="scale-balanced" horizontal>
+  What each artifact is licensed under, and the conditions the embedding exception sets.
+</Card>
+
+## Next
+
+<Card title="Runtime" href="/sdk/runtime" icon="server" horizontal>
+  The sidecar's guest rules, pidfile reclaim, and the rest of `doctor()`.
+</Card>

@@ -1022,6 +1022,28 @@ import {
   replaceDynamicOpenCodeModelDescriptors,
   replaceDynamicPiModelDescriptors,
 } from "../../../shared/modelRegistry";
+import { CLAUDE_MUTATING_BUILTIN_TOOLS } from "../../../shared/permissionPolicy";
+import { CLAUDE_READ_ONLY_TOOLS } from "./claudeToolGate";
+import { HOST_TOOL_APPROVAL_NAMES } from "../../../shared/__fixtures__/hostToolApprovalNames";
+
+/**
+ * The fake `@anthropic-ai/claude-agent-sdk` session every Claude test mounts.
+ *
+ * One factory at module scope because five call sites had pasted the same
+ * four-field literal inline, next to two local factories that existed to
+ * prevent exactly that.
+ */
+function claudeSdkSession(sessionId: string): Record<string, unknown> {
+  return {
+    send: vi.fn(),
+    stream: vi.fn(async function* () {
+      return;
+    }),
+    close: vi.fn(),
+    sessionId,
+  };
+}
+
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -4598,6 +4620,170 @@ describe("createAgentChatService", () => {
       expect(opts?.managedSettings).toBeUndefined();
     });
 
+    describe("host instructions and settingSources on a personal Claude session", () => {
+      const openPersonalClaudeSession = async (
+        extra: Record<string, unknown>,
+      ): Promise<Record<string, unknown>> => {
+        vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue(claudeSdkSession("sdk-session-host-config") as any);
+        const { service } = createService();
+        await service.createSession({
+          laneId: "lane-1",
+          provider: "claude",
+          model: "sonnet",
+          surface: "personal",
+          sessionProfile: "light",
+          ...extra,
+        } as never);
+        await vi.waitFor(() => {
+          expect(claudeSdkCreateSessionCompat).toHaveBeenCalled();
+        });
+        return vi.mocked(claudeSdkCreateSessionCompat).mock.calls.at(-1)?.[0] as Record<string, unknown>;
+      };
+
+      // Every existing embedder passes nothing. `settingSources` must still be
+      // explicit, because an omitted option and an empty array are not
+      // documented to be the same thing in the Agent SDK.
+      it("defaults to the ADE prompt and an empty settingSources list", async () => {
+        const opts = await openPersonalClaudeSession({});
+        expect(opts.systemPrompt).toContain("ADE personal chat");
+        expect(opts.settingSources).toEqual([]);
+      });
+
+      it.each([
+        ["none", []],
+        ["project", ["project"]],
+        ["user", ["user"]],
+        ["all", ["user", "project", "local"]],
+      ] as const)("maps settingSources %s to %j", async (value, expected) => {
+        const opts = await openPersonalClaudeSession({ settingSources: value });
+        expect(opts.settingSources).toEqual(expected);
+      });
+
+      it("appends host instructions after ADE's own prompt", async () => {
+        const opts = await openPersonalClaudeSession({
+          instructions: { mode: "append", text: "The project codeword is HALYARD." },
+        });
+        const prompt = opts.systemPrompt as string;
+        expect(typeof prompt).toBe("string");
+        expect(prompt).toContain("ADE personal chat");
+        expect(prompt.endsWith("The project codeword is HALYARD.")).toBe(true);
+      });
+
+      it("accepts a bare string as an append", async () => {
+        const opts = await openPersonalClaudeSession({ instructions: "The codeword is HALYARD." });
+        const prompt = opts.systemPrompt as string;
+        expect(prompt).toContain("ADE personal chat");
+        expect(prompt.endsWith("The codeword is HALYARD.")).toBe(true);
+      });
+
+      // A host-branded assistant must never learn that ADE exists.
+      it("drops ADE's prompt entirely for replace", async () => {
+        const opts = await openPersonalClaudeSession({
+          instructions: { mode: "replace", text: "You are the Halyard assistant." },
+        });
+        expect(opts.systemPrompt).toBe("You are the Halyard assistant.");
+        expect(opts.systemPrompt as string).not.toContain("ADE personal chat");
+      });
+
+      it("reports what the provider did on the session summary", async () => {
+        vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue(claudeSdkSession("sdk-session-host-config-report") as any);
+        const { service } = createService();
+        const created = await service.createSession({
+          laneId: "lane-1",
+          provider: "claude",
+          model: "sonnet",
+          surface: "personal",
+          sessionProfile: "light",
+          instructions: { mode: "replace", text: "You are the Halyard assistant." },
+          settingSources: "project",
+        } as never);
+        const summary = await service.getSessionSummary(created.id);
+        expect(summary?.instructionsCapability).toMatchObject({ level: "applied", mode: "replace" });
+        expect(summary?.settingSourcesCapability).toMatchObject({ level: "applied", value: "project" });
+      });
+
+      // Absent means "never requested", exactly as mcpCapability does. A caller
+      // that asked for nothing must not read a report about nothing.
+      it("omits both capability reports when nothing was requested", async () => {
+        vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue(claudeSdkSession("sdk-session-host-config-absent") as any);
+        const { service } = createService();
+        const created = await service.createSession({
+          laneId: "lane-1",
+          provider: "claude",
+          model: "sonnet",
+          surface: "personal",
+          sessionProfile: "light",
+        } as never);
+        const summary = await service.getSessionSummary(created.id);
+        expect(summary?.instructionsCapability).toBeUndefined();
+        expect(summary?.settingSourcesCapability).toBeUndefined();
+      });
+
+      // The regression this whole feature has to not cause: an embedder that
+      // passes no cwd keeps writing files exactly where it always did. The
+      // previous version of this test built a path, never passed it anywhere,
+      // and then asserted the result differed from it — which no implementation
+      // could fail. Assert the resolved lane root instead. `realpathSync`
+      // because the harness's temp root sits under `/var`, which is a symlink
+      // to `/private/var` on macOS, and the lane launch context canonicalizes.
+      it("leaves the lane root alone when no host cwd was requested", async () => {
+        const baseline = await openPersonalClaudeSession({});
+        expect(baseline.cwd).toBe(fs.realpathSync(tmpRoot));
+      });
+
+      it("runs the provider in the host cwd when one was requested", async () => {
+        const baseline = await openPersonalClaudeSession({});
+        const hostCwd = path.join(tmpRoot, "host-workspace");
+        fs.mkdirSync(hostCwd, { recursive: true });
+        const opts = await openPersonalClaudeSession({ requestedCwd: hostCwd });
+        expect(opts.cwd).toBe(hostCwd);
+        expect(opts.cwd).not.toBe(baseline.cwd);
+      });
+
+      // A work chat's lane worktree is a git invariant; a host cwd must never
+      // move it, or the chat produces diffs against the wrong tree.
+      it("ignores a requested cwd on a work session", async () => {
+        const hostCwd = path.join(tmpRoot, "host-workspace-work");
+        fs.mkdirSync(hostCwd, { recursive: true });
+        const openWorkSession = async (extra: Record<string, unknown>) => {
+          vi.mocked(claudeSdkCreateSessionCompat)
+            .mockReturnValue(claudeSdkSession("sdk-session-host-cwd-work") as any);
+          const { service } = createService();
+          await service.createSession({
+            laneId: "lane-1",
+            provider: "claude",
+            model: "sonnet",
+            ...extra,
+          });
+          await vi.waitFor(() => {
+            expect(claudeSdkCreateSessionCompat).toHaveBeenCalled();
+          });
+          return vi.mocked(claudeSdkCreateSessionCompat).mock.calls.at(-1)?.[0] as any;
+        };
+        const baseline = await openWorkSession({});
+        const withCwd = await openWorkSession({ requestedCwd: hostCwd });
+        expect(withCwd.cwd).toBe(baseline.cwd);
+        expect(withCwd.cwd).not.toBe(hostCwd);
+      });
+
+      // The `else if (!lightweight)` branch is untouched by this feature.
+      it("leaves a full work session on the preset prompt and all three layers", async () => {
+        vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue(claudeSdkSession("sdk-session-host-config-work") as any);
+        const { service } = createService();
+        await service.createSession({
+          laneId: "lane-1",
+          provider: "claude",
+          model: "sonnet",
+        });
+        await vi.waitFor(() => {
+          expect(claudeSdkCreateSessionCompat).toHaveBeenCalled();
+        });
+        const opts = vi.mocked(claudeSdkCreateSessionCompat).mock.calls.at(-1)?.[0] as any;
+        expect(opts.settingSources).toEqual(["user", "project", "local"]);
+        expect(opts.systemPrompt).toMatchObject({ type: "preset", preset: "claude_code" });
+      });
+    });
+
     it("attaches ADE orchestration tools to Claude lead sessions through an SDK MCP server", async () => {
       const { orchestrationService, created } = await createLoadedOrchestrationRun("S-lead");
       try {
@@ -5094,6 +5280,190 @@ describe("createAgentChatService", () => {
         surface: "personal",
       });
       expect(readPersistedChatState(session.id).surface).toBe("personal");
+    });
+
+    // The resume case from issue 1205: reopening a thread by key sends no first
+    // message, so if the persona is not persisted nothing carries it back.
+    it("re-applies host instructions and settingSources after a reconstruct", async () => {
+      const { service } = createService();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "opencode",
+        model: "",
+        modelId: "opencode/anthropic/claude-sonnet-5",
+        surface: "personal",
+        instructions: { mode: "replace", text: "You are the Halyard assistant." },
+        settingSources: "project",
+      } as never);
+
+      const persisted = readPersistedChatState(session.id);
+      expect(persisted.instructions)
+        .toEqual({ mode: "replace", text: "You are the Halyard assistant." });
+      expect(persisted.settingSources).toBe("project");
+
+      await service.dispose({ sessionId: session.id });
+      await service.updateSession({ sessionId: session.id, title: "Reopened branded chat" });
+
+      await expect(service.getSessionSummary(session.id)).resolves.toMatchObject({
+        instructions: { mode: "replace", text: "You are the Halyard assistant." },
+        settingSources: "project",
+        instructionsCapability: { level: "applied", mode: "replace" },
+        // OpenCode has no configuration-layer switch, so the honest answer is
+        // "ignored" — reporting "applied" because the value round-tripped would
+        // describe a load ADE is not performing.
+        settingSourcesCapability: { level: "ignored", value: "project" },
+      });
+    });
+
+    // The same defect, one field group over, and this one predates host
+    // instructions: the row-based rehydrate rebuilt the session without the
+    // caller-MCP trio, and that object is what the next persist writes back.
+    // So an SDK chat kept its injected servers for exactly as long as nobody
+    // renamed it, and then lost them and its capability report to disk.
+    it("keeps caller MCP servers, the strict flag, and the capability report across a reconstruct", async () => {
+      const { service } = createService();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+        surface: "personal",
+        sessionProfile: "light",
+        mcpServers: { embedder: { type: "http", url: "https://example.test/mcp" } },
+        // Explicitly false, not absent: a lightweight session is strict by
+        // default, so this is the value most likely to be collapsed away.
+        strictMcpConfig: false,
+      });
+
+      const beforeReconstruct = readPersistedChatState(session.id);
+      expect(beforeReconstruct.mcpServers)
+        .toEqual({ embedder: { type: "http", url: "https://example.test/mcp" } });
+      expect(beforeReconstruct.strictMcpConfig).toBe(false);
+      expect(beforeReconstruct.mcpCapability).toMatchObject({ level: "enforced" });
+
+      await service.dispose({ sessionId: session.id });
+      // One update is all it takes: this is the persist that used to write the
+      // rehydrated session back over the good record.
+      await service.updateSession({ sessionId: session.id, title: "Reopened MCP chat" });
+
+      const afterReconstruct = readPersistedChatState(session.id);
+      expect(afterReconstruct.mcpServers)
+        .toEqual({ embedder: { type: "http", url: "https://example.test/mcp" } });
+      expect(afterReconstruct.strictMcpConfig).toBe(false);
+      expect(afterReconstruct.mcpCapability).toMatchObject({
+        level: "enforced",
+        strictRequested: false,
+      });
+
+      await expect(service.getSessionSummary(session.id)).resolves.toMatchObject({
+        mcpServers: { embedder: { type: "http", url: "https://example.test/mcp" } },
+        strictMcpConfig: false,
+        mcpCapability: { level: "enforced" },
+      });
+    });
+
+    // A capability report is a claim about THIS provider. Copying the persisted
+    // verdict forward lets a stale one outlive the provider it described — a
+    // chat moved from Claude to Droid would keep reporting "applied on a real
+    // system-prompt channel" forever. Both rehydrate paths therefore re-derive
+    // from the persisted args plus the session's provider. The fake level on
+    // disk stands in for that stale record.
+    it("re-derives host capability reports on rehydrate instead of trusting the record", async () => {
+      const { service } = createService();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+        surface: "personal",
+        sessionProfile: "light",
+        instructions: { mode: "append", text: "You are the Halyard assistant." },
+        settingSources: "project",
+      } as never);
+
+      expect(readPersistedChatState(session.id).instructionsCapability)
+        .toMatchObject({ level: "applied" });
+
+      await service.dispose({ sessionId: session.id });
+      writePersistedChatState(session.id, {
+        ...readPersistedChatState(session.id),
+        instructionsCapability: {
+          level: "ignored",
+          mode: "append",
+          mechanism: "stale verdict from an older build",
+          detail: "should be replaced on rehydrate",
+        },
+        settingSourcesCapability: {
+          level: "ignored",
+          value: "project",
+          mechanism: "stale verdict from an older build",
+          detail: "should be replaced on rehydrate",
+        },
+      });
+
+      // A SECOND service, so nothing is left in `managedSessions` and the row
+      // has to be rebuilt from the record on disk. Reusing the first service
+      // would answer from the live session and never touch the rehydrate path
+      // this test exists for.
+      const { service: reopened } = createService();
+
+      await expect(reopened.getSessionSummary(session.id)).resolves.toMatchObject({
+        instructionsCapability: { level: "applied", mode: "append" },
+        settingSourcesCapability: { level: "applied", value: "project" },
+      });
+
+      // And the corrected verdict is what gets written back, so the stale one
+      // does not sit on disk waiting for the next reader.
+      await reopened.updateSession({ sessionId: session.id, title: "Reopened" });
+      expect(readPersistedChatState(session.id).instructionsCapability)
+        .toMatchObject({ level: "applied" });
+      expect(readPersistedChatState(session.id).settingSourcesCapability)
+        .toMatchObject({ level: "applied" });
+    });
+
+    // The same defect again, and this field is a tool gate: a chat that lost
+    // its policy on the first update after a restart would keep running with
+    // no gate at all, which is the state the policy exists to replace.
+    it("keeps the permission policy and its capability across a reconstruct", async () => {
+      const { service } = createService();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+        surface: "personal",
+        sessionProfile: "light",
+        permissionPolicy: {
+          allowedTools: ["mcp:srv:*"],
+          deniedTools: ["Bash"],
+          sandboxRoot: tmpRoot,
+          fallback: "ask",
+        },
+      } as never);
+
+      const beforeReconstruct = readPersistedChatState(session.id);
+      expect(beforeReconstruct.permissionPolicy).toEqual({
+        allowedTools: ["mcp:srv:*"],
+        deniedTools: ["Bash"],
+        sandboxRoot: tmpRoot,
+        fallback: "ask",
+      });
+
+      await service.dispose({ sessionId: session.id });
+      await service.updateSession({ sessionId: session.id, title: "Reopened gated chat" });
+
+      const afterReconstruct = readPersistedChatState(session.id);
+      expect(afterReconstruct.permissionPolicy).toEqual({
+        allowedTools: ["mcp:srv:*"],
+        deniedTools: ["Bash"],
+        sandboxRoot: tmpRoot,
+        fallback: "ask",
+      });
+      // "ask" on Claude is best-effort: the tool lists are applied by the CLI,
+      // but the ask verdict needs the Agent SDK prompt, which ADE does not own.
+      expect(afterReconstruct.permissionCapability).toMatchObject({ level: "best-effort" });
+
+      await expect(service.getSessionSummary(session.id)).resolves.toMatchObject({
+        permissionPolicy: { fallback: "ask", deniedTools: ["Bash"] },
+        permissionCapability: { level: "best-effort" },
+      });
     });
 
     it("writes a chat transcript init record", async () => {
@@ -6519,6 +6889,65 @@ describe("createAgentChatService", () => {
       expect(fs.existsSync(changedFile)).toBe(true);
       expect(fs.readFileSync(changedFile, "utf8")).toBe("keep me");
       expect(vi.mocked(runGit).mock.calls.some(([args]) => args[0] === "checkout")).toBe(false);
+    });
+
+    it("restores Codex rewind files in the personal chat's host cwd, not the lane worktree", async () => {
+      // A personal chat whose host named a `requestedCwd` runs in the user's
+      // own repository while its lane still points at the synthetic scratch
+      // worktree. Re-resolving the directory from the lane id ran
+      // `git checkout <sha> -- <path>` somewhere the user never asked about and
+      // reported success against it.
+      const hostCwd = path.join(tmpRoot, "host-project");
+      fs.mkdirSync(hostCwd, { recursive: true });
+      const { service, sessionService } = createService();
+      const source = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.5",
+        modelId: "openai/gpt-5.5",
+        surface: "personal",
+        requestedCwd: hostCwd,
+      } as never);
+      source.threadId = "source-thread-1";
+      source.status = "idle";
+      mockState.codexResponseOverrides.set("thread/rollback", () => ({
+        thread: { id: "source-thread-1" },
+      }));
+      const transcriptPath = sessionService.get(source.id)?.transcriptPath;
+      const rewindEnvelopes: AgentChatEventEnvelope[] = [
+        {
+          sessionId: source.id,
+          timestamp: "2026-07-07T20:00:00.000Z",
+          event: {
+            type: "user_message",
+            messageId: "user-1",
+            text: "change a file",
+            turnId: "turn-1",
+          },
+        } as AgentChatEventEnvelope,
+        {
+          sessionId: source.id,
+          timestamp: "2026-07-07T20:00:01.000Z",
+          event: {
+            type: "turn_diff_summary",
+            turnId: "turn-1",
+            beforeSha: "before-sha",
+            afterSha: "after-sha",
+            files: [{ path: "src/safe.ts", additions: 1, deletions: 0 }],
+            totalAdditions: 1,
+            totalDeletions: 0,
+          },
+        } as AgentChatEventEnvelope,
+      ];
+      fs.writeFileSync(String(transcriptPath), `${rewindEnvelopes.map((entry) => JSON.stringify(entry)).join("\n")}\n`, "utf8");
+      vi.mocked(parseAgentChatTranscript).mockReturnValue(rewindEnvelopes);
+      vi.mocked(runGit).mockImplementation(async () => ({ stdout: "", stderr: "", exitCode: 0 }));
+
+      await service.rewindFiles({ sessionId: source.id, userMessageId: "user-1" });
+
+      const checkout = vi.mocked(runGit).mock.calls.find(([args]) => args[0] === "checkout");
+      expect(checkout).toBeTruthy();
+      expect((checkout?.[1] as { cwd?: string })?.cwd).toBe(hostCwd);
     });
 
     it("does not recursively delete directories during Codex rewind", async () => {
@@ -8530,6 +8959,39 @@ describe("createAgentChatService", () => {
         .some((command) => /^\/ade(?:-|$)/i.test(command.name))).toBe(false);
     });
 
+    it.each([
+      ["append", "append", true],
+      ["replace", "replace", false],
+    ] as const)(
+      "carries host instructions to Codex developerInstructions on %s",
+      async (_label, mode, keepsAdeText) => {
+        const { service } = createService();
+        const session = await service.createSession({
+          laneId: "lane-1",
+          provider: "codex",
+          model: "gpt-5.4",
+          surface: "personal",
+          instructions: { mode, text: "You are the Halyard assistant." },
+        } as never);
+
+        await service.sendMessage({ sessionId: session.id, text: "Hello." });
+
+        await vi.waitFor(() => {
+          expect(mockState.codexRequestPayloads.some((payload) => payload.method === "thread/start"))
+            .toBe(true);
+        });
+        const startPayload = mockState.codexRequestPayloads.find(
+          (payload) => payload.method === "thread/start",
+        );
+        const instructions = String(
+          (startPayload?.params as { developerInstructions?: unknown } | undefined)
+            ?.developerInstructions ?? "",
+        );
+        expect(instructions).toContain("You are the Halyard assistant.");
+        expect(instructions.includes("ADE personal chat")).toBe(keepsAdeText);
+      },
+    );
+
     it("adds dynamic orchestration tools to Codex orchestrator threads", async () => {
       const { orchestrationService, created } = await createLoadedOrchestrationRun("S-lead");
       try {
@@ -9360,7 +9822,7 @@ describe("createAgentChatService", () => {
       return { db, ctoStateService, ctoMemoryService };
     }
 
-    it("persists a CTO model switch back into identity model preferences (D3)", async () => {
+    it("persists a CTO model switch back into identity model preferences", async () => {
       const { db, ctoStateService, ctoMemoryService } = await createCtoServices();
       const { service } = createService({ ctoStateService, ctoMemoryService });
 
@@ -30445,6 +30907,73 @@ describe("createAgentChatService", () => {
       }));
     });
 
+    it("lists an OpenCode approval that is blocking the session", async () => {
+      // `hasLivePendingInput` consults five stores and `listPendingInputs` used
+      // to read two, so an OpenCode chat reported `awaitingInput: true` with an
+      // empty request list — "blocked, with nothing to show", which is exactly
+      // the state the pending-inputs action exists to remove. An embedder that
+      // reloads its UI has no other way to redraw the card.
+      const events: AgentChatEventEnvelope[] = [];
+      let releaseStream!: () => void;
+      const streamGate = new Promise<void>((resolve) => { releaseStream = () => resolve(); });
+      vi.mocked(streamText).mockImplementation(() => ({
+        fullStream: (async function* () {
+          await streamGate;
+          yield { type: "finish", usage: {} };
+        })(),
+      }) as any);
+
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "opencode",
+        model: "opencode/openai/gpt-5.4",
+        modelId: "opencode/openai/gpt-5.4",
+      });
+
+      const sendPromise = service.sendMessage({ sessionId: session.id, text: "Run something." });
+      await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope =>
+          event.event.type === "status" && event.event.turnStatus === "started",
+      );
+
+      const state = [...mockState.openCodeSessions.values()][0]!;
+      state.events.push({
+        type: "permission.asked",
+        properties: {
+          id: "perm-listable-1",
+          sessionID: "opencode-session-1",
+          permission: "bash",
+          patterns: ["rm -rf /"],
+          metadata: {},
+        },
+      });
+      const waiters = [...state.waiters];
+      state.waiters.length = 0;
+      waiters.forEach((waiter) => waiter());
+
+      await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope =>
+          event.event.type === "approval_request" && event.event.itemId === "perm-listable-1",
+      );
+
+      // The session says it is blocked...
+      await expect(service.getSessionSummary(session.id)).resolves.toMatchObject({
+        awaitingInput: true,
+      });
+      // ...and can say what by.
+      const pending = service.listPendingInputs({ sessionId: session.id });
+      expect(pending.requests.map((request) => request.itemId)).toContain("perm-listable-1");
+      expect(pending.requests[0]?.source).toBe("opencode");
+
+      releaseStream();
+      await sendPromise.catch(() => {});
+    });
+
     it("streams OpenCode assistant text from part deltas, without doubling it at the end", async () => {
       // OpenCode's processor calls updatePartDelta for every text-delta and
       // only calls updatePart at text-start and text-end. Ignoring
@@ -48158,3 +48687,726 @@ function agentEmitCommands(
 ): void {
   agent.emitUpdate(sessionId, { sessionUpdate: "available_commands_update", availableCommands });
 }
+
+describe("host permission policy", () => {
+  const openPersonalClaudeSession = async (
+    permissionPolicy: Record<string, unknown> | undefined,
+    sdkSessionId: string,
+  ) => {
+    vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue(claudeSdkSession(sdkSessionId) as any);
+    const events: AgentChatEventEnvelope[] = [];
+    const { service } = createService({
+      onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+    });
+    const session = await service.createSession({
+      laneId: "lane-1",
+      provider: "claude",
+      model: "sonnet",
+      sessionProfile: "light",
+      surface: "personal",
+      ...(permissionPolicy ? { permissionPolicy } : {}),
+    } as any);
+    await vi.waitFor(() => {
+      expect(claudeSdkCreateSessionCompat).toHaveBeenCalled();
+    });
+    const opts = vi.mocked(claudeSdkCreateSessionCompat).mock.calls.at(-1)?.[0] as {
+      allowedTools?: string[];
+      disallowedTools?: string[];
+      managedSettings?: {
+        allowedMcpServers?: Array<{ serverName: string }>;
+        allowManagedMcpServersOnly?: boolean;
+      };
+      canUseTool?: (
+        tool: string,
+        input: Record<string, unknown>,
+        options: Record<string, unknown>,
+      ) => Promise<Record<string, unknown>>;
+    };
+    return { service, session, opts, events };
+  };
+
+  const callTool = (
+    opts: { canUseTool?: Function },
+    tool: string,
+    input: Record<string, unknown>,
+    toolUseID: string,
+  ) => (opts.canUseTool as Function)(tool, input, {
+    signal: new AbortController().signal,
+    toolUseID,
+  }) as Promise<Record<string, unknown>>;
+
+  it("installs no tool gate on a personal chat that supplied no policy", async () => {
+    // The whole point of gating this on the policy: every SDK chat that exists
+    // today keeps running with no gate, so none of them starts parking turns
+    // on a host that renders no approval card.
+    const { opts } = await openPersonalClaudeSession(undefined, "sdk-policy-absent");
+    expect(opts.canUseTool).toBeUndefined();
+    expect(opts.allowedTools).toBeUndefined();
+    expect(opts.disallowedTools).toBeUndefined();
+  });
+
+  it("translates the policy into Claude's tool lists and wires the gate", async () => {
+    const { opts } = await openPersonalClaudeSession({
+      allowedTools: ["mcp:srv:*", "Read"],
+      deniedTools: ["Bash"],
+      fallback: "ask",
+    }, "sdk-policy-lists");
+    expect(opts.allowedTools).toEqual(["mcp__srv", "Read"]);
+    expect(opts.disallowedTools).toEqual(["Bash"]);
+    expect(typeof opts.canUseTool).toBe("function");
+  });
+
+  it("enforces a deny fallback in the tool lists, not through the prompt", async () => {
+    // The Agent SDK applies these lists itself: a disallowed tool leaves the
+    // model's catalog. `canUseTool` did not fire on the SDK version measured,
+    // so a policy that only wired the prompt would enforce nothing.
+    const { opts } = await openPersonalClaudeSession({
+      allowedTools: ["mcp:srv:*"],
+      fallback: "deny",
+    }, "sdk-policy-deny-enforced");
+
+    // The roster comes from the implementation. Restating it here meant a tool
+    // added to the deny set had to be remembered in three files.
+    for (const tool of CLAUDE_MUTATING_BUILTIN_TOOLS) {
+      expect(opts.disallowedTools).toContain(tool);
+    }
+    // A deny fallback stops the agent changing things; it does not blind it.
+    expect(opts.disallowedTools).not.toContain("Read");
+    expect(opts.disallowedTools).not.toContain("Grep");
+    // Still wired as a second line, in case a future SDK does call back.
+    expect(typeof opts.canUseTool).toBe("function");
+  });
+
+  it("scopes MCP to the servers the policy names under a deny fallback", async () => {
+    const { opts } = await openPersonalClaudeSession({
+      allowedTools: ["mcp:srv:*"],
+      fallback: "deny",
+    }, "sdk-policy-deny-mcp-scope");
+
+    expect(opts.managedSettings?.allowedMcpServers).toEqual([{ serverName: "srv" }]);
+    expect(opts.managedSettings?.allowManagedMcpServersOnly).toBe(true);
+  });
+
+  it("reads autoApproveMcpServers into the same allowlist", async () => {
+    const { opts } = await openPersonalClaudeSession({
+      autoApproveMcpServers: ["srv", "other"],
+      fallback: "deny",
+    }, "sdk-policy-deny-mcp-auto");
+
+    expect(opts.managedSettings?.allowedMcpServers)
+      .toEqual([{ serverName: "srv" }, { serverName: "other" }]);
+  });
+
+  it("leaves the catalog and MCP alone under an ask fallback", async () => {
+    // "ask" still routes through the prompt path, so removing tools up front
+    // would refuse the very work the host asked to be consulted about.
+    const { opts } = await openPersonalClaudeSession({
+      allowedTools: ["mcp:srv:*"],
+      fallback: "ask",
+    }, "sdk-policy-ask-no-additions");
+
+    expect(opts.disallowedTools).toBeUndefined();
+    expect(opts.managedSettings?.allowManagedMcpServersOnly).toBeUndefined();
+    expect(typeof opts.canUseTool).toBe("function");
+  });
+
+  it("names caller MCP servers a deny policy blocks, end to end", async () => {
+    // The report is the only place a host learns that a server it supplied in
+    // the same create call is unreachable. Both fields are set together and it
+    // is easy to set one and forget the other.
+    vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue(
+      claudeSdkSession("sdk-policy-blocked-caller") as any,
+    );
+    const { service } = createService();
+    const session = await service.createSession({
+      laneId: "lane-1",
+      provider: "claude",
+      model: "sonnet",
+      sessionProfile: "light",
+      surface: "personal",
+      mcpServers: {
+        srv: { type: "http", url: "https://example.test/srv" },
+        other: { type: "http", url: "https://example.test/other" },
+      },
+      permissionPolicy: { allowedTools: ["mcp:srv:*"], fallback: "deny" },
+    } as never);
+
+    const summary = await service.getSessionSummary(session.id);
+    expect(summary?.permissionCapability?.level).toBe("enforced");
+    expect(summary?.permissionCapability?.residual)
+      .toContain("caller MCP servers blocked by the policy: other");
+  });
+
+  it("downgrades to best-effort when the policy names one MCP tool", async () => {
+    const { service, session, opts } = await openPersonalClaudeSession({
+      allowedTools: ["mcp:srv:search"],
+      fallback: "deny",
+    }, "sdk-policy-tool-level-mcp");
+
+    // The server is still admitted — that is exactly the hole being reported.
+    expect(opts.managedSettings?.allowedMcpServers).toEqual([{ serverName: "srv" }]);
+    const summary = await service.getSessionSummary(session.id);
+    expect(summary?.permissionCapability?.level).toBe("best-effort");
+    expect(summary?.permissionCapability?.residual)
+      .toContain("individual MCP tool entries admit the whole server");
+  });
+
+  it("reports the capability level per fallback", async () => {
+    const deny = await openPersonalClaudeSession({ fallback: "deny" }, "sdk-policy-cap-deny");
+    await expect(deny.service.getSessionSummary(deny.session.id)).resolves.toMatchObject({
+      permissionCapability: { level: "enforced" },
+    });
+
+    const ask = await openPersonalClaudeSession({ fallback: "ask" }, "sdk-policy-cap-ask");
+    const askSummary = await ask.service.getSessionSummary(ask.session.id);
+    expect(askSummary?.permissionCapability?.level).toBe("best-effort");
+    expect(askSummary?.permissionCapability?.residual).toContain("permissions.defaultMode: auto");
+  });
+
+  it("allows a tool the policy names", async () => {
+    const { opts } = await openPersonalClaudeSession({
+      allowedTools: ["Bash"],
+      fallback: "deny",
+    }, "sdk-policy-allow");
+    await expect(callTool(opts, "Bash", { command: "ls" }, "tool-allow-1"))
+      .resolves.toEqual({ behavior: "allow", updatedInput: { command: "ls" } });
+  });
+
+  it("denies a tool the policy refuses, with the policy's own message", async () => {
+    const { opts, events } = await openPersonalClaudeSession({
+      deniedTools: ["Bash"],
+      fallback: "ask",
+    }, "sdk-policy-deny");
+    await expect(callTool(opts, "Bash", { command: "rm -rf /" }, "tool-deny-1"))
+      .resolves.toEqual({
+        behavior: "deny",
+        message: "Denied by the host permission policy.",
+      });
+    expect(events.some((event) => event.event.type === "approval_request")).toBe(false);
+  });
+
+  it("asks, and the answer releases the tool call", async () => {
+    const { service, session, opts, events } = await openPersonalClaudeSession({
+      fallback: "ask",
+    }, "sdk-policy-ask");
+    const pending = callTool(opts, "Bash", { command: "ls" }, "tool-ask-1");
+
+    await vi.waitFor(() => {
+      expect(events.some((event) => event.event.type === "approval_request")).toBe(true);
+    });
+    const request = events.find((event) => event.event.type === "approval_request")?.event as
+      { itemId: string; kind: string };
+    expect(request.kind).toBe("command");
+
+    // The same request a reloaded host would ask for to redraw its card.
+    expect(service.listPendingInputs({ sessionId: session.id }).requests.map((r) => r.itemId))
+      .toContain(request.itemId);
+
+    await service.approveToolUse({
+      sessionId: session.id,
+      itemId: request.itemId,
+      decision: "accept",
+    });
+    await expect(pending).resolves.toMatchObject({ behavior: "allow" });
+    expect(service.listPendingInputs({ sessionId: session.id }).requests).toEqual([]);
+  });
+
+  it("does not prompt for Claude's read-only built-ins under fallback ask", async () => {
+    // A card for every file read teaches a user to click Allow without
+    // reading it, which costs more than the cards buy. The check is literal
+    // set membership, so this is not the old substring heuristic returning.
+    const { opts, events } = await openPersonalClaudeSession({
+      fallback: "ask",
+    }, "sdk-policy-read-only");
+    // Every member of the implementation's own set, so a tool added to it is
+    // covered here without a second edit.
+    for (const tool of CLAUDE_READ_ONLY_TOOLS) {
+      await expect(callTool(opts, tool, { file_path: "README.md" }, `tool-ro-${tool}`))
+        .resolves.toEqual({ behavior: "allow", updatedInput: { file_path: "README.md" } });
+    }
+    expect(events.some((event) => event.event.type === "approval_request")).toBe(false);
+  });
+
+  it("prompts for a mutating built-in under fallback ask", async () => {
+    const { opts, events } = await openPersonalClaudeSession({
+      fallback: "ask",
+    }, "sdk-policy-mutating-builtin");
+    void callTool(opts, "Bash", { command: "ls" }, "tool-mutating-1");
+    await vi.waitFor(() => {
+      expect(events.some((event) => event.event.type === "approval_request")).toBe(true);
+    });
+  });
+
+  it("never exempts a host tool by name, however read-only it sounds", async () => {
+    // `mcp__srv__read` is not Claude's `Read`. Its risk is not knowable from
+    // its name, so it follows the fallback like any other host tool.
+    const { opts, events } = await openPersonalClaudeSession({
+      fallback: "ask",
+    }, "sdk-policy-mcp-named-read");
+    void callTool(opts, "mcp__srv__read", {}, "tool-mcp-read-1");
+    await vi.waitFor(() => {
+      expect(events.some((event) => event.event.type === "approval_request")).toBe(true);
+    });
+  });
+
+  it("denies a read-only built-in under fallback deny", async () => {
+    // The exemption belongs to "ask". `fallback: "deny"` is the no-hang mode
+    // and means what it says: nothing unmatched runs.
+    const { opts } = await openPersonalClaudeSession({
+      fallback: "deny",
+    }, "sdk-policy-read-only-denied");
+    await expect(callTool(opts, "Read", { file_path: "README.md" }, "tool-ro-denied-1"))
+      .resolves.toEqual({
+        behavior: "deny",
+        message: "Denied by the host permission policy.",
+      });
+  });
+
+  it("lets the policy deny a question tool that would otherwise auto-allow itself", async () => {
+    // `AskUserQuestion` and ADE's `ask_user` both auto-allow themselves, each
+    // because it carries its own answer UI. That is right, and it must still
+    // lose to a rule the host wrote: an auto-allow that outranked the policy
+    // would decline to apply `deniedTools`.
+    const { opts, events } = await openPersonalClaudeSession({
+      deniedTools: ["AskUserQuestion", "ask_user"],
+      fallback: "ask",
+    }, "sdk-policy-deny-ask-user");
+
+    for (const tool of ["AskUserQuestion", "ask_user"]) {
+      await expect(callTool(
+        opts,
+        tool,
+        { questions: [{ question: "Which key?", header: "Key", options: ["C", "G"] }] },
+        `tool-deny-${tool}`,
+      )).resolves.toEqual({
+        behavior: "deny",
+        message: "Denied by the host permission policy.",
+      });
+    }
+    expect(events.some((event) => event.event.type === "approval_request")).toBe(false);
+  });
+
+  it("allows every tool of a server named by a wildcard, without prompting", async () => {
+    const { opts, events } = await openPersonalClaudeSession({
+      allowedTools: ["mcp:srv:*"],
+      fallback: "ask",
+    }, "sdk-policy-mcp-wildcard");
+    // The five names issue 1208 part C calls out. Under the old substring gate
+    // three of them prompted because of "edit", "write", and "agent". The list
+    // is shared with `permissionPolicy.test.ts`, which asserts the same names
+    // against the policy evaluator one layer down.
+    for (const tool of HOST_TOOL_APPROVAL_NAMES) {
+      await expect(callTool(opts, tool, {}, `tool-${tool}`))
+        .resolves.toEqual({ behavior: "allow", updatedInput: {} });
+    }
+    expect(events.some((event) => event.event.type === "approval_request")).toBe(false);
+  });
+
+  it("never prompts under fallback deny", async () => {
+    const { opts, events } = await openPersonalClaudeSession({
+      fallback: "deny",
+    }, "sdk-policy-fallback-deny");
+    for (const tool of ["Bash", "Write", "mcp__srv__list_agents"]) {
+      await expect(callTool(opts, tool, {}, `tool-fallback-${tool}`))
+        .resolves.toEqual({
+          behavior: "deny",
+          message: "Denied by the host permission policy.",
+        });
+    }
+    expect(events.some((event) => event.event.type === "approval_request")).toBe(false);
+  });
+
+  it("auto-approves a write inside sandboxRoot and asks for one outside it", async () => {
+    const { opts, events } = await openPersonalClaudeSession({
+      sandboxRoot: tmpRoot,
+      fallback: "ask",
+    }, "sdk-policy-sandbox-root");
+
+    await expect(callTool(
+      opts,
+      "Write",
+      { file_path: path.join(tmpRoot, "notes.txt") },
+      "tool-inside-1",
+    )).resolves.toMatchObject({ behavior: "allow" });
+    expect(events.some((event) => event.event.type === "approval_request")).toBe(false);
+
+    void callTool(opts, "Write", { file_path: path.join(os.tmpdir(), "outside-of-root.txt") }, "tool-outside-1");
+    await vi.waitFor(() => {
+      expect(events.some((event) => event.event.type === "approval_request")).toBe(true);
+    });
+  });
+
+  it("reports the capability and the policy itself on the summary", async () => {
+    const { service, session } = await openPersonalClaudeSession({
+      fallback: "deny",
+    }, "sdk-policy-capability");
+    const summary = await service.getSessionSummary(session.id);
+    expect(summary?.permissionCapability?.level).toBe("enforced");
+    expect(summary?.permissionPolicy).toEqual({ fallback: "deny" });
+  });
+
+  it("re-derives the capability when the session switches provider", async () => {
+    // The title of the test above used to promise this and never did it. The
+    // report is a claim about what THIS provider enforces, so a switch must
+    // recompute it or the session keeps advertising Claude's answer on Codex.
+    const { service, session } = await openPersonalClaudeSession({
+      fallback: "deny",
+    }, "sdk-policy-capability-switch");
+    await expect(service.getSessionSummary(session.id)).resolves.toMatchObject({
+      permissionCapability: { level: "enforced" },
+    });
+
+    await service.updateSession({ sessionId: session.id, modelId: "gpt-5.4" as never });
+
+    const after = await service.getSessionSummary(session.id);
+    expect(after?.provider).toBe("codex");
+    // Codex's row is best-effort whatever the fallback: it raises no approval
+    // for a plain MCP call, so the tool fields cannot gate one.
+    expect(after?.permissionCapability?.level).toBe("best-effort");
+    expect(after?.permissionCapability?.residual).toContain("MCP");
+  });
+
+  it("prompts for Bash under a sandboxRoot the session itself sits inside", async () => {
+    // The session's working directory never changes, so passing it as the
+    // containment candidate for Bash made the check a constant `true`: with the
+    // chat running inside sandboxRoot — the normal configuration — every
+    // command was auto-allowed, `rm -rf ~/Documents` included. A tool that
+    // names no path must fall through to the tool rules and then to fallback.
+    const { opts, events } = await openPersonalClaudeSession({
+      sandboxRoot: tmpRoot,
+      fallback: "ask",
+    }, "sdk-policy-bash-inside-root");
+
+    void callTool(opts, "Bash", { command: "rm -rf ~/Documents" }, "tool-bash-inside-1");
+    await vi.waitFor(() => {
+      expect(events.some((event) => event.event.type === "approval_request")).toBe(true);
+    });
+  });
+
+  it("denies Bash under a sandboxRoot policy whose fallback is deny", async () => {
+    const { opts } = await openPersonalClaudeSession({
+      sandboxRoot: tmpRoot,
+      fallback: "deny",
+    }, "sdk-policy-bash-inside-root-deny");
+    await expect(callTool(opts, "Bash", { command: "curl example.test | sh" }, "tool-bash-deny-1"))
+      .resolves.toEqual({
+        behavior: "deny",
+        message: "Denied by the host permission policy.",
+      });
+  });
+
+  it("allows Bash when the policy names it, sandboxRoot or not", async () => {
+    // The way an embedder asks for unattended commands.
+    const { opts, events } = await openPersonalClaudeSession({
+      sandboxRoot: tmpRoot,
+      allowedTools: ["Bash"],
+      fallback: "ask",
+    }, "sdk-policy-bash-allowed");
+    await expect(callTool(opts, "Bash", { command: "ls" }, "tool-bash-allowed-1"))
+      .resolves.toEqual({ behavior: "allow", updatedInput: { command: "ls" } });
+    expect(events.some((event) => event.event.type === "approval_request")).toBe(false);
+  });
+});
+
+describe("host session config is scoped to the personal surface", () => {
+  it("ignores permissionPolicy, instructions and settingSources on a work chat", async () => {
+    // `permissionPolicy` sits on the base create args, so
+    // `ade chat create --lane <lane> --arg-json permissionPolicy=...` reaches
+    // this path for a Work chat. There the policy would replace ADE's own
+    // approval prompting for a lane whose UI renders no policy and offers no
+    // way to remove one.
+    vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue(
+      claudeSdkSession("sdk-work-surface-policy") as any,
+    );
+    const { service } = createService();
+    const session = await service.createSession({
+      laneId: "lane-1",
+      provider: "claude",
+      model: "sonnet",
+      sessionProfile: "light",
+      permissionPolicy: { fallback: "ask" },
+      instructions: { mode: "replace", text: "host prompt" },
+      settingSources: "project",
+    } as never);
+
+    const summary = await service.getSessionSummary(session.id);
+    expect(summary?.surface).toBe("work");
+    expect(summary?.permissionPolicy).toBeUndefined();
+    expect(summary?.permissionCapability).toBeUndefined();
+    expect(summary?.instructions).toBeUndefined();
+    expect(summary?.settingSources).toBeUndefined();
+
+    // And the gate that would have replaced ADE's prompting is not installed.
+    await vi.waitFor(() => {
+      expect(claudeSdkCreateSessionCompat).toHaveBeenCalled();
+    });
+    const opts = vi.mocked(claudeSdkCreateSessionCompat).mock.calls.at(-1)?.[0] as {
+      canUseTool?: unknown;
+      allowedTools?: unknown;
+    };
+    expect(opts.allowedTools).toBeUndefined();
+  });
+
+  it("still honors all three on a personal chat", async () => {
+    vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue(
+      claudeSdkSession("sdk-personal-surface-policy") as any,
+    );
+    const { service } = createService();
+    const session = await service.createSession({
+      laneId: "lane-1",
+      provider: "claude",
+      model: "sonnet",
+      sessionProfile: "light",
+      surface: "personal",
+      permissionPolicy: { fallback: "ask" },
+      instructions: { mode: "replace", text: "host prompt" },
+      settingSources: "project",
+    } as never);
+
+    const summary = await service.getSessionSummary(session.id);
+    expect(summary?.surface).toBe("personal");
+    expect(summary?.permissionPolicy).toEqual({ fallback: "ask" });
+    expect(summary?.permissionCapability?.level).toBe("best-effort");
+    expect(summary?.instructions).toEqual({ mode: "replace", text: "host prompt" });
+    expect(summary?.settingSources).toBe("project");
+  });
+});
+
+describe("Codex approvals under a host permission policy", () => {
+  // `tmpRoot` is assigned per test, so this is read at call time, not at
+  // collection time.
+  const outsideOfRoot = (): string =>
+    path.join(path.parse(tmpRoot).root, "definitely-outside-the-sandbox-root");
+
+  const openCodexSession = async (permissionPolicy: Record<string, unknown>) => {
+    const events: AgentChatEventEnvelope[] = [];
+    const { service } = createService({
+      onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+    });
+    const session = await service.createSession({
+      laneId: "lane-1",
+      provider: "codex",
+      model: "gpt-5.4",
+      sessionProfile: "light",
+      surface: "personal",
+      permissionPolicy,
+    } as any);
+    await service.sendMessage({
+      sessionId: session.id,
+      text: "Do the work.",
+    }, { awaitDispatch: true });
+    await vi.waitFor(() => {
+      expect(mockState.codexRequestPayloads.some((payload) => payload.method === "turn/start")).toBe(true);
+    });
+    return { service, session, events };
+  };
+
+  it("maps a policy onto the approval-raising Codex dial", async () => {
+    const { service, session } = await openCodexSession({ fallback: "ask" });
+    const summary = await service.getSessionSummary(session.id);
+    // `never` + `danger-full-access` would run wide and never raise a request
+    // for the policy to be applied to.
+    expect(summary?.codexApprovalPolicy).toBe("on-request");
+    expect(summary?.codexSandbox).toBe("workspace-write");
+    expect(summary?.permissionCapability?.level).toBe("best-effort");
+    expect(summary?.permissionCapability?.residual).toContain("MCP");
+  });
+
+  it("auto-accepts a command inside sandboxRoot", async () => {
+    const { events } = await openCodexSession({ sandboxRoot: tmpRoot, fallback: "ask" });
+    mockState.emitCodexPayload({
+      jsonrpc: "2.0",
+      id: "cmd-inside-1",
+      method: "item/commandExecution/requestApproval",
+      params: { itemId: "cmd-inside-1", turnId: "turn-1", command: "ls", cwd: tmpRoot },
+    });
+
+    await vi.waitFor(() => {
+      expect(mockState.codexRequestPayloads.find((payload) => payload.id === "cmd-inside-1"))
+        .toMatchObject({ result: { decision: "accept" } });
+    });
+    expect(events.some((event) =>
+      event.event.type === "approval_request" && event.event.itemId === "cmd-inside-1")).toBe(false);
+  });
+
+  it("parks a command outside sandboxRoot when the fallback is ask", async () => {
+    const { service, session, events } = await openCodexSession({
+      sandboxRoot: tmpRoot,
+      fallback: "ask",
+    });
+    mockState.emitCodexPayload({
+      jsonrpc: "2.0",
+      id: "cmd-outside-ask-1",
+      method: "item/commandExecution/requestApproval",
+      params: {
+        itemId: "cmd-outside-ask-1",
+        turnId: "turn-1",
+        command: "ls",
+        cwd: outsideOfRoot(),
+      },
+    });
+
+    await vi.waitFor(() => {
+      expect(events.some((event) =>
+        event.event.type === "approval_request"
+        && event.event.itemId === "cmd-outside-ask-1")).toBe(true);
+    });
+    expect(mockState.codexRequestPayloads.find((payload) => payload.id === "cmd-outside-ask-1"))
+      .toBeUndefined();
+    expect(service.listPendingInputs({ sessionId: session.id }).requests.map((r) => r.itemId))
+      .toContain("cmd-outside-ask-1");
+
+    await service.respondToInput({
+      sessionId: session.id,
+      itemId: "cmd-outside-ask-1",
+      decision: "decline",
+    });
+  });
+
+  it("declines a command outside sandboxRoot when the fallback is deny, and records it", async () => {
+    const { events } = await openCodexSession({ sandboxRoot: tmpRoot, fallback: "deny" });
+    mockState.emitCodexPayload({
+      jsonrpc: "2.0",
+      id: "cmd-outside-deny-1",
+      method: "item/commandExecution/requestApproval",
+      params: {
+        itemId: "cmd-outside-deny-1",
+        turnId: "turn-1",
+        command: "ls",
+        cwd: outsideOfRoot(),
+      },
+    });
+
+    // Answered immediately: this is the case that used to park the turn with
+    // nobody able to release it.
+    await vi.waitFor(() => {
+      expect(mockState.codexRequestPayloads.find((payload) => payload.id === "cmd-outside-deny-1"))
+        .toMatchObject({ result: { decision: "decline" } });
+    });
+    await vi.waitFor(() => {
+      expect(events.some((event) =>
+        event.event.type === "approval_request"
+        && event.event.itemId === "cmd-outside-deny-1")).toBe(true);
+      expect(events.some((event) =>
+        event.event.type === "pending_input_resolved"
+        && event.event.itemId === "cmd-outside-deny-1"
+        && event.event.resolution === "declined")).toBe(true);
+    });
+  });
+
+  it("parks a rootless ask policy's command instead of auto-accepting it", async () => {
+    // The presence of a policy object used to be the whole auto-accept test, so
+    // `{ fallback: "ask" }` — the documented way to say "ask me about
+    // everything" — auto-approved every command in the session's own working
+    // directory and raised no approval request at all. A policy that named no
+    // root approved no directory.
+    const { service, session, events } = await openCodexSession({ fallback: "ask" });
+    mockState.emitCodexPayload({
+      jsonrpc: "2.0",
+      id: "cmd-rootless-ask-1",
+      method: "item/commandExecution/requestApproval",
+      params: {
+        itemId: "cmd-rootless-ask-1",
+        turnId: "turn-1",
+        command: "rm -rf ~/Documents",
+        cwd: tmpRoot,
+      },
+    });
+
+    await vi.waitFor(() => {
+      expect(events.some((event) =>
+        event.event.type === "approval_request"
+        && event.event.itemId === "cmd-rootless-ask-1")).toBe(true);
+    });
+    expect(mockState.codexRequestPayloads.find((payload) => payload.id === "cmd-rootless-ask-1"))
+      .toBeUndefined();
+
+    await service.respondToInput({
+      sessionId: session.id,
+      itemId: "cmd-rootless-ask-1",
+      decision: "decline",
+    });
+  });
+
+  it("declines a rootless deny policy's command instead of auto-accepting it", async () => {
+    const { events } = await openCodexSession({ fallback: "deny" });
+    mockState.emitCodexPayload({
+      jsonrpc: "2.0",
+      id: "cmd-rootless-deny-1",
+      method: "item/commandExecution/requestApproval",
+      params: {
+        itemId: "cmd-rootless-deny-1",
+        turnId: "turn-1",
+        command: "rm -rf ~/Documents",
+        cwd: tmpRoot,
+      },
+    });
+
+    await vi.waitFor(() => {
+      expect(mockState.codexRequestPayloads.find((payload) => payload.id === "cmd-rootless-deny-1"))
+        .toMatchObject({ result: { decision: "decline" } });
+    });
+    await vi.waitFor(() => {
+      expect(events.some((event) =>
+        event.event.type === "pending_input_resolved"
+        && event.event.itemId === "cmd-rootless-deny-1"
+        && event.event.resolution === "declined")).toBe(true);
+    });
+  });
+
+  it("parks a rootless ask policy's file change instead of auto-accepting it", async () => {
+    const { service, session, events } = await openCodexSession({ fallback: "ask" });
+    mockState.emitCodexPayload({
+      jsonrpc: "2.0",
+      id: "file-rootless-ask-1",
+      method: "item/fileChange/requestApproval",
+      params: {
+        itemId: "file-rootless-ask-1",
+        turnId: "turn-1",
+        reason: "Write a file",
+        grantRoot: tmpRoot,
+      },
+    });
+
+    await vi.waitFor(() => {
+      expect(events.some((event) =>
+        event.event.type === "approval_request"
+        && event.event.itemId === "file-rootless-ask-1")).toBe(true);
+    });
+    expect(mockState.codexRequestPayloads.find((payload) => payload.id === "file-rootless-ask-1"))
+      .toBeUndefined();
+
+    await service.respondToInput({
+      sessionId: session.id,
+      itemId: "file-rootless-ask-1",
+      decision: "decline",
+    });
+  });
+
+  it("declines a permissions request under fallback deny with an empty grant", async () => {
+    const { events } = await openCodexSession({ sandboxRoot: tmpRoot, fallback: "deny" });
+    mockState.emitCodexPayload({
+      jsonrpc: "2.0",
+      id: "perm-deny-1",
+      method: "item/permissions/requestApproval",
+      params: {
+        itemId: "perm-deny-1",
+        turnId: "turn-1",
+        cwd: outsideOfRoot(),
+        reason: "Allow write access",
+        permissions: { fileSystem: { write: [path.join(outsideOfRoot(), "x.txt")] } },
+      },
+    });
+
+    await vi.waitFor(() => {
+      expect(mockState.codexRequestPayloads.find((payload) => payload.id === "perm-deny-1"))
+        .toMatchObject({ result: { permissions: {}, scope: "turn" } });
+    });
+    await vi.waitFor(() => {
+      expect(events.some((event) =>
+        event.event.type === "pending_input_resolved"
+        && event.event.itemId === "perm-deny-1"
+        && event.event.resolution === "declined")).toBe(true);
+    });
+  });
+});

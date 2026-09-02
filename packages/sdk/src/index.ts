@@ -50,14 +50,38 @@ export type {
 } from "./thread.js";
 export { AdeError, type AdeErrorCode } from "./errors.js";
 export { SDK_VERSION } from "./version.js";
-export type { PermissionPreset } from "./permissions.js";
+export type { PermissionPreset, ThreadPermissionPolicy } from "./permissions.js";
 export { SUPPORTED_PROVIDERS } from "./permissions.js";
+
+export { APPROVAL_DECISIONS, isApprovalShaped } from "./approvals.js";
+export type { ApprovalDecision, ApprovalRequest } from "./approvals.js";
+
+export type {
+  HostConfigCapability,
+  InstructionsCapability,
+  PermissionCapability,
+  SettingSourcesCapability,
+  ThreadInstructions,
+} from "./hostConfig.js";
 
 export {
   resolveRuntimeSocketPath,
   isNamedPipePath,
   endpointComparisonKey,
 } from "./socketPath.js";
+
+export {
+  resolveBundledRuntime,
+  bundledRuntimePackageName,
+  type BundledRuntime,
+  type ResolveBundledRuntimeOptions,
+} from "./bundledRuntime.js";
+export {
+  probeRuntimeSignature,
+  type RuntimeSignature,
+  type ProbeRuntimeSignatureOptions,
+} from "./runtimeSignature.js";
+export type { ResolvedBinarySource } from "./binary.js";
 
 export {
   assetUrl,
@@ -76,14 +100,24 @@ export type {
   AgentChatEvent,
   AgentChatEventEnvelope,
   AgentChatFileRef,
+  AgentChatHostConfigLevel,
+  AgentChatInstructions,
   AgentChatSessionStatus,
   AgentChatSessionSummary,
+  AgentChatSettingSources,
   DoctorReport,
   KnownAgentChatEvent,
   McpCapabilityReport,
   McpServerConfig,
   ModelCatalogEntry,
+  PendingInputKind,
+  PendingInputOption,
+  PendingInputQuestion,
+  PendingInputRequest,
+  PendingInputSource,
   ProviderStatus,
+  ProviderStatusProbeRecord,
+  ProviderStatusRpcResult,
   ThreadSummary,
   Unsubscribe,
 } from "./types.js";

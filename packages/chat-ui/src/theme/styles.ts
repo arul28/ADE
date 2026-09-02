@@ -242,6 +242,54 @@ ${themeToCss(defaultTheme, ".adechat-root")}
   color: var(--adechat-muted);
 }
 
+/* Approvals -------------------------------------------------------------- */
+
+.adechat-approval {
+  align-self: stretch;
+  display: flex;
+  flex-direction: column;
+  gap: calc(var(--adechat-space) * 0.75);
+  padding: calc(var(--adechat-space) * 1.25);
+  border: 1px solid var(--adechat-border-strong);
+  border-radius: var(--adechat-radius);
+  background: var(--adechat-bg-subtle);
+}
+.adechat-approval[data-state="pending"] { border-color: var(--adechat-accent); }
+.adechat-approval[data-state="rejected"],
+.adechat-approval[data-state="cancelled"] { border-color: var(--adechat-border); }
+.adechat-approval[data-state="expired"] { border-color: var(--adechat-border); opacity: 0.75; }
+.adechat-approval-head {
+  display: flex;
+  align-items: baseline;
+  gap: calc(var(--adechat-space) * 0.75);
+}
+.adechat-approval-title { font-weight: 600; flex: 1 1 auto; }
+.adechat-approval-settled { font-size: 0.85em; color: var(--adechat-muted); }
+.adechat-approval-command {
+  margin: 0;
+  padding: calc(var(--adechat-space) * 0.75) calc(var(--adechat-space) * 1);
+  border-radius: var(--adechat-radius-sm);
+  background: var(--adechat-bg);
+  border: 1px solid var(--adechat-border);
+  font-family: var(--adechat-font-mono);
+  font-size: 0.85em;
+  white-space: pre-wrap;
+  overflow-x: auto;
+}
+.adechat-approval-path { margin: 0; font-family: var(--adechat-font-mono); font-size: 0.85em; }
+.adechat-approval-note { margin: 0; font-size: 0.88em; color: var(--adechat-muted); }
+.adechat-approval-error { margin: 0; font-size: 0.88em; color: var(--adechat-danger); }
+.adechat-approval-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: calc(var(--adechat-space) * 0.75);
+}
+/* The card never takes focus, so reaching it by keyboard has to be visible. */
+.adechat-approval-actions .adechat-button:focus-visible {
+  outline: 2px solid var(--adechat-accent);
+  outline-offset: 2px;
+}
+
 /* Live activity ---------------------------------------------------------- */
 
 .adechat-activity {
@@ -460,6 +508,21 @@ ${themeToCss(defaultTheme, ".adechat-root")}
 .adechat-providercard-name { font-weight: 600; flex: 1 1 auto; }
 .adechat-providercard-state { font-size: 0.85em; color: var(--adechat-muted); }
 .adechat-providercard-detail { font-size: 0.88em; color: var(--adechat-muted); margin: 0; }
+.adechat-providercard-probe {
+  display: flex;
+  align-items: baseline;
+  gap: calc(var(--adechat-space) * 0.75);
+  margin: 0;
+  font-size: 0.82em;
+  color: var(--adechat-muted);
+  min-width: 0;
+}
+.adechat-providercard-probe code {
+  font-family: var(--adechat-font-mono);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .adechat-command {
   display: flex;
   align-items: center;

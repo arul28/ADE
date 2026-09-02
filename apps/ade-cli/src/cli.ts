@@ -17465,6 +17465,7 @@ async function runServe(
     {
       createMultiProjectRpcRequestHandler,
       createPersonalChatScope,
+      createProviderStatusService,
       readMachineRuntimeActivitySummary,
     },
     { createSharedSyncListener },
@@ -17581,6 +17582,10 @@ async function runServe(
   const personalChatScope = createPersonalChatScope(
     runtimeProfile ? { runtimeProfile } : undefined,
   );
+  // Both profiles get it. An embedded runtime is exactly the case that needs
+  // it most: the embedder's first screen asks "which CLIs do you have", and
+  // without this it would have to write that detection itself.
+  const providerStatus = createProviderStatusService();
   let preferredSyncProjectId: string | null = null;
   const preferredSyncProjectRoot = process.env.ADE_PROJECT_ROOT?.trim();
   if (preferredSyncProjectRoot) {
@@ -18155,6 +18160,7 @@ async function runServe(
       projectRegistry,
       scopeRegistry,
       personalChatScope,
+      providerStatus,
       productAnalyticsService: brainProductAnalytics,
       accountAuthService: brainAccountAuthService,
       getAccountDirectoryHealth,

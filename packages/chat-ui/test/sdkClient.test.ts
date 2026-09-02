@@ -7,10 +7,11 @@ import {
   threadUsageFromEnvelope,
   type SdkLikeChatClient,
   type SdkLikeThread,
-  type SdkProviderStatus,
+  type SdkProviderStatusRecord,
 } from "../src/adapters/sdkClient";
 import type { AdeChatClient } from "@ade-dev/sdk";
-import type { AgentChatEventEnvelope, Unsubscribe } from "../src/sdkTypes";
+import type { AdeIpcClient } from "@ade-dev/sdk/electron/renderer";
+import type { AgentChatEventEnvelope, ApprovalRequest, Unsubscribe } from "../src/sdkTypes";
 
 /**
  * The envelopes below are copied from a real ADE transcript
@@ -25,7 +26,12 @@ function envelope(event: Record<string, unknown>): AgentChatEventEnvelope {
   };
 }
 
-const sdkStatuses: Record<string, SdkProviderStatus> = {
+/**
+ * A 0.1.x-shaped record: no probe fields at all. The adapter still has to
+ * produce a usable card from it, because a proxy or an older client sends
+ * exactly this.
+ */
+const sdkStatuses: Record<string, SdkProviderStatusRecord> = {
   claude: {
     provider: "claude",
     displayName: "Claude",
@@ -112,7 +118,7 @@ describe("threadUsageFromEnvelope", () => {
 });
 
 describe("providerStatusesFromSdk", () => {
-  it("keys off modelCount for installed, never off authenticated", () => {
+  it("falls back to modelCount for installed, never to authenticated", () => {
     const [claude, codex, droid] = providerStatusesFromSdk(sdkStatuses);
     expect(claude).toMatchObject({ id: "claude", installed: true, authenticated: true });
     expect(claude?.detail).toBeUndefined();
@@ -130,6 +136,118 @@ describe("providerStatusesFromSdk", () => {
     expect(statuses.map((entry) => entry.id)).toEqual(["codex", "claude"]);
     expect(statuses[0]?.loginCommand).toBe("codex login");
     expect(statuses[1]?.loginCommand).toBeUndefined();
+  });
+
+  /**
+   * The point of the 0.2 probe: a record that says where the binary is and what
+   * version it is must reach the card intact, and `installed` must be the
+   * runtime's answer rather than a count of catalog rows. A provider with a
+   * binary but no models used to render as "not installed" and send the user to
+   * an install command they had already run.
+   */
+  it("uses the probed fields when the runtime supplies them", () => {
+    const [claude] = providerStatusesFromSdk({
+      claude: {
+        provider: "claude",
+        displayName: "Claude Code",
+        installed: true,
+        binaryPath: "/opt/homebrew/bin/claude",
+        version: "2.4.1 (Claude Code)",
+        authenticated: true,
+        installCommand: "npm i -g @anthropic-ai/claude-code",
+        loginCommand: "claude setup-token",
+        docsUrl: "https://docs.claude.com/claude-code",
+        available: true,
+        requiresConfiguration: false,
+        // Zero catalog rows, and still installed: the old derivation would have
+        // called this provider missing.
+        modelCount: 0,
+        stale: false,
+        source: "probed",
+        checkedAt: "2026-09-02T04:00:00.000Z",
+      },
+    });
+    expect(claude).toMatchObject({
+      id: "claude",
+      installed: true,
+      binaryPath: "/opt/homebrew/bin/claude",
+      version: "2.4.1 (Claude Code)",
+      source: "probed",
+      checkedAt: "2026-09-02T04:00:00.000Z",
+      installCommand: "npm i -g @anthropic-ai/claude-code",
+      loginCommand: "claude setup-token",
+      docsUrl: "https://docs.claude.com/claude-code",
+    });
+  });
+
+  it("marks a record with no probe fields as derived", () => {
+    const [claude] = providerStatusesFromSdk(sdkStatuses);
+    // `source` is what lets the card say "Not detected" rather than claiming a
+    // filesystem fact nobody established.
+    expect(claude?.source).toBe("derived");
+    expect(claude?.binaryPath).toBeUndefined();
+    expect(claude?.version).toBeUndefined();
+  });
+
+  it("keeps a probed record's own detail over the generic ladder", () => {
+    const [cursor] = providerStatusesFromSdk({
+      cursor: {
+        provider: "cursor",
+        displayName: "Cursor",
+        installed: false,
+        binaryPath: null,
+        version: null,
+        authenticated: false,
+        installCommand: null,
+        loginCommand: null,
+        docsUrl: null,
+        available: false,
+        requiresConfiguration: false,
+        modelCount: 0,
+        stale: false,
+        source: "probed",
+        checkedAt: "2026-09-02T04:00:00.000Z",
+        detail: "cursor is a Node package, not a CLI.",
+      },
+    });
+    expect(cursor?.detail).toBe("cursor is a Node package, not a CLI.");
+  });
+
+  /**
+   * `commandHints` predates the probe and was the only source of these strings.
+   * It now overrides a runtime that supplies its own, so a host that set them
+   * in 0.1.x sees the exact copy it had rather than ADE's wording appearing
+   * underneath it.
+   */
+  it("lets commandHints override what the runtime reported", () => {
+    const probed: Record<string, SdkProviderStatusRecord> = {
+      codex: {
+        provider: "codex",
+        displayName: "Codex",
+        installed: true,
+        binaryPath: "/usr/local/bin/codex",
+        version: "0.55.0",
+        authenticated: false,
+        installCommand: "npm i -g @openai/codex",
+        loginCommand: "codex login",
+        docsUrl: "https://developers.openai.com/codex",
+        available: false,
+        requiresConfiguration: false,
+        modelCount: 4,
+        stale: false,
+        source: "probed",
+        checkedAt: "2026-09-02T04:00:00.000Z",
+      },
+    };
+    const [withoutHints] = providerStatusesFromSdk(probed);
+    expect(withoutHints?.loginCommand).toBe("codex login");
+
+    const [withHints] = providerStatusesFromSdk(probed, {
+      commandHints: { codex: { loginCommand: "myapp connect codex" } },
+    });
+    expect(withHints?.loginCommand).toBe("myapp connect codex");
+    // Only the field the host overrode changes.
+    expect(withHints?.installCommand).toBe("npm i -g @openai/codex");
   });
 });
 
@@ -161,6 +279,28 @@ describe("the shape adaptSdkClient accepts", () => {
     const real = null as unknown as AdeChatClient;
     const accepted: SdkLikeChatClient = real;
     expect(accepted).toBeNull();
+  });
+
+  /**
+   * The same guard for the Electron bridge, and the reason it is a separate
+   * assertion: `createAdeIpcClient` does not return the SDK's own client. It
+   * returns a proxy built from `window.ade`, and the promise this package makes
+   * to an Electron embedder is that the proxy drops into `adaptSdkClient` with
+   * NO cast. That promise is a type relationship, so nothing but `tsc` can hold
+   * it, and it breaks silently the moment either side moves.
+   *
+   * This resolves `@ade-dev/sdk/electron/renderer` through the package's
+   * `exports` map, so it also proves the subpath is declared and its types
+   * ship. Build the SDK first: the check reads `dist`, not `src`.
+   */
+  it("still fits the Electron IPC bridge client", () => {
+    const bridged = null as unknown as AdeIpcClient;
+    const accepted: SdkLikeChatClient = bridged;
+    // Compiled, never invoked. The assertion is that this call typechecks with
+    // no cast; running it would only prove that a null stand-in has no members.
+    const adapts = () => adaptSdkClient(bridged, { providerFilter: ["claude"] });
+    expect(accepted).toBeNull();
+    expect(typeof adapts).toBe("function");
   });
 });
 
@@ -268,5 +408,60 @@ describe("adaptSdkClient", () => {
     expect(status).toHaveBeenCalledWith({ state: "running", turnId: "t1" });
     expect(usage).toHaveBeenCalledTimes(1);
     expect(usage).toHaveBeenCalledWith({ totalTokens: 12, contextWindow: 100 });
+  });
+
+  /**
+   * The approval surface is optional on both sides. Forwarding it only when the
+   * inner thread has it is what lets `canApprove` be honest: a card over a
+   * client that cannot answer renders read-only instead of offering a button
+   * that would throw.
+   */
+  it("forwards approve and pendingApprovals only when the SDK thread has them", async () => {
+    const { sdk } = fakeSdk();
+    const bare = await adaptSdkClient(sdk).threads.open("main");
+    expect(bare.approve).toBeUndefined();
+    expect(bare.pendingApprovals).toBeUndefined();
+
+    const approve = vi.fn(async () => {});
+    const request: ApprovalRequest = {
+      itemId: "item-1",
+      kind: "command",
+      description: "Run a shell command",
+    };
+    const pendingApprovals = vi.fn(async () => [request]);
+    const { sdk: capable } = fakeSdk();
+    const opened = await adaptSdkClient({
+      ...capable,
+      threads: {
+        open: async (key, opts) => ({
+          ...(await capable.threads.open(key, opts)),
+          approve,
+          pendingApprovals,
+        }),
+      },
+    }).threads.open("main");
+
+    await opened.approve?.("item-1", "accept_always");
+    expect(approve).toHaveBeenCalledWith("item-1", "accept_always");
+    // The optional third argument is omitted rather than passed as undefined:
+    // a proxy that counts arguments must not see one that was never given.
+    expect(approve.mock.calls[0]).toHaveLength(2);
+
+    await opened.approve?.("item-1", "reject", "not now");
+    expect(approve).toHaveBeenLastCalledWith("item-1", "reject", "not now");
+
+    expect(await opened.pendingApprovals?.()).toEqual([request]);
+  });
+
+  it("forwards providers.refresh only when the SDK client can re-probe", async () => {
+    const { sdk } = fakeSdk();
+    expect(adaptSdkClient(sdk).providers.refresh).toBeUndefined();
+
+    const refresh = vi.fn(async () => sdkStatuses);
+    const client = adaptSdkClient({ ...sdk, providers: { ...sdk.providers, refresh } });
+    const statuses = await client.providers.refresh?.();
+    expect(refresh).toHaveBeenCalledTimes(1);
+    // The same mapping as `status()`, not the raw record.
+    expect(statuses?.map((entry) => entry.id)).toEqual(["claude", "codex", "droid"]);
   });
 });

@@ -220,3 +220,5 @@ Validate with `npm --prefix apps/desktop run typecheck` and `npm run test:deskto
 ## License
 
 [AGPL-3.0](LICENSE) — © 2025 Arul Sharma. Free forever. Source on GitHub.
+
+The `@ade-dev/sdk` and `@ade-dev/chat-ui` npm packages are MIT. Shipping an unmodified ADE runtime binary inside a larger work is covered by the [ADE Runtime Embedding Exception](RUNTIME-EMBEDDING-EXCEPTION.md).

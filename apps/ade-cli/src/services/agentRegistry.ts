@@ -1,4 +1,6 @@
 import { CURSOR_CLI_EXECUTABLES } from "../../../desktop/src/shared/providerCliExecutables";
+import { resolveProviderRemediation } from "../../../desktop/src/shared/providerRemediation";
+import type { ShippedProvider } from "../../../desktop/src/shared/providers";
 
 export type AgentCliErrorCategory = "missing" | "unauthenticated";
 
@@ -24,18 +26,61 @@ export type AgentCliErrorMatch = {
   authCommand: string;
 };
 
+function hostPlatform(): NodeJS.Platform {
+  return typeof process !== "undefined" ? process.platform : "linux";
+}
+
 function npmGlobalInstallCommand(packageName: string): string {
-  if (typeof process !== "undefined" && process.platform === "win32") {
+  if (hostPlatform() === "win32") {
     return `npm install -g ${packageName}`;
   }
   return `mkdir -p "$HOME/.npm-global" "$HOME/.local/bin" && NPM_CONFIG_PREFIX="$HOME/.npm-global" npm install -g ${packageName}`;
 }
 
-function cursorInstallCommand(): string {
-  if (typeof process !== "undefined" && process.platform === "win32") {
-    return `powershell.exe -NoProfile -Command "irm 'https://cursor.com/install?win32=true' | iex"`;
+/**
+ * One vendor command, wrapped for the shell this registry's callers use.
+ *
+ * The command text itself belongs to
+ * `apps/desktop/src/shared/providerRemediation.ts`, which is the one table for
+ * every `ShippedProvider`. This function adds only what the call site needs:
+ * a `NPM_CONFIG_PREFIX` prelude so a POSIX `npm install -g` lands somewhere the
+ * user can write, and `powershell.exe -NoProfile -Command` so a Windows
+ * `irm … | iex` line runs from a `cmd.exe` recovery card. No row's command
+ * contains a double quote, so the PowerShell wrapping needs no escaping; keep
+ * it that way when editing the shared table.
+ */
+function shellInstallCommand(displayCommand: string): string {
+  if (hostPlatform() === "win32") {
+    if (displayCommand.startsWith("npm ")) return displayCommand;
+    return `powershell.exe -NoProfile -Command "${displayCommand}"`;
   }
-  return 'mkdir -p "$HOME/.local/bin" && curl https://cursor.com/install -fsS | bash';
+  const NPM_PREFIX = "npm install -g ";
+  if (displayCommand.startsWith(NPM_PREFIX)) {
+    return npmGlobalInstallCommand(displayCommand.slice(NPM_PREFIX.length));
+  }
+  return `mkdir -p "$HOME/.local/bin" && ${displayCommand}`;
+}
+
+/**
+ * The install and login commands for one `ShippedProvider`, from the one table.
+ *
+ * A provider that is not a `ShippedProvider` — Qwen, Kimi, Grok, Copilot — is
+ * an ACP provider and writes its own strings below, because the shared table
+ * deliberately does not carry them.
+ */
+function sharedRemediation(provider: ShippedProvider): {
+  installCommand: string;
+  authCommand: string;
+} {
+  const resolved = resolveProviderRemediation(provider, hostPlatform());
+  return {
+    // Every shipped row has an install command on both platforms today. The
+    // docs URL is the honest fallback if one ever becomes "no installer here".
+    installCommand: resolved.installCommand
+      ? shellInstallCommand(resolved.installCommand)
+      : (resolved.docsUrl ?? ""),
+    authCommand: resolved.loginCommand ?? "",
+  };
 }
 
 export const AGENT_CLI_REGISTRY: AgentCliDescriptor[] = [
@@ -43,8 +88,7 @@ export const AGENT_CLI_REGISTRY: AgentCliDescriptor[] = [
     agent: "claude",
     displayName: "Claude Code",
     binaryNames: ["claude"],
-    installCommand: npmGlobalInstallCommand("@anthropic-ai/claude-code"),
-    authCommand: "claude auth login",
+    ...sharedRemediation("claude"),
     missingErrorPatterns: [
       /\bclaude\b.*\b(command not found|not recognized|not found|enoent)\b/i,
       /\bspawn\s+claude\s+enoent\b/i,
@@ -60,8 +104,7 @@ export const AGENT_CLI_REGISTRY: AgentCliDescriptor[] = [
     agent: "codex",
     displayName: "Codex CLI",
     binaryNames: ["codex"],
-    installCommand: npmGlobalInstallCommand("@openai/codex"),
-    authCommand: "codex login",
+    ...sharedRemediation("codex"),
     missingErrorPatterns: [
       /\bcodex\b.*\b(command not found|not recognized|not found|enoent)\b/i,
       /\bspawn\s+codex\s+enoent\b/i,
@@ -75,8 +118,7 @@ export const AGENT_CLI_REGISTRY: AgentCliDescriptor[] = [
     agent: "opencode",
     displayName: "OpenCode",
     binaryNames: ["opencode"],
-    installCommand: npmGlobalInstallCommand("opencode-ai"),
-    authCommand: "opencode auth login",
+    ...sharedRemediation("opencode"),
     missingErrorPatterns: [
       /\bopencode\b.*\b(command not found|not recognized|not found|enoent)\b/i,
       /\bspawn\s+opencode\s+enoent\b/i,
@@ -89,8 +131,7 @@ export const AGENT_CLI_REGISTRY: AgentCliDescriptor[] = [
     agent: "cursor",
     displayName: "Cursor Agent",
     binaryNames: CURSOR_CLI_EXECUTABLES.recoveryMentionNames,
-    installCommand: cursorInstallCommand(),
-    authCommand: "cursor-agent login",
+    ...sharedRemediation("cursor"),
     authRecoveryRules: CURSOR_CLI_EXECUTABLES.authRecoveryRules,
     missingErrorPatterns: [
       /\bcursor-agent\b.*\b(command not found|not recognized|not found|enoent)\b/i,
@@ -105,8 +146,7 @@ export const AGENT_CLI_REGISTRY: AgentCliDescriptor[] = [
     agent: "pi",
     displayName: "Pi",
     binaryNames: ["pi"],
-    installCommand: npmGlobalInstallCommand("@earendil-works/pi-coding-agent"),
-    authCommand: "pi",
+    ...sharedRemediation("pi"),
     missingErrorPatterns: [
       /\bpi\b.*\b(command not found|not recognized|not found|enoent)\b/i,
       /\bspawn\s+pi\s+enoent\b/i,
@@ -121,11 +161,9 @@ export const AGENT_CLI_REGISTRY: AgentCliDescriptor[] = [
     agent: "droid",
     displayName: "Factory Droid",
     binaryNames: ["droid"],
-    installCommand: npmGlobalInstallCommand("droid"),
-    // Factory exposes sign-in through the interactive CLI's /login flow rather
-    // than a non-interactive `login` subcommand. Launching `droid` is therefore
-    // the portable recovery command on Windows, macOS, and Linux.
-    authCommand: "droid",
+    // Factory's own installer, and its interactive `/login` flow rather than a
+    // non-interactive `login` subcommand — both from the shared table.
+    ...sharedRemediation("droid"),
     missingErrorPatterns: [
       /\bdroid\b.*\b(command not found|not recognized|not found|enoent)\b/i,
       /\bspawn\s+droid\s+enoent\b/i,

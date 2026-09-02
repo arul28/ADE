@@ -710,6 +710,21 @@ Renderer — settings:
   `CollapsibleProviderCard` (readiness tone, version, CLI path, and Open
   `settings.json` / `auth.json` / `models.json` shortcuts) whose body is
   `PiProvidersPanel.tsx`.
+- `apps/desktop/src/shared/providerRemediation.ts` — the single source of the
+  install command, login command, display name, and docs URL for every
+  CLI-backed provider, with the Windows spelling where the vendor ships a
+  different installer. Four surfaces read it and none keeps its own copy: the
+  Settings CLI-tools cards (`settings/providers/cliTools.ts`), the model
+  picker's empty states (`shared/ModelPicker/providerEmptyState.tsx`), the CLI
+  agent registry (`apps/ade-cli/src/services/agentRegistry.ts`), and the
+  `providers.status` RPC that reports the same strings to SDK embedders. Edit a
+  changed vendor command here; copying it into a screen is how the four drift.
+  Each string is the vendor's own documented one, and two are not the obvious
+  guess: Droid has no non-interactive login, so the honest `loginCommand` is the
+  bare `droid`, and Pi signs in through the interactive CLI's `/login`, so its
+  `loginCommand` is the bare `pi`. On Windows, Claude, Cursor and Droid each
+  ship a PowerShell installer rather than the POSIX line; a `curl … | sh` shown
+  to a Windows user is a dead end, not a fix.
 - `apps/desktop/src/renderer/components/settings/PiProvidersPanel.tsx`
   — Pi's half of Settings → Providers: the sign-in flow and the provider
   catalog. Its own module because Pi's catalog is the size of OpenCode's and the

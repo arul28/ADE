@@ -24,9 +24,22 @@ export {
   Transcript,
   ActivityIndicator,
   usePrefersReducedMotion,
+  DEFAULT_APPROVAL_WAITING_LABEL,
   type TranscriptProps,
 } from "./transcript/Transcript";
 export { ToolChip, type ToolChipProps } from "./transcript/ToolChip";
+export {
+  ApprovalCard,
+  approvalRequestFromRow,
+  readApprovalCommand,
+  readApprovalPaths,
+  NO_APPROVE_NOTICE,
+  UNANSWERABLE_NOTICE,
+  type ApprovalCardProps,
+  type ApprovalLabels,
+  type ApprovalRespond,
+  type ApprovalUiOptions,
+} from "./transcript/ApprovalCard";
 export {
   buildTranscriptRows,
   collapseTranscriptEvents,
@@ -36,6 +49,8 @@ export {
   formatStructuredValue,
   eventHasPayload,
   resolveToolName,
+  type ApprovalRow,
+  type ApprovalRowState,
   type ToolChipRow,
   type TranscriptRow,
   type TranscriptRowEvent,
@@ -51,6 +66,8 @@ export { ModelPicker, type ModelPickerProps } from "./models/ModelPicker";
 export {
   ProviderCard,
   ProviderCards,
+  resolveStateCopy,
+  truncateBinaryPath,
   type ProviderCardProps,
   type ProviderCardsProps,
 } from "./models/ProviderCard";
@@ -91,6 +108,7 @@ export {
   type SdkLikeThread,
   type SdkModelCatalogEntry,
   type SdkProviderStatus,
+  type SdkProviderStatusRecord,
 } from "./adapters/sdkClient";
 
 export {
@@ -122,6 +140,9 @@ export type {
   AdeThread,
   AgentChatEvent,
   AgentChatEventEnvelope,
+  ApprovalDecision,
+  ApprovalKind,
+  ApprovalRequest,
   ChatAttachment,
   ModelDescriptor,
   ProviderId,

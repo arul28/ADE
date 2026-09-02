@@ -3,6 +3,7 @@ import type {
   AgentChatMcpServerConfig,
   AgentChatProvider,
 } from "./types/chat";
+import type { ShippedProvider } from "./providers";
 
 /**
  * Caller-injected MCP servers.
@@ -53,14 +54,6 @@ export type CallerMcpSupport = {
    */
   unsupportedTransports?: readonly AgentChatMcpServerConfig["type"][];
 };
-
-/**
- * Every provider ADE ships, named exactly. `AgentChatProvider` widens to
- * `string` for forward compatibility, which would let a new provider be added
- * with no entry below; this narrow alias makes the omission a compile error
- * instead, the same way `McpCapableProvider` does for orchestration.
- */
-export type CallerMcpProvider = "claude" | "codex" | "cursor" | "droid" | "opencode" | "pi";
 
 /**
  * One row per provider, and one accessor onto it. These facts were three
@@ -139,7 +132,7 @@ export const CALLER_MCP_SUPPORT = {
     residual: null,
     delivery: "none — the Pi SDK exposes no MCP configuration",
   },
-} as const satisfies Record<CallerMcpProvider, CallerMcpSupport>;
+} as const satisfies Record<ShippedProvider, CallerMcpSupport>;
 
 /**
  * The only way to read the table. `hasOwnProperty` rather than a bare index:
@@ -151,7 +144,7 @@ export function callerMcpSupport(
   provider: AgentChatProvider | string,
 ): CallerMcpSupport | null {
   if (!Object.prototype.hasOwnProperty.call(CALLER_MCP_SUPPORT, provider)) return null;
-  return CALLER_MCP_SUPPORT[provider as CallerMcpProvider];
+  return CALLER_MCP_SUPPORT[provider as ShippedProvider];
 }
 
 /**
@@ -159,8 +152,8 @@ export function callerMcpSupport(
  * refusal message names these rather than a hand-written list, so adding a
  * provider to the table is the only edit adding it needs.
  */
-export const CALLER_MCP_CAPABLE_PROVIDERS: readonly CallerMcpProvider[] =
-  (Object.keys(CALLER_MCP_SUPPORT) as CallerMcpProvider[])
+export const CALLER_MCP_CAPABLE_PROVIDERS: readonly ShippedProvider[] =
+  (Object.keys(CALLER_MCP_SUPPORT) as ShippedProvider[])
     .filter((name) => CALLER_MCP_SUPPORT[name].level !== "unsupported");
 
 /** True when the provider can receive caller-injected MCP servers at all. */

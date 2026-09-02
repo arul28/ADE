@@ -5,8 +5,10 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createEventBuffer, type BufferedEvent } from "./eventBuffer";
 import {
+  PROVIDER_STATUS_CACHE_TTL_MS,
   createMultiProjectRpcRequestHandler,
   createPersonalChatScope,
+  createProviderStatusService,
   decorateProjectListWithIcons,
   readMachineRuntimeActivitySummary,
 } from "./multiProjectRpcServer";
@@ -27,6 +29,7 @@ import {
 } from "../../desktop/src/shared/types";
 import { RUNTIME_COMPAT_LEVEL } from "../../desktop/src/shared/adeRuntimeProtocol";
 import { PersonalChatScope } from "./services/personalChats/personalChatScope";
+import type { ProviderStatusReport } from "../../desktop/src/main/services/ai/providerStatusProbe";
 import { JsonRpcErrorCode } from "./jsonrpc";
 
 const originalAdeHome = process.env.ADE_HOME;
@@ -1120,6 +1123,56 @@ describe("multi-project RPC server", () => {
       },
     });
     expect(getRuntimeStatus).toHaveBeenCalledTimes(1);
+    handler.dispose();
+  });
+
+  it("answers providers.status on the machine scope and advertises the capability", async () => {
+    const { registry } = createRegistry();
+    // A marker value, not a faithful `ProviderStatusReport`. The RPC server
+    // does not read this object, it hands it back, so a sixteen-field fixture
+    // asserted with `toEqual` proved only that pass-through works while adding
+    // fifteen fields that drift whenever the record type changes. What this
+    // test is actually about is the two `toHaveBeenLastCalledWith` assertions
+    // below: the method reaches the machine scope, and `refresh` is forwarded.
+    const report = { checkedAt: "2026-09-02T00:00:00.000Z", providers: {} } as ProviderStatusReport;
+    const providerStatus = {
+      capabilities: vi.fn(() => ({ status: true as const, cacheTtlMs: PROVIDER_STATUS_CACHE_TTL_MS })),
+      status: vi.fn(async () => report),
+    };
+    const handler = createMultiProjectRpcRequestHandler({
+      serverVersion: "test",
+      projectRegistry: registry,
+      providerStatus,
+    });
+
+    const initialized = await handler({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "ade/initialize",
+      params: {},
+    });
+    expect(initialized).toMatchObject({
+      capabilities: { providers: { status: true, cacheTtlMs: PROVIDER_STATUS_CACHE_TTL_MS } },
+    });
+
+    // No `params.projectId`: the method belongs to the machine scope, so it
+    // must not fall through to the per-project dispatch.
+    await expect(handler({
+      jsonrpc: "2.0",
+      id: 2,
+      method: "providers.status",
+      params: {},
+    })).resolves.toEqual(report);
+    expect(providerStatus.status).toHaveBeenLastCalledWith({ refresh: false });
+
+    await handler({
+      jsonrpc: "2.0",
+      id: 3,
+      method: "providers.status",
+      params: { refresh: true },
+    });
+    expect(providerStatus.status).toHaveBeenLastCalledWith({ refresh: true });
+
     handler.dispose();
   });
 
@@ -3157,5 +3210,22 @@ describe("machine.reportPowerTransition", () => {
     } finally {
       restoreEnvVar("ADE_DEFAULT_ROLE", previousDefaultRole);
     }
+  });
+});
+
+describe("providers.status cache TTL", () => {
+  it("advertises the same TTL the probe module enforces", async () => {
+    // The constant is imported from `providerStatusDetails`, a zero-import
+    // leaf, rather than copied. It is still not imported from the probe: that
+    // would be a value import pulling the whole detector, and every provider
+    // resolver it imports, into the brain's startup — which is what the lazy
+    // `await import` inside `status()` exists to avoid. This pins the leaf and
+    // the probe to one number.
+    const probe = await import("../../desktop/src/main/services/ai/providerStatusProbe");
+    expect(PROVIDER_STATUS_CACHE_TTL_MS).toBe(probe.PROVIDER_STATUS_CACHE_TTL_MS);
+    expect(createProviderStatusService().capabilities()).toEqual({
+      status: true,
+      cacheTtlMs: probe.PROVIDER_STATUS_CACHE_TTL_MS,
+    });
   });
 });

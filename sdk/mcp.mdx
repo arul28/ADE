@@ -24,6 +24,8 @@ Supported shapes:
 
 Supplying `mcpServers` turns on **strict mode** unless you set `loadUserMcpServers: true`. Strict means: withhold the user's and project's own MCP config, and try to load only the servers you supplied.
 
+Both options apply on **create only**. Reopening an existing key re-applies the tool surface that key was created with, and the SDK logs one line when the values passed differ — so do not present "only your tools are loaded" on the strength of a `loadUserMcpServers: false` passed to a resume. See [Threads](/sdk/threads).
+
 <Warning>
 Strict mode is **enforced only on Claude**. Codex, Cursor, Droid, and OpenCode are best-effort with a named residual. Pi has no MCP surface — injected servers are refused rather than opening a tool-less thread. Do not tell your users "only your tools are loaded" without checking `thread.mcpCapability`.
 </Warning>
@@ -78,8 +80,26 @@ await ade.threads.open("ops", {
 
 An explicit `false` is not the same as omitting the field. Omitting both `mcpServers` and `loadUserMcpServers` lets the embedded session profile decide (SDK threads are strict by default).
 
+## A deny policy can hide a server you injected
+
+Injecting a server and gating it are two decisions, and on Claude the second can undo the first. Under `permissions: { …, fallback: "deny" }` the session reaches only the MCP servers the policy names, so a server passed in `mcpServers` and absent from the policy is unreachable. There is no error: the tools are simply never called, and the model reports that it could not do the thing.
+
+```ts
+await ade.threads.open("ops", {
+  provider: "claude",
+  model: "claude-sonnet-4-5",
+  mcpServers: { docs: { type: "http", url: "https://mcp.example/mcp" } },
+  permissions: {
+    allowedTools: ["mcp:docs:*"], // without this, `docs` is unreachable
+    fallback: "deny",
+  },
+});
+```
+
+The SDK logs a line at open time naming any server in this shape, and `permissionCapability.residual` lists them. See [Permissions](/sdk/permissions#what-fallback-deny-does-on-claude).
+
 ## Next
 
-<Card title="Chat UI" href="/sdk/chat-ui" icon="comments" horizontal>
-  Show tool activity to your users as labels, not raw tool names.
+<Card title="Permissions and approvals" href="/sdk/permissions" icon="shield-check" horizontal>
+  Decide which of those tools run without asking, and answer the ones that do.
 </Card>
