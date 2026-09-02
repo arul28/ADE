@@ -10,6 +10,15 @@ import { PLUGIN_FIXTURES, pluginFixtureRows } from "./pluginFixtures";
 import type { PluginCollectionRow } from "../../lib/pluginRuntimeBridge";
 import { VOCAB_LIMITS, bindingKey, vocabListPagesToCeiling, type VocabAction } from "../../../shared/plugins/vocabulary";
 import * as openExternalModule from "../../lib/openExternal";
+import { useAppStore } from "../../state/appStore";
+import type { OpenProjectBinding } from "../../../shared/types";
+
+const LOCAL_BINDING: OpenProjectBinding = {
+  kind: "local",
+  key: "local:/repo",
+  rootPath: "/repo",
+  displayName: "repo",
+};
 
 vi.mock("../graph/WorkspaceGraphPage", () => ({
   WorkspaceGraphPage: ({ active }: { active?: boolean }) =>
@@ -61,6 +70,9 @@ function makeContext(overrides: Partial<VocabRenderContext> = {}): VocabRenderCo
 afterEach(() => {
   cleanup();
   vi.restoreAllMocks();
+  // The two compiled Work panes read the open project's binding to decide which
+  // machine they belong to, so a test that opened one puts it back.
+  useAppStore.setState({ projectBinding: null });
 });
 
 describe("PluginPanelView", () => {
@@ -258,7 +270,7 @@ describe("PluginPanelView", () => {
             bind: { collection: "lanes" },
           }],
         }}
-        context={makeContext()}
+        context={makeContext({ pluginId: "ade-graph" })}
       />,
     );
 
@@ -268,6 +280,7 @@ describe("PluginPanelView", () => {
   });
 
   it("mounts the host Electron Control pane for an electron-control canvas", async () => {
+    useAppStore.setState({ projectBinding: LOCAL_BINDING });
     render(
       <PluginPanelView
         schema={{
@@ -279,7 +292,7 @@ describe("PluginPanelView", () => {
             bind: { collection: "status" },
           }],
         }}
-        context={makeContext()}
+        context={makeContext({ pluginId: "ade-app-control" })}
       />,
     );
 
@@ -288,6 +301,7 @@ describe("PluginPanelView", () => {
   });
 
   it("mounts the host iOS Simulator pane for a simulator canvas", async () => {
+    useAppStore.setState({ projectBinding: LOCAL_BINDING });
     render(
       <PluginPanelView
         schema={{
@@ -299,7 +313,7 @@ describe("PluginPanelView", () => {
             bind: { collection: "status" },
           }],
         }}
-        context={makeContext()}
+        context={makeContext({ pluginId: "ade-ios-sim" })}
       />,
     );
 
@@ -647,6 +661,38 @@ describe("the markdown node", () => {
     const refused = renderMarkdown("![secret](data:image/png;base64,abcd)");
     expect(refused.container.querySelector("img")).toBeNull();
     expect(refused.container.textContent).toContain("secret");
+  });
+
+  /**
+   * The desktop `img-src` allowlist refuses a plugin markdown image, and the
+   * hosted web policy admits it. Neither client may show a broken frame, so the
+   * load failing is a designed state rather than an accident of policy.
+   */
+  it("falls back to an openable link when a markdown image will not load", () => {
+    const openExternal = vi.spyOn(openExternalModule, "openExternalUrl").mockImplementation(() => {});
+    const { container } = renderMarkdown("See ![a diagram](https://ade.dev/x.png) here");
+    const img = container.querySelector("img");
+    expect(img).not.toBeNull();
+
+    fireEvent.error(img!);
+    expect(container.querySelector("img")).toBeNull();
+    expect(container.textContent).toContain("a diagram");
+
+    // The picture's own URL is where the link goes when the document named no
+    // other destination, and it opens outside ADE — which is the one place the
+    // request is not the app's to make.
+    fireEvent.click(container.querySelector("a")!);
+    expect(openExternal).toHaveBeenCalledWith("https://ade.dev/x.png");
+  });
+
+  it("keeps the document's own link when an image inside one will not load", () => {
+    const openExternal = vi.spyOn(openExternalModule, "openExternalUrl").mockImplementation(() => {});
+    const { container } = renderMarkdown("[![shot](https://ade.dev/x.png)](https://ade.dev/page)");
+    fireEvent.error(container.querySelector("img")!);
+    fireEvent.click(container.querySelector("a")!);
+    // The author's destination wins over the picture's, both before and after
+    // the load fails.
+    expect(openExternal).toHaveBeenCalledWith("https://ade.dev/page");
   });
 
   it("draws a GFM pipe table", () => {

@@ -1,6 +1,13 @@
 import { describe, expect, it } from "vitest";
 
-import { allowWorkRailPluginPane, buildWorkSidebarTabItems, isAvailableWorkSidebarTab, remapWorkRailTabAfterPolarity } from "./WorkSidebar";
+import {
+  allowWorkRailPluginPane,
+  buildWorkSidebarTabItems,
+  isAvailableWorkSidebarTab,
+  remapWorkRailTabAfterPolarity,
+  shouldWaitForWorkRailPluginPane,
+} from "./WorkSidebar";
+import { DEFAULT_PLUGIN_ICON } from "../plugins/pluginIcons";
 import { pluginPanelSlotId } from "../plugins/sockets/panelSlotId";
 import type { PluginPanelSlot } from "../plugins/sockets";
 import type { WorkSidebarTab } from "../../state/appStore";
@@ -127,7 +134,10 @@ describe("buildWorkSidebarTabItems", () => {
       pluginId,
       panelId,
       label,
-      icon: (() => null) as PluginPanelSlot["icon"],
+      // The real resolved Phosphor component, not a cast: `pluginIcon` returns
+      // this exact value for an unknown name, so the slot carries what the host
+      // would actually hand `GlowMenu`.
+      icon: DEFAULT_PLUGIN_ICON,
       displayName: label,
     };
   }
@@ -153,5 +163,164 @@ describe("buildWorkSidebarTabItems", () => {
     ]);
     expect(items[3]?.id).toBe(sim.id);
     expect(items[4]?.id).toBe(control.id);
+  });
+});
+
+describe("the install/disable window, when both the compiled tab and the pane exist", () => {
+  function slot(pluginId: string, panelId: string, label: string): PluginPanelSlot {
+    return {
+      id: pluginPanelSlotId(pluginId, panelId),
+      key: `${pluginId}:${panelId}`,
+      pluginId,
+      panelId,
+      label,
+      icon: DEFAULT_PLUGIN_ICON,
+      displayName: label,
+    };
+  }
+
+  /**
+   * The gate reads `installedPlugins` and the panes read the contribution
+   * store, and the two resolve a tick apart on every install and every disable.
+   * In that window the rail was handed a visible compiled tab AND its plugin's
+   * pane, and drew both — under the same label, the same icon and the same
+   * colour, because `workRailItemForPluginPane` deliberately borrows the
+   * compiled ones. Two identical buttons is not a cosmetic defect: neither one
+   * says which is which, and pressing them lands on different tab ids.
+   */
+  it("draws one button, not two, while the compiled tab is still visible", () => {
+    const sim = slot("ade-ios-sim", "main", "iOS Sim");
+    const control = slot("ade-app-control", "main", "Electron Control");
+    const items = buildWorkSidebarTabItems([sim, control], {
+      isRemoteProject: false,
+      supportsIosSimulator: true,
+      // The install half of the window: the compiled tabs have not been taken
+      // away yet, and the contributions have already landed.
+      builtinSurfaceVisible: () => true,
+      pluginPaneIds: new Set([sim.id, control.id]),
+    });
+    expect(items.map((item) => item.label)).toEqual([
+      "Terminal",
+      "Git",
+      "Files",
+      "iOS Sim",
+      "Electron Control",
+      "Browser",
+    ]);
+    // And it is the compiled tab that holds the slot, since that is the id the
+    // rail's own persisted selection names.
+    expect(items[3]?.id).toBe("ios");
+    expect(items[4]?.id).toBe("app-control");
+  });
+
+  it("draws the pane, not the compiled tab, once the gate catches up", () => {
+    const sim = slot("ade-ios-sim", "main", "iOS Sim");
+    const items = buildWorkSidebarTabItems([sim], {
+      isRemoteProject: false,
+      supportsIosSimulator: true,
+      builtinSurfaceVisible: (id) => id !== "ios",
+      pluginPaneIds: new Set([sim.id]),
+    });
+    expect(items.filter((item) => item.label === "iOS Sim")).toHaveLength(1);
+    expect(items[3]?.id).toBe(sim.id);
+  });
+
+  it("still seats an ordinary plugin pane after Browser", () => {
+    const other = slot("ade-log-viewer", "viewer", "Logs");
+    const items = buildWorkSidebarTabItems([other], {
+      isRemoteProject: false,
+      supportsIosSimulator: true,
+      builtinSurfaceVisible: () => true,
+      pluginPaneIds: new Set([other.id]),
+    });
+    expect(items.at(-1)?.id).toBe(other.id);
+  });
+});
+
+describe("a persisted compiled selection that cannot heal", () => {
+  /**
+   * The rail waits before writing Git so that installing the owner does not
+   * erase a Control/Sim selection the plugin's pane is about to restore. On a
+   * machine where that pane can never arrive, waiting is forever: the reader
+   * sat on Git under a stored `ios` that nothing would overwrite.
+   */
+  it("stops waiting on a host that can never contribute the pane", () => {
+    const hidden = { builtinSurfaceVisible: (id: string) => id !== "ios" && id !== "app-control" };
+    // A Mac with a local checkout: the Simulator pane is coming, so wait.
+    expect(shouldWaitForWorkRailPluginPane("ios", {
+      ...hidden,
+      isRemoteProject: false,
+      supportsIosSimulator: true,
+    })).toBe(true);
+    // Not a Mac: `allowWorkRailPluginPane` refuses the Simulator pane here, so
+    // the wait would never end.
+    expect(shouldWaitForWorkRailPluginPane("ios", {
+      ...hidden,
+      isRemoteProject: false,
+      supportsIosSimulator: false,
+    })).toBe(false);
+    // A remote checkout refuses both.
+    expect(shouldWaitForWorkRailPluginPane("app-control", {
+      ...hidden,
+      isRemoteProject: true,
+      supportsIosSimulator: true,
+    })).toBe(false);
+    expect(shouldWaitForWorkRailPluginPane("app-control", {
+      ...hidden,
+      isRemoteProject: false,
+      supportsIosSimulator: true,
+    })).toBe(true);
+  });
+
+  it("never waits on a tab that has no plugin behind it", () => {
+    const base = { isRemoteProject: false, supportsIosSimulator: true, builtinSurfaceVisible: () => false };
+    expect(shouldWaitForWorkRailPluginPane("git", base)).toBe(false);
+    expect(shouldWaitForWorkRailPluginPane("browser", base)).toBe(false);
+  });
+
+  it("never waits while the compiled tab is still on screen", () => {
+    expect(shouldWaitForWorkRailPluginPane("ios", {
+      isRemoteProject: false,
+      supportsIosSimulator: true,
+      builtinSurfaceVisible: () => true,
+    })).toBe(false);
+  });
+});
+
+describe("the cold-launch flip", () => {
+  const simPane = { id: pluginPanelSlotId("ade-ios-sim", "main"), pluginId: "ade-ios-sim" };
+
+  /**
+   * A superseded surface reads as VISIBLE before the registry resolves, which
+   * is the right default for the compiled product. It is the wrong input for
+   * this remap: on every cold launch a persisted plugin pane was rewritten to
+   * the compiled id, persisted, and flipped back a tick later when the
+   * contribution landed — a visible flash and two writes for one selection.
+   */
+  it("leaves a persisted plugin pane alone until the registry answers", () => {
+    expect(remapWorkRailTabAfterPolarity(simPane.id as WorkSidebarTab, {
+      pluginPanes: [],
+      builtinSurfaceVisible: () => true,
+      pluginsResolved: false,
+    })).toBe(simPane.id);
+  });
+
+  it("falls back to the compiled tab once the registry says the plugin is gone", () => {
+    expect(remapWorkRailTabAfterPolarity(simPane.id as WorkSidebarTab, {
+      pluginPanes: [],
+      builtinSurfaceVisible: () => true,
+      pluginsResolved: true,
+    })).toBe("ios");
+  });
+
+  it("still moves a compiled tab onto a landed pane before the registry answers", () => {
+    // This direction needs no wait: `builtinSurfaceVisible` only answers false
+    // for a superseded surface once the registry has resolved, so reaching here
+    // already means the answer is known.
+    expect(remapWorkRailTabAfterPolarity("ios", {
+      pluginPanes: [simPane],
+      builtinSurfaceVisible: (id) => id !== "ios",
+      pluginsResolved: false,
+    })).toBe(simPane.id);
   });
 });

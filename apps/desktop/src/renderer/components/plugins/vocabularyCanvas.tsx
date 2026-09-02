@@ -1,20 +1,24 @@
 import React from "react";
 
 import { COLORS, MONO_FONT, SANS_FONT } from "../lanes/laneDesignTokens";
-import { EmptyLine } from "./vocabularyPrimitives";
+import { EmptyLine, InlineError } from "./vocabularyPrimitives";
 import type { VocabRenderContext } from "./vocabularyPrimitives";
-import { VocabList } from "./vocabularyComponents";
+import { VocabList, VocabListPageRow, useVocabActionRunner } from "./vocabularyComponents";
 import {
   bindingKey,
   boundRowEntries,
   coerceBoundListItem,
+  vocabListPage,
+  vocabListPageLabel,
   VOCAB_LIMITS,
   type VocabAction,
   type VocabBinding,
   type VocabCanvasNode,
   type VocabListNode,
 } from "../../../shared/plugins/vocabulary";
+import { PLUGIN_BUILTIN_SURFACE_OWNER_IDS } from "../../../shared/plugins/builtinSurfaceRegistry";
 import { isRecord } from "../../../shared/plugins/parse";
+import { selectActiveProjectRoot, useAppStore } from "../../state/appStore";
 import {
   buildCommitGraphLayout,
   columnCenterX,
@@ -50,7 +54,46 @@ const ChatIosSimulatorPanel = React.lazy(() =>
  * they draw the same bound rows as a list. `workspace`, `electron-control` and
  * `simulator` are compiled host pages: desktop mounts them; other clients still
  * list the bound rows.
+ *
+ * ## Who may name a compiled host page
+ *
+ * `git-dag`, `swimlane` and `graph` are drawing engines over rows the plugin
+ * wrote, so every plugin may name them. The other three are not engines: each
+ * one mounts a compiled ADE pane that reads the host's OWN state — the
+ * workspace topology, a Chrome DevTools session, a booted simulator — and none
+ * of that comes from the plugin's rows. A plugin that could name `simulator`
+ * would get simctl streaming into its panel without asking for the capability.
+ *
+ * So a compiled page is drawn only for the plugin registered as its owner in
+ * {@link PLUGIN_BUILTIN_SURFACE_OWNER_IDS}, which is the same table that decides
+ * which plugin supersedes which compiled surface. Every other plugin gets the
+ * honest fallback: the bound rows drawn as a list, exactly what the phone and
+ * the terminal draw for the same node. The parser stays open on purpose — it is
+ * shared with clients that have no host page to protect and no plugin id to
+ * check — so the refusal lives here, at the mount.
  */
+
+/**
+ * The plugin each compiled host page belongs to.
+ *
+ * Read out of the surface-owner table rather than spelled again, so a surface
+ * that changes hands changes hands here too.
+ */
+const HOST_ENGINE_OWNER_PLUGIN_ID: Readonly<
+  Record<"workspace" | "electron-control" | "simulator", string>
+> = {
+  workspace: PLUGIN_BUILTIN_SURFACE_OWNER_IDS.graph,
+  "electron-control": PLUGIN_BUILTIN_SURFACE_OWNER_IDS["app-control"],
+  simulator: PLUGIN_BUILTIN_SURFACE_OWNER_IDS.ios,
+};
+
+/** True when the publishing plugin owns the compiled page this engine mounts. */
+export function canMountHostCanvasEngine(
+  engine: "workspace" | "electron-control" | "simulator",
+  pluginId: string,
+): boolean {
+  return HOST_ENGINE_OWNER_PLUGIN_ID[engine] === pluginId;
+}
 
 export function VocabCanvas({
   node,
@@ -67,11 +110,17 @@ export function VocabCanvas({
     case "graph":
       return <GraphCanvas node={node} context={context} />;
     case "workspace":
-      return <WorkspaceCanvas context={context} />;
+      return canMountHostCanvasEngine("workspace", context.pluginId)
+        ? <WorkspaceCanvas context={context} />
+        : <CanvasListFallback node={node} context={context} />;
     case "electron-control":
-      return <HostEngineCanvas engine="electron-control" />;
+      return canMountHostCanvasEngine("electron-control", context.pluginId)
+        ? <HostEngineCanvas engine="electron-control" context={context} />
+        : <CanvasListFallback node={node} context={context} />;
     case "simulator":
-      return <HostEngineCanvas engine="simulator" />;
+      return canMountHostCanvasEngine("simulator", context.pluginId)
+        ? <HostEngineCanvas engine="simulator" context={context} />
+        : <CanvasListFallback node={node} context={context} />;
     default: {
       const _exhaustive: never = node.engine;
       return <EmptyLine text={`Unknown canvas engine: ${String(_exhaustive)}`} />;
@@ -102,15 +151,71 @@ function WorkspaceCanvas({ context }: { context: VocabRenderContext }) {
   );
 }
 
-function HostEngineCanvas({ engine }: { engine: "electron-control" | "simulator" }) {
+function HostEngineCanvas({
+  engine,
+  context,
+}: {
+  engine: "electron-control" | "simulator";
+  context: VocabRenderContext;
+}) {
   // Bind is required so phone and TUI list the same status rows. Desktop mounts
   // the compiled pane ADE already owns. Work rail still wires chat context
   // itself when these plugins contribute a work-rail-pane; this path is the
   // vocabulary mount (tests, a plugin tab, a deeplink).
   const label = engine === "electron-control" ? "Electron Control" : "iOS Simulator";
+  const binding = useAppStore((state) => state.projectBinding);
+  const projectRoot = useAppStore(selectActiveProjectRoot);
+  // The same pin the Work rail hands these two panes. A remote checkout is
+  // owned by another machine, and a pane mounted with no pin asks the LOCAL
+  // host for a CDP session or a booted simulator — so a remote project used to
+  // report this machine's state under a remote project's tab. A local binding
+  // needs no pin: the bound machine is this one.
+  const runtimePin = binding?.kind === "remote" ? binding : null;
+
+  let body: React.ReactNode;
+  if (!binding) {
+    // No project is open, so no machine is known. Saying so is the honest
+    // answer; binding to whatever host happens to be local is not.
+    body = (
+      <EmptyLine text={`Open a project before using ${label}. ADE cannot tell which machine this pane belongs to.`} />
+    );
+  } else if (!context.active) {
+    // The hidden-but-mounted perf law. Both panes stream — CDP frames for
+    // Control, a simulator screen for Simulator — and a plugin tab the reader
+    // has switched away from stays mounted, so the mount itself is the gate.
+    body = <EmptyLine text={`${label} is paused while this tab is hidden.`} />;
+  } else {
+    body = (
+      <React.Suspense fallback={<EmptyLine text={`Loading ${label}…`} />}>
+        {engine === "electron-control" ? (
+          <ChatAppControlPanel
+            sessionId={null}
+            laneId={null}
+            runtimePin={runtimePin}
+            projectRoot={projectRoot}
+            controlDisabledReason={null}
+          />
+        ) : (
+          <ChatIosSimulatorPanel
+            sessionId={null}
+            laneId={null}
+            runtimePin={runtimePin}
+            projectRoot={projectRoot}
+            controlDisabledReason={null}
+            // There is no chat behind a vocabulary canvas, so there is no chat
+            // that could own the pane. The Work rail passes the same flag for
+            // the same reason.
+            ignoreChatOwnership
+          />
+        )}
+      </React.Suspense>
+    );
+  }
+
   return (
     <div
       data-vocab-canvas={engine}
+      data-vocab-canvas-active={context.active ? "true" : "false"}
       style={{
         flex: 1,
         minHeight: 560,
@@ -121,24 +226,7 @@ function HostEngineCanvas({ engine }: { engine: "electron-control" | "simulator"
         flexDirection: "column",
       }}
     >
-      <React.Suspense fallback={<EmptyLine text={`Loading ${label}…`} />}>
-        {engine === "electron-control" ? (
-          <ChatAppControlPanel
-            sessionId={null}
-            laneId={null}
-            projectRoot={null}
-            controlDisabledReason={null}
-          />
-        ) : (
-          <ChatIosSimulatorPanel
-            sessionId={null}
-            laneId={null}
-            projectRoot={null}
-            controlDisabledReason={null}
-            ignoreChatOwnership
-          />
-        )}
-      </React.Suspense>
+      {body}
     </div>
   );
 }
@@ -150,7 +238,8 @@ function GitDagCanvas({
   node: VocabCanvasNode;
   context: VocabRenderContext;
 }) {
-  const entries = canvasEntries(node.bind, context, VOCAB_LIMITS.maxCanvasItems);
+  const { entries, footer } = useCanvasPage(node.bind, context);
+  const { select, error } = useCanvasSelect(node, context);
   const commits = entries
       .map((entry) => coerceGitDagCommit(entry.value, entry.key, node.bind.allowActions))
     .filter((row): row is GitDagRow => row !== null);
@@ -159,7 +248,11 @@ function GitDagCanvas({
     return <CanvasListFallback node={node} context={context} />;
   }
 
-    return <GitDagView commits={commits} onSelect={(row) => dispatchCanvasSelect(row.id, row.onPress, node.onSelect, context)} />;
+  return (
+    <CanvasFrame footer={footer} error={error}>
+      <GitDagView commits={commits} onSelect={(row) => select(row.id, row.onPress)} />
+    </CanvasFrame>
+  );
 }
 
 function SwimlaneCanvas({
@@ -169,7 +262,8 @@ function SwimlaneCanvas({
   node: VocabCanvasNode;
   context: VocabRenderContext;
 }) {
-  const entries = canvasEntries(node.bind, context, VOCAB_LIMITS.maxCanvasItems);
+  const { entries, footer } = useCanvasPage(node.bind, context);
+  const { select, error } = useCanvasSelect(node, context);
   const events = entries
       .map((entry) => coerceSwimlaneEvent(entry.value, entry.key, node.bind.allowActions))
     .filter((row): row is SwimlaneEvent => row !== null);
@@ -180,6 +274,7 @@ function SwimlaneCanvas({
 
   const lanes = uniqueLanes(events);
   return (
+    <CanvasFrame footer={footer} error={error}>
     <div
       data-vocab-canvas="swimlane"
       style={{
@@ -203,7 +298,7 @@ function SwimlaneCanvas({
         <React.Fragment key={event.id}>
           <button
             type="button"
-            onClick={() => dispatchCanvasSelect(event.id, event.onPress, node.onSelect, context)}
+            onClick={() => select(event.id, event.onPress)}
             style={eventLabelStyle}
           >
             <span style={{ fontWeight: 500 }}>{event.title}</span>
@@ -229,6 +324,7 @@ function SwimlaneCanvas({
         </React.Fragment>
       ))}
     </div>
+    </CanvasFrame>
   );
 }
 
@@ -239,10 +335,15 @@ function GraphCanvas({
   node: VocabCanvasNode;
   context: VocabRenderContext;
 }) {
-  const nodeEntries = canvasEntries(node.bind, context, VOCAB_LIMITS.maxCanvasItems);
+  const { entries: nodeEntries, footer } = useCanvasPage(node.bind, context);
+  const { select, error } = useCanvasSelect(node, context);
   const nodes = nodeEntries
       .map((entry) => coerceGraphNode(entry.value, entry.key, nodeEntries.length, node.bind.allowActions))
     .filter((row): row is GraphNodeRow => row !== null);
+  // Edges are not paged with the nodes: an edge the reader cannot see is
+  // harmless, and dropping edges by page would draw a graph with lines missing
+  // rather than one with fewer nodes. Only edges whose ends are both drawn are
+  // painted, which the lookup below already enforces.
   const edgeEntries = node.edges
     ? canvasEntries(node.edges, context, VOCAB_LIMITS.maxCanvasItems)
     : [];
@@ -257,6 +358,7 @@ function GraphCanvas({
   const width = 640;
   const height = Math.max(280, 80 + nodes.length * 28);
   return (
+    <CanvasFrame footer={footer} error={error}>
     <svg
       data-vocab-canvas="graph"
       viewBox={`0 0 ${width} ${height}`}
@@ -285,7 +387,7 @@ function GraphCanvas({
         <g
           key={row.id}
           style={{ cursor: "pointer" }}
-          onClick={() => dispatchCanvasSelect(row.id, row.onPress, node.onSelect, context)}
+          onClick={() => select(row.id, row.onPress)}
         >
           <circle cx={row.x} cy={row.y} r={10} fill={COLORS.accent} stroke="rgba(255,255,255,0.4)" />
           <text
@@ -300,6 +402,7 @@ function GraphCanvas({
         </g>
       ))}
     </svg>
+    </CanvasFrame>
   );
 }
 
@@ -313,10 +416,6 @@ function GitDagView({
   const layout = React.useMemo(
     () => buildCommitGraphLayout(commits.map((row) => row.commit)),
     [commits],
-  );
-  const nodeBySha = React.useMemo(
-    () => new Map(layout.nodes.map((n) => [n.sha, n])),
-    [layout.nodes],
   );
   const headSha = commits[0]?.commit.sha ?? null;
 
@@ -445,17 +544,96 @@ function canvasEntries(
   return rows ?? [];
 }
 
-function dispatchCanvasSelect(
-  id: string,
-  rowAction: VocabAction | undefined,
-  canvasAction: VocabAction | undefined,
+/**
+ * What a canvas draws around its engine: the paging sentence under it, and the
+ * one line an action left behind when it failed.
+ *
+ * A wrapper rather than each engine repeating the two, so a `git-dag` and a
+ * `graph` cannot end up saying "Showing 100 of 143" in two different places.
+ */
+function CanvasFrame({
+  footer,
+  error,
+  children,
+}: {
+  footer: React.ReactNode;
+  error: string | null;
+  children: React.ReactNode;
+}) {
+  if (!footer && !error) return <>{children}</>;
+  return (
+    <div style={{ display: "grid", gap: 8, minWidth: 0 }}>
+      {children}
+      {error ? <InlineError message={error} /> : null}
+      {footer}
+    </div>
+  );
+}
+
+/**
+ * One canvas's page of rows, and the sentence that says so.
+ *
+ * A canvas reads the same bound collection a `list` does and stopped at the
+ * ceiling in the same silence — a reader saw a complete-looking commit graph
+ * that was not one. So it pages through exactly the contract the list uses:
+ * `vocabListPage` over the host's page count, `Show more` in the host's own
+ * words, and the count sentence even on the last page. Keyed on the binding, so
+ * a canvas and the list it falls back to are the same list to the host and a
+ * reader who paged one does not go back to page one in the other.
+ */
+function useCanvasPage(
+  binding: VocabBinding,
   context: VocabRenderContext,
-): void {
-  const action = rowAction ?? (canvasAction
-    ? { ...canvasAction, args: { ...canvasAction.args, id } }
-    : null);
-  if (!action) return;
-  void context.dispatch(action);
+): { entries: { key?: string; value: unknown }[]; footer: React.ReactNode } {
+  const all = canvasEntries(binding, context, VOCAB_LIMITS.maxCanvasItems);
+  const pageNode: VocabListNode = { component: "list", bind: binding };
+  const page = vocabListPage(all.length, context.listPage(pageNode));
+  const label = vocabListPageLabel(page);
+  const showMoreListRows = context.showMoreListRows;
+  const total = all.length;
+  const showMore = React.useCallback(() => {
+    showMoreListRows({ component: "list", bind: binding }, total);
+  }, [showMoreListRows, binding, total]);
+  return {
+    entries: all.slice(0, page.drawn),
+    footer: label
+      ? (
+        <VocabListPageRow
+          label={label}
+          {...(page.hasMore ? { onShowMore: showMore } : {})}
+        />
+      )
+      : null,
+  };
+}
+
+/**
+ * Pressing a canvas row, through the one runner every other control uses.
+ *
+ * A canvas row used to call `context.dispatch` itself. That skipped
+ * `action.confirm` — so the same destructive action asked first behind a button
+ * and ran silently behind a commit dot — and it dropped the returned promise,
+ * so a refused dispatch surfaced as an unhandled rejection instead of a line
+ * under the canvas. `useVocabActionRunner` is the fix for both, and it is the
+ * same hook the list rows, the buttons and the bulk bar already press through.
+ */
+function useCanvasSelect(
+  node: VocabCanvasNode,
+  context: VocabRenderContext,
+): { select: (id: string, rowAction?: VocabAction) => void; error: string | null } {
+  const { error, run } = useVocabActionRunner(context);
+  const canvasAction = node.onSelect;
+  const select = React.useCallback(
+    (id: string, rowAction?: VocabAction) => {
+      const action = rowAction ?? (canvasAction
+        ? { ...canvasAction, args: { ...canvasAction.args, id } }
+        : null);
+      if (!action) return;
+      void run(action);
+    },
+    [canvasAction, run],
+  );
+  return { select, error };
 }
 
 type GitDagRow = {

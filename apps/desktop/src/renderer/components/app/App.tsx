@@ -213,8 +213,38 @@ const StartupSplashScreen = (
 /** Used by React.lazy Suspense boundaries while route chunks load. */
 const GuardLoadingFallback = StartupSplashScreen;
 
-/** A compiled surface's route, refused when its owner plugin is not installed. */
+/**
+ * Split a route into the path a gate is registered under and the rest of the
+ * URL, which the gate must not read but must not throw away either.
+ *
+ * `/graph?focusLane=lane-7` is one URL with two jobs: the path names the
+ * surface, and the query is how the PRs tab and the stack pane ask the canvas
+ * to focus one lane. `builtinGateForRoute` matches on the path alone, so a
+ * route carrying a query used to find no gate at all.
+ */
+export function splitRouteQuery(route: string): { path: string; suffix: string } {
+  const cut = route.search(/[?#]/);
+  return cut === -1
+    ? { path: route, suffix: "" }
+    : { path: route.slice(0, cut), suffix: route.slice(cut) };
+}
+
+/**
+ * A compiled surface's route, refused when its owner plugin is not installed —
+ * or handed to the owner plugin's tab when the plugin SUPERSEDES it.
+ *
+ * The redirect is taken here rather than left to `BuiltinRouteGuard` for one
+ * reason: the guard is handed a bare route, so it can only redirect to a bare
+ * plugin path, and `#/graph?focusLane=…` arrived at `/plugin/ade-graph` with no
+ * lane to focus. The query and hash belong to the reader's request, not to the
+ * gate, so they are carried across the hop.
+ */
 function GatedRoute({ route, children }: { route: string; children: React.ReactNode }) {
+  const location = useLocation();
+  const gateInput = useBuiltinGateInput();
+  const replacement = supersededCompiledRouteReplacement(route, gateInput);
+  const suffix = `${location.search ?? ""}${location.hash ?? ""}`;
+  if (replacement && suffix) return <Navigate to={`${replacement}${suffix}`} replace />;
   return <BuiltinRouteGuard route={route} pending={LazyFallback}>{children}</BuiltinRouteGuard>;
 }
 
@@ -322,10 +352,15 @@ function serializeStoredProjectRoute(location: ReturnType<typeof useLocation>): 
  * not "unavailable", and clobbering a perfectly good stored route because the
  * registry hasn't resolved on this particular render would be its own bug.
  */
-function persistableSurfaceRoute(route: string, gateInput: BuiltinGateInput): string {
-  const replacement = supersededCompiledRouteReplacement(route, gateInput);
-  if (replacement) return replacement;
-  const gate = builtinGateForRoute(route);
+export function persistableSurfaceRoute(route: string, gateInput: BuiltinGateInput): string {
+  // A stored route carries its query — `serializeProjectRoute` keeps the search
+  // and the hash — and the gate is registered under the path alone, so the two
+  // are separated before either is asked about. Without this, `/graph?focusLane=…`
+  // matched no gate and persisted unexamined.
+  const { path, suffix } = splitRouteQuery(route);
+  const replacement = supersededCompiledRouteReplacement(path, gateInput);
+  if (replacement) return `${replacement}${suffix}`;
+  const gate = builtinGateForRoute(path);
   if (!gate) return route;
   const knownUnavailable =
     gateInput.pluginSupport && gateInput.pluginsLoaded && !isBuiltinSurfaceVisible(gate.builtinId, gateInput);
@@ -1397,8 +1432,18 @@ function AppNavigationBridge() {
       // The open kind: any main-process card, `ade` deeplink or nav target can
       // name a route directly, so this one branch reaches all three gated pages
       // without going near the rail that hides them.
-      const gate = builtinGateForRoute(route);
-      if (gate && !isBuiltinTabVisible(route, builtinGateInputRef.current)) {
+      const { path, suffix } = splitRouteQuery(route);
+      // A superseded surface is not gone, it moved. The artifact arm above and
+      // the two route-storage call sites already follow the replacement; this
+      // one refused instead, so an `ade://` link to `/graph` failed on exactly
+      // the machines that have the Graph plugin installed.
+      const replacement = supersededCompiledRouteReplacement(path, builtinGateInputRef.current);
+      if (replacement) {
+        navigate(`${replacement}${suffix}`);
+        return true;
+      }
+      const gate = builtinGateForRoute(path);
+      if (gate && !isBuiltinTabVisible(path, builtinGateInputRef.current)) {
         return refuseGatedTarget(gate.title);
       }
       navigate(route);

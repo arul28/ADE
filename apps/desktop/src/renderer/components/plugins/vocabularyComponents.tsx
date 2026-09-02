@@ -177,8 +177,13 @@ export function VocabDivider({ node }: { node: VocabDividerNode }) {
  * with no prompt, while the same action behind a button asked first. iOS routes
  * every action through one `perform` for this reason
  * (`PluginPaneStore.swift`); this is the desktop and web equivalent.
+ *
+ * Exported because the canvas engines in `vocabularyCanvas.tsx` press actions
+ * too. A canvas row used to call `context.dispatch` itself, which skipped the
+ * confirmation and turned a rejected dispatch into an unhandled rejection —
+ * the same defect this hook was written to close for list rows.
  */
-function useVocabActionRunner(context: VocabRenderContext) {
+export function useVocabActionRunner(context: VocabRenderContext) {
   const [pending, setPending] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
 
@@ -582,10 +587,6 @@ export function VocabList({
         .filter((item): item is VocabListItem => item !== null)
     : (node.items ?? []);
 
-  if (items.length === 0) {
-    return <EmptyLine text={node.emptyText ?? "Nothing here yet."} />;
-  }
-
   // Filter first, page second. `items` has already been through the binding's
   // `where`, so the page is computed over what the reader can actually see —
   // paging a pre-filter window would hand them rows the filter had rejected.
@@ -635,6 +636,15 @@ export function VocabList({
     });
     return () => reportBulk(bulkReportId, null);
   }, [reportBulk, bulkReportId, ticking, tickedKey, selectable]);
+
+  // After every hook, never before one. An early return above `useId` and the
+  // bulk-report effect made this component call a different number of hooks on
+  // the render where its rows arrived, which is the rules-of-hooks violation
+  // the lint gate reported. An empty list still reports "no ticks" through the
+  // effect above, which is what clears a bar left over from the previous rows.
+  if (items.length === 0) {
+    return <EmptyLine text={node.emptyText ?? "Nothing here yet."} />;
+  }
 
   return (
     <div style={{ display: "grid", gap: 8, minWidth: 0 }}>
@@ -703,7 +713,7 @@ function VocabListLoadSentinel({ onShowMore }: { onShowMore: () => void }) {
  * noise. The button's own label moves the focus ring nowhere, so the rows that
  * appear are the next thing under it.
  */
-function VocabListPageRow({
+export function VocabListPageRow({
   label,
   onShowMore,
 }: {

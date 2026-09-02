@@ -653,6 +653,22 @@ export type VocabChartNode = {
  * - `simulator` — desktop mounts ADE's compiled iOS Simulator pane. Phone and
  *   terminal list the bound status rows. The pane itself still needs a Mac.
  *
+ * ## The last three are owned, and the parser is not where that is enforced
+ *
+ * `git-dag`, `swimlane` and `graph` draw the plugin's own rows, so any plugin
+ * may name them. `workspace`, `electron-control` and `simulator` mount a
+ * compiled ADE pane that reads the HOST's state — workspace topology, a Chrome
+ * DevTools session, a booted simulator — and none of that is the plugin's data.
+ * A client draws one of those three only for the plugin registered as the
+ * surface's owner in `PLUGIN_BUILTIN_SURFACE_OWNER_IDS`, and draws the bound
+ * rows as a list for every other plugin.
+ *
+ * That check is NOT here on purpose. This parser is shared with clients that
+ * have no compiled pane to protect, and it is handed a schema without a plugin
+ * id — the id is the host's fact, not the schema's, so a check here would read
+ * a field a plugin could write. Desktop enforces it at the mount, in
+ * `renderer/components/plugins/vocabularyCanvas.tsx`.
+ *
  * Bound row shape is the list row (`title`, `subtitle`, `onPress`, …) plus
  * engine fields the host reads without reshaping: `sha`/`parents` for git-dag,
  * `laneId`/`t` for swimlane, `x`/`y`/`source`/`target` for graph. `workspace`,

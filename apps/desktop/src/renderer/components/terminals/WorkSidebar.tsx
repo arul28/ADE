@@ -195,8 +195,21 @@ export function remapWorkRailTabAfterPolarity(
   options: {
     pluginPanes: readonly Pick<PluginPanelSlot, "id" | "pluginId">[];
     builtinSurfaceVisible: (id: PluginBuiltinSurfaceId) => boolean;
+    /**
+     * Whether the plugin registry has answered yet. Absent reads as "yes", for
+     * the callers that have no registry to wait on.
+     *
+     * Load-bearing in one direction only. A superseded surface reads as VISIBLE
+     * before the registry resolves — that is the "the product without plugins is
+     * the product ADE always shipped" rule — so on every cold launch a persisted
+     * plugin pane would remap onto the compiled id, get written to storage, and
+     * flip back a tick later when the contribution landed. The reader saw the
+     * wrong pane flash, and the rail wrote its selection twice.
+     */
+    pluginsResolved?: boolean;
   },
 ): WorkSidebarTab {
+  const resolved = options.pluginsResolved ?? true;
   if (tab === "ios" || tab === "app-control") {
     if (options.builtinSurfaceVisible(tab)) return tab;
     const pane = options.pluginPanes.find((entry) => hostEngineForPluginPane(entry) === tab);
@@ -207,8 +220,41 @@ export function remapWorkRailTabAfterPolarity(
   const compiled = hostEngineForPluginPane(parsed);
   if (!compiled) return tab;
   if (options.pluginPanes.some((entry) => entry.id === tab)) return tab;
+  // "We do not know yet" is not "the plugin is gone". Waiting costs the reader
+  // one render of the Git fallback; guessing costs them a wrong pane and a
+  // clobbered selection.
+  if (!resolved) return tab;
   if (options.builtinSurfaceVisible(compiled)) return compiled;
   return tab;
+}
+
+/**
+ * Whether a compiled Control/Sim selection should sit still rather than fall
+ * back to Git.
+ *
+ * The gate hides the compiled tab the moment the owner plugin is installed, and
+ * the plugin's own pane arrives a tick later — writing Git in that window would
+ * erase a selection the pane is about to restore. So the rail waits.
+ *
+ * It must NOT wait forever. `allowWorkRailPluginPane` refuses the Simulator
+ * pane on a machine that is not a Mac and both panes on a remote checkout, so
+ * on those hosts the contribution the rail is waiting for can never arrive: a
+ * persisted `ios` never healed, and the rail showed Git under a selection it
+ * would not overwrite. Waiting is therefore conditional on the pane being
+ * possible here at all.
+ */
+export function shouldWaitForWorkRailPluginPane(
+  tab: WorkSidebarTab,
+  options: {
+    isRemoteProject: boolean;
+    supportsIosSimulator: boolean;
+    builtinSurfaceVisible: (id: PluginBuiltinSurfaceId) => boolean;
+  },
+): boolean {
+  if (tab !== "ios" && tab !== "app-control") return false;
+  if (options.builtinSurfaceVisible(tab)) return false;
+  const ownerPluginId = tab === "ios" ? IOS_SIM_PLUGIN_ID : APP_CONTROL_PLUGIN_ID;
+  return allowWorkRailPluginPane({ pluginId: ownerPluginId }, options);
 }
 
 /** Native rail colour and label when a contributed pane IS the compiled product. */
@@ -242,9 +288,18 @@ export function buildWorkSidebarTabItems(
 ): Array<GlowMenuItem<WorkSidebarTab>> {
   const items: Array<GlowMenuItem<WorkSidebarTab>> = [];
   const seated = new Set<string>();
+  // The compiled tabs this rail is already drawing. Control and Simulator can
+  // be here at the same time as their plugin's pane: the compiled tab reads
+  // `installedPlugins` through the gate while the panes read the contribution
+  // store, and those two resolve a tick apart on every install and every
+  // disable. In that window the plugin's pane would be seated again below,
+  // under the SAME label and the SAME icon as the compiled tab — two identical
+  // buttons that do the same thing, which reads as a duplicated rail.
+  const drawnHosts = new Set<"ios" | "app-control">();
   for (const item of WORK_SIDEBAR_TABS) {
     if (isAvailableWorkSidebarTab(item.id, tabAvailability)) {
       items.push(item);
+      if (item.id === "ios" || item.id === "app-control") drawnHosts.add(item.id);
       continue;
     }
     const host = item.id === "ios" || item.id === "app-control" ? item.id : null;
@@ -253,9 +308,15 @@ export function buildWorkSidebarTabItems(
     if (!pane) continue;
     items.push(workRailItemForPluginPane(pane));
     seated.add(pane.id);
+    drawnHosts.add(host);
   }
   for (const pane of pluginPanes) {
     if (seated.has(pane.id)) continue;
+    // The compiled tab wins the slot while both are visible: it is the one the
+    // rail's own persisted ids name, and `remapWorkRailTabAfterPolarity` moves
+    // the reader onto the plugin pane the moment the gate catches up.
+    const host = hostEngineForPluginPane(pane);
+    if (host && drawnHosts.has(host)) continue;
     items.push(workRailItemForPluginPane(pane));
   }
   return items;
@@ -440,7 +501,14 @@ export function WorkSidebar({
     () => buildWorkSidebarTabItems(pluginPanes, tabAvailability),
     [pluginPanes, tabAvailability],
   );
-  const remappedTab = remapWorkRailTabAfterPolarity(tab, { pluginPanes, builtinSurfaceVisible });
+  // The registry has answered exactly when both are true. A host with no plugin
+  // support never has a contribution to wait for, so it counts as resolved.
+  const pluginsResolved = !builtinGateInput.pluginSupport || builtinGateInput.pluginsLoaded;
+  const remappedTab = remapWorkRailTabAfterPolarity(tab, {
+    pluginPanes,
+    builtinSurfaceVisible,
+    pluginsResolved,
+  });
   const effectiveTab: WorkSidebarTab = isAvailableWorkSidebarTab(remappedTab, tabAvailability)
     ? remappedTab
     : "git";
@@ -494,12 +562,25 @@ export function WorkSidebar({
     if (isPluginPanelSlotId(tab)) return;
     // Installing the owner hides the compiled tab one tick before the
     // contribution lands. Writing Git here would erase a Control/Sim
-    // selection the plugin pane is about to restore.
-    if ((tab === "ios" || tab === "app-control") && !builtinSurfaceVisible(tab)) return;
+    // selection the plugin pane is about to restore — but only while that pane
+    // can actually arrive on this host.
+    if (shouldWaitForWorkRailPluginPane(tab, {
+      isRemoteProject,
+      supportsIosSimulator,
+      builtinSurfaceVisible,
+    })) return;
     if (!isAvailableWorkSidebarTab(tab, tabAvailability)) {
       onTabChange("git");
     }
-  }, [builtinSurfaceVisible, onTabChange, remappedTab, tab, tabAvailability]);
+  }, [
+    builtinSurfaceVisible,
+    isRemoteProject,
+    onTabChange,
+    remappedTab,
+    supportsIosSimulator,
+    tab,
+    tabAvailability,
+  ]);
 
   useEffect(() => {
     const el = sidebarRef.current;
