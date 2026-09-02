@@ -3,22 +3,19 @@
 Drive an iOS Simulator from ADE — boot it, tap and type in it, watch the screen,
 and open it beside the chat that is building the app.
 
-Simulator control was part of ADE itself until plugins existed. Nothing about it
-changed — it stopped being something everyone has to carry, including the people
-who never open Xcode.
+This plugin replaces ADE's compiled Simulator pane. Install it and the Work
+tools talk to this package. Disable it and the compiled pane comes back
+unchanged. simctl and idb stay in ADE.
 
 ### What it adds
 
-- The **iOS Simulator** pane in the Work tools, and its chat drawer.
+- The **iOS Simulator** pane in the Work tools.
+- A `get_status` tool. Launch, tap, type and screenshot stay on `ade ios-sim`.
 
 ### Notes
 
-- It needs a Mac. On anything else the pane stays hidden even with the plugin
-  installed.
-- The pane is drawn by the desktop app rather than published as a panel, because
-  it drives a real simulator. On a phone or in the terminal the plugin shows a
-  card pointing at the Mac.
-- Agents can open the drawer with `ade ios-sim` — but only while this plugin is
-  installed and enabled.
-- It runs no code at all: the card is `panels/main.json`, which ADE reads from
-  the manifest. Nothing is read, and nothing is stored.
+- It needs a Mac. On anything else the compiled pane stays hidden, and this
+  plugin lists a status row pointing at the Mac.
+- Desktop mounts ADE's compiled Simulator pane through a host canvas engine.
+  Phone and terminal never run a simulator.
+- Agents keep using `ade ios-sim` — those verbs stay on the host.

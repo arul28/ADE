@@ -3138,7 +3138,7 @@ export function resetChatBootModelRefreshMemoForTests(): void {
 
 function isLikelyMacRenderer(): boolean {
   if (typeof navigator === "undefined") return false;
-  return /\bMac\b/i.test(navigator.platform) || /\bMac OS X\b/i.test(navigator.userAgent);
+  return /Mac/i.test(navigator.platform) || /Mac OS X|Macintosh/i.test(navigator.userAgent);
 }
 
 export function AgentChatPane({
@@ -3684,11 +3684,9 @@ export function AgentChatPane({
     () => readChatCompanionUiState(initialCompanionStateKey).iosSimulatorOpen,
   );
   const [iosSimulatorDrawerModeRequest, setIosSimulatorDrawerModeRequest] = useState<{ mode: IosSimulatorDrawerMode; nonce: number } | null>(null);
-  // Host support only: "this machine can run a simulator". Whether the product
-  // has an iOS Simulator at all is the plugin's answer, folded in below.
+  // Host support only: "this machine can run a simulator". The compiled pane
+  // is default-on now; the plugin replaces the Work rail, not this drawer.
   const [iosSimulatorHostSupported, setIosSimulatorHostSupported] = useState(isLikelyMacRenderer);
-  const iosSimulatorSurfaceVisible = useBuiltinSurfaceVisible("ios");
-  const appControlSurfaceVisible = useBuiltinSurfaceVisible("app-control");
   const iosSimulatorOpenRef = useRef(iosSimulatorOpen);
   iosSimulatorOpenRef.current = iosSimulatorOpen;
   // An agent launching the simulator used to force this drawer open, closing
@@ -4058,16 +4056,12 @@ export function AgentChatPane({
       return next;
     });
   }, []);
-  // Both gates are folded in here, at the single source every button, toggle
-  // prop, probe effect and drawer render already reads, so there is no call
-  // site left that can reveal a pane its plugin no longer owns. `*Open` still
-  // holds the user's saved preference: a stored open drawer is ignored while
-  // the plugin is gone and comes back as they left it if they reinstall, so
-  // uninstalling never silently rewrites what they chose.
-  const iosSimulatorAvailable = iosSimulatorSurfaceVisible && iosSimulatorHostSupported;
-  const appControlAvailable = appControlSurfaceVisible && appControlHostSupported;
-  const effectiveIosSimulatorOpen = iosSimulatorSurfaceVisible && !hideLaneToolDrawers && iosSimulatorOpen;
-  const effectiveAppControlOpen = appControlSurfaceVisible && !hideLaneToolDrawers && appControlOpen;
+  // The compiled drawers stay host-gated. The plugin replaces the Work rail
+  // pane; uninstalling it must not hide a chat companion ADE already ships.
+  const iosSimulatorAvailable = iosSimulatorHostSupported;
+  const appControlAvailable = appControlHostSupported;
+  const effectiveIosSimulatorOpen = !hideLaneToolDrawers && iosSimulatorOpen;
+  const effectiveAppControlOpen = !hideLaneToolDrawers && appControlOpen;
   const laneToolsVisible = Boolean(showWorkspaceChrome && !hideLaneToolDrawers && laneId);
   const chatTerminalVisible = Boolean(showWorkspaceChrome && laneId);
   const laneDisplayLabel = useMemo(() => {
@@ -4086,7 +4080,7 @@ export function AgentChatPane({
   useEffect(() => {
     const api = window.ade?.iosSimulator;
     if (!api?.getStatus) return;
-    if (!effectiveIosSimulatorOpen || !isTileActive) return;
+    if (!laneToolsVisible) return;
     let cancelled = false;
     void api.getStatus(chatRuntimePinRef.current)
       .then((status) => {
@@ -4100,7 +4094,7 @@ export function AgentChatPane({
     return () => {
       cancelled = true;
     };
-  }, [effectiveIosSimulatorOpen, isTileActive]);
+  }, [laneToolsVisible]);
 
   useEffect(() => {
     const api = window.ade?.appControl;
@@ -7148,10 +7142,8 @@ export function AgentChatPane({
   useEffect(() => {
     const api = window.ade?.iosSimulator;
     // `ade ios-sim` reaches this over IPC and force-opens the drawer, which is
-    // the one path into the pane that never passes a button. Refusing to
-    // subscribe while the plugin is absent is what keeps an agent from
-    // revealing a surface the user cannot otherwise see.
-    if (!api?.onEvent || hideLaneToolDrawers || !iosSimulatorSurfaceVisible) return undefined;
+    // the one path into the pane that never passes a button.
+    if (!api?.onEvent || hideLaneToolDrawers) return undefined;
     const addressesThisPane = iosSimulatorAddressesThisPane;
     return api.onEvent((event) => {
       if (event.type === "session-started") {
@@ -7185,7 +7177,7 @@ export function AgentChatPane({
       setIosSimulatorOpen(true);
       setIosSimulatorDrawerModeRequest({ mode: event.mode, nonce: Date.now() });
     }, chatRuntimePin);
-  }, [chatRuntimePin, hideLaneToolDrawers, iosSimulatorAddressesThisPane, iosSimulatorSurfaceVisible]);
+  }, [chatRuntimePin, hideLaneToolDrawers, iosSimulatorAddressesThisPane]);
 
   useEffect(() => {
     if (!iosSimulatorOpen && iosSimulatorDrawerModeRequest) {
@@ -7197,11 +7189,7 @@ export function AgentChatPane({
     setIosSimulatorDrawerModeRequest(null);
     setIosSimulatorSessionChip(null);
     const api = window.ade?.iosSimulator;
-    // Same rule as the event subscription above: an absent plugin gets no probe
-    // at all. Without this the pane asked the simulator service for status on
-    // every chat switch and could set `iosSimulatorHostSupported` for a surface
-    // this machine no longer has.
-    if (!api?.getStatus || hideLaneToolDrawers || !iosSimulatorSurfaceVisible) return undefined;
+    if (!api?.getStatus || hideLaneToolDrawers) return undefined;
     let cancelled = false;
     // The chip existed only as a side effect of the live `session-started`
     // event, so the two commonest cases lost it entirely: opening ADE while a
@@ -7219,7 +7207,7 @@ export function AgentChatPane({
     return () => {
       cancelled = true;
     };
-  }, [hideLaneToolDrawers, iosSimulatorAddressesThisPane, iosSimulatorSurfaceVisible, laneId, selectedSessionId]);
+  }, [hideLaneToolDrawers, iosSimulatorAddressesThisPane, laneId, selectedSessionId]);
 
   useEffect(() => {
     const next = new Set<string>();

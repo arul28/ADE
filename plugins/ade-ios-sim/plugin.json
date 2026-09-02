@@ -1,31 +1,55 @@
 {
   "name": "ade-ios-sim",
-  "version": "1.0.1",
+  "version": "1.1.0",
   "displayName": "iOS Simulator",
-  "description": "Drive an iOS Simulator from the Work tools, on a Mac.",
+  "description": "Drive an iOS Simulator from ADE — the same simulator pane ADE already ships, as a plugin.",
   "icon": "device-mobile",
   "accent": "#8A8F98",
   "vocabVersion": 1,
-  "surfaces": [
-    {
-      "kind": "pane",
-      "id": "ios-sim",
-      "title": "iOS Simulator",
-      "icon": "device-mobile",
-      "panelId": "main",
-      "builtin": "ios",
-      "mobile": false
-    }
-  ],
+  "entry": "index.js",
   "panels": [
     {
       "id": "main",
       "schemaFile": "panels/main.json",
-      "title": "iOS Simulator"
+      "title": "iOS Simulator",
+      "icon": "device-mobile",
+      "refreshAction": "refreshStatus"
     }
   ],
-  "skills": [
-    "skills"
+  "sockets": [
+    {
+      "socket": "work-rail-pane",
+      "surface": "work",
+      "id": "sim-pane",
+      "label": "iOS Sim",
+      "icon": "device-mobile",
+      "panelId": "main"
+    },
+    {
+      "socket": "command-palette-action",
+      "surface": "app",
+      "id": "palette-sim",
+      "label": "iOS Simulator",
+      "icon": "device-mobile",
+      "actionId": "openSimulator"
+    }
   ],
+  "collections": {
+    "status": { "sync": true }
+  },
+  "tools": [
+    {
+      "name": "get_status",
+      "description": "Read iOS Simulator status on this machine — whether it is a Mac, the live device, and the attached chat.",
+      "action": "getStatusTool",
+      "input": {
+        "type": "object",
+        "properties": {},
+        "required": []
+      }
+    }
+  ],
+  "cli": [],
+  "skills": ["skills"],
   "official": true
 }

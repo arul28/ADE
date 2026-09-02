@@ -115,7 +115,7 @@ describe("installing a bundled package the way the web client does", () => {
  * Skills that ship inside the plugin that owns them.
  *
  * `ade-linear`, `ade-ios-simulator` and `ade-app-control` describe surfaces an
- * official plugin gates, so they live in `plugins/<id>/skills/` and not in the
+ * official plugin owns, so they live in `plugins/<id>/skills/` and not in the
  * shared bundled root. That placement IS the gate: the existing enable/install
  * filter answers for them, and no runtime is asked to exclude anything. The
  * skills nobody gates have to stay put just as firmly — a move that quietly

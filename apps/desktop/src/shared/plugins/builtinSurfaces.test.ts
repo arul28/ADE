@@ -21,7 +21,15 @@ import { coreSmartLinkBuiltinsOwnedBy, CORE_SMART_LINK_HOST_BUILTINS } from "./u
 const CURSOR_CLOUD_INSTALLED = [{ pluginId: "ade-cursor-cloud", enabled: true }];
 const LINEAR_INSTALLED = [{ pluginId: "ade-linear", enabled: true }];
 const REVIEW_INSTALLED = [{ pluginId: "ade-review", enabled: true }];
-const SUPERSEDED_SURFACES: readonly PluginBuiltinSurfaceId[] = ["linear", "cursor-cloud", "review", "history", "graph"];
+const SUPERSEDED_SURFACES: readonly PluginBuiltinSurfaceId[] = [
+  "linear",
+  "cursor-cloud",
+  "review",
+  "history",
+  "graph",
+  "ios",
+  "app-control",
+];
 
 /**
  * The half of the gate both processes share.
@@ -77,10 +85,9 @@ describe("builtinSurfaceInstalled", () => {
  * future edit from collapsing the two relationships back into a single boolean.
  */
 describe("builtinSurfaceDrawn", () => {
-  it("keeps every surface ADE never compiled on the enables polarity", () => {
+  it("has no enabling surfaces left", () => {
     for (const builtinId of PLUGIN_BUILTIN_SURFACE_IDS) {
-      if (SUPERSEDED_SURFACES.includes(builtinId)) continue;
-      expect(builtinSurfacePresence(builtinId), builtinId).toBe("enables");
+      expect(builtinSurfacePresence(builtinId), builtinId).toBe("supersedes");
     }
   });
 
@@ -90,10 +97,16 @@ describe("builtinSurfaceDrawn", () => {
     }
   });
 
-  it("agrees with builtinSurfaceInstalled for an enabling surface", () => {
-    expect(builtinSurfaceDrawn("ios", [{ pluginId: "ade-ios-sim", enabled: true }])).toBe(true);
-    expect(builtinSurfaceDrawn("ios", [{ pluginId: "ade-ios-sim", enabled: false }])).toBe(false);
-    expect(builtinSurfaceDrawn("ios", [])).toBe(false);
+  it("draws the built-in Simulator until its plugin is installed and enabled", () => {
+    expect(builtinSurfaceDrawn("ios", [])).toBe(true);
+    expect(builtinSurfaceDrawn("ios", [{ pluginId: "ade-ios-sim", enabled: false }])).toBe(true);
+    expect(builtinSurfaceDrawn("ios", [{ pluginId: "ade-ios-sim", enabled: true }])).toBe(false);
+  });
+
+  it("draws the built-in Electron Control until its plugin is installed and enabled", () => {
+    expect(builtinSurfaceDrawn("app-control", [])).toBe(true);
+    expect(builtinSurfaceDrawn("app-control", [{ pluginId: "ade-app-control", enabled: false }])).toBe(true);
+    expect(builtinSurfaceDrawn("app-control", [{ pluginId: "ade-app-control", enabled: true }])).toBe(false);
   });
 
   it("draws the built-in Linear until its plugin is installed and enabled", () => {
@@ -134,12 +147,9 @@ describe("builtinSurfaceDrawn", () => {
     expect(builtinSurfaceDrawn("cursor-cloud", CURSOR_CLOUD_INSTALLED)).toBe(false);
   });
 
-  it("moves the two polarities in opposite directions from one registry", () => {
-    // Both owners present. The enabling surface appears, the superseding one
-    // disappears, from the same records — which is the whole reason a single
-    // boolean cannot carry this table.
+  it("hides every compiled surface once its owner is installed", () => {
     const both = [...LINEAR_INSTALLED, { pluginId: "ade-ios-sim", enabled: true }];
-    expect(builtinSurfaceDrawn("ios", both)).toBe(true);
+    expect(builtinSurfaceDrawn("ios", both)).toBe(false);
     expect(builtinSurfaceDrawn("linear", both)).toBe(false);
   });
 

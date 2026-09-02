@@ -365,9 +365,12 @@ const LINEAR = manifest({
   version: "1.1.0",
   displayName: "Linear",
   description: "Browse Linear issues, start a lane and an agent on one, and keep the issue moving — from ADE, on every device.",
-  icon: "list-checks",
+  icon: "brand:linear",
   accent: "#5E6AD2",
   entry: "index.js",
+  brandIcons: {
+    linear: "icons/linear.svg",
+  },
   network: { hosts: ["api.linear.app"] },
   credentialHandoff: ["linear"],
   // Declared, not optional: the install card has to be able to say "signs you
@@ -396,37 +399,37 @@ const LINEAR = manifest({
     id: "issue",
     hosts: ["linear.app"],
     pathPattern: "/{workspace}/issue/{key}/**",
-    chip: { label: "{key}", icon: "L" },
+    chip: { label: "{key}", icon: "brand:linear" },
     panelId: "issue",
   }],
   surfaces: [
-    { kind: "tab", id: "issues", title: "Linear", icon: "list-checks", panelId: "issues", order: 55, mobile: true },
+    { kind: "tab", id: "issues", title: "Linear", icon: "brand:linear", panelId: "issues", order: 55, mobile: true },
   ],
   sockets: [
-    { socket: "work-rail-pane", surface: "work", id: "issues-pane", label: "Linear", icon: "list-checks", panelId: "issues" },
-    { socket: "composer-action", surface: "work", id: "attach-issue", label: "Attach a Linear issue", icon: "list-checks", actionId: "openIssues" },
+    { socket: "work-rail-pane", surface: "work", id: "issues-pane", label: "Linear", icon: "brand:linear", panelId: "issues" },
+    { socket: "composer-action", surface: "work", id: "attach-issue", label: "Attach a Linear issue", icon: "brand:linear", actionId: "openIssues" },
     {
       socket: "chat-header-action",
       surface: "work",
       id: "chat-issue",
       label: "Linear issue",
-      icon: "list-checks",
+      icon: "brand:linear",
       actionId: "openSessionIssue",
       menu: [
-        { label: "Open in Linear", actionId: "openInLinear", icon: "external-link" },
-        { label: "Comment progress on the issue", actionId: "commentProgress", icon: "message-square" },
+        { label: "Open in Linear", actionId: "openInLinear", icon: "link" },
+        { label: "Comment progress on the issue", actionId: "commentProgress", icon: "chat" },
       ],
     },
-    { socket: "row-badge", surface: "lanes", id: "lane-issue", label: "Linear issue", icon: "list-checks" },
-    { socket: "graph-node", surface: "lanes", id: "graph-issue", label: "Linear issue", icon: "list-checks" },
-    { socket: "settings-section", surface: "settings", id: "connection", label: "Linear", icon: "list-checks", panelId: "settings" },
-    { socket: "command-palette-action", surface: "app", id: "palette-issues", label: "Linear issues", icon: "list-checks", actionId: "openIssues" },
+    { socket: "row-badge", surface: "lanes", id: "lane-issue", label: "Linear issue", icon: "brand:linear" },
+    { socket: "graph-node", surface: "lanes", id: "graph-issue", label: "Linear issue", icon: "brand:linear" },
+    { socket: "settings-section", surface: "settings", id: "connection", label: "Linear", icon: "brand:linear", panelId: "settings" },
+    { socket: "command-palette-action", surface: "app", id: "palette-issues", label: "Linear issues", icon: "brand:linear", actionId: "openIssues" },
   ],
   panels: [
-    { id: "main", schemaFile: "panels/main.json", title: "Linear", icon: "list-checks" },
-    { id: "issues", schemaFile: "panels/issues.json", title: "Linear", icon: "list-checks", refreshAction: "refreshIssues" },
-    { id: "issue", schemaFile: "panels/issue.json", title: "Issue", icon: "list-checks", refreshAction: "refreshIssue" },
-    { id: "settings", schemaFile: "panels/settings.json", title: "Linear connection", icon: "list-checks", refreshAction: "refreshConnection" },
+    { id: "main", schemaFile: "panels/main.json", title: "Linear", icon: "brand:linear" },
+    { id: "issues", schemaFile: "panels/issues.json", title: "Linear", icon: "brand:linear", refreshAction: "refreshIssues" },
+    { id: "issue", schemaFile: "panels/issue.json", title: "Issue", icon: "brand:linear", refreshAction: "refreshIssue" },
+    { id: "settings", schemaFile: "panels/settings.json", title: "Linear connection", icon: "brand:linear", refreshAction: "refreshConnection" },
     { id: "launch", schemaFile: "panels/launch.json", title: "Launch", icon: "rocket" },
   ],
   // `sync: false` is a decision, not an omission. Comments and webhook
@@ -621,30 +624,77 @@ const LINEAR = manifest({
 
 const IOS_SIM = manifest({
   name: "ade-ios-sim",
-  version: "1.0.1",
+  version: "1.1.0",
   displayName: "iOS Simulator",
-  description: "Drive an iOS Simulator from the Work tools, on a Mac.",
+  description: "Drive an iOS Simulator from ADE — the same simulator pane ADE already ships, as a plugin.",
   icon: "device-mobile",
   accent: "#8A8F98",
-  surfaces: [{ kind: "pane", id: "ios-sim", title: "iOS Simulator", icon: "device-mobile", panelId: "main", builtin: "ios", mobile: false }],
-  panels: [{ id: "main", schemaFile: "panels/main.json", title: "iOS Simulator" }],
-  // A gate that still ships something an agent reads: the package carries an
-  // agent-skill directory, and "adds an agent skill" is a line on the install
-  // card, so leaving it off understated a plugin that is otherwise a switch.
+  entry: "index.js",
+  panels: [{
+    id: "main",
+    schemaFile: "panels/main.json",
+    title: "iOS Simulator",
+    icon: "device-mobile",
+    refreshAction: "refreshStatus",
+  }],
+  sockets: [
+    { socket: "work-rail-pane", surface: "work", id: "sim-pane", label: "iOS Sim", icon: "device-mobile", panelId: "main" },
+    { socket: "command-palette-action", surface: "app", id: "palette-sim", label: "iOS Simulator", icon: "device-mobile", actionId: "openSimulator" },
+  ],
+  collections: {
+    status: { sync: true },
+  },
+  tools: [
+    {
+      name: "get_status",
+      description: "Read iOS Simulator status on this machine — whether it is a Mac, the live device, and the attached chat.",
+      action: "getStatusTool",
+      input: {
+        type: "object",
+        properties: {},
+        required: [],
+      },
+    },
+  ],
+  cli: [],
   skills: ["skills"],
 });
 
 const APP_CONTROL = manifest({
   name: "ade-app-control",
-  version: "1.0.1",
+  version: "1.1.0",
   displayName: "Electron Control",
-  description: "Drive and inspect Electron apps from the Work tools.",
+  description: "Drive and inspect Electron apps — the same Electron Control ADE already ships, as a plugin.",
   icon: "desktop",
   accent: "#47848F",
-  surfaces: [{ kind: "pane", id: "app-control", title: "Electron Control", icon: "desktop", panelId: "main", builtin: "app-control", mobile: false }],
-  panels: [{ id: "main", schemaFile: "panels/main.json", title: "Electron Control" }],
-  // Same as `ade-ios-sim`: a compiled pane, plus a skill directory the agent
-  // gets on install. Both belong on the card.
+  entry: "index.js",
+  panels: [{
+    id: "main",
+    schemaFile: "panels/main.json",
+    title: "Electron Control",
+    icon: "desktop",
+    refreshAction: "refreshStatus",
+  }],
+  sockets: [
+    { socket: "work-rail-pane", surface: "work", id: "control-pane", label: "Electron Control", icon: "desktop", panelId: "main" },
+    { socket: "command-palette-action", surface: "app", id: "palette-control", label: "Electron Control", icon: "desktop", actionId: "openControl" },
+  ],
+  collections: {
+    status: { sync: true },
+  },
+  tools: [
+    {
+      name: "get_status",
+      description: "Read Electron Control status on this machine — attached session, CDP port, and whether this host can drive an app.",
+      action: "getStatusTool",
+      input: {
+        type: "object",
+        properties: {},
+        required: [],
+      },
+    },
+  ],
+  cli: [],
   skills: ["skills"],
 });
 
@@ -680,10 +730,7 @@ const LOG_VIEWER = manifest({
 /**
  * Voice, which gates nothing.
  *
- * The other entries above are gates: a compiled surface that appears when the
- * plugin is installed. This one is the opposite demonstration, and it is worth
- * being explicit about because it is the more important of the two. Dictation
- * is a `composer-action` socket, a `captureClip` SDK call and an
+ * Dictation is a `composer-action` socket, a `captureClip` SDK call and an
  * `{composer:{insertText}}` response — three public primitives, no `builtin`
  * binding, nothing an author outside this repository could not have written.
  * If that ever stops being true, the extraction it proves has regressed.
@@ -768,9 +815,13 @@ const CURSOR_CLOUD = manifest({
       socket: "composer-action",
       surface: "work",
       id: "send-to-cloud",
-      label: "Launch in Cursor Cloud",
+      label: "Cursor Cloud",
       icon: "cloud",
       actionId: "openLaunch",
+      ownsSend: true,
+      menu: [
+        { label: "Advanced launch…", actionId: "openLaunch", icon: "cloud" },
+      ],
     },
     {
       socket: "chat-header-action",
@@ -1614,15 +1665,16 @@ export const MARKETPLACE_LOCAL_INDEX: readonly MarketplaceListing[] = [
       "Run an iOS Simulator beside your work: launch a build, tap and type in it,",
       "take screenshots, and hand what you see to a chat.",
       "",
-      "Install it and the simulator pane and its chat button are there; remove it and",
-      "they are gone.",
+      "This plugin replaces ADE's compiled Simulator pane. Install it and the Work",
+      "tools talk to this package. Disable it and the compiled pane comes back.",
       "",
       "### Notes",
       "",
-      "- Macs only, and it needs Xcode. On anything else the pane stays hidden even",
-      "  with the plugin installed.",
-      "- Driving the simulator stays inside ADE rather than being published as a",
-      "  panel, because it holds a running app and a video stream open.",
+      "- Macs only, and it needs Xcode. On anything else the compiled pane stays",
+      "  hidden even with the plugin installed.",
+      "- The simctl/idb engine stays in ADE. Desktop mounts the host Simulator pane;",
+      "  phone and terminal list a status row pointing at the Mac.",
+      "- Agents keep using `ade ios-sim`. Those verbs stay on the host.",
     ].join("\n"),
   }),
   listing(APP_CONTROL, {
@@ -1633,17 +1685,16 @@ export const MARKETPLACE_LOCAL_INDEX: readonly MarketplaceListing[] = [
       "Point ADE at an Electron app and watch it work: click and type in it, read its",
       "logs, answer its prompts, and pull a screenshot back into a chat.",
       "",
-      "Install it and the Electron Control pane and its chat button are there; remove",
-      "it and they are gone.",
+      "This plugin replaces ADE's compiled Electron Control pane. Install it and the",
+      "Work tools talk to this package. Disable it and the compiled pane comes back.",
       "",
       "### Notes",
       "",
       "- It drives over the Chrome DevTools Protocol, so the app has to be Electron or",
       "  Chromium — a native desktop app has nothing to attach to.",
-      "- Runs on the machine you are attached to, and asks that machine for permission",
-      "  the first time it needs it.",
-      "- Driving an app stays inside ADE rather than being published as a panel,",
-      "  because it holds a live connection to a running program.",
+      "- The CDP engine stays in ADE. Desktop mounts the host Control pane; phone and",
+      "  terminal list a status row pointing at the attached computer.",
+      "- Agents keep using `ade app-control`. Those verbs stay on the host.",
     ].join("\n"),
   }),
   listing(LOG_VIEWER, {

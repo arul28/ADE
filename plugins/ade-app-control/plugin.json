@@ -1,31 +1,55 @@
 {
   "name": "ade-app-control",
-  "version": "1.0.1",
+  "version": "1.1.0",
   "displayName": "Electron Control",
-  "description": "Drive and inspect Electron apps from the Work tools.",
+  "description": "Drive and inspect Electron apps — the same Electron Control ADE already ships, as a plugin.",
   "icon": "desktop",
   "accent": "#47848F",
   "vocabVersion": 1,
-  "surfaces": [
-    {
-      "kind": "pane",
-      "id": "app-control",
-      "title": "Electron Control",
-      "icon": "desktop",
-      "panelId": "main",
-      "builtin": "app-control",
-      "mobile": false
-    }
-  ],
+  "entry": "index.js",
   "panels": [
     {
       "id": "main",
       "schemaFile": "panels/main.json",
-      "title": "Electron Control"
+      "title": "Electron Control",
+      "icon": "desktop",
+      "refreshAction": "refreshStatus"
     }
   ],
-  "skills": [
-    "skills"
+  "sockets": [
+    {
+      "socket": "work-rail-pane",
+      "surface": "work",
+      "id": "control-pane",
+      "label": "Electron Control",
+      "icon": "desktop",
+      "panelId": "main"
+    },
+    {
+      "socket": "command-palette-action",
+      "surface": "app",
+      "id": "palette-control",
+      "label": "Electron Control",
+      "icon": "desktop",
+      "actionId": "openControl"
+    }
   ],
+  "collections": {
+    "status": { "sync": true }
+  },
+  "tools": [
+    {
+      "name": "get_status",
+      "description": "Read Electron Control status on this machine — attached session, CDP port, and whether this host can drive an app.",
+      "action": "getStatusTool",
+      "input": {
+        "type": "object",
+        "properties": {},
+        "required": []
+      }
+    }
+  ],
+  "cli": [],
+  "skills": ["skills"],
   "official": true
 }

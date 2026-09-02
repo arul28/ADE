@@ -31,10 +31,10 @@ function manifest(overrides: Record<string, unknown>): Record<string, unknown> {
 const iosSurface = { kind: "tab", id: "sim", title: "iOS Simulator", panelId: "main", builtin: "ios" };
 
 describe("manifest builtin surfaces", () => {
-  it("honours builtin on an official manifest", () => {
+  it("refuses builtin on iOS Simulator because that surface supersedes", () => {
     const parsed = parsePluginManifest(manifest({ official: true, surfaces: [iosSurface] }));
-    expect(parsed.errors).toEqual([]);
-    expect(parsed.manifest?.surfaces[0]?.builtin).toBe("ios");
+    expect(parsed.manifest?.surfaces[0]?.builtin).toBeUndefined();
+    expect(parsed.warnings.join(" ")).toContain("superseded surface");
   });
 
   it("drops builtin from a manifest that does not claim official tier", () => {
@@ -72,14 +72,17 @@ describe("manifest builtin surfaces", () => {
    * A gated built-in draws compiled code, so whether it appears on the phone is
    * a fact about what iOS ships — not something a manifest gets to assert.
    */
-  it("clamps mobile to what the phone has a page for", () => {
+  it("clamps mobile only while a builtin claim is honoured", () => {
+    // There is no enabling surface left to honour. `ios` supersedes, so the
+    // field is dropped before the ceiling runs and what remains is an ordinary
+    // tab — which is mobile-capable.
     const parsed = parsePluginManifest(manifest({
       official: true,
       surfaces: [{ ...iosSurface, mobile: true }],
     }));
     expect(parsed.errors).toEqual([]);
-    expect(parsed.manifest?.surfaces[0]?.mobile).toBe(false);
-    expect(parsed.warnings.join(" ")).toContain("no page for");
+    expect(parsed.manifest?.surfaces[0]?.builtin).toBeUndefined();
+    expect(parsed.manifest?.surfaces[0]?.mobile).toBe(true);
   });
 
   it("has no mobile-capable built-in left for a manifest to name", () => {

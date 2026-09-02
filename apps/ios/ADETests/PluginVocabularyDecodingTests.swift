@@ -79,6 +79,8 @@ final class PluginVocabularyDecodingTests: XCTestCase {
           "emptyText": "No commits"
         },
         { "component": "canvas", "engine": "workspace", "bind": { "collection": "lanes" } },
+        { "component": "canvas", "engine": "electron-control", "bind": { "collection": "status" } },
+        { "component": "canvas", "engine": "simulator", "bind": { "collection": "status" } },
         { "component": "canvas", "engine": "map", "bind": { "collection": "x" } },
         { "component": "canvas", "engine": "git-dag" }
       ]
@@ -94,8 +96,16 @@ final class PluginVocabularyDecodingTests: XCTestCase {
     XCTAssertEqual(workspace.engine, .workspace)
     XCTAssertEqual(workspace.bind?.collection, "lanes")
     XCTAssertTrue(PluginRenderSupport.isRenderable(schema.body[1]))
-    if case .invalid = schema.body[2] {} else { XCTFail("unknown engine must not parse") }
-    if case .invalid = schema.body[3] {} else { XCTFail("canvas without bind must not parse") }
+    guard case let .canvas(electronControl) = schema.body[2] else { return XCTFail("expected electron-control canvas") }
+    XCTAssertEqual(electronControl.engine, .electronControl)
+    XCTAssertEqual(electronControl.bind?.collection, "status")
+    XCTAssertTrue(PluginRenderSupport.isRenderable(schema.body[2]))
+    guard case let .canvas(simulator) = schema.body[3] else { return XCTFail("expected simulator canvas") }
+    XCTAssertEqual(simulator.engine, .simulator)
+    XCTAssertEqual(simulator.bind?.collection, "status")
+    XCTAssertTrue(PluginRenderSupport.isRenderable(schema.body[3]))
+    if case .invalid = schema.body[4] {} else { XCTFail("unknown engine must not parse") }
+    if case .invalid = schema.body[5] {} else { XCTFail("canvas without bind must not parse") }
   }
 
   func testAvatarParsesAndFallsABlankName() throws {

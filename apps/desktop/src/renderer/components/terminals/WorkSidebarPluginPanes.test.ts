@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
 
-import { isAvailableWorkSidebarTab } from "./WorkSidebar";
+import { allowWorkRailPluginPane, buildWorkSidebarTabItems, isAvailableWorkSidebarTab, remapWorkRailTabAfterPolarity } from "./WorkSidebar";
 import { pluginPanelSlotId } from "../plugins/sockets/panelSlotId";
+import type { PluginPanelSlot } from "../plugins/sockets";
 import type { WorkSidebarTab } from "../../state/appStore";
 
 /**
@@ -58,5 +59,99 @@ describe("plugin panes in the Work rail", () => {
       ...withPane,
       builtinSurfaceVisible: (id) => id !== "ios",
     })).toBe(false);
+  });
+});
+
+describe("allowWorkRailPluginPane", () => {
+  it("hides Control and Simulator contributions on a remote project", () => {
+    expect(allowWorkRailPluginPane({ pluginId: "ade-app-control" }, { isRemoteProject: true, supportsIosSimulator: true })).toBe(false);
+    expect(allowWorkRailPluginPane({ pluginId: "ade-ios-sim" }, { isRemoteProject: true, supportsIosSimulator: true })).toBe(false);
+    expect(allowWorkRailPluginPane({ pluginId: "ade-history" }, { isRemoteProject: true, supportsIosSimulator: true })).toBe(true);
+  });
+
+  it("still requires a Mac for the Simulator contribution", () => {
+    expect(allowWorkRailPluginPane({ pluginId: "ade-ios-sim" }, { isRemoteProject: false, supportsIosSimulator: false })).toBe(false);
+    expect(allowWorkRailPluginPane({ pluginId: "ade-ios-sim" }, { isRemoteProject: false, supportsIosSimulator: true })).toBe(true);
+    expect(allowWorkRailPluginPane({ pluginId: "ade-app-control" }, { isRemoteProject: false, supportsIosSimulator: false })).toBe(true);
+  });
+});
+
+describe("remapWorkRailTabAfterPolarity", () => {
+  const simPane = { id: pluginPanelSlotId("ade-ios-sim", "main"), pluginId: "ade-ios-sim" };
+  const controlPane = { id: pluginPanelSlotId("ade-app-control", "main"), pluginId: "ade-app-control" };
+
+  it("moves a compiled Control/Sim tab onto the plugin pane once the owner hides it", () => {
+    const visible = (id: string) => id !== "ios";
+    expect(remapWorkRailTabAfterPolarity("ios", {
+      pluginPanes: [simPane, controlPane],
+      builtinSurfaceVisible: visible,
+    })).toBe(simPane.id);
+    expect(remapWorkRailTabAfterPolarity("app-control", {
+      pluginPanes: [simPane, controlPane],
+      builtinSurfaceVisible: visible,
+    })).toBe("app-control");
+  });
+
+  it("waits on the compiled id when the contribution has not landed yet", () => {
+    expect(remapWorkRailTabAfterPolarity("ios", {
+      pluginPanes: [],
+      builtinSurfaceVisible: () => false,
+    })).toBe("ios");
+  });
+
+  it("moves a Control/Sim plugin pane back onto the compiled tab once the owner is gone", () => {
+    expect(remapWorkRailTabAfterPolarity(simPane.id as WorkSidebarTab, {
+      pluginPanes: [],
+      builtinSurfaceVisible: () => true,
+    })).toBe("ios");
+    expect(remapWorkRailTabAfterPolarity(controlPane.id as WorkSidebarTab, {
+      pluginPanes: [],
+      builtinSurfaceVisible: () => true,
+    })).toBe("app-control");
+  });
+
+  it("leaves an ordinary plugin pane alone", () => {
+    const other = pluginPanelSlotId("ade-log-viewer", "viewer");
+    expect(remapWorkRailTabAfterPolarity(other as WorkSidebarTab, {
+      pluginPanes: [],
+      builtinSurfaceVisible: () => true,
+    })).toBe(other);
+  });
+});
+
+describe("buildWorkSidebarTabItems", () => {
+  function slot(pluginId: string, panelId: string, label: string): PluginPanelSlot {
+    return {
+      id: pluginPanelSlotId(pluginId, panelId),
+      key: `${pluginId}:${panelId}`,
+      pluginId,
+      panelId,
+      label,
+      icon: (() => null) as PluginPanelSlot["icon"],
+      displayName: label,
+    };
+  }
+
+  it("seats Control and Simulator plugin panes in the compiled slots, not after Browser", () => {
+    const sim = slot("ade-ios-sim", "main", "iOS Sim");
+    const control = slot("ade-app-control", "main", "Electron Control");
+    const other = slot("ade-log-viewer", "viewer", "Logs");
+    const items = buildWorkSidebarTabItems([other, control, sim], {
+      isRemoteProject: false,
+      supportsIosSimulator: true,
+      builtinSurfaceVisible: () => false,
+      pluginPaneIds: new Set([sim.id, control.id, other.id]),
+    });
+    expect(items.map((item) => item.label)).toEqual([
+      "Terminal",
+      "Git",
+      "Files",
+      "iOS Sim",
+      "Electron Control",
+      "Browser",
+      "Logs",
+    ]);
+    expect(items[3]?.id).toBe(sim.id);
+    expect(items[4]?.id).toBe(control.id);
   });
 });

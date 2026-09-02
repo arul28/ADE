@@ -648,13 +648,27 @@ export type VocabChartNode = {
  * - `workspace` — desktop mounts ADE's compiled workspace Graph page (React
  *   Flow). Bind is still required so phone and terminal list the same rows.
  *   The plugin never ships drawing code; this engine is a named host page.
+ * - `electron-control` — desktop mounts ADE's compiled Electron Control pane.
+ *   Phone and terminal list the bound status rows.
+ * - `simulator` — desktop mounts ADE's compiled iOS Simulator pane. Phone and
+ *   terminal list the bound status rows. The pane itself still needs a Mac.
  *
  * Bound row shape is the list row (`title`, `subtitle`, `onPress`, …) plus
  * engine fields the host reads without reshaping: `sha`/`parents` for git-dag,
- * `laneId`/`t` for swimlane, `x`/`y`/`source`/`target` for graph. `workspace`
- * ignores layout fields on desktop and reads ADE's own lane topology instead.
+ * `laneId`/`t` for swimlane, `x`/`y`/`source`/`target` for graph. `workspace`,
+ * `electron-control` and `simulator` ignore layout fields on desktop and read
+ * ADE's own host page instead.
  */
-export type VocabCanvasEngine = "git-dag" | "swimlane" | "graph" | "workspace";
+export const VOCAB_CANVAS_ENGINES = [
+  "git-dag",
+  "swimlane",
+  "graph",
+  "workspace",
+  "electron-control",
+  "simulator",
+] as const;
+
+export type VocabCanvasEngine = (typeof VOCAB_CANVAS_ENGINES)[number];
 
 export type VocabCanvasNode = {
   component: "canvas";
@@ -1704,9 +1718,9 @@ export const NODE_PARSERS: Record<string, VocabNodeParser> = {
   },
 
   canvas: (raw, ctx) => {
-    const engine = enumValue(raw.engine, ["git-dag", "swimlane", "graph", "workspace"] as const);
+    const engine = enumValue(raw.engine, VOCAB_CANVAS_ENGINES);
     if (engine === undefined) {
-      return ctx.invalid("`engine` must be `git-dag`, `swimlane`, `graph`, or `workspace`");
+      return ctx.invalid("`engine` must be `git-dag`, `swimlane`, `graph`, `workspace`, `electron-control`, or `simulator`");
     }
     const bind = raw.bind !== undefined ? ctx.binding(raw.bind) : null;
     if (bind === null) return ctx.invalid("`bind` is required");

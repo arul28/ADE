@@ -596,6 +596,8 @@ struct PluginVocabCanvas: Equatable {
     case swimlane
     case graph
     case workspace
+    case electronControl = "electron-control"
+    case simulator
   }
 
   var engine: Engine

@@ -74,13 +74,13 @@ afterEach(() => {
 });
 
 describe("resolveDisabledActionDomains", () => {
-  it("refuses every plugin-owned domain on a machine with no plugins", () => {
+  it("refuses no plugin-owned domain on a machine with no plugins", () => {
     const disabled = resolveDisabledActionDomains(writePluginsRoot({}));
 
-    // Only the two `"enables"` verticals. ADE never compiled a simulator pane
-    // or Electron Control, so there is nothing to keep serving and the whole
-    // domain is refused.
-    expect([...disabled].sort()).toEqual(["app_control", "ios_simulator"]);
+    // Every registered surface supersedes. ADE compiled the Control and
+    // Simulator verbs and still answers them, so an empty machine refuses
+    // nothing.
+    expect([...disabled]).toEqual([]);
   });
 
   it("never refuses a domain behind a superseded surface, whoever is installed", () => {
@@ -97,19 +97,12 @@ describe("resolveDisabledActionDomains", () => {
     }
   });
 
-  it("opens exactly the installed plugin's domains and no others", () => {
-    const disabled = resolveDisabledActionDomains(writePluginsRoot({ "ade-ios-sim": {} }));
-
-    expect(disabled.has("ios_simulator")).toBe(false);
-    expect(disabled.has("app_control")).toBe(true);
-  });
-
-  it("treats a disabled plugin as absent", () => {
-    const disabled = resolveDisabledActionDomains(
-      writePluginsRoot({ "ade-ios-sim": { enabled: false } }),
-    );
-
-    expect(disabled.has("ios_simulator")).toBe(true);
+  it("never refuses Control or Simulator domains, whoever is installed", () => {
+    for (const root of [writePluginsRoot({}), writePluginsRoot({ "ade-ios-sim": {} })]) {
+      const disabled = resolveDisabledActionDomains(root);
+      expect(disabled.has("ios_simulator")).toBe(false);
+      expect(disabled.has("app_control")).toBe(false);
+    }
   });
 
   it("never gates ADE's own domains", () => {
@@ -120,27 +113,20 @@ describe("resolveDisabledActionDomains", () => {
     }
   });
 
-  it("gates everything when the registry is unreadable rather than opening up", () => {
+  it("gates nothing when the registry is unreadable, because nothing is gated", () => {
     const root = scratchDir("ade-gated-corrupt-");
     fs.writeFileSync(path.join(root, "state.json"), "{ not json");
 
-    expect(resolveDisabledActionDomains(root).has("ios_simulator")).toBe(true);
+    expect([...resolveDisabledActionDomains(root)]).toEqual([]);
   });
 });
 
 describe("refusal copy", () => {
   it("names the plugin using the catalog's display name, not a hardcoded label", () => {
-    const denial = buildGatedDomainDenial("ios_simulator", () => "iOS Simulator");
-
-    expect(denial?.message).toBe(
+    expect(pluginNotInstalledMessage("ade-ios-sim", () => "iOS Simulator")).toBe(
       "This machine doesn't have iOS Simulator. It's provided by the ade-ios-sim plugin — available in the Marketplace.",
     );
-    expect(denial?.pluginId).toBe("ade-ios-sim");
-    expect(denial?.data).toEqual({
-      kind: "plugin_not_installed",
-      domain: "ios_simulator",
-      pluginId: "ade-ios-sim",
-    });
+    expect(buildGatedDomainDenial("ios_simulator", () => "iOS Simulator")).toBeNull();
   });
 
   it("invents no hint when no catalog can name the owner", () => {
@@ -160,11 +146,11 @@ describe("refusal copy", () => {
     expect(buildGatedDomainDenial("lane", () => "Anything")).toBeNull();
 
     const gated = allGatedActionDomains();
-    expect(gated.has("ios_simulator")).toBe(true);
-    expect(gated.has("app_control")).toBe(true);
+    expect(gated.has("ios_simulator")).toBe(false);
+    expect(gated.has("app_control")).toBe(false);
     expect(gated.has("lane")).toBe(false);
-    // Not gated, and that is the point: a superseded surface refuses nothing.
     expect(gated.has("linear_credentials")).toBe(false);
+    expect(gated.size).toBe(0);
   });
 
   it("says nothing about a domain no plugin owns", () => {
@@ -214,35 +200,21 @@ describe("refusal copy", () => {
 });
 
 describe("buildSurfaceUnavailableDenial", () => {
-  it("refuses an enabling surface whose plugin is absent", () => {
-    const denial = buildSurfaceUnavailableDenial("ios", {
-      pluginsRoot: writePluginsRoot({}),
-      lookupDisplayName: () => "iOS Simulator",
-    });
-
-    expect(denial?.pluginId).toBe("ade-ios-sim");
-    expect(denial?.message).toContain("ade-ios-sim plugin");
-  });
-
-  it("lets the call through once the enabling plugin is installed", () => {
+  it("lets a superseded Simulator through on a machine WITHOUT the plugin", () => {
     expect(buildSurfaceUnavailableDenial("ios", {
-      pluginsRoot: writePluginsRoot({ "ade-ios-sim": {} }),
+      pluginsRoot: writePluginsRoot({}),
       lookupDisplayName: () => "iOS Simulator",
     })).toBeNull();
   });
 
-  it("still refuses with a cold catalog — the catalog decides the advice, not the verdict", () => {
-    // Failing open here would leave every paired phone reading and writing
-    // through a plugin the machine no longer has, just because the display
-    // name was unavailable.
+  it("refuses a superseded Simulator once the plugin owns it", () => {
     const denial = buildSurfaceUnavailableDenial("ios", {
-      pluginsRoot: writePluginsRoot({}),
-      lookupDisplayName: () => null,
+      pluginsRoot: writePluginsRoot({ "ade-ios-sim": {} }),
+      lookupDisplayName: () => "iOS Simulator",
     });
 
     expect(denial?.pluginId).toBe("ade-ios-sim");
-    expect(denial?.message).toBe("This machine doesn't have the ade-ios-sim plugin.");
-    expect(denial?.message).not.toContain("Marketplace");
+    expect(denial?.message).toContain("ade-ios-sim plugin provides iOS Simulator");
   });
 
   /**
@@ -333,32 +305,19 @@ describe("plugin step refusal", () => {
 });
 
 describe("gatedDomainUnavailableReason", () => {
-  // The domain-shaped half of the same question, and the one that regressed:
-  // both automation registries answered it with `buildGatedDomainDenial` alone,
-  // which writes the sentence without ever checking install state. Every
-  // `ios_simulator` / `app_control` automation step then failed —
-  // telling the user to install a plugin they already had.
-  it("stays silent for a domain whose plugin is installed and enabled", () => {
+  it("stays silent for a domain no plugin refuses, installed or not", () => {
     expect(gatedDomainUnavailableReason("ios_simulator", {
       pluginsRoot: writePluginsRoot({ "ade-ios-sim": {} }),
       lookupDisplayName: () => "iOS Simulator",
     })).toBeNull();
-  });
-
-  it("refuses a domain whose plugin is installed but switched off", () => {
     expect(gatedDomainUnavailableReason("ios_simulator", {
       pluginsRoot: writePluginsRoot({ "ade-ios-sim": { enabled: false } }),
       lookupDisplayName: () => "iOS Simulator",
-    })).toContain("iOS Simulator");
-  });
-
-  it("refuses a domain whose plugin was never installed", () => {
+    })).toBeNull();
     expect(gatedDomainUnavailableReason("ios_simulator", {
       pluginsRoot: writePluginsRoot({}),
       lookupDisplayName: () => "iOS Simulator",
-    })).toBe(
-      "This machine doesn't have iOS Simulator. It's provided by the ade-ios-sim plugin — available in the Marketplace.",
-    );
+    })).toBeNull();
   });
 
   it("stays silent for a domain no plugin gates", () => {

@@ -3,13 +3,14 @@
   "title": "Electron Control",
   "fallback": {
     "title": "Electron Control",
-    "text": "Electron Control is drawn by ADE on the attached computer."
+    "text": "Open ADE on the attached computer to drive and inspect an Electron app.",
+    "deeplink": "ade://plugin/ade-app-control/main"
   },
   "body": [
     {
       "component": "emptyState",
-      "title": "Electron Control lives on the desktop",
-      "description": "Install this plugin on the attached computer to drive and inspect Electron apps from ADE.",
+      "title": "Loading Electron Control…",
+      "description": "Reading whether this machine can drive an Electron app.",
       "icon": "desktop"
     }
   ]

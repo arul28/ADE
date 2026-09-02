@@ -1,27 +1,25 @@
 /**
  * Compiled surfaces owned by official plugins.
  *
- * A manifest `builtin` contribution does not render a vocabulary panel. It
- * names a surface that is compiled into ADE — the iOS Simulator and Electron
- * Control panes — and says "installing me is what puts this in the product".
- * Graph, Review, History, Linear and Cursor Cloud run the other way: ADE
- * already ships them compiled, and the owner plugin replaces them.
+ * Graph, Review, History, Linear, Cursor Cloud, iOS Simulator and Electron
+ * Control all SUPERSEDE: ADE already ships them compiled, and the owner plugin
+ * replaces them. A manifest `builtin` contribution does not render a vocabulary
+ * panel — it names a compiled surface — and a superseding plugin may not set
+ * that field at all. The parser refuses the combination.
  *
- * ## Hidden is the default, and it is a default, not a fallback
+ * ## Shown is the default, and it is a default, not a fallback
  *
- * Every answer here starts at "not visible" and is moved only by a positive
- * fact: this host publishes plugins, its registry has resolved, and the
- * registered owner is in it and enabled. Before the registry loads, on a host
- * with no plugin support, after an uninstall, and while the owner is disabled,
- * the surface is absent — and those cases are indistinguishable on purpose, so
- * there is no state in which a surface appears because ADE was unsure.
+ * Every superseded answer starts at "visible" and is taken away only by a
+ * positive fact: this host publishes plugins, its registry has resolved, and
+ * the registered owner is in it and enabled. Before the registry loads, on a
+ * host with no plugin support, after an uninstall, and while the owner is
+ * disabled, the compiled surface stays — those cases are indistinguishable on
+ * purpose, so there is no state in which a shipped feature disappears because
+ * ADE was unsure.
  *
- * That is the reverse of how this file read in round 1, when the surfaces were
- * seeded onto every machine and hiding one had to be earned. Nothing is seeded
- * now, so there is no existing install to protect and no reason to remember
- * what was once seen: a machine with no plugins has no iOS Simulator pane, and
- * that is the correct product, not a degraded one. Graph, Review and History
- * SUPERSEDE, so the same unknowns leave those compiled tabs in place.
+ * The `enables` polarity remains in the table for a future vertical that only
+ * exists while a gating plugin is installed. Today every registered surface
+ * supersedes, so nothing uses it.
  *
  * ## Visibility is not the whole gate
  *

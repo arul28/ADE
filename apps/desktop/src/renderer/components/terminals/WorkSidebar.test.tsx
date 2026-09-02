@@ -375,7 +375,9 @@ describe("WorkSidebar context targets", () => {
       value: "MacIntel",
     });
     installAdeMock();
-    seedBuiltinSurfacePlugins(["ios", "app-control"]);
+    // Compiled Control and Simulator are default-on (supersedes). Seeding the
+    // owner plugins here would hide those panes, which is the opposite of what
+    // these tests describe.
   });
 
   afterEach(() => {
@@ -696,8 +698,8 @@ describe("WorkSidebar context targets", () => {
     expect(window.ade.iosSimulator.getStatus).not.toHaveBeenCalled();
   });
 
-  it("drops the plugin-owned panes and leaves the active one when the plugins go", async () => {
-    resetBuiltinSurfacePlugins();
+  it("hides compiled Control and Simulator once the owner plugins are installed", async () => {
+    seedBuiltinSurfacePlugins(["ios", "app-control"]);
     const onTabChange = vi.fn();
 
     renderSidebar({
@@ -713,7 +715,10 @@ describe("WorkSidebar context targets", () => {
     expect(screen.getByRole("button", { name: "Git" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Files" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Browser" })).toBeTruthy();
-    await waitFor(() => expect(onTabChange).toHaveBeenCalledWith("git"));
+    // The contribution has not landed, so the rail keeps the persisted `ios`
+    // id rather than writing Git over a pane the plugin is about to restore.
+    await waitFor(() => expect(screen.getByRole("button", { name: "Git" })).toBeTruthy());
+    expect(onTabChange).not.toHaveBeenCalled();
   });
 });
 
@@ -736,7 +741,7 @@ describe("isAvailableWorkSidebarTab", () => {
     }
   });
 
-  it("shows the plugin-owned panes only while their owner is installed", () => {
+  it("shows compiled Control and Simulator panes only while those compiled surfaces are visible", () => {
     expect(isAvailableWorkSidebarTab("ios", options())).toBe(true);
     expect(isAvailableWorkSidebarTab("app-control", options())).toBe(true);
 
@@ -750,7 +755,7 @@ describe("isAvailableWorkSidebarTab", () => {
     expect(isAvailableWorkSidebarTab("app-control", options({ builtinSurfaceVisible: onlyIos }))).toBe(false);
   });
 
-  it("still requires a Mac for the iOS pane once its plugin is installed", () => {
+  it("still requires a Mac for the compiled iOS pane", () => {
     expect(isAvailableWorkSidebarTab("ios", options({ supportsIosSimulator: false }))).toBe(false);
   });
 

@@ -709,7 +709,7 @@ extension PluginPanelParser {
           let engine = PluginVocabCanvas.Engine(rawValue: rawEngine) else {
       return invalid(
         "canvas",
-        "`engine` must be `git-dag`, `swimlane`, `graph`, or `workspace`",
+        "`engine` must be `git-dag`, `swimlane`, `graph`, `workspace`, `electron-control`, or `simulator`",
         path: path,
         context: &context
       )

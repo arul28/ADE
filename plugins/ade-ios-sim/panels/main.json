@@ -3,13 +3,14 @@
   "title": "iOS Simulator",
   "fallback": {
     "title": "iOS Simulator",
-    "text": "Simulator control is drawn by ADE on the attached Mac."
+    "text": "Open ADE on the attached Mac to drive a simulator.",
+    "deeplink": "ade://plugin/ade-ios-sim/main"
   },
   "body": [
     {
       "component": "emptyState",
-      "title": "The simulator needs a Mac",
-      "description": "Install this plugin on the attached Mac to drive a simulator from ADE.",
+      "title": "Loading iOS Simulator…",
+      "description": "Reading whether this Mac can drive a simulator.",
       "icon": "device-mobile"
     }
   ]

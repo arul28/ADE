@@ -30,13 +30,26 @@ const WorkspaceGraphPage = React.lazy(() =>
   })),
 );
 
+const ChatAppControlPanel = React.lazy(() =>
+  import("../chat/ChatAppControlPanel").then((module) => ({
+    default: module.ChatAppControlPanel,
+  })),
+);
+
+const ChatIosSimulatorPanel = React.lazy(() =>
+  import("../chat/ChatIosSimulatorPanel").then((module) => ({
+    default: module.ChatIosSimulatorPanel,
+  })),
+);
+
 /**
  * Host-rendered canvas engines for vocabulary v1.
  *
  * The plugin never ships drawing code. It writes rows; this file picks an
  * engine ADE already owns and paints. Phone and terminal never reach here —
- * they draw the same bound rows as a list. `workspace` is the compiled Graph
- * page itself: desktop mounts it; other clients still list the bound rows.
+ * they draw the same bound rows as a list. `workspace`, `electron-control` and
+ * `simulator` are compiled host pages: desktop mounts them; other clients still
+ * list the bound rows.
  */
 
 export function VocabCanvas({
@@ -55,6 +68,10 @@ export function VocabCanvas({
       return <GraphCanvas node={node} context={context} />;
     case "workspace":
       return <WorkspaceCanvas context={context} />;
+    case "electron-control":
+      return <HostEngineCanvas engine="electron-control" />;
+    case "simulator":
+      return <HostEngineCanvas engine="simulator" />;
     default: {
       const _exhaustive: never = node.engine;
       return <EmptyLine text={`Unknown canvas engine: ${String(_exhaustive)}`} />;
@@ -80,6 +97,47 @@ function WorkspaceCanvas({ context }: { context: VocabRenderContext }) {
     >
       <React.Suspense fallback={<EmptyLine text="Loading Graph…" />}>
         <WorkspaceGraphPage active={context.active} />
+      </React.Suspense>
+    </div>
+  );
+}
+
+function HostEngineCanvas({ engine }: { engine: "electron-control" | "simulator" }) {
+  // Bind is required so phone and TUI list the same status rows. Desktop mounts
+  // the compiled pane ADE already owns. Work rail still wires chat context
+  // itself when these plugins contribute a work-rail-pane; this path is the
+  // vocabulary mount (tests, a plugin tab, a deeplink).
+  const label = engine === "electron-control" ? "Electron Control" : "iOS Simulator";
+  return (
+    <div
+      data-vocab-canvas={engine}
+      style={{
+        flex: 1,
+        minHeight: 560,
+        minWidth: 0,
+        height: "100%",
+        overflow: "hidden",
+        display: "flex",
+        flexDirection: "column",
+      }}
+    >
+      <React.Suspense fallback={<EmptyLine text={`Loading ${label}…`} />}>
+        {engine === "electron-control" ? (
+          <ChatAppControlPanel
+            sessionId={null}
+            laneId={null}
+            projectRoot={null}
+            controlDisabledReason={null}
+          />
+        ) : (
+          <ChatIosSimulatorPanel
+            sessionId={null}
+            laneId={null}
+            projectRoot={null}
+            controlDisabledReason={null}
+            ignoreChatOwnership
+          />
+        )}
       </React.Suspense>
     </div>
   );

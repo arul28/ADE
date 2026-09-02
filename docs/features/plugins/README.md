@@ -1835,32 +1835,35 @@ moves the compiled surface.
 | `review` | `ade-review` | `supersedes` |
 | `history` | `ade-history` | `supersedes` |
 | `linear` | `ade-linear` | `supersedes` |
-| `ios` | `ade-ios-sim` | `enables` |
-| `app-control` | `ade-app-control` | `enables` |
+| `ios` | `ade-ios-sim` | `supersedes` |
+| `app-control` | `ade-app-control` | `supersedes` |
 | `cursor-cloud` | `ade-cursor-cloud` | `supersedes` |
 
 `enables` is the original relationship: the plugin is the only reason the
 surface exists, so ADE draws it only while the owner is installed and enabled,
 and every unknown — an unresolved registry, a host with no plugin support —
 hides it. There is no state in which a surface appears because ADE was unsure.
+No registered surface uses it today; the field stays so a future vertical can
+gate a compiled pane without inventing a second table.
 
-`supersedes` is the mirror, and five surfaces use it. ADE shipped a compiled
-Graph tab, a compiled fleet surface, a compiled Linear integration, a compiled
-Review tab and a compiled History tab long before those plugins existed, and
-`ade-graph`, `ade-cursor-cloud`, `ade-linear`, `ade-review` and `ade-history`
+`supersedes` is the mirror, and every registered surface uses it. ADE shipped a
+compiled Graph tab, a compiled fleet surface, a compiled Linear integration, a
+compiled Review tab, a compiled History tab and compiled Work panes for Control
+and Simulator long before those plugins existed, and the owner plugins
 **replace** them: their own header buttons, composer sockets, panels, row
-badges and settings sections stand where the built-in ones did. So ADE draws
-the compiled surface only while the owner is ABSENT, and every unknown draws
-it — a machine without the plugin must behave exactly as it did before the
-plugin existed, and hiding on an unresolved registry would blink a shipped
-feature off on every launch. Only a positive "the owner is here" takes it
-away, which is the same instant the plugin's own entry point appears, so the
-user never sees both at once.
+badges, settings sections and Work-rail entries stand where the built-in ones
+did. So ADE draws the compiled surface only while the owner is ABSENT, and
+every unknown draws it — a machine without the plugin must behave exactly as
+it did before the plugin existed, and hiding on an unresolved registry would
+blink a shipped feature off on every launch. Only a positive "the owner is
+here" takes it away, which is the same instant the plugin's own entry point
+appears, so the user never sees both at once.
 
-Linear was the one that had to CHANGE polarity first. Review, History and
-Graph follow the same template: take an ADE install that has no owner plugin,
-and it is the compiled tab it has always been; install the plugin, and every
-compiled surface for that product steps aside for the plugin's own.
+Linear was the one that had to CHANGE polarity first. Review, History, Graph,
+Electron Control and iOS Simulator follow the same template: take an ADE
+install that has no owner plugin, and it is the compiled product it has always
+been; install the plugin, and every compiled surface for that product steps
+aside for the plugin's own.
 
 The polarity also decides what a manifest may say. A `supersedes` surface is
 never named by `surfaces[].builtin`: that field means "ADE draws its compiled
@@ -1922,17 +1925,24 @@ installed), the PR-detail "ADE review" button, and `ade review` once the plugin
 declares those CLI words. Submit review on a GitHub PR stays — that is GitHub's
 own review, not ADE's. The engine (`review.*`) stays in core.
 
+What is gated for Electron Control and iOS Simulator: the compiled Work-rail
+tabs. Chat companion drawers stay compiled and host-gated (Mac / CDP) in both
+polarities, because adding to chat and PTY insert are the same wiring either
+way. Install the plugin and the Work rail mounts the same compiled pane through
+a `work-rail-pane` (no attribution chrome, native rail colour). Disable it and
+the compiled tab id comes back. Phone and terminal list a bound status row;
+they never compiled those panes. `ade app-control` and `ade ios-sim` stay on
+the host.
+
 ### Agent tooling
 
 An `enables` plugin's ADE action domains leave with it. `BUILTIN_SURFACE_OWNERS`
 in `shared/plugins/builtinSurfaces.ts` carries an `actionDomains` list per
-surface — `ade-ios-sim` owns `ios_simulator`, `ade-app-control` owns
-`app_control` — and `resolveDisabledActionDomains()` turns that plus the install
-registry into the set to refuse. Graph and History list nothing: they are
-views over state other domains already own, so there is nothing of theirs to
-refuse. Review lists nothing in `actionDomains` either — the plugin's tools
-call `review.*`, so those verbs stay dispatching — and withholds them by name
-like Linear.
+surface, and `resolveDisabledActionDomains()` turns that plus the install
+registry into the set to refuse. Every registered surface supersedes today, so
+that list is empty: Graph, History, Control and Simulator are views over host
+engines, and Review/Linear withhold verbs by name rather than refusing a
+domain.
 
 A `supersedes` surface refuses NOTHING, and gets a second mechanism instead. The
 owner row carries an `actionNames` list of `"<domain>.<action>"` strings, and
@@ -1965,10 +1975,10 @@ asks `builtinSurfaceDrawn`, not `builtinSurfaceInstalled`, so a paired phone
 reaches ADE's compiled Linear commands on a machine with no plugin and is told to
 use the plugin's own screen on a machine that has one. The two refusals read
 opposite ways, which is why the function is named for the surface being
-unavailable rather than missing: an `enables` surface answers "this machine
-doesn't have the `ade-ios-sim` plugin", and a `supersedes` one answers "the
-`ade-linear` plugin provides Linear on this computer. Open it from the plugin's
-own screen." Telling the user to install a plugin that has already arrived and
+unavailable rather than missing: an `enables` surface would answer "this machine
+doesn't have the plugin", and a `supersedes` one answers "the `ade-linear`
+plugin provides Linear on this computer. Open it from the plugin's own
+screen." Telling the user to install a plugin that has already arrived and
 taken the surface over would be the opposite of the truth. A null answer means
 only "ADE still draws this surface here" — a cold catalog never becomes a pass,
 because a sync command has no generic fallback and failing open would leave every
@@ -2131,20 +2141,17 @@ is where that stands today, on this branch.
 | `ade-graph` | `supersedes` | real plugin | A real plugin. Desktop mounts ADE's compiled workspace Graph (`canvas` / `workspace`); phone and TUI list the same bound lane rows. The React Flow engine stays in core. Phone and TUI get vocabulary panels; compiled Graph was desktop-only. |
 | `ade-review` | `supersedes` | real plugin | A real plugin. Run list, launch form, findings, learnings, PR toolbar, agent tools and `ade review`. The engine stays in core. Phone and TUI get vocabulary panels; compiled Review was desktop-only. |
 | `ade-history` | `supersedes` | real plugin | A real plugin. Commit DAG (`canvas` / `git-dag`), activity list, commit git verbs, agent tools and `ade history activity`. The git and operation engines stay in core. Phone and TUI get vocabulary panels; compiled History was desktop-only. |
-| `ade-ios-sim` | `enables` | 0 | Gating shell, plus an agent-skills directory |
-| `ade-app-control` | `enables` | 0 | Gating shell, plus an agent-skills directory |
+| `ade-ios-sim` | `supersedes` | real plugin | A real plugin. Desktop mounts ADE's compiled Simulator pane (`canvas` / `simulator`); phone and terminal list a status row. simctl/idb stay in core. Compiled Simulator was Mac-only. |
+| `ade-app-control` | `supersedes` | real plugin | A real plugin. Desktop mounts ADE's compiled Electron Control pane (`canvas` / `electron-control`); phone and terminal list a status row. CDP stays in core. |
 
 `plugins/` also holds two plugins that are not part of the extraction — `ade-voice`
 (1,659 lines) and `ade-log-viewer` (489) — plus three themes. They add capability
 rather than replacing a compiled surface, so neither polarity applies to them.
 
-A **gating shell** ships no executable code at all. It exists only so that
-installing it unlocks a surface ADE already compiled, and disabling it hides that
-surface again. `ade-ios-sim` and `ade-app-control` are the remaining shells.
-Turning one into a real `supersedes` plugin — a plugin that re-implements the
-compiled feature on desktop AND mobile, so that the compiled version steps
-aside on install and returns on disable — is the remaining work. Linear is the
-worked example and its flip is the template.
+Every extracted product is a real `supersedes` plugin. A **gating shell** — a
+package that ships no code and only unlocks a compiled surface — is no longer
+the shape of any official plugin. The `enables` polarity stays in the table so a
+future vertical can gate a compiled pane without inventing a second table.
 
 **The acceptance test.** One build, every plugin installable, and for each of
 them:

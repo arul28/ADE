@@ -7,12 +7,12 @@ Marketplace shows.
 
 ```
 plugins/
-  ade-graph/            gates the built-in Graph tab
+  ade-graph/            ADE's Graph product (supersedes the compiled Graph tab)
   ade-review/           ADE's AI review product (supersedes the compiled Review tab)
   ade-history/          ADE's History product (supersedes the compiled History tab)
-  ade-linear/           gates the Linear pane in Work
-  ade-ios-sim/          gates the iOS Simulator pane in Work
-  ade-app-control/      gates the Electron Control pane in Work
+  ade-linear/           ADE's Linear product (supersedes the compiled Linear pane)
+  ade-ios-sim/          ADE's iOS Simulator product (supersedes the compiled Work pane)
+  ade-app-control/      ADE's Electron Control product (supersedes the compiled Work pane)
   ade-log-viewer/       renders .log and .ndjson in the Files tab
   themes/
     ade-theme-paper/    warm paper light

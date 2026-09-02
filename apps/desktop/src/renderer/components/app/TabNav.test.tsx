@@ -89,8 +89,8 @@ describe("TabNav", () => {
     expect(screen.getByRole("link", { name: "Review" }).getAttribute("aria-disabled")).toBe("true");
   });
 
-  it("leaves enabling plugin tabs out of the rail on a machine with no plugins", () => {
-    // iOS Simulator and Electron Control stay hidden until their plugins land.
+  it("keeps compiled Graph, Review and History on a machine with no plugins", () => {
+    // Control and Simulator live in the Work rail, not this nav.
     // Graph, Review and History are compiled tabs ADE already ships, so a
     // fresh install still has them.
     render(

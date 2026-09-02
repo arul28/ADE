@@ -16,6 +16,16 @@ vi.mock("../graph/WorkspaceGraphPage", () => ({
     React.createElement("div", { "data-testid": "workspace-graph-page" }, active === false ? "idle" : "workspace graph"),
 }));
 
+vi.mock("../chat/ChatAppControlPanel", () => ({
+  ChatAppControlPanel: () =>
+    React.createElement("div", { "data-testid": "chat-app-control-panel" }, "electron control"),
+}));
+
+vi.mock("../chat/ChatIosSimulatorPanel", () => ({
+  ChatIosSimulatorPanel: () =>
+    React.createElement("div", { "data-testid": "chat-ios-simulator-panel" }, "simulator"),
+}));
+
 /**
  * These cover the one promise the renderer makes that a type system cannot:
  * a panel is never blank and never takes the tab down with it. Everything else
@@ -255,6 +265,46 @@ describe("PluginPanelView", () => {
     expect(await screen.findByTestId("workspace-graph-page")).toBeTruthy();
     expect(document.querySelector('[data-vocab-canvas="workspace"]')).toBeTruthy();
     expect(screen.getByText("workspace graph")).toBeTruthy();
+  });
+
+  it("mounts the host Electron Control pane for an electron-control canvas", async () => {
+    render(
+      <PluginPanelView
+        schema={{
+          v: 1,
+          fallback: { title: "T", text: "B" },
+          body: [{
+            component: "canvas",
+            engine: "electron-control",
+            bind: { collection: "status" },
+          }],
+        }}
+        context={makeContext()}
+      />,
+    );
+
+    expect(await screen.findByTestId("chat-app-control-panel")).toBeTruthy();
+    expect(document.querySelector('[data-vocab-canvas="electron-control"]')).toBeTruthy();
+  });
+
+  it("mounts the host iOS Simulator pane for a simulator canvas", async () => {
+    render(
+      <PluginPanelView
+        schema={{
+          v: 1,
+          fallback: { title: "T", text: "B" },
+          body: [{
+            component: "canvas",
+            engine: "simulator",
+            bind: { collection: "status" },
+          }],
+        }}
+        context={makeContext()}
+      />,
+    );
+
+    expect(await screen.findByTestId("chat-ios-simulator-panel")).toBeTruthy();
+    expect(document.querySelector('[data-vocab-canvas="simulator"]')).toBeTruthy();
   });
 
   it("draws a rich row and keeps its trailing buttons out of the row's own press", async () => {

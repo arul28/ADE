@@ -181,6 +181,16 @@ describe("parsePluginPanel — valid schemas", () => {
         bind: { collection: "lanes" },
         onSelect: { action: "openLane" },
       },
+      {
+        component: "canvas",
+        engine: "electron-control",
+        bind: { collection: "status" },
+      },
+      {
+        component: "canvas",
+        engine: "simulator",
+        bind: { collection: "status" },
+      },
       { component: "canvas", engine: "map", bind: { collection: "x" } },
       { component: "canvas", engine: "git-dag" },
     ]));
@@ -205,13 +215,25 @@ describe("parsePluginPanel — valid schemas", () => {
       bind: { collection: "lanes" },
       onSelect: { action: "openLane" },
     });
-    expect(result.panel.body[3]).toMatchObject({ component: "__invalid", name: "canvas" });
-    expect(result.panel.body[4]).toMatchObject({ component: "__invalid", name: "canvas" });
+    expect(result.panel.body[3]).toMatchObject({
+      component: "canvas",
+      engine: "electron-control",
+      bind: { collection: "status" },
+    });
+    expect(result.panel.body[4]).toMatchObject({
+      component: "canvas",
+      engine: "simulator",
+      bind: { collection: "status" },
+    });
+    expect(result.panel.body[5]).toMatchObject({ component: "__invalid", name: "canvas" });
+    expect(result.panel.body[6]).toMatchObject({ component: "__invalid", name: "canvas" });
     expect(collectVocabBindings(result.panel.body)).toEqual([
       { collection: "commits", allowActions: ["openCommit"] },
       { collection: "nodes" },
       { collection: "edges" },
       { collection: "lanes" },
+      { collection: "status" },
+      { collection: "status" },
     ]);
   });
 });

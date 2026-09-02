@@ -19,9 +19,9 @@ import { builtinSurfacePresence } from "../../../shared/plugins/builtinSurfaces"
  *
  * The asymmetry is the whole point and is asserted from both sides: showing an
  * `enables` surface takes three positive facts, and hiding it takes any single
- * one of them being missing. Graph, Review and History SUPERSEDE: a machine
- * with no plugins still has those compiled tabs, and installing the owner
- * hides the compiled page in favour of the plugin's own.
+ * one of them being missing. Every registered surface SUPERSEDES today: a
+ * machine with no plugins still has those compiled tabs and Work panes, and
+ * installing the owner hides the compiled page in favour of the plugin's own.
  */
 
 function plugin(overrides: Partial<InstalledPlugin> = {}): InstalledPlugin {
@@ -140,24 +140,25 @@ describe("gate ownership", () => {
     expect(isBuiltinTabVisible("/graph", input({ plugins: [impostor] }))).toBe(true);
   });
 
-  it("still lets an enabling owner claim its compiled pane", () => {
-    expect(pluginOwnsBuiltinTab(iosPlugin())).toBe(true);
-    expect(claimedBuiltinGate(iosPlugin())?.builtinId).toBe("ios");
+  it("does not let a superseding Simulator plugin claim the compiled pane", () => {
+    expect(pluginOwnsBuiltinTab(iosPlugin())).toBe(false);
+    expect(claimedBuiltinGate(iosPlugin())).toBeNull();
   });
 
-  it("trusts the registered enabling owner on a host that reports no builtin field", () => {
+  it("does not trust a registered Simulator owner that reports no builtin field", () => {
     const older = iosPlugin({ tabs: [{ id: "ios", title: "iOS Simulator", panelId: "main" }] });
-    expect(pluginOwnsBuiltinTab(older)).toBe(true);
+    expect(pluginOwnsBuiltinTab(older)).toBe(false);
+    expect(claimedBuiltinGate(older)).toBeNull();
   });
 
-  it("does not treat an enabling owner's ordinary second tab as a gate", () => {
+  it("does not treat a Simulator plugin's ordinary tab as a gate", () => {
     const withOtherTab = iosPlugin({
       tabs: [
         { id: "ios", title: "iOS Simulator", panelId: "main", builtin: "ios" },
         { id: "extra", title: "Extra", panelId: "extra", builtin: null },
       ],
     });
-    expect(claimedBuiltinGate(withOtherTab)?.builtinId).toBe("ios");
+    expect(claimedBuiltinGate(withOtherTab)).toBeNull();
   });
 
   it("does not route a Graph plugin page to the compiled tab", () => {
@@ -260,11 +261,15 @@ describe("a superseded builtin surface", () => {
     expect(builtinRouteForPluginRoute("ade-cursor-cloud", [installed])).toBeNull();
   });
 
-  it("leaves every enabling surface on the original polarity", () => {
+  it("leaves no enabling surface on the original polarity", () => {
     const withCursorCloud = input({ plugins: [cursorCloudPlugin()] });
     for (const builtinId of PLUGIN_BUILTIN_SURFACE_IDS) {
-      if (builtinSurfacePresence(builtinId) === "supersedes") continue;
-      expect(isBuiltinSurfaceVisible(builtinId, withCursorCloud), builtinId).toBe(false);
+      expect(builtinSurfacePresence(builtinId), builtinId).toBe("supersedes");
+      if (builtinId === "cursor-cloud") {
+        expect(isBuiltinSurfaceVisible(builtinId, withCursorCloud)).toBe(false);
+        continue;
+      }
+      expect(isBuiltinSurfaceVisible(builtinId, withCursorCloud), builtinId).toBe(true);
     }
   });
 });

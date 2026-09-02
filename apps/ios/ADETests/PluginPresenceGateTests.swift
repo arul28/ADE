@@ -373,56 +373,53 @@ final class PluginPresenceGateTests: XCTestCase {
     }
   }
 
-  // MARK: - The `.enables` surfaces keep their polarity
+  // MARK: - Every registered surface supersedes
 
-  /// An `.enables` surface reads `drawsBuiltin` and `owns` the same way in every
-  /// state the table above enumerates.
-  ///
-  /// `.graph` stands for the whole `.enables` half: the phone has no compiled
-  /// Graph screen, so the plugin is the only thing that could put one there, and
-  /// every unknown must hide. `drawsBuiltin` is the predicate the entry points
-  /// call, so it has to agree with `owns` here — including in the unknowns,
-  /// which is exactly where the two polarities disagree and where a mistake
-  /// would silently invert a surface.
-  func testEnablesSurfacesDrawExactlyWhenTheyAreOwned() async {
+  /// Graph used to stand for the `.enables` half. It does not any more: the
+  /// compiled Graph tab is default-on, and installing `ade-graph` hides it.
+  /// Simulator and Electron Control now read the same way.
+  func testSupersededSurfacesHideCompiledWhenOwned() async {
     let sync = FakePresenceSync()
     let gate = PluginPresenceGate(sync: sync)
 
-    // Before any answer.
     XCTAssertFalse(gate.owns(.graph))
-    XCTAssertFalse(gate.drawsBuiltin(.graph))
+    XCTAssertTrue(gate.drawsBuiltin(.graph))
+    XCTAssertTrue(gate.drawsBuiltin(.iosSimulator))
+    XCTAssertTrue(gate.drawsBuiltin(.appControl))
 
-    // Installed and enabled.
-    sync.reply = PluginPresenceListResult(plugins: [entry("ade-graph")])
+    sync.reply = PluginPresenceListResult(plugins: [
+      entry("ade-graph"),
+      entry("ade-ios-sim"),
+      entry("ade-app-control"),
+    ])
     await gate.refresh()
     XCTAssertTrue(gate.owns(.graph))
-    XCTAssertTrue(gate.drawsBuiltin(.graph))
+    XCTAssertFalse(gate.drawsBuiltin(.graph))
+    XCTAssertFalse(gate.drawsBuiltin(.iosSimulator))
+    XCTAssertFalse(gate.drawsBuiltin(.appControl))
 
-    // Installed but disabled.
     sync.reply = PluginPresenceListResult(plugins: [entry("ade-graph", enabled: false)])
     sync.triggerScope = "machine-a|1"
     await gate.refresh()
     XCTAssertFalse(gate.owns(.graph))
-    XCTAssertFalse(gate.drawsBuiltin(.graph))
+    XCTAssertTrue(gate.drawsBuiltin(.graph))
 
-    // Unreachable.
     sync.failure = FetchFailure.unreachable
     await gate.refresh()
-    XCTAssertFalse(gate.drawsBuiltin(.graph))
+    XCTAssertTrue(gate.drawsBuiltin(.graph))
+    XCTAssertTrue(gate.drawsBuiltin(.iosSimulator))
 
-    // Host too old to be asked.
     sync.failure = nil
     sync.supportsPluginPresenceList = false
     await gate.refresh()
-    XCTAssertFalse(gate.drawsBuiltin(.graph))
+    XCTAssertTrue(gate.drawsBuiltin(.graph))
   }
 
-  /// A machine with BOTH plugins moves each surface its own way at once, which
-  /// is the case a single shared boolean would get wrong.
-  ///
-  /// `ade-graph` enables a screen the phone does not compile, and `ade-linear`
-  /// replaces one it does. One reply, two surfaces, opposite results.
-  func testOneAnswerMovesTheTwoPolaritiesInOppositeDirections() async {
+  /// Installing two superseded plugins hides both compiled surfaces from one
+  /// reply. The gate used to have an `.enables` half (Graph) that moved the
+  /// other way; every registered surface supersedes now, so one reply hides
+  /// both.
+  func testOneAnswerHidesEveryOwnedCompiledSurface() async {
     let sync = FakePresenceSync()
     sync.reply = PluginPresenceListResult(plugins: [
       entry("ade-graph"),
@@ -434,10 +431,10 @@ final class PluginPresenceGateTests: XCTestCase {
 
     XCTAssertTrue(gate.owns(.graph))
     XCTAssertTrue(gate.owns(.linear))
-    XCTAssertTrue(gate.drawsBuiltin(.graph))
+    XCTAssertFalse(gate.drawsBuiltin(.graph))
     XCTAssertFalse(
       gate.drawsBuiltin(.linear),
-      "One reply must move an enabled surface up and a superseded one down."
+      "One reply must hide every owned compiled surface."
     )
   }
 
@@ -503,23 +500,23 @@ final class PluginPresenceGateTests: XCTestCase {
     XCTAssertEqual(sync.fetchCount, 2)
   }
 
-  /// The twin reads the same table `drawsBuiltin` does, so it must invert for an
-  /// `.enables` surface too. A polarity-blind awaited form is the trap this
-  /// replaces, and it would answer both of these the same way.
-  func testAwaitedGateKeepsTheEnablesPolarityToo() async {
+  /// The twin reads the same table `drawsBuiltin` does. Graph, Simulator and
+  /// Linear all supersede: an empty reply keeps the compiled affordance, and
+  /// installing the owner hides it.
+  func testAwaitedGateKeepsTheSupersedesPolarity() async {
     let installed = FakePresenceSync()
     installed.reply = PluginPresenceListResult(plugins: [entry("ade-graph")])
     let withPlugin = PluginPresenceGate(sync: installed)
     let graphWithPlugin = await withPlugin.awaitDrawsBuiltin(.graph)
-    XCTAssertTrue(graphWithPlugin, "An `.enables` surface exists only while its plugin does.")
+    XCTAssertFalse(graphWithPlugin, "A superseded surface hides once its plugin is here.")
 
     let bare = FakePresenceSync()
     bare.reply = PluginPresenceListResult(plugins: [])
     let withoutPlugin = PluginPresenceGate(sync: bare)
     let graphWithoutPlugin = await withoutPlugin.awaitDrawsBuiltin(.graph)
     let linearWithoutPlugin = await withoutPlugin.awaitDrawsBuiltin(.linear)
-    XCTAssertFalse(graphWithoutPlugin)
-    XCTAssertTrue(linearWithoutPlugin, "The same empty reply moves the two surfaces apart.")
+    XCTAssertTrue(graphWithoutPlugin)
+    XCTAssertTrue(linearWithoutPlugin, "The same empty reply keeps every compiled surface.")
   }
 
   // MARK: - Before the host's command catalog has arrived
@@ -697,7 +694,7 @@ final class PluginPresenceGateTests: XCTestCase {
   func testSurfacePolarityMatchesTheSharedPresenceTable() {
     XCTAssertEqual(
       PluginBuiltinSurface.allCases.map(\.presence),
-      [.supersedes, .supersedes, .supersedes, .supersedes, .enables, .enables, .supersedes]
+      [.supersedes, .supersedes, .supersedes, .supersedes, .supersedes, .supersedes, .supersedes]
     )
   }
 }

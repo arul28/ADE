@@ -638,17 +638,18 @@ describe("pane surfaces", () => {
     expect(parsed.warnings.join(" ")).toContain("not drawn by any client");
   });
 
-  it("keeps a pane that gates a compiled built-in, which ADE itself draws", () => {
-    // The iOS Simulator pane rather than Linear: `linear` supersedes now, and a
-    // superseded surface may not be named with `builtin` at all, so it can no
-    // longer stand for this shape.
+  it("refuses a pane that names a superseded built-in, because nothing honours the field", () => {
+    // `ios` supersedes now. Honouring `builtin` would suppress the plugin's own
+    // work-rail-pane and leave neither compiled pane nor plugin pane. The field
+    // is dropped, and a pane with nothing to gate is the inert shape.
     const parsed = parsePluginManifest(validManifest({
       name: "ade-ios-sim",
       official: true,
       surfaces: [{ kind: "pane", id: "ios", title: "iOS Simulator", panelId: "main", builtin: "ios" }],
     }));
-    expect(parsed.manifest!.surfaces).toHaveLength(1);
-    expect(parsed.manifest!.surfaces[0]).toMatchObject({ kind: "pane", builtin: "ios" });
+    expect(parsed.manifest!.surfaces).toEqual([]);
+    expect(parsed.warnings.join(" ")).toContain("superseded surface");
+    expect(parsed.warnings.join(" ")).toContain("work-rail-pane");
   });
 
   it("refuses a pane whose builtin was not honoured, rather than keeping it inert", () => {

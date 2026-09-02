@@ -7,18 +7,20 @@ the chat.
 It works over the Chrome DevTools Protocol, so it drives Electron and Chromium
 apps rather than native desktop apps.
 
-Electron Control was part of ADE itself until plugins existed. Nothing about it
-changed — it stopped being something everyone has to carry.
+This plugin replaces ADE's compiled Electron Control pane. Install it and the
+Work tools talk to this package. Disable it and the compiled pane comes back
+unchanged. The CDP engine stays in ADE.
 
 ### What it adds
 
-- The **Electron Control** pane in the Work tools, and its chat drawer.
+- The **Electron Control** pane in the Work tools.
+- A `get_status` tool. Click, type, launch and attach stay on `ade app-control`.
 
 ### Notes
 
 - It drives apps on the computer this project is attached to, so it is a desktop
-  pane. On a phone or in the terminal the plugin shows a card pointing there.
-- The pane is drawn by the desktop app rather than published as a panel, because
-  it owns a live connection to the app it is driving.
-- It runs no code at all: the card is `panels/main.json`, which ADE reads from
-  the manifest. Nothing is read, and nothing is stored.
+  pane. On a phone or in the terminal the plugin lists a status row pointing
+  there.
+- Desktop mounts ADE's compiled Control pane through a host canvas engine. Phone
+  and terminal never run CDP.
+- Agents keep using `ade app-control` — those verbs stay on the host.

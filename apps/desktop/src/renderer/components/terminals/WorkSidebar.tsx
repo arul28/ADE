@@ -51,9 +51,11 @@ import { useBuiltinGateInput } from "../plugins/useBuiltinTabs";
 import { isBuiltinSurfaceVisible } from "../plugins/builtinTabs";
 import {
   isPluginPanelSlotId,
+  parsePluginPanelSlotId,
   PluginSlotPanel,
   pluginSessionContext,
   usePluginPanelSlots,
+  type PluginPanelSlot,
 } from "../plugins/sockets";
 import type { PluginBuiltinSurfaceId } from "../../../shared/plugins/manifest";
 
@@ -119,9 +121,9 @@ function isRemoteWorkSidebarTab(tab: WorkSidebarTab): boolean {
 
 /**
  * Terminal, Git, Files and Browser are ADE itself and are never gated. iOS Sim
- * and Electron Control are compiled panes owned by plugins, so each needs its
- * owner installed and enabled on top of the host checks it already had —
- * a Mac with no iOS Simulator plugin has no iOS Sim tab.
+ * and Electron Control are compiled panes a plugin can replace, so each needs
+ * its compiled surface visible — or, once the owner is installed, the plugin's
+ * own work-rail-pane, which the rail then mounts as the same compiled pane.
  *
  * Pure on purpose: the caller passes the gate in, so the rail filter, the
  * fallback and the force-switch effect all ask the same question, and the
@@ -146,6 +148,117 @@ export function isAvailableWorkSidebarTab(
   if (tab === "app-control" && !options.builtinSurfaceVisible("app-control")) return false;
   if (options.isRemoteProject) return isRemoteWorkSidebarTab(tab);
   return tab !== "ios" || options.supportsIosSimulator;
+}
+
+const APP_CONTROL_PLUGIN_ID = "ade-app-control";
+const IOS_SIM_PLUGIN_ID = "ade-ios-sim";
+
+/** Which compiled Work pane a contributed slot should mount, if any. */
+export function hostEngineForPluginPane(
+  pane: Pick<PluginPanelSlot, "pluginId"> | null,
+): "app-control" | "ios" | null {
+  if (!pane) return null;
+  if (pane.pluginId === APP_CONTROL_PLUGIN_ID) return "app-control";
+  if (pane.pluginId === IOS_SIM_PLUGIN_ID) return "ios";
+  return null;
+}
+
+/**
+ * Control and Simulator still need a local machine. A remote checkout has
+ * nothing to attach a CDP session or a simulator to, and Simulator still
+ * needs a Mac.
+ */
+export function allowWorkRailPluginPane(
+  pane: Pick<PluginPanelSlot, "pluginId">,
+  options: { isRemoteProject: boolean; supportsIosSimulator: boolean },
+): boolean {
+  if (pane.pluginId === IOS_SIM_PLUGIN_ID) {
+    return !options.isRemoteProject && options.supportsIosSimulator;
+  }
+  if (pane.pluginId === APP_CONTROL_PLUGIN_ID) {
+    return !options.isRemoteProject;
+  }
+  return true;
+}
+
+/**
+ * Keep the user on the same product across the install flip.
+ *
+ * Compiled Control/Sim persist as `ios` / `app-control`. The plugin panes
+ * persist as `plugin:<id>:<panelId>`. Without this remap, installing the owner
+ * hides the compiled tab and the rail writes Git, and disabling it leaves a
+ * dead plugin id that also falls back to Git. Graph already does the same
+ * thing for `/graph` → `/plugin/ade-graph`.
+ */
+export function remapWorkRailTabAfterPolarity(
+  tab: WorkSidebarTab,
+  options: {
+    pluginPanes: readonly Pick<PluginPanelSlot, "id" | "pluginId">[];
+    builtinSurfaceVisible: (id: PluginBuiltinSurfaceId) => boolean;
+  },
+): WorkSidebarTab {
+  if (tab === "ios" || tab === "app-control") {
+    if (options.builtinSurfaceVisible(tab)) return tab;
+    const pane = options.pluginPanes.find((entry) => hostEngineForPluginPane(entry) === tab);
+    return pane ? pane.id as WorkSidebarTab : tab;
+  }
+  const parsed = typeof tab === "string" ? parsePluginPanelSlotId(tab) : null;
+  if (!parsed) return tab;
+  const compiled = hostEngineForPluginPane(parsed);
+  if (!compiled) return tab;
+  if (options.pluginPanes.some((entry) => entry.id === tab)) return tab;
+  if (options.builtinSurfaceVisible(compiled)) return compiled;
+  return tab;
+}
+
+/** Native rail colour and label when a contributed pane IS the compiled product. */
+export function workRailItemForPluginPane(
+  pane: PluginPanelSlot,
+): GlowMenuItem<WorkSidebarTab> {
+  const host = hostEngineForPluginPane(pane);
+  const native = host ? WORK_SIDEBAR_TABS.find((item) => item.id === host) : undefined;
+  return {
+    id: pane.id as WorkSidebarTab,
+    label: native?.label ?? pane.label,
+    icon: native?.icon ?? pane.icon,
+    gradient: native?.gradient ?? railGlow("--work-rail-plugin", 34),
+    color: native?.color ?? "var(--work-rail-plugin)",
+  };
+}
+
+/**
+ * The six built-ins in product order, with Control/Sim plugin panes sitting in
+ * the same slots the compiled tabs occupy. Other contributed panes still follow
+ * after Browser.
+ */
+export function buildWorkSidebarTabItems(
+  pluginPanes: readonly PluginPanelSlot[],
+  tabAvailability: {
+    isRemoteProject: boolean;
+    supportsIosSimulator: boolean;
+    builtinSurfaceVisible: (id: PluginBuiltinSurfaceId) => boolean;
+    pluginPaneIds?: ReadonlySet<string>;
+  },
+): Array<GlowMenuItem<WorkSidebarTab>> {
+  const items: Array<GlowMenuItem<WorkSidebarTab>> = [];
+  const seated = new Set<string>();
+  for (const item of WORK_SIDEBAR_TABS) {
+    if (isAvailableWorkSidebarTab(item.id, tabAvailability)) {
+      items.push(item);
+      continue;
+    }
+    const host = item.id === "ios" || item.id === "app-control" ? item.id : null;
+    if (!host) continue;
+    const pane = pluginPanes.find((entry) => hostEngineForPluginPane(entry) === host);
+    if (!pane) continue;
+    items.push(workRailItemForPluginPane(pane));
+    seated.add(pane.id);
+  }
+  for (const pane of pluginPanes) {
+    if (seated.has(pane.id)) continue;
+    items.push(workRailItemForPluginPane(pane));
+  }
+  return items;
 }
 
 export type WorkSidebarContextTarget =
@@ -307,10 +420,14 @@ export function WorkSidebar({
       : null),
     [activeSession],
   );
-  const pluginPanes = usePluginPanelSlots("work", "work-rail-pane", {
+  const contributedPanes = usePluginPanelSlots("work", "work-rail-pane", {
     active,
     context: railSessionContext,
   });
+  const pluginPanes = useMemo(
+    () => contributedPanes.filter((pane) => allowWorkRailPluginPane(pane, { isRemoteProject, supportsIosSimulator })),
+    [contributedPanes, isRemoteProject, supportsIosSimulator],
+  );
   const pluginPaneIds = useMemo(
     () => new Set(pluginPanes.map((pane) => pane.id)),
     [pluginPanes],
@@ -320,26 +437,18 @@ export function WorkSidebar({
     [builtinSurfaceVisible, isRemoteProject, pluginPaneIds, supportsIosSimulator],
   );
   const sidebarTabs = useMemo(
-    () => [
-      ...WORK_SIDEBAR_TABS.filter((item) => isAvailableWorkSidebarTab(item.id, tabAvailability)),
-      // Always after ADE's own six. Contributed panes carry no rail colour of
-      // their own: the `--work-rail-*` tokens name the product's tools, and a
-      // plugin borrowing one would claim to be a tool it is not.
-      ...pluginPanes.map((pane): GlowMenuItem<WorkSidebarTab> => ({
-        id: pane.id as WorkSidebarTab,
-        label: pane.label,
-        icon: pane.icon,
-        gradient: railGlow("--work-rail-plugin", 34),
-        color: "var(--work-rail-plugin)",
-      })),
-    ],
+    () => buildWorkSidebarTabItems(pluginPanes, tabAvailability),
     [pluginPanes, tabAvailability],
   );
-  const effectiveTab: WorkSidebarTab = isAvailableWorkSidebarTab(tab, tabAvailability) ? tab : "git";
+  const remappedTab = remapWorkRailTabAfterPolarity(tab, { pluginPanes, builtinSurfaceVisible });
+  const effectiveTab: WorkSidebarTab = isAvailableWorkSidebarTab(remappedTab, tabAvailability)
+    ? remappedTab
+    : "git";
   const selectedPluginPane = useMemo(
     () => pluginPanes.find((pane) => pane.id === effectiveTab) ?? null,
     [effectiveTab, pluginPanes],
   );
+  const hostEngineTab = hostEngineForPluginPane(selectedPluginPane);
 
   // A foreign chat's lane is absent from the tab-bound `lanes` array, so the
   // worktree path (and therefore iOS / App Control) resolved to null. Fall
@@ -365,9 +474,11 @@ export function WorkSidebar({
 
   // Also the uninstall path: the pane the user is sitting in can lose its
   // plugin mid-session, and `tabAvailability` changing is what moves them off
-  // it instead of leaving a rail with no matching tab.
+  // it instead of leaving a rail with a selected tab that has no matching
+  // entry. Control and Simulator remap onto the compiled tab rather than Git
+  // — `remapWorkRailTabAfterPolarity` is that hop.
   //
-  // A contributed pane is deliberately exempt from the WRITE. Contributions
+  // A contributed pane is deliberately exempt from a Git WRITE. Contributions
   // load a tick after the rail mounts, so a persisted plugin pane is
   // unavailable on the first render of every launch — and writing "git" there
   // would erase the user's selected pane before the plugin that owns it had a
@@ -376,11 +487,19 @@ export function WorkSidebar({
   // plugin that is genuinely gone simply never restores, and the stale id is
   // overwritten the next time a tab is picked.
   useEffect(() => {
+    if (remappedTab !== tab) {
+      onTabChange(remappedTab);
+      return;
+    }
     if (isPluginPanelSlotId(tab)) return;
+    // Installing the owner hides the compiled tab one tick before the
+    // contribution lands. Writing Git here would erase a Control/Sim
+    // selection the plugin pane is about to restore.
+    if ((tab === "ios" || tab === "app-control") && !builtinSurfaceVisible(tab)) return;
     if (!isAvailableWorkSidebarTab(tab, tabAvailability)) {
       onTabChange("git");
     }
-  }, [onTabChange, tab, tabAvailability]);
+  }, [builtinSurfaceVisible, onTabChange, remappedTab, tab, tabAvailability]);
 
   useEffect(() => {
     const el = sidebarRef.current;
@@ -408,7 +527,7 @@ export function WorkSidebar({
 
   useEffect(() => {
     if (!active) return undefined;
-    if (effectiveTab !== "app-control") return undefined;
+    if (effectiveTab !== "app-control" && hostEngineTab !== "app-control") return undefined;
     if (pinnedMachineOffline) return undefined;
     const appControl = window.ade?.appControl;
     if (!appControl?.getStatus || !appControl.onEvent) return undefined;
@@ -431,11 +550,11 @@ export function WorkSidebar({
       cancelled = true;
       unsubscribe();
     };
-  }, [active, effectiveTab, pinnedMachineOffline, runtimePin]);
+  }, [active, effectiveTab, hostEngineTab, pinnedMachineOffline, runtimePin]);
 
   useEffect(() => {
     if (!active) return undefined;
-    if (effectiveTab !== "ios") return undefined;
+    if (effectiveTab !== "ios" && hostEngineTab !== "ios") return undefined;
     if (pinnedMachineOffline) return undefined;
     const iosSimulator = window.ade?.iosSimulator;
     if (!iosSimulator?.getStatus || !iosSimulator.onEvent) return undefined;
@@ -458,14 +577,14 @@ export function WorkSidebar({
       cancelled = true;
       unsubscribe();
     };
-  }, [active, effectiveTab, pinnedMachineOffline, runtimePin]);
+  }, [active, effectiveTab, hostEngineTab, pinnedMachineOffline, runtimePin]);
 
   function resolveToolAttributionReason(): string | null {
     if (!laneId) return null;
-    if (effectiveTab === "app-control" && appControlSession?.laneId && appControlSession.laneId !== laneId) {
+    if ((effectiveTab === "app-control" || hostEngineTab === "app-control") && appControlSession?.laneId && appControlSession.laneId !== laneId) {
       return laneMismatchMessage("Electron Control", appControlSession.laneId, laneId, scopedLanes);
     }
-    if (effectiveTab === "ios" && iosSession?.laneId && iosSession.laneId !== laneId) {
+    if ((effectiveTab === "ios" || hostEngineTab === "ios") && iosSession?.laneId && iosSession.laneId !== laneId) {
       return laneMismatchMessage("iOS Simulator", iosSession.laneId, laneId, scopedLanes);
     }
     return null;
@@ -611,7 +730,7 @@ export function WorkSidebar({
     // Before the lane guard below: a plugin pane's subject is its own data and
     // the chat beside it, so it works in a window with no lane selected — which
     // is exactly the case a "no lane" placeholder would wrongly claim it needs.
-    if (selectedPluginPane) {
+    if (selectedPluginPane && !hostEngineTab) {
       return (
         <div className="min-h-0 flex-1 overflow-auto px-3 py-3">
           <PluginSlotPanel slot={selectedPluginPane} active={active} context={railSessionContext} />
@@ -737,7 +856,7 @@ export function WorkSidebar({
       );
     }
 
-    const panel = effectiveTab === "ios" ? (
+    const panel = (effectiveTab === "ios" || hostEngineTab === "ios") ? (
       <ChatIosSimulatorPanel
         key={`work-ios:${runtimePin?.key ?? "bound"}`}
         sessionId={panelSessionId}
@@ -795,6 +914,7 @@ export function WorkSidebar({
     terminalOwnerSessionId,
     railSessionContext,
     selectedPluginPane,
+    hostEngineTab,
   ]);
 
   return (

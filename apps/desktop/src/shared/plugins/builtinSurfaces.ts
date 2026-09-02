@@ -244,8 +244,27 @@ export const BUILTIN_SURFACE_OWNERS: readonly BuiltinSurfaceOwner[] = [
     actionDomains: [],
     actionNames: LINEAR_ACTION_NAMES,
   },
-  { builtinId: "ios", route: null, ownerPluginId: PLUGIN_BUILTIN_SURFACE_OWNER_IDS.ios, title: "iOS Simulator", actionDomains: ["ios_simulator"], actionNames: [] },
-  { builtinId: "app-control", route: null, ownerPluginId: PLUGIN_BUILTIN_SURFACE_OWNER_IDS["app-control"], title: "Electron Control", actionDomains: ["app_control"], actionNames: [] },
+  {
+    // Superseded: ADE shipped compiled Work panes, so `ade-ios-sim` replaces
+    // the Simulator pane rather than being the reason it exists. simctl/idb
+    // stay in core; this row gates the Work rail entry, not the engine.
+    builtinId: "ios",
+    route: null,
+    ownerPluginId: PLUGIN_BUILTIN_SURFACE_OWNER_IDS.ios,
+    title: "iOS Simulator",
+    actionDomains: [],
+    actionNames: [],
+  },
+  {
+    // Superseded: ADE shipped a compiled Electron Control pane, so
+    // `ade-app-control` replaces it. CDP stays in core.
+    builtinId: "app-control",
+    route: null,
+    ownerPluginId: PLUGIN_BUILTIN_SURFACE_OWNER_IDS["app-control"],
+    title: "Electron Control",
+    actionDomains: [],
+    actionNames: [],
+  },
   {
     // Superseded, like `linear` above: `ade-cursor-cloud` replaces ADE's
     // compiled fleet button, fleet modal, composer cloud row and `/cloud`
