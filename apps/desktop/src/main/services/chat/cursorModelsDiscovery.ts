@@ -1089,26 +1089,20 @@ export type CursorSdkModelSelectionInput = {
 };
 
 /**
- * Resolve a model selection against the catalog already in memory.
+ * Resolve a model selection against an already-fetched catalog.
  *
- * Cache-only and synchronous, for the local chat path, which resolves params on
- * every send and must never block one on a network fetch. Use
- * `resolveCursorSdkModelSelection` where the catalog has to be verified first.
+ * `rows` is the catalog the caller verified — a probe result, or the in-memory
+ * cache. An empty array is an authoritative empty catalog, not a load failure:
+ * every model is unlisted.
  */
-export function resolveCursorSdkModelSelectionFromCache(
+function resolveCursorSdkModelSelectionFromRows(
+  rows: readonly CursorCliModelRow[],
   args: CursorSdkModelSelectionInput,
 ): CursorSdkModelSelectionResult {
   const modelSdkId = args.modelSdkId.trim();
   if (!modelSdkId) return { status: "unknown-model" };
-  if (!sdkCached?.models.length) {
-    // A fixed reason, not `sdkLastFailure`: this resolver takes no API key, so
-    // it cannot tell whether the last recorded failure belongs to the key the
-    // caller is asking about. `resolveCursorSdkModelSelection` has the probe
-    // result and supplies the real cause.
-    return { status: "catalog-unavailable", reason: "Cursor's model catalog has not loaded yet." };
-  }
   const normalizedModelSdkId = modelSdkId.toLowerCase();
-  const row = sdkCached.models.find((entry) =>
+  const row = rows.find((entry) =>
     entry.id.trim().toLowerCase() === normalizedModelSdkId
     || (entry.aliases ?? []).some((alias) => alias.trim().toLowerCase() === normalizedModelSdkId),
   );
@@ -1238,6 +1232,28 @@ export function resolveCursorSdkModelSelectionFromCache(
 }
 
 /**
+ * Resolve a model selection against the catalog already in memory.
+ *
+ * Cache-only and synchronous, for the local chat path, which resolves params on
+ * every send and must never block one on a network fetch. Use
+ * `resolveCursorSdkModelSelection` where the catalog has to be verified first.
+ */
+export function resolveCursorSdkModelSelectionFromCache(
+  args: CursorSdkModelSelectionInput,
+): CursorSdkModelSelectionResult {
+  const modelSdkId = args.modelSdkId.trim();
+  if (!modelSdkId) return { status: "unknown-model" };
+  if (!sdkCached?.models.length) {
+    // A fixed reason, not `sdkLastFailure`: this resolver takes no API key, so
+    // it cannot tell whether the last recorded failure belongs to the key the
+    // caller is asking about. `resolveCursorSdkModelSelection` has the probe
+    // result and supplies the real cause.
+    return { status: "catalog-unavailable", reason: "Cursor's model catalog has not loaded yet." };
+  }
+  return resolveCursorSdkModelSelectionFromRows(sdkCached.models, args);
+}
+
+/**
  * Best-effort params for a model selection, from the catalog already in memory.
  *
  * Returns the params ADE could resolve on `ok` and on `partial`, and `undefined`
@@ -1255,10 +1271,9 @@ export function resolveCursorSdkModelSelectionParams(
 /**
  * Verify the Cursor model catalog, then resolve a model selection against it.
  *
- * The probe and the resolve live together here because both read `sdkCached`,
- * the module's own cache. A caller that probed for the side effect and then
- * called the resolver depended on an ordering it could not state, and could not
- * tell a cold cache from a model the catalog cannot express.
+ * The probe and the resolve live together here so a successful empty catalog
+ * stays empty, and a probe for one API key cannot resolve against another
+ * key's cached rows. Local sends keep the cache-only wrapper.
  */
 export async function resolveCursorSdkModelSelection(
   apiKey: string | null | undefined,
@@ -1271,7 +1286,7 @@ export async function resolveCursorSdkModelSelection(
       reason: probe.errorMessage?.trim() || probe.failureKind,
     };
   }
-  return resolveCursorSdkModelSelectionFromCache(args);
+  return resolveCursorSdkModelSelectionFromRows(probe.rows, args);
 }
 
 /**
@@ -1296,7 +1311,7 @@ export async function verifyExplicitCursorModelSelection(
   apiKey: string | null | undefined,
   args: CursorSdkModelSelectionInput,
 ): Promise<CursorModelParameterValue[] | null> {
-  const hasExplicitSelection = args.reasoningEffort != null || args.fastMode != null;
+  const hasExplicitSelection = Boolean(args.reasoningEffort?.trim()) || args.fastMode != null;
   if (!hasExplicitSelection) return null;
   const selection = await resolveCursorSdkModelSelection(apiKey, args);
   if (selection.status !== "ok") {

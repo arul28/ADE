@@ -712,6 +712,36 @@ describe("parseCursorCliModelsStdout", () => {
     })).rejects.toThrow("could not verify the selected model settings (standard speed)");
   });
 
+  it("treats blank reasoning effort as no explicit control", async () => {
+    cursorModelsListMock.mockRejectedValue(new Error("should not probe"));
+    await expect(verifyExplicitCursorModelSelection("crsr_test", {
+      modelSdkId: "composer-2",
+      reasoningEffort: " ",
+    })).resolves.toBeNull();
+    expect(cursorModelsListMock).not.toHaveBeenCalled();
+  });
+
+  it("resolves an authoritative empty probe without another key's cached catalog", async () => {
+    cursorModelsListMock.mockResolvedValueOnce([{ id: "composer-2", displayName: "Composer 2" }]);
+    await expect(resolveCursorSdkModelSelection("crsr_key_a", {
+      modelSdkId: "composer-2",
+    })).resolves.toEqual({ status: "ok", params: [] });
+    expect(resolveCursorSdkModelSelectionFromCache({ modelSdkId: "composer-2" }))
+      .toEqual({ status: "ok", params: [] });
+
+    cursorModelsListMock.mockResolvedValue([]);
+    vi.stubGlobal("fetch", vi.fn(async () => ({ ok: true, json: async () => ({ models: [] }) })));
+
+    await expect(resolveCursorSdkModelSelection("crsr_key_b", {
+      modelSdkId: "composer-2",
+      fastMode: true,
+    })).resolves.toEqual({ status: "unknown-model" });
+    // The cache-only path still sees key A's rows: empty probes do not overwrite
+    // a different key. Authoritative resolve must not follow that cache.
+    expect(resolveCursorSdkModelSelectionFromCache({ modelSdkId: "composer-2" }))
+      .toEqual({ status: "ok", params: [] });
+  });
+
   it("names the cause of every selection a fail-closed caller refuses", () => {
     expect(describeCursorSdkModelSelectionFailure("composer-2", { status: "unknown-model" }))
       .toBe("Cursor Cloud does not list model composer-2. Refresh Cursor models.");

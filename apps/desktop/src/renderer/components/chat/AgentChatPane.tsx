@@ -5450,14 +5450,20 @@ export function AgentChatPane({
     [parallelConfiguringRow],
   );
 
+  const modelCatalogScopeKeyRef = useRef(modelCatalogScopeKey);
+  modelCatalogScopeKeyRef.current = modelCatalogScopeKey;
   const applyLaunchConfigToComposer = useCallback((config: LastLaunchConfig) => {
     setModelId(config.modelId);
     // Every caller of this hydrates a DRAFT, so the same rule as a draft model
     // change applies: a persisted thinking level or fast flag must not survive a
     // model that no longer exposes that control. Without this, a stale stored
     // value reaches the launch snapshot and the main process refuses the run.
+    // Read the scope through a ref so this callback's identity stays stable when
+    // the composer machine changes. It is a dependency of the composer-draft
+    // hydration effect, which would otherwise re-read the persisted snapshot
+    // and clobber live typing / attachments.
     const reconciledControls = reconcileDraftModelControls(
-      resolveScopedModelDescriptor(config.modelId, modelCatalogScopeKey),
+      resolveScopedModelDescriptor(config.modelId, modelCatalogScopeKeyRef.current),
       { reasoningEffort: config.reasoningEffort, fastMode: config.fastMode },
     );
     setReasoningEffort(reconciledControls.reasoningEffort);
@@ -5472,7 +5478,7 @@ export function AgentChatPane({
     setDroidPermissionMode(config.controls.droidPermissionMode);
     setCursorModeId(config.controls.cursorModeId);
     setCursorConfigValues({ ...config.controls.cursorConfigValues });
-  }, [modelCatalogScopeKey, setFastModeState]);
+  }, [setFastModeState]);
 
   const syncComposerToSession = useCallback((session: AgentChatSessionSummary | null) => {
     if (!session) {
