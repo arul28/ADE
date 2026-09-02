@@ -245,6 +245,7 @@ import type {
   BudgetCapScope,
   BudgetCapProvider,
   BudgetCapConfig,
+  AcpProviderDiagnostics,
   AiApiKeyVerificationResult,
   AiConfig,
   AiSettingsStatus,
@@ -1104,6 +1105,14 @@ declare global {
         listApiKeys: () => Promise<string[]>;
         verifyApiKey: (provider: string) => Promise<AiApiKeyVerificationResult>;
         updateConfig: (config: Partial<AiConfig>) => Promise<void>;
+        /**
+         * Optional: shipped after this group did, so an older preload will not
+         * have it and callers must guard before reaching for it.
+         */
+        acpProviderDiagnostics?: (args: {
+          provider: "qwen" | "kimi" | "grok" | "copilot";
+          runDoctor?: boolean;
+        }) => Promise<AcpProviderDiagnostics>;
         opencodeAuthMethods: () => Promise<{ methods: OpenCodeProviderAuthMethods }>;
         opencodeOAuthStart: (args: {
           providerId: string;

@@ -20483,6 +20483,12 @@ final class ADETests: XCTestCase {
     )
   }
 
+  func testWorkModelCatalogUsesRequestedProviderOrder() {
+    let groups = workModelCatalogGroups(currentModelId: "", currentProvider: "codex")
+
+    XCTAssertEqual(groups.map(\.key), ["claude", "codex", "cursor", "opencode", "droid"])
+  }
+
   func testWorkModelCatalogIncludesFlagshipModelMetadata() {
     let groups = workModelCatalogGroups(currentModelId: "", currentProvider: "codex")
     let claudeGroup = groups.first(where: { $0.key == "claude" })

@@ -990,24 +990,54 @@ function terminalToChoice(session: ChatTerminalSession): RemoteSessionChoice {
   };
 }
 
-const TRACKED_CLI_REMOTE_PROVIDERS = new Set(["claude", "codex", "cursor", "droid", "opencode", "pi"]);
+const TRACKED_CLI_REMOTE_PROVIDERS = new Set([
+  "claude",
+  "codex",
+  "cursor",
+  "droid",
+  "opencode",
+  "pi",
+  "qwen",
+  "kimi",
+  "grok",
+  "copilot",
+]);
+
+const CHAT_BACKED_REMOTE_TOOL_TYPES = new Set([
+  "codex-chat",
+  "claude-chat",
+  "opencode-chat",
+  "cursor",
+  "droid-chat",
+  "pi-chat",
+  "qwen-chat",
+  "kimi-chat",
+  "grok-chat",
+  "copilot-chat",
+]);
+
+const TRACKED_CLI_REMOTE_TOOL_TYPE_PREFIXES = [
+  "codex",
+  "cursor",
+  "droid",
+  "opencode",
+  "pi",
+  "claude",
+  "qwen",
+  "kimi",
+  "grok",
+  "copilot",
+] as const;
 
 function isTerminalSessionLaunchable(session: ChatTerminalSession): boolean {
   const toolType = session.toolType ?? "";
   // Chat-backed terminals surface through the chat session list instead.
-  if (toolType === "codex-chat" || toolType === "claude-chat" || toolType === "opencode-chat" || toolType === "cursor" || toolType === "droid-chat" || toolType === "pi-chat") {
+  if (CHAT_BACKED_REMOTE_TOOL_TYPES.has(toolType)) {
     return false;
   }
-  // Any tracked provider CLI (claude/codex/cursor-cli/droid/opencode) is
-  // launchable — mirrors trackedCliTerminalProvider in adeApi.ts.
-  if (
-    toolType.startsWith("codex")
-    || toolType.startsWith("cursor")
-    || toolType.startsWith("droid")
-    || toolType.startsWith("opencode")
-    || toolType.startsWith("pi")
-    || toolType.startsWith("claude")
-  ) {
+  // Any tracked provider CLI is launchable — mirrors
+  // trackedCliTerminalProvider in adeApi.ts.
+  if (TRACKED_CLI_REMOTE_TOOL_TYPE_PREFIXES.some((prefix) => toolType.startsWith(prefix))) {
     return true;
   }
   const provider = isRecord(session.resumeMetadata) ? session.resumeMetadata.provider : null;

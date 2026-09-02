@@ -25,6 +25,21 @@ function normalizePermissionFamily(family: string): string {
   return family;
 }
 
+/**
+ * Model families ADE drives over the Agent Client Protocol.
+ *
+ * They share one permission vocabulary because they share one host: the
+ * permission round-trip is `session/request_permission` in every dialect, and
+ * ADE writes an abstract posture that each dialect maps to its own flags. So
+ * they get one permission key and one option list, not four.
+ */
+const ACP_PERMISSION_FAMILIES: ReadonlySet<string> = new Set([
+  "qwen",
+  "moonshot",
+  "xai",
+  "github-copilot",
+]);
+
 export function resolvePersistentIdentityGuardedPermissionMode(opts: {
   family: string;
   isCliWrapped: boolean;
@@ -319,6 +334,63 @@ export function getPermissionOptions(opts: {
     ];
   }
 
+  // ACP providers (Qwen, Kimi, Grok, GitHub Copilot)
+  //
+  // One arm for all four. ADE writes an abstract posture and each dialect maps
+  // it to its own native flags at the launch boundary, so the labels describe
+  // what the user gets rather than any one vendor's vocabulary. The ladder
+  // matches `AgentChatAcpPermissionMode`; `edit` and `full-auto` are ADE's
+  // spellings of that type's `auto-edit` and `yolo`.
+  if (opts.isCliWrapped && ACP_PERMISSION_FAMILIES.has(normalizePermissionFamily(opts.family))) {
+    return [
+      {
+        value: "plan",
+        label: "Plan",
+        shortDesc: "Read-only — no file edits or commands",
+        detail: "The agent reads, searches, and proposes a plan. Nothing it suggests runs until you switch modes.",
+        allows: ["File reads", "Code search", "Plan generation"],
+        blocks: ["File writes & edits", "Shell commands"],
+        safety: "safe",
+      },
+      {
+        value: "default",
+        label: "Ask",
+        shortDesc: "Prompts before each write or command",
+        detail: "The agent asks permission for every file change and every shell command, one at a time.",
+        allows: ["File reads", "Code search"],
+        gates: ["File writes & edits", "Shell commands", "Web access"],
+        safety: "safe",
+      },
+      {
+        value: "edit",
+        label: "Accept edits",
+        shortDesc: "File edits auto-approved; commands still ask",
+        detail: "The agent edits files without asking, and still pauses before running shell commands.",
+        allows: ["File reads", "File writes & edits", "Code search"],
+        gates: ["Shell commands", "Web access"],
+        safety: "semi-auto",
+      },
+      {
+        value: "auto",
+        label: "Auto",
+        shortDesc: "The agent judges each request itself",
+        detail: "The agent decides which actions are safe to take on its own and asks only for the rest.",
+        allows: ["File reads", "File writes & edits", "Most shell commands"],
+        gates: ["Actions the agent judges risky"],
+        safety: "semi-auto",
+      },
+      {
+        value: "full-auto",
+        label: "Full access",
+        shortDesc: "Every request approved without asking",
+        detail: "Nothing prompts. Where the provider cannot be told to stop asking, ADE approves each request for you and records it in the transcript.",
+        allows: ["Everything"],
+        warning: "⚠ Only use in isolated or disposable working copies.",
+        safety: "danger",
+      },
+    ];
+  }
+
   // API and local models
   return [
     {
@@ -407,33 +479,40 @@ export function safetyColors(safety: SafetyLevel) {
   }
 }
 
+export type PermissionFamilyKey = "claude" | "codex" | "cursor" | "droid" | "acp" | "opencode";
+
 /**
  * Map a ProviderFamily string to the permission-family key used by
- * provider permission config ("claude" | "codex" | "cursor" | "droid" | "opencode").
+ * provider permission config.
  *
  * Only CLI-wrapped anthropic → "claude" and CLI-wrapped openai → "codex".
+ * The four ACP families collapse to one "acp" key: they share a host, a
+ * permission round-trip, and an abstract posture, so a per-vendor key would
+ * duplicate the same setting four times.
  * All API / local models (even anthropic-api or openai-api) use "opencode".
  */
 export function familyToPermissionKey(
   family: string,
   isCliWrapped: boolean,
-): "claude" | "codex" | "cursor" | "droid" | "opencode" {
+): PermissionFamilyKey {
   if (isCliWrapped) {
     if (family === "anthropic") return "claude";
     if (family === "openai") return "codex";
     if (family === "cursor") return "cursor";
     if (family === "factory") return "droid";
+    if (ACP_PERMISSION_FAMILIES.has(family)) return "acp";
   }
   return "opencode";
 }
 
 /** Human-readable label for a permission family key */
-export function permissionFamilyLabel(key: "claude" | "codex" | "cursor" | "droid" | "opencode"): string {
+export function permissionFamilyLabel(key: PermissionFamilyKey): string {
   switch (key) {
     case "claude": return "Claude Code workers";
     case "codex": return "Codex workers";
     case "cursor": return "Cursor workers";
     case "droid": return "Droid workers";
+    case "acp": return "Qwen, Kimi, Grok and Copilot workers";
     case "opencode": return "OpenCode workers";
   }
 }

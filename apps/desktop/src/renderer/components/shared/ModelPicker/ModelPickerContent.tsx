@@ -19,6 +19,10 @@ import {
   type ModelDescriptor,
   type ProviderFamily,
 } from "../../../../shared/modelRegistry";
+import {
+  MODEL_PICKER_PROVIDER_ORDER,
+  type ProviderGroupKey,
+} from "../../../../shared/modelCatalog";
 import { cn } from "../../ui/cn";
 import { cursorProviderAvailable } from "../../../lib/platform";
 import { ModelListRow } from "./ModelListRow";
@@ -32,7 +36,10 @@ import { useProviderAuthStatus } from "./useProviderAuthStatus";
 import { scoreModelPickerSearch } from "./modelPickerSearch";
 import { sortModelItems } from "./modelOrdering";
 import { ProviderSetupBanner } from "./providerEmptyState";
-import type { RuntimeCatalogModelDescriptor } from "./modelCatalog";
+import {
+  filterAcpFallbackModelsToRuntimeCatalog,
+  type RuntimeCatalogModelDescriptor,
+} from "./modelCatalog";
 import type { AgentChatModelCatalogRefreshProvider, OpenProjectBinding } from "../../../../shared/types";
 import { refreshProviderForFamily } from "./runtimeCatalogCache";
 
@@ -45,7 +52,7 @@ const PROVIDER_LABELS: Partial<Record<ProviderFamily, string>> = {
   google: "Google",
   mistral: "Mistral",
   deepseek: "DeepSeek",
-  xai: "xAI",
+  xai: "Grok",
   groq: "Groq",
   together: "Together",
   openrouter: "OpenRouter",
@@ -54,21 +61,34 @@ const PROVIDER_LABELS: Partial<Record<ProviderFamily, string>> = {
   cursor: "Cursor",
   factory: "Droid",
   pi: "Pi",
+  qwen: "Qwen",
+  moonshot: "Kimi",
+  "github-copilot": "GitHub Copilot",
 };
 
 // Order matters for rail layout — top-tier providers first, then routers,
 // then local runtimes. Listed here (not derived from PROVIDER_LABELS) because
 // PROVIDER_LABELS may include experimental entries we don't want surfaced.
-const ALL_PROVIDER_FAMILIES: readonly ProviderFamily[] = [
-  "anthropic",
-  "openai",
-  "factory",
-  "pi",
-  "cursor",
-  "opencode",
-  "ollama",
-  "lmstudio",
-];
+// ACP CLI families (Qwen / Kimi / Grok / Copilot) are first-class rails so
+// they stay reachable before catalog refresh, same as Cursor and Droid.
+const PICKER_FAMILY_BY_GROUP: Record<ProviderGroupKey, ProviderFamily> = {
+  claude: "anthropic",
+  codex: "openai",
+  cursor: "cursor",
+  opencode: "opencode",
+  pi: "pi",
+  copilot: "github-copilot",
+  grok: "xai",
+  droid: "factory",
+  kimi: "moonshot",
+  qwen: "qwen",
+  ollama: "ollama",
+  lmstudio: "lmstudio",
+};
+
+const ALL_PROVIDER_FAMILIES: readonly ProviderFamily[] = MODEL_PICKER_PROVIDER_ORDER.map(
+  (groupKey) => PICKER_FAMILY_BY_GROUP[groupKey],
+);
 
 function providerLabel(family: ProviderFamily | string): string {
   return PROVIDER_LABELS[family as ProviderFamily] ?? family;
@@ -125,7 +145,13 @@ function pickerFamilyForModel(model: ModelDescriptor): ProviderFamily {
 function providerAuthEstablishesModelAvailability(model: ModelDescriptor): boolean {
   if (isPiRoutedModel(model)) return true;
   const provider = resolveCliProviderForModel(model);
-  return provider === "claude" || provider === "codex" || provider === "droid";
+  return provider === "claude"
+    || provider === "codex"
+    || provider === "droid"
+    || provider === "qwen"
+    || provider === "kimi"
+    || provider === "grok"
+    || provider === "copilot";
 }
 
 // The runtime catalog flags a model as requiring configuration when it is
@@ -276,7 +302,11 @@ export const ModelPickerContent = memo(function ModelPickerContent({
       }
       if (!merged.has(m.id)) merged.set(m.id, m);
     }
-    return [...merged.values()];
+    const runtimeAcpModels = models.filter(
+      (model): model is RuntimeCatalogModelDescriptor =>
+        (model as RuntimeCatalogModelDescriptor).catalogAvailable === true,
+    );
+    return filterAcpFallbackModelsToRuntimeCatalog([...merged.values()], runtimeAcpModels);
   }, [allowRegistryExpansion, authOnly, familyIsReady, models, registryFilter]);
 
   const providersPresent = useMemo<ProviderFamily[]>(() => {
@@ -292,9 +322,10 @@ export const ModelPickerContent = memo(function ModelPickerContent({
       if (pickerFamily === "cursor" && !cursorProviderAvailable()) continue;
       set.add(pickerFamily);
     }
-    // Always include dynamic-only provider families (Cursor, Droid, OpenCode,
-    // local runtimes). Their models may not exist until a catalog refresh runs,
-    // but the rail entry must still be reachable without toggling "Show all models".
+    // Always include first-class provider families (Cursor, Droid, ACP CLIs,
+    // OpenCode, local runtimes). Their models may not exist until a catalog
+    // refresh runs, but the rail entry must still be reachable without
+    // toggling "Show all models".
     for (const family of families) set.add(family);
     // Stabilize rail order so it doesn't flicker as catalog discovery streams in.
     return families.filter((family) => set.has(family))
@@ -427,6 +458,16 @@ export const ModelPickerContent = memo(function ModelPickerContent({
     if (selection === "favorites" || selection === "recents") return null;
     return selection.slice("provider:".length) as ProviderFamily;
   }, [searchActive, selection]);
+
+  // A fresh picker can open directly on a provider selected by the persisted
+  // draft model. Refresh that provider once on mount so the first list is based
+  // on the current ACP verdict, not yesterday's curated fallback rows.
+  const initialProviderRefreshRequestedRef = useRef(false);
+  useEffect(() => {
+    if (initialProviderRefreshRequestedRef.current) return;
+    initialProviderRefreshRequestedRef.current = true;
+    if (activeProviderFamily) onProviderRailSelect?.(activeProviderFamily);
+  }, [activeProviderFamily, onProviderRailSelect]);
 
   const activeRefreshProvider = activeProviderFamily ? refreshProviderForFamily(activeProviderFamily) : null;
   const activeProviderRefreshing = activeRefreshProvider != null && refreshingProvider === activeRefreshProvider;

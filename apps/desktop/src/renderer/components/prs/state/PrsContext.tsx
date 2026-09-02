@@ -267,7 +267,10 @@ function writeJsonLs(key: string, value: unknown): void {
   }
 }
 
-type ResolverPermissionFamily = Extract<ModelProviderGroup, "claude" | "codex" | "opencode" | "cursor" | "droid" | "pi">;
+type ResolverPermissionFamily = Extract<
+  ModelProviderGroup,
+  "claude" | "codex" | "opencode" | "cursor" | "droid" | "pi" | "qwen" | "kimi" | "grok" | "copilot"
+>;
 type ResolverPermissionPreferences = Record<ResolverPermissionFamily, PrAgentPermissionMode>;
 
 const DEFAULT_RESOLVER_PERMISSIONS: ResolverPermissionPreferences = {
@@ -277,6 +280,10 @@ const DEFAULT_RESOLVER_PERMISSIONS: ResolverPermissionPreferences = {
   cursor: "default",
   droid: "edit",
   pi: "default",
+  qwen: "default",
+  kimi: "default",
+  grok: "default",
+  copilot: "default",
 };
 
 function normalizeResolverPermissionMode(value: unknown): PrAgentPermissionMode | null {
@@ -305,6 +312,10 @@ function readPersistedResolverPermissions(): ResolverPermissionPreferences {
       cursor: normalizeResolverPermissionMode(parsed?.cursor) ?? DEFAULT_RESOLVER_PERMISSIONS.cursor,
       droid: normalizeResolverPermissionMode(parsed?.droid) ?? DEFAULT_RESOLVER_PERMISSIONS.droid,
       pi: normalizeResolverPermissionMode(parsed?.pi) ?? DEFAULT_RESOLVER_PERMISSIONS.pi,
+      qwen: normalizeResolverPermissionMode(parsed?.qwen) ?? DEFAULT_RESOLVER_PERMISSIONS.qwen,
+      kimi: normalizeResolverPermissionMode(parsed?.kimi) ?? DEFAULT_RESOLVER_PERMISSIONS.kimi,
+      grok: normalizeResolverPermissionMode(parsed?.grok) ?? DEFAULT_RESOLVER_PERMISSIONS.grok,
+      copilot: normalizeResolverPermissionMode(parsed?.copilot) ?? DEFAULT_RESOLVER_PERMISSIONS.copilot,
     };
   } catch {
     return DEFAULT_RESOLVER_PERMISSIONS;

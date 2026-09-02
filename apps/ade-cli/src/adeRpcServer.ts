@@ -332,7 +332,7 @@ const TOOL_SPECS: ToolSpec[] = [
       additionalProperties: false,
       properties: {
         laneId: { type: "string", minLength: 1 },
-        provider: { type: "string", enum: ["claude", "codex", "cursor", "droid", "opencode", "pi", "shell"] },
+        provider: { type: "string", enum: ["claude", "codex", "cursor", "droid", "opencode", "pi", "qwen", "kimi", "grok", "copilot", "shell"] },
         permissionMode: { type: "string", enum: ["default", "auto", "plan", "edit", "full-auto", "config-toml"], default: "default" },
         title: { type: "string" },
         initialInput: { type: "string" },
@@ -1698,7 +1698,7 @@ function parseCliSessionProvider(value: unknown): LaunchProfile {
   if (!isLaunchProfile(provider)) {
     throw new JsonRpcError(
       JsonRpcErrorCode.invalidParams,
-      "provider must be one of claude, codex, cursor, droid, opencode, pi, or shell",
+      "provider must be one of claude, codex, cursor, droid, opencode, pi, qwen, kimi, grok, copilot, or shell",
     );
   }
   return provider;

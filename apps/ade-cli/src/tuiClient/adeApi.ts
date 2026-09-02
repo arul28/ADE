@@ -423,6 +423,10 @@ const CHAT_BACKED_TERMINAL_TOOL_TYPES = new Set([
   "cursor",
   "droid-chat",
   "pi-chat",
+  "qwen-chat",
+  "kimi-chat",
+  "grok-chat",
+  "copilot-chat",
 ]);
 
 const TRACKED_CLI_PROVIDERS = new Set<AdeCodeProvider>([
@@ -432,6 +436,10 @@ const TRACKED_CLI_PROVIDERS = new Set<AdeCodeProvider>([
   "droid",
   "opencode",
   "pi",
+  "qwen",
+  "kimi",
+  "grok",
+  "copilot",
 ]);
 
 /**
@@ -454,6 +462,10 @@ export function trackedCliTerminalProvider(session: ChatTerminalSession): AdeCod
   if (toolType.startsWith("opencode")) return "opencode";
   if (toolType.startsWith("pi")) return "pi";
   if (toolType.startsWith("claude")) return "claude";
+  if (toolType.startsWith("qwen")) return "qwen";
+  if (toolType.startsWith("kimi")) return "kimi";
+  if (toolType.startsWith("grok")) return "grok";
+  if (toolType.startsWith("copilot")) return "copilot";
   const resumeCommand = typeof session.resumeCommand === "string" ? session.resumeCommand.trim().toLowerCase() : "";
   return resumeCommand && /\bclaude\b/.test(resumeCommand) ? "claude" : null;
 }
@@ -508,7 +520,10 @@ export async function signalTerminal(
 }
 
 /** Provider CLIs the TUI can launch as tracked terminal sessions. */
-export type CliTerminalProvider = Extract<AdeCodeProvider, "claude" | "codex" | "cursor" | "droid" | "opencode" | "pi">;
+export type CliTerminalProvider = Extract<
+  AdeCodeProvider,
+  "claude" | "codex" | "cursor" | "droid" | "opencode" | "pi" | "qwen" | "kimi" | "grok" | "copilot"
+>;
 
 export type StartCliTerminalSessionResult = {
   provider: string;
@@ -739,7 +754,17 @@ export async function getAvailableModels(
     // IDs such as `claude-opus-4-6-fast`, not a separate service-tier toggle.
     // Codex is intentionally NOT here: its tiers come from the app-server, which
     // loadAvailableModels always queries regardless of activateRuntime.
-    activateRuntime: provider === "cursor" || provider === "droid" || provider === "pi",
+    // The four ACP providers are here too, but they never spawn an agent for a
+    // model list: `activateRuntime` only forces a fresh CLI auth pass, which is
+    // what gates their curated rows (see loadAvailableModels in
+    // agentChatService).
+    activateRuntime: provider === "cursor"
+      || provider === "droid"
+      || provider === "pi"
+      || provider === "qwen"
+      || provider === "kimi"
+      || provider === "grok"
+      || provider === "copilot",
     ...(provider === "cursor" ? { cursorSource } : {}),
   });
 }

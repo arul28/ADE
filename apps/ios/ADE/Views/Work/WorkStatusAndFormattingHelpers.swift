@@ -271,6 +271,10 @@ func providerLabel(_ provider: String) -> String {
   case "google": return "Google"
   case "ollama": return "Ollama"
   case "lmstudio": return "LM Studio"
+  case "qwen": return "Qwen"
+  case "kimi": return "Kimi"
+  case "grok": return "Grok"
+  case "copilot": return "GitHub Copilot"
   default: return provider.capitalized
   }
 }
@@ -328,6 +332,14 @@ func providerIcon(_ provider: String) -> String {
     return "desktopcomputer"
   case "google":
     return "g.circle.fill"
+  case "qwen":
+    return "square.on.square"
+  case "kimi":
+    return "moon.stars.fill"
+  case "grok":
+    return "bolt.fill"
+  case "copilot":
+    return "chevron.left.forwardslash.chevron.right"
   default:
     return "brain.head.profile"
   }
@@ -356,6 +368,15 @@ func providerAssetName(_ provider: String?) -> String? {
     return "ProviderOpenCode"
   case "droid", "factory":
     return "ProviderDroid"
+  case "qwen":
+    return "ProviderQwen"
+  case "kimi":
+    return "ProviderKimi"
+  case "grok":
+    return "ProviderXAI"
+  case "copilot":
+    // GitHub's Copilot mark is the one already bundled for the GitHub surfaces.
+    return "ProviderGitHub"
   default:
     return nil
   }
@@ -382,6 +403,14 @@ func workRailLogoProvider(for catalogGroupKey: String) -> String {
     return "ollama"
   case "lmstudio":
     return "lmstudio"
+  case "qwen":
+    return "qwen"
+  case "kimi", "moonshot":
+    return "kimi"
+  case "grok", "xai":
+    return "grok"
+  case "copilot", "github-copilot":
+    return "copilot"
   default:
     return catalogGroupKey
   }
@@ -432,6 +461,15 @@ func workModelRowLogoProvider(for model: WorkModelOption, catalogGroupKey: Strin
       return "factory"
     }
     return "droid"
+  }
+
+  // Copilot resells other vendors' models, so its rows show the upstream mark
+  // for the same reason Cursor and Droid rows do.
+  if group == "copilot" || modelId.hasPrefix("github-copilot/") {
+    if let brand = workUpstreamBrand(modelId: modelId) {
+      return brand
+    }
+    return "copilot"
   }
 
   if group == "opencode" || modelId.hasPrefix("opencode/") {
@@ -515,6 +553,14 @@ func providerTint(_ provider: String?) -> Color {
     return .yellow
   case "factory":
     return .gray
+  case "qwen":
+    return .purple
+  case "kimi":
+    return .primary
+  case "grok":
+    return .red
+  case "copilot":
+    return .cyan
   default:
     return ADEColor.accent
   }
@@ -545,6 +591,13 @@ func providerFamilyKey(_ provider: String) -> String {
   if raw == "droid" || raw == "factory" || raw.hasPrefix("droid") {
     return "droid"
   }
+  // ACP providers. Each folds its brand aliases onto the ADE provider id, so a
+  // session labelled "moonshot" and one labelled "kimi-chat" resolve to one
+  // family and cannot draw different marks for the same runtime.
+  if raw.hasPrefix("qwen") { return "qwen" }
+  if raw == "moonshot" || raw == "moonshotai" || raw.hasPrefix("kimi") { return "kimi" }
+  if raw == "xai" || raw.hasPrefix("grok") { return "grok" }
+  if raw == "github-copilot" || raw == "githubcopilot" || raw.hasPrefix("copilot") { return "copilot" }
   return raw
 }
 
@@ -552,7 +605,7 @@ func providerFamilyKey(_ provider: String) -> String {
 /// Routed Pi models must stay on Pi rather than falling through to Claude.
 func workNormalizedChatProvider(_ provider: String) -> String {
   let family = providerFamilyKey(provider)
-  return ["claude", "codex", "cursor", "opencode", "droid", "pi"].contains(family)
+  return ["claude", "codex", "cursor", "opencode", "droid", "pi", "qwen", "kimi", "grok", "copilot"].contains(family)
     ? family
     : "claude"
 }

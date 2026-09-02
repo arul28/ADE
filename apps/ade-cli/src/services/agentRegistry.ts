@@ -137,6 +137,73 @@ export const AGENT_CLI_REGISTRY: AgentCliDescriptor[] = [
       /\bfactory(?:_api_key| api key)\b.*\b(invalid|missing|not found|not set|required|unauthorized|must be set)\b/i,
     ],
   },
+  {
+    agent: "qwen",
+    displayName: "Qwen Code",
+    binaryNames: ["qwen"],
+    installCommand: npmGlobalInstallCommand("@qwen-code/qwen-code"),
+    // 0.22.3 removed `qwen auth`. Sign-in is OPENAI_API_KEY / `--auth-type=openai`.
+    authCommand: "qwen --auth-type=openai",
+    missingErrorPatterns: [
+      /\bqwen\b.*\b(command not found|not recognized|not found|enoent)\b/i,
+      /\bspawn\s+qwen\s+enoent\b/i,
+    ],
+    notAuthErrorPatterns: [
+      /\bqwen\b.*\b(not logged in|not authenticated|unauthorized|authentication failed|login required|no api key|api key required|no credentials)\b/i,
+      /\b(?:dashscope|openai)[_ ]api[_ ]key\b.*\b(invalid|missing|not found|not set|required|unauthorized|must be set)\b/i,
+    ],
+  },
+  {
+    agent: "kimi",
+    displayName: "Kimi Code",
+    binaryNames: ["kimi"],
+    // Kimi ships a native binary rather than an npm package, so there is no
+    // portable one-liner to print here. Point at the vendor's own installer
+    // instead of guessing a package name that would fail on paste.
+    installCommand: "curl -LsSf https://code.kimi.com/kimi-code/install.sh | bash",
+    authCommand: "kimi login",
+    missingErrorPatterns: [
+      /\bkimi\b.*\b(command not found|not recognized|not found|enoent)\b/i,
+      /\bspawn\s+kimi\s+enoent\b/i,
+    ],
+    notAuthErrorPatterns: [
+      /\bkimi\b.*\b(not logged in|not authenticated|unauthorized|authentication failed|login required|no api key|api key required|no credentials)\b/i,
+      /\brun\s+[`'"]?kimi\s+login[`'"]?/i,
+      /\bmoonshot[_ ]api[_ ]key\b.*\b(invalid|missing|not found|not set|required|unauthorized|must be set)\b/i,
+    ],
+  },
+  {
+    agent: "grok",
+    displayName: "Grok CLI",
+    binaryNames: ["grok"],
+    installCommand: npmGlobalInstallCommand("@xai-official/grok"),
+    authCommand: "grok login",
+    missingErrorPatterns: [
+      /\bgrok\b.*\b(command not found|not recognized|not found|enoent)\b/i,
+      /\bspawn\s+grok\s+enoent\b/i,
+    ],
+    notAuthErrorPatterns: [
+      /\bgrok\b.*\b(not logged in|not authenticated|unauthorized|authentication failed|login required|no api key|api key required|no credentials)\b/i,
+      /\brun\s+[`'"]?grok\s+login[`'"]?/i,
+      /\bxai[_ ]api[_ ]key\b.*\b(invalid|missing|not found|not set|required|unauthorized|must be set)\b/i,
+    ],
+  },
+  {
+    agent: "copilot",
+    displayName: "GitHub Copilot CLI",
+    binaryNames: ["copilot"],
+    installCommand: npmGlobalInstallCommand("@github/copilot"),
+    authCommand: "copilot login",
+    missingErrorPatterns: [
+      /\bcopilot\b.*\b(command not found|not recognized|not found|enoent)\b/i,
+      /\bspawn\s+copilot\s+enoent\b/i,
+    ],
+    notAuthErrorPatterns: [
+      /\bcopilot\b.*\b(not logged in|not authenticated|unauthorized|authentication failed|login required|no credentials)\b/i,
+      /\brun\s+[`'"]?copilot\s+login[`'"]?/i,
+      /\bgh[_ ]token\b.*\b(invalid|missing|not found|not set|required|unauthorized|must be set)\b/i,
+    ],
+  },
 ];
 
 function descriptorMatchesPreferred(descriptor: AgentCliDescriptor, preferredAgent: string | null | undefined): boolean {

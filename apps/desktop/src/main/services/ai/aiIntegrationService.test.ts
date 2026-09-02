@@ -24,6 +24,7 @@ const mockState = vi.hoisted(() => ({
   getModelsDevLastFetchedAt: vi.fn((..._args: unknown[]) => null as number | null),
   clearOpenCodeBinaryCache: vi.fn(),
   resolveOpenCodeBinary: vi.fn(),
+  probeAllAcpProviderAuth: vi.fn(),
 }));
 
 vi.mock("./authDetector", () => ({
@@ -35,6 +36,18 @@ vi.mock("./authDetector", () => ({
 
 vi.mock("./providerConnectionStatus", () => ({
   buildProviderConnections: (...args: unknown[]) => mockState.buildProviderConnections(...args),
+}));
+
+vi.mock("./acpAuthProbe", () => ({
+  probeAllAcpProviderAuth: (...args: unknown[]) => mockState.probeAllAcpProviderAuth(...args),
+}));
+
+vi.mock("./qwenUserSettings", () => ({
+  loadQwenUserSettings: vi.fn(async () => ({
+    authenticated: false,
+    models: [],
+    defaultModelId: null,
+  })),
 }));
 
 vi.mock("./localModelDiscovery", () => ({
@@ -616,6 +629,60 @@ describe("aiIntegrationService", () => {
     await service.getStatus({ force: true });
 
     expect(mockState.probeClaudeRuntimeHealth).not.toHaveBeenCalled();
+  });
+
+  it("waits for an ACP auth verdict before publishing provider status", async () => {
+    const { service } = makeService({
+      availability: { claude: false, codex: false, cursor: false, droid: false },
+    });
+    mockState.getCachedCliAuthStatuses.mockReturnValue([
+      {
+        cli: "copilot",
+        installed: true,
+        path: "/usr/local/bin/copilot",
+        authenticated: false,
+        verified: false,
+      },
+    ]);
+    mockState.detectAllAuth.mockResolvedValue([]);
+    mockState.probeAllAcpProviderAuth.mockResolvedValue({
+      copilot: { state: "ready", message: null },
+    });
+    const base = makeProviderConnections({ claude: false, codex: false, cursor: false, droid: false });
+    mockState.buildProviderConnections.mockResolvedValue({
+      ...base,
+      copilot: {
+        provider: "copilot",
+        authAvailable: true,
+        runtimeDetected: true,
+        runtimeAvailable: true,
+        usageAvailable: false,
+        path: "/usr/local/bin/copilot",
+        blocker: null,
+        lastCheckedAt: "2025-01-01T00:00:00.000Z",
+        sources: [],
+      },
+    });
+
+    const status = await service.getStatus({ force: true });
+
+    expect(mockState.probeAllAcpProviderAuth).toHaveBeenCalledWith(expect.objectContaining({
+      providers: ["copilot"],
+      cwd: "/tmp/project",
+    }));
+    expect(status.availableProviders.copilot).toBe(true);
+    expect(status.models.copilot?.map((model) => model.id)).toEqual([
+      "github-copilot/claude-sonnet-4.6",
+      "github-copilot/claude-opus-4.6",
+      "github-copilot/gpt-5.4",
+      "github-copilot/gpt-5.3-codex",
+    ]);
+    expect(status.detectedAuth).toContainEqual(expect.objectContaining({
+      type: "cli-subscription",
+      cli: "copilot",
+      authenticated: true,
+      verified: true,
+    }));
   });
 
   it("invalidates provider readiness caches after API key verification", async () => {

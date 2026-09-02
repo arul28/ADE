@@ -29,13 +29,19 @@ import {
   getAvailableModels,
   getLocalProviderDefaultEndpoint,
   isLocalProviderFamily,
+  listAcpModelDescriptorsForProvider,
   listModelDescriptorsForProvider,
+  mergeDynamicAcpModelDescriptors,
+  createDynamicAcpModelDescriptor,
   LOCAL_PROVIDER_LABELS,
   replaceDynamicOpenCodeModelDescriptors,
   resolveModelAlias,
   resolveProviderGroupForModel,
   type LocalProviderFamily,
 } from "../../../shared/modelRegistry";
+import { disabledProviderSet } from "../../../shared/providerEnablement";
+import { probeAllAcpProviderAuth } from "./acpAuthProbe";
+import { loadQwenUserSettings } from "./qwenUserSettings";
 import {
   detectAllAuth,
   getCachedCliAuthStatuses,
@@ -80,7 +86,11 @@ import { discoverDroidCliModelDescriptors, markDroidModelCachesStale } from "../
 import { resolveDroidExecutable } from "./droidExecutable";
 import { buildProviderConnections } from "./providerConnectionStatus";
 import { piModelDescriptorsFromInventory, probePiProfileInventory, resolvePiInstallation } from "./piInstallation";
-import { getProviderRuntimeHealthVersion, resetProviderRuntimeHealth } from "./providerRuntimeHealth";
+import {
+  getProviderRuntimeHealth,
+  getProviderRuntimeHealthVersion,
+  resetProviderRuntimeHealth,
+} from "./providerRuntimeHealth";
 import { resetClaudeRuntimeProbeCache } from "./claudeRuntimeProbe";
 import { runProviderTask } from "./providerTaskRunner";
 import { resolveClaudeCodeExecutable } from "./claudeCodeExecutable";
@@ -131,16 +141,26 @@ export type AiIntegrationStatus = {
     codex: boolean;
     cursor: boolean;
     droid: boolean;
+    // Optional, mirroring `AiSettingsStatus`: a host on an older build has no
+    // arm for these and its payload must still deserialise.
+    qwen?: boolean;
+    kimi?: boolean;
+    grok?: boolean;
+    copilot?: boolean;
   };
   models: {
     claude: AgentModelDescriptor[];
     codex: AgentModelDescriptor[];
     cursor: AgentModelDescriptor[];
     droid: AgentModelDescriptor[];
+    qwen?: AgentModelDescriptor[];
+    kimi?: AgentModelDescriptor[];
+    grok?: AgentModelDescriptor[];
+    copilot?: AgentModelDescriptor[];
   };
   detectedAuth?: Array<{
     type: "cli-subscription" | "api-key" | "oauth" | "openrouter" | "local";
-    cli?: "claude" | "codex" | "cursor" | "droid";
+    cli?: "claude" | "codex" | "cursor" | "droid" | "qwen" | "kimi" | "grok" | "copilot";
     provider?: string;
     source?: "config" | "env" | "store" | "file";
     endpointSource?: "auto" | "config";
@@ -379,6 +399,7 @@ function resolveBundledClaudeBinary(): Pick<AiClaudeAvailability["binary"], "pre
 
 function buildClaudeAvailabilityFromConnection(
   connection: AiProviderConnections["claude"],
+  options?: { disabled?: boolean },
 ): AiClaudeAvailability {
   const bundledBinary = resolveBundledClaudeBinary();
   const binary = bundledBinary.present
@@ -398,7 +419,8 @@ function buildClaudeAvailabilityFromConnection(
   const normalizedBlocker = connection.blocker?.toLowerCase() ?? "";
   const blockerIsOnlyAboutPath = binary.source === "bundled"
     && binaryOnlyBlockers.some((needle) => normalizedBlocker.includes(needle));
-  const ready = binary.present
+  const ready = options?.disabled !== true
+    && binary.present
     && connection.authAvailable
     && (connection.runtimeAvailable || blockerIsOnlyAboutPath || !connection.blocker);
   return {
@@ -537,6 +559,7 @@ function hasUsableDetectedAuth(auth: DetectedAuth[]): boolean {
 function redactDetectedAuth(
   auth: DetectedAuth[],
   cliStatuses: CliAuthStatus[],
+  runtimeReadyAcpProviders?: ReadonlySet<string>,
 ): NonNullable<AiIntegrationStatus["detectedAuth"]> {
   const redacted = auth.map((entry) => {
     if (entry.type === "cli-subscription") {
@@ -573,6 +596,7 @@ function redactDetectedAuth(
 
   for (const cliStatus of cliStatuses) {
     if (!cliStatus.installed) continue;
+    const runtimeReady = runtimeReadyAcpProviders?.has(cliStatus.cli) === true;
     const existingIndex = redacted.findIndex(
       (entry) => entry.type === "cli-subscription" && entry.cli === cliStatus.cli,
     );
@@ -580,8 +604,8 @@ function redactDetectedAuth(
       type: "cli-subscription" as const,
       cli: cliStatus.cli,
       path: cliStatus.path ?? cliStatus.cli,
-      authenticated: cliStatus.authenticated,
-      verified: cliStatus.verified,
+      authenticated: runtimeReady || cliStatus.authenticated,
+      verified: runtimeReady || cliStatus.verified,
     };
     if (existingIndex >= 0) {
       redacted[existingIndex] = normalizedEntry;
@@ -918,6 +942,20 @@ function agentModelsFromAvailable(
 
 type ModelDescriptorForStatus = ReturnType<typeof getAvailableModels>[number];
 
+/**
+ * Model family behind each ACP provider's settings page.
+ *
+ * Curated rows come from the registry and live-discovered rows are folded into
+ * it by the ACP host, so one family lookup answers both — the settings page
+ * does not need to know which of the two a row came from.
+ */
+export const ACP_STATUS_FAMILIES = {
+  qwen: "qwen",
+  kimi: "moonshot",
+  grok: "xai",
+  copilot: "github-copilot",
+} as const;
+
 function buildStatusModelLists(
   available: ModelDescriptorForStatus[],
   availability: AiIntegrationStatus["availableProviders"],
@@ -927,6 +965,14 @@ function buildStatusModelLists(
     codex: availability.codex ? agentModelsFromAvailable(available, "openai") : [],
     cursor: availability.cursor ? agentModelsFromAvailable(available, "cursor") : [],
     droid: availability.droid ? agentModelsFromAvailable(available, "factory") : [],
+    // The ACP providers list their models whenever the CLI is present, not only
+    // once signed in: the curated list is what the settings page is for, and an
+    // empty page would say "this provider has no models" when what is true is
+    // "you are not signed in yet" — which the status word already says.
+    qwen: availability.qwen ? agentModelsFromAvailable(available, ACP_STATUS_FAMILIES.qwen) : [],
+    kimi: availability.kimi ? agentModelsFromAvailable(available, ACP_STATUS_FAMILIES.kimi) : [],
+    grok: availability.grok ? agentModelsFromAvailable(available, ACP_STATUS_FAMILIES.grok) : [],
+    copilot: availability.copilot ? agentModelsFromAvailable(available, ACP_STATUS_FAMILIES.copilot) : [],
   };
 }
 
@@ -1025,6 +1071,42 @@ export function createAiIntegrationService(args: {
     // which populates dynamic OpenCode descriptors (including local providers).
 
     let available = getAvailableModels(auth);
+    // ACP model ids are provider-owned. In particular, Qwen can be pointed at
+    // an arbitrary OpenAI-compatible endpoint, so its own settings are the
+    // source of truth when they name models; ADE's curated Alibaba rows are
+    // only a fallback for an otherwise unconfigured Qwen CLI.
+    const qwenSettings = await loadQwenUserSettings();
+    if (qwenSettings.models.length) {
+      mergeDynamicAcpModelDescriptors(
+        "qwen",
+        qwenSettings.models.map((model) => createDynamicAcpModelDescriptor("qwen", model.id, {
+          displayName: model.displayName,
+        })),
+      );
+    }
+    const acpModelFamilies = [
+      ["qwen", ACP_STATUS_FAMILIES.qwen],
+      ["kimi", ACP_STATUS_FAMILIES.kimi],
+      ["grok", ACP_STATUS_FAMILIES.grok],
+      ["copilot", ACP_STATUS_FAMILIES.copilot],
+    ] as const;
+    for (const [provider, family] of acpModelFamilies) {
+      const health = getProviderRuntimeHealth(provider);
+      const hasAuth = health
+        ? health.state === "ready"
+        : auth.some((entry) => entry.type === "cli-subscription" && entry.cli === provider && entry.authenticated !== false);
+      // An explicit failed health verdict must remove stale curated rows too;
+      // otherwise a signed-out provider still looks selectable in the picker.
+      available = available.filter((descriptor) =>
+        !(descriptor.isCliWrapped && descriptor.family === family)
+      );
+      if (!hasAuth) continue;
+      available.push(...listAcpModelDescriptorsForProvider(provider, {
+        ...(provider === "qwen" && qwenSettings.models.length
+          ? { configuredModelIds: qwenSettings.models.map((model) => model.id) }
+          : {}),
+      }));
+    }
     const discoveryMode = options?.discoverCliModels === true ? "probe" : "cached-or-fallback";
     // "cached-or-fallback" serves last-known-good rows and warms the cache in
     // the background when cold, so a verified key surfaces models on passive
@@ -1836,12 +1918,48 @@ export function createAiIntegrationService(args: {
             force: options?.force,
             shallowCliAuth: !shouldProbeCliModels,
           }));
-          const available = await timePhase("resolve_available_models", () =>
-            getResolvedAvailableModels(auth, { discoverCliModels: shouldProbeCliModels })
-          );
           // detectAuth -> detectAllAuth already called detectCliAuthStatuses() and
           // populated the cache, so this reads instantly from cache:
           const cliStatuses = timeSyncPhase("read_cli_auth_cache", () => getCachedCliAuthStatuses());
+          const installedAcp = ( ["qwen", "kimi", "grok", "copilot"] as const)
+            .filter((provider) => cliStatuses.some((status) => status.cli === provider && status.installed));
+          // The disk heuristic proves only that a provider left credentials on
+          // disk. A forced Settings refresh must wait for the ACP handshake so
+          // the first payload says what the user can actually run. The old
+          // fire-and-forget call returned stale cards (notably Copilot, whose
+          // keychain login is not represented in config.json) and never
+          // refreshed the renderer with its verdict.
+          const acpProbeResults = options?.force === true && installedAcp.length
+            ? await timePhase("probe_acp_auth", () => probeAllAcpProviderAuth({
+                providers: installedAcp,
+                cwd: projectRoot,
+                logger,
+              }))
+            : {};
+          const runtimeReadyAcpProviders = new Set<string>();
+          for (const provider of ["qwen", "kimi", "grok", "copilot"] as const) {
+            const probe = acpProbeResults[provider];
+            const health = getProviderRuntimeHealth(provider);
+            if (probe?.state === "ready" || health?.state === "ready") {
+              runtimeReadyAcpProviders.add(provider);
+            }
+          }
+          runtimeHealthVersion = getProviderRuntimeHealthVersion();
+          const authForModels: DetectedAuth[] = [...auth];
+          for (const provider of runtimeReadyAcpProviders) {
+            if (authForModels.some((entry) => entry.type === "cli-subscription" && entry.cli === provider)) continue;
+            const cli = cliStatuses.find((status) => status.cli === provider);
+            authForModels.push({
+              type: "cli-subscription",
+              cli: provider as "qwen" | "kimi" | "grok" | "copilot",
+              path: cli?.path ?? provider,
+              authenticated: true,
+              verified: true,
+            });
+          }
+          const available = await timePhase("resolve_available_models", () =>
+            getResolvedAvailableModels(authForModels, { discoverCliModels: shouldProbeCliModels })
+          );
           const piInstallation = timeSyncPhase("resolve_pi_installation", () => resolvePiInstallation());
           const piProfileInventory = await timePhase("pi_inventory", () => probePiProfileInventory(piInstallation));
           replaceDynamicPiModelDescriptors(piModelDescriptorsFromInventory(piProfileInventory));
@@ -1862,18 +1980,38 @@ export function createAiIntegrationService(args: {
             auth,
             providerConnections,
           }));
+          // A provider the user switched off in Settings offers nothing
+          // anywhere: no availability, no model rows, no ids in the merged
+          // list. Its settings tile still renders (as "Disabled") from the
+          // connection status, so the switch stays findable.
+          const disabledProviders = disabledProviderSet(projectConfigService.get().effective.ai);
+          const enabled = (provider: string): boolean => !disabledProviders.has(provider);
           const availability: AiIntegrationStatus["availableProviders"] = {
-            claude: buildClaudeAvailabilityFromConnection(providerConnections.claude),
-            codex: providerConnections.codex.runtimeAvailable,
-            cursor: providerConnections.cursor.runtimeAvailable,
-            droid: providerConnections.droid.runtimeAvailable,
+            claude: buildClaudeAvailabilityFromConnection(
+              providerConnections.claude,
+              { disabled: !enabled("claude") },
+            ),
+            codex: enabled("codex") && providerConnections.codex.runtimeAvailable,
+            cursor: enabled("cursor") && providerConnections.cursor.runtimeAvailable,
+            droid: enabled("droid") && providerConnections.droid.runtimeAvailable,
+            qwen: enabled("qwen") && Boolean(providerConnections.qwen?.runtimeAvailable),
+            kimi: enabled("kimi") && Boolean(providerConnections.kimi?.runtimeAvailable),
+            grok: enabled("grok") && Boolean(providerConnections.grok?.runtimeAvailable),
+            copilot: enabled("copilot") && Boolean(providerConnections.copilot?.runtimeAvailable),
           };
           const runtimeFilteredAvailable = timeSyncPhase("filter_available_models", () => available.filter((descriptor) => {
+            // API/local rows are not owned by any one provider tile (they reach
+            // ADE through OpenCode, Pi, or a local runtime), so the tile toggle
+            // does not speak for them. The catalog gate handles those groups.
             if (!descriptor.isCliWrapped) return true;
             if (descriptor.family === "anthropic") return availability.claude.auth.ready;
-            if (descriptor.family === "openai") return providerConnections.codex.runtimeAvailable;
-            if (descriptor.family === "cursor") return providerConnections.cursor.runtimeAvailable;
-            if (descriptor.family === "factory") return providerConnections.droid.runtimeAvailable;
+            if (descriptor.family === "openai") return enabled("codex") && providerConnections.codex.runtimeAvailable;
+            if (descriptor.family === "cursor") return enabled("cursor") && providerConnections.cursor.runtimeAvailable;
+            if (descriptor.family === "factory") return enabled("droid") && providerConnections.droid.runtimeAvailable;
+            if (descriptor.family === ACP_STATUS_FAMILIES.qwen) return availability.qwen === true;
+            if (descriptor.family === ACP_STATUS_FAMILIES.kimi) return availability.kimi === true;
+            if (descriptor.family === ACP_STATUS_FAMILIES.grok) return availability.grok === true;
+            if (descriptor.family === ACP_STATUS_FAMILIES.copilot) return availability.copilot === true;
             return true;
           }));
 
@@ -1958,7 +2096,7 @@ export function createAiIntegrationService(args: {
             availableProviders: availability,
             models,
             detectedAuth: timeSyncPhase("redact_auth", () => [
-              ...redactDetectedAuth(auth, cliStatuses),
+              ...redactDetectedAuth(auth, cliStatuses, runtimeReadyAcpProviders),
               ...redactPiDetectedAuth(piProfileInventory),
             ]),
             providerConnections,

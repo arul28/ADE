@@ -16,6 +16,7 @@ import { CURSOR_CLI_EXECUTABLES } from "../../../shared/providerCliExecutables";
 import type { AiLocalProviderConfigs } from "../../../shared/types";
 import { inspectLocalProvider, clearLocalProviderInspectionCache } from "./localModelDiscovery";
 import { resolveDroidExecutable } from "./droidExecutable";
+import { loadQwenUserSettings } from "./qwenUserSettings";
 import {
   reportProviderRuntimeAuthFailure,
   reportProviderRuntimeFailure,
@@ -23,7 +24,26 @@ import {
 } from "./providerRuntimeHealth";
 import { loadCursorSdk } from "./cursorSdkLoader";
 
-type CliName = "claude" | "codex" | "cursor" | "droid";
+type CliName =
+  | "claude"
+  | "codex"
+  | "cursor"
+  | "droid"
+  | "qwen"
+  | "kimi"
+  | "grok"
+  | "copilot";
+
+/**
+ * CLIs ADE reaches over the Agent Client Protocol. Their auth state is read
+ * from disk, not from a spawn: see `inspectAcpCliCredentials`.
+ */
+const ACP_CLI_NAMES = ["qwen", "kimi", "grok", "copilot"] as const;
+type AcpCliName = (typeof ACP_CLI_NAMES)[number];
+
+function isAcpCliName(cli: CliName): cli is AcpCliName {
+  return (ACP_CLI_NAMES as readonly string[]).includes(cli);
+}
 
 type ApiKeySource = "config" | "env" | "store";
 
@@ -49,7 +69,7 @@ export type CliAuthStatus = {
 export type DetectedAuth =
   | {
       type: "cli-subscription";
-      cli: "claude" | "codex" | "cursor" | "droid";
+      cli: "claude" | "codex" | "cursor" | "droid" | AcpCliName;
       path: string;
       authenticated: boolean;
       verified: boolean;
@@ -88,7 +108,88 @@ const CLI_AUTH_PROBES: Record<CliName, string[][]> = {
   // real subcommand — `version`, `whoami`, `account status` — is taken as a
   // *prompt* and boots the full interactive TUI, burning the spawn timeout.
   droid: [["--version"], ["-v"]],
+  // The ACP CLIs have no cheap, non-interactive auth subcommand: `qwen`,
+  // `kimi`, and `grok` all boot their TUI for anything that is not a
+  // recognised flag, and `copilot`'s only status surface is inside the
+  // session. Their credentials are read off disk instead — see
+  // `inspectAcpCliCredentials` — and the protocol-level `authenticate`
+  // handshake belongs to the ACP host, not to this presence probe.
+  qwen: [],
+  kimi: [],
+  grok: [],
+  copilot: [],
 };
+
+/**
+ * Where each ACP CLI keeps the artifact that proves a completed login.
+ *
+ * These are heuristics, and they are reported as such: `verified` stays false,
+ * because ADE has not asked the provider whether the credential still works.
+ * Only the ACP host's `authenticate` round-trip can say that.
+ */
+async function inspectAcpCliCredentials(
+  cli: AcpCliName,
+): Promise<{ authenticated: boolean; verified: false }> {
+  const home = homedir();
+  const env = process.env;
+  const dir = (override: string | undefined, fallback: string): string => {
+    const configured = override?.trim();
+    return configured?.length ? path.resolve(configured) : path.join(home, fallback);
+  };
+
+  if (cli === "grok") {
+    // `~/.grok` only — Grok honours no config-home override, so ADE must not
+    // invent one. A stored session token outranks XAI_API_KEY inside Grok
+    // itself, but either one means the CLI can start.
+    if (env.XAI_API_KEY?.trim()) return { authenticated: true, verified: false };
+    return { authenticated: await fileExists(path.join(home, ".grok", "auth.json")), verified: false };
+  }
+
+  if (cli === "qwen") {
+    if (env.OPENAI_API_KEY?.trim() || env.QWEN_API_KEY?.trim() || env.DASHSCOPE_API_KEY?.trim()) {
+      return { authenticated: true, verified: false };
+    }
+    const root = dir(env.QWEN_HOME, ".qwen");
+    const [oauth, dotenvFile, settings] = await Promise.all([
+      fileExists(path.join(root, "oauth_creds.json")),
+      fileExists(path.join(root, ".env")),
+      loadQwenUserSettings({ env }),
+    ]);
+    return { authenticated: oauth || dotenvFile || settings.authenticated, verified: false };
+  }
+
+  if (cli === "kimi") {
+    const root = dir(env.KIMI_CODE_HOME, ".kimi-code");
+    return { authenticated: await fileExists(path.join(root, "config.toml")), verified: false };
+  }
+
+  // Copilot's durable login is normally keychain/session-state backed, not a
+  // reliable JSON field in config.json. Environment tokens are still a useful
+  // presence hint; the ACP handshake remains the authority. Keep the legacy
+  // JSON read as a best-effort fallback, and never write or rewrite this file
+  // (it is JSONC on current Copilot versions).
+  if (env.GITHUB_TOKEN?.trim() || env.GH_TOKEN?.trim()) {
+    return { authenticated: true, verified: false };
+  }
+  const root = dir(env.COPILOT_HOME, ".copilot");
+  try {
+    const raw = await readFile(path.join(root, "config.json"), "utf8");
+    const parsed = JSON.parse(raw) as { logged_in_users?: unknown };
+    const users = Array.isArray(parsed.logged_in_users) ? parsed.logged_in_users : [];
+    return { authenticated: users.length > 0, verified: false };
+  } catch {
+    return { authenticated: false, verified: false };
+  }
+}
+
+async function fileExists(target: string): Promise<boolean> {
+  try {
+    await readFile(target);
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 function cliSpawnCommands(cli: CliName): readonly string[] {
   if (cli === "cursor") return CURSOR_CLI_EXECUTABLES.launchCandidates;
@@ -1122,7 +1223,7 @@ export async function detectCliAuthStatuses(options?: { force?: boolean; skipAut
     await refreshProcessPathFromShell();
   }
 
-  const cliChecks: CliName[] = ["claude", "codex", "cursor", "droid"];
+  const cliChecks: CliName[] = ["claude", "codex", "cursor", "droid", ...ACP_CLI_NAMES];
 
   // Probe all CLIs in parallel
   const statuses = await Promise.all(
@@ -1147,6 +1248,11 @@ export async function detectCliAuthStatuses(options?: { force?: boolean; skipAut
           authenticated: false,
           verified: false,
         };
+      }
+      if (isAcpCliName(cli)) {
+        // Disk-only, so there is nothing for `skipAuthProbe` to skip.
+        const auth = await inspectAcpCliCredentials(cli);
+        return { cli, installed, path, authenticated: auth.authenticated, verified: auth.verified };
       }
       if (skipAuthProbe && cli !== "droid") {
         return {
@@ -1210,7 +1316,6 @@ export async function detectAllAuth(
     skipAuthProbe: options?.skipCliAuthProbe,
   });
   for (const cli of cliStatuses) {
-    if (cli.cli !== "claude" && cli.cli !== "codex" && cli.cli !== "cursor" && cli.cli !== "droid") continue;
     if (!cli.installed) continue;
     if (!cli.authenticated && cli.verified) continue;
     results.push({

@@ -866,6 +866,22 @@ describe("projectConfigService - AI mode migration", () => {
     expect(cleared?.customProviders).toBeUndefined();
     expect(cleared?.customModelSlugs).toBeUndefined();
   });
+
+  // The Settings toggle writes the whole authoritative list. Under union
+  // semantics re-enabling a provider would be inexpressible, which is the same
+  // trap custom providers fell into above.
+  it("replaces the disabled-provider list so a provider can be switched back on", () => {
+    const shared = { disabledProviders: ["grok", "copilot"] };
+
+    const narrowed = mergeAiConfig(shared, { disabledProviders: ["grok"] });
+    expect(narrowed?.disabledProviders).toEqual(["grok"]);
+
+    const kept = mergeAiConfig(shared, { defaultModel: "openai/gpt-5.4" });
+    expect(kept?.disabledProviders).toEqual(["grok", "copilot"]);
+
+    const cleared = mergeAiConfig(shared, { disabledProviders: [] });
+    expect(cleared?.disabledProviders).toBeUndefined();
+  });
 });
 
 describe("projectConfigService - PR transcript gists", () => {

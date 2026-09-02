@@ -34,6 +34,7 @@ vi.mock("@lobehub/icons", () => {
     OpenAI: brand(),
     OpenCode: brand(),
     OpenRouter: brand(),
+    Qwen: brand(),
     XAI: brand(),
   };
 });

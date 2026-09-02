@@ -15,9 +15,14 @@ import {
 } from "../../../shared/providerPlatformSupport";
 import type { PiInstallation, PiProfileInventory } from "./piInstallation";
 import { nowIso } from "../shared/utils";
+import {
+  ACP_PROVIDER_IDS,
+  ACP_PROVIDER_METADATA,
+  type AcpProviderId,
+} from "../../../shared/acpProviderMetadata";
 
 function createUnavailableStatus(
-  provider: "claude" | "codex" | "cursor" | "droid" | "pi",
+  provider: "claude" | "codex" | "cursor" | "droid" | "pi" | AcpProviderId,
   checkedAt: string,
 ): AiProviderConnectionStatus {
   return {
@@ -393,5 +398,51 @@ export async function buildProviderConnections(
     : undefined;
   if (pi) applyRuntimeHealth(pi, piRuntimeHealth);
 
-  return pi ? { claude, codex, cursor, droid, pi } : { claude, codex, cursor, droid };
+  const acpConnections: Partial<Record<AcpProviderId, AiProviderConnectionStatus>> = {};
+  for (const provider of ACP_PROVIDER_IDS) {
+    const metadata = ACP_PROVIDER_METADATA[provider];
+    const cli = cliStatuses.find((status) => status.cli === provider) ?? null;
+    const runtimeDetected = Boolean(cli?.installed);
+    const authAvailable = Boolean(cli?.installed && cli.authenticated);
+    const health = getProviderRuntimeHealth(provider);
+    const status: AiProviderConnectionStatus = {
+      ...createUnavailableStatus(provider, checkedAt),
+      authAvailable,
+      runtimeDetected,
+      runtimeAvailable: authAvailable && runtimeDetected,
+      // No dialect reports usage through a channel ADE polls yet. Kimi does not
+      // report it at all; the rest fold it into prompt results, which only the
+      // ACP host sees.
+      usageAvailable: false,
+      path: cli?.path ?? null,
+      sources: [
+        {
+          kind: "cli",
+          detected: runtimeDetected,
+          authenticated: cli?.authenticated,
+          // Always false for these: a credential file on disk is not proof the
+          // credential still works, and saying otherwise would make a stale
+          // login read as connected.
+          verified: cli?.verified,
+          path: cli?.path ?? null,
+        },
+      ],
+      blocker: !runtimeDetected
+        ? `The ${metadata.statusLabel} CLI (\`${provider}\`) was not found on this machine.`
+        : !authAvailable
+          ? `${metadata.statusLabel} is installed but no login was detected. Run: ${metadata.loginHint}`
+          : null,
+    };
+    applyRuntimeHealth(status, health);
+    acpConnections[provider] = status;
+  }
+
+  return {
+    claude,
+    codex,
+    cursor,
+    droid,
+    ...(pi ? { pi } : {}),
+    ...acpConnections,
+  };
 }

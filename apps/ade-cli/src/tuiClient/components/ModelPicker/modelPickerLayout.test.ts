@@ -40,6 +40,23 @@ describe("buildModelPickerLayout", () => {
     expect(layout.railEntries[0]?.kind).toBe("favorites");
     expect(layout.railEntries[1]?.kind).toBe("recents");
     expect(layout.railEntries.some((entry) => entry.kind === "provider")).toBe(true);
+    expect(layout.railEntries
+      .filter((entry) => entry.kind === "provider")
+      .map((entry) => entry.kind === "provider" ? entry.provider : null))
+      .toEqual([
+        "claude",
+        "codex",
+        "cursor",
+        "opencode",
+        "pi",
+        "copilot",
+        "grok",
+        "droid",
+        "kimi",
+        "qwen",
+        "ollama",
+        "lmstudio",
+      ]);
     const piRail = layout.railEntries.find((entry) => entry.kind === "provider" && entry.provider === "pi");
     expect(piRail?.kind).toBe("provider");
     if (piRail?.kind === "provider") {
@@ -114,6 +131,89 @@ describe("buildModelPickerLayout", () => {
 
     expect(modelPickerProviderAuthStatus(status, "pi", "chat")).toBe("unavailable");
     expect(modelPickerProviderAuthStatus(status, "pi", "cli")).toBe("ready");
+  });
+
+  it("keeps a rail for every ACP provider so /model can offer them", () => {
+    const layout = buildModelPickerLayout({
+      models,
+      favorites: [],
+      recents: [],
+      activeModelId: null,
+      query: "",
+      selection: { kind: "favorites" },
+      focusedIndex: 0,
+      searchMode: false,
+    });
+    const rails = layout.railEntries
+      .filter((entry) => entry.kind === "provider")
+      .map((entry) => (entry.kind === "provider" ? entry.provider : null));
+    for (const provider of ["qwen", "kimi", "grok", "copilot"] as const) {
+      expect(rails).toContain(provider);
+    }
+  });
+
+  it("grades ACP provider auth from the host's optional status slots", () => {
+    // Nothing probed: not "signed out", just not known yet.
+    expect(modelPickerProviderAuthStatus({} as AiSettingsStatus, "qwen", "chat")).toBe("unknown");
+
+    const connected = {
+      providerConnections: { grok: { authAvailable: true, runtimeAvailable: true } },
+    } as unknown as AiSettingsStatus;
+    expect(modelPickerProviderAuthStatus(connected, "grok", "chat")).toBe("ready");
+
+    const probedSignedOut = {
+      providerConnections: { kimi: { authAvailable: false, runtimeAvailable: false } },
+    } as unknown as AiSettingsStatus;
+    expect(modelPickerProviderAuthStatus(probedSignedOut, "kimi", "chat")).toBe("unavailable");
+
+    const flagged = { availableProviders: { copilot: true } } as unknown as AiSettingsStatus;
+    expect(modelPickerProviderAuthStatus(flagged, "copilot", "chat")).toBe("ready");
+  });
+
+  it("files ACP catalog groups on their own rail instead of falling back to Codex", () => {
+    const catalog = {
+      groups: [
+        {
+          key: "qwen",
+          label: "Qwen",
+          providers: [
+            {
+              key: "qwen",
+              displayName: "Qwen",
+              subsections: [
+                {
+                  key: "qwen",
+                  label: "Qwen",
+                  models: [
+                    {
+                      id: "qwen/qwen3-coder-plus",
+                      displayName: "Qwen3 Coder Plus",
+                      groupKey: "qwen",
+                      family: "qwen",
+                      isAvailable: true,
+                    },
+                  ],
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    } as unknown as AgentChatModelCatalog;
+
+    const layout = buildModelPickerLayout({
+      models: [],
+      catalog,
+      favorites: [],
+      recents: [],
+      activeModelId: null,
+      query: "",
+      selection: { kind: "provider", provider: "qwen" },
+      focusedIndex: 0,
+      searchMode: false,
+    });
+    expect(layout.entries.map((entry) => entry.modelId)).toEqual(["qwen/qwen3-coder-plus"]);
+    expect(layout.entries[0]?.family).toBe("qwen");
   });
 
   it("shows static Anthropic rows immediately before the runtime catalog warms", () => {
@@ -433,6 +533,10 @@ describe("modelPickerController", () => {
     expect(modelPickerRefreshProvider("lmstudio")).toBe("lmstudio");
     expect(modelPickerRefreshProvider("ollama")).toBe("ollama");
     expect(modelPickerRefreshProvider("pi")).toBe("pi");
+    expect(modelPickerRefreshProvider("qwen")).toBe("qwen");
+    expect(modelPickerRefreshProvider("kimi")).toBe("kimi");
+    expect(modelPickerRefreshProvider("grok")).toBe("grok");
+    expect(modelPickerRefreshProvider("copilot")).toBe("copilot");
     expect(modelPickerRefreshProvider("codex")).toBeNull();
     expect(modelPickerRefreshProvider("claude")).toBeNull();
   });

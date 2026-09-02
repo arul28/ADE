@@ -67,6 +67,20 @@ struct WorkNewChatSheet: View {
         tint: providerTint("codex")
       ),
       WorkProviderOption(
+        id: "cursor",
+        title: "Cursor",
+        subtitle: "Cursor-native chat sessions",
+        icon: providerIcon("cursor"),
+        tint: providerTint("cursor")
+      ),
+      WorkProviderOption(
+        id: "opencode",
+        title: "OpenCode",
+        subtitle: "Open workflows and tools",
+        icon: providerIcon("opencode"),
+        tint: providerTint("opencode")
+      ),
+      WorkProviderOption(
         id: "pi",
         title: "Pi",
         subtitle: "Pi-native models and sessions",
@@ -74,11 +88,18 @@ struct WorkNewChatSheet: View {
         tint: providerTint("pi")
       ),
       WorkProviderOption(
-        id: "cursor",
-        title: "Cursor",
-        subtitle: "Cursor-native chat sessions",
-        icon: providerIcon("cursor"),
-        tint: providerTint("cursor")
+        id: "copilot",
+        title: "GitHub Copilot",
+        subtitle: "Copilot CLI on the paired Mac",
+        icon: providerIcon("copilot"),
+        tint: providerTint("copilot")
+      ),
+      WorkProviderOption(
+        id: "grok",
+        title: "Grok",
+        subtitle: "Grok CLI on the paired Mac",
+        icon: providerIcon("grok"),
+        tint: providerTint("grok")
       ),
       WorkProviderOption(
         id: "droid",
@@ -88,11 +109,18 @@ struct WorkNewChatSheet: View {
         tint: providerTint("droid")
       ),
       WorkProviderOption(
-        id: "opencode",
-        title: "OpenCode",
-        subtitle: "Open workflows and tools",
-        icon: providerIcon("opencode"),
-        tint: providerTint("opencode")
+        id: "kimi",
+        title: "Kimi",
+        subtitle: "Kimi Code on the paired Mac",
+        icon: providerIcon("kimi"),
+        tint: providerTint("kimi")
+      ),
+      WorkProviderOption(
+        id: "qwen",
+        title: "Qwen",
+        subtitle: "Qwen Code on the paired Mac",
+        icon: providerIcon("qwen"),
+        tint: providerTint("qwen")
       ),
     ]
   }

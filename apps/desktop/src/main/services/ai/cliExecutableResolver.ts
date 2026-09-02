@@ -216,6 +216,10 @@ function getWindowsKnownBinDirs(env: NodeJS.ProcessEnv, command: string): string
     command === "codex" && localAppData
       ? path.join(localAppData, "Programs", "OpenAI", "Codex", "bin")
       : "",
+    command === "kimi" ? path.join(homeDir, ".kimi-code", "bin") : "",
+    command === "kimi" && env.KIMI_CODE_HOME?.trim()
+      ? path.join(env.KIMI_CODE_HOME.trim(), "bin")
+      : "",
   ]);
 }
 
@@ -254,6 +258,10 @@ function getUnixLikeKnownBinDirs(env: NodeJS.ProcessEnv, command: string): strin
     asdfDataDir ? path.join(asdfDataDir, "shims") : "",
     ...readNpmPrefixBinDirs(env),
     command === "codex" ? "/Applications/Codex.app/Contents/Resources" : "",
+    command === "kimi" ? path.join(homeDir, ".kimi-code", "bin") : "",
+    command === "kimi" && env.KIMI_CODE_HOME?.trim()
+      ? path.join(env.KIMI_CODE_HOME.trim(), "bin")
+      : "",
   ]);
 }
 

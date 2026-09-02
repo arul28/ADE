@@ -1,0 +1,63 @@
+{
+  "qwen": {
+    "provider": "qwen",
+    "steps": [
+      {
+        "step": "initialize",
+        "ok": true,
+        "closeAdvertised": false,
+        "sessionCapabilities": {
+          "list": {},
+          "resume": {}
+        }
+      },
+      {
+        "step": "session/close dummy id",
+        "ok": false,
+        "message": "\"Method not found\": session/close",
+        "rpc": {
+          "code": -32601,
+          "message": "\"Method not found\": session/close",
+          "data": {
+            "method": "session/close"
+          }
+        }
+      },
+      {
+        "step": "authenticate openai",
+        "ok": false,
+        "message": "Internal error",
+        "rpc": {
+          "code": -32603,
+          "message": "Internal error",
+          "data": {
+            "details": "Missing API key for openai auth. Current model: 'coder-model', baseUrl: '(default)'. Provide an API key via settings (security.auth.apiKey), or set the environment variable 'OPENAI_API_KEY'."
+          }
+        }
+      }
+    ]
+  },
+  "kimi": {
+    "provider": "kimi",
+    "steps": [
+      {
+        "step": "initialize",
+        "ok": true,
+        "closeAdvertised": true,
+        "sessionCapabilities": {
+          "list": {},
+          "resume": {},
+          "close": {},
+          "delete": {},
+          "fork": {},
+          "additionalDirectories": {}
+        }
+      },
+      {
+        "step": "session/close dummy id",
+        "ok": true,
+        "unexpected": {}
+      }
+    ]
+  }
+}

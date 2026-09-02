@@ -992,6 +992,8 @@ describe("ADE CLI", () => {
       ADE_PACKAGE_CHANNEL: process.env.ADE_PACKAGE_CHANNEL,
       ADE_SYNC_HOST_LOCK_PATH: process.env.ADE_SYNC_HOST_LOCK_PATH,
       ADE_SYNC_HOST_SINGLETON_TEST_MODE: process.env.ADE_SYNC_HOST_SINGLETON_TEST_MODE,
+      ADE_DISABLE_RUNTIME_SERVICE_INSTALL: process.env.ADE_DISABLE_RUNTIME_SERVICE_INSTALL,
+      ADE_DISABLE_TOOLS_FETCH: process.env.ADE_DISABLE_TOOLS_FETCH,
     };
     const ownerProcess = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000);"], {
       stdio: "ignore",
@@ -1008,6 +1010,8 @@ describe("ADE CLI", () => {
       delete process.env.ADE_PACKAGE_CHANNEL;
       process.env.ADE_SYNC_HOST_LOCK_PATH = lockPath;
       process.env.ADE_SYNC_HOST_SINGLETON_TEST_MODE = "1";
+      process.env.ADE_DISABLE_RUNTIME_SERVICE_INSTALL = "1";
+      process.env.ADE_DISABLE_TOOLS_FETCH = "1";
       writeSyncHostSingletonLock({
         lockPath,
         pid: ownerProcess.pid,
@@ -1031,6 +1035,10 @@ describe("ADE CLI", () => {
       else process.env.ADE_SYNC_HOST_LOCK_PATH = originalEnv.ADE_SYNC_HOST_LOCK_PATH;
       if (originalEnv.ADE_SYNC_HOST_SINGLETON_TEST_MODE === undefined) delete process.env.ADE_SYNC_HOST_SINGLETON_TEST_MODE;
       else process.env.ADE_SYNC_HOST_SINGLETON_TEST_MODE = originalEnv.ADE_SYNC_HOST_SINGLETON_TEST_MODE;
+      if (originalEnv.ADE_DISABLE_RUNTIME_SERVICE_INSTALL === undefined) delete process.env.ADE_DISABLE_RUNTIME_SERVICE_INSTALL;
+      else process.env.ADE_DISABLE_RUNTIME_SERVICE_INSTALL = originalEnv.ADE_DISABLE_RUNTIME_SERVICE_INSTALL;
+      if (originalEnv.ADE_DISABLE_TOOLS_FETCH === undefined) delete process.env.ADE_DISABLE_TOOLS_FETCH;
+      else process.env.ADE_DISABLE_TOOLS_FETCH = originalEnv.ADE_DISABLE_TOOLS_FETCH;
       ownerProcess.kill("SIGKILL");
       fs.rmSync(adeHome, { recursive: true, force: true });
     }
@@ -3411,7 +3419,21 @@ describe("ADE CLI", () => {
         "--provider",
         "mystery",
       ]),
-    ).toThrow(/Provider must be claude, codex, cursor, droid, opencode, pi, or shell/);
+    ).toThrow(/Provider must be claude, codex, cursor, droid, opencode, pi, qwen, kimi, grok, copilot, or shell/);
+  });
+
+  it("accepts ACP providers for new chat", () => {
+    for (const provider of ["qwen", "kimi", "grok", "copilot"] as const) {
+      const plan = buildCliPlan([
+        "new",
+        "chat",
+        "--lane",
+        "lane-1",
+        "--provider",
+        provider,
+      ]);
+      expect(plan.kind).toBe("execute");
+    }
   });
 
   it("does not treat new --mode values as subcommands", () => {

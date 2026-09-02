@@ -122,6 +122,33 @@ describe("cliExecutableResolver", () => {
     expect(entries).toContain("/opt/homebrew/bin");
   });
 
+  it("discovers kimi from ~/.kimi-code/bin when PATH does not include it", () => {
+    tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-cli-kimi-"));
+    const homeDir = path.join(tempRoot, "home");
+    makeExecutable(path.join(homeDir, ".kimi-code", "bin", executableFileName("kimi")));
+
+    const realStatSync = fs.statSync;
+    vi.spyOn(fs, "statSync").mockImplementation(((p: fs.PathLike, opts?: any) => {
+      const normalizedCandidate = path.normalize(String(p));
+      const normalizedTempRoot = path.normalize(tempRoot!);
+      const candidateBase = path.parse(normalizedCandidate).name.toLowerCase();
+      if (candidateBase === "kimi" && !normalizedCandidate.startsWith(normalizedTempRoot)) {
+        const err: NodeJS.ErrnoException = new Error("ENOENT");
+        err.code = "ENOENT";
+        throw err;
+      }
+      return realStatSync(normalizedCandidate, opts);
+    }) as typeof fs.statSync);
+
+    expect(resolveExecutableFromKnownLocations("kimi", {
+      HOME: homeDir,
+      PATH: "/usr/bin:/bin",
+    })).toEqual({
+      path: path.join(homeDir, ".kimi-code", "bin", executableFileName("kimi")),
+      source: "known-dir",
+    });
+  });
+
   it("returns all executable candidates in PATH then known-directory order", () => {
     tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-cli-candidates-"));
     const homeDir = path.join(tempRoot, "home");

@@ -223,7 +223,11 @@ describe("providerFromChatToolType", () => {
   });
 
   it("returns null for CLI/shell tool types and unknown input", () => {
-    for (const toolType of ["shell", "claude", "codex", "cursor-cli", "droid", "opencode", "not-a-tool", "", null, undefined]) {
+    for (const toolType of [
+      "shell", "claude", "codex", "cursor-cli", "droid", "opencode",
+      "qwen", "kimi", "grok", "copilot",
+      "not-a-tool", "", null, undefined,
+    ]) {
       expect(providerFromChatToolType(toolType)).toBeNull();
     }
   });

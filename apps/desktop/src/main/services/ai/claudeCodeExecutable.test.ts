@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterAll, describe, expect, it } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -8,6 +8,13 @@ import {
   findToolTargetPin,
   loadToolsManifest,
 } from "../../../../../ade-cli/src/services/tools";
+
+const emptyToolsRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-claude-empty-tools-"));
+afterAll(() => fs.rmSync(emptyToolsRoot, { recursive: true, force: true }));
+
+function envWithoutCachedTool(overrides: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  return { ADE_TOOLS_ROOT: emptyToolsRoot, ...overrides };
+}
 
 /**
  * Materialize a pinned tool into a throwaway cache root exactly as an install
@@ -58,9 +65,9 @@ describe("resolveClaudeCodeExecutable", () => {
             verified: true,
           },
         ],
-        env: {
+        env: envWithoutCachedTool({
           PATH: "/usr/bin:/bin",
-        },
+        }),
       }),
     ).toEqual({
       path: "/opt/homebrew/bin/claude",
@@ -93,9 +100,9 @@ describe("resolveClaudeCodeExecutable", () => {
               verified: true,
             },
           ],
-          env: {
+          env: envWithoutCachedTool({
             PATH: "/usr/bin:/bin",
-          },
+          }),
           resourcesPath,
           platform: "darwin",
           arch: "arm64",

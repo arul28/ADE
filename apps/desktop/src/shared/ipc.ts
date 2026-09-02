@@ -609,6 +609,12 @@ export const IPC = {
   aiListApiKeys: "ade.ai.listApiKeys",
   aiVerifyApiKey: "ade.ai.verifyApiKey",
   aiUpdateConfig: "ade.ai.updateConfig",
+  /**
+   * Binary path, config home, version, last auth verdict, and optionally the
+   * vendor's own `doctor`, for one ACP provider. Spawns, so it is called when a
+   * provider's settings page opens — never on a status refresh.
+   */
+  aiAcpProviderDiagnostics: "ade.ai.acpProviderDiagnostics",
   aiOpencodeAuthMethods: "ade.ai.opencodeAuthMethods",
   aiOpencodeOAuthStart: "ade.ai.opencodeOAuthStart",
   aiOpencodeOAuthCancel: "ade.ai.opencodeOAuthCancel",

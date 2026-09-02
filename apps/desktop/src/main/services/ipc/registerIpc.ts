@@ -67,12 +67,13 @@ import {
   convertHeicBufferToJpeg,
   HeicAttachmentConversionError,
 } from "../chat/heicAttachmentConverter";
-import type { ConvertImageToJpegResult } from "../../../shared/types/chat";
+import type { AcpChatProvider, ConvertImageToJpegResult } from "../../../shared/types/chat";
 import { appendEvent as perfAppend, isRunActive as isPerfRunActive } from "../perf/perfLog";
 import { buildPrAiResolutionContextKey, isAdeUsageRangePreset, isAdeUsageScope } from "../../../shared/types";
 import { detectCliAuthStatuses } from "../ai/authDetector";
 import { resolveClaudeCodeExecutable } from "../ai/claudeCodeExecutable";
 import { buildProviderConnections } from "../ai/providerConnectionStatus";
+import { collectAcpProviderDiagnostics } from "../ai/acpProviderDiagnostics";
 import { resolvePiInstallation } from "../ai/piInstallation";
 import { pathsEqual } from "../shared/pathCompare";
 import { browseProjectDirectories } from "../projects/projectBrowserService";
@@ -589,6 +590,7 @@ import type {
   AiDetectedAuth,
   AiFeatureKey,
   AiProviderConnections,
+  AcpProviderDiagnostics,
   AiApiKeyVerificationResult,
   AiConfig,
   AiSettingsStatus,
@@ -5085,6 +5087,24 @@ export function registerIpc({
       const ctx = getCtx();
       requireAppContextServices(ctx, ["aiIntegrationService"] as const);
       return await ctx.aiIntegrationService.verifyApiKeyConnection(arg.provider);
+    },
+  );
+
+  ipcMain.handle(
+    IPC.aiAcpProviderDiagnostics,
+    async (
+      _event,
+      arg: { provider: AcpChatProvider; runDoctor?: boolean },
+    ): Promise<AcpProviderDiagnostics> => {
+      const ctx = getCtx();
+      return await collectAcpProviderDiagnostics({
+        provider: arg.provider,
+        // Diagnostics are about this machine's install, so the project root is
+        // the right directory: probe verdicts are cached per `{provider, cwd}`
+        // and a lane worktree would key a second, emptier cache entry.
+        cwd: ctx.project.rootPath,
+        ...(arg.runDoctor === true ? { runDoctor: true } : {}),
+      });
     },
   );
 

@@ -14,6 +14,9 @@ import {
   startOpenCodeSession,
 } from "../opencode/openCodeRuntime";
 import { cursorSdkSettingSources, evaluateCursorSdkHook, summarizeCursorHook } from "./cursorSdkPolicy";
+import { createMockAcpAgent, respondWithSession, type MockAcpAgent } from "./acpHost/mockAcpAgent";
+import { createAcpSessionPool } from "./acpHost/acpSessionPool";
+import type { AcpSessionUpdate } from "./acpHost/acpProtocolTypes";
 import { openKvDb } from "../state/kvDb";
 import { createCtoStateService } from "../cto/ctoStateService";
 import { createCtoMemoryService } from "../cto/ctoMemoryService";
@@ -25,6 +28,7 @@ import {
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { injectFsFault } from "../../../test/faultInjection";
 import { resolveBuiltInBrowserActorCapability } from "../builtInBrowser/builtInBrowserActorCapabilities";
+import { loadQwenUserSettings } from "../ai/qwenUserSettings";
 
 const streamText = vi.fn();
 const claudeSdkCreateSessionCompat = vi.hoisted(() => vi.fn());
@@ -735,6 +739,30 @@ vi.mock("./droidModelsDiscovery", () => ({
 
 vi.mock("../ai/authDetector", () => ({
   detectAllAuth: vi.fn(async () => []),
+  // The ACP adapter reads this to resolve a binary and to gate the catalog.
+  // Every ACP CLI reports installed and signed in unless a test says otherwise.
+  detectCliAuthStatuses: vi.fn(async () =>
+    ["qwen", "kimi", "grok", "copilot"].map((cli) => ({
+      cli,
+      installed: true,
+      path: `/usr/local/bin/${cli}`,
+      authenticated: true,
+      verified: false,
+    })),
+  ),
+}));
+
+vi.mock("../ai/qwenUserSettings", () => ({
+  loadQwenUserSettings: vi.fn(async () => ({
+    authenticated: false,
+    models: [],
+    defaultModelId: null,
+  })),
+  parseQwenUserSettings: vi.fn(() => ({
+    authenticated: false,
+    models: [],
+    defaultModelId: null,
+  })),
 }));
 
 vi.mock("../ai/localModelDiscovery", () => ({}));
@@ -969,7 +997,7 @@ import {
   gunzipFromBase64,
 } from "./crossMachineForkTransport";
 import { spawn } from "node:child_process";
-import { detectAllAuth } from "../ai/authDetector";
+import { detectAllAuth, detectCliAuthStatuses } from "../ai/authDetector";
 import { buildCodingAgentSystemPrompt } from "../ai/tools/systemPrompt";
 import { createOrchestrationService } from "../orchestration/orchestrationService";
 import { runGit } from "../git/git";
@@ -27933,6 +27961,58 @@ describe("createAgentChatService", () => {
       expect(Array.isArray(models)).toBe(true);
     });
 
+    it("uses the Qwen CLI's configured model instead of unrelated curated rows", async () => {
+      vi.mocked(detectAllAuth).mockResolvedValue([
+        {
+          type: "cli-subscription",
+          cli: "qwen",
+          path: "/usr/local/bin/qwen",
+          authenticated: true,
+          verified: false,
+        },
+      ] as never);
+      vi.mocked(detectCliAuthStatuses).mockResolvedValue([
+        {
+          cli: "qwen",
+          installed: true,
+          path: "/usr/local/bin/qwen",
+          authenticated: true,
+          verified: false,
+        },
+      ] as never);
+      vi.mocked(loadQwenUserSettings).mockResolvedValue({
+        authenticated: true,
+        models: [{ id: "gpt-5.5", displayName: "gpt-5.5" }],
+        defaultModelId: "gpt-5.5",
+      });
+
+      const { service } = createService();
+      const models = await service.getAvailableModels({ provider: "qwen", activateRuntime: true });
+
+      expect(models.map((model) => model.id)).toEqual(["qwen/gpt-5.5"]);
+    });
+
+    // Settings can switch a provider off. That has to mean the same thing on
+    // every surface, so the gate lives on the one call every picker, the
+    // catalog, and the cross-machine action all funnel through.
+    it("offers nothing for a provider the user disabled, directly or in aggregate", async () => {
+      const { service } = createService({
+        projectConfigService: {
+          get: vi.fn(() => ({ effective: { ai: { disabledProviders: ["claude"] } } })),
+          getAll: vi.fn(() => ({})),
+          set: vi.fn(),
+        } as any,
+      });
+
+      expect(await service.getAvailableModels({ provider: "claude" })).toEqual([]);
+
+      const aggregate = await service.getAvailableModels({});
+      expect(aggregate.some((model) => model.family === "anthropic")).toBe(false);
+
+      const catalog = await service.getModelCatalog({ mode: "force" });
+      expect(catalog.groups.map((group) => group.key)).not.toContain("claude");
+    });
+
     it("returns Cursor CLI models without requiring a Cursor SDK API key", async () => {
       delete process.env.CURSOR_API_KEY;
       vi.mocked(detectAllAuth).mockResolvedValue([
@@ -46706,3 +46786,565 @@ describe("claude output style listing", () => {
     expect((await service.getSessionSummary(session.id))?.claudeOutputStyle ?? null).toBeNull();
   });
 });
+
+// ---------------------------------------------------------------------------
+// ACP providers (qwen, kimi, grok, copilot)
+// ---------------------------------------------------------------------------
+//
+// These drive the real ACP host: the scripted agent is a fake child process, so
+// the framing, the request correlation and the permission round-trip under test
+// are the production ones. Only the operating system process is replaced.
+
+describe("acp chat runtime", () => {
+  type AcpHarness = Awaited<ReturnType<typeof openAcpHarness>>;
+
+  const acpTeardown: Array<() => void> = [];
+
+  afterEach(() => {
+    for (const dispose of acpTeardown.splice(0)) dispose();
+  });
+
+  async function openAcpHarness(options: {
+    provider: "qwen" | "kimi" | "grok" | "copilot";
+    modelId: string;
+    model: string;
+    /** Extra `session/new` result fields, for config-option tests. */
+    sessionExtra?: Record<string, unknown>;
+    /** Seeded persisted state, for the resume test. */
+    seedPersistedState?: Record<string, unknown>;
+    sessionOverrides?: Record<string, unknown>;
+  }) {
+    const agent = createMockAcpAgent();
+    agent.on("session/new", respondWithSession("acp-session-1", options.sessionExtra ?? {}));
+    agent.on("session/load", respondWithSession("acp-session-1", options.sessionExtra ?? {}));
+    agent.on("session/resume", respondWithSession("acp-session-1", options.sessionExtra ?? {}));
+    agent.on("session/close", () => ({ result: {} }));
+    agent.on("session/set_config_option", () => ({ result: {} }));
+    agent.on("session/cancel", () => ({ result: {} }));
+
+    const pool = createAcpSessionPool();
+    acpTeardown.push(() => pool.disposeAll("test teardown"));
+
+    const events: AgentChatEventEnvelope[] = [];
+    const harness = createService({
+      onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      acpSpawnOverride: () => agent.child,
+      acpSessionPool: pool,
+    });
+    const session = await harness.service.createSession({
+      laneId: "lane-1",
+      provider: options.provider,
+      model: options.model,
+      modelId: options.modelId,
+      ...(options.sessionOverrides ?? {}),
+    });
+    if (options.seedPersistedState) {
+      writePersistedChatState(session.id, {
+        ...readPersistedChatState(session.id),
+        ...options.seedPersistedState,
+      });
+    }
+    acpTeardown.push(() => { void harness.service.disposeAll(); });
+    return { agent, events, session, ...harness };
+  }
+
+  /** Types of the events emitted for one turn, in order. */
+  function eventTypes(harness: Pick<AcpHarness, "events">): string[] {
+    return harness.events.map((envelope) => envelope.event.type);
+  }
+
+  function eventsOfType<T extends string>(
+    harness: Pick<AcpHarness, "events">,
+    type: T,
+  ): Array<Record<string, any>> {
+    return harness.events
+      .map((envelope) => envelope.event as Record<string, any>)
+      .filter((event) => event.type === type);
+  }
+
+  /** Script one prompt turn: stream `updates`, then answer with `result`. */
+  function scriptPrompt(
+    agent: MockAcpAgent,
+    updates: AcpSessionUpdate[],
+    result: Record<string, unknown> = { stopReason: "end_turn" },
+  ): void {
+    agent.on("session/prompt", async (params) => {
+      const sessionId = (params as { sessionId: string }).sessionId;
+      for (const update of updates) agent.emitUpdate(sessionId, update);
+      return { result };
+    });
+  }
+
+  it("streams a turn as text then a terminal done, flushing text before the tool row", async () => {
+    // The flush invariant: buffered assistant text must be committed before any
+    // non-text event, or the tool row lands above the sentence that introduced
+    // it and the transcript reads backwards.
+    const harness = await openAcpHarness({
+      provider: "qwen",
+      model: "qwen3-coder-plus",
+      modelId: "qwen/qwen3-coder-plus",
+    });
+    scriptPrompt(harness.agent, [
+      { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "Reading the file." } },
+      {
+        sessionUpdate: "tool_call",
+        toolCallId: "tool-1",
+        title: "Read src/index.ts",
+        kind: "read",
+        status: "completed",
+        rawInput: { path: "src/index.ts" },
+      },
+      { sessionUpdate: "agent_message_chunk", content: { type: "text", text: " Done." } },
+    ]);
+
+    await harness.service.sendMessage({ sessionId: harness.session.id, text: "look at this" });
+    await vi.waitFor(() => {
+      expect(eventTypes(harness)).toContain("done");
+    });
+
+    const types = eventTypes(harness);
+    const firstText = types.indexOf("text");
+    const toolCall = types.indexOf("tool_call");
+    expect(firstText).toBeGreaterThanOrEqual(0);
+    expect(toolCall).toBeGreaterThan(firstText);
+    expect(types.indexOf("done")).toBeGreaterThan(toolCall);
+
+    const done = eventsOfType(harness, "done").at(-1);
+    expect(done?.status).toBe("completed");
+    const statuses = eventsOfType(harness, "status").map((event) => event.turnStatus);
+    expect(statuses).toContain("started");
+    expect(statuses).toContain("completed");
+  });
+
+  it("forwards image URL attachments in the ACP prompt payload", async () => {
+    const harness = await openAcpHarness({
+      provider: "qwen",
+      model: "qwen3-coder-plus",
+      modelId: "qwen/qwen3-coder-plus",
+    });
+    let promptParams: Record<string, unknown> | null = null;
+    harness.agent.on("session/prompt", async (params) => {
+      promptParams = params as Record<string, unknown>;
+      return { result: { stopReason: "end_turn" } };
+    });
+
+    void harness.service.sendMessage({
+      sessionId: harness.session.id,
+      text: "Review this image.",
+      attachments: [{
+        path: "https://example.test/review.webp",
+        type: "image-url",
+        url: "https://example.test/review.webp",
+      }],
+    });
+
+    await vi.waitFor(() => {
+      expect(promptParams).not.toBeNull();
+    });
+    await vi.waitFor(() => {
+      expect(eventTypes(harness)).toContain("done");
+    });
+
+    const sentPrompt = promptParams as unknown as Record<string, unknown>;
+    expect(sentPrompt.prompt).toEqual([
+      { type: "text", text: expect.stringContaining("Review this image.") },
+      {
+        type: "image",
+        data: "",
+        mimeType: "image/webp",
+        uri: "https://example.test/review.webp",
+      },
+    ]);
+  });
+
+  it("raises a permission request as a card and forwards the chosen option", async () => {
+    const harness = await openAcpHarness({
+      provider: "qwen",
+      model: "qwen3-coder-plus",
+      modelId: "qwen/qwen3-coder-plus",
+    });
+    let permissionAnswer: any = null;
+    harness.agent.on("session/prompt", async (params) => {
+      const sessionId = (params as { sessionId: string }).sessionId;
+      permissionAnswer = await harness.agent.callClient("session/request_permission", {
+        sessionId,
+        toolCall: { toolCallId: "tool-1", title: "Write src/index.ts", kind: "edit" },
+        options: [
+          { optionId: "allow", name: "Allow", kind: "allow_once" },
+          { optionId: "reject", name: "Reject", kind: "reject_once" },
+        ],
+      });
+      return { result: { stopReason: "end_turn" } };
+    });
+
+    void harness.service.sendMessage({ sessionId: harness.session.id, text: "edit it" });
+    await vi.waitFor(() => {
+      expect(eventsOfType(harness, "approval_request").length).toBe(1);
+    });
+    const card = eventsOfType(harness, "approval_request")[0]!;
+    const request = card.detail?.request as { requestId: string; source: string };
+    expect(request.source).toBe("acp");
+
+    await harness.service.respondToInput({
+      sessionId: harness.session.id,
+      itemId: card.itemId,
+      decision: "accept",
+    });
+
+    await vi.waitFor(() => {
+      expect(permissionAnswer).not.toBeNull();
+    });
+    expect(permissionAnswer.outcome).toEqual({ outcome: "selected", optionId: "allow" });
+    await vi.waitFor(() => {
+      expect(eventTypes(harness)).toContain("done");
+    });
+  });
+
+  it("sends the reject option when the user declines, never a silent allow", async () => {
+    const harness = await openAcpHarness({
+      provider: "qwen",
+      model: "qwen3-coder-plus",
+      modelId: "qwen/qwen3-coder-plus",
+    });
+    let permissionAnswer: any = null;
+    harness.agent.on("session/prompt", async (params) => {
+      const sessionId = (params as { sessionId: string }).sessionId;
+      permissionAnswer = await harness.agent.callClient("session/request_permission", {
+        sessionId,
+        toolCall: { toolCallId: "tool-1", title: "Run rm -rf", kind: "execute" },
+        options: [
+          { optionId: "allow", name: "Allow", kind: "allow_once" },
+          { optionId: "reject", name: "Reject", kind: "reject_once" },
+        ],
+      });
+      return { result: { stopReason: "end_turn" } };
+    });
+
+    void harness.service.sendMessage({ sessionId: harness.session.id, text: "clean up" });
+    await vi.waitFor(() => {
+      expect(eventsOfType(harness, "approval_request").length).toBe(1);
+    });
+    await harness.service.respondToInput({
+      sessionId: harness.session.id,
+      itemId: eventsOfType(harness, "approval_request")[0]!.itemId,
+      decision: "decline",
+    });
+
+    await vi.waitFor(() => {
+      expect(permissionAnswer).not.toBeNull();
+    });
+    expect(permissionAnswer.outcome).toEqual({ outcome: "selected", optionId: "reject" });
+  });
+
+  it("answers an open permission request when the turn is interrupted", async () => {
+    // A card that outlives its turn blocks the agent behind something the user
+    // can no longer see. The interrupt has to settle it.
+    const harness = await openAcpHarness({
+      provider: "qwen",
+      model: "qwen3-coder-plus",
+      modelId: "qwen/qwen3-coder-plus",
+    });
+    let permissionAnswer: any = null;
+    harness.agent.on("session/prompt", async (params) => {
+      const sessionId = (params as { sessionId: string }).sessionId;
+      permissionAnswer = await harness.agent.callClient("session/request_permission", {
+        sessionId,
+        toolCall: { toolCallId: "tool-1", title: "Write a file", kind: "edit" },
+        options: [{ optionId: "allow", name: "Allow", kind: "allow_once" }],
+      });
+      return { result: { stopReason: "cancelled" } };
+    });
+
+    void harness.service.sendMessage({ sessionId: harness.session.id, text: "edit it" });
+    await vi.waitFor(() => {
+      expect(eventsOfType(harness, "approval_request").length).toBe(1);
+    });
+
+    await harness.service.interrupt({ sessionId: harness.session.id });
+
+    await vi.waitFor(() => {
+      expect(permissionAnswer).not.toBeNull();
+    });
+    expect(permissionAnswer.outcome).toEqual({ outcome: "cancelled" });
+    await vi.waitFor(() => {
+      expect(eventsOfType(harness, "done").length).toBe(1);
+    });
+    // The composer is released only by a terminal marker. An interrupted turn
+    // must still reach one.
+    expect(eventsOfType(harness, "done").at(-1)?.status).toBe("interrupted");
+  });
+
+  it("reports a cancelled turn as interrupted even when the agent says end_turn", async () => {
+    // Copilot's known bug (github/copilot-cli #4561). ADE's own cancel record
+    // is the deciding source, never the agent's stopReason.
+    const harness = await openAcpHarness({
+      provider: "copilot",
+      model: "claude-sonnet-4.6",
+      modelId: "github-copilot/claude-sonnet-4.6",
+    });
+    let releasePrompt: (() => void) | null = null;
+    harness.agent.on("session/prompt", async () => {
+      await new Promise<void>((resolve) => { releasePrompt = resolve; });
+      return { result: { stopReason: "end_turn" } };
+    });
+
+    void harness.service.sendMessage({ sessionId: harness.session.id, text: "work" });
+    await vi.waitFor(() => {
+      expect(releasePrompt).not.toBeNull();
+    });
+    await harness.service.interrupt({ sessionId: harness.session.id });
+    releasePrompt!();
+
+    await vi.waitFor(() => {
+      expect(eventsOfType(harness, "done").length).toBe(1);
+    });
+    expect(eventsOfType(harness, "done").at(-1)?.status).toBe("interrupted");
+  });
+
+  it("reopens an ACP runtime when permission mode changes during a turn", async () => {
+    const harness = await openAcpHarness({
+      provider: "copilot",
+      model: "claude-sonnet-4.6",
+      modelId: "github-copilot/claude-sonnet-4.6",
+      sessionOverrides: { permissionMode: "full-auto" },
+    });
+    let releaseFirstPrompt: (() => void) | null = null;
+    let promptCount = 0;
+    let permissionAnswer: Record<string, unknown> | null = null;
+    harness.agent.on("session/prompt", async (params) => {
+      promptCount += 1;
+      const sessionId = (params as { sessionId: string }).sessionId;
+      if (promptCount === 1) {
+        await new Promise<void>((resolve) => { releaseFirstPrompt = resolve; });
+        return { result: { stopReason: "end_turn" } };
+      }
+      permissionAnswer = await harness.agent.callClient("session/request_permission", {
+        sessionId,
+        toolCall: { toolCallId: "tool-1", title: "Write src/index.ts", kind: "edit" },
+        options: [
+          { optionId: "allow", name: "Allow", kind: "allow_once" },
+          { optionId: "reject", name: "Reject", kind: "reject_once" },
+        ],
+      });
+      return { result: { stopReason: "end_turn" } };
+    });
+
+    void harness.service.sendMessage({ sessionId: harness.session.id, text: "first" });
+    await harness.agent.waitForMethod("session/prompt");
+    expect(harness.session.acpPermissionMode).toBe("yolo");
+
+    await harness.service.updateSession({ sessionId: harness.session.id, permissionMode: "plan" });
+    expect(harness.session.acpPermissionMode).toBe("plan");
+    releaseFirstPrompt!();
+    await vi.waitFor(() => {
+      expect(eventsOfType(harness, "done")).toHaveLength(1);
+    });
+
+    void harness.service.sendMessage({ sessionId: harness.session.id, text: "second" });
+    await vi.waitFor(() => {
+      expect(eventsOfType(harness, "approval_request")).toHaveLength(1);
+    });
+    // The old full-auto runtime would auto-approve this request. A second
+    // session entry proves the mode change rebuilt the provider boundary first;
+    // the resumed entry may be `session/resume` rather than `session/new`.
+    const sessionEntries = harness.agent.methodsReceived().filter((method) =>
+      method === "session/new" || method === "session/load" || method === "session/resume",
+    );
+    expect(sessionEntries).toHaveLength(2);
+
+    await harness.service.respondToInput({
+      sessionId: harness.session.id,
+      itemId: eventsOfType(harness, "approval_request")[0]!.itemId,
+      decision: "accept",
+    });
+    await vi.waitFor(() => {
+      expect(permissionAnswer).not.toBeNull();
+      expect(eventsOfType(harness, "done")).toHaveLength(2);
+    });
+    expect(permissionAnswer).toMatchObject({
+      outcome: { outcome: "selected", optionId: "allow" },
+    });
+  });
+
+  it("folds Grok's prompt-result usage into the turn", async () => {
+    const harness = await openAcpHarness({
+      provider: "grok",
+      model: "grok-4.6",
+      modelId: "xai/grok-4-6",
+    });
+    scriptPrompt(harness.agent, [], {
+      stopReason: "end_turn",
+      _meta: {
+        costUsdTicks: 2_500_000_000,
+        cachedReadTokens: 40,
+        modelUsage: { "grok-4.6": { inputTokens: 100, outputTokens: 20 } },
+      },
+    });
+
+    await harness.service.sendMessage({ sessionId: harness.session.id, text: "hi" });
+    await vi.waitFor(() => {
+      expect(eventTypes(harness)).toContain("done");
+    });
+
+    const tokens = eventsOfType(harness, "tokens").at(-1);
+    expect(tokens?.inputTokens).toBe(100);
+    expect(tokens?.outputTokens).toBe(20);
+    expect(tokens?.cacheReadTokens).toBe(40);
+  });
+
+  it("emits no usage for Kimi and says why once", async () => {
+    // Kimi 0.31.x reports nothing on the wire. Fabricating a zero would be a
+    // lie; saying nothing at all reads as a broken meter. So it says so.
+    const harness = await openAcpHarness({
+      provider: "kimi",
+      model: "kimi-code/k3",
+      modelId: "moonshot/k3",
+    });
+    scriptPrompt(harness.agent, [
+      { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "ok" } },
+    ]);
+
+    await harness.service.sendMessage({ sessionId: harness.session.id, text: "hi" });
+    await vi.waitFor(() => {
+      expect(eventTypes(harness)).toContain("done");
+    });
+
+    expect(eventsOfType(harness, "tokens")).toHaveLength(0);
+    const notices = eventsOfType(harness, "system_notice").map((event) => String(event.message));
+    expect(notices.filter((message) => message.includes("token usage"))).toHaveLength(1);
+
+    // Once per chat, not once per turn.
+    harness.events.length = 0;
+    await harness.service.sendMessage({ sessionId: harness.session.id, text: "again" });
+    await vi.waitFor(() => {
+      expect(eventTypes(harness)).toContain("done");
+    });
+    expect(
+      eventsOfType(harness, "system_notice")
+        .map((event) => String(event.message))
+        .filter((message) => message.includes("token usage")),
+    ).toHaveLength(0);
+  });
+
+  it("persists the agent's session id and rejoins with it after a restart", async () => {
+    const harness = await openAcpHarness({
+      provider: "qwen",
+      model: "qwen3-coder-plus",
+      modelId: "qwen/qwen3-coder-plus",
+    });
+    scriptPrompt(harness.agent, []);
+    await harness.service.sendMessage({ sessionId: harness.session.id, text: "hi" });
+    await vi.waitFor(() => {
+      expect(eventTypes(harness)).toContain("done");
+    });
+    expect(readPersistedChatState(harness.session.id).acpSessionId).toBe("acp-session-1");
+
+    // A second service over the same persisted state is the restart: it must
+    // rejoin by id rather than start a fresh agent session.
+    const agent = createMockAcpAgent();
+    const resumeCalls: unknown[] = [];
+    agent.on("session/resume", (params) => {
+      resumeCalls.push(params);
+      return { result: { sessionId: "acp-session-1" } };
+    });
+    agent.on("session/prompt", async () => ({ result: { stopReason: "end_turn" } }));
+    const pool = createAcpSessionPool();
+    acpTeardown.push(() => pool.disposeAll("test teardown"));
+    // Same lane and session services: a restart re-reads ADE's own state, and
+    // a fresh mock registry would look like a session ADE had never heard of
+    // and send the reconciler down the continuity-recovery path.
+    const restarted = createService({
+      acpSpawnOverride: () => agent.child,
+      acpSessionPool: pool,
+      laneService: harness.laneService,
+      sessionService: harness.sessionService,
+    });
+    acpTeardown.push(() => { void restarted.service.disposeAll(); });
+
+    await restarted.service.sendMessage({ sessionId: harness.session.id, text: "still here?" });
+    await vi.waitFor(() => {
+      expect(resumeCalls.length).toBe(1);
+    });
+    expect(resumeCalls[0]).toMatchObject({ sessionId: "acp-session-1" });
+    expect(agent.methodsReceived()).not.toContain("session/new");
+  });
+
+  it("offers the agent's advertised slash commands, deduped and TUI-filtered", async () => {
+    const harness = await openAcpHarness({
+      provider: "copilot",
+      model: "claude-sonnet-4.6",
+      modelId: "github-copilot/claude-sonnet-4.6",
+    });
+    harness.agent.on("session/prompt", async (params) => {
+      const sessionId = (params as { sessionId: string }).sessionId;
+      const availableCommands = [
+        { name: "review", description: "Review the diff" },
+        // Copilot's terminal-only commands would reach the model as prose.
+        { name: "diff", description: "Show the diff" },
+        { name: "login", description: "Sign in" },
+      ];
+      agentEmitCommands(harness.agent, sessionId, availableCommands);
+      // Re-sent on the same turn: the picker must not show it twice.
+      agentEmitCommands(harness.agent, sessionId, availableCommands);
+      return { result: { stopReason: "end_turn" } };
+    });
+
+    await harness.service.sendMessage({ sessionId: harness.session.id, text: "hi" });
+    await vi.waitFor(() => {
+      expect(eventTypes(harness)).toContain("done");
+    });
+
+    const commands = harness.service.getSlashCommands({ sessionId: harness.session.id });
+    const names = commands.map((command) => command.name);
+    expect(names.filter((name) => name === "/review")).toHaveLength(1);
+    expect(names).not.toContain("/diff");
+    expect(names).not.toContain("/login");
+  });
+
+  it("emits one visible error and a terminal done when the agent cannot start", async () => {
+    // A chat that never reaches `done` leaves the composer locked with nothing
+    // on screen explaining why.
+    const agent = createMockAcpAgent();
+    agent.on("session/new", () => ({
+      error: { code: -32000, message: "Authentication required: Use Qwen Code CLI to authenticate first." },
+    }));
+    const pool = createAcpSessionPool();
+    acpTeardown.push(() => pool.disposeAll("test teardown"));
+    const events: AgentChatEventEnvelope[] = [];
+    const harness = createService({
+      onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      acpSpawnOverride: () => agent.child,
+      acpSessionPool: pool,
+    });
+    acpTeardown.push(() => { void harness.service.disposeAll(); });
+    const session = await harness.service.createSession({
+      laneId: "lane-1",
+      provider: "qwen",
+      model: "qwen3-coder-plus",
+      modelId: "qwen/qwen3-coder-plus",
+    });
+
+    await harness.service.sendMessage({ sessionId: session.id, text: "hi" });
+    await vi.waitFor(() => {
+      expect(events.some((envelope) => envelope.event.type === "done")).toBe(true);
+    });
+
+    const errors = events.map((e) => e.event as Record<string, any>).filter((e) => e.type === "error");
+    expect(errors).toHaveLength(1);
+    expect(String(errors[0]?.message)).toContain("Authentication required");
+    expect(errors[0]?.errorInfo?.category).toBe("agent_cli_auth");
+    expect(errors[0]?.errorInfo?.agentCli?.agent).toBe("qwen");
+    expect(errors[0]?.errorInfo?.agentCli?.authCommand).toBe("qwen --auth-type=openai");
+    const done = events.map((e) => e.event as Record<string, any>).filter((e) => e.type === "done").at(-1);
+    expect(done?.status).toBe("failed");
+  });
+});
+
+/** Emit an `available_commands_update` for a scripted agent. */
+function agentEmitCommands(
+  agent: MockAcpAgent,
+  sessionId: string,
+  availableCommands: Array<{ name: string; description: string }>,
+): void {
+  agent.emitUpdate(sessionId, { sessionUpdate: "available_commands_update", availableCommands });
+}

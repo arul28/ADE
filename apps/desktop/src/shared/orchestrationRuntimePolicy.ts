@@ -1,4 +1,5 @@
 import type {
+  AgentChatAcpPermissionMode,
   AgentChatClaudePermissionMode,
   AgentChatCodexApprovalPolicy,
   AgentChatCodexConfigSource,
@@ -31,6 +32,7 @@ export type OrchestrationPermissionProfile = Partial<Pick<
   | "cursorModeId"
   | "droidPermissionMode"
   | "opencodePermissionMode"
+  | "acpPermissionMode"
   | "permissionMode"
 >>;
 
@@ -488,6 +490,17 @@ export function applyOrchestrationPermissionProfile(
       };
     case "pi":
       return { permissionMode: "full-auto" };
+    // Every ACP dialect maps ADE's abstract mode itself, so one entry covers
+    // the four. `yolo` is the ladder's top rung, which is what an orchestrated
+    // worker needs.
+    case "qwen":
+    case "kimi":
+    case "grok":
+    case "copilot":
+      return {
+        acpPermissionMode: "yolo" satisfies AgentChatAcpPermissionMode,
+        permissionMode: "full-auto",
+      };
     default:
       return {};
   }

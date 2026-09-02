@@ -206,6 +206,10 @@ func workResolveCliProvider(for modelId: String, provider: String) -> String {
   case "cursor": return "cursor"
   case "droid": return "droid"
   case "pi": return "pi"
+  case "qwen": return "qwen"
+  case "kimi": return "kimi"
+  case "grok": return "grok"
+  case "copilot": return "copilot"
   default: return "opencode"
   }
 }
@@ -272,12 +276,12 @@ struct WorkModelProvider: Identifiable, Hashable {
   let models: [WorkModelOption]
 }
 
-/// Top-level catalog group: one of CLAUDE / CODEX / CURSOR / OPENCODE. This
-/// drives the first-level tab strip in the mobile picker. Exactly mirrors
-/// the desktop `ModelCatalogPanel` group layout.
+/// Top-level catalog group: one of the runtime/provider keys listed in
+/// `workModelGroupOrder`. This drives the first-level tab strip in the mobile
+/// picker and mirrors the desktop `ModelCatalogPanel` group layout.
 struct WorkModelCatalogGroup: Identifiable, Hashable {
   var id: String { key }
-  /// Runtime key: "claude" | "codex" | "cursor" | "droid" | "pi" | "opencode".
+  /// Runtime key such as "claude", "codex", "cursor", or "opencode".
   let key: String
   let displayName: String
   let providers: [WorkModelProvider]
@@ -299,7 +303,42 @@ struct WorkModelCatalogGroupLegacyView: Identifiable, Hashable {
   let models: [WorkModelOption]
 }
 
-private let workModelGroupOrder = ["claude", "codex", "pi", "cursor", "droid", "opencode", "ollama", "lmstudio"]
+/// Group keys, in the order the picker lists them. A group missing from this
+/// list is dropped from the phone's catalog entirely, so it must carry every
+/// `ModelProviderGroup` the host can publish (see `MODEL_PROVIDER_GROUPS` in
+/// `apps/desktop/src/shared/modelRegistry.ts`) plus the two OpenCode-routed
+/// local groups.
+private let workModelGroupOrder = [
+  "claude",
+  "codex",
+  "cursor",
+  "opencode",
+  "pi",
+  "copilot",
+  "grok",
+  "droid",
+  "kimi",
+  "qwen",
+  "ollama",
+  "lmstudio",
+]
+
+private func workModelGroupComesBefore(_ lhs: String, _ rhs: String) -> Bool {
+  let lhsOrder = workModelGroupOrder.firstIndex(of: lhs) ?? workModelGroupOrder.count
+  let rhsOrder = workModelGroupOrder.firstIndex(of: rhs) ?? workModelGroupOrder.count
+  if lhsOrder != rhsOrder { return lhsOrder < rhsOrder }
+  return lhs.localizedCaseInsensitiveCompare(rhs) == .orderedAscending
+}
+
+private func workOrderedModelCatalogGroups(_ groups: [WorkModelCatalogGroup]) -> [WorkModelCatalogGroup] {
+  groups.sorted { workModelGroupComesBefore($0.key, $1.key) }
+}
+
+private func workOrderedAgentChatModelCatalogGroups(
+  _ groups: [AgentChatModelCatalogGroup]
+) -> [AgentChatModelCatalogGroup] {
+  groups.sorted { workModelGroupComesBefore($0.key, $1.key) }
+}
 
 private func workClaudeFableReasoningEfforts() -> [AgentChatModelReasoningEffort] {
   workClaudeOpus5ReasoningEfforts() + [
@@ -675,7 +714,7 @@ private func workCuratedModelCatalogGroups() -> [WorkModelCatalogGroup] {
     ]
   ))
 
-  return groups
+  return workOrderedModelCatalogGroups(groups)
 }
 
 /// Curated catalog with the current live model injected when needed.
@@ -753,7 +792,7 @@ func workModelCatalogGroups(
   currentModelId: String,
   currentProvider: String
 ) -> [WorkModelCatalogGroup] {
-  let groups = hostCatalog.groups.map { group in
+  let groups = workOrderedAgentChatModelCatalogGroups(hostCatalog.groups).map { group in
     let isPiGroup = group.key.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "pi"
     var providers: [WorkModelProvider]
     if isPiGroup {
@@ -1228,6 +1267,10 @@ private func workProviderDisplayName(
   case "together": return "Together"
   case "cursor": return "Cursor"
   case "factory": return "Droid Core"
+  case "qwen": return "Qwen"
+  case "moonshot", "moonshotai", "kimi": return "Kimi"
+  case "grok": return "Grok"
+  case "copilot", "github-copilot": return "GitHub Copilot"
   default: return providerKey.capitalized
   }
 }
@@ -1454,6 +1497,19 @@ private func workModelProviderKey(for model: AgentChatModelInfo, topLevelProvide
       return "xai"
     }
     return normalizedFamily.isEmpty ? "cursor" : normalizedFamily
+  case "copilot":
+    // Copilot resells other vendors' models, so split it by upstream brand the
+    // way Cursor and Droid are split rather than showing one flat list.
+    if normalizedId.contains("claude") || normalizedId.contains("sonnet") || normalizedId.contains("opus") || normalizedId.contains("haiku") {
+      return "anthropic"
+    }
+    if normalizedId.contains("gpt") || normalizedId.contains("codex") {
+      return "openai"
+    }
+    if normalizedId.contains("gemini") {
+      return "google"
+    }
+    return "github-copilot"
   default:
     return topLevelProvider
   }
@@ -1683,7 +1739,7 @@ private func injectCurrentWorkModelIfNeeded(
     }
   }
 
-  return groups
+  return workOrderedModelCatalogGroups(groups)
 }
 
 func workModelCatalogGroupKey(for currentModelId: String, currentProvider: String) -> String {
@@ -1710,6 +1766,23 @@ func workModelCatalogGroupKey(for currentModelId: String, currentProvider: Strin
   }
   if modelId.hasPrefix("opencode/") || provider == "opencode" {
     return "opencode"
+  }
+  // ACP providers, before the model-name heuristics below. Their registry ids
+  // carry the upstream vendor — `github-copilot/claude-sonnet-4.6` contains
+  // "claude", `github-copilot/gpt-5.4` contains "gpt" — so checking them later
+  // would file a Copilot model under Claude or Codex. The OpenCode checks stay
+  // ahead of these, because an OpenCode-routed Kimi or Grok belongs to OpenCode.
+  if provider == "qwen" || modelId.hasPrefix("qwen/") {
+    return "qwen"
+  }
+  if provider == "kimi" || provider == "moonshot" || modelId.hasPrefix("moonshot/") {
+    return "kimi"
+  }
+  if provider == "grok" || modelId.hasPrefix("xai/") {
+    return "grok"
+  }
+  if provider == "copilot" || provider == "github-copilot" || modelId.hasPrefix("github-copilot/") {
+    return "copilot"
   }
   if workCanonicalCodexRegistryId(for: modelId) != nil {
     return "codex"
