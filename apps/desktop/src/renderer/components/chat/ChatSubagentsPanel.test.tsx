@@ -957,4 +957,72 @@ describe("ChatSubagentsPanel (pane variant)", () => {
     fireEvent.click(screen.getByTitle("Copy all paths"));
     expect(writeText).toHaveBeenCalledWith("apps/desktop/src/foo.ts\napps/desktop/src/bar.ts");
   });
+
+  it("keeps the expand caret as a sibling button, not nested inside the row", () => {
+    const parent: ChatSubagentSnapshot = {
+      ...baseSnapshot,
+      taskId: "parent",
+      agentId: "parent",
+      description: "Finished parent",
+      status: "completed",
+      background: false,
+    };
+    const child: ChatSubagentSnapshot = {
+      ...baseSnapshot,
+      taskId: "child",
+      agentId: "child",
+      parentAgentId: "parent",
+      description: "Finished child",
+      status: "completed",
+      background: false,
+    };
+
+    render(
+      <ChatSubagentsPanel
+        snapshots={[parent, child]}
+        events={[]}
+        variant="pane"
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Completed (1)" }));
+    const caret = screen.getByRole("button", { name: "Show nested agents" });
+    const row = screen.getByTitle("Finished parent");
+    expect(caret.tagName).toBe("BUTTON");
+    expect(row.tagName).toBe("BUTTON");
+    expect(row.contains(caret)).toBe(false);
+    expect(screen.queryByTitle("Finished child")).toBeNull();
+  });
+
+  it("keeps a selected finished descendant visible while auto-collapsing the rest", () => {
+    const parent: ChatSubagentSnapshot = {
+      ...baseSnapshot,
+      taskId: "parent",
+      agentId: "parent",
+      description: "Finished parent",
+      status: "completed",
+      background: false,
+    };
+    const child: ChatSubagentSnapshot = {
+      ...baseSnapshot,
+      taskId: "child",
+      agentId: "child",
+      parentAgentId: "parent",
+      description: "Finished child",
+      status: "completed",
+      background: false,
+    };
+
+    render(
+      <ChatSubagentsPanel
+        snapshots={[parent, child]}
+        events={[]}
+        variant="pane"
+        selectedTaskId="child"
+      />,
+    );
+
+    expect(screen.getByTitle("Finished child")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Show nested agents" })).toBeNull();
+  });
 });

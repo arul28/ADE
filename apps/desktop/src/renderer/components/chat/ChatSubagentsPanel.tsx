@@ -18,7 +18,7 @@ import { formatDurationMs, formatSubagentDurationMs } from "../../lib/format";
 import type { ChatScheduledWorkSnapshot, ChatSubagentSnapshot } from "./chatExecutionSummary";
 import { derivePlan, subagentTreeDepth } from "./chatExecutionSummary";
 import { annotateSubagentTree, shouldAutoCollapseFinishedSubtree } from "../../../shared/chatSubagentTree";
-import { resourceLinkCopyPaths, resourceLinkDisplayPath } from "../../../shared/claudeAgentSdkFields";
+import { resourceLinkCopyPaths } from "../../../shared/claudeAgentSdkFields";
 import type { TodoItemSnapshot } from "./chatExecutionSummary";
 import { ChatTaskList } from "./ChatTasksPanel";
 import type { ChatInfoPlanStep, PaneSectionKey } from "../../../shared/chatSubagents";
@@ -887,46 +887,40 @@ function SubagentRow({
 
   return (
     <div>
+      <div className="flex w-full items-stretch">
+        {treePrefix || depth > 0 ? (
+          <span aria-hidden className="shrink-0 self-center pl-2 font-mono text-[11px] leading-none text-fg/30 whitespace-pre">
+            {treePrefix || `${"  ".repeat(Math.max(0, depth - 1))}└ `}
+          </span>
+        ) : null}
+        {collapsedDescendantCount > 0 && onToggleCollapsedSubtree ? (
+          <button
+            type="button"
+            title="Show nested agents"
+            aria-label="Show nested agents"
+            onClick={(event) => {
+              event.preventDefault();
+              event.stopPropagation();
+              onToggleCollapsedSubtree();
+            }}
+            className="shrink-0 self-center rounded-sm px-0.5 text-fg/40 hover:text-fg/70"
+          >
+            <CaretRight size={10} weight="bold" />
+          </button>
+        ) : null}
       <button
         type="button"
         onClick={onClick}
         title={isSpawnedChat ? "Open the spawned chat" : (snapshot.description || "View subagent details")}
         data-selected={selected || undefined}
         className={cn(
-          "group relative flex w-full items-center gap-2.5 rounded-md px-2 py-1.5 text-left",
+          "group relative flex min-w-0 flex-1 items-center gap-2.5 rounded-md px-2 py-1.5 text-left",
           "transition-colors duration-150",
           "hover:bg-white/[0.04]",
           (selected || expanded)
             && "bg-[color:color-mix(in_srgb,var(--color-accent)_10%,transparent)] ring-1 ring-inset ring-[color:color-mix(in_srgb,var(--color-accent)_30%,transparent)]",
         )}
       >
-        {treePrefix || depth > 0 ? (
-          <span aria-hidden className="shrink-0 self-center font-mono text-[11px] leading-none text-fg/30 whitespace-pre">
-            {treePrefix || `${"  ".repeat(Math.max(0, depth - 1))}└ `}
-          </span>
-        ) : null}
-        {collapsedDescendantCount > 0 && onToggleCollapsedSubtree ? (
-          <span
-            role="button"
-            tabIndex={0}
-            title="Show nested agents"
-            onClick={(event) => {
-              event.preventDefault();
-              event.stopPropagation();
-              onToggleCollapsedSubtree();
-            }}
-            onKeyDown={(event) => {
-              if (event.key === "Enter" || event.key === " ") {
-                event.preventDefault();
-                event.stopPropagation();
-                onToggleCollapsedSubtree();
-              }
-            }}
-            className="shrink-0 self-center rounded-sm px-0.5 text-fg/40 hover:text-fg/70"
-          >
-            <CaretRight size={10} weight="bold" />
-          </span>
-        ) : null}
         <ChatSubagentGlyph id={snapshot.agentId ?? snapshot.taskId} color={color} status={snapshot.status} />
 
         <span
@@ -994,6 +988,7 @@ function SubagentRow({
           {time ? <span className="text-fg/35 group-hover:text-fg/50">{time}</span> : null}
         </span>
       </button>
+      </div>
 
       {filePaths.length > 0 ? (
         <div className="mx-2 mb-1">
@@ -1018,10 +1013,9 @@ function SubagentRow({
           </div>
           {filesOpen ? (
             <ul className="mt-0.5 space-y-0.5 pl-4 font-mono text-[10.5px] text-fg/45">
-              {(snapshot.resourceLinks ?? []).map((link, index) => {
-                const path = resourceLinkDisplayPath(link) ?? link.name ?? link.uri ?? `file-${index}`;
-                return <li key={`${path}-${index}`} className="truncate">{path}</li>;
-              })}
+              {filePaths.map((path) => (
+                <li key={path} className="truncate">{path}</li>
+              ))}
             </ul>
           ) : null}
         </div>
@@ -1280,19 +1274,30 @@ export function ChatSubagentsPanel({
     }
     return map;
   }, [annotatedSubagents]);
+  const pinnedSubagentIds = useMemo(() => new Set(
+    [selectedTaskId, expandedTaskId].filter((id): id is string => Boolean(id)),
+  ), [expandedTaskId, selectedTaskId]);
   const hiddenDescendantIds = useMemo(() => {
     const hidden = new Set<string>();
     const byId = new Map(subagents.map((snapshot) => [subagentIdentity(snapshot), snapshot]));
+    const isPinned = (snapshot: ChatSubagentSnapshot | undefined, id: string): boolean => {
+      if (pinnedSubagentIds.has(id)) return true;
+      if (!snapshot) return false;
+      return pinnedSubagentIds.has(snapshot.taskId) || pinnedSubagentIds.has(subagentIdentity(snapshot));
+    };
     for (const { node, tree } of annotatedSubagents) {
       const id = subagentIdentity(node);
       if (expandedFinishedIds.has(id)) continue;
       const descendantStatuses = tree.descendantIds.map((descendantId) => byId.get(descendantId)?.status);
       if (shouldAutoCollapseFinishedSubtree(node, descendantStatuses)) {
-        for (const descendantId of tree.descendantIds) hidden.add(descendantId);
+        for (const descendantId of tree.descendantIds) {
+          if (isPinned(byId.get(descendantId), descendantId)) continue;
+          hidden.add(descendantId);
+        }
       }
     }
     return hidden;
-  }, [annotatedSubagents, expandedFinishedIds, subagents]);
+  }, [annotatedSubagents, expandedFinishedIds, pinnedSubagentIds, subagents]);
   const collapsedCountById = useMemo(() => {
     const counts = new Map<string, number>();
     const byId = new Map(subagents.map((snapshot) => [subagentIdentity(snapshot), snapshot]));
@@ -1307,9 +1312,6 @@ export function ChatSubagentsPanel({
     return counts;
   }, [annotatedSubagents, expandedFinishedIds, hiddenDescendantIds, subagents]);
 
-  const pinnedSubagentIds = useMemo(() => new Set(
-    [selectedTaskId, expandedTaskId].filter((id): id is string => Boolean(id)),
-  ), [expandedTaskId, selectedTaskId]);
   const clearedSubagentIds = useMemo(() => new Set(paneCleared.subagents), [paneCleared.subagents]);
   const clearedBackgroundIds = useMemo(() => new Set(paneCleared.background), [paneCleared.background]);
   const clearedScheduleIds = useMemo(() => new Set(paneCleared.schedule), [paneCleared.schedule]);
@@ -1318,7 +1320,8 @@ export function ChatSubagentsPanel({
     const grouped = groupPaneSectionItems(subagents, {
       isEarlier: isEarlierSubagentSnapshot,
       isCleared: (snapshot) => clearedSubagentIds.has(snapshot.taskId),
-      isPinned: (snapshot) => pinnedSubagentIds.has(snapshot.taskId),
+      isPinned: (snapshot) =>
+        pinnedSubagentIds.has(snapshot.taskId) || pinnedSubagentIds.has(subagentIdentity(snapshot)),
     });
     const visible = (items: ChatSubagentSnapshot[]) => items.filter((item) => !hiddenDescendantIds.has(subagentIdentity(item)));
     return {

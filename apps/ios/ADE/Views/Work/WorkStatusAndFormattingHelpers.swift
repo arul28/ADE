@@ -249,9 +249,14 @@ func workSubagentTreeAnnotation(
   var ancestorBars: [String] = []
   if depth > 0 {
     var chain: [Bool] = []
+    var seen = Set<String>()
     var current: WorkSubagentSnapshot? = snapshot
-    while let node = current, let currentParentId = parentId(node), let parentNode = byId[currentParentId] {
-      chain.append(lastChildByParent[currentParentId] == identity(node))
+    while let node = current, chain.count < depth {
+      let nodeId = identity(node)
+      if seen.contains(nodeId) { break }
+      seen.insert(nodeId)
+      guard let currentParentId = parentId(node), let parentNode = byId[currentParentId] else { break }
+      chain.append(lastChildByParent[currentParentId] == nodeId)
       current = parentNode
     }
     chain.reverse()
@@ -278,7 +283,7 @@ func workSubagentResourcePaths(_ snapshot: WorkSubagentSnapshot) -> [String] {
   var seen = Set<String>()
   var paths: [String] = []
   for link in snapshot.resourceLinks {
-    let path = link.displayPath.trimmingCharacters(in: .whitespacesAndNewlines)
+    let path = link.copyPath?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
     if path.isEmpty || seen.contains(path) { continue }
     seen.insert(path)
     paths.append(path)

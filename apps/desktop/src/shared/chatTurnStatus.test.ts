@@ -50,7 +50,7 @@ describe("chat turn status", () => {
           status: "completed",
           durationMs: 18_000,
           startedAt: "2026-05-01T00:03:54.000Z",
-          resourceLinks: [{ path: "a.ts" }, { path: "b.ts" }, { path: "c.ts" }],
+          resourceLinks: [{ path: "a.ts" }, { path: "a.ts" }, { name: "label-only" }],
         },
       ],
     });
@@ -63,7 +63,8 @@ describe("chat turn status", () => {
     expect(text).toContain("queued     1 message waiting");
     expect(text).toContain("typecheck desktop");
     expect(text).toContain("└ explore chat tests");
-    expect(text).toContain("▸ 3 files returned");
+    expect(text).toContain("▸ 1 file returned");
+    expect(text).not.toContain("▸ 3 files returned");
     expect(text).toContain("● bg");
   });
 
@@ -81,6 +82,8 @@ describe("chat turn status", () => {
     expect(status.ask?.stranded).toBe(true);
     const text = formatChatTurnStatus(status);
     expect(text).toContain("● BLOCKED");
+    expect(text).toContain("Allow Bash?");
+    expect(text).not.toContain("awaiting permission");
     expect(text).toContain("stranded — no deadline set (dialogExpiry: never)");
     expect(text).toContain("ask        Bash(rm -rf build/)");
     expect(chatTurnStatusExitCode(status.phase)).toBe(2);

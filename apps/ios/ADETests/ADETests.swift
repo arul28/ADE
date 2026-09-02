@@ -14960,6 +14960,101 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(windows.displayPath, "C:/Users/ade/src/foo.ts")
     let posix = AgentChatResourceLink(uri: "file:///tmp/a.ts", name: nil, path: nil)
     XCTAssertEqual(posix.displayPath, "/tmp/a.ts")
+    let named = AgentChatResourceLink(uri: nil, name: "README", path: nil)
+    XCTAssertNil(named.copyPath)
+    XCTAssertEqual(named.displayPath, "README")
+  }
+
+  func testAgentChatEventEnvelopePrefersSpawnDepthSnakeCase() throws {
+    let json = """
+    {
+      "sessionId": "chat-1",
+      "timestamp": "2026-05-01T00:00:01.000Z",
+      "sequence": 1,
+      "event": {
+        "type": "subagent_started",
+        "taskId": "task-1",
+        "description": "Docs helper",
+        "spawn_depth": 1,
+        "spawnDepth": 9
+      }
+    }
+    """
+    let envelope = try JSONDecoder().decode(AgentChatEventEnvelope.self, from: Data(json.utf8))
+    XCTAssertEqual(envelope.subagentSpawnDepth, 1)
+  }
+
+  func testWorkTranscriptParsesNestedToolUseResultResourceLinksAndPrefersSpawnDepthSnakeCase() {
+    let raw = """
+    {"sessionId":"chat-1","timestamp":"2026-03-25T00:00:01.000Z","sequence":1,"event":{"type":"subagent_started","taskId":"task-1","agentId":"agent-1","spawn_depth":1,"spawnDepth":9,"tool_use_result":{"resource_links":[{"path":"apps/ios/Foo.swift"},{"name":"README"}]},"description":"Docs helper","turnId":"turn-1"}}
+    """
+    let snapshots = buildWorkSubagentSnapshots(from: parseWorkChatTranscript(raw))
+    XCTAssertEqual(snapshots.first?.spawnDepth, 1)
+    XCTAssertEqual(snapshots.first?.resourceLinks.count, 2)
+    XCTAssertEqual(snapshots.first?.resourceLinks.first?.path, "apps/ios/Foo.swift")
+    XCTAssertEqual(workSubagentResourcePaths(snapshots[0]), ["apps/ios/Foo.swift"])
+  }
+
+  func testWorkSubagentTreePrefixCapsConnectorsToDisplayedSpawnDepth() {
+    func snap(
+      _ id: String,
+      parent: String?,
+      startedAt: String,
+      spawnDepth: Int? = nil
+    ) -> WorkSubagentSnapshot {
+      WorkSubagentSnapshot(
+        taskId: id,
+        agentId: id,
+        agentType: nil,
+        parentToolUseId: nil,
+        description: id,
+        background: false,
+        label: nil,
+        model: nil,
+        reasoningEffort: nil,
+        status: .running,
+        lastToolName: nil,
+        latestSummary: nil,
+        turnId: nil,
+        startedAt: startedAt,
+        updatedAt: startedAt,
+        parentAgentId: parent,
+        spawnDepth: spawnDepth
+      )
+    }
+    let root = snap("root", parent: nil, startedAt: "2026-05-01T00:00:03.000Z")
+    let child = snap("child", parent: "root", startedAt: "2026-05-01T00:00:02.000Z")
+    let leaf = snap("leaf", parent: "child", startedAt: "2026-05-01T00:00:01.000Z", spawnDepth: 1)
+    let list = [root, child, leaf]
+    XCTAssertEqual(workSubagentTreeDepth(leaf, in: list), 1)
+    XCTAssertEqual(workSubagentTreePrefix(leaf, in: list), "└ ")
+  }
+
+  func testWorkSubagentSnapshotsRenderSignatureHashesEachResourceLink() {
+    func snap(_ path: String) -> WorkSubagentSnapshot {
+      WorkSubagentSnapshot(
+        taskId: "task-1",
+        agentId: "agent-1",
+        agentType: nil,
+        parentToolUseId: nil,
+        description: "Docs helper",
+        background: false,
+        label: nil,
+        model: nil,
+        reasoningEffort: nil,
+        status: .running,
+        lastToolName: nil,
+        latestSummary: nil,
+        turnId: nil,
+        startedAt: "2026-05-01T00:00:01.000Z",
+        updatedAt: "2026-05-01T00:00:01.000Z",
+        resourceLinks: [AgentChatResourceLink(uri: nil, name: nil, path: path)]
+      )
+    }
+    XCTAssertNotEqual(
+      workSubagentSnapshotsRenderSignature([snap("a.ts")]),
+      workSubagentSnapshotsRenderSignature([snap("b.ts")])
+    )
   }
 
   func testWorkSubagentSnapshotsAdoptCodexPlaceholderAndPreserveStoppedAgentName() {

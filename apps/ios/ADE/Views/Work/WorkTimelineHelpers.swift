@@ -93,7 +93,7 @@ private func workChatTimelineSnapshotSignature(
     combineOptional(envelope.subagentSpawnKind.map { String(describing: $0) }, into: &hasher)
     combineOptional(envelope.subagentParentAgentId, into: &hasher)
     hasher.combine(envelope.subagentSpawnDepth ?? Int.min)
-    hasher.combine(envelope.subagentResourceLinks.count)
+    hasher.combine(envelope.subagentResourceLinks)
     combineWorkChatEventSignature(envelope.event, into: &hasher)
   }
 

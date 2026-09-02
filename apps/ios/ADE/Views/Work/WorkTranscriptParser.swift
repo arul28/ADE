@@ -410,11 +410,9 @@ func parseWorkChatTranscript(_ raw: String) -> [WorkChatEnvelope] {
       let subagentSpawnKind = optionalString(eventDict["spawnKind"])
         .map(AgentChatSpawnKind.init(wireValue:))
       let subagentParentAgentId = optionalString(eventDict["parentAgentId"])
-      let subagentSpawnDepth = eventDict["spawnDepth"] as? Int
-        ?? eventDict["spawn_depth"] as? Int
-      let subagentResourceLinks = parseAgentChatResourceLinks(
-        from: eventDict["resourceLinks"] ?? eventDict["resource_links"]
-      )
+      let subagentSpawnDepth = eventDict["spawn_depth"] as? Int
+        ?? eventDict["spawnDepth"] as? Int
+      let subagentResourceLinks = parseAgentChatResourceLinksFromEvent(eventDict)
       let event: WorkChatEvent
 
       switch type {
@@ -1092,6 +1090,16 @@ private func workSpawnCompletionEvent(
     reasoningEffort: nil,
     turnId: optionalString(completion["childTurnId"]) ?? fallbackTurnId
   )
+}
+
+private func parseAgentChatResourceLinksFromEvent(_ eventDict: [String: Any]) -> [AgentChatResourceLink] {
+  let direct = parseAgentChatResourceLinks(
+    from: eventDict["resourceLinks"] ?? eventDict["resource_links"]
+  )
+  if !direct.isEmpty { return direct }
+  let toolResult = eventDict["tool_use_result"] ?? eventDict["toolUseResult"]
+  guard let dict = toolResult as? [String: Any] else { return [] }
+  return parseAgentChatResourceLinks(from: dict["resourceLinks"] ?? dict["resource_links"])
 }
 
 private func parseAgentChatResourceLinks(from value: Any?) -> [AgentChatResourceLink] {

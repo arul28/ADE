@@ -14062,6 +14062,9 @@ describe("createAgentChatService", () => {
       const events: AgentChatEventEnvelope[] = [];
       let streamCall = 0;
       let warmupComplete = false;
+      let ambientLive = false;
+      let holdAmbientComplete!: () => void;
+      const holdAmbientCompletePromise = new Promise<void>((resolve) => { holdAmbientComplete = resolve; });
       let turnDone: (() => void) | null = null;
       const turnDonePromise = new Promise<void>((resolve) => { turnDone = resolve; });
       const send = vi.fn().mockResolvedValue(undefined);
@@ -14091,6 +14094,8 @@ describe("createAgentChatService", () => {
             ambient: true,
           }],
         };
+        ambientLive = true;
+        await holdAmbientCompletePromise;
         yield {
           type: "system",
           subtype: "task_notification",
@@ -14130,6 +14135,7 @@ describe("createAgentChatService", () => {
 
       await vi.waitFor(() => {
         expect(events.some((e) => e.event.type === "status")).toBe(true);
+        expect(ambientLive).toBe(true);
       });
 
       expect(events.filter((e) =>
@@ -14138,6 +14144,7 @@ describe("createAgentChatService", () => {
         || e.event.type === "subagent_result"
       )).toEqual([]);
 
+      holdAmbientComplete();
       turnDone!();
       await expect(sendPromise).resolves.toBeUndefined();
       await vi.waitFor(() => {
@@ -21813,8 +21820,11 @@ describe("createAgentChatService", () => {
       const send = vi.fn().mockResolvedValue(undefined);
       let streamCall = 0;
       let startAmbient!: () => void;
+      let holdAmbientComplete!: () => void;
+      let ambientLive = false;
       let ambientDrained = false;
       const startAmbientPromise = new Promise<void>((resolve) => { startAmbient = resolve; });
+      const holdAmbientCompletePromise = new Promise<void>((resolve) => { holdAmbientComplete = resolve; });
 
       const stream = vi.fn(() => (async function* () {
         streamCall += 1;
@@ -21855,6 +21865,8 @@ describe("createAgentChatService", () => {
             ambient: true,
           }],
         };
+        ambientLive = true;
+        await holdAmbientCompletePromise;
         yield {
           type: "system",
           subtype: "task_notification",
@@ -21897,9 +21909,8 @@ describe("createAgentChatService", () => {
 
       startAmbient();
       await vi.waitFor(() => {
-        expect(ambientDrained).toBe(true);
+        expect(ambientLive).toBe(true);
       });
-
       expect(events.filter((event) =>
         event.sessionId === session.id
         && (event.event.type === "subagent_started"
@@ -21908,6 +21919,11 @@ describe("createAgentChatService", () => {
         && (event.event as { taskId?: string }).taskId === "task-ambient-idle-true",
       )).toEqual([]);
       expect(service.hasActiveWorkloads()).toBe(false);
+
+      holdAmbientComplete();
+      await vi.waitFor(() => {
+        expect(ambientDrained).toBe(true);
+      });
     });
 
     it("delivers queued steers after an idle Claude turn completes", async () => {

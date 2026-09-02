@@ -17,6 +17,7 @@ describe("claude Agent SDK field readers", () => {
   it("reads spawn_depth when it is a non-negative integer", () => {
     expect(readClaudeSpawnDepth({ spawn_depth: 2 })).toBe(2);
     expect(readClaudeSpawnDepth({ spawnDepth: 0 })).toBe(0);
+    expect(readClaudeSpawnDepth({ spawn_depth: 1, spawnDepth: 9 })).toBe(1);
     expect(readClaudeSpawnDepth({ spawn_depth: -1 })).toBeUndefined();
     expect(readClaudeSpawnDepth({})).toBeUndefined();
   });
@@ -42,5 +43,9 @@ describe("claude Agent SDK field readers", () => {
     expect(resourceLinkCopyPaths([
       { uri: "file:///C:/Users/ade/src/foo.ts" },
     ])).toEqual(["C:/Users/ade/src/foo.ts"]);
+    expect(resourceLinkCopyPaths([
+      { name: "README" },
+      { path: "apps/desktop/src/foo.ts" },
+    ])).toEqual(["apps/desktop/src/foo.ts"]);
   });
 });

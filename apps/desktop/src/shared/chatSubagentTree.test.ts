@@ -15,6 +15,19 @@ describe("subagent tree connectors", () => {
     expect(annotated[2]?.tree).toMatchObject({ depth: 2, glyph: "└", prefix: "   └ " });
   });
 
+  it("caps connector ancestors to the displayed spawn_depth", () => {
+    const annotated = annotateSubagentTree([
+      { taskId: "root", agentId: "root", startedAt: "2026-05-01T00:00:03.000Z" },
+      { taskId: "child", agentId: "child", parentAgentId: "root", startedAt: "2026-05-01T00:00:02.000Z" },
+      { taskId: "leaf", agentId: "leaf", parentAgentId: "child", spawnDepth: 1, startedAt: "2026-05-01T00:00:01.000Z" },
+    ]);
+    expect(annotated.find((entry) => entry.node.taskId === "leaf")?.tree).toMatchObject({
+      depth: 1,
+      glyph: "└",
+      prefix: "└ ",
+    });
+  });
+
   it("uses ├ for a non-last sibling", () => {
     const annotated = annotateSubagentTree([
       { taskId: "root", agentId: "root", startedAt: "2026-05-01T00:00:02.000Z" },

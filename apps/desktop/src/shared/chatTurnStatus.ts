@@ -110,7 +110,7 @@ export function formatChatTurnStatus(status: ChatTurnStatusSnapshot): string {
     if (status.turnElapsedMs != null) headlineBits.push(`turn ${formatCompactDuration(status.turnElapsedMs)}`);
     if (status.lastActivityMsAgo != null) headlineBits.push(`last activity ${formatCompactDuration(status.lastActivityMsAgo)} ago`);
   } else if (status.phase === "blocked") {
-    headlineBits.push(status.ask?.title ? `awaiting permission` : "awaiting input");
+    headlineBits.push(status.ask?.title?.trim() || "awaiting input");
     if (status.turnElapsedMs != null) headlineBits.push(formatCompactDuration(status.turnElapsedMs));
     else if (status.lastActivityMsAgo != null) headlineBits.push(formatCompactDuration(status.lastActivityMsAgo));
   } else if (status.lastActivityMsAgo != null) {
@@ -144,8 +144,9 @@ export function formatChatTurnStatus(status: ChatTurnStatusSnapshot): string {
       const statusLabel = node.status === "running" ? "running" : node.status === "failed" ? "failed" : node.status === "stopped" ? "stopped" : "done";
       const duration = node.durationMs != null ? formatCompactDuration(node.durationMs) : "";
       const bg = node.background ? "● bg" : "";
-      const files = node.resourceLinks?.length
-        ? `▸ ${node.resourceLinks.length} file${node.resourceLinks.length === 1 ? "" : "s"} returned`
+      const fileCount = resourceLinkCopyPaths(node.resourceLinks ?? []).length;
+      const files = fileCount > 0
+        ? `▸ ${fileCount} file${fileCount === 1 ? "" : "s"} returned`
         : "";
       const columns = [indent + name, statusLabel, duration, bg, files].filter((part) => part.length > 0);
       lines.push(`  ${columns[0]!.padEnd(Math.max(28, columns[0]!.length))}  ${statusLabel.padEnd(8)}  ${duration.padStart(5)}  ${bg}  ${files}`.trimEnd());

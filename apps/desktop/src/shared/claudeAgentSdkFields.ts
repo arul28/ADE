@@ -62,12 +62,10 @@ export function parseClaudeResourceLinks(value: unknown): AgentChatResourceLink[
   return readResourceLinkList(toolResult.resource_links ?? toolResult.resourceLinks);
 }
 
-export function resourceLinkDisplayPath(link: AgentChatResourceLink): string | null {
+/** Path or URI remainder. Name-only links are labels, not copyable paths. */
+export function resourceLinkCopyPath(link: AgentChatResourceLink): string | null {
   if (link.path?.trim()) return link.path.trim();
-  if (link.uri?.trim()) {
-    return displayPathFromUri(link.uri.trim());
-  }
-  if (link.name?.trim()) return link.name.trim();
+  if (link.uri?.trim()) return displayPathFromUri(link.uri.trim());
   return null;
 }
 
@@ -88,7 +86,7 @@ export function resourceLinkCopyPaths(links: readonly AgentChatResourceLink[]): 
   const paths: string[] = [];
   const seen = new Set<string>();
   for (const link of links) {
-    const path = resourceLinkDisplayPath(link);
+    const path = resourceLinkCopyPath(link);
     if (!path || seen.has(path)) continue;
     seen.add(path);
     paths.push(path);

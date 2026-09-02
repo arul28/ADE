@@ -144,12 +144,16 @@ export function annotateSubagentTree<T extends SubagentTreeIdentity>(
     if (depth > 0) {
       let current: T | undefined = node;
       const chain: boolean[] = [];
-      while (current) {
+      const seen = new Set<string>();
+      while (current && chain.length < depth) {
+        const currentId = identityKey(current);
+        if (seen.has(currentId)) break;
+        seen.add(currentId);
         const currentParentId = parentKey(current);
         if (!currentParentId) break;
         const parent = byId.get(currentParentId);
         if (!parent) break;
-        chain.push(lastChildByParent.get(currentParentId) === identityKey(current));
+        chain.push(lastChildByParent.get(currentParentId) === currentId);
         current = parent;
       }
       chain.reverse();

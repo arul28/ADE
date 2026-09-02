@@ -2221,12 +2221,12 @@ struct AgentChatEventProvenance: Decodable, Equatable {
   var runId: String?
 }
 
-struct AgentChatResourceLink: Codable, Equatable {
+struct AgentChatResourceLink: Codable, Equatable, Hashable {
   var uri: String?
   var name: String?
   var path: String?
 
-  var displayPath: String {
+  var copyPath: String? {
     if let path, !path.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
       return path
     }
@@ -2244,7 +2244,11 @@ struct AgentChatResourceLink: Codable, Equatable {
       }
       return uri
     }
-    return name?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    return nil
+  }
+
+  var displayPath: String {
+    copyPath ?? name?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
   }
 }
 
@@ -2341,8 +2345,8 @@ struct AgentChatEventEnvelope: Decodable, Identifiable, Equatable {
       command = try container.decodeIfPresent(String.self, forKey: .command)
       spawnKind = try container.decodeIfPresent(AgentChatSpawnKind.self, forKey: .spawnKind)
       parentAgentId = try container.decodeIfPresent(String.self, forKey: .parentAgentId)
-      spawnDepth = try container.decodeIfPresent(Int.self, forKey: .spawnDepth)
-        ?? container.decodeIfPresent(Int.self, forKey: .spawnDepthSnake)
+      spawnDepth = try container.decodeIfPresent(Int.self, forKey: .spawnDepthSnake)
+        ?? container.decodeIfPresent(Int.self, forKey: .spawnDepth)
       resourceLinks = try container.decodeIfPresent([AgentChatResourceLink].self, forKey: .resourceLinks)
         ?? container.decodeIfPresent([AgentChatResourceLink].self, forKey: .resourceLinksSnake)
     }
