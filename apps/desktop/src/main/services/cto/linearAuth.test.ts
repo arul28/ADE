@@ -339,6 +339,26 @@ function waitMs(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+async function waitForCallbackPortFree(): Promise<void> {
+  const deadline = Date.now() + 3000;
+  while (Date.now() < deadline) {
+    const free = await new Promise<boolean>((resolve) => {
+      const probe = http.createServer();
+      const finish = (ok: boolean) => {
+        probe.removeAllListeners();
+        resolve(ok);
+      };
+      probe.once("error", () => finish(false));
+      probe.listen(19836, "127.0.0.1", () => {
+        probe.close(() => finish(true));
+      });
+    });
+    if (free) return;
+    await waitMs(10);
+  }
+  throw new Error("Linear OAuth callback port 19836 stayed in use after disposing test servers.");
+}
+
 async function waitForSessionStatus(
   service: ReturnType<typeof createLinearOAuthService>,
   sessionId: string,
@@ -358,6 +378,7 @@ async function waitForSessionStatus(
 afterEach(async () => {
   await Promise.all(activeServices.map((service) => service.dispose()));
   activeServices.length = 0;
+  await waitForCallbackPortFree();
 });
 
 describe("linearOAuthService", () => {
