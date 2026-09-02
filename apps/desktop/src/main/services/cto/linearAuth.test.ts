@@ -350,6 +350,7 @@ async function waitForCallbackPortFree(): Promise<void> {
       };
       probe.once("error", () => finish(false));
       probe.listen(19836, "127.0.0.1", () => {
+        probe.closeAllConnections();
         probe.close(() => finish(true));
       });
     });

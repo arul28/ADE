@@ -31982,6 +31982,14 @@ describe("createAgentChatService", () => {
       return { service, session, events, approvalEvent };
     };
 
+    it("includes runtime Codex approvals in getTurnStatus ask fields", async () => {
+      const { service, session } = await stageCompletedCodexPlanApproval();
+      const status = await service.getTurnStatus(session.id);
+      expect(status?.phase).toBe("blocked");
+      expect(status?.ask?.title).toBeTruthy();
+      expect(status?.ask?.title).not.toBe("awaiting input");
+    });
+
     it("defaults interaction mode to null or undefined", async () => {
       const { service } = createService();
       const session = await service.createSession({

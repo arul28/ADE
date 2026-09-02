@@ -45769,7 +45769,7 @@ export function createAgentChatService(args: {
     if (!summary) return null;
     const trimmed = sessionId.trim();
     const managed = managedSessions.get(trimmed) ?? null;
-    const pending = managed ? [...managed.localPendingInputs.values()][0]?.request : undefined;
+    const pending = managed ? collectPendingInputRequests(managed)[0] : undefined;
     const queuedMessageCount = managed?.runtime && "pendingSteers" in managed.runtime
       ? managed.runtime.pendingSteers.length
       : 0;
