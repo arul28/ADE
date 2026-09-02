@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { cursorCloudErrorMessage, repoMatchKey, type CursorCloudExistingPr } from "../../lib/cursorCloudUtils";
 import { isInjectableCloudSecretName } from "./CursorCloudSecretsPicker";
+import type { LaneGitRemoteStatus } from "./useLaneGitRemote";
 
 export type CursorCloudRepoListState =
   | { status: "loading" }
@@ -12,6 +13,9 @@ type UseCursorCloudDraftStateInput = {
   laneId: string | null;
   laneGitRemote: string | null;
   laneGitBranch: string | null;
+  /** Tri-state read of the lane remote. See `useLaneGitRemote`. */
+  laneGitRemoteStatus: LaneGitRemoteStatus;
+  laneGitRemoteError: string | null;
 };
 
 /**
@@ -26,6 +30,8 @@ export function useCursorCloudDraftState({
   laneId,
   laneGitRemote,
   laneGitBranch,
+  laneGitRemoteStatus,
+  laneGitRemoteError,
 }: UseCursorCloudDraftStateInput) {
   const [cursorCloudMode, setCursorCloudMode] = useState(false);
   const [cursorCloudAutoPr, setCursorCloudAutoPr] = useState(false);
@@ -158,10 +164,26 @@ export function useCursorCloudDraftState({
     return repoState.urls.find((url) => repoMatchKey(url) === target) ?? null;
   }, [laneGitRemote, repoState]);
 
+  /**
+   * Every reason names the thing that is actually true right now. The lane
+   * remote is read asynchronously and can fail, so "no GitHub remote" is only
+   * said once the read finished and came back empty — a pending or failed read
+   * gets its own sentence, and the failed one can be retried.
+   */
   const cursorCloudUnavailableReason = useMemo(() => {
     if (!cursorCloudAvailable) return null;
     if (repoState.status === "loading") return "Checking Cursor Cloud…";
     if (repoState.status === "error") return repoState.message;
+    // Unreachable while the pane gates `cursorCloudAvailable` on a lane, but the
+    // hook must not blame a missing remote for a missing lane if that changes.
+    if (!laneId) return "Choose a lane before sending to Cursor Cloud.";
+    if (laneGitRemoteStatus === "idle" || laneGitRemoteStatus === "loading") {
+      return "Checking this lane's git remote…";
+    }
+    if (laneGitRemoteStatus === "error") {
+      const detail = laneGitRemoteError?.trim() || "The git remote read failed.";
+      return `Could not read this lane's git remote: ${detail}`;
+    }
     if (!laneGitRemote) {
       return "This lane has no GitHub remote, so there is nothing for Cursor Cloud to clone.";
     }
@@ -169,11 +191,25 @@ export function useCursorCloudDraftState({
       return "This repo is not connected to Cursor. Connect it in Cursor, then try again.";
     }
     return null;
-  }, [cursorCloudAvailable, cursorCloudRepoUrl, laneGitRemote, repoState]);
+  }, [
+    cursorCloudAvailable,
+    cursorCloudRepoUrl,
+    laneGitRemote,
+    laneGitRemoteError,
+    laneGitRemoteStatus,
+    laneId,
+    repoState,
+  ]);
 
+  // Cloud mode drops only on a definitive reason. A probe that is merely in
+  // flight (the repo list, or the remote of a lane the user just switched to)
+  // keeps the mode: the send control is disabled by the reason text meanwhile,
+  // and turning the mode off would make the user re-pick Cursor Cloud after
+  // every lane change.
+  const cursorCloudProbesPending = repoState.status === "loading" || laneGitRemoteStatus === "loading";
   useEffect(() => {
-    if (cursorCloudMode && cursorCloudUnavailableReason) setCursorCloudMode(false);
-  }, [cursorCloudMode, cursorCloudUnavailableReason]);
+    if (cursorCloudMode && cursorCloudUnavailableReason && !cursorCloudProbesPending) setCursorCloudMode(false);
+  }, [cursorCloudMode, cursorCloudProbesPending, cursorCloudUnavailableReason]);
 
   return {
     cursorCloudMode,

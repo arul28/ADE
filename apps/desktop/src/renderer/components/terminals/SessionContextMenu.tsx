@@ -32,7 +32,7 @@ import type {
   TerminalSessionSummary,
 } from "../../../shared/types";
 import { useClampedFixedPosition } from "../../hooks/useClampedFixedPosition";
-import { isChatToolType } from "../../lib/sessions";
+import { cursorOwnsSessionName, isChatToolType } from "../../lib/sessions";
 import { sessionCanonicalUiState, sessionIsMidFlight } from "../../lib/terminalAttention";
 import { useSessionMetadataGenerating } from "../../state/sessionMetadataGeneratingStore";
 import {
@@ -297,6 +297,7 @@ function SessionContextMenuPanel({
   const menuPosition = clampedPosition ?? { left: x, top: y };
   const isRunning = session.status === "running";
   const isChat = isChatToolType(session.toolType);
+  const isCursorCloud = cursorOwnsSessionName(session);
   const isPrimaryLane = laneType === "primary";
   const isRegeneratingMetadata = Boolean(useSessionMetadataGenerating(session.id));
   const canonicalPhase = sessionCanonicalUiState(session).phase;
@@ -407,7 +408,11 @@ function SessionContextMenuPanel({
 
   const deletingLabel = deletingSessionId === session.id ? "Deleting…" : null;
 
-  const showNameStatusSubmenu = !tagging && isChat && Boolean(onRegenerateMetadata);
+  const metadataActions = SESSION_METADATA_GENERATION_ACTIONS.filter((action) => {
+    if (!isCursorCloud) return true;
+    return !action.fields.includes("title") && !action.primaryFields?.includes("title");
+  });
+  const showNameStatusSubmenu = !tagging && isChat && Boolean(onRegenerateMetadata) && metadataActions.length > 0;
   const renderNameStatusContent = (): ReactNode => {
     if (renaming) return renameInput;
     const regenerateMetadata = onRegenerateMetadata;
@@ -415,20 +420,24 @@ function SessionContextMenuPanel({
 
     return (
       <>
-        <button
-          type="button"
-          className={MENU_ITEM_CLASS}
-          onClick={() => {
-            finalizedRef.current = false;
-            setDraft(session.title);
-            setRenaming(true);
-          }}
-        >
-          <MenuRowIcon icon={PencilSimple} />
-          Rename…
-        </button>
-        <MenuSeparator />
-        {SESSION_METADATA_GENERATION_ACTIONS.map((action) => {
+        {!isCursorCloud ? (
+          <>
+            <button
+              type="button"
+              className={MENU_ITEM_CLASS}
+              onClick={() => {
+                finalizedRef.current = false;
+                setDraft(session.title);
+                setRenaming(true);
+              }}
+            >
+              <MenuRowIcon icon={PencilSimple} />
+              Rename…
+            </button>
+            <MenuSeparator />
+          </>
+        ) : null}
+        {metadataActions.map((action) => {
           const label = isPrimaryLane && action.primaryLabel ? action.primaryLabel : action.label;
           const fields = isPrimaryLane && action.primaryFields ? action.primaryFields : action.fields;
           const disabled = isRegeneratingMetadata || (action.laneNameOnly === true && isPrimaryLane);
@@ -454,17 +463,17 @@ function SessionContextMenuPanel({
     if (showNameStatusSubmenu) {
       return (
         <MenuSubmenu
-          label="Name & status"
+          label={isCursorCloud ? "Status" : "Name & status"}
           icon={<MenuRowIcon icon={TextT} />}
           className={MENU_ITEM_CLASS}
           data-testid="session-menu-name-status"
-          title="Rename this chat or refresh its visible metadata with AI"
+          title={isCursorCloud ? "Refresh status metadata; rename this agent on cursor.com" : "Rename this chat or refresh its visible metadata with AI"}
         >
           {renderNameStatusContent()}
         </MenuSubmenu>
       );
     }
-    if (!renaming && !tagging) {
+    if (!isCursorCloud && !renaming && !tagging) {
       return (
         <button
           type="button"

@@ -7,6 +7,7 @@ import {
   buildCursorSdkLocalRunOptions,
   cursorProjectSlugForPath,
   cursorSdkLocalAgentMode,
+  CURSOR_SDK_ONESHOT_POLICY,
   CURSOR_SDK_READONLY_TOOLS,
   denyCursorHook,
   evaluateCursorSdkHook,
@@ -16,6 +17,13 @@ import {
 import { cursorProjectSlug } from "../../../shared/cursorProjectSlug";
 
 describe("Cursor SDK policy", () => {
+  it("runs every one-shot under the read-only ask policy", () => {
+    // A one-shot is a tool-less text task, so its policy is fixed rather than
+    // derived from a caller's permission mode.
+    expect(CURSOR_SDK_ONESHOT_POLICY).toEqual(resolveCursorSdkPolicy({ cursorModeId: "ask" }));
+    expect(CURSOR_SDK_ONESHOT_POLICY.fullAuto).toBe(false);
+  });
+
   it("maps Cursor modes to ADE permission policies", () => {
     expect(resolveCursorSdkPolicy({ cursorModeId: "ask" })).toMatchObject({
       chatMode: "ask",

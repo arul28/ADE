@@ -17,6 +17,7 @@ import type {
   CursorCloudCreateRunResult,
   CursorCloudListAgentsResult,
   CursorCloudListRunsResult,
+  CursorCloudModelParameter,
   CursorCloudRepository,
   CursorCloudRunSummary,
   CursorAgentUsage,
@@ -78,6 +79,7 @@ import {
 import { inspectLocalProvider } from "./localModelDiscovery";
 import {
   discoverCursorSdkModelDescriptors,
+  verifyExplicitCursorModelSelection,
   clearCursorCliModelsCache,
   markCursorModelCachesStale,
   probeCursorSdkModelDiscovery,
@@ -533,14 +535,27 @@ function normalizeCursorCloudAgent(raw: unknown): CursorCloudAgentSummary {
   };
 }
 
-function normalizeCursorCloudRun(raw: unknown, fallbackAgentId?: string | null): CursorCloudRunSummary {
+function readCursorCloudModelParams(value: unknown): CursorCloudModelParameter[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const params = value.flatMap((entry) => {
+    if (!isRecord(entry)) return [];
+    const id = readString(entry.id);
+    const parameterValue = readString(entry.value);
+    return id && parameterValue ? [{ id, value: parameterValue }] : [];
+  });
+  return params.length ? params : undefined;
+}
+
+function normalizeCursorCloudRun(raw: unknown, fallbackAgentId?: string | null, fallbackModelParams?: CursorCloudModelParameter[]): CursorCloudRunSummary {
   const record = isRecord(raw) ? raw : {};
   const model = isRecord(record.model) ? record.model : {};
+  const modelParams = readCursorCloudModelParams(model.params) ?? fallbackModelParams;
   return {
     runId: readString(record.id) ?? readString(record.runId) ?? "",
     agentId: readString(record.agentId) ?? fallbackAgentId ?? "",
     status: readString(record.status) ?? "unknown",
     modelId: readString(model.id) ?? readString(record.modelId),
+    ...(modelParams?.length ? { modelParams } : {}),
     durationMs: readNumber(record.durationMs),
     result: record.result,
     git: record.git,
@@ -1276,6 +1291,17 @@ export function createAiIntegrationService(args: {
     const idempotencyKey = args.idempotencyKey?.trim() || undefined;
     const apiKey = await requireCursorCloudApiKey();
     const { Agent } = await loadCursorSdk();
+    const modelId = args.modelId?.trim() || "";
+    // Before `resolveCursorCloudCreateCloudExtras`, which persists the lane's
+    // remembered secret names: a launch this check rejects must leave no trace.
+    // A launch that chose no controls sends no params and lets Cursor decide.
+    const modelParams: CursorCloudModelParameter[] | undefined = modelId
+      ? (await verifyExplicitCursorModelSelection(apiKey, {
+          modelSdkId: modelId,
+          reasoningEffort: args.reasoningEffort,
+          fastMode: args.fastMode,
+        })) ?? undefined
+      : undefined;
     const launch = resolveCursorCloudCreateCloudExtras({
       projectRoot,
       db,
@@ -1287,11 +1313,13 @@ export function createAiIntegrationService(args: {
       secretNames: args.secretNames,
       rememberSecretNames: args.rememberSecretNames === true,
     });
+    const modelSelection = modelId
+      ? { id: modelId, ...(modelParams?.length ? { params: modelParams } : {}) }
+      : undefined;
     const agent = await Agent.create({
       apiKey,
       ...(idempotencyKey ? { idempotencyKey } : {}),
-      ...(args.modelId?.trim() ? { model: { id: args.modelId.trim() } } : {}),
-      ...(args.agentName?.trim() ? { name: args.agentName.trim() } : {}),
+      ...(modelSelection ? { model: modelSelection } : {}),
       cloud: {
         repos: [{
           url: repoUrl,
@@ -1304,17 +1332,16 @@ export function createAiIntegrationService(args: {
         ...launch.extras,
       },
     });
-    const modelId = args.modelId?.trim() || "";
     const run = await agent.send(promptText, {
       ...(idempotencyKey ? { idempotencyKey } : {}),
-      ...(modelId ? { model: { id: modelId } } : {}),
+      ...(modelSelection ? { model: modelSelection } : {}),
     });
     // Cursor names its own agents; use that name when the SDK hands one back so callers can
     // adopt it (chat titles) instead of ADE's placeholder.
     const sdkAgentName = readCursorSdkAgentName(agent);
     const agentSummary: CursorCloudAgentSummary = {
       agentId: agent.agentId,
-      name: args.agentName?.trim() || sdkAgentName || "Cursor cloud agent",
+      name: sdkAgentName || "Cursor cloud agent",
       summary: promptText.slice(0, 180),
       status: "running",
       archived: false,
@@ -1323,7 +1350,7 @@ export function createAiIntegrationService(args: {
     };
     return {
       agent: agentSummary,
-      run: normalizeCursorCloudRun(run, agent.agentId),
+      run: normalizeCursorCloudRun(run, agent.agentId, modelParams),
     };
   };
 

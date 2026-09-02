@@ -551,6 +551,13 @@ extension WorkRootScreen {
       errorMessage = "Session title cannot be empty."
       return
     }
+    if CursorCloudNaming.ownsName(
+      chatSummaries[renameTarget.id]?.cursorCloudAgentId ?? renameTarget.cursorCloudAgentId
+    ) {
+      ADEHaptics.error()
+      errorMessage = CursorCloudNaming.renameBlockedMessage
+      return
+    }
     do {
       try await syncService.updateSessionMeta(
         sessionId: renameTarget.id,

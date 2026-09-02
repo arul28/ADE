@@ -947,6 +947,30 @@ Haiku / Sonnet / "first available" namer.
 - Live chat compaction is unchanged — it always uses the chat's own
   provider.
 
+Every one-off call — the session-intelligence chain above and the utility
+tasks here — reaches its provider through `runProviderTask`. Every Cursor
+one-off runs on the pooled worker, through `runCursorSdkLocalPrompt` in
+`cursorSdkPool.ts`: it gets the sandbox-unsupported fallback, agent retries,
+trimmed setting sources, a throwaway state root, and an agent that is closed
+instead of leaked. Never call `Agent.create` in the host process.
+
+The pool keeps one worker per workspace path and API key for a short idle
+window, so a three-model naming chain forks Node once, and it caps the warm
+one-shot workers at `CURSOR_SDK_LOCAL_ONESHOT_MAX_WORKERS`, releasing the idle
+least-recently-used one to make room. Every send carries `resetConversation`,
+so no one-shot inherits the previous one-shot's conversation. A one-shot is a
+tool-less text task: it always runs under the fixed `CURSOR_SDK_ONESHOT_POLICY`
+and every tool call it makes is denied, so the caller's permission mode decides
+nothing here.
+
+`regenerateSessionMetadata` reports why a chain produced nothing.
+`runNamingAcrossProviders` returns `lastFailure`, and the result carries it as
+`generationError` alongside `usedDeterministicFallback`. When nothing was
+applied the Work tab states that reason instead of always blaming a concurrent
+rename. Cursor Cloud chats skip that chain: Cursor owns the agent name, so
+`updateSession`, `regenerateSessionMetadata` (title), auto-title, and the
+user-facing meta writers refuse the write instead of overlaying an ADE title.
+
 ## CTO vs. regular chat routing
 
 CTO sessions (`identityKey: "cto"`) are routed differently:

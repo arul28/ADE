@@ -368,14 +368,26 @@ function normalizeCursorAliasList(value: unknown, canonicalId?: string): string[
   return out.length ? out : undefined;
 }
 
+/**
+ * The text the parameter classifiers match against.
+ *
+ * `_`, `-` and `.` become spaces so the word-boundary tests see the words in a
+ * snake- or kebab-case id. Without that, `\b` finds no boundary inside
+ * `reasoning_effort` or `service_tier`, and a row that carries only an id and
+ * no display name is classified as neither a reasoning nor a tier control.
+ */
+function cursorParameterClassifierHaystack(
+  parameter: Pick<CursorModelParameterDefinition, "id" | "displayName">,
+): string {
+  return `${parameter.id} ${parameter.displayName ?? ""}`.toLowerCase().replace(/[_\-.]+/g, " ");
+}
+
 function isReasoningParameterLike(parameter: Pick<CursorModelParameterDefinition, "id" | "displayName">): boolean {
-  const hay = `${parameter.id} ${parameter.displayName ?? ""}`.toLowerCase();
-  return /\b(reason|reasoning|thinking|think|effort)\b/.test(hay);
+  return /\b(reason|reasoning|thinking|think|effort)\b/.test(cursorParameterClassifierHaystack(parameter));
 }
 
 function isServiceTierParameterLike(parameter: Pick<CursorModelParameterDefinition, "id" | "displayName">): boolean {
-  const hay = `${parameter.id} ${parameter.displayName ?? ""}`.toLowerCase();
-  return /\b(speed|service|tier|mode|latency)\b/.test(hay);
+  return /\b(speed|service|tier|mode|latency)\b/.test(cursorParameterClassifierHaystack(parameter));
 }
 
 function normalizeCursorReasoningValue(value: unknown): string | null {
@@ -1011,19 +1023,96 @@ export function mergeCursorModelDescriptorSources(args: {
   );
 }
 
-export function resolveCursorSdkModelSelectionParams(args: {
+/**
+ * A model control the verified catalog cannot express for the chosen model.
+ *
+ * Reported only when the model DECLARES a parameter of that class and the
+ * requested value maps onto none of its values. A model that declares no
+ * parameter of the class at all leaves the control inapplicable, which is not
+ * an unmet control: Cursor has no variant to silently substitute, so the
+ * selection stays `ok`.
+ */
+export type CursorSdkModelSelectionUnmetControl = "reasoning" | "fast" | "standard";
+
+/**
+ * What ADE could make of a Cursor model selection.
+ *
+ * The four outcomes are deliberately distinct, because the callers want
+ * different things from them. A local chat send is best-effort: it sends
+ * whatever params resolved, on `ok` and on `partial` alike. A cloud create
+ * fails closed on anything but `ok`, because Cursor Cloud silently substitutes
+ * its own default variant when `params` are omitted — and the error it shows
+ * has to name the real cause rather than blame the user's selection for a
+ * network fault.
+ */
+export type CursorSdkModelSelectionResult =
+  | { status: "ok"; params: CursorModelParameterValue[] }
+  | {
+      status: "partial";
+      params: CursorModelParameterValue[];
+      unmet: CursorSdkModelSelectionUnmetControl[];
+    }
+  | { status: "unknown-model" }
+  | { status: "catalog-unavailable"; reason: string };
+
+const CURSOR_SDK_UNMET_CONTROL_LABELS: Record<CursorSdkModelSelectionUnmetControl, string> = {
+  reasoning: "reasoning effort",
+  fast: "fast mode",
+  standard: "standard speed",
+};
+
+/**
+ * The error a fail-closed caller shows for a selection it cannot use.
+ *
+ * Each outcome names its own cause: a cold or failed catalog is ADE's problem
+ * to retry, an unlisted model is a stale picker, and a partial resolve is the
+ * one case where the user's own control is what could not be expressed.
+ */
+export function describeCursorSdkModelSelectionFailure(
+  modelSdkId: string,
+  selection: Exclude<CursorSdkModelSelectionResult, { status: "ok" }>,
+): string {
+  if (selection.status === "catalog-unavailable") {
+    return `Could not load Cursor's model catalog (${selection.reason}). Try again.`;
+  }
+  if (selection.status === "unknown-model") {
+    return `Cursor Cloud does not list model ${modelSdkId.trim() || "(unnamed)"}. Refresh Cursor models.`;
+  }
+  const controls = selection.unmet.map((entry) => CURSOR_SDK_UNMET_CONTROL_LABELS[entry]).join(" and ");
+  return `Cursor Cloud could not verify the selected model settings (${controls}). Refresh Cursor models and try again.`;
+}
+
+export type CursorSdkModelSelectionInput = {
   modelSdkId: string;
   reasoningEffort?: string | null;
   fastMode?: boolean | null;
-}): CursorModelParameterValue[] | undefined {
+};
+
+/**
+ * Resolve a model selection against the catalog already in memory.
+ *
+ * Cache-only and synchronous, for the local chat path, which resolves params on
+ * every send and must never block one on a network fetch. Use
+ * `resolveCursorSdkModelSelection` where the catalog has to be verified first.
+ */
+export function resolveCursorSdkModelSelectionFromCache(
+  args: CursorSdkModelSelectionInput,
+): CursorSdkModelSelectionResult {
   const modelSdkId = args.modelSdkId.trim();
-  if (!modelSdkId || !sdkCached?.models.length) return undefined;
+  if (!modelSdkId) return { status: "unknown-model" };
+  if (!sdkCached?.models.length) {
+    // A fixed reason, not `sdkLastFailure`: this resolver takes no API key, so
+    // it cannot tell whether the last recorded failure belongs to the key the
+    // caller is asking about. `resolveCursorSdkModelSelection` has the probe
+    // result and supplies the real cause.
+    return { status: "catalog-unavailable", reason: "Cursor's model catalog has not loaded yet." };
+  }
   const normalizedModelSdkId = modelSdkId.toLowerCase();
   const row = sdkCached.models.find((entry) =>
     entry.id.trim().toLowerCase() === normalizedModelSdkId
     || (entry.aliases ?? []).some((alias) => alias.trim().toLowerCase() === normalizedModelSdkId),
   );
-  if (!row) return undefined;
+  if (!row) return { status: "unknown-model" };
   const reasoning = normalizeCursorMetadataText(args.reasoningEffort);
   const wantsFast = args.fastMode === true;
   const wantsStandard = args.fastMode === false;
@@ -1110,7 +1199,108 @@ export function resolveCursorSdkModelSelectionParams(args: {
   }
 
   const params = [...out.entries()].map(([id, value]) => ({ id, value }));
-  return params.length ? params : undefined;
+  // A control the model defines no parameter for is INAPPLICABLE, not unmet.
+  // Cursor has no variant to substitute for a class the row never declares, so
+  // there is nothing to enforce and nothing the user could pick differently.
+  // Only a class the model DOES declare, whose requested value ADE cannot map
+  // onto one of its values, is unmet. A stale draft carrying a reasoning effort
+  // from a previously selected model must not block a model such as
+  // `composer-2.5`, whose catalog row has no reasoning parameter at all.
+  const unmet: CursorSdkModelSelectionUnmetControl[] = [];
+  if (
+    reasoning
+    && reasoningParameterIds.size > 0
+    && !params.some((param) => reasoningParameterIds.has(param.id))
+  ) {
+    unmet.push("reasoning");
+  }
+  if (
+    wantsFast
+    && serviceTierParameterIds.size > 0
+    && !params.some((param) => serviceTierParameterIds.has(param.id))
+  ) {
+    unmet.push("fast");
+  }
+  if (
+    wantsStandard
+    && serviceTierParameterIds.size > 0
+    && !params.some((param) => serviceTierParameterIds.has(param.id))
+  ) {
+    unmet.push("standard");
+  }
+  if (unmet.length) return { status: "partial", params, unmet };
+  // An explicitly-known model with no parameterized controls is still a valid
+  // selection. The empty array lets callers distinguish it from a model that
+  // was not present in the verified SDK catalog.
+  return { status: "ok", params };
+}
+
+/**
+ * Best-effort params for a model selection, from the catalog already in memory.
+ *
+ * Returns the params ADE could resolve on `ok` and on `partial`, and `undefined`
+ * only when the catalog cannot answer for this model at all. Sending the params
+ * that did resolve beats sending none: a model whose tier control ADE cannot
+ * express still honours the reasoning effort the user picked.
+ */
+export function resolveCursorSdkModelSelectionParams(
+  args: CursorSdkModelSelectionInput,
+): CursorModelParameterValue[] | undefined {
+  const selection = resolveCursorSdkModelSelectionFromCache(args);
+  return selection.status === "ok" || selection.status === "partial" ? selection.params : undefined;
+}
+
+/**
+ * Verify the Cursor model catalog, then resolve a model selection against it.
+ *
+ * The probe and the resolve live together here because both read `sdkCached`,
+ * the module's own cache. A caller that probed for the side effect and then
+ * called the resolver depended on an ordering it could not state, and could not
+ * tell a cold cache from a model the catalog cannot express.
+ */
+export async function resolveCursorSdkModelSelection(
+  apiKey: string | null | undefined,
+  args: CursorSdkModelSelectionInput,
+): Promise<CursorSdkModelSelectionResult> {
+  const probe = await probeCursorSdkModelDiscovery(apiKey);
+  if (probe.failureKind) {
+    return {
+      status: "catalog-unavailable",
+      reason: probe.errorMessage?.trim() || probe.failureKind,
+    };
+  }
+  return resolveCursorSdkModelSelectionFromCache(args);
+}
+
+/**
+ * Verify a model selection for a cloud CREATE, or refuse the launch.
+ *
+ * The single owner of the fail-closed rule that both cloud create paths obey.
+ * Cursor Cloud silently substitutes its own default variant when `params` are
+ * omitted, so a create that cannot express the user's chosen controls must fail
+ * with the cause named rather than quietly run a different model.
+ *
+ * Returns null when the user chose neither control. A null or absent `fastMode`
+ * is no tier opinion at all, not a request for the standard tier: the composer
+ * always sends a boolean, so an absent one means the caller never asked.
+ *
+ * Callers supply their own fallback for the null case, because they differ:
+ * a cloud launch sends no params, and a chat send falls back to its session's
+ * best-effort params.
+ *
+ * @throws the sentence from `describeCursorSdkModelSelectionFailure`.
+ */
+export async function verifyExplicitCursorModelSelection(
+  apiKey: string | null | undefined,
+  args: CursorSdkModelSelectionInput,
+): Promise<CursorModelParameterValue[] | null> {
+  const hasExplicitSelection = args.reasoningEffort != null || args.fastMode != null;
+  if (!hasExplicitSelection) return null;
+  const selection = await resolveCursorSdkModelSelection(apiKey, args);
+  if (selection.status !== "ok") {
+    throw new Error(describeCursorSdkModelSelectionFailure(args.modelSdkId, selection));
+  }
+  return selection.params;
 }
 
 /**

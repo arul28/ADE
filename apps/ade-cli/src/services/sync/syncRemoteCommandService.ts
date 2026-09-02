@@ -8,6 +8,7 @@ import {
 } from "../../../../desktop/src/shared/types/chat";
 import { runWithAbortSignal } from "./abortSignal";
 import { projectAttachmentsDir } from "../../../../desktop/src/shared/chatAttachmentStagingFs";
+import { assertCursorCloudRenameAllowed } from "../../../../desktop/src/shared/cursorCloudNaming";
 import type { AttachmentUploadRegistry, AttachmentUploadTicket } from "./attachmentUploadService";
 import type {
   AgentChatCreateArgs,
@@ -4206,7 +4207,14 @@ function registerWorkRemoteCommands({ args, register }: RemoteCommandRegistratio
     args.sessionDeltaService?.getSessionDelta(parseSessionIdArgs(payload, "work.getSessionDelta").sessionId) ?? null);
   register("work.listSessions", { viewerAllowed: true }, async (payload) => listRemoteWorkSessions(args, parseListSessionsArgs(payload)));
   register("work.updateSessionMeta", { viewerAllowed: true, queueable: true }, async (payload) => {
-    args.sessionService.updateMeta(parseUpdateSessionMetaArgs(payload));
+    const parsed = parseUpdateSessionMetaArgs(payload);
+    await assertCursorCloudRenameAllowed(
+      args.agentChatService
+        ? (sessionId) => args.agentChatService!.getSessionSummary(sessionId)
+        : null,
+      parsed,
+    );
+    args.sessionService.updateMeta(parsed);
     return { ok: true };
   });
   // ---------------------------------------------------------------------
@@ -5536,15 +5544,20 @@ function registerMiscRemoteCommands({ args, register }: RemoteCommandRegistratio
     return { ok: true };
   });
   register("ai.openCursorCloudChat", { viewerAllowed: true, queueable: false }, async (payload) => {
-    const agentName = asTrimmedString(payload.agentName);
     const sessionId = asTrimmedString(payload.sessionId);
     const modelId = asTrimmedString(payload.modelId);
+    const reasoningEffort = asTrimmedString(payload.reasoningEffort);
+    const fastMode = asOptionalBoolean(payload.fastMode);
     return requireService(args.agentChatService, "Agent chat service not available.").openCursorCloudChat({
       cloudAgentId: requireString(payload.cloudAgentId, "ai.openCursorCloudChat requires cloudAgentId."),
       laneId: requireString(payload.laneId, "ai.openCursorCloudChat requires laneId."),
-      ...(agentName ? { agentName } : {}),
       ...(sessionId ? { sessionId } : {}),
       ...(modelId ? { modelId } : {}),
+      // `asTrimmedString` returns null, never undefined, so this has to test
+      // for null: forwarding it would clear the session's reasoning effort on
+      // every mobile, web, and relay call that omits the field.
+      ...(reasoningEffort !== null ? { reasoningEffort } : {}),
+      ...(fastMode !== undefined ? { fastMode } : {}),
     });
   });
   register("ai.watchCursorCloudMirror", { viewerAllowed: true, queueable: false }, async (payload) => {

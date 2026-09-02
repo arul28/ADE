@@ -21,6 +21,8 @@ Coverage states:
   Measure only up to the ADE preflight/button state unless explicitly allowed.
 - `moved`: no longer a Work-tab surface. Historical evidence stays below for
   traceability, but current coverage belongs to the destination route's matrix.
+- `removed`: the surface itself was deleted, so there is nothing left to drive.
+  Historical evidence stays below for traceability.
 
 ## Work shell and layout
 
@@ -224,13 +226,13 @@ Coverage states:
 | work.chat.cursor-cloud.open | Open Cursor Cloud actions menu | measured | `AgentChatComposer.tsx` |
 | work.chat.cursor-cloud.launch-mode | Toggle Cursor Cloud launch mode | sandbox-only | `AgentChatComposer.tsx` |
 | work.chat.cursor-cloud.bring-local | Bring Cursor Cloud session local | sandbox-only | `AgentChatComposer.tsx` |
-| work.chat.cursor-cloud.repo | Select Cursor Cloud repository | external-skip | `CursorCloudInlineLaunch.tsx` |
-| work.chat.cursor-cloud.branch | Select Cursor Cloud branch | external-skip | `CursorCloudInlineLaunch.tsx` |
-| work.chat.cursor-cloud.model | Select Cursor Cloud model | external-skip | `CursorCloudInlineLaunch.tsx` |
-| work.chat.cursor-cloud.pr-link | Toggle linked PR context | external-skip | `CursorCloudInlineLaunch.tsx` |
-| work.chat.cursor-cloud.auto-pr | Toggle Auto-PR | external-skip | `CursorCloudInlineLaunch.tsx` |
-| work.chat.cursor-cloud.current-branch | Toggle Work on current branch | external-skip | `CursorCloudInlineLaunch.tsx` |
-| work.chat.cursor-cloud.cancel | Cancel Cursor Cloud launch | measured | `CursorCloudInlineLaunch.tsx` |
+| work.chat.cursor-cloud.repo | Select Cursor Cloud repository | removed | `CursorCloudInlineLaunch.tsx` |
+| work.chat.cursor-cloud.branch | Select Cursor Cloud branch | removed | `CursorCloudInlineLaunch.tsx` |
+| work.chat.cursor-cloud.model | Select Cursor Cloud model | removed | `CursorCloudInlineLaunch.tsx` |
+| work.chat.cursor-cloud.pr-link | Toggle linked PR context | removed | `CursorCloudInlineLaunch.tsx` |
+| work.chat.cursor-cloud.auto-pr | Toggle Auto-PR | removed | `CursorCloudInlineLaunch.tsx` |
+| work.chat.cursor-cloud.current-branch | Toggle Work on current branch | removed | `CursorCloudInlineLaunch.tsx` |
+| work.chat.cursor-cloud.cancel | Cancel Cursor Cloud launch | removed | `CursorCloudInlineLaunch.tsx` |
 | work.chat.dismiss.preview | Dismiss attached iOS/App Control/browser preview | measured | `AgentChatComposer.tsx` |
 | work.chat.dismiss.error | Dismiss composer attach error | measured | `AgentChatComposer.tsx` |
 
@@ -992,7 +994,7 @@ Rows promoted to `measured`:
 - `work.chat.git.lane-open`: the toolbar fixture rendered the real current-lane
   button inside `MemoryRouter`, clicked `UI audit lane`, and verified navigation
   to `/lanes/lane-1`.
-Cursor Cloud inline launch fixture:
+Cursor Cloud inline launch fixture (historical):
 
 ```bash
 npm --prefix apps/desktop run test -- src/renderer/components/chat/CursorCloudInlineLaunch.test.tsx
@@ -1000,11 +1002,16 @@ npm --prefix apps/desktop run test -- src/renderer/components/chat/CursorCloudIn
 
 Result: passed (`1` focused test).
 
-Rows promoted to `measured`:
+Rows this run promoted to `measured`, now `removed`:
 
 - `work.chat.cursor-cloud.cancel`: the inline-launch fixture clicked
   `Cancel cloud send`, verified `onClose` fired once, and verified
   `cursorCloudCreateRun` was not called.
+
+`CursorCloudInlineLaunch.tsx` and its fixture were deleted. Composer-native
+cloud mode superseded the inline strip: the machine picker chooses Cursor Cloud,
+the lane picker chooses the branch, and the model picker chooses the model. The
+command above no longer runs.
 
 Git toolbar coverage:
 

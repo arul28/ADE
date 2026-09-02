@@ -1689,7 +1689,14 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
             refreshLabel: "metadata generation",
             onSuccess: (result) => {
               if (result.applied.length === 0) {
-                setSessionActionError("Metadata was not changed because the session or lane changed while it was generating.");
+                // Generation swallows a model failure and falls back to a
+                // deterministic name, so a zero-applied result is not proof of
+                // a concurrent edit. Name the real cause when the service
+                // reports one.
+                const reason = result.generationError?.trim();
+                setSessionActionError(reason
+                  ? `Generate name failed: ${reason}`
+                  : "Metadata was not changed because the session or lane changed while it was generating.");
                 window.setTimeout(() => setSessionActionError(null), 6000);
               }
             },

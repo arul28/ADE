@@ -4061,6 +4061,9 @@ struct TerminalSessionSummary: Codable, Identifiable, Equatable {
   var chatSessionId: String? = nil
   /// Current pending approval/input item id when the backing chat is waiting on the user.
   var pendingInputItemId: String? = nil
+  /// Present when this Work row is a Cursor Cloud chat. Cursor owns that
+  /// agent's name, so ADE hides Rename.
+  var cursorCloudAgentId: String? = nil
   // Orchestration-mode fields (populated when the session is part of an orchestration run)
   var orchestrationRunId: String? = nil
   var orchestrationRole: String? = nil
@@ -4110,6 +4113,7 @@ struct TerminalSessionSummary: Codable, Identifiable, Equatable {
       && lhs.chatIdleSinceAt == rhs.chatIdleSinceAt
       && lhs.chatSessionId == rhs.chatSessionId
       && lhs.pendingInputItemId == rhs.pendingInputItemId
+      && lhs.cursorCloudAgentId == rhs.cursorCloudAgentId
       && lhs.orchestrationRunId == rhs.orchestrationRunId
       && lhs.orchestrationRole == rhs.orchestrationRole
       && lhs.orchestrationTag == rhs.orchestrationTag
@@ -4156,6 +4160,7 @@ extension TerminalSessionSummary {
     case chatIdleSinceAt
     case chatSessionId
     case pendingInputItemId
+    case cursorCloudAgentId
     case orchestrationRunId
     case orchestrationRole
     case orchestrationTag
@@ -4201,6 +4206,7 @@ extension TerminalSessionSummary {
     chatIdleSinceAt = try container.decodeIfPresent(String.self, forKey: .chatIdleSinceAt)
     chatSessionId = try container.decodeIfPresent(String.self, forKey: .chatSessionId)
     pendingInputItemId = try container.decodeIfPresent(String.self, forKey: .pendingInputItemId)
+    cursorCloudAgentId = try container.decodeIfPresent(String.self, forKey: .cursorCloudAgentId)
     orchestrationRunId = try container.decodeIfPresent(String.self, forKey: .orchestrationRunId)
     orchestrationRole = try container.decodeIfPresent(String.self, forKey: .orchestrationRole)
     orchestrationTag = try container.decodeIfPresent(String.self, forKey: .orchestrationTag)

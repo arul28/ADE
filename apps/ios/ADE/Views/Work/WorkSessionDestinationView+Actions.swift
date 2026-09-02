@@ -887,6 +887,11 @@ extension WorkSessionDestinationView {
 
   @MainActor
   func presentSessionRename() {
+    if CursorCloudNaming.ownsName(composerChatSummary?.cursorCloudAgentId ?? session?.cursorCloudAgentId) {
+      ADEHaptics.error()
+      errorMessage = CursorCloudNaming.renameBlockedMessage
+      return
+    }
     sessionActionRenameText = (chatSummary?.title ?? session?.title ?? initialSession?.title ?? "")
       .trimmingCharacters(in: .whitespacesAndNewlines)
     sessionActionRenamePresented = true
@@ -898,6 +903,11 @@ extension WorkSessionDestinationView {
     guard !trimmedTitle.isEmpty else {
       ADEHaptics.error()
       errorMessage = "Session title cannot be empty."
+      return
+    }
+    if CursorCloudNaming.ownsName(composerChatSummary?.cursorCloudAgentId ?? session?.cursorCloudAgentId) {
+      ADEHaptics.error()
+      errorMessage = CursorCloudNaming.renameBlockedMessage
       return
     }
     do {

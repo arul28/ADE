@@ -92,6 +92,7 @@ import type {
   ListLanesArgs,
   SessionSettleOverride,
   SessionWakeReason,
+  UpdateSessionMetaArgs,
   PrAgentPermissionMode,
   PrAiResolutionContext,
   PrAiResolutionEventPayload,
@@ -141,6 +142,7 @@ import { mapPermissionModeForModelFamily } from "../prs/resolverUtils";
 import { getErrorMessage, isRecord, nowIso, resolvePathWithinRoot } from "../shared/utils";
 import { parseLinearGraphQLInput } from "../cto/linearGraphQLInput";
 import { launchAgentChatCli } from "../chat/agentChatCliLaunch";
+import { assertCursorCloudRenameAllowed } from "../../../shared/cursorCloudNaming";
 import { deleteTerminalSessionWithRuntimeCleanup } from "../sessions/deleteTerminalSession";
 import {
   parseSettleOverrideArg,
@@ -2118,6 +2120,20 @@ function buildSessionDomainService(runtime: AdeRuntime): OpaqueService | null {
   if (!sessionService) return null;
   return {
     ...(sessionService as unknown as OpaqueService),
+    async updateMeta(args?: unknown) {
+      // Preload prefers this runtime action over IPC, so the IPC rename guard
+      // never runs in a connected desktop. Override the spread `updateMeta`.
+      const record = (args && typeof args === "object" && !Array.isArray(args)
+        ? args
+        : {}) as UpdateSessionMetaArgs;
+      await assertCursorCloudRenameAllowed(
+        runtime.agentChatService
+          ? (sessionId) => runtime.agentChatService!.getSessionSummary(sessionId)
+          : null,
+        record,
+      );
+      return sessionService.updateMeta(record);
+    },
     async list(args?: ListSessionsArgs | null) {
       return listSessionsWithChatProjection(runtime, args ?? {});
     },
@@ -2964,16 +2980,18 @@ function buildAiDomainService(runtime: AdeRuntime): OpaqueService | null {
     openCursorCloudChat: (args?: {
       cloudAgentId?: string;
       laneId?: string;
-      agentName?: string;
       sessionId?: string;
       modelId?: string;
+      reasoningEffort?: string | null;
+      fastMode?: boolean | null;
     }) =>
       requireService(runtime.agentChatService, "Agent chat service not available.").openCursorCloudChat({
         cloudAgentId: requireNonEmptyString(args?.cloudAgentId, "cloudAgentId"),
         laneId: requireNonEmptyString(args?.laneId, "laneId"),
-        ...(args?.agentName ? { agentName: args.agentName } : {}),
         ...(args?.sessionId ? { sessionId: args.sessionId } : {}),
         ...(args?.modelId ? { modelId: args.modelId } : {}),
+        ...(args?.reasoningEffort !== undefined ? { reasoningEffort: args.reasoningEffort } : {}),
+        ...(args?.fastMode !== undefined ? { fastMode: args.fastMode } : {}),
       }),
     watchCursorCloudMirror: (args?: { sessionId?: string; watching?: boolean }) => {
       if (typeof args?.watching !== "boolean") {

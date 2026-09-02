@@ -81,6 +81,14 @@ const reportedRequests = new Set<string>();
 let unhandledExitScheduled = false;
 let sandboxSupported = true;
 let lastLocalPermissionFingerprint: string | null = null;
+/**
+ * Whether the current local agent has already been given a prompt.
+ *
+ * A `resetConversation` send only has to replace the agent when there is a
+ * conversation to leave behind. The agent `init` just created is already empty,
+ * so the first one-shot on a fresh worker skips the close/create round trip.
+ */
+let localAgentPrompted = false;
 
 function asCursorSdkRunStoreLike(store: unknown): CursorSdkRunStoreLike | null {
   return store && typeof store === "object" ? store as CursorSdkRunStoreLike : null;
@@ -257,6 +265,48 @@ function buildLocalAgentOptions(init: CursorSdkWorkerInit): AgentOptionsWithAdeM
     },
     ...(init.mcpServers ? { mcpServers: init.mcpServers as AgentOptions["mcpServers"] } : {}),
   };
+}
+
+/**
+ * Release an SDK agent, whichever teardown method this SDK build exposes.
+ *
+ * `agent?.[Symbol.asyncDispose]?.()` evaluates to `undefined` when the method
+ * is absent instead of throwing, so a catch-fallback can never reach `close()`.
+ * Test for the method instead.
+ */
+async function closeSdkAgent(target: SdkAgent | null): Promise<void> {
+  if (!target) return;
+  try {
+    if (typeof (target as { [Symbol.asyncDispose]?: unknown })[Symbol.asyncDispose] === "function") {
+      await target[Symbol.asyncDispose]!();
+      return;
+    }
+    target.close?.();
+  } catch {
+    // The replacement matters more than an orderly close of the old agent.
+  }
+}
+
+/**
+ * Close the current local agent and create an empty replacement.
+ *
+ * `createOrResumeLocalAgent` resumes whatever id it can find, so both the live
+ * agent and the init's resume id have to be cleared first, or the "new" agent
+ * is the old thread again. The permission fingerprint is cleared with them so
+ * `applyLocalAgentOptions` does not short-circuit on an unchanged policy.
+ *
+ * `localAgentPrompted` is the fourth piece of that same state, so it is cleared
+ * here rather than by the caller: a second caller would otherwise leave the
+ * flag set and the next `resetConversation` send would reset a fresh agent.
+ */
+async function resetLocalAgent(): Promise<void> {
+  const previous = agent;
+  agent = null;
+  localAgentPrompted = false;
+  lastLocalPermissionFingerprint = null;
+  if (initState) initState.agentId = null;
+  await closeSdkAgent(previous);
+  await applyLocalAgentOptions();
 }
 
 async function createOrResumeLocalAgent(options: AgentOptionsWithAdeMode): Promise<SdkAgent> {
@@ -535,10 +585,21 @@ async function cursorSdkSendMessage(
 }
 
 async function sendPrompt(payload: CursorSdkSendPrompt): Promise<unknown> {
-  if (!agent || !initState) throw new Error("Cursor SDK worker is not initialized.");
+  if (!initState) throw new Error("Cursor SDK worker is not initialized.");
+  if (payload.resetConversation && localAgentPrompted) {
+    await resetLocalAgent();
+  }
+  // `applyLocalAgentOptions` already means "create the agent if it is missing,
+  // otherwise reuse it", so this one call also rebuilds an agent that a failed
+  // reset left null on an otherwise healthy worker. Its failure is only fatal
+  // when no agent survives it, and then the caller gets the real cause: a
+  // generic "not initialized" is a fault no pool eviction rule can act on, and
+  // it is what wedged the warm one-shot worker.
+  let applyError: unknown = null;
   try {
     await applyLocalAgentOptions();
   } catch (error) {
+    applyError = error;
     post({
       type: "log",
       level: "warn",
@@ -546,7 +607,11 @@ async function sendPrompt(payload: CursorSdkSendPrompt): Promise<unknown> {
       detail: { error: errorMessage(error) },
     });
   }
-  if (!agent) throw new Error("Cursor SDK worker is not initialized.");
+  if (!agent) {
+    throw applyError instanceof Error
+      ? applyError
+      : new Error("Cursor SDK worker is not initialized.");
+  }
   const message = await cursorSdkSendMessage(payload.promptText, payload.images);
   const mode = payload.mode ?? cursorSdkLocalAgentMode(initState.policy);
   const idempotencyKey = trimIdempotencyKey(payload.idempotencyKey);
@@ -561,6 +626,7 @@ async function sendPrompt(payload: CursorSdkSendPrompt): Promise<unknown> {
     local: { force: payload.forceExpireActiveRun === true },
   };
   currentRun = await agent.send(message, sendOptions);
+  localAgentPrompted = true;
   const runModelParams = normalizeCursorModelParams(payload.modelParams ?? initState.modelParams);
   const sdkRequestId = cursorRunRequestId(currentRun);
   post({
@@ -717,20 +783,13 @@ async function dispose(): Promise<void> {
     resolve(denyCursorHook("Cursor SDK worker disposed before tool approval completed."));
   }
   hookWaiters.clear();
-  try {
-    await agent?.[Symbol.asyncDispose]?.();
-  } catch {
-    try {
-      agent?.close();
-    } catch {
-      // ignore
-    }
-  }
+  await closeSdkAgent(agent);
   agent = null;
   localAgentPlatform = null;
   localAgentStore = null;
   sandboxSupported = true;
   lastLocalPermissionFingerprint = null;
+  localAgentPrompted = false;
   if (hookServer) {
     await new Promise<void>((resolve) => hookServer!.close(() => resolve())).catch(() => {});
     hookServer = null;
@@ -772,7 +831,6 @@ function buildCloudCreateOptions(payload: CursorSdkCloudSendStreamPayload): Agen
 
   const options: AgentOptionsWithAdeMode = {
     apiKey: payload.apiKey?.trim() || undefined,
-    name: payload.agentName?.trim() || undefined,
     cloud,
   };
   const idempotencyKey = trimIdempotencyKey(payload.idempotencyKey);

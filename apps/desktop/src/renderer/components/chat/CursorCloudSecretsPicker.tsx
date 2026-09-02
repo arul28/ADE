@@ -1,3 +1,5 @@
+import { useEffect, useRef } from "react";
+
 export function isInjectableCloudSecretName(name: string): boolean {
   const trimmed = name.trim();
   return trimmed.length > 0 && !trimmed.toUpperCase().startsWith("CURSOR_");
@@ -21,7 +23,14 @@ export function CursorCloudSecretsList({
   onRememberChange: (remember: boolean) => void;
 }) {
   const selected = new Set(selectedNames);
-  const injectableNames = availableNames.filter(isInjectableCloudSecretName);
+  const injectableNames = [...new Set(availableNames.filter(isInjectableCloudSecretName))];
+  const allSelected = injectableNames.length > 0 && injectableNames.every((name) => selected.has(name));
+  const partiallySelected = injectableNames.some((name) => selected.has(name)) && !allSelected;
+  const selectAllRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (selectAllRef.current) selectAllRef.current.indeterminate = partiallySelected;
+  }, [partiallySelected]);
 
   const toggleName = (name: string) => {
     if (selected.has(name)) {
@@ -31,11 +40,35 @@ export function CursorCloudSecretsList({
     onSelectedNamesChange([...selectedNames, name]);
   };
 
+  const toggleAll = () => {
+    if (allSelected) {
+      const injectableSet = new Set(injectableNames);
+      onSelectedNamesChange(selectedNames.filter((name) => !injectableSet.has(name)));
+      return;
+    }
+    onSelectedNamesChange([...new Set([...selectedNames, ...injectableNames])]);
+  };
+
   return (
     <div>
       <p className="px-2 pb-1 font-sans text-[10px] font-medium uppercase tracking-[0.08em] text-muted-fg/55">
         Attach ADE secrets
       </p>
+      {injectableNames.length > 0 ? (
+        <label className="flex cursor-pointer items-center gap-2 rounded-lg px-2 py-1.5 font-sans text-[11px] font-medium text-fg/90 hover:bg-white/[0.06]">
+          <input
+            ref={selectAllRef}
+            type="checkbox"
+            role="menuitemcheckbox"
+            aria-label="Select all attachable secrets"
+            checked={allSelected}
+            onChange={toggleAll}
+            className="h-3 w-3 accent-violet-400"
+          />
+          <span>Select all</span>
+          <span className="ml-auto font-mono text-[10px] text-muted-fg/55">{injectableNames.length}</span>
+        </label>
+      ) : null}
       <div className="max-h-40 overflow-y-auto">
         {injectableNames.length === 0 ? (
           <p className="px-2 py-1.5 font-sans text-[11px] text-muted-fg/70">

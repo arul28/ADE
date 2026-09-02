@@ -203,11 +203,15 @@ export function DraftMachinePicker({
           aria-expanded={open}
           aria-label={triggerAriaLabel}
           disabled={disabled}
-          onClick={() => setOpen((current) => {
-            const next = !current;
+          // `onOpen` runs outside the state updater on purpose. React may call
+          // an updater during another component's render and may call it twice,
+          // so a probe fired from inside it warns about updating the parent
+          // mid-render and can run twice per click.
+          onClick={() => {
+            const next = !open;
+            setOpen(next);
             if (next) onOpen?.();
-            return next;
-          })}
+          }}
           className={cn(
             "inline-flex h-7 min-w-0 shrink items-center gap-1.5 rounded-md border px-2",
             "font-sans text-[11px] font-medium transition-colors",

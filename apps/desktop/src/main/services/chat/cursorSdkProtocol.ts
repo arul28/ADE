@@ -132,6 +132,17 @@ export type CursorSdkSendPrompt = {
   forceExpireActiveRun?: boolean;
   idempotencyKey?: string | null;
   mode?: CursorSdkAgentMode;
+  /**
+   * Start this prompt on a brand-new local agent instead of continuing the
+   * worker's current conversation.
+   *
+   * Chat never sets this: a chat turn is a follow-up by definition. One-shot
+   * callers (titles, status lines, commit messages, PR descriptions) share one
+   * warm worker per workspace, so without a reset every later one-shot would
+   * carry the previous one-shot's prompt and answer in its context. The worker
+   * closes the previous agent before it creates the replacement.
+   */
+  resetConversation?: boolean;
 };
 
 export type CursorSdkCloudRepoOverride = {
@@ -148,7 +159,6 @@ export type CursorSdkCloudSendStreamPayload = {
   modelParams?: CursorSdkModelParameterValue[];
   idempotencyKey?: string | null;
   mode?: CursorSdkAgentMode;
-  agentName?: string | null;
   repoUrl: string;
   startingRef?: string | null;
   prUrl?: string | null;

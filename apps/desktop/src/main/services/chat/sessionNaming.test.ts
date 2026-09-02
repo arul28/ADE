@@ -201,6 +201,47 @@ describe("runNamingAcrossProviders", () => {
     expect(onFailure).not.toHaveBeenCalled();
   });
 
+  it("reports the last attempt failure so the caller can name the real cause", async () => {
+    const candidates = buildNamingModelCandidates({
+      availableModels: ALL_MODELS,
+      preferred: [OPENAI_MODELS[0]?.id, ANTHROPIC_MODELS[0]?.id],
+    });
+
+    const { result, lastFailure } = await runNamingAcrossProviders<string>(candidates, {
+      run: async (descriptor) => {
+        throw new Error(`no route for ${descriptor.id}`);
+      },
+      onFailure: vi.fn(),
+    });
+
+    expect(result).toBeNull();
+    expect(lastFailure).toEqual({
+      modelId: candidates[1],
+      error: `no route for ${candidates[1]}`,
+    });
+  });
+
+  it("clears the last failure once a later candidate answers", async () => {
+    let attempts = 0;
+    const { result, lastFailure } = await runNamingAcrossProviders<string>(
+      buildNamingModelCandidates({
+        availableModels: ALL_MODELS,
+        preferred: [OPENAI_MODELS[0]?.id, ANTHROPIC_MODELS[0]?.id],
+      }),
+      {
+        run: async () => {
+          attempts += 1;
+          if (attempts === 1) throw new Error("transient");
+          return "Second Model Wins";
+        },
+        onFailure: vi.fn(),
+      },
+    );
+
+    expect(result).toBe("Second Model Wins");
+    expect(lastFailure).toBeNull();
+  });
+
   it("gives up after three attempts instead of walking the whole registry", async () => {
     const attempted: string[] = [];
     const { result, attemptCount } = await runNamingAcrossProviders<string>(

@@ -1703,6 +1703,59 @@ describe("runtime session actions", () => {
     expect(runtime.sessionDeltaService?.getSessionDelta).toHaveBeenCalledWith("session-1");
   });
 
+  it("refuses session.updateMeta title writes when Cursor owns the chat name", async () => {
+    const updateMeta = vi.fn();
+    const getSessionSummary = vi.fn().mockResolvedValue({
+      sessionId: "cloud-session-1",
+      cursorCloudAgentId: "cloud-agent-1",
+    });
+    const runtime = {
+      sessionService: {
+        get: vi.fn(),
+        list: vi.fn(),
+        updateMeta,
+      },
+      agentChatService: { getSessionSummary },
+    } as unknown as Parameters<typeof getAdeActionDomainServices>[0];
+    const sessionService = getAdeActionDomainServices(runtime).session as {
+      updateMeta: (args: unknown) => Promise<unknown>;
+    } & Record<string, unknown>;
+
+    await expect(sessionService.updateMeta({
+      sessionId: "cloud-session-1",
+      title: "ADE-owned title",
+    })).rejects.toThrow("agent names are managed by Cursor");
+    expect(updateMeta).not.toHaveBeenCalled();
+  });
+
+  it("still pins a Cursor Cloud chat through session.updateMeta", async () => {
+    const updateMeta = vi.fn().mockReturnValue({ id: "cloud-session-1", pinned: true });
+    const getSessionSummary = vi.fn().mockResolvedValue({
+      sessionId: "cloud-session-1",
+      cursorCloudAgentId: "cloud-agent-1",
+    });
+    const runtime = {
+      sessionService: {
+        get: vi.fn(),
+        list: vi.fn(),
+        updateMeta,
+      },
+      agentChatService: { getSessionSummary },
+    } as unknown as Parameters<typeof getAdeActionDomainServices>[0];
+    const sessionService = getAdeActionDomainServices(runtime).session as {
+      updateMeta: (args: unknown) => Promise<unknown>;
+    } & Record<string, unknown>;
+
+    await expect(sessionService.updateMeta({
+      sessionId: "cloud-session-1",
+      pinned: true,
+    })).resolves.toEqual({ id: "cloud-session-1", pinned: true });
+    expect(updateMeta).toHaveBeenCalledWith(expect.objectContaining({
+      sessionId: "cloud-session-1",
+      pinned: true,
+    }));
+  });
+
   // The sync remote-command path honours `dismissPendingInput` for a single
   // session. This bulk action never has, and used to drop the key silently — so
   // the same argument meant "dismiss the prompt" over sync and nothing at all

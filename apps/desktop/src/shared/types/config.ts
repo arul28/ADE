@@ -1060,6 +1060,11 @@ export type CursorCloudRepository = {
   url: string;
 };
 
+export type CursorCloudModelParameter = {
+  id: string;
+  value: string;
+};
+
 export type CursorCloudAgentSummary = {
   agentId: string;
   name: string;
@@ -1077,6 +1082,8 @@ export type CursorCloudRunSummary = {
   agentId: string;
   status: string;
   modelId?: string | null;
+  /** Exact Cursor model variant parameters used by this run. */
+  modelParams?: CursorCloudModelParameter[];
   durationMs?: number | null;
   result?: unknown;
   git?: unknown;
@@ -1098,7 +1105,10 @@ export type CursorCloudCreateRunRequest = {
   idempotencyKey?: string | null;
   startingRef?: string | null;
   modelId?: string | null;
-  agentName?: string | null;
+  /** Explicit reasoning selection from ADE's model controls. */
+  reasoningEffort?: string | null;
+  /** Explicit service tier selection from ADE's model controls. */
+  fastMode?: boolean | null;
   workOnCurrentBranch?: boolean;
   autoCreatePR?: boolean;
   skipReviewerRequest?: boolean;
@@ -1244,11 +1254,9 @@ export type CursorCloudFleetEvent = {
 export type CursorCloudOpenChatRequest = {
   cloudAgentId: string;
   laneId: string;
-  /**
-   * Cursor's own name for the agent. Adopted as the ADE session title so this chat and
-   * cursor.com read the same, and so ADE's session auto-naming stands down for it.
-   */
-  agentName?: string | null;
+  /** Preserve the launcher's exact Cursor model controls on a newly materialized chat. */
+  reasoningEffort?: string | null;
+  fastMode?: boolean | null;
   /**
    * Predetermined ADE session id, typically the same id stamped as
    * cloud.metadata.ade_session_id at Agent.create.

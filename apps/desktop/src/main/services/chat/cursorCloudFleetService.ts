@@ -40,7 +40,6 @@ type FleetServiceDeps = {
   openCursorCloudChat: (args: {
     cloudAgentId: string;
     laneId: string;
-    agentName?: string | null;
   }) => Promise<{ sessionId: string }>;
   cancelCursorCloudRun: (args: { agentId: string; runId: string }) => Promise<void>;
   /** Single-agent read for agents beyond the first list page. */
@@ -471,7 +470,6 @@ export function createCursorCloudFleetService(deps: FleetServiceDeps) {
       const opened = await deps.openCursorCloudChat({
         cloudAgentId: id,
         laneId: lane.id,
-        agentName: agent.name,
       });
       sessionId = opened.sessionId;
     } catch (error) {

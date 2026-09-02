@@ -384,6 +384,7 @@ import {
   formatSystemDetails,
   CURSOR_CLOUD_PANE_NOTE,
 } from "./rightPaneFormatters";
+import { cursorCloudRenameBlockedReason } from "./cursorCloudChatRename";
 import {
   buildFeedbackDraftInput,
   buildFeedbackEnvironment,
@@ -7523,6 +7524,11 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       focusDetails();
       return;
     }
+    const blocked = cursorCloudRenameBlockedReason(session);
+    if (blocked) {
+      addNotice(blocked, "error");
+      return;
+    }
     openForm({
       kind: "form",
       title: "Rename chat",
@@ -7532,7 +7538,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
         { name: "title", label: "Title", required: true, initialValue: session.title ?? "" },
       ],
     });
-  }, [activeSession, focusDetails, openForm, sessions]);
+  }, [activeSession, addNotice, focusDetails, openForm, sessions]);
 
   const openFeedbackForm = useCallback(() => {
     // Seed the multiline feedback form's serializable state (feedbackForm.ts)
@@ -11007,6 +11013,12 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
         setRightPane({ kind: "details", title: "Rename chat", body: "No active chat is selected." });
         return;
       }
+      const renameTarget = sessions.find((entry) => entry.sessionId === sessionId) ?? activeSession;
+      const blocked = cursorCloudRenameBlockedReason(renameTarget);
+      if (blocked) {
+        addNotice(blocked, "error");
+        return;
+      }
       if (!args) {
         openChatRenameForm(sessionId);
         return;
@@ -12560,6 +12572,12 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       if (!targetSessionId) return;
       const title = requireField("title", "Title");
       if (!title) return;
+      const renameTarget = sessions.find((entry) => entry.sessionId === targetSessionId) ?? activeSession;
+      const blocked = cursorCloudRenameBlockedReason(renameTarget);
+      if (blocked) {
+        addNotice(blocked, "error");
+        return;
+      }
       await renameChat(conn, targetSessionId, title);
       setRightOpen(false);
       setRightPane({ kind: "empty" });

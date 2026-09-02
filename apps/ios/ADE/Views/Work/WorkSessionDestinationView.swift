@@ -1206,7 +1206,10 @@ struct WorkSessionDestinationView: View {
       showsProof: !personalChat,
       showsPinAction: !personalChat,
       showsSessionLink: !personalChat,
-      canAttachIssue: syncService.canInvokeRemoteAction("lane.attachLinearIssueToSession")
+      canAttachIssue: syncService.canInvokeRemoteAction("lane.attachLinearIssueToSession"),
+      showsRename: !CursorCloudNaming.ownsName(
+        composerChatSummary?.cursorCloudAgentId ?? session.cursorCloudAgentId
+      )
     )
   }
 

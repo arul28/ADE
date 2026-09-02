@@ -45,14 +45,17 @@ extension WorkSessionSettingsSheet {
 
   @MainActor
   func submit() async {
+    let cursorOwnsName = CursorCloudNaming.ownsName(summary.cursorCloudAgentId)
     let trimmedTitle = titleText.trimmingCharacters(in: .whitespacesAndNewlines)
-    guard !trimmedTitle.isEmpty else {
-      ADEHaptics.error()
-      errorMessage = "Chat title cannot be empty."
-      return
+    if !cursorOwnsName {
+      guard !trimmedTitle.isEmpty else {
+        ADEHaptics.error()
+        errorMessage = "Chat title cannot be empty."
+        return
+      }
     }
 
-    let titleChanged = trimmedTitle != resolvedInitialTitle
+    let titleChanged = !cursorOwnsName && trimmedTitle != resolvedInitialTitle
     let modelChanged = !workModelIdsEquivalent(selectedModelId, resolvedInitialModelId)
     let normalizedReasoning = selectedReasoningEffort.trimmingCharacters(in: .whitespacesAndNewlines)
     let reasoningPayload = normalizedReasoning.isEmpty ? "" : normalizedReasoning

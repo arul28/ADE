@@ -39,7 +39,7 @@ import {
   type SessionStatusPresentation,
 } from "../../../shared/sessionStatusPresentation";
 import { relativeTimeCompact } from "../../lib/format";
-import { isChatToolType, shortToolTypeLabel } from "../../lib/sessions";
+import { cursorOwnsSessionName, isChatToolType, shortToolTypeLabel } from "../../lib/sessions";
 import { providerChatAccent } from "../chat/chatSurfaceTheme";
 import { workToolFamily } from "../terminals/workSessionFilters";
 import {
@@ -670,17 +670,19 @@ export const ThreadResultRow = React.memo(function ThreadResultRow({
             >
               <Plus size={12} aria-hidden /> New chat
             </button>
-            <button
-              type="button"
-              className={actionButtonClass}
-              aria-label={`Rename ${session.title || "session"}`}
-              onClick={(event) => {
-                event.stopPropagation();
-                onAction(entry, "rename");
-              }}
-            >
-              <PencilSimple size={12} aria-hidden /> Rename
-            </button>
+            {!cursorOwnsSessionName(session) ? (
+              <button
+                type="button"
+                className={actionButtonClass}
+                aria-label={`Rename ${session.title || "session"}`}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  onAction(entry, "rename");
+                }}
+              >
+                <PencilSimple size={12} aria-hidden /> Rename
+              </button>
+            ) : null}
             {canSettle ? (
               <button
                 type="button"
