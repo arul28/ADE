@@ -6,9 +6,11 @@
  * wrong thing to depend on at first paint: it is a network fetch, it can be
  * unreachable, and until the registry is populated it has nothing in it. So the
  * official set ships inside the app and the live index is layered on top —
- * `mergeMarketplaceCatalogue` gives directory entries precedence over these for
- * the same id, which means a published entry always wins and this file only
- * ever fills a gap.
+ * `mergeMarketplaceCatalogue` compares versions for the same id and keeps the
+ * higher one, breaking a tie in the directory's favour. So a published entry
+ * that is ahead of this file replaces it, and one that is behind it does not:
+ * an index generated before this build lists these same ids at older versions,
+ * and letting it win would offer the user a downgrade.
  *
  * What is deliberately NOT here: install counts and stars. Those are facts the
  * directory measures, and inventing plausible-looking numbers for the bundled

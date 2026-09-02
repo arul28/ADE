@@ -195,6 +195,94 @@ describe("mergeMarketplaceCatalogue", () => {
     expect(merged.listings[0]?.origin).toBe("directory");
   });
 
+  /**
+   * The registry index that shipped first listed every official plugin at a
+   * version OLDER than the copy inside the app, pointing at repositories with
+   * no manifest. Unconditional directory precedence made the gallery offer a
+   * downgrade and blanked the install dialog's Adds list.
+   */
+  it("keeps the bundled copy when the directory entry is behind it", () => {
+    const { manifest } = parsePluginManifest({
+      name: "graph",
+      version: "1.1.0",
+      displayName: "Graph",
+      description: "",
+      surfaces: [{ kind: "tab", id: "graph", title: "Graph", panelId: "main" }],
+    });
+
+    const merged = mergeMarketplaceCatalogue({
+      bundled: [listing({ version: "1.1.0", source: "graph", manifest, origin: "bundled" })],
+      live: [listing({ version: "1.0.1", source: "https://example.test/graph", installs: 42, stars: 7, publishedAt: "2026-08-14T00:00:00.000Z" })],
+      installed: [],
+    });
+
+    expect(merged.listings).toHaveLength(1);
+    const entry = merged.listings[0];
+    expect(entry?.version).toBe("1.1.0");
+    expect(entry?.origin).toBe("bundled");
+    // Installing must fetch the bundled package, not the older repository.
+    expect(entry?.source).toBe("graph");
+    expect(entry?.manifest).toBe(manifest);
+    // Winning on version must not empty the card.
+    expect(entry?.installs).toBe(42);
+    expect(entry?.stars).toBe(7);
+    expect(entry?.publishedAt).toBe("2026-08-14T00:00:00.000Z");
+  });
+
+  it("lets the directory win when it is ahead of the bundled copy", () => {
+    const { manifest } = parsePluginManifest({
+      name: "graph",
+      version: "1.0.1",
+      displayName: "Graph",
+      description: "",
+    });
+
+    const merged = mergeMarketplaceCatalogue({
+      bundled: [listing({ version: "1.0.1", source: "graph", manifest, origin: "bundled" })],
+      live: [listing({ version: "1.1.0", source: "https://example.test/graph" })],
+      installed: [],
+    });
+
+    expect(merged.listings[0]?.version).toBe("1.1.0");
+    expect(merged.listings[0]?.origin).toBe("directory");
+    expect(merged.listings[0]?.source).toBe("https://example.test/graph");
+    // A newer published manifest is unknown, so the dialog says it reads one
+    // during install rather than describing the older bundled package.
+    expect(merged.listings[0]?.manifest).toBeNull();
+  });
+
+  it("lends the bundled manifest to a directory entry at the same version", () => {
+    const { manifest } = parsePluginManifest({
+      name: "graph",
+      version: "1.1.0",
+      displayName: "Graph",
+      description: "",
+      surfaces: [{ kind: "tab", id: "graph", title: "Graph", panelId: "main" }],
+    });
+
+    const merged = mergeMarketplaceCatalogue({
+      bundled: [listing({ version: "1.1.0", manifest, origin: "bundled" })],
+      live: [listing({ version: "1.1.0", description: "Published copy." })],
+      installed: [],
+    });
+
+    expect(merged.listings[0]?.origin).toBe("directory");
+    expect(merged.listings[0]?.description).toBe("Published copy.");
+    expect(merged.listings[0]?.manifest).toBe(manifest);
+    expect(describePluginAdds(merged.listings[0]!)).not.toHaveLength(0);
+  });
+
+  it("treats an unparsable directory version as lower than a real one", () => {
+    const merged = mergeMarketplaceCatalogue({
+      bundled: [listing({ version: "1.1.0", source: "graph", origin: "bundled" })],
+      live: [listing({ version: "latest", source: "https://example.test/graph" })],
+      installed: [],
+    });
+
+    expect(merged.listings[0]?.version).toBe("1.1.0");
+    expect(merged.listings[0]?.origin).toBe("bundled");
+  });
+
   it("keeps a plugin that is installed but in no catalogue", () => {
     const merged = mergeMarketplaceCatalogue({
       bundled: [],

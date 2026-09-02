@@ -209,13 +209,68 @@ export type MergedCatalogue = {
 };
 
 /**
+ * Choose between the bundled copy and the published entry for one plugin id.
+ *
+ * The higher version wins, and a tie goes to the directory. That is the whole
+ * rule, and the reason for it is that "directory over bundled unconditionally"
+ * is only right while the directory is ahead: a registry index generated before
+ * the app shipped lists the same ids at OLDER versions pointing at older trees,
+ * and letting it win turns the gallery into a downgrade button.
+ *
+ * A version that does not parse is treated as lower than one that does, so a
+ * malformed entry can never take a real one's place.
+ *
+ * When bundled wins it keeps `origin: "bundled"` and its own install source —
+ * the plugin id, which installs the copy inside the app — but inherits the
+ * live entry's measured stats, so winning on version never costs the card its
+ * install count or stars.
+ *
+ * When live wins it inherits the bundled manifest ONLY at equal versions. A
+ * newer published version has a manifest nobody here has read, and the install
+ * dialog's "read during install" line is the honest answer for it; showing the
+ * older bundled manifest's Adds list would describe a package that is not the
+ * one being installed.
+ */
+function chooseCatalogueListing(
+  bundled: MarketplaceListing,
+  live: MarketplaceListing,
+): MarketplaceListing {
+  const rank = (value: string): number => (isValidPluginVersion(value) ? 1 : 0);
+  const bundledRank = rank(bundled.version);
+  const liveRank = rank(live.version);
+  const order = bundledRank !== liveRank
+    ? bundledRank - liveRank
+    : bundledRank === 0
+      ? 0
+      : comparePluginVersions(bundled.version, live.version);
+
+  if (order > 0) {
+    return {
+      ...bundled,
+      origin: "bundled",
+      source: bundled.source,
+      installs: live.installs ?? bundled.installs,
+      stars: live.stars ?? bundled.stars,
+      publishedAt: live.publishedAt ?? bundled.publishedAt,
+    };
+  }
+
+  if (order === 0 && live.manifest === null && bundled.manifest !== null) {
+    return { ...live, manifest: bundled.manifest };
+  }
+  return live;
+}
+
+/**
  * Fold the bundled index, the live directory, and what is installed into one
  * catalogue.
  *
- * Precedence is directory over bundled for the same id — a shipped entry is a
- * floor, not a ceiling, and a stale bundled description should never mask the
- * published one. Installed-but-unlisted plugins are appended as sideloaded
- * listings so the gallery accounts for everything on the machine.
+ * For the same id the HIGHER VERSION wins, with a tie going to the directory —
+ * a stale bundled description must never mask the published one, and an index
+ * that predates this build must never mask what shipped inside it. See
+ * {@link chooseCatalogueListing} for what each winner keeps.
+ * Installed-but-unlisted plugins are appended as sideloaded listings so the
+ * gallery accounts for everything on the machine.
  */
 export function mergeMarketplaceCatalogue(input: {
   bundled: readonly MarketplaceListing[];
@@ -227,7 +282,10 @@ export function mergeMarketplaceCatalogue(input: {
 }): MergedCatalogue {
   const byId = new Map<string, MarketplaceListing>();
   for (const listing of input.bundled) byId.set(listing.pluginId, { ...listing, origin: "bundled" });
-  for (const listing of input.live ?? []) byId.set(listing.pluginId, listing);
+  for (const listing of input.live ?? []) {
+    const bundled = byId.get(listing.pluginId);
+    byId.set(listing.pluginId, bundled ? chooseCatalogueListing(bundled, listing) : listing);
+  }
 
   for (const plugin of input.installed) {
     if (byId.has(plugin.pluginId)) continue;

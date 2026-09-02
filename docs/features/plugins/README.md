@@ -2210,6 +2210,13 @@ are in [registry/README.md](../../../registry/README.md).
 Until the registry repository exists, the Marketplace ships a bundled index of
 official plugins and layers a live index on top when one becomes reachable.
 
+For an id in both indexes, the higher version wins, and a tie goes to the live
+index. So an index generated before this build cannot replace a newer bundled
+plugin with older code. A bundled winner keeps its in-app install source and
+inherits the live entry's installs, stars and publish date. A live winner
+inherits the bundled manifest only when the two versions are equal, because a
+newer published manifest is unknown here.
+
 ### Client entry points
 
 | Client | Entry |
