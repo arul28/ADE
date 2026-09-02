@@ -1,0 +1,16 @@
+{
+  "v": 1,
+  "title": "Activity",
+  "fallback": {
+    "title": "Activity",
+    "text": "Open ADE on the computer that holds this plugin to read lane operations.",
+    "deeplink": "ade://plugin/ade-history/activity"
+  },
+  "body": [
+    {
+      "component": "emptyState",
+      "title": "Loading activity…",
+      "icon": "clock-counter-clockwise"
+    }
+  ]
+}

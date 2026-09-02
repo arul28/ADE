@@ -183,6 +183,14 @@ describe("gate ownership", () => {
     expect(supersededCompiledRouteReplacement("/review", input())).toBeNull();
     expect(supersededCompiledRouteReplacement("/review", input({ plugins: [review] })))
       .toBe("/plugin/ade-review");
+    const history = plugin({
+      pluginId: "ade-history",
+      displayName: "History",
+      tabs: [{ id: "commits", title: "History", panelId: "commits" }],
+    });
+    expect(supersededCompiledRouteReplacement("/history", input())).toBeNull();
+    expect(supersededCompiledRouteReplacement("/history", input({ plugins: [history] })))
+      .toBe("/plugin/ade-history");
     expect(supersededCompiledRouteReplacement("/graph", input({ plugins: [plugin()] }))).toBeNull();
   });
 });

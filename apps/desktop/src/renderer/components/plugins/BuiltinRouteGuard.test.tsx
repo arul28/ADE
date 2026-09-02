@@ -65,9 +65,9 @@ describe("BuiltinRouteGuard", () => {
   it("names the surface that is missing, not the plugin that provides it", () => {
     seedBuiltinSurfacePlugins([]);
 
-    render(<BuiltinRouteGuard route="/history" pending={null}><Page /></BuiltinRouteGuard>);
+    render(<BuiltinRouteGuard route="/graph" pending={null}><Page /></BuiltinRouteGuard>);
 
-    expect(screen.getByText("History isn't part of this ADE")).toBeTruthy();
+    expect(screen.getByText("Graph isn't part of this ADE")).toBeTruthy();
   });
 
   it("leaves a route no plugin owns alone", () => {
@@ -103,5 +103,32 @@ describe("BuiltinRouteGuard", () => {
 
     expect(screen.queryByText("the real page")).toBeNull();
     expect(screen.getByText("plugin review")).toBeTruthy();
+  });
+
+  it("renders compiled History while its plugin is absent", () => {
+    seedBuiltinSurfacePlugins([]);
+
+    render(<BuiltinRouteGuard route="/history" pending={null}><Page /></BuiltinRouteGuard>);
+
+    expect(screen.getByText("the real page")).toBeTruthy();
+  });
+
+  it("sends compiled History to the plugin tab once ade-history is installed", () => {
+    seedBuiltinSurfacePlugins(["history"]);
+
+    render(
+      <MemoryRouter initialEntries={["/history"]}>
+        <Routes>
+          <Route
+            path="/history"
+            element={<BuiltinRouteGuard route="/history" pending={null}><Page /></BuiltinRouteGuard>}
+          />
+          <Route path="/plugin/ade-history" element={<div>plugin history</div>} />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    expect(screen.queryByText("the real page")).toBeNull();
+    expect(screen.getByText("plugin history")).toBeTruthy();
   });
 });

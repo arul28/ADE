@@ -206,7 +206,17 @@ export const BUILTIN_SURFACE_OWNERS: readonly BuiltinSurfaceOwner[] = [
     actionDomains: [],
     actionNames: REVIEW_ACTION_NAMES,
   },
-  { builtinId: "history", route: "/history", ownerPluginId: PLUGIN_BUILTIN_SURFACE_OWNER_IDS.history, title: "History", actionDomains: [], actionNames: [] },
+  {
+    // Superseded: ADE shipped a compiled History tab, so `ade-history` replaces
+    // it rather than being the reason it exists. Git and operation verbs stay
+    // open — this row gates the page, not the engine.
+    builtinId: "history",
+    route: "/history",
+    ownerPluginId: PLUGIN_BUILTIN_SURFACE_OWNER_IDS.history,
+    title: "History",
+    actionDomains: [],
+    actionNames: [],
+  },
   {
     // Superseded: ADE has shipped a compiled Linear integration since long
     // before the plugin platform, so `ade-linear` replaces it rather than being

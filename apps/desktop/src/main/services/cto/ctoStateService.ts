@@ -150,11 +150,13 @@ const CTO_MEMORY_SYSTEM_GUIDANCE = [
 /**
  * The page list the CTO is told about.
  *
- * `/graph` and `/history` are compiled surfaces owned by `ade-graph` and
- * `ade-history`. On a machine without those plugins the pages do not exist and
- * the rail does not show them, so naming them here would send the CTO — and the
- * user it is talking to — at a tab that is not there. This is an ADVERTISEMENT
- * gate, not a capability one: nothing about what the CTO may do changes.
+ * `/graph` is a compiled surface owned by `ade-graph`. On a machine without
+ * that plugin the page does not exist and the rail does not show it, so naming
+ * it here would send the CTO — and the user it is talking to — at a tab that
+ * is not there. History ships compiled (`supersedes`): `/history` is always a
+ * real page, and installing `ade-history` still serves that URL by redirect.
+ * This is an ADVERTISEMENT gate, not a capability one: nothing about what the
+ * CTO may do changes.
  */
 function buildCtoPageLines(installedSurfaces: ReadonlySet<PluginBuiltinSurfaceId>): string[] {
   return [
@@ -166,9 +168,7 @@ function buildCtoPageLines(installedSurfaces: ReadonlySet<PluginBuiltinSurfaceId
     ...(installedSurfaces.has("graph")
       ? ["  /graph — Workspace dependency graph visualization showing lane relationships."]
       : []),
-    ...(installedSurfaces.has("history")
-      ? ["  /history — Operation history timeline showing all past actions."]
-      : []),
+    "  /history — Operation history timeline showing all past actions.",
     "  /automations — Automation rule builder: create rules triggered by events (PR opened, test failed, etc.).",
     "  /settings — App settings: AI providers, GitHub auth, Linear integration, keybindings, and external connectors. Live provider usage and automation guardrails are now in the header usage popup.",
     "  When an action should be opened in ADE, return a navigation suggestion. Never silently switch tabs.",

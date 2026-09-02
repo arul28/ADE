@@ -338,7 +338,9 @@ describe("ctoStateService", () => {
 /**
  * The CTO prompt is the biggest advertisement ADE writes, and it is read by
  * something that will act on it: a CTO told about `/graph` on a machine without
- * `ade-graph` sends the user to a tab the rail does not draw.
+ * `ade-graph` sends the user to a tab the rail does not draw. History ships
+ * compiled, so `/history` stays in the prompt whether or not `ade-history` is
+ * installed.
  *
  * Capability is deliberately NOT asserted away here. The CTO keeps every tool
  * and every `ade` command on a machine with no plugins at all; what changes is
@@ -348,7 +350,7 @@ describe("CTO prompt follows plugin install state", () => {
   const surfaces = (...ids: PluginBuiltinSurfaceId[]) =>
     () => new Set<PluginBuiltinSurfaceId>(ids);
 
-  it("omits the /graph and /history pages on a machine without their plugins", async () => {
+  it("omits the /graph page on a machine without its plugin", async () => {
     const fixture = await createStateFixture();
     const service = createCtoStateService({
       db: fixture.db,
@@ -361,9 +363,9 @@ describe("CTO prompt follows plugin install state", () => {
     const reconstruction = service.buildReconstructionContext(5);
 
     expect(prompt).not.toContain("/graph —");
-    expect(prompt).not.toContain("/history —");
+    expect(prompt).toContain("/history —");
     expect(reconstruction).not.toContain("/graph —");
-    expect(reconstruction).not.toContain("/history —");
+    expect(reconstruction).toContain("/history —");
     // The pages that are not plugin-owned are untouched...
     expect(prompt).toContain("/lanes —");
     expect(prompt).toContain("/prs —");
@@ -386,7 +388,7 @@ describe("CTO prompt follows plugin install state", () => {
     const prompt = service.previewSystemPrompt().prompt;
 
     expect(prompt).toContain("/graph —");
-    expect(prompt).not.toContain("/history —");
+    expect(prompt).toContain("/history —");
 
     fixture.db.close();
   });

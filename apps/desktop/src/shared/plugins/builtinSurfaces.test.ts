@@ -21,7 +21,7 @@ import { coreSmartLinkBuiltinsOwnedBy, CORE_SMART_LINK_HOST_BUILTINS } from "./u
 const CURSOR_CLOUD_INSTALLED = [{ pluginId: "ade-cursor-cloud", enabled: true }];
 const LINEAR_INSTALLED = [{ pluginId: "ade-linear", enabled: true }];
 const REVIEW_INSTALLED = [{ pluginId: "ade-review", enabled: true }];
-const SUPERSEDED_SURFACES: readonly PluginBuiltinSurfaceId[] = ["linear", "cursor-cloud", "review"];
+const SUPERSEDED_SURFACES: readonly PluginBuiltinSurfaceId[] = ["linear", "cursor-cloud", "review", "history"];
 
 /**
  * The half of the gate both processes share.
@@ -111,6 +111,13 @@ describe("builtinSurfaceDrawn", () => {
     expect(builtinSurfaceDrawn("review", [{ pluginId: "ade-review", enabled: false }])).toBe(true);
     expect(builtinSurfaceDrawn("review", LINEAR_INSTALLED)).toBe(true);
     expect(builtinSurfaceDrawn("review", REVIEW_INSTALLED)).toBe(false);
+  });
+
+  it("draws the built-in History until its plugin is installed and enabled", () => {
+    expect(builtinSurfaceDrawn("history", [])).toBe(true);
+    expect(builtinSurfaceDrawn("history", [{ pluginId: "ade-history", enabled: false }])).toBe(true);
+    expect(builtinSurfaceDrawn("history", REVIEW_INSTALLED)).toBe(true);
+    expect(builtinSurfaceDrawn("history", [{ pluginId: "ade-history", enabled: true }])).toBe(false);
   });
 
   it("draws the built-in Cursor Cloud until its plugin is installed and enabled", () => {

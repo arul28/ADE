@@ -1,0 +1,16 @@
+{
+  "v": 1,
+  "title": "Commit",
+  "fallback": {
+    "title": "Commit",
+    "text": "Open ADE on the computer that holds this plugin to inspect this commit.",
+    "deeplink": "ade://plugin/ade-history/commit"
+  },
+  "body": [
+    {
+      "component": "emptyState",
+      "title": "Loading this commit…",
+      "icon": "git-commit"
+    }
+  ]
+}

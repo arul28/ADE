@@ -1,28 +1,144 @@
 {
   "name": "ade-history",
-  "version": "1.0.1",
+  "version": "1.1.0",
   "displayName": "History",
-  "description": "Commits, lane operations and captured artifacts \u2014 as an optional tab.",
+  "description": "Browse commits and lane operations — the same History ADE already ships, as a plugin.",
   "icon": "clock-counter-clockwise",
   "accent": "#E0932F",
   "vocabVersion": 1,
+  "entry": "index.js",
   "surfaces": [
     {
       "kind": "tab",
-      "id": "history",
+      "id": "commits",
       "title": "History",
       "icon": "clock-counter-clockwise",
-      "panelId": "main",
-      "builtin": "history",
-      "mobile": false
+      "panelId": "commits",
+      "order": 55,
+      "mobile": true
     }
   ],
   "panels": [
     {
-      "id": "main",
-      "schemaFile": "panels/main.json",
-      "title": "History"
+      "id": "commits",
+      "schemaFile": "panels/commits.json",
+      "title": "History",
+      "icon": "clock-counter-clockwise",
+      "refreshAction": "refreshCommits"
+    },
+    {
+      "id": "commit",
+      "schemaFile": "panels/commit.json",
+      "title": "Commit",
+      "icon": "git-commit",
+      "refreshAction": "refreshCommit"
+    },
+    {
+      "id": "activity",
+      "schemaFile": "panels/activity.json",
+      "title": "Activity",
+      "icon": "list",
+      "refreshAction": "refreshActivity"
+    },
+    {
+      "id": "event",
+      "schemaFile": "panels/event.json",
+      "title": "Operation",
+      "icon": "clock-counter-clockwise",
+      "refreshAction": "openEvent"
     }
   ],
+  "sockets": [
+    {
+      "socket": "work-rail-pane",
+      "surface": "work",
+      "id": "commits-pane",
+      "label": "History",
+      "icon": "clock-counter-clockwise",
+      "panelId": "commits"
+    },
+    {
+      "socket": "command-palette-action",
+      "surface": "app",
+      "id": "palette-commits",
+      "label": "History commits",
+      "icon": "clock-counter-clockwise",
+      "actionId": "openCommits"
+    },
+    {
+      "socket": "command-palette-action",
+      "surface": "app",
+      "id": "palette-activity",
+      "label": "History activity",
+      "icon": "list",
+      "actionId": "openActivity"
+    }
+  ],
+  "collections": {
+    "commits": { "sync": true },
+    "operations": { "sync": true },
+    "files": { "sync": true },
+    "lanes": { "sync": true }
+  },
+  "tools": [
+    {
+      "name": "list_commits",
+      "description": "List recent commits for a lane, newest first.",
+      "action": "listCommitsTool",
+      "input": {
+        "type": "object",
+        "properties": {
+          "laneId": { "type": "string", "description": "The lane whose git history to read." },
+          "limit": { "type": "integer", "description": "How many commits to return. Defaults to 50." }
+        },
+        "required": ["laneId"]
+      }
+    },
+    {
+      "name": "get_commit",
+      "description": "Fetch one commit summary for a lane.",
+      "action": "getCommitTool",
+      "input": {
+        "type": "object",
+        "properties": {
+          "laneId": { "type": "string" },
+          "sha": { "type": "string", "description": "The full commit SHA." }
+        },
+        "required": ["laneId", "sha"]
+      }
+    },
+    {
+      "name": "list_operations",
+      "description": "List persisted lane operations, newest first.",
+      "action": "listOperationsTool",
+      "input": {
+        "type": "object",
+        "properties": {
+          "laneId": { "type": "string" },
+          "kind": { "type": "string" },
+          "status": {
+            "type": "string",
+            "description": "running, succeeded, failed, canceled, or all."
+          },
+          "limit": { "type": "integer" }
+        },
+        "required": []
+      }
+    },
+    {
+      "name": "get_operation",
+      "description": "Fetch one persisted lane operation.",
+      "action": "getOperationTool",
+      "input": {
+        "type": "object",
+        "properties": {
+          "operationId": { "type": "string" }
+        },
+        "required": ["operationId"]
+      }
+    }
+  ],
+  "cli": ["activity"],
+  "skills": ["skills"],
   "official": true
 }

@@ -1273,7 +1273,16 @@ function AppNavigationBridge() {
 
     if (target.kind === "artifact") {
       // History does not expose a stable focused-artifact URL yet; route to the
-      // local proof/history surface optimistically.
+      // History surface. When ade-history is installed, /history redirects to
+      // the plugin tab, so follow that replacement rather than refusing.
+      const historyReplacement = supersededCompiledRouteReplacement(
+        "/history",
+        builtinGateInputRef.current,
+      );
+      if (historyReplacement) {
+        navigate(historyReplacement);
+        return true;
+      }
       if (!isBuiltinTabVisible("/history", builtinGateInputRef.current)) {
         return refuseGatedTarget("History");
       }

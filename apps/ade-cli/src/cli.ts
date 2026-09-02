@@ -13328,7 +13328,7 @@ function buildCliPlan(
   if (primary === "shell" || primary === "pty") return buildShellPlan(args);
   if (primary === "terminal" || primary === "term")
     return buildTerminalPlan(args);
-  if (primary === "history") return buildHistoryPlan(args);
+  if (primary === "history") return buildHistoryDispatchPlan(args);
   if (primary === "session" || primary === "sessions")
     return buildSessionPlan(args);
   if (primary === "chat" || primary === "chats" || primary === "work")
@@ -13652,6 +13652,58 @@ function buildReviewPluginPlan(args: string[]): CliPlan {
     };
   }
   throw new CliUsageError(unknownCommandMessage("review"));
+}
+
+/**
+ * `ade history <word>` aliases `ade ade-history <word>` when that plugin is
+ * installed. Compiled `ade history list` / `show` / `commits` / `export` stay
+ * on the host verbs either way — the plugin only claims `activity`.
+ */
+const HISTORY_PLUGIN_CLI_WORDS: Record<string, string> = {
+  activity: "activity",
+  operations: "activity",
+};
+
+function historyPluginCliArgs(args: readonly string[]): string[] | null {
+  const word = args.find((arg) => arg !== "--" && !arg.startsWith("-")) ?? null;
+  if (word === null) return null;
+  const canonical = HISTORY_PLUGIN_CLI_WORDS[word.toLowerCase()];
+  if (!canonical) return null;
+  let replaced = false;
+  return args.map((arg) => {
+    if (!replaced && arg === word) {
+      replaced = true;
+      return canonical;
+    }
+    return arg;
+  });
+}
+
+function historyPluginAliasUsageText(): string {
+  const pluginId = PLUGIN_BUILTIN_SURFACE_OWNER_IDS.history;
+  return pluginCliUsageText(pluginId).replaceAll(`ade ${pluginId} `, "ade history ");
+}
+
+function buildHistoryDispatchPlan(args: string[]): CliPlan {
+  const pluginArgs = historyPluginCliArgs(args);
+  const pluginRoute = pluginArgs
+    ? resolvePluginCliRoute(PLUGIN_BUILTIN_SURFACE_OWNER_IDS.history, pluginArgs)
+    : null;
+  if (pluginRoute) {
+    if (!pluginRoute.command || hasHelpFlag(args)) {
+      return { kind: "help", text: historyPluginAliasUsageText() };
+    }
+    return {
+      kind: "execute",
+      label: `plugin ${pluginRoute.pluginId} ${pluginRoute.command}`,
+      steps: [actionStep("result", "plugin", "invoke", {
+        pluginId: pluginRoute.pluginId,
+        action: pluginRoute.command,
+        argv: pluginArgs,
+      })],
+    };
+  }
+  return buildHistoryPlan(args);
 }
 
 function findProjectRoots(startDir: string): {

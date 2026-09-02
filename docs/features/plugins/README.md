@@ -1832,7 +1832,7 @@ moves the compiled surface.
 |---|---|---|
 | `graph` | `ade-graph` | `enables` |
 | `review` | `ade-review` | `supersedes` |
-| `history` | `ade-history` | `enables` |
+| `history` | `ade-history` | `supersedes` |
 | `linear` | `ade-linear` | `supersedes` |
 | `ios` | `ade-ios-sim` | `enables` |
 | `app-control` | `ade-app-control` | `enables` |
@@ -1843,22 +1843,22 @@ surface exists, so ADE draws it only while the owner is installed and enabled,
 and every unknown — an unresolved registry, a host with no plugin support —
 hides it. There is no state in which a surface appears because ADE was unsure.
 
-`supersedes` is the mirror, and three surfaces use it. ADE shipped a compiled
-fleet surface, a compiled Linear integration and a compiled Review tab long
-before those plugins existed, and `ade-cursor-cloud`, `ade-linear` and
-`ade-review` **replace** them: their own header buttons, composer sockets,
-panels, row badges and settings sections stand where the built-in ones did. So
-ADE draws the compiled surface only while the owner is ABSENT, and every unknown
-draws it — a machine without the plugin must behave exactly as it did before the
-plugin existed, and hiding on an unresolved registry would blink a shipped
-feature off on every launch. Only a positive "the owner is here" takes it away,
-which is the same instant the plugin's own entry point appears, so the user
-never sees both at once.
+`supersedes` is the mirror, and four surfaces use it. ADE shipped a compiled
+fleet surface, a compiled Linear integration, a compiled Review tab and a
+compiled History tab long before those plugins existed, and `ade-cursor-cloud`,
+`ade-linear`, `ade-review` and `ade-history` **replace** them: their own
+header buttons, composer sockets, panels, row badges and settings sections
+stand where the built-in ones did. So ADE draws the compiled surface only while
+the owner is ABSENT, and every unknown draws it — a machine without the plugin
+must behave exactly as it did before the plugin existed, and hiding on an
+unresolved registry would blink a shipped feature off on every launch. Only a
+positive "the owner is here" takes it away, which is the same instant the
+plugin's own entry point appears, so the user never sees both at once.
 
-Linear was the one that had to CHANGE polarity first. Review follows the same
-template: take an ADE install that has no `ade-review`, and it is the compiled
-Review tab it has always been; install the plugin, and every compiled Review
-surface steps aside for the plugin's own.
+Linear was the one that had to CHANGE polarity first. Review and History follow
+the same template: take an ADE install that has no owner plugin, and it is the
+compiled tab it has always been; install the plugin, and every compiled
+surface for that product steps aside for the plugin's own.
 
 The polarity also decides what a manifest may say. A `supersedes` surface is
 never named by `surfaces[].builtin`: that field means "ADE draws its compiled
@@ -2128,7 +2128,7 @@ is where that stands today, on this branch.
 | `ade-cursor-cloud` | `supersedes` | 3,439 lines (4,643 with tests) | A real plugin, with a chat runtime. Composer Send is claimed via `ownsSend` (Enter launches the cloud agent from the live draft; Advanced still opens the form). Fleet Automations strip reads `webhooks.status()`. `{openSettings}` opens the Cursor provider page or the host Secrets tab. Remaining gap: a tab badge (spec-optional). Landed: `ade cursor cloud` aliases the plugin's CLI words when it is installed; plugin-owned cloud chats stamp `cursorCloudAgentId` so Cursor's rename lock applies; create sends REST `model: { id, params? }` and fails closed when the form named reasoning or speed the catalog cannot express; finished-run artifact files are host-fetched into the lane cache. |
 | `ade-graph` | `enables` | 0 | A gating shell: `plugin.json`, an icon, a README and a one-panel schema |
 | `ade-review` | `supersedes` | real plugin | A real plugin. Run list, launch form, findings, learnings, PR toolbar, agent tools and `ade review`. The engine stays in core. Phone and TUI get vocabulary panels; compiled Review was desktop-only. |
-| `ade-history` | `enables` | 0 | Gating shell |
+| `ade-history` | `supersedes` | real plugin | A real plugin. Commit DAG (`canvas` / `git-dag`), activity list, commit git verbs, agent tools and `ade history activity`. The git and operation engines stay in core. Phone and TUI get vocabulary panels; compiled History was desktop-only. |
 | `ade-ios-sim` | `enables` | 0 | Gating shell, plus an agent-skills directory |
 | `ade-app-control` | `enables` | 0 | Gating shell, plus an agent-skills directory |
 

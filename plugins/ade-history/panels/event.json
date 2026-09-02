@@ -1,0 +1,16 @@
+{
+  "v": 1,
+  "title": "Operation",
+  "fallback": {
+    "title": "Operation",
+    "text": "Open ADE on the computer that holds this plugin to read this operation.",
+    "deeplink": "ade://plugin/ade-history/event"
+  },
+  "body": [
+    {
+      "component": "emptyState",
+      "title": "Loading this operation…",
+      "icon": "clock-counter-clockwise"
+    }
+  ]
+}

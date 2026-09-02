@@ -212,15 +212,97 @@ const REVIEW = manifest({
   skills: ["skills"],
 });
 
+/**
+ * History, as the real product rather than a gate.
+ *
+ * The gate is gone. `history` is a SUPERSEDED surface now, so the plugin may not
+ * name it with `builtin` at all — it draws its own panels and ADE's compiled
+ * History tab steps aside. The git and operation engines stay in core; this
+ * package is the UI, the Work pane and `ade history activity`.
+ */
 const HISTORY = manifest({
   name: "ade-history",
-  version: "1.0.1",
+  version: "1.1.0",
   displayName: "History",
-  description: "Commits, lane operations and captured artifacts — as an optional tab.",
+  description: "Browse commits and lane operations — the same History ADE already ships, as a plugin.",
   icon: "clock-counter-clockwise",
   accent: "#E0932F",
-  surfaces: [{ kind: "tab", id: "history", title: "History", icon: "clock-counter-clockwise", panelId: "main", builtin: "history", mobile: false }],
-  panels: [{ id: "main", schemaFile: "panels/main.json", title: "History" }],
+  entry: "index.js",
+  surfaces: [{ kind: "tab", id: "commits", title: "History", icon: "clock-counter-clockwise", panelId: "commits", order: 55, mobile: true }],
+  panels: [
+    { id: "commits", schemaFile: "panels/commits.json", title: "History", icon: "clock-counter-clockwise", refreshAction: "refreshCommits" },
+    { id: "commit", schemaFile: "panels/commit.json", title: "Commit", icon: "git-commit", refreshAction: "refreshCommit" },
+    { id: "activity", schemaFile: "panels/activity.json", title: "Activity", icon: "list", refreshAction: "refreshActivity" },
+    { id: "event", schemaFile: "panels/event.json", title: "Operation", icon: "clock-counter-clockwise", refreshAction: "openEvent" },
+  ],
+  sockets: [
+    { socket: "work-rail-pane", surface: "work", id: "commits-pane", label: "History", icon: "clock-counter-clockwise", panelId: "commits" },
+    { socket: "command-palette-action", surface: "app", id: "palette-commits", label: "History commits", icon: "clock-counter-clockwise", actionId: "openCommits" },
+    { socket: "command-palette-action", surface: "app", id: "palette-activity", label: "History activity", icon: "list", actionId: "openActivity" },
+  ],
+  collections: {
+    commits: { sync: true },
+    operations: { sync: true },
+    files: { sync: true },
+    lanes: { sync: true },
+  },
+  tools: [
+    {
+      name: "list_commits",
+      description: "List recent commits for a lane, newest first.",
+      action: "listCommitsTool",
+      input: {
+        type: "object",
+        properties: {
+          laneId: { type: "string", description: "The lane whose git history to read." },
+          limit: { type: "integer", description: "How many commits to return. Defaults to 50." },
+        },
+        required: ["laneId"],
+      },
+    },
+    {
+      name: "get_commit",
+      description: "Fetch one commit summary for a lane.",
+      action: "getCommitTool",
+      input: {
+        type: "object",
+        properties: {
+          laneId: { type: "string" },
+          sha: { type: "string", description: "The full commit SHA." },
+        },
+        required: ["laneId", "sha"],
+      },
+    },
+    {
+      name: "list_operations",
+      description: "List persisted lane operations, newest first.",
+      action: "listOperationsTool",
+      input: {
+        type: "object",
+        properties: {
+          laneId: { type: "string" },
+          kind: { type: "string" },
+          status: { type: "string", description: "running, succeeded, failed, canceled, or all." },
+          limit: { type: "integer" },
+        },
+        required: [],
+      },
+    },
+    {
+      name: "get_operation",
+      description: "Fetch one persisted lane operation.",
+      action: "getOperationTool",
+      input: {
+        type: "object",
+        properties: {
+          operationId: { type: "string" },
+        },
+        required: ["operationId"],
+      },
+    },
+  ],
+  cli: ["activity"],
+  skills: ["skills"],
 });
 
 /**
@@ -1450,19 +1532,19 @@ export const MARKETPLACE_LOCAL_INDEX: readonly MarketplaceListing[] = [
     readme: [
       "## History",
       "",
-      "Everything that happened in a project, in order: runs, commits, files that",
-      "changed, and the screenshots and recordings your agents captured along the way.",
+      "Commits and lane operations for this project. The same History ADE already",
+      "ships, drawn as vocabulary panels every client can show.",
       "",
-      "History was part of ADE itself until plugins existed. Nothing about it changed —",
-      "it stopped being something everyone has to carry. Install it and the History tab",
-      "is in your rail; remove it and the rail is one item shorter.",
+      "This plugin replaces ADE's compiled History tab. Install it and the rail,",
+      "the Work pane, and `ade history activity` talk to these panels. Disable it",
+      "and the compiled History page comes back unchanged.",
       "",
       "### Notes",
       "",
-      "- The timeline is drawn by the desktop app rather than published as a panel, so",
-      "  on a phone or in the terminal the plugin shows a card pointing at the machine",
-      "  that holds the project.",
-      "- The `/history` route opens only while the plugin is installed and on.",
+      "- The git and operation engines stay in ADE. This plugin shapes rows and",
+      "  calls `git.*` and `operation.*`.",
+      "- Phone: there was never a compiled History screen. These panels are the first",
+      "  History UI on iOS and in the terminal.",
     ].join("\n"),
   }),
   listing(LINEAR, {

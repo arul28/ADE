@@ -90,8 +90,8 @@ describe("TabNav", () => {
   });
 
   it("leaves enabling plugin tabs out of the rail on a machine with no plugins", () => {
-    // Graph and History stay hidden until their plugins land. Review is a
-    // compiled tab ADE already ships, so a fresh install still has it.
+    // Graph and iOS stay hidden until their plugins land. Review and History
+    // are compiled tabs ADE already ships, so a fresh install still has them.
     render(
       <MemoryRouter initialEntries={["/work"]}>
         <TabNav />
@@ -100,7 +100,7 @@ describe("TabNav", () => {
 
     expect(screen.queryByRole("link", { name: "Graph" })).toBeNull();
     expect(screen.getByRole("link", { name: "Review" })).toBeTruthy();
-    expect(screen.queryByRole("link", { name: "History" })).toBeNull();
+    expect(screen.getByRole("link", { name: "History" })).toBeTruthy();
     expect(screen.getByRole("link", { name: "Work" })).toBeTruthy();
     expect(screen.getByRole("link", { name: "PRs" })).toBeTruthy();
   });
@@ -119,7 +119,7 @@ describe("TabNav", () => {
     // duplicate row opening an empty page would wear the feature's name.
     expect(screen.getAllByRole("link", { name: "Graph" })).toHaveLength(1);
     expect(screen.getByRole("link", { name: "Review" })).toBeTruthy();
-    expect(screen.queryByRole("link", { name: "History" })).toBeNull();
+    expect(screen.getByRole("link", { name: "History" })).toBeTruthy();
   });
 
   it("places sidebar tooltips beside navigation rows", () => {

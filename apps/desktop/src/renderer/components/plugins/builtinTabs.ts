@@ -2,11 +2,10 @@
  * Compiled surfaces owned by official plugins.
  *
  * A manifest `builtin` contribution does not render a vocabulary panel. It
- * names a surface that is compiled into ADE — the Graph canvas, the History
- * page, the iOS Simulator and Electron Control panes — and says "installing me
- * is what puts this in the product". Review, Linear and Cursor Cloud run the
- * other way: ADE already ships them compiled, and the owner plugin replaces
- * them.
+ * names a surface that is compiled into ADE — the Graph canvas, the iOS
+ * Simulator and Electron Control panes — and says "installing me is what puts
+ * this in the product". Review, History, Linear and Cursor Cloud run the other
+ * way: ADE already ships them compiled, and the owner plugin replaces them.
  *
  * ## Hidden is the default, and it is a default, not a fallback
  *

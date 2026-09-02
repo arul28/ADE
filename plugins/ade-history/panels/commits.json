@@ -1,0 +1,17 @@
+{
+  "v": 1,
+  "title": "History",
+  "fallback": {
+    "title": "History",
+    "text": "Open ADE on the computer that holds this plugin to browse commits.",
+    "deeplink": "ade://plugin/ade-history/commits"
+  },
+  "body": [
+    {
+      "component": "emptyState",
+      "title": "Loading commits…",
+      "description": "Reading this project's git history.",
+      "icon": "clock-counter-clockwise"
+    }
+  ]
+}

@@ -9,7 +9,7 @@ Marketplace shows.
 plugins/
   ade-graph/            gates the built-in Graph tab
   ade-review/           ADE's AI review product (supersedes the compiled Review tab)
-  ade-history/          gates the built-in History tab
+  ade-history/          ADE's History product (supersedes the compiled History tab)
   ade-linear/           gates the Linear pane in Work
   ade-ios-sim/          gates the iOS Simulator pane in Work
   ade-app-control/      gates the Electron Control pane in Work
