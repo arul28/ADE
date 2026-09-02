@@ -166,6 +166,18 @@ test("publish workflow checksum step uses runtimeAssetNames", () => {
   assert.doesNotMatch(workflow, /ade-win32-x64\\.exe\(\\\.native\\.tar\\.gz\)\?/);
 });
 
+test("publish workflow runs when a GitHub release is published, not only on dispatch", () => {
+  const workflow = fs.readFileSync(
+    new URL("../../../.github/workflows/publish-runtime-packages.yml", import.meta.url),
+    "utf8",
+  );
+  assert.match(workflow, /\n  release:\n    types: \[published\]/);
+  assert.match(workflow, /github\.event_name == 'release'/);
+  assert.match(workflow, /github\.event\.release\.tag_name/);
+  assert.match(workflow, /refusing to skip a runtime npm publish/);
+  assert.doesNotMatch(workflow, /MANUAL ONLY/);
+});
+
 test("names the Windows binary ade.exe", () => {
   withTempDirs(({ artifacts, out }) => {
     writeFakeArtifacts(artifacts, "win32-x64");
@@ -260,6 +272,38 @@ test("fails the build when a dependency .gitignore drops a native module from th
     assert.ok(
       fs.existsSync(path.join(out, "runtime-linux-x64", "native", "node_modules", "x", "crsqlite.node")),
     );
+  });
+});
+
+test("does not fail the build when npm-packlist omits an ignore file", () => {
+  // isexe ships `.npmignore`. npm-packlist never puts ignore files in the
+  // tarball, so a check of `onDisk ⊆ packed` reports thousands of missing
+  // files while every .node and vendor binary is present.
+  withTempDirs(({ artifacts, out }) => {
+    writeFakeArtifacts(artifacts, "linux-x64");
+    const packageDir = buildRuntimePackage({
+      target: "linux-x64",
+      artifactsDir: artifacts,
+      outDir: out,
+      version: "1.2.3",
+      license: "L",
+      exception: "EXCEPTION TEXT",
+    });
+    const ignorePath = path.join(packageDir, "native", "node_modules", "isexe", ".npmignore");
+    fs.mkdirSync(path.dirname(ignorePath), { recursive: true });
+    fs.writeFileSync(ignorePath, "*\n");
+    verifyPackedRuntimeFiles({
+      packageDir,
+      runPack: packedListing([
+        "package.json",
+        "LICENSE",
+        "RUNTIME-EMBEDDING-EXCEPTION.md",
+        "README.md",
+        "bin/ade",
+        "native/node_modules/better-sqlite3/index.js",
+        "native/vendor/crsqlite/linux-x64/crsqlite.so",
+      ]),
+    });
   });
 });
 
@@ -362,8 +406,9 @@ test("fails the build when the packed tarball carries no launcher", () => {
 test("fails the build when the packed tarball carries no cr-sqlite extension", () => {
   // cr-sqlite does not live under native/node_modules — package-native-deps
   // writes it to native/vendor/crsqlite/<target>/. An archive carrying
-  // node_modules but no vendor/ satisfied every other check: the parity check
-  // is `onDisk ⊆ packed`, and a file on neither side is invisible to it.
+  // node_modules but no vendor/ satisfied every other check: the critical-file
+  // check only looks at paths that already exist on disk, and a file on neither
+  // side is invisible to it.
   withTempDirs(({ artifacts, out }) => {
     writeFakeArtifacts(artifacts, "linux-x64");
     const packageDir = buildRuntimePackage({
@@ -422,7 +467,7 @@ test("accepts the cr-sqlite extension at the exact path its target implies", () 
 
 test("refuses another platform's cr-sqlite extension in a target's own directory", () => {
   // The release assembly mislabels one native archive and the Windows package
-  // ships a Linux `.so`. Parity is `onDisk ⊆ packed`, node_modules is
+  // ships a Linux `.so`. Disk and the packed listing agree, node_modules is
   // non-empty, and `bin/ade.exe` comes from the separate binary asset, so this
   // assertion is the only one left that can catch it.
   withTempDirs(({ artifacts, out }) => {

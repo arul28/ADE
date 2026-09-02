@@ -269,7 +269,7 @@ Desktop release is needed if any changed file matches:
 - `apps/desktop/**`
 - `apps/ade-cli/**`
 - desktop/runtime release scripts under `apps/desktop/scripts/**`
-- `.github/workflows/release*.yml`, `.github/workflows/update-brew-tap.yml`
+- `.github/workflows/release*.yml`, `.github/workflows/update-brew-tap.yml`, `.github/workflows/publish-runtime-packages.yml`
 - shared package files that desktop imports
 - root package/build files that affect desktop packaging
 
@@ -501,7 +501,9 @@ Expected shape:
 - `publish-release` (in `release-publish.yml`, called by `release.yml` after
   `run-release` succeeds) merges the per-arch updater manifests and creates the
   draft
-- `update-brew-tap` runs after publication
+- `update-brew-tap` and `Publish ADE runtime packages` both run after the
+  GitHub release is made public (`release.published`), not when the draft is
+  created. The conductor waits for the runtime npm job after undraft.
 
 If `platforms=mac,win` and `build-win-release` did not run, stop. The gate and
 the run disagree, and publishing would ship a macOS-only release under a
@@ -616,6 +618,39 @@ gh release edit "v<VERSION>" --repo arul28/ADE --draft=false --latest
 gh api repos/arul28/ADE/releases/latest \
   --jq '{tag_name,draft,prerelease,html_url,asset_count:(.assets|length)}'
 ```
+
+Undrafting publishes the GitHub release. That event starts
+`publish-runtime-packages.yml`, which downloads this tag's runtime assets,
+checksums them, and publishes `@ade-dev/runtime*` at the same version. npm
+versions are immutable, which is why this waits for `--draft=false` instead of
+the tag push. Do not treat desktop release as done until that job succeeds.
+
+```bash
+# The release event can take a few seconds to enqueue the run.
+for _ in 1 2 3 4 5 6; do
+  NPM_RUN_ID=$(gh run list --repo arul28/ADE \
+    --workflow publish-runtime-packages.yml --event release \
+    --json databaseId,headBranch,status,conclusion,url,createdAt \
+    --jq "[.[] | select(.headBranch==\"v<VERSION>\")][0].databaseId")
+  [ -n "$NPM_RUN_ID" ] && [ "$NPM_RUN_ID" != "null" ] && break
+  sleep 10
+done
+if [ -z "$NPM_RUN_ID" ] || [ "$NPM_RUN_ID" = "null" ]; then
+  echo "Publish ADE runtime packages did not start for v<VERSION>"
+  exit 1
+fi
+gh run watch "$NPM_RUN_ID" --repo arul28/ADE --interval 30
+gh run view "$NPM_RUN_ID" --repo arul28/ADE --json conclusion,url
+npm view @ade-dev/runtime version
+npm view @ade-dev/runtime-darwin-arm64 version
+```
+
+If the run fails because Trusted Publisher / `RUNTIME_TRUSTED_PUBLISHING` is
+not configured, that is a release blocker, not a skip. `workflow_dispatch` on
+the same workflow (tag + confirm `publish`) is recovery only.
+
+The brew tap bump is the same `release.published` event. Watch it if it is
+still in progress; do not block the npm wait on it.
 
 ## Phase 5: iOS TestFlight Build and Distribution
 
@@ -1272,8 +1307,10 @@ Desktop:
 - If a GitHub notarization job stalls, do not restart everything. Cancel the
   stuck run only when it has exceeded the cutoff, then use
   `gh run rerun --failed`.
-- If the publish job fails after mac artifacts succeeded, inspect the draft
-  release/assets and workflow logs before rerunning anything.
+- If the runtime npm publish job fails after the GitHub release is public,
+  rerun `publish-runtime-packages.yml` with the same tag and confirm `publish`.
+  Skip-if-exists means packages that already landed are left alone. Do not
+  unpublish. Do not invent a new version.
 - If `latest-mac.yml` references a missing asset, keep the release draft/private
   until fixed.
 - If `latest-mac.yml` references a universal ZIP, keep the release draft/private
