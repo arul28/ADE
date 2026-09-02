@@ -68,6 +68,7 @@ import {
 import { Claude, Codex, Cursor, Github, OpenAI } from "@lobehub/icons";
 import {
   isPluginBrandTokenName,
+  parsePluginBrandGlyph,
   pluginBrandTokenKey,
   type PluginBrandGlyph,
 } from "../../../shared/plugins/vocabularyBrandIcons";
@@ -416,6 +417,33 @@ export const DEFAULT_PLUGIN_ICON: PhosphorIcon = PuzzlePiece;
 /** The Marketplace's own nav glyph. Exported so the rail and the page agree. */
 export const MARKETPLACE_ICON: PhosphorIcon = Storefront;
 
+/**
+ * Does this build have artwork for that name, once the plugin's own is counted?
+ *
+ * {@link PLUGIN_ICON_NAMES} is the closed list every client compiles in, and it
+ * is the wrong allowlist on its own: a `brand:*` token a PLUGIN ships is a
+ * legitimate icon everywhere an icon token is legal — a tab, a badge, a panel,
+ * a URL-matcher chip — and it can never appear in a compiled list, because the
+ * artwork arrives with the package. Asking the closed list alone reported
+ * `ade-linear`'s own `brand:linear` as an unknown glyph.
+ *
+ * So the question is asked with the plugin's shipped collection in hand. Absent
+ * it, the answer is the closed list, which is what a caller holding only a name
+ * should get. A well-formed token with no artwork on either side is still
+ * false: it degrades to the puzzle piece, and calling that "resolved" would
+ * hide the one failure this predicate exists to catch.
+ */
+export function pluginIconNameResolves(
+  name: string | null | undefined,
+  shipped?: Readonly<Record<string, unknown>>,
+): boolean {
+  const key = (name ?? "").trim().toLowerCase();
+  if (key.length === 0) return false;
+  if (Object.hasOwn(PLUGIN_ICONS, key) || Object.hasOwn(PLUGIN_BRAND_ICONS, key)) return true;
+  const token = pluginBrandTokenKey(key);
+  return Boolean(token && shipped && Object.hasOwn(shipped, token));
+}
+
 /** Icon names a manifest may use, for docs and the authoring skill. */
 export const PLUGIN_ICON_NAMES: readonly string[] = [
   ...Object.keys(PLUGIN_ICONS),
@@ -439,7 +467,13 @@ export function pluginIcon(
   if (Object.hasOwn(PLUGIN_BRAND_ICONS, key)) return PLUGIN_BRAND_ICONS[key]!;
   const token = pluginBrandTokenKey(key);
   if (token && shipped && Object.hasOwn(shipped, token)) {
-    return shippedBrandGlyph(shipped[token]!, key);
+    // Re-validated, not trusted. The host sanitizes a glyph on the way in, but
+    // this row reaches the renderer through the plugin record and the CRR table
+    // another machine filled — the same reason iOS re-runs the ceilings. A
+    // malformed row draws the fallback rather than throwing inside the tab
+    // rail, which renders above the route's error boundary.
+    const glyph = parsePluginBrandGlyph(shipped[token]);
+    if (glyph) return shippedBrandGlyph(glyph, key);
   }
   return Object.hasOwn(PLUGIN_ICONS, key) ? PLUGIN_ICONS[key]! : DEFAULT_PLUGIN_ICON;
 }
@@ -627,13 +661,10 @@ export function pluginIdentity(input: {
 }): PluginIdentity {
   const hash = hashPluginId(input.pluginId);
   const named = (input.icon ?? "").trim().toLowerCase();
-  const shippedKey = pluginBrandTokenKey(named);
-  const hasNamedIcon = named.length > 0
-    && (
-      Object.hasOwn(PLUGIN_ICONS, named)
-      || Object.hasOwn(PLUGIN_BRAND_ICONS, named)
-      || (shippedKey !== null && Boolean(input.brandIcons && Object.hasOwn(input.brandIcons, shippedKey)))
-    );
+  // One predicate rather than a second copy of the three-way check: this asked
+  // the same question the allowlist asks, and the two had to be edited together
+  // every time the token grammar grew.
+  const hasNamedIcon = pluginIconNameResolves(named, input.brandIcons);
   const glyph = hasNamedIcon
     ? named
     : PLUGIN_IDENTITY_GLYPHS[hash % PLUGIN_IDENTITY_GLYPHS.length]!;

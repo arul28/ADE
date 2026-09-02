@@ -1,3 +1,5 @@
+import type { PluginBrandGlyph } from "./plugins/vocabularyBrandIcons";
+
 /**
  * A provider a plugin's URL matcher speaks for, namespaced by its plugin id.
  *
@@ -57,6 +59,15 @@ export type SmartLinkPreview = {
    * compiled-in mark. Text, never markup — see `smartLinkGlyph`.
    */
   glyph?: string | null;
+  /**
+   * A plugin-shipped vector for the same slot, when the matcher's icon named a
+   * `brand:` token the plugin has artwork for.
+   *
+   * Already sanitized by the host to a viewBox and a path list, so a client
+   * draws it as geometry and never as markup. Absent is the ordinary case, and
+   * a client that cannot draw a vector ignores it and uses `glyph`.
+   */
+  glyphMark?: PluginBrandGlyph | null;
   /** Set when a plugin's declared URL matcher produced this preview. */
   plugin?: SmartLinkPluginBinding | null;
 };

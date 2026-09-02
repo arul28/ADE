@@ -36,11 +36,13 @@ import { pluginNetworkHostAllowed } from "./network";
 import {
   compilePluginUrlMatcherPattern,
   parsePluginUrlMatcherLabelTemplate,
+  pluginUrlMatcherChipGlyphText,
   renderPluginUrlMatcherLabel,
   sanitizePluginUrlMatcherValue,
   type PluginManifestUrlMatcher,
   type PluginUrlMatcherLabelPart,
 } from "./urlMatchers";
+import { pluginBrandTokenKey, type PluginBrandGlyph } from "./vocabularyBrandIcons";
 
 /**
  * The little a plugin has to look like for its matchers to be compiled.
@@ -58,6 +60,15 @@ export type SmartLinkMatcherSource = {
   /** The user's per-contribution off switch. Applied here so the compiled set
    *  IS the live set and no reader has to ask a second question. */
   disabledContributions?: readonly string[];
+  /**
+   * The plugin's own sanitized `brand:*` glyphs, for a chip icon that names one.
+   *
+   * Resolved HERE rather than at draw time because this is the last place that
+   * holds both halves: the matcher's declared token and the plugin that shipped
+   * the artwork. A chip carries the resolved mark, so no renderer has to reach
+   * back into the registry from inside a keystroke handler.
+   */
+  brandIcons?: Readonly<Record<string, PluginBrandGlyph>>;
 };
 
 /** One matcher, ready to run. */
@@ -68,7 +79,17 @@ export type CompiledSmartLinkMatcher = {
   pattern: RegExp;
   captureNames: readonly string[];
   labelParts: readonly PluginUrlMatcherLabelPart[];
+  /** The one or two characters to draw, when the icon is a monogram. */
   glyph: string | null;
+  /**
+   * The vector to draw, when the icon is a `brand:` token this plugin ships.
+   *
+   * Null when the icon is a monogram, and null when the token names a glyph row
+   * the plugin did not ship — the chip then falls back to its provider mark
+   * rather than printing the token. A manifest string must never reach a chip
+   * as text.
+   */
+  mark: PluginBrandGlyph | null;
   panelId: string;
   entity: { kind: "issue"; provider: string; keyFrom: string } | null;
 };
@@ -90,6 +111,22 @@ function resolveMatcherPanelId(
   const tabs = source.tabs ?? [];
   if (tabs.some((tab) => tab.panelId === PLUGIN_ISSUE_PANEL_ID)) return PLUGIN_ISSUE_PANEL_ID;
   return tabs[0]?.panelId ?? PLUGIN_ISSUE_PANEL_ID;
+}
+
+/**
+ * The sanitized mark a `brand:` chip icon names, or null.
+ *
+ * `Object.hasOwn`, not a plain lookup: the token suffix comes from a manifest,
+ * and `constructor` would resolve through the prototype chain to a function the
+ * renderer would then try to read paths off.
+ */
+function resolveMatcherChipMark(
+  icon: string | undefined,
+  brandIcons: Readonly<Record<string, PluginBrandGlyph>> | undefined,
+): PluginBrandGlyph | null {
+  const token = pluginBrandTokenKey(icon);
+  if (!token || !brandIcons || !Object.hasOwn(brandIcons, token)) return null;
+  return brandIcons[token] ?? null;
 }
 
 /**
@@ -124,7 +161,8 @@ export function compileSmartLinkMatchers(
         pattern: new RegExp(pattern.compiled.source),
         captureNames: pattern.compiled.captureNames,
         labelParts: template.parts,
-        glyph: matcher.chip.icon ?? null,
+        glyph: pluginUrlMatcherChipGlyphText(matcher.chip.icon),
+        mark: resolveMatcherChipMark(matcher.chip.icon, source.brandIcons),
         panelId: resolveMatcherPanelId(matcher, source),
         entity: matcher.entity ?? null,
       });
@@ -174,6 +212,7 @@ export function matchSmartLinkMatchers(
       kind: "plugin_entity",
       label,
       ...(matcher.glyph ? { glyph: matcher.glyph } : {}),
+      ...(matcher.mark ? { glyphMark: matcher.mark } : {}),
       plugin: {
         pluginId: matcher.pluginId,
         matcherId: matcher.matcherId,

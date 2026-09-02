@@ -55,7 +55,7 @@ import {
   compilePluginUrlMatcherPattern,
   coreSmartLinkHostOwner,
   coreSmartLinkBuiltinsOwnedBy,
-  isValidPluginUrlMatcherGlyph,
+  isValidPluginUrlMatcherChipIcon,
   isValidPluginUrlMatcherProvider,
   parsePluginUrlMatcherLabelTemplate,
   PLUGIN_URL_MATCHER_HOSTS_MAX,
@@ -1116,6 +1116,45 @@ export function pluginPanelShowsOnMobile(surface: PluginManifestSurface): boolea
   return surface.mobile !== false;
 }
 
+/**
+ * The surface kinds that become ONE rail entry at `/plugin/<id>`.
+ *
+ * `webview` sits beside `tab` because the two are the same entry and differ
+ * only in what the page draws inside it. Filtering on `kind === "tab"` alone
+ * gave a plugin whose only full-page surface is a `webview` zero rail tabs,
+ * which is the bug `toRecordTabs` and the preload bridge each fixed separately.
+ */
+export const PLUGIN_RAIL_TAB_SURFACE_KINDS = ["tab", "webview"] as const;
+
+/**
+ * The one surface a plugin's rail tab, its badge and its default panel mean.
+ *
+ * Four places had to answer "which surface IS the tab" and answered it three
+ * ways: the desktop record keeps `tab` and `webview` in manifest order and
+ * reads `tabs[0]`, the TUI took the first `kind === "tab"`, and iOS has its own
+ * copy. A plugin whose webview comes first therefore badged one surface on the
+ * desktop and a different one in the terminal, against the same manifest — and
+ * a tab badge is addressed by `"<pluginId>/<surfaceId>"`, so the two clients
+ * were reading two different addresses for one pill.
+ *
+ * The rule is: the FIRST surface in manifest order whose kind is a rail kind.
+ * Manifest order, because that is the order the author wrote and the only order
+ * every client already has.
+ *
+ * Accepts a surface with no `kind` as a rail surface, so the same function
+ * serves a wire record whose surfaces were already filtered to rail kinds and
+ * therefore carry no kind of their own.
+ */
+export function pluginRailTabSurface<T extends { kind?: string }>(
+  surfaces: readonly T[] | null | undefined,
+): T | null {
+  for (const surface of surfaces ?? []) {
+    if (surface.kind === undefined) return surface;
+    if (PLUGIN_RAIL_TAB_SURFACE_KINDS.some((kind) => kind === surface.kind)) return surface;
+  }
+  return null;
+}
+
 function parsePanels(raw: unknown, ctx: ParseContext): PluginManifestPanel[] {
   return parseArray(raw, "panels", ctx, (entry, label) => {
     if (!isRecord(entry)) return ctx.drop(`${label} is not an object`);
@@ -1863,15 +1902,18 @@ function parseUrlMatchers(
     const template = parsePluginUrlMatcherLabelTemplate(entry.chip.label, captureNames);
     if (!template.ok) return ctx.drop(`${label}.chip.label ${template.reason}`);
     const icon = entry.chip.icon === undefined ? null : trimmedString(entry.chip.icon);
-    if (icon !== null && !isValidPluginUrlMatcherGlyph(icon)) {
+    if (icon !== null && !isValidPluginUrlMatcherChipIcon(icon)) {
       // Dropped rather than refusing the matcher: the chip has a monogram to
       // fall back to, and losing the whole link over its badge is the worse
       // trade. Named so the author can see which glyph was refused.
-      ctx.warnings.push(`${label}.chip.icon "${String(entry.chip.icon)}" is not one or two plain characters`);
+      ctx.warnings.push(
+        `${label}.chip.icon "${String(entry.chip.icon)}"`
+          + " is not one or two plain characters or a brand: token",
+      );
     }
     const chip: PluginManifestUrlMatcher["chip"] = {
       label: trimmedString(entry.chip.label) ?? "",
-      ...(icon && isValidPluginUrlMatcherGlyph(icon) ? { icon } : {}),
+      ...(icon && isValidPluginUrlMatcherChipIcon(icon) ? { icon } : {}),
     };
 
     const panelId = entry.panelId === undefined ? null : parseIdentifier(entry.panelId);

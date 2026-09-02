@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type MouseEvent as ReactMouseEvent, type ReactNode } from "react";
 import { ChatGitToolbar } from "../chat/ChatGitToolbar";
-import { WorkHeaderSidebarToggle, WorkHeaderToolsToggle } from "./WorkHeaderPaneToggles";
+import { WorkHeaderToolsToggle } from "./WorkHeaderPaneToggles";
 import { LaneBranchDriftChip } from "../lanes/LaneBranchDrift";
 import { LaneChip } from "../terminals/LaneChip";
 import { SessionSnoozeChip } from "./SessionLifecycleChips";
@@ -169,15 +169,6 @@ export type WorkSurfaceHeaderProps = {
    * what warms them.
    */
   pluginSocketsActive?: boolean;
-  /**
-   * Far-left session-list expander. When provided, renders the sidebar toggle
-   * before the title (every chat/CLI surface owns its own expander now that the
-   * shared top bar is gone).
-   */
-  onToggleSessionsPane?: () => void;
-  sessionsPaneCollapsed?: boolean;
-  sessionsPaneCount?: number;
-
   /** Far-right Tools-pane toggle. When provided, renders after trailingActions. */
   onToggleToolsPane?: () => void;
   toolsPaneOpen?: boolean;
@@ -218,9 +209,6 @@ export function WorkSurfaceHeader({
   trailingActions,
   pluginSession = null,
   pluginSocketsActive = true,
-  onToggleSessionsPane,
-  sessionsPaneCollapsed = false,
-
   onToggleToolsPane,
   toolsPaneOpen = false,
   className,
@@ -237,12 +225,6 @@ export function WorkSurfaceHeader({
   return (
     <div className={cn(WORK_SURFACE_HEADER_CLASS, className)} data-testid={testId} onContextMenu={onContextMenu}>
       <div className="flex w-full items-center gap-2">
-        {onToggleSessionsPane ? (
-          <WorkHeaderSidebarToggle
-            collapsed={sessionsPaneCollapsed}
-            onToggle={onToggleSessionsPane}
-          />
-        ) : null}
         <div
           className={cn("flex min-w-0 shrink items-center gap-2", tileDragProps && "cursor-grab active:cursor-grabbing")}
           {...(tileDragProps ?? {})}

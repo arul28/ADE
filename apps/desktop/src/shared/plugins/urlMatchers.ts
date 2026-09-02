@@ -61,6 +61,7 @@ import {
   type PluginBuiltinSurfaceId,
 } from "./builtinSurfaceRegistry";
 import { isValidPluginNetworkHost, pluginNetworkHostAllowed } from "./network";
+import { isPluginBrandTokenName } from "./vocabularyBrandIcons";
 
 /** The most URL matchers one plugin may declare. */
 export const PLUGIN_URL_MATCHERS_PER_PLUGIN = 8;
@@ -528,4 +529,47 @@ export function isValidPluginUrlMatcherGlyph(value: unknown): value is string {
   // Counted in code points, not UTF-16 units, so one emoji is one character.
   if (Array.from(glyph).length > PLUGIN_URL_MATCHER_GLYPH_MAX) return false;
   return stripUnsafeDisplayChars(glyph) === glyph;
+}
+
+/**
+ * Is this a chip icon a manifest may declare — a monogram OR a brand token?
+ *
+ * The glyph above is TEXT: one or two characters drawn in the chip's mark slot.
+ * A plugin whose subject is a vendor ADE ships no mark for had no way to say so
+ * here, and the honest token for that already exists everywhere else an icon is
+ * named — `brand:<id>`, resolved against the glyph the plugin shipped in its
+ * `brandIcons` collection. A tracker chip is the one icon slot that refused it,
+ * so `ade-linear` declared the same `brand:linear` it names on its tab and its
+ * panels and got a parser warning for it.
+ *
+ * Validated with the collection's own id rule rather than a second one, so a
+ * token the manifest may declare is exactly a token the collection can hold.
+ * The two forms stay distinguishable at every later step: a monogram is drawn
+ * as text and a brand token is resolved to a vector, and
+ * {@link isPluginBrandTokenName} is what separates them. Nothing here widens
+ * what a glyph may CONTAIN — the sanitizer still runs on the text form, and a
+ * brand token still resolves only to a host-sanitized path list.
+ */
+export function isValidPluginUrlMatcherChipIcon(value: unknown): value is string {
+  if (typeof value !== "string") return false;
+  // Trimmed before the glyph test, not after: `isValidPluginUrlMatcherGlyph`
+  // is a type predicate, so on the false branch TypeScript has narrowed the
+  // argument to `never` and there is no string left to read.
+  const trimmed = value.trim();
+  return isValidPluginUrlMatcherGlyph(value) || isPluginBrandTokenName(trimmed);
+}
+
+/**
+ * The TEXT to draw in a chip's mark slot, or null when the icon is a mark.
+ *
+ * A caller that can draw a vector resolves the brand token itself; one that can
+ * only set text asks this and falls back to its provider monogram. Either way
+ * the literal string `brand:linear` never reaches a chip — an author's token
+ * rendered as text is the one outcome worse than no icon at all.
+ */
+export function pluginUrlMatcherChipGlyphText(icon: string | null | undefined): string | null {
+  if (!icon) return null;
+  const trimmed = icon.trim();
+  if (isPluginBrandTokenName(trimmed)) return null;
+  return isValidPluginUrlMatcherGlyph(trimmed) ? trimmed : null;
 }

@@ -205,14 +205,19 @@ afterEach(() => {
 });
 
 describe("plugin sockets over sync", () => {
-  it("renders a plugin's declared badge on a lane row in the browser", async () => {
-    const PluginRowBadges = await mount(fake);
-    render(<PluginRowBadges surface="lanes" context={laneContext} />);
+  it("carries a declared badge over the wire and draws nothing for it", async () => {
+    // B4: a DECLARED `row-badge` draws nothing. A badge is a per-entity value
+    // and a declaration has no entity, so drawing its manifest label put the
+    // same chip on every lane forever. The declaration still has to ARRIVE —
+    // it is what a published row is matched against for override and ordering,
+    // and what the install sheet describes — so both halves are asserted here.
+    const contributions = await readContributions(fake);
+    expect(contributions.find((entry) => entry.socket === "row-badge")?.payload)
+      .toMatchObject({ text: "Risk" });
 
-    // The manifest declaration alone is enough to draw something: a plugin that
-    // has not published a row for this lane yet is still a plugin that says it
-    // badges lanes, and rendering nothing would make it invisible.
-    expect(await screen.findByText("Risk")).toBeTruthy();
+    const PluginRowBadges = await mount(fake);
+    const { container } = render(<PluginRowBadges surface="lanes" context={laneContext} />);
+    await waitFor(() => expect(container.textContent).toBe(""));
   });
 
   it("lets a published row replace the declaration it fills", async () => {
@@ -237,14 +242,21 @@ describe("plugin sockets over sync", () => {
     await waitFor(() => expect(screen.queryByText("Risk")).toBeNull());
   });
 
-  it("shows the declaration when the host serves no contributions command", async () => {
+  it("still resolves the static half when the host serves no contributions command", async () => {
     fake.descriptors = descriptors(["plugins.list"]);
-    const PluginRowBadges = await mount(fake);
-    render(<PluginRowBadges surface="lanes" context={laneContext} />);
 
-    // Half the path is still half a working surface. An older host means "this
-    // plugin badges lanes, nothing specific to say here", not a blank row.
-    expect(await screen.findByText("Risk")).toBeTruthy();
+    // Half the path is still half a working surface: an older host that cannot
+    // answer `plugins.contributions` must leave the declared set intact rather
+    // than failing the read for every socket kind on the surface.
+    const contributions = await readContributions(fake);
+    expect(contributions.map((entry) => entry.socket)).toEqual(["row-badge"]);
+
+    // The badge slot itself stays empty, for the B4 reason above — the missing
+    // command changes nothing about that, which is what makes the two states
+    // safe to be indistinguishable on screen.
+    const PluginRowBadges = await mount(fake);
+    const { container } = render(<PluginRowBadges surface="lanes" context={laneContext} />);
+    await waitFor(() => expect(container.textContent).toBe(""));
   });
 
   it("draws nothing for a socket the user switched off", async () => {
@@ -331,6 +343,8 @@ describe("plugin sockets over sync", () => {
           branch: null,
           state: "open",
           ciStatus: "unknown",
+          id: null,
+          laneId: null,
         }}
       />,
     );

@@ -60,27 +60,96 @@ const BODY_STYLE: React.CSSProperties = {
   overflowWrap: "anywhere",
 };
 
+/**
+ * A markdown image, with the affordance that survives a refused load.
+ *
+ * A markdown image is the one picture in a panel whose URL the plugin did not
+ * author: it comes from a remote document body — an issue, a comment thread —
+ * and points at whatever host that tracker stores attachments on. The two
+ * clients that share this file do not agree about loading it. The hosted web
+ * client's policy admits `https:` for plugin media on purpose (see its
+ * `_headers`), while the desktop renderer's `img-src` is a scoped allowlist
+ * with an explicit "no blanket `https:`" rule — and that rule is not an
+ * oversight to be relaxed here: the desktop renderer is a privileged document,
+ * and a blanket image allowance would let a panel turn any URL into an
+ * outbound request the plugin's declared `network.hosts` never authorised.
+ *
+ * So the load is attempted and the FAILURE is designed, rather than the load
+ * being refused up front on one client. Where the picture can be fetched it is
+ * drawn; where it cannot — a refused policy, a dead link, a host that answers
+ * with something that is not an image — the reader gets the alt text as a link
+ * that opens the picture in their browser, which is the one place the request
+ * is not ADE's to make. Both clients run this same rule, so neither shows a
+ * broken frame and neither silently drops the picture.
+ *
+ * Mirrors the avatar fallback in `vocabularyComponents.tsx`, which learned the
+ * same lesson about a remote `src` in a panel.
+ */
+function MarkdownImage({ src, alt }: { src: string; alt: string }) {
+  const [failed, setFailed] = React.useState(false);
+  React.useEffect(() => { setFailed(false); }, [src]);
+  if (failed) {
+    return (
+      <span
+        style={{
+          display: "inline-flex",
+          alignItems: "center",
+          gap: 4,
+          verticalAlign: "middle",
+          fontSize: 11.5,
+          color: COLORS.textMuted,
+        }}
+      >
+        {alt.trim() || "Image"}
+        <span aria-hidden="true">↗</span>
+      </span>
+    );
+  }
+  return (
+    <img
+      src={src}
+      alt={alt}
+      loading="lazy"
+      onError={() => setFailed(true)}
+      style={{
+        display: "inline-block",
+        maxWidth: "100%",
+        maxHeight: 280,
+        verticalAlign: "middle",
+        border: `1px solid ${COLORS.borderMuted}`,
+        borderRadius: RADII.md,
+      }}
+    />
+  );
+}
+
 /** One inline run. Flags nest as elements; the text itself is never markup. */
 function MarkdownSpan({ span, pluginId }: { span: VocabMarkdownSpan; pluginId: string }) {
   if (span.src !== undefined) {
     const src = /^https:/i.test(span.src) ? span.src : undefined;
-    const image = src ? (
-      <img
-        src={src}
-        alt={span.text}
-        loading="lazy"
-        style={{
-          display: "inline-block",
-          maxWidth: "100%",
-          maxHeight: 280,
-          verticalAlign: "middle",
-          border: `1px solid ${COLORS.borderMuted}`,
-          borderRadius: RADII.md,
-        }}
-      />
-    ) : (
-      <>{span.text}</>
-    );
+    const image = src ? <MarkdownImage src={src} alt={span.text} /> : <>{span.text}</>;
+    // An image with no link of its own still needs somewhere to go when the
+    // load is refused, so the picture's own URL becomes that link. `href` wins
+    // when the document named one — that is the destination the author chose.
+    if (span.href === undefined && src) {
+      return (
+        <a
+          href={src}
+          target="_blank"
+          rel="noopener noreferrer"
+          onClick={(event) => {
+            event.preventDefault();
+            openPluginExternalUrl(src, { pluginId, source: "markdown" });
+          }}
+          onAuxClick={(event) => {
+            event.preventDefault();
+            openPluginExternalUrl(src, { pluginId, source: "markdown" });
+          }}
+        >
+          {image}
+        </a>
+      );
+    }
     if (span.href === undefined) return image;
     const href = span.href;
     return (

@@ -35,7 +35,7 @@ vi.mock("../../lib/openExternal", () => ({
 
 vi.mock("./sockets/dialogTarget", () => ({ applyPluginDialogEdit: () => {} }));
 
-const { PluginPanelHost } = await import("./PluginPanelHost");
+const { PluginPanelHost, PluginSurfaceViewedLifecycle } = await import("./PluginPanelHost");
 
 function panelWith(body: unknown[], schemaExtra: Record<string, unknown> = {}) {
   return {
@@ -184,5 +184,119 @@ describe("the panel refresh contract", () => {
     await screen.findByText("Cursor is unreachable.");
     // And the button comes back rather than stranding in its pending state.
     await waitFor(() => expect((refresh as HTMLButtonElement).disabled).toBe(false));
+  });
+});
+
+/**
+ * The viewed acknowledgement — the only thing that clears a tab badge.
+ *
+ * A published badge stays until the plugin unpublishes it, so `viewAction` is
+ * the whole durable-clear story: the host says `{viewed: true}` while the panel
+ * is on screen and `{viewed: false}` when it leaves. Two failures are equally
+ * bad and neither shows on screen. Firing twice for one reveal breaks the
+ * refcount the plugin keeps, so a second host going idle clears a badge the
+ * reader is still looking at; never firing the hidden half leaves the plugin
+ * believing the panel is open forever.
+ */
+describe("the viewed lifecycle", () => {
+  const viewedCalls = () =>
+    bridge.invoke.mock.calls
+      .map(([args]) => args as { action: string; args?: { viewed?: boolean } })
+      .filter((call) => call.action === "markRead")
+      .map((call) => call.args?.viewed);
+
+  async function mountViewed(active = true) {
+    bridge.panel = panelWith(RUN_BUTTON, { viewAction: "markRead" });
+    const view = render(
+      <PluginPanelHost pluginId="ade-cursor-cloud" panelId="fleet" active={active} />,
+    );
+    if (active) await screen.findByRole("button");
+    return view;
+  }
+
+  it("acknowledges once when the panel is visible", async () => {
+    const view = await mountViewed();
+    await waitFor(() => expect(viewedCalls()).toEqual([true]));
+
+    // A re-render is not a second reveal. The effect keys on the plugin, the
+    // panel and the visibility, so nothing about redrawing the same panel may
+    // spend another acknowledgement.
+    view.rerender(<PluginPanelHost pluginId="ade-cursor-cloud" panelId="fleet" active />);
+    view.rerender(<PluginPanelHost pluginId="ade-cursor-cloud" panelId="fleet" active />);
+    await waitFor(() => expect(viewedCalls()).toEqual([true]));
+  });
+
+  it("says the panel is hidden when it unmounts", async () => {
+    const view = await mountViewed();
+    await waitFor(() => expect(viewedCalls()).toEqual([true]));
+    view.unmount();
+    await waitFor(() => expect(viewedCalls()).toEqual([true, false]));
+  });
+
+  it("says the panel is hidden when it stops being active", async () => {
+    const view = await mountViewed();
+    await waitFor(() => expect(viewedCalls()).toEqual([true]));
+
+    view.rerender(<PluginPanelHost pluginId="ade-cursor-cloud" panelId="fleet" active={false} />);
+    await waitFor(() => expect(viewedCalls()).toEqual([true, false]));
+
+    // Back on screen is a new reveal and does earn a second acknowledgement.
+    view.rerender(<PluginPanelHost pluginId="ade-cursor-cloud" panelId="fleet" active />);
+    await waitFor(() => expect(viewedCalls()).toEqual([true, false, true]));
+  });
+
+  it("stays silent for a panel that declares no view action", async () => {
+    await mountPanel();
+    fireEvent.click(screen.getByRole("button", { name: "Run" }));
+    await waitFor(() => expect(bridge.invoke).toHaveBeenCalled());
+    expect(viewedCalls()).toEqual([]);
+  });
+
+  /**
+   * A rejected invoke must not reach the user.
+   *
+   * A plugin that declares `viewAction` and ships no handler answers
+   * `unsupported_method`, and most plugins declare none at all — a toast for
+   * either would be the host reporting its own bookkeeping as the reader's
+   * problem.
+   */
+  it("swallows a failing acknowledgement instead of surfacing it", async () => {
+    bridge.invoke.mockRejectedValue(new Error("unsupported_method"));
+    await mountViewed();
+    await waitFor(() => expect(viewedCalls()).toEqual([true]));
+    expect(screen.queryByRole("status")).toBeNull();
+  });
+});
+
+/**
+ * The same lifecycle for a surface that draws no panel.
+ *
+ * A webview tab returns its guest before the panel host is ever reached, so
+ * this component is what carries the acknowledgement there. Without it a plugin
+ * whose only rail surface is a webview could publish a tab badge and never be
+ * told it had been read.
+ */
+describe("the webview surface's viewed lifecycle", () => {
+  const viewedCalls = () =>
+    bridge.invoke.mock.calls
+      .map(([args]) => args as { action: string; args?: { viewed?: boolean } })
+      .filter((call) => call.action === "markRead")
+      .map((call) => call.args?.viewed);
+
+  it("reads the stamped action off the panel record and acknowledges once", async () => {
+    bridge.panel = panelWith(RUN_BUTTON, { viewAction: "markRead" });
+    const view = render(
+      <PluginSurfaceViewedLifecycle pluginId="ade-cursor-cloud" panelId="fleet" active />,
+    );
+    await waitFor(() => expect(viewedCalls()).toEqual([true]));
+    view.unmount();
+    await waitFor(() => expect(viewedCalls()).toEqual([true, false]));
+  });
+
+  it("stays silent when the panel stamps no view action", async () => {
+    bridge.panel = panelWith(RUN_BUTTON);
+    render(<PluginSurfaceViewedLifecycle pluginId="ade-cursor-cloud" panelId="fleet" active />);
+    await waitFor(() => expect(bridge.panel).toBeTruthy());
+    expect(viewedCalls()).toEqual([]);
   });
 });

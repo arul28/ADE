@@ -17,11 +17,13 @@ import {
   compilePluginUrlMatcherPattern,
   CORE_ISSUE_PROVIDERS,
   coreSmartLinkHostOwner,
+  isValidPluginUrlMatcherChipIcon,
   isValidPluginUrlMatcherGlyph,
   isValidPluginUrlMatcherHost,
   isValidPluginUrlMatcherPattern,
   isValidPluginUrlMatcherProvider,
   parsePluginUrlMatcherLabelTemplate,
+  pluginUrlMatcherChipGlyphText,
   PLUGIN_URL_MATCHER_CAPTURES_MAX,
   PLUGIN_URL_MATCHER_LABEL_MAX,
   PLUGIN_URL_MATCHER_LABEL_TEMPLATE_MAX,
@@ -264,6 +266,35 @@ describe("label template", () => {
     expect(isValidPluginUrlMatcherGlyph(`A${RTL_OVERRIDE}`)).toBe(false);
   });
 
+  it("accepts a brand token as a chip icon, but never as a text glyph", () => {
+    // Two different questions. The glyph predicate answers "may I draw this as
+    // text", and a token must always answer no there or a chip would print the
+    // literal string `brand:linear`.
+    expect(isValidPluginUrlMatcherChipIcon("brand:linear")).toBe(true);
+    expect(isValidPluginUrlMatcherChipIcon("brand:jira-cloud")).toBe(true);
+    expect(isValidPluginUrlMatcherChipIcon("JR")).toBe(true);
+    expect(isValidPluginUrlMatcherGlyph("brand:linear")).toBe(false);
+
+    // Same id rule the collection uses, so a token the manifest may declare is
+    // exactly a token `brandIcons` can hold.
+    expect(isValidPluginUrlMatcherChipIcon("brand:")).toBe(false);
+    expect(isValidPluginUrlMatcherChipIcon("brand:Linear")).toBe(true);
+    expect(isValidPluginUrlMatcherChipIcon("brand:9lives")).toBe(false);
+    expect(isValidPluginUrlMatcherChipIcon("brand")).toBe(false);
+    expect(isValidPluginUrlMatcherChipIcon("<svg/>")).toBe(false);
+  });
+
+  it("hands a caller text for a monogram and nothing for a brand token", () => {
+    expect(pluginUrlMatcherChipGlyphText("JR")).toBe("JR");
+    expect(pluginUrlMatcherChipGlyphText(" J ")).toBe("J");
+    // Null, not the token: a caller that can only set text falls back to its
+    // provider mark rather than printing a manifest field.
+    expect(pluginUrlMatcherChipGlyphText("brand:linear")).toBeNull();
+    expect(pluginUrlMatcherChipGlyphText("JIRA")).toBeNull();
+    expect(pluginUrlMatcherChipGlyphText(null)).toBeNull();
+    expect(pluginUrlMatcherChipGlyphText(undefined)).toBeNull();
+  });
+
   it("accepts one or two plain characters as a glyph and nothing else", () => {
     expect(isValidPluginUrlMatcherGlyph("J")).toBe(true);
     expect(isValidPluginUrlMatcherGlyph("JR")).toBe(true);
@@ -363,6 +394,14 @@ describe("urlMatchers in the manifest", () => {
       { ...VALID_MATCHER, entity: { kind: "issue", provider: "acme", keyFrom: "nope" } },
     ]);
     expect(manifest?.urlMatchers).toEqual([]);
+  });
+
+  it("keeps a brand token the plugin's own collection can hold", () => {
+    const { manifest, warnings } = parseWith([
+      { ...VALID_MATCHER, chip: { label: "ACME {key}", icon: "brand:acme" } },
+    ]);
+    expect(manifest?.urlMatchers?.[0]?.chip).toEqual({ label: "ACME {key}", icon: "brand:acme" });
+    expect(warnings.filter((line) => line.includes("chip.icon"))).toEqual([]);
   });
 
   it("keeps the matcher but drops a glyph that is not one or two plain characters", () => {

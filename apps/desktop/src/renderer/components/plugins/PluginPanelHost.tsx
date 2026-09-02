@@ -699,21 +699,7 @@ export function PluginPanelHost({
   const refreshAction = readPluginPanelRefreshAction(state.record?.schema);
   const viewAction = readPluginPanelViewAction(state.record?.schema);
 
-  /**
-   * Tell the plugin this panel is (or is not) on screen.
-   *
-   * Silent: a missing handler is `unsupported_method` and must not toast —
-   * most plugins never declare `viewAction`. Refcounted on the plugin side so
-   * a Work-rail host going idle while the tab host is active does not clear
-   * a badge the reader is still looking at.
-   */
-  React.useEffect(() => {
-    if (!viewAction || !active) return;
-    void invokePluginAction(pluginId, viewAction, { panelId, viewed: true }).catch(() => {});
-    return () => {
-      void invokePluginAction(pluginId, viewAction, { panelId, viewed: false }).catch(() => {});
-    };
-  }, [active, viewAction, pluginId, panelId]);
+  usePluginPanelViewed({ pluginId, panelId, active, viewAction });
 
   /**
    * Run the declared refresh action, then refetch.
@@ -856,4 +842,74 @@ function PanelSkeleton() {
       <span style={{ fontFamily: SANS_FONT, fontSize: 11, color: COLORS.textDim }}>Loading…</span>
     </div>
   );
+}
+
+/**
+ * Tell the plugin this panel is (or is not) on screen.
+ *
+ * Silent: a missing handler is `unsupported_method` and must not toast — most
+ * plugins never declare `viewAction`. Refcounted on the plugin side so a
+ * Work-rail host going idle while the tab host is active does not clear a badge
+ * the reader is still looking at.
+ *
+ * A hook rather than an inline effect because a WEBVIEW tab needs the same
+ * lifecycle and has no panel host to put it in: `PluginTabPage` returns the
+ * guest before it ever reaches `PluginPanelHost`, so a plugin whose only
+ * full-page surface is a webview could publish a tab badge and then never be
+ * told it had been read — the pill stayed until the plugin unpublished it,
+ * which is the one thing `viewAction` exists to prevent.
+ */
+export function usePluginPanelViewed(args: {
+  pluginId: string;
+  panelId: string;
+  active: boolean;
+  viewAction: string | null;
+}): void {
+  const { pluginId, panelId, active, viewAction } = args;
+  React.useEffect(() => {
+    if (!viewAction || !active) return;
+    void invokePluginAction(pluginId, viewAction, { panelId, viewed: true }).catch(() => {});
+    return () => {
+      void invokePluginAction(pluginId, viewAction, { panelId, viewed: false }).catch(() => {});
+    };
+  }, [active, viewAction, pluginId, panelId]);
+}
+
+/**
+ * The viewed lifecycle for a surface that draws no panel.
+ *
+ * Renders nothing. It reads the panel RECORD only to learn the stamped
+ * `viewAction` — the same value the panel host reads, from the same place, so a
+ * webview tab and its fallback panel can never disagree about which action the
+ * host is allowed to invoke. One read per mount, and none at all for the
+ * plugins that declare no view action, because the record is already the thing
+ * the host would have fetched had it drawn the panel.
+ *
+ * A failed read leaves the action null and the lifecycle silent, which is the
+ * same outcome as a plugin that declared none.
+ */
+export function PluginSurfaceViewedLifecycle({
+  pluginId,
+  panelId,
+  active,
+}: {
+  pluginId: string;
+  panelId: string;
+  active: boolean;
+}) {
+  const [viewAction, setViewAction] = React.useState<string | null>(null);
+  React.useEffect(() => {
+    let cancelled = false;
+    void readPluginPanel(pluginId, panelId)
+      .then((record) => {
+        if (!cancelled) setViewAction(readPluginPanelViewAction(record?.schema));
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+      setViewAction(null);
+    };
+  }, [pluginId, panelId]);
+  usePluginPanelViewed({ pluginId, panelId, active, viewAction });
+  return null;
 }

@@ -47,6 +47,11 @@ vi.mock("./PluginPanelHost", () => ({
   PluginPanelHost: ({ panelId }: { panelId: string }) => (
     <div data-testid="panel-host">{panelId}</div>
   ),
+  // Renders nothing in the app; stubbed as a marker so the webview branch can
+  // be asserted to carry the viewed lifecycle the panel host would have owned.
+  PluginSurfaceViewedLifecycle: ({ panelId }: { panelId: string }) => (
+    <div data-testid="viewed-lifecycle">{panelId}</div>
+  ),
 }));
 
 vi.mock("./PluginWebviewHost", () => ({

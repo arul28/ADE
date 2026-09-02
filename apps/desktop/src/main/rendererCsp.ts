@@ -61,6 +61,22 @@ export function buildRendererCspPolicy(isDevMode: boolean): string {
   // `images.clerk.dev/` prefix on Google Cloud Storage).
   // We keep the allowlist scoped: no blanket `https:`, and Google Cloud Storage
   // is only ever allowed under specific path prefixes, never the bare host.
+  //
+  // A PLUGIN's images are the case that keeps asking for the blanket, and the
+  // answer stays no. The hosted web client does admit `https:` for plugin media
+  // (see `renderer/webclient/public/_headers`), because a browser tab is not a
+  // privileged document; this renderer is. A blanket image allowance here would
+  // let a panel turn any URL into an outbound request that the plugin's
+  // declared `network.hosts` never authorised, which is exfiltration wearing an
+  // `<img>`. So the desktop answer is a designed FALLBACK rather than a wider
+  // policy: a plugin markdown image that this policy refuses degrades to the
+  // alt text as a link that opens the picture outside ADE
+  // (`vocabularyMarkdownView.tsx`). Showing it inline would need the bytes to
+  // come through main — the pattern `fetchIconDataUrl` in
+  // `services/chat/smartLinkPreviewService.ts` already implements, with its
+  // SSRF guards, size cap and content-type allowlist — so that the plugin's
+  // declared hosts can be enforced on the way out. That is a main-process
+  // change, not a policy line.
   const cspImageSources = `${cspSources}${cspLocalSources} https://avatars.githubusercontent.com https://*.githubusercontent.com https://user-images.githubusercontent.com https://private-user-images.githubusercontent.com https://media.githubusercontent.com https://camo.githubusercontent.com https://objects.githubusercontent.com https://github.githubassets.com https://opengraph.githubassets.com https://github.com https://vercel.com https://*.vercel.com https://img.shields.io https://*.s3.amazonaws.com https://storage.googleapis.com/coderabbit_public_assets/ https://storage.googleapis.com/images.clerk.dev/ https://img.clerk.com https://images.clerk.dev https://dependabot-badges.githubapp.com/badges/ https://cursor.com/assets/images/ https://www.gravatar.com https://secure.gravatar.com https://ade-app.dev https://img.youtube.com`;
   // The welcome video used to be a YouTube iframe embed, which required
   // frame-src exceptions for youtube(-nocookie).com. It's now a thumbnail

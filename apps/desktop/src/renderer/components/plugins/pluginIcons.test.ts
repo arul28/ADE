@@ -13,6 +13,7 @@ import {
   isPluginBrandIconName,
   officialPluginLogo,
   pluginIcon,
+  pluginIconNameResolves,
   pluginIdentity,
 } from "./pluginIcons";
 
@@ -186,14 +187,43 @@ describe("the official set's identities", () => {
     accent: listing.accent,
   }));
 
-  it("names a glyph this build actually has", () => {
+  /**
+   * The `brand:*` tokens each package ships artwork for.
+   *
+   * Read off the manifest rather than passed to `pluginIdentity`, because the
+   * manifest holds SOURCE PATHS and the identity helper takes host-sanitized
+   * glyphs. The two are different shapes for the same token, and only the
+   * allowlist question can be answered from the manifest side.
+   */
+  const shippedTokens = new Map(
+    MARKETPLACE_LOCAL_INDEX.map((listing) => [listing.pluginId, listing.manifest?.brandIcons]),
+  );
+
+  it("names a glyph this build actually has, or one the package itself ships", () => {
     for (const official of officials) {
       expect(official.icon, `${official.pluginId} names no glyph`).toBeTruthy();
       // Not `pluginIcon(icon) !== DEFAULT_PLUGIN_ICON` — `puzzle` is a legal
-      // name. The published list is the allowlist.
-      expect(PLUGIN_ICON_NAMES, `${official.pluginId} names an unknown glyph`)
-        .toContain(official.icon!.toLowerCase());
+      // name. The published list plus the package's own `brandIcons` is the
+      // allowlist: `ade-linear` names `brand:linear`, and no compiled list can
+      // ever contain that token because the artwork arrives with the package.
+      expect(
+        pluginIconNameResolves(official.icon, shippedTokens.get(official.pluginId)),
+        `${official.pluginId} names an unknown glyph`,
+      ).toBe(true);
     }
+  });
+
+  it("still refuses a brand token no build and no package has artwork for", () => {
+    expect(pluginIconNameResolves("brand:linear")).toBe(false);
+    expect(pluginIconNameResolves("brand:linear", { jira: "icons/jira.svg" })).toBe(false);
+    expect(pluginIconNameResolves("brand:linear", { linear: "icons/linear.svg" })).toBe(true);
+    expect(pluginIconNameResolves("brand:cursor")).toBe(true);
+    expect(pluginIconNameResolves("gear")).toBe(true);
+    expect(pluginIconNameResolves("no-such-glyph")).toBe(false);
+    expect(pluginIconNameResolves("")).toBe(false);
+    // An inherited property is not artwork, on either side of the question.
+    expect(pluginIconNameResolves("constructor")).toBe(false);
+    expect(pluginIconNameResolves("brand:linear", Object.create({ linear: {} }))).toBe(false);
   });
 
   it("gives each one a colour of its own", () => {

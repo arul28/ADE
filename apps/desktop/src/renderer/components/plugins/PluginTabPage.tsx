@@ -4,12 +4,13 @@ import { Navigate, useParams, useSearchParams } from "react-router-dom";
 import { COLORS, RADII, SANS_FONT, outlineButton } from "../lanes/laneDesignTokens";
 import { useRootAppStore } from "../../state/appStore";
 import { openPluginLogs, restartPlugin, type InstalledPlugin } from "../../lib/pluginRuntimeBridge";
-import { PluginPanelHost } from "./PluginPanelHost";
+import { PluginPanelHost, PluginSurfaceViewedLifecycle } from "./PluginPanelHost";
 import { PluginWebviewHost, supportsPluginWebviews } from "./PluginWebviewHost";
 import { PluginFallbackCard } from "./VocabularyRenderer";
 import { pluginIcon } from "./pluginIcons";
 import { builtinRouteForPluginRoute } from "./builtinTabs";
 import { buildDeeplink, parseDeeplinkPluginContext } from "../../../shared/deeplinks";
+import { pluginRailTabSurface } from "../../../shared/plugins/manifest";
 
 /**
  * The route page for a plugin tab (`/plugin/:pluginId`).
@@ -72,10 +73,12 @@ export function PluginTabPage({ active = true }: { active?: boolean }) {
   );
   const panelId = requestedPanelId
     ?? (declaresRemembered ? rememberedPanelId : null)
-    // `tabs[0]` is the plugin's OWN first surface, so it is the fallback rather
-    // than `"main"`. `"main"` survives only for a plugin that declares no rail
-    // surface at all, where there is no declared id to prefer.
-    ?? plugin?.tabs[0]?.panelId
+    // The plugin's OWN rail surface is the fallback rather than `"main"`, and
+    // it is chosen by the one rule every client shares — the same surface the
+    // rail draws and the same one a tab badge is addressed against. `"main"`
+    // survives only for a plugin that declares no rail surface at all, where
+    // there is no declared id to prefer.
+    ?? pluginRailTabSurface(plugin?.tabs)?.panelId
     ?? "main";
 
   // The context an `ade://plugin/…?ctx=` link arrived with. Read off the query
@@ -199,8 +202,22 @@ function PluginBody({
   // A webview surface names its page AND a panel. The page wins where a guest
   // can run; everywhere else the panel is what the manifest promised would be
   // shown instead, so falling through to it is the contract, not a degradation.
+  //
+  // The viewed lifecycle rides alongside. It normally lives in the panel host,
+  // which this branch returns before reaching — so a plugin whose only rail
+  // surface is a webview published a tab badge and was never told the reader
+  // had opened it, and the pill stayed up until the plugin unpublished it.
   if (entryHtml && supportsPluginWebviews()) {
-    return <PluginWebviewHost pluginId={plugin.pluginId} entryHtml={entryHtml} active={active} />;
+    return (
+      <>
+        <PluginSurfaceViewedLifecycle
+          pluginId={plugin.pluginId}
+          panelId={panelId}
+          active={active}
+        />
+        <PluginWebviewHost pluginId={plugin.pluginId} entryHtml={entryHtml} active={active} />
+      </>
+    );
   }
 
   const panel = (

@@ -1,4 +1,5 @@
 import type { SmartLinkProvider } from "../../../shared/smartLinks";
+import type { PluginBrandGlyph } from "../../../shared/plugins/vocabularyBrandIcons";
 import { LINEAR_LOGO_PATH } from "../lanes/linearBrand";
 
 // Inline SVG brand marks for composer smart-link chips. The chips are built
@@ -48,4 +49,36 @@ export function smartLinkChipMarkSvg(provider: SmartLinkProvider): string | null
     default:
       return null;
   }
+}
+
+/**
+ * A plugin-shipped brand glyph as an SVG element, for the same chip slot.
+ *
+ * Built with `createElementNS` and `setAttribute` rather than returned as
+ * markup, which is what every other mark here is. The other marks are compiled
+ * constants; this one comes from a file a plugin author chose, so the two must
+ * not share a path that ends in `innerHTML`. The host already sanitized the
+ * source to a viewBox and a path list, and building elements means even a glyph
+ * that somehow carried markup would land as an attribute value.
+ *
+ * `currentColor`, like the compiled marks, so the chip's violet-tinted
+ * foreground still tints it.
+ */
+export function smartLinkChipBrandMarkNode(glyph: PluginBrandGlyph): SVGSVGElement {
+  const NS = "http://www.w3.org/2000/svg";
+  const root = document.createElementNS(NS, "svg");
+  root.setAttribute("viewBox", glyph.viewBox);
+  root.setAttribute("width", "100%");
+  root.setAttribute("height", "100%");
+  root.setAttribute("fill", "currentColor");
+  root.setAttribute("aria-hidden", "true");
+  root.setAttribute("focusable", "false");
+  root.style.display = "block";
+  for (const entry of glyph.paths) {
+    const path = document.createElementNS(NS, "path");
+    path.setAttribute("d", entry.d);
+    if (entry.evenodd) path.setAttribute("fill-rule", "evenodd");
+    root.appendChild(path);
+  }
+  return root;
 }

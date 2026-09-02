@@ -12,6 +12,12 @@ import { sanitizePluginThemeTokens } from "../../renderer/lib/pluginTheme";
 import { parsePluginManifestJson, type PluginManifest } from "./manifest";
 import { parsePluginRegistryIndexJson } from "./registryIndex";
 import { parsePluginPanel } from "./vocabulary";
+import {
+  builtinSurfaceInstalled,
+  builtinSurfaceOwner,
+  builtinSurfaceOwnerForPlugin,
+  builtinSurfacePresence,
+} from "./builtinSurfaces";
 
 /**
  * The plugins ADE publishes itself, checked as the real files they are.
@@ -97,21 +103,72 @@ describe("official plugin packages", () => {
   });
 });
 
+/**
+ * The Graph package, as the SUPERSEDES plugin it became.
+ *
+ * These three assertions used to describe a gating shell: a surface that named
+ * `builtin: "graph"` so ADE drew its compiled page in the plugin's place, and a
+ * `panels/main.json` whose fallback deeplinked at `ade://graph`. Neither can
+ * exist now. `graph` is a superseded surface, so the manifest parser REFUSES
+ * `surfaces[].builtin` on it, and the package draws its own panels rather than
+ * borrowing ADE's page — which is why its panels are `graph` and `lane` and its
+ * fallback points into the plugin.
+ *
+ * So ownership is asserted where ownership actually lives — the registry table
+ * every client reads — rather than through a manifest field a superseding
+ * plugin is not allowed to write.
+ */
 describe("ade-graph", () => {
   const manifest = manifests.get("ade-graph")!;
+  // Through `require`, exactly as the child bootstrap loads it, so a syntax
+  // error in the real panel builder fails here rather than at install time.
+  const graphPanels = createRequire(import.meta.url)(
+    path.join(pluginsRoot, "ade-graph/panels.js"),
+  ) as { buildGraphPanel: (input?: Record<string, unknown>) => unknown };
 
-  it("gates the built-in Graph tab", () => {
+  it("supersedes the built-in Graph tab without naming it", () => {
     expect(manifest.official).toBe(true);
-    expect(manifest.surfaces[0]).toMatchObject({ kind: "tab", id: "graph", builtin: "graph" });
+    expect(manifest.surfaces[0]).toMatchObject({ kind: "tab", id: "graph", panelId: "graph" });
+    // Not `toMatchObject` with `builtin: undefined` — that passes on a key that
+    // is present and undefined. The field must be absent.
+    expect(Object.hasOwn(manifest.surfaces[0]!, "builtin")).toBe(false);
+
+    // Ownership survives the polarity the `builtin` field cannot express, and
+    // this table is what the rail, the routes and the smart-link relaxation all
+    // read.
+    expect(builtinSurfacePresence("graph")).toBe("supersedes");
+    expect(builtinSurfaceOwner("graph").ownerPluginId).toBe("ade-graph");
+    expect(builtinSurfaceOwnerForPlugin("ade-graph")?.builtinId).toBe("graph");
   });
 
   it("publishes a panel for clients that cannot draw the canvas", () => {
-    const parsed = parsePluginPanel(
-      JSON.parse(fs.readFileSync(path.join(pluginsRoot, "ade-graph/panels/main.json"), "utf8")),
-    );
+    // Every panel the manifest declares has a file, and every file parses. A
+    // panel that stops parsing renders a fallback card instead of itself.
+    for (const panel of manifest.panels) {
+      const file = path.join(pluginsRoot, "ade-graph", panel.schemaFile!);
+      expect(fs.existsSync(file), `ade-graph/${panel.schemaFile}`).toBe(true);
+      const parsed = parsePluginPanel(JSON.parse(fs.readFileSync(file, "utf8")));
+      expect(parsed.ok, `ade-graph/${panel.schemaFile}`).toBe(true);
+      if (!parsed.ok) continue;
+      // Into the PLUGIN, not at `ade://graph`. The compiled page is the thing
+      // this package replaces, so pointing a reader back at it would send them
+      // to the surface the plugin just took over.
+      expect(parsed.panel.fallback.deeplink).toBe(`ade://plugin/ade-graph/${panel.id}`);
+    }
+  });
+
+  it("binds the lane rows every client can list, canvas or not", () => {
+    // The canvas is what desktop mounts; the BIND is what the phone and the
+    // terminal read, and it is the same collection either way. A canvas with no
+    // bound rows would be a tab that is simply blank on two clients.
+    const built = graphPanels.buildGraphPanel({}) as {
+      body: { component: string; engine?: string; bind?: { collection?: string } }[];
+    };
+    const parsed = parsePluginPanel(built);
     expect(parsed.ok).toBe(true);
-    if (!parsed.ok) return;
-    expect(parsed.panel.fallback.deeplink).toBe("ade://graph");
+    expect(built.body[0]?.component).toBe("canvas");
+    expect(built.body[0]?.engine).toBe("workspace");
+    expect(built.body[0]?.bind?.collection).toBe("lanes");
   });
 });
 
@@ -303,11 +360,20 @@ describe("installing a package the way `ade plugin install <path>` does", () => 
     expect(install.list().map((entry) => entry.record.pluginId)).toEqual([manifest.name]);
   });
 
-  it("keeps ade-graph's builtin surface through an install", async () => {
+  it("hides the compiled Graph tab once ade-graph is installed", async () => {
     const root = pluginsRootScratch();
     const install = createPluginInstallService({ logger: logger(), pluginsRoot: root });
     const installed = await install.install({ source: path.join(pluginsRoot, "ade-graph") });
-    expect(installed.manifest?.surfaces[0]?.builtin).toBe("graph");
+
+    // The install carries no `builtin` field, because a superseding plugin may
+    // not declare one. What it carries is the plugin ID, and that is what the
+    // gate reads: the compiled page steps aside for the OWNER being present and
+    // enabled, never for a manifest field.
+    expect(Object.hasOwn(installed.manifest!.surfaces[0]!, "builtin")).toBe(false);
+    expect(builtinSurfaceInstalled("graph", [installed.record])).toBe(true);
+    // Disabled is not installed, for this question: the compiled tab comes back.
+    expect(builtinSurfaceInstalled("graph", [{ ...installed.record, enabled: false }])).toBe(false);
+    expect(builtinSurfaceInstalled("graph", [])).toBe(false);
   });
 
   /**

@@ -18,7 +18,8 @@ import { cn } from "../ui/cn";
 import { useClampedFixedPosition } from "../../hooks/useClampedFixedPosition";
 import { useAppStore, useRootAppStore } from "../../state/appStore";
 import { MARKETPLACE_ICON, pluginIcon } from "../plugins/pluginIcons";
-import { pluginOwnsBuiltinTab } from "../plugins/builtinTabs";
+import { claimedBuiltinGate, pluginOwnsBuiltinTab } from "../plugins/builtinTabs";
+import { pluginRailTabSurface } from "../../../shared/plugins/manifest";
 import { useVisibleBuiltinRoutes } from "../plugins/useBuiltinTabs";
 import { revealLabel } from "../../lib/platform";
 import { isWebClientMode, pluginTabsAvailable, WEB_CLIENT_TAB_PATHS } from "../../lib/webClientMode";
@@ -416,10 +417,6 @@ export function TabNav({ githubStatus }: { githubStatus?: GitHubStatus | null })
   // so the compiled tab is on the rail until the plugin replaces it.
   const builtinTabVisible = useVisibleBuiltinRoutes();
   const webMode = isWebClientMode();
-  const toolItems = (webMode
-    ? mainItems.slice(4).filter((it) => WEB_CLIENT_TAB_PATHS.has(it.to))
-    : mainItems.slice(4)
-  ).filter((it) => builtinTabVisible(it.to));
   const showSettings = !webMode || WEB_CLIENT_TAB_PATHS.has(settingsItem.to);
   // On the list for web: the marketplace reads and installs through the sync
   // adapter, so browsing and managing a machine's plugins works from a browser.
@@ -436,39 +433,82 @@ export function TabNav({ githubStatus }: { githubStatus?: GitHubStatus | null })
   // client never shows a nav item that opens an empty shell.
   const installedPlugins = useRootAppStore((s) => s.installedPlugins);
   const canServePluginTabs = pluginTabsAvailable();
+  /**
+   * Every plugin whose rail tab can carry a badge — GATED ONES INCLUDED.
+   *
+   * The gate filter used to run here, before the badges were resolved, so a
+   * plugin whose rail entry is a compiled tab rather than `/plugin/<id>` could
+   * not publish a pill at all, while iOS and the TUI drew one from the same
+   * row. Where the pill HANGS is a rendering question, answered twice below;
+   * whether it exists is not, so this list is the whole set.
+   *
+   * The surface is chosen by {@link pluginRailTabSurface}, the one rule every
+   * client shares — a tab badge is addressed by `"<pluginId>/<surfaceId>"`, and
+   * two clients picking different surfaces off one manifest would read two
+   * different addresses for one pill.
+   */
   const pluginTabSpecs = React.useMemo(
     () =>
       canServePluginTabs
-        ? installedPlugins
-            .filter((plugin) => plugin.enabled
-              && (plugin.tabs?.length ?? 0) > 0
-              && !pluginOwnsBuiltinTab(plugin))
-            .map((plugin) => ({
-              pluginId: plugin.pluginId,
-              surfaceId: plugin.tabs[0]!.id,
-              plugin,
-            }))
+        ? installedPlugins.flatMap((plugin) => {
+          if (!plugin.enabled) return [];
+          const tab = pluginRailTabSurface(plugin.tabs);
+          if (!tab) return [];
+          return [{ pluginId: plugin.pluginId, surfaceId: tab.id, tab, plugin }];
+        })
         : [],
     [canServePluginTabs, installedPlugins],
   );
   const pluginTabBadges = usePluginTabBadges(pluginTabSpecs);
   const pluginItems = React.useMemo<TabNavItem[]>(
     () =>
-      pluginTabSpecs.map(({ plugin }) => {
-        const tab = plugin.tabs[0]!;
-        const badge = pluginTabBadges.get(plugin.pluginId) ?? null;
-        return {
-          to: `/plugin/${plugin.pluginId}`,
-          label: tab.title || plugin.displayName,
-          icon: pluginIcon(tab.icon ?? plugin.icon, plugin.brandIcons),
-          accent: plugin.accent,
-          attention: plugin.attention === true,
-          badge,
-          description: `A tab from the ${plugin.displayName} plugin.`,
-        };
-      }),
+      pluginTabSpecs
+        .filter(({ plugin }) => !pluginOwnsBuiltinTab(plugin))
+        .map(({ plugin, tab }) => {
+          const badge = pluginTabBadges.get(plugin.pluginId) ?? null;
+          return {
+            to: `/plugin/${plugin.pluginId}`,
+            label: tab.title || plugin.displayName,
+            icon: pluginIcon(tab.icon ?? plugin.icon, plugin.brandIcons),
+            accent: plugin.accent,
+            attention: plugin.attention === true,
+            badge,
+            description: `A tab from the ${plugin.displayName} plugin.`,
+          };
+        }),
     [pluginTabBadges, pluginTabSpecs],
   );
+
+  /**
+   * The badge a GATED plugin publishes, keyed by the compiled route it owns.
+   *
+   * A plugin that gates a compiled tab has no rail item of its own — the
+   * compiled one IS its entry point — so its pill belongs on that item. Keyed
+   * by route because that is the only field a `mainItems` entry and a gate have
+   * in common. A pane owner (`route === null`) has nowhere to hang one, and is
+   * left out rather than guessed at.
+   */
+  const gatedTabBadges = React.useMemo(() => {
+    const byRoute = new Map<string, NonNullable<TabNavItem["badge"]>>();
+    for (const { plugin } of pluginTabSpecs) {
+      const route = claimedBuiltinGate(plugin)?.route;
+      const badge = pluginTabBadges.get(plugin.pluginId);
+      if (route && badge) byRoute.set(route, badge);
+    }
+    return byRoute;
+  }, [pluginTabBadges, pluginTabSpecs]);
+
+  // Built after the badges, because a gated plugin's pill hangs on the compiled
+  // item it owns rather than on a rail entry of its own.
+  const toolItems = (webMode
+    ? mainItems.slice(4).filter((it) => WEB_CLIENT_TAB_PATHS.has(it.to))
+    : mainItems.slice(4)
+  )
+    .filter((it) => builtinTabVisible(it.to))
+    .map((it) => {
+      const badge = gatedTabBadges.get(it.to);
+      return badge ? { ...it, badge } : it;
+    });
 
   return (
     <>

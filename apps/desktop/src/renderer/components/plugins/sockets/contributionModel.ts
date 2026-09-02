@@ -30,8 +30,10 @@ import {
   type PluginSurfaceId,
 } from "../../../../shared/plugins/sockets";
 import {
+  parsePluginTabContributionEntityId,
   pluginContributionKeyForContext,
   pluginSurfaceContributionKey,
+  pluginTabContributionKey,
   type PluginSurfaceContext,
 } from "../../../../shared/plugins/context";
 import { manifestOf, type PluginContributionRow, type PluginSocketSource } from "./contributionBridge";
@@ -524,12 +526,35 @@ export function selectPluginTabBadge(
   pluginId: string,
   tabSurfaceId: string,
 ): PluginContribution<"row-badge"> | null {
+  const address = pluginTabContributionKey(pluginId, tabSurfaceId).entityId;
   const badges = selectContributions(set, "row-badge", {
     kind: "plugin-tab",
     pluginId,
     surfaceId: tabSurfaceId,
-  }).filter((entry) => entry.pluginId === pluginId);
-  return badges[0] ?? null;
+  }).filter((entry) => entry.pluginId === pluginId && addressesPluginTab(entry, address));
+  // Sliced rather than indexed, so the cap is the constant that documents it.
+  return badges.slice(0, PLUGIN_TAB_BADGE_VISIBLE_LIMIT)[0] ?? null;
+}
+
+/**
+ * Is this row published against the tab's own address?
+ *
+ * Re-read rather than trusted. A row's `entityId` is data another machine
+ * wrote, and `"<pluginId>/<surfaceId>"` — exactly one slash — is the whole
+ * reason a tab badge cannot be confused with a contribution on one of ADE's own
+ * surfaces. Checking the shape where the pill is CHOSEN, and not only where it
+ * is published, is what makes {@link parsePluginTabContributionEntityId} part
+ * of the real path instead of a function only a test calls.
+ *
+ * A contribution with no entity at all is a declaration, and declarations do
+ * not reach this kind — `selectContributions` drops static `row-badge` entries
+ * — so it can only arrive from a caller that built one by hand.
+ */
+function addressesPluginTab(entry: PluginContribution<"row-badge">, address: string): boolean {
+  const entityId = (entry as Partial<PluginEntityContribution>).entityId;
+  if (entityId === undefined) return true;
+  const parsed = parsePluginTabContributionEntityId(entityId);
+  return parsed !== null && `${parsed.pluginId}/${parsed.surfaceId}` === address;
 }
 
 /**
