@@ -391,8 +391,10 @@ export const GitHubTabPrRow = React.memo(function GitHubTabPrRow({
       branch: item.headBranch,
       state: item.state,
       isDraft: item.isDraft,
+      id: item.linkedPrId,
+      laneId: item.linkedLaneId,
     }),
-    [item.githubPrNumber, item.headBranch, item.isDraft, item.state, item.title],
+    [item.githubPrNumber, item.headBranch, item.isDraft, item.linkedLaneId, item.linkedPrId, item.state, item.title],
   );
   const pluginEntries = usePluginMenuEntries("prs", prContext, {
     onClose: closeRowMenu,

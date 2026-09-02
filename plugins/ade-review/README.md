@@ -1,22 +1,24 @@
 ## Review
 
-Run AI review passes over your project and pull requests, and read what they
-found — findings, files and the run history behind them.
+Run AI review passes over a lane, a commit range, uncommitted changes, or a
+pull request, then act on the findings — acknowledge, dismiss, snooze, or
+suppress similar ones.
 
-Review was part of ADE itself until plugins existed. Nothing about it changed —
-it stopped being something everyone has to carry. Install it and the Review tab
-is in your rail; remove it and the rail is one item shorter.
+This plugin replaces ADE's compiled Review tab. Install it and the rail, the
+PR "ADE review" button, and `ade review` talk to these panels. Disable it and
+the compiled Review page comes back unchanged.
 
 ### What it adds
 
-- The **Review** tab.
+- The **Review** tab, on every client that draws vocabulary panels.
+- Launch from the tab, the command palette, or a pull request.
+- Findings with the same feedback the compiled page offered.
+- Learnings: the quality report and the suppressions list.
+- Agent tools and `ade review runs | launch | learnings`.
 
 ### Notes
 
-- The page is drawn by the desktop app rather than published as a panel. On a
-  phone or in the terminal the plugin shows a card pointing at the computer that
-  holds the repository.
-- The `/review` route and Review links open only while this plugin is installed
-  and enabled. Otherwise ADE says plainly that it is not here.
-- It runs no code at all: the card is `panels/main.json`, which ADE reads from
-  the manifest. Nothing is read, and nothing is stored.
+- The review engine stays in ADE. This plugin shapes rows and calls `review.*`.
+- The review agent is read-only. It never edits, commits, or pushes.
+- Phone: there was never a compiled Review screen. These panels are the first
+  Review UI on iOS and in the terminal.

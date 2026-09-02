@@ -30,6 +30,14 @@ export type PluginPrContext = {
   branch: string | null;
   state: "open" | "closed" | "merged" | "draft" | "unknown";
   ciStatus: "passing" | "failing" | "pending" | "none" | "unknown";
+  /**
+   * ADE's pull-request row id, when this PR is linked in ADE. Null for a
+   * GitHub-only row that has not been mapped yet. A plugin that starts an
+   * ADE review needs this, not the GitHub number.
+   */
+  id: string | null;
+  /** The lane this PR is checked out in, when there is one. */
+  laneId: string | null;
 };
 
 export type PluginLaneContext = {

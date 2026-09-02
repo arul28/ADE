@@ -33,6 +33,7 @@ import { PrUserAvatar } from "./PrUserAvatar";
 import { PrChecksCard } from "./PrChecksCard";
 import { isBotLogin, reviewStateForLogin } from "./prMergeRailUtils";
 import { useBuiltinSurfaceVisible } from "../../plugins/useBuiltinTabs";
+import { PluginToolbarActions, pluginPrContext } from "../../plugins/sockets";
 
 export type PrDetailRightMetadataRailProps = {
   pr: PrWithConflicts;
@@ -202,10 +203,18 @@ export const PrDetailRightMetadataRail = memo(function PrDetailRightMetadataRail
   const [reviewEvent, setReviewEvent] = useState<PrReviewEvent>("APPROVE");
 
   const isOpenOrDraft = pr.state === "open" || pr.state === "draft";
-  // An ADE review run reports into the Review tab, so the button goes wherever
-  // that tab goes: on a machine without the plugin that owns it, starting a run
-  // would send findings to a page this ADE does not have.
+  // Compiled ADE review reports into the compiled Review tab, so the button
+  // goes wherever that tab goes. Installing `ade-review` hides this control
+  // and the plugin's `toolbar-action` on this rail stands in its place.
   const reviewSurfaceVisible = useBuiltinSurfaceVisible("review");
+  const pluginReviewContext = pluginPrContext({
+    number: pr.githubPrNumber,
+    title: pr.title,
+    branch: pr.headBranch,
+    state: pr.state,
+    id: pr.id,
+    laneId: pr.laneId,
+  });
   // ADE review starts an agent inside the lane's worktree, so this one really
   // does need a local checkout. A disabled button that explains itself beats a
   // button that silently does nothing when clicked.
@@ -315,7 +324,13 @@ export const PrDetailRightMetadataRail = memo(function PrDetailRightMetadataRail
                 <Sparkle size={11} weight="fill" />
                 {canOfferOpenAsLane ? "Open as lane to review" : "ADE review"}
               </button>
-              ) : null}
+              ) : (
+                <PluginToolbarActions
+                  surface="prs"
+                  context={pluginReviewContext}
+                  style={{ flex: 1, minWidth: 0 }}
+                />
+              )}
               <button
                 type="button"
                 onClick={() => setSubmitReviewOpen(true)}

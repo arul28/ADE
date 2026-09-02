@@ -2,9 +2,11 @@
  * Compiled surfaces owned by official plugins.
  *
  * A manifest `builtin` contribution does not render a vocabulary panel. It
- * names a surface that is compiled into ADE — the Graph canvas, the Review and
- * History pages, the Linear, iOS Simulator and Electron Control panes — and says
- * "installing me is what puts this in the product".
+ * names a surface that is compiled into ADE — the Graph canvas, the History
+ * page, the iOS Simulator and Electron Control panes — and says "installing me
+ * is what puts this in the product". Review, Linear and Cursor Cloud run the
+ * other way: ADE already ships them compiled, and the owner plugin replaces
+ * them.
  *
  * ## Hidden is the default, and it is a default, not a fallback
  *
@@ -129,6 +131,26 @@ export function isBuiltinSurfaceVisible(
 export function isBuiltinTabVisible(route: string, input: BuiltinGateInput): boolean {
   const gate = builtinGateForRoute(route);
   return gate ? isBuiltinSurfaceVisible(gate.builtinId, input) : true;
+}
+
+/**
+ * Where a compiled route should send someone once a superseding plugin owns it.
+ *
+ * Enables surfaces have nowhere to go when the owner is gone — the page is not
+ * part of this ADE. Supersedes surfaces do: the plugin's own tab is the
+ * replacement, so a bookmark or a stored last-route at `/review` must open
+ * `/plugin/ade-review` rather than a dead end or `/work`.
+ */
+export function supersededCompiledRouteReplacement(
+  route: string,
+  input: BuiltinGateInput,
+): string | null {
+  const gate = builtinGateForRoute(route);
+  if (!gate?.route) return null;
+  if (builtinSurfacePresence(gate.builtinId) !== "supersedes") return null;
+  if (isBuiltinSurfaceVisible(gate.builtinId, input)) return null;
+  if (!(input.pluginSupport && input.pluginsLoaded)) return null;
+  return `/plugin/${encodeURIComponent(gate.ownerPluginId)}`;
 }
 
 /**

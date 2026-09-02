@@ -1,0 +1,16 @@
+{
+  "v": 1,
+  "title": "Review run",
+  "fallback": {
+    "title": "Review run",
+    "text": "Open ADE on the computer that holds this plugin to read this run.",
+    "deeplink": "ade://plugin/ade-review/run"
+  },
+  "body": [
+    {
+      "component": "emptyState",
+      "title": "Loading this run…",
+      "icon": "git-pull-request"
+    }
+  ]
+}

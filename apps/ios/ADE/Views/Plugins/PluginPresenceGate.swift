@@ -47,17 +47,20 @@ enum PluginBuiltinSurface: String, CaseIterable {
   /// The reason a surface picks one rather than the other is a product fact
   /// about who drew the screen first.
   ///
-  /// Both surfaces this app compiles are `.supersedes`. `ade-linear` and
-  /// `ade-cursor-cloud` each ship a replacement for a pane this app has drawn in
-  /// hand-written SwiftUI since before the plugin platform existed. Installing
-  /// either plugin REMOVES the compiled pane rather than adding a second way in,
-  /// and uninstalling it hands the feature back. The `.enables` surfaces are the
-  /// ones this app never compiled — Graph, Review, History, iOS Simulator, App
-  /// Control — where the plugin is the only reason a screen could exist at all.
+  /// Both surfaces this app compiles as panes are `.supersedes`. `ade-linear`
+  /// and `ade-cursor-cloud` each ship a replacement for a pane this app has
+  /// drawn in hand-written SwiftUI since before the plugin platform existed.
+  /// Review is `.supersedes` too: ADE shipped a compiled Review tab on desktop,
+  /// and the phone draws the plugin's panels rather than a compiled screen.
+  /// Installing the owner REMOVES the compiled affordance rather than adding a
+  /// second way in, and uninstalling it hands the feature back. The `.enables`
+  /// surfaces are the ones this app never compiled — Graph, History, iOS
+  /// Simulator, App Control — where the plugin is the only reason a screen
+  /// could exist at all.
   var spec: (ownerPluginId: String, presence: PluginSurfacePresence) {
     switch self {
     case .graph: return ("ade-graph", .enables)
-    case .review: return ("ade-review", .enables)
+    case .review: return ("ade-review", .supersedes)
     case .history: return ("ade-history", .enables)
     case .linear: return ("ade-linear", .supersedes)
     case .iosSimulator: return ("ade-ios-sim", .enables)

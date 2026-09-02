@@ -39,6 +39,7 @@ import {
   builtinGateForRoute,
   isBuiltinSurfaceVisible,
   isBuiltinTabVisible,
+  supersededCompiledRouteReplacement,
   type BuiltinGateInput,
 } from "../plugins/builtinTabs";
 import {
@@ -322,6 +323,8 @@ function serializeStoredProjectRoute(location: ReturnType<typeof useLocation>): 
  * registry hasn't resolved on this particular render would be its own bug.
  */
 function persistableSurfaceRoute(route: string, gateInput: BuiltinGateInput): string {
+  const replacement = supersededCompiledRouteReplacement(route, gateInput);
+  if (replacement) return replacement;
   const gate = builtinGateForRoute(route);
   if (!gate) return route;
   const knownUnavailable =

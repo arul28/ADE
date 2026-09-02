@@ -89,32 +89,127 @@ const GRAPH = manifest({
 });
 
 /**
- * The rest of the compiled surfaces, as gates.
+ * Review, as the real product rather than a gate.
  *
- * Same shape as GRAPH and for the same reason: none of these draws anything
- * from its manifest. Review is a diff reader, History is an event timeline,
- * Linear talks to an API, the simulator and app panes own native processes —
- * none of that is expressible as vocabulary, and rewriting them as panels to
- * make them "real" plugins would have been a rewrite of working code for no
- * gain. What the manifest buys is the choice: installed, the surface is there;
- * removed, every entry point for it goes with it.
- *
- * The `builtin` id is the contract, not the surface `id`: `ade-ios-sim`
- * publishes surface id `ios-sim` but gates the compiled `ios` pane, and the
- * two being spelled differently is exactly why the compiled side keys off
- * `builtin` and never off the surface id. These mirror `plugins/<id>/plugin.json`
- * field for field — a drift here shows as a wrong "Adds" list in the install
- * modal, never as a wrong install.
+ * The gate is gone. `review` is a SUPERSEDED surface now, so the plugin may not
+ * name it with `builtin` at all — it draws its own panels and ADE's compiled
+ * Review tab steps aside. The engine stays in core; this package is the UI,
+ * the PR toolbar, the agent tools and `ade review`.
  */
 const REVIEW = manifest({
   name: "ade-review",
-  version: "1.0.1",
+  version: "1.1.0",
   displayName: "Review",
-  description: "AI review passes over your project and pull requests — as an optional tab.",
+  description: "Run AI review passes over a lane, a commit range, uncommitted changes, or a pull request, and act on the findings.",
   icon: "git-pull-request",
   accent: "#22A06B",
-  surfaces: [{ kind: "tab", id: "review", title: "Review", icon: "git-pull-request", panelId: "main", builtin: "review", mobile: false }],
-  panels: [{ id: "main", schemaFile: "panels/main.json", title: "Review" }],
+  entry: "index.js",
+  surfaces: [{ kind: "tab", id: "runs", title: "Review", icon: "git-pull-request", panelId: "runs", order: 45, mobile: true }],
+  panels: [
+    { id: "runs", schemaFile: "panels/runs.json", title: "Review", icon: "git-pull-request", refreshAction: "refreshRuns" },
+    { id: "run", schemaFile: "panels/run.json", title: "Review run", icon: "git-pull-request", refreshAction: "refreshRun" },
+    { id: "launch", schemaFile: "panels/launch.json", title: "Launch a review", icon: "play" },
+    { id: "learnings", schemaFile: "panels/learnings.json", title: "Review learnings", icon: "sparkle", refreshAction: "refreshLearnings" },
+  ],
+  sockets: [
+    { socket: "work-rail-pane", surface: "work", id: "runs-pane", label: "Review", icon: "git-pull-request", panelId: "runs" },
+    { socket: "toolbar-action", surface: "prs", id: "request-review", label: "ADE review", icon: "sparkle", actionId: "openLaunchFromPr" },
+    { socket: "row-menu-item", surface: "prs", id: "request-review-row", label: "ADE review…", icon: "sparkle", actionId: "openLaunchFromPr" },
+    { socket: "command-palette-action", surface: "app", id: "palette-runs", label: "Review runs", icon: "git-pull-request", actionId: "openRuns" },
+    { socket: "command-palette-action", surface: "app", id: "palette-launch", label: "Launch a review", icon: "play", actionId: "openLaunch" },
+  ],
+  collections: {
+    runs: { sync: true },
+    findings: { sync: true },
+    suppressions: { sync: true },
+  },
+  tools: [
+    {
+      name: "list_runs",
+      description: "List ADE AI review runs for this project, newest first.",
+      action: "listRunsTool",
+      input: {
+        type: "object",
+        properties: {
+          laneId: { type: "string", description: "Limit to this lane." },
+          status: {
+            type: "string",
+            description: "queued, running, completed, failed, cancelled, or all.",
+          },
+          limit: { type: "integer", description: "How many runs to return. Defaults to 50." },
+        },
+        required: [],
+      },
+    },
+    {
+      name: "start_run",
+      description: "Start an AI review of a lane, commit range, working tree, or pull request.",
+      action: "startRun",
+      input: {
+        type: "object",
+        properties: {
+          laneId: { type: "string", description: "The lane to review." },
+          targetMode: {
+            type: "string",
+            description: "lane_diff, commit_range, working_tree, or pr.",
+          },
+          compareKind: {
+            type: "string",
+            description: "default_branch or lane. Only for lane_diff.",
+          },
+          compareLaneId: { type: "string", description: "The other lane, when compareKind is lane." },
+          baseCommit: { type: "string", description: "Excluded base SHA for commit_range." },
+          headCommit: { type: "string", description: "Included head SHA for commit_range." },
+          prId: { type: "string", description: "ADE pull-request id for pr mode." },
+          modelId: { type: "string" },
+          reasoningEffort: { type: "string" },
+          fastMode: { type: "boolean" },
+          publishBehavior: {
+            type: "string",
+            description: "local_only or auto_publish.",
+          },
+        },
+        required: ["laneId"],
+      },
+    },
+    {
+      name: "get_run",
+      description: "Fetch one review run with its findings, artifacts, and publication status.",
+      action: "getRunTool",
+      input: {
+        type: "object",
+        properties: {
+          runId: { type: "string", description: "The review run id." },
+        },
+        required: ["runId"],
+      },
+    },
+    {
+      name: "record_feedback",
+      description: "Acknowledge, dismiss, snooze, or suppress a review finding.",
+      action: "recordFeedback",
+      input: {
+        type: "object",
+        properties: {
+          findingId: { type: "string" },
+          kind: {
+            type: "string",
+            description: "acknowledge, dismiss, snooze, or suppress.",
+          },
+          reason: { type: "string" },
+          note: { type: "string" },
+          snoozeDurationMs: { type: "integer" },
+          suppressionScope: {
+            type: "string",
+            description: "repo, path, or global. Only for suppress.",
+          },
+        },
+        required: ["findingId", "kind"],
+      },
+    },
+  ],
+  cli: ["runs", "launch", "learnings"],
+  skills: ["skills"],
 });
 
 const HISTORY = manifest({
@@ -1335,19 +1430,19 @@ export const MARKETPLACE_LOCAL_INDEX: readonly MarketplaceListing[] = [
     readme: [
       "## Review",
       "",
-      "Read a pull request and the changes in your working copy side by side, file",
-      "by file, with comments in place.",
+      "Run AI review passes over a lane, a commit range, uncommitted changes, or a",
+      "pull request, then act on the findings — acknowledge, dismiss, snooze, or",
+      "suppress similar ones.",
       "",
-      "Review was part of ADE itself until plugins existed. Nothing about it changed —",
-      "it stopped being something everyone has to carry. Install it and the Review tab",
-      "is in your rail; remove it and the rail is one item shorter.",
+      "This plugin replaces ADE's compiled Review tab. Install it and the rail, the",
+      "PR \"ADE review\" button, and `ade review` talk to these panels. Disable it and",
+      "the compiled Review page comes back unchanged.",
       "",
       "### Notes",
       "",
-      "- The diff is drawn by the desktop app rather than published as a panel, so on",
-      "  a phone or in the terminal the plugin shows a card pointing at the machine",
-      "  that holds the repository.",
-      "- The `/review` route opens only while the plugin is installed and on.",
+      "- The review engine stays in ADE. This plugin shapes rows and calls `review.*`.",
+      "- Phone: there was never a compiled Review screen. These panels are the first",
+      "  Review UI on iOS and in the terminal.",
     ].join("\n"),
   }),
   listing(HISTORY, {

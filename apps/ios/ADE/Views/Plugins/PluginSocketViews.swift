@@ -20,7 +20,7 @@ import SwiftUI
 enum PluginSocketContext: Equatable {
   case surface(PluginSurfaceId)
   case lane(id: String)
-  case pr(number: Int)
+  case pr(number: Int, id: String?, laneId: String?)
   case session(id: String)
   case file(path: String)
   case automation(id: String)
@@ -40,7 +40,7 @@ enum PluginSocketContext: Equatable {
     switch self {
     case let .surface(surface): return (.surface, surface.rawValue)
     case let .lane(id): return (.lane, id)
-    case let .pr(number): return (.pr, String(number))
+    case let .pr(number, _, _): return (.pr, String(number))
     case let .session(id): return (.session, id)
     case let .file(path): return (.file, path)
     case let .automation(id): return (.automation, id)
@@ -58,8 +58,11 @@ enum PluginSocketContext: Equatable {
       return ["kind": "surface", "surface": surface.rawValue]
     case let .lane(id):
       return ["kind": "lane", "id": id]
-    case let .pr(number):
-      return ["kind": "pr", "number": number]
+    case let .pr(number, id, laneId):
+      var object: [String: Any] = ["kind": "pr", "number": number]
+      if let id { object["id"] = id }
+      if let laneId { object["laneId"] = laneId }
+      return object
     case let .session(id):
       return ["kind": "session", "id": id]
     case let .file(path):
@@ -389,7 +392,7 @@ extension SyncService {
     // `pluginContributionKeyForContext` writes and what the host stores. A row
     // that is not numeric came from something that did not follow the contract,
     // and the untouched `entityId` still rides in the payload beside this.
-    case .pr: .pr(number: Int(contribution.entityId) ?? 0)
+    case .pr: .pr(number: Int(contribution.entityId) ?? 0, id: nil, laneId: nil)
     case .session: .session(id: contribution.entityId)
     case .file: .file(path: contribution.entityId)
     case .automation: .automation(id: contribution.entityId)
@@ -1005,8 +1008,11 @@ enum PluginSocketContextValues {
       return ["kind": .string("surface"), "surface": .string(surface.rawValue)]
     case let .lane(id):
       return ["kind": .string("lane"), "id": .string(id)]
-    case let .pr(number):
-      return ["kind": .string("pr"), "number": .number(Double(number))]
+    case let .pr(number, id, laneId):
+      var values: [String: RemoteJSONValue] = ["kind": .string("pr"), "number": .number(Double(number))]
+      if let id { values["id"] = .string(id) }
+      if let laneId { values["laneId"] = .string(laneId) }
+      return values
     case let .session(id):
       return ["kind": .string("session"), "id": .string(id)]
     case let .file(path):

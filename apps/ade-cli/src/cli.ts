@@ -13073,6 +13073,15 @@ function buildCliPlan(
     if (primaryHelpKey === "cursor") {
       return { kind: "help", text: buildCursorHelp(args) };
     }
+    if (primaryHelpKey === "review") {
+      const pluginId = PLUGIN_BUILTIN_SURFACE_OWNER_IDS.review;
+      if (resolvePluginCliRoute(pluginId, [])) {
+        return {
+          kind: "help",
+          text: pluginCliUsageText(pluginId).replaceAll(`ade ${pluginId} `, "ade review "),
+        };
+      }
+    }
     if (primaryHelpKey === "app-control") {
       return { kind: "help", text: buildAppControlHelp(args) };
     }
@@ -13393,6 +13402,7 @@ function buildCliPlan(
     return buildUpdatePlan(args);
   if (primary === "cursor") return buildCursorPlan(args);
   if (primary === "github" || primary === "gh") return buildGithubPlan(args);
+  if (primary === "review") return buildReviewPluginPlan(args);
   // `ade <pluginId> <cmd>` (D18). Only an installed, enabled plugin that
   // declares this word claims the command; anything else must still read as the
   // typo it is, so `ade lnes` says "Unknown command" and not a plugin error.
@@ -13585,6 +13595,63 @@ function buildCursorPlan(args: string[]): CliPlan {
     return { kind: "help", text: HELP_BY_COMMAND.cursor ?? topLevelHelpText() };
   }
   return { kind: "cursor-cloud", rest: args };
+}
+
+/**
+ * `ade review <word>` aliases `ade ade-review <word>` when that plugin is
+ * installed. Not a new manifest field: the owner id is the `review`
+ * builtin-surface owner, and the words are the ones its `cli` array already
+ * declares. Without the plugin the word stays unknown — compiled Review never
+ * had an `ade review` command (`ade prs review` is GitHub).
+ */
+const REVIEW_PLUGIN_CLI_WORDS: Record<string, string> = {
+  runs: "runs",
+  run: "runs",
+  launch: "launch",
+  learnings: "learnings",
+  learning: "learnings",
+};
+
+function reviewPluginCliArgs(args: readonly string[]): string[] | null {
+  const word = args.find((arg) => arg !== "--" && !arg.startsWith("-")) ?? null;
+  if (word === null) return [...args];
+  const canonical = REVIEW_PLUGIN_CLI_WORDS[word.toLowerCase()];
+  if (!canonical) return null;
+  let replaced = false;
+  return args.map((arg) => {
+    if (!replaced && arg === word) {
+      replaced = true;
+      return canonical;
+    }
+    return arg;
+  });
+}
+
+function reviewPluginAliasUsageText(): string {
+  const pluginId = PLUGIN_BUILTIN_SURFACE_OWNER_IDS.review;
+  return pluginCliUsageText(pluginId).replaceAll(`ade ${pluginId} `, "ade review ");
+}
+
+function buildReviewPluginPlan(args: string[]): CliPlan {
+  const pluginArgs = reviewPluginCliArgs(args);
+  const pluginRoute = pluginArgs
+    ? resolvePluginCliRoute(PLUGIN_BUILTIN_SURFACE_OWNER_IDS.review, pluginArgs)
+    : null;
+  if (pluginRoute) {
+    if (!pluginRoute.command || hasHelpFlag(args)) {
+      return { kind: "help", text: reviewPluginAliasUsageText() };
+    }
+    return {
+      kind: "execute",
+      label: `plugin ${pluginRoute.pluginId} ${pluginRoute.command}`,
+      steps: [actionStep("result", "plugin", "invoke", {
+        pluginId: pluginRoute.pluginId,
+        action: pluginRoute.command,
+        argv: pluginArgs,
+      })],
+    };
+  }
+  throw new CliUsageError(unknownCommandMessage("review"));
 }
 
 function findProjectRoots(startDir: string): {

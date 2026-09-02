@@ -174,9 +174,38 @@ const CURSOR_CLOUD_ACTION_NAMES: readonly string[] = [
   "ai.stopCursorCloudAgentRun",
 ];
 
+/**
+ * ADE's own compiled Review verbs.
+ *
+ * The `review` domain stays DISPATCHING on a machine that has `ade-review`:
+ * the plugin's tools and panels call these, and an in-flight chat must not
+ * fail because the catalog hid them. Advertisement is what moves.
+ */
+const REVIEW_ACTION_NAMES: readonly string[] = [
+  "review.cancelRun",
+  "review.deleteSuppression",
+  "review.getRunDetail",
+  "review.listLaunchContext",
+  "review.listRuns",
+  "review.listSuppressions",
+  "review.qualityReport",
+  "review.recordFeedback",
+  "review.rerun",
+  "review.startRun",
+];
+
 export const BUILTIN_SURFACE_OWNERS: readonly BuiltinSurfaceOwner[] = [
   { builtinId: "graph", route: "/graph", ownerPluginId: PLUGIN_BUILTIN_SURFACE_OWNER_IDS.graph, title: "Graph", actionDomains: [], actionNames: [] },
-  { builtinId: "review", route: "/review", ownerPluginId: PLUGIN_BUILTIN_SURFACE_OWNER_IDS.review, title: "Review", actionDomains: [], actionNames: [] },
+  {
+    // Superseded: ADE shipped a compiled Review tab, so `ade-review` replaces
+    // it rather than being the reason it exists.
+    builtinId: "review",
+    route: "/review",
+    ownerPluginId: PLUGIN_BUILTIN_SURFACE_OWNER_IDS.review,
+    title: "Review",
+    actionDomains: [],
+    actionNames: REVIEW_ACTION_NAMES,
+  },
   { builtinId: "history", route: "/history", ownerPluginId: PLUGIN_BUILTIN_SURFACE_OWNER_IDS.history, title: "History", actionDomains: [], actionNames: [] },
   {
     // Superseded: ADE has shipped a compiled Linear integration since long

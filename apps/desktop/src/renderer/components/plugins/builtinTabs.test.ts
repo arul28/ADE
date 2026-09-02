@@ -8,6 +8,7 @@ import {
   isBuiltinSurfaceVisible,
   isBuiltinTabVisible,
   pluginOwnsBuiltinTab,
+  supersededCompiledRouteReplacement,
   type BuiltinGateInput,
 } from "./builtinTabs";
 import { PLUGIN_BUILTIN_SURFACE_IDS } from "../../../shared/plugins/manifest";
@@ -171,6 +172,18 @@ describe("gate ownership", () => {
 
   it("does not route to a surface whose owner is installed but disabled", () => {
     expect(builtinRouteForPluginRoute("ade-graph", [plugin({ enabled: false })])).toBeNull();
+  });
+
+  it("sends a superseded compiled route to the plugin tab once the owner is here", () => {
+    const review = plugin({
+      pluginId: "ade-review",
+      displayName: "Review",
+      tabs: [{ id: "runs", title: "Review", panelId: "runs" }],
+    });
+    expect(supersededCompiledRouteReplacement("/review", input())).toBeNull();
+    expect(supersededCompiledRouteReplacement("/review", input({ plugins: [review] })))
+      .toBe("/plugin/ade-review");
+    expect(supersededCompiledRouteReplacement("/graph", input({ plugins: [plugin()] }))).toBeNull();
   });
 });
 

@@ -76,9 +76,7 @@ describe("TabNav", () => {
 
   it("keeps Chats available and active without a project", () => {
     useAppStore.setState({ project: null, showWelcome: true } as any);
-    // Review is one of the tabs a plugin owns, so this machine has to have it
-    // for the "needs a project" rule to be the thing under test here.
-    seedBuiltinSurfacePlugins(["review"]);
+    // Compiled Review is on the rail by default (supersedes). Graph is not.
 
     render(
       <MemoryRouter initialEntries={["/chats"]}>
@@ -91,9 +89,9 @@ describe("TabNav", () => {
     expect(screen.getByRole("link", { name: "Review" }).getAttribute("aria-disabled")).toBe("true");
   });
 
-  it("leaves the plugin-owned tabs out of the rail on a machine with no plugins", () => {
-    // The shipped default. Nothing seeds these packages, so a fresh install has
-    // no Graph, Review or History tab — and the core tabs are untouched.
+  it("leaves enabling plugin tabs out of the rail on a machine with no plugins", () => {
+    // Graph and History stay hidden until their plugins land. Review is a
+    // compiled tab ADE already ships, so a fresh install still has it.
     render(
       <MemoryRouter initialEntries={["/work"]}>
         <TabNav />
@@ -101,7 +99,7 @@ describe("TabNav", () => {
     );
 
     expect(screen.queryByRole("link", { name: "Graph" })).toBeNull();
-    expect(screen.queryByRole("link", { name: "Review" })).toBeNull();
+    expect(screen.getByRole("link", { name: "Review" })).toBeTruthy();
     expect(screen.queryByRole("link", { name: "History" })).toBeNull();
     expect(screen.getByRole("link", { name: "Work" })).toBeTruthy();
     expect(screen.getByRole("link", { name: "PRs" })).toBeTruthy();
@@ -120,7 +118,7 @@ describe("TabNav", () => {
     // No second entry for the plugin itself: it has no panel of its own, and a
     // duplicate row opening an empty page would wear the feature's name.
     expect(screen.getAllByRole("link", { name: "Graph" })).toHaveLength(1);
-    expect(screen.queryByRole("link", { name: "Review" })).toBeNull();
+    expect(screen.getByRole("link", { name: "Review" })).toBeTruthy();
     expect(screen.queryByRole("link", { name: "History" })).toBeNull();
   });
 

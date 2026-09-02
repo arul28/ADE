@@ -126,6 +126,8 @@ export function useGitHubTabListModel({
             branch: item.headBranch,
             state: item.state,
             isDraft: item.isDraft,
+            id: item.linkedPrId,
+            laneId: item.linkedLaneId,
           }),
           appliedPluginFilterKeys,
         ))

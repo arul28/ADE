@@ -1,0 +1,16 @@
+{
+  "v": 1,
+  "title": "Review learnings",
+  "fallback": {
+    "title": "Review learnings",
+    "text": "Open ADE on the computer that holds this plugin to manage suppressions.",
+    "deeplink": "ade://plugin/ade-review/learnings"
+  },
+  "body": [
+    {
+      "component": "emptyState",
+      "title": "Loading learnings…",
+      "icon": "sparkle"
+    }
+  ]
+}

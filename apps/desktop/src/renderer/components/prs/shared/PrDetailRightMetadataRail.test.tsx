@@ -26,6 +26,8 @@ const pr = {
   laneId: "lane-1",
   repoOwner: "acme",
   repoName: "ade",
+  githubPrNumber: 1,
+  title: "Fix login",
   state: "open",
 } as unknown as PrWithConflicts;
 
@@ -73,9 +75,7 @@ describe("PrDetailRightMetadataRail — can-this-land column", () => {
   // now offers the checkout that unblocks it. Without a way to make that lane it
   // falls back to disabled, rather than promising something it cannot do.
   it("offers the lane checkout instead of a dead ADE review button", () => {
-    // This is about the LANE gate, so it describes a machine that has the Review
-    // plugin — without it the button is gone for a different reason entirely.
-    seedBuiltinSurfacePlugins(["review"]);
+    // Compiled Review is the default. The plugin is what HIDES this button.
     const onOpenAsLane = vi.fn();
     renderRail(null, onOpenAsLane);
     const button = screen.getByRole("button", { name: /open as lane to review/i });
@@ -85,16 +85,14 @@ describe("PrDetailRightMetadataRail — can-this-land column", () => {
   });
 
   it("falls back to a disabled ADE review button when no lane can be created", () => {
-    seedBuiltinSurfacePlugins(["review"]);
     renderRail(null);
     const button = screen.getByRole("button", { name: /ADE review/i });
     expect((button as HTMLButtonElement).disabled).toBe(true);
     expect(screen.queryByRole("button", { name: /open as lane to review/i })).toBeNull();
   });
   it("folds the review actions into the Reviewers section instead of a standalone pane", () => {
-    // A machine that HAS the Review plugin: the ADE review button is an entry
-    // point to the Review tab, so it only exists where that tab does.
-    seedBuiltinSurfacePlugins(["review"]);
+    // A machine without the Review plugin: the compiled ADE review button is
+    // the entry point to the compiled Review tab.
     renderRail();
     const actions = screen.getByTestId("pr-detail-metadata-actions");
     // The two buttons used to be the LAST card in the rail — i.e. the card that
@@ -104,10 +102,11 @@ describe("PrDetailRightMetadataRail — can-this-land column", () => {
     expect(actions.textContent).toContain("Submit review");
   });
 
-  // An ADE review reports into the Review tab. On a machine without the plugin
-  // that owns that tab there is nowhere for the findings to land, so the button
-  // goes with it — while Submit review, which is GitHub's own, stays.
-  it("drops the ADE review button when the Review plugin is not installed", () => {
+  // An ADE review reports into the Review tab. Once `ade-review` owns that
+  // tab the compiled button steps aside so the plugin's toolbar action is the
+  // only way in — while Submit review, which is GitHub's own, stays.
+  it("drops the compiled ADE review button when the Review plugin is installed", () => {
+    seedBuiltinSurfacePlugins(["review"]);
     renderRail();
     const actions = screen.getByTestId("pr-detail-metadata-actions");
     expect(actions.textContent).not.toContain("ADE review");

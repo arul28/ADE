@@ -1,0 +1,16 @@
+{
+  "v": 1,
+  "title": "Launch a review",
+  "fallback": {
+    "title": "Launch a review",
+    "text": "Reviews launch from the computer that holds this plugin.",
+    "deeplink": "ade://plugin/ade-review/launch"
+  },
+  "body": [
+    {
+      "component": "emptyState",
+      "title": "Preparing the launch form…",
+      "icon": "play"
+    }
+  ]
+}

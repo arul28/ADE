@@ -74,6 +74,10 @@ export function pluginPrContext(pr: {
   state?: string | null;
   isDraft?: boolean | null;
   ciStatus?: PluginPrContext["ciStatus"];
+  id?: string | null;
+  linkedPrId?: string | null;
+  laneId?: string | null;
+  linkedLaneId?: string | null;
 }): PluginPrContext {
   const state = pr.isDraft
     ? "draft"
@@ -84,6 +88,8 @@ export function pluginPrContext(pr: {
         : pr.state === "CLOSED" || pr.state === "closed"
           ? "closed"
           : "unknown";
+  const id = pr.id || pr.linkedPrId || null;
+  const laneId = pr.laneId || pr.linkedLaneId || null;
   return {
     kind: "pr",
     number: pr.number,
@@ -91,6 +97,8 @@ export function pluginPrContext(pr: {
     branch: pr.branch ?? pr.headRefName ?? null,
     state,
     ciStatus: pr.ciStatus ?? "unknown",
+    id,
+    laneId,
   };
 }
 

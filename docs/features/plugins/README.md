@@ -1822,7 +1822,7 @@ moves the compiled surface.
 | surface | owner | presence |
 |---|---|---|
 | `graph` | `ade-graph` | `enables` |
-| `review` | `ade-review` | `enables` |
+| `review` | `ade-review` | `supersedes` |
 | `history` | `ade-history` | `enables` |
 | `linear` | `ade-linear` | `supersedes` |
 | `ios` | `ade-ios-sim` | `enables` |
@@ -1834,21 +1834,22 @@ surface exists, so ADE draws it only while the owner is installed and enabled,
 and every unknown — an unresolved registry, a host with no plugin support —
 hides it. There is no state in which a surface appears because ADE was unsure.
 
-`supersedes` is the mirror, and two surfaces use it. ADE shipped a compiled
-fleet surface and a compiled Linear integration long before either plugin
-existed, and `ade-cursor-cloud` and `ade-linear` **replace** them: their own
-header buttons, composer sockets, panels, row badges and settings sections stand
-where the built-in ones did. So ADE draws the compiled surface only while the
-owner is ABSENT, and every unknown draws it — a machine without the plugin must
-behave exactly as it did before the plugin existed, and hiding on an unresolved
-registry would blink a shipped feature off on every launch. Only a positive "the
-owner is here" takes it away, which is the same instant the plugin's own entry
-point appears, so the user never sees both at once.
+`supersedes` is the mirror, and three surfaces use it. ADE shipped a compiled
+fleet surface, a compiled Linear integration and a compiled Review tab long
+before those plugins existed, and `ade-cursor-cloud`, `ade-linear` and
+`ade-review` **replace** them: their own header buttons, composer sockets,
+panels, row badges and settings sections stand where the built-in ones did. So
+ADE draws the compiled surface only while the owner is ABSENT, and every unknown
+draws it — a machine without the plugin must behave exactly as it did before the
+plugin existed, and hiding on an unresolved registry would blink a shipped
+feature off on every launch. Only a positive "the owner is here" takes it away,
+which is the same instant the plugin's own entry point appears, so the user
+never sees both at once.
 
-Linear is the one that had to CHANGE polarity, and the change is what makes the
-acceptance test possible: take an ADE install that has no `ade-linear`, and it
-is the full Linear integration it has always been; install the plugin, and every
-compiled Linear surface steps aside for the plugin's own.
+Linear was the one that had to CHANGE polarity first. Review follows the same
+template: take an ADE install that has no `ade-review`, and it is the compiled
+Review tab it has always been; install the plugin, and every compiled Review
+surface steps aside for the plugin's own.
 
 The polarity also decides what a manifest may say. A `supersedes` surface is
 never named by `surfaces[].builtin`: that field means "ADE draws its compiled
@@ -1904,15 +1905,23 @@ The compiled Linear code is NOT deleted by any of this. It is still there, still
 compiled, and still what the product runs on a machine without the plugin.
 Deletion is a later step — see [Program status](#program-status).
 
+What is gated for Review: the compiled Review rail tab and `/review` (a
+bookmark at `/review` redirects to `/plugin/ade-review` once the plugin is
+installed), the PR-detail "ADE review" button, and `ade review` once the plugin
+declares those CLI words. Submit review on a GitHub PR stays — that is GitHub's
+own review, not ADE's. The engine (`review.*`) stays in core.
+
 ### Agent tooling
 
 An `enables` plugin's ADE action domains leave with it. `BUILTIN_SURFACE_OWNERS`
 in `shared/plugins/builtinSurfaces.ts` carries an `actionDomains` list per
 surface — `ade-ios-sim` owns `ios_simulator`, `ade-app-control` owns
 `app_control` — and `resolveDisabledActionDomains()` turns that plus the install
-registry into the set to refuse. Graph, Review and History list nothing: they are
+registry into the set to refuse. Graph and History list nothing: they are
 views over state other domains already own, so there is nothing of theirs to
-refuse.
+refuse. Review lists nothing in `actionDomains` either — the plugin's tools
+call `review.*`, so those verbs stay dispatching — and withholds them by name
+like Linear.
 
 A `supersedes` surface refuses NOTHING, and gets a second mechanism instead. The
 owner row carries an `actionNames` list of `"<domain>.<action>"` strings, and
@@ -1922,7 +1931,7 @@ automation ADE-action registry. It is a withholding, not a refusal: the verbs
 still dispatch, so a chat already bound to a cloud agent or a Linear issue keeps
 working. What stops is ADE advertising a surface the user can no longer see.
 
-Two surfaces use it, for two different reasons:
+Three surfaces use it, for three different reasons:
 
 - **Cursor Cloud** has no domain of its own: all twenty verbs live in `ai`, next
   to `getStatus`, every API-key verb and the Cursor CLI login, so refusing that
@@ -1936,6 +1945,9 @@ Two surfaces use it, for two different reasons:
   `linear_issue_tracker.listIssues` because `ade-linear` is installed would fail
   the calls the plugin exists to take over. So all thirty names are on the
   `actionNames` list and `actionDomains` is empty.
+- **Review** has a `review` domain of its own and still may not refuse it: the
+  plugin's tools and panels call those verbs. They leave the catalog by name
+  once `ade-review` is installed.
 
 The sync command surface follows the same polarity: `buildSurfaceUnavailableDenial`
 asks `builtinSurfaceDrawn`, not `builtinSurfaceInstalled`, so a paired phone
@@ -2106,7 +2118,7 @@ is where that stands today, on this branch.
 | `ade-linear` | `supersedes` | 8,795 lines (14,296 with its tests) | A real plugin. Panels, sockets, tools, CLI words, automation triggers and steps, a webhook channel, a sign-in flow, a credential handoff and a URL matcher |
 | `ade-cursor-cloud` | `supersedes` | 3,439 lines (4,643 with tests) | A real plugin, with a chat runtime. Composer Send is claimed via `ownsSend` (Enter launches the cloud agent from the live draft; Advanced still opens the form). Fleet Automations strip reads `webhooks.status()`. `{openSettings}` opens the Cursor provider page or the host Secrets tab. Remaining gap: a tab badge (spec-optional). Landed: `ade cursor cloud` aliases the plugin's CLI words when it is installed; plugin-owned cloud chats stamp `cursorCloudAgentId` so Cursor's rename lock applies; create sends REST `model: { id, params? }` and fails closed when the form named reasoning or speed the catalog cannot express; finished-run artifact files are host-fetched into the lane cache. |
 | `ade-graph` | `enables` | 0 | A gating shell: `plugin.json`, an icon, a README and a one-panel schema |
-| `ade-review` | `enables` | 0 | Gating shell |
+| `ade-review` | `supersedes` | real plugin | A real plugin. Run list, launch form, findings, learnings, PR toolbar, agent tools and `ade review`. The engine stays in core. Phone and TUI get vocabulary panels; compiled Review was desktop-only. |
 | `ade-history` | `enables` | 0 | Gating shell |
 | `ade-ios-sim` | `enables` | 0 | Gating shell, plus an agent-skills directory |
 | `ade-app-control` | `enables` | 0 | Gating shell, plus an agent-skills directory |

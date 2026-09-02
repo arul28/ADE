@@ -20,8 +20,9 @@
  */
 
 import React from "react";
+import { Navigate } from "react-router-dom";
 
-import { builtinGateForRoute, isBuiltinTabVisible } from "./builtinTabs";
+import { builtinGateForRoute, isBuiltinTabVisible, supersededCompiledRouteReplacement } from "./builtinTabs";
 import { BuiltinSurfaceUnavailable } from "./BuiltinSurfaceUnavailable";
 import { useBuiltinGateInput } from "./useBuiltinTabs";
 
@@ -38,5 +39,7 @@ export function BuiltinRouteGuard({
   const gateInput = useBuiltinGateInput();
   if (isBuiltinTabVisible(route, gateInput)) return <>{children}</>;
   if (gateInput.pluginSupport && !gateInput.pluginsLoaded) return <>{pending}</>;
+  const replacement = supersededCompiledRouteReplacement(route, gateInput);
+  if (replacement) return <Navigate to={replacement} replace />;
   return <BuiltinSurfaceUnavailable title={builtinGateForRoute(route)?.title ?? "This tab"} />;
 }

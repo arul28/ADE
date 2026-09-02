@@ -1358,8 +1358,10 @@ export function PrDetailPane({
       branch: pr.headBranch,
       state: pr.state,
       ciStatus: pr.checksStatus === "not_run" ? "none" : pr.checksStatus,
+      id: pr.id,
+      laneId: pr.laneId,
     }),
-    [pr.checksStatus, pr.githubPrNumber, pr.headBranch, pr.state, pr.title],
+    [pr.checksStatus, pr.githubPrNumber, pr.headBranch, pr.id, pr.laneId, pr.state, pr.title],
   );
 
   /**

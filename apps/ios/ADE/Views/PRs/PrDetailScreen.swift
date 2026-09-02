@@ -1248,7 +1248,7 @@ struct PrDetailView: View {
     if !pluginSections.isEmpty {
       PluginDetailSections(
         contributions: pluginSections,
-        context: .pr(number: currentPr.githubPrNumber),
+        context: .pr(number: currentPr.githubPrNumber, id: currentPr.id, laneId: currentPr.laneId),
         syncService: syncService
       )
       .prListRow()

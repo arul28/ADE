@@ -3,6 +3,7 @@
 import React from "react";
 import { afterEach, describe, expect, it } from "vitest";
 import { cleanup, render, screen } from "@testing-library/react";
+import { MemoryRouter, Route, Routes } from "react-router-dom";
 
 import { BuiltinRouteGuard } from "./BuiltinRouteGuard";
 import { resetBuiltinSurfacePlugins, seedBuiltinSurfacePlugins } from "../../../test/builtinSurfaces";
@@ -75,5 +76,32 @@ describe("BuiltinRouteGuard", () => {
     render(<BuiltinRouteGuard route="/lanes" pending={null}><Page /></BuiltinRouteGuard>);
 
     expect(screen.getByText("the real page")).toBeTruthy();
+  });
+
+  it("renders compiled Review while its plugin is absent", () => {
+    seedBuiltinSurfacePlugins([]);
+
+    render(<BuiltinRouteGuard route="/review" pending={null}><Page /></BuiltinRouteGuard>);
+
+    expect(screen.getByText("the real page")).toBeTruthy();
+  });
+
+  it("sends compiled Review to the plugin tab once ade-review is installed", () => {
+    seedBuiltinSurfacePlugins(["review"]);
+
+    render(
+      <MemoryRouter initialEntries={["/review"]}>
+        <Routes>
+          <Route
+            path="/review"
+            element={<BuiltinRouteGuard route="/review" pending={null}><Page /></BuiltinRouteGuard>}
+          />
+          <Route path="/plugin/ade-review" element={<div>plugin review</div>} />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    expect(screen.queryByText("the real page")).toBeNull();
+    expect(screen.getByText("plugin review")).toBeTruthy();
   });
 });

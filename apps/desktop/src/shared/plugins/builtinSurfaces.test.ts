@@ -20,7 +20,8 @@ import { coreSmartLinkBuiltinsOwnedBy, CORE_SMART_LINK_HOST_BUILTINS } from "./u
 
 const CURSOR_CLOUD_INSTALLED = [{ pluginId: "ade-cursor-cloud", enabled: true }];
 const LINEAR_INSTALLED = [{ pluginId: "ade-linear", enabled: true }];
-const SUPERSEDED_SURFACES: readonly PluginBuiltinSurfaceId[] = ["linear", "cursor-cloud"];
+const REVIEW_INSTALLED = [{ pluginId: "ade-review", enabled: true }];
+const SUPERSEDED_SURFACES: readonly PluginBuiltinSurfaceId[] = ["linear", "cursor-cloud", "review"];
 
 /**
  * The half of the gate both processes share.
@@ -83,7 +84,7 @@ describe("builtinSurfaceDrawn", () => {
     }
   });
 
-  it("puts both surfaces ADE already ships on the supersedes polarity", () => {
+  it("puts shipped compiled surfaces on the supersedes polarity", () => {
     for (const builtinId of SUPERSEDED_SURFACES) {
       expect(builtinSurfacePresence(builtinId), builtinId).toBe("supersedes");
     }
@@ -105,6 +106,13 @@ describe("builtinSurfaceDrawn", () => {
     expect(builtinSurfaceDrawn("linear", LINEAR_INSTALLED)).toBe(false);
   });
 
+  it("draws the built-in Review until its plugin is installed and enabled", () => {
+    expect(builtinSurfaceDrawn("review", [])).toBe(true);
+    expect(builtinSurfaceDrawn("review", [{ pluginId: "ade-review", enabled: false }])).toBe(true);
+    expect(builtinSurfaceDrawn("review", LINEAR_INSTALLED)).toBe(true);
+    expect(builtinSurfaceDrawn("review", REVIEW_INSTALLED)).toBe(false);
+  });
+
   it("draws the built-in Cursor Cloud until its plugin is installed and enabled", () => {
     expect(builtinSurfaceDrawn("cursor-cloud", [])).toBe(true);
     expect(builtinSurfaceDrawn("cursor-cloud", [{ pluginId: "ade-cursor-cloud", enabled: false }])).toBe(true);
@@ -124,6 +132,7 @@ describe("builtinSurfaceDrawn", () => {
   it("cannot be superseded by another plugin naming the owner's surface", () => {
     expect(builtinSurfaceDrawn("cursor-cloud", [{ pluginId: "someone-elses-cloud", enabled: true }])).toBe(true);
     expect(builtinSurfaceDrawn("linear", [{ pluginId: "someone-elses-linear", enabled: true }])).toBe(true);
+    expect(builtinSurfaceDrawn("review", [{ pluginId: "someone-elses-review", enabled: true }])).toBe(true);
   });
 
   it("keeps the presence table keyed by the closed id list", () => {
@@ -135,12 +144,11 @@ describe("builtinSurfaceDrawn", () => {
 /**
  * Withholding a verb is not refusing it.
  *
- * Two surfaces take this softer form, for two different reasons. Cursor Cloud's
- * verbs share the `ai` domain with the model picker and every API-key verb, so
- * refusing the domain would take the picker down. Linear has three domains of
- * its own and still may not refuse them, because it SUPERSEDES: ADE compiled
- * those verbs and still answers them for the chats and automations already
- * using them. These pin both boundaries.
+ * Three surfaces take this softer form. Cursor Cloud's verbs share the `ai`
+ * domain with the model picker and every API-key verb, so refusing the domain
+ * would take the picker down. Linear and Review have domains of their own and
+ * still may not refuse them, because they SUPERSEDE: ADE compiled those verbs
+ * and still answers them for the chats and automations already using them.
  */
 describe("hiddenBuiltinActionNames", () => {
   it("hides nothing while both built-in surfaces are the ones in the product", () => {
@@ -164,8 +172,20 @@ describe("hiddenBuiltinActionNames", () => {
     expect(hidden.has("ai.getCursorCloudFleet")).toBe(false);
   });
 
-  it("hides both sets when both plugins own their surfaces", () => {
-    const hidden = hiddenBuiltinActionNames([...LINEAR_INSTALLED, ...CURSOR_CLOUD_INSTALLED]);
+  it("hides every compiled Review verb once the plugin owns the surface", () => {
+    const hidden = hiddenBuiltinActionNames(REVIEW_INSTALLED);
+    expect(hidden.has("review.startRun")).toBe(true);
+    expect(hidden.has("review.listRuns")).toBe(true);
+    expect(hidden.has("review.recordFeedback")).toBe(true);
+    expect(hidden.has("ai.getCursorCloudFleet")).toBe(false);
+  });
+
+  it("hides every superseded set when those plugins own their surfaces", () => {
+    const hidden = hiddenBuiltinActionNames([
+      ...LINEAR_INSTALLED,
+      ...CURSOR_CLOUD_INSTALLED,
+      ...REVIEW_INSTALLED,
+    ]);
     expect(hidden.size).toBe(gatedBuiltinActionNames().length);
   });
 
