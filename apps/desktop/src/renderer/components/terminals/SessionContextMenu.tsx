@@ -297,7 +297,7 @@ function SessionContextMenuPanel({
   const menuPosition = clampedPosition ?? { left: x, top: y };
   const isRunning = session.status === "running";
   const isChat = isChatToolType(session.toolType);
-  const isCursorCloud = cursorOwnsSessionName(session);
+  const canRename = !cursorOwnsSessionName(session);
   const isPrimaryLane = laneType === "primary";
   const isRegeneratingMetadata = Boolean(useSessionMetadataGenerating(session.id));
   const canonicalPhase = sessionCanonicalUiState(session).phase;
@@ -409,8 +409,8 @@ function SessionContextMenuPanel({
   const deletingLabel = deletingSessionId === session.id ? "Deleting…" : null;
 
   const metadataActions = SESSION_METADATA_GENERATION_ACTIONS.filter((action) => {
-    if (!isCursorCloud) return true;
-    return !action.fields.includes("title") && !action.primaryFields?.includes("title");
+    const fields = isPrimaryLane && action.primaryFields ? action.primaryFields : action.fields;
+    return canRename || !fields.includes("title");
   });
   const showNameStatusSubmenu = !tagging && isChat && Boolean(onRegenerateMetadata) && metadataActions.length > 0;
   const renderNameStatusContent = (): ReactNode => {
@@ -420,7 +420,7 @@ function SessionContextMenuPanel({
 
     return (
       <>
-        {!isCursorCloud ? (
+        {canRename ? (
           <>
             <button
               type="button"
@@ -463,17 +463,17 @@ function SessionContextMenuPanel({
     if (showNameStatusSubmenu) {
       return (
         <MenuSubmenu
-          label={isCursorCloud ? "Status" : "Name & status"}
+          label={canRename ? "Name & status" : "Status"}
           icon={<MenuRowIcon icon={TextT} />}
           className={MENU_ITEM_CLASS}
           data-testid="session-menu-name-status"
-          title={isCursorCloud ? "Refresh status metadata; rename this agent on cursor.com" : "Rename this chat or refresh its visible metadata with AI"}
+          title={canRename ? "Rename this chat or refresh its visible metadata with AI" : "Refresh status metadata; rename this agent on cursor.com"}
         >
           {renderNameStatusContent()}
         </MenuSubmenu>
       );
     }
-    if (!isCursorCloud && !renaming && !tagging) {
+    if (canRename && !renaming && !tagging) {
       return (
         <button
           type="button"
@@ -505,7 +505,7 @@ function SessionContextMenuPanel({
       >
         {/* ── Identity: what this row is called and where it sits. Unlabelled;
             it is the first block under the cursor and needs no signpost. ── */}
-        {renaming && !(isChat && onRegenerateMetadata) ? renameInput : null}
+        {renaming && !showNameStatusSubmenu ? renameInput : null}
         {tagging && (
           <div className="px-3 py-1.5">
             <input

@@ -13161,6 +13161,8 @@ export function AgentChatPane({
     : null;
 
   const composerMachineBinding = activeComposerRuntimeBinding;
+  const composerAvailableModelIds = cursorCloudMode ? cursorCloudModelIds : effectiveAvailableModelIds;
+  const composerConstrainModelSelection = modelSelectionConstrained || cursorCloudMode;
 
   const composerElement = (
       <AgentChatComposer
@@ -13175,8 +13177,8 @@ export function AgentChatPane({
             onModelPickerOpenRequestHandled={handleModelPickerOpenRequestHandled}
             // Cloud mode narrows the picker to the models Cursor Cloud can actually run. Leaving
             // it (or picking a non-cursor model another way) restores the full list.
-            availableModelIds={cursorCloudMode ? cursorCloudModelIds : effectiveAvailableModelIds}
-            constrainModelSelection={modelSelectionConstrained || cursorCloudMode}
+            availableModelIds={composerAvailableModelIds}
+            constrainModelSelection={composerConstrainModelSelection}
             modelUnavailableMessage={cursorCloudMode ? undefined : constrainedModelSelectionError ?? undefined}
             providerAuthStatus={modelPickerProviderAuthStatus}
             onRuntimeCatalogRefreshed={() => {
@@ -13295,16 +13297,14 @@ export function AgentChatPane({
             orchestratorModeActive={isOrchestratorDraft || isOrchestratorLead}
             orchestrationRole={isOrchestratorDraft ? "lead" : activeOrchestrationRole}
             onModelChange={(nextModelId, options) => {
-              const modelAllowed = cursorCloudMode
-                ? cursorCloudModelIds.includes(nextModelId)
-                : modelSelectionConstrained
-                  ? effectiveAvailableModelIds.includes(nextModelId)
-                  : (
-                      !effectiveAvailableModelIds.length
-                      || effectiveAvailableModelIds.includes(nextModelId)
-                      || isKnownSelectableChatModelId(nextModelId)
-                      || Boolean(resolveScopedModelDescriptor(nextModelId, modelCatalogScopeKey))
-                    );
+              const modelAllowed = composerConstrainModelSelection
+                ? composerAvailableModelIds.includes(nextModelId)
+                : (
+                    !effectiveAvailableModelIds.length
+                    || effectiveAvailableModelIds.includes(nextModelId)
+                    || isKnownSelectableChatModelId(nextModelId)
+                    || Boolean(resolveScopedModelDescriptor(nextModelId, modelCatalogScopeKey))
+                  );
               if (!modelAllowed) {
                 return;
               }
@@ -13312,9 +13312,6 @@ export function AgentChatPane({
                 return;
               }
               const previousFastMode = fastModeRef.current;
-              if (options) {
-                setFastModeState(options.fastMode);
-              }
               const snapshot = buildModelSelectionSnapshot(nextModelId);
               if (!selectedSessionId) {
                 draftLaunchConfigTouchedKeyRef.current = draftLaunchConfigScopeKey;
@@ -13331,6 +13328,8 @@ export function AgentChatPane({
                 });
                 setReasoningEffort(reconciledControls.reasoningEffort);
                 setFastModeState(reconciledControls.fastMode);
+              } else if (options) {
+                setFastModeState(options.fastMode);
               }
               if (!selectedSessionId || turnActive) {
                 applyModelSelectionSnapshot(snapshot);
