@@ -41,6 +41,11 @@ function writeFakeArtifacts(dir, target) {
     fs.writeFileSync(path.join(staging, "node_modules", "better-sqlite3", "index.js"), "module.exports = {};\n");
     fs.mkdirSync(path.join(staging, "vendor", "crsqlite", target), { recursive: true });
     fs.writeFileSync(path.join(staging, "vendor", "crsqlite", target, crsqliteName(target)), "binary");
+    fs.mkdirSync(path.join(staging, "tuiClient"), { recursive: true });
+    fs.writeFileSync(
+      path.join(staging, "tuiClient", "cli.mjs"),
+      "export async function runAdeCodeCli() { return 0; }\n",
+    );
     // `execFileSync`, not `spawnSync`: a missing or failing `tar` must throw
     // here. Discarding the result left an absent archive and failed the test
     // later with an unrelated message.

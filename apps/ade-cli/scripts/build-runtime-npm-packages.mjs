@@ -332,6 +332,20 @@ function listFilesRelative(dir, base = dir) {
   return out;
 }
 
+/**
+ * Files that must survive `npm pack`. npm-packlist routinely omits ignore
+ * files and gyp metadata (`isexe/.npmignore`, `node-pty/build/config.gypi`).
+ * Those are not dropped native modules. A `.gitignore` that hides `*.node`
+ * still fails: the `.node` path is critical.
+ */
+function isRuntimeCriticalPackedFile(relativePath) {
+  if (relativePath.startsWith("bin/")) return true;
+  if (relativePath.startsWith("native/vendor/")) return true;
+  if (relativePath === "native/manifest.json") return true;
+  if (relativePath === "native/tuiClient/cli.mjs") return true;
+  return relativePath.endsWith(".node");
+}
+
 /** 50 MiB: a real native tree's `npm pack --dry-run --json` listing exceeds Node's 1 MiB default. */
 export const NPM_PACK_MAX_BUFFER_BYTES = 50 * 1024 * 1024;
 
@@ -443,7 +457,7 @@ export function verifyPackedRuntimeFiles({ packageDir, runPack = defaultPackRunn
     );
   }
   const packed = new Set(packedPathsFromNpmPackJson(parsed));
-  const missing = onDisk.filter((file) => !packed.has(file));
+  const missing = onDisk.filter((file) => isRuntimeCriticalPackedFile(file) && !packed.has(file));
   if (missing.length > 0) {
     throw new Error(
       `${packageDir}: npm would not pack ${missing.length} file(s) that exist on disk, starting ` +
@@ -476,13 +490,13 @@ export function verifyPackedRuntimeFiles({ packageDir, runPack = defaultPackRunn
   // cr-sqlite is the one file whose absence is a crash rather than a degrade,
   // and it does NOT live under native/node_modules — `package-native-deps.mjs`
   // writes it to native/vendor/crsqlite/<target>/. An archive carrying
-  // node_modules but no vendor/ satisfied every other check here: the parity
-  // check is `onDisk ⊆ packed`, and a file on neither side is invisible to it.
+  // node_modules but no vendor/ satisfied every other check here: the critical-
+  // file check only looks at paths that already exist on disk, and a file on
+  // neither side is invisible to it.
   // The path is exact, not a shape: a `runtime-win32-x64` package carrying a
-  // Linux `native/vendor/crsqlite/win32-x64/crsqlite.so` satisfies every other
-  // check here — parity is `onDisk ⊆ packed`, node_modules is non-empty, and
-  // the launcher comes from the separate binary asset — and then dies at
-  // dlopen on the user's machine.
+  // Linux `native/vendor/crsqlite/win32-x64/crsqlite.so` satisfies the disk
+  // listing, node_modules is non-empty, and the launcher comes from the
+  // separate binary asset — and then dies at dlopen on the user's machine.
   const crsqlite = crsqliteExtensionPath(target);
   if (!packedFiles.includes(crsqlite)) {
     throw new Error(
@@ -491,6 +505,15 @@ export function verifyPackedRuntimeFiles({ packageDir, runPack = defaultPackRunn
         `find ${launcher}, and the embedder's app would then die at dlopen. Carrying another ` +
         `platform's extension there is the same failure: found: ` +
         `${packedFiles.filter((file) => file.startsWith("native/vendor/crsqlite/")).join(", ") || "nothing under native/vendor/crsqlite/"}.`,
+    );
+  }
+  // ADE Code loads this module from ADE_RUNTIME_ROOT. The launcher and
+  // native-module checks do not mention it, so a packlist omit still published.
+  if (!packedFiles.includes("native/tuiClient/cli.mjs")) {
+    throw new Error(
+      `${packageDir}: the packed tarball carries no native/tuiClient/cli.mjs. runAdeCode() ` +
+        `imports that module from ADE_RUNTIME_ROOT, so the package would install and then fail ` +
+        `the first \`ade code\` invocation.`,
     );
   }
   for (const required of ["LICENSE", EXCEPTION_FILE_NAME, "README.md", "package.json"]) {

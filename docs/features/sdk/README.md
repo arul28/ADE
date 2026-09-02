@@ -28,7 +28,7 @@ surfaces stay first-party. The SDK is how a *different* app embeds ADE chat.
 | `packages/sdk/examples/electron/` | Runnable reference app: `sandbox: true`, `contextIsolation: true`, strict CSP. Not installed by CI. |
 | `apps/ade-cli/scripts/build-runtime-npm-packages.mjs` | Builds the six `@ade-dev/runtime*` packages from a release's artifacts. |
 | `apps/ade-cli/scripts/verify-runtime-package-contents.mjs` | Re-runs the packed-file assertion between build and publish, against the directories about to be published rather than the ones the build believed it wrote. |
-| `.github/workflows/publish-runtime-packages.yml` | `workflow_dispatch`-only publish of those packages: `tag` + `confirm: publish`, checksum-verified, skip-if-version-exists. |
+| `.github/workflows/publish-runtime-packages.yml` | Publishes those packages when a GitHub release is published (`release.published`), the same event `/release` uses when it undrafts. `workflow_dispatch` (`tag` + confirm `publish`) is recovery. Checksum-verified, skip-if-version-exists. |
 | `scripts/check-package-licenses.mjs` | Asserts the SPDX field, `LICENSE` file, tarball file list, and README `## License` section agree for every published package. |
 | `packages/sdk/src/runtimePidfile.ts` | `<home>/runtime.pid` reclaim with pid-recycling and start-time guards. |
 | `packages/sdk/src/socketPath.ts` | Per-home Unix socket or hashed Windows named pipe. |
@@ -111,7 +111,7 @@ An embedder shipping a signed, notarized app cannot download an executable at fi
 - `createAdeChat` accepts `binaryPath`, `runtimeNodeModules`, `runtimeRoot` and `allowDownload`. Both directories are validated at create, not at spawn.
 - The pinned and bundled routes skip `SHA256SUMS` by design: bytes signed into the embedder's bundle are verified by the OS.
 - `doctor().runtime` reports `source` (`explicit` | `bundled-package` | `cached-download` | `path` | `downloaded` | `attached`), the two runtime paths, `signature`, `downloadedThisSession` and `checksumVerified`. `doctor().binary` keeps its 0.1.x four-value `source`.
-- Built by `apps/ade-cli/scripts/build-runtime-npm-packages.mjs` from a release's artifacts; published by `.github/workflows/publish-runtime-packages.yml` (`workflow_dispatch` only, `tag` + `confirm: publish`, checksum-verified, skip-if-version-exists).
+- Built by `apps/ade-cli/scripts/build-runtime-npm-packages.mjs` from a release's artifacts; published by `.github/workflows/publish-runtime-packages.yml` when that GitHub release is published. `/release` undrafts; the workflow then publishes. `workflow_dispatch` is recovery. Checksum-verified, skip-if-version-exists.
 - Public guide: `sdk/bundling.mdx` — signing, entitlements, and an electron-builder fragment.
 
 ## Wire contract
