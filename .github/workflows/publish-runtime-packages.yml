@@ -129,30 +129,40 @@ jobs:
         if: steps.token.outputs.present == 'true'
         run: |
           set -euo pipefail
-          cd release-artifacts
-          if [ ! -s SHA256SUMS ]; then
+          if [ ! -s release-artifacts/SHA256SUMS ]; then
             echo "::error::The release published no SHA256SUMS; refusing to repackage unverified bytes."
             exit 1
           fi
           # Only the ten runtime assets are checked: the release also carries
           # desktop artifacts this workflow never downloads, and `-c` fails on a
-          # manifest line whose file is absent.
-          # `|| true` on every grep. Under `set -euo pipefail` a grep that
-          # matches nothing exits 1 and aborts the step with no message, which
-          # is the most likely failure here (a renamed release asset) and the
-          # one the count diagnostic below exists to explain.
-          : > expected.sums
-          for TARGET in darwin-arm64 darwin-x64 linux-x64 linux-arm64; do
-            grep -E "  ade-${TARGET}(\.native\.tar\.gz)?$" SHA256SUMS >> expected.sums || true
-          done
-          grep -E "  ade-win32-x64\.exe(\.native\.tar\.gz)?$" SHA256SUMS >> expected.sums || true
-          if [ "$(wc -l < expected.sums)" -ne 10 ]; then
-            echo "::error::Expected 10 runtime entries in SHA256SUMS, found $(wc -l < expected.sums)."
-            cat expected.sums
-            exit 1
-          fi
-          sha256sum -c expected.sums
-          rm expected.sums
+          # manifest line whose file is absent. Names come from runtimeAssetNames
+          # so Windows stays `ade-win32-x64.native.tar.gz`, matching SHA256SUMS
+          # and release-core.yml, not `ade-win32-x64.exe.native.tar.gz`.
+          node --input-type=module <<'EOF'
+          import fs from "node:fs";
+          import { RUNTIME_TARGETS, runtimeAssetNames } from "./apps/ade-cli/scripts/build-runtime-npm-packages.mjs";
+
+          const sums = fs.readFileSync("release-artifacts/SHA256SUMS", "utf8").split(/\r?\n/);
+          const expected = [];
+          for (const { target } of RUNTIME_TARGETS) {
+            const { binaryAsset, archiveAsset } = runtimeAssetNames(target);
+            for (const name of [binaryAsset, archiveAsset]) {
+              const line = sums.find((row) => row.endsWith(`  ${name}`));
+              if (!line) {
+                console.error(`::error::SHA256SUMS has no entry for ${name}.`);
+                process.exit(1);
+              }
+              expected.push(line);
+            }
+          }
+          if (expected.length !== 10) {
+            console.error(`::error::Expected 10 runtime entries in SHA256SUMS, found ${expected.length}.`);
+            process.exit(1);
+          }
+          fs.writeFileSync("release-artifacts/expected.sums", `${expected.join("\n")}\n`);
+          EOF
+          (cd release-artifacts && sha256sum -c expected.sums)
+          rm release-artifacts/expected.sums
 
       - name: Build the platform packages
         if: steps.token.outputs.present == 'true'

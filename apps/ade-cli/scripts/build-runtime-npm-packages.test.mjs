@@ -121,6 +121,26 @@ test("sets the executable bit on the runtime binary", () => {
   });
 });
 
+test("Windows native archive is ade-win32-x64.native.tar.gz, not glued onto .exe", () => {
+  assert.deepEqual(runtimeAssetNames("win32-x64"), {
+    binaryAsset: "ade-win32-x64.exe",
+    archiveAsset: "ade-win32-x64.native.tar.gz",
+  });
+  assert.deepEqual(runtimeAssetNames("linux-x64"), {
+    binaryAsset: "ade-linux-x64",
+    archiveAsset: "ade-linux-x64.native.tar.gz",
+  });
+});
+
+test("publish workflow checksum step uses runtimeAssetNames", () => {
+  const workflow = fs.readFileSync(
+    new URL("../../../.github/workflows/publish-runtime-packages.yml", import.meta.url),
+    "utf8",
+  );
+  assert.match(workflow, /runtimeAssetNames/);
+  assert.doesNotMatch(workflow, /ade-win32-x64\\.exe\(\\\.native\\.tar\\.gz\)\?/);
+});
+
 test("names the Windows binary ade.exe", () => {
   withTempDirs(({ artifacts, out }) => {
     writeFakeArtifacts(artifacts, "win32-x64");

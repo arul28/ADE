@@ -61,8 +61,14 @@ export function runtimePackageName(target) {
 
 /** The two release assets that make one platform package. */
 export function runtimeAssetNames(target) {
-  const binaryAsset = target === "win32-x64" ? `ade-${target}.exe` : `ade-${target}`;
-  return { binaryAsset, archiveAsset: `${binaryAsset}.native.tar.gz` };
+  // The Windows launcher is `ade-win32-x64.exe`. The native archive next to it
+  // is `ade-win32-x64.native.tar.gz` — not `ade-win32-x64.exe.native.tar.gz`.
+  // `release-core.yml` and SHA256SUMS spell it that way; gluing `.native.tar.gz`
+  // onto the binary name looks for a file the release never publishes.
+  if (target === "win32-x64") {
+    return { binaryAsset: "ade-win32-x64.exe", archiveAsset: "ade-win32-x64.native.tar.gz" };
+  }
+  return { binaryAsset: `ade-${target}`, archiveAsset: `ade-${target}.native.tar.gz` };
 }
 
 /**
