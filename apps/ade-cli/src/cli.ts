@@ -13023,6 +13023,8 @@ const VALUE_CARRIER_FLAGS: ReadonlySet<string> = new Set([
   "--state",
   "--tab",
   "--tab-identifier",
+  "--task",
+  "--task-id",
   "--target",
   "--target-id",
   "--terminal",

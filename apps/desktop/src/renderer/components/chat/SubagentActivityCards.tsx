@@ -427,6 +427,7 @@ export function BackgroundJobLine({
   event,
   sessionEnded = false,
   onOpenBackgroundJobs,
+  onStop,
 }: {
   event: BackgroundJobLineRenderEvent | BackgroundJobGroupRenderEvent;
   /**
@@ -438,6 +439,8 @@ export function BackgroundJobLine({
    */
   sessionEnded?: boolean;
   onOpenBackgroundJobs?: () => void;
+  /** Stop this one running job by provider task id. Groups omit this. */
+  onStop?: (taskId: string) => void;
 }) {
   const running = event.status === "running";
   // A frozen counter is still a wrong counter: an archived job that never got a
@@ -449,6 +452,7 @@ export function BackgroundJobLine({
   const ok = event.status === "completed";
   const duration = formatSubagentDurationMs(running ? (stale ? null : liveMs) : event.durationMs);
   const count = event.type === "background_job_group" ? event.count : 1;
+  const jobTaskId = event.type === "background_job_line" ? event.taskId ?? null : null;
   const parts = [
     count > 1 ? `${event.label} ×${count}` : event.label,
     !running && typeof event.exitCode === "number" ? `exit ${event.exitCode}` : null,
@@ -486,6 +490,21 @@ export function BackgroundJobLine({
           Background · {parts.join(" · ")}
         </span>
       </span>
+      {running && onStop && jobTaskId ? (
+        <button
+          type="button"
+          aria-label={`Stop ${event.label}`}
+          title="Stop this background job"
+          onClick={(clickEvent) => {
+            clickEvent.preventDefault();
+            clickEvent.stopPropagation();
+            onStop(jobTaskId);
+          }}
+          className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-md text-current opacity-70 transition-opacity hover:bg-rose-500/10 hover:text-rose-200/90 hover:opacity-100 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-rose-300/40"
+        >
+          <Square size={8} weight="fill" aria-hidden />
+        </button>
+      ) : null}
       {onOpenBackgroundJobs ? (
         <button
           type="button"

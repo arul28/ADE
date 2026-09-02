@@ -256,7 +256,7 @@ extension WorkSessionDestinationView {
   @MainActor
   func optOutUsageLimitAutoContinue() async {
     do {
-      if let schedule = WorkUsageLimitOptOut.pendingSchedule(chatSummary?.scheduledWork),
+      if let schedule = WorkUsageLimitOptOut.pendingSchedule(composerChatSummary?.scheduledWork),
          syncService.canInvokeChatRemoteAction("chat.cancelScheduledWork", sessionId: sessionId) {
         _ = try? await syncService.cancelScheduledWork(sessionId: sessionId, scheduleId: schedule.id)
       }

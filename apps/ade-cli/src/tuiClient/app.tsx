@@ -1335,9 +1335,10 @@ function formatTokenSummary(stats: ReturnType<typeof latestTokenStats>): string 
 }
 
 function chatInterruptNotice(result: Awaited<ReturnType<typeof interruptChat>>): string {
-  const stoppedBackground = stopModeStopsBackground(parseAgentChatStopMode(result.mode));
+  const mode = parseAgentChatStopMode(result.mode);
+  const stoppedBackground = stopModeStopsBackground(mode);
   const backgroundNote = stoppedBackground ? " Background jobs were stopped." : "";
-  if (!stopModeClearsQueue(parseAgentChatStopMode(result.mode))) {
+  if (!stopModeClearsQueue(mode)) {
     return `Stopped. Queued messages are preserved.${backgroundNote}`;
   }
   if (result.cancelledQueuedCount > 0 && result.recoveryId) {

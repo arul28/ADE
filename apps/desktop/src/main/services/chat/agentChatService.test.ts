@@ -10967,6 +10967,16 @@ describe("createAgentChatService", () => {
 
       const optedOut = await service.getSessionSummary(session.id);
       expect(optedOut?.autoContinueAtUsageLimit).toBe(false);
+      await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope =>
+          event.event.type === "status" && event.event.turnStatus === "interrupted",
+      );
+      await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope =>
+          event.event.type === "done" && event.event.status === "interrupted",
+      );
       const interruptedStatuses = events.filter(
         (event) => event.event.type === "status" && event.event.turnStatus === "interrupted",
       );
@@ -15155,6 +15165,56 @@ describe("createAgentChatService", () => {
         && (e.event as any).status === "stopped");
       expect(events.some((e) =>
         e.event.type === "subagent_result" && (e.event as any).taskId === "task-B")).toBe(false);
+
+      hangResolve!();
+      await expect(sendPromise).resolves.toBeUndefined();
+    });
+
+    it("does not stop a task that belongs to a different session", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      let streamCall = 0;
+      let warmupComplete = false;
+      let hangResolve: (() => void) | null = null;
+      const hangPromise = new Promise<void>((resolve) => { hangResolve = resolve; });
+      const send = vi.fn().mockResolvedValue(undefined);
+      const setPermissionMode = vi.fn().mockResolvedValue(undefined);
+      const stopTask = vi.fn().mockResolvedValue(undefined);
+      const stream = vi.fn(() => (async function* () {
+        streamCall += 1;
+        if (streamCall <= 2) {
+          yield { type: "system", subtype: "init", session_id: `sdk-stop-cross-${streamCall}`, slash_commands: [] };
+          if (streamCall === 2) warmupComplete = true;
+          yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+          return;
+        }
+        yield { type: "system", subtype: "task_started", task_id: "task-A", description: "review A" };
+        await hangPromise;
+        yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+      })());
+      let queryN = 0;
+      vi.mocked(claudeSdkCreateSessionCompat).mockImplementation(() => {
+        queryN += 1;
+        return {
+          send,
+          stream,
+          close: vi.fn(),
+          sessionId: `sdk-stop-cross-${queryN}`,
+          setPermissionMode,
+          stopTask,
+        } as any;
+      });
+      const { service } = createService({ onEvent: (event: AgentChatEventEnvelope) => events.push(event) });
+      const session = await service.createSession({ laneId: "lane-1", provider: "claude", model: "sonnet" });
+      const other = await service.createSession({ laneId: "lane-1", provider: "claude", model: "sonnet" });
+      await vi.waitFor(() => { expect(warmupComplete).toBe(true); });
+      const sendPromise = service.sendMessage({ sessionId: session.id, text: "spawn A" });
+
+      await waitForEvent(events, (e): e is AgentChatEventEnvelope =>
+        e.event.type === "subagent_started" && (e.event as any).taskId === "task-A");
+
+      await expect(service.stopTask({ sessionId: other.id, taskId: "task-A" }))
+        .resolves.toMatchObject({ stopped: false, reason: "That task is not running." });
+      expect(stopTask).not.toHaveBeenCalled();
 
       hangResolve!();
       await expect(sendPromise).resolves.toBeUndefined();

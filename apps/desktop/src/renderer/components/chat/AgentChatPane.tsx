@@ -12250,7 +12250,7 @@ export function AgentChatPane({
           });
           return;
         }
-        setError("Per-task stop is only available for Claude chats.");
+        setError("Per-task stop is not available for this provider.");
       } : undefined}
       onStopSubagent={selectedSessionId && (selectedSession?.provider ?? sessionProvider) === "claude"
         ? (snapshot) => {

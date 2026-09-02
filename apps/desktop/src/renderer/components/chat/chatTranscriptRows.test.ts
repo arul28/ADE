@@ -3045,6 +3045,7 @@ describe("subagent two-row rendering", () => {
     if (rows[0]!.event.type !== "background_job_line") throw new Error("Expected background job line");
     expect(rows[0]!.event.status).toBe("running");
     expect(rows[0]!.event.label).toBe("npm install");
+    expect(rows[0]!.event.taskId).toBe("bg-1");
     expect(rows[0]!.key).toBe("background-chip:bg-1");
   });
 

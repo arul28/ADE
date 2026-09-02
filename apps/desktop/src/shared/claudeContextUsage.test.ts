@@ -68,6 +68,19 @@ describe("Claude context usage kind classification", () => {
       categories: [{ name: "Messages", tokens: 40, kind: "used" }],
     });
     expect(usage.categories.some((row) => row.kind === "free" && row.tokens === 60)).toBe(true);
-    expect(usage.categories.some((row) => row.name.trim().toLowerCase() === "free" && row.kind !== "free")).toBe(false);
+    expect(usage.categories.filter((row) => row.name.trim().toLowerCase() === "free" && row.kind !== "free")).toEqual([]);
+  });
+
+  it("reads mcp_servers when the payload is a name-to-token map", () => {
+    const usage = normalizeClaudeContextUsage({
+      totalTokens: 18_000,
+      maxTokens: 200_000,
+      categories: [
+        { name: "MCP tools", tokens: 18_000, kind: "used", mcp_servers: { posthog: 18_000 } },
+      ],
+    });
+    expect(usage.categories.find((row) => row.name === "MCP tools")?.mcpServers).toEqual([
+      { name: "posthog", tokens: 18_000 },
+    ]);
   });
 });

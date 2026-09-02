@@ -141,4 +141,24 @@ describe("BackgroundJobLine", () => {
     );
     expect(screen.getByText(/npm install/).textContent).not.toContain("×");
   });
+
+  it("stops a running job by provider task id", () => {
+    const onStop = vi.fn();
+    render(
+      <BackgroundJobLine
+        event={{
+          type: "background_job_line",
+          agentKey: "bg-1",
+          label: "npm install",
+          startedAt: "2026-08-06T10:00:00.000Z",
+          status: "running",
+          taskId: "bg-1",
+        }}
+        onStop={onStop}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: /stop npm install/i }));
+    expect(onStop).toHaveBeenCalledTimes(1);
+    expect(onStop).toHaveBeenCalledWith("bg-1");
+  });
 });

@@ -64,6 +64,11 @@ describe("PersonalChatScope", () => {
         restored: true,
         restoredCount: 2,
       })),
+      stopTask: vi.fn(async ({ sessionId, taskId }: { sessionId: string; taskId: string }) => ({
+        sessionId,
+        taskId,
+        stopped: true,
+      })),
       recoverTurn: vi.fn(async ({ turnId, action }) => ({
         turnId,
         action,
@@ -692,6 +697,20 @@ describe("PersonalChatScope", () => {
       sessionId: "chat-1",
       mode: "stop_only",
     });
+
+    await expect(scope.call("stopTask", {
+      sessionId: "chat-1",
+      taskId: "task-A",
+    })).resolves.toEqual({
+      action: "stopTask",
+      result: { sessionId: "chat-1", taskId: "task-A", stopped: true },
+    });
+    expect(service.stopTask).toHaveBeenCalledWith({
+      sessionId: "chat-1",
+      taskId: "task-A",
+    });
+    await expect(scope.call("stopTask", { sessionId: "chat-1" })).rejects.toThrow("taskId is required.");
+    expect(service.stopTask).toHaveBeenCalledTimes(1);
 
     await expect(scope.call("restoreCancelledQueue", {
       sessionId: "chat-1",

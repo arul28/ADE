@@ -73,7 +73,7 @@ function readMcpServers(category: Record<string, unknown>): ClaudeContextMcpServ
   };
   const listed = fromArray(category.mcpServers ?? category.servers ?? category.mcp_servers);
   if (listed.length) return listed;
-  const map = category.mcpServers ?? category.servers;
+  const map = category.mcpServers ?? category.servers ?? category.mcp_servers;
   if (!map || typeof map !== "object" || Array.isArray(map)) return [];
   return Object.entries(map as Record<string, unknown>).flatMap(([name, tokens]) => {
     const count = nonNegativeInt(tokens);

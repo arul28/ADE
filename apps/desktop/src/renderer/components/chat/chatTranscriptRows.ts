@@ -243,6 +243,8 @@ export type BackgroundJobLineRenderEvent = {
   agentKey: string;
   label: string;
   startedAt: string | null;
+  /** Provider task id when ADE can stop this job via `stopTask`. */
+  taskId?: string | null;
 } & (
   | { status: "running" }
   | {
@@ -1596,6 +1598,7 @@ function handleSubagentLifecycleEvent(
           label: backgroundJobLabel(state),
           status: "running",
           startedAt: state.startedAt,
+          taskId: state.taskId,
         });
       }
       return true;
@@ -1651,6 +1654,7 @@ function handleSubagentLifecycleEvent(
       exitCode: backgroundExitCode(event),
       durationMs: durationMsBetween(state.startedAt, timestamp),
       startedAt: state.startedAt,
+      taskId: state.taskId,
     });
     return true;
   }
@@ -2221,19 +2225,28 @@ export function appendCollapsedChatTranscriptEvent(
     const label = backgroundCommandLabel(event.title ?? "")
       || event.title
       || "Background command";
+    const providerTaskId = event.sourceTaskId?.trim() || null;
     upsertBackgroundJobLine(
       rows,
       context,
       expectedKey,
       envelope.timestamp,
       status === "running"
-        ? { type: "background_job_line", agentKey: taskKey, label, startedAt, status }
+        ? {
+            type: "background_job_line",
+            agentKey: taskKey,
+            label,
+            startedAt,
+            status,
+            taskId: providerTaskId,
+          }
         : {
             type: "background_job_line",
             agentKey: taskKey,
             label,
             startedAt,
             status,
+            taskId: providerTaskId,
             // The scheduled-work wire format carries no exit code; duration is
             // measured from the row's own first sighting instead of trusting
             // the free-text summary the emitter composes.

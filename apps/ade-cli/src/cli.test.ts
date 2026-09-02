@@ -4577,6 +4577,35 @@ describe("ADE CLI", () => {
       action: "stopTask",
       args: { sessionId: "personal-1", taskId: "task-B" },
     });
+
+    const stopTaskFlagFirst = expectExecutePlan(buildCliPlan([
+      "chat",
+      "stop-task",
+      "--task",
+      "task-A",
+      "chat-1",
+    ]));
+    expect(stopTaskFlagFirst.steps[0]?.params).toMatchObject({
+      arguments: {
+        domain: "chat",
+        action: "stopTask",
+        args: { sessionId: "chat-1", taskId: "task-A" },
+      },
+    });
+
+    const personalStopTaskFlagFirst = expectExecutePlan(buildCliPlan([
+      "chat",
+      "stop-task",
+      "--personal",
+      "--task",
+      "task-B",
+      "personal-1",
+    ]));
+    expect(personalStopTaskFlagFirst.machineOnly).toBe(true);
+    expect(personalStopTaskFlagFirst.steps[0]?.params).toEqual({
+      action: "stopTask",
+      args: { sessionId: "personal-1", taskId: "task-B" },
+    });
   });
 
   it("routes chat demote, promote, and keep-reporting to spawn-kind actions", () => {

@@ -408,15 +408,19 @@ describe.runIf(process.platform === "win32")("inspectSyncListenerPort against th
     const address = holder.address();
     if (!address || typeof address === "string") throw new Error("Expected a TCP holder.");
     try {
-      const diagnosis = await inspectSyncListenerPort(address.port);
-      expect(diagnosis.port).toBe(address.port);
-      const self = diagnosis.holders.find((entry) => entry.pid === process.pid);
-      expect(self).toBeDefined();
-      // The reclaim path matches on the command line and guards PID reuse with
-      // the start time, so neither may be null for a process we own.
-      expect(self?.command).toBeTruthy();
-      expect(self?.startTime).toBeTruthy();
-      expect(Number.isFinite(Date.parse(self!.startTime!))).toBe(true);
+      // Get-NetTCPConnection can lag a newly bound LISTEN socket on a loaded
+      // Windows runner. Retry until this process is named, or the reclaim path
+      // would see "no holders" and skip same-channel reclaim. Command line and
+      // start time must be present so PID-reuse guards still work.
+      await vi.waitFor(async () => {
+        const diagnosis = await inspectSyncListenerPort(address.port);
+        expect(diagnosis.port).toBe(address.port);
+        const self = diagnosis.holders.find((entry) => entry.pid === process.pid);
+        expect(self, `holders=${JSON.stringify(diagnosis.holders)}`).toBeDefined();
+        expect(self?.command).toBeTruthy();
+        expect(self?.startTime).toBeTruthy();
+        expect(Number.isFinite(Date.parse(self!.startTime!))).toBe(true);
+      }, { timeout: 20_000, interval: 250 });
     } finally {
       await new Promise<void>((resolve) => holder.close(() => resolve()));
     }

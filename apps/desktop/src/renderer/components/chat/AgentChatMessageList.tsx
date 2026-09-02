@@ -2918,6 +2918,7 @@ function renderEvent(
   /* ── Background command one-liner (live from spawn through finish), and the
         folded run of identical jobs — same line, same `open` target ── */
   if (event.type === "background_job_line" || event.type === "background_job_group") {
+    const taskId = event.type === "background_job_line" ? event.taskId : null;
     return (
       <BackgroundJobLine
         event={event}
@@ -2928,8 +2929,13 @@ function renderEvent(
         // selecting an agent. Omitted entirely on a host with no actions pane,
         // so the affordance never renders as a button that does nothing.
         onOpenBackgroundJobs={options?.chatInfoHostAvailable
-          ? () => openChatInfoFromActivity(options?.sessionId, null)
+          ? () => openChatInfoFromActivity(options?.sessionId, taskId ?? null)
           : undefined}
+        onStop={
+          event.type === "background_job_line" && taskId && options?.onStopSubagent
+            ? (id) => options.onStopSubagent?.(id)
+            : undefined
+        }
       />
     );
   }
