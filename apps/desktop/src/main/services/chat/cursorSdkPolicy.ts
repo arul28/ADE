@@ -189,6 +189,23 @@ export function resolveCursorSdkPolicy(session: CursorSessionModeInput): CursorS
 }
 
 /**
+ * The one policy every ADE one-shot Cursor prompt runs under.
+ *
+ * A one-shot is a tool-less text task — a title, a lane name, a status line, a
+ * summary, a commit message, a pull request description — and
+ * `runCursorSdkLocalPrompt` denies every tool call it makes. Deriving a policy
+ * from the caller's permission mode therefore decided nothing except the SDK
+ * chat mode, and it told a `full-auto` caller's model it had tools that the
+ * bridge then refused. One fixed read-only policy states what actually happens.
+ *
+ * It is constant on purpose: the warm one-shot worker is shared across
+ * features, and a pooled worker keeps the policy it was created with.
+ */
+export const CURSOR_SDK_ONESHOT_POLICY: CursorSdkPermissionPolicy = Object.freeze(
+  resolveCursorSdkPolicy({ cursorModeId: "ask" }),
+);
+
+/**
  * Ambient Cursor setting layers an agent may load (`local.settingSources`).
  *
  * The Cursor SDK derives `includeProjectMcp` / `includePluginMcp` from these

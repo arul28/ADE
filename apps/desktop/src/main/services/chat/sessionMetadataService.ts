@@ -123,6 +123,19 @@ export function createSessionMetadataRegenerator<ManagedSession extends SessionM
     const skipped: AgentChatSessionMetadataField[] = [];
     let selectedModelId: string | null = null;
     let attemptCount = 0;
+    // Carried to the caller so a zero-applied result can name its real cause
+    // instead of blaming a concurrent rename that never happened.
+    let generationError: string | null = null;
+    let usedDeterministicFallback = false;
+
+    const buildResult = (): AgentChatRegenerateSessionMetadataResult => ({
+      sessionId,
+      applied,
+      skipped,
+      modelId: selectedModelId,
+      generationError,
+      usedDeterministicFallback,
+    });
 
     const notifyOutcome = (outcome: "completed" | "partial" | "failed"): void => {
       try {
@@ -179,11 +192,12 @@ export function createSessionMetadataRegenerator<ManagedSession extends SessionM
         initialLane?.worktreePath || managed.laneWorktreePath,
       ) || null;
 
-      let generated: {
-        result: ReturnType<typeof deriveDeterministicSessionMetadata>;
-        selectedModelId: string | null;
-        attemptCount: number;
-      } = { result: null, selectedModelId: null, attemptCount: 0 };
+      let generated: Awaited<ReturnType<typeof runSessionMetadataGeneration>> = {
+        result: null,
+        selectedModelId: null,
+        attemptCount: 0,
+        lastFailure: null,
+      };
       if (candidateModelIds.length) {
         const prompt = buildSessionMetadataPrompt({
           provider: managed.session.provider,
@@ -225,6 +239,7 @@ export function createSessionMetadataRegenerator<ManagedSession extends SessionM
       }
       selectedModelId = generated.selectedModelId;
       attemptCount = generated.attemptCount;
+      generationError = generated.result ? null : generated.lastFailure?.error ?? null;
       const laneNameOnly = needs.laneName && !needs.title && !needs.statusLine;
       const metadata = generated.result ?? (laneNameOnly
         ? null
@@ -245,6 +260,7 @@ export function createSessionMetadataRegenerator<ManagedSession extends SessionM
         throw new Error("The AI returned no usable session metadata.");
       }
       if (!generated.result) {
+        usedDeterministicFallback = true;
         dependencies.logger.info("agent_chat.session_metadata_deterministic_fallback", {
           sessionId,
           attemptCount,
@@ -258,7 +274,7 @@ export function createSessionMetadataRegenerator<ManagedSession extends SessionM
       if (managed.deleted || managed.sessionMetadataGenerationVersion !== generationVersion) {
         skipped.push(...fields);
         notifyOutcome("partial");
-        return { sessionId, applied, skipped, modelId: selectedModelId };
+        return buildResult();
       }
 
       if (fields.includes("title")) {
@@ -281,7 +297,7 @@ export function createSessionMetadataRegenerator<ManagedSession extends SessionM
         }
         dependencies.persistChatState(managed);
         notifyOutcome("partial");
-        return { sessionId, applied, skipped, modelId: selectedModelId };
+        return buildResult();
       }
 
       if (fields.includes("statusLine")) {
@@ -302,7 +318,7 @@ export function createSessionMetadataRegenerator<ManagedSession extends SessionM
           }
           dependencies.persistChatState(managed);
           notifyOutcome("partial");
-          return { sessionId, applied, skipped, modelId: selectedModelId };
+          return buildResult();
         }
         if (metadata.laneName && currentLane && currentLane.name === snapshot.laneName) {
           try {
@@ -329,7 +345,7 @@ export function createSessionMetadataRegenerator<ManagedSession extends SessionM
         attemptCount,
       });
       notifyOutcome(applied.length === fields.length ? "completed" : "partial");
-      return { sessionId, applied, skipped, modelId: selectedModelId };
+      return buildResult();
     } catch (error) {
       notifyOutcome("failed");
       dependencies.logger.warn("agent_chat.session_metadata_generation_failed", {

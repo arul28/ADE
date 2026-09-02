@@ -180,8 +180,7 @@ struct CursorCloudAgentDetailScreen: View {
       }
       _ = try await syncService.openCursorCloudChat(
         agentId: entry.agent.agentId,
-        laneId: laneId,
-        agentName: entry.agent.name
+        laneId: laneId
       )
       successMessage = "Opened as a cloud chat in lane '\(laneName ?? "lane")' on your machine."
     } catch {

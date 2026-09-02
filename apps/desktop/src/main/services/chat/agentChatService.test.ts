@@ -44641,6 +44641,161 @@ it("fails a cleanly ended OpenCode event stream and clears active child sessions
       expect(sessionService.get(session.id)?.manuallyNamed).toBe(false);
     });
 
+    it("uses Cursor's remote name and hydrates a reopened cloud chat", async () => {
+      process.env.CURSOR_API_KEY = "cursor-test-key";
+      const events: AgentChatEventEnvelope[] = [];
+      const { service, sessionService } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "cursor",
+        model: "composer-2",
+        modelId: "cursor/composer-2",
+      });
+      await service.sendMessage({
+        sessionId: session.id,
+        text: "Create the cloud chat.",
+        runtime: "cloud",
+        cloudOverrides: { repoUrl: "https://github.com/example/repo.git" },
+      } as any, { awaitDispatch: true });
+      await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope & { event: Extract<AgentChatEventEnvelope["event"], { type: "done" }> } =>
+          event.event.type === "done" && event.sessionId === session.id,
+      );
+
+      mockState.cursorSdkCloudResponses.set("cloud.agent.get", {
+        name: "Plugin platform linear parity",
+      });
+      mockState.cursorSdkCloudResponses.set("cloud.runs.list", {
+        items: [{
+          runId: "cloud-run-1",
+          status: "finished",
+          model: { id: "grok-4.6" },
+        }],
+      });
+      mockState.cursorSdkCloudResponses.set("cloud.run.conversation", {
+        turns: [{
+          type: "agentConversationTurn",
+          turn: {
+            userMessage: { text: "Remote prompt" },
+            steps: [{ type: "assistantMessage", message: { text: "Remote answer" } }],
+          },
+        }],
+      });
+
+      await service.openCursorCloudChat({
+        cloudAgentId: "cloud-agent-1",
+        laneId: "lane-1",
+        sessionId: session.id,
+      });
+
+      expect(sessionService.get(session.id)?.title).toBe("Plugin platform linear parity");
+      expect(events.some((event) => event.event.type === "text" && event.event.text === "Remote answer")).toBe(true);
+      expect(mockState.cursorSdkCloudRequests.map((request) => request.type)).toEqual(
+        expect.arrayContaining(["cloud.agent.get", "cloud.runs.list", "cloud.run.conversation"]),
+      );
+    });
+
+    it("re-reads Cursor's name on the first visible turn while the ADE title is still a default", async () => {
+      process.env.CURSOR_API_KEY = "cursor-test-key";
+      const events: AgentChatEventEnvelope[] = [];
+      const { service, sessionService } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "cursor",
+        model: "composer-2",
+        modelId: "cursor/composer-2",
+      });
+      await service.sendMessage({
+        sessionId: session.id,
+        text: "Create the cloud chat.",
+        runtime: "cloud",
+        cloudOverrides: { repoUrl: "https://github.com/example/repo.git" },
+      } as any, { awaitDispatch: true });
+      await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope & { event: Extract<AgentChatEventEnvelope["event"], { type: "done" }> } =>
+          event.event.type === "done" && event.sessionId === session.id,
+      );
+      const agentGetCalls = () => mockState.cursorSdkCloudRequests.filter((request) => request.type === "cloud.agent.get").length;
+      // A launched cloud chat keeps ADE's default title until Cursor names it; this test
+      // session was auto-titled from its prompt because it started as a local chat.
+      sessionService.updateMeta({ sessionId: session.id, title: "Cursor Chat" });
+
+      // First hydrate: Cursor has not named the agent yet and the run has no visible turn.
+      mockState.cursorSdkCloudResponses.set("cloud.agent.get", {});
+      mockState.cursorSdkCloudResponses.set("cloud.runs.list", {
+        items: [{ runId: "cloud-run-1", status: "running", model: { id: "grok-4.6" } }],
+      });
+      mockState.cursorSdkCloudResponses.set("cloud.run.conversation", { turns: [] });
+      await service.openCursorCloudChat({ cloudAgentId: "cloud-agent-1", laneId: "lane-1", sessionId: session.id });
+      const readsAfterFirstHydrate = agentGetCalls();
+      expect(readsAfterFirstHydrate).toBeGreaterThan(0);
+      expect(sessionService.get(session.id)?.title ?? "").not.toBe("Named after the first turn");
+
+      // Next tick, well inside the 60 s TTL: the run now has a visible turn and Cursor has a
+      // name. The title is still a default, so this tick re-reads the name without polling.
+      mockState.cursorSdkCloudResponses.set("cloud.agent.get", { name: "Named after the first turn" });
+      mockState.cursorSdkCloudResponses.set("cloud.run.conversation", {
+        turns: [{
+          type: "agentConversationTurn",
+          turn: {
+            userMessage: { text: "Remote prompt" },
+            steps: [{ type: "assistantMessage", message: { text: "Remote answer" } }],
+          },
+        }],
+      });
+      await service.openCursorCloudChat({ cloudAgentId: "cloud-agent-1", laneId: "lane-1", sessionId: session.id });
+      expect(agentGetCalls()).toBe(readsAfterFirstHydrate + 1);
+      expect(sessionService.get(session.id)?.title).toBe("Named after the first turn");
+
+      // Once named, later ticks inside the TTL do not read the name again.
+      await service.openCursorCloudChat({ cloudAgentId: "cloud-agent-1", laneId: "lane-1", sessionId: session.id });
+      expect(agentGetCalls()).toBe(readsAfterFirstHydrate + 1);
+    });
+
+    it("rejects ADE title writes after a chat becomes a Cursor Cloud agent", async () => {
+      process.env.CURSOR_API_KEY = "cursor-test-key";
+      const events: AgentChatEventEnvelope[] = [];
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "cursor",
+        model: "composer-2",
+        modelId: "cursor/composer-2",
+      });
+
+      await service.sendMessage({
+        sessionId: session.id,
+        text: "Promote this chat.",
+        runtime: "cloud",
+        cloudOverrides: { repoUrl: "https://github.com/example/repo.git" },
+      } as any, { awaitDispatch: true });
+      await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope & { event: Extract<AgentChatEventEnvelope["event"], { type: "done" }> } =>
+          event.event.type === "done" && event.sessionId === session.id,
+      );
+
+      await expect(service.updateSession({
+        sessionId: session.id,
+        title: "ADE-owned title",
+        manuallyNamed: true,
+      })).rejects.toThrow("agent names are managed by Cursor");
+      await expect(service.regenerateSessionMetadata({
+        sessionId: session.id,
+        fields: ["title"],
+      })).rejects.toThrow("agent names are managed by Cursor");
+    });
+
     it("uses cloud.followup with the durable agentId on subsequent cloud sends", async () => {
       process.env.CURSOR_API_KEY = "cursor-test-key";
       const events: AgentChatEventEnvelope[] = [];
@@ -44768,6 +44923,237 @@ it("fails a cleanly ended OpenCode event stream and clears active child sessions
       expect(doneEvent.event.status).toBe("completed");
       const summary = await service.getSessionSummary(session.id);
       expect(summary?.cursorRuntime).toBe("cloud");
+    });
+
+    it("refuses to create a cloud agent it cannot give the chosen model settings", async () => {
+      process.env.CURSOR_API_KEY = "cursor-test-key";
+      // A catalog whose model DOES declare a reasoning control, but has no
+      // value for the effort the session chose. Cursor would silently pick one
+      // of the other values, so the create has to fail instead.
+      cursorModelsListMock.mockResolvedValue([{
+        id: "composer-2",
+        displayName: "Composer 2",
+        parameters: [{
+          id: "reasoning_effort",
+          displayName: "Reasoning effort",
+          values: [{ value: "high", displayName: "High" }],
+        }],
+      }]);
+      const events: AgentChatEventEnvelope[] = [];
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "cursor",
+        model: "composer-2",
+        modelId: "cursor/composer-2",
+        reasoningEffort: "xhigh",
+      } as any);
+
+      await service.sendMessage({
+        sessionId: session.id,
+        text: "Create the cloud agent.",
+        runtime: "cloud",
+        cloudOverrides: { repoUrl: "https://github.com/example/repo.git" },
+      } as any, { awaitDispatch: true });
+
+      const errorEvent = await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope & { event: Extract<AgentChatEventEnvelope["event"], { type: "error" }> } =>
+          event.event.type === "error" && event.sessionId === session.id,
+      );
+      expect(errorEvent.event.message).toContain("could not verify the selected model settings");
+      // Cursor Cloud substitutes its own default variant when `params` are
+      // omitted, so a create it cannot express must not be dispatched at all.
+      expect(mockState.cursorSdkCloudRequests.some((r) => r.type === "cloud.send.stream")).toBe(false);
+    });
+
+    it("creates a cloud agent on a model that declares no reasoning control", async () => {
+      process.env.CURSOR_API_KEY = "cursor-test-key";
+      // Cursor's row for this model has no reasoning parameter at all, so the
+      // effort left on the session by a previously chosen model is
+      // inapplicable, not unmet. There is no variant Cursor could substitute.
+      cursorModelsListMock.mockResolvedValue([{
+        id: "composer-2.5",
+        displayName: "Composer 2.5",
+        parameters: [{
+          id: "speed",
+          displayName: "Speed",
+          values: [
+            { value: "standard", displayName: "Standard" },
+            { value: "fast", displayName: "Fast" },
+          ],
+        }],
+      }]);
+      const events: AgentChatEventEnvelope[] = [];
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "cursor",
+        model: "composer-2.5",
+        modelId: "cursor/composer-2.5",
+        reasoningEffort: "xhigh",
+      } as any);
+
+      await service.sendMessage({
+        sessionId: session.id,
+        text: "Create the cloud agent.",
+        runtime: "cloud",
+        cloudOverrides: { repoUrl: "https://github.com/example/repo.git" },
+      } as any, { awaitDispatch: true });
+      await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope & { event: Extract<AgentChatEventEnvelope["event"], { type: "done" }> } =>
+          event.event.type === "done" && event.sessionId === session.id,
+      );
+
+      expect(events.some((event) => event.event.type === "error")).toBe(false);
+      const sent = mockState.cursorSdkCloudRequests.find((r) => r.type === "cloud.send.stream");
+      expect(sent).toBeTruthy();
+    });
+
+    it("creates the cloud agent with the verified model params", async () => {
+      process.env.CURSOR_API_KEY = "cursor-test-key";
+      cursorModelsListMock.mockResolvedValue([{
+        id: "composer-2",
+        displayName: "Composer 2",
+        parameters: [{
+          id: "reasoning_effort",
+          displayName: "Reasoning effort",
+          values: [{ value: "high", displayName: "High" }],
+        }],
+      }]);
+      const events: AgentChatEventEnvelope[] = [];
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "cursor",
+        model: "composer-2",
+        modelId: "cursor/composer-2",
+        reasoningEffort: "high",
+      } as any);
+
+      await service.sendMessage({
+        sessionId: session.id,
+        text: "Create the cloud agent.",
+        runtime: "cloud",
+        cloudOverrides: { repoUrl: "https://github.com/example/repo.git" },
+      } as any, { awaitDispatch: true });
+      await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope & { event: Extract<AgentChatEventEnvelope["event"], { type: "done" }> } =>
+          event.event.type === "done" && event.sessionId === session.id,
+      );
+
+      const sent = mockState.cursorSdkCloudRequests.find((r) => r.type === "cloud.send.stream");
+      expect(sent?.payload.modelParams).toEqual([{ id: "reasoning_effort", value: "high" }]);
+    });
+
+    it("treats a session that never chose a tier as having no tier opinion", async () => {
+      process.env.CURSOR_API_KEY = "cursor-test-key";
+      // A catalog whose only service tier is "fast": there is no standard value
+      // to express. A session that never chose a tier must not be verified as
+      // having asked for one, on either cloud create path.
+      cursorModelsListMock.mockResolvedValue([{
+        id: "composer-2",
+        displayName: "Composer 2",
+        parameters: [
+          {
+            id: "reasoning_effort",
+            displayName: "Reasoning effort",
+            values: [{ value: "high", displayName: "High" }],
+          },
+          {
+            id: "speed",
+            displayName: "Speed",
+            values: [{ value: "fast", displayName: "Fast" }],
+          },
+        ],
+      }]);
+      const events: AgentChatEventEnvelope[] = [];
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "cursor",
+        model: "composer-2",
+        modelId: "cursor/composer-2",
+        reasoningEffort: "high",
+      } as any);
+
+      await service.sendMessage({
+        sessionId: session.id,
+        text: "Create the cloud agent.",
+        runtime: "cloud",
+        cloudOverrides: { repoUrl: "https://github.com/example/repo.git" },
+      } as any, { awaitDispatch: true });
+      await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope & { event: Extract<AgentChatEventEnvelope["event"], { type: "done" }> } =>
+          event.event.type === "done" && event.sessionId === session.id,
+      );
+
+      const sent = mockState.cursorSdkCloudRequests.find((r) => r.type === "cloud.send.stream");
+      expect(sent?.payload.modelParams).toEqual([{ id: "reasoning_effort", value: "high" }]);
+    });
+
+    it("stops refetching a terminal cloud run that keeps reading back empty", async () => {
+      process.env.CURSOR_API_KEY = "cursor-test-key";
+      const events: AgentChatEventEnvelope[] = [];
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "cursor",
+        model: "composer-2",
+        modelId: "cursor/composer-2",
+      });
+      await service.sendMessage({
+        sessionId: session.id,
+        text: "Create the cloud chat.",
+        runtime: "cloud",
+        cloudOverrides: { repoUrl: "https://github.com/example/repo.git" },
+      } as any, { awaitDispatch: true });
+      await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope & { event: Extract<AgentChatEventEnvelope["event"], { type: "done" }> } =>
+          event.event.type === "done" && event.sessionId === session.id,
+      );
+
+      // A run that ended in error with no visible turns never produces one.
+      mockState.cursorSdkCloudResponses.set("cloud.runs.list", {
+        items: [{ runId: "cloud-run-empty", status: "error" }],
+      });
+      mockState.cursorSdkCloudResponses.set("cloud.run.conversation", { turns: [] });
+      mockState.cursorSdkCloudRequests.length = 0;
+
+      for (let attempt = 0; attempt < 5; attempt += 1) {
+        await service.openCursorCloudChat({
+          cloudAgentId: "cloud-agent-1",
+          laneId: "lane-1",
+          sessionId: session.id,
+        });
+      }
+
+      const conversationReads = mockState.cursorSdkCloudRequests.filter((r) => (
+        r.type === "cloud.run.conversation" && r.payload.runId === "cloud-run-empty"
+      ));
+      expect(conversationReads).toHaveLength(3);
+      // The remote name is read on the first hydrate of the session and then at
+      // most once a minute, not on every one of the five refreshes.
+      expect(mockState.cursorSdkCloudRequests.filter((r) => r.type === "cloud.agent.get")).toHaveLength(1);
     });
 
     it("includes the cursorSdkSystemPrompt directive in the first cloud send promptText", async () => {

@@ -100,6 +100,7 @@ import {
   resolveProjectIconPath,
   setProjectIconOverrideFromSelection,
 } from "../projects/projectIconResolver";
+import { assertCursorCloudRenameAllowed } from "../../../shared/cursorCloudNaming";
 import { launchAgentChatCli } from "../chat/agentChatCliLaunch";
 import {
   createPromptStash,
@@ -5510,9 +5511,10 @@ export function registerIpc({
       return await ctx.agentChatService.openCursorCloudChat({
         cloudAgentId: arg.cloudAgentId,
         laneId: arg.laneId,
-        ...(arg.agentName ? { agentName: arg.agentName } : {}),
         ...(arg.sessionId ? { sessionId: arg.sessionId } : {}),
         ...(arg.modelId ? { modelId: arg.modelId } : {}),
+        ...(arg.reasoningEffort !== undefined ? { reasoningEffort: arg.reasoningEffort } : {}),
+        ...(arg.fastMode !== undefined ? { fastMode: arg.fastMode } : {}),
       });
     },
   );
@@ -7529,6 +7531,12 @@ export function registerIpc({
 
   ipcMain.handle(IPC.sessionsUpdateMeta, async (_event, arg: UpdateSessionMetaArgs): Promise<TerminalSessionSummary | null> => {
     const ctx = ensureSessionContext();
+    await assertCursorCloudRenameAllowed(
+      ctx.agentChatService
+        ? (sessionId) => ctx.agentChatService!.getSessionSummary(sessionId)
+        : null,
+      arg,
+    );
     return ctx.sessionService.updateMeta(arg);
   });
 

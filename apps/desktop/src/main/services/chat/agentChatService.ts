@@ -590,6 +590,7 @@ import {
   type TranscriptHistoryPageRead,
 } from "./chatTranscriptHistoryPager";
 import { extractLeadingSlashCommand, isProviderSlashCommandInput } from "../../../shared/chatSlashCommands";
+import { CURSOR_CLOUD_RENAME_BLOCKED_MESSAGE, cursorOwnsSessionName } from "../../../shared/cursorCloudNaming";
 import { isManualCompactCommand } from "../../../shared/contextCompaction";
 import {
   deriveDeterministicAutoLaneIdentity,
@@ -666,6 +667,9 @@ import {
   cloudConversationHasTurns,
   CURSOR_CLOUD_CONVERSATION_RETRY_ATTEMPTS,
   CURSOR_CLOUD_CONVERSATION_RETRY_MS,
+  CURSOR_CLOUD_EMPTY_TERMINAL_READ_LIMIT,
+  CURSOR_CLOUD_PLACEHOLDER_NAME_READ_LIMIT,
+  CURSOR_CLOUD_REMOTE_NAME_READ_TTL_MS,
   flattenCloudConversationMessages,
   fingerprintAlreadyHydrated,
   isCloudRunStillLive,
@@ -699,7 +703,9 @@ import {
   discoverCursorSdkModelDescriptors,
   mergeCursorModelDescriptorSources,
   resolveCachedCursorModelAvailability,
+  resolveCursorSdkModelSelectionFromCache,
   resolveCursorSdkModelSelectionParams,
+  verifyExplicitCursorModelSelection,
 } from "./cursorModelsDiscovery";
 import { discoverDroidSdkModelDescriptors } from "./droidModelsDiscovery";
 import {
@@ -4023,10 +4029,11 @@ function cursorCatalogSupportsFastMode(
 function cachedCursorSdkParamsSupportFastMode(session: AgentChatSession): boolean {
   if (session.provider !== "cursor") return false;
   const modelSdkId = resolveCursorRuntimeModelSdkId(session);
-  return Boolean(resolveCursorSdkModelSelectionParams({
-    modelSdkId,
-    fastMode: true,
-  })?.length);
+  // Only a fully expressed selection answers "this model has a fast tier". A
+  // partial resolve is the case where the tier is exactly what ADE could not
+  // express, so its params must not read as support.
+  const selection = resolveCursorSdkModelSelectionFromCache({ modelSdkId, fastMode: true });
+  return selection.status === "ok" && selection.params.length > 0;
 }
 
 function sessionSupportsFastMode(
@@ -12041,6 +12048,12 @@ export function createAgentChatService(args: {
     return false;
   };
 
+  /** True while the session still carries an ADE default title ("Cursor Chat", "Cursor cloud agent", ...). */
+  const sessionTitleIsDefault = (managed: ManagedChatSession): boolean => {
+    const current = sessionService.get(managed.session.id)?.title ?? "";
+    return normalizeRuntimeSessionTitle(managed, current) === null;
+  };
+
   const normalizeRuntimeSessionTitle = (managed: ManagedChatSession, rawTitle: unknown): string | null => {
     const title = sanitizeAutoTitle(extractRuntimeTitle(rawTitle) ?? "");
     if (!title) return null;
@@ -12055,11 +12068,20 @@ export function createAgentChatService(args: {
     return sanitizeAutoTitle(sessionService.get(managed.session.id)?.title ?? "");
   };
 
+  /**
+   * The single writer of a session's title metadata.
+   *
+   * Cursor owns the name of a cloud chat, so the rule is enforced here rather
+   * than at each caller: a title writer added later inherits the protection
+   * instead of having to remember it. Cursor's own name arrives through
+   * `adoptCursorCloudSessionTitle`, which writes past this guard.
+   */
   const persistSessionTitleMetadata = (
     managed: ManagedChatSession,
     rawTitle: string,
     manuallyNamed: boolean,
   ): string | null => {
+    if (cursorOwnsSessionName(managed.session.cursorCloudAgentId)) return null;
     const title = rawTitle.trim();
     if (!title) return null;
 
@@ -12164,11 +12186,46 @@ export function createAgentChatService(args: {
     return appliedTitle;
   };
 
+  const adoptCursorCloudSessionTitle = (
+    managed: ManagedChatSession,
+    rawTitle: unknown,
+    source: string,
+  ): string | null => {
+    if (managed.deleted) return null;
+    const title = normalizeRuntimeSessionTitle(managed, rawTitle);
+    if (!title) return null;
+
+    const currentTitle = sessionService.get(managed.session.id)?.title ?? null;
+    if (currentTitle?.trim() !== title) {
+      sessionService.updateMeta({ sessionId: managed.session.id, title, manuallyNamed: false });
+      managed.sessionMetadataTitleRevision += 1;
+      emitTransientChatEnvelope(managed.session.id, {
+        type: "session_meta_updated",
+        title,
+        manuallyNamed: false,
+      });
+    }
+    managed.manuallyNamed = false;
+    managed.runtimeTitleAdopted = true;
+    managed.autoTitleStage = "initial";
+    logger.info("agent_chat.runtime_title_adopted", {
+      sessionId: managed.session.id,
+      provider: managed.session.provider,
+      source,
+      titleLength: title.length,
+    });
+    persistChatState(managed);
+    return title;
+  };
+
   const adoptRuntimeSessionTitle = (
     managed: ManagedChatSession,
     rawTitle: unknown,
     source: string,
   ): string | null => {
+    if (cursorOwnsSessionName(managed.session.cursorCloudAgentId)) {
+      return adoptCursorCloudSessionTitle(managed, rawTitle, source);
+    }
     if (managed.deleted) return null;
     if (sessionIsManuallyNamed(managed)) return null;
     const title = normalizeRuntimeSessionTitle(managed, rawTitle);
@@ -12238,6 +12295,7 @@ export function createAgentChatService(args: {
     args: { stage: "initial" | "final"; latestUserText?: string | null; summary?: string | null }
   ): Promise<void> => {
     if (managed.deleted) return;
+    if (cursorOwnsSessionName(managed.session.cursorCloudAgentId)) return;
     const config = resolveChatConfig();
     if (!config.titleGenerationEnabled) return;
     if (sessionIsManuallyNamed(managed)) return;
@@ -12348,9 +12406,16 @@ export function createAgentChatService(args: {
   };
 
   let sessionMetadataRegenerator: ReturnType<typeof createSessionMetadataRegenerator> | null = null;
-  const regenerateSessionMetadata = (
+  const regenerateSessionMetadata = async (
     args: AgentChatRegenerateSessionMetadataArgs,
   ): Promise<AgentChatRegenerateSessionMetadataResult> => {
+    // `async`, so `ensureManagedSession` rejects for an unknown session id like
+    // every other failure here rather than throwing at the call site.
+    const managed = ensureManagedSession(args.sessionId);
+    const requestedFields = args.fields ?? ["title", "laneName", "statusLine"];
+    if (cursorOwnsSessionName(managed.session.cursorCloudAgentId) && requestedFields.includes("title")) {
+      throw new Error(CURSOR_CLOUD_RENAME_BLOCKED_MESSAGE);
+    }
     sessionMetadataRegenerator ??= createSessionMetadataRegenerator<ManagedChatSession>({
       ensureManagedSession,
       getSession: (sessionId) => {
@@ -37197,6 +37262,26 @@ export function createAgentChatService(args: {
       fastMode: session.fastMode === true,
     });
 
+  /**
+   * Resolve the model params for a NEW cloud agent, or refuse to create it.
+   *
+   * `verifyExplicitCursorModelSelection` owns the fail-closed rule that both
+   * cloud create paths obey, so this supplies only the fallback for a session
+   * that chose neither control: its ordinary best-effort params. A followup to
+   * an existing agent is unaffected, because its variant is already fixed.
+   */
+  const requireCursorCloudCreateModelParams = async (
+    session: Pick<AgentChatSession, "reasoningEffort" | "fastMode">,
+    modelSdkId: string,
+    apiKey: string,
+  ): Promise<Array<{ id: string; value: string }> | undefined> => (
+    await verifyExplicitCursorModelSelection(apiKey, {
+      modelSdkId,
+      reasoningEffort: session.reasoningEffort,
+      fastMode: session.fastMode ?? null,
+    })
+  ) ?? resolveCursorSdkModelParamsForSession(session, modelSdkId);
+
   const cursorModelParamsForLog = (
     modelParams?: Array<{ id: string; value: string }>,
   ): Array<{ id: string; value: string }> | undefined =>
@@ -39640,19 +39725,7 @@ export function createAgentChatService(args: {
     }
     const { promptText, images } = await buildCursorWorkerPrompt(cloudComposed, args.resolvedAttachments);
 
-    const cloudLogModelParams = runtime.modelSdkId
-      ? resolveCursorSdkModelParamsForSession(managed.session, runtime.modelSdkId)
-      : undefined;
     persistChatState(managed);
-    logger.info("agent_chat.cursor_cloud_prompt_start", {
-      sessionId: managed.session.id,
-      turnId,
-      isFollowUp,
-      hasAgentId: Boolean(managed.session.cursorCloudAgentId),
-      ...(runtime.modelSdkId ? { modelSdkId: runtime.modelSdkId } : {}),
-      ...(cloudLogModelParams?.length ? { modelParams: cursorModelParamsForLog(cloudLogModelParams) } : {}),
-      imageCount: images.length,
-    });
 
     if (args.onDispatched) {
       args.onDispatched();
@@ -39668,10 +39741,21 @@ export function createAgentChatService(args: {
     try {
       let result: unknown;
       const sdkMode = cursorSdkModeForPolicy(runtime.sdkPolicy ?? resolveCursorSdkPolicy(managed.session));
-      if (isFollowUp && managed.session.cursorCloudAgentId) {
-        const modelParams = runtime.modelSdkId
+      const modelParams = runtime.modelSdkId
+        ? (isFollowUp
           ? resolveCursorSdkModelParamsForSession(managed.session, runtime.modelSdkId)
-          : undefined;
+          : await requireCursorCloudCreateModelParams(managed.session, runtime.modelSdkId, apiKey))
+        : undefined;
+      logger.info("agent_chat.cursor_cloud_prompt_start", {
+        sessionId: managed.session.id,
+        turnId,
+        isFollowUp,
+        hasAgentId: Boolean(managed.session.cursorCloudAgentId),
+        ...(runtime.modelSdkId ? { modelSdkId: runtime.modelSdkId } : {}),
+        ...(modelParams?.length ? { modelParams: cursorModelParamsForLog(modelParams) } : {}),
+        imageCount: images.length,
+      });
+      if (isFollowUp && managed.session.cursorCloudAgentId) {
         const payload: CursorSdkCloudFollowupPayload = {
           apiKey,
           agentId: managed.session.cursorCloudAgentId,
@@ -39688,10 +39772,6 @@ export function createAgentChatService(args: {
         );
       } else {
         const repoUrl = await resolveCloudRepoUrl(managed, args.cloudOverrides);
-        const manualAgentName = manualSessionTitleForRuntime(managed);
-        const modelParams = runtime.modelSdkId
-          ? resolveCursorSdkModelParamsForSession(managed.session, runtime.modelSdkId)
-          : undefined;
         let linearIssueId = args.cloudOverrides?.linearIssueId?.trim() || null;
         if (!linearIssueId) {
           try {
@@ -39731,7 +39811,6 @@ export function createAgentChatService(args: {
           projectId: launch.projectId,
           linearIssueId: launch.linearIssueId,
           ...(Object.keys(launch.envVars).length > 0 ? { envVars: launch.envVars } : {}),
-          ...(manualAgentName ? { agentName: manualAgentName } : {}),
           ...(runtime.modelSdkId ? { modelSdkId: runtime.modelSdkId } : {}),
           ...(modelParams?.length ? { modelParams } : {}),
           ...(args.cloudOverrides?.startingRef ? { startingRef: args.cloudOverrides.startingRef } : {}),
@@ -39765,7 +39844,7 @@ export function createAgentChatService(args: {
       const innerResult = "result" in startedRecord ? startedRecord.result : startedRecord;
       const resultRecord = asRecord(innerResult) ?? asRecord(startedRecord) ?? null;
       const resultStatus = typeof resultRecord?.status === "string" ? resultRecord.status : "";
-      adoptRuntimeSessionTitle(managed, startedRecord, "cursor_cloud_agent_info");
+      adoptCursorCloudSessionTitle(managed, startedRecord, "cursor_cloud_agent_info");
 
       if (runStartedAgentId) {
         managed.session.cursorCloudAgentId = runStartedAgentId;
@@ -40297,6 +40376,34 @@ export function createAgentChatService(args: {
 
   const cursorCloudHydrateInFlight = new Set<string>();
   const cursorCloudHydratedRunIds = new Map<string, Set<string>>();
+  /** When this session last read its agent's remote name, per session id. */
+  const cursorCloudRemoteNameReadAt = new Map<string, number>();
+  /** Empty conversation reads of a terminal run, per session id and run id. */
+  const cursorCloudEmptyRunReads = new Map<string, Map<string, number>>();
+  /** Event-driven name reads made while the title was still a default, per session id. */
+  const cursorCloudPlaceholderNameReads = new Map<string, number>();
+
+  /**
+   * Forget one session's cloud hydration state.
+   *
+   * `cursorCloudHydrateInFlight` is deliberately absent: that marker has to
+   * survive a teardown until the request it guards settles.
+   */
+  const forgetCursorCloudHydrationState = (sessionId: string): void => {
+    cursorCloudHydratedRunIds.delete(sessionId);
+    cursorCloudRemoteNameReadAt.delete(sessionId);
+    cursorCloudEmptyRunReads.delete(sessionId);
+    cursorCloudPlaceholderNameReads.delete(sessionId);
+  };
+
+  /** Forget every session's cloud hydration state, for a whole-service dispose. */
+  const clearAllCursorCloudHydrationState = (): void => {
+    cursorCloudHydrateInFlight.clear();
+    cursorCloudHydratedRunIds.clear();
+    cursorCloudRemoteNameReadAt.clear();
+    cursorCloudEmptyRunReads.clear();
+    cursorCloudPlaceholderNameReads.clear();
+  };
 
   type CursorCloudLatestRun = {
     runId: string;
@@ -40347,6 +40454,39 @@ export function createAgentChatService(args: {
     const hydrateTurnId = randomUUID();
     let emittedVisible = false;
     try {
+      // Cursor owns the agent name. Read it on the first hydrate of a session
+      // and then at most once a minute: a watched mirror ticks every three
+      // seconds during an active run, and a rename on cursor.com is not worth
+      // twenty extra API calls a minute per chat.
+      const readRemoteName = async (): Promise<void> => {
+        // Stamped before the request, so a failing read is rate-limited too.
+        cursorCloudRemoteNameReadAt.set(managed.session.id, Date.now());
+        try {
+          const remoteAgent = await runCursorSdkCloudRequest<unknown>({
+            projectRoot,
+            workspacePath,
+            apiKey,
+            type: "cloud.agent.get",
+            payload: { agentId },
+            logger,
+          });
+          const remoteName = extractRuntimeTitle(remoteAgent);
+          if (remoteName) adoptCursorCloudSessionTitle(managed, remoteName, "cursor_cloud_agent");
+        } catch (error) {
+          logger.warn("agent_chat.cursor_cloud_agent_info_failed", {
+            sessionId: managed.session.id,
+            agentId,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+      };
+      const lastRemoteNameReadAt = cursorCloudRemoteNameReadAt.get(managed.session.id);
+      if (
+        lastRemoteNameReadAt === undefined
+        || Date.now() - lastRemoteNameReadAt >= CURSOR_CLOUD_REMOTE_NAME_READ_TTL_MS
+      ) {
+        await readRemoteName();
+      }
       let runs: CursorCloudLatestRun[] = [];
       const conversationByRunId = new Map<string, unknown>();
       for (let attempt = 0; attempt < CURSOR_CLOUD_CONVERSATION_RETRY_ATTEMPTS; attempt += 1) {
@@ -40399,15 +40539,57 @@ export function createAgentChatService(args: {
       }
 
       const hydrated = cursorCloudHydratedRunIds.get(managed.session.id) ?? new Set<string>();
+      const hydratedBefore = new Set(hydrated);
+      const emptyReads = cursorCloudEmptyRunReads.get(managed.session.id) ?? new Map<string, number>();
       for (const run of [...runs].reverse()) {
         const conversation = conversationByRunId.get(run.runId);
         if (!conversation) continue;
-        if (hydrateCursorCloudConversationEvents(managed, conversation, { turnId: hydrateTurnId })) {
+        const hasConversationTurns = cloudConversationHasTurns(conversation);
+        if (hasConversationTurns && hydrateCursorCloudConversationEvents(managed, conversation, { turnId: hydrateTurnId })) {
           emittedVisible = true;
         }
-        if (!isCloudRunStillLive(run.status)) hydrated.add(run.runId);
+        if (isCloudRunStillLive(run.status)) continue;
+        // Do not permanently mark an empty or unrecognised response as
+        // hydrated on the first read. Cursor can return a run before its
+        // conversation is materialized, and the next presence-gated refresh
+        // must be allowed to fetch it again once the VM has produced the
+        // transcript. Bound that retry: a terminal run that reads empty a few
+        // times in a row (an ERROR run with no visible turns never gets one)
+        // would otherwise be refetched on every mirror tick forever.
+        if (hasConversationTurns) {
+          hydrated.add(run.runId);
+          emptyReads.delete(run.runId);
+          continue;
+        }
+        const attempts = (emptyReads.get(run.runId) ?? 0) + 1;
+        if (attempts >= CURSOR_CLOUD_EMPTY_TERMINAL_READ_LIMIT) {
+          hydrated.add(run.runId);
+          emptyReads.delete(run.runId);
+        } else {
+          emptyReads.set(run.runId, attempts);
+        }
       }
       cursorCloudHydratedRunIds.set(managed.session.id, hydrated);
+      cursorCloudEmptyRunReads.set(managed.session.id, emptyReads);
+
+      // Cursor names the agent shortly after its first run produces output,
+      // which is usually after the read above. No polling: while the ADE title
+      // is still a default, re-read the name only on the tick that yields the
+      // first visible turn or sees a run reach a terminal status, and stop
+      // after a few attempts. The TTL rule above still applies afterwards.
+      const runReachedTerminalThisPass = runs.some((run) => (
+        !isCloudRunStillLive(run.status) && !hydratedBefore.has(run.runId) && hydrated.has(run.runId)
+      ));
+      if (
+        (emittedVisible || runReachedTerminalThisPass)
+        && sessionTitleIsDefault(managed)
+      ) {
+        const placeholderReads = cursorCloudPlaceholderNameReads.get(managed.session.id) ?? 0;
+        if (placeholderReads < CURSOR_CLOUD_PLACEHOLDER_NAME_READ_LIMIT) {
+          cursorCloudPlaceholderNameReads.set(managed.session.id, placeholderReads + 1);
+          await readRemoteName();
+        }
+      }
 
       if (emittedVisible) {
         flushBufferedReasoning(managed);
@@ -40531,9 +40713,10 @@ export function createAgentChatService(args: {
   const openCursorCloudChat = async (args: {
     cloudAgentId: string;
     laneId: string;
-    agentName?: string | null;
     sessionId?: string | null;
     modelId?: string | null;
+    reasoningEffort?: string | null;
+    fastMode?: boolean | null;
   }): Promise<{ sessionId: string; session: AgentChatSession }> => {
     const trimmedAgent = args.cloudAgentId.trim();
     const trimmedLane = args.laneId.trim();
@@ -40572,6 +40755,7 @@ export function createAgentChatService(args: {
       }
     }
 
+    const existedBefore = Boolean(managed);
     if (!managed) {
       const requestedModel = typeof args.modelId === "string" ? args.modelId.trim() : "";
       const sdkId = requestedModel.replace(/^cursor\//, "") || "composer-2";
@@ -40580,6 +40764,8 @@ export function createAgentChatService(args: {
         provider: "cursor",
         model: sdkId,
         modelId: `cursor/${sdkId}`,
+        ...(args.reasoningEffort !== undefined ? { reasoningEffort: args.reasoningEffort } : {}),
+        ...(args.fastMode !== undefined && args.fastMode !== null ? { fastMode: args.fastMode } : {}),
         ...(requestedId ? { sessionId: requestedId } : {}),
       });
       managed = managedSessions.get(created.id) ?? null;
@@ -40588,14 +40774,13 @@ export function createAgentChatService(args: {
 
     managed.session.cursorCloudAgentId = trimmedAgent;
     managed.session.cursorRuntime = "cloud";
-    if (typeof args.agentName === "string" && args.agentName.trim()) {
-      adoptRuntimeSessionTitle(managed, args.agentName.trim(), "cursor_cloud_agent");
-    }
     persistChatState(managed);
 
     // New launches return the ADE session immediately so the renderer can
-    // leave the draft pane. Reopening an existing empty cloud chat waits for
-    // hydrate so Retry/backfill does not time out on a fire-and-forget fetch.
+    // leave the draft pane; the launcher pre-assigns the session id, so "new"
+    // means the session did not exist before this call, not that no id was
+    // given. Reopening an existing empty cloud chat waits for hydrate so
+    // Retry/backfill does not time out on a fire-and-forget fetch.
     const hydratePromise = attachAndHydrateCursorCloudChat({
       managed,
       agentId: trimmedAgent,
@@ -40607,9 +40792,9 @@ export function createAgentChatService(args: {
         agentId: trimmedAgent,
         error: error instanceof Error ? error.message : String(error),
       });
-      if (requestedId) throw error;
+      if (existedBefore) throw error;
     });
-    if (requestedId) await hydratePromise;
+    if (existedBefore) await hydratePromise;
 
     return { sessionId: managed.session.id, session: managed.session };
   };
@@ -45222,6 +45407,7 @@ export function createAgentChatService(args: {
     eventHistoryBySession.delete(sessionId);
     transcriptHistoryCacheBySession.delete(sessionId);
     resolvedTranscriptPathBySession.delete(sessionId);
+    forgetCursorCloudHydrationState(sessionId);
   };
 
   const countActiveForLane = (laneId: string): number => {
@@ -47053,6 +47239,7 @@ export function createAgentChatService(args: {
       ]);
       teardownRuntime(managed, "ended_session");
       managedSessions.delete(trimmedSessionId);
+      forgetCursorCloudHydrationState(trimmedSessionId);
     } else {
       clearSubagentSnapshots(trimmedSessionId);
     }
@@ -47115,21 +47302,31 @@ export function createAgentChatService(args: {
     sessionService.unarchiveSession(trimmedSessionId);
   };
 
-  const disposeAll = async (): Promise<void> => {
-    // First, before anything that can throw. The dispose tail is wrapped in a
-    // swallow by both hosts, so a rejection further down would leave this
-    // service registered — and a half-disposed service keeps counting runtimes
-    // that no longer exist, permanently shrinking the process budget.
+  /**
+   * The teardown every dispose path runs first.
+   *
+   * First, before anything that can throw. The dispose tail is wrapped in a
+   * swallow by both hosts, so a rejection further down would leave this service
+   * registered — and a half-disposed service keeps counting runtimes that no
+   * longer exist, permanently shrinking the process budget.
+   *
+   * One function, because `disposeAll` and `forceDisposeAll` ran identical
+   * copies and every new piece of per-service state had to be remembered twice.
+   */
+  const beginDispose = (): void => {
     runtimeBudget.unregister(runtimeBudgetParticipant);
     hostSleepChips.dispose();
     clearInterval(sessionCleanupTimer);
     clearCursorCloudMirrorWatches();
-    cursorCloudHydrateInFlight.clear();
-    cursorCloudHydratedRunIds.clear();
+    clearAllCursorCloudHydrationState();
     scheduledWorkScheduler?.dispose();
     autoResume.forgetAll();
     for (const recovery of cancelledQueueRecoveries.values()) clearTimeout(recovery.timer);
     cancelledQueueRecoveries.clear();
+  };
+
+  const disposeAll = async (): Promise<void> => {
+    beginDispose();
     for (const sessionId of [...managedSessions.keys()]) {
       try {
         await disposeManagedSession({ sessionId }, "detached");
@@ -47142,20 +47339,7 @@ export function createAgentChatService(args: {
   };
 
   const forceDisposeAll = (): void => {
-    // First, before anything that can throw. The dispose tail is wrapped in a
-    // swallow by both hosts, so a rejection further down would leave this
-    // service registered — and a half-disposed service keeps counting runtimes
-    // that no longer exist, permanently shrinking the process budget.
-    runtimeBudget.unregister(runtimeBudgetParticipant);
-    hostSleepChips.dispose();
-    clearInterval(sessionCleanupTimer);
-    clearCursorCloudMirrorWatches();
-    cursorCloudHydrateInFlight.clear();
-    cursorCloudHydratedRunIds.clear();
-    scheduledWorkScheduler?.dispose();
-    autoResume.forgetAll();
-    for (const recovery of cancelledQueueRecoveries.values()) clearTimeout(recovery.timer);
-    cancelledQueueRecoveries.clear();
+    beginDispose();
     for (const sessionId of [...sessionTurnCollectors.keys()]) {
       rejectActiveSessionTurnCollector(sessionId, `Chat session '${sessionId}' was closed during shutdown.`);
     }
@@ -47320,6 +47504,9 @@ export function createAgentChatService(args: {
   }: AgentChatUpdateSessionArgs): Promise<AgentChatSession> => {
     const fastMode = requestedFastModeArg ?? requestedLegacyFastModeArg;
     const managed = ensureManagedSession(sessionId);
+    if (cursorOwnsSessionName(managed.session.cursorCloudAgentId) && (title !== undefined || manuallyNamed !== undefined)) {
+      throw new Error(CURSOR_CLOUD_RENAME_BLOCKED_MESSAGE);
+    }
     const chatConfig = resolveChatConfig();
     const isIdentitySession = Boolean(managed.session.identityKey);
     const identityPinned = isPrimaryPinnedIdentity(managed.session.identityKey);

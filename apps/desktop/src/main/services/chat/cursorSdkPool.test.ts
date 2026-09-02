@@ -7,6 +7,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   acquireCursorSdkConnection,
   buildCursorSdkPaths,
+  CURSOR_SDK_LOCAL_ONESHOT_MAX_WORKERS,
+  CURSOR_SDK_ONESHOT_AGENT_NAME,
   buildCursorSdkWorkerEnv,
   cleanupCursorSdkRuntimePaths,
   CURSOR_SDK_REPLACE_WAIT_MS,
@@ -14,9 +16,11 @@ import {
   MAX_CURSOR_SDK_SOCKET_PATH_BYTES,
   poisonCursorSdkConnection,
   releaseCursorSdkConnection,
+  runCursorSdkLocalPrompt,
   releaseCursorSdkConnectionAfterIdle,
   resolveCursorSdkUserHome,
 } from "./cursorSdkPool";
+import { CURSOR_SDK_ONESHOT_POLICY } from "./cursorSdkPolicy";
 import { buildPackagedRuntimeNodeModulePaths } from "../runtime/packagedNodePath";
 
 const forkMock = vi.hoisted(() => vi.fn());
@@ -238,6 +242,113 @@ class FailingSendChild extends FakeSdkChild {
     }
     return super.send(message);
   }
+}
+
+/** Answers `send` with a terminal run result instead of an empty object. */
+class OneShotSdkChild extends FakeSdkChild {
+  constructor(private readonly runResult: unknown = { status: "finished", result: " named it " }) {
+    super();
+  }
+
+  override send(message: { type?: string; requestId?: string; payload?: unknown }): boolean {
+    if (message.type === "send" && message.requestId) {
+      this.sent.push(message);
+      const requestId = message.requestId;
+      queueMicrotask(() => {
+        this.emit("message", { type: "response", requestId, ok: true, result: this.runResult });
+      });
+      return true;
+    }
+    return super.send(message);
+  }
+}
+
+/** Never answers `send`, so the one-shot deadline is the only way out. */
+class StalledSendChild extends FakeSdkChild {
+  cancelCount = 0;
+
+  override send(message: { type?: string; requestId?: string }): boolean {
+    if (message.type === "send") {
+      this.sent.push(message);
+      return true;
+    }
+    if (message.type === "cancel" && message.requestId) {
+      this.cancelCount += 1;
+      const requestId = message.requestId;
+      queueMicrotask(() => {
+        this.emit("message", { type: "response", requestId, ok: true, result: null });
+      });
+      return true;
+    }
+    return super.send(message);
+  }
+}
+
+/** Reports how many `send` requests were in flight at the same moment. */
+class OverlapCountingChild extends FakeSdkChild {
+  inFlight = 0;
+  maxInFlight = 0;
+
+  override send(message: { type?: string; requestId?: string }): boolean {
+    if (message.type === "send" && message.requestId) {
+      this.sent.push(message);
+      this.inFlight += 1;
+      this.maxInFlight = Math.max(this.maxInFlight, this.inFlight);
+      const requestId = message.requestId;
+      setTimeout(() => {
+        this.inFlight -= 1;
+        this.emit("message", {
+          type: "response",
+          requestId,
+          ok: true,
+          result: { status: "finished", result: "done" },
+        });
+      }, 20).unref?.();
+      return true;
+    }
+    return super.send(message);
+  }
+}
+
+function sentMessagesOfType(
+  child: FakeSdkChild,
+  type: string,
+): Array<{ type?: string; payload?: Record<string, unknown> }> {
+  return child.sent.filter((message): message is { type?: string; payload?: Record<string, unknown> } => (
+    Boolean(message && typeof message === "object" && (message as { type?: string }).type === type)
+  ));
+}
+
+/** Answers `send` with a rejection, the way a worker reports its own fault. */
+class RejectingSendChild extends FakeSdkChild {
+  override send(message: { type?: string; requestId?: string }): boolean {
+    if (message.type === "send" && message.requestId) {
+      this.sent.push(message);
+      const requestId = message.requestId;
+      queueMicrotask(() => {
+        this.emit("message", {
+          type: "response",
+          requestId,
+          ok: false,
+          error: "Cursor SDK worker is not initialized.",
+        });
+      });
+      return true;
+    }
+    return super.send(message);
+  }
+}
+
+function oneShotArgs(workspacePath: string) {
+  return {
+    projectRoot: path.join(os.tmpdir(), "ade-project"),
+    workspacePath,
+    apiKey: "cursor-test-key",
+    modelSdkId: "grok-4.6",
+    promptText: "Name this chat.",
+    feature: "session_title",
+    timeoutMs: 5_000,
+  };
 }
 
 afterEach(() => {
@@ -975,6 +1086,178 @@ describe("Cursor SDK pool paths", () => {
     expect(third.pooled).not.toBe(first.pooled);
     expect(forkMock).toHaveBeenCalledTimes(2);
     releaseCursorSdkConnection(poolKey, third.generation);
+  });
+
+
+  it("runs a one-shot local prompt on a pooled worker and starts a fresh conversation", async () => {
+    const child = new OneShotSdkChild();
+    forkMock.mockReturnValue(child);
+    const workspacePath = path.join(os.tmpdir(), `ade-oneshot-${Date.now()}-${Math.random()}`);
+
+    const result = await runCursorSdkLocalPrompt(oneShotArgs(workspacePath));
+
+    expect(result.text).toBe("named it");
+    expect(result.agentId).toBe("agent-1");
+    const init = sentMessagesOfType(child, "init")[0]?.payload;
+    expect(init).toMatchObject({
+      modelSdkId: "grok-4.6",
+      apiKey: "cursor-test-key",
+      sessionId: "oneshot:session_title",
+      laneRoot: workspacePath,
+      // Fixed, both of them: the warm worker is shared across features and
+      // keeps the policy and the name it was created with.
+      agentName: CURSOR_SDK_ONESHOT_AGENT_NAME,
+      policy: CURSOR_SDK_ONESHOT_POLICY,
+    });
+    const send = sentMessagesOfType(child, "send")[0]?.payload;
+    expect(send).toMatchObject({
+      promptText: "Name this chat.",
+      modelSdkId: "grok-4.6",
+      resetConversation: true,
+    });
+  });
+
+  it("keeps the one-shot worker warm across back-to-back prompts", async () => {
+    const child = new OneShotSdkChild();
+    forkMock.mockReturnValue(child);
+    const workspacePath = path.join(os.tmpdir(), `ade-oneshot-warm-${Date.now()}-${Math.random()}`);
+
+    await runCursorSdkLocalPrompt(oneShotArgs(workspacePath));
+    await runCursorSdkLocalPrompt({ ...oneShotArgs(workspacePath), modelSdkId: "composer-2" });
+
+    expect(forkMock).toHaveBeenCalledTimes(1);
+    const sends = sentMessagesOfType(child, "send");
+    expect(sends).toHaveLength(2);
+    // The worker applies a per-send model, so a second candidate model does not
+    // need a second worker.
+    expect(sends[1]?.payload?.modelSdkId).toBe("composer-2");
+    expect(sends[1]?.payload?.resetConversation).toBe(true);
+  });
+
+  it("serializes concurrent one-shot prompts on the same workspace", async () => {
+    const child = new OverlapCountingChild();
+    forkMock.mockReturnValue(child);
+    const workspacePath = path.join(os.tmpdir(), `ade-oneshot-race-${Date.now()}-${Math.random()}`);
+
+    await Promise.all([
+      runCursorSdkLocalPrompt(oneShotArgs(workspacePath)),
+      runCursorSdkLocalPrompt(oneShotArgs(workspacePath)),
+      runCursorSdkLocalPrompt(oneShotArgs(workspacePath)),
+    ]);
+
+    expect(child.maxInFlight).toBe(1);
+    expect(sentMessagesOfType(child, "send")).toHaveLength(3);
+    expect(forkMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("maps an errored one-shot run onto a thrown error", async () => {
+    forkMock.mockReturnValue(new OneShotSdkChild({ status: "error", result: "Cursor is out of credits." }));
+    const workspacePath = path.join(os.tmpdir(), `ade-oneshot-error-${Date.now()}-${Math.random()}`);
+
+    await expect(runCursorSdkLocalPrompt(oneShotArgs(workspacePath)))
+      .rejects.toThrow("Cursor is out of credits.");
+  });
+
+  it("maps a cancelled one-shot run onto a thrown error", async () => {
+    forkMock.mockReturnValue(new OneShotSdkChild({ status: "cancelled", result: "" }));
+    const workspacePath = path.join(os.tmpdir(), `ade-oneshot-cancelled-${Date.now()}-${Math.random()}`);
+
+    await expect(runCursorSdkLocalPrompt(oneShotArgs(workspacePath)))
+      .rejects.toThrow("Cursor SDK task was cancelled.");
+  });
+
+  it("cancels and discards the worker when a one-shot prompt times out", async () => {
+    const stalled = new StalledSendChild();
+    const replacement = new OneShotSdkChild();
+    forkMock.mockReturnValueOnce(stalled).mockReturnValueOnce(replacement);
+    const workspacePath = path.join(os.tmpdir(), `ade-oneshot-timeout-${Date.now()}-${Math.random()}`);
+
+    await expect(runCursorSdkLocalPrompt({ ...oneShotArgs(workspacePath), timeoutMs: 20 }))
+      .rejects.toThrow("Cursor SDK task timed out after 20ms.");
+    expect(stalled.cancelCount).toBe(1);
+
+    // A worker that missed its deadline is still streaming: the next one-shot
+    // must not inherit it.
+    const result = await runCursorSdkLocalPrompt(oneShotArgs(workspacePath));
+    expect(result.text).toBe("named it");
+    expect(forkMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("discards the worker when a one-shot send rejects", async () => {
+    const broken = new RejectingSendChild();
+    const replacement = new OneShotSdkChild();
+    forkMock.mockReturnValueOnce(broken).mockReturnValueOnce(replacement);
+    const workspacePath = path.join(os.tmpdir(), `ade-oneshot-reject-${Date.now()}-${Math.random()}`);
+
+    await expect(runCursorSdkLocalPrompt(oneShotArgs(workspacePath)))
+      .rejects.toThrow("Cursor SDK worker is not initialized.");
+    expect(broken.disposeCount).toBe(1);
+
+    // A worker whose send rejected reported a fault of its own, and its process
+    // stays alive through all of them: the pool's liveness check would keep
+    // handing the same broken worker out.
+    const result = await runCursorSdkLocalPrompt(oneShotArgs(workspacePath));
+    expect(result.text).toBe("named it");
+    expect(forkMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("reports a terminal one-shot error from the run's error detail", async () => {
+    forkMock.mockReturnValue(new OneShotSdkChild({
+      status: "error",
+      result: "Here is the partial answer",
+      error: { message: "Cursor stream failed: NGHTTP2_ENHANCE_YOUR_CALM" },
+    }));
+    const workspacePath = path.join(os.tmpdir(), `ade-oneshot-detail-${Date.now()}-${Math.random()}`);
+
+    await expect(runCursorSdkLocalPrompt(oneShotArgs(workspacePath)))
+      .rejects.toThrow("Cursor stream failed: NGHTTP2_ENHANCE_YOUR_CALM");
+  });
+
+  it("shares one warm worker across two spellings of the same workspace path", async () => {
+    const child = new OneShotSdkChild();
+    forkMock.mockReturnValue(child);
+    const workspacePath = path.join(os.tmpdir(), `ADE-Oneshot-Case-${Date.now()}`);
+
+    await runCursorSdkLocalPrompt(oneShotArgs(workspacePath));
+    await runCursorSdkLocalPrompt(oneShotArgs(workspacePath.toLowerCase()));
+
+    // Only where the filesystem itself folds case; Linux is case-sensitive and
+    // two spellings really are two workspaces there.
+    const expectedWorkers = process.platform === "linux" ? 2 : 1;
+    expect(forkMock).toHaveBeenCalledTimes(expectedWorkers);
+  });
+
+  it("forks a fresh worker when the Cursor API key rotates", async () => {
+    const first = new OneShotSdkChild();
+    const second = new OneShotSdkChild();
+    forkMock.mockReturnValueOnce(first).mockReturnValueOnce(second);
+    const workspacePath = path.join(os.tmpdir(), `ade-oneshot-key-${Date.now()}-${Math.random()}`);
+
+    await runCursorSdkLocalPrompt(oneShotArgs(workspacePath));
+    await runCursorSdkLocalPrompt({ ...oneShotArgs(workspacePath), apiKey: "cursor-rotated-key" });
+
+    expect(forkMock).toHaveBeenCalledTimes(2);
+    expect(sentMessagesOfType(second, "init")[0]?.payload?.apiKey).toBe("cursor-rotated-key");
+  });
+
+  it("caps the warm one-shot workers and releases the least recently used idle one", async () => {
+    const children = [new OneShotSdkChild(), new OneShotSdkChild(), new OneShotSdkChild()];
+    forkMock.mockImplementation(() => children.shift() ?? new OneShotSdkChild());
+    const [oldest, middle] = [children[0]!, children[1]!];
+    const stamp = `${Date.now()}-${Math.random()}`;
+    const workspaces = [0, 1, 2].map((index) => path.join(os.tmpdir(), `ade-oneshot-lru-${stamp}-${index}`));
+
+    expect(CURSOR_SDK_LOCAL_ONESHOT_MAX_WORKERS).toBe(2);
+    await runCursorSdkLocalPrompt(oneShotArgs(workspaces[0]!));
+    await runCursorSdkLocalPrompt(oneShotArgs(workspaces[1]!));
+    expect(oldest.disposeCount).toBe(0);
+
+    // The third distinct workspace is over the cap, so the idle worker that ran
+    // longest ago is released rather than kept warm alongside the other two.
+    await runCursorSdkLocalPrompt(oneShotArgs(workspaces[2]!));
+    expect(forkMock).toHaveBeenCalledTimes(3);
+    expect(oldest.disposeCount).toBe(1);
+    expect(middle.disposeCount).toBe(0);
   });
 
   it("preserves structured Cursor SDK worker error metadata on rejected requests", async () => {

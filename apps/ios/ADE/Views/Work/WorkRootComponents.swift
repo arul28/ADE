@@ -870,10 +870,13 @@ struct WorkSessionListRow: View {
     } label: {
       Label("Select", systemImage: "checkmark.circle")
     }
-    Button {
-      onRename(session)
-    } label: {
-      Label("Rename", systemImage: "pencil")
+    if !CursorCloudNaming.ownsName(session.cursorCloudAgentId)
+      && !CursorCloudNaming.ownsName(chatSummary?.cursorCloudAgentId) {
+      Button {
+        onRename(session)
+      } label: {
+        Label("Rename", systemImage: "pencil")
+      }
     }
     Button {
       onPin(session)

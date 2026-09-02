@@ -3411,6 +3411,16 @@ export type AgentChatRegenerateSessionMetadataResult = {
   applied: AgentChatSessionMetadataField[];
   skipped: AgentChatSessionMetadataField[];
   modelId: string | null;
+  /**
+   * The last model failure of the naming chain, when every attempt failed.
+   *
+   * Generation falls back to a deterministic name rather than throwing, so a
+   * caller that only sees `applied: []` cannot tell an auth failure from a
+   * concurrent rename. Null when a model answered.
+   */
+  generationError?: string | null;
+  /** True when no model answered and the deterministic name was used instead. */
+  usedDeterministicFallback?: boolean;
 };
 
 export type AgentChatSlashCommand = {

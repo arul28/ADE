@@ -9,6 +9,37 @@
 export const CURSOR_CLOUD_CONVERSATION_RETRY_ATTEMPTS = 8;
 export const CURSOR_CLOUD_CONVERSATION_RETRY_MS = 2_000;
 
+/**
+ * How often a watched cloud chat re-reads its agent's remote name.
+ *
+ * Cursor owns that name, but the mirror ticks every three seconds during an
+ * active run and a rename on cursor.com is not worth an API call per tick.
+ */
+export const CURSOR_CLOUD_REMOTE_NAME_READ_TTL_MS = 60_000;
+
+/**
+ * How many times a terminal run may read back an empty conversation before ADE
+ * stops asking.
+ *
+ * A run that ends in ERROR with no visible turns never produces one, so an
+ * unbounded retry refetches it on every mirror tick for the life of the
+ * session. A few attempts still cover the real case the retry exists for: a run
+ * that reports terminal before its VM has written the transcript.
+ */
+export const CURSOR_CLOUD_EMPTY_TERMINAL_READ_LIMIT = 3;
+
+/**
+ * How many event-driven name reads a still-unnamed cloud chat may make on top
+ * of the TTL rule.
+ *
+ * Cursor names an agent shortly after its first run produces output, which is
+ * usually after ADE's first read. Rather than poll, the mirror re-reads the name
+ * only while the ADE title is still a default and only when a tick yields the
+ * first visible turn or a run reaches a terminal status, and stops after this
+ * many extra reads.
+ */
+export const CURSOR_CLOUD_PLACEHOLDER_NAME_READ_LIMIT = 3;
+
 function asRecord(value: unknown): Record<string, unknown> | null {
   return value && typeof value === "object" && !Array.isArray(value)
     ? value as Record<string, unknown>

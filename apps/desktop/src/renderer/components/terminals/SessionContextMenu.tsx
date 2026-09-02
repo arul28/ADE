@@ -32,7 +32,7 @@ import type {
   TerminalSessionSummary,
 } from "../../../shared/types";
 import { useClampedFixedPosition } from "../../hooks/useClampedFixedPosition";
-import { isChatToolType } from "../../lib/sessions";
+import { cursorOwnsSessionName, isChatToolType } from "../../lib/sessions";
 import { sessionCanonicalUiState, sessionIsMidFlight } from "../../lib/terminalAttention";
 import { useSessionMetadataGenerating } from "../../state/sessionMetadataGeneratingStore";
 import {
@@ -297,6 +297,7 @@ function SessionContextMenuPanel({
   const menuPosition = clampedPosition ?? { left: x, top: y };
   const isRunning = session.status === "running";
   const isChat = isChatToolType(session.toolType);
+  const canRename = !cursorOwnsSessionName(session);
   const isPrimaryLane = laneType === "primary";
   const isRegeneratingMetadata = Boolean(useSessionMetadataGenerating(session.id));
   const canonicalPhase = sessionCanonicalUiState(session).phase;
@@ -321,7 +322,7 @@ function SessionContextMenuPanel({
     if (finalizedRef.current) return;
     finalizedRef.current = true;
     const trimmed = draft.trim();
-    if (trimmed.length > 0) {
+    if (trimmed.length > 0 && canRename) {
       onRename(session, trimmed, binding);
     }
     onClose();
@@ -407,7 +408,11 @@ function SessionContextMenuPanel({
 
   const deletingLabel = deletingSessionId === session.id ? "Deleting…" : null;
 
-  const showNameStatusSubmenu = !tagging && isChat && Boolean(onRegenerateMetadata);
+  const metadataActions = SESSION_METADATA_GENERATION_ACTIONS.filter((action) => {
+    const fields = isPrimaryLane && action.primaryFields ? action.primaryFields : action.fields;
+    return canRename || !fields.includes("title");
+  });
+  const showNameStatusSubmenu = !tagging && isChat && Boolean(onRegenerateMetadata) && metadataActions.length > 0;
   const renderNameStatusContent = (): ReactNode => {
     if (renaming) return renameInput;
     const regenerateMetadata = onRegenerateMetadata;
@@ -415,20 +420,24 @@ function SessionContextMenuPanel({
 
     return (
       <>
-        <button
-          type="button"
-          className={MENU_ITEM_CLASS}
-          onClick={() => {
-            finalizedRef.current = false;
-            setDraft(session.title);
-            setRenaming(true);
-          }}
-        >
-          <MenuRowIcon icon={PencilSimple} />
-          Rename…
-        </button>
-        <MenuSeparator />
-        {SESSION_METADATA_GENERATION_ACTIONS.map((action) => {
+        {canRename ? (
+          <>
+            <button
+              type="button"
+              className={MENU_ITEM_CLASS}
+              onClick={() => {
+                finalizedRef.current = false;
+                setDraft(session.title);
+                setRenaming(true);
+              }}
+            >
+              <MenuRowIcon icon={PencilSimple} />
+              Rename…
+            </button>
+            <MenuSeparator />
+          </>
+        ) : null}
+        {metadataActions.map((action) => {
           const label = isPrimaryLane && action.primaryLabel ? action.primaryLabel : action.label;
           const fields = isPrimaryLane && action.primaryFields ? action.primaryFields : action.fields;
           const disabled = isRegeneratingMetadata || (action.laneNameOnly === true && isPrimaryLane);
@@ -454,17 +463,17 @@ function SessionContextMenuPanel({
     if (showNameStatusSubmenu) {
       return (
         <MenuSubmenu
-          label="Name & status"
+          label={canRename ? "Name & status" : "Status"}
           icon={<MenuRowIcon icon={TextT} />}
           className={MENU_ITEM_CLASS}
           data-testid="session-menu-name-status"
-          title="Rename this chat or refresh its visible metadata with AI"
+          title={canRename ? "Rename this chat or refresh its visible metadata with AI" : "Refresh status metadata; rename this agent on cursor.com"}
         >
           {renderNameStatusContent()}
         </MenuSubmenu>
       );
     }
-    if (!renaming && !tagging) {
+    if (canRename && !renaming && !tagging) {
       return (
         <button
           type="button"
@@ -496,7 +505,7 @@ function SessionContextMenuPanel({
       >
         {/* ── Identity: what this row is called and where it sits. Unlabelled;
             it is the first block under the cursor and needs no signpost. ── */}
-        {renaming && !(isChat && onRegenerateMetadata) ? renameInput : null}
+        {renaming && !showNameStatusSubmenu ? renameInput : null}
         {tagging && (
           <div className="px-3 py-1.5">
             <input

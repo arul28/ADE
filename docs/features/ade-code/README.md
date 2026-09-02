@@ -257,7 +257,7 @@ Right pane (open contextual content):
 | `/steer` | Show staged steer messages and their delivery state. |
 | `/new lane` | Lane creation form (desktop CreateLaneDialog parity): start-from modes for primary base branch / child lane / import branch, color picker, optional Linear issue attachment, optional setup template id, and post-create setup progress with retryable failure. Backed by `newLaneForm.ts` and the `lane.create` / `lane.createChild` / `lane.importBranch` actions. |
 | `/new chat [title]` | New chat in the active lane. |
-| `/rename [title]`, `/chat rename [title]` | Rename the active chat. |
+| `/rename [title]`, `/chat rename [title]` | Rename the active chat. Cursor Cloud chats refuse this — Cursor owns the agent name. |
 | `/chat archive` | Archive the active chat. |
 | `/chat unarchive <chat-id\|title>` | Unarchive a chat by id or title. |
 | `/chat archived [filter]` | List archived chats. |

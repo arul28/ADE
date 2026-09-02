@@ -11,6 +11,7 @@ const mockState = vi.hoisted(() => ({
   markCursorModelCachesStale: vi.fn(),
   discoverCursorCliModelDescriptors: vi.fn(),
   discoverCursorSdkModelDescriptors: vi.fn(),
+  verifyExplicitCursorModelSelection: vi.fn(),
   probeCursorSdkModelDiscovery: vi.fn(),
   getApiKeyStoreStatus: vi.fn(),
   initModelsDevService: vi.fn(),
@@ -54,11 +55,17 @@ vi.mock("./localModelDiscovery", () => ({
   inspectLocalProvider: (...args: unknown[]) => mockState.inspectLocalProvider(...args),
 }));
 
-vi.mock("../chat/cursorModelsDiscovery", () => ({
+vi.mock("../chat/cursorModelsDiscovery", async (importOriginal) => ({
+  // The failure-message builder stays real: these tests assert the exact
+  // sentence a rejected cloud launch shows, and that sentence is the contract.
+  describeCursorSdkModelSelectionFailure:
+    (await importOriginal<typeof import("../chat/cursorModelsDiscovery")>())
+      .describeCursorSdkModelSelectionFailure,
   clearCursorCliModelsCache: (...args: unknown[]) => mockState.clearCursorCliModelsCache(...args),
   markCursorModelCachesStale: (...args: unknown[]) => mockState.markCursorModelCachesStale(...args),
   discoverCursorCliModelDescriptors: (...args: unknown[]) => mockState.discoverCursorCliModelDescriptors(...args),
   discoverCursorSdkModelDescriptors: (...args: unknown[]) => mockState.discoverCursorSdkModelDescriptors(...args),
+  verifyExplicitCursorModelSelection: (...args: unknown[]) => mockState.verifyExplicitCursorModelSelection(...args),
   probeCursorSdkModelDiscovery: (...args: unknown[]) => mockState.probeCursorSdkModelDiscovery(...args),
 }));
 
@@ -112,6 +119,9 @@ vi.mock("../opencode/openCodeBinaryManager", () => ({
 }));
 
 import { createDynamicCursorCliModelDescriptor, getLocalProviderDefaultEndpoint } from "../../../shared/modelRegistry";
+// The real builder, kept real by the module mock above: these tests assert the
+// exact sentence a rejected cloud launch shows.
+import { describeCursorSdkModelSelectionFailure } from "../chat/cursorModelsDiscovery";
 import { createAiIntegrationService, missingFeatureModelMessage } from "./aiIntegrationService";
 
 type ServiceFactoryOptions = {
@@ -293,6 +303,9 @@ beforeEach(() => {
     createDynamicCursorCliModelDescriptor("auto", "Auto"),
     createDynamicCursorCliModelDescriptor("composer-2", "Composer 2"),
   ]);
+  // Null is "the caller chose no control", the state of every test that does
+  // not set a reasoning effort or a fast mode of its own.
+  mockState.verifyExplicitCursorModelSelection.mockResolvedValue(null);
   mockState.probeCursorSdkModelDiscovery.mockResolvedValue({
     rows: [
       { id: "auto", displayName: "Auto" },
@@ -850,5 +863,137 @@ describe("aiIntegrationService", () => {
     expect(cloud).not.toHaveProperty("metadata");
     expect(cloud).not.toHaveProperty("webhook");
     expect(send).toHaveBeenCalled();
+  });
+
+  it("passes the selected Cursor model params to both cloud create and send", async () => {
+    const { service } = makeService({
+      availability: { claude: false, codex: false, cursor: true, droid: false },
+    });
+    mockState.detectAllAuth.mockResolvedValue([
+      { type: "api-key", provider: "cursor", key: "crsr_test", source: "store" },
+    ]);
+    const send = vi.fn().mockResolvedValue({ id: "run-1", status: "RUNNING" });
+    const create = vi.fn().mockResolvedValue({ agentId: "agt_1", send });
+    cursorCloudMocks.loadCursorSdk.mockResolvedValue({ Agent: { create } });
+    cursorCloudMocks.resolveCursorCloudCreateCloudExtras.mockReturnValue({
+      sessionId: "sess-1",
+      laneId: "lane-1",
+      projectId: "proj-1",
+      linearIssueId: null,
+      envVars: {},
+      extras: {},
+    });
+    const modelParams = [
+      { id: "reasoning_effort", value: "xhigh" },
+      { id: "speed", value: "standard" },
+    ];
+    mockState.verifyExplicitCursorModelSelection.mockResolvedValue(modelParams);
+
+    await service.createCursorCloudRun({
+      promptText: "Use the exact selected model settings.",
+      repoUrl: "https://github.com/acme/project.git",
+      modelId: "grok-4.6",
+      reasoningEffort: "xhigh",
+      fastMode: false,
+    });
+
+    // One call that owns both the catalog probe and the resolve, so the caller
+    // cannot depend on an ordering it has no way to state.
+    expect(mockState.verifyExplicitCursorModelSelection).toHaveBeenCalledWith("crsr_test", {
+      modelSdkId: "grok-4.6",
+      reasoningEffort: "xhigh",
+      fastMode: false,
+    });
+    expect(create.mock.calls[0]?.[0]).toEqual(expect.objectContaining({
+      model: { id: "grok-4.6", params: modelParams },
+    }));
+    expect(send.mock.calls[0]?.[1]).toEqual(expect.objectContaining({
+      model: { id: "grok-4.6", params: modelParams },
+    }));
+  });
+
+  it("fails closed instead of letting Cursor choose a different cloud variant", async () => {
+    const { service } = makeService({
+      availability: { claude: false, codex: false, cursor: true, droid: false },
+    });
+    mockState.detectAllAuth.mockResolvedValue([
+      { type: "api-key", provider: "cursor", key: "crsr_test", source: "store" },
+    ]);
+    const create = vi.fn();
+    cursorCloudMocks.loadCursorSdk.mockResolvedValue({ Agent: { create } });
+    cursorCloudMocks.resolveCursorCloudCreateCloudExtras.mockReturnValue({
+      sessionId: "sess-1",
+      laneId: "lane-1",
+      projectId: "proj-1",
+      linearIssueId: null,
+      envVars: {},
+      extras: {},
+    });
+    mockState.verifyExplicitCursorModelSelection.mockRejectedValue(new Error(
+      describeCursorSdkModelSelectionFailure("grok-4.6", {
+        status: "partial",
+        params: [],
+        unmet: ["reasoning"],
+      }),
+    ));
+
+    await expect(service.createCursorCloudRun({
+      promptText: "Do not silently change my settings.",
+      repoUrl: "https://github.com/acme/project.git",
+      modelId: "grok-4.6",
+      reasoningEffort: "xhigh",
+      fastMode: false,
+    })).rejects.toThrow("could not verify the selected model settings (reasoning effort)");
+    expect(create).not.toHaveBeenCalled();
+  });
+
+  it("names the cause when the Cursor catalog itself could not be loaded", async () => {
+    const { service } = makeService({
+      availability: { claude: false, codex: false, cursor: true, droid: false },
+    });
+    mockState.detectAllAuth.mockResolvedValue([
+      { type: "api-key", provider: "cursor", key: "crsr_test", source: "store" },
+    ]);
+    const create = vi.fn();
+    cursorCloudMocks.loadCursorSdk.mockResolvedValue({ Agent: { create } });
+    mockState.verifyExplicitCursorModelSelection.mockRejectedValue(new Error(
+      describeCursorSdkModelSelectionFailure("grok-4.6", {
+        status: "catalog-unavailable",
+        reason: "request timed out",
+      }),
+    ));
+
+    await expect(service.createCursorCloudRun({
+      promptText: "Do not blame my selection for a network fault.",
+      repoUrl: "https://github.com/acme/project.git",
+      modelId: "grok-4.6",
+      reasoningEffort: "xhigh",
+      fastMode: false,
+    })).rejects.toThrow("Could not load Cursor's model catalog (request timed out). Try again.");
+    expect(create).not.toHaveBeenCalled();
+    // A launch the model check refuses must leave no trace, so the lane's
+    // remembered secret names are never written.
+    expect(cursorCloudMocks.resolveCursorCloudCreateCloudExtras).not.toHaveBeenCalled();
+  });
+
+  it("rejects explicit cloud controls when no model id was sent", async () => {
+    const { service } = makeService({
+      availability: { claude: false, codex: false, cursor: true, droid: false },
+    });
+    mockState.detectAllAuth.mockResolvedValue([
+      { type: "api-key", provider: "cursor", key: "crsr_test", source: "store" },
+    ]);
+    const create = vi.fn();
+    cursorCloudMocks.loadCursorSdk.mockResolvedValue({ Agent: { create } });
+
+    await expect(service.createCursorCloudRun({
+      promptText: "Do not apply settings to Cursor's default model.",
+      repoUrl: "https://github.com/acme/project.git",
+      reasoningEffort: "xhigh",
+      fastMode: false,
+    })).rejects.toThrow("without a selected model");
+    expect(create).not.toHaveBeenCalled();
+    expect(mockState.verifyExplicitCursorModelSelection).not.toHaveBeenCalled();
+    expect(cursorCloudMocks.resolveCursorCloudCreateCloudExtras).not.toHaveBeenCalled();
   });
 });

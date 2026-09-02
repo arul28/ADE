@@ -2,6 +2,10 @@
 
 import type { AgentChatProvider, AgentChatSession, TerminalSessionSummary, TerminalToolType } from "../../shared/types";
 import { isProviderSlashCommandInput } from "../../shared/chatSlashCommands";
+import { stripElectronErrorWrapper } from "../../shared/codedError";
+import { cursorOwnsSessionName as cursorOwnsCloudAgentId } from "../../shared/cursorCloudNaming";
+
+export { CURSOR_CLOUD_RENAME_BLOCKED_MESSAGE } from "../../shared/cursorCloudNaming";
 
 /** Returns true if the tool type represents an AI chat session. */
 export function isChatToolType(toolType: string | null | undefined): boolean {
@@ -14,6 +18,18 @@ export function isChatToolType(toolType: string | null | undefined): boolean {
     || t === "cursor"
     || t.endsWith("-chat")
   );
+}
+
+/**
+ * True when Cursor owns this chat's name, so ADE must not rename it.
+ *
+ * Wrapper over the shared id predicate so renderer menus keep passing a
+ * session object. A whitespace-only id is not a cloud agent.
+ */
+export function cursorOwnsSessionName(
+  session: Pick<TerminalSessionSummary, "cursorCloudAgentId">,
+): boolean {
+  return cursorOwnsCloudAgentId(session.cursorCloudAgentId);
 }
 
 /**
@@ -45,10 +61,7 @@ export function isPtyContextInsertableToolType(toolType: TerminalSessionSummary[
  */
 export function formatSessionActionError(error: unknown, action: string): string {
   const raw = (error instanceof Error ? error.message : String(error ?? "")).trim();
-  const message = raw
-    .replace(/^Error invoking remote method '[^']+':\s*/i, "")
-    .replace(/^Error:\s*/i, "")
-    .trim();
+  const message = stripElectronErrorWrapper(raw);
   if (!message) return `${action} failed. Try again.`;
   if (/(?:session|chat) '[^']*' was not found\.?$/i.test(message)) {
     // The session belongs to a different machine than the one the call reached,

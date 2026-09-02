@@ -15,6 +15,10 @@ import {
 } from "../../../shared/chatAttachmentLimits";
 import {
   AgentChatComposer,
+  CURSOR_CLOUD_MODEL_BLOCKED_MESSAGE,
+  CURSOR_CLOUD_MODELS_NOT_LOADED_MESSAGE,
+  CURSOR_CLOUD_SEND_EMPTY_CONTENT_MESSAGE,
+  cursorCloudSendBlock,
   HEIC_CONVERSION_UNAVAILABLE_MESSAGE,
 } from "./AgentChatComposer";
 import { useAppStore } from "../../state/appStore";
@@ -3586,5 +3590,129 @@ describe("AgentChatComposer", () => {
       expect(screen.queryByRole("button", { name: /Compact context/i })).toBeNull();
       expect(screen.getByLabelText("Context usage: 80% full")).toBeTruthy();
     });
+  });
+});
+
+/**
+ * Cloud mode must never reroute a send to the local runtime. The pane cannot reach the
+ * "eligible list is not empty but the draft's model is not on it" state, because its
+ * auto-switch effect corrects it, so the rule is proved here at the boundary that
+ * enforces it.
+ */
+describe("AgentChatComposer Cursor Cloud send blocking", () => {
+  function cloudProps(overrides: Partial<ComponentProps<typeof AgentChatComposer>> = {}) {
+    return {
+      turnActive: false,
+      sessionProvider: "cursor" as const,
+      modelId: "cursor/composer-cloud",
+      availableModelIds: ["cursor/composer-cloud"],
+      draft: "Run this in the cloud.",
+      cursorCloudCanLaunch: true,
+      cursorCloudModeActive: true,
+      ...overrides,
+    };
+  }
+
+  it("blocks the send and names the model when other cloud models exist", () => {
+    const onSubmit = vi.fn();
+    const onSubmitBlocked = vi.fn();
+    const onSubmitToCloud = vi.fn();
+    renderComposer(cloudProps({
+      cursorCloudModelReady: false,
+      cursorCloudHasEligibleModels: true,
+      onSubmit,
+      onSubmitBlocked,
+      onSubmitToCloud,
+    }));
+
+    expect((screen.getByRole("button", { name: "Send to Cursor Cloud" }) as HTMLButtonElement).disabled).toBe(true);
+    // Enter bypasses the disabled button, so it is the path that could send locally.
+    fireEvent.keyDown(screen.getByRole("textbox"), { key: "Enter" });
+
+    expect(onSubmitBlocked).toHaveBeenCalledWith(CURSOR_CLOUD_MODEL_BLOCKED_MESSAGE);
+    expect(onSubmit).not.toHaveBeenCalled();
+    expect(onSubmitToCloud).not.toHaveBeenCalled();
+  });
+
+  it("names the unloaded catalog instead when there is no eligible model to choose", () => {
+    const onSubmit = vi.fn();
+    const onSubmitBlocked = vi.fn();
+    const onSubmitToCloud = vi.fn();
+    renderComposer(cloudProps({
+      cursorCloudModelReady: false,
+      cursorCloudHasEligibleModels: false,
+      onSubmit,
+      onSubmitBlocked,
+      onSubmitToCloud,
+    }));
+
+    fireEvent.keyDown(screen.getByRole("textbox"), { key: "Enter" });
+
+    expect(onSubmitBlocked).toHaveBeenCalledWith(CURSOR_CLOUD_MODELS_NOT_LOADED_MESSAGE);
+    expect(onSubmit).not.toHaveBeenCalled();
+    expect(onSubmitToCloud).not.toHaveBeenCalled();
+  });
+
+  it("blocks an empty model id without a check of its own", () => {
+    const onSubmit = vi.fn();
+    const onSubmitBlocked = vi.fn();
+    renderComposer(cloudProps({
+      modelId: "",
+      cursorCloudModelReady: false,
+      cursorCloudHasEligibleModels: true,
+      onSubmit,
+      onSubmitBlocked,
+      onSubmitToCloud: vi.fn(),
+    }));
+
+    fireEvent.keyDown(screen.getByRole("textbox"), { key: "Enter" });
+
+    expect(onSubmitBlocked).toHaveBeenCalledWith(CURSOR_CLOUD_MODEL_BLOCKED_MESSAGE);
+    expect(onSubmit).not.toHaveBeenCalled();
+  });
+
+  it("sends to the cloud once the draft model is eligible", () => {
+    const onSubmit = vi.fn();
+    const onSubmitToCloud = vi.fn().mockReturnValue(true);
+    renderComposer(cloudProps({
+      cursorCloudModelReady: true,
+      cursorCloudHasEligibleModels: true,
+      onSubmit,
+      onSubmitToCloud,
+    }));
+
+    expect((screen.getByRole("button", { name: "Send to Cursor Cloud" }) as HTMLButtonElement).disabled).toBe(false);
+    fireEvent.keyDown(screen.getByRole("textbox"), { key: "Enter" });
+
+    expect(onSubmitToCloud).toHaveBeenCalledWith("Run this in the cloud.");
+    expect(onSubmit).not.toHaveBeenCalled();
+  });
+});
+
+describe("cursorCloudSendBlock", () => {
+  it("names the unloaded catalog first, then the ineligible model, then empty content", () => {
+    expect(cursorCloudSendBlock({
+      hasEligibleModels: false,
+      modelReady: false,
+      hasContent: false,
+    })).toEqual({ reason: CURSOR_CLOUD_MODELS_NOT_LOADED_MESSAGE, notify: true });
+    expect(cursorCloudSendBlock({
+      hasEligibleModels: true,
+      modelReady: false,
+      hasContent: true,
+    })).toEqual({ reason: CURSOR_CLOUD_MODEL_BLOCKED_MESSAGE, notify: true });
+    expect(cursorCloudSendBlock({
+      hasEligibleModels: true,
+      modelReady: true,
+      hasContent: false,
+    })).toEqual({ reason: CURSOR_CLOUD_SEND_EMPTY_CONTENT_MESSAGE, notify: false });
+  });
+
+  it("lets a ready cloud send through", () => {
+    expect(cursorCloudSendBlock({
+      hasEligibleModels: true,
+      modelReady: true,
+      hasContent: true,
+    })).toBeNull();
   });
 });

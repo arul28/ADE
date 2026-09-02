@@ -109,10 +109,21 @@ struct WorkSessionSettingsSheet: View {
           }
 
           GlassSection(title: "Title") {
-            TextField("Name this chat", text: $titleText)
-              .textInputAutocapitalization(.sentences)
-              .autocorrectionDisabled()
-              .adeInsetField(cornerRadius: 14, padding: 12)
+            if CursorCloudNaming.ownsName(summary.cursorCloudAgentId) {
+              VStack(alignment: .leading, spacing: 6) {
+                Text(summary.title ?? defaultWorkChatTitle(provider: summary.provider))
+                  .font(.subheadline.weight(.semibold))
+                  .foregroundStyle(ADEColor.textPrimary)
+                Text(CursorCloudNaming.renameBlockedMessage)
+                  .font(.caption)
+                  .foregroundStyle(ADEColor.textSecondary)
+              }
+            } else {
+              TextField("Name this chat", text: $titleText)
+                .textInputAutocapitalization(.sentences)
+                .autocorrectionDisabled()
+                .adeInsetField(cornerRadius: 14, padding: 12)
+            }
           }
 
           GlassSection(title: "Model") {

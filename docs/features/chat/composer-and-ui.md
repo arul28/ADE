@@ -1787,6 +1787,43 @@ These modules are pure and unit-testable:
 
 ## Cursor Cloud fleet view
 
+The chat composer also exposes a Cursor Cloud agents side panel from its
+overflow menu whenever the lane has a connected Cursor account. The panel
+lists active and recent agents, opens an existing agent as an ADE chat, and
+keeps archive, cancel, delete, and refresh actions on the same Cursor-owned
+agent record. Cursor supplies the agent name: ADE mirrors that name and does
+not offer an ADE rename action. New cloud launches pass the selected model's
+reasoning and service-tier parameters explicitly, so Cursor cannot silently
+replace the chosen variant with its default.
+A control the selected model does not define at all (Composer models carry no
+reasoning parameter, for example) is simply not sent; the launch fails closed
+only when the model has the control and cannot represent the chosen value.
+
+Cloud readiness is honest about the lane's git remote. The remote is read
+through `useLaneGitRemote` with a loading, ready, and error state, retried on
+its own a few times and again whenever the machine picker opens; "no GitHub
+remote" is only shown after a finished read that returned none. The
+auto-create lane row reads the primary lane's remote, because the auto-created
+branch is cut from the same repo and the placeholder id is not a lane the brain
+knows. Before the agent starts, the launcher asks git where the lane's branch
+stands: a branch that is only behind origin is not pushed (the cloud clones
+origin, which is newer), a diverged branch blocks the send with one plain
+sentence, and only local commits are pushed. A failed push always aborts the
+launch, even when origin already lists the branch — listing it is not proof it
+has these commits. A rejected push is rewritten into a sentence instead of
+git's stderr. ADE rename is blocked on every surface that can write a chat
+title: desktop menus, the command palette, ADE Code (`/rename`, hotkey `r`),
+iOS, `sessions.updateMeta`, `session.updateMeta`, and `work.updateSessionMeta`.
+The iOS chat settings sheet shows Cursor's name as read-only. Pin and other
+non-title patches still go through.
+
+A new cloud launch returns its ADE session as soon as it is persisted, and the
+first hydrate runs in the chat view; only reopening an existing empty cloud
+chat waits for hydrate. Cursor names the agent shortly after the first run
+produces output, so while the ADE title is still a default the mirror re-reads
+the name on the tick that yields the first visible turn or a terminal run,
+capped at three extra reads, with no polling of its own.
+
 The top bar carries a Cursor quick-view button (`CursorCloudQuickViewButton`,
 mounted by `TopBar` beside the Linear quick-view) that opens
 `CursorCloudFleetModal` — a **project-scoped** account surface listing every

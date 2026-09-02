@@ -508,6 +508,17 @@ describe("SessionContextMenu grouped actions", () => {
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 
+  it("hides ADE rename controls for Cursor Cloud agents but keeps status actions", () => {
+    const onRegenerateMetadata = vi.fn();
+    renderMenu(makeSession({ cursorCloudAgentId: "cloud-agent-1" }), { onRegenerateMetadata });
+
+    expect(screen.queryByRole("button", { name: "Rename" })).toBeNull();
+    openSubmenuByHover(screen.getByTestId("session-menu-name-status"));
+
+    expect(screen.queryByRole("button", { name: "Rename…" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Generate status line" })).toBeTruthy();
+  });
+
   it("explains why lane-name generation is disabled for the primary lane", () => {
     const onRegenerateMetadata = vi.fn();
     renderMenu(makeSession(), { onRegenerateMetadata, laneType: "primary" });
