@@ -168,11 +168,15 @@ jobs:
         if: steps.token.outputs.present == 'true'
         run: |
           set -euo pipefail
+          # Outside the checkout so the repo `.gitignore` (`node_modules`) cannot
+          # strip native/node_modules from `npm pack`.
+          OUT_DIR="${RUNNER_TEMP}/runtime-packages"
+          echo "RUNTIME_PACKAGES_DIR=$OUT_DIR" >> "$GITHUB_ENV"
           node apps/ade-cli/scripts/build-runtime-npm-packages.mjs \
             --artifacts-dir release-artifacts \
             --version "${{ steps.version.outputs.version }}" \
-            --out-dir runtime-packages
-          ls -la runtime-packages
+            --out-dir "$OUT_DIR"
+          ls -la "$OUT_DIR"
 
       # Between build and publish, never after. npm-packlist honors a
       # `.gitignore` or `.npmignore` shipped inside a packed subdirectory, so a
@@ -182,7 +186,7 @@ jobs:
         if: steps.token.outputs.present == 'true'
         run: |
           set -euo pipefail
-          for DIR in runtime-packages/runtime-*/; do
+          for DIR in "$RUNTIME_PACKAGES_DIR"/runtime-*/; do
             node apps/ade-cli/scripts/verify-runtime-package-contents.mjs "$DIR"
           done
 
@@ -200,19 +204,19 @@ jobs:
           # optionalDependencies, so publishing it first would leave a window in
           # which installing it resolves nothing.
           ORDER=""
-          for DIR in runtime-packages/*/; do
+          for DIR in "$RUNTIME_PACKAGES_DIR"/*/; do
             case "$DIR" in
-              runtime-packages/runtime/) ;;
+              */runtime/) ;;
               *) ORDER="$ORDER $DIR" ;;
             esac
           done
-          ORDER="$ORDER runtime-packages/runtime/"
+          ORDER="$ORDER $RUNTIME_PACKAGES_DIR/runtime/"
 
           # Skip-if-exists, matching publish-sdk-packages.yml's auto route: a
           # re-run after a partial failure must publish only what is missing
           # rather than abort on the packages that already landed.
           for DIR in $ORDER; do
-            PKG=$(node -p "require('./${DIR}package.json').name")
+            PKG=$(node -p "require(require('node:path').resolve('$DIR', 'package.json')).name")
             if npm view "$PKG@$VERSION" version >/dev/null 2>&1; then
               echo "$PKG@$VERSION already published; skipping." >> "$GITHUB_STEP_SUMMARY"
               continue
