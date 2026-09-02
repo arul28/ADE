@@ -2221,6 +2221,33 @@ struct AgentChatEventProvenance: Decodable, Equatable {
   var runId: String?
 }
 
+struct AgentChatResourceLink: Codable, Equatable {
+  var uri: String?
+  var name: String?
+  var path: String?
+
+  var displayPath: String {
+    if let path, !path.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+      return path
+    }
+    if let uri, !uri.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+      if uri.hasPrefix("file://") {
+        var rest = String(uri.dropFirst("file://".count))
+        rest = rest.removingPercentEncoding ?? rest
+        if rest.count >= 3 {
+          let chars = Array(rest)
+          if chars[0] == "/", chars[1].isLetter, chars[2] == ":" {
+            rest.removeFirst()
+          }
+        }
+        return rest
+      }
+      return uri
+    }
+    return name?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+  }
+}
+
 struct AgentChatEventEnvelope: Decodable, Identifiable, Equatable {
   /// Identity must include the timestamp, not just the sequence.
   ///
@@ -2249,6 +2276,9 @@ struct AgentChatEventEnvelope: Decodable, Identifiable, Equatable {
   var subagentTaskType: String?
   var subagentCommand: String?
   var subagentSpawnKind: AgentChatSpawnKind?
+  var subagentParentAgentId: String?
+  var subagentSpawnDepth: Int?
+  var subagentResourceLinks: [AgentChatResourceLink]?
 
   init(
     sessionId: String,
@@ -2258,7 +2288,10 @@ struct AgentChatEventEnvelope: Decodable, Identifiable, Equatable {
     provenance: AgentChatEventProvenance? = nil,
     subagentTaskType: String? = nil,
     subagentCommand: String? = nil,
-    subagentSpawnKind: AgentChatSpawnKind? = nil
+    subagentSpawnKind: AgentChatSpawnKind? = nil,
+    subagentParentAgentId: String? = nil,
+    subagentSpawnDepth: Int? = nil,
+    subagentResourceLinks: [AgentChatResourceLink]? = nil
   ) {
     self.sessionId = sessionId
     self.timestamp = timestamp
@@ -2268,6 +2301,9 @@ struct AgentChatEventEnvelope: Decodable, Identifiable, Equatable {
     self.subagentTaskType = subagentTaskType
     self.subagentCommand = subagentCommand
     self.subagentSpawnKind = subagentSpawnKind
+    self.subagentParentAgentId = subagentParentAgentId
+    self.subagentSpawnDepth = subagentSpawnDepth
+    self.subagentResourceLinks = subagentResourceLinks
   }
 
   private enum CodingKeys: String, CodingKey {
@@ -2282,12 +2318,20 @@ struct AgentChatEventEnvelope: Decodable, Identifiable, Equatable {
     var taskType: String?
     var command: String?
     var spawnKind: AgentChatSpawnKind?
+    var parentAgentId: String?
+    var spawnDepth: Int?
+    var resourceLinks: [AgentChatResourceLink]?
 
     private enum CodingKeys: String, CodingKey {
       case taskType
       case taskTypeSnake = "task_type"
       case command
       case spawnKind
+      case parentAgentId
+      case spawnDepth
+      case spawnDepthSnake = "spawn_depth"
+      case resourceLinks
+      case resourceLinksSnake = "resource_links"
     }
 
     init(from decoder: Decoder) throws {
@@ -2296,6 +2340,11 @@ struct AgentChatEventEnvelope: Decodable, Identifiable, Equatable {
         ?? container.decodeIfPresent(String.self, forKey: .taskTypeSnake)
       command = try container.decodeIfPresent(String.self, forKey: .command)
       spawnKind = try container.decodeIfPresent(AgentChatSpawnKind.self, forKey: .spawnKind)
+      parentAgentId = try container.decodeIfPresent(String.self, forKey: .parentAgentId)
+      spawnDepth = try container.decodeIfPresent(Int.self, forKey: .spawnDepth)
+        ?? container.decodeIfPresent(Int.self, forKey: .spawnDepthSnake)
+      resourceLinks = try container.decodeIfPresent([AgentChatResourceLink].self, forKey: .resourceLinks)
+        ?? container.decodeIfPresent([AgentChatResourceLink].self, forKey: .resourceLinksSnake)
     }
   }
 
@@ -2310,6 +2359,9 @@ struct AgentChatEventEnvelope: Decodable, Identifiable, Equatable {
     subagentTaskType = metadata?.taskType
     subagentCommand = metadata?.command
     subagentSpawnKind = metadata?.spawnKind
+    subagentParentAgentId = metadata?.parentAgentId
+    subagentSpawnDepth = metadata?.spawnDepth
+    subagentResourceLinks = metadata?.resourceLinks
   }
 }
 

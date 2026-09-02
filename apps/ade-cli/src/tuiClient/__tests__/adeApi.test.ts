@@ -1061,6 +1061,25 @@ describe("discoverProjectSlashCommands", () => {
     ]));
   });
 
+  it("hides Claude terminal-only slash commands from the TUI catalog", () => {
+    const projectRoot = makeTmpRoot("ade-code-terminal-slash-");
+    const commandsDir = path.join(projectRoot, ".claude", "commands");
+    fs.mkdirSync(commandsDir, { recursive: true });
+    fs.writeFileSync(path.join(commandsDir, "exit.md"), "Exit the CLI.\n");
+    fs.writeFileSync(path.join(commandsDir, "quit.md"), "Quit.\n");
+    fs.writeFileSync(path.join(commandsDir, "statusline.md"), "Status line.\n");
+    fs.writeFileSync(path.join(commandsDir, "compact.md"), "Compact.\n");
+
+    const commands = discoverProjectSlashCommands(projectRoot);
+    const names = commands.map((command) => command.name.toLowerCase());
+    expect(names).not.toContain("/exit");
+    expect(names).not.toContain("/quit");
+    expect(names).not.toContain("/statusline");
+    expect(commands).toEqual(expect.arrayContaining([
+      expect.objectContaining({ name: "/compact" }),
+    ]));
+  });
+
   it("includes Cursor command files and subagents", () => {
     const projectRoot = makeTmpRoot("ade-code-cursor-command-");
     const commandsDir = path.join(projectRoot, ".cursor", "commands");

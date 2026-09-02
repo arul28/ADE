@@ -13202,6 +13202,9 @@ final class SyncService: ObservableObject {
     var lastToolName: String?
     var background: Bool?
     var usage: AgentChatSubagentUsage?
+    var parentAgentId: String?
+    var spawnDepth: Int?
+    var resourceLinks: [AgentChatResourceLink]?
   }
 
   /// Fetch a transcript page. Without `cursor` this returns the newest

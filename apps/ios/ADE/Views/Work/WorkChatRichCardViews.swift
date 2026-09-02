@@ -3244,6 +3244,7 @@ struct WorkChatInfoDetailsSheet: View {
       probing: probingTaskId == snapshot.taskId,
       expanded: expandedTaskIds.contains(snapshot.taskId),
       sessionModel: sessionModel,
+      treePrefix: workSubagentTreePrefix(snapshot, in: subagents),
       onSelect: { Task { await onSelect(snapshot) } }
     )
   }
@@ -3382,7 +3383,10 @@ private struct WorkChatInfoSubagentRow: View {
   let probing: Bool
   let expanded: Bool
   let sessionModel: String?
+  var treePrefix: String = ""
   let onSelect: () -> Void
+
+  @State private var filesOpen = false
 
   private var elapsed: String? { workSubagentElapsedLabel(snapshot) }
   private var detailText: String? {
@@ -3390,77 +3394,115 @@ private struct WorkChatInfoSubagentRow: View {
     return filteredDetail(snapshot.description)
   }
   private var lastToolName: String? { trimmedNonEmpty(snapshot.lastToolName) }
+  private var filePaths: [String] { workSubagentResourcePaths(snapshot) }
   private var showsDisclosure: Bool {
     snapshot.status == .running || detailText != nil || lastToolName != nil
   }
 
   var body: some View {
-    Button(action: onSelect) {
-      VStack(alignment: .leading, spacing: 8) {
-        HStack(spacing: 10) {
-          WorkSubagentGlyph(id: snapshot.agentId ?? snapshot.taskId, status: snapshot.status)
-          VStack(alignment: .leading, spacing: 2) {
-            Text(workSubagentMeaningfulName(snapshot))
-              .font(.subheadline.weight(.semibold))
-              .foregroundStyle(titleColor)
-              .lineLimit(1)
-              .truncationMode(.tail)
-            if let subtitleText {
-              subtitleText
-                .font(.caption2)
+    VStack(alignment: .leading, spacing: 6) {
+      Button(action: onSelect) {
+        VStack(alignment: .leading, spacing: 8) {
+          HStack(spacing: 10) {
+            if !treePrefix.isEmpty {
+              Text(treePrefix)
+                .font(.caption.monospaced())
+                .foregroundStyle(ADEColor.textMuted)
+            }
+            WorkSubagentGlyph(id: snapshot.agentId ?? snapshot.taskId, status: snapshot.status)
+            VStack(alignment: .leading, spacing: 2) {
+              Text(workSubagentMeaningfulName(snapshot))
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(titleColor)
+                .lineLimit(1)
+                .truncationMode(.tail)
+              if let subtitleText {
+                subtitleText
+                  .font(.caption2)
+                  .foregroundStyle(ADEColor.textMuted)
+                  .lineLimit(1)
+              }
+            }
+            if snapshot.background {
+              WorkSubagentTinyChip(text: "background", tint: ADEColor.textMuted)
+            }
+            if snapshot.spawnKind == .peer {
+              WorkSubagentTinyChip(text: "peer", tint: ADEColor.textMuted)
+            }
+            Spacer(minLength: 0)
+            HStack(spacing: 8) {
+              if probing {
+                ProgressView().controlSize(.small)
+              }
+              WorkSubagentStatusChip(status: snapshot.status)
+              if showsDisclosure {
+                Image(systemName: selected ? "arrow.uturn.left" : "chevron.right")
+                  .font(.system(size: 12, weight: .bold))
+                  .foregroundStyle(ADEColor.textMuted)
+              }
+            }
+          }
+
+          if expanded, detailText != nil || lastToolName != nil {
+            VStack(alignment: .leading, spacing: 5) {
+              if let detailText {
+                Text(detailText)
+              }
+              if let tool = lastToolName {
+                Text("last: \(tool)")
+                  .font(.caption2.monospaced())
+                  .foregroundStyle(ADEColor.textMuted)
+              }
+            }
+            .font(.caption)
+            .foregroundStyle(ADEColor.textSecondary)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.leading, 34)
+          }
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 9)
+        .background(
+          RoundedRectangle(cornerRadius: 8, style: .continuous)
+            .fill(selected ? ADEColor.accent.opacity(0.12) : ADEColor.cardBackground.opacity(0.52))
+        )
+        .overlay(
+          RoundedRectangle(cornerRadius: 8, style: .continuous)
+            .stroke(selected ? ADEColor.accent.opacity(0.45) : ADEColor.glassBorder, lineWidth: 1)
+        )
+      }
+      .buttonStyle(.plain)
+
+      if !filePaths.isEmpty {
+        VStack(alignment: .leading, spacing: 4) {
+          HStack(spacing: 8) {
+            Button {
+              filesOpen.toggle()
+            } label: {
+              Text("\(filesOpen ? "▾" : "▸") \(filePaths.count) file\(filePaths.count == 1 ? "" : "s") returned")
+                .font(.caption)
+                .foregroundStyle(ADEColor.textMuted)
+            }
+            .buttonStyle(.plain)
+            Button("Copy paths") {
+              UIPasteboard.general.string = filePaths.joined(separator: "\n")
+            }
+            .font(.caption2)
+            .foregroundStyle(ADEColor.textMuted)
+            .buttonStyle(.plain)
+          }
+          if filesOpen {
+            ForEach(filePaths, id: \.self) { path in
+              Text(path)
+                .font(.caption2.monospaced())
                 .foregroundStyle(ADEColor.textMuted)
                 .lineLimit(1)
             }
           }
-          if snapshot.background {
-            WorkSubagentTinyChip(text: "background", tint: ADEColor.textMuted)
-          }
-          if snapshot.spawnKind == .peer {
-            WorkSubagentTinyChip(text: "peer", tint: ADEColor.textMuted)
-          }
-          Spacer(minLength: 0)
-          HStack(spacing: 8) {
-            if probing {
-              ProgressView().controlSize(.small)
-            }
-            WorkSubagentStatusChip(status: snapshot.status)
-            if showsDisclosure {
-              Image(systemName: selected ? "arrow.uturn.left" : "chevron.right")
-                .font(.system(size: 12, weight: .bold))
-                .foregroundStyle(ADEColor.textMuted)
-            }
-          }
         }
-
-        if expanded, detailText != nil || lastToolName != nil {
-          VStack(alignment: .leading, spacing: 5) {
-            if let detailText {
-              Text(detailText)
-            }
-            if let tool = lastToolName {
-              Text("last: \(tool)")
-                .font(.caption2.monospaced())
-                .foregroundStyle(ADEColor.textMuted)
-            }
-          }
-          .font(.caption)
-          .foregroundStyle(ADEColor.textSecondary)
-          .frame(maxWidth: .infinity, alignment: .leading)
-          .padding(.leading, 34)
-        }
+        .padding(.leading, 34)
       }
-      .padding(.horizontal, 10)
-      .padding(.vertical, 9)
-      .background(
-        RoundedRectangle(cornerRadius: 8, style: .continuous)
-          .fill(selected ? ADEColor.accent.opacity(0.12) : ADEColor.cardBackground.opacity(0.52))
-      )
-      .overlay(
-        RoundedRectangle(cornerRadius: 8, style: .continuous)
-          .stroke(selected ? ADEColor.accent.opacity(0.45) : ADEColor.glassBorder, lineWidth: 1)
-      )
     }
-    .buttonStyle(.plain)
   }
 
   private var subtitleText: Text? {

@@ -78,6 +78,12 @@ import {
   type AgentChatDroidPermissionMode,
 } from "../../desktop/src/shared/types/chat";
 import type { AgentChatDispatchSteerMode } from "../../desktop/src/shared/types/chat";
+import {
+  chatTurnStatusExitCode,
+  formatChatTurnStatus,
+  type ChatTurnStatusPhase,
+  type ChatTurnStatusSnapshot,
+} from "../../desktop/src/shared/chatTurnStatus";
 import type { TerminalSessionSummary } from "../../desktop/src/shared/types/sessions";
 import {
   formatWorkingDuration,
@@ -328,6 +334,7 @@ type FormatterId =
   | "pr-comments"
   | "chat-list"
   | "chat-read"
+  | "chat-status"
   | "session-lifecycle"
   | "lane-drift"
   | "scheduled-work-create"
@@ -2097,7 +2104,7 @@ const HELP_BY_COMMAND: Record<string, string> = {
                                                     already carries. Add --arg strictMcpConfig=false to also load the
                                                     user's own MCP config (personal chats withhold it by default), or
                                                     --arg strictMcpConfig=true to withhold it on a project chat.
-                                                    Read mcpCapability on the created session (ade chat status
+                                                    Read mcpCapability on the created session (ade chat show
                                                     <session> --personal --json) for what the provider could honor:
                                                     only level "enforced" means the caller's servers are the whole
                                                     surface. A server the provider cannot carry fails the create.
@@ -2105,6 +2112,9 @@ const HELP_BY_COMMAND: Record<string, string> = {
     $ ade chat create --from-linear-issue ENG-431 --parent <session> --type subagent
                                                     Start a child chat with an attached issue + kickoff (alias: --linear-issue-json)
     $ ade chat send <session> --text "next step"    Send a message; steers automatically if the turn is active
+    $ ade chat show <session>                       Session summary (title, provider, model)
+    $ ade chat status <session>                     Live turn status: RUNNING / BLOCKED / IDLE
+                                                    Exit 0 running, 1 idle, 2 blocked. Use --text.
     $ ade chat note "testing desktop auth fallback" # Update the Work status line (aim for ${STATUS_NOTE_GUIDELINE_WORDS} words or fewer; truncated past ${MAX_STATUS_NOTE_CHARACTERS} characters)
     $ ade chat ask "Which account should I use?"    Escalate a blocking question to the user
                                                     'note' and 'ask' default to the caller and accept --session <id>.
@@ -7633,15 +7643,35 @@ function buildChatPlan(args: string[]): CliPlan {
       ],
     };
   }
-  if (sub === "show" || sub === "status")
+  if (sub === "show")
     return {
       kind: "execute",
-      label: "chat status",
+      label: "chat show",
       steps: [
         actionArgsListStep("result", "chat", "getSessionSummary", [
           requireValue(sessionId, "sessionId"),
         ]),
       ],
+    };
+  if (sub === "status")
+    return {
+      kind: "execute",
+      label: "chat status",
+      formatter: "chat-status",
+      steps: [
+        actionArgsListStep("result", "chat", "getTurnStatus", [
+          requireValue(sessionId, "sessionId"),
+        ]),
+      ],
+      exitCodeFromResult: (result) => {
+        const record = firstRecord(result, ["result", "status"])
+          ?? (isRecord(result) ? result : {});
+        const phase = asString(record.phase) as ChatTurnStatusPhase | undefined;
+        if (phase === "running" || phase === "idle" || phase === "blocked") {
+          return chatTurnStatusExitCode(phase);
+        }
+        return 1;
+      },
     };
   if (sub === "read" || sub === "messages" || sub === "transcript") {
     const targetSession = requireValue(sessionId, "sessionId");
@@ -20570,6 +20600,15 @@ function formatExternalSessions(value: unknown): string {
   );
 }
 
+function formatChatStatus(value: unknown): string {
+  const record = firstRecord(value, ["result", "status"])
+    ?? (isRecord(value) ? value : null);
+  if (!record || typeof record.sessionId !== "string" || typeof record.phase !== "string") {
+    return "ADE chat status\n(no session)";
+  }
+  return formatChatTurnStatus(record as ChatTurnStatusSnapshot);
+}
+
 function formatChatList(value: unknown): string {
   const sessions = firstArray(value, ["sessions", "chats", "items"]);
   return renderTable(
@@ -22000,6 +22039,8 @@ function formatTextOutput(
       return formatPrComments(value);
     case "chat-list":
       return formatChatList(value);
+    case "chat-status":
+      return formatChatStatus(value);
     case "chat-read":
       return formatChatRead(value);
     case "session-lifecycle":
@@ -22149,6 +22190,7 @@ function inferFormatter(
   if (label === "pr checks") return "pr-checks";
   if (label === "pr comments") return "pr-comments";
   if (label === "chat list") return "chat-list";
+  if (label === "chat status") return "chat-status";
   if (label === "test runs") return "tests-runs";
   if (label === "proof list") return "proof-list";
   if (label === "ios simulator status") return "ios-sim-status";

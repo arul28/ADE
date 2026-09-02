@@ -977,6 +977,9 @@ struct WorkSubagentSnapshot: Identifiable, Equatable {
   var taskType: String? = nil
   var command: String? = nil
   var spawnKind: AgentChatSpawnKind? = nil
+  var parentAgentId: String? = nil
+  var spawnDepth: Int? = nil
+  var resourceLinks: [AgentChatResourceLink] = []
 
   var id: String { taskId }
 }
@@ -1334,6 +1337,9 @@ struct WorkChatEnvelope: Identifiable, Equatable {
   let subagentTaskType: String?
   let subagentCommand: String?
   let subagentSpawnKind: AgentChatSpawnKind?
+  let subagentParentAgentId: String?
+  let subagentSpawnDepth: Int?
+  let subagentResourceLinks: [AgentChatResourceLink]
 
   init(
     sessionId: String,
@@ -1342,7 +1348,10 @@ struct WorkChatEnvelope: Identifiable, Equatable {
     event: WorkChatEvent,
     subagentTaskType: String? = nil,
     subagentCommand: String? = nil,
-    subagentSpawnKind: AgentChatSpawnKind? = nil
+    subagentSpawnKind: AgentChatSpawnKind? = nil,
+    subagentParentAgentId: String? = nil,
+    subagentSpawnDepth: Int? = nil,
+    subagentResourceLinks: [AgentChatResourceLink] = []
   ) {
     self.sessionId = sessionId
     self.timestamp = timestamp
@@ -1351,6 +1360,9 @@ struct WorkChatEnvelope: Identifiable, Equatable {
     self.subagentTaskType = subagentTaskType
     self.subagentCommand = subagentCommand
     self.subagentSpawnKind = subagentSpawnKind
+    self.subagentParentAgentId = subagentParentAgentId
+    self.subagentSpawnDepth = subagentSpawnDepth
+    self.subagentResourceLinks = subagentResourceLinks
   }
 }
 

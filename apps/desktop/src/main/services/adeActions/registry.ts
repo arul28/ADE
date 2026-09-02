@@ -603,6 +603,7 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "listClaudeOutputStyles",
     "getSessionCapabilities",
     "getSessionSummary",
+    "getTurnStatus",
     "getSlashCommands",
     "getTurnFileDiff",
     "getParallelLaunchState",
@@ -1116,6 +1117,11 @@ const ADE_ACTION_INPUT_CONTRACTS: Partial<Record<AdeActionDomain, Partial<Record
       description: "Read one chat session summary.",
       input: "scalar sessionId string, positional argsList [sessionId], or object { sessionId }",
       example: "ade actions run chat.getSessionSummary --scalar chat-123",
+    },
+    getTurnStatus: {
+      description: "Read live turn status for one chat: RUNNING, BLOCKED, or IDLE.",
+      input: "scalar sessionId string, positional argsList [sessionId], or object { sessionId }",
+      example: "ade actions run chat.getTurnStatus --scalar chat-123",
     },
     createScheduledWork: {
       description: "Create durable scheduled work for an eligible chat or tracked provider CLI session. Use delaySeconds or runAt for one-shot wakeups; five-field cron uses the ADE brain machine's local timezone.",
@@ -1895,6 +1901,10 @@ function buildChatDomainService(runtime: AdeRuntime): OpaqueService | null {
   if (typeof base.getSessionSummary === "function") {
     service.getSessionSummary = (args?: unknown) =>
       agentChatService.getSessionSummary(readStringActionArg(args, "sessionId"));
+  }
+  if (typeof base.getTurnStatus === "function") {
+    service.getTurnStatus = (args?: unknown) =>
+      agentChatService.getTurnStatus(readStringActionArg(args, "sessionId"));
   }
   if (typeof base.listScheduledWork === "function") {
     service.listScheduledWork = (args?: unknown) => {

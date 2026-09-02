@@ -1,5 +1,6 @@
 import type {
   AgentChatEventEnvelope,
+  AgentChatResourceLink,
   AgentChatSpawnKind,
   TurnDiffSummary,
 } from "../../../shared/types";
@@ -57,6 +58,8 @@ export type ChatSubagentSnapshot = {
    */
   spawnKind?: AgentChatSpawnKind;
   workflowName?: string;
+  spawnDepth?: number;
+  resourceLinks?: AgentChatResourceLink[];
   usage?: {
     totalTokens?: number;
     toolUses?: number;
@@ -80,6 +83,9 @@ export function subagentTreeDepth(
   snapshots: ChatSubagentSnapshot[],
   cap = 3,
 ): number {
+  if (typeof snapshot.spawnDepth === "number" && Number.isFinite(snapshot.spawnDepth)) {
+    return Math.max(0, Math.min(cap, Math.floor(snapshot.spawnDepth)));
+  }
   const byAgentId = new Map<string, ChatSubagentSnapshot>();
   for (const candidate of snapshots) {
     if (candidate.agentId) byAgentId.set(candidate.agentId, candidate);
@@ -242,6 +248,8 @@ export function deriveChatSubagentSnapshots(events: AgentChatEventEnvelope[]): C
         // fall back to the existing snapshot to survive the twin's overwrite.
         spawnKind,
         workflowName: event.workflowName ?? existing?.workflowName,
+        spawnDepth: event.spawnDepth ?? existing?.spawnDepth,
+        resourceLinks: event.resourceLinks?.length ? event.resourceLinks : existing?.resourceLinks,
         usage: existing?.usage,
       });
       continue;
@@ -274,6 +282,8 @@ export function deriveChatSubagentSnapshots(events: AgentChatEventEnvelope[]): C
         taskType: event.taskType ?? existing?.taskType,
         spawnKind,
         workflowName: event.workflowName ?? existing?.workflowName,
+        spawnDepth: event.spawnDepth ?? existing?.spawnDepth,
+        resourceLinks: event.resourceLinks?.length ? event.resourceLinks : existing?.resourceLinks,
         usage: event.usage ? { ...(existing?.usage ?? {}), ...event.usage } : existing?.usage,
       });
       continue;
@@ -306,6 +316,8 @@ export function deriveChatSubagentSnapshots(events: AgentChatEventEnvelope[]): C
         taskType: event.taskType ?? existing?.taskType,
         spawnKind,
         workflowName: event.workflowName ?? existing?.workflowName,
+        spawnDepth: event.spawnDepth ?? existing?.spawnDepth,
+        resourceLinks: event.resourceLinks?.length ? event.resourceLinks : existing?.resourceLinks,
         usage: event.usage ? { ...(existing?.usage ?? {}), ...event.usage } : existing?.usage,
       });
     }

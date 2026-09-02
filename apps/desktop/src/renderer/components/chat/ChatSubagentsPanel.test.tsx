@@ -916,4 +916,45 @@ describe("ChatSubagentsPanel (pane variant)", () => {
     expect(header?.className).toContain("sticky");
     expect(header?.className).toContain("--work-sidebar-bg");
   });
+
+  it("indents nested agents with connector glyphs and a collapsible files-returned row", () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.assign(navigator, { clipboard: { writeText } });
+    const parent: ChatSubagentSnapshot = {
+      ...baseSnapshot,
+      taskId: "root",
+      agentId: "root",
+      description: "typecheck desktop",
+      background: false,
+    };
+    const child: ChatSubagentSnapshot = {
+      ...baseSnapshot,
+      taskId: "child",
+      agentId: "child",
+      parentAgentId: "root",
+      description: "explore chat tests",
+      background: false,
+      spawnDepth: 1,
+      resourceLinks: [{ path: "apps/desktop/src/foo.ts" }, { path: "apps/desktop/src/bar.ts" }],
+    };
+
+    render(
+      <ChatSubagentsPanel
+        snapshots={[parent, child]}
+        events={[]}
+        variant="pane"
+      />,
+    );
+
+    expect(screen.getByText(/└/)).toBeTruthy();
+    expect(screen.getByText("2 files returned")).toBeTruthy();
+    expect(screen.queryByText("apps/desktop/src/foo.ts")).toBeNull();
+
+    fireEvent.click(screen.getByText("2 files returned"));
+    expect(screen.getByText("apps/desktop/src/foo.ts")).toBeTruthy();
+    expect(screen.getByText("apps/desktop/src/bar.ts")).toBeTruthy();
+
+    fireEvent.click(screen.getByTitle("Copy all paths"));
+    expect(writeText).toHaveBeenCalledWith("apps/desktop/src/foo.ts\napps/desktop/src/bar.ts");
+  });
 });

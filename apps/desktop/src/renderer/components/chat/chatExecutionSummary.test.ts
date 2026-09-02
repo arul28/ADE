@@ -40,6 +40,12 @@ describe("subagentTreeDepth", () => {
     expect(subagentTreeDepth(orphan, list)).toBe(0);
   });
 
+  it("prefers SDK spawnDepth over a parentAgentId walk", () => {
+    const root = snap("root", null);
+    const child = { ...snap("child", "root"), spawnDepth: 3 };
+    expect(subagentTreeDepth(child, [root, child])).toBe(3);
+  });
+
   it("caps depth at 3 for deep chains", () => {
     const a = snap("a", null);
     const b = snap("b", "a");
@@ -244,6 +250,31 @@ describe("deriveChatSubagentSnapshots", () => {
         taskId: "child-task-1",
         agentId: "child-agent-1",
         parentToolUseId: "parent-agent-1",
+      }),
+    ]);
+  });
+
+  it("copies spawnDepth and resourceLinks from subagent envelopes", () => {
+    const events: AgentChatEventEnvelope[] = [
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-10T12:00:00.000Z",
+        event: {
+          type: "subagent_started",
+          taskId: "task-files",
+          agentId: "agent-files",
+          description: "Collect returned files",
+          spawnDepth: 2,
+          resourceLinks: [{ path: "apps/desktop/src/foo.ts" }, { uri: "file:///tmp/a.ts" }],
+        },
+      },
+    ];
+
+    expect(deriveChatSubagentSnapshots(events)).toEqual([
+      expect.objectContaining({
+        taskId: "task-files",
+        spawnDepth: 2,
+        resourceLinks: [{ path: "apps/desktop/src/foo.ts" }, { uri: "file:///tmp/a.ts" }],
       }),
     ]);
   });

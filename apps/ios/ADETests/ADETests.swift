@@ -14891,7 +14891,7 @@ final class ADETests: XCTestCase {
 
   func testWorkSubagentSnapshotsPreserveAgentIdAndRunningCount() {
     let raw = """
-    {"sessionId":"chat-1","timestamp":"2026-03-25T00:00:01.000Z","sequence":1,"event":{"type":"subagent_started","taskId":"task-1","agentId":"agent-1","parentAgentId":"parent-agent-1","description":"Docs helper","background":true,"label":"Researcher","model":"gpt-5.6-luna","reasoningEffort":"xhigh","turnId":"turn-1"}}
+    {"sessionId":"chat-1","timestamp":"2026-03-25T00:00:01.000Z","sequence":1,"event":{"type":"subagent_started","taskId":"task-1","agentId":"agent-1","parentAgentId":"parent-agent-1","spawnDepth":1,"resourceLinks":[{"path":"apps/ios/README.md"}],"description":"Docs helper","background":true,"label":"Researcher","model":"gpt-5.6-luna","reasoningEffort":"xhigh","turnId":"turn-1"}}
     {"sessionId":"chat-1","timestamp":"2026-03-25T00:00:02.000Z","sequence":2,"event":{"type":"subagent_progress","taskId":"task-1","agentId":"agent-1","summary":"Reading README.md","lastToolName":"functions.Read","label":"Researcher","model":"gpt-5.6-luna","reasoningEffort":"xhigh","turnId":"turn-1"}}
     {"sessionId":"chat-1","timestamp":"2026-03-25T00:00:03.000Z","sequence":3,"event":{"type":"subagent_started","taskId":"task-2","agentId":"agent-2","description":"Done helper","turnId":"turn-1"}}
     {"sessionId":"chat-1","timestamp":"2026-03-25T00:00:04.000Z","sequence":4,"event":{"type":"subagent_result","taskId":"task-2","agentId":"agent-2","status":"completed","summary":"Done","turnId":"turn-1"}}
@@ -14910,6 +14910,56 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(snapshots.first?.lastToolName, "functions.Read")
     XCTAssertEqual(snapshots.first?.startedAt, "2026-03-25T00:00:01.000Z")
     XCTAssertEqual(snapshots.first?.updatedAt, "2026-03-25T00:00:02.000Z")
+    XCTAssertEqual(snapshots.first?.parentAgentId, "parent-agent-1")
+    XCTAssertEqual(snapshots.first?.spawnDepth, 1)
+    XCTAssertEqual(snapshots.first?.resourceLinks.first?.path, "apps/ios/README.md")
+    XCTAssertEqual(workSubagentResourcePaths(snapshots[0]), ["apps/ios/README.md"])
+  }
+
+  func testWorkSubagentTreePrefixUsesConnectorGlyphsAndPrefersSpawnDepth() {
+    func snap(
+      _ id: String,
+      parent: String?,
+      startedAt: String,
+      spawnDepth: Int? = nil
+    ) -> WorkSubagentSnapshot {
+      WorkSubagentSnapshot(
+        taskId: id,
+        agentId: id,
+        agentType: nil,
+        parentToolUseId: nil,
+        description: id,
+        background: false,
+        label: nil,
+        model: nil,
+        reasoningEffort: nil,
+        status: .running,
+        lastToolName: nil,
+        latestSummary: nil,
+        turnId: nil,
+        startedAt: startedAt,
+        updatedAt: startedAt,
+        parentAgentId: parent,
+        spawnDepth: spawnDepth
+      )
+    }
+    let root = snap("root", parent: nil, startedAt: "2026-05-01T00:00:02.000Z")
+    let newer = snap("newer", parent: "root", startedAt: "2026-05-01T00:00:01.000Z")
+    let older = snap("older", parent: "root", startedAt: "2026-05-01T00:00:00.000Z")
+    let leaf = snap("leaf", parent: "newer", startedAt: "2026-05-01T00:00:00.500Z", spawnDepth: 2)
+    let list = [root, newer, older, leaf]
+    XCTAssertEqual(workSubagentTreePrefix(root, in: list), "")
+    XCTAssertEqual(workSubagentTreePrefix(newer, in: list), "├ ")
+    XCTAssertEqual(workSubagentTreePrefix(older, in: list), "└ ")
+    XCTAssertEqual(workSubagentTreeDepth(leaf, in: list), 2)
+    XCTAssertEqual(workSubagentTreePrefix(leaf, in: list), "│  └ ")
+  }
+
+  func testAgentChatResourceLinkDisplayPathStripsWindowsFileHostSlash() {
+    let windows = AgentChatResourceLink(uri: "file:///C:/Users/ade/src/foo.ts", name: nil, path: nil)
+    XCTAssertEqual(windows.displayPath, "C:/Users/ade/src/foo.ts")
+    let posix = AgentChatResourceLink(uri: "file:///tmp/a.ts", name: nil, path: nil)
+    XCTAssertEqual(posix.displayPath, "/tmp/a.ts")
   }
 
   func testWorkSubagentSnapshotsAdoptCodexPlaceholderAndPreserveStoppedAgentName() {

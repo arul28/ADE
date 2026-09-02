@@ -2352,6 +2352,9 @@ func workSubagentSnapshotsRenderSignature(_ snapshots: [WorkSubagentSnapshot]) -
     hasher.combine(snapshot.startedAt)
     hasher.combine(snapshot.updatedAt)
     hasher.combine(snapshot.spawnKind.map { String(describing: $0) })
+    hasher.combine(snapshot.parentAgentId)
+    hasher.combine(snapshot.spawnDepth ?? Int.min)
+    hasher.combine(snapshot.resourceLinks.count)
   }
   return hasher.finalize()
 }
