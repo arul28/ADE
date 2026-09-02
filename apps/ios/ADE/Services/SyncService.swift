@@ -13764,7 +13764,7 @@ final class SyncService: ObservableObject {
     let scope = chatCommandScope(for: sessionId)
     _ = try await sendChatCommand(
       action: chatActionName("chat.cancelSteer", sessionId: sessionId),
-      payload: AgentChatCancelSteerRequest(sessionId: sessionId, steerId: steerId, requireQueued: true),
+      payload: AgentChatCancelSteerRequest(sessionId: sessionId, steerId: steerId),
       targetProjectId: scope.projectId,
       targetProjectRootPath: scope.rootPath
     )

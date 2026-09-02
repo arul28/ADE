@@ -60,7 +60,7 @@ import {
   type LaunchProfile,
   type TrackedCliLaunchCommand,
 } from "../../desktop/src/shared/cliLaunch";
-import type { AgentChatPermissionMode, AgentChatSpawnKind, TerminalResumeMetadata, TerminalSessionSummary } from "../../desktop/src/shared/types";
+import type { AgentChatDroidPermissionMode, AgentChatPermissionMode, AgentChatSpawnKind, TerminalResumeMetadata, TerminalSessionSummary } from "../../desktop/src/shared/types";
 import type { AdeRuntime } from "./bootstrap";
 import {
   recordUsageInteraction,
@@ -75,7 +75,11 @@ import { BUILT_IN_BROWSER_ACTOR_CAPABILITY_PARAM } from "./services/builtInBrows
 import { resolveCodexComputerUseMcpConfig } from "../../desktop/src/main/utils/codexComputerUse";
 import { parseTrackedCliLaunchConfig } from "../../desktop/src/main/utils/terminalSessionSignals";
 import { RUNTIME_COMPAT_LEVEL } from "../../desktop/src/shared/adeRuntimeProtocol";
-import { AGENT_CHAT_DROID_PERMISSION_MODE_VALUES } from "../../desktop/src/shared/types/chat";
+import {
+  AGENT_CHAT_DROID_PERMISSION_MODE_VALUES,
+  AGENT_CHAT_PERMISSION_MODE_VALUES,
+  isAgentChatDroidPermissionMode,
+} from "../../desktop/src/shared/types/chat";
 
 // Cross-surface (desktop + TUI + iOS) model picker favorites & recents.
 // Backed by the per-project cr-sqlite CRR DB (runtime.db) so the three surfaces
@@ -237,7 +241,7 @@ const TOOL_SPECS: ToolSpec[] = [
         runId: { type: "string" },
         stepId: { type: "string" },
         attemptId: { type: "string" },
-        permissionMode: { type: "string", enum: ["default", "auto", "plan", "edit", "full-auto", "config-toml"], default: "default" },
+        permissionMode: { type: "string", enum: [...AGENT_CHAT_PERMISSION_MODE_VALUES], default: "default" },
         toolWhitelist: { type: "array", items: { type: "string" }, maxItems: 24 },
         maxPromptChars: { type: "number", minimum: 256, maximum: 12000 },
         contextFilePath: { type: "string" },
@@ -334,7 +338,8 @@ const TOOL_SPECS: ToolSpec[] = [
       properties: {
         laneId: { type: "string", minLength: 1 },
         provider: { type: "string", enum: ["claude", "codex", "cursor", "droid", "opencode", "pi", "qwen", "kimi", "grok", "copilot", "shell"] },
-        permissionMode: { type: "string", enum: ["default", "auto", "plan", "edit", "full-auto", "config-toml"], default: "default" },
+        permissionMode: { type: "string", enum: [...AGENT_CHAT_PERMISSION_MODE_VALUES], default: "default" },
+        droidPermissionMode: { type: "string", enum: [...AGENT_CHAT_DROID_PERMISSION_MODE_VALUES] },
         title: { type: "string" },
         initialInput: { type: "string" },
         cols: { type: "number", minimum: 20, maximum: 400, default: 120 },
@@ -1244,7 +1249,7 @@ const CTO_OPERATOR_TOOL_SPECS: ToolSpec[] = [
         laneId: { type: "string" },
         modelId: { type: "string" },
         reasoningEffort: { type: "string" },
-        permissionMode: { type: "string", enum: ["default", "auto", "plan", "edit", "full-auto", "config-toml"] },
+        permissionMode: { type: "string", enum: [...AGENT_CHAT_PERMISSION_MODE_VALUES] },
         droidPermissionMode: { type: "string", enum: [...AGENT_CHAT_DROID_PERMISSION_MODE_VALUES] },
         title: { type: "string" },
         initialPrompt: { type: "string" },
@@ -1712,6 +1717,16 @@ function parseCliSessionPermissionMode(value: unknown): AgentChatPermissionMode 
   throw new JsonRpcError(
     JsonRpcErrorCode.invalidParams,
     "permissionMode must be one of default, auto, plan, edit, full-auto, or config-toml",
+  );
+}
+
+function parseCliSessionDroidPermissionMode(value: unknown): AgentChatDroidPermissionMode | undefined {
+  const mode = asTrimmedString(value).toLowerCase();
+  if (!mode) return undefined;
+  if (isAgentChatDroidPermissionMode(mode)) return mode;
+  throw new JsonRpcError(
+    JsonRpcErrorCode.invalidParams,
+    "droidPermissionMode must be one of read-only, auto-low, auto-medium, auto-high, or agi",
   );
 }
 
@@ -4012,6 +4027,13 @@ async function runTool(args: {
     const laneId = assertNonEmptyString(toolArgs.laneId, "laneId");
     const provider = parseCliSessionProvider(toolArgs.provider);
     const permissionMode = parseCliSessionPermissionMode(toolArgs.permissionMode);
+    const droidPermissionMode = parseCliSessionDroidPermissionMode(toolArgs.droidPermissionMode);
+    if (droidPermissionMode && provider !== "droid") {
+      throw new JsonRpcError(
+        JsonRpcErrorCode.invalidParams,
+        "droidPermissionMode is only supported for Droid CLI sessions.",
+      );
+    }
     const orchestrationParentSessionId = toolArgs.orchestrationParentSessionId == null
       ? null
       : assertNonEmptyString(toolArgs.orchestrationParentSessionId, "orchestrationParentSessionId");
@@ -4070,6 +4092,7 @@ async function runTool(args: {
       return buildTrackedCliLaunchCommand({
         provider,
         permissionMode,
+        ...(droidPermissionMode ? { droidPermissionMode } : {}),
         sessionId: preassignedSessionId,
         model,
         reasoningEffort,
@@ -4131,6 +4154,7 @@ async function runTool(args: {
       laneId,
       title,
       permissionMode,
+      droidPermissionMode: droidPermissionMode ?? null,
       model: provider === "claude" ? model ?? null : null,
       ptyId: created.ptyId,
       sessionId: created.sessionId,

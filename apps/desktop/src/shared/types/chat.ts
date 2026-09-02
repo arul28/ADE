@@ -216,6 +216,28 @@ export const AGENT_CHAT_DROID_PERMISSION_MODE_VALUES = [
   "agi",
 ] as const satisfies readonly AgentChatDroidPermissionMode[];
 
+/** Shared copy for every Droid permission picker (chat, handoff, and CLI launch). */
+export const AGENT_CHAT_DROID_PERMISSION_MODE_DETAILS: Record<
+  AgentChatDroidPermissionMode,
+  { label: string; detail: string }
+> = {
+  "read-only": { label: "Read-only", detail: "No auto flag. Droid stays in read-only mode for analysis and planning." },
+  "auto-low": { label: "Auto low", detail: "Passes --auto low for safe file edits and low-risk operations." },
+  "auto-medium": { label: "Auto medium", detail: "Passes --auto medium for local development operations such as builds, tests, and package installs." },
+  "auto-high": { label: "Auto high", detail: "Passes --auto high for broad automation. Use only in trusted workspaces." },
+  agi: { label: "AGI (orchestrator)", detail: "Droid decomposes the task into a mission and spawns worker subagents." },
+};
+
+export const AGENT_CHAT_DROID_PERMISSION_MODE_OPTIONS = AGENT_CHAT_DROID_PERMISSION_MODE_VALUES.map((value) => ({
+  value,
+  ...AGENT_CHAT_DROID_PERMISSION_MODE_DETAILS[value],
+}));
+
+export function isAgentChatDroidPermissionMode(value: unknown): value is AgentChatDroidPermissionMode {
+  return typeof value === "string"
+    && (AGENT_CHAT_DROID_PERMISSION_MODE_VALUES as readonly string[]).includes(value);
+}
+
 export type AgentChatResumeFailureKind = "thread_missing" | "provider_environment" | "transient" | "unknown";
 export type AgentChatSpawnKind = "subagent" | "peer";
 
@@ -1626,6 +1648,42 @@ export const AGENT_CHAT_PERMISSION_MODE_VALUES = [
   "full-auto",
   "config-toml",
 ] as const satisfies readonly AgentChatPermissionMode[];
+
+/** Convert ADE's generic permission ladder to Droid's native autonomy tier. */
+export function droidPermissionModeFromLegacyPermissionMode(
+  mode: AgentChatPermissionMode | null | undefined,
+): AgentChatDroidPermissionMode | undefined {
+  switch (mode) {
+    case "plan":
+      return "read-only";
+    case "edit":
+      return "auto-low";
+    case "default":
+      return "auto-medium";
+    case "full-auto":
+      return "auto-high";
+    default:
+      return undefined;
+  }
+}
+
+/** Convert a Droid tier back to ADE's generic label when a legacy field is needed. */
+export function legacyPermissionModeFromDroidPermissionMode(
+  mode: AgentChatDroidPermissionMode | null | undefined,
+): AgentChatPermissionMode | undefined {
+  switch (mode) {
+    case "read-only":
+      return "plan";
+    case "auto-low":
+      return "edit";
+    case "auto-medium":
+      return "default";
+    case "auto-high":
+      return "full-auto";
+    default:
+      return undefined;
+  }
+}
 export type AgentChatExecutionMode = "focused" | "parallel" | "subagents" | "teams";
 export type AgentChatInteractionMode =
   | "default"
@@ -1904,6 +1962,8 @@ export type AgentChatSessionSummary = {
   droidPermissionMode?: AgentChatDroidPermissionMode;
   cursorModeSnapshot?: AgentChatCursorModeSnapshot;
   cursorModeId?: string | null;
+  /** True when the host explicitly cleared Cursor's mode with `null`. */
+  cursorModeIdWasCleared?: boolean;
   cursorConfigValues?: Record<string, AgentChatCursorConfigValue> | null;
   /** Caller-injected MCP servers, echoed back so an embedder can confirm them. */
   mcpServers?: Record<string, AgentChatMcpServerConfig>;

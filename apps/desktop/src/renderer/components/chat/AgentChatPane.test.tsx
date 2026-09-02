@@ -3750,6 +3750,8 @@ describe("AgentChatPane submit recovery", () => {
 
     expect(await screen.findByText(/Couldn't remove the queued message/)).toBeTruthy();
     expect(await screen.findByText(/queue is locked/)).toBeTruthy();
+    expect(screen.getByText("Cancel me.")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Remove queued message" })).toBeTruthy();
   });
 
   it("selects Interrupt & send, then sends it atomically", async () => {

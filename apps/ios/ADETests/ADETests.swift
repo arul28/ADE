@@ -6410,12 +6410,11 @@ final class ADETests: XCTestCase {
 
     let cancel = try jsonDictionary(from: AgentChatCancelSteerRequest(
       sessionId: "session-1",
-      steerId: "steer-1",
-      requireQueued: true
+      steerId: "steer-1"
     ))
     XCTAssertEqual(cancel["sessionId"] as? String, "session-1")
     XCTAssertEqual(cancel["steerId"] as? String, "steer-1")
-    XCTAssertEqual(cancel["requireQueued"] as? Bool, true)
+    XCTAssertNil(cancel["requireQueued"], "Ordinary cancel must also clear persisted messages without a live runtime.")
 
     let sessionId = try jsonDictionary(from: AgentChatSessionIdRequest(sessionId: "session-1"))
     XCTAssertEqual(sessionId["sessionId"] as? String, "session-1")
@@ -18008,6 +18007,34 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(summary.requestedCwd, "apps/ios/ADE")
   }
 
+  func testAgentChatSessionSummaryPreservesExplicitCursorModeClear() throws {
+    let payload: [String: Any] = [
+      "sessionId": "chat-cleared",
+      "laneId": "lane-1",
+      "provider": "cursor",
+      "model": "composer-2",
+      "permissionMode": "default",
+      "cursorModeSnapshot": [
+        "currentModeId": "full-auto",
+        "availableModeIds": ["agent", "ask", "plan", "full-auto"],
+      ],
+      "cursorModeId": NSNull(),
+      "cursorModeIdWasCleared": true,
+      "status": "idle",
+      "startedAt": "2026-03-25T00:00:00.000Z",
+      "lastActivityAt": "2026-03-25T00:00:00.000Z",
+    ]
+
+    let summary = try JSONDecoder().decode(
+      AgentChatSessionSummary.self,
+      from: try JSONSerialization.data(withJSONObject: payload)
+    )
+
+    XCTAssertTrue(summary.cursorModeIdWasCleared == true)
+    XCTAssertEqual(workInitialRuntimeMode(summary), "default")
+    XCTAssertEqual(workInitialCursorModeId(summary), "agent")
+  }
+
   func testAgentChatMetaModeUpdateAppliesCursorConfigAndExplicitClear() throws {
     let summaryPayload: [String: Any] = [
       "sessionId": "chat-1",
@@ -18056,9 +18083,11 @@ final class ADETests: XCTestCase {
     XCTAssertTrue(clearUpdate.hasAnyField)
     summary.applyModeUpdate(clearUpdate)
     XCTAssertNil(summary.cursorModeId)
+    XCTAssertTrue(summary.cursorModeIdWasCleared == true)
 
     // A partial update that omits cursorModeId entirely must NOT clear it.
     summary.cursorModeId = "agent"
+    summary.cursorModeIdWasCleared = false
     let unrelatedUpdate = try JSONDecoder().decode(
       AgentChatSessionMetaModeUpdate.self,
       from: try JSONSerialization.data(withJSONObject: [
@@ -18094,11 +18123,11 @@ final class ADETests: XCTestCase {
 
     // The cache fold above is only half the story: the open chat view rebuilds
     // its LIVE summary from the cache via `mergeModeFields(from:)`. The cache is
-    // authoritative for cursor fields, so the merge mirrors them wholesale —
-    // nil included — which is exactly how an explicit clear reaches the live
-    // composer, with no stateful clear marker.
+    // authoritative for cursor fields, and the explicit clear marker travels
+    // with the nullable mode so Swift does not mistake null for omission.
     var cachedAfterClear = summary
     cachedAfterClear.cursorModeId = nil
+    cachedAfterClear.cursorModeIdWasCleared = true
     cachedAfterClear.cursorConfigValues = nil
     var liveSummary = summary
     liveSummary.cursorModeId = "agent"
@@ -18109,11 +18138,11 @@ final class ADETests: XCTestCase {
     XCTAssertNil(mergedCleared.cursorConfigValues, "explicit cache clear must null the live cursor config")
 
     // Regression guard (the "stale clear marker wins" bug): after a clear, a
-    // host that RESTORES a non-null mode/config must NOT be re-cleared. With no
-    // persistent clear state, each reconcile mirrors the current authoritative
-    // cache, so a restored value survives.
+    // host that RESTORES a non-null mode/config must reset the marker, so the
+    // restored value survives.
     var cachedRestored = summary
     cachedRestored.cursorModeId = "plan"
+    cachedRestored.cursorModeIdWasCleared = false
     cachedRestored.cursorConfigValues = ["voice": .bool(false)]
     var liveAfterClear = liveSummary
     liveAfterClear.cursorModeId = nil

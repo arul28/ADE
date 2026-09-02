@@ -3,6 +3,7 @@ import {
   CURSOR_AVAILABLE_MODE_IDS,
   CURSOR_DEFAULT_MODE_ID,
   effectiveCursorModeId,
+  formatCursorModeLabel,
   legacyPermissionModeToCursorModeId,
 } from "./cursorModes";
 
@@ -30,5 +31,12 @@ describe("Cursor mode compatibility mapping", () => {
     expect(effectiveCursorModeId(null, "edit")).toBe(CURSOR_DEFAULT_MODE_ID);
     expect(effectiveCursorModeId(null, null)).toBe(CURSOR_DEFAULT_MODE_ID);
     expect(effectiveCursorModeId(null)).toBe(CURSOR_DEFAULT_MODE_ID);
+  });
+
+  it("formats aliases and provider-defined mode ids consistently", () => {
+    expect(formatCursorModeLabel("default")).toBe("Agent");
+    expect(formatCursorModeLabel("FULL-AUTO")).toBe("Full auto");
+    expect(formatCursorModeLabel("debug_tools")).toBe("Debug Tools");
+    expect(formatCursorModeLabel("  ")).toBe("Agent");
   });
 });

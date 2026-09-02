@@ -305,7 +305,7 @@ export function createAgentChatNamespace(infra: AdapterInfra): AdeNamespace<"age
       await callRequiredMutation("chat.cancelSteer", args);
     },
     editSteer: async (args: unknown) => {
-      await call("chat.editSteer", args, undefined, false);
+      await callRequiredMutation("chat.editSteer", args);
     },
     dispatchSteer: async (args, pin) => {
       guardPin("dispatchSteer", pin);

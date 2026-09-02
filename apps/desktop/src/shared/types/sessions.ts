@@ -9,6 +9,7 @@ import type {
   AgentChatCodexConfigSource,
   AgentChatCodexSandbox,
   AgentChatCliLaunchProvider,
+  AgentChatDroidPermissionMode,
   AgentChatModelHandoff,
   AgentChatSpawnKind,
 } from "./chat";
@@ -184,6 +185,7 @@ export type TerminalResumeTargetKind = "session" | "thread";
 
 export type TerminalResumeLaunchConfig = {
   permissionMode?: AgentChatPermissionMode | null;
+  droidPermissionMode?: AgentChatDroidPermissionMode | null;
   model?: string | null;
   reasoningEffort?: string | null;
   fastMode?: boolean | null;
@@ -414,6 +416,7 @@ export type PtyCreateArgs = {
   runtimeCliLaunch?: {
     provider: AgentChatCliLaunchProvider;
     permissionMode: AgentChatPermissionMode;
+    droidPermissionMode?: AgentChatDroidPermissionMode | null;
     orchestrationRole?: OrchestrationRole | null;
     sessionId?: string;
     model?: string | null;

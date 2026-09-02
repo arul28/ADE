@@ -101,7 +101,7 @@ import { GITHUB_BRAND } from "../lanes/githubBrand";
 import { LinearMark, LINEAR_BRAND } from "../lanes/linearBrand";
 import { AskQuestionComposer } from "./AskQuestionComposer";
 import { isAskQuestionRequest } from "../../../shared/pendingInputAnswers";
-import { CURSOR_MODE_LABELS } from "../../../shared/cursorModes";
+import { formatCursorModeLabel } from "../../../shared/cursorModes";
 import { ChatProposedPlanCard } from "./ChatProposedPlanCard";
 import { ChatModelSelectionPendingCard } from "./ChatModelSelectionPendingCard";
 import { ChatCommandMenu, type ChatCommandMenuItem, type ChatCommandMenuHandle } from "./ChatCommandMenu";
@@ -141,6 +141,9 @@ import {
   stageAttachmentBytesFromFile,
   type StagedAttachment,
 } from "./chatAttachmentStaging";
+import {
+  DROID_PERMISSION_OPTIONS as BASE_DROID_PERMISSION_OPTIONS,
+} from "../../lib/nativeLaunchControls";
 
 // Attachment ceilings are not a renderer constant any more: they depend on the
 // leg the bytes take, which depends on the machine that owns the chat. See
@@ -1113,24 +1116,15 @@ const OPENCODE_PERMISSION_OPTIONS: Array<PermissionModePickerOption<AgentChatOpe
   { value: "config-toml", label: "Config", detail: "Use OpenCode config files.", tone: "slate", icon: "config" },
 ];
 
-const DROID_PERMISSION_OPTIONS: Array<PermissionModePickerOption<AgentChatDroidPermissionMode>> = [
-  { value: "read-only", label: "Read-only", detail: "No auto flag. Droid stays in read-only mode for analysis and planning.", tone: "green", icon: "manual" },
-  { value: "auto-low", label: "Auto low", detail: "Passes --auto low for safe file edits and low-risk operations.", tone: "green", icon: "edit" },
-  { value: "auto-medium", label: "Auto medium", detail: "Passes --auto medium for local development operations such as builds, tests, and package installs.", tone: "amber", icon: "auto" },
-  { value: "auto-high", label: "Auto high", detail: "Passes --auto high for broad automation. Use only in trusted workspaces.", tone: "red", icon: "full" },
-  { value: "agi", label: "AGI (orchestrator)", triggerLabel: "AGI", detail: "Droid decomposes the task into a mission and spawns worker subagents (read-only at the top level). Workers appear in the subagents panel.", tone: "purple", icon: "agi" },
-];
-
-function cursorModeLabel(modeId: string): string {
-  const normalized = modeId.trim().toLowerCase();
-  if (!normalized.length) return "Agent";
-  if (CURSOR_MODE_LABELS[normalized]) return CURSOR_MODE_LABELS[normalized];
-  return normalized
-    .split(/[-_/]+/)
-    .filter(Boolean)
-    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
-    .join(" ");
-}
+const DROID_PERMISSION_OPTION_PRESENTATION: Record<AgentChatDroidPermissionMode, Pick<PermissionModePickerOption<AgentChatDroidPermissionMode>, "triggerLabel" | "tone" | "icon">> = {
+  "read-only": { tone: "green", icon: "manual" },
+  "auto-low": { tone: "green", icon: "edit" },
+  "auto-medium": { tone: "amber", icon: "auto" },
+  "auto-high": { tone: "red", icon: "full" },
+  agi: { triggerLabel: "AGI", tone: "purple", icon: "agi" },
+};
+const DROID_PERMISSION_OPTIONS: Array<PermissionModePickerOption<AgentChatDroidPermissionMode>> =
+  BASE_DROID_PERMISSION_OPTIONS.map((option) => ({ ...option, ...DROID_PERMISSION_OPTION_PRESENTATION[option.value] }));
 
 function resolveCursorModeOption(snapshot: AgentChatCursorModeSnapshot | null | undefined): AgentChatCursorConfigOption | null {
   if (!snapshot?.configOptions?.length) return null;
@@ -4216,7 +4210,7 @@ export function AgentChatComposer({
         ? cursorModeOption.options.map((option) => ({ value: option.value, label: option.label }))
         : (cmsUse?.availableModeIds ?? []).map((modeId) => ({
             value: modeId,
-            label: cursorModeLabel(modeId),
+            label: formatCursorModeLabel(modeId),
           }));
       const cursorModeOptions = modeChoices.map((option) => cursorPermissionPickerOption(option.value, option.label));
       return (

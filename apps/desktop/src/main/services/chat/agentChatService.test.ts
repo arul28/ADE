@@ -39601,7 +39601,7 @@ describe("createAgentChatService", () => {
         ],
       });
 
-      await service.cancelSteer({ sessionId: session.id, steerId: cancelledSteerId });
+      await service.cancelSteer({ sessionId: session.id, steerId: cancelledSteerId, requireQueued: true });
 
       expect(readPersistedChatState(session.id).pendingSteers).toEqual([
         { steerId: survivingSteerId, text: "Keep me" },
@@ -44613,6 +44613,55 @@ it("fails a cleanly ended OpenCode event stream and clears active child sessions
       permissionMode: "default",
     });
     expect(updated.cursorModeId ?? null).toBeNull();
+    expect(updated.permissionMode).toBe("default");
+    await expect(service.getSessionSummary(session.id)).resolves.toMatchObject({
+      cursorModeId: null,
+      cursorModeIdWasCleared: true,
+    });
+  });
+
+  it("broadcasts an explicit Cursor mode clear when lowering legacy permissions", async () => {
+    const events: AgentChatEventEnvelope[] = [];
+    const { service } = createService({
+      onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+    });
+    const cursorSession = await service.createSession({
+      laneId: "lane-1",
+      provider: "cursor",
+      model: "composer-2",
+      modelId: "cursor/composer-2",
+      permissionMode: "full-auto",
+    });
+    events.length = 0;
+
+    await service.updateSession({
+      sessionId: cursorSession.id,
+      permissionMode: "default",
+    });
+
+    const metaEvent = events
+      .map((envelope) => envelope.event)
+      .find((event): event is Extract<typeof event, { type: "session_meta_updated" }> =>
+        event.type === "session_meta_updated");
+    expect(metaEvent).toMatchObject({
+      permissionMode: "default",
+      cursorModeId: null,
+    });
+  });
+
+  it("preserves an explicit Cursor mode clear during native permission normalization", async () => {
+    const { service, session } = await setupCursorPermissionSession({
+      permissionMode: "full-auto",
+    });
+    expect(session.cursorModeId).toBe("full-auto");
+
+    const updated = await service.updateSession({
+      sessionId: session.id,
+      cursorModeId: null,
+    });
+
+    expect(updated.cursorModeId).toBeNull();
+    expect(updated.permissionMode).toBe("default");
   });
 
   it("pushes Cursor SDK mode changes into the live worker while a turn is active", async () => {

@@ -2,6 +2,7 @@ import type {
   AgentChatCodexApprovalPolicy,
   AgentChatCodexConfigSource,
   AgentChatCodexSandbox,
+  AgentChatDroidPermissionMode,
   AgentChatPermissionMode,
   PtySendToSessionArgs,
   TerminalResumeLaunchConfig,
@@ -10,7 +11,10 @@ import type {
   TerminalToolType,
   WindowsShellKind,
 } from "./types";
-import { AGENT_CHAT_PERMISSION_MODE_VALUES } from "./types/chat";
+import {
+  AGENT_CHAT_PERMISSION_MODE_VALUES,
+  droidPermissionModeFromLegacyPermissionMode,
+} from "./types/chat";
 import {
   ADE_AGENT_SKILLS_DIRS_ENV,
   getAdeAgentSkillRootsForPrompt,
@@ -679,6 +683,7 @@ function withAdeAgentSkillEnv(
 export function buildTrackedCliStartupCommand(args: {
   provider: CliProvider;
   permissionMode: AgentChatPermissionMode;
+  droidPermissionMode?: AgentChatDroidPermissionMode | null;
   orchestrationRole?: OrchestrationRole | null;
   /** Pre-assigned session ID for Claude CLI (enables reliable resume). */
   sessionId?: string;
@@ -701,6 +706,7 @@ export function buildTrackedCliStartupCommand(args: {
 export function buildTrackedCliLaunchCommand(args: {
   provider: CliProvider;
   permissionMode: AgentChatPermissionMode;
+  droidPermissionMode?: AgentChatDroidPermissionMode | null;
   orchestrationRole?: OrchestrationRole | null;
   /** Pre-assigned session ID for Claude CLI (enables reliable resume). */
   sessionId?: string;
@@ -839,6 +845,7 @@ export function buildTrackedCliLaunchCommand(args: {
       // Cursor already do. POSIX keeps the prompt in argv where it round-trips.
       const startupCommand = droidPowerShellCommand({
         permissionMode,
+        droidPermissionMode: args.droidPermissionMode,
         model: args.model,
         reasoningEffort: args.reasoningEffort,
       });
@@ -853,6 +860,7 @@ export function buildTrackedCliLaunchCommand(args: {
     }
     const startupCommand = buildDroidCommandLine({
       permissionMode,
+      droidPermissionMode: args.droidPermissionMode,
       model: args.model,
       reasoningEffort: args.reasoningEffort,
       prompt,
@@ -1392,15 +1400,27 @@ function permissionModeToCursorFlags(permissionMode: AgentChatPermissionMode | n
 
 function droidSettingsJson(args: {
   permissionMode: AgentChatPermissionMode | null | undefined;
+  droidPermissionMode?: AgentChatDroidPermissionMode | null;
   model?: string | null;
   reasoningEffort?: string | null;
 }): string {
+  const droidPermissionMode = args.droidPermissionMode
+    ?? droidPermissionModeFromLegacyPermissionMode(args.permissionMode);
   const sessionDefaultSettings = (() => {
-    if (args.permissionMode == null) return null;
-    if (args.permissionMode === "full-auto") return { interactionMode: "auto", autonomyLevel: "high" };
-    if (args.permissionMode === "default") return { interactionMode: "auto", autonomyLevel: "medium" };
-    if (args.permissionMode === "edit") return { interactionMode: "auto", autonomyLevel: "low" };
-    return { interactionMode: "spec", autonomyLevel: "off" };
+    switch (droidPermissionMode) {
+      case "agi":
+        return { interactionMode: "agi", autonomyLevel: "off" };
+      case "read-only":
+        return { interactionMode: "spec", autonomyLevel: "off" };
+      case "auto-low":
+        return { interactionMode: "auto", autonomyLevel: "low" };
+      case "auto-medium":
+        return { interactionMode: "auto", autonomyLevel: "medium" };
+      case "auto-high":
+        return { interactionMode: "auto", autonomyLevel: "high" };
+      default:
+        return null;
+    }
   })();
   const model = normalizeDroidCliModel(args.model);
   const reasoningEffort = normalizeCliFlagValue(args.reasoningEffort);
@@ -1409,7 +1429,7 @@ function droidSettingsJson(args: {
   };
   if (model) settings.model = model;
   if (reasoningEffort) settings.reasoningEffort = reasoningEffort;
-  if (args.permissionMode === "plan") {
+  if (droidPermissionMode === "read-only") {
     const specDefaults = sessionDefaultSettings as Record<string, unknown>;
     if (model) specDefaults.specModeModel = model;
     if (reasoningEffort) specDefaults.specModeReasoningEffort = reasoningEffort;
@@ -1423,6 +1443,7 @@ function quotePowerShellArg(value: string): string {
 
 function droidPowerShellCommand(args: {
   permissionMode: AgentChatPermissionMode | null | undefined;
+  droidPermissionMode?: AgentChatDroidPermissionMode | null;
   model?: string | null;
   reasoningEffort?: string | null;
   prompt?: string;
@@ -1451,6 +1472,7 @@ function droidPowerShellCommand(args: {
 
 function buildDroidCommandLine(args: {
   permissionMode: AgentChatPermissionMode | null | undefined;
+  droidPermissionMode?: AgentChatDroidPermissionMode | null;
   model?: string | null;
   reasoningEffort?: string | null;
   prompt?: string;
@@ -1731,6 +1753,10 @@ export function buildTrackedCliResumeLaunchCommand(
   const fastMode = overrides.fastMode !== undefined
     ? overrides.fastMode
     : metadata.launch.fastMode ?? metadata.launch.codexFastMode;
+  const droidPermissionMode = overrides.permissionMode !== undefined
+    ? droidPermissionModeFromLegacyPermissionMode(permissionMode)
+    : metadata.launch.droidPermissionMode
+      ?? droidPermissionModeFromLegacyPermissionMode(permissionMode);
   const prompt = normalizeCliFlagValue(overrides.prompt);
   validateLaunchProfilePermissionMode(metadata.provider, permissionMode);
 
@@ -1799,7 +1825,7 @@ export function buildTrackedCliResumeLaunchCommand(
   }
 
   if (metadata.provider === "droid") {
-    if (permissionMode == null && !normalizeCliFlagValue(model) && !normalizeCliFlagValue(reasoningEffort)) {
+    if (permissionMode == null && droidPermissionMode == null && !normalizeCliFlagValue(model) && !normalizeCliFlagValue(reasoningEffort)) {
       const parts = ["droid"];
       if (targetId) parts.push("--resume", targetId);
       else parts.push("--resume");
@@ -1812,6 +1838,7 @@ export function buildTrackedCliResumeLaunchCommand(
     }
     const droidArgs = {
       permissionMode,
+      droidPermissionMode,
       model,
       reasoningEffort,
       ...(prompt ? { prompt } : {}),

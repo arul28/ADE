@@ -409,7 +409,11 @@ import {
   providerSupportsHandoffFork,
 } from "../../../shared/types";
 import {
+  AGENT_CHAT_DROID_PERMISSION_MODE_VALUES,
+  AGENT_CHAT_PERMISSION_MODE_VALUES,
+  droidPermissionModeFromLegacyPermissionMode,
   isAcpChatProvider,
+  legacyPermissionModeFromDroidPermissionMode,
   spawnCompletedNoticeMessage,
   supportsActiveTurnDispatchMode,
   unsupportedActiveTurnDispatchModeMessage,
@@ -6769,7 +6773,7 @@ const PLAN_STEP_STATUS_MAP: Record<string, "pending" | "in_progress" | "complete
   failed: "failed",
 };
 
-const VALID_PERMISSION_MODES = new Set(["default", "auto", "plan", "edit", "full-auto", "config-toml"]);
+const VALID_PERMISSION_MODES = new Set<string>(AGENT_CHAT_PERMISSION_MODE_VALUES);
 const VALID_EXECUTION_MODES = new Set(["focused", "parallel", "subagents", "teams"]);
 const VALID_INTERACTION_MODES = new Set([
   "default",
@@ -6783,7 +6787,7 @@ const VALID_CODEX_APPROVAL_POLICIES = new Set(["untrusted", "on-request", "on-fa
 const VALID_CODEX_SANDBOXES = new Set(["read-only", "workspace-write", "danger-full-access"]);
 const VALID_CODEX_CONFIG_SOURCES = new Set(["flags", "config-toml"]);
 const VALID_OPENCODE_PERMISSION_MODES = new Set(["plan", "edit", "full-auto", "config-toml"]);
-const VALID_DROID_PERMISSION_MODES = new Set(["read-only", "auto-low", "auto-medium", "auto-high", "agi"]);
+const VALID_DROID_PERMISSION_MODES = new Set<string>(AGENT_CHAT_DROID_PERMISSION_MODE_VALUES);
 
 function normalizePersistedEnum<T extends string>(value: unknown, validSet: Set<string>): T | undefined {
   if (typeof value !== "string") return undefined;
@@ -6909,23 +6913,6 @@ function legacyPermissionModeToOpenCodePermissionMode(
   return mode === "default" ? "edit" : normalizeOpenCodePermissionMode(mode);
 }
 
-function legacyPermissionModeToDroidPermissionMode(
-  mode: AgentChatSession["permissionMode"] | undefined,
-): AgentChatDroidPermissionMode | undefined {
-  switch (mode) {
-    case "plan":
-      return "read-only";
-    case "edit":
-      return "auto-low";
-    case "default":
-      return "auto-medium";
-    case "full-auto":
-      return "auto-high";
-    default:
-      return undefined;
-  }
-}
-
 function legacyOpenCodePermissionModeToDroidPermissionMode(
   mode: AgentChatOpenCodePermissionMode | undefined,
 ): AgentChatDroidPermissionMode | undefined {
@@ -6941,26 +6928,9 @@ function legacyOpenCodePermissionModeToDroidPermissionMode(
   }
 }
 
-function droidPermissionModeToLegacyPermissionMode(
-  mode: AgentChatDroidPermissionMode | undefined,
-): AgentChatSession["permissionMode"] | undefined {
-  switch (mode) {
-    case "read-only":
-      return "plan";
-    case "auto-low":
-      return "edit";
-    case "auto-medium":
-      return "default";
-    case "auto-high":
-      return "full-auto";
-    default:
-      return undefined;
-  }
-}
-
 function syncLegacyPermissionMode(session: Pick<
   AgentChatSession,
-  "provider" | "permissionMode" | "interactionMode" | "claudePermissionMode" | "codexApprovalPolicy" | "codexSandbox" | "codexConfigSource" | "opencodePermissionMode" | "droidPermissionMode"
+  "provider" | "permissionMode" | "interactionMode" | "claudePermissionMode" | "codexApprovalPolicy" | "codexSandbox" | "codexConfigSource" | "opencodePermissionMode" | "droidPermissionMode" | "cursorModeId"
 >): AgentChatSession["permissionMode"] | undefined {
   if (session.provider === "claude") {
     if (session.interactionMode === "plan") {
@@ -6997,10 +6967,31 @@ function syncLegacyPermissionMode(session: Pick<
 
   if (session.provider === "droid") {
     if (session.interactionMode === "plan") return "plan";
-    return droidPermissionModeToLegacyPermissionMode(
+    return legacyPermissionModeFromDroidPermissionMode(
       session.droidPermissionMode
         ?? legacyOpenCodePermissionModeToDroidPermissionMode(session.opencodePermissionMode),
     );
+  }
+
+  if (session.provider === "cursor") {
+    switch (session.cursorModeId) {
+      case "full-auto":
+        return "full-auto";
+      case "plan":
+        return "plan";
+      case "ask":
+        return "edit";
+      case "agent":
+        return "default";
+      case null:
+        // A present null is an explicit native-mode clear, not a request to
+        // resurrect the previous OpenCode compatibility field.
+        return "default";
+      default:
+        // Undefined means an older/legacy caller did not send a native mode;
+        // preserve its already-selected legacy value while it is migrated.
+        return session.permissionMode;
+    }
   }
 
   if (session.provider === "pi") return session.permissionMode;
@@ -7041,19 +7032,21 @@ function applyLegacyPermissionModeToNativeControls(
 
   if (session.provider === "droid") {
     session.interactionMode = mode === "plan" ? "plan" : "default";
-    session.droidPermissionMode = legacyPermissionModeToDroidPermissionMode(mode);
+    session.droidPermissionMode = droidPermissionModeFromLegacyPermissionMode(mode);
     return;
   }
 
   if (session.provider === "pi") return;
 
-  session.opencodePermissionMode = legacyPermissionModeToOpenCodePermissionMode(mode);
   if (session.provider === "cursor") {
     // Overwrite, never fill: this runs when the caller explicitly changed
     // `permissionMode`, so a stale `full-auto` from an earlier request has to
     // clear rather than outlive the mode that set it.
+    session.opencodePermissionMode = legacyPermissionModeToOpenCodePermissionMode(mode);
     session.cursorModeId = legacyPermissionModeToCursorModeId(mode);
+    return;
   }
+  session.opencodePermissionMode = legacyPermissionModeToOpenCodePermissionMode(mode);
 }
 
 type ClaudePlanModeTransition = "entered_plan_mode" | "exited_plan_mode";
@@ -7092,6 +7085,11 @@ function applyCursorModeIdFromLegacyPermissionMode(
   session: Pick<AgentChatSession, "provider" | "permissionMode" | "cursorModeId">,
 ): void {
   if (session.provider !== "cursor") return;
+  // `undefined` means the caller did not supply a native mode. `null` is an
+  // explicit clear and must survive normalization instead of being rebuilt
+  // from the legacy permission field. Empty strings remain invalid/missing
+  // input and can still fall back to the legacy field.
+  if (session.cursorModeId === null) return;
   if (typeof session.cursorModeId === "string" && session.cursorModeId.trim().length) return;
   const derived = legacyPermissionModeToCursorModeId(session.permissionMode);
   if (derived) session.cursorModeId = derived;
@@ -7119,14 +7117,15 @@ function hydrateNativePermissionControls(
       ? "plan"
       : "default");
     session.droidPermissionMode = session.droidPermissionMode
-      ?? legacyPermissionModeToDroidPermissionMode(session.permissionMode)
+      ?? droidPermissionModeFromLegacyPermissionMode(session.permissionMode)
       ?? legacyOpenCodePermissionModeToDroidPermissionMode(session.opencodePermissionMode);
   } else if (session.provider === "pi") {
     if (orchestrationMode) session.interactionMode = orchestrationMode;
+  } else if (session.provider === "cursor") {
+    applyCursorModeIdFromLegacyPermissionMode(session);
   } else {
     if (orchestrationMode) session.interactionMode = orchestrationMode;
     session.opencodePermissionMode = session.opencodePermissionMode ?? legacyPermissionModeToOpenCodePermissionMode(session.permissionMode);
-    applyCursorModeIdFromLegacyPermissionMode(session);
   }
 
   session.permissionMode = syncLegacyPermissionMode(session);
@@ -7680,7 +7679,7 @@ function resolveSessionDroidPermissionModeOrNull(
   session: Pick<AgentChatSession, "droidPermissionMode" | "opencodePermissionMode" | "permissionMode">,
 ): AgentChatDroidPermissionMode | null {
   return session.droidPermissionMode
-    ?? legacyPermissionModeToDroidPermissionMode(session.permissionMode)
+    ?? droidPermissionModeFromLegacyPermissionMode(session.permissionMode)
     ?? legacyOpenCodePermissionModeToDroidPermissionMode(session.opencodePermissionMode)
     ?? null;
 }
@@ -7951,11 +7950,14 @@ function normalizeSessionNativePermissionControls(
   } else if (session.provider === "pi") {
     if (orchestrationMode) session.interactionMode = orchestrationMode;
     else delete session.interactionMode;
+  } else if (session.provider === "cursor") {
+    if (orchestrationMode) session.interactionMode = orchestrationMode;
+    else delete session.interactionMode;
+    applyCursorModeIdFromLegacyPermissionMode(session);
   } else {
     if (orchestrationMode) session.interactionMode = orchestrationMode;
     else delete session.interactionMode;
     session.opencodePermissionMode = resolveSessionOpenCodePermissionMode(session, config.opencodePermissionMode);
-    applyCursorModeIdFromLegacyPermissionMode(session);
   }
 
   session.permissionMode = syncLegacyPermissionMode(session);
@@ -14215,7 +14217,7 @@ export function createAgentChatService(args: {
       const opencodePermissionMode = normalizePersistedOpenCodePermissionMode(record.opencodePermissionMode ?? (record as any).unifiedPermissionMode);
       const droidPermissionMode = normalizePersistedDroidPermissionMode(record.droidPermissionMode)
         ?? (provider === "droid"
-          ? legacyPermissionModeToDroidPermissionMode(permissionMode)
+          ? droidPermissionModeFromLegacyPermissionMode(permissionMode)
             ?? legacyOpenCodePermissionModeToDroidPermissionMode(opencodePermissionMode)
           : undefined);
       const cursorModeSnapshot = record.cursorModeSnapshot && typeof record.cursorModeSnapshot === "object"
@@ -33984,7 +33986,7 @@ export function createAgentChatService(args: {
           // The desktop composer always sends one; a launch that sends nothing
           // is saying nothing, and Droid resolves it from settings.json.
           droidPermissionMode: requestedDroidPermissionMode
-            ?? legacyPermissionModeToDroidPermissionMode(effectivePermissionMode)
+            ?? droidPermissionModeFromLegacyPermissionMode(effectivePermissionMode)
             ?? legacyOpenCodePermissionModeToDroidPermissionMode(requestedOpenCodePermissionMode),
         };
       }
@@ -43143,8 +43145,9 @@ export function createAgentChatService(args: {
     managed: ManagedChatSession,
     steerId: string,
     turnId?: string | null,
+    options: { tombstonePersistedSteer?: boolean } = {},
   ): void => {
-    forgetPersistedSteer(managed, steerId);
+    if (options.tombstonePersistedSteer) forgetPersistedSteer(managed, steerId);
     claimSteerSettlement(managed, steerId);
     emitChatEvent(managed, {
       type: "system_notice",
@@ -43153,7 +43156,12 @@ export function createAgentChatService(args: {
       message: "Queued message cancelled.",
       turnId: turnId ?? undefined,
     });
-    persistChatState(managed);
+    const persisted = persistChatState(managed);
+    if (options.tombstonePersistedSteer && persisted) {
+      const cancelled = cancelledPersistedSteerIds.get(managed);
+      cancelled?.delete(steerId);
+      if (!cancelled?.size) cancelledPersistedSteerIds.delete(managed);
+    }
   };
 
   const cancelSteer = async ({ sessionId, steerId, requireQueued = false }: AgentChatCancelSteerArgs): Promise<void> => {
@@ -43186,7 +43194,11 @@ export function createAgentChatService(args: {
       // than leaving a control that does nothing every time it is pressed.
       runtime.queuedSubmissionBySteerId.delete(steerId);
     } else if (!runtime) {
-      if (requireQueued) throw new Error("This message is no longer queued.");
+      if (requireQueued) {
+        const persistedSteers = readPersistedState(managed.session.id)?.pendingSteers ?? [];
+        const stillPersisted = persistedSteers.some((steer) => steer.steerId === steerId);
+        if (!stillPersisted) throw new Error("This message is no longer queued.");
+      }
       // A torn-down session holds no local queue, so the staged chip is the
       // only thing left to cancel. The shared finalizer also drops the steer
       // from persisted state before a future runtime can hydrate it.
@@ -43214,7 +43226,9 @@ export function createAgentChatService(args: {
     // Always emit the cancelled notice — even when the steer already left the
     // server-side queue (e.g. dispatched inline before this call landed) — so
     // the client display clears the staged chip on the delete-button path.
-    finalizeCancelledSteer(managed, steerId, runtime?.activeTurnId);
+    finalizeCancelledSteer(managed, steerId, runtime?.activeTurnId, {
+      tombstonePersistedSteer: runtime == null && !managed.runtimeInvalidated,
+    });
   };
 
   const editSteer = async ({ sessionId, steerId, text }: AgentChatEditSteerArgs): Promise<void> => {
@@ -43227,9 +43241,9 @@ export function createAgentChatService(args: {
       // silent no-op.
       const submissionId = runtime.queuedSubmissionBySteerId.get(steerId)
         ?? await recoverCodexQueueSubmissionId(managed, runtime, steerId);
-      if (!submissionId) return;
+      if (!submissionId) throw new Error("This message is no longer queued.");
       const threadId = managed.session.threadId;
-      if (!threadId) return;
+      if (!threadId) throw new Error("This message cannot be edited because Codex has no active thread.");
       if (!trimmed.length) {
         await cancelSteer({ sessionId, steerId, requireQueued: true });
         return;
@@ -43249,10 +43263,10 @@ export function createAgentChatService(args: {
       persistChatState(managed);
       return;
     }
-    if (!runtime) return;
+    if (!runtime) throw new Error("This message is no longer queued.");
 
     const idx = runtime.pendingSteers.findIndex((s) => s.steerId === steerId);
-    if (idx === -1) return;
+    if (idx === -1) throw new Error("This message is no longer queued.");
 
     if (!trimmed.length) {
       const [removed] = runtime.pendingSteers.splice(idx, 1);
@@ -45045,6 +45059,16 @@ export function createAgentChatService(args: {
         error: error instanceof Error ? error.message : String(error),
       });
     }
+    // Preserve an explicit null from the live session instead of falling back
+    // to an older persisted native mode. The distinction matters to clients:
+    // Cursor's mode is nullable because null means the user cleared the native
+    // selection, not that the summary omitted it.
+    const summaryCursorModeId = liveSession?.cursorModeId !== undefined
+      ? liveSession.cursorModeId
+      : persisted?.cursorModeId;
+    const summaryCursorModeSnapshot = summaryCursorModeId === null
+      ? undefined
+      : liveSession?.cursorModeSnapshot ?? persisted?.cursorModeSnapshot;
     return {
       sessionId: row.id,
       laneId: row.laneId,
@@ -45088,12 +45112,13 @@ export function createAgentChatService(args: {
       ...(liveSession?.droidPermissionMode || persisted?.droidPermissionMode
         ? { droidPermissionMode: liveSession?.droidPermissionMode ?? persisted?.droidPermissionMode }
         : {}),
-      ...(liveSession?.cursorModeSnapshot || persisted?.cursorModeSnapshot
-        ? { cursorModeSnapshot: liveSession?.cursorModeSnapshot ?? persisted?.cursorModeSnapshot }
+      ...(summaryCursorModeSnapshot
+        ? { cursorModeSnapshot: summaryCursorModeSnapshot }
         : {}),
-      ...(liveSession?.cursorModeId !== undefined || persisted?.cursorModeId !== undefined
-        ? { cursorModeId: liveSession?.cursorModeId ?? persisted?.cursorModeId ?? null }
+      ...(summaryCursorModeId !== undefined
+        ? { cursorModeId: summaryCursorModeId ?? null }
         : {}),
+      ...(summaryCursorModeId === null ? { cursorModeIdWasCleared: true } : {}),
       ...(liveSession?.cursorConfigValues || persisted?.cursorConfigValues
         ? { cursorConfigValues: liveSession?.cursorConfigValues ?? persisted?.cursorConfigValues }
         : {}),
@@ -48266,7 +48291,7 @@ export function createAgentChatService(args: {
         ...(managed.session.codexConfigSource !== undefined ? { codexConfigSource: managed.session.codexConfigSource } : {}),
         ...(managed.session.opencodePermissionMode !== undefined ? { opencodePermissionMode: managed.session.opencodePermissionMode } : {}),
         ...(managed.session.droidPermissionMode !== undefined ? { droidPermissionMode: managed.session.droidPermissionMode } : {}),
-        ...(cursorModeId !== undefined || managed.session.cursorModeId != null
+        ...(cursorModeId !== undefined || permissionMode !== undefined || managed.session.cursorModeId != null
           ? { cursorModeId: managed.session.cursorModeId ?? null }
           : {}),
         ...(managed.session.cursorModeSnapshot ? { cursorModeSnapshot: managed.session.cursorModeSnapshot } : {}),

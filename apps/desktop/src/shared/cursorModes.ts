@@ -1,11 +1,11 @@
 /**
- * Canonical Cursor mode IDs and labels.
+ * ADE-facing Cursor chat selections and labels.
  *
  * Both AgentChatPane (fallback snapshot) and AgentChatComposer (mode labels)
  * must reference the same set. Import from here instead of hardcoding.
  */
 
-/** The set of Cursor mode IDs exposed to the user in the mode picker. */
+/** The set of Cursor selections exposed to the user in the mode picker. */
 export const CURSOR_AVAILABLE_MODE_IDS = ["agent", "ask", "plan", "full-auto"] as const;
 
 export type CursorModeId = (typeof CURSOR_AVAILABLE_MODE_IDS)[number];
@@ -23,13 +23,24 @@ export const CURSOR_MODE_LABELS: Record<string, string> = {
 /** The Cursor mode a session runs in when it names none. */
 export const CURSOR_DEFAULT_MODE_ID = "agent" satisfies CursorModeId;
 
+/** Format provider-returned Cursor mode ids consistently across every surface. */
+export function formatCursorModeLabel(modeId: string): string {
+  const normalized = modeId.trim().toLowerCase();
+  if (!normalized.length) return CURSOR_MODE_LABELS.agent;
+  if (CURSOR_MODE_LABELS[normalized]) return CURSOR_MODE_LABELS[normalized];
+  return normalized
+    .split(/[-_/]+/)
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(" ");
+}
+
 /**
- * The native Cursor mode a legacy `permissionMode` asks for, or `null` when it
+ * The ADE-facing Cursor selection a legacy `permissionMode` asks for, or `null` when it
  * asks for nothing Cursor names.
  *
- * Only the two modes Cursor itself has are mapped. `full-auto` and `plan` are
- * real Cursor modes and `resolveCursorSdkPolicy` already runs the session under
- * them, so the session must say so; leaving `cursorModeId` empty is what made a
+ * `full-auto` and `plan` are ADE selections; the provider SDK still receives
+ * its supported execution mode separately. Leaving `cursorModeId` empty made a
  * `--permissions full-auto` child report `agent` in its mode snapshot.
  *
  * `default` and `edit` both run as Cursor `agent`, and `ask` is a deliberate

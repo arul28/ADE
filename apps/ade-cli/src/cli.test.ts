@@ -3344,6 +3344,51 @@ describe("ADE CLI", () => {
     });
   });
 
+  it("forwards explicit Droid autonomy through new chat CLI mode", () => {
+    const plan = buildCliPlan([
+      "new",
+      "chat",
+      "--mode",
+      "cli",
+      "--lane",
+      "lane-1",
+      "--provider",
+      "droid",
+      "--permissions",
+      "default",
+      "--droid-autonomy",
+      "agi",
+      "--prompt",
+      "Run the Droid child.",
+    ]);
+
+    const executePlan = expectExecutePlan(plan);
+    const launchParams = (executePlan.steps[0]?.params as (v: Record<string, unknown>) => Record<string, unknown>)({});
+    expect(launchParams).toMatchObject({
+      name: "start_cli_session",
+      arguments: {
+        provider: "droid",
+        permissionMode: "default",
+        droidPermissionMode: "agi",
+        initialInput: "Run the Droid child.",
+      },
+    });
+  });
+
+  it("rejects invalid Droid autonomy values on every chat planning surface", () => {
+    const invalid = "not-a-droid-tier";
+    const plans = [
+      ["chat", "create", "--lane", "lane-1", "--provider", "droid", "--droid-autonomy", invalid],
+      ["chat", "create", "--personal", "--provider", "droid", "--model", "droid/model", "--droid-autonomy", invalid],
+      ["chat", "update", "personal-1", "--personal", "--droid-autonomy", invalid],
+      ["shell", "start-cli", "--lane", "lane-1", "--provider", "droid", "--droid-autonomy", invalid],
+    ];
+
+    for (const args of plans) {
+      expect(() => buildCliPlan(args)).toThrow(/droidPermissionMode must be one of/);
+    }
+  });
+
   it("adds a valid --type to new chat createSession args and rejects invalid values", () => {
     const plan = buildCliPlan([
       "new",
