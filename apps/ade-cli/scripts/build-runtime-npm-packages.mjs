@@ -332,6 +332,9 @@ function listFilesRelative(dir, base = dir) {
   return out;
 }
 
+/** 50 MiB: a real native tree's `npm pack --dry-run --json` listing exceeds Node's 1 MiB default. */
+export const NPM_PACK_MAX_BUFFER_BYTES = 50 * 1024 * 1024;
+
 /**
  * `npm pack --dry-run`, spawned the one way that works on every platform.
  *
@@ -353,6 +356,7 @@ function defaultPackRunner(cwd) {
     cwd,
     encoding: "utf8",
     stdio: ["ignore", "pipe", "pipe"],
+    maxBuffer: NPM_PACK_MAX_BUFFER_BYTES,
     windowsHide: true,
     windowsVerbatimArguments: invocation.windowsVerbatimArguments,
   });
