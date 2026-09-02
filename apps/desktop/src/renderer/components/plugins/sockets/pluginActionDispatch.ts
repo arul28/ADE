@@ -21,6 +21,11 @@ import {
   type PluginActionNavigation,
 } from "../../../../shared/plugins/sdk";
 import { applyPluginActionOpenUrl } from "../pluginActionOpenUrl";
+// Re-exported so the socket dispatcher stays the one import site callers know,
+// while the implementation sits where `pluginActionOpenSettings` can reach it
+// without importing this module back.
+export { showPluginActionMessage } from "../pluginActionToast";
+import { showPluginActionMessage } from "../pluginActionToast";
 import { applyPluginActionOpenSettings } from "../pluginActionOpenSettings";
 import type { PluginSurfaceContext } from "../../../../shared/plugins/context";
 import {
@@ -114,6 +119,15 @@ export function runPluginSocketAction(
   )
     .then((result) => {
       clearSlowNotice();
+      // What the action said about how it went.
+      //
+      // A panel draws this line inline (`PluginPanelHost`), and a socket has no
+      // inline place to draw it, so the toast is the socket's equivalent. Without
+      // it every `{ok: false, message}` a socket action answered with was
+      // discarded: the armed-Send path swallowed Cursor Cloud's model refusal
+      // and its every launch failure, and a press that refused looked exactly
+      // like a press that did nothing.
+      showPluginActionMessage(result, pluginId, actionId);
       // Applied before navigation, which may take the composer off screen: an
       // action that writes a draft and then opens its own panel should do both,
       // in the order the plugin can predict.

@@ -456,6 +456,7 @@ import {
   PLUGIN_CHAT_WRITES_PER_SESSION_BURST,
   PLUGIN_CHAT_WRITE_BURST_WINDOW_MS,
   PluginSdkError,
+  readPluginChatArtifactSourceUrl,
   type PluginChatArtifact,
   type PluginChatAssistantChunk,
   type PluginChatPart,
@@ -39801,19 +39802,54 @@ export function createAgentChatService(args: {
     }
   };
 
+  /**
+   * Path segments Windows cannot hold, whatever the extension.
+   *
+   * `CON`, `NUL`, `AUX`, `PRN`, `COM1`…`COM9` and `LPT1`…`LPT9` are DEVICE
+   * names on win32, and they are reserved with any extension and any case:
+   * `con.txt` opens the console. Writing one does not fail cleanly — it writes
+   * to the device — so a plugin naming an artifact `nul.log` would report a
+   * file that is not there on Windows and would be there on macOS. Refused on
+   * every platform rather than on win32 only, because a lane cache is a
+   * directory that syncs and is read back on another machine.
+   *
+   * A trailing dot or space is the same class of name: Windows strips both when
+   * it creates the file, so `report.` and `report` collide.
+   */
+  const WIN32_RESERVED_SEGMENT = /^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\..*)?$/i;
+
+  const isWin32SafeSegment = (segment: string): boolean => {
+    if (WIN32_RESERVED_SEGMENT.test(segment)) return false;
+    if (/[<>:"|?*]/.test(segment)) return false;
+    // eslint-disable-next-line no-control-regex -- the ASCII control range is exactly what win32 refuses.
+    if (/[\u0000-\u001f]/.test(segment)) return false;
+    if (/[. ]$/.test(segment)) return false;
+    return true;
+  };
+
   const sanitizeArtifactRelativePath = (raw: string): string | null => {
     if (typeof raw !== "string") return null;
     const trimmed = raw.replace(/\\/g, "/").replace(/^\/+/, "").trim();
     if (!trimmed.length) return null;
     const segments = trimmed.split("/").filter((seg) => seg.length > 0 && seg !== ".");
+    if (!segments.length) return null;
     if (segments.some((seg) => seg === "..")) return null;
     if (segments.some((seg) => seg.includes("\0"))) return null;
+    // A drive-relative or UNC-shaped first segment is an absolute path on
+    // win32 even though it carries no leading slash.
+    if (/^[A-Za-z]:/.test(segments[0] ?? "")) return null;
+    if (segments.some((seg) => !isWin32SafeSegment(seg))) return null;
     return segments.join("/");
   };
 
   const sanitizePluginCacheSegment = (raw: string): string => {
     const cleaned = raw.replace(/[^A-Za-z0-9._-]+/g, "-").replace(/^-+|-+$/g, "");
-    return cleaned.slice(0, 80) || "item";
+    const trimmed = cleaned.slice(0, 80).replace(/[. ]+$/, "");
+    if (!trimmed) return "item";
+    // A plugin id or an external id may spell a win32 device name as readily as
+    // an artifact path can. Prefixed rather than refused: these two segments are
+    // addressing, and refusing one would drop the artifact entirely.
+    return WIN32_RESERVED_SEGMENT.test(trimmed) ? `_${trimmed}` : trimmed;
   };
 
   const decodePluginArtifactContents = (contents: string): Buffer | null => {
@@ -39826,6 +39862,39 @@ export function createAgentChatService(args: {
     }
   };
 
+  /**
+   * Content types a plugin artifact download may claim.
+   *
+   * A sanity check, not a security boundary: the bytes go into a cache file the
+   * host never executes and never renders as a document. What it refuses is the
+   * shape of a fetch that went somewhere else — an HTML sign-in page or an
+   * error portal answered with 200, which would otherwise land in the lane as a
+   * "proof artifact" the reader is invited to open.
+   */
+  const isPluginArtifactContentType = (raw: string | null): boolean => {
+    if (!raw) return true; // A server that declares nothing is not making a claim.
+    const type = raw.split(";", 1)[0]?.trim().toLowerCase() ?? "";
+    if (!type) return true;
+    if (type === "text/html" || type === "application/xhtml+xml") return false;
+    return true;
+  };
+
+  /**
+   * Fetch one artifact's bytes, refusing more than the cap before buffering it.
+   *
+   * Three guards, and each refuses a different failure:
+   *
+   * - `Content-Length` is checked BEFORE a byte is read, so a server that
+   *   declares a gigabyte costs one round trip rather than a gigabyte of heap.
+   * - The body is then read in chunks against the same cap, because
+   *   `Content-Length` is the server's claim and a chunked response makes none.
+   *   `response.arrayBuffer()` had already materialized the whole body by the
+   *   time the old check ran, which made that check a report rather than a cap.
+   * - The FINAL hop is re-validated through {@link readPluginChatArtifactSourceUrl},
+   *   the same predicate that admitted the URL the plugin asked for. Following
+   *   redirects with only the first hop checked let a plugin name an allowed
+   *   host that redirected to `localhost`, and the host would fetch it.
+   */
   const downloadPluginArtifactSourceUrl = async (url: string): Promise<Buffer | null> => {
     try {
       const response = await fetch(url, {
@@ -39833,13 +39902,43 @@ export function createAgentChatService(args: {
         redirect: "follow",
         signal: AbortSignal.timeout(30_000),
       });
-      if (!response.ok) return null;
-      const finalUrl = response.url || url;
-      const parsed = new URL(finalUrl);
-      if (parsed.protocol !== "https:") return null;
-      const buffer = Buffer.from(await response.arrayBuffer());
-      if (buffer.byteLength > PLUGIN_CHAT_ARTIFACT_MAX_BYTES) return null;
-      return buffer;
+      if (!response.ok) {
+        await response.body?.cancel().catch(() => undefined);
+        return null;
+      }
+      // The final hop faces the rule the first hop passed: https, no
+      // credentials, and never a loopback name.
+      if (!readPluginChatArtifactSourceUrl(response.url || url)) {
+        await response.body?.cancel().catch(() => undefined);
+        return null;
+      }
+      if (!isPluginArtifactContentType(response.headers.get("content-type"))) {
+        await response.body?.cancel().catch(() => undefined);
+        return null;
+      }
+      const declared = Number(response.headers.get("content-length"));
+      if (Number.isFinite(declared) && declared > PLUGIN_CHAT_ARTIFACT_MAX_BYTES) {
+        await response.body?.cancel().catch(() => undefined);
+        return null;
+      }
+      const body = response.body;
+      if (!body) return null;
+      const chunks: Buffer[] = [];
+      let total = 0;
+      const reader = body.getReader();
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        if (!value) continue;
+        total += value.byteLength;
+        if (total > PLUGIN_CHAT_ARTIFACT_MAX_BYTES) {
+          await reader.cancel().catch(() => undefined);
+          return null;
+        }
+        chunks.push(Buffer.from(value.buffer, value.byteOffset, value.byteLength));
+      }
+      if (total === 0) return null;
+      return Buffer.concat(chunks, total);
     } catch {
       return null;
     }
@@ -39867,17 +39966,42 @@ export function createAgentChatService(args: {
       buffer = await downloadPluginArtifactSourceUrl(artifact.sourceUrl);
     }
     if (!buffer) return null;
-    const destPath = path.join(
+    const cacheRoot = path.join(
       worktree,
       ".ade",
       "cache",
       "plugin-artifacts",
       sanitizePluginCacheSegment(pluginId),
       sanitizePluginCacheSegment(externalId),
-      safeRel,
     );
-    fs.mkdirSync(path.dirname(destPath), { recursive: true });
-    fs.writeFileSync(destPath, buffer);
+    const destPath = path.join(cacheRoot, safeRel);
+    // Lexical containment first, on the resolved strings. `safeRel` already
+    // refuses `..`, so this is the belt to that brace and costs nothing.
+    if (!isWithinRoot(path.resolve(destPath), path.resolve(cacheRoot))) return null;
+    const destDir = path.dirname(destPath);
+    fs.mkdirSync(destDir, { recursive: true });
+    // Then containment through the LINKS. A directory inside the cache may be a
+    // symlink — a previous artifact, another tool, or the user — and a lexically
+    // contained path under it resolves anywhere on the disk. Checked after the
+    // mkdir, because the directory has to exist before it can be resolved, and
+    // before the write, which is the thing that would escape.
+    const realDestDir = safeRealpath(destDir);
+    const realCacheRoot = safeRealpath(cacheRoot);
+    if (!realDestDir || !realCacheRoot || !isWithinRoot(realDestDir, realCacheRoot)) return null;
+    // An existing entry at the destination may itself be a link out of the
+    // cache; `writeFileSync` would follow it. `wx` refuses anything already
+    // there, so a re-materialized artifact replaces its own file only after the
+    // unlink below, which removes the link rather than following it.
+    try {
+      fs.rmSync(destPath, { force: true });
+    } catch {
+      return null;
+    }
+    try {
+      fs.writeFileSync(destPath, buffer, { flag: "wx" });
+    } catch {
+      return null;
+    }
     return path.relative(worktree, destPath);
   };
 
@@ -42117,19 +42241,6 @@ export function createAgentChatService(args: {
     if (!trimmedAgent) throw new Error("Cursor cloud agent id is required.");
     if (!trimmedLane) throw new Error("Lane id is required.");
 
-    const apiKey = getCursorSdkApiKey();
-    if (!apiKey) throw new Error("Cursor Cloud chat requires a Cursor API key.");
-
-    const laneInfo = (() => {
-      try {
-        return laneService.getLaneBaseAndBranch(trimmedLane);
-      } catch {
-        return null;
-      }
-    })();
-    if (!laneInfo) throw new Error(`Lane '${trimmedLane}' was not found.`);
-    const laneRoot = laneInfo.worktreePath;
-
     const requestedId = args.sessionId?.trim() || "";
     let managed: ManagedChatSession | null = null;
     if (requestedId) {
@@ -42149,9 +42260,30 @@ export function createAgentChatService(args: {
       }
     }
 
+    // The plugin-owned short-circuit comes BEFORE every requirement ADE's own
+    // cloud path has. A chat the `ade-cursor-cloud` plugin owns hydrates itself
+    // with the plugin's credential, and this method has nothing to add to it.
+    // Ordered after the key check, it threw "Cursor Cloud chat requires a
+    // Cursor API key" on exactly the machines where the plugin supersedes the
+    // compiled surface and ADE holds no key — an error banner over a chat that
+    // was working. Neither the key nor the lane lookup is needed to answer
+    // "somebody else already owns this session".
     if (managed && isPluginOwnedChatSession(managed.session)) {
       return { sessionId: managed.session.id, session: managed.session };
     }
+
+    const apiKey = getCursorSdkApiKey();
+    if (!apiKey) throw new Error("Cursor Cloud chat requires a Cursor API key.");
+
+    const laneInfo = (() => {
+      try {
+        return laneService.getLaneBaseAndBranch(trimmedLane);
+      } catch {
+        return null;
+      }
+    })();
+    if (!laneInfo) throw new Error(`Lane '${trimmedLane}' was not found.`);
+    const laneRoot = laneInfo.worktreePath;
 
     const existedBefore = Boolean(managed);
     if (!managed) {

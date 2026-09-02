@@ -280,20 +280,26 @@ function resolveFromRow(row, args) {
   }
 
   const params = [...out.entries()].map(([id, value]) => ({ id, value }));
+  // Fails CLOSED. A catalog row that declares no reasoning parameter at all, or
+  // no service tier, cannot express what the reader asked for — so the request
+  // is UNMET, not satisfied. Gating each check on `size > 0` read the absence of
+  // the parameter as proof that nothing needed to be sent, and the launch went
+  // to Cursor with no params: the reader picked "high" and got the row's
+  // default, with nothing on screen to say so.
   const unmet = [];
-  if (reasoning && reasoningParameterIds.size > 0) {
+  if (reasoning) {
     const matched = params.some((param) =>
       reasoningParameterIds.has(param.id) && normalizeText(param.value) === reasoning,
     );
     if (!matched) unmet.push("reasoning effort");
   }
-  if (wantsFast && serviceTierParameterIds.size > 0) {
+  if (wantsFast) {
     const matched = params.some((param) =>
       serviceTierParameterIds.has(param.id) && normalizeServiceTierValue(param.value) === "fast",
     );
     if (!matched) unmet.push("fast mode");
   }
-  if (wantsStandard && serviceTierParameterIds.size > 0) {
+  if (wantsStandard) {
     const matched = params.some((param) =>
       serviceTierParameterIds.has(param.id) && normalizeServiceTierValue(param.value) === "standard",
     );

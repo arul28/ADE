@@ -37,7 +37,7 @@ import { DRAFT_LAUNCH_JOB_STALE_AFTER_MS } from "../../lib/draftLaunchJobs";
 import { invalidateProjectConfigCache } from "../../lib/projectConfigCache";
 import { useAppStore } from "../../state/appStore";
 import { descriptorsFromAgentChatModelCatalog } from "../shared/ModelPicker/modelCatalog";
-import { resetBuiltinSurfacePlugins } from "../../../test/builtinSurfaces";
+import { resetBuiltinSurfacePlugins, seedBuiltinSurfacePlugins } from "../../../test/builtinSurfaces";
 import {
   rememberRuntimeCatalog,
   resetModelPickerRuntimeCatalogForTests,
@@ -12774,6 +12774,99 @@ describe("AgentChatPane Cursor Cloud composer mode", () => {
     expect(screen.queryByTestId("cursor-cloud-connecting")).toBeNull();
     expect(screen.getByTestId("cursor-cloud-header-link")).toBeTruthy();
     expect(screen.queryByText(/Live view of Cursor Cloud/)).toBeNull();
+  });
+
+  it("never runs the compiled hydrate for a chat the Cursor Cloud plugin owns", async () => {
+    // A plugin-owned Cursor Cloud chat carries `cursorCloudAgentId` too, and
+    // the compiled hydrate needs ADE's own Cursor key — which the machine does
+    // not have once the plugin supersedes the surface. Running it anyway drew
+    // the retry banner and the connecting overlay over a chat that was working.
+    const session = buildSession("cloud-plugin-1", {
+      provider: "cursor",
+      model: "composer-2",
+      modelId: CURSOR_MODEL_ID,
+      title: "Cursor Chat",
+      cursorCloudAgentId: "bc-plugin-owned",
+      runtimeRef: {
+        pluginId: "ade-cursor-cloud",
+        runtimeId: "cloud",
+        externalId: "bc-plugin-owned",
+      },
+    } as Record<string, unknown>);
+    installAdeMocks({
+      sessions: [session],
+      cursorModels: [{ id: "composer-cloud" }],
+      aiStatus: cursorAvailableAiStatus(),
+      eventHistory: {
+        sessionId: session.sessionId,
+        events: [],
+        truncated: false,
+        sessionFound: true,
+      },
+    });
+    seedDrawerStore();
+    const openChat = vi.fn().mockRejectedValue(new Error("the compiled hydrate must not run here"));
+    Object.assign(window.ade.ai, {
+      cursorCloudOpenChat: openChat,
+      cursorCloudListRepositories: vi.fn().mockResolvedValue([]),
+      cursorCloudListAgents: vi.fn().mockResolvedValue({ items: [] }),
+      cursorCloudGetLaneSecretNames: vi.fn().mockResolvedValue([]),
+    });
+
+    renderPane(session);
+
+    // The header chip draws off `cursorCloudAgentId` alone, so it is on screen
+    // whether or not the hydrate ran — a settle point that does not presume the
+    // outcome this test is about.
+    await screen.findByTestId("cursor-cloud-header-link");
+    await act(async () => { await Promise.resolve(); });
+    await act(async () => { await Promise.resolve(); });
+
+    expect(openChat).not.toHaveBeenCalled();
+    expect(screen.queryByTestId("cursor-cloud-connecting")).toBeNull();
+    expect(screen.queryByTestId("cursor-cloud-hydrate-failed")).toBeNull();
+  });
+
+  it("never runs the compiled hydrate once the plugin supersedes the Cursor Cloud surface", async () => {
+    // The other half of the guard, and the one that covers a chat ADE itself
+    // created before the plugin was installed: the compiled surface is gone, so
+    // the key it needs is gone with it.
+    const session = buildSession("cloud-superseded-1", {
+      provider: "cursor",
+      model: "composer-2",
+      modelId: CURSOR_MODEL_ID,
+      title: "Cursor Chat",
+      cursorCloudAgentId: "bc-superseded",
+    });
+    installAdeMocks({
+      sessions: [session],
+      cursorModels: [{ id: "composer-cloud" }],
+      aiStatus: cursorAvailableAiStatus(),
+      eventHistory: {
+        sessionId: session.sessionId,
+        events: [],
+        truncated: false,
+        sessionFound: true,
+      },
+    });
+    seedDrawerStore();
+    const openChat = vi.fn().mockRejectedValue(new Error("the compiled hydrate must not run here"));
+    Object.assign(window.ade.ai, {
+      cursorCloudOpenChat: openChat,
+      cursorCloudListRepositories: vi.fn().mockResolvedValue([]),
+      cursorCloudListAgents: vi.fn().mockResolvedValue({ items: [] }),
+      cursorCloudGetLaneSecretNames: vi.fn().mockResolvedValue([]),
+    });
+    seedBuiltinSurfacePlugins(["cursor-cloud"]);
+
+    renderPane(session);
+
+    await screen.findByTestId("cursor-cloud-header-link");
+    await act(async () => { await Promise.resolve(); });
+    await act(async () => { await Promise.resolve(); });
+
+    expect(openChat).not.toHaveBeenCalled();
+    expect(screen.queryByTestId("cursor-cloud-hydrate-failed")).toBeNull();
   });
 
   it("watches an open cloud chat while visible and unwatches on unmount", async () => {

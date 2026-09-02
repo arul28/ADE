@@ -9934,6 +9934,16 @@ export function AgentChatPane({
   useEffect(() => {
     const session = selectedSession;
     if (!session?.cursorCloudAgentId) return;
+    // The compiled hydrate is ADE's own cloud path, and it needs ADE's own
+    // Cursor key. A chat the `ade-cursor-cloud` plugin owns has neither: the
+    // plugin holds the credential and backfills the transcript itself. Running
+    // this on one produced an error banner and a 20 s overlay over a chat that
+    // was working. Both halves of the guard matter — the marker refuses a
+    // plugin-owned session even on a machine that still draws the compiled
+    // surface, and the surface predicate refuses the whole path once the plugin
+    // supersedes it.
+    if (isPluginOwnedChatSession(session)) return;
+    if (!cursorCloudSurfaceVisible) return;
     if (chatHasMessages || selectedChatCold) return;
     if (cursorCloudBackfillAttemptedRef.current.has(session.sessionId)) return;
     cursorCloudBackfillAttemptedRef.current.add(session.sessionId);
@@ -9954,6 +9964,7 @@ export function AgentChatPane({
   }, [
     chatHasMessages,
     cloudBackfillNonce,
+    cursorCloudSurfaceVisible,
     notifySessionCreated,
     refreshSessions,
     selectedChatCold,
@@ -9986,9 +9997,22 @@ export function AgentChatPane({
   ]);
 
   useEffect(() => {
-    if (!selectedSession?.cursorCloudAgentId || chatHasMessages || selectedChatCold || subagentView) {
+    // The overlay and its 20 s deadline belong to the compiled hydrate above,
+    // and they are guarded on exactly the same two facts. A plugin-owned chat
+    // backfills itself, so arming here spun for twenty seconds and then drew
+    // "Couldn't load the Cursor Cloud conversation" over a transcript the
+    // plugin was already filling in.
+    const pluginOwned = isPluginOwnedChatSession(selectedSession);
+    if (
+      !selectedSession?.cursorCloudAgentId
+      || pluginOwned
+      || !cursorCloudSurfaceVisible
+      || chatHasMessages
+      || selectedChatCold
+      || subagentView
+    ) {
       setCloudOverlayArmed(false);
-      if (chatHasMessages) setCloudHydrateFailed(false);
+      if (chatHasMessages || pluginOwned || !cursorCloudSurfaceVisible) setCloudHydrateFailed(false);
       return;
     }
     setCloudOverlayArmed(true);
@@ -10000,9 +10024,9 @@ export function AgentChatPane({
   }, [
     chatHasMessages,
     cloudBackfillNonce,
+    cursorCloudSurfaceVisible,
     selectedChatCold,
-    selectedSession?.cursorCloudAgentId,
-    selectedSession?.sessionId,
+    selectedSession,
     subagentView,
   ]);
 

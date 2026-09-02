@@ -286,3 +286,63 @@ describe("a press while the plugin is still starting", () => {
     expect(failure.tone).toBe("error");
   });
 });
+
+/**
+ * The `{message}` verb on a socket press.
+ *
+ * A panel draws this line inline and a socket had no place for it, so desktop
+ * and the web client discarded it. The cost was concrete: every `{ok: false,
+ * message}` a Cursor Cloud launch answered with — the model-verification
+ * refusal above all — reached the armed-Enter path and vanished, and a Send
+ * that refused looked exactly like a Send that did nothing.
+ */
+describe("what the action said about how it went", () => {
+  it("draws a refusal as an error toast titled with the plugin's name", async () => {
+    registry.plugins = [installedPlugin({ pluginId: "ade-cursor-cloud", displayName: "Cursor Cloud" })];
+    invokePluginSocketAction.mockResolvedValue({
+      ok: false,
+      message: "Cursor Cloud could not verify the selected model settings.",
+    });
+
+    await runPluginSocketAction("ade-cursor-cloud", "openLaunch", ACTION_CONTEXT, {
+      socket: "composer-action",
+      args: { send: true },
+    });
+
+    expect(showToast).toHaveBeenCalledTimes(1);
+    const toast = showToast.mock.calls[0]?.[0] as { title: string; message: string; tone: string };
+    expect(toast.tone).toBe("error");
+    expect(toast.title).toContain("Cursor Cloud");
+    expect(toast.message).toContain("could not verify the selected model settings");
+  });
+
+  it("draws a success message as an ordinary toast", async () => {
+    registry.plugins = [installedPlugin({ pluginId: "journal", displayName: "Journal" })];
+    invokePluginSocketAction.mockResolvedValue({ message: "Logged it." });
+
+    await runPluginSocketAction("journal", "logIt", ACTION_CONTEXT);
+
+    expect(showToast).toHaveBeenCalledTimes(1);
+    const toast = showToast.mock.calls[0]?.[0] as { title: string; message: string; tone: string };
+    expect(toast.tone).toBe("info");
+    expect(toast.title).toBe("Journal");
+    expect(toast.message).toBe("Logged it.");
+  });
+
+  it("falls back to the plugin id when the registry has no name for it", async () => {
+    invokePluginSocketAction.mockResolvedValue({ ok: false, message: "No API key." });
+
+    await runPluginSocketAction("unknown-plugin", "go", ACTION_CONTEXT);
+
+    const toast = showToast.mock.calls[0]?.[0] as { title: string };
+    expect(toast.title).toContain("unknown-plugin");
+  });
+
+  it("says nothing when the action answered with no message", async () => {
+    invokePluginSocketAction.mockResolvedValue({ ok: true });
+
+    await runPluginSocketAction("journal", "logIt", ACTION_CONTEXT);
+
+    expect(showToast).not.toHaveBeenCalled();
+  });
+});

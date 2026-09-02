@@ -40,6 +40,17 @@ const PUBLISH_ATTEMPTS = 5;
 const PUBLISH_RETRY_MS = 3_000;
 const COMMIT_LIMIT = 120;
 const LANE_CAP = 8;
+/**
+ * How far the sweep reads before deciding what to delete.
+ *
+ * Derived from the widest write this plugin makes rather than typed as a
+ * number, because the two have to agree: commits are written for every lane, so
+ * one refresh writes up to `LANE_CAP * COMMIT_LIMIT` rows. A fixed 800 read less
+ * than the 960 it could write, and the surplus was invisible to the sweep — a
+ * commit that left a lane's recent history stayed on the panel forever. Capped
+ * at the platform's own list ceiling (1000), which this stays under.
+ */
+const SWEEP_LIMIT = LANE_CAP * COMMIT_LIMIT;
 
 let sdk = null;
 let disposed = false;
@@ -125,7 +136,7 @@ async function replaceCollection(collection, wanted) {
       log("warn", `Could not store ${collection} row ${key}: ${error?.message ?? error}`);
     }
   }
-  const existing = await sdk.collections.list(collection, { limit: 800 }).catch(() => []);
+  const existing = await sdk.collections.list(collection, { limit: SWEEP_LIMIT }).catch(() => []);
   for (const row of existing) {
     if (wanted.has(row.key)) continue;
     await sdk.collections.delete(collection, row.key).catch(() => {});

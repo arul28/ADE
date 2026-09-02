@@ -514,9 +514,40 @@ exports.actions = {
   },
 };
 
+/** The three scopes a suppression may claim. Anything else is a typo. */
+const SUPPRESSION_SCOPES = ["repo", "path", "global"];
+
+/**
+ * The suppression the caller meant, from either shape it may arrive in.
+ *
+ * The panel's own button builds `{suppression: {scope}}`. The agent tool
+ * declares a flat `suppressionScope` string, because a tool input is what a
+ * model fills in and a one-level object is what it fills in reliably. Both are
+ * the same request, so both resolve here rather than only the first: the tool's
+ * field was declared and then never read, which made every model-driven
+ * suppression a repo-wide one whatever the model asked for.
+ */
+function readSuppression(args) {
+  if (args?.suppression && typeof args.suppression === "object") return args.suppression;
+  const scope = readString(args?.suppressionScope);
+  if (!scope) return null;
+  // An unrecognised scope is refused rather than widened to the default: the
+  // caller asked to silence a finding, and silencing MORE than they asked is
+  // the one wrong answer that leaves no trace.
+  if (!SUPPRESSION_SCOPES.includes(scope)) return { invalid: scope };
+  return { scope };
+}
+
 async function recordFeedback(args) {
   const findingId = readString(args?.findingId);
   if (!findingId) return { message: "Pick a finding.", ok: false };
+  const suppression = readSuppression(args);
+  if (suppression?.invalid) {
+    return {
+      message: `“${suppression.invalid}” is not a suppression scope. Use repo, path, or global.`,
+      ok: false,
+    };
+  }
   try {
     await invokeReview("recordFeedback", {
       findingId,
@@ -524,7 +555,7 @@ async function recordFeedback(args) {
       reason: readString(args?.reason),
       note: readString(args?.note),
       snoozeDurationMs: Number.isFinite(args?.snoozeDurationMs) ? args.snoozeDurationMs : undefined,
-      suppression: args?.suppression ?? null,
+      suppression,
     });
     if (currentRunId) await refreshRun({ runId: currentRunId });
     return { message: "Saved." };

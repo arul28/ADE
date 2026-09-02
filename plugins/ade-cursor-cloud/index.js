@@ -91,8 +91,38 @@ function log(level, message, fields) {
   sdk?.log(level, message, fields);
 }
 
+/**
+ * Where the unread count survives a reload.
+ *
+ * The badge ROW is durable — the host stores it and every client reads it — but
+ * the count behind it lived in module memory. So a reload left the row saying 5
+ * with the counter at 0, and the next finished agent published 1: the reader
+ * watched a badge count DOWN as more work finished. `deliveries` is this
+ * plugin's one unsynced collection, which is what this is: an unread mark
+ * belongs to the machine the reader is sitting at, not to the fleet.
+ */
+const UNREAD_COLLECTION = "deliveries";
+const UNREAD_KEY = "badge:unread-finished";
+
+async function readStoredUnread() {
+  const row = await sdk?.collections.get(UNREAD_COLLECTION, UNREAD_KEY).catch(() => null);
+  const raw = row && typeof row === "object" ? row.count : row;
+  return tabBadge.nextUnreadCount(0, raw);
+}
+
+async function storeUnread(count) {
+  await sdk?.collections
+    .put(UNREAD_COLLECTION, UNREAD_KEY, { count }, { ifFull: "evictOldest" })
+    .catch((error) => {
+      // A count this plugin could not store reconciles to whatever it CAN read
+      // on the next activate. Never worth failing the badge over.
+      log("debug", `Could not store the unread count: ${error?.message ?? error}`);
+    });
+}
+
 async function publishTabBadge() {
   if (!sdk) return;
+  await storeUnread(unreadFinished);
   try {
     await sdk.contributions.publish(
       "surface",
@@ -107,6 +137,19 @@ async function publishTabBadge() {
 
 async function clearTabBadge() {
   unreadFinished = 0;
+  await publishTabBadge();
+}
+
+/**
+ * Bring the count and the published row back into agreement, once, on activate.
+ *
+ * Republishes unconditionally rather than only on a mismatch: this plugin
+ * cannot READ its published contribution, so "the row already says 3" is not a
+ * fact it has. One publish of a value it does know is cheaper than a badge that
+ * lies until the next finish.
+ */
+async function reconcileTabBadge() {
+  unreadFinished = await readStoredUnread();
   await publishTabBadge();
 }
 
@@ -467,6 +510,8 @@ exports.activate = async (ade) => {
     originCache.reset();
     void refreshFleet();
   }));
+
+  await reconcileTabBadge();
 
   await publish("fleet", buildFleetPanel({ state: "loading" }));
   await refreshFleet().catch((error) => {

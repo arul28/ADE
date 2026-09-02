@@ -394,6 +394,72 @@ describe("AgentChatComposer", () => {
     expect(resolveSmartLinkPreview).not.toHaveBeenCalled();
   });
 
+  /**
+   * Who owns Enter after the reader switches conversation.
+   *
+   * The pane mounts ONE composer and swaps the session under it, so an armed
+   * `ownsSend` plugin stayed armed across the switch: the reader armed Cursor
+   * Cloud in one chat, opened a Claude chat, pressed Enter, and the turn went
+   * to the plugin instead of the local runtime.
+   */
+  it("disarms an ownsSend plugin when the conversation changes", async () => {
+    (window as any).ade = {
+      plugins: {
+        list: async () => [{
+          pluginId: "cloud",
+          displayName: "Cloud",
+          enabled: true,
+          accent: null,
+          icon: null,
+          disabledContributions: [],
+        }],
+        getManifest: async () => ({
+          name: "cloud",
+          version: "1.0.0",
+          sockets: [{
+            socket: "composer-action",
+            surface: "work",
+            id: "send-to-cloud",
+            label: "Cloud",
+            actionId: "openLaunch",
+            ownsSend: true,
+          }],
+        }),
+        listContributions: async () => [],
+        invoke: async () => ({}),
+      },
+    };
+
+    const props = buildComposerProps({
+      sessionId: "chat-1",
+      isActive: true,
+      turnActive: false,
+      draft: "Ship the fix",
+    });
+    const view = render(<AgentChatComposer {...props} />);
+
+    const button = await waitFor(() => {
+      const found = screen.getByText("Cloud").closest("button");
+      if (!found) throw new Error("the contributed button has not rendered yet");
+      return found;
+    });
+
+    await act(async () => {
+      fireEvent.click(button);
+    });
+    expect(button.getAttribute("aria-pressed")).toBe("true");
+
+    // The same composer instance, a different conversation.
+    await act(async () => {
+      view.rerender(<AgentChatComposer {...props} sessionId="chat-2" />);
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText("Cloud").closest("button")?.getAttribute("aria-pressed"))
+        .toBe("false");
+    });
+  });
+
   it("leaves a URL no installed plugin claims to the generic path", async () => {
     const url = "https://unclaimed.example.com/browse/ACME-12";
     const resolveSmartLinkPreview = vi.fn().mockResolvedValue({

@@ -159,6 +159,29 @@ export function PluginComposerActions({
   const [busyKeys, setBusyKeys] = React.useState<readonly string[]>([]);
 
   /**
+   * Disarm a Send owner whose contribution is no longer on the row.
+   *
+   * The armed owner lives in the parent composer, and the parent cannot see
+   * this row's contributions. So a plugin that was disabled, uninstalled, or
+   * whose per-session row stopped declaring `ownsSend` removed the button here
+   * and left the parent armed — Enter then dispatched a plugin action for a
+   * button nobody could see, instead of sending the turn to the local runtime.
+   *
+   * Gated on `active`, because an inactive composer reads an EMPTY set rather
+   * than a set that says the contribution is gone. Disarming on that would
+   * clear the arm every time the pane lost focus.
+   */
+  React.useEffect(() => {
+    if (!active || !sendOwner || !onSendOwnerChange) return;
+    const live = contributions.some((entry) => (
+      entry.payload.ownsSend === true
+      && entry.pluginId === sendOwner.pluginId
+      && entry.payload.actionId === sendOwner.actionId
+    ));
+    if (!live) onSendOwnerChange(null);
+  }, [active, contributions, onSendOwnerChange, sendOwner]);
+
+  /**
    * Fire an action, unless this one is already running.
    *
    * The re-entry guard is here rather than on the button's `disabled`, because

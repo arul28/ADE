@@ -94,7 +94,7 @@ import {
 } from "./ChatAttachmentTray";
 import { ChatComposerShell } from "./ChatComposerShell";
 import { ComposerSmartLinkMenu } from "./ComposerSmartLinkMenu";
-import { smartLinkChipMarkSvg } from "./smartLinkChipMark";
+import { smartLinkChipBrandMarkNode, smartLinkChipMarkSvg } from "./smartLinkChipMark";
 import { mentionChipMarkSvg, type ComposerAtChipKind } from "./mentionChipMark";
 import { GitHubIssueSelectModal } from "../app/GitHubIssueSelectModal";
 import { LinearIssueSelectModal } from "../app/LinearIssueSelectModal";
@@ -3061,9 +3061,22 @@ export function AgentChatComposer({
       icon.innerHTML = markSvg;
       return;
     }
-    // A plugin provider has no compiled-in mark, so it lands here and draws the
-    // one or two characters its matcher declared. Set as TEXT: the mark path
-    // above assigns `innerHTML`, and a manifest field must never reach it.
+    // A plugin whose matcher named a `brand:` token it ships artwork for draws
+    // that mark, the same one its tab and its panels draw. Built as ELEMENTS,
+    // never as markup: the glyph is host-sanitized to a viewBox and a path
+    // list, and `createElementNS` plus `setAttribute` cannot grow a second
+    // meaning for either the way `innerHTML` could.
+    const mark = preview.glyphMark ?? null;
+    if (mark) {
+      icon.className = SMART_LINK_ICON_MARK_CLASS;
+      icon.appendChild(smartLinkChipBrandMarkNode(mark));
+      return;
+    }
+    // A plugin provider with no shipped mark lands here and draws the one or
+    // two characters its matcher declared, or the generic web arrow when the
+    // matcher named a token this machine has no artwork for. Set as TEXT: the
+    // mark path above assigns `innerHTML`, and a manifest field must never
+    // reach it.
     icon.className = SMART_LINK_ICON_GLYPH_CLASS;
     icon.textContent = smartLinkGlyph(preview);
   }, []);
@@ -3711,6 +3724,20 @@ export function AgentChatComposer({
    * not invoke the launch on click.
    */
   const [pluginSendOwner, setPluginSendOwner] = useState<PluginComposerSendOwner>(null);
+
+  /**
+   * A new conversation always starts with Send owned by ADE.
+   *
+   * The pane mounts one composer and swaps the session under it, so without
+   * this an owner armed in a plugin-owned chat stayed armed after the reader
+   * switched to a Claude chat, and Enter dispatched the plugin action instead
+   * of the turn. The row itself disarms an owner whose contribution left; this
+   * covers the case where the same contribution is still on the row but the
+   * conversation under it is a different one.
+   */
+  useEffect(() => {
+    setPluginSendOwner(null);
+  }, [sessionId]);
 
   /**
    * The whole typed context, read at the moment a plugin is invoked.

@@ -106,12 +106,43 @@ describe("verifyCreateModel", () => {
     ]);
   });
 
-  it("does not block a model that has no reasoning parameter", () => {
+  it("refuses a model whose row cannot express the reasoning effort asked for", () => {
+    // Fails CLOSED. A row that names no reasoning parameter cannot carry
+    // "high", so launching it would silently give the reader the row's default
+    // under the label they did not pick.
     const result = verifyCreateModel({
       modelId: "composer-2.5",
       reasoningEffort: "high",
       catalog,
     });
+    assert.equal(result.ok, false);
+    assert.match(result.message, /reasoning effort/);
+  });
+
+  it("refuses a model whose row cannot express fast mode", () => {
+    const result = verifyCreateModel({
+      modelId: "composer-2.5",
+      fastMode: true,
+      catalog,
+    });
+    assert.equal(result.ok, false);
+    assert.match(result.message, /fast mode/);
+  });
+
+  it("refuses a model whose row cannot express standard speed", () => {
+    const result = verifyCreateModel({
+      modelId: "composer-2.5",
+      fastMode: false,
+      catalog,
+    });
+    assert.equal(result.ok, false);
+    assert.match(result.message, /standard speed/);
+  });
+
+  it("still launches a row with no parameters when nothing was selected", () => {
+    // The refusal is about an UNMET request, never about a plain launch: a
+    // reader who picked no effort and no speed asked the row for nothing.
+    const result = verifyCreateModel({ modelId: "composer-2.5", catalog });
     assert.deepEqual(result, { ok: true, model: { id: "composer-2.5" } });
   });
 });

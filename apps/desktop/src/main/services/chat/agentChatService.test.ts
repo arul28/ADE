@@ -20,6 +20,7 @@ import {
   PLUGIN_ADE_CARD_PANEL_CONTEXT_MAX_BYTES,
   PLUGIN_ADE_CARDS_PER_SESSION_BURST,
   PLUGIN_BUDGET_EXCEEDED_CODE,
+  PLUGIN_CHAT_ARTIFACT_MAX_BYTES,
 } from "../../../shared/plugins/sdk";
 import {
   findPluginChatRuntimeWriterForProjectRoot,
@@ -48058,6 +48059,212 @@ describe("agentChatService plugin-owned conversations", () => {
       );
       expect(fs.readFileSync(landed, "utf8")).toBe("pulled from Cursor");
     } finally {
+      runtime.detach();
+      service.forceDisposeAll();
+    }
+  });
+
+  /**
+   * The download half of `setArtifacts`, which fetches a URL the plugin named.
+   *
+   * Every assertion below is about what the host REFUSES. The cap used to run
+   * after `arrayBuffer()` had already materialized the whole body, so it was a
+   * report rather than a cap; the host followed redirects with only the first
+   * hop checked; and nothing looked at what came back.
+   */
+  function artifactFetchStub(input: {
+    url?: string;
+    ok?: boolean;
+    headers?: Record<string, string>;
+    chunks?: Uint8Array[];
+  }) {
+    const chunks = input.chunks ?? [new Uint8Array([1, 2, 3])];
+    let cancelled = false;
+    let index = 0;
+    const reader = {
+      read: async () => (index < chunks.length
+        ? { done: false, value: chunks[index++] }
+        : { done: true, value: undefined }),
+      cancel: async () => { cancelled = true; },
+    };
+    const response = {
+      ok: input.ok ?? true,
+      url: input.url ?? "https://files.cursor.com/report.md",
+      headers: { get: (name: string) => input.headers?.[name.toLowerCase()] ?? null },
+      body: { getReader: () => reader, cancel: async () => { cancelled = true; } },
+    };
+    return {
+      fetch: async () => response as unknown as Response,
+      wasCancelled: () => cancelled,
+    };
+  }
+
+  async function setSourceUrlArtifact(
+    service: ReturnType<typeof createService>["service"],
+    stub: { fetch: () => Promise<Response> },
+    artifactPath = "report.md",
+  ): Promise<string> {
+    const previous = globalThis.fetch;
+    (globalThis as { fetch: unknown }).fetch = stub.fetch;
+    try {
+      const { bound, writer } = await bindOwnedSession(service);
+      await writer.setArtifacts(bound.sessionId, [{
+        path: artifactPath,
+        label: artifactPath,
+        sourceUrl: "https://files.cursor.com/report.md",
+      }]);
+    } finally {
+      (globalThis as { fetch: unknown }).fetch = previous;
+    }
+    return path.join(
+      tmpRoot,
+      ".ade",
+      "cache",
+      "plugin-artifacts",
+      "ade-cursor-cloud",
+      "bc-42",
+      artifactPath,
+    );
+  }
+
+  it("writes an artifact fetched from a source URL", async () => {
+    const runtime = installFakePluginRuntime();
+    const { service } = createOwnedService();
+    try {
+      const stub = artifactFetchStub({
+        chunks: [new TextEncoder().encode("pulled over https")],
+        headers: { "content-type": "text/markdown" },
+      });
+      const landed = await setSourceUrlArtifact(service, stub);
+      expect(fs.readFileSync(landed, "utf8")).toBe("pulled over https");
+    } finally {
+      runtime.detach();
+      service.forceDisposeAll();
+    }
+  });
+
+  it("refuses a download whose FINAL hop is a loopback host", async () => {
+    const runtime = installFakePluginRuntime();
+    const { service } = createOwnedService();
+    try {
+      // The plugin named an allowed host; that host redirected to the machine
+      // the host is running on. `redirect: "follow"` had already been there.
+      const stub = artifactFetchStub({ url: "https://localhost/secrets" });
+      const landed = await setSourceUrlArtifact(service, stub);
+      expect(fs.existsSync(landed)).toBe(false);
+      expect(stub.wasCancelled()).toBe(true);
+    } finally {
+      runtime.detach();
+      service.forceDisposeAll();
+    }
+  });
+
+  it("refuses a download that declares more than the cap, before reading a byte", async () => {
+    const runtime = installFakePluginRuntime();
+    const { service } = createOwnedService();
+    try {
+      const stub = artifactFetchStub({
+        headers: { "content-length": String(PLUGIN_CHAT_ARTIFACT_MAX_BYTES + 1) },
+        chunks: [new Uint8Array([1])],
+      });
+      const landed = await setSourceUrlArtifact(service, stub);
+      expect(fs.existsSync(landed)).toBe(false);
+      expect(stub.wasCancelled()).toBe(true);
+    } finally {
+      runtime.detach();
+      service.forceDisposeAll();
+    }
+  });
+
+  it("refuses a body that runs past the cap while declaring nothing", async () => {
+    const runtime = installFakePluginRuntime();
+    const { service } = createOwnedService();
+    try {
+      // A chunked response makes no `Content-Length` claim, which is exactly
+      // the shape the old check could not see.
+      const megabyte = new Uint8Array(1024 * 1024);
+      const chunks = Array.from({ length: 12 }, () => megabyte);
+      const stub = artifactFetchStub({ chunks });
+      const landed = await setSourceUrlArtifact(service, stub);
+      expect(fs.existsSync(landed)).toBe(false);
+      expect(stub.wasCancelled()).toBe(true);
+    } finally {
+      runtime.detach();
+      service.forceDisposeAll();
+    }
+  });
+
+  it("refuses an HTML answer, which is what a sign-in page looks like", async () => {
+    const runtime = installFakePluginRuntime();
+    const { service } = createOwnedService();
+    try {
+      const stub = artifactFetchStub({
+        headers: { "content-type": "text/html; charset=utf-8" },
+        chunks: [new TextEncoder().encode("<html>Sign in to continue</html>")],
+      });
+      const landed = await setSourceUrlArtifact(service, stub);
+      expect(fs.existsSync(landed)).toBe(false);
+    } finally {
+      runtime.detach();
+      service.forceDisposeAll();
+    }
+  });
+
+  it("refuses an artifact path Windows cannot hold", async () => {
+    const runtime = installFakePluginRuntime();
+    const { service } = createOwnedService();
+    try {
+      const { bound, writer } = await bindOwnedSession(service);
+      // `nul` and friends are DEVICE names on win32, with any extension and any
+      // case. Refused on every platform, because a lane cache is read back on
+      // another machine.
+      for (const name of ["nul.txt", "CON", "com1.log", "aux/report.md", "report.md ", "trailing."]) {
+        await writer.setArtifacts(bound.sessionId, [{
+          path: name,
+          label: name,
+          contents: Buffer.from("x").toString("base64"),
+        }]);
+      }
+      const cacheDir = path.join(
+        tmpRoot,
+        ".ade",
+        "cache",
+        "plugin-artifacts",
+        "ade-cursor-cloud",
+        "bc-42",
+      );
+      for (const name of ["nul.txt", "CON", "com1.log", "aux", "report.md ", "trailing."]) {
+        expect(fs.existsSync(path.join(cacheDir, name))).toBe(false);
+      }
+    } finally {
+      runtime.detach();
+      service.forceDisposeAll();
+    }
+  });
+
+  it("hands a plugin-owned cloud chat straight back, with no Cursor key and no lane lookup", async () => {
+    // The renderer fires the compiled hydrate on `cursorCloudAgentId`, which a
+    // plugin-owned Cursor Cloud chat also carries. Under `supersedes` the
+    // plugin holds the credential and ADE holds none, so the key check threw
+    // before the ownership check could answer — an error banner and a 20 s
+    // overlay over a chat that was working.
+    const runtime = installFakePluginRuntime();
+    const { service } = createOwnedService();
+    const previousKey = process.env.CURSOR_API_KEY;
+    delete process.env.CURSOR_API_KEY;
+    try {
+      const { bound } = await bindOwnedSession(service);
+      const result = await service.openCursorCloudChat({
+        cloudAgentId: RUNTIME_REF.externalId,
+        // A lane id nothing resolves, to pin that the lookup is never reached.
+        laneId: "lane-that-does-not-exist",
+        sessionId: bound.sessionId,
+      });
+      expect(result.sessionId).toBe(bound.sessionId);
+      expect(result.session.runtimeRef).toEqual(RUNTIME_REF);
+    } finally {
+      if (previousKey === undefined) delete process.env.CURSOR_API_KEY;
+      else process.env.CURSOR_API_KEY = previousKey;
       runtime.detach();
       service.forceDisposeAll();
     }

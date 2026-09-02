@@ -17,7 +17,12 @@ function readString(value) {
 
 function statusRow(status) {
   const session = status && typeof status === "object" ? status.activeSession : null;
-  const supported = status?.supported !== false;
+  // A POSITIVE test, the same one `ade-ios-sim` uses. `!== false` read every
+  // shape that is not the literal `false` as support — a null status, a read
+  // that threw and returned undefined, a host that has not answered yet — and
+  // drew "Idle" over a machine where Electron Control does not run at all.
+  // Absence of an answer is not an answer.
+  const supported = status?.supported === true;
   const live = Boolean(session);
   const title = !supported
     ? "Not available on this machine"

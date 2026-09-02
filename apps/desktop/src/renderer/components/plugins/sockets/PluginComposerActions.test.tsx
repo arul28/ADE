@@ -406,4 +406,79 @@ describe("contributed composer buttons", () => {
     expect(button.getAttribute("aria-pressed")).toBe("false");
     expect(owners.at(-1)).toBeNull();
   });
+
+  /**
+   * Who disarms an owner the row can no longer honour.
+   *
+   * The armed owner lives in the parent composer, which cannot see this row's
+   * contributions. So a plugin that was disabled took its button away and left
+   * the parent armed: Enter dispatched a plugin action for a control nobody
+   * could see, instead of sending the turn to the local runtime.
+   */
+  it("disarms an owner whose contribution is no longer on the row", async () => {
+    const owners: PluginComposerSendOwner[] = [];
+    function Harness({ active }: { active: boolean }) {
+      const [owner, setOwner] = React.useState<PluginComposerSendOwner>({
+        pluginId: "prompts",
+        actionId: "gone",
+        label: "Removed",
+      });
+      owners.push(owner);
+      return (
+        <PluginComposerActions
+          sessionId="chat-1"
+          laneId="lane-1"
+          readDraft={() => ({ draft: "", cursor: null })}
+          sendOwner={owner}
+          onSendOwnerChange={setOwner}
+          active={active}
+        />
+      );
+    }
+
+    render(<Harness active />);
+    await waitFor(() => expect(owners.at(-1)).toBeNull());
+    expect(invoked).toHaveLength(0);
+  });
+
+  it("keeps the arm while the composer is inactive", async () => {
+    // An inactive composer reads an EMPTY contribution set rather than a set
+    // that says the contribution left. Disarming on that would clear the arm
+    // every time the pane lost focus.
+    const armed: PluginComposerSendOwner = {
+      pluginId: "prompts",
+      actionId: "bug",
+      label: "Bug report",
+    };
+    const changes: PluginComposerSendOwner[] = [];
+
+    render(
+      <PluginComposerActions
+        sessionId="chat-1"
+        laneId="lane-1"
+        readDraft={() => ({ draft: "", cursor: null })}
+        sendOwner={armed}
+        onSendOwnerChange={(next) => changes.push(next)}
+        active={false}
+      />,
+    );
+    await act(async () => { await Promise.resolve(); });
+    expect(changes).toHaveLength(0);
+  });
+
+  it("leaves a live ownsSend contribution armed", async () => {
+    const changes: PluginComposerSendOwner[] = [];
+    render(
+      <PluginComposerActions
+        sessionId="chat-1"
+        laneId="lane-1"
+        readDraft={() => ({ draft: "", cursor: null })}
+        sendOwner={{ pluginId: "prompts", actionId: "bug", label: "Bug report" }}
+        onSendOwnerChange={(next) => changes.push(next)}
+      />,
+    );
+    await waitFor(() => expect(screen.getByText("Bug report")).toBeTruthy());
+    await act(async () => { await Promise.resolve(); });
+    expect(changes).toHaveLength(0);
+  });
 });

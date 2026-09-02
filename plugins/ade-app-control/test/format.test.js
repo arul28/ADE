@@ -21,4 +21,16 @@ describe("electron control row shaping", () => {
     assert.equal(row.live, "no");
     assert.equal(row.badge.text, "IDLE");
   });
+
+  it("does not claim support for a status that never said so", () => {
+    // A read that answered nothing, or answered without the field, is not a
+    // machine that supports Electron Control. The old `!== false` test drew
+    // "Idle" over both.
+    for (const status of [null, undefined, {}, { activeSession: null }]) {
+      const row = statusRow(status);
+      assert.equal(row.supported, "no", `status ${JSON.stringify(status)} is not support`);
+      assert.equal(row.badge.text, "UNAVAILABLE");
+      assert.equal(row.title, "Not available on this machine");
+    }
+  });
 });
