@@ -1,0 +1,38 @@
+[
+  {
+    "type": "select",
+    "id": "mode",
+    "name": "Mode",
+    "currentValue": "https://agentclientprotocol.com/protocol/session-modes#agent",
+    "options": [
+      {
+        "value": "https://agentclientprotocol.com/protocol/session-modes#agent",
+        "name": "Agent",
+        "description": "Default agent mode for conversational interactions"
+      },
+      {
+        "value": "https://agentclientprotocol.com/protocol/session-modes#plan",
+        "name": "Plan",
+        "description": "Plan mode for creating and executing multi-step plans"
+      }
+    ],
+    "category": "mode"
+  },
+  {
+    "type": "select",
+    "id": "allow_all",
+    "name": "Allow All",
+    "currentValue": "off",
+    "options": [
+      {
+        "value": "on",
+        "name": "On"
+      },
+      {
+        "value": "off",
+        "name": "Off"
+      }
+    ],
+    "category": "permissions"
+  }
+]

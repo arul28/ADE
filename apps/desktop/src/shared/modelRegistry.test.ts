@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
+  createDynamicAcpModelDescriptor,
+  clearDynamicAcpModelDescriptors,
   createDynamicDroidCliModelDescriptor,
+  replaceDynamicAcpModelDescriptors,
   createDynamicLocalModelDescriptor,
   createDynamicOpenCodeModelDescriptor,
   createDynamicPiModelDescriptor,
@@ -18,12 +21,14 @@ import {
   getModelById,
   getModelDescriptorForPermissionMode,
   getRuntimeModelRefForDescriptor,
+  listAcpModelDescriptorsForProvider,
   listModelDescriptorsForProvider,
   MODEL_REGISTRY,
   replaceDynamicPiModelDescriptors,
   resolveModelAlias,
   resolveCursorCliModelVariant,
   resolveCliProviderForModel,
+  resolveProviderGroupForModel,
   resolveModelDescriptor,
   resolveModelDescriptorForProvider,
   resolveModelSlug,
@@ -79,6 +84,76 @@ describe("modelRegistry", () => {
     expect(descriptor.piProviderId).toBe("openai-codex");
     expect(descriptor.piModelId).toBe("gpt-5.4");
     expect(descriptor.family).toBe("openai");
+  });
+
+  it("routes every ACP provider's curated rows to its own group", () => {
+    const expectations = [
+      { provider: "qwen", family: "qwen" },
+      { provider: "kimi", family: "moonshot" },
+      { provider: "grok", family: "xai" },
+      { provider: "copilot", family: "github-copilot" },
+    ] as const;
+    for (const { provider, family } of expectations) {
+      const models = listModelDescriptorsForProvider(provider);
+      expect(models.length).toBeGreaterThan(0);
+      for (const descriptor of models) {
+        expect(descriptor.family).toBe(family);
+        expect(descriptor.isCliWrapped).toBe(true);
+        expect(resolveCliProviderForModel(descriptor)).toBe(provider);
+        expect(resolveProviderGroupForModel(descriptor)).toBe(provider);
+        // The CLI flag needs the provider's own id, never ADE's registry id.
+        expect(getRuntimeModelRefForDescriptor(descriptor)).toBe(descriptor.providerModelId);
+      }
+      expect(getDefaultModelDescriptor(provider)).toBe(models[0]);
+    }
+  });
+
+  it("prefers a Qwen model discovered from the CLI settings over curated Alibaba rows", () => {
+    try {
+      replaceDynamicAcpModelDescriptors("qwen", [
+        createDynamicAcpModelDescriptor("qwen", "gpt-5.5"),
+      ]);
+      const models = listModelDescriptorsForProvider("qwen");
+      expect(models[0]?.providerModelId).toBe("gpt-5.5");
+      expect(getDefaultModelDescriptor("qwen")?.providerModelId).toBe("gpt-5.5");
+      expect(models.some((model) => model.providerModelId === "qwen3-coder-plus")).toBe(true);
+    } finally {
+      clearDynamicAcpModelDescriptors();
+    }
+  });
+
+  it("uses configured Qwen model ids instead of presenting unrelated curated rows", () => {
+    try {
+      replaceDynamicAcpModelDescriptors("qwen", [
+        createDynamicAcpModelDescriptor("qwen", "gpt-5.5"),
+      ]);
+      expect(listAcpModelDescriptorsForProvider("qwen", {
+        configuredModelIds: ["gpt-5.5"],
+      }).map((model) => model.providerModelId)).toEqual(["gpt-5.5"]);
+    } finally {
+      clearDynamicAcpModelDescriptors();
+    }
+  });
+
+  it("keeps OpenCode-routed xAI and Moonshot models out of the Grok and Kimi groups", () => {
+    // Family alone would misroute these: only `isCliWrapped` separates a Grok
+    // CLI row from an OpenCode-routed xAI row that shares its family.
+    for (const family of ["xai", "moonshot"] as const) {
+      const routed = MODEL_REGISTRY.filter((m) => m.family === family && !m.isCliWrapped);
+      for (const descriptor of routed) {
+        expect(resolveCliProviderForModel(descriptor)).toBeNull();
+        expect(resolveProviderGroupForModel(descriptor)).toBe("opencode");
+      }
+    }
+  });
+
+  it("marks the preview-tier ACP providers and leaves the first-class ones unmarked", () => {
+    for (const provider of ["grok", "copilot"] as const) {
+      expect(listModelDescriptorsForProvider(provider).every((m) => m.previewTier === true)).toBe(true);
+    }
+    for (const provider of ["qwen", "kimi"] as const) {
+      expect(listModelDescriptorsForProvider(provider).some((m) => m.previewTier === true)).toBe(false);
+    }
   });
 
   it("rejects ambiguous or incomplete Pi registry components", () => {

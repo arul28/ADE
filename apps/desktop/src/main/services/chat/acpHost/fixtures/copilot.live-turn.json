@@ -1,0 +1,176 @@
+{
+  "steps": [
+    {
+      "step": "ping",
+      "ok": true,
+      "text": "ping",
+      "stopReason": "end_turn",
+      "usage": {
+        "inputTokens": 18577,
+        "outputTokens": 48,
+        "totalTokens": 18625,
+        "thoughtTokens": 41,
+        "cachedReadTokens": 9066,
+        "cachedWriteTokens": 9501
+      },
+      "config": [
+        {
+          "sessionUpdate": "config_option_update",
+          "configOptions": [
+            {
+              "type": "select",
+              "id": "mode",
+              "name": "Mode",
+              "currentValue": "https://agentclientprotocol.com/protocol/session-modes#agent",
+              "options": [
+                {
+                  "value": "https://agentclientprotocol.com/protocol/session-modes#agent",
+                  "name": "Agent",
+                  "description": "Default agent mode for conversational interactions"
+                },
+                {
+                  "value": "https://agentclientprotocol.com/protocol/session-modes#plan",
+                  "name": "Plan",
+                  "description": "Plan mode for creating and executing multi-step plans"
+                },
+                {
+                  "value": "https://agentclientprotocol.com/protocol/session-modes#autopilot",
+                  "name": "Autopilot",
+                  "description": "Autonomous mode that enables allow-all and runs until task completion without user interaction (experimental)"
+                }
+              ],
+              "category": "mode",
+              "description": "Controls how Copilot responds: a conversational agent, planning multi-step work, or autonomous autopilot."
+            },
+            {
+              "type": "select",
+              "id": "allow_all",
+              "name": "Allow All",
+              "currentValue": "off",
+              "options": [
+                {
+                  "value": "on",
+                  "name": "On",
+                  "description": "Automatically approve all tool, path, and URL requests"
+                },
+                {
+                  "value": "off",
+                  "name": "Off",
+                  "description": "Require approval for tool, path, and URL requests"
+                }
+              ],
+              "category": "permissions",
+              "description": "Controls whether Copilot prompts for approval before using tools, accessing paths, or fetching URLs."
+            }
+          ]
+        }
+      ],
+      "kinds": [
+        "available_commands_update",
+        "available_commands_update",
+        "session_info_update",
+        "config_option_update",
+        "usage_update",
+        "agent_thought_chunk",
+        "agent_thought_chunk",
+        "agent_thought_chunk",
+        "agent_message_chunk"
+      ]
+    },
+    {
+      "step": "ping-with-model-gpt-5.4",
+      "ok": true,
+      "text": "ping",
+      "stopReason": "end_turn",
+      "usage": {
+        "inputTokens": 18575,
+        "outputTokens": 42,
+        "totalTokens": 18617,
+        "thoughtTokens": 35,
+        "cachedReadTokens": 9066,
+        "cachedWriteTokens": 9499
+      },
+      "config": [
+        {
+          "sessionUpdate": "config_option_update",
+          "configOptions": [
+            {
+              "type": "select",
+              "id": "mode",
+              "name": "Mode",
+              "currentValue": "https://agentclientprotocol.com/protocol/session-modes#agent",
+              "options": [
+                {
+                  "value": "https://agentclientprotocol.com/protocol/session-modes#agent",
+                  "name": "Agent",
+                  "description": "Default agent mode for conversational interactions"
+                },
+                {
+                  "value": "https://agentclientprotocol.com/protocol/session-modes#plan",
+                  "name": "Plan",
+                  "description": "Plan mode for creating and executing multi-step plans"
+                },
+                {
+                  "value": "https://agentclientprotocol.com/protocol/session-modes#autopilot",
+                  "name": "Autopilot",
+                  "description": "Autonomous mode that enables allow-all and runs until task completion without user interaction (experimental)"
+                }
+              ],
+              "category": "mode",
+              "description": "Controls how Copilot responds: a conversational agent, planning multi-step work, or autonomous autopilot."
+            },
+            {
+              "type": "select",
+              "id": "allow_all",
+              "name": "Allow All",
+              "currentValue": "off",
+              "options": [
+                {
+                  "value": "on",
+                  "name": "On",
+                  "description": "Automatically approve all tool, path, and URL requests"
+                },
+                {
+                  "value": "off",
+                  "name": "Off",
+                  "description": "Require approval for tool, path, and URL requests"
+                }
+              ],
+              "category": "permissions",
+              "description": "Controls whether Copilot prompts for approval before using tools, accessing paths, or fetching URLs."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "step": "cancel-mid-prompt",
+      "ok": true,
+      "text": "1\n2\n3\n4\n5",
+      "stopReason": "end_turn",
+      "usage": null
+    },
+    {
+      "step": "write-probe",
+      "ok": true,
+      "text": "Info: /var/folders/ck/qnm27lyn4d3865_9s0xt26y80000gn/T/ade-copilot-turn-d9MfNy/acp-probe-write.txtDone.",
+      "stopReason": "end_turn",
+      "permissionCount": 0,
+      "permissionTitles": [],
+      "kinds": [
+        "available_commands_update",
+        "available_commands_update",
+        "session_info_update",
+        "config_option_update",
+        "usage_update",
+        "tool_call",
+        "agent_message_chunk",
+        "tool_call_update",
+        "usage_update",
+        "agent_message_chunk",
+        "agent_message_chunk"
+      ],
+      "wrote": "ping"
+    }
+  ]
+}

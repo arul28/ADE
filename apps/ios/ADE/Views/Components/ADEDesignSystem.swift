@@ -130,6 +130,9 @@ enum ADEColor {
     case "deepseek": return brandDeepSeek
     case "xai", "grok": return brandXAI
     case "groq": return brandGroq
+    case "qwen": return ADESharedTheme.brandQwen
+    case "kimi", "moonshot", "moonshotai": return ADESharedTheme.brandKimi
+    case "copilot", "github-copilot": return ADESharedTheme.brandCopilot
     default: return purpleAccent
     }
   }
@@ -385,6 +388,11 @@ enum ADEColor {
     "xai": 0xDC2626,
     "grok": 0xDC2626,
     "groq": 0x06B6D4,
+    "qwen": 0x6D4AFF,
+    "kimi": 0x1F1F1F,
+    "moonshot": 0x1F1F1F,
+    "copilot": 0x8B5CF6,
+    "github-copilot": 0x8B5CF6,
   ]
 
   /// Resolve the chat-surface accent for a session. Precedence: explicit hex

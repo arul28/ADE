@@ -15,6 +15,7 @@ import {
   OpenAI,
   OpenCode,
   OpenRouter,
+  Qwen,
   XAI,
 } from "@lobehub/icons";
 import {
@@ -193,6 +194,8 @@ export function ProviderLogo({
       return <Ollama.Avatar size={size} className={c} />;
     case "lmstudio":
       return <LmStudio.Avatar size={size} className={c} />;
+    case "qwen":
+      return <Qwen.Color size={size} className={c} />;
     case "moonshotai":
     case "moonshot":
     case "kimi":
@@ -200,6 +203,7 @@ export function ProviderLogo({
       return <Kimi.Color size={size} className={c} />;
     case "github-copilot":
     case "githubcopilot":
+    case "copilot":
       return <GithubCopilot.Avatar size={size} className={c} />;
     case "github":
     case "github-models":

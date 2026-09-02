@@ -24,6 +24,11 @@ const KNOWN_PROVIDERS: ReadonlySet<string> = new Set<AdeCodeProvider>([
   "cursor",
   "droid",
   "opencode",
+  "pi",
+  "qwen",
+  "kimi",
+  "grok",
+  "copilot",
   "ollama",
   "lmstudio",
 ]);

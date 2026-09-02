@@ -40,6 +40,7 @@ vi.mock("@lobehub/icons", () => {
     OpenAI: brand(),
     OpenCode: brand(),
     OpenRouter: brand(),
+    Qwen: brand(),
     XAI: brand(),
   };
 });
@@ -162,6 +163,7 @@ vi.mock("./modelOrdering", () => ({
 }));
 
 import { composeModelPickerTriggerLabel, ModelPicker } from "./ModelPicker";
+import { cursorProviderAvailable } from "../../../lib/platform";
 import {
   rememberRuntimeCatalog,
   resetModelPickerRuntimeCatalogForTests,
@@ -2001,6 +2003,146 @@ describe("ModelPicker", () => {
       expect(trigger.getAttribute("aria-expanded")).toBe("false");
     });
   });
+  describe("ACP provider rails", () => {
+    it("keeps Qwen, Kimi, Grok, and GitHub Copilot in the rail before those models are discovered", async () => {
+      const user = userEvent.setup();
+      authOnlyState = true;
+      providerAuthStatusInternal = { anthropic: "ok" };
+      renderPicker({ models: MODELS });
+      await user.click(screen.getByRole("button", { name: /Select model/i }));
+
+      expect(document.querySelector('[data-rail-selection="provider:qwen"]')).toBeTruthy();
+      expect(document.querySelector('[data-rail-selection="provider:moonshot"]')).toBeTruthy();
+      expect(document.querySelector('[data-rail-selection="provider:xai"]')).toBeTruthy();
+      expect(document.querySelector('[data-rail-selection="provider:github-copilot"]')).toBeTruthy();
+      expect(screen.getByRole("tab", { name: /^Qwen$/i })).toBeTruthy();
+      expect(screen.getByRole("tab", { name: /^Kimi$/i })).toBeTruthy();
+      expect(screen.getByRole("tab", { name: /^Grok$/i })).toBeTruthy();
+      expect(screen.getByRole("tab", { name: /^GitHub Copilot$/i })).toBeTruthy();
+
+      const railKeys = Array.from(document.querySelectorAll("[data-rail-selection]"))
+        .map((entry) => entry.getAttribute("data-rail-selection"));
+      const expectedRailKeys = [
+        "favorites",
+        "recents",
+        "provider:anthropic",
+        "provider:openai",
+        "provider:cursor",
+        "provider:opencode",
+        "provider:pi",
+        "provider:github-copilot",
+        "provider:xai",
+        "provider:factory",
+        "provider:moonshot",
+        "provider:qwen",
+        "provider:ollama",
+        "provider:lmstudio",
+      ].filter((key) => key !== "provider:cursor" || cursorProviderAvailable());
+      expect(railKeys).toEqual(expectedRailKeys);
+    });
+
+    it("lists curated Qwen models when the Qwen rail is selected", async () => {
+      const user = userEvent.setup();
+      renderPicker();
+      await user.click(screen.getByRole("button", { name: /Select model/i }));
+      await user.click(screen.getByRole("tab", { name: /^Qwen$/i }));
+      expect(await findModelRow("qwen/qwen3-coder-plus")).toBeTruthy();
+    });
+
+    it("lists curated Qwen models in auth-only mode once Qwen is authenticated", async () => {
+      const user = userEvent.setup();
+      authOnlyState = true;
+      providerAuthStatusInternal = { anthropic: "ok", qwen: "ok" };
+      renderPicker({ models: MODELS });
+      await user.click(screen.getByRole("button", { name: /Select model/i }));
+      await user.click(screen.getByRole("tab", { name: /^Qwen$/i }));
+      expect(await findModelRow("qwen/qwen3-coder-plus")).toBeTruthy();
+    });
+
+    it("replaces curated Qwen rows with the connected provider catalog", async () => {
+      const user = userEvent.setup();
+      const modelCatalog = vi.fn(async (): Promise<AgentChatModelCatalog> => ({
+        groups: [{
+          key: "qwen",
+          displayName: "Qwen",
+          providers: [{
+            key: "qwen",
+            displayName: "Qwen",
+            badgeColor: "#6D4AFF",
+            modelCount: 1,
+            subsections: [{
+              key: "qwen",
+              label: "Qwen",
+              models: [{
+                id: "qwen/gpt-5.5",
+                runtimeModelId: "gpt-5.5",
+                provider: "qwen",
+                providerKey: "qwen",
+                groupKey: "qwen",
+                displayName: "gpt-5.5",
+                isDefault: true,
+                isAvailable: true,
+                supportsReasoning: false,
+                supportsTools: true,
+              }],
+            }],
+          }],
+        }],
+        fetchedAt: "2026-05-18T00:00:00.000Z",
+        stale: false,
+      }));
+      Object.defineProperty(window, "ade", {
+        configurable: true,
+        writable: true,
+        value: { agentChat: { modelCatalog } },
+      });
+
+      renderPicker({ models: [] });
+      await user.click(screen.getByRole("button", { name: /Select model/i }));
+      await user.click(screen.getByRole("tab", { name: /^Qwen$/i }));
+
+      await waitFor(() => {
+        expect(modelCatalog).toHaveBeenCalledWith({ mode: "refresh-stale", refreshProvider: "qwen" });
+      });
+      expect(await findModelRow("qwen/gpt-5.5")).toBeTruthy();
+      expect(document.querySelector('[data-model-id="qwen/qwen3-coder-plus"]')).toBeNull();
+    });
+
+    it("refreshes the ACP catalog when an ACP rail is selected", async () => {
+      const user = userEvent.setup();
+      const modelCatalog = vi.fn(async () => ({
+        groups: [],
+        fetchedAt: "2026-05-18T00:00:00.000Z",
+        stale: false,
+      }));
+      Object.defineProperty(window, "ade", {
+        configurable: true,
+        writable: true,
+        value: { agentChat: { modelCatalog } },
+      });
+
+      renderPicker();
+      await user.click(screen.getByRole("button", { name: /Select model/i }));
+
+      await user.click(screen.getByRole("tab", { name: /^Qwen$/i }));
+      await waitFor(() => {
+        expect(modelCatalog).toHaveBeenCalledWith({ mode: "refresh-stale", refreshProvider: "qwen" });
+      });
+      await user.click(screen.getByRole("tab", { name: /^Kimi$/i }));
+      await waitFor(() => {
+        expect(modelCatalog).toHaveBeenCalledWith({ mode: "refresh-stale", refreshProvider: "kimi" });
+      });
+      await user.click(screen.getByRole("tab", { name: /^Grok$/i }));
+      await waitFor(() => {
+        expect(modelCatalog).toHaveBeenCalledWith({ mode: "refresh-stale", refreshProvider: "grok" });
+      });
+      await user.click(screen.getByRole("tab", { name: /^GitHub Copilot$/i }));
+      await waitFor(() => {
+        expect(modelCatalog).toHaveBeenCalledWith({ mode: "refresh-stale", refreshProvider: "copilot" });
+      });
+    });
+  });
+
   // The rail lists Cursor unconditionally so it stays reachable before the
   // catalog refresh streams in — except on Windows on ARM, where @cursor/sdk has
   // no build. See apps/desktop/src/shared/providerPlatformSupport.ts.
@@ -2026,6 +2168,10 @@ describe("ModelPicker", () => {
       expect(keys).toContain("provider:anthropic");
       expect(keys).toContain("provider:openai");
       expect(keys).toContain("provider:factory");
+      expect(keys).toContain("provider:qwen");
+      expect(keys).toContain("provider:moonshot");
+      expect(keys).toContain("provider:xai");
+      expect(keys).toContain("provider:github-copilot");
       expect(keys).toContain("provider:opencode");
     });
 

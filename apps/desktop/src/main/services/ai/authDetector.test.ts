@@ -56,6 +56,18 @@ function commandBasename(command: string): string {
   return command.replace(/\\/g, "/").split("/").pop() ?? command;
 }
 
+function hideRealExecutable(command: string) {
+  const realStatSync = fs.statSync.bind(fs);
+  return vi.spyOn(fs, "statSync").mockImplementation(((candidatePath: fs.PathLike, options?: fs.StatOptions) => {
+    if (commandBasename(String(candidatePath)) === command) {
+      const error = new Error(`ENOENT: no such file or directory, stat '${String(candidatePath)}'`) as NodeJS.ErrnoException;
+      error.code = "ENOENT";
+      throw error;
+    }
+    return realStatSync(candidatePath, options as fs.StatOptions | undefined);
+  }) as typeof fs.statSync);
+}
+
 function withExecutableMode(stat: fs.Stats): fs.Stats {
   return new Proxy(stat, {
     get(target, property, receiver) {
@@ -163,6 +175,7 @@ describe("authDetector", () => {
   });
 
   it("reports installed-but-unauthenticated CLI providers", async () => {
+    hideRealExecutable("claude");
     spawnMock.mockImplementation((command: string, args: string[] = []) => {
       // commandExists: direct spawn strategy
       if (args[0] === "--version") {
@@ -193,6 +206,7 @@ describe("authDetector", () => {
   });
 
   it("can skip expensive CLI auth probes for passive status checks", async () => {
+    hideRealExecutable("claude");
     spawnMock.mockImplementation((command: string, args: string[] = []) => {
       if (args[0] === "--version") {
         if (command === "claude") return fakeChild({ status: 0, stdout: "1.0.0\n" });
@@ -592,6 +606,7 @@ describe("authDetector", () => {
   });
 
   it("repairs PATH from the interactive shell during a forced refresh", async () => {
+    hideRealExecutable("codex");
     process.env.PATH = "/usr/bin:/bin:/usr/sbin:/sbin";
     process.env.SHELL = "/bin/zsh";
 

@@ -961,7 +961,7 @@ export type AiFeatureUsageRow = {
 
 export type AiDetectedAuth = {
   type: "cli-subscription" | "api-key" | "oauth" | "openrouter" | "local";
-  cli?: "claude" | "codex" | "cursor" | "droid";
+  cli?: "claude" | "codex" | "cursor" | "droid" | "qwen" | "kimi" | "grok" | "copilot";
   provider?: string;
   source?: "config" | "env" | "store" | "file";
   endpointSource?: "auto" | "config";
@@ -995,7 +995,7 @@ export type AiProviderConnectionSource = {
 };
 
 export type AiProviderConnectionStatus = {
-  provider: "claude" | "codex" | "cursor" | "droid" | "pi";
+  provider: "claude" | "codex" | "cursor" | "droid" | "pi" | "qwen" | "kimi" | "grok" | "copilot";
   authAvailable: boolean;
   runtimeDetected: boolean;
   runtimeAvailable: boolean;
@@ -1014,6 +1014,36 @@ export type AiProviderConnections = {
   cursor: AiProviderConnectionStatus;
   droid: AiProviderConnectionStatus;
   pi?: AiProviderConnectionStatus;
+  // ACP providers. Optional like `pi`, because an older host on the other end
+  // of a cross-machine call has no arm for them and must keep deserialising.
+  qwen?: AiProviderConnectionStatus;
+  kimi?: AiProviderConnectionStatus;
+  grok?: AiProviderConnectionStatus;
+  copilot?: AiProviderConnectionStatus;
+};
+
+/**
+ * What Settings knows about one ACP provider CLI beyond its connection status.
+ *
+ * Collected on demand (a detail page opening, or "Run doctor"), never on a
+ * status refresh: every field below either costs a process spawn or is only
+ * meaningful next to one that does.
+ */
+export type AcpProviderDiagnostics = {
+  provider: "qwen" | "kimi" | "grok" | "copilot";
+  /** Null when nothing was found — the bare command name is a guess, not a path. */
+  binaryPath: string | null;
+  binarySource: "env" | "auth" | "path" | "common-dir" | "fallback-command";
+  /** Directory the CLI reads its config from. Grok's is fixed at `~/.grok`. */
+  configHome: string | null;
+  version: string | null;
+  /** Why no version, when there is none. */
+  versionError: string | null;
+  /** The last verdict `acpAuthProbe` cached for this provider and directory. */
+  lastProbe: { state: "ready" | "auth-failed" | "runtime-failed"; message: string | null } | null;
+  /** Present only when the vendor ships a `doctor` command and it was run. */
+  doctor: { command: string; exitCode: number | null; output: string } | null;
+  checkedAt: string;
 };
 
 export type AiApiKeyVerificationResult = {
@@ -1508,12 +1538,20 @@ export type AiSettingsStatus = {
     codex: boolean;
     cursor: boolean;
     droid: boolean;
+    qwen?: boolean;
+    kimi?: boolean;
+    grok?: boolean;
+    copilot?: boolean;
   };
   models: {
     claude: AiModelDescriptor[];
     codex: AiModelDescriptor[];
     cursor: AiModelDescriptor[];
     droid: AiModelDescriptor[];
+    qwen?: AiModelDescriptor[];
+    kimi?: AiModelDescriptor[];
+    grok?: AiModelDescriptor[];
+    copilot?: AiModelDescriptor[];
   };
   features: AiFeatureUsageRow[];
   detectedAuth?: AiDetectedAuth[];
@@ -1576,6 +1614,12 @@ export type AiProviderPermissions = {
   droid?: AgentChatPermissionMode;
   opencode?: AgentChatPermissionMode;
   pi?: AgentChatPermissionMode;
+  // The ACP providers. One key each, sharing one option list, because they
+  // share one permission round-trip (`session/request_permission`).
+  qwen?: AgentChatPermissionMode;
+  kimi?: AgentChatPermissionMode;
+  grok?: AgentChatPermissionMode;
+  copilot?: AgentChatPermissionMode;
   codexSandbox?: "read-only" | "workspace-write" | "danger-full-access";
   writablePaths?: string[];
   allowedTools?: string[];
@@ -1705,6 +1749,19 @@ export type AiConfig = {
   customProviders?: AiCustomProviderConfig[];
   /** Extra model slugs (provider/model) the user pinned as selectable beyond probed inventory. */
   customModelSlugs?: string[];
+  /**
+   * Providers the user switched off in Settings → Agents & Models.
+   *
+   * A disabled provider still has a settings page — that is where the switch
+   * lives, and a one-way door is a bug — but it offers no models anywhere else:
+   * not in a picker, not in the catalog ADE publishes to the phone, not to a
+   * chat that tries to start on it.
+   *
+   * Deliberately `string[]` rather than a union of today's ten ids: this list
+   * crosses the sync wire, and a machine running an older build must be able to
+   * read a newer one's list without losing the entries it does not recognise.
+   */
+  disabledProviders?: string[];
   workerSafety?: WorkerSafetyPolicy;
   /** Per-feature model overrides, e.g. { pr_descriptions: "claude-sonnet-5" } */
   featureModelOverrides?: Partial<Record<AiFeatureKey, string | null>>;
@@ -1729,12 +1786,20 @@ export type AiIntegrationStatus = {
     codex: boolean;
     cursor: boolean;
     droid: boolean;
+    qwen?: boolean;
+    kimi?: boolean;
+    grok?: boolean;
+    copilot?: boolean;
   };
   models: {
     claude: AgentChatModelInfo[];
     codex: AgentChatModelInfo[];
     cursor: AgentChatModelInfo[];
     droid: AgentChatModelInfo[];
+    qwen?: AgentChatModelInfo[];
+    kimi?: AgentChatModelInfo[];
+    grok?: AgentChatModelInfo[];
+    copilot?: AgentChatModelInfo[];
   };
   // OpenCode/runtime-backed fields
   detectedAuth?: AiDetectedAuth[];

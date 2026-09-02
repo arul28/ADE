@@ -133,6 +133,7 @@ import type {
   AdeActionRegistryEntry,
   AdeCliInstallResult,
   AdeCliStatus,
+  AcpProviderDiagnostics,
   AiApiKeyVerificationResult,
   AiConfig,
   AiSettingsStatus,
@@ -4550,6 +4551,14 @@ const adeBridge = {
             () => ipcRenderer.invoke(IPC.aiUpdateConfig, config),
           ),
       ),
+    acpProviderDiagnostics: async (args: {
+      provider: "qwen" | "kimi" | "grok" | "copilot";
+      runDoctor?: boolean;
+    }): Promise<AcpProviderDiagnostics> =>
+      // Deliberately not routed through a project runtime action: this reports
+      // on the CLIs installed on the machine the main process runs on, and a
+      // remote host's answer would describe the wrong computer.
+      ipcRenderer.invoke(IPC.aiAcpProviderDiagnostics, args),
     opencodeAuthMethods: async (): Promise<{ methods: OpenCodeProviderAuthMethods }> =>
       callProjectRuntimeActionOr("ai", "opencodeAuthMethods", {}, () =>
         ipcRenderer.invoke(IPC.aiOpencodeAuthMethods),

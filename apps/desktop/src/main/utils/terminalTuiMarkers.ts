@@ -142,6 +142,17 @@ const PI_PACK: MarkerPack = {
   working: [ESC_TO_INTERRUPT],
 };
 
+/**
+ * Generic pack for the ACP CLIs. Only the interrupt hint is claimed: it is the
+ * one footer every one of them prints, and a guessed prompt pattern would latch
+ * a row as "waiting on you" that nobody is waiting on.
+ */
+const ACP_PACK: MarkerPack = {
+  planning: [],
+  waitingInput: [NUMBERED_YES_OPTION, YES_NO_PROMPT],
+  working: [ESC_TO_INTERRUPT],
+};
+
 const PACKS: Record<TerminalResumeProvider, MarkerPack> = {
   claude: CLAUDE_PACK,
   codex: CODEX_PACK,
@@ -149,6 +160,13 @@ const PACKS: Record<TerminalResumeProvider, MarkerPack> = {
   droid: DROID_PACK,
   opencode: OPENCODE_PACK,
   pi: PI_PACK,
+  // ACP providers. ADE reads their turn state off the protocol, not off the
+  // TUI, so a tracked terminal for one of them gets the generic pack rather
+  // than invented regexes for footers nobody has measured.
+  qwen: ACP_PACK,
+  kimi: ACP_PACK,
+  grok: ACP_PACK,
+  copilot: ACP_PACK,
 };
 
 export type TuiMarkerState = {

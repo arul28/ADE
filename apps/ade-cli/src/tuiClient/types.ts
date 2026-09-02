@@ -99,7 +99,13 @@ export type AdeCodeConnection = {
   close(): Promise<void>;
 };
 
-export type AdeCodeProvider = Extract<AgentChatProvider, "codex" | "claude" | "opencode" | "cursor" | "droid" | "pi"> | "ollama" | "lmstudio";
+export type AdeCodeProvider =
+  | Extract<
+    AgentChatProvider,
+    "codex" | "claude" | "opencode" | "cursor" | "droid" | "pi" | "qwen" | "kimi" | "grok" | "copilot"
+  >
+  | "ollama"
+  | "lmstudio";
 
 /**
  * How a new chat draft is launched. `chat` creates an SDK chat via

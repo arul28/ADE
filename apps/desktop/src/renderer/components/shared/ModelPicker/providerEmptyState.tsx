@@ -81,6 +81,42 @@ const PROVIDER_COPY: Partial<Record<ProviderFamily, ProviderCopy>> = {
       action: { kind: "open-external", url: "https://ollama.com/download" },
     },
   },
+  qwen: {
+    title: "Set up Qwen Code",
+    body: "Install Qwen Code and configure it in that CLI. ADE reuses ~/.qwen and does not write it. Point Qwen at an OpenAI-compatible key (OPENAI_API_KEY, optional OPENAI_BASE_URL for a local proxy).",
+    primary: { label: "Open Settings", action: { kind: "open-settings" } },
+    secondary: {
+      label: "Qwen Code docs",
+      action: { kind: "open-external", url: "https://github.com/QwenLM/qwen-code" },
+    },
+  },
+  moonshot: {
+    title: "Set up Kimi",
+    body: "Install Kimi Code and run `kimi login` (`--region global` for kimi.ai, `--region mainland-cn` for kimi.com). ADE reuses ~/.kimi-code and does not write it.",
+    primary: { label: "Open Settings", action: { kind: "open-settings" } },
+    secondary: {
+      label: "Kimi Code docs",
+      action: { kind: "open-external", url: "https://github.com/MoonshotAI/kimi-code" },
+    },
+  },
+  xai: {
+    title: "Set up Grok",
+    body: "Install the Grok CLI and run `grok login`, or set XAI_API_KEY. ADE reuses ~/.grok and does not relocate it.",
+    primary: { label: "Open Settings", action: { kind: "open-settings" } },
+    secondary: {
+      label: "Grok CLI docs",
+      action: { kind: "open-external", url: "https://docs.x.ai/docs/grok-cli" },
+    },
+  },
+  "github-copilot": {
+    title: "Set up GitHub Copilot",
+    body: "Install the Copilot CLI and run `copilot login`. ADE reuses that login and does not write ~/.copilot.",
+    primary: { label: "Open Settings", action: { kind: "open-settings" } },
+    secondary: {
+      label: "Copilot CLI docs",
+      action: { kind: "open-external", url: "https://github.com/github/copilot-cli" },
+    },
+  },
   pi: {
     title: "Connect Pi",
     body: "Use Pi’s native /login flow or configure a provider in your Pi profile. ADE keeps Pi credentials in Pi’s own profile.",
@@ -118,6 +154,10 @@ const PROVIDER_DISPLAY_LABELS: Partial<Record<ProviderFamily, string>> = {
   cursor: "Cursor",
   factory: "Droid",
   pi: "Pi",
+  qwen: "Qwen",
+  moonshot: "Kimi",
+  xai: "Grok",
+  "github-copilot": "GitHub Copilot",
   opencode: "OpenCode",
   lmstudio: "LM Studio",
   ollama: "Ollama",

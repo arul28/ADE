@@ -2,6 +2,8 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { ArrowClockwise, CheckCircle, CopySimple, Play, Terminal, Warning } from "@phosphor-icons/react";
 import { cn } from "../ui/cn";
 import { useCopyToClipboard } from "../../hooks/useCopyToClipboard";
+import { ProviderSignInModal } from "../settings/providers/ProviderSignInModal";
+import { acpLoginCommand } from "../settings/providers/acpProviders";
 
 export type AgentCliAuthCardInfo = {
   agent: string;
@@ -181,7 +183,12 @@ export function AgentCliAuthCard({
   const canRetry = !missing && Boolean(chatSessionId);
 
   const [loginStarted, setLoginStarted] = useState(false);
+  const [signInOpen, setSignInOpen] = useState(false);
   const [retrying, setRetrying] = useState(false);
+  // The ACP providers can sign in without leaving the chat: the login is a
+  // terminal flow, and ADE can host that terminal in a dialog. The other agents
+  // keep the "open a terminal in Work" affordance they already had.
+  const embeddedSignInCommand = missing ? null : acpLoginCommand(agentCli.agent);
   const [resolved, setResolved] = useState(false);
   const retryResetTimerRef = useRef<number | null>(null);
 
@@ -306,16 +313,30 @@ export function AgentCliAuthCard({
                 <code className="min-w-0 flex-1 overflow-x-auto whitespace-nowrap font-mono text-[length:calc(var(--chat-font-size)*11/14)] text-fg/78">
                   {agentCli.authCommand}
                 </code>
-                <ShellRunButton
-                  command={agentCli.authCommand}
-                  {...(agentCli.agent === "pi" ? { initialInput: "/login\n" } : {})}
-                  label={agentCli.agent === "claude" ? "Log in to Claude" : agentCli.agent === "pi" ? "Log in to Pi" : "Run auth"}
-                  laneId={laneId}
-                  chatSessionId={chatSessionId}
-                  accent={accent}
-                  onRevealTerminal={onRevealTerminal}
-                  onLaunched={() => setLoginStarted(true)}
-                />
+                {embeddedSignInCommand ? (
+                  <button
+                    type="button"
+                    onClick={() => setSignInOpen(true)}
+                    className={cn(
+                      "inline-flex items-center gap-1.5 rounded-md border px-2 py-1 font-mono text-[length:calc(var(--chat-font-size)*9/14)] font-bold uppercase tracking-[0.14em] transition-colors",
+                      accent.runButton,
+                    )}
+                  >
+                    <Play size={12} weight="bold" aria-hidden />
+                    Sign in
+                  </button>
+                ) : (
+                  <ShellRunButton
+                    command={agentCli.authCommand}
+                    {...(agentCli.agent === "pi" ? { initialInput: "/login\n" } : {})}
+                    label={agentCli.agent === "claude" ? "Log in to Claude" : agentCli.agent === "pi" ? "Log in to Pi" : "Run auth"}
+                    laneId={laneId}
+                    chatSessionId={chatSessionId}
+                    accent={accent}
+                    onRevealTerminal={onRevealTerminal}
+                    onLaunched={() => setLoginStarted(true)}
+                  />
+                )}
                 <CommandCopyButton command={agentCli.authCommand} label="Copy auth" />
               </div>
             </div>
@@ -346,6 +367,25 @@ export function AgentCliAuthCard({
           </div>
         </div>
       </div>
+      {signInOpen && embeddedSignInCommand ? (
+        <ProviderSignInModal
+          providerId={agentCli.agent}
+          providerLabel={agentCli.displayName}
+          command={embeddedSignInCommand}
+          laneId={laneId ?? null}
+          onClose={() => setSignInOpen(false)}
+          // Signing in does not resend anything on its own: the retry button
+          // above is the one place a turn is re-dispatched, and it now reads as
+          // the obvious next step.
+          onSignedIn={() => setLoginStarted(true)}
+          checkSignedIn={async () => {
+            const status = await window.ade?.ai?.getStatus?.({ force: true });
+            const connection = (status?.providerConnections as Record<string, { authAvailable?: boolean }> | undefined)
+              ?.[agentCli.agent];
+            return connection?.authAvailable === true;
+          }}
+        />
+      ) : null}
     </div>
   );
 }

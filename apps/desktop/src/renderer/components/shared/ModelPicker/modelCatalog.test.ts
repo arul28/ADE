@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import {
   descriptorsFromAgentChatModelCatalog,
+  filterAcpFallbackModelsToRuntimeCatalog,
   getRuntimeCatalogModelDescriptor,
   mergeSelectorModels,
   resetRuntimeCatalogDescriptorCacheForTests,
@@ -16,7 +17,10 @@ import {
   runtimeCatalogProviderIsFresh,
 } from "./runtimeCatalogCache";
 import type { AgentChatModelCatalog } from "../../../../shared/types";
-import { createDynamicPiModelDescriptor } from "../../../../shared/modelRegistry";
+import {
+  createDynamicAcpModelDescriptor,
+  createDynamicPiModelDescriptor,
+} from "../../../../shared/modelRegistry";
 
 describe("mergeSelectorModels", () => {
   beforeEach(() => {
@@ -124,6 +128,22 @@ describe("mergeSelectorModels", () => {
     const merged = mergeSelectorModels(undefined, undefined, undefined, "all");
     const opencodeModels = merged.filter((m) => m.family === "opencode");
     expect(opencodeModels.length).toBe(0);
+  });
+
+  it("replaces curated ACP rows with the connected provider's live models", () => {
+    const qwenFallbacks = mergeSelectorModels(undefined, undefined, undefined, "all")
+      .filter((model) => model.family === "qwen");
+    const liveQwen = {
+      ...createDynamicAcpModelDescriptor("qwen", "gpt-5.5"),
+      catalogAvailable: true,
+    };
+
+    const filtered = filterAcpFallbackModelsToRuntimeCatalog(
+      [...qwenFallbacks, liveQwen],
+      [liveQwen],
+    );
+
+    expect(filtered.map((model) => model.id)).toEqual(["qwen/gpt-5.5"]);
   });
 
   it("surfaces only the discovered Droid model — no canonical entries are injected", () => {

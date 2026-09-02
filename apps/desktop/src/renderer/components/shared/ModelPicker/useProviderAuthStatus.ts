@@ -15,9 +15,26 @@ import type { AuthStatus } from "./ModelPickerRail";
 
 type AuthStatusMap = Partial<Record<ProviderFamily, AuthStatus>>;
 
+type ProviderConnectionFlags = { authAvailable?: boolean; runtimeAvailable?: boolean };
+
 type ProviderStatusSnapshot = {
-  availableProviders?: { claude?: unknown; codex?: unknown; cursor?: unknown; droid?: unknown };
-  providerConnections?: { pi?: { authAvailable?: boolean; runtimeAvailable?: boolean } };
+  availableProviders?: {
+    claude?: unknown;
+    codex?: unknown;
+    cursor?: unknown;
+    droid?: unknown;
+    qwen?: unknown;
+    kimi?: unknown;
+    grok?: unknown;
+    copilot?: unknown;
+  };
+  providerConnections?: {
+    pi?: ProviderConnectionFlags;
+    qwen?: ProviderConnectionFlags;
+    kimi?: ProviderConnectionFlags;
+    grok?: ProviderConnectionFlags;
+    copilot?: ProviderConnectionFlags;
+  };
   piInstallation?: { sdkAvailable?: boolean; cliAvailable?: boolean; availableModelIds?: string[] };
   opencodeProviders?: Array<{ id: string; connected: boolean }>;
   opencodeBinaryInstalled?: unknown;
@@ -27,6 +44,17 @@ type ProviderBinarySnapshot = {
   opencodeBinaryInstalled: boolean;
   binaryProbed: boolean;
 };
+
+/**
+ * ACP provider -> picker rail family. One table, so the greying arms and the
+ * empty-state copy cannot name different families for the same provider.
+ */
+const ACP_PICKER_FAMILIES = [
+  { provider: "qwen", family: "qwen" },
+  { provider: "kimi", family: "moonshot" },
+  { provider: "grok", family: "xai" },
+  { provider: "copilot", family: "github-copilot" },
+] as const satisfies readonly { provider: string; family: ProviderFamily }[];
 
 const EMPTY_AUTH_STATUS: AuthStatusMap = {};
 const UNKNOWN_BINARY: ProviderBinarySnapshot = {
@@ -90,6 +118,20 @@ export function familiesFromStatus(
     out.pi = "ok";
   } else if (status.piInstallation || pi) {
     out.pi = "unauthed";
+  }
+
+  // ACP providers. Each one is CLI-backed, so "ok" means ADE found both the
+  // binary and a credential for it; the host resolves that into
+  // `availableProviders` and `providerConnections`. A provider ADE has not
+  // probed yet stays absent from the map rather than reading as signed out.
+  for (const acp of ACP_PICKER_FAMILIES) {
+    const connection = status.providerConnections?.[acp.provider];
+    const flagged = status.availableProviders?.[acp.provider] === true;
+    if (flagged || connection?.runtimeAvailable === true) {
+      out[acp.family] = "ok";
+    } else if (connection) {
+      out[acp.family] = "unauthed";
+    }
   }
 
   return out;

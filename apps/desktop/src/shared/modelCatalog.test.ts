@@ -1,6 +1,36 @@
 import { describe, expect, it } from "vitest";
-import { buildProviderGroupBlocks, createModelOrderMap } from "./modelCatalog";
-import { createDynamicPiModelDescriptor } from "./modelRegistry";
+import {
+  buildProviderGroupBlocks,
+  createModelOrderMap,
+  MODEL_PICKER_PROVIDER_ORDER,
+} from "./modelCatalog";
+import { createDynamicPiModelDescriptor, MODEL_REGISTRY } from "./modelRegistry";
+
+describe("model picker provider order", () => {
+  it("keeps the canonical provider sequence after favorites and recents", () => {
+    expect(MODEL_PICKER_PROVIDER_ORDER).toEqual([
+      "claude",
+      "codex",
+      "cursor",
+      "opencode",
+      "pi",
+      "copilot",
+      "grok",
+      "droid",
+      "kimi",
+      "qwen",
+      "ollama",
+      "lmstudio",
+    ]);
+  });
+
+  it("sorts populated catalog groups in canonical order", () => {
+    const groups = buildProviderGroupBlocks(MODEL_REGISTRY, createModelOrderMap(), undefined, false);
+    const present = groups.map((group) => group.key);
+
+    expect(present).toEqual(MODEL_PICKER_PROVIDER_ORDER.filter((group) => present.includes(group)));
+  });
+});
 
 describe("Pi model catalog grouping", () => {
   it("keeps branded provider labels in the Pi rail and subsection", () => {
@@ -8,7 +38,8 @@ describe("Pi model catalog grouping", () => {
       profileId: "work",
     });
 
-    const [group] = buildProviderGroupBlocks([model], createModelOrderMap());
+    const group = buildProviderGroupBlocks([model], createModelOrderMap())
+      .find((candidate) => candidate.key === "pi");
 
     expect(group?.key).toBe("pi");
     expect(group?.label).toBe("Pi");
@@ -23,7 +54,8 @@ describe("Pi model catalog grouping", () => {
       createDynamicPiModelDescriptor("openai-codex", "gpt-5.5", { profileId: "team" }),
     ];
 
-    const [group] = buildProviderGroupBlocks(models, createModelOrderMap());
+    const group = buildProviderGroupBlocks(models, createModelOrderMap())
+      .find((candidate) => candidate.key === "pi");
     const subsections = group?.providers[0]?.subsections ?? [];
 
     expect(subsections).toHaveLength(2);

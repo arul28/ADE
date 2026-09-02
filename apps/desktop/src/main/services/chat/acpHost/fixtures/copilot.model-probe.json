@@ -1,0 +1,149 @@
+{
+  "steps": [
+    {
+      "step": "prompt-default",
+      "ok": true,
+      "extraArgs": [],
+      "stdout": "ping\n\n"
+    },
+    {
+      "step": "prompt-model-auto",
+      "ok": true,
+      "extraArgs": [
+        "--model",
+        "auto"
+      ],
+      "stdout": "ping\n\n"
+    },
+    {
+      "step": "prompt-model-gpt-5.4",
+      "ok": false,
+      "extraArgs": [
+        "--model",
+        "gpt-5.4"
+      ],
+      "status": 1,
+      "stdout": "",
+      "stderr": "Error: Model \"gpt-5.4\" from --model flag is not available.\n"
+    },
+    {
+      "step": "acp-default",
+      "ok": true,
+      "extraArgs": [],
+      "sessionId": "69cad382-d50a-487b-af52-862f33312e7b",
+      "stopReason": "end_turn",
+      "usage": {
+        "inputTokens": 18573,
+        "outputTokens": 53,
+        "totalTokens": 18626,
+        "thoughtTokens": 47,
+        "cachedReadTokens": 0,
+        "cachedWriteTokens": 18563
+      },
+      "textHint": "{\"stopReason\":\"end_turn\",\"usage\":{\"inputTokens\":18573,\"outputTokens\":53,\"totalTokens\":18626,\"thoughtTokens\":47,\"cachedReadTokens\":0,\"cachedWriteTokens\":18563}}",
+      "notificationUpdates": [
+        "available_commands_update",
+        "available_commands_update",
+        "session_info_update",
+        "config_option_update",
+        "usage_update",
+        "agent_thought_chunk",
+        "agent_thought_chunk",
+        "agent_thought_chunk",
+        "agent_message_chunk"
+      ],
+      "stderrTail": ""
+    },
+    {
+      "step": "acp-model-auto",
+      "ok": true,
+      "extraArgs": [
+        "--model",
+        "auto"
+      ],
+      "sessionId": "205ed6a6-ea25-439e-b68a-d5a55ff320c7",
+      "stopReason": "end_turn",
+      "usage": {
+        "inputTokens": 18575,
+        "outputTokens": 45,
+        "totalTokens": 18620,
+        "thoughtTokens": 38,
+        "cachedReadTokens": 9066,
+        "cachedWriteTokens": 9499
+      },
+      "textHint": "{\"stopReason\":\"end_turn\",\"usage\":{\"inputTokens\":18575,\"outputTokens\":45,\"totalTokens\":18620,\"thoughtTokens\":38,\"cachedReadTokens\":9066,\"cachedWriteTokens\":9499}}",
+      "notificationUpdates": [
+        "available_commands_update",
+        "available_commands_update",
+        "session_info_update",
+        "config_option_update",
+        "usage_update",
+        "agent_thought_chunk",
+        "agent_thought_chunk",
+        "agent_message_chunk"
+      ],
+      "stderrTail": ""
+    },
+    {
+      "step": "acp-model-gpt-5.4",
+      "ok": true,
+      "extraArgs": [
+        "--model",
+        "gpt-5.4"
+      ],
+      "sessionId": "c4c7449f-4ec9-4b4c-8a32-3d327b9458d3",
+      "stopReason": "end_turn",
+      "usage": {
+        "inputTokens": 18579,
+        "outputTokens": 49,
+        "totalTokens": 18628,
+        "thoughtTokens": 43,
+        "cachedReadTokens": 9066,
+        "cachedWriteTokens": 9503
+      },
+      "textHint": "{\"stopReason\":\"end_turn\",\"usage\":{\"inputTokens\":18579,\"outputTokens\":49,\"totalTokens\":18628,\"thoughtTokens\":43,\"cachedReadTokens\":9066,\"cachedWriteTokens\":9503}}",
+      "notificationUpdates": [
+        "available_commands_update",
+        "available_commands_update",
+        "session_info_update",
+        "config_option_update",
+        "usage_update",
+        "agent_thought_chunk",
+        "agent_thought_chunk",
+        "agent_message_chunk"
+      ],
+      "stderrTail": ""
+    },
+    {
+      "step": "acp-model-claude-sonnet-4.6",
+      "ok": true,
+      "extraArgs": [
+        "--model",
+        "claude-sonnet-4.6"
+      ],
+      "sessionId": "3335e01a-e453-4c3b-94ee-2d23814ee6a3",
+      "stopReason": "end_turn",
+      "usage": {
+        "inputTokens": 18576,
+        "outputTokens": 52,
+        "totalTokens": 18628,
+        "thoughtTokens": 46,
+        "cachedReadTokens": 9066,
+        "cachedWriteTokens": 9500
+      },
+      "textHint": "{\"stopReason\":\"end_turn\",\"usage\":{\"inputTokens\":18576,\"outputTokens\":52,\"totalTokens\":18628,\"thoughtTokens\":46,\"cachedReadTokens\":9066,\"cachedWriteTokens\":9500}}",
+      "notificationUpdates": [
+        "available_commands_update",
+        "available_commands_update",
+        "session_info_update",
+        "config_option_update",
+        "usage_update",
+        "agent_thought_chunk",
+        "agent_thought_chunk",
+        "agent_thought_chunk",
+        "agent_message_chunk"
+      ],
+      "stderrTail": ""
+    }
+  ]
+}

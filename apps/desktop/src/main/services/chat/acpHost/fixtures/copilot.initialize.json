@@ -1,0 +1,35 @@
+{
+  "protocolVersion": 1,
+  "agentCapabilities": {
+    "loadSession": true,
+    "promptCapabilities": {
+      "image": true,
+      "audio": false,
+      "embeddedContext": true
+    },
+    "sessionCapabilities": {
+      "list": {}
+    }
+  },
+  "agentInfo": {
+    "name": "Copilot",
+    "title": "Copilot",
+    "version": "1.0.4"
+  },
+  "authMethods": [
+    {
+      "id": "copilot-login",
+      "name": "Log in with Copilot CLI",
+      "description": "Run `copilot login` in the terminal",
+      "_meta": {
+        "terminal-auth": {
+          "command": "/opt/homebrew/Caskroom/copilot-cli/1.0.3/copilot",
+          "args": [
+            "login"
+          ],
+          "label": "Copilot Login"
+        }
+      }
+    }
+  ]
+}

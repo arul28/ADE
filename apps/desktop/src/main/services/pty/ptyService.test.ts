@@ -1524,6 +1524,37 @@ describe("ptyService", () => {
       expect(resolveBuiltInBrowserActorCapability(actorToken)).toBeNull();
     });
 
+    // The ACP CLIs joined `TrackedAgentCliToolType` before the runtime predicate
+    // caught up, and the browser-actor token is issued unconditionally — so a
+    // qwen/kimi/grok/copilot terminal used to leave a live capability behind
+    // after its session closed.
+    it.each(["qwen", "kimi", "grok", "copilot"] as const)(
+      "revokes the browser actor capability when a %s session closes",
+      async (toolType) => {
+        const { service, loadPty } = createHarness();
+
+        const result = await service.create({
+          laneId: "lane-1",
+          title: `${toolType} CLI`,
+          cols: 80,
+          rows: 24,
+          toolType,
+          command: toolType,
+        });
+
+        const ptyLib = loadPty.mock.results.at(-1)?.value as { spawn: ReturnType<typeof vi.fn> };
+        const opts = ptyLib.spawn.mock.calls.at(-1)?.[2] as { env?: NodeJS.ProcessEnv } | undefined;
+        const actorToken = opts?.env?.ADE_BROWSER_ACTOR_TOKEN;
+        expect(resolveBuiltInBrowserActorCapability(actorToken)).toMatchObject({
+          chatSessionId: result.sessionId,
+        });
+
+        service.dispose({ ptyId: result.ptyId, sessionId: result.sessionId });
+
+        expect(resolveBuiltInBrowserActorCapability(actorToken)).toBeNull();
+      },
+    );
+
     it("exports spawn lineage without replacing the tracked CLI session identity", async () => {
       const { service, loadPty } = createHarness();
 
@@ -1658,6 +1689,29 @@ describe("ptyService", () => {
       const refusal = canPerform.mock.results.find((result) => result.value.allowed === false)?.value.message;
       expectNoJargon(refusal);
     });
+
+    // Same gate, for the CLIs that used to slip past the predicate entirely.
+    it.each(["qwen", "kimi", "grok", "copilot"] as const)(
+      "refuses a new %s launch when storage is exhausted",
+      async (toolType) => {
+        const canPerform = vi.fn(() => ({
+          allowed: false,
+          state: "exhausted",
+          code: "disk_full",
+          message: "Your computer is almost out of storage. ADE can't safely start a new CLI session until you free up space.",
+        }));
+        const { service } = createHarness({ diskPressureMonitor: { canPerform } });
+
+        await expect(service.create({
+          laneId: "lane-1",
+          title: `${toolType} CLI`,
+          cols: 80,
+          rows: 24,
+          toolType,
+          command: toolType,
+        })).rejects.toMatchObject({ code: "disk_full" });
+      },
+    );
 
     it("does not leak an inherited ADE chat session into unlinked terminals", async () => {
       const previous = process.env.ADE_CHAT_SESSION_ID;

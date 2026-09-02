@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterAll, describe, expect, it, vi } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -17,6 +17,13 @@ import {
   findToolTargetPin,
   loadToolsManifest,
 } from "../../../../../ade-cli/src/services/tools";
+
+const emptyToolsRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-codex-empty-tools-"));
+afterAll(() => fs.rmSync(emptyToolsRoot, { recursive: true, force: true }));
+
+function envWithoutCachedTool(overrides: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  return { ADE_TOOLS_ROOT: emptyToolsRoot, ...overrides };
+}
 
 /**
  * Materialize the pinned Codex build into a throwaway cache root the way an
@@ -51,9 +58,9 @@ describe("resolveCodexExecutable", () => {
             verified: true,
           },
         ],
-        env: {
+        env: envWithoutCachedTool({
           PATH: "/usr/bin:/bin",
-        },
+        }),
         bundledRoots: [],
       }),
     ).toEqual({
@@ -109,9 +116,9 @@ describe("resolveCodexExecutable", () => {
               verified: true,
             },
           ],
-          env: {
+          env: envWithoutCachedTool({
             PATH: "/usr/bin:/bin",
-          },
+          }),
           bundledRoots: [tmpDir],
           platform: "darwin",
           arch: "arm64",
@@ -145,9 +152,9 @@ describe("resolveCodexExecutable", () => {
     try {
       expect(
         resolveCodexExecutable({
-          env: {
+          env: envWithoutCachedTool({
             PATH: "/usr/bin:/bin",
-          },
+          }),
           bundledRoots: [tmpDir],
           platform: "darwin",
           arch: "arm64",

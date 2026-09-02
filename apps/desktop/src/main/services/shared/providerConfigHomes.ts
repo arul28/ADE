@@ -70,3 +70,30 @@ export function factoryConfigHome(args: HomeArg = {}): string {
   const configured = trimmed((args.env ?? process.env).FACTORY_HOME_OVERRIDE);
   return path.join(configured ? path.resolve(configured) : baseHome(args), ".factory");
 }
+
+/** `QWEN_HOME` names the config directory itself (CODEX_HOME shape). */
+export function qwenConfigHome(args: HomeArg = {}): string {
+  const configured = trimmed((args.env ?? process.env).QWEN_HOME);
+  return configured ? path.resolve(configured) : path.join(baseHome(args), ".qwen");
+}
+
+/** `COPILOT_HOME` names the config directory itself; `--config-dir` is its flag twin. */
+export function copilotConfigHome(args: HomeArg = {}): string {
+  const configured = trimmed((args.env ?? process.env).COPILOT_HOME);
+  return configured ? path.resolve(configured) : path.join(baseHome(args), ".copilot");
+}
+
+/** `KIMI_CODE_HOME` names the config directory itself; it holds `config.toml`. */
+export function kimiCodeConfigHome(args: HomeArg = {}): string {
+  const configured = trimmed((args.env ?? process.env).KIMI_CODE_HOME);
+  return configured ? path.resolve(configured) : path.join(baseHome(args), ".kimi-code");
+}
+
+/**
+ * Grok has NO config-home override: it reads `~/.grok` and nothing else. ADE
+ * therefore sets nothing and reuses whatever the user already has. Stated here
+ * so the absence reads as a decision rather than an omission.
+ */
+export function grokConfigHome(args: HomeArg = {}): string {
+  return path.join(baseHome(args), ".grok");
+}

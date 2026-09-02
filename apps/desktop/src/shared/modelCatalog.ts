@@ -31,6 +31,9 @@ export const PROVIDER_CATEGORY_MAP: Record<string, ProviderCategory> = {
   openrouter: "router",
   ollama: "local",
   lmstudio: "local",
+  qwen: "cloud-api",
+  moonshot: "cloud-api",
+  "github-copilot": "cloud-api",
 };
 
 export const PROVIDER_CATEGORY_LABELS: Record<ProviderCategory, string> = {
@@ -63,6 +66,26 @@ export type ModelProviderGroupBlock = {
   providers: ModelProviderBlock[];
 };
 
+/**
+ * Canonical provider rail order for every model-picker surface. Favorites and
+ * recents are added by each client before this list; these are the runtime
+ * group keys behind the user-facing Anthropic/OpenAI/etc. labels.
+ */
+export const MODEL_PICKER_PROVIDER_ORDER = [
+  "claude",
+  "codex",
+  "cursor",
+  "opencode",
+  "pi",
+  "copilot",
+  "grok",
+  "droid",
+  "kimi",
+  "qwen",
+  "ollama",
+  "lmstudio",
+] as const satisfies readonly ProviderGroupKey[];
+
 const PROVIDER_LABELS: Record<string, string> = {
   opencode: "OpenCode (Free)",
   anthropic: "Anthropic",
@@ -82,6 +105,8 @@ const PROVIDER_LABELS: Record<string, string> = {
   groq: "Groq",
   together: "Together",
   meta: "Meta",
+  qwen: "Qwen",
+  moonshot: "Moonshot",
 };
 
 export const PROVIDER_BADGE_COLORS: Record<string, string> = {
@@ -103,6 +128,8 @@ export const PROVIDER_BADGE_COLORS: Record<string, string> = {
   groq: "#06B6D4",
   together: "#22C55E",
   meta: "#3B82F6",
+  qwen: "#6D4AFF",
+  moonshot: "#1F1F1F",
 };
 
 export const PROVIDER_ORDER: string[] = [
@@ -112,6 +139,8 @@ export const PROVIDER_ORDER: string[] = [
   "openai-codex",
   "google",
   "github-copilot",
+  "qwen",
+  "moonshot",
   "deepseek",
   "mistral",
   "xai",
@@ -125,16 +154,9 @@ export const PROVIDER_ORDER: string[] = [
   "pi",
 ];
 
-const PROVIDER_GROUP_ORDER: Record<ProviderGroupKey, number> = {
-  claude: 10,
-  codex: 20,
-  cursor: 30,
-  droid: 35,
-  pi: 38,
-  opencode: 40,
-  ollama: 50,
-  lmstudio: 60,
-};
+const PROVIDER_GROUP_ORDER = Object.fromEntries(
+  MODEL_PICKER_PROVIDER_ORDER.map((groupKey, index) => [groupKey, index]),
+) as Record<ProviderGroupKey, number>;
 
 export const PROVIDER_GROUP_COLORS: Record<ProviderGroupKey, string> = {
   claude: "#D97706",
@@ -142,6 +164,10 @@ export const PROVIDER_GROUP_COLORS: Record<ProviderGroupKey, string> = {
   cursor: "#A78BFA",
   droid: "#6B7280",
   pi: "#F97316",
+  qwen: "#6D4AFF",
+  kimi: "#1F1F1F",
+  grok: "#DC2626",
+  copilot: "#8B5CF6",
   opencode: "#2563EB",
   ollama: "#71717A",
   lmstudio: "#64748B",
@@ -184,25 +210,28 @@ export function classifyProviderGroup(model: ModelDescriptor): ProviderGroupKey 
   return resolveProviderGroupForModel(model);
 }
 
+/**
+ * Group labels, as an exhaustive table rather than a switch with a default.
+ * A new group is a compile error here, not a row that silently renders under
+ * its own key.
+ */
+const PROVIDER_GROUP_LABELS: Record<ProviderGroupKey, string> = {
+  claude: "Claude",
+  codex: "Codex",
+  cursor: "Cursor",
+  droid: "Droid",
+  pi: "Pi",
+  qwen: "Qwen",
+  kimi: "Kimi",
+  grok: "Grok",
+  copilot: "GitHub Copilot",
+  opencode: "OpenCode",
+  ollama: "Ollama",
+  lmstudio: "LM Studio",
+};
+
 export function providerGroupLabel(group: ProviderGroupKey): string {
-  switch (group) {
-    case "claude":
-      return "Claude";
-    case "codex":
-      return "Codex";
-    case "cursor":
-      return "Cursor";
-    case "droid":
-      return "Droid";
-    case "pi":
-      return "Pi";
-    case "opencode":
-      return "OpenCode";
-    case "ollama":
-      return "Ollama";
-    case "lmstudio":
-      return "LM Studio";
-  }
+  return PROVIDER_GROUP_LABELS[group];
 }
 
 export function subsectionKeyForModel(model: ModelDescriptor, group: ProviderGroupKey): string {

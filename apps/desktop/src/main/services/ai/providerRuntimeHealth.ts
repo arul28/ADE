@@ -1,7 +1,15 @@
 import { nowIso } from "../shared/utils";
 
 export type ProviderRuntimeHealthState = "ready" | "auth-failed" | "runtime-failed";
-export type ProviderRuntimeHealthProvider = "claude" | "codex" | "cursor" | "pi";
+export type ProviderRuntimeHealthProvider =
+  | "claude"
+  | "codex"
+  | "cursor"
+  | "pi"
+  | "qwen"
+  | "kimi"
+  | "grok"
+  | "copilot";
 
 export type ProviderRuntimeHealth = {
   provider: ProviderRuntimeHealthProvider;

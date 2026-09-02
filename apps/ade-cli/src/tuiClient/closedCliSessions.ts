@@ -34,6 +34,10 @@ export function terminalSessionResumeProvider(session: ChatTerminalSession | nul
   if (toolType.startsWith("opencode")) return "opencode";
   if (toolType.startsWith("pi")) return "pi";
   if (toolType.startsWith("claude")) return "claude";
+  if (toolType.startsWith("qwen")) return "qwen";
+  if (toolType.startsWith("kimi")) return "kimi";
+  if (toolType.startsWith("grok")) return "grok";
+  if (toolType.startsWith("copilot")) return "copilot";
   return null;
 }
 
@@ -50,12 +54,14 @@ export function isTerminalSessionResumable(session: ChatTerminalSession | null |
   );
 }
 
-/** Narrow a terminal session's derived provider to an AgentChatProvider (CLI terminals are always one of the five). */
+/**
+ * Narrow a terminal session's derived provider to an AgentChatProvider. Every
+ * `AdeCodeProvider` except the two OpenCode-backed local runtimes (Ollama,
+ * LM Studio) is one, and those two never back a tracked CLI terminal.
+ */
 function terminalSummaryProvider(session: ChatTerminalSession): AgentChatSessionSummary["provider"] {
   const provider = terminalSessionProvider(session);
-  return provider === "codex" || provider === "claude" || provider === "opencode" || provider === "cursor" || provider === "droid" || provider === "pi"
-    ? provider
-    : "claude";
+  return provider && provider !== "ollama" && provider !== "lmstudio" ? provider : "claude";
 }
 
 export function terminalSessionToChatSummary(

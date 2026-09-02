@@ -1378,6 +1378,10 @@ private func workCliToolType(provider: String) -> String {
   case "opencode": return "opencode"
   case "pi": return "pi"
   case "droid": return "droid"
+  case "qwen": return "qwen"
+  case "kimi": return "kimi"
+  case "grok": return "grok"
+  case "copilot": return "copilot"
   case "shell": return "shell"
   default: return "opencode"
   }

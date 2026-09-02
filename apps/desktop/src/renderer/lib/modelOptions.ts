@@ -92,6 +92,13 @@ function addAvailableModelIdsByPrefix(
   }
 }
 
+const ACP_MODEL_PREFIX_BY_CLI: Partial<Record<string, string>> = {
+  qwen: "qwen/",
+  kimi: "moonshot/",
+  grok: "xai/",
+  copilot: "github-copilot/",
+};
+
 function hasDynamicLocalModelIdsForProvider(
   provider: string,
   availableModelIds: readonly ModelId[] | undefined,
@@ -153,6 +160,8 @@ export function deriveConfiguredModelIds(
       const familyMap: Record<string, string> = { claude: "anthropic", codex: "openai" };
       const family = auth.cli ? familyMap[auth.cli] : undefined;
       if (family) addKnownModelIds(ids, family, true);
+      const acpPrefix = auth.cli ? ACP_MODEL_PREFIX_BY_CLI[auth.cli] : undefined;
+      if (acpPrefix) addAvailableModelIdsByPrefix(ids, status.availableModelIds, acpPrefix);
       continue;
     }
 

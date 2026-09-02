@@ -284,6 +284,7 @@ type AiConfig = {
   localProviders?: AiLocalProviderConfigs;
   customProviders?: AiCustomProviderConfig[];  // user-defined OpenAI-/Anthropic-compatible providers
   customModelSlugs?: string[];            // extra provider/model slugs pinned as selectable
+  disabledProviders?: string[];           // providers switched off in Settings
   workerSafety?: WorkerSafetyPolicy;
   featureModelOverrides?: Partial<Record<AiFeatureKey, string | null>>;
   featureReasoningOverrides?: Partial<Record<AiFeatureKey, string | null>>;
@@ -307,6 +308,22 @@ deterministic naming — it does not throw or skip. CLI titles and
 terminal summaries try the setting, then the stored launch model, and
 skip the AI call when both are missing. Live chat compaction stays on
 the chat's own provider.
+
+### Disabled providers
+
+`ai.disabledProviders` holds the ids of providers switched off with the
+toggle on a provider's page in Settings → Agents & Models. A disabled
+provider keeps its tile (reading **Disabled**) and its page, so the
+switch is always findable, and it offers no models anywhere else: it is
+dropped from `getAvailableModels`, from the model catalog the pickers,
+the phone, and the relay all read, and from the AI status payload.
+
+Ids are lower-cased on read but never validated against the current
+provider list — the field crosses the sync wire, and dropping an id a
+newer build wrote would silently re-enable a provider on the other
+machine. Like `customProviders`, the field uses replace semantics on
+merge: the UI writes the whole authoritative list, so an empty array
+clears it and an absent key keeps what is stored.
 
 ### Custom providers and model slugs
 

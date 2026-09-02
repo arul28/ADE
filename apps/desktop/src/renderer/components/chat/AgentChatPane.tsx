@@ -1639,7 +1639,17 @@ function defaultNativeControls(profile: ChatSurfaceProfile): NativeControlState 
   };
 }
 
-type ChatRuntimeProviderKey = "claude" | "codex" | "cursor" | "droid" | "opencode" | "pi";
+type ChatRuntimeProviderKey =
+  | "claude"
+  | "codex"
+  | "cursor"
+  | "droid"
+  | "opencode"
+  | "pi"
+  | "qwen"
+  | "kimi"
+  | "grok"
+  | "copilot";
 
 function resolveChatRuntimeProvider(desc: ModelDescriptor | null | undefined): ChatRuntimeProviderKey {
   return desc ? resolveProviderGroupForModel(desc) : "opencode";
@@ -7004,12 +7014,42 @@ export function AgentChatPane({
   }, [initialSessionSummary, lockSessionId, projectRoot, refreshAvailableModels, refreshSessions]);
 
   useEffect(() => {
-    const selectableModelIds = modelSelectionConstrained ? effectiveAvailableModelIds : availableModelIds;
+    const isFreshDraft = !selectedSessionId && selectedEvents.length === 0;
+    const selectableModelIds = modelSelectionConstrained || isFreshDraft
+      ? effectiveAvailableModelIds
+      : availableModelIds;
     if (loading || !selectableModelIds.length) return;
     // If the user hasn't picked a model yet, don't auto-select one.
     if (!modelId) return;
     if (selectableModelIds.includes(modelId)) return;
     if (modelSelectionConstrained) return;
+    if (isFreshDraft) {
+      const currentModelDesc = resolveScopedModelDescriptor(modelId, modelCatalogScopeKey);
+      const currentModelIsAcp = currentModelDesc?.family === "qwen"
+        || currentModelDesc?.family === "moonshot"
+        || currentModelDesc?.family === "xai"
+        || currentModelDesc?.family === "github-copilot";
+      const hasLiveAcpAlternative = Boolean(
+        currentModelIsAcp
+        && currentModelDesc
+        && effectiveAvailableModelIds.some((candidateId) => {
+          if (candidateId === modelId) return false;
+          return resolveScopedModelDescriptor(candidateId, modelCatalogScopeKey)?.family === currentModelDesc.family;
+        }),
+      );
+      // A known non-ACP model may be intentionally launchable even when the
+      // passive inventory has not reported it (for example, an installed CLI
+      // subscription). ACP models are different: once live discovery reports
+      // a same-provider alternative, a persisted curated row is stale and
+      // must not survive into a fresh draft.
+      if (currentModelDesc && !hasLiveAcpAlternative) return;
+      const preferred = readLastUsedModelId();
+      const nextModelId = preferred && selectableModelIds.includes(preferred)
+        ? preferred
+        : selectableModelIds[0]!;
+      if (nextModelId !== modelId) setModelId(nextModelId);
+      return;
+    }
     const modelDesc = resolveScopedModelDescriptor(modelId, modelCatalogScopeKey);
     // Runtime catalog can surface Cursor/Droid SDK models before ai status catches up.
     if (isKnownSelectableChatModelId(modelId) || modelDesc) return;
@@ -7023,7 +7063,7 @@ export function AgentChatPane({
     } else {
       setModelId(selectableModelIds[0]!);
     }
-  }, [loading, availableModelIds, effectiveAvailableModelIds, modelId, modelSelectionConstrained, selectedSessionModelId, modelCatalogScopeKey]);
+  }, [loading, availableModelIds, effectiveAvailableModelIds, modelId, modelSelectionConstrained, modelCatalogScopeKey, selectedEvents.length, selectedSessionId, selectedSessionModelId]);
 
   useEffect(() => {
     selectedSessionIdRef.current = selectedSessionId;
