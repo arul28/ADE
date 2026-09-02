@@ -4,7 +4,7 @@ import { EventEmitter } from "node:events";
 import os from "node:os";
 import path from "node:path";
 import zlib, { gzipSync } from "node:zlib";
-import { getSessionInfo, getSessionMessages, getSubagentMessages, query, renameSession, startup, tagSession } from "@anthropic-ai/claude-agent-sdk";
+import { getSessionInfo, getSessionMessages, getSubagentMessages, query, renameSession, startup, tagSession, createSdkMcpServer } from "@anthropic-ai/claude-agent-sdk";
 import { resolveClaudeCodeExecutable } from "../ai/claudeCodeExecutable";
 import { codexComputerUseClientCandidates } from "../../utils/codexComputerUse";
 import {
@@ -1243,12 +1243,12 @@ function bridgeClaudeSessionToQuery(sessionHandle: any, prompt: unknown) {
       }
       return [];
     }),
-    getContextUsage: vi.fn(async () => {
+    getContextUsage: vi.fn(async (options?: unknown) => {
       if (typeof session.getContextUsage === "function") {
-        return session.getContextUsage();
+        return session.getContextUsage(options);
       }
       if (typeof session.query?.getContextUsage === "function") {
-        return session.query.getContextUsage();
+        return session.query.getContextUsage(options);
       }
       return {
         categories: [],
@@ -1259,6 +1259,15 @@ function bridgeClaudeSessionToQuery(sessionHandle: any, prompt: unknown) {
         gridRows: [],
         model: "",
       };
+    }),
+    initializationResult: vi.fn(async () => {
+      if (typeof session.initializationResult === "function") {
+        return session.initializationResult();
+      }
+      if (typeof session.query?.initializationResult === "function") {
+        return session.query.initializationResult();
+      }
+      return {};
     }),
     rewindFiles: vi.fn(async (userMessageId: string, options?: { dryRun?: boolean }) => {
       if (typeof session.rewindFiles === "function") {
@@ -2052,7 +2061,8 @@ async function waitForFakeTimerPromise<T>(
 async function createClaudeStreamFixture(args: {
   sdkSessionId: string;
   messages: Array<Record<string, unknown>>;
-  getContextUsage?: () => Promise<unknown>;
+  getContextUsage?: (options?: unknown) => Promise<unknown>;
+  initializationResult?: () => Promise<unknown>;
 }) {
   const events: AgentChatEventEnvelope[] = [];
   const setPermissionMode = vi.fn().mockResolvedValue(undefined);
@@ -2083,6 +2093,7 @@ async function createClaudeStreamFixture(args: {
     sessionId: args.sdkSessionId,
     setPermissionMode,
     ...(args.getContextUsage ? { getContextUsage: args.getContextUsage } : {}),
+    ...(args.initializationResult ? { initializationResult: args.initializationResult } : {}),
   } as any);
 
   const harness = createService({
@@ -4506,6 +4517,10 @@ describe("createAgentChatService", () => {
       const opts = vi.mocked(claudeSdkCreateSessionCompat).mock.calls.at(-1)?.[0] as any;
       const server = opts?.mcpServers?.["ade-cto"];
       expect(server?.type).toBe("sdk");
+      expect(createSdkMcpServer).toHaveBeenCalledWith(expect.objectContaining({
+        name: "ade-cto",
+        timeout: 120_000,
+      }));
       const toolNames = Object.keys(server?.instance?._registeredTools ?? {});
       expect(toolNames).toContain("spawnChat");
 
@@ -41964,7 +41979,7 @@ it("fails a cleanly ended OpenCode event stream and clears active child sessions
       await turn;
 
       await vi.waitFor(() => {
-        expect(getContextUsage).toHaveBeenCalled();
+        expect(getContextUsage).toHaveBeenCalledWith({ detail: "summary" });
         expect(events.map((entry) => entry.event))
           .toEqual(expect.arrayContaining([
             expect.objectContaining({
@@ -41980,6 +41995,128 @@ it("fails a cleanly ended OpenCode event stream and clears active child sessions
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it("requests a full Claude context snapshot after compact and a summary after settle", async () => {
+    const getContextUsage = vi.fn().mockResolvedValue({
+      categories: [{ name: "Messages", tokens: 40_000 }],
+      totalTokens: 40_000,
+      maxTokens: 200_000,
+      rawMaxTokens: 200_000,
+      percentage: 20,
+      gridRows: [],
+      model: "claude-sonnet-5",
+    });
+    await createClaudeStreamFixture({
+      sdkSessionId: "sdk-context-detail",
+      getContextUsage,
+      messages: [
+        {
+          type: "system",
+          subtype: "compact_boundary",
+          compact_metadata: { trigger: "auto", pre_tokens: 90_000, post_tokens: 40_000 },
+        },
+        { type: "result", subtype: "success", is_error: false, usage: { input_tokens: 1, output_tokens: 1 } },
+      ],
+    });
+    expect(getContextUsage).toHaveBeenCalledWith({ detail: "full" });
+    expect(getContextUsage).toHaveBeenCalledWith({ detail: "summary" });
+  });
+
+  it("records Claude modelUsage extras on done without changing outputTokens", async () => {
+    const events = await runClaudeStreamFixture({
+      sdkSessionId: "sdk-model-usage-extras",
+      messages: [
+        {
+          type: "result",
+          subtype: "success",
+          is_error: false,
+          usage: { input_tokens: 10, output_tokens: 20 },
+          total_cost_usd: 0.01,
+          queued_turn_count: 0,
+          user_message_uuid: "user-msg-result",
+          modelUsage: {
+            "claude-sonnet-5": {
+              inputTokens: 10,
+              outputTokens: 20,
+              thinkingTokens: 7,
+              costUSD: 0.01,
+              costBasis: "list",
+              cacheReadInputTokens: 0,
+              cacheCreationInputTokens: 0,
+              webSearchRequests: 0,
+              contextWindow: 200_000,
+              maxOutputTokens: 16_000,
+            },
+          },
+        },
+      ],
+    });
+    const done = events
+      .map((entry) => entry.event)
+      .find((event): event is Extract<AgentChatEventEnvelope["event"], { type: "done" }> => event.type === "done");
+    expect(done).toMatchObject({
+      type: "done",
+      usage: {
+        inputTokens: 10,
+        outputTokens: 20,
+        thinkingTokens: 7,
+      },
+      costUsd: 0.01,
+      costBasis: "list",
+      queuedTurnCount: 0,
+      userMessageUuid: "user-msg-result",
+    });
+  });
+
+  it("stamps user_message_uuid from the first assistant frame onto done", async () => {
+    const events = await runClaudeStreamFixture({
+      sdkSessionId: "sdk-early-user-message-uuid",
+      messages: [
+        {
+          type: "assistant",
+          user_message_uuid: "user-msg-early",
+          message: {
+            content: [{ type: "text", text: "hello" }],
+            usage: { input_tokens: 1, output_tokens: 1 },
+          },
+        },
+        {
+          type: "result",
+          subtype: "success",
+          is_error: false,
+          usage: { input_tokens: 1, output_tokens: 1 },
+        },
+      ],
+    });
+    const done = events
+      .map((entry) => entry.event)
+      .find((event): event is Extract<AgentChatEventEnvelope["event"], { type: "done" }> => event.type === "done");
+    expect(done?.userMessageUuid).toBe("user-msg-early");
+  });
+
+  it("warns when Claude reports this client's hooks were ignored", async () => {
+    const initializationResult = vi.fn().mockResolvedValue({ hooks_applied: false });
+    const onClaudeHooksIgnored = vi.fn();
+    vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+      ...makeDefaultClaudeSession(),
+      initializationResult,
+    });
+    const { service, logger } = createService({ onClaudeHooksIgnored });
+    const session = await service.createSession({
+      laneId: "lane-1",
+      provider: "claude",
+      model: "claude-sonnet-5",
+      modelId: "anthropic/claude-sonnet-5",
+    });
+    await service.sendMessage({ sessionId: session.id, text: "hello" });
+    await vi.waitFor(() => {
+      expect(onClaudeHooksIgnored).toHaveBeenCalledWith({ sessionId: session.id });
+    });
+    expect(logger.warn).toHaveBeenCalledWith(
+      "agent_chat.claude_hooks_ignored",
+      expect.objectContaining({ sessionId: session.id }),
+    );
   });
 
   it("lets natural compaction suppress the 97% fallback", async () => {

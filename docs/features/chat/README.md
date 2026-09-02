@@ -487,7 +487,7 @@ Three rules are specific to it:
 ## Key concepts
 
 - **Claude Agent SDK pipeline.** The Claude adapter is built on the
-  stable `query()` API and exactly pins SDK `0.3.220` in both the desktop
+  stable `query()` API and exactly pins SDK `0.3.258` in both the desktop
   and ADE CLI packages so the bundled Claude Code runtime and protocol
   surface are reproducible: every chat owns a `ClaudeQuery`,
   fed by a `ClaudeInputPump` (`claudeInputPump.ts`) async iterable that
@@ -503,9 +503,9 @@ Three rules are specific to it:
   path is passed through `pathToClaudeCodeExecutable`. Context usage,
   rewindFiles, forkSession, and output-style selection all run through the SDK control channel surfaced on the active
   `Query` handle. The `claude_sdk.version` telemetry tag is derived from the
-  resolved runtime package metadata (with `0.3.220` only as the partial-install
+  resolved runtime package metadata (with `0.3.258` only as the partial-install
   fallback), so packaged telemetry reports the SDK that actually shipped.
-- **Claude SDK 0.3.220 event surfaces.** ADE enables SDK hook events,
+- **Claude SDK 0.3.258 event surfaces.** ADE enables SDK hook events,
   agent progress summaries, prompt suggestions, defensive filtering of tagged child frames,
   file checkpointing, and all skills for full Claude chats. The adapter
   translates SDK retry/refusal/notification/memory/mirror/permission events
@@ -2000,7 +2000,7 @@ Provider connection management lives on the `ade.ai.*` surface (handled in `regi
 - **Dispatched steer cancellation.** Every priority message receives a fresh
   client-side SDK UUID. ADE keeps a bounded UUID-to-`steerId` attribution map,
   returns those attributed messages in interrupt receipts, and capability-probes
-  the runtime `cancelAsyncMessage(uuid)` control. SDK `0.3.220` additionally
+  the runtime `cancelAsyncMessage(uuid)` control. SDK `0.3.258` additionally
   supports queue cancellation on the raw interrupt request; ADE uses it only
   when the session advertises `interrupt_cancel_queued_v1`, otherwise it
   preserves the per-message fallback. Successful cancellation

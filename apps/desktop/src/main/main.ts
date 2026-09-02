@@ -79,6 +79,7 @@ import {
   captureAgentTurnSettledAnalytics,
   captureChatAutoResumeAnalytics,
   captureChatMentionsExpandedAnalytics,
+  captureClaudeHooksIgnoredAnalytics,
   captureSessionMetadataRegeneratedAnalytics,
 } from "./services/analytics/agentTurnProductAnalytics";
 import { initPerfRunFromEnv } from "./services/perf/perfLog";
@@ -3886,6 +3887,11 @@ app.whenReady().then(async () => {
         emitProjectEvent(projectRoot, IPC.agentChatEvent, event);
       },
       onTurnSettled: (event) => captureAgentTurnSettledAnalytics({
+        analytics: productAnalyticsService,
+        projectId,
+        event,
+      }),
+      onClaudeHooksIgnored: (event) => captureClaudeHooksIgnoredAnalytics({
         analytics: productAnalyticsService,
         projectId,
         event,

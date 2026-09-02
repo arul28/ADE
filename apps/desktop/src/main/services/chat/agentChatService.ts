@@ -845,12 +845,14 @@ function resolveClaudeAgentSdkVersion(): string {
   } catch {
     // The package metadata can be unavailable in partial development installs.
   }
-  return "0.3.220";
+  return "0.3.258";
 }
 
 const CLAUDE_AGENT_SDK_VERSION = resolveClaudeAgentSdkVersion();
 const CLAUDE_AGENT_SDK_API = "v1_query";
 const CLAUDE_POST_RESULT_DRAIN_TIMEOUT_MS = 1_000;
+/** Hung SDK MCP tool calls currently freeze the chat with no error. 120s is generous enough for slow tools. */
+const CLAUDE_SDK_MCP_TOOL_TIMEOUT_MS = 120_000;
 const CLAUDE_INTERNAL_EDE_DIAGNOSTIC_PREFIX = "[ede_diagnostic]";
 const CLAUDE_AGENT_SDK_TELEMETRY_TAGS = {
   "claude_sdk.version": CLAUDE_AGENT_SDK_VERSION,
@@ -5878,6 +5880,50 @@ function extractReportedModelUsageProvenance(value: unknown): {
   };
 }
 
+const CLAUDE_MODEL_USAGE_COST_BASES = ["list", "managed", "unknown"] as const;
+type ClaudeModelUsageCostBasis = (typeof CLAUDE_MODEL_USAGE_COST_BASES)[number];
+
+function isClaudeModelUsageCostBasis(value: unknown): value is ClaudeModelUsageCostBasis {
+  return typeof value === "string"
+    && (CLAUDE_MODEL_USAGE_COST_BASES as readonly string[]).includes(value);
+}
+
+/**
+ * Display-only extras from SDK ModelUsage. thinkingTokens is already counted
+ * inside outputTokens — never add it to a total, sum, or cost. It is also
+ * partial for sessions resumed from older CLI versions, so it must not be used
+ * for reconciliation. When more than one model reports a value, skip the
+ * turn-level field rather than combining them.
+ */
+function extractClaudeModelUsageExtras(value: unknown): {
+  thinkingTokens?: number;
+  costBasis?: ClaudeModelUsageCostBasis;
+} {
+  if (!value || typeof value !== "object") return {};
+  const rows = Object.values(value as Record<string, unknown>)
+    .map(asRecord)
+    .filter((row): row is Record<string, unknown> => row !== null);
+  const thinkingValues = new Set(
+    rows
+      .map((row) => numberOrNull(row.thinkingTokens ?? row.thinking_tokens))
+      .filter((tokens): tokens is number => tokens != null),
+  );
+  const costBases = new Set(
+    rows
+      .map((row) => row.costBasis ?? row.cost_basis)
+      .filter(isClaudeModelUsageCostBasis),
+  );
+  return {
+    ...(thinkingValues.size === 1 ? { thinkingTokens: [...thinkingValues][0] } : {}),
+    ...(costBases.size === 1 ? { costBasis: [...costBases][0] } : {}),
+  };
+}
+
+function readClaudeUserMessageUuid(value: unknown): string | null {
+  const record = asRecord(value);
+  return normalizeReportedModelName(record?.user_message_uuid);
+}
+
 type ClaudeResultMetadata = {
   canonicalModel?: string;
   modelProvider?: string;
@@ -5885,11 +5931,16 @@ type ClaudeResultMetadata = {
   fastModeDisabledReason?: string;
   userMessageUuid?: string;
   requestSentWallMs?: number;
+  queuedTurnCount?: number;
+  thinkingTokens?: number;
+  costBasis?: ClaudeModelUsageCostBasis;
 };
 
 function extractClaudeResultMetadata(result: Record<string, unknown>): ClaudeResultMetadata {
   const provenance = extractReportedModelUsageProvenance(result.modelUsage);
+  const usageExtras = extractClaudeModelUsageExtras(result.modelUsage);
   const userMessageUuid = normalizeReportedModelName(result.user_message_uuid);
+  const queuedTurnCount = numberOrNull(result.queued_turn_count);
   const fastModeDisabledReason = typeof result.fast_mode_disabled_reason === "string"
     ? result.fast_mode_disabled_reason
     : result.fast_mode_disabled_reason
@@ -5897,10 +5948,12 @@ function extractClaudeResultMetadata(result: Record<string, unknown>): ClaudeRes
       : undefined;
   return {
     ...provenance,
+    ...usageExtras,
     ...(typeof result.api_error_status === "number" ? { apiErrorStatus: result.api_error_status } : {}),
     ...(fastModeDisabledReason ? { fastModeDisabledReason } : {}),
     ...(userMessageUuid ? { userMessageUuid } : {}),
     ...(typeof result.request_sent_wall_ms === "number" ? { requestSentWallMs: result.request_sent_wall_ms } : {}),
+    ...(queuedTurnCount != null ? { queuedTurnCount } : {}),
   };
 }
 
@@ -8101,6 +8154,11 @@ export function createAgentChatService(args: {
   onEvent?: (event: AgentChatEventEnvelope) => void;
   /** Low-frequency, content-free hook emitted once when a persisted turn reaches a terminal state. */
   onTurnSettled?: (event: AgentChatTurnSettledEvent) => void;
+  /**
+   * Content-free hook fired when this client's Claude hooks were ignored
+   * because another client already configured the joined session.
+   */
+  onClaudeHooksIgnored?: (event: { sessionId: string }) => void;
   /** Content-free hook fired when a send's composer @-mentions were expanded into pointer blocks. */
   onChatMentionsExpanded?: (event: { sessionId: string | null }) => void;
   /** Content-free hook fired after an explicit session-metadata generation request. */
@@ -8180,6 +8238,7 @@ export function createAgentChatService(args: {
     createScheduledWorkScheduler = createChatScheduledWorkScheduler,
     onEvent,
     onTurnSettled,
+    onClaudeHooksIgnored,
     onChatMentionsExpanded,
     onSessionMetadataRegenerated,
     onAutoResumeOutcome,
@@ -9700,7 +9759,7 @@ export function createAgentChatService(args: {
       applyFlagSettings?: ClaudeQuery["applyFlagSettings"];
       reloadPlugins?: ClaudeQuery["reloadPlugins"];
       supportedCommands?: () => Promise<Array<{ name?: string; description?: string }>>;
-      getContextUsage?: () => Promise<SDKControlGetContextUsageResponse>;
+      getContextUsage?: (opts?: { detail?: "summary" | "full" }) => Promise<SDKControlGetContextUsageResponse>;
       rewindFiles?: (userMessageId: string, options?: { dryRun?: boolean }) => Promise<ClaudeRewindFilesResult>;
       interrupt?: ClaudeQuery["interrupt"];
       interruptWithOptions?: (options: { cancelQueued: boolean }) => Promise<SDKControlInterruptResponse>;
@@ -15654,7 +15713,7 @@ export function createAgentChatService(args: {
       const usage = normalizeClaudeContextUsage(await awaitClaudeControlCall(
         "Claude context usage",
         CLAUDE_INTERRUPT_REQUEST_TIMEOUT_MS,
-        () => control.getContextUsage!(),
+        () => control.getContextUsage!({ detail: origin === "compact" ? "full" : "summary" }),
       ));
       if (
         managed.runtime !== runtime
@@ -18205,6 +18264,7 @@ export function createAgentChatService(args: {
       version: appVersion,
       tools: sdkTools,
       alwaysLoad: true,
+      timeout: CLAUDE_SDK_MCP_TOOL_TIMEOUT_MS,
     });
   };
 
@@ -20060,14 +20120,17 @@ export function createAgentChatService(args: {
       outputTokens?: number | null;
       cacheReadTokens?: number | null;
       cacheCreationTokens?: number | null;
+      thinkingTokens?: number | null;
     };
     costUsd: number | null;
+    costBasis?: ClaudeModelUsageCostBasis;
     canonicalModel?: string;
     modelProvider?: string;
     apiErrorStatus?: number;
     fastModeDisabledReason?: string;
     userMessageUuid?: string;
     requestSentWallMs?: number;
+    queuedTurnCount?: number;
     emittedToolIds: Set<string>;
     openToolUses: Map<string, { toolName: string }>;
     structuredActivity: ClaudeStructuredActivityState;
@@ -20230,12 +20293,14 @@ export function createAgentChatService(args: {
       ...resolveClaudeTurnModelPayload(managed.session, []),
       ...(state.usage ? { usage: state.usage } : {}),
       ...(state.costUsd != null ? { costUsd: state.costUsd } : {}),
+      ...(state.costBasis ? { costBasis: state.costBasis } : {}),
       ...(state.canonicalModel ? { canonicalModel: state.canonicalModel } : {}),
       ...(state.modelProvider ? { modelProvider: state.modelProvider } : {}),
       ...(state.apiErrorStatus != null ? { apiErrorStatus: state.apiErrorStatus } : {}),
       ...(state.fastModeDisabledReason ? { fastModeDisabledReason: state.fastModeDisabledReason } : {}),
       ...(state.userMessageUuid ? { userMessageUuid: state.userMessageUuid } : {}),
       ...(state.requestSentWallMs != null ? { requestSentWallMs: state.requestSentWallMs } : {}),
+      ...(state.queuedTurnCount != null ? { queuedTurnCount: state.queuedTurnCount } : {}),
       ...(terminalReason ? { terminalReason, terminalReasonSource: "sdk" as const } : {}),
     });
     if (state.assistantText.trim().length > 0) {
@@ -20912,6 +20977,10 @@ export function createAgentChatService(args: {
 
     if (msg.type === "assistant") {
       const assistantMsg = record;
+      const earlyUserMessageUuid = readClaudeUserMessageUuid(assistantMsg);
+      if (earlyUserMessageUuid && !state.userMessageUuid) {
+        state.userMessageUuid = earlyUserMessageUuid;
+      }
       const betaMessage = asRecord(assistantMsg.message);
       const assistantWireUuid = compactString(assistantMsg.uuid);
       const assistantMessageId = compactString(betaMessage?.id);
@@ -21038,6 +21107,10 @@ export function createAgentChatService(args: {
 
     if (msg.type === "stream_event") {
       const streamMsg = record;
+      const earlyUserMessageUuid = readClaudeUserMessageUuid(streamMsg);
+      if (earlyUserMessageUuid && !state.userMessageUuid) {
+        state.userMessageUuid = earlyUserMessageUuid;
+      }
       const event = asRecord(streamMsg.event);
       if (!event) return;
       const turnId = startClaudeIdleTurn(managed, runtime, state);
@@ -21222,8 +21295,13 @@ export function createAgentChatService(args: {
       state.modelProvider = metadata.modelProvider;
       state.apiErrorStatus = metadata.apiErrorStatus;
       state.fastModeDisabledReason = metadata.fastModeDisabledReason;
-      state.userMessageUuid = metadata.userMessageUuid;
+      if (metadata.userMessageUuid) state.userMessageUuid = metadata.userMessageUuid;
       state.requestSentWallMs = metadata.requestSentWallMs;
+      if (metadata.queuedTurnCount != null) state.queuedTurnCount = metadata.queuedTurnCount;
+      if (metadata.costBasis) state.costBasis = metadata.costBasis;
+      if (metadata.thinkingTokens != null) {
+        state.usage = { ...state.usage, thinkingTokens: metadata.thinkingTokens };
+      }
       if (resultIsError && turnId) {
         for (const error of resultErrors.userFacing) {
           emitChatEvent(managed, { type: "error", message: error, turnId });
@@ -21546,7 +21624,7 @@ export function createAgentChatService(args: {
     });
 
     let assistantText = "";
-    let usage: { inputTokens?: number | null; outputTokens?: number | null; cacheReadTokens?: number | null; cacheCreationTokens?: number | null } | undefined;
+    let usage: { inputTokens?: number | null; outputTokens?: number | null; cacheReadTokens?: number | null; cacheCreationTokens?: number | null; thinkingTokens?: number | null } | undefined;
     let costUsd: number | null = null;
     let resultTerminalStatus: ClaudeTerminalStatus = "completed";
     let quotaTrippedThisTurn = false;
@@ -21557,6 +21635,8 @@ export function createAgentChatService(args: {
     let resultFastModeDisabledReason: string | undefined;
     let resultUserMessageUuid: string | undefined;
     let resultRequestSentWallMs: number | undefined;
+    let resultQueuedTurnCount: number | undefined;
+    let resultCostBasis: ClaudeModelUsageCostBasis | undefined;
     let recoverFromContextOverflow = false;
     let reportedAssistantModel: string | null = null;
     let reportedInitModel: string | null = null;
@@ -22967,6 +23047,10 @@ export function createAgentChatService(args: {
         // assistant message — process content blocks
         if (msg.type === "assistant") {
           const assistantMsg = msg as any;
+          const earlyUserMessageUuid = readClaudeUserMessageUuid(assistantMsg);
+          if (earlyUserMessageUuid && !resultUserMessageUuid) {
+            resultUserMessageUuid = earlyUserMessageUuid;
+          }
           // The SDK reports a logged-out turn as an assistant message carrying
           // error="authentication_failed" (its text otherwise renders as a plain
           // bubble with no recovery affordance). Fast-fail into the re-login card.
@@ -23144,6 +23228,10 @@ export function createAgentChatService(args: {
         // stream_event — partial streaming deltas
         if (msg.type === "stream_event") {
           const streamMsg = msg as any;
+          const earlyUserMessageUuid = readClaudeUserMessageUuid(streamMsg);
+          if (earlyUserMessageUuid && !resultUserMessageUuid) {
+            resultUserMessageUuid = earlyUserMessageUuid;
+          }
           const event = streamMsg.event;
           if (!event) continue;
           markBackendDispatched();
@@ -23410,8 +23498,10 @@ export function createAgentChatService(args: {
           resultModelProvider = metadata.modelProvider;
           resultApiErrorStatus = metadata.apiErrorStatus;
           resultFastModeDisabledReason = metadata.fastModeDisabledReason;
-          resultUserMessageUuid = metadata.userMessageUuid;
+          if (metadata.userMessageUuid) resultUserMessageUuid = metadata.userMessageUuid;
           resultRequestSentWallMs = metadata.requestSentWallMs;
+          if (metadata.queuedTurnCount != null) resultQueuedTurnCount = metadata.queuedTurnCount;
+          if (metadata.costBasis) resultCostBasis = metadata.costBasis;
           if (resultMsg.usage) {
             usage = {
               inputTokens: resultMsg.usage.input_tokens ?? null,
@@ -23419,6 +23509,9 @@ export function createAgentChatService(args: {
               cacheReadTokens: resultMsg.usage.cache_read_input_tokens ?? null,
               cacheCreationTokens: resultMsg.usage.cache_creation_input_tokens ?? null,
             };
+          }
+          if (metadata.thinkingTokens != null) {
+            usage = { ...usage, thinkingTokens: metadata.thinkingTokens };
           }
           if (typeof resultMsg.total_cost_usd === "number") {
             costUsd = resultMsg.total_cost_usd;
@@ -23618,12 +23711,14 @@ export function createAgentChatService(args: {
           ...doneModel,
           ...(usage ? { usage } : {}),
           ...(costUsd != null ? { costUsd } : {}),
+          ...(resultCostBasis ? { costBasis: resultCostBasis } : {}),
           ...(resultCanonicalModel ? { canonicalModel: resultCanonicalModel } : {}),
           ...(resultModelProvider ? { modelProvider: resultModelProvider } : {}),
           ...(resultApiErrorStatus != null ? { apiErrorStatus: resultApiErrorStatus } : {}),
           ...(resultFastModeDisabledReason ? { fastModeDisabledReason: resultFastModeDisabledReason } : {}),
           ...(resultUserMessageUuid ? { userMessageUuid: resultUserMessageUuid } : {}),
           ...(resultRequestSentWallMs != null ? { requestSentWallMs: resultRequestSentWallMs } : {}),
+          ...(resultQueuedTurnCount != null ? { queuedTurnCount: resultQueuedTurnCount } : {}),
           ...(resultTerminalReason
             ? { terminalReason: resultTerminalReason, terminalReasonSource: "sdk" as const }
             : {}),
@@ -32149,6 +32244,31 @@ export function createAgentChatService(args: {
     }
   };
 
+  const observeClaudeInitializationHooks = (
+    managed: ManagedChatSession,
+    sessionQuery: ClaudeQuery,
+  ): void => {
+    const initializationResult = typeof sessionQuery.initializationResult === "function"
+      ? sessionQuery.initializationResult.bind(sessionQuery)
+      : null;
+    if (!initializationResult) return;
+    const sessionId = managed.session.id;
+    void initializationResult().then((response) => {
+      if (response?.hooks_applied !== false) return;
+      logger.warn("agent_chat.claude_hooks_ignored", {
+        sessionId,
+        ...CLAUDE_AGENT_SDK_TELEMETRY_TAGS,
+      });
+      onClaudeHooksIgnored?.({ sessionId });
+    }).catch((error) => {
+      logger.debug("agent_chat.claude_initialization_result_failed", {
+        sessionId,
+        ...CLAUDE_AGENT_SDK_TELEMETRY_TAGS,
+        error: String(error),
+      });
+    });
+  };
+
   const startClaudeQuery = async (managed: ManagedChatSession, runtime: ClaudeRuntime): Promise<ClaudeQuery> => {
     const startGeneration = runtime.queryGeneration;
     // background_tasks_changed is per CLI process and emits no startup value.
@@ -32223,6 +32343,7 @@ export function createAgentChatService(args: {
     runtime.query = sessionQuery;
     runtime.inputPump = pump;
     runtime.warmQuery = null;
+    observeClaudeInitializationHooks(managed, sessionQuery);
     if (runtime.forkFromSdkSessionId) {
       runtime.forkFromSdkSessionId = null;
       persistChatState(managed);

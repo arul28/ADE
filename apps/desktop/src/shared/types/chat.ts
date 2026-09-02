@@ -944,10 +944,20 @@ export type AgentChatEvent =
         cacheCreationTokens?: number | null;
         /** Reasoning/thinking output tokens (Codex/Droid/OpenCode/Claude). */
         reasoningTokens?: number | null;
+        /**
+         * Claude ModelUsage.thinkingTokens. Already counted inside outputTokens —
+         * display-only; never add to a total, sum, or cost.
+         */
+        thinkingTokens?: number | null;
         /** Effective context window for the model that produced this turn, when the runtime reports one. */
         contextWindow?: number | null;
       };
       costUsd?: number | null;
+      /**
+       * Which price table priced this Claude turn: list, managed-settings, or
+       * unknown (costUsd is then a guess). Recorded only; not used for billing.
+       */
+      costBasis?: "list" | "managed" | "unknown";
       /** HTTP status attached to an SDK terminal API error (notably 429/529). */
       apiErrorStatus?: number | null;
       /** Why fast mode was disabled for this result, when reported by Claude. */
@@ -956,6 +966,11 @@ export type AgentChatEvent =
       userMessageUuid?: string;
       /** Wall-clock timestamp at which the provider request was sent. */
       requestSentWallMs?: number;
+      /**
+       * User-initiated sends still waiting in Claude's command queue when this
+       * result was produced. 0 means none pending. Absent on older CLIs.
+       */
+      queuedTurnCount?: number;
       // Set only at render time when multiple done events from one cancellation
       // (parent + subagents) are consolidated into a single row.
       subagentStoppedCount?: number;
