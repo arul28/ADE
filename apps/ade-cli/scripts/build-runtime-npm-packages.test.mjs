@@ -13,6 +13,7 @@ import {
   buildMetaPackage,
   buildRuntimePackage,
   metaPackageManifest,
+  packedPathsFromNpmPackJson,
   parseArgs,
   readLicenseFiles,
   runtimeAssetNames,
@@ -128,6 +129,21 @@ test("npm pack dry-run buffer is large enough for a real native tree", () => {
   assert.match(source, /maxBuffer:\s*NPM_PACK_MAX_BUFFER_BYTES/);
 });
 
+test("reads npm 12 pack --json objects keyed by package name", () => {
+  assert.deepEqual(
+    packedPathsFromNpmPackJson({
+      "@ade-dev/runtime-linux-x64": {
+        files: [{ path: "bin/ade" }, { path: "package/native/manifest.json" }],
+      },
+    }),
+    ["bin/ade", "native/manifest.json"],
+  );
+  assert.deepEqual(
+    packedPathsFromNpmPackJson([{ files: [{ path: "bin/ade" }, { path: "package.json" }] }]),
+    ["bin/ade", "package.json"],
+  );
+});
+
 test("Windows native archive is ade-win32-x64.native.tar.gz, not glued onto .exe", () => {
   assert.deepEqual(runtimeAssetNames("win32-x64"), {
     binaryAsset: "ade-win32-x64.exe",
@@ -145,6 +161,8 @@ test("publish workflow checksum step uses runtimeAssetNames", () => {
     "utf8",
   );
   assert.match(workflow, /runtimeAssetNames/);
+  assert.match(workflow, /\$\{RUNNER_TEMP\}/);
+  assert.match(workflow, /RUNTIME_PACKAGES_DIR/);
   assert.doesNotMatch(workflow, /ade-win32-x64\\.exe\(\\\.native\\.tar\\.gz\)\?/);
 });
 

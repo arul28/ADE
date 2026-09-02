@@ -386,6 +386,34 @@ function defaultPackRunner(cwd) {
  * comment claimed: that script walks `packages/` only, and these packages are
  * built into `runtime-packages/`, which it never sees.
  */
+/**
+ * Paths `npm pack --dry-run --json` says it would publish.
+ *
+ * npm 10/11 emit an array of entries. npm 12 (what `npm@latest` is on the
+ * publish runner) emits an object keyed by package name. Treating that object
+ * as the entry made `files` undefined, so a real native tree reported every
+ * on-disk path as missing, starting at `bin/ade`.
+ */
+export function packedPathsFromNpmPackJson(parsed) {
+  if (parsed == null) return [];
+  let entry = null;
+  if (Array.isArray(parsed)) {
+    entry = parsed[0] ?? null;
+  } else if (Array.isArray(parsed.files)) {
+    entry = parsed;
+  } else {
+    entry = Object.values(parsed).find((value) => value && Array.isArray(value.files)) ?? null;
+  }
+  const files = Array.isArray(entry?.files) ? entry.files : [];
+  const paths = [];
+  for (const file of files) {
+    const raw = typeof file === "string" ? file : file?.path;
+    if (typeof raw !== "string" || raw.length === 0) continue;
+    paths.push(raw.replace(/^package\//, ""));
+  }
+  return paths;
+}
+
 export function verifyPackedRuntimeFiles({ packageDir, runPack = defaultPackRunner }) {
   // The directory name carries the target, so the launcher's name is decided,
   // not a choice of two. Accepting either one let a `runtime-win32-x64`
@@ -414,8 +442,7 @@ export function verifyPackedRuntimeFiles({ packageDir, runPack = defaultPackRunn
         `package whose contents were never verified.`,
     );
   }
-  const entry = Array.isArray(parsed) ? parsed[0] : parsed;
-  const packed = new Set((Array.isArray(entry?.files) ? entry.files : []).map((file) => file.path));
+  const packed = new Set(packedPathsFromNpmPackJson(parsed));
   const missing = onDisk.filter((file) => !packed.has(file));
   if (missing.length > 0) {
     throw new Error(
@@ -628,8 +655,7 @@ export function verifyPackedMetaFiles({ packageDir, runPack = defaultPackRunner 
         `package whose contents were never verified.`,
     );
   }
-  const entry = Array.isArray(parsed) ? parsed[0] : parsed;
-  const packed = new Set((Array.isArray(entry?.files) ? entry.files : []).map((file) => file.path));
+  const packed = new Set(packedPathsFromNpmPackJson(parsed));
   for (const required of ["LICENSE", EXCEPTION_FILE_NAME, "README.md", "package.json"]) {
     if (!packed.has(required)) {
       throw new Error(
