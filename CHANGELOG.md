@@ -28,6 +28,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `@ade-dev/sdk` and `@ade-dev/chat-ui` are MIT, and a proprietary app may ship the runtime binary. ADE itself, the desktop app, the CLI, and the runtime binary stay AGPL-3.0-only, but the new ADE Runtime Embedding Exception permits distributing an unmodified runtime binary inside a larger work that consumes it through the documented SDK interface. Re-signing the binary with your own identity does not count as modifying it. Modifying the runtime, or linking ADE source, keeps the AGPL in force. Every `@ade-dev/runtime-*` package now carries both documents (#1211).
 - `@ade-dev/sdk` and `@ade-dev/chat-ui` are at 0.2.0. Every 0.1.x option keeps its exact behavior; everything above is additive (#1212).
 
+## [1.2.72] - 2026-09-02
+
+### Claude
+
+- Claude chats now run Claude Code 2.1.258. ADE pins Claude Agent SDK 0.3.258 so Fable 5.1 can actually run on the shipped CLI (#1204).
+
+### Model picker
+
+- Grok, Kimi, Qwen, and GitHub Copilot are in the picker. Desktop, ADE Code, and iOS share the same catalog and provider order.
+
+### Cursor Cloud
+
+- Cloud chats send the model you picked and keep Cursor's agent name instead of swapping in a generic one (#1203).
+
+### Work chat
+
+- Ticks, menus, and a pending model pick stay consistent while a turn is running (#1201).
+
+### Updates
+
+- A newer ADE release replaces a staged update without requiring a relaunch first (#1200).
+
+### iOS
+
+- Work's model picker includes Grok, Kimi, Qwen, and GitHub Copilot, matching desktop.
+
 ## [1.2.71] - 2026-09-01
 
 ### Claude models
@@ -1894,7 +1920,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Initial public release.
 
-[Unreleased]: https://github.com/arul28/ADE/compare/v1.2.71...HEAD
+[Unreleased]: https://github.com/arul28/ADE/compare/v1.2.72...HEAD
+[1.2.72]: https://github.com/arul28/ADE/compare/v1.2.71...v1.2.72
 [1.2.71]: https://github.com/arul28/ADE/compare/v1.2.70...v1.2.71
 [1.2.70]: https://github.com/arul28/ADE/compare/v1.2.69...v1.2.70
 [1.2.69]: https://github.com/arul28/ADE/compare/v1.2.68...v1.2.69

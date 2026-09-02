@@ -61,6 +61,7 @@ import { buildPairingQrPayload } from "../../desktop/src/shared/pairingQr";
 import { buildWebClientPairUrl } from "../../desktop/src/shared/webClientUrl";
 import { abbreviatePathTail } from "../../desktop/src/shared/pathDisplay";
 import { CURSOR_CLI_EXECUTABLES } from "../../desktop/src/shared/providerCliExecutables";
+import { effectiveCursorModeId } from "../../desktop/src/shared/cursorModes";
 import {
   accountMachineDisplayName,
   accountMachineConnectionState,
@@ -71,6 +72,11 @@ import {
   machineStatusLine,
 } from "../../desktop/src/shared/machinePresence";
 import { SEARCH_DOC_KINDS } from "../../desktop/src/shared/types/search";
+import {
+  droidPermissionModeFromLegacyPermissionMode,
+  isAgentChatDroidPermissionMode,
+  type AgentChatDroidPermissionMode,
+} from "../../desktop/src/shared/types/chat";
 import type { AgentChatDispatchSteerMode } from "../../desktop/src/shared/types/chat";
 import type { TerminalSessionSummary } from "../../desktop/src/shared/types/sessions";
 import {
@@ -1767,6 +1773,9 @@ const HELP_BY_COMMAND: Record<string, string> = {
     --model <id>           Runtime model id.
     --reasoning-effort <v> Reasoning tier. Alias: --effort.
     --permissions <mode>   default | auto | plan | edit | full-auto | config-toml.
+    --droid-permission-mode <m>
+                           Droid only: read-only | auto-low | auto-medium | auto-high | agi.
+                           Aliases: --droid-autonomy, --autonomy.
     --fast                 Request fast service tier when supported.
     --no-fast, --standard  Disable fast service tier explicitly.
     --prompt <text>        First chat message or CLI initial input.
@@ -2235,6 +2244,9 @@ const HELP_BY_COMMAND: Record<string, string> = {
     --kickoff <text>        Alias for --prompt.
     --permissions <mode>    Alias for --permission-mode.
     --permission-mode <m>   default | auto | plan | edit | full-auto | config-toml.
+    --droid-permission-mode <m>
+                            Droid only: read-only | auto-low | auto-medium | auto-high | agi.
+                            Aliases: --droid-autonomy, --autonomy.
     --fast                  Request fast service tier when supported.
     --no-fast, --standard   Disable fast mode explicitly.
     --print                 Start the session runtime in print mode.
@@ -2928,6 +2940,24 @@ function parseRuntimeProfile(value: string | null | undefined): "embedded" | und
   if (trimmed === "embedded") return "embedded";
   throw new CliUsageError(
     `Unknown runtime profile '${trimmed}'. The only profile ade runtime run accepts is 'embedded'.`,
+  );
+}
+
+const DROID_PERMISSION_MODE_FLAGS = [
+  "--droid-permission-mode",
+  "--droid-autonomy",
+  "--autonomy",
+];
+
+function readDroidPermissionMode(args: string[]): AgentChatDroidPermissionMode | null {
+  const value = readValue(args, DROID_PERMISSION_MODE_FLAGS);
+  if (value == null) return null;
+  const normalized = value.trim().toLowerCase();
+  if (isAgentChatDroidPermissionMode(normalized)) {
+    return normalized;
+  }
+  throw new CliUsageError(
+    "droidPermissionMode must be one of read-only, auto-low, auto-medium, auto-high, or agi.",
   );
 }
 
@@ -4874,6 +4904,11 @@ function readChatLaunchConfig(args: string[]): JsonObject {
     "permissionMode",
     readValue(args, ["--permission-mode", "--permissions"]),
   );
+  maybePut(
+    config,
+    "droidPermissionMode",
+    readDroidPermissionMode(args),
+  );
   if (fastMode !== undefined) {
     config.fastMode = fastMode;
     // Mirror to the deprecated alias so older daemons (pre-rename) still see the selection.
@@ -5001,6 +5036,7 @@ function buildNewChatPlan(args: string[], defaultMode: "chat" | "cli"): CliPlan 
   const modelArg = readValue(args, ["--model", "--model-id"]);
   const reasoningEffort = readValue(args, ["--reasoning-effort", "--effort", "--reasoning"]);
   const permissionMode = readValue(args, ["--permission-mode", "--permissions"]);
+  const droidPermissionMode = readDroidPermissionMode(args);
   const fastMode = readFastModeFlag(args);
   const title = readValue(args, ["--title"]);
   const printConfig = readFlag(args, ["--print-config", "--dry-run"]);
@@ -5010,6 +5046,9 @@ function buildNewChatPlan(args: string[], defaultMode: "chat" | "cli"): CliPlan 
   }
   if (mode === "chat" && provider === "shell") {
     throw new CliUsageError("Chat mode provider must be claude, codex, cursor, droid, opencode, pi, qwen, kimi, grok, or copilot.");
+  }
+  if (droidPermissionMode && provider !== "droid") {
+    throw new CliUsageError("Droid autonomy is only supported for Droid chat sessions.");
   }
   if (mode === "cli") {
     const effectivePermissionMode = permissionMode ?? "default";
@@ -5045,11 +5084,7 @@ function buildNewChatPlan(args: string[], defaultMode: "chat" | "cli"): CliPlan 
         permissionMode,
         ...(orchestrationParentSessionId ? { orchestrationParentSessionId } : {}),
         ...(spawnKind ? { spawnKind } : {}),
-        droidPermissionMode: readValue(args, [
-          "--droid-permission-mode",
-          "--droid-autonomy",
-          "--autonomy",
-        ]),
+        ...(droidPermissionMode ? { droidPermissionMode } : {}),
         title,
         surface: readValue(args, ["--surface"]) ?? "work",
         ...(fastMode !== undefined ? { fastMode, codexFastMode: fastMode } : {}),
@@ -5062,6 +5097,7 @@ function buildNewChatPlan(args: string[], defaultMode: "chat" | "cli"): CliPlan 
         model: modelArg,
         modelId: modelArg,
         reasoningEffort,
+        ...(droidPermissionMode ? { droidPermissionMode } : {}),
         ...(fastMode !== undefined ? { fastMode, codexFastMode: fastMode } : {}),
         // Spawn lineage rides on resume metadata, which only agent providers
         // have — plain shell terminals can't persist it, so don't pretend.
@@ -5210,8 +5246,8 @@ function codexPermissionPreview(permissionMode: string): JsonObject | null {
   };
 }
 
-function permissionModePreview(permissionMode: string): JsonObject {
-  const mode = permissionMode || "default";
+function permissionModePreview(permissionMode: string, droidPermissionMode?: string | null): JsonObject {
+  const mode = isTrackedCliPermissionMode(permissionMode) ? permissionMode : "default";
   return {
     permissionMode: mode,
     claudePermissionMode: mode === "full-auto"
@@ -5224,20 +5260,13 @@ function permissionModePreview(permissionMode: string): JsonObject {
             ? "auto"
             : "default",
     codex: codexPermissionPreview(mode),
-    cursorMode: mode === "full-auto"
-      ? "full-auto"
-      : mode === "plan"
-        ? "plan"
-        : mode === "edit"
-          ? "ask"
-          : "agent",
-    droidPermissionMode: mode === "full-auto"
-      ? "auto-high"
-      : mode === "edit"
-        ? "auto-low"
-        : mode === "plan"
-          ? "read-only"
-          : "auto-medium",
+    // Preview the mode the created session actually persists. `edit` used to
+    // preview as `ask`, which no create path has ever produced: Cursor runs
+    // both `edit` and `default` as `agent`.
+    cursorMode: effectiveCursorModeId(null, mode),
+    droidPermissionMode: droidPermissionMode
+      ?? droidPermissionModeFromLegacyPermissionMode(mode)
+      ?? "auto-medium",
     opencodePermissionMode: mode === "default" ? "edit" : mode,
   };
 }
@@ -5304,7 +5333,7 @@ function buildChatCreateConfigPreview(
       model: asString(input.model) ?? asString(input.modelId) ?? null,
       reasoningEffort: asString(input.reasoningEffort) ?? null,
       fastMode: typeof input.fastMode === "boolean" ? input.fastMode : null,
-      ...permissionModePreview(permissionMode),
+      ...permissionModePreview(permissionMode, asString(input.droidPermissionMode)),
     },
   };
 }
@@ -6983,6 +7012,10 @@ function buildCliSessionStartPlan(
     : readValue(args, ["--message", "--prompt", "--initial-input"]);
   const permissionMode =
     readValue(args, ["--permission-mode", "--permissions"]) ?? "default";
+  const droidPermissionMode = readDroidPermissionMode(args);
+  if (droidPermissionMode && provider !== "droid") {
+    throw new CliUsageError("Droid autonomy is only supported for Droid CLI sessions.");
+  }
   if (!isTrackedCliPermissionMode(permissionMode)) {
     throw new CliUsageError(
       "permissionMode must be one of default, auto, plan, edit, full-auto, or config-toml.",
@@ -7012,6 +7045,7 @@ function buildCliSessionStartPlan(
     chatSessionId: readValue(args, ["--chat-session", "--chat-session-id"]),
     ...(orchestrationParentSessionId ? { orchestrationParentSessionId } : {}),
     ...(spawnKind ? { spawnKind } : {}),
+    ...(droidPermissionMode ? { droidPermissionMode } : {}),
     tracked: !readFlag(args, ["--untracked"]),
   });
 
@@ -7771,11 +7805,7 @@ function buildChatPlan(args: string[]): CliPlan {
           "--permission-mode",
           "--permissions",
         ]),
-        droidPermissionMode: readValue(args, [
-          "--droid-permission-mode",
-          "--droid-autonomy",
-          "--autonomy",
-        ]),
+        droidPermissionMode: readDroidPermissionMode(args),
         title: readValue(args, ["--title"]),
         surface: readValue(args, ["--surface"]) ?? "work",
         ...(fastMode !== undefined ? { fastMode, codexFastMode: fastMode } : {}),
@@ -8551,6 +8581,7 @@ function buildPersonalChatPlan(sub: string, args: string[]): CliPlan {
     const model = readValue(args, ["--model", "--model-id"]);
     const provider = readValue(args, ["--provider"]);
     const prompt = readValue(args, ["--prompt", "--kickoff", "--kickoff-prompt"]);
+    const droidPermissionMode = readDroidPermissionMode(args);
     const fastMode = readFastModeFlag(args);
     const createArgs = collectGenericObjectArgs(args, {
       provider,
@@ -8559,6 +8590,7 @@ function buildPersonalChatPlan(sub: string, args: string[]): CliPlan {
       title: readValue(args, ["--title"]),
       reasoningEffort: readValue(args, ["--reasoning-effort", "--effort"]),
       permissionMode: readValue(args, ["--permission-mode", "--permissions"]),
+      ...(droidPermissionMode ? { droidPermissionMode } : {}),
       ...(fastMode !== undefined ? { fastMode, codexFastMode: fastMode } : {}),
       ...(prompt ? { kickoffText: prompt } : {}),
     });
@@ -8678,6 +8710,7 @@ function buildPersonalChatPlan(sub: string, args: string[]): CliPlan {
     const provider = readValue(args, ["--provider"]);
     const reasoningEffort = readValue(args, ["--reasoning-effort", "--effort"]);
     const permissionMode = readValue(args, ["--permission-mode", "--permissions"]);
+    const droidPermissionMode = readDroidPermissionMode(args);
     const fastMode = readFastModeFlag(args);
     return {
       ...base,
@@ -8690,6 +8723,7 @@ function buildPersonalChatPlan(sub: string, args: string[]): CliPlan {
         ...(model ? { model, modelId: model } : {}),
         ...(reasoningEffort ? { reasoningEffort } : {}),
         ...(permissionMode ? { permissionMode } : {}),
+        ...(droidPermissionMode ? { droidPermissionMode } : {}),
         ...(fastMode !== undefined ? { fastMode } : {}),
       }))],
     };

@@ -1012,7 +1012,7 @@ import {
 } from "./crossProviderReplayFork";
 import { acquireDroidSdkConnection } from "./droidSdkPool";
 import { clearCursorCliModelsCache } from "./cursorModelsDiscovery";
-import type { AgentChatCreateScheduledWorkArgs, AgentChatCrossMachineHandoffCapsule, AgentChatEventEnvelope, ComputerUseBackendStatus, LaneLinearIssue, PendingInputRequest } from "../../../shared/types";
+import type { AgentChatCreateArgs, AgentChatCreateScheduledWorkArgs, AgentChatCrossMachineHandoffCapsule, AgentChatEventEnvelope, ComputerUseBackendStatus, LaneLinearIssue, PendingInputRequest } from "../../../shared/types";
 import { PTY_SEND_PRE_DELIVERY_ERROR_CODE } from "../../../shared/types";
 import { makeLinearIssueContextAttachment } from "../../../shared/chatContextAttachments";
 import { stableStringify } from "../shared/utils";
@@ -16329,6 +16329,29 @@ describe("createAgentChatService", () => {
       mockState.codexResponseOverrides.set("initialize", { userAgent: "codex/0.149.1" });
     };
 
+    const setupQueuedCodexTurn = async () => {
+      pin149();
+      const events: AgentChatEventEnvelope[] = [];
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.4",
+      });
+      await service.sendMessage({
+        sessionId: session.id,
+        text: "Keep this turn active.",
+      }, { awaitDispatch: true });
+      mockState.emitCodexPayload({
+        jsonrpc: "2.0",
+        method: "item/started",
+        params: { turnId: "turn-1", item: { id: "compact-1", type: "contextCompaction" } },
+      });
+      return { service, session, events };
+    };
+
     it("sends ! and /shell drafts through thread/shellCommand", async () => {
       pin149();
       const { service } = createService();
@@ -16502,6 +16525,115 @@ describe("createAgentChatService", () => {
         event.event.type === "system_notice"
         && event.event.message === "Duplicate check-in ignored.",
       )).toBe(true);
+    });
+
+    it("cancels a queued Codex message and clears the staged chip", async () => {
+      const { service, session, events } = await setupQueuedCodexTurn();
+
+      const { steerId } = await service.steer({ sessionId: session.id, text: "check in" });
+      await service.cancelSteer({ sessionId: session.id, steerId });
+
+      expect(mockState.codexRequestPayloads.some((payload) => payload.method === "thread/queue/delete")).toBe(true);
+      expect(events.some((event) =>
+        event.event.type === "system_notice"
+        && event.event.message === "Queued message cancelled."
+        && event.event.steerId === steerId,
+      )).toBe(true);
+    });
+
+    it("recovers the Codex queue submission id when the in-memory mapping is missing", async () => {
+      // `queuedSubmissionBySteerId` lives only on the runtime object, so a
+      // restart, a rehydration, or a remote-handled cancel arrives with it
+      // empty while the transcript still renders the staged chip. The server
+      // is the durable half of the mapping.
+      const { service, session } = await setupQueuedCodexTurn();
+
+      // A queue/add that reports no id leaves the runtime with no mapping —
+      // the same state a restart or a rehydrated session produces — while the
+      // server still holds the submission under the steerId ADE sent it as.
+      mockState.codexResponseOverrides.set("thread/queue/add", (payload) => ({
+        queuedSubmission: {
+          clientUserMessageId: (payload.params as { clientUserMessageId?: string }).clientUserMessageId,
+        },
+      }));
+      const { steerId } = await service.steer({ sessionId: session.id, text: "check in" });
+      mockState.codexResponseOverrides.set("thread/queue/list", {
+        queuedSubmissions: [{ id: "recovered-submission", clientUserMessageId: steerId }],
+      });
+
+      await service.cancelSteer({ sessionId: session.id, steerId, requireQueued: true });
+
+      expect(mockState.codexRequestPayloads.some((payload) =>
+        payload.method === "thread/queue/delete"
+        && (payload.params as { id?: string }).id === "recovered-submission",
+      )).toBe(true);
+    });
+
+    it("raises instead of reporting a cancellation Codex refused", async () => {
+      // Swallowing this cleared the chip while the submission stayed queued and
+      // still ran — a false success, which is worse than a visible failure.
+      const { service, session, events } = await setupQueuedCodexTurn();
+
+      const { steerId } = await service.steer({ sessionId: session.id, text: "check in" });
+      mockState.codexResponseOverrides.set("thread/queue/delete", {
+        error: { code: -32000, message: "queue is locked" },
+      });
+
+      await expect(service.cancelSteer({ sessionId: session.id, steerId })).rejects.toThrow("queue is locked");
+      expect(events.some((event) =>
+        event.event.type === "system_notice"
+        && event.event.message === "Queued message cancelled."
+        && event.event.steerId === steerId,
+      )).toBe(false);
+    });
+
+    it("keeps the staged Codex message when queue recovery itself fails", async () => {
+      const { service, session, events } = await setupQueuedCodexTurn();
+
+      mockState.codexResponseOverrides.set("thread/queue/add", (payload) => ({
+        queuedSubmission: {
+          clientUserMessageId: (payload.params as { clientUserMessageId?: string }).clientUserMessageId,
+        },
+      }));
+      const { steerId } = await service.steer({ sessionId: session.id, text: "check in" });
+      mockState.codexResponseOverrides.set("thread/queue/list", {
+        error: { code: -32000, message: "queue temporarily unavailable" },
+      });
+
+      await expect(service.cancelSteer({ sessionId: session.id, steerId })).rejects.toThrow(
+        "Could not inspect Codex's queued messages: queue temporarily unavailable",
+      );
+      expect(events.some((event) =>
+        event.event.type === "system_notice"
+        && event.event.message === "Queued message cancelled."
+        && event.event.steerId === steerId,
+      )).toBe(false);
+      expect(mockState.codexRequestPayloads.some((payload) => payload.method === "thread/queue/delete")).toBe(false);
+    });
+
+    it("clears an unrecoverable staged Codex message instead of silently doing nothing", async () => {
+      const { service, session, events } = await setupQueuedCodexTurn();
+
+      // Mapping never recorded AND the server queue is empty: nothing can
+      // deliver this message, so the chip has to clear rather than sit there
+      // with a button that does nothing every time it is pressed.
+      mockState.codexResponseOverrides.set("thread/queue/add", (payload) => ({
+        queuedSubmission: {
+          clientUserMessageId: (payload.params as { clientUserMessageId?: string }).clientUserMessageId,
+        },
+      }));
+      const { steerId } = await service.steer({ sessionId: session.id, text: "check in" });
+
+      await service.cancelSteer({ sessionId: session.id, steerId });
+
+      expect(events.some((event) =>
+        event.event.type === "system_notice"
+        && event.event.message === "Queued message cancelled."
+        && event.event.steerId === steerId,
+      )).toBe(true);
+      await expect(
+        service.cancelSteer({ sessionId: session.id, steerId, requireQueued: true }),
+      ).rejects.toThrow("no longer queued");
     });
 
     it("runs mid-turn ! commands as user shell instead of steer", async () => {
@@ -39977,6 +40109,39 @@ describe("createAgentChatService", () => {
       expect(deliveredSteer).toBeUndefined();
     });
 
+    it("does not resurrect a cancelled persisted steer when no runtime is attached", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "cursor",
+        model: "composer-2",
+        modelId: "cursor/composer-2",
+      });
+      const cancelledSteerId = "persisted-steer-to-cancel";
+      const survivingSteerId = "persisted-steer-to-keep";
+      writePersistedChatState(session.id, {
+        ...readPersistedChatState(session.id),
+        pendingSteers: [
+          { steerId: cancelledSteerId, text: "Remove me" },
+          { steerId: survivingSteerId, text: "Keep me" },
+        ],
+      });
+
+      await service.cancelSteer({ sessionId: session.id, steerId: cancelledSteerId, requireQueued: true });
+
+      expect(readPersistedChatState(session.id).pendingSteers).toEqual([
+        { steerId: survivingSteerId, text: "Keep me" },
+      ]);
+      expect(events.some((event) =>
+        event.event.type === "system_notice"
+        && event.event.message === "Queued message cancelled."
+        && event.event.steerId === cancelledSteerId,
+      )).toBe(true);
+    });
+
     it("editSteer updates the queued steer text and cancels on interrupt", async () => {
       const events: AgentChatEventEnvelope[] = [];
       const send = vi.fn().mockResolvedValue(undefined);
@@ -44904,6 +45069,128 @@ it("fails a cleanly ended OpenCode event stream and clears active child sessions
     await expect(service.getSessionSummary(session.id)).resolves.toMatchObject({
       cursorModeId: "agent",
     });
+  });
+
+  const setupCursorPermissionSession = async (
+    controls: Pick<AgentChatCreateArgs, "permissionMode" | "cursorModeId"> = {},
+  ) => {
+    process.env.CURSOR_API_KEY = "cursor-test-key";
+    const { service } = createService();
+    const session = await service.createSession({
+      laneId: "lane-1",
+      provider: "cursor",
+      model: "composer-2",
+      modelId: "cursor/composer-2",
+      ...controls,
+    });
+    return { service, session };
+  };
+
+  it("persists the native Cursor full-auto mode for a permissionMode-only create", async () => {
+    // `ade new chat --provider cursor --permissions full-auto` sends only
+    // `permissionMode`; the desktop composer is the only caller that sends
+    // `cursorModeId`. The session used to run full-auto while reporting mode
+    // "agent", so every mode-reading surface disagreed with the policy.
+    const { service, session } = await setupCursorPermissionSession({
+      permissionMode: "full-auto",
+    });
+
+    expect(session.cursorModeId).toBe("full-auto");
+
+    await service.sendMessage({
+      sessionId: session.id,
+      text: "Run in full auto.",
+    }, { awaitDispatch: true });
+
+    await expect(service.getSessionSummary(session.id)).resolves.toMatchObject({
+      cursorModeId: "full-auto",
+      cursorModeSnapshot: expect.objectContaining({ currentModeId: "full-auto" }),
+    });
+  });
+
+  it("leaves cursorModeId absent for the legacy modes Cursor runs as plain agent", async () => {
+    // Materialising "agent" here would be read back as a real selection and
+    // pin the chat to it, which is the durable-pin bug the Droid and Claude
+    // native controls carry the same warning about.
+    for (const permissionMode of ["default", "edit"] as const) {
+      const { session } = await setupCursorPermissionSession({
+        permissionMode,
+      });
+      expect(session.cursorModeId ?? null).toBeNull();
+    }
+  });
+
+  it("does not let an explicit Cursor mode be overwritten by the legacy permission mode", async () => {
+    const { session } = await setupCursorPermissionSession({
+      permissionMode: "full-auto",
+      cursorModeId: "agent",
+    });
+
+    expect(session.cursorModeId).toBe("agent");
+  });
+
+  it("clears a derived Cursor full-auto mode when the permission mode is lowered", async () => {
+    const { service, session } = await setupCursorPermissionSession({
+      permissionMode: "full-auto",
+    });
+    expect(session.cursorModeId).toBe("full-auto");
+
+    // Without this the derived mode outlives the request that set it and the
+    // chat keeps running full-auto after the caller asked it not to.
+    const updated = await service.updateSession({
+      sessionId: session.id,
+      permissionMode: "default",
+    });
+    expect(updated.cursorModeId ?? null).toBeNull();
+    expect(updated.permissionMode).toBe("default");
+    await expect(service.getSessionSummary(session.id)).resolves.toMatchObject({
+      cursorModeId: null,
+      cursorModeIdWasCleared: true,
+    });
+  });
+
+  it("broadcasts an explicit Cursor mode clear when lowering legacy permissions", async () => {
+    const events: AgentChatEventEnvelope[] = [];
+    const { service } = createService({
+      onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+    });
+    const cursorSession = await service.createSession({
+      laneId: "lane-1",
+      provider: "cursor",
+      model: "composer-2",
+      modelId: "cursor/composer-2",
+      permissionMode: "full-auto",
+    });
+    events.length = 0;
+
+    await service.updateSession({
+      sessionId: cursorSession.id,
+      permissionMode: "default",
+    });
+
+    const metaEvent = events
+      .map((envelope) => envelope.event)
+      .find((event): event is Extract<typeof event, { type: "session_meta_updated" }> =>
+        event.type === "session_meta_updated");
+    expect(metaEvent).toMatchObject({
+      permissionMode: "default",
+      cursorModeId: null,
+    });
+  });
+
+  it("preserves an explicit Cursor mode clear during native permission normalization", async () => {
+    const { service, session } = await setupCursorPermissionSession({
+      permissionMode: "full-auto",
+    });
+    expect(session.cursorModeId).toBe("full-auto");
+
+    const updated = await service.updateSession({
+      sessionId: session.id,
+      cursorModeId: null,
+    });
+
+    expect(updated.cursorModeId).toBeNull();
+    expect(updated.permissionMode).toBe("default");
   });
 
   it("pushes Cursor SDK mode changes into the live worker while a turn is active", async () => {

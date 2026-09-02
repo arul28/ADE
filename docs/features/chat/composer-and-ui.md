@@ -722,7 +722,12 @@ that could not work without it.
 - **Pending steers.** When steers are queued during an active turn, the
   composer renders a pending-steers section above the input area with
   per-message controls. Each `PendingSteerItem` displays a "Sends after
-  turn" badge plus the message text. Hover-revealed actions per
+  turn" badge plus the message text. The action strip
+  (`data-testid="pending-steer-actions"`) hides itself behind hover **only**
+  inside `@media (hover: hover)`; a touch pointer never hovers, so on mobile and
+  ADE Web the controls stay visible. Both the hidden state and the
+  `group-hover` reveal sit inside that one media query, and `group-hover` wins
+  on specificity, so the reveal never depends on stylesheet order. Actions per
   entry: edit (guard-cancel the queued entry with `requireQueued: true`, then
   merge its text, file attachments, and structured context attachments into the
   main composer so the user can revise it and choose a delivery mode again),
@@ -738,11 +743,19 @@ that could not work without it.
   Claude query. Cursor sessions get the interrupt action only, labelled
   **Interrupt & continue** — `dispatchSteer({ mode: "interrupt" })` there
   promotes the staged row to the cancel-and-resend redirect, and `"inline"` is
-  rejected. The tooltips and the hover hint above the staged list follow the
-  same table and name the real provider, so a Cursor session reads "Hover to
-  interrupt with this message, edit, or remove." rather than promising an inline
-  send. Both buttons are hidden for the remaining providers (Codex, OpenCode,
-  Droid, Pi), which only support post-turn delivery.
+  rejected. The tooltips and the hint above the staged list follow the same
+  table and name the real provider (`stagedSteerHint`), so a Cursor session
+  reads "Interrupt with this message, edit or remove." rather than promising an
+  inline send. Both buttons are hidden for the remaining providers (Codex,
+  OpenCode, Droid, Pi), which only support post-turn delivery — and for those
+  the hint says so outright ("Codex cannot take a message mid-turn, so this one
+  waits for the turn to end."). That sentence keys off `capability.modes`, not
+  the wired handlers, so a Claude chat whose dispatch handler is merely unwired
+  never claims Claude is queue-only.
+- **A cancel that fails is reported.** `onCancelSteer` catches the rejection and
+  raises "Couldn't remove the queued message: …" in the pane error banner. A
+  swallowed rejection read as a cancellation that never happened while the agent
+  still sent the message.
 - **Mid-turn split Send button.** While a Claude or Cursor turn is active, the
   composer's primary send control is a split button
   (`ActiveTurnSendButton`, Claude Code parity). The caret selects a delivery

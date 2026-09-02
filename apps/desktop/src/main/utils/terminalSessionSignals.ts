@@ -2,6 +2,7 @@ import type {
   AgentChatClaudePermissionMode,
   AgentChatCodexApprovalPolicy,
   AgentChatCodexSandbox,
+  AgentChatDroidPermissionMode,
   AgentChatPermissionMode,
   TerminalResumeLaunchConfig,
   TerminalResumeMetadata,
@@ -114,16 +115,26 @@ function extractDroidSettings(command: string): Record<string, unknown> | null {
   }
 }
 
-function droidPermissionModeFromSettings(settings: Record<string, unknown> | null): AgentChatPermissionMode | null {
+function droidNativePermissionModeFromSettings(settings: Record<string, unknown> | null): AgentChatDroidPermissionMode | null {
   const defaults = settings?.sessionDefaultSettings;
   if (!defaults || typeof defaults !== "object" || Array.isArray(defaults)) return null;
   const defaultRecord = defaults as Record<string, unknown>;
   const interactionMode = String(defaultRecord.interactionMode ?? "").toLowerCase();
   const autonomyLevel = String(defaultRecord.autonomyLevel ?? "").toLowerCase();
-  if (interactionMode === "spec" || autonomyLevel === "off") return "plan";
-  if (autonomyLevel === "high") return "full-auto";
-  if (autonomyLevel === "medium") return "default";
-  if (autonomyLevel === "low") return "edit";
+  if (interactionMode === "agi") return "agi";
+  if (interactionMode === "spec" || autonomyLevel === "off") return "read-only";
+  if (autonomyLevel === "high") return "auto-high";
+  if (autonomyLevel === "medium") return "auto-medium";
+  if (autonomyLevel === "low") return "auto-low";
+  return null;
+}
+
+function droidPermissionModeFromSettings(settings: Record<string, unknown> | null): AgentChatPermissionMode | null {
+  const nativeMode = droidNativePermissionModeFromSettings(settings);
+  if (nativeMode === "read-only" || nativeMode === "agi") return "plan";
+  if (nativeMode === "auto-high") return "full-auto";
+  if (nativeMode === "auto-medium") return "default";
+  if (nativeMode === "auto-low") return "edit";
   return null;
 }
 
@@ -262,6 +273,9 @@ export function parseTrackedCliLaunchConfig(
   if (!normalized.length) return null;
 
   const droidSettings = provider === "droid" ? extractDroidSettings(normalized) : null;
+  const droidPermissionMode = provider === "droid"
+    ? droidNativePermissionModeFromSettings(droidSettings)
+    : null;
   const permissionMode = droidPermissionModeFromSettings(droidSettings)
     ?? extractTrackedCliPermissionMode(normalized, provider);
   const model = droidStringSetting(droidSettings, "model")
@@ -328,6 +342,7 @@ export function parseTrackedCliLaunchConfig(
 
   return {
     ...(permissionMode ? { permissionMode } : {}),
+    ...(droidPermissionMode ? { droidPermissionMode } : {}),
     ...(model ? { model } : {}),
     ...(reasoningEffort ? { reasoningEffort } : {}),
     ...(fastMode !== undefined ? { fastMode } : {}),

@@ -59,7 +59,8 @@ not need to parse the raw structured object to show those values.
 
 ### Permission gate
 
-`PermissionMode` (`plan | edit | full-auto`) maps to tool categories
+`PermissionMode` (`default | auto | plan | edit | full-auto | config-toml`)
+maps to tool categories
 (`read`, `write`, `bash`). The gate rejects writes and bash in `plan`
 mode. `edit` requires `onApprovalRequest` to return `{ approved: true }`
 for bash (or for writes on hosted workers without the session-level
@@ -167,7 +168,7 @@ uses to act on ADE itself:
 
 | Tool family | Purpose |
 |---|---|
-| `spawnChat` | Spawn a new chat session with an explicit model, reasoning effort, and initial prompt. Lane resolution goes through `resolveExecutionLane`: an explicit `laneId` wins, and omitting it creates a **fresh** lane (`freshLaneName` / `freshLaneDescription`) rather than reusing the caller's. For the CTO that is load-bearing — its session is pinned to the project's primary lane, so a fallback would run spawned agents against the primary worktree. |
+| `spawnChat` | Spawn a new chat session with an explicit model, reasoning effort, initial prompt, and optional `permissionMode` (`default` \| `auto` \| `plan` \| `edit` \| `full-auto` \| `config-toml`, forwarded to `chat.createSession` only when supplied, so an omitted value keeps the provider default rather than pinning a substituted one). Droid's provider-native `droidPermissionMode` (`read-only` \| `auto-low` \| `auto-medium` \| `auto-high` \| `agi`) is forwarded independently when supplied; `agi` starts Droid's read-only orchestrator mode. Lane resolution goes through `resolveExecutionLane`: an explicit `laneId` wins, and omitting it creates a **fresh** lane (`freshLaneName` / `freshLaneDescription`) rather than reusing the caller's. For the CTO that is load-bearing — its session is pinned to the project's primary lane, so a fallback would run spawned agents against the primary worktree. |
 | `interruptChat`, `steerChat`, `cancelSteer`, `listSubagents`, `approveToolUse` | Mid-session control over other chat sessions: interrupt a turn, inject a steer instruction, cancel a pending steer by its `steerId`, enumerate spawned sub-agents, and answer a pending permission prompt. Each is a **required** dep on `CtoOperatorToolDeps` and maps onto the corresponding `agentChatService` method (`approveToolUse` translates the tool's `toolUseId` to the service's `itemId`), so none of them can be advertised without an implementation behind it. |
 | `createTerminal`, `runCommand` | Create untracked shells or run fire-and-forget commands. `createTerminal` passes explicit `cols: 100`, `rows: 30`, and a title, rather than relying on the pty service's default clamp. |
 | `listLanes`, `createLane`, `renameLane`, `archiveLane`, `inspectLane` | Lane management. |

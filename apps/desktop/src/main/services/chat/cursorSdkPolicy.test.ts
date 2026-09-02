@@ -62,6 +62,19 @@ describe("Cursor SDK policy", () => {
     expect(resolveCursorSdkPolicy({ cursorModeId: "full-auto" }).disallowedTools).toBeUndefined();
   });
 
+  it("does not resurrect an OpenCode full-auto value after Cursor is explicitly cleared", () => {
+    expect(resolveCursorSdkPolicy({
+      cursorModeId: null,
+      permissionMode: "default",
+      opencodePermissionMode: "full-auto",
+    })).toMatchObject({
+      chatMode: "agent",
+      approvalPolicy: "on-request",
+      sandbox: "ade",
+      fullAuto: false,
+    });
+  });
+
   it("maps ADE modes onto SDK agent/plan + local tools/sandbox/autoReview and never names a mode auto", () => {
     const expected: Record<string, {
       mode: "agent" | "plan";
