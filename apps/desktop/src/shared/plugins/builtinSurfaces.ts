@@ -195,7 +195,17 @@ const REVIEW_ACTION_NAMES: readonly string[] = [
 ];
 
 export const BUILTIN_SURFACE_OWNERS: readonly BuiltinSurfaceOwner[] = [
-  { builtinId: "graph", route: "/graph", ownerPluginId: PLUGIN_BUILTIN_SURFACE_OWNER_IDS.graph, title: "Graph", actionDomains: [], actionNames: [] },
+  {
+    // Superseded: ADE shipped a compiled Graph tab, so `ade-graph` replaces
+    // it rather than being the reason it exists. The React Flow engine stays
+    // in core; this row gates the page, not the canvas.
+    builtinId: "graph",
+    route: "/graph",
+    ownerPluginId: PLUGIN_BUILTIN_SURFACE_OWNER_IDS.graph,
+    title: "Graph",
+    actionDomains: [],
+    actionNames: [],
+  },
   {
     // Superseded: ADE shipped a compiled Review tab, so `ade-review` replaces
     // it rather than being the reason it exists.

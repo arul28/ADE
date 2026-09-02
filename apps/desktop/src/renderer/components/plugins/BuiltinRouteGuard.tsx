@@ -1,11 +1,10 @@
 /**
  * A route whose page belongs to a plugin.
  *
- * Hiding the rail item is not enough, and this is where round 1 stopped: the
- * `/graph` route stayed live so old links kept working, which meant a removed
- * tab was still one URL away and the persisted last-route could put you back on
- * it with no click. The product decision is that a surface you do not have is
- * simply not part of your ADE, so the route answers plainly instead.
+ * Hiding the rail item is not enough. Graph, Review and History SUPERSEDE: ADE
+ * ships the compiled page, and installing the owner sends that URL to the
+ * plugin tab. Enabling surfaces still refuse the route when their owner is
+ * gone. A hidden rail item is not access control.
  *
  * "Not loaded yet" is the one case a route must NOT treat as hidden, and it is
  * the only place that differs from the rail. The rail is right to stay empty

@@ -390,8 +390,8 @@ export function TabNav({ githubStatus }: { githubStatus?: GitHubStatus | null })
   // be dead nav entries.
   // A tool tab can be owned by a plugin (Graph is, via `ade-graph`): the page
   // stays compiled in, but every way to it — rail entry, route, deeplink —
-  // follows install state. `builtinTabs.ts` states the rules; every uncertainty
-  // resolves to HIDING it, so a rail item is only ever drawn on a positive fact.
+  // follows install state. `builtinTabs.ts` states the rules. Graph SUPERSEDES,
+  // so the compiled tab is on the rail until the plugin replaces it.
   const builtinTabVisible = useVisibleBuiltinRoutes();
   const webMode = isWebClientMode();
   const toolItems = (webMode

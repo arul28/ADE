@@ -1,24 +1,77 @@
 {
   "name": "ade-graph",
-  "version": "1.0.1",
+  "version": "1.1.0",
   "displayName": "Graph",
-  "description": "Lanes, commits and PR overlays on one canvas — as an optional tab.",
+  "description": "Lanes, commits and PR overlays on one canvas — the same Graph ADE already ships, as a plugin.",
   "icon": "graph",
   "accent": "#6366F1",
   "vocabVersion": 1,
+  "entry": "index.js",
   "surfaces": [
     {
       "kind": "tab",
       "id": "graph",
       "title": "Graph",
       "icon": "graph",
-      "panelId": "main",
-      "builtin": "graph",
-      "mobile": false
+      "panelId": "graph",
+      "order": 50,
+      "mobile": true
     }
   ],
   "panels": [
-    { "id": "main", "schemaFile": "panels/main.json", "title": "Graph" }
+    {
+      "id": "graph",
+      "schemaFile": "panels/graph.json",
+      "title": "Graph",
+      "icon": "graph",
+      "refreshAction": "refreshGraph"
+    },
+    {
+      "id": "lane",
+      "schemaFile": "panels/lane.json",
+      "title": "Lane",
+      "icon": "git-branch",
+      "refreshAction": "openLane"
+    }
   ],
+  "sockets": [
+    {
+      "socket": "command-palette-action",
+      "surface": "app",
+      "id": "palette-graph",
+      "label": "Graph",
+      "icon": "graph",
+      "actionId": "openGraph"
+    }
+  ],
+  "collections": {
+    "lanes": { "sync": true }
+  },
+  "tools": [
+    {
+      "name": "list_lanes",
+      "description": "List the project's open lanes, the same rows the Graph canvas binds.",
+      "action": "listLanesTool",
+      "input": {
+        "type": "object",
+        "properties": {},
+        "required": []
+      }
+    },
+    {
+      "name": "get_lane",
+      "description": "Fetch one lane the Graph canvas can open.",
+      "action": "getLaneTool",
+      "input": {
+        "type": "object",
+        "properties": {
+          "laneId": { "type": "string", "description": "The lane id to fetch." }
+        },
+        "required": ["laneId"]
+      }
+    }
+  ],
+  "cli": [],
+  "skills": ["skills"],
   "official": true
 }

@@ -24,12 +24,19 @@ import {
 } from "../history/commitGraphLayout";
 import type { GitCommitSummary } from "../../../shared/types";
 
+const WorkspaceGraphPage = React.lazy(() =>
+  import("../graph/WorkspaceGraphPage").then((module) => ({
+    default: module.WorkspaceGraphPage,
+  })),
+);
+
 /**
  * Host-rendered canvas engines for vocabulary v1.
  *
  * The plugin never ships drawing code. It writes rows; this file picks an
  * engine ADE already owns and paints. Phone and terminal never reach here —
- * they draw the same bound rows as a list.
+ * they draw the same bound rows as a list. `workspace` is the compiled Graph
+ * page itself: desktop mounts it; other clients still list the bound rows.
  */
 
 export function VocabCanvas({
@@ -46,11 +53,36 @@ export function VocabCanvas({
       return <SwimlaneCanvas node={node} context={context} />;
     case "graph":
       return <GraphCanvas node={node} context={context} />;
+    case "workspace":
+      return <WorkspaceCanvas context={context} />;
     default: {
       const _exhaustive: never = node.engine;
       return <EmptyLine text={`Unknown canvas engine: ${String(_exhaustive)}`} />;
     }
   }
+}
+
+function WorkspaceCanvas({ context }: { context: VocabRenderContext }) {
+  // Bind is required by the parser so phone and TUI list the same lanes. Desktop
+  // mounts ADE's compiled Graph page and reads topology from the host store.
+  return (
+    <div
+      data-vocab-canvas="workspace"
+      style={{
+        flex: 1,
+        minHeight: 560,
+        minWidth: 0,
+        height: "100%",
+        overflow: "hidden",
+        display: "flex",
+        flexDirection: "column",
+      }}
+    >
+      <React.Suspense fallback={<EmptyLine text="Loading Graph…" />}>
+        <WorkspaceGraphPage active={context.active} />
+      </React.Suspense>
+    </div>
+  );
 }
 
 function GitDagCanvas({

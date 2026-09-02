@@ -78,6 +78,7 @@ final class PluginVocabularyDecodingTests: XCTestCase {
           "onSelect": { "action": "openCommit" },
           "emptyText": "No commits"
         },
+        { "component": "canvas", "engine": "workspace", "bind": { "collection": "lanes" } },
         { "component": "canvas", "engine": "map", "bind": { "collection": "x" } },
         { "component": "canvas", "engine": "git-dag" }
       ]
@@ -89,8 +90,12 @@ final class PluginVocabularyDecodingTests: XCTestCase {
     XCTAssertEqual(canvas.onSelect?.action, "openCommit")
     XCTAssertEqual(canvas.emptyText, "No commits")
     XCTAssertTrue(PluginRenderSupport.isRenderable(schema.body[0]))
-    if case .invalid = schema.body[1] {} else { XCTFail("unknown engine must not parse") }
-    if case .invalid = schema.body[2] {} else { XCTFail("canvas without bind must not parse") }
+    guard case let .canvas(workspace) = schema.body[1] else { return XCTFail("expected workspace canvas") }
+    XCTAssertEqual(workspace.engine, .workspace)
+    XCTAssertEqual(workspace.bind?.collection, "lanes")
+    XCTAssertTrue(PluginRenderSupport.isRenderable(schema.body[1]))
+    if case .invalid = schema.body[2] {} else { XCTFail("unknown engine must not parse") }
+    if case .invalid = schema.body[3] {} else { XCTFail("canvas without bind must not parse") }
   }
 
   func testAvatarParsesAndFallsABlankName() throws {

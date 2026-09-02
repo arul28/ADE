@@ -595,6 +595,7 @@ struct PluginVocabCanvas: Equatable {
     case gitDag = "git-dag"
     case swimlane
     case graph
+    case workspace
   }
 
   var engine: Engine

@@ -697,7 +697,7 @@ final class PluginPresenceGateTests: XCTestCase {
   func testSurfacePolarityMatchesTheSharedPresenceTable() {
     XCTAssertEqual(
       PluginBuiltinSurface.allCases.map(\.presence),
-      [.enables, .supersedes, .supersedes, .supersedes, .enables, .enables, .supersedes]
+      [.supersedes, .supersedes, .supersedes, .supersedes, .enables, .enables, .supersedes]
     )
   }
 }

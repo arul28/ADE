@@ -44,6 +44,11 @@
  * every entry point for that compiled surface out of the product. Routes and
  * deeplinks must fail closed too; a hidden rail item is not an access control.
  *
+ * Graph, Review and History used to sit on this `builtin` field. They
+ * SUPERSEDE now: the plugins draw their own panels, and ADE's compiled pages
+ * step aside. The `builtin` field remains for the surfaces that still only
+ * exist while a gating plugin is installed (iOS Simulator, Electron Control).
+ *
  * The list is CLOSED and lives here rather than in the renderer because every
  * client validates against it: a name outside it is a manifest typo, and
  * honouring it would produce a rail item that navigates nowhere.
@@ -73,17 +78,17 @@ export function isPluginBuiltinSurfaceId(value: unknown): value is PluginBuiltin
  * - `"enables"` — the plugin is the only reason the surface exists. ADE draws
  *   the compiled page only while the owner is installed and enabled. Every
  *   unknown hides it, so there is no state in which a surface appears because
- *   ADE was unsure. This is what Graph, the iOS Simulator pane and Electron
- *   Control do: ADE never shipped those compiled as default-on surfaces, so
- *   there is nothing to hand back when the plugin leaves.
+ *   ADE was unsure. This is what the iOS Simulator pane and Electron Control
+ *   do: ADE never shipped those compiled as default-on surfaces, so there is
+ *   nothing to hand back when the plugin leaves.
  * - `"supersedes"` — the plugin REPLACES a surface ADE already ships compiled.
  *   ADE draws the compiled page only while the owner is ABSENT. Every unknown
  *   SHOWS it, because the built-in is what the product has always done and a
  *   machine without the plugin must behave exactly as it did before the plugin
  *   existed. Hiding on an unknown would delete a shipped feature every time the
- *   registry had not resolved yet. This is what Cursor Cloud, Linear, Review
- *   and History do: ADE shipped those compiled long before the plugins existed,
- *   and an install with no owner must still be the product it was.
+ *   registry had not resolved yet. This is what Graph, Cursor Cloud, Linear,
+ *   Review and History do: ADE shipped those compiled long before the plugins
+ *   existed, and an install with no owner must still be the product it was.
  *
  * The polarity also decides what the manifest may say. A `"supersedes"` surface
  * is never named by a `surfaces[].builtin` field: that field means "ADE draws
@@ -97,7 +102,7 @@ export function isPluginBuiltinSurfaceId(value: unknown): value is PluginBuiltin
 export const PLUGIN_BUILTIN_SURFACE_PRESENCE: Readonly<
   Record<PluginBuiltinSurfaceId, "enables" | "supersedes">
 > = {
-  graph: "enables",
+  graph: "supersedes",
   review: "supersedes",
   history: "supersedes",
   linear: "supersedes",
@@ -114,10 +119,11 @@ export const PLUGIN_BUILTIN_SURFACE_PRESENCE: Readonly<
  * manifest can decide. The phone ships a Linear pane and a Cursor Cloud screen;
  * the Graph canvas, the simulator pane and Electron Control are not ported as
  * compiled screens, and declaring `mobile: true` on one of them would put a
- * rail entry in front of a renderer that does not exist. Review and History
- * compiled pages are desktop-only too (`false` here); `ade-review` and
- * `ade-history` draw their own panels on the phone instead. So the table is the
- * ceiling for COMPILED screens and the manifest may only narrow it.
+ * rail entry in front of a renderer that does not exist. Review, History and
+ * Graph compiled pages are desktop-only too (`false` here); `ade-review`,
+ * `ade-history` and `ade-graph` draw their own panels on the phone instead. So
+ * the table is the ceiling for COMPILED screens and the manifest may only
+ * narrow it.
  *
  * Keyed by the closed id list above, so adding a gateable surface without
  * deciding this question does not compile.

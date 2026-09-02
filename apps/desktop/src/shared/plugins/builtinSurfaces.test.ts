@@ -21,7 +21,7 @@ import { coreSmartLinkBuiltinsOwnedBy, CORE_SMART_LINK_HOST_BUILTINS } from "./u
 const CURSOR_CLOUD_INSTALLED = [{ pluginId: "ade-cursor-cloud", enabled: true }];
 const LINEAR_INSTALLED = [{ pluginId: "ade-linear", enabled: true }];
 const REVIEW_INSTALLED = [{ pluginId: "ade-review", enabled: true }];
-const SUPERSEDED_SURFACES: readonly PluginBuiltinSurfaceId[] = ["linear", "cursor-cloud", "review", "history"];
+const SUPERSEDED_SURFACES: readonly PluginBuiltinSurfaceId[] = ["linear", "cursor-cloud", "review", "history", "graph"];
 
 /**
  * The half of the gate both processes share.
@@ -91,9 +91,9 @@ describe("builtinSurfaceDrawn", () => {
   });
 
   it("agrees with builtinSurfaceInstalled for an enabling surface", () => {
-    expect(builtinSurfaceDrawn("graph", [{ pluginId: "ade-graph", enabled: true }])).toBe(true);
-    expect(builtinSurfaceDrawn("graph", [{ pluginId: "ade-graph", enabled: false }])).toBe(false);
-    expect(builtinSurfaceDrawn("graph", [])).toBe(false);
+    expect(builtinSurfaceDrawn("ios", [{ pluginId: "ade-ios-sim", enabled: true }])).toBe(true);
+    expect(builtinSurfaceDrawn("ios", [{ pluginId: "ade-ios-sim", enabled: false }])).toBe(false);
+    expect(builtinSurfaceDrawn("ios", [])).toBe(false);
   });
 
   it("draws the built-in Linear until its plugin is installed and enabled", () => {
@@ -120,6 +120,13 @@ describe("builtinSurfaceDrawn", () => {
     expect(builtinSurfaceDrawn("history", [{ pluginId: "ade-history", enabled: true }])).toBe(false);
   });
 
+  it("draws the built-in Graph until its plugin is installed and enabled", () => {
+    expect(builtinSurfaceDrawn("graph", [])).toBe(true);
+    expect(builtinSurfaceDrawn("graph", [{ pluginId: "ade-graph", enabled: false }])).toBe(true);
+    expect(builtinSurfaceDrawn("graph", REVIEW_INSTALLED)).toBe(true);
+    expect(builtinSurfaceDrawn("graph", [{ pluginId: "ade-graph", enabled: true }])).toBe(false);
+  });
+
   it("draws the built-in Cursor Cloud until its plugin is installed and enabled", () => {
     expect(builtinSurfaceDrawn("cursor-cloud", [])).toBe(true);
     expect(builtinSurfaceDrawn("cursor-cloud", [{ pluginId: "ade-cursor-cloud", enabled: false }])).toBe(true);
@@ -131,8 +138,8 @@ describe("builtinSurfaceDrawn", () => {
     // Both owners present. The enabling surface appears, the superseding one
     // disappears, from the same records — which is the whole reason a single
     // boolean cannot carry this table.
-    const both = [...LINEAR_INSTALLED, { pluginId: "ade-graph", enabled: true }];
-    expect(builtinSurfaceDrawn("graph", both)).toBe(true);
+    const both = [...LINEAR_INSTALLED, { pluginId: "ade-ios-sim", enabled: true }];
+    expect(builtinSurfaceDrawn("ios", both)).toBe(true);
     expect(builtinSurfaceDrawn("linear", both)).toBe(false);
   });
 
@@ -140,6 +147,7 @@ describe("builtinSurfaceDrawn", () => {
     expect(builtinSurfaceDrawn("cursor-cloud", [{ pluginId: "someone-elses-cloud", enabled: true }])).toBe(true);
     expect(builtinSurfaceDrawn("linear", [{ pluginId: "someone-elses-linear", enabled: true }])).toBe(true);
     expect(builtinSurfaceDrawn("review", [{ pluginId: "someone-elses-review", enabled: true }])).toBe(true);
+    expect(builtinSurfaceDrawn("graph", [{ pluginId: "someone-elses-graph", enabled: true }])).toBe(true);
   });
 
   it("keeps the presence table keyed by the closed id list", () => {
@@ -160,7 +168,7 @@ describe("builtinSurfaceDrawn", () => {
 describe("hiddenBuiltinActionNames", () => {
   it("hides nothing while both built-in surfaces are the ones in the product", () => {
     expect(hiddenBuiltinActionNames([]).size).toBe(0);
-    expect(hiddenBuiltinActionNames([{ pluginId: "ade-graph", enabled: true }]).size).toBe(0);
+    expect(hiddenBuiltinActionNames([{ pluginId: "ade-ios-sim", enabled: true }]).size).toBe(0);
   });
 
   it("hides every Cursor Cloud verb once the plugin owns the surface", () => {

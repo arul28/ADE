@@ -76,7 +76,7 @@ describe("TabNav", () => {
 
   it("keeps Chats available and active without a project", () => {
     useAppStore.setState({ project: null, showWelcome: true } as any);
-    // Compiled Review is on the rail by default (supersedes). Graph is not.
+    // Compiled Review and Graph are on the rail by default (supersedes).
 
     render(
       <MemoryRouter initialEntries={["/chats"]}>
@@ -90,24 +90,9 @@ describe("TabNav", () => {
   });
 
   it("leaves enabling plugin tabs out of the rail on a machine with no plugins", () => {
-    // Graph and iOS stay hidden until their plugins land. Review and History
-    // are compiled tabs ADE already ships, so a fresh install still has them.
-    render(
-      <MemoryRouter initialEntries={["/work"]}>
-        <TabNav />
-      </MemoryRouter>,
-    );
-
-    expect(screen.queryByRole("link", { name: "Graph" })).toBeNull();
-    expect(screen.getByRole("link", { name: "Review" })).toBeTruthy();
-    expect(screen.getByRole("link", { name: "History" })).toBeTruthy();
-    expect(screen.getByRole("link", { name: "Work" })).toBeTruthy();
-    expect(screen.getByRole("link", { name: "PRs" })).toBeTruthy();
-  });
-
-  it("puts a tab in the rail once its own plugin is installed, and only that one", () => {
-    seedBuiltinSurfacePlugins(["graph"]);
-
+    // iOS Simulator and Electron Control stay hidden until their plugins land.
+    // Graph, Review and History are compiled tabs ADE already ships, so a
+    // fresh install still has them.
     render(
       <MemoryRouter initialEntries={["/work"]}>
         <TabNav />
@@ -115,8 +100,34 @@ describe("TabNav", () => {
     );
 
     expect(screen.getByRole("link", { name: "Graph" })).toBeTruthy();
-    // No second entry for the plugin itself: it has no panel of its own, and a
-    // duplicate row opening an empty page would wear the feature's name.
+    expect(screen.getByRole("link", { name: "Review" })).toBeTruthy();
+    expect(screen.getByRole("link", { name: "History" })).toBeTruthy();
+    expect(screen.getByRole("link", { name: "Work" })).toBeTruthy();
+    expect(screen.getByRole("link", { name: "PRs" })).toBeTruthy();
+  });
+
+  it("replaces compiled Graph with the plugin tab once ade-graph is installed", () => {
+    seedBuiltinSurfacePlugins(["graph"]);
+    Object.defineProperty(globalThis.window, "ade", {
+      configurable: true,
+      writable: true,
+      value: {
+        ...((globalThis.window as unknown as { ade?: Record<string, unknown> }).ade ?? {}),
+        plugins: {
+          getPanel: async () => null,
+          getCollection: async () => [],
+        },
+      },
+    });
+
+    render(
+      <MemoryRouter initialEntries={["/work"]}>
+        <TabNav />
+      </MemoryRouter>,
+    );
+
+    const graph = screen.getByRole("link", { name: "Graph" });
+    expect(graph.getAttribute("href")).toBe("/plugin/ade-graph");
     expect(screen.getAllByRole("link", { name: "Graph" })).toHaveLength(1);
     expect(screen.getByRole("link", { name: "Review" })).toBeTruthy();
     expect(screen.getByRole("link", { name: "History" })).toBeTruthy();

@@ -337,10 +337,8 @@ describe("ctoStateService", () => {
 
 /**
  * The CTO prompt is the biggest advertisement ADE writes, and it is read by
- * something that will act on it: a CTO told about `/graph` on a machine without
- * `ade-graph` sends the user to a tab the rail does not draw. History ships
- * compiled, so `/history` stays in the prompt whether or not `ade-history` is
- * installed.
+ * Graph and History ship compiled, so `/graph` and `/history` stay in the
+ * prompt whether or not those plugins are installed.
  *
  * Capability is deliberately NOT asserted away here. The CTO keeps every tool
  * and every `ade` command on a machine with no plugins at all; what changes is
@@ -350,7 +348,7 @@ describe("CTO prompt follows plugin install state", () => {
   const surfaces = (...ids: PluginBuiltinSurfaceId[]) =>
     () => new Set<PluginBuiltinSurfaceId>(ids);
 
-  it("omits the /graph page on a machine without its plugin", async () => {
+  it("names /graph and /history on a machine without those plugins", async () => {
     const fixture = await createStateFixture();
     const service = createCtoStateService({
       db: fixture.db,
@@ -362,9 +360,9 @@ describe("CTO prompt follows plugin install state", () => {
     const prompt = service.previewSystemPrompt().prompt;
     const reconstruction = service.buildReconstructionContext(5);
 
-    expect(prompt).not.toContain("/graph —");
+    expect(prompt).toContain("/graph —");
     expect(prompt).toContain("/history —");
-    expect(reconstruction).not.toContain("/graph —");
+    expect(reconstruction).toContain("/graph —");
     expect(reconstruction).toContain("/history —");
     // The pages that are not plugin-owned are untouched...
     expect(prompt).toContain("/lanes —");
@@ -376,7 +374,7 @@ describe("CTO prompt follows plugin install state", () => {
     fixture.db.close();
   });
 
-  it("names each page once its plugin is installed", async () => {
+  it("still names /graph once its plugin is installed", async () => {
     const fixture = await createStateFixture();
     const service = createCtoStateService({
       db: fixture.db,

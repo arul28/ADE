@@ -74,18 +74,59 @@ function manifest(partial: Partial<PluginManifest> & Pick<PluginManifest,
   };
 }
 
+/**
+ * Graph, as the real product rather than a gate.
+ *
+ * The gate is gone. `graph` is a SUPERSEDED surface now, so the plugin may not
+ * name it with `builtin` at all — it draws its own panels and ADE's compiled
+ * Graph tab steps aside. The React Flow engine stays in core; this package is
+ * the UI, the lane list on phone and terminal, and the `workspace` canvas.
+ */
 const GRAPH = manifest({
   name: "ade-graph",
-  version: "1.0.1",
+  version: "1.1.0",
   displayName: "Graph",
-  description: "Lanes, commits and PR overlays on one canvas — as an optional tab.",
+  description: "Lanes, commits and PR overlays on one canvas — the same Graph ADE already ships, as a plugin.",
   icon: "graph",
   accent: "#6366F1",
-  // `builtin` is what makes this a gate rather than a page: the tab it names is
-  // compiled into the app, and installing or removing the plugin is what puts it
-  // in or out of the rail. See `builtinTabs.ts`.
-  surfaces: [{ kind: "tab", id: "graph", title: "Graph", icon: "graph", panelId: "main", builtin: "graph", mobile: false }],
-  panels: [{ id: "main", schemaFile: "panels/main.json", title: "Graph" }],
+  entry: "index.js",
+  surfaces: [{ kind: "tab", id: "graph", title: "Graph", icon: "graph", panelId: "graph", order: 50, mobile: true }],
+  panels: [
+    { id: "graph", schemaFile: "panels/graph.json", title: "Graph", icon: "graph", refreshAction: "refreshGraph" },
+    { id: "lane", schemaFile: "panels/lane.json", title: "Lane", icon: "git-branch", refreshAction: "openLane" },
+  ],
+  sockets: [
+    { socket: "command-palette-action", surface: "app", id: "palette-graph", label: "Graph", icon: "graph", actionId: "openGraph" },
+  ],
+  collections: {
+    lanes: { sync: true },
+  },
+  tools: [
+    {
+      name: "list_lanes",
+      description: "List the project's open lanes, the same rows the Graph canvas binds.",
+      action: "listLanesTool",
+      input: {
+        type: "object",
+        properties: {},
+        required: [],
+      },
+    },
+    {
+      name: "get_lane",
+      description: "Fetch one lane the Graph canvas can open.",
+      action: "getLaneTool",
+      input: {
+        type: "object",
+        properties: {
+          laneId: { type: "string", description: "The lane id to fetch." },
+        },
+        required: ["laneId"],
+      },
+    },
+  ],
+  cli: [],
+  skills: ["skills"],
 });
 
 /**
@@ -1494,17 +1535,15 @@ export const MARKETPLACE_LOCAL_INDEX: readonly MarketplaceListing[] = [
       "Lanes, commits, PR overlays, conflict risk and sync presence, drawn on one",
       "canvas. Selecting a node opens that lane.",
       "",
-      "Graph was part of ADE itself until plugins existed. Nothing about it changed —",
-      "it stopped being something everyone has to carry. Install it and the Graph tab",
-      "is in your rail; remove it and the rail is one item shorter.",
+      "This plugin replaces ADE's compiled Graph tab. Install it and the rail talks",
+      "to these panels. Disable it and the compiled Graph page comes back unchanged.",
       "",
       "### Notes",
       "",
-      "- The canvas is drawn by the desktop app rather than published as a panel, so",
-      "  on a phone or in the terminal the plugin shows a card pointing at the machine",
-      "  that holds the repository.",
-      "- The `/graph` route keeps working even with the tab hidden, so links minted",
-      "  before you removed it still open.",
+      "- The canvas engine stays in ADE. Desktop mounts the host workspace Graph;",
+      "  phone and terminal list the same bound lane rows.",
+      "- Phone: there was never a compiled Graph screen. These panels are the first",
+      "  Graph UI on iOS and in the terminal.",
     ].join("\n"),
   }),
   listing(REVIEW, {

@@ -12,7 +12,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A `composer-action` can claim Send (`ownsSend`). Cursor Cloud uses it so Enter launches the cloud agent from the live draft, and Advanced still opens the form. Fleet Automations reads the host webhook ledger. `{openSettings}` can open the host Secrets tab so a launch form never carries a secret value.
 - Review is a real `supersedes` plugin. Install `ade-review` and the compiled Review tab, the PR "ADE review" button and `ade review` talk to its panels; disable it and the compiled page comes back. The engine stays in core.
 - History is a real `supersedes` plugin. Install `ade-history` and the compiled History tab talks to its commit DAG and activity panels; disable it and the compiled page comes back. Git and operation engines stay in core.
-- Plugin vocabulary v1 has a `canvas` node. A plugin names a host engine (`git-dag`, `swimlane`, or `graph`) and binds rows; desktop draws the engine and phone/terminal draw the same rows as a list. There is no script payload.
+- Graph is a real `supersedes` plugin. Install `ade-graph` and the compiled Graph tab talks to a `workspace` canvas that mounts ADE's React Flow page; disable it and the compiled page comes back. Phone and terminal list the same bound lanes.
+- Plugin vocabulary v1 has a `canvas` node. A plugin names a host engine (`git-dag`, `swimlane`, `graph`, or `workspace`) and binds rows; desktop draws the engine and phone/terminal draw the same rows as a list. There is no script payload.
 
 ## [1.2.71] - 2026-09-01
 

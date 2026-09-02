@@ -3,20 +3,21 @@
 Lanes, commits, PR overlays, conflict risk and sync presence, drawn on one
 canvas. Selecting a node opens that lane.
 
-Graph was part of ADE itself until plugins existed. Nothing about it changed —
-it stopped being something everyone has to carry. Install it and the Graph tab
-is in your rail; remove it and the rail is one item shorter.
+This plugin replaces ADE's compiled Graph tab. Install it and the rail talks to
+these panels. Disable it and the compiled Graph page comes back unchanged. The
+canvas engine stays in ADE: desktop mounts the host workspace Graph (React
+Flow); phone and terminal list the same bound lane rows.
 
 ### What it adds
 
-- The **Graph** tab.
+- The **Graph** tab: a host-rendered workspace canvas plus a lane list on
+  phone and in the terminal.
+- A lane detail for the clients that cannot draw React Flow.
+- Agent tools: `list_lanes`, `get_lane`.
 
 ### Notes
 
-- The canvas is drawn by the desktop app rather than published as a panel, so
-  the tab is the desktop's own page. On a phone or in the terminal the plugin
-  shows a card pointing at the machine that holds the repository.
-- The `/graph` route and Graph deeplinks open only while this plugin is
-  installed and enabled. Otherwise ADE shows a plain unavailable error.
-- It runs no code at all: the card is `panels/main.json`, which ADE reads from
-  the manifest. Nothing is read, and nothing is stored.
+- Topology, conflict risk, PR overlays and the minimap stay in ADE. This plugin
+  names the `workspace` canvas engine and publishes lane rows.
+- Phone and terminal: there was never a compiled Graph screen. These panels are
+  the first Graph UI on iOS and in the terminal.

@@ -32,7 +32,7 @@ Node built-ins:
 |---|---|
 | `apps/desktop/src/shared/plugins/manifest.ts` | `plugin.json` contract, strict-on-known/tolerant-of-unknown parser, id and relative-path validation, `minAdeVersion` gate, the `tab`/`pane`/`webview` surface kinds and the `entryHtml` rule |
 | `apps/desktop/src/shared/plugins/vocabulary.ts` | Panel schema v1: component union, `VOCAB_LIMITS`, degradation ladder, `parsePluginPanel`, panel `chrome` (search, nav actions, sticky footer), the reserved bindings (`vocabReservedRows` over `$context` and `$state`), `collectVocabStateDeclarations` |
-| `apps/desktop/src/shared/plugins/vocabularyNodes.ts` | The 18 v1 components and their parsers, `VOCAB_LIMITS`, the `group` node and `vocabGroupKey`, the row-action allowlist (`boundRowAction`), the `canvas` engines (`git-dag`, `swimlane`, `graph`) |
+| `apps/desktop/src/shared/plugins/vocabularyNodes.ts` | The 18 v1 components and their parsers, `VOCAB_LIMITS`, the `group` node and `vocabGroupKey`, the row-action allowlist (`boundRowAction`), the `canvas` engines (`git-dag`, `swimlane`, `graph`, `workspace`) |
 | `apps/desktop/src/shared/plugins/vocabularyState.ts` | Client-evaluated panel state: the `segmented` control's declarations, `chrome.search`, the `where` grammar (`contains` included) and its three-valued evaluator, the `$state` binding (`VOCAB_STATE_COLLECTION`), the row selection a `list.selectable` owns, the signature/normalize/reset lifecycle, `readPluginActionResetState` |
 | `apps/desktop/src/shared/plugins/vocabularyMarkdown.ts` | The `markdown` node's subset: a bounded block/span AST, `VOCAB_MARKDOWN_LIMITS`, `https:`-only links, GFM pipe tables, https images, and no HTML path at all |
 | `apps/desktop/src/shared/plugins/vocabularyBrandIcons.ts` | Plugin-shipped `brand:*` glyphs: the reserved `ade.brandIcons` collection, the fail-closed SVG sanitizer, and the portable `{ viewBox, paths }` shape |
@@ -1133,13 +1133,14 @@ list row cannot skip the prompt a button asks. iOS holds the same shape in
 `PluginPaneStore.perform`.
 
 **A `canvas` is a named host engine, not a drawing surface.** `{ component:
-"canvas", engine: "git-dag" | "swimlane" | "graph", bind }` is data: the plugin
-writes render-ready rows (and, for `graph`, an `edges` binding) and the host
-picks an engine ADE already owns. There is no script payload and no SVG the
-plugin authored. Desktop draws the git commit DAG, a lane swimlane, or a
-node-link graph; iOS and the terminal draw the same bound rows as a list. A
-canvas `onSelect` fires when a node has no row `onPress`, with `id` taken from
-the row's key. Bound row actions still go through `allowActions`.
+"canvas", engine: "git-dag" | "swimlane" | "graph" | "workspace", bind }` is
+data: the plugin writes render-ready rows (and, for `graph`, an `edges`
+binding) and the host picks an engine ADE already owns. There is no script
+payload and no SVG the plugin authored. Desktop draws the git commit DAG, a
+lane swimlane, a small node-link graph, or ADE's compiled workspace Graph
+page (`workspace`); iOS and the terminal draw the same bound rows as a list.
+A canvas `onSelect` fires when a node has no row `onPress`, with `id` taken
+from the row's key. Bound row actions still go through `allowActions`.
 
 **Paging a list, and saying so.** A plugin list used to stop dead at 100 rows
 while the built-in it replaced paged to 500, and it stopped SILENTLY — the reader
@@ -1830,7 +1831,7 @@ moves the compiled surface.
 
 | surface | owner | presence |
 |---|---|---|
-| `graph` | `ade-graph` | `enables` |
+| `graph` | `ade-graph` | `supersedes` |
 | `review` | `ade-review` | `supersedes` |
 | `history` | `ade-history` | `supersedes` |
 | `linear` | `ade-linear` | `supersedes` |
@@ -1843,22 +1844,23 @@ surface exists, so ADE draws it only while the owner is installed and enabled,
 and every unknown — an unresolved registry, a host with no plugin support —
 hides it. There is no state in which a surface appears because ADE was unsure.
 
-`supersedes` is the mirror, and four surfaces use it. ADE shipped a compiled
-fleet surface, a compiled Linear integration, a compiled Review tab and a
-compiled History tab long before those plugins existed, and `ade-cursor-cloud`,
-`ade-linear`, `ade-review` and `ade-history` **replace** them: their own
-header buttons, composer sockets, panels, row badges and settings sections
-stand where the built-in ones did. So ADE draws the compiled surface only while
-the owner is ABSENT, and every unknown draws it — a machine without the plugin
-must behave exactly as it did before the plugin existed, and hiding on an
-unresolved registry would blink a shipped feature off on every launch. Only a
-positive "the owner is here" takes it away, which is the same instant the
-plugin's own entry point appears, so the user never sees both at once.
+`supersedes` is the mirror, and five surfaces use it. ADE shipped a compiled
+Graph tab, a compiled fleet surface, a compiled Linear integration, a compiled
+Review tab and a compiled History tab long before those plugins existed, and
+`ade-graph`, `ade-cursor-cloud`, `ade-linear`, `ade-review` and `ade-history`
+**replace** them: their own header buttons, composer sockets, panels, row
+badges and settings sections stand where the built-in ones did. So ADE draws
+the compiled surface only while the owner is ABSENT, and every unknown draws
+it — a machine without the plugin must behave exactly as it did before the
+plugin existed, and hiding on an unresolved registry would blink a shipped
+feature off on every launch. Only a positive "the owner is here" takes it
+away, which is the same instant the plugin's own entry point appears, so the
+user never sees both at once.
 
-Linear was the one that had to CHANGE polarity first. Review and History follow
-the same template: take an ADE install that has no owner plugin, and it is the
-compiled tab it has always been; install the plugin, and every compiled
-surface for that product steps aside for the plugin's own.
+Linear was the one that had to CHANGE polarity first. Review, History and
+Graph follow the same template: take an ADE install that has no owner plugin,
+and it is the compiled tab it has always been; install the plugin, and every
+compiled surface for that product steps aside for the plugin's own.
 
 The polarity also decides what a manifest may say. A `supersedes` surface is
 never named by `surfaces[].builtin`: that field means "ADE draws its compiled
@@ -2126,7 +2128,7 @@ is where that stands today, on this branch.
 |---|---|---|---|
 | `ade-linear` | `supersedes` | 8,795 lines (14,296 with its tests) | A real plugin. Panels, sockets, tools, CLI words, automation triggers and steps, a webhook channel, a sign-in flow, a credential handoff and a URL matcher |
 | `ade-cursor-cloud` | `supersedes` | 3,439 lines (4,643 with tests) | A real plugin, with a chat runtime. Composer Send is claimed via `ownsSend` (Enter launches the cloud agent from the live draft; Advanced still opens the form). Fleet Automations strip reads `webhooks.status()`. `{openSettings}` opens the Cursor provider page or the host Secrets tab. Remaining gap: a tab badge (spec-optional). Landed: `ade cursor cloud` aliases the plugin's CLI words when it is installed; plugin-owned cloud chats stamp `cursorCloudAgentId` so Cursor's rename lock applies; create sends REST `model: { id, params? }` and fails closed when the form named reasoning or speed the catalog cannot express; finished-run artifact files are host-fetched into the lane cache. |
-| `ade-graph` | `enables` | 0 | A gating shell: `plugin.json`, an icon, a README and a one-panel schema |
+| `ade-graph` | `supersedes` | real plugin | A real plugin. Desktop mounts ADE's compiled workspace Graph (`canvas` / `workspace`); phone and TUI list the same bound lane rows. The React Flow engine stays in core. Phone and TUI get vocabulary panels; compiled Graph was desktop-only. |
 | `ade-review` | `supersedes` | real plugin | A real plugin. Run list, launch form, findings, learnings, PR toolbar, agent tools and `ade review`. The engine stays in core. Phone and TUI get vocabulary panels; compiled Review was desktop-only. |
 | `ade-history` | `supersedes` | real plugin | A real plugin. Commit DAG (`canvas` / `git-dag`), activity list, commit git verbs, agent tools and `ade history activity`. The git and operation engines stay in core. Phone and TUI get vocabulary panels; compiled History was desktop-only. |
 | `ade-ios-sim` | `enables` | 0 | Gating shell, plus an agent-skills directory |
@@ -2138,10 +2140,11 @@ rather than replacing a compiled surface, so neither polarity applies to them.
 
 A **gating shell** ships no executable code at all. It exists only so that
 installing it unlocks a surface ADE already compiled, and disabling it hides that
-surface again. Turning one into a real `supersedes` plugin — a plugin that
-re-implements the compiled feature on desktop AND mobile, so that the compiled
-version steps aside on install and returns on disable — is the remaining work.
-Linear is the worked example and its flip is the template.
+surface again. `ade-ios-sim` and `ade-app-control` are the remaining shells.
+Turning one into a real `supersedes` plugin — a plugin that re-implements the
+compiled feature on desktop AND mobile, so that the compiled version steps
+aside on install and returns on disable — is the remaining work. Linear is the
+worked example and its flip is the template.
 
 **The acceptance test.** One build, every plugin installable, and for each of
 them:

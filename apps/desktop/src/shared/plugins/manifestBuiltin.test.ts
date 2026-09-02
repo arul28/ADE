@@ -28,17 +28,17 @@ function manifest(overrides: Record<string, unknown>): Record<string, unknown> {
   };
 }
 
-const graphSurface = { kind: "tab", id: "graph", title: "Graph", panelId: "main", builtin: "graph" };
+const iosSurface = { kind: "tab", id: "sim", title: "iOS Simulator", panelId: "main", builtin: "ios" };
 
 describe("manifest builtin surfaces", () => {
   it("honours builtin on an official manifest", () => {
-    const parsed = parsePluginManifest(manifest({ official: true, surfaces: [graphSurface] }));
+    const parsed = parsePluginManifest(manifest({ official: true, surfaces: [iosSurface] }));
     expect(parsed.errors).toEqual([]);
-    expect(parsed.manifest?.surfaces[0]?.builtin).toBe("graph");
+    expect(parsed.manifest?.surfaces[0]?.builtin).toBe("ios");
   });
 
   it("drops builtin from a manifest that does not claim official tier", () => {
-    const parsed = parsePluginManifest(manifest({ surfaces: [graphSurface] }));
+    const parsed = parsePluginManifest(manifest({ surfaces: [iosSurface] }));
     expect(parsed.manifest?.surfaces[0]?.builtin).toBeUndefined();
     expect(parsed.warnings.join(" ")).toContain("official");
   });
@@ -46,15 +46,15 @@ describe("manifest builtin surfaces", () => {
   it("keeps the surface when builtin is refused", () => {
     // The plugin still declares a tab. Dropping the whole surface would turn a
     // rejected claim into a missing feature.
-    const parsed = parsePluginManifest(manifest({ surfaces: [graphSurface] }));
+    const parsed = parsePluginManifest(manifest({ surfaces: [iosSurface] }));
     expect(parsed.manifest?.surfaces).toHaveLength(1);
-    expect(parsed.manifest?.surfaces[0]).toMatchObject({ kind: "tab", id: "graph", panelId: "main" });
+    expect(parsed.manifest?.surfaces[0]).toMatchObject({ kind: "tab", id: "sim", panelId: "main" });
   });
 
   it("refuses a builtin name that is not a gateable tab", () => {
     const parsed = parsePluginManifest(manifest({
       official: true,
-      surfaces: [{ ...graphSurface, builtin: "settings" }],
+      surfaces: [{ ...iosSurface, builtin: "settings" }],
     }));
     expect(parsed.manifest?.surfaces[0]?.builtin).toBeUndefined();
     expect(parsed.warnings.join(" ")).toContain("not a gateable built-in tab");
@@ -75,7 +75,7 @@ describe("manifest builtin surfaces", () => {
   it("clamps mobile to what the phone has a page for", () => {
     const parsed = parsePluginManifest(manifest({
       official: true,
-      surfaces: [{ ...graphSurface, mobile: true }],
+      surfaces: [{ ...iosSurface, mobile: true }],
     }));
     expect(parsed.errors).toEqual([]);
     expect(parsed.manifest?.surfaces[0]?.mobile).toBe(false);
@@ -109,10 +109,19 @@ describe("manifest builtin surfaces", () => {
     expect(parsed.warnings.join(" ")).toContain("superseded surface");
   });
 
+  it("refuses builtin on Graph because that surface supersedes", () => {
+    const parsed = parsePluginManifest(manifest({
+      official: true,
+      surfaces: [{ kind: "tab", id: "graph", title: "Graph", panelId: "graph", builtin: "graph" }],
+    }));
+    expect(parsed.manifest?.surfaces[0]?.builtin).toBeUndefined();
+    expect(parsed.warnings.join(" ")).toContain("superseded surface");
+  });
+
   it("gives a refused builtin claim the ordinary surface default", () => {
     // The `builtin` was dropped, so what is left is a plain tab — and a plain
     // tab is mobile-capable. The clamp must not outlive the claim it clamped.
-    const parsed = parsePluginManifest(manifest({ surfaces: [graphSurface] }));
+    const parsed = parsePluginManifest(manifest({ surfaces: [iosSurface] }));
     expect(parsed.manifest?.surfaces[0]?.builtin).toBeUndefined();
     expect(parsed.manifest?.surfaces[0]?.mobile).toBe(true);
   });

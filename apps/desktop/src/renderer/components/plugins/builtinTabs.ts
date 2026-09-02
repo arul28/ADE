@@ -2,10 +2,10 @@
  * Compiled surfaces owned by official plugins.
  *
  * A manifest `builtin` contribution does not render a vocabulary panel. It
- * names a surface that is compiled into ADE — the Graph canvas, the iOS
- * Simulator and Electron Control panes — and says "installing me is what puts
- * this in the product". Review, History, Linear and Cursor Cloud run the other
- * way: ADE already ships them compiled, and the owner plugin replaces them.
+ * names a surface that is compiled into ADE — the iOS Simulator and Electron
+ * Control panes — and says "installing me is what puts this in the product".
+ * Graph, Review, History, Linear and Cursor Cloud run the other way: ADE
+ * already ships them compiled, and the owner plugin replaces them.
  *
  * ## Hidden is the default, and it is a default, not a fallback
  *
@@ -19,8 +19,9 @@
  * That is the reverse of how this file read in round 1, when the surfaces were
  * seeded onto every machine and hiding one had to be earned. Nothing is seeded
  * now, so there is no existing install to protect and no reason to remember
- * what was once seen: a machine with no plugins has no Graph tab, and that is
- * the correct product, not a degraded one.
+ * what was once seen: a machine with no plugins has no iOS Simulator pane, and
+ * that is the correct product, not a degraded one. Graph, Review and History
+ * SUPERSEDE, so the same unknowns leave those compiled tabs in place.
  *
  * ## Visibility is not the whole gate
  *

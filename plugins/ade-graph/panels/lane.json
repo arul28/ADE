@@ -1,0 +1,17 @@
+{
+  "v": 1,
+  "title": "Lane",
+  "fallback": {
+    "title": "Lane",
+    "text": "Open ADE on the computer that holds this plugin to inspect this lane.",
+    "deeplink": "ade://plugin/ade-graph/lane"
+  },
+  "body": [
+    {
+      "component": "emptyState",
+      "title": "Pick a lane",
+      "description": "Select a lane on the Graph to inspect it here.",
+      "icon": "git-branch"
+    }
+  ]
+}

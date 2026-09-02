@@ -17,13 +17,11 @@ import { builtinSurfacePresence } from "../../../shared/plugins/builtinSurfaces"
 /**
  * The rules for a compiled surface a plugin owns.
  *
- * The asymmetry is the whole point and is asserted from both sides: showing a
- * surface takes three positive facts, and hiding it takes any single one of
- * them being missing. These tests were written the other way round in round 1,
- * when the surfaces were seeded onto every machine and hiding one had to be
- * earned. Nothing is seeded now, so a machine with no plugins correctly has no
- * Graph tab — and a regression that reintroduces "show it when unsure" puts
- * every extracted surface back on every install.
+ * The asymmetry is the whole point and is asserted from both sides: showing an
+ * `enables` surface takes three positive facts, and hiding it takes any single
+ * one of them being missing. Graph, Review and History SUPERSEDE: a machine
+ * with no plugins still has those compiled tabs, and installing the owner
+ * hides the compiled page in favour of the plugin's own.
  */
 
 function plugin(overrides: Partial<InstalledPlugin> = {}): InstalledPlugin {
@@ -35,10 +33,20 @@ function plugin(overrides: Partial<InstalledPlugin> = {}): InstalledPlugin {
     icon: "graph",
     accent: "#7C6FF0",
     status: "none",
-    tabs: [{ id: "graph", title: "Graph", panelId: "main", builtin: "graph" }],
+    tabs: [{ id: "graph", title: "Graph", panelId: "graph" }],
     theme: null,
     ...overrides,
   };
+}
+
+function iosPlugin(overrides: Partial<InstalledPlugin> = {}): InstalledPlugin {
+  return plugin({
+    pluginId: "ade-ios-sim",
+    displayName: "iOS Simulator",
+    icon: "device-mobile",
+    tabs: [{ id: "ios", title: "iOS Simulator", panelId: "main", builtin: "ios" }],
+    ...overrides,
+  });
 }
 
 function input(overrides: Partial<BuiltinGateInput> = {}): BuiltinGateInput {
@@ -55,32 +63,29 @@ describe("isBuiltinTabVisible", () => {
     expect(isBuiltinTabVisible("/lanes", input())).toBe(true);
   });
 
-  it("shows the tab when the owner is installed and enabled", () => {
-    expect(isBuiltinTabVisible("/graph", input({ plugins: [plugin()] }))).toBe(true);
+  it("shows compiled Graph on a machine that does not have the plugin", () => {
+    expect(isBuiltinTabVisible("/graph", input({ plugins: [] }))).toBe(true);
   });
 
-  it("hides the tab when the owner is disabled", () => {
-    expect(isBuiltinTabVisible("/graph", input({ plugins: [plugin({ enabled: false })] }))).toBe(false);
+  it("hides compiled Graph once the owner is installed and enabled", () => {
+    expect(isBuiltinTabVisible("/graph", input({ plugins: [plugin()] }))).toBe(false);
   });
 
-  it("hides the tab when the owner is not installed", () => {
-    expect(isBuiltinTabVisible("/graph", input({ plugins: [] }))).toBe(false);
+  it("keeps compiled Graph when the owner is disabled", () => {
+    expect(isBuiltinTabVisible("/graph", input({ plugins: [plugin({ enabled: false })] }))).toBe(true);
   });
 
-  it("hides the tab while the registry is still loading", () => {
-    // "Not loaded yet" and "not installed" answer the same on purpose. A tab
-    // that appeared for one frame and then vanished would read as a glitch, and
-    // the honest default before the facts arrive is the shipped one: hidden.
-    expect(isBuiltinTabVisible("/graph", input({ pluginsLoaded: false, plugins: [plugin()] }))).toBe(false);
+  it("shows compiled Graph while the registry is still loading", () => {
+    expect(isBuiltinTabVisible("/graph", input({ pluginsLoaded: false, plugins: [plugin()] }))).toBe(true);
   });
 
-  it("hides the tab on a host with no plugin support at all", () => {
-    expect(isBuiltinTabVisible("/graph", input({ pluginSupport: false, plugins: [plugin()] }))).toBe(false);
+  it("shows compiled Graph on a host with no plugin support at all", () => {
+    expect(isBuiltinTabVisible("/graph", input({ pluginSupport: false, plugins: [plugin()] }))).toBe(true);
   });
 
   it("ignores an unrelated installed plugin", () => {
     const other = plugin({ pluginId: "ade-log-viewer", displayName: "Log viewer", tabs: [] });
-    expect(isBuiltinTabVisible("/graph", input({ plugins: [other] }))).toBe(false);
+    expect(isBuiltinTabVisible("/graph", input({ plugins: [other] }))).toBe(true);
   });
 });
 
@@ -124,48 +129,48 @@ describe("every registered surface", () => {
 });
 
 describe("gate ownership", () => {
-  it("recognises the registered owner", () => {
-    expect(pluginOwnsBuiltinTab(plugin())).toBe(true);
-    expect(claimedBuiltinGate(plugin())?.route).toBe("/graph");
+  it("does not let a superseding Graph plugin claim the compiled tab", () => {
+    expect(pluginOwnsBuiltinTab(plugin())).toBe(false);
+    expect(claimedBuiltinGate(plugin())).toBeNull();
   });
 
   it("does not let an unregistered plugin claim a compiled surface", () => {
     const impostor = plugin({ pluginId: "graph-pro", displayName: "Graph Pro" });
     expect(pluginOwnsBuiltinTab(impostor)).toBe(false);
-    expect(isBuiltinTabVisible("/graph", input({ plugins: [impostor] }))).toBe(false);
+    expect(isBuiltinTabVisible("/graph", input({ plugins: [impostor] }))).toBe(true);
   });
 
-  it("trusts the registered owner on a host that reports no builtin field", () => {
-    // Older host, or one whose summary drops the field: the owner is still the
-    // owner, and the alternative is a duplicate rail item exactly there.
-    const older = plugin({ tabs: [{ id: "graph", title: "Graph", panelId: "main" }] });
+  it("still lets an enabling owner claim its compiled pane", () => {
+    expect(pluginOwnsBuiltinTab(iosPlugin())).toBe(true);
+    expect(claimedBuiltinGate(iosPlugin())?.builtinId).toBe("ios");
+  });
+
+  it("trusts the registered enabling owner on a host that reports no builtin field", () => {
+    const older = iosPlugin({ tabs: [{ id: "ios", title: "iOS Simulator", panelId: "main" }] });
     expect(pluginOwnsBuiltinTab(older)).toBe(true);
   });
 
-  it("does not treat an owner's ordinary second tab as a gate", () => {
-    const withOtherTab = plugin({
+  it("does not treat an enabling owner's ordinary second tab as a gate", () => {
+    const withOtherTab = iosPlugin({
       tabs: [
-        { id: "graph", title: "Graph", panelId: "main", builtin: "graph" },
+        { id: "ios", title: "iOS Simulator", panelId: "main", builtin: "ios" },
         { id: "extra", title: "Extra", panelId: "extra", builtin: null },
       ],
     });
-    expect(claimedBuiltinGate(withOtherTab)?.builtinId).toBe("graph");
+    expect(claimedBuiltinGate(withOtherTab)?.builtinId).toBe("ios");
   });
 
-  it("routes the plugin page to the compiled tab it owns", () => {
-    expect(builtinRouteForPluginRoute("ade-graph", [plugin()])).toBe("/graph");
+  it("does not route a Graph plugin page to the compiled tab", () => {
+    expect(builtinRouteForPluginRoute("ade-graph", [plugin()])).toBeNull();
     expect(builtinRouteForPluginRoute("ade-log-viewer", [plugin()])).toBeNull();
     expect(builtinRouteForPluginRoute("ade-graph", [])).toBeNull();
   });
 
   it("does not route a pane owner anywhere, because its surface has no route", () => {
-    // Linear lives inside Work. `/plugin/ade-linear` has nowhere to redirect to,
-    // so it must fall through and draw the plugin's own fallback card instead of
-    // sending someone to a route that does not exist.
     const linear = plugin({
       pluginId: "ade-linear",
       displayName: "Linear",
-      tabs: [{ id: "linear", title: "Linear", panelId: "main", builtin: "linear" }],
+      tabs: [{ id: "linear", title: "Linear", panelId: "main" }],
     });
     expect(builtinRouteForPluginRoute("ade-linear", [linear])).toBeNull();
   });
@@ -191,7 +196,9 @@ describe("gate ownership", () => {
     expect(supersededCompiledRouteReplacement("/history", input())).toBeNull();
     expect(supersededCompiledRouteReplacement("/history", input({ plugins: [history] })))
       .toBe("/plugin/ade-history");
-    expect(supersededCompiledRouteReplacement("/graph", input({ plugins: [plugin()] }))).toBeNull();
+    expect(supersededCompiledRouteReplacement("/graph", input())).toBeNull();
+    expect(supersededCompiledRouteReplacement("/graph", input({ plugins: [plugin()] })))
+      .toBe("/plugin/ade-graph");
   });
 });
 
@@ -226,7 +233,7 @@ describe("a superseded builtin surface", () => {
   it("is visible while the registry is still loading, unlike an enabling surface", () => {
     const loading = input({ pluginsLoaded: false, plugins: [cursorCloudPlugin()] });
     expect(isBuiltinSurfaceVisible("cursor-cloud", loading)).toBe(true);
-    expect(isBuiltinSurfaceVisible("graph", input({ pluginsLoaded: false, plugins: [plugin()] }))).toBe(false);
+    expect(isBuiltinSurfaceVisible("graph", input({ pluginsLoaded: false, plugins: [plugin()] }))).toBe(true);
   });
 
   it("is visible on a host with no plugin support at all", () => {

@@ -26,7 +26,9 @@ the runtime's `graph_state` action domain — they live in the runtime's
 state store so the layout follows the project binding (and survives
 across desktop windows pointed at the same project). The renderer
 itself owns no service state; it is purely a projection of runtime
-data.
+data. When `ade-graph` is installed, the Graph tab is that plugin's
+panel: the `workspace` canvas engine mounts this same page. Disable
+the plugin and the compiled `/graph` route comes back unchanged.
 
 For remote-bound windows the entire data graph is computed on the
 remote machine; the desktop renderer just receives the snapshots and

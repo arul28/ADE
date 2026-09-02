@@ -150,24 +150,19 @@ const CTO_MEMORY_SYSTEM_GUIDANCE = [
 /**
  * The page list the CTO is told about.
  *
- * `/graph` is a compiled surface owned by `ade-graph`. On a machine without
- * that plugin the page does not exist and the rail does not show it, so naming
- * it here would send the CTO — and the user it is talking to — at a tab that
- * is not there. History ships compiled (`supersedes`): `/history` is always a
- * real page, and installing `ade-history` still serves that URL by redirect.
- * This is an ADVERTISEMENT gate, not a capability one: nothing about what the
- * CTO may do changes.
+ * `/graph` ships compiled (`supersedes`): the page is always real, and
+ * installing `ade-graph` still serves that URL by redirect. History is the
+ * same. This is an ADVERTISEMENT, not a capability gate: nothing about what
+ * the CTO may do changes.
  */
-function buildCtoPageLines(installedSurfaces: ReadonlySet<PluginBuiltinSurfaceId>): string[] {
+function buildCtoPageLines(_installedSurfaces: ReadonlySet<PluginBuiltinSurfaceId>): string[] {
   return [
     "  /work — Main workspace with terminal sessions and chat panels. This is where active development happens.",
     "  /lanes — Lane browser showing all lanes, their status, git actions, diffs, stacks, and PR panels.",
     "  /files — File explorer for browsing and editing project files.",
     "  /prs — Pull request management: list, detail view, queue, GitHub integration.",
     "  /cto — CTO page: your persistent chat thread plus settings (identity, personality, Linear connection).",
-    ...(installedSurfaces.has("graph")
-      ? ["  /graph — Workspace dependency graph visualization showing lane relationships."]
-      : []),
+    "  /graph — Workspace dependency graph visualization showing lane relationships.",
     "  /history — Operation history timeline showing all past actions.",
     "  /automations — Automation rule builder: create rules triggered by events (PR opened, test failed, etc.).",
     "  /settings — App settings: AI providers, GitHub auth, Linear integration, keybindings, and external connectors. Live provider usage and automation guardrails are now in the header usage popup.",

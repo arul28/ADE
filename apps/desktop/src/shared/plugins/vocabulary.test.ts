@@ -175,6 +175,12 @@ describe("parsePluginPanel — valid schemas", () => {
         bind: { collection: "nodes" },
         edges: { collection: "edges" },
       },
+      {
+        component: "canvas",
+        engine: "workspace",
+        bind: { collection: "lanes" },
+        onSelect: { action: "openLane" },
+      },
       { component: "canvas", engine: "map", bind: { collection: "x" } },
       { component: "canvas", engine: "git-dag" },
     ]));
@@ -193,12 +199,19 @@ describe("parsePluginPanel — valid schemas", () => {
       bind: { collection: "nodes" },
       edges: { collection: "edges" },
     });
-    expect(result.panel.body[2]).toMatchObject({ component: "__invalid", name: "canvas" });
+    expect(result.panel.body[2]).toMatchObject({
+      component: "canvas",
+      engine: "workspace",
+      bind: { collection: "lanes" },
+      onSelect: { action: "openLane" },
+    });
     expect(result.panel.body[3]).toMatchObject({ component: "__invalid", name: "canvas" });
+    expect(result.panel.body[4]).toMatchObject({ component: "__invalid", name: "canvas" });
     expect(collectVocabBindings(result.panel.body)).toEqual([
       { collection: "commits", allowActions: ["openCommit"] },
       { collection: "nodes" },
       { collection: "edges" },
+      { collection: "lanes" },
     ]);
   });
 });

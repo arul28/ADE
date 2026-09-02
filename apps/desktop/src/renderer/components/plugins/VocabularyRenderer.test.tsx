@@ -11,6 +11,11 @@ import type { PluginCollectionRow } from "../../lib/pluginRuntimeBridge";
 import { VOCAB_LIMITS, bindingKey, vocabListPagesToCeiling, type VocabAction } from "../../../shared/plugins/vocabulary";
 import * as openExternalModule from "../../lib/openExternal";
 
+vi.mock("../graph/WorkspaceGraphPage", () => ({
+  WorkspaceGraphPage: ({ active }: { active?: boolean }) =>
+    React.createElement("div", { "data-testid": "workspace-graph-page" }, active === false ? "idle" : "workspace graph"),
+}));
+
 /**
  * These cover the one promise the renderer makes that a type system cannot:
  * a panel is never blank and never takes the tab down with it. Everything else
@@ -229,6 +234,27 @@ describe("PluginPanelView", () => {
         args: expect.objectContaining({ id: "abc1234deadbeef" }),
       }),
     );
+  });
+
+  it("mounts the host workspace Graph page for a workspace canvas", async () => {
+    render(
+      <PluginPanelView
+        schema={{
+          v: 1,
+          fallback: { title: "T", text: "B" },
+          body: [{
+            component: "canvas",
+            engine: "workspace",
+            bind: { collection: "lanes" },
+          }],
+        }}
+        context={makeContext()}
+      />,
+    );
+
+    expect(await screen.findByTestId("workspace-graph-page")).toBeTruthy();
+    expect(document.querySelector('[data-vocab-canvas="workspace"]')).toBeTruthy();
+    expect(screen.getByText("workspace graph")).toBeTruthy();
   });
 
   it("draws a rich row and keeps its trailing buttons out of the row's own press", async () => {

@@ -1,18 +1,12 @@
 /**
  * Test support for the compiled surfaces official plugins own.
  *
- * The product hides Graph, the iOS Simulator pane and Electron Control unless
- * the owning plugin is installed and enabled on this machine, and hidden is the
- * default rather than a fallback. A suite that renders one of those
- * surfaces is therefore describing a machine that HAS it, and has to say so —
- * which is the point of making this explicit instead of seeding plugins
- * globally in `setup.ts`: a suite that forgets to ask still sees the shipped
- * default, so a gate that stops working shows up as a failing test.
- *
- * Cursor Cloud, Linear, Review and History run the other way: their plugins
- * REPLACE ADE's compiled surfaces, so seeding one here is how a suite describes
- * the machine where the built-in is GONE, and a suite that says nothing gets
- * the built-in — which is what a machine without the plugin has always had.
+ * The product hides the iOS Simulator pane and Electron Control unless the
+ * owning plugin is installed and enabled on this machine, and hidden is the
+ * default rather than a fallback. Graph, Review, History, Linear and Cursor
+ * Cloud run the other way: their plugins REPLACE ADE's compiled surfaces, so
+ * seeding one here is how a suite describes the machine where the built-in is
+ * GONE, and a suite that says nothing gets the built-in.
  */
 
 import { BUILTIN_TAB_GATES } from "../renderer/components/plugins/builtinTabs";

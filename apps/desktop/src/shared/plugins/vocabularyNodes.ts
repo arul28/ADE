@@ -643,14 +643,18 @@ export type VocabChartNode = {
  *   commit graph; phone and terminal draw the same rows as a list.
  * - `swimlane` — timestamped events with `laneId`. Desktop draws lane columns;
  *   other clients list.
- * - `graph` — nodes plus an optional `edges` binding. Desktop draws a node-link
- *   canvas; other clients list the nodes.
+ * - `graph` — nodes plus an optional `edges` binding. Desktop draws a small
+ *   SVG node-link canvas; other clients list the nodes.
+ * - `workspace` — desktop mounts ADE's compiled workspace Graph page (React
+ *   Flow). Bind is still required so phone and terminal list the same rows.
+ *   The plugin never ships drawing code; this engine is a named host page.
  *
  * Bound row shape is the list row (`title`, `subtitle`, `onPress`, …) plus
  * engine fields the host reads without reshaping: `sha`/`parents` for git-dag,
- * `laneId`/`t` for swimlane, `x`/`y`/`source`/`target` for graph.
+ * `laneId`/`t` for swimlane, `x`/`y`/`source`/`target` for graph. `workspace`
+ * ignores layout fields on desktop and reads ADE's own lane topology instead.
  */
-export type VocabCanvasEngine = "git-dag" | "swimlane" | "graph";
+export type VocabCanvasEngine = "git-dag" | "swimlane" | "graph" | "workspace";
 
 export type VocabCanvasNode = {
   component: "canvas";
@@ -1700,9 +1704,9 @@ export const NODE_PARSERS: Record<string, VocabNodeParser> = {
   },
 
   canvas: (raw, ctx) => {
-    const engine = enumValue(raw.engine, ["git-dag", "swimlane", "graph"] as const);
+    const engine = enumValue(raw.engine, ["git-dag", "swimlane", "graph", "workspace"] as const);
     if (engine === undefined) {
-      return ctx.invalid("`engine` must be `git-dag`, `swimlane`, or `graph`");
+      return ctx.invalid("`engine` must be `git-dag`, `swimlane`, `graph`, or `workspace`");
     }
     const bind = raw.bind !== undefined ? ctx.binding(raw.bind) : null;
     if (bind === null) return ctx.invalid("`bind` is required");

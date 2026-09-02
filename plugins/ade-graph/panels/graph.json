@@ -1,0 +1,17 @@
+{
+  "v": 1,
+  "title": "Graph",
+  "fallback": {
+    "title": "Graph",
+    "text": "Open ADE on the computer that holds this plugin to see lanes on one canvas.",
+    "deeplink": "ade://plugin/ade-graph/graph"
+  },
+  "body": [
+    {
+      "component": "emptyState",
+      "title": "Loading Graph…",
+      "description": "Reading this project's lanes.",
+      "icon": "graph"
+    }
+  ]
+}
