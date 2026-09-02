@@ -838,6 +838,22 @@ struct PluginLinkRefusal: Identifiable, Equatable {
   var pluginLabel: String
 }
 
+/// A host settings page a plugin action asked to open, as the phone can answer.
+///
+/// The desktop NAVIGATES for `{openSettings}`. The phone names the page
+/// instead, and that is the honest answer rather than a lesser one: the pages
+/// on the closed list are a Mac's own — the Cursor API key and the project
+/// secret store both live on the machine that holds the plugin, and inventing a
+/// phone route would send the reader somewhere that cannot hold the value.
+struct PluginSettingsNotice: Identifiable, Equatable {
+  let id = UUID()
+  /// An entry id from ``PluginInvokeResult/allowedOpenSettingsEntryIds``.
+  var entryId: String
+  var pluginLabel: String
+
+  var message: String { PluginInvokeResult.openSettingsNotice(for: entryId) }
+}
+
 /// Reply from `plugins.list` — the attached machine reporting its install
 /// records, manifest detail and all.
 ///
@@ -883,6 +899,14 @@ struct PluginInstallRecordEntry: Decodable, Equatable {
   /// everything it published" on every host too old to send the field — which
   /// would hide every contribution on the phone instead of falling back.
   var sockets: [PluginManifestSocketWire]?
+  /// The plugin's rail surfaces, in MANIFEST order, as `toRecordTabs` sends
+  /// them — already filtered to the rail kinds and therefore carrying no `kind`
+  /// of their own.
+  ///
+  /// Absent means the same thing it means for ``sockets``: this host could not
+  /// read the manifest. The phone then falls back to guessing from the panel
+  /// rows, which is what it did everywhere before this field existed.
+  var tabs: [PluginManifestTabWire]?
   /// Manifest socket ids the user switched OFF. A list of what is off rather
   /// than what is on, because contributions are on by default: a reader holding
   /// the declarations but not the toggles would draw contributions the user has
@@ -890,18 +914,20 @@ struct PluginInstallRecordEntry: Decodable, Equatable {
   var disabledContributions: [String] = []
 
   private enum CodingKeys: String, CodingKey {
-    case pluginId, enabled, sockets, disabledContributions
+    case pluginId, enabled, sockets, tabs, disabledContributions
   }
 
   init(
     pluginId: String,
     enabled: Bool = true,
     sockets: [PluginManifestSocketWire]? = nil,
+    tabs: [PluginManifestTabWire]? = nil,
     disabledContributions: [String] = []
   ) {
     self.pluginId = pluginId
     self.enabled = enabled
     self.sockets = sockets
+    self.tabs = tabs
     self.disabledContributions = disabledContributions
   }
 
@@ -915,6 +941,7 @@ struct PluginInstallRecordEntry: Decodable, Equatable {
     // different claim from an empty list — while a single unreadable socket
     // drops only itself.
     sockets = container.decodeLossyArrayIfPresent(PluginManifestSocketWire.self, forKey: .sockets)
+    tabs = container.decodeLossyArrayIfPresent(PluginManifestTabWire.self, forKey: .tabs)
     disabledContributions =
       container.decodeLossyArrayIfPresent(String.self, forKey: .disabledContributions) ?? []
   }
@@ -969,9 +996,17 @@ struct PluginManifestSocketWire: Decodable, Equatable {
   /// becomes a payload. Nil for every kind that is not an action button, and for
   /// the older hosts that send no `color` at all.
   var color: String?
+  /// A declared `composer-action` that claims Send, mirroring
+  /// `SyncPluginRecordSocket.ownsSend`.
+  ///
+  /// On the wire for the same reason `menu` and `color` are: the phone has no
+  /// manifest on disk, and the Cursor Cloud launch button is DECLARED and never
+  /// published — without this field it drew here as an ordinary button that
+  /// invoked on tap while the same button armed Send on the desktop.
+  var ownsSend: Bool = false
 
   private enum CodingKeys: String, CodingKey {
-    case socket, surface, id, order, label, icon, panelId, actionId, extensions, filterKey, menu, color
+    case socket, surface, id, order, label, icon, panelId, actionId, extensions, filterKey, menu, color, ownsSend
   }
 
   init(
@@ -986,7 +1021,8 @@ struct PluginManifestSocketWire: Decodable, Equatable {
     extensions: [String] = [],
     filterKey: String? = nil,
     menu: [PluginActionMenuEntry] = [],
-    color: String? = nil
+    color: String? = nil,
+    ownsSend: Bool = false
   ) {
     self.socket = socket
     self.surface = surface
@@ -1000,6 +1036,7 @@ struct PluginManifestSocketWire: Decodable, Equatable {
     self.filterKey = filterKey
     self.menu = menu
     self.color = color
+    self.ownsSend = ownsSend
   }
 
   init(from decoder: Decoder) throws {
@@ -1023,5 +1060,73 @@ struct PluginManifestSocketWire: Decodable, Equatable {
     // declaration its extra actions, never its primary one.
     menu = (try? container.decodeIfPresent([PluginActionMenuEntry].self, forKey: .menu)) ?? [] ?? []
     color = (try? container.decodeIfPresent(String.self, forKey: .color)) ?? nil
+    // Strictly the JSON boolean, like every other tolerant read here: a host
+    // sending `"ownsSend": 1` leaves Send with ADE rather than handing it to a
+    // plugin on a value the desktop would have refused.
+    ownsSend = ((try? container.decodeIfPresent(Bool.self, forKey: .ownsSend)) ?? nil) == true
   }
+}
+
+/// One rail surface of a plugin's manifest, as `SyncPluginRecordTab` sends it.
+///
+/// `kind` is absent on today's wire because `toRecordTabs` has already filtered
+/// the list to the rail kinds. It is decoded anyway so
+/// ``pluginRailTabSurface(_:)`` can apply the same rule to a future host that
+/// sends the unfiltered list, exactly as `pluginRailTabSurface` in
+/// `shared/plugins/manifest.ts` does.
+struct PluginManifestTabWire: Decodable, Equatable {
+  var id: String = ""
+  var title: String?
+  var panelId: String?
+  var icon: String?
+  var kind: String?
+
+  private enum CodingKeys: String, CodingKey {
+    case id, title, panelId, icon, kind
+  }
+
+  init(id: String, title: String? = nil, panelId: String? = nil, icon: String? = nil, kind: String? = nil) {
+    self.id = id
+    self.title = title
+    self.panelId = panelId
+    self.icon = icon
+    self.kind = kind
+  }
+
+  init(from decoder: Decoder) throws {
+    let container = try decoder.container(keyedBy: CodingKeys.self)
+    id = (try? container.decodeIfPresent(String.self, forKey: .id)) ?? ""
+    title = (try? container.decodeIfPresent(String.self, forKey: .title)) ?? nil
+    panelId = (try? container.decodeIfPresent(String.self, forKey: .panelId)) ?? nil
+    icon = (try? container.decodeIfPresent(String.self, forKey: .icon)) ?? nil
+    kind = (try? container.decodeIfPresent(String.self, forKey: .kind)) ?? nil
+  }
+}
+
+/// Kinds that draw as a rail tab. Mirrors `PLUGIN_RAIL_TAB_SURFACE_KINDS`.
+///
+/// A `webview` is a tab whose page the plugin draws itself; it differs from a
+/// `tab` only in what is inside it, so filtering on `tab` alone gave a plugin
+/// whose only full-page surface is a webview zero rail tabs.
+let pluginRailTabSurfaceKinds: Set<String> = ["tab", "webview"]
+
+/// The ONE surface a plugin's rail tab, its badge address and its default panel
+/// all mean: the first in MANIFEST order whose kind is a rail kind.
+///
+/// A transcription of `pluginRailTabSurface` in `shared/plugins/manifest.ts`,
+/// and it has to stay one. Four places used to answer this question three ways
+/// — the desktop record, the TUI and this app each had a copy — so a plugin
+/// whose webview comes first badged one surface on the desktop and another in
+/// the terminal, against the same manifest. A tab badge is addressed by
+/// `"<pluginId>/<surfaceId>"`, so those were two different addresses for one
+/// pill.
+///
+/// A surface carrying no `kind` counts as a rail surface, which is what lets
+/// the same rule serve a wire list that was already filtered.
+func pluginRailTabSurface(_ surfaces: [PluginManifestTabWire]?) -> PluginManifestTabWire? {
+  for surface in surfaces ?? [] {
+    guard let kind = surface.kind else { return surface }
+    if pluginRailTabSurfaceKinds.contains(kind) { return surface }
+  }
+  return nil
 }

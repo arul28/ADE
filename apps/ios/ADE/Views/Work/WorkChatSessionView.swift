@@ -3107,6 +3107,12 @@ private struct WorkChatComposerDraftInput: View {
   @State private var stopHapticToken = 0
   @State private var activeSendMode: WorkActiveSendMode = .inline
   @State private var sendOptionsPresented = false
+  /// The contributed button holding Send, when one is armed.
+  ///
+  /// Lifted out of the accessory row so the send control can see it: the row
+  /// only toggles the claim, exactly as it does on the desktop, and the send
+  /// control is what runs the plugin's action.
+  @State private var pluginSendOwner: PluginComposerSendOwner?
 
   private var hasSendableDraftOrAttachment: Bool {
     draftState.hasSendableText || !workChatInputReadyAttachments(inputAttachments).isEmpty
@@ -3332,8 +3338,46 @@ private struct WorkChatComposerDraftInput: View {
       draft: { draftState.text },
       onEdit: applyPluginComposerEdit,
       enabled: canCompose && !settingsMutationInFlight,
-      compact: compact
+      compact: compact,
+      sendOwner: pluginSendOwner,
+      onSendOwnerChange: { pluginSendOwner = $0 }
     )
+  }
+
+  /// Whether a plugin, rather than the local runtime, is where Send goes.
+  ///
+  /// The claim is dropped the moment its button stops being contributed — an
+  /// uninstall, a disable, or a plugin that stopped publishing the button —
+  /// because a Send pointing at a control that is no longer on screen would be
+  /// a send the reader cannot explain and cannot undo.
+  private var pluginSendClaim: PluginComposerSendOwner? {
+    guard let owner = pluginSendOwner else { return nil }
+    let live = pluginContributions.composerActions(sessionId: sessionId)
+    guard live.contains(where: { entry in
+      entry.pluginId == owner.contribution.pluginId
+        && entry.composerAction?.actionId == owner.actionId
+        && entry.composerAction?.ownsSend == true
+    }) else { return nil }
+    return owner
+  }
+
+  /// Run the armed plugin action with the words on screen.
+  ///
+  /// Shaped as the send button's own `onSend` so the claim changes WHERE the
+  /// draft goes and nothing else: the button still clears the field, still
+  /// restores it on a refusal, and still shows its spinner. Returning `false`
+  /// puts the draft back, which is what an action that refused owes a reader
+  /// who has not seen their words leave.
+  @MainActor
+  private func sendToPlugin(_ owner: PluginComposerSendOwner, text: String) async -> Bool {
+    let result = await syncService.invokeSocketContribution(
+      owner.contribution,
+      actionId: owner.actionId,
+      context: .composer(sessionId: sessionId, draft: text),
+      extraArgs: ["send": true]
+    )
+    guard let result else { return false }
+    return result.ok
   }
 
   /// Apply what a composer action answered with.
@@ -3396,9 +3440,10 @@ private struct WorkChatComposerDraftInput: View {
             canSend: canSend,
             canUploadAttachments: canUploadAttachments,
             sending: sending,
-            accessibilityLabelText: "Stage message",
+            accessibilityLabelText: sendButtonLabel("Stage message"),
+            consumesAttachments: pluginSendClaim == nil,
             onSend: { text, attachments in
-              await onSend(text, attachments, .queue)
+              await performSend(text, attachments, .queue)
             },
             onSent: onSent
           )
@@ -3413,12 +3458,40 @@ private struct WorkChatComposerDraftInput: View {
         canSend: canSend,
         canUploadAttachments: canUploadAttachments,
         sending: sending,
+        accessibilityLabelText: sendButtonLabel("Send message"),
+        consumesAttachments: pluginSendClaim == nil,
         onSend: { text, attachments in
-          await onSend(text, attachments, .queue)
+          await performSend(text, attachments, .queue)
         },
         onSent: onSent
       )
     }
+  }
+
+  /// What the send control is called right now.
+  ///
+  /// A plugin holding Send renames the control, because that is the only place
+  /// the change is visible to someone who cannot see the armed pill — and a
+  /// button labelled "Send message" that launches a cloud agent is the one
+  /// outcome this feature must never produce.
+  private func sendButtonLabel(_ base: String) -> String {
+    guard let owner = pluginSendClaim else { return base }
+    return "Send to \(owner.label)"
+  }
+
+  /// Where the draft actually goes. The plugin claim wins over every send mode:
+  /// queue, interrupt and inline are all instructions to the local runtime, and
+  /// an armed plugin is not it.
+  @MainActor
+  private func performSend(
+    _ text: String,
+    _ attachments: [WorkChatInputAttachment],
+    _ mode: WorkActiveSendMode
+  ) async -> Bool {
+    if let owner = pluginSendClaim {
+      return await sendToPlugin(owner, text: text)
+    }
+    return await onSend(text, attachments, mode)
   }
 
   @ViewBuilder
@@ -3430,11 +3503,12 @@ private struct WorkChatComposerDraftInput: View {
         canSend: canSend,
         canUploadAttachments: canUploadAttachments,
         sending: sending,
-        accessibilityLabelText: activeSendModeTitle(effectiveActiveSendMode),
+        accessibilityLabelText: sendButtonLabel(activeSendModeTitle(effectiveActiveSendMode)),
         systemImageName: activeSendModeIcon(effectiveActiveSendMode),
         minimumTapTargetSize: 32,
+        consumesAttachments: pluginSendClaim == nil,
         onSend: { text, attachments in
-          await onSend(text, attachments, effectiveActiveSendMode)
+          await performSend(text, attachments, effectiveActiveSendMode)
         },
         onSent: onSent
       )
@@ -4007,6 +4081,12 @@ private struct WorkChatComposerSendButton: View {
   var accessibilityLabelText = "Send message"
   var systemImageName = "arrow.up"
   var minimumTapTargetSize: CGFloat = 28
+  /// Whether a successful send has taken the attachments with it.
+  ///
+  /// False when a plugin holds Send: the plugin contract carries the DRAFT and
+  /// nothing else, so clearing the tray would delete files the reader staged
+  /// and nothing anywhere would have received them.
+  var consumesAttachments = true
   let onSend: @MainActor (String, [WorkChatInputAttachment]) async -> Bool
   let onSent: () -> Void
 
@@ -4031,13 +4111,13 @@ private struct WorkChatComposerSendButton: View {
       let outgoingAttachments = workChatInputReadyAttachments(attachments)
       let text = workChatOutgoingText(originalText, attachmentCount: outgoingAttachments.count)
       let restoredAttachments = attachments
-      attachments.removeAll()
+      if consumesAttachments { attachments.removeAll() }
       Task { @MainActor in
         let sent = await onSend(text, outgoingAttachments)
         if sent {
           onSent()
         } else {
-          attachments = restoredAttachments
+          if consumesAttachments { attachments = restoredAttachments }
           draftState.restoreUnsentText(originalText)
         }
       }

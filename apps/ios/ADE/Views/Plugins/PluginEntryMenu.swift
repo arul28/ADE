@@ -7,8 +7,14 @@ struct PluginEntry: Identifiable, Equatable {
   var pluginId: String
   var label: String
   var icon: String?
-  /// The tab surface id a plugin-tab badge is published against, typically
-  /// the first panel's `surface` column (Cursor Cloud: `fleet`).
+  /// The tab surface id a plugin-tab badge is published against.
+  ///
+  /// The first surface in MANIFEST order whose kind draws as a rail tab —
+  /// ``pluginRailTabSurface(_:)``, the same rule the desktop and the TUI apply.
+  /// This app used to take the first panel row with a non-empty `surface`
+  /// column, which is DATABASE order: a plugin whose webview comes first got a
+  /// different answer here than on the desktop, and a badge published against
+  /// `"<pluginId>/<surfaceId>"` then had two addresses for one pill.
   var surfaceId: String
 }
 
@@ -45,6 +51,7 @@ final class PluginEntryListModel: ObservableObject {
     await gate.refresh()
 
     let catalog = sync.pluginPresenceCatalog()
+    let declarations = await sync.pluginSocketDeclarations()
     let panelsByPlugin = Dictionary(grouping: sync.pluginPanels(pluginId: nil), by: \.pluginId)
 
     entries = gate.installedPlugins
@@ -53,7 +60,11 @@ final class PluginEntryListModel: ObservableObject {
         guard !panels.isEmpty else { return nil }
         let record = catalog.record(for: plugin.pluginId)
         let icon = plugin.icon.isEmpty ? record?.icon : plugin.icon
-        let surfaceId = panels.first { !$0.surface.isEmpty }?.surface
+        // The manifest's answer first. The panel-row guess stays only as the
+        // fallback for a host too old to send `tabs` — dropping it would take
+        // the badge address away from every plugin on an older machine.
+        let surfaceId = declarations.railTabSurfaceId(for: plugin.pluginId)
+          ?? panels.first { !$0.surface.isEmpty }?.surface
           ?? panels.first?.panelId
           ?? plugin.pluginId
         return PluginEntry(
@@ -73,6 +84,11 @@ final class PluginEntryListModel: ObservableObject {
 protocol PluginEntryListSyncing: AnyObject {
   func pluginPresenceCatalog() -> PluginPresenceCatalog
   func pluginPanels(pluginId: String?) -> [PluginPanelRecord]
+  /// The manifest the attached machine read, which is the only place the rail
+  /// tab rule can be applied. Cached per presence scope by the service, so this
+  /// costs no extra round trip beyond the one every plugin surface already
+  /// makes.
+  func pluginSocketDeclarations() async -> PluginSocketDeclarations
 }
 
 extension SyncService: PluginEntryListSyncing {}
@@ -97,7 +113,12 @@ struct PluginEntryMenuButton: View {
 
   var body: some View {
     content
-      .loadPluginContributions(.surface, into: $pluginContributions)
+      // Gated on there being a plugin tab at all. This button sits in a root
+      // tab's top bar and re-renders on every projection revision, and the
+      // `app` read is a pair of round trips — with no plugin installed there is
+      // nothing for it to find, and the Work screen already loads the same
+      // scope for its own toolbar sockets.
+      .loadPluginContributions(.surface, into: $pluginContributions, active: !model.entries.isEmpty)
       // Re-resolves when plugin rows change (install, uninstall, a new panel)
       // and when the phone attaches to a different machine, which is the case
       // that actually changes the answer.
@@ -197,10 +218,22 @@ struct PluginEntryMenuButton: View {
     return "Plugins, \(marked.joined(separator: ", "))"
   }
 
+  /// How much of a badge's text the overlay pill may draw.
+  ///
+  /// The pill rides the corner of a 38×34pt glyph, and `row-badge` allows 32
+  /// characters — the same payload draws fine as a chip on a lane row and
+  /// stretches this pill across the top bar. Six is what a count needs ("9+",
+  /// "1,234"), and desktop caps the rail pill at the same six. Cut, never
+  /// ellipsized: an ellipsis inside a six-character pill spends half of it
+  /// saying there is more.
+  private static let tabBadgePillMaxCharacters = 6
+
   @ViewBuilder
   private func tabBadgeOverlay(for entry: PluginEntry) -> some View {
     if let badge = tabBadge(for: entry)?.badge {
-      Text(badge.text)
+      // The full text still reaches the reader through
+      // `accessibilityLabel(for:)`; the pill itself is hidden from VoiceOver.
+      Text(String(badge.text.prefix(Self.tabBadgePillMaxCharacters)))
         .font(.system(size: 9, weight: .bold, design: .monospaced))
         .foregroundStyle(.white)
         .padding(.horizontal, 3)

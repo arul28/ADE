@@ -479,6 +479,19 @@ struct PluginActionButtonPayload: Equatable {
   /// desktop — so a colour refused there is refused here, and a plugin does not
   /// get a legible button on one client and an invisible one on the other.
   var color: String?
+  /// This button claims the composer's Send.
+  ///
+  /// `composer-action` only in meaning, and parsed on all three action-button
+  /// kinds — one arm builds them — so the field cannot drift between the
+  /// clients. Only the composer row honours it: a tap ARMS the button instead
+  /// of invoking, and Send then runs this action with `args.send == true` and
+  /// the live draft. The button's own menu still invokes: a split button's
+  /// extra entries are Advanced, never the Send claim.
+  ///
+  /// Strictly the JSON boolean `true`, matching `parsePluginContributionPayload`
+  /// in `shared/plugins/sockets.ts`. A payload saying `"ownsSend": 1` leaves
+  /// Send with ADE.
+  var ownsSend: Bool = false
 }
 
 /// A plugin's vocabulary panel, rendered inside a detail screen after the
@@ -624,6 +637,26 @@ struct PluginContribution: Equatable, Identifiable {
   /// payloads would make every chip select nothing, since a chip is published
   /// against the surface and the rows it filters are published against entities.
   var filterKey: String?
+  /// Ids the SURFACE knew and the stored row cannot carry.
+  ///
+  /// `plugin_contributions` keys a PR row on its GitHub number, because that is
+  /// all `pluginContributionKeyForContext` writes. A plugin that starts an ADE
+  /// review needs ADE's own pull-request id and the lane the PR is checked out
+  /// in — `launch.js` in `ade-review` validates on both, and neither is
+  /// derivable from a number. The screen that drew the row has them, so it
+  /// stamps them here on the way to ``SyncService/invokeRowContribution(_:)``.
+  ///
+  /// Empty is the ordinary case, and it must stay honest: an unstamped
+  /// contribution sends nulls, which is what it sent before, rather than a
+  /// guessed id a plugin could act on.
+  var rowIdentity = PluginRowIdentity()
+
+  /// A copy carrying the ids the drawing surface knows.
+  func stamping(_ identity: PluginRowIdentity) -> PluginContribution {
+    var copy = self
+    copy.rowIdentity = identity
+    return copy
+  }
 
   var badge: PluginRowBadgePayload? {
     if case let .rowBadge(payload) = payload { return payload }
@@ -822,7 +855,9 @@ enum PluginContributionParser {
       // the button live rather than silently dead.
       disabled: PluginPanelParser.boolValue(object["disabled"]) ?? false,
       menu: parseActionMenu(object["menu"]),
-      color: sanitizeActionColor(object["color"])
+      color: sanitizeActionColor(object["color"]),
+      // Strictly `true` for the same reason `disabled` is.
+      ownsSend: PluginPanelParser.boolValue(object["ownsSend"]) == true
     )
   }
 
@@ -1221,6 +1256,20 @@ struct PluginContributionIndex: Equatable {
     contributions(kind, entityId).filter { $0.menuItem != nil }
   }
 
+  /// The same list for a PR row, carrying the ids only that row knows.
+  ///
+  /// Separate accessor rather than an optional argument on the one above, so a
+  /// PR surface cannot reach the unstamped version by accident and send a
+  /// plugin `id: null` for a pull request ADE has a row for.
+  func menuItems(
+    forPrNumber number: Int,
+    prId: String?,
+    laneId: String?
+  ) -> [PluginContribution] {
+    let identity = PluginRowIdentity(prId: prId, laneId: laneId)
+    return menuItems(.pr, String(number)).map { $0.stamping(identity) }
+  }
+
   /// Sections a detail screen appends after its own, in placement order.
   func detailSections(_ kind: PluginEntityKind, _ entityId: String) -> [PluginContribution] {
     contributions(kind, entityId).filter { $0.detailSection != nil }
@@ -1412,6 +1461,19 @@ struct PluginSocketDeclarations: Equatable {
   /// read the manifest and found no sockets lists the plugin with nothing
   /// declared, which is the stronger claim, and its rows drop.
   private(set) var knownPlugins: Set<String> = []
+  /// The rail tab surface id per plugin, by the ONE rule every client shares.
+  ///
+  /// Built here because this is the only place the phone already holds the
+  /// manifest as the machine read it. Absent for a plugin whose record carried
+  /// no `tabs` — an older host — and the caller then falls back to guessing
+  /// from the panel rows.
+  private(set) var railTabSurfaceByPlugin: [String: String] = [:]
+
+  /// Which surface this plugin's tab, badge and default panel mean, or nil when
+  /// this host could not say. See ``pluginRailTabSurface(_:)``.
+  func railTabSurfaceId(for pluginId: String) -> String? {
+    railTabSurfaceByPlugin[pluginId]
+  }
 
   /// Declaration key: plugin, SURFACE, socket kind.
   ///
@@ -1442,12 +1504,32 @@ struct PluginSocketDeclarations: Equatable {
       // A plugin-tab badge is published against `<pluginId>/<tabSurfaceId>`
       // and declared on `app`. ADE surface ids have no slash, so this cannot
       // steal a toolbar row addressed to Work or Lanes.
-      if entityId.contains("/") {
+      //
+      // EXACTLY one slash, with something on each side. A transcription of
+      // `parsePluginTabContributionEntityId` in `shared/plugins/context.ts`,
+      // and it has to stay one: `contains("/")` accepted `a/b/c` and a
+      // trailing `a/`, so a row the desktop drops as unaddressable used to be
+      // filed under `app` here and drawn on a tab that does not own it.
+      if parsePluginTabEntityId(entityId) != nil {
         return PluginSurfaceId.app.rawValue
       }
       return nil
     }
     return PluginSurfaceId.allCases.first { pluginSurfaceEntityKind($0) == entityKind }?.rawValue
+  }
+
+  /// Split `<pluginId>/<tabSurfaceId>`, or nil when the id is not that shape.
+  ///
+  /// Mirrors `parsePluginTabContributionEntityId`: one slash, not the first
+  /// character, not the last, and no second slash anywhere.
+  static func parsePluginTabEntityId(_ entityId: String) -> (pluginId: String, surfaceId: String)? {
+    guard let slash = entityId.firstIndex(of: "/"),
+          slash != entityId.startIndex,
+          entityId.index(after: slash) != entityId.endIndex,
+          entityId.lastIndex(of: "/") == slash else {
+      return nil
+    }
+    return (String(entityId[..<slash]), String(entityId[entityId.index(after: slash)...]))
   }
 
   static let none = PluginSocketDeclarations()
@@ -1511,6 +1593,11 @@ struct PluginSocketDeclarations: Equatable {
       // A plugin whose record carries no `sockets` at all is one this host
       // could not read a manifest for. It stays out of `knownPlugins`, so its
       // published rows are never joined against declarations it never reported.
+      // The rail tab is read off `tabs`, which is present independently of
+      // `sockets`: a plugin can declare a tab and no sockets at all.
+      if let rail = pluginRailTabSurface(record.tabs), !rail.id.isEmpty {
+        railTabSurfaceByPlugin[record.pluginId] = rail.id
+      }
       guard let wires = record.sockets else { continue }
       knownPlugins.insert(record.pluginId)
       let disabled = Set(record.disabledContributions)
@@ -1607,6 +1694,11 @@ struct PluginSocketDeclarations: Equatable {
       // Loose like `menu`, and re-judged for the same reason: the contrast rule
       // then lives in one place rather than being re-applied at every hop.
       put("color", wire.color)
+      // A Send claim is a MANIFEST fact, so it has to survive the declaration
+      // path: the Cursor Cloud launch button is declared and never published,
+      // and without this the phone drew it as an ordinary button that invoked
+      // on tap while the desktop armed Send.
+      if wire.ownsSend { object["ownsSend"] = true }
     case .rowMenuItem:
       put("label", wire.label)
       put("icon", wire.icon)
@@ -1661,4 +1753,13 @@ struct PluginSocketDeclarations: Equatable {
     }
     return object
   }
+}
+
+/// Ids a contribution's own storage key cannot hold, supplied by the surface
+/// that draws the row. See ``PluginContribution/rowIdentity``.
+struct PluginRowIdentity: Equatable {
+  /// ADE's own pull-request row id, when this PR is linked in ADE.
+  var prId: String?
+  /// The lane the PR is checked out in, when there is one.
+  var laneId: String?
 }

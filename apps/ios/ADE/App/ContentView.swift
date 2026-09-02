@@ -181,6 +181,21 @@ struct ContentView: View {
       } message: { refusal in
         Text("\(refusal.pluginLabel) isn't on your computer, so this link has nothing to open.")
       }
+      // The `{openSettings}` verb from a socket press. Desktop navigates; the
+      // phone names the page, because every page on the closed list is one the
+      // Mac that holds the plugin owns.
+      .alert(
+        "Open on your Mac",
+        isPresented: Binding(
+          get: { syncService.pluginSettingsNotice != nil },
+          set: { if !$0 { syncService.pluginSettingsNotice = nil } }
+        ),
+        presenting: syncService.pluginSettingsNotice
+      ) { _ in
+        Button("OK", role: .cancel) { syncService.pluginSettingsNotice = nil }
+      } message: { notice in
+        Text(notice.message)
+      }
       // The `{prompt}` verb: a contributed button asking for one line before it
       // can finish. Hosted here rather than at the button, because by the time
       // the action answers, the menu the press came from has dismissed.

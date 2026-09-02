@@ -664,8 +664,12 @@ struct PluginBrandGlyph: Equatable {
   static func parse(_ raw: Any?) -> PluginBrandGlyph? {
     guard let object = raw as? [String: Any] else { return nil }
     let viewBox = (object["viewBox"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-    let parts = viewBox.split(whereSeparator: { $0.isWhitespace })
-    guard parts.count == 4, parts.allSatisfy({ Double($0) != nil }) else { return nil }
+    // `VIEWBOX_PATTERN` in `vocabularyBrandIcons.ts`, restated: four decimal
+    // numbers, optional leading minus, no exponent and no hex. `Double(_:)`
+    // alone accepted `nan`, `inf`, `0x1p3` and `1e9` — a NaN width then made
+    // every transform in the glyph NaN and the mark vanished on the phone
+    // while the desktop refused the icon outright.
+    guard isBrandViewBox(viewBox) else { return nil }
     guard let rawPaths = object["paths"] as? [Any], !rawPaths.isEmpty, rawPaths.count <= 24 else {
       return nil
     }
@@ -684,6 +688,28 @@ struct PluginBrandGlyph: Equatable {
     let parts = viewBox.split(whereSeparator: { $0.isWhitespace }).compactMap { Double($0) }
     guard parts.count == 4 else { return (0, 0, 24, 24) }
     return (parts[0], parts[1], max(parts[2], 0.001), max(parts[3], 0.001))
+  }
+
+  /// Four decimal numbers separated by whitespace, matching `VIEWBOX_PATTERN`.
+  ///
+  /// Hand-written rather than a regex so the rule is readable next to the one
+  /// it mirrors, and so it cannot be widened by accident: every character of
+  /// every token is checked, which is what refuses `nan`, `inf`, `1e9`, `0x10`
+  /// and a bare `+1`.
+  static func isBrandViewBox(_ raw: String) -> Bool {
+    let parts = raw.split(whereSeparator: { $0.isWhitespace })
+    guard parts.count == 4 else { return false }
+    return parts.allSatisfy(isBrandViewBoxNumber)
+  }
+
+  private static func isBrandViewBoxNumber(_ token: Substring) -> Bool {
+    var rest = token
+    if rest.first == "-" { rest = rest.dropFirst() }
+    let halves = rest.split(separator: ".", omittingEmptySubsequences: false)
+    guard halves.count == 1 || halves.count == 2 else { return false }
+    return halves.allSatisfy { half in
+      !half.isEmpty && half.allSatisfy { $0.isASCII && $0.isNumber }
+    }
   }
 }
 

@@ -2,23 +2,48 @@ import CoreGraphics
 import SwiftUI
 
 /// Minimal SVG path-data → `Path` converter, sufficient for the Linear logo
-/// glyph (commands M/m L/l H/h V/v C/c A/a Z/z). Arcs are emitted as cubic
-/// bezier segments via the SVG endpoint→center parameterization; the Linear
-/// glyph's arcs are axis-aligned (x-rotation 0), which this handles exactly.
+/// glyph and for the mono `brand:*` glyphs a plugin ships (commands M/m L/l
+/// H/h V/v C/c S/s Q/q T/t A/a Z/z). Arcs are emitted as cubic bezier segments
+/// via the SVG endpoint→center parameterization; an axis-aligned arc
+/// (x-rotation 0) is handled exactly.
 ///
 /// Coordinates are produced in the path's own units (the Linear glyph is a
 /// 0…24 viewBox); callers scale into their target rect.
+///
+/// The input is UNTRUSTED. A plugin's `brandIcons` file reaches this parser
+/// after the host's sanitizer, which judges the markup and not the path
+/// grammar, so this function must terminate on every string. Two rules make
+/// that true: every loop pass either consumes input or returns, and the pass
+/// count is bounded by ``svgPathMaxCommands`` no matter what. Without them
+/// `"M0 0 Z 5"` spun forever on the main actor — the `z` arm consumes nothing
+/// and a number after it used to re-run `z` for ever.
 func parseSVGPath(_ data: String) -> Path {
   var path = Path()
   let scanner = SVGPathScanner(data)
   var current = CGPoint.zero
   var subpathStart = CGPoint.zero
   var lastCommand: Character = " "
+  /// The control point a smooth `S`/`s` reflects, set only by a cubic command.
+  var lastCubicControl: CGPoint?
+  /// The control point a smooth `T`/`t` reflects, set only by a quadratic one.
+  var lastQuadControl: CGPoint?
+  var commands = 0
 
   while let command = scanner.nextCommand(previous: lastCommand) {
+    commands += 1
+    // The belt to the "always consume" brace. A path long enough to hit this
+    // is not a glyph, and drawing a prefix of it beats freezing the surface
+    // that drew it.
+    if commands > svgPathMaxCommands { return path }
     lastCommand = command
     let isRelative = command.isLowercase
-    switch command.lowercased().first! {
+    let letter = command.lowercased().first!
+    // Only a cubic keeps a cubic reflection and only a quadratic keeps a
+    // quadratic one, exactly as the SVG spec says: any other command makes the
+    // next smooth curve reflect the current point instead.
+    if letter != "c" && letter != "s" { lastCubicControl = nil }
+    if letter != "q" && letter != "t" { lastQuadControl = nil }
+    switch letter {
     case "m":
       guard let x = scanner.nextNumber(), let y = scanner.nextNumber() else { return path }
       current = isRelative ? CGPoint(x: current.x + x, y: current.y + y) : CGPoint(x: x, y: y)
@@ -45,6 +70,31 @@ func parseSVGPath(_ data: String) -> Path {
       let c2 = isRelative ? CGPoint(x: current.x + x2, y: current.y + y2) : CGPoint(x: x2, y: y2)
       let end = isRelative ? CGPoint(x: current.x + x, y: current.y + y) : CGPoint(x: x, y: y)
       path.addCurve(to: end, control1: c1, control2: c2)
+      lastCubicControl = c2
+      current = end
+    case "s":
+      guard let x2 = scanner.nextNumber(), let y2 = scanner.nextNumber(),
+            let x = scanner.nextNumber(), let y = scanner.nextNumber() else { return path }
+      let c1 = reflect(lastCubicControl, about: current)
+      let c2 = isRelative ? CGPoint(x: current.x + x2, y: current.y + y2) : CGPoint(x: x2, y: y2)
+      let end = isRelative ? CGPoint(x: current.x + x, y: current.y + y) : CGPoint(x: x, y: y)
+      path.addCurve(to: end, control1: c1, control2: c2)
+      lastCubicControl = c2
+      current = end
+    case "q":
+      guard let x1 = scanner.nextNumber(), let y1 = scanner.nextNumber(),
+            let x = scanner.nextNumber(), let y = scanner.nextNumber() else { return path }
+      let control = isRelative ? CGPoint(x: current.x + x1, y: current.y + y1) : CGPoint(x: x1, y: y1)
+      let end = isRelative ? CGPoint(x: current.x + x, y: current.y + y) : CGPoint(x: x, y: y)
+      path.addQuadCurve(to: end, control: control)
+      lastQuadControl = control
+      current = end
+    case "t":
+      guard let x = scanner.nextNumber(), let y = scanner.nextNumber() else { return path }
+      let control = reflect(lastQuadControl, about: current)
+      let end = isRelative ? CGPoint(x: current.x + x, y: current.y + y) : CGPoint(x: x, y: y)
+      path.addQuadCurve(to: end, control: control)
+      lastQuadControl = control
       current = end
     case "a":
       guard let rx = scanner.nextNumber(), let ry = scanner.nextNumber(),
@@ -65,6 +115,21 @@ func parseSVGPath(_ data: String) -> Path {
     }
   }
   return path
+}
+
+/// The most commands one glyph may spend before the parser gives up.
+///
+/// A sanitized `brand:*` path is capped at 4,096 characters and the shortest
+/// legal command is two, so this cannot refuse a glyph the host accepted; it
+/// exists only so a future change that reintroduces a non-consuming arm cannot
+/// freeze the main actor again.
+private let svgPathMaxCommands = 4_096
+
+/// The smooth-curve reflection: the previous control mirrored through the
+/// current point, or the current point itself when there is nothing to mirror.
+private func reflect(_ control: CGPoint?, about current: CGPoint) -> CGPoint {
+  guard let control else { return current }
+  return CGPoint(x: 2 * current.x - control.x, y: 2 * current.y - control.y)
 }
 
 /// Endpoint → center parameterization for an axis-aligned elliptical arc,
@@ -158,6 +223,14 @@ private final class SVGPathScanner {
   /// Returns the next command letter. When the next token is a number, repeats
   /// the previous command (implicit repetition), converting an implicit moveto
   /// repeat into a lineto per the SVG spec.
+  ///
+  /// Two previous commands refuse to repeat, and both refusals are what keeps
+  /// the caller's loop finite. `" "` is "nothing has run yet", so a path that
+  /// opens with a number is not a path. `z`/`Z` takes no arguments and consumes
+  /// nothing, so repeating it on a trailing number — `"M0 0 Z 5"` — would hand
+  /// the caller the same command for ever with the cursor never moving. The
+  /// spec has no implicit repetition after a closepath either: a number there
+  /// is malformed data, and stopping is what every other malformed arm does.
   func nextCommand(previous: Character) -> Character? {
     guard let c = peek() else { return nil }
     if c.isLetter {
@@ -168,7 +241,7 @@ private final class SVGPathScanner {
     switch previous {
     case "M": return "L"
     case "m": return "l"
-    case " ": return nil
+    case " ", "z", "Z": return nil
     default: return previous
     }
   }

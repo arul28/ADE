@@ -392,7 +392,14 @@ extension SyncService {
     // `pluginContributionKeyForContext` writes and what the host stores. A row
     // that is not numeric came from something that did not follow the contract,
     // and the untouched `entityId` still rides in the payload beside this.
-    case .pr: .pr(number: Int(contribution.entityId) ?? 0, id: nil, laneId: nil)
+    // The ids come off ``PluginContribution/rowIdentity`` because the row's own
+    // key holds only the number. A surface that did not stamp them sends nulls,
+    // exactly as before — an unlinked GitHub-only PR genuinely has no ADE id.
+    case .pr: .pr(
+      number: Int(contribution.entityId) ?? 0,
+      id: contribution.rowIdentity.prId,
+      laneId: contribution.rowIdentity.laneId
+    )
     case .session: .session(id: contribution.entityId)
     case .file: .file(path: contribution.entityId)
     case .automation: .automation(id: contribution.entityId)
@@ -442,6 +449,25 @@ extension SyncService {
       actionId: actionId,
       payload: payload
     )
+    // Before the navigation, the order the pane path and the desktop both use:
+    // an action that opens a link, names a settings page and then moves the
+    // reader should do all three.
+    //
+    // `https:` only, and the ceiling is `PLUGIN_URL_MAX_CHARS` — both already
+    // applied by ``PluginInvokeResult/parseOpenURL(_:)``, so nothing else can
+    // reach here. Honoured on every socket the phone draws: a toolbar button, a
+    // row menu item and a composer action all went through this one function
+    // and all silently dropped the verb, so "Open PR" worked on the desktop and
+    // did nothing at all on the phone.
+    if let url = result?.openURL {
+      UIApplication.shared.open(url)
+    }
+    if let entryId = result?.openSettings {
+      pluginSettingsNotice = PluginSettingsNotice(
+        entryId: entryId,
+        pluginLabel: pluginPresenceCatalog().label(for: contribution.pluginId)
+      )
+    }
     if let navigation = result?.navigate {
       presentedPluginPane = PluginPaneRequest(
         pluginId: contribution.pluginId,
@@ -1035,6 +1061,22 @@ enum PluginSocketContextValues {
 
 // MARK: - composer-action
 
+/// The composer button currently claiming Send, when one is armed.
+///
+/// `ownsSend` is a toggle rather than an invoke: the button reads as ON, and
+/// Send runs this action with the live draft and `args.send == true` instead of
+/// handing the words to the local runtime. Nil means Send is ADE's own.
+///
+/// The whole contribution rather than an id triple, because the invoke goes
+/// back through ``SyncService/invokeSocketContribution(_:actionId:context:extraArgs:allowsPrompt:)``
+/// — which is what makes a `{navigate}` or a `{prompt}` from a Send behave the
+/// same way it does from a tap.
+struct PluginComposerSendOwner: Equatable {
+  var contribution: PluginContribution
+  var actionId: String
+  var label: String
+}
+
 /// Contributed buttons in the chat composer's accessory row.
 ///
 /// The one socket whose press carries the user's own unsent words, and the one
@@ -1063,6 +1105,12 @@ struct PluginComposerActions: View {
   /// behind a single plugins menu, because the row genuinely cannot hold a
   /// second labeled control beside a text field the user is typing into.
   var compact = false
+  /// Which contributed button currently claims Send, or nil for ADE's own.
+  var sendOwner: PluginComposerSendOwner?
+  /// Arm or disarm a Send claim. Absent, an `ownsSend` button invokes on tap,
+  /// which is the degradation a composer with no Send control to hand over
+  /// gets — the same rule the desktop row follows.
+  var onSendOwnerChange: ((PluginComposerSendOwner?) -> Void)?
 
   @EnvironmentObject private var syncService: SyncService
   @State private var inFlight: Set<String> = []
@@ -1072,10 +1120,35 @@ struct PluginComposerActions: View {
     compact ? 1 : pluginActionVisibleLimit
   }
 
+  /// Whether this contribution's primary action is the one holding Send.
+  private func claimsSend(_ contribution: PluginContribution, _ action: PluginActionButtonPayload) -> Bool {
+    action.ownsSend
+      && sendOwner?.contribution.pluginId == contribution.pluginId
+      && sendOwner?.actionId == action.actionId
+  }
+
+  /// The order the row draws in.
+  ///
+  /// An armed button is promoted to the visible cluster, for the desktop's
+  /// reason: with one inline slot in the compact row, a claim made from the
+  /// overflow menu would take over Send while the only thing on screen said
+  /// nothing about it. Nothing is reordered when nothing is armed.
+  private var ordered: [PluginContribution] {
+    guard sendOwner != nil else { return contributions }
+    let armed = contributions.filter { entry in
+      guard let action = entry.composerAction else { return false }
+      return claimsSend(entry, action)
+    }
+    guard !armed.isEmpty else { return contributions }
+    let rest = contributions.filter { entry in !armed.contains(where: { $0.id == entry.id }) }
+    return armed + rest
+  }
+
   var body: some View {
     if !contributions.isEmpty {
-      let visible = contributions.prefix(visibleLimit)
-      let hidden = contributions.dropFirst(visibleLimit)
+      let row = ordered
+      let visible = row.prefix(visibleLimit)
+      let hidden = row.dropFirst(visibleLimit)
       ForEach(Array(visible)) { contribution in
         if let action = contribution.composerAction {
           button(contribution, action)
@@ -1115,9 +1188,10 @@ struct PluginComposerActions: View {
   @ViewBuilder
   private func button(_ contribution: PluginContribution, _ action: PluginActionButtonPayload) -> some View {
     let busy = inFlight.contains(contribution.id)
+    let claimed = claimsSend(contribution, action)
     HStack(spacing: 0) {
       Button {
-        invoke(contribution, actionId: action.actionId)
+        press(contribution, action)
       } label: {
         HStack(spacing: 5) {
           if busy {
@@ -1142,7 +1216,8 @@ struct PluginComposerActions: View {
       .buttonStyle(.plain)
       .disabled(isDisabled(contribution, disabled: action.disabled))
       .accessibilityLabel("\(action.label), \(syncService.pluginPresenceCatalog().label(for: contribution.pluginId))")
-      .accessibilityValue(busy ? "Working" : "")
+      .accessibilityValue(busy ? "Working" : (claimed ? "Send launches here" : ""))
+      .accessibilityAddTraits(claimed ? [.isSelected] : [])
 
       if !action.menu.isEmpty {
         // A separate hit target rather than a long-press, matching the send
@@ -1174,11 +1249,45 @@ struct PluginComposerActions: View {
     .frame(maxWidth: pluginActionLabelMaxWidth)
     .fixedSize(horizontal: false, vertical: true)
     .layoutPriority(1)
-    .background(ADEColor.surfaceBackground.opacity(0.38), in: Capsule(style: .continuous))
+    // An armed button is LIT rather than tinted: the plugin's own colour is an
+    // inline style on the label, so painting the claim as a colour would paint
+    // over the only thing saying Send has moved. Same trade the desktop row
+    // makes for its busy and armed states.
+    .background(
+      (claimed ? ADEColor.accent.opacity(0.20) : ADEColor.surfaceBackground.opacity(0.38)),
+      in: Capsule(style: .continuous)
+    )
     .overlay(
       Capsule(style: .continuous)
-        .stroke(ADEColor.border.opacity(0.24), lineWidth: 0.5)
+        .stroke(
+          claimed ? ADEColor.accent.opacity(0.55) : ADEColor.border.opacity(0.24),
+          lineWidth: claimed ? 1 : 0.5
+        )
     )
+  }
+
+  /// A tap on the button's primary half.
+  ///
+  /// An `ownsSend` button is a TOGGLE, not an invoke: it arms, and Send then
+  /// runs the action with the live draft and `args.send == true`. A second tap
+  /// disarms and hands Send back to ADE. Every other button invokes, and so
+  /// does an `ownsSend` one on a composer that gave this row no way to hand
+  /// Send over.
+  private func press(_ contribution: PluginContribution, _ action: PluginActionButtonPayload) {
+    guard action.ownsSend, let onSendOwnerChange else {
+      invoke(contribution, actionId: action.actionId)
+      return
+    }
+    ADEHaptics.light()
+    if claimsSend(contribution, action) {
+      onSendOwnerChange(nil)
+      return
+    }
+    onSendOwnerChange(PluginComposerSendOwner(
+      contribution: contribution,
+      actionId: action.actionId,
+      label: action.label
+    ))
   }
 
   /// An overflowed action as menu rows: the action itself, then whatever its
@@ -1191,7 +1300,7 @@ struct PluginComposerActions: View {
   ) -> some View {
     if action.menu.isEmpty {
       Button {
-        invoke(contribution, actionId: action.actionId)
+        press(contribution, action)
       } label: {
         Label {
           Text(action.label)
@@ -1202,8 +1311,11 @@ struct PluginComposerActions: View {
       .disabled(isDisabled(contribution, disabled: action.disabled))
     } else {
       Menu {
+        // The PRIMARY entry, so it arms exactly as the inline button does. The
+        // entries below it still invoke: a split button's extra actions are
+        // Advanced, never the Send claim — the same split desktop draws.
         Button {
-          invoke(contribution, actionId: action.actionId)
+          press(contribution, action)
         } label: {
           Label {
             Text(action.label)

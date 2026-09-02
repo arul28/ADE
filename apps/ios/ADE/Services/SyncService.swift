@@ -3938,6 +3938,13 @@ final class SyncService: ObservableObject {
   /// the toolbar icon has nowhere to put a field. Set by
   /// `invokeSocketContribution` and cleared by whoever shows it.
   @Published var pendingPluginPrompt: PluginSocketPromptRequest?
+  /// A host settings page a socket press asked to open, waiting to be named.
+  ///
+  /// Root-level for the reason `pendingPluginPrompt` is: a toolbar button, a
+  /// row menu and a composer action have all dismissed by the time the action
+  /// answers. Set by `invokeSocketContribution` and cleared by whoever shows
+  /// it. The pane path has its own inline banner and does not use this.
+  @Published var pluginSettingsNotice: PluginSettingsNotice?
 
   private let iso8601WithFractionalSecondsFormatter: ISO8601DateFormatter = {
     let formatter = ISO8601DateFormatter()

@@ -111,16 +111,44 @@ enum PluginVocabMarkdownParser {
 
   /// Cut a document to `maxChars` at the last complete line in the window.
   /// Mirrors `clampVocabMarkdownSource`.
+  ///
+  /// Counted in UTF-16 code units, because that is what `String.length` and
+  /// `String.slice` count in the TypeScript this transcribes. Swift's
+  /// `Character` count is graphemes, so a document of emoji or of accented
+  /// text used to be cut at a different place on the phone than on the desktop
+  /// — the same source, two different documents, and a table or fence that
+  /// survived on one client and not on the other.
+  ///
+  /// One deliberate difference: a window boundary that falls inside a surrogate
+  /// pair or a grapheme cluster moves DOWN to the nearest character boundary. A
+  /// Swift `String` cannot hold the lone surrogate a JavaScript slice would
+  /// produce there, and a whole character is the honest rounding.
   static func clamp(_ source: String, maxChars: Int = PluginVocabMarkdownLimits.maxChars) -> (text: String, truncated: Bool) {
-    guard source.count > maxChars else { return (source, false) }
-    let slice = String(source.prefix(maxChars))
+    guard source.utf16.count > maxChars else { return (source, false) }
+    let end = characterIndex(atOrBelowUTF16Offset: maxChars, in: source)
+    let slice = source[..<end]
     if let newline = slice.lastIndex(of: "\n") {
-      let offset = slice.distance(from: slice.startIndex, to: newline)
+      let offset = source.utf16.distance(from: source.utf16.startIndex, to: newline.samePosition(in: source.utf16) ?? source.utf16.startIndex)
       if offset >= maxChars / 2 {
         return (String(slice[..<newline]), true)
       }
     }
-    return (slice, true)
+    return (String(slice), true)
+  }
+
+  /// The character boundary at, or the nearest one below, a UTF-16 offset.
+  private static func characterIndex(atOrBelowUTF16Offset offset: Int, in source: String) -> String.Index {
+    guard var cursor = source.utf16.index(
+      source.utf16.startIndex,
+      offsetBy: offset,
+      limitedBy: source.utf16.endIndex
+    ) else {
+      return source.endIndex
+    }
+    while cursor > source.utf16.startIndex, cursor.samePosition(in: source) == nil {
+      cursor = source.utf16.index(before: cursor)
+    }
+    return cursor.samePosition(in: source) ?? source.startIndex
   }
 
   // MARK: Blocks

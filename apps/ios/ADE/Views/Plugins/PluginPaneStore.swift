@@ -442,6 +442,9 @@ final class PluginPaneStore: ObservableObject {
     }
     presentation = resolvePresentation()
     phase = .loaded
+    // Last, so the reconcile reads the selection this pass settled on rather
+    // than the one it started with.
+    reconcileViewAcknowledgement()
   }
 
   /// Ask again for everything this pane could not get. The gesture behind the
@@ -574,23 +577,81 @@ final class PluginPaneStore: ObservableObject {
   /// declaration exists whether the socket can run it right now.
   var viewAction: String? { selectedPanel?.viewAction }
 
-  /// Tell the plugin this pane is (or is not) on screen.
+  /// Whether the sheet hosting this store is on screen right now.
+  ///
+  /// Held rather than passed, because the pair that has to be released is not
+  /// the pair the disappearing view can name: a plugin may have navigated the
+  /// pane to another panel since it appeared.
+  private var viewIsOnScreen = false
+
+  /// The exact `(panel, action)` pair this pane last told the plugin it was
+  /// viewing, or nil when it has told the plugin nothing.
+  ///
+  /// The pair, not the panel id: `viewAction` is read off the SELECTED panel,
+  /// and the pane swaps its selection in place. Acknowledging with whatever
+  /// panel happens to be selected at disappear is what leaked the plugin's
+  /// viewer refcount — open the fleet sheet (acquire), tap a row (the pane
+  /// navigates to a panel with no `viewAction`), close it, and the release
+  /// never went out. The count stayed at one and the badge never came back.
+  private var acknowledgedView: PluginViewAcknowledgement?
+
+  /// The pane is on screen. Idempotent: a second appear does not double-count.
+  func acquireView() {
+    viewIsOnScreen = true
+    reconcileViewAcknowledgement()
+  }
+
+  /// The pane is gone. Releases whatever pair is outstanding, whichever panel
+  /// is selected now and whether or not the socket is answering.
+  func releaseView() {
+    viewIsOnScreen = false
+    reconcileViewAcknowledgement()
+  }
+
+  /// Bring the plugin's viewer count in line with what is actually on screen.
+  ///
+  /// One function so release and acquire cannot be ordered wrongly: a panel
+  /// swap releases the OLD pair first and only then acquires the new one, which
+  /// is what keeps a plugin's refcount from resting at two for one reader.
+  /// Called from ``load()``, so every path that changes the selection —
+  /// ``selectPanel(_:)``, ``navigate(to:)``, ``goBack()`` and the projection
+  /// task — reconciles without having to remember to.
   ///
   /// Silent: a missing handler must not raise a banner — most plugins never
-  /// declare `viewAction`. Refcounted on the plugin side so a Work-rail host
-  /// going idle while this sheet is open does not clear a badge the reader is
-  /// still looking at.
-  func acknowledgeView(viewed: Bool) {
-    guard let actionId = viewAction, canInvoke else { return }
+  /// declare `viewAction`.
+  private func reconcileViewAcknowledgement() {
+    let desired: PluginViewAcknowledgement?
+    if viewIsOnScreen, let panelId = selectedPanelId, !panelId.isEmpty, let actionId = viewAction {
+      desired = PluginViewAcknowledgement(panelId: panelId, actionId: actionId)
+    } else {
+      desired = nil
+    }
+    guard desired != acknowledgedView else { return }
+    if let outstanding = acknowledgedView {
+      acknowledgedView = nil
+      // Deliberately NOT gated on ``canInvoke``. A socket that dropped between
+      // appear and disappear must not turn an acquire into a permanent one; the
+      // call fails and is swallowed, which is the same outcome as never having
+      // tried, and the alternative is a badge that can never return.
+      sendViewAcknowledgement(outstanding, viewed: false)
+    }
+    // The acquire IS gated: telling a plugin the pane is visible when the call
+    // cannot leave the phone would record a viewer that was never counted.
+    if let desired, canInvoke {
+      acknowledgedView = desired
+      sendViewAcknowledgement(desired, viewed: true)
+    }
+  }
+
+  private func sendViewAcknowledgement(_ pair: PluginViewAcknowledgement, viewed: Bool) {
     let pluginId = self.pluginId
-    let panelId = selectedPanelId ?? ""
     Task { [weak self] in
       guard let self else { return }
       do {
         _ = try await self.sync.invokePluginAction(
           pluginId: pluginId,
-          actionId: actionId,
-          payload: ["panelId": panelId, "viewed": viewed]
+          actionId: pair.actionId,
+          payload: ["panelId": pair.panelId, "viewed": viewed]
         )
       } catch {
         // A view ack that fails is not a control the reader pressed.
@@ -1651,4 +1712,14 @@ struct PluginPanePendingPrompt: Equatable, Identifiable {
   static func == (lhs: PluginPanePendingPrompt, rhs: PluginPanePendingPrompt) -> Bool {
     lhs.id == rhs.id
   }
+}
+
+/// One outstanding "this pane is on screen" acknowledgement.
+///
+/// A pair rather than a panel id, because the action a release has to name is
+/// the one the ACQUIRE named. The pane can navigate to a panel that declares a
+/// different `viewAction`, or none at all, between the two.
+struct PluginViewAcknowledgement: Equatable {
+  var panelId: String
+  var actionId: String
 }

@@ -28,6 +28,9 @@
 		PH0000000000000000000E12 /* PluginVocabularyMarkdownTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = PG0000000000000000000E12 /* PluginVocabularyMarkdownTests.swift */; };
 		PH000000000000000000000B /* PluginVocabularyDecodingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = PG000000000000000000000B /* PluginVocabularyDecodingTests.swift */; };
 		PH000000000000000000000C /* PluginContributionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = PG000000000000000000000C /* PluginContributionTests.swift */; };
+		PH0000000000000000000F01 /* PluginTabBadgeParityTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = PG0000000000000000000F01 /* PluginTabBadgeParityTests.swift */; };
+		PH0000000000000000000F02 /* PluginBrandGlyphPathTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = PG0000000000000000000F02 /* PluginBrandGlyphPathTests.swift */; };
+		PH0000000000000000000F03 /* PluginSocketParityTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = PG0000000000000000000F03 /* PluginSocketParityTests.swift */; };
 		PH0000000000000000000E10 /* PluginVocabularyMarkdown.swift in Sources */ = {isa = PBXBuildFile; fileRef = PG0000000000000000000E10 /* PluginVocabularyMarkdown.swift */; };
 		PH000000000000000000000D /* PluginVocabularyNodeParsing.swift in Sources */ = {isa = PBXBuildFile; fileRef = PG000000000000000000000D /* PluginVocabularyNodeParsing.swift */; };
 		PH0000000000000000000E01 /* PluginVocabularyState.swift in Sources */ = {isa = PBXBuildFile; fileRef = PG0000000000000000000E01 /* PluginVocabularyState.swift */; };
@@ -377,6 +380,9 @@
 		PG0000000000000000000E12 /* PluginVocabularyMarkdownTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PluginVocabularyMarkdownTests.swift; path = ADETests/PluginVocabularyMarkdownTests.swift; sourceTree = "<group>"; };
 		PG000000000000000000000B /* PluginVocabularyDecodingTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PluginVocabularyDecodingTests.swift; path = ADETests/PluginVocabularyDecodingTests.swift; sourceTree = "<group>"; };
 		PG000000000000000000000C /* PluginContributionTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PluginContributionTests.swift; path = ADETests/PluginContributionTests.swift; sourceTree = "<group>"; };
+		PG0000000000000000000F01 /* PluginTabBadgeParityTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PluginTabBadgeParityTests.swift; path = ADETests/PluginTabBadgeParityTests.swift; sourceTree = "<group>"; };
+		PG0000000000000000000F02 /* PluginBrandGlyphPathTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PluginBrandGlyphPathTests.swift; path = ADETests/PluginBrandGlyphPathTests.swift; sourceTree = "<group>"; };
+		PG0000000000000000000F03 /* PluginSocketParityTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PluginSocketParityTests.swift; path = ADETests/PluginSocketParityTests.swift; sourceTree = "<group>"; };
 		PG0000000000000000000E10 /* PluginVocabularyMarkdown.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PluginVocabularyMarkdown.swift; path = ADE/Models/PluginVocabularyMarkdown.swift; sourceTree = "<group>"; };
 		PG000000000000000000000D /* PluginVocabularyNodeParsing.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PluginVocabularyNodeParsing.swift; path = ADE/Models/PluginVocabularyNodeParsing.swift; sourceTree = "<group>"; };
 		PG0000000000000000000E01 /* PluginVocabularyState.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PluginVocabularyState.swift; path = ADE/Models/PluginVocabularyState.swift; sourceTree = "<group>"; };
@@ -1245,6 +1251,9 @@
 				PG0000000000000000000E12 /* PluginVocabularyMarkdownTests.swift */,
 				PG000000000000000000000B /* PluginVocabularyDecodingTests.swift */,
 				PG000000000000000000000C /* PluginContributionTests.swift */,
+				PG0000000000000000000F01 /* PluginTabBadgeParityTests.swift */,
+				PG0000000000000000000F02 /* PluginBrandGlyphPathTests.swift */,
+				PG0000000000000000000F03 /* PluginSocketParityTests.swift */,
 				PG0000000000000000000010 /* PluginPresenceGateTests.swift */,
 				AC7300000000000000000001 /* ActivityAckQueueTests.swift */,
 				AC7300000000000000000002 /* ActivityPollingTests.swift */,
@@ -1802,6 +1811,9 @@
 				PH0000000000000000000E12 /* PluginVocabularyMarkdownTests.swift in Sources */,
 				PH000000000000000000000B /* PluginVocabularyDecodingTests.swift in Sources */,
 				PH000000000000000000000C /* PluginContributionTests.swift in Sources */,
+				PH0000000000000000000F01 /* PluginTabBadgeParityTests.swift in Sources */,
+				PH0000000000000000000F02 /* PluginBrandGlyphPathTests.swift in Sources */,
+				PH0000000000000000000F03 /* PluginSocketParityTests.swift in Sources */,
 				PH0000000000000000000010 /* PluginPresenceGateTests.swift in Sources */,
 				AC7400000000000000000001 /* ActivityAckQueueTests.swift in Sources */,
 				AC7400000000000000000002 /* ActivityPollingTests.swift in Sources */,
