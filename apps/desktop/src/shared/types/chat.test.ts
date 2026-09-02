@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
+  droidPermissionModeFromLegacyPermissionMode,
+  isAgentChatDroidPermissionMode,
+  legacyPermissionModeFromDroidPermissionMode,
   activeTurnDispatchModes,
   activeTurnInterruptContinues,
   defaultActiveTurnDispatchMode,
@@ -13,6 +16,18 @@ import {
   type AgentChatFileRef,
   type AgentChatModelsArgs,
 } from "./chat";
+
+describe("Droid permission vocabulary", () => {
+  it("validates native tiers and converts the shared legacy ladder", () => {
+    expect(isAgentChatDroidPermissionMode("auto-high")).toBe(true);
+    expect(isAgentChatDroidPermissionMode("AUTO-HIGH")).toBe(false);
+    expect(isAgentChatDroidPermissionMode("unknown")).toBe(false);
+    expect(droidPermissionModeFromLegacyPermissionMode("default")).toBe("auto-medium");
+    expect(droidPermissionModeFromLegacyPermissionMode("full-auto")).toBe("auto-high");
+    expect(legacyPermissionModeFromDroidPermissionMode("auto-medium")).toBe("default");
+    expect(legacyPermissionModeFromDroidPermissionMode("agi")).toBeUndefined();
+  });
+});
 
 describe("active-turn dispatch modes", () => {
   it("is the one table every surface reads: Claude all three, Cursor no inline, others queue-only", () => {

@@ -1,16 +1,20 @@
 import type {
   AgentChatClaudePermissionMode,
-  AgentChatCodexApprovalPolicy,
-  AgentChatCodexConfigSource,
-  AgentChatCodexSandbox,
-  AgentChatDroidPermissionMode,
-  AgentChatInteractionMode,
   AgentChatOpenCodePermissionMode,
   AgentChatPermissionMode,
   AgentChatProvider,
   ChatSurfaceProfile,
 } from "../../shared/types";
-import { CURSOR_AVAILABLE_MODE_IDS } from "../../shared/cursorModes";
+import {
+  AGENT_CHAT_DROID_PERMISSION_MODE_OPTIONS,
+  droidPermissionModeFromLegacyPermissionMode,
+  legacyPermissionModeFromDroidPermissionMode,
+} from "../../shared/types/chat";
+import {
+  CURSOR_AVAILABLE_MODE_IDS,
+  formatCursorModeLabel,
+  legacyPermissionModeToCursorModeId,
+} from "../../shared/cursorModes";
 import {
   getModelById,
   resolveProviderGroupForModel,
@@ -66,14 +70,6 @@ function resolveDescriptor(modelId: string): ModelDescriptor | undefined {
 export function resolveChatRuntimeProvider(modelId: string): ChatRuntimeProviderKey {
   const desc = resolveDescriptor(modelId);
   return desc ? resolveProviderGroupForModel(desc) : "opencode";
-}
-
-function droidPermissionModeToLegacyPermissionMode(mode: AgentChatDroidPermissionMode): AgentChatPermissionMode {
-  if (mode === "read-only") return "plan";
-  if (mode === "agi") return "plan";
-  if (mode === "auto-low") return "edit";
-  if (mode === "auto-medium") return "default";
-  return "full-auto";
 }
 
 export function summarizeNativeControls(
@@ -148,7 +144,7 @@ export function summarizeNativeControls(
   if (provider === "droid") {
     return {
       droidPermissionMode: controls.droidPermissionMode,
-      permissionMode: droidPermissionModeToLegacyPermissionMode(controls.droidPermissionMode),
+      permissionMode: legacyPermissionModeFromDroidPermissionMode(controls.droidPermissionMode),
     };
   }
   // Pi's native permission field IS `permissionMode` — it has no provider
@@ -242,26 +238,12 @@ export function applyUnifiedPermissionToNativeControls(
   }
 
   if (provider === "cursor") {
-    const cursorModeId =
-      mode === "plan"
-        ? "plan"
-        : mode === "full-auto"
-          ? "full-auto"
-          : mode === "edit"
-            ? "ask"
-            : "agent";
+    const cursorModeId = legacyPermissionModeToCursorModeId(mode) ?? "agent";
     return { ...next, cursorModeId };
   }
 
   if (provider === "droid") {
-    const droidPermissionMode: AgentChatDroidPermissionMode =
-      mode === "plan"
-        ? "read-only"
-        : mode === "edit"
-          ? "auto-low"
-          : mode === "default"
-            ? "auto-medium"
-            : "auto-high";
+    const droidPermissionMode = droidPermissionModeFromLegacyPermissionMode(mode) ?? "auto-high";
     return { ...next, droidPermissionMode };
   }
 
@@ -294,13 +276,7 @@ export function cursorModeChoices(): string[] {
 }
 
 export function cursorModeLabel(modeId: string): string {
-  switch (modeId) {
-    case "agent": return "Agent";
-    case "ask": return "Ask";
-    case "plan": return "Plan";
-    case "full-auto": return "Full auto";
-    default: return modeId;
-  }
+  return formatCursorModeLabel(modeId);
 }
 
 export function codexPresetFromControls(controls: NativeControlState): "default" | "edit" | "plan" | "full-auto" | "config-toml" | "custom" {
@@ -365,12 +341,7 @@ export const OPENCODE_PERMISSION_OPTIONS: Array<{ value: AgentChatOpenCodePermis
   { value: "config-toml", label: "Config" },
 ];
 
-export const DROID_PERMISSION_OPTIONS: Array<{ value: AgentChatDroidPermissionMode; label: string; detail: string }> = [
-  { value: "read-only", label: "Read-only", detail: "No auto flag. Droid stays in read-only mode." },
-  { value: "auto-low", label: "Auto low", detail: "Passes --auto low for safe file edits." },
-  { value: "auto-medium", label: "Auto medium", detail: "Passes --auto medium for local development operations." },
-  { value: "auto-high", label: "Auto high", detail: "Passes --auto high for broader automation." },
-];
+export const DROID_PERMISSION_OPTIONS = AGENT_CHAT_DROID_PERMISSION_MODE_OPTIONS;
 
 export function claudeSelectionMode(controls: NativeControlState): AgentChatClaudePermissionMode {
   return controls.interactionMode === "plan" ? "plan" : controls.claudePermissionMode;

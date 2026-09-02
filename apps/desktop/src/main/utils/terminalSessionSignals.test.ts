@@ -147,6 +147,7 @@ describe("terminalSessionSignals", () => {
       "droid",
     )).toEqual({
       permissionMode: "edit",
+      droidPermissionMode: "auto-low",
       model: "gpt-5.4",
       reasoningEffort: "xhigh",
     });
@@ -155,8 +156,16 @@ describe("terminalSessionSignals", () => {
       "droid",
     )).toEqual({
       permissionMode: "plan",
+      droidPermissionMode: "read-only",
       model: "claude-sonnet-5",
       reasoningEffort: "high",
+    });
+    expect(parseTrackedCliLaunchConfig(
+      "ADE_DROID_SETTINGS=\"$(mktemp \"${TMPDIR:-/tmp}/ade-droid-settings.XXXXXX.json\")\" && printf %s \"{\\\"sessionDefaultSettings\\\":{\\\"interactionMode\\\":\\\"agi\\\",\\\"autonomyLevel\\\":\\\"off\\\"}}\" > \"$ADE_DROID_SETTINGS\" && droid --settings \"$ADE_DROID_SETTINGS\"",
+      "droid",
+    )).toEqual({
+      permissionMode: "plan",
+      droidPermissionMode: "agi",
     });
     expect(parseTrackedCliLaunchConfig("OPENCODE_CONFIG_CONTENT='{\"permission\":{\"*\":\"ask\",\"edit\":\"allow\"}}' opencode", "opencode")).toEqual({
       permissionMode: "edit",

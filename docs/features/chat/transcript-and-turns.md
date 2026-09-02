@@ -777,6 +777,34 @@ the queued steers the runtime actually cancelled, emits `queue_recovery`, and
 accepts one `restoreCancelledQueue` call for eight seconds; expiry and restore
 are persisted as terminal recovery events so replay cannot resurrect Undo.
 
+Codex stages a mid-turn message on the app-server's own queue
+(`thread/queue/add`) whenever the live turn rejects a steer — during compaction
+or a review turn — and ADE keeps the `steerId` -> `submissionId` mapping on the
+runtime object only. That mapping does not survive a runtime restart, a
+rehydration, or a cancel routed in from another machine, while the transcript
+still renders the staged chip, so `cancelSteer` re-reads the server queue first:
+every entry carries the ADE `steerId` ADE sent as `clientUserMessageId`, which
+makes the app-server the durable half of the mapping. Three rules follow:
+
+- A `thread/queue/delete` that **fails** raises. The submission is still queued
+  and will run, so clearing the chip would report a cancellation that did not
+  happen.
+- If ADE cannot read the app-server queue during recovery, it also raises and
+  leaves the chip in place. A failed lookup is not evidence that the submission
+  disappeared; the user can retry after the temporary failure clears.
+- A submission that is recoverable **nowhere** — no mapping, nothing on the
+  server — still clears the chip and emits the `Queued message cancelled.`
+  notice. Nothing can deliver that message, and the old silent return left a
+  control that did nothing every time it was pressed.
+- A cancel on a session with **no runtime** clears the chip and also drops the
+  steer from the persisted `pendingSteers`. `persistChatState` carries the
+  previous file's list forward verbatim whenever the live runtime is not Claude,
+  so without that the next runtime hydrated the steer straight back and sent the
+  message the user had just cancelled.
+
+`requireQueued: true` (the composer's Edit path) still refuses rather than
+clearing, because Edit must not lose a message it cannot first take back.
+
 A Codex turn ends through several paths — Stop, the local interrupt finish, the
 app-server's `turn/aborted`, runtime teardown, `thread/deleted`, an app-server
 crash — and every one of them runs `settleCodexPendingInputs` so the turn cannot

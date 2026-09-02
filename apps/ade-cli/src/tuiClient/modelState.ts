@@ -15,6 +15,7 @@ import type {
   AgentChatModelInfo,
   AgentChatPermissionMode,
 } from "../../../desktop/src/shared/types/chat";
+import { AGENT_CHAT_DROID_PERMISSION_MODE_VALUES } from "../../../desktop/src/shared/types/chat";
 import { DEFAULT_CODEX_REASONING_EFFORT, type CliTerminalProvider } from "./adeApi";
 import { theme } from "./theme";
 import type { AdeCodeInterfaceMode, AdeCodeModelState, AdeCodeProvider, SetupPaneRow, SetupPaneRowKind } from "./types";
@@ -25,7 +26,7 @@ export const EFFORTS = ["low", "medium", "high", "xhigh", "max", "ultra"];
 export const CODEX_PRESETS = ["default", "edit", "plan", "full-auto", "config-toml"] as const;
 export const CLAUDE_PERMISSION_OPTIONS = ["default", "auto", "plan", "acceptEdits", "bypassPermissions"] as const;
 export const OPENCODE_PERMISSION_OPTIONS = ["plan", "edit", "full-auto", "config-toml"] as const;
-export const DROID_PERMISSION_OPTIONS = ["read-only", "auto-low", "auto-medium", "auto-high", "agi"] as const;
+export const DROID_PERMISSION_OPTIONS = AGENT_CHAT_DROID_PERMISSION_MODE_VALUES;
 
 export type CodexPreset = (typeof CODEX_PRESETS)[number];
 

@@ -3344,6 +3344,51 @@ describe("ADE CLI", () => {
     });
   });
 
+  it("forwards explicit Droid autonomy through new chat CLI mode", () => {
+    const plan = buildCliPlan([
+      "new",
+      "chat",
+      "--mode",
+      "cli",
+      "--lane",
+      "lane-1",
+      "--provider",
+      "droid",
+      "--permissions",
+      "default",
+      "--droid-autonomy",
+      "agi",
+      "--prompt",
+      "Run the Droid child.",
+    ]);
+
+    const executePlan = expectExecutePlan(plan);
+    const launchParams = (executePlan.steps[0]?.params as (v: Record<string, unknown>) => Record<string, unknown>)({});
+    expect(launchParams).toMatchObject({
+      name: "start_cli_session",
+      arguments: {
+        provider: "droid",
+        permissionMode: "default",
+        droidPermissionMode: "agi",
+        initialInput: "Run the Droid child.",
+      },
+    });
+  });
+
+  it("rejects invalid Droid autonomy values on every chat planning surface", () => {
+    const invalid = "not-a-droid-tier";
+    const plans = [
+      ["chat", "create", "--lane", "lane-1", "--provider", "droid", "--droid-autonomy", invalid],
+      ["chat", "create", "--personal", "--provider", "droid", "--model", "droid/model", "--droid-autonomy", invalid],
+      ["chat", "update", "personal-1", "--personal", "--droid-autonomy", invalid],
+      ["shell", "start-cli", "--lane", "lane-1", "--provider", "droid", "--droid-autonomy", invalid],
+    ];
+
+    for (const args of plans) {
+      expect(() => buildCliPlan(args)).toThrow(/droidPermissionMode must be one of/);
+    }
+  });
+
   it("adds a valid --type to new chat createSession args and rejects invalid values", () => {
     const plan = buildCliPlan([
       "new",
@@ -3787,6 +3832,53 @@ describe("ADE CLI", () => {
         },
       ],
     });
+  });
+
+  it("previews the Cursor mode a create actually persists", () => {
+    const cursorMode = (permissions: string) => {
+      const plan = buildCliPlan([
+        "chat",
+        "create",
+        "--lane",
+        "lane-1",
+        "--provider",
+        "cursor",
+        "--model",
+        "cursor/composer-2",
+        "--permissions",
+        permissions,
+        "--print-config",
+      ]);
+      return (expectStaticPlan(plan).value as { resolved: { cursorMode: string } }).resolved.cursorMode;
+    };
+
+    expect(cursorMode("full-auto")).toBe("full-auto");
+    expect(cursorMode("plan")).toBe("plan");
+    // `edit` previewed as "ask" — a read-only mode no create path has ever
+    // persisted. Cursor runs both `edit` and `default` as `agent`.
+    expect(cursorMode("edit")).toBe("agent");
+    expect(cursorMode("default")).toBe("agent");
+  });
+
+  it("preserves an explicit Droid autonomy tier in the create preview", () => {
+    const plan = buildCliPlan([
+      "chat",
+      "create",
+      "--lane",
+      "lane-1",
+      "--provider",
+      "droid",
+      "--model",
+      "droid/model",
+      "--permissions",
+      "edit",
+      "--droid-permission-mode",
+      "auto-high",
+      "--print-config",
+    ]);
+
+    expect((expectStaticPlan(plan).value as { resolved: { droidPermissionMode: string } }).resolved.droidPermissionMode)
+      .toBe("auto-high");
   });
 
   it("prints chat create from Linear dry-run with attachment flags", () => {
@@ -8539,6 +8631,53 @@ describe("ADE CLI", () => {
     const sendArgs = (sendParams.arguments as { args: { text: string } }).args;
     expect(sendArgs.text).toContain("ENG-431");
     expect(sendArgs.text).toContain("https://linear.app/x/ENG-431");
+  });
+
+  it("forwards provider-native Droid autonomy through Linear and personal launches", () => {
+    const linearPlan = expectExecutePlan(buildCliPlan([
+      "lanes",
+      "create-from-linear",
+      "--linear-issue-json",
+      '{"id":"issue-1","identifier":"ENG-431","title":"Fix OAuth"}',
+      "--start-chat",
+      "--provider",
+      "droid",
+      "--model",
+      "droid/model",
+      "--droid-permission-mode",
+      "auto-high",
+    ]));
+    const chatParams = (linearPlan.steps[1]?.params as (v: Record<string, unknown>) => Record<string, unknown>)({
+      lane: { domain: "lane", action: "create", result: { lane: { id: "lane-new" } } },
+    });
+    expect(chatParams).toMatchObject({
+      arguments: {
+        args: {
+          provider: "droid",
+          droidPermissionMode: "auto-high",
+        },
+      },
+    });
+
+    const personalPlan = expectExecutePlan(buildCliPlan([
+      "chat",
+      "create",
+      "--personal",
+      "--provider",
+      "droid",
+      "--model",
+      "droid/model",
+      "--droid-permission-mode",
+      "auto-medium",
+    ]));
+    expect(personalPlan.steps[0]).toMatchObject({
+      params: {
+        action: "create",
+        args: {
+          droidPermissionMode: "auto-medium",
+        },
+      },
+    });
   });
 
   it("requires and persists a spawn type when create-from-linear starts a child chat", () => {

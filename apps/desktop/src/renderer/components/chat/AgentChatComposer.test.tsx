@@ -514,6 +514,62 @@ describe("AgentChatComposer", () => {
     expect(onCancelSteer).toHaveBeenCalledWith("steer-1");
   });
 
+  it("uses a touch-safe class contract for queued-message controls", () => {
+    renderComposer({
+      pendingSteers: [{
+        steerId: "steer-1",
+        text: "Queued one",
+        attachments: [],
+        contextAttachments: [],
+      }],
+      onCancelSteer: vi.fn(),
+    });
+
+    const actions = screen.getByTestId("pending-steer-actions");
+    // A touch pointer never hovers, so an unconditional `opacity-0` left every
+    // control invisible on mobile and ADE Web. Both the hidden state and the
+    // reveal have to sit inside the hover media query.
+    expect(actions.className).not.toMatch(/(^|\s)opacity-0(\s|$)/);
+    expect(actions.className).toContain("[@media(hover:hover)]:opacity-0");
+    expect(actions.className).toContain("[@media(hover:hover)]:group-hover:opacity-100");
+  });
+
+  it("says why a queue-only agent cannot take the staged message mid-turn", () => {
+    renderComposer({
+      sessionProvider: "codex",
+      pendingSteers: [{
+        steerId: "steer-1",
+        text: "Queued one",
+        attachments: [],
+        contextAttachments: [],
+      }],
+      onCancelSteer: vi.fn(),
+    });
+
+    // Codex is queue-only: there is no force-send and no interrupt-and-send, so
+    // the strip has to name the limit rather than just omit the buttons.
+    expect(screen.getByText(/Codex cannot take a message mid-turn/)).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Send during turn" })).toBeNull();
+    expect(screen.queryByRole("button", { name: /^Interrupt/ })).toBeNull();
+    // "Hover to …" is simply wrong on a touch pointer.
+    expect(screen.queryByText(/Hover to/)).toBeNull();
+  });
+
+  it("does not claim Claude is queue-only when its dispatch handlers are merely unwired", () => {
+    renderComposer({
+      ...CLAUDE_STEER_OVERRIDES,
+      pendingSteers: [{
+        steerId: "steer-1",
+        text: "Queued one",
+        attachments: [],
+        contextAttachments: [],
+      }],
+      onCancelSteer: vi.fn(),
+    });
+
+    expect(screen.queryByText(/cannot take a message mid-turn/)).toBeNull();
+  });
+
   const CLAUDE_STEER_OVERRIDES = {
     sessionProvider: "claude" as const,
     modelId: "anthropic/claude-sonnet-5",

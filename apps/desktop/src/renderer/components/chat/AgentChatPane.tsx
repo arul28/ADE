@@ -2397,7 +2397,10 @@ function nativeControlsFromLaunchSource(
   defaults: NativeControlState,
 ): NativeControlState {
   const codexFallbacks = codexControlsFromPermissionMode(source.permissionMode, defaults);
-  const cursorSnapshotValues = cursorConfigValuesFromSnapshot(source.cursorModeSnapshot);
+  const cursorModeWasExplicitlyCleared = source.cursorModeId === null;
+  const cursorSnapshotValues = cursorModeWasExplicitlyCleared
+    ? {}
+    : cursorConfigValuesFromSnapshot(source.cursorModeSnapshot);
   return {
     interactionMode: pickStringEnum(
       source.interactionMode,
@@ -2436,7 +2439,7 @@ function nativeControlsFromLaunchSource(
       DROID_PERMISSION_MODES,
       legacyPermissionModeToDroidPermissionMode(source.permissionMode) ?? defaults.droidPermissionMode,
     ),
-    cursorModeId: typeof source.cursorModeId === "string"
+    cursorModeId: source.cursorModeId !== undefined
       ? source.cursorModeId
       : source.cursorModeSnapshot?.currentModeId ?? defaults.cursorModeId,
     cursorConfigValues: {
@@ -5359,13 +5362,20 @@ export function AgentChatPane({
   }, []);
   const effectiveCursorModeSnapshot = useMemo(() => {
     if (sessionProvider !== "cursor") return null;
-    const base = selectedSession?.cursorModeSnapshot ?? buildFallbackCursorModeSnapshot(cursorModeId);
+    const cursorModeWasExplicitlyCleared = selectedSession?.cursorModeId === null
+      || selectedSession?.cursorModeIdWasCleared === true;
+    const base = cursorModeWasExplicitlyCleared
+      ? buildFallbackCursorModeSnapshot(null)
+      : selectedSession?.cursorModeSnapshot ?? buildFallbackCursorModeSnapshot(cursorModeId);
+    const effectiveModeId = cursorModeWasExplicitlyCleared
+      ? base.currentModeId
+      : cursorModeId ?? base.currentModeId;
     return {
       ...base,
-      currentModeId: cursorModeId ?? base.currentModeId,
+      currentModeId: effectiveModeId,
       configOptions: base.configOptions?.map((option) => {
         if (option.id === base.modeConfigId) {
-          return { ...option, currentValue: cursorModeId ?? option.currentValue };
+          return { ...option, currentValue: effectiveModeId ?? option.currentValue };
         }
         if (Object.prototype.hasOwnProperty.call(cursorConfigValues, option.id)) {
           return { ...option, currentValue: cursorConfigValues[option.id] ?? option.currentValue };
@@ -5373,7 +5383,14 @@ export function AgentChatPane({
         return option;
       }),
     };
-  }, [cursorConfigValues, cursorModeId, selectedSession?.cursorModeSnapshot, sessionProvider]);
+  }, [
+    cursorConfigValues,
+    cursorModeId,
+    selectedSession?.cursorModeId,
+    selectedSession?.cursorModeIdWasCleared,
+    selectedSession?.cursorModeSnapshot,
+    sessionProvider,
+  ]);
 
   const patchParallelSlot = useCallback((index: number, patch: Partial<ParallelModelRowState>) => {
     setParallelModelSlots((prev) => {
@@ -5546,13 +5563,19 @@ export function AgentChatPane({
         ?? legacyPermissionModeToDroidPermissionMode(session.permissionMode)
         ?? initialNativeControls.droidPermissionMode,
     );
-    setCursorModeId(session.cursorModeId ?? session.cursorModeSnapshot?.currentModeId ?? initialNativeControls.cursorModeId);
+    const cursorModeWasExplicitlyCleared = session.cursorModeId === null
+      || session.cursorModeIdWasCleared === true;
+    setCursorModeId(cursorModeWasExplicitlyCleared
+      ? null
+      : session.cursorModeId ?? session.cursorModeSnapshot?.currentModeId ?? initialNativeControls.cursorModeId);
     setCursorConfigValues(
-      Object.fromEntries(
-        (session.cursorModeSnapshot?.configOptions ?? [])
-          .filter((option) => option.id !== session.cursorModeSnapshot?.modeConfigId)
-          .flatMap((option) => option.currentValue == null ? [] : [[option.id, option.currentValue]]),
-      ),
+      cursorModeWasExplicitlyCleared
+        ? normalizeCursorConfigValues(session.cursorConfigValues)
+        : Object.fromEntries(
+            (session.cursorModeSnapshot?.configOptions ?? [])
+              .filter((option) => option.id !== session.cursorModeSnapshot?.modeConfigId)
+              .flatMap((option) => option.currentValue == null ? [] : [[option.id, option.currentValue]]),
+          ),
     );
   }, [
     applyLaunchConfigToComposer,
@@ -7753,7 +7776,10 @@ export function AgentChatPane({
         if (meta.codexConfigSource !== undefined) summaryPatch.codexConfigSource = meta.codexConfigSource;
         if (meta.opencodePermissionMode !== undefined) summaryPatch.opencodePermissionMode = meta.opencodePermissionMode;
         if (meta.droidPermissionMode !== undefined) summaryPatch.droidPermissionMode = meta.droidPermissionMode;
-        if (meta.cursorModeId !== undefined) summaryPatch.cursorModeId = meta.cursorModeId;
+        if (meta.cursorModeId !== undefined) {
+          summaryPatch.cursorModeId = meta.cursorModeId;
+          summaryPatch.cursorModeIdWasCleared = meta.cursorModeId === null;
+        }
         if (meta.cursorModeSnapshot !== undefined) summaryPatch.cursorModeSnapshot = meta.cursorModeSnapshot;
         if (meta.cursorConfigValues !== undefined) summaryPatch.cursorConfigValues = meta.cursorConfigValues;
         if (meta.spawnKind !== undefined) summaryPatch.spawnKind = meta.spawnKind;
@@ -13391,7 +13417,14 @@ export function AgentChatPane({
             pendingSteers={pendingSteers}
             onCancelSteer={(steerId) => {
               if (selectedSessionId) {
-                void window.ade.agentChat.cancelSteer({ sessionId: selectedSessionId, steerId }, chatRuntimePinRef.current);
+                // A cancel that fails leaves the message queued and the agent
+                // will still send it. Report it the way the edit and dispatch
+                // paths do rather than dropping the rejection on the floor.
+                void window.ade.agentChat
+                  .cancelSteer({ sessionId: selectedSessionId, steerId }, chatRuntimePinRef.current)
+                  .catch((error: unknown) => {
+                    setError(`Couldn't remove the queued message: ${error instanceof Error ? error.message : String(error)}`);
+                  });
               }
             }}
             onEditSteer={(steerId, text, queuedAttachments, queuedContextAttachments) => {

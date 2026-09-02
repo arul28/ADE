@@ -1253,6 +1253,18 @@ describe("buildTrackedCliStartupCommand", () => {
       expect(launch.initialInput).toBeUndefined();
     });
 
+    it("uses an explicit Droid native autonomy tier instead of the generic permission fallback", () => {
+      const launch = buildTrackedCliLaunchCommand({
+        provider: "droid",
+        permissionMode: "default",
+        droidPermissionMode: "agi",
+      });
+
+      expect(launch.startupCommand).toContain('\\\"interactionMode\\\":\\\"agi\\\"');
+      expect(launch.startupCommand).toContain('\\\"autonomyLevel\\\":\\\"off\\\"');
+      expect(launch.startupCommand).not.toContain('\\\"autonomyLevel\\\":\\\"medium\\\"');
+    });
+
     it("launches Droid through PowerShell on Windows with the prompt off the command line", () => {
       withProcessPlatform("win32", () => {
         const launch = buildTrackedCliLaunchCommand({

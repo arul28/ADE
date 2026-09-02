@@ -1113,6 +1113,9 @@ func workInitialRuntimeMode(_ summary: AgentChatSessionSummary) -> String {
   case "opencode":
     return workNormalizedOpenCodeRuntimeMode(summary.opencodePermissionMode ?? summary.permissionMode)
   case "cursor":
+    if summary.cursorModeIdWasCleared == true {
+      return "default"
+    }
     switch summary.cursorModeId ?? workCursorCurrentModeId(summary.cursorModeSnapshot) {
     case "plan": return "plan"
     case "ask": return "edit"
@@ -1165,7 +1168,10 @@ func workDroidRuntimeMode(droidPermissionMode: String?, permissionMode: String?)
 }
 
 func workInitialCursorModeId(_ summary: AgentChatSessionSummary) -> String {
-  summary.cursorModeId ?? workCursorCurrentModeId(summary.cursorModeSnapshot) ?? "agent"
+  if summary.cursorModeIdWasCleared == true {
+    return "agent"
+  }
+  return summary.cursorModeId ?? workCursorCurrentModeId(summary.cursorModeSnapshot) ?? "agent"
 }
 
 func workCursorModeIds(_ snapshot: RemoteJSONValue?, fallback: String) -> [String] {
