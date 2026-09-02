@@ -27,6 +27,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Licensing is documented in one place. A new page states what the SDK package, the chat-ui package, the runtime binary, and ADE itself are licensed under, and CI now fails a release whose SPDX field, `LICENSE` file, tarball, and README disagree (#1211, #1212).
 - `@ade-dev/sdk` and `@ade-dev/chat-ui` are MIT, and a proprietary app may ship the runtime binary. ADE itself, the desktop app, the CLI, and the runtime binary stay AGPL-3.0-only, but the new ADE Runtime Embedding Exception permits distributing an unmodified runtime binary inside a larger work that consumes it through the documented SDK interface. Re-signing the binary with your own identity does not count as modifying it. Modifying the runtime, or linking ADE source, keeps the AGPL in force. Every `@ade-dev/runtime-*` package now carries both documents (#1211).
 - `@ade-dev/sdk` and `@ade-dev/chat-ui` are at 0.2.0. Every 0.1.x option keeps its exact behavior; everything above is additive (#1212).
+- `@ade-dev/runtime*` publishes when a GitHub release is made public. `/release` undrafts; the same `release.published` event as the brew tap then packs and publishes the six platform packages at that tag's version. A separate Actions click is recovery, not the release path.
 
 ## [1.2.72] - 2026-09-02
 

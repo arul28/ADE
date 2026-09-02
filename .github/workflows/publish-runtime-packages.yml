@@ -13,29 +13,36 @@
 #   @ade-dev/runtime-linux-x64      @ade-dev/runtime-linux-arm64
 #   @ade-dev/runtime-win32-x64      @ade-dev/runtime  (the meta package)
 #
-# MANUAL ONLY, and deliberately so. This publishes the bytes of an EXISTING
-# GitHub release, so it must run after that release is public and its assets
-# are final. It never builds a runtime; it downloads one, verifies it against
-# the release's own SHA256SUMS, and repackages it. The version published is the
-# release tag with the leading `v` removed, which keeps the npm version and the
-# ADE release version identical by construction.
+# This publishes the bytes of an EXISTING GitHub release: it never builds a
+# runtime. It downloads one, verifies it against the release's own SHA256SUMS,
+# and repackages it. npm versions are immutable, so this must run only after
+# the release is public and its assets are final — the same moment
+# update-brew-tap.yml fires. `/release` undrafts; this workflow then publishes
+# `@ade-dev/runtime*`. The npm version is the release tag with the leading `v`
+# removed, so it stays identical to the ADE release by construction.
+#
+# Triggers:
+# - `release.published` (not draft creation, not the v* tag push). Prereleases
+#   are skipped. This is the `/release` path.
+# - `workflow_dispatch` with confirm=publish remains as recovery for one tag.
 #
 # Credentials — the same two modes as publish-sdk-packages.yml:
 #
 # 1. Trusted publishing (OIDC, no secret). Configure per package on npmjs.com →
 #    Settings → Trusted Publisher: repository `arul28/ADE`, workflow
-#    `publish-runtime-packages.yml`. npm requires the package to already exist
-#    to configure it, so the FIRST version of each of the six ships by mode 2
-#    (or from a maintainer machine). Then set the repo variable
+#    `publish-runtime-packages.yml`. Then set the repo variable
 #    `RUNTIME_TRUSTED_PUBLISHING=true`.
 # 2. `NPM_TOKEN` secret — a granular access token scoped to the `@ade-dev`
 #    packages, with an expiry.
 #
-# With neither configured the run ends early with a notice instead of failing.
+# With neither configured the run fails. A silent skip would look like a
+# successful `/release` that never updated npm.
 
 name: Publish ADE runtime packages
 
 on:
+  release:
+    types: [published]
   workflow_dispatch:
     inputs:
       tag:
@@ -57,7 +64,11 @@ concurrency:
 
 jobs:
   publish:
-    if: ${{ inputs.confirm == 'publish' }}
+    if: >-
+      ${{
+        (github.event_name == 'release' && !github.event.release.prerelease)
+        || (github.event_name == 'workflow_dispatch' && inputs.confirm == 'publish')
+      }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -75,7 +86,7 @@ jobs:
       - name: Resolve the release version
         id: version
         env:
-          RELEASE_TAG: ${{ inputs.tag }}
+          RELEASE_TAG: ${{ github.event_name == 'release' && github.event.release.tag_name || inputs.tag }}
         run: |
           set -euo pipefail
           case "$RELEASE_TAG" in
@@ -105,16 +116,15 @@ jobs:
             echo "present=true" >> "$GITHUB_OUTPUT"
             echo "mode=token" >> "$GITHUB_OUTPUT"
           else
-            echo "Neither RUNTIME_TRUSTED_PUBLISHING nor NPM_TOKEN is configured; skipping publish." >> "$GITHUB_STEP_SUMMARY"
-            echo "present=false" >> "$GITHUB_OUTPUT"
-            echo "mode=none" >> "$GITHUB_OUTPUT"
+            echo "::error::Neither RUNTIME_TRUSTED_PUBLISHING nor NPM_TOKEN is configured; refusing to skip a runtime npm publish."
+            exit 1
           fi
 
       - name: Download the release artifacts
         if: steps.token.outputs.present == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ inputs.tag }}
+          RELEASE_TAG: ${{ github.event_name == 'release' && github.event.release.tag_name || inputs.tag }}
         run: |
           set -euo pipefail
           mkdir -p release-artifacts
