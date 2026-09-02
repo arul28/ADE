@@ -88,16 +88,16 @@ const ISSUE_KEY_GROUP = "group:";
 /**
  * How many issues one refresh materializes.
  *
- * The vocabulary draws at most 250 list items (`maxListItems`) and pages past
+ * The vocabulary draws at most 1000 list items (`maxListItems`) and pages past
  * that, so fetching more would spend Linear's rate limit on rows no reader can
  * reach. The built-in's own ceiling is 500 with an opt-in button
- * (`LinearIssueBrowser.tsx:90`); the difference is a gap, and it is in the
- * report.
+ * (`LinearIssueBrowser.tsx:90`); 1000 is the phone's scroll-loaded ceiling and
+ * the vocabulary's.
  */
-const MAX_ISSUES = 250;
+const MAX_ISSUES = 1000;
 
-/** Longest description carried on a row. See the module header. */
-const MAX_DESCRIPTION_CHARS = 8_000;
+/** Longest description carried on a row. Matches `maxMarkdownChars`. */
+const MAX_DESCRIPTION_CHARS = 16_000;
 
 /** Comments kept per issue. The detail panel pages within this. */
 const MAX_COMMENTS_PER_ISSUE = 50;
@@ -165,10 +165,11 @@ function defaultFilters() {
     priority: "",
     sort: DEFAULT_SORT,
     text: "",
-    // The grouped/flat toggle and the recency window. Stored rather than left
-    // to panel state, because panel state is per-viewer and session-scoped
-    // (`vocabularyState.ts:109`) — the reader who chose the flat view on the
-    // desktop expects the phone to open flat too.
+    // Stored rather than left to panel state, because panel state is per-viewer
+    // and session-scoped (`vocabularyState.ts`). `view` is a leftover of the
+    // grouped/flat toggle; the panel always draws grouped lists with a shared
+    // batch key. The field still round-trips so an older prefs blob does not
+    // fail `normalizeFilters`.
     view: "grouped",
     updated: "",
     // The TEAM, by key rather than by id, because that is what Linear's
@@ -216,14 +217,15 @@ function filtersToQuery(filters) {
 /**
  * The row a BOUND LIST reads, as opposed to the row this plugin reads.
  *
- * `readListItem` (`shared/plugins/vocabularyNodes.ts`) looks at exactly eleven
- * names — title, key, subtitle, meta, tone, icon, mono, badge, onPress,
- * actions, overflow — and IGNORES everything else. A stored row carrying
+ * `readListItem` (`shared/plugins/vocabularyNodes.ts`) looks at the row fields
+ * a bound list actually draws — title, key, subtitle, meta, tone, icon, mono,
+ * badge, onPress, actions, overflow, preview, markdown, avatar — and IGNORES
+ * everything else. A stored row carrying
  * `badgeText` and `badgeTone` therefore draws as a bare title with no chip and
  * no press, and a row with no `key` lets a tick inherit the COLLECTION key
  * (`flat:000012:<uuid>`), which is a sort rank standing in for an issue id.
  *
- * `issueListRow` makes those eleven. The axes merged back on top are what a
+ * `issueListRow` makes those fields. The axes merged back on top are what a
  * binding's `where` compares, and dropping them would make every filter a
  * silent no-op.
  *
@@ -467,9 +469,8 @@ function createData(options = {}) {
     const sorted = [...issues].sort(sort);
 
     // The grouped order is the state rank first, then the reader's sort inside
-    // each state — so folding a group open shows the same order the flat list
-    // would have shown for those rows, which is what makes the two views feel
-    // like one screen rather than two.
+    // each state — so folding a group open shows the same order those rows
+    // would have in a single list.
     const groupCounts = new Map();
     const wanted = new Map();
     sorted.forEach((row, index) => {

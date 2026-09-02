@@ -231,12 +231,13 @@ struct PluginRowMenuItems: View {
 
 // MARK: - The `{prompt}` verb on screen
 
-/// One question, one field, cancel and confirm.
+/// One question. Free text is an `.alert`; a closed list is a sheet.
 ///
-/// Deliberately an `.alert` rather than a sheet: the question interrupts
-/// something the reader started one tap ago, it is one line long, and an alert
-/// is the only presentation that can land on top of a context menu, a toolbar,
-/// a pane sheet and a chat transcript without any of them having to make room.
+/// An alert is still the right interrupt for one line: it can land on top of a
+/// context menu, a toolbar, a pane sheet and a chat transcript without any of
+/// them having to make room. A picker of up to eighty lanes cannot fit in an
+/// alert, so `options` presents as a medium sheet instead. Cancel still
+/// invokes nothing at all.
 ///
 /// The confirm button is DISABLED past the byte ceiling rather than truncating
 /// what was typed — the refusal is visible before the reader presses anything,
@@ -257,10 +258,7 @@ struct PluginPromptAlert: ViewModifier {
       .alert(
         pending?.title ?? "",
         isPresented: Binding(
-          get: { pending != nil },
-          // Every dismissal that is not the confirm button is a cancel, and a
-          // cancel invokes nothing. Firing after a submit is harmless: the
-          // question has already been cleared by then.
+          get: { pending.map { $0.prompt.options.isEmpty } ?? false },
           set: { if !$0 { onCancel() } }
         ),
         presenting: pending
@@ -275,8 +273,28 @@ struct PluginPromptAlert: ViewModifier {
           Text("That is longer than a plugin may be sent. Shorten it to continue.")
         }
       }
-      // A new question is a new field. Keyed on the pending id rather than on
-      // presentation, so asking the same question twice still starts empty.
+      .sheet(
+        isPresented: Binding(
+          get: { pending.map { !$0.prompt.options.isEmpty } ?? false },
+          set: { if !$0 { onCancel() } }
+        )
+      ) {
+        if let pending {
+          NavigationStack {
+            List(pending.prompt.options, id: \.value) { option in
+              Button(option.label) { onSubmit(option.value) }
+            }
+            .navigationTitle(pending.title)
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+              ToolbarItem(placement: .cancellationAction) {
+                Button("Cancel") { onCancel() }
+              }
+            }
+          }
+          .presentationDetents([.medium, .large])
+        }
+      }
       .onChange(of: pending?.id) { _, _ in text = "" }
   }
 }

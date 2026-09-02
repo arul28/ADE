@@ -957,9 +957,8 @@ enum PluginContributionParser {
     return PluginActivityEntryPayload(
       title: title,
       body: PluginPanelParser.cleanString(object["body"], max: 240),
-      // No red anywhere: `PluginVocabTone` folds every danger-ish spelling onto
-      // warning, so a plugin cannot make its row the loudest thing in a list it
-      // does not own.
+      // `destructive` is the red a failed check earns. Authors write `danger`
+      // and the normalizer folds it; a payload cannot invent a sixth colour.
       tone: PluginVocabTone.normalize(object["tone"]),
       actionId: actionId,
       // A label with no action is a button that cannot fire, so it goes with it.

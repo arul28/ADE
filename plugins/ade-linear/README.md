@@ -1,23 +1,26 @@
 ## Linear
 
-Browse and open Linear issues without leaving ADE — from the top bar, from an
-issue key mentioned in a session, or from a link someone sent you.
+Browse Linear issues, start a lane and an agent on one, and keep the issue
+moving — from ADE, on the desktop, the phone, the web client, and the
+terminal.
 
-Linear browsing was part of ADE itself until plugins existed. Nothing about it
-changed — it stopped being something everyone has to carry. Install it and the
-Linear button is back; remove it and every way in goes quiet.
+Installing this plugin replaces ADE's compiled Linear surfaces. Disabling it
+brings those compiled surfaces back.
 
 ### What it adds
 
-- The **Linear** pane, its top-bar button, and the issue pickers that open it.
+- A **Linear** tab and work-rail pane: issues grouped by workflow state, nav-bar
+  search, filters, and a batch bar for launching lanes or assigning.
+- An issue detail panel: description and comments as markdown, inline state and
+  priority, assign, comment, and a sticky launch bar.
+- Settings for the Linear connection, including OAuth, API key, and webhooks.
+- Agent tools, CLI words, automation triggers and steps, a URL matcher for
+  `linear.app` issue links, and a command-palette / keybinding entry.
 
 ### Notes
 
-- Connecting your Linear account is separate and stays where it is, in Settings.
-  Agents keep using that connection whether or not this plugin is installed.
-- The issue browser is drawn by the desktop app rather than published as a
-  panel. On a phone or in the terminal the plugin shows a card pointing at the
-  computer this project is attached to.
-- Linear links open only while this plugin is installed and enabled there.
-- It runs no code at all: the card is `panels/main.json`, which ADE reads from
-  the manifest. Nothing is read, and nothing is stored.
+- The Linear token stays on this machine. Agents use the same connection.
+- Search and the state / sort / team filters round-trip through Linear. Project,
+  assignee, priority, and recency also filter on the client against rows already
+  in memory.
+- Identity icons use the Linear mark shipped as `icons/linear.svg`.

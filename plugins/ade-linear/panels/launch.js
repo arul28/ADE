@@ -12,7 +12,7 @@
 //   `secret`, `select`, `toggle` and `number`, and none of them is multi-line.
 //   A reader who wants a paragraph writes it in the chat once the agent starts.
 // - **The model picker is a flat select, not `WorkModelPickerSheet`.** It loses
-//   search, grouping and the provider marks. Forty options is the ceiling, so a
+//   search, grouping and the provider marks. Eighty options is the ceiling, so a
 //   workspace with more models than that gets the ones the plugin thinks are
 //   likeliest and can change provider to see the rest.
 

@@ -186,13 +186,17 @@ function everyNode(value, found = []) {
 }
 
 function nodesOf(panel, component) {
-  return everyNode(panel.body).filter((node) => node.component === component);
+  return everyNode(panel).filter((node) => node.component === component);
 }
 
 function pressed(panel) {
   return new Set(
-    everyNode(panel.body)
-      .flatMap((node) => [node.onPress, node.onChange, node.action?.onPress, node.submit?.onPress])
+    [
+      ...everyNode(panel)
+        .flatMap((node) => [node.onPress, node.onChange, node.action?.onPress, node.submit?.onPress]),
+      panel.chrome?.search?.onChange,
+      ...(panel.chrome?.navActions ?? []),
+    ]
       .filter(Boolean)
       .map((press) => press.action),
   );
@@ -259,21 +263,20 @@ describe("the issue list a connected reader is actually published", () => {
     assert.ok(pressed(panel).has(contract.ACTIONS.clearFilters));
   });
 
-  it("keeps the flat view the reader switched to", async () => {
-    // Grouped and flat are two different KEY SPACES, not a predicate, so the
-    // toggle has to survive the round trip and come back in the published
-    // schema. `view` was not among the keys a filter change carried, so the
-    // control moved and the list stayed grouped.
+  it("keeps grouped lists selectable after a filter change", async () => {
+    // Grouped lists share one batch key. A filter change used to drop `view`
+    // and force a flat list; that toggle is gone, and the published panel must
+    // still tick.
     const { sdk } = await activate();
-    await withLinear(() => plugin.actions.applyFilters({ [contract.STATE_VIEW]: "flat" }));
+    await withLinear(() => plugin.actions.applyFilters({ [contract.STATE_PRESET]: "all" }));
     const panel = await published(sdk, "issues");
 
-    assert.equal(nodesOf(panel, "group").length, 0, "still grouped after switching to flat");
-    const [list] = nodesOf(panel, "list");
-    assert.equal(list.bind.keyPrefix, contract.flatKeyPrefix());
-    assert.equal(list.selectable.stateKey, contract.STATE_BATCH);
-    const view = nodesOf(panel, "segmented").find((node) => node.stateKey === contract.STATE_VIEW);
-    assert.equal(view.default, "flat");
+    assert.ok(nodesOf(panel, "group").length > 0, "the list is not grouped");
+    const selectable = nodesOf(panel, "list").filter((node) => node.selectable);
+    assert.ok(selectable.length > 0, "grouped lists do not tick");
+    assert.equal(selectable[0].selectable.stateKey, contract.STATE_BATCH);
+    assert.equal(panel.chrome.search.stateKey, contract.STATE_SEARCH);
+    assert.ok(!nodesOf(panel, "segmented").some((node) => node.stateKey === contract.STATE_VIEW));
   });
 
   it("sends the team the reader picked to Linear, and draws it back", async () => {

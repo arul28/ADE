@@ -25,7 +25,7 @@ const path = require("node:path");
 const { afterEach, describe, it } = require("node:test");
 
 const plugin = require("../index");
-const { ACTIONS } = require("../panels/contract");
+const { ACTIONS, PROMPT_LANE } = require("../panels/contract");
 const panelActions = require("../panelActions");
 const { createApi, createSdk, issueNode } = require("./support");
 
@@ -129,6 +129,28 @@ describe("activate", () => {
     const shared = panelOnly.filter((id) => ownOnly.includes(id));
     assert.deepEqual(shared, [], `both halves define ${shared.join(", ")}`);
     assert.ok(sdk);
+  });
+
+  it("asks which lane to link to instead of taking the first one", async () => {
+    await activated({
+      lanes: [
+        { id: "lane-1", name: "One" },
+        { id: "lane-2", name: "Two" },
+      ],
+    });
+    const asked = await plugin.actions.linkToLane({ issueId: "issue-1" });
+    assert.equal(asked.prompt?.id, PROMPT_LANE);
+    assert.deepEqual(
+      (asked.prompt.options ?? []).map((option) => option.value),
+      ["lane-1", "lane-2"],
+    );
+  });
+
+  it("refuses to guess a lane when the project has none", async () => {
+    await activated({ lanes: [] });
+    const result = await plugin.actions.linkToLane({ issueId: "issue-1" });
+    assert.equal(result.ok, false);
+    assert.match(result.message, /Open a lane first/);
   });
 
   it("keeps the three refresh ids as the DATA half's, not the panel half's", async () => {

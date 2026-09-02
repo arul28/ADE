@@ -21,6 +21,7 @@ export const SOCKET_TONE_COLOR: Record<PluginBadgeTone, string> = {
   accent: COLORS.accent,
   success: COLORS.success,
   warning: COLORS.warning,
+  destructive: COLORS.danger,
 };
 
 /**

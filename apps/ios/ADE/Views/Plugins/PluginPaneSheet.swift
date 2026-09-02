@@ -63,8 +63,8 @@ struct PluginPaneSheet: View {
                 ADEHaptics.light()
                 store.perform(nav.action, label: nav.label)
               } label: {
-                if PluginSymbol.drawsIcon(nav.icon) {
-                  PluginSymbol.image(nav.icon, fallback: "puzzlepiece.extension")
+                if PluginSymbol.drawsIcon(nav.icon, shipped: store.brandIcons) {
+                  PluginSymbol.glyph(nav.icon, fallback: "puzzlepiece.extension", pointSize: 17, shipped: store.brandIcons)
                 } else {
                   Text(nav.label).font(.subheadline)
                 }
@@ -174,7 +174,7 @@ struct PluginPaneSheet: View {
 
   @ViewBuilder
   private func chromeBottom(footer: [PluginVocabNode]) -> some View {
-    let showBulk = bulkReports.contains { report in
+    let showBulk = PluginVocabBulk.unioned(bulkReports).contains { report in
       !store.selectedKeys(in: report.selectable, visibleRowKeys: report.visibleRowKeys).isEmpty
     }
     if showBulk || !footer.isEmpty {

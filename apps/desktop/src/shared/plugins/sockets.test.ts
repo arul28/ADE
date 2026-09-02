@@ -73,10 +73,9 @@ describe("parsePluginContributionPayload", () => {
     expect(parsePluginContributionPayload("row-badge", "nope")).toBeNull();
   });
 
-  // House rule, same as `normalizeAdeCardTone`: failure is amber, never red.
-  it("folds any red-ish tone a plugin invents into warning", () => {
+  it("folds any red-ish tone a plugin invents into destructive", () => {
     for (const tone of ["danger", "error", "critical"]) {
-      expect(parsePluginContributionPayload("row-badge", { text: "x", tone })).toMatchObject({ tone: "warning" });
+      expect(parsePluginContributionPayload("row-badge", { text: "x", tone })).toMatchObject({ tone: "destructive" });
     }
     expect(parsePluginContributionPayload("row-badge", { text: "x", tone: "nonsense" }))
       .toMatchObject({ tone: "neutral" });
@@ -788,7 +787,7 @@ describe("the ambient kinds", () => {
     })).toEqual({
       title: "2 checks failed",
       body: "on lane fix-auth",
-      tone: "warning",
+      tone: "destructive",
       actionId: "open",
       actionLabel: "Open",
     });

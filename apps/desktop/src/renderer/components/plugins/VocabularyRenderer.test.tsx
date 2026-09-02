@@ -519,13 +519,29 @@ describe("the markdown node", () => {
     expect(openExternal).toHaveBeenCalledWith("https://linear.app/ade/issue/ADE-1");
   });
 
-  it("shows an over-long document as its source, with a line saying why", () => {
+  it("draws an https markdown image and refuses a data: one", () => {
+    const { container } = renderMarkdown("See ![a diagram](https://ade.dev/x.png) here");
+    const img = container.querySelector("img");
+    expect(img?.getAttribute("src")).toBe("https://ade.dev/x.png");
+    expect(img?.getAttribute("alt")).toBe("a diagram");
+
+    const refused = renderMarkdown("![secret](data:image/png;base64,abcd)");
+    expect(refused.container.querySelector("img")).toBeNull();
+    expect(refused.container.textContent).toContain("secret");
+  });
+
+  it("draws a GFM pipe table", () => {
+    const { container } = renderMarkdown("| Name | State |\n| --- | --- |\n| ISS-1 | Open |");
+    expect(container.querySelector("table")).not.toBeNull();
+    expect(container.querySelector("th")?.textContent).toBe("Name");
+    expect(container.textContent).toContain("ISS-1");
+  });
+
+  it("renders an over-long document as markdown with a line saying the rest is not shown", () => {
     const { container } = renderMarkdown(`# Heading\n\n${"a".repeat(VOCAB_LIMITS.maxMarkdownChars)}`);
-    // No formatting: a cut lands wherever it lands, and half-parsed prose says
-    // less about what happened than the source plus one sentence.
-    expect(container.querySelector("h1")).toBeNull();
-    expect(container.textContent).toContain("# Heading");
-    expect(container.textContent).toContain("shown as written");
+    expect(container.querySelector("h1")?.textContent).toBe("Heading");
+    expect(container.textContent).toContain("The rest of this text is not shown.");
+    expect(container.textContent).not.toContain("shown as written");
   });
 
   it("says so when a document has more blocks than a panel draws", () => {
@@ -923,6 +939,25 @@ describe("list hover card and chip strip", () => {
     expect(screen.getByTestId("plugin-list-hover-card").textContent).toContain("Assigned to you");
   });
 
+  it("renders markdown on a list row without spending a body node", () => {
+    render(
+      <PluginPanelView
+        schema={{
+          v: 1,
+          fallback: { title: "T", text: "B" },
+          body: [{
+            component: "list",
+            items: [{ title: "kai", markdown: "The fix is in `sessionRedirect.ts`." }],
+          }],
+        }}
+        context={makeContext()}
+      />,
+    );
+    const body = screen.getByTestId("plugin-list-item-markdown");
+    expect(body.querySelector("code")?.textContent).toBe("sessionRedirect.ts");
+    expect(screen.getByText("kai")).not.toBeNull();
+  });
+
   it("draws a segmented strip that scrolls sideways instead of wrapping", () => {
     render(
       <PluginPanelView
@@ -992,5 +1027,41 @@ describe("panel chrome", () => {
     fireEvent.click(screen.getByRole("button", { name: "Open in Linear" }));
     fireEvent.click(screen.getByRole("button", { name: "New issue" }));
     expect(screen.getByText("Issue list")).toBeTruthy();
+  });
+
+  it("unions ticks across grouped lists that share a selection key", () => {
+    render(
+      <PluginPanelView
+        schema={{
+          v: 1,
+          fallback: { title: "T", text: "B" },
+          body: [
+            {
+              component: "group",
+              title: "Started",
+              children: [{
+                component: "list",
+                items: [{ key: "a", title: "One" }],
+                selectable: { stateKey: "batch", actions: [{ action: "go", label: "Go" }] },
+              }],
+            },
+            {
+              component: "group",
+              title: "Todo",
+              children: [{
+                component: "list",
+                items: [{ key: "b", title: "Two" }],
+                selectable: { stateKey: "batch", actions: [{ action: "go", label: "Go" }] },
+              }],
+            },
+          ],
+        }}
+        context={makeContext({
+          selection: { batch: ["a", "b"] },
+          selectionDeclarations: [{ stateKey: "batch", max: 100, actionIds: ["go"] }],
+        })}
+      />,
+    );
+    expect(screen.getByTestId("plugin-panel-bulk-bar").textContent).toContain("2 selected");
   });
 });

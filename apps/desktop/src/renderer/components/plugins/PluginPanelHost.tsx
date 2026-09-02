@@ -1,4 +1,5 @@
 import React from "react";
+import { useRootAppStore } from "../../state/appStore";
 
 import { ArrowsClockwise } from "@phosphor-icons/react";
 
@@ -212,6 +213,9 @@ export function PluginPanelHost({
   // How far down each list the reader has walked. Beside the folds because it is
   // the same kind of thing: client-local, per panel, and never the plugin's.
   const [listPages, setListPages] = React.useState<Readonly<Record<string, number>>>(NO_LIST_PAGES);
+  const brandIcons = useRootAppStore(
+    (state) => state.installedPlugins.find((plugin) => plugin.pluginId === pluginId)?.brandIcons,
+  );
   const activeRef = React.useRef(active);
   activeRef.current = active;
   const contextRef = React.useRef(renderContext ?? null);
@@ -651,6 +655,7 @@ export function PluginPanelHost({
   const context = React.useMemo(
     () => ({
       pluginId,
+      brandIcons,
       rowsByBinding,
       dispatch,
       active,
@@ -668,6 +673,7 @@ export function PluginPanelHost({
     }),
     [
       active,
+      brandIcons,
       clearSelection,
       declarations,
       dispatch,

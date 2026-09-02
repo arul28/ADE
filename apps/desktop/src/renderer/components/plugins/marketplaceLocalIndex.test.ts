@@ -94,6 +94,7 @@ const MANIFEST_FIELDS: Record<keyof PluginManifest, true> = {
   description: true,
   icon: true,
   accent: true,
+  brandIcons: true,
   minAdeVersion: true,
   vocabVersion: true,
   entry: true,

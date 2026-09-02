@@ -20,6 +20,7 @@ import {
   normalizeVocabTone,
   parsePluginPanel,
   readVocabFallback,
+  vocabAvatarInitials,
   vocabChildNodes,
   vocabFallbackText,
   vocabGroupKey,
@@ -66,6 +67,7 @@ describe("parsePluginPanel — valid schemas", () => {
         { component: "chart", kind: "line", series: [{ id: "a", points: [{ x: 0, y: 1 }] }] },
         { component: "video", src: "file:///clip.mp4" },
         { component: "image", src: "file:///shot.png", alt: "Screenshot" },
+        { component: "avatar", name: "Jane Doe" },
         { component: "keyValue", rows: [{ key: "Branch", value: "main" }] },
         { component: "emptyState", title: "Nothing yet" },
         { component: "stack", children: [{ component: "text", text: "nested" }] },
@@ -86,6 +88,7 @@ describe("parsePluginPanel — valid schemas", () => {
       "chart",
       "video",
       "image",
+      "avatar",
       "keyValue",
       "emptyState",
       "stack",
@@ -97,13 +100,43 @@ describe("parsePluginPanel — valid schemas", () => {
     expect(result.ok).toBe(true);
   });
 
-  it("folds red-ish tones to warning so a payload cannot introduce a red state", () => {
+  it("admits destructive as red and folds danger/error/failed onto it", () => {
     const result = parsePluginPanel(panel([{ component: "badge", text: "Failed", tone: "danger" }]));
     expect(result.ok).toBe(true);
     if (!result.ok) return;
-    expect(result.panel.body[0]).toMatchObject({ component: "badge", tone: "warning" });
-    expect(normalizeVocabTone("error")).toBe("warning");
+    expect(result.panel.body[0]).toMatchObject({ component: "badge", tone: "destructive" });
+    expect(normalizeVocabTone("error")).toBe("destructive");
+    expect(normalizeVocabTone("destructive")).toBe("destructive");
+    expect(normalizeVocabTone("warning")).toBe("warning");
     expect(normalizeVocabTone("nonsense")).toBe("neutral");
+  });
+
+  it("parses an avatar and falls a missing photo to initials", () => {
+    const result = parsePluginPanel(panel([
+      { component: "avatar", name: "Jane Doe", src: "https://example.test/j.png", size: "lg" },
+      { component: "avatar", name: "  " },
+      {
+        component: "list",
+        items: [{ title: "ENG-1", avatar: { name: "Linear", src: "https://example.test/l.png" } }],
+      },
+    ]));
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.panel.body[0]).toMatchObject({
+      component: "avatar",
+      name: "Jane Doe",
+      src: "https://example.test/j.png",
+      size: "lg",
+    });
+    expect(result.panel.body[1]).toMatchObject({ component: "__invalid", name: "avatar" });
+    const list = result.panel.body[2];
+    expect(list?.component === "list" ? list.items?.[0]?.avatar : null).toEqual({
+      name: "Linear",
+      src: "https://example.test/l.png",
+    });
+    expect(vocabAvatarInitials("Jane Doe")).toBe("JD");
+    expect(vocabAvatarInitials("Linear")).toBe("L");
+    expect(vocabAvatarInitials("   ")).toBe("?");
   });
 
   it("reports every binding so a host can fetch exactly what a panel reads", () => {
@@ -266,6 +299,32 @@ describe("parsePluginPanel — node-local degradation", () => {
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.panel.body[0]).toMatchObject({ component: "__invalid", name: "form" });
+  });
+
+  it("holds eighty select options and refuses an eighty-first", () => {
+    const options = Array.from({ length: VOCAB_LIMITS.maxSelectOptions }, (_, i) => ({ value: `m${i}` }));
+    const ok = parsePluginPanel(panel([{
+      component: "form",
+      fields: [{ kind: "select", id: "model", label: "Model", options }],
+      submit: { label: "Go", onPress: { action: "go" } },
+    }]));
+    expect(ok.ok).toBe(true);
+    if (!ok.ok) return;
+    expect(ok.panel.body[0]).toMatchObject({ component: "form" });
+
+    const over = parsePluginPanel(panel([{
+      component: "form",
+      fields: [{
+        kind: "select",
+        id: "model",
+        label: "Model",
+        options: [...options, { value: "extra" }],
+      }],
+      submit: { label: "Go", onPress: { action: "go" } },
+    }]));
+    expect(over.ok).toBe(true);
+    if (!over.ok) return;
+    expect(over.panel.body[0]).toMatchObject({ component: "__invalid", name: "form" });
   });
 
   /**
@@ -442,7 +501,7 @@ describe("bound rows", () => {
       title: "lane-a",
       subtitle: "2 commits",
       icon: "git-branch",
-      tone: "warning",
+      tone: "destructive",
     });
     expect(coerceBoundListItem({ subtitle: "no title" })).toBeNull();
   });
@@ -1056,6 +1115,25 @@ describe("list paging", () => {
     expect(node).toMatchObject({
       component: "list",
       items: [{ title: "ISS-1", preview: { title: "Login fails", text: "Assigned to you" } }],
+    });
+    expect(countVocabNodes(result.panel.body)).toBe(1);
+  });
+
+  it("parses list-row markdown without counting it as a body node", () => {
+    const result = parsePluginPanel(panel([{
+      component: "list",
+      items: [{
+        title: "kai",
+        markdown: "The fix is in `sessionRedirect.ts`.",
+      }],
+    }]));
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const list = result.panel.body[0];
+    if (list.component !== "list") throw new Error("expected a list");
+    expect(list.items?.[0]).toMatchObject({
+      title: "kai",
+      markdown: "The fix is in `sessionRedirect.ts`.",
     });
     expect(countVocabNodes(result.panel.body)).toBe(1);
   });

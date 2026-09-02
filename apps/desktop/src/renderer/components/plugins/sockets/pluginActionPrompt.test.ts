@@ -132,4 +132,28 @@ describe("an action that answers with a prompt", () => {
     expect(getPluginPrompt()).toBeNull();
     expect(invokePluginSocketAction).toHaveBeenCalledTimes(1);
   });
+
+  it("carries closed options through so the card can draw a picker", async () => {
+    invokePluginSocketAction.mockResolvedValue({
+      prompt: {
+        id: "lane",
+        title: "Link to a lane",
+        options: [{ value: "lane-1", label: "One" }, { value: "lane-2", label: "Two" }],
+      },
+    });
+    const { runPluginSocketAction } = await import("./pluginActionDispatch");
+    const { getPluginPrompt, submitPluginPrompt } = await import("./pluginPromptStore");
+
+    await runPluginSocketAction("linear", "linkToLane", CONTEXT, { label: "Link to a lane" });
+
+    expect(getPluginPrompt()?.prompt.options).toEqual([
+      { value: "lane-1", label: "One" },
+      { value: "lane-2", label: "Two" },
+    ]);
+    submitPluginPrompt("lane-2");
+    await vi.waitFor(() => expect(invokePluginSocketAction).toHaveBeenCalledTimes(2));
+    expect(invokePluginSocketAction.mock.calls[1]?.[2]).toMatchObject({
+      prompt: { id: "lane", text: "lane-2" },
+    });
+  });
 });

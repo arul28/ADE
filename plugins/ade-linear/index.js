@@ -56,7 +56,8 @@ const { createOwnActions } = require("./actions");
 // The comment key space, from the file that BUILDS it. A second spelling here
 // renders as an empty comment list rather than as an error — which is the exact
 // bug class `panels/contract.js` opens by naming.
-const { COLLECTION_COMMENTS, commentKeyPrefix } = require("./panels/contract");
+const { COLLECTION_COMMENTS, PROMPT_LANE, commentKeyPrefix } = require("./panels/contract");
+const { COPY, LIMITS } = require("./panels/common");
 
 /** Attempts to publish a panel before giving up until the next action. */
 const PUBLISH_ATTEMPTS = 5;
@@ -465,6 +466,9 @@ async function viewFor(panelId, context) {
     const status = await connect.connectStatus().catch(() => ({}));
     const secretStored = Boolean(await sdk.secrets.get("LINEAR_WEBHOOK_SECRET").catch(() => null));
     const webhooksPossible = webhooksReachable(status);
+    const ledger = connection?.webhookUrl
+      ? await sdk.webhooks.status().catch(() => null)
+      : null;
     return {
       // Three bodies, and the third is real: before the first `refreshConnection`
       // there is no connection ROW at all, which is a different thing from a
@@ -518,9 +522,8 @@ async function viewFor(panelId, context) {
       // most misleading sentence on the screen: the endpoint exists, the
       // deliveries arrive, and none of them count.
       //
-      // Whether deliveries are actually ARRIVING needs the host's delivery
-      // ledger, and no SDK verb exposes it — which is why `lastEvent` is null
-      // rather than a guess. That gap is in the report.
+      // Whether deliveries are actually ARRIVING is the host's delivery ledger.
+      // `webhooks.status` is that row, scoped to this plugin.
       ingress: connection?.webhookUrl
         ? {
           status: !webhooksPossible
@@ -529,7 +532,11 @@ async function viewFor(panelId, context) {
               ? "Endpoint ready"
               : "Waiting for the signing secret",
           tone: webhooksPossible && secretStored ? "neutral" : "warning",
-          lastEvent: null,
+          lastEvent: formatWebhookLastEvent(ledger?.lastReceivedAt),
+          pendingDeliveries: Number(ledger?.pendingDeliveries) || 0,
+          drainError: typeof ledger?.lastError === "string" && ledger.lastError.trim()
+            ? ledger.lastError.trim()
+            : null,
           url: connection.webhookUrl,
           secretStored,
           webhooksPossible,
@@ -540,6 +547,19 @@ async function viewFor(panelId, context) {
   }
 
   return snapshot;
+}
+
+/**
+ * When the drain last received a delivery, as a line a settings row can print.
+ *
+ * The ledger stores ISO-8601. A schema cannot format dates, so this is the
+ * same pre-format `expiry` does for the token.
+ */
+function formatWebhookLastEvent(iso) {
+  if (typeof iso !== "string" || !iso.trim()) return null;
+  const at = Date.parse(iso);
+  if (Number.isNaN(at)) return iso.trim();
+  return new Date(at).toISOString().replace("T", " ").slice(0, 16) + " UTC";
 }
 
 /**
@@ -814,8 +834,8 @@ function buildPanelHost() {
         return agent;
       },
 
-      /** The bulk bar: attach several issues to the lane the reader is in. */
-      linkIssueToLane: async (issueIds) => {
+      /** The bulk bar: attach several issues to a lane the reader picks. */
+      linkIssueToLane: async (issueIds, laneId) => {
         // Through `issueIdFromRowKey` even though the panel half already
         // strips it. A tick carries the row's `key`, and a row that ever ships
         // without one inherits the COLLECTION key — `flat:000012:<uuid>` — so
@@ -824,11 +844,29 @@ function buildPanelHost() {
         const ids = (Array.isArray(issueIds) ? issueIds : [issueIds])
           .map((entry) => issueIdFromRowKey(entry) ?? entry)
           .filter(Boolean);
-        const lanes = await sdk.lanes.list().catch(() => []);
-        const laneId = lanes[0]?.id ?? null;
-        if (!laneId) throw new Error("Open a lane first.");
+        const chosen = typeof laneId === "string" && laneId.trim() ? laneId.trim() : null;
+        if (!chosen) {
+          const lanes = await sdk.lanes.list().catch(() => []);
+          if (!Array.isArray(lanes) || lanes.length === 0) {
+            throw new Error("Open a lane first.");
+          }
+          return {
+            prompt: {
+              id: PROMPT_LANE,
+              title: COPY.linkLaneTitle,
+              placeholder: COPY.linkLanePlaceholder,
+              submitLabel: COPY.linkLaneSubmit,
+              options: lanes.slice(0, LIMITS.maxSelectOptions).flatMap((lane) => {
+                const value = lane && typeof lane === "object" ? String(lane.id ?? "").trim() : "";
+                if (!value) return [];
+                const label = String(lane.name ?? lane.title ?? value);
+                return [{ value, label }];
+              }),
+            },
+          };
+        }
         for (const issueId of ids) {
-          const result = await flows.linkIssueToLane({ issueId, laneId });
+          const result = await flows.linkIssueToLane({ issueId, laneId: chosen });
           if (!result.ok) throw new Error(result.message);
         }
         await refreshIssues();

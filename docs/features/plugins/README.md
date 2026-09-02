@@ -32,9 +32,10 @@ Node built-ins:
 |---|---|
 | `apps/desktop/src/shared/plugins/manifest.ts` | `plugin.json` contract, strict-on-known/tolerant-of-unknown parser, id and relative-path validation, `minAdeVersion` gate, the `tab`/`pane`/`webview` surface kinds and the `entryHtml` rule |
 | `apps/desktop/src/shared/plugins/vocabulary.ts` | Panel schema v1: component union, `VOCAB_LIMITS`, degradation ladder, `parsePluginPanel`, panel `chrome` (search, nav actions, sticky footer), the reserved bindings (`vocabReservedRows` over `$context` and `$state`), `collectVocabStateDeclarations` |
-| `apps/desktop/src/shared/plugins/vocabularyNodes.ts` | The 16 v1 components and their parsers, `VOCAB_LIMITS`, the `group` node and `vocabGroupKey`, the row-action allowlist (`boundRowAction`) |
+| `apps/desktop/src/shared/plugins/vocabularyNodes.ts` | The 17 v1 components and their parsers, `VOCAB_LIMITS`, the `group` node and `vocabGroupKey`, the row-action allowlist (`boundRowAction`) |
 | `apps/desktop/src/shared/plugins/vocabularyState.ts` | Client-evaluated panel state: the `segmented` control's declarations, `chrome.search`, the `where` grammar (`contains` included) and its three-valued evaluator, the `$state` binding (`VOCAB_STATE_COLLECTION`), the row selection a `list.selectable` owns, the signature/normalize/reset lifecycle, `readPluginActionResetState` |
-| `apps/desktop/src/shared/plugins/vocabularyMarkdown.ts` | The `markdown` node's subset: a bounded block/span AST, `VOCAB_MARKDOWN_LIMITS`, `https:`-only links, and no HTML path at all |
+| `apps/desktop/src/shared/plugins/vocabularyMarkdown.ts` | The `markdown` node's subset: a bounded block/span AST, `VOCAB_MARKDOWN_LIMITS`, `https:`-only links, GFM pipe tables, https images, and no HTML path at all |
+| `apps/desktop/src/shared/plugins/vocabularyBrandIcons.ts` | Plugin-shipped `brand:*` glyphs: the reserved `ade.brandIcons` collection, the fail-closed SVG sanitizer, and the portable `{ viewBox, paths }` shape |
 | `apps/desktop/src/shared/plugins/vocabularyPaging.ts` | One `list`'s page: `vocabListPage`, `vocabListNextPage`, the three-state `vocabListPageLabel`, and `VOCAB_LIST_SHOW_MORE_LABEL` |
 | `apps/desktop/src/shared/plugins/urlMatchers.ts` | The no-regex `pathPattern` grammar, the chip label template, the core-host refusal and the ownership relaxation (`coreSmartLinkBuiltinsOwnedBy`) |
 | `apps/desktop/src/shared/plugins/smartLinkMatchers.ts` | Compiling installed plugins' matchers and running them against a pasted URL; the chip and its deeplink |
@@ -529,10 +530,13 @@ replay guard were all spelled "cursor". They are now spelled per plugin.
   an unpruned one costs. Pruning cannot resurrect a delivery here because the
   relay's own retention is shorter than the ledger's.
 - `ade.webhooks.url(channelId?)` answers the URL to hand the third party, for a
-  declared channel only. The Marketplace detail page shows the same URLs with a
-  Copy button, and `ade plugin doctor` grows a **Webhooks** rung, because the
-  person setting the integration up is usually looking at a plugin that is
-  installed and not running.
+  declared channel only. `ade.webhooks.status()` is this plugin's row on the
+  host's delivery ledger — last received, pending, last drain error — so a
+  settings panel can print what actually arrived rather than guessing. The
+  Marketplace detail page shows the same URLs with a Copy button, and
+  `ade plugin doctor` grows a **Webhooks** rung, because the person setting
+  the integration up is usually looking at a plugin that is installed and not
+  running.
 
 ### A plugin can own a conversation
 
@@ -1230,13 +1234,14 @@ schema would have rendered a table on desktop and a row of pipes on a phone. So
 the subset is defined once, in `vocabularyMarkdown.ts`, as a bounded tree of
 blocks and inline runs. Every TypeScript client calls the same
 `parseVocabMarkdown`; iOS mirrors it arm for arm in
-`PluginVocabularyMarkdownViews.swift`.
+`PluginVocabularyMarkdown.swift`.
 
 Blocks are `heading`, `paragraph`, fenced `code`, `quote`, `list` (ordered or not,
-with inert task checkboxes) and `rule`. Inline runs carry flat boolean flags —
-`bold`, `italic`, `strike`, `code`, `href` — rather than nesting, so a phone
-builds one `AttributedString`, a terminal sets Ink's props and desktop nests
-`<strong><em>`, all three reading the same list.
+with inert task checkboxes), `rule`, and GFM pipe `table`. Inline runs carry
+flat boolean flags — `bold`, `italic`, `strike`, `code`, `href`, `src` — rather
+than nesting, so a phone builds one `AttributedString` (and `AsyncImage` for a
+run with `src`), a terminal sets Ink's props and desktop nests `<strong><em>`,
+all three reading the same list.
 
 **There is no HTML path to disable.** The parser never produces markup: it
 produces text runs with boolean flags, so `<script>alert(1)</script>` in a source
@@ -1245,27 +1250,29 @@ and Ink all escape it. There is no raw-HTML pass-through, no sanitizer schema to
 keep in step with a renderer, and no client that can opt out. That is deliberately
 stronger than an allowlist: an allowlist is a list someone has to maintain, and
 this is a shape that cannot express the attack
-(`vocabularyMarkdown.ts:27-41`). Links are the one reach outside the document and
-pass the same `https:`-only gate the `openUrl` action verb passes; a
-`javascript:` or `data:` destination loses the link and keeps its text.
+(`vocabularyMarkdown.ts:27-41`). Links and markdown images are the two reaches
+outside the document and pass the same `https:`-only gate the `openUrl` action
+verb passes; a `javascript:` or `data:` destination loses the link (or the
+picture) and keeps its text.
 
-Deliberately out of the subset: images (the vocabulary has an `image` node with a
-source ceiling and a per-client media path; `![alt](url)` renders as its alt
-text), tables (`table` is a node with columns a client can lay out), raw HTML,
-bare-URL autolinking (three clients, three URL-detection regexes, three answers
-about where a URL ends — write `[text](url)`), and setext headings and indented
-code, both of which people produce by accident.
+Deliberately out of the subset: raw HTML, bare-URL autolinking (three clients,
+three URL-detection regexes, three answers about where a URL ends — write
+`[text](url)`), `data:` images (those still belong on the `image` node, which
+has a source ceiling), and setext headings and indented code, both of which
+people produce by accident.
 
-`VOCAB_MARKDOWN_LIMITS`: 4,000 source characters, 100 blocks, container depth 3,
-200 runs per block, a link destination capped at `PLUGIN_URL_MAX_CHARS`, and a
-32-character fence info string. **Over the character cap the node renders as PLAIN
-TEXT with a marker, on every client**, rather than as markdown. That is not
-squeamishness about length: a cut lands wherever the ceiling falls, regularly
-inside a fence, a link or an emphasis run, so the markdown of a truncated document
-is not the document's markdown — a half-open fence swallows the rest of it as
-code. Showing the source says "this was cut" in a way half-parsed prose cannot
-(`vocabularyNodes.ts:346-356`). A document stopped by the BLOCK budget instead
-reports `truncated` and the renderer says so, rather than ending mid-document.
+A list row may carry a `markdown` field, parsed with the same subset, clamped to
+`maxListItemMarkdownChars` (4,000). It is row data, not a body node, so a
+comment thread of rows does not spend `maxNodes` per comment.
+
+`VOCAB_MARKDOWN_LIMITS`: 16,000 source characters (four Linear-sized issue
+bodies, a quarter of the 65,536-byte panel; `text` stays at 4,000 because it is
+still a paragraph), 100 blocks, container depth 3, 200 runs per block, a link
+or image destination capped at `PLUGIN_URL_MAX_CHARS`, a 32-character fence
+info string, 8 table columns and 40 table body rows. Over the character cap the
+source is cut at the last complete line in the window and **still formatted as
+markdown**, on every client, with a line saying the rest is not shown. A
+document stopped by the block budget reports `truncated` the same way.
 
 ### Client-evaluated panel state
 
@@ -1460,12 +1467,14 @@ Four rules carry it:
   of which mean the panel is offering something other than what the reader ticked
   rows for.
 - **`maxSelectionKeys` is 2, not 8.** A selection owns a bar across the panel and
-  one word — "3 selected" — and two lists both claiming that bar is already a
-  panel that needs splitting. Two covers the one shape that is not a mistake: a
-  detail panel offering a batch over its issues and a batch over its pull
-  requests. When two lists both have visible ticks, the first non-empty report
-  in tree order wins; the bar sits in panel chrome above `chrome.footer`, not
-  under each list.
+  one word — "3 selected" — and two *different* lists both claiming that bar is
+  already a panel that needs splitting. Two covers the one shape that is not a
+  mistake: a detail panel offering a batch over its issues and a batch over its
+  pull requests. Lists that share a `stateKey` (seven Linear state groups, one
+  batch) union their on-screen ticks into that one bar. When two different
+  selection keys both have visible ticks, the first non-empty report in tree
+  order wins. The bar sits in panel chrome above `chrome.footer`, not under each
+  list.
 
 Ceilings, in `VOCAB_STATE_LIMITS` and spread into `VOCAB_LIMITS`: **8** state keys
 per panel, 2–8 literal options per control and 50 resolved, 4 top-level `where`
@@ -1522,24 +1531,27 @@ all four clients:
   because in-app destinations belong to `navigate` and `fallback.deeplink`,
   which pass an installed-and-enabled gate this would bypass. Every open is
   logged with the plugin id.
-- **`prompt`** (`readPluginActionPrompt`) asks the reader ONE line of text and
-  re-invokes the same action with `args.prompt = {id, text, context?}`. It is
-  the ledger's B1, and the gap was ordinary enough to be worth naming: "a Log it
-  button that saves a one-line note of what I'm doing" had no shape at all, so
-  the plugin that wanted it logged the chat's auto-generated title instead.
-  Three rules carry the design. **Cancel invokes nothing** — not a call with an
-  empty answer, nothing at all — which is what makes the verb safe behind any
-  button. **One hop**: a prompt returned by the re-invocation is dropped by
-  every client, so this cannot become a wizard and cannot trap a reader in a
-  loop the plugin keeps re-opening; a second field is a panel `form`. And the
-  answer is **refused, never truncated**, past `PLUGIN_PROMPT_TEXT_MAX_BYTES`
-  (4 KiB) — half a note saved is worse than one the reader was asked to shorten.
-  `buildPluginActionPromptAnswer` is the single builder of the re-invocation
-  frame, so the desktop popover, the phone's alert and the terminal's inline
-  field cannot hand a handler three different shapes. Desktop and web anchor the
-  card at the pressed control by sampling `document.activeElement` at INVOKE
-  time (`readPluginPromptAnchor`) rather than when the answer comes back, by
-  which point the menu the button lived in may have closed.
+- **`prompt`** (`readPluginActionPrompt`) asks one question and re-invokes the
+  same action with `args.prompt = {id, text, context?}`. With `options` it is a
+  picker: desktop and web draw a list, iOS a sheet, the TUI matches typed text
+  against value or label (and refuses a miss). Without `options` it is still
+  one line of text. It is the ledger's B1, and the gap was ordinary enough to
+  be worth naming: "a Log it button that saves a one-line note of what I'm
+  doing" had no shape at all, so the plugin that wanted it logged the chat's
+  auto-generated title instead. Three rules carry the design. **Cancel invokes
+  nothing** — not a call with an empty answer, nothing at all — which is what
+  makes the verb safe behind any button. **One hop**: a prompt returned by the
+  re-invocation is dropped by every client, so this cannot become a wizard and
+  cannot trap a reader in a loop the plugin keeps re-opening; a second field is
+  a panel `form`. And the answer is **refused, never truncated**, past
+  `PLUGIN_PROMPT_TEXT_MAX_BYTES` (4 KiB) — half a note saved is worse than one
+  the reader was asked to shorten. `buildPluginActionPromptAnswer` is the
+  single builder of the re-invocation frame, so the desktop popover, the
+  phone's sheet and the terminal's inline field cannot hand a handler three
+  different shapes. Desktop and web anchor the card at the pressed control by
+  sampling `document.activeElement` at INVOKE time (`readPluginPromptAnchor`)
+  rather than when the answer comes back, by which point the menu the button
+  lived in may have closed.
 - **`message`** (`readPluginActionMessage`) is one sentence about how it went.
   Two shapes reach the renderer and both are normal: over sync the host wraps a
   handler's return as `{ok, message?, result}`, while the desktop's local IPC
@@ -2072,7 +2084,7 @@ is where that stands today, on this branch.
 | plugin | polarity | own code | state |
 |---|---|---|---|
 | `ade-linear` | `supersedes` | 8,795 lines (14,296 with its tests) | A real plugin. Panels, sockets, tools, CLI words, automation triggers and steps, a webhook channel, a sign-in flow, a credential handoff and a URL matcher |
-| `ade-cursor-cloud` | `supersedes` | 3,439 lines (4,643 with tests) | A real plugin, with a chat runtime. 7 gaps still open: the `webhooks.status()` ledger read, secret reveal, navigate-to-settings, a tab badge, artifact download, the launch strip, and a CLI alias |
+| `ade-cursor-cloud` | `supersedes` | 3,439 lines (4,643 with tests) | A real plugin, with a chat runtime. 6 gaps still open: secret reveal, navigate-to-settings, a tab badge, artifact download, the launch strip, and a CLI alias. `webhooks.status()` is on the SDK; Linear's settings strip reads the ledger. |
 | `ade-graph` | `enables` | 0 | A gating shell: `plugin.json`, an icon, a README and a one-panel schema |
 | `ade-review` | `enables` | 0 | Gating shell |
 | `ade-history` | `enables` | 0 | Gating shell |
@@ -2131,28 +2143,29 @@ oversight:
 - **The TUI draws 3 of the 18 socket kinds** — `row-badge`, `row-menu-item` and
   `toolbar-action` — and only on the `lanes` and `work` surfaces, which are the
   surfaces it lists rows for.
-- **iOS renders 15 of the 16 v1 components.** `chart` shows a named marker: a
+- **iOS renders 16 of the 17 v1 components.** `chart` shows a named marker: a
   sparse line or bar chart is the least useful thing to squeeze onto a
   phone-width panel and the most expensive to draw well.
-- **The TUI renders 13 of 16.** `video`, `image` and `chart` show named
-  placeholders.
-- **A plugin cannot ship a brand glyph.** The `brand:` icon namespace is a closed
-  five-token catalogue (`claude`, `codex`, `cursor`, `github`, `openai`), and
-  there is no path for a plugin to supply its own mono mark. `brand:linear` does
-  not exist on either client, so the Linear plugin draws a generic mark where the
-  compiled integration drew a logo.
-- **A `markdown` node over 4,000 characters renders as plain text.** Deliberate —
-  see [Prose: the `markdown` node](#prose-the-markdown-node) — but it is still a
-  reduction against a surface that renders a whole issue body. Markdown also has
-  no images and no tables, and does not render inside a list row, so a comment
-  thread drawn as rows is plain text.
-- **Writes are round trips: there is no optimistic local echo.** A state control
-  that dispatches an action shows the new value when the plugin answers, not when
-  the reader presses it. Panel state is client-evaluated and instant, but anything
-  the plugin owns is not.
-- **There is no picker node.** A bound single-select — "link this to a lane" — has
-  no control, so a panel either offers a `segmented` over a bounded option list or
-  takes the first candidate.
+- **The TUI renders 14 of 17.** `video`, `image` and `chart` show named
+  placeholders. An `avatar` draws as `[JD] Jane Doe` — initials, never a photo.
+- **A plugin ships a brand glyph as a path-only SVG.** ADE still ships five
+  vendor marks (`brand:claude`, `brand:codex`, `brand:cursor`, `brand:github`,
+  `brand:openai`) because those logos already live on every client. Any other
+  vendor is declared on the manifest as `brandIcons: { "linear": "icons/linear.svg" }`.
+  The host sanitizes the file to a viewBox plus paths, writes it into the reserved
+  `ade.brandIcons` collection, and every client draws `brand:linear` from that
+  list. A suffix the plugin did not ship still puzzles, identically. Badges,
+  list-item badges, and `emptyState` still skip brand tokens.
+- **A `segmented` with `onChange` already writes locally first.** The control
+  shows the new value on press, then dispatches. Collection-backed copy beside
+  it (a `keyValue` status row, a bound list) still waits for the plugin to
+  republish. There is no overlay of in-flight writes onto bound rows.
+- **A `{prompt}` may carry `options`.** A one-hop question with a closed list is
+  a picker — "link this to a lane" — rather than a text field. Desktop and web
+  draw a scrollable list, iOS a sheet (an alert cannot host eighty lanes), and
+  the TUI matches typed text against value or label and refuses a miss. Without
+  `options` it is still one line of text. Either way, one hop: a re-invocation's
+  own `{prompt}` is ignored. A form `select` holds 80 options, the same ceiling.
 - **iOS renders a plugin's URLs as plain links.** The phone's smart-link detector
   is a hardcoded four-provider host test and reads no `urlMatchers`, because
   manifests never replicate to a phone — it sees a contribution only when the

@@ -204,6 +204,7 @@ enum PluginRenderSupport {
     "form",
     "video",
     "image",
+    "avatar",
     "divider",
     "keyValue",
     "emptyState",
@@ -286,6 +287,8 @@ final class PluginPaneStore: ObservableObject {
   /// on an action payload. How far down a list a reader has walked is a
   /// statement about this screen, not about which rows the panel is showing.
   @Published private var listPages: [String: Int] = [:]
+  /// Sanitized `brand:*` glyphs from the reserved `ade.brandIcons` collection.
+  @Published private(set) var brandIcons: [String: PluginBrandGlyph] = [:]
 
   /// The controls the current schema declares, in reading order.
   private(set) var stateDeclarations: [PluginVocabStateDeclaration] = []
@@ -752,6 +755,7 @@ final class PluginPaneStore: ObservableObject {
     switch PluginPanelParser.parse(record.schemaJSON) {
     case let .ok(schema, _):
       adoptStateControls(from: schema)
+      loadBrandIcons()
       return .panel(resolveBindings(in: schema))
     case let .failed(failure, fallback):
       if case .versionUnsupported = failure {
@@ -1062,6 +1066,25 @@ final class PluginPaneStore: ObservableObject {
       resolved.chrome = chrome
     }
     return resolved
+  }
+
+  /// Host-written `ade.brandIcons` rows, re-validated the way the desktop
+  /// summary is. A malformed row is dropped rather than drawn.
+  private func loadBrandIcons() {
+    let binding = PluginVocabBinding(
+      collection: PluginVocabulary.brandIconsCollection,
+      keyPrefix: nil,
+      limit: 8,
+      allowActions: nil,
+      whereClauses: nil
+    )
+    var glyphs: [String: PluginBrandGlyph] = [:]
+    for entry in entries(for: binding, limit: 8) {
+      if let glyph = PluginBrandGlyph.parse(entry.value) {
+        glyphs[entry.key] = glyph
+      }
+    }
+    brandIcons = glyphs
   }
 
   private func resolveBindings(in node: PluginVocabNode) -> PluginVocabNode {

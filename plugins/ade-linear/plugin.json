@@ -3,10 +3,13 @@
   "version": "1.1.0",
   "displayName": "Linear",
   "description": "Browse Linear issues, start a lane and an agent on one, and keep the issue moving \u2014 from ADE, on every device.",
-  "icon": "list-checks",
+  "icon": "brand:linear",
   "accent": "#5E6AD2",
   "vocabVersion": 1,
   "entry": "index.js",
+  "brandIcons": {
+    "linear": "icons/linear.svg"
+  },
   "network": {
     "hosts": [
       "api.linear.app"
@@ -51,7 +54,7 @@
       "pathPattern": "/{workspace}/issue/{key}/**",
       "chip": {
         "label": "{key}",
-        "icon": "L"
+        "icon": "brand:linear"
       },
       "panelId": "issue"
     }
@@ -61,7 +64,7 @@
       "kind": "tab",
       "id": "issues",
       "title": "Linear",
-      "icon": "list-checks",
+      "icon": "brand:linear",
       "panelId": "issues",
       "order": 55,
       "mobile": true
@@ -72,27 +75,27 @@
       "id": "main",
       "schemaFile": "panels/main.json",
       "title": "Linear",
-      "icon": "list-checks"
+      "icon": "brand:linear"
     },
     {
       "id": "issues",
       "schemaFile": "panels/issues.json",
       "title": "Linear",
-      "icon": "list-checks",
+      "icon": "brand:linear",
       "refreshAction": "refreshIssues"
     },
     {
       "id": "issue",
       "schemaFile": "panels/issue.json",
       "title": "Issue",
-      "icon": "list-checks",
+      "icon": "brand:linear",
       "refreshAction": "refreshIssue"
     },
     {
       "id": "settings",
       "schemaFile": "panels/settings.json",
       "title": "Linear connection",
-      "icon": "list-checks",
+      "icon": "brand:linear",
       "refreshAction": "refreshConnection"
     },
     {
@@ -108,7 +111,7 @@
       "surface": "work",
       "id": "issues-pane",
       "label": "Linear",
-      "icon": "list-checks",
+      "icon": "brand:linear",
       "panelId": "issues"
     },
     {
@@ -116,7 +119,7 @@
       "surface": "work",
       "id": "attach-issue",
       "label": "Attach a Linear issue",
-      "icon": "list-checks",
+      "icon": "brand:linear",
       "actionId": "openIssues"
     },
     {
@@ -124,18 +127,18 @@
       "surface": "work",
       "id": "chat-issue",
       "label": "Linear issue",
-      "icon": "list-checks",
+      "icon": "brand:linear",
       "actionId": "openSessionIssue",
       "menu": [
         {
           "label": "Open in Linear",
           "actionId": "openInLinear",
-          "icon": "external-link"
+          "icon": "link"
         },
         {
           "label": "Comment progress on the issue",
           "actionId": "commentProgress",
-          "icon": "message-square"
+          "icon": "chat"
         }
       ]
     },
@@ -144,21 +147,21 @@
       "surface": "lanes",
       "id": "lane-issue",
       "label": "Linear issue",
-      "icon": "list-checks"
+      "icon": "brand:linear"
     },
     {
       "socket": "graph-node",
       "surface": "lanes",
       "id": "graph-issue",
       "label": "Linear issue",
-      "icon": "list-checks"
+      "icon": "brand:linear"
     },
     {
       "socket": "settings-section",
       "surface": "settings",
       "id": "connection",
       "label": "Linear",
-      "icon": "list-checks",
+      "icon": "brand:linear",
       "panelId": "settings"
     },
     {
@@ -166,7 +169,7 @@
       "surface": "app",
       "id": "palette-issues",
       "label": "Linear issues",
-      "icon": "list-checks",
+      "icon": "brand:linear",
       "actionId": "openIssues"
     }
   ],

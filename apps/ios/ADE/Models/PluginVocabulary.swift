@@ -32,6 +32,10 @@ enum PluginVocabulary {
   /// the leading `$` is illegal in a collection name, so no real collection can
   /// shadow it and a bound node never has to guess which one it meant.
   static let contextCollection = "$context"
+  /// Host-written sanitized `brand:*` glyphs. Same reservation as `ade.memory`:
+  /// the plugin cannot name it through `collections.*`. Mirrors
+  /// `PLUGIN_BRAND_ICONS_COLLECTION` in `vocabularyBrandIcons.ts`.
+  static let brandIconsCollection = "ade.brandIcons"
 }
 
 /// Narrow a schema-supplied `Double` to an `Int`, or nothing.
@@ -68,7 +72,11 @@ enum PluginVocabLimits {
   static let maxNodes = 200
   static let maxDepth = 8
   static let maxSchemaBytes = 65_536
-  static let maxSelectOptions = 40
+  /// Options one form `select` may hold. Mirrors `maxSelectOptions`.
+  ///
+  /// 80 rather than 40, because 40 was one model-picker short of a workspace
+  /// that lists every provider's models.
+  static let maxSelectOptions = 80
   static let maxTableRows = 100
   static let maxTableColumns = 8
   /// Rows one `list` may hold, and the ceiling this phone reads a bound
@@ -97,10 +105,12 @@ enum PluginVocabLimits {
   static let maxChartPoints = 200
   static let maxFormFields = 24
   static let maxTextChars = 4_000
-  /// A `markdown` node's source. The same ceiling as `maxTextChars`, because
-  /// markdown is prose and that is already the prose ceiling — a paragraph does
-  /// not earn more room for being formatted. Mirrors `maxMarkdownChars`.
+  /// A `markdown` node's source. 16,000 — four Linear-sized issue bodies, a
+  /// quarter of the 65,536-byte panel. A `text` node stays at 4,000; markdown
+  /// is a document, not a paragraph. Mirrors `maxMarkdownChars`.
   static let maxMarkdownChars = PluginVocabMarkdownLimits.maxChars
+  /// Source on one list row's `markdown` field. Mirrors `maxListItemMarkdownChars`.
+  static let maxListItemMarkdownChars = PluginVocabMarkdownLimits.maxListItemChars
   static let maxLabelChars = 200
   static let maxValueChars = 1_000
   static let maxIdChars = 120
@@ -124,21 +134,25 @@ enum PluginVocabLimits {
   static let maxChromeFooterNodes = 4
 }
 
-/// Semantic tone. No red: a failure is amber, the house rule stated at the top
-/// of `apps/desktop/src/shared/adeCard.ts`. Any red-ish value a plugin author
-/// invents folds into `warning` here so a payload cannot bypass it.
+/// Semantic tone.
+///
+/// `destructive` is the red: a delete, a failed check, a cancel. `warning` stays
+/// amber. Authors may write `danger` / `error` / `failed` / `red`; ``normalize``
+/// folds those onto `destructive` so a payload cannot invent a sixth colour.
 enum PluginVocabTone: String, Equatable {
   case neutral
   case accent
   case success
   case warning
+  case destructive
 
   static func normalize(_ raw: Any?) -> PluginVocabTone {
     guard let text = raw as? String else { return .neutral }
     switch text.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
     case "accent", "info": return .accent
     case "success", "ok", "pass", "passed": return .success
-    case "warning", "warn", "danger", "error", "fail", "failed", "red": return .warning
+    case "warning", "warn": return .warning
+    case "destructive", "danger", "error", "critical", "fail", "failed", "red": return .destructive
     default: return .neutral
     }
   }
@@ -268,11 +282,12 @@ struct PluginVocabText: Equatable {
 /// Formatted prose: an issue body, a comment, a release note.
 ///
 /// The subset is `PluginVocabularyMarkdown.swift`, mirrored from
-/// `vocabularyMarkdown.ts` — headings, emphasis, code, links, lists, quotes and
-/// inert task checkboxes, with no raw HTML anywhere in it and `https:`-only
-/// links. One field, on purpose: there is no `maxHeight` twin of
-/// ``PluginVocabImage`` here, because prose has a length the ceiling already
-/// bounds and a height in points is not a thing a terminal can honour.
+/// `vocabularyMarkdown.ts` — headings, emphasis, code, links, lists, quotes,
+/// inert task checkboxes, https images and GFM pipe tables, with no raw HTML
+/// anywhere in it and `https:`-only links and markdown images. One field, on
+/// purpose: there is no `maxHeight` twin of ``PluginVocabImage`` here, because
+/// prose has a length the ceiling already bounds and a height in points is not
+/// a thing a terminal can honour.
 ///
 /// Mirrors `VocabMarkdownNode` in `vocabularyNodes.ts`.
 struct PluginVocabMarkdown: Equatable {
@@ -280,10 +295,9 @@ struct PluginVocabMarkdown: Equatable {
   var text: String
   /// Set by the parser when the source was over the ceiling and was cut.
   ///
-  /// A clamped document renders as PLAIN TEXT with a marker rather than as
-  /// markdown, on every client: the cut lands wherever the ceiling falls, which
-  /// is regularly inside a fence or a link, so the markdown of a truncated
-  /// document is not the document's markdown.
+  /// The cut is at the last complete line in the window, and every client still
+  /// formats what remains as markdown. The view adds a line saying the rest is
+  /// not shown. There is no "dump as plain source" path.
   var truncated = false
 }
 
@@ -321,7 +335,9 @@ struct PluginVocabListItemAction: Equatable, Identifiable {
 /// item the whole list is one node's worth of budget, so `maxListItems` becomes
 /// the real ceiling. Mirrors `VocabListItem` in `vocabularyNodes.ts`.
 struct PluginVocabListItem: Equatable, Identifiable {
-  var id: String { "\(key ?? "")|\(title)|\(subtitle ?? "")|\(meta ?? "")|\(mono ?? "")" }
+  var id: String {
+    "\(key ?? "")|\(title)|\(subtitle ?? "")|\(meta ?? "")|\(mono ?? "")|\(markdown?.prefix(40) ?? "")"
+  }
   var title: String
   /// The row's identity, and the only thing a selection ever holds.
   ///
@@ -347,6 +363,13 @@ struct PluginVocabListItem: Equatable, Identifiable {
   /// Hover-card payload on desktop/web. This phone shows it as a context-menu
   /// preview; there is no hover.
   var preview: PluginVocabListItemPreview?
+  /// Formatted body under the row. Same subset as a `markdown` node; not a body
+  /// node, so a comment thread of rows does not spend `maxNodes` per comment.
+  var markdown: String?
+  /// Set by the host when ``markdown`` was over ``PluginVocabLimits/maxListItemMarkdownChars``.
+  var markdownTruncated = false
+  /// Face beside the title. Initials when `src` is absent or will not load.
+  var avatar: PluginVocabAvatar? = nil
 }
 
 /// What a list row shows when the pointer rests on it. Mirrors
@@ -577,6 +600,72 @@ struct PluginVocabImage: Equatable {
   var maxHeight: Double?
 }
 
+/// A face: a photo when `src` loads, otherwise the initials of `name`.
+/// Mirrors `VocabAvatar` / `VocabAvatarNode` in `vocabularyNodes.ts`.
+struct PluginVocabAvatar: Equatable {
+  var name: String
+  var src: String?
+  var size: Size?
+
+  enum Size: String {
+    case sm, md, lg
+    var points: Double {
+      switch self {
+      case .sm: return 20
+      case .md: return 28
+      case .lg: return 36
+      }
+    }
+  }
+
+  /// One letter for a single word, two for "Jane Doe". Empty is `"?"`.
+  static func initials(_ name: String) -> String {
+    let words = name.split(whereSeparator: { $0.isWhitespace }).filter { !$0.isEmpty }
+    guard let firstWord = words.first, let first = firstWord.first else { return "?" }
+    if words.count > 1, let second = words[1].first {
+      return String([first, second]).uppercased()
+    }
+    return String(first).uppercased()
+  }
+}
+
+/// A sanitized mono `brand:*` glyph the host wrote into `ade.brandIcons`.
+/// Mirrors `PluginBrandGlyph` in `vocabularyBrandIcons.ts`.
+struct PluginBrandGlyph: Equatable {
+  var viewBox: String
+  var paths: [PluginBrandPath]
+
+  struct PluginBrandPath: Equatable {
+    var d: String
+    var evenodd: Bool
+  }
+
+  static func parse(_ raw: Any?) -> PluginBrandGlyph? {
+    guard let object = raw as? [String: Any] else { return nil }
+    let viewBox = (object["viewBox"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    let parts = viewBox.split(whereSeparator: { $0.isWhitespace })
+    guard parts.count == 4, parts.allSatisfy({ Double($0) != nil }) else { return nil }
+    guard let rawPaths = object["paths"] as? [Any], !rawPaths.isEmpty, rawPaths.count <= 24 else {
+      return nil
+    }
+    var paths: [PluginBrandPath] = []
+    for entry in rawPaths {
+      guard let item = entry as? [String: Any],
+            let rawD = item["d"] as? String else { return nil }
+      let d = rawD.trimmingCharacters(in: .whitespacesAndNewlines)
+      guard !d.isEmpty, d.count <= 4096, !d.contains("<"), !d.contains(">") else { return nil }
+      paths.append(PluginBrandPath(d: d, evenodd: PluginPanelParser.boolValue(item["evenodd"]) == true))
+    }
+    return PluginBrandGlyph(viewBox: viewBox, paths: paths)
+  }
+
+  var box: (minX: Double, minY: Double, width: Double, height: Double) {
+    let parts = viewBox.split(whereSeparator: { $0.isWhitespace }).compactMap { Double($0) }
+    guard parts.count == 4 else { return (0, 0, 24, 24) }
+    return (parts[0], parts[1], max(parts[2], 0.001), max(parts[3], 0.001))
+  }
+}
+
 struct PluginVocabKeyValueRow: Equatable, Identifiable {
   var id: String { key }
   var key: String
@@ -619,6 +708,7 @@ indirect enum PluginVocabNode: Equatable {
   case chart(PluginVocabChart)
   case video(PluginVocabVideo)
   case image(PluginVocabImage)
+  case avatar(PluginVocabAvatar)
   case divider(label: String?)
   case keyValue(PluginVocabKeyValue)
   case emptyState(PluginVocabEmptyState)
@@ -642,6 +732,7 @@ indirect enum PluginVocabNode: Equatable {
     case .chart: return "chart"
     case .video: return "video"
     case .image: return "image"
+    case .avatar: return "avatar"
     case .divider: return "divider"
     case .keyValue: return "keyValue"
     case .emptyState: return "emptyState"

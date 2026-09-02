@@ -118,11 +118,10 @@ extension PluginPanelParser {
 
   /// Mirrors the `markdown` arm of `NODE_PARSERS`.
   ///
-  /// NOT ``cleanString``: its ellipsis would be appended INSIDE the document, so
-  /// a cut that landed in a fence would render `…` as code and the marker the
-  /// reader needs would be invisible. Over the ceiling the node keeps the text
-  /// it can and says so in a field, which is what the view reads to decide
-  /// between drawing prose and drawing the source.
+  /// NOT ``cleanString``: its ellipsis would be appended INSIDE the document.
+  /// Over the ceiling the node keeps every complete line it can (see
+  /// ``PluginVocabMarkdownParser/clamp(_:maxChars:)``) and says so in a field.
+  /// The view still formats that window as markdown.
   static func parseMarkdown(
     _ object: [String: Any],
     path: String,
@@ -135,10 +134,10 @@ extension PluginPanelParser {
     guard !source.isEmpty else {
       return invalid("markdown", "`text` is required", path: path, context: &context)
     }
-    let truncated = source.count > PluginVocabLimits.maxMarkdownChars
+    let clamped = PluginVocabMarkdownParser.clamp(source)
     return .markdown(PluginVocabMarkdown(
-      text: truncated ? String(source.prefix(PluginVocabLimits.maxMarkdownChars)) : source,
-      truncated: truncated
+      text: clamped.text,
+      truncated: clamped.truncated
     ))
   }
 
@@ -298,6 +297,7 @@ extension PluginPanelParser {
           let title = cleanString(object["title"], max: PluginVocabLimits.maxLabelChars) else {
       return nil
     }
+    let markdown = parseListItemMarkdown(object["markdown"])
     return PluginVocabListItem(
       title: title,
       // `boundedString`, never `cleanString`: an over-long key is REFUSED, not
@@ -321,8 +321,20 @@ extension PluginPanelParser {
         max: PluginVocabLimits.maxListItemOverflow,
         gate: gate
       ),
-      preview: parseListItemPreview(object["preview"])
+      preview: parseListItemPreview(object["preview"]),
+      markdown: markdown?.text,
+      markdownTruncated: markdown?.truncated ?? false,
+      avatar: parseAvatarValue(object["avatar"])
     )
+  }
+
+  /// A row's formatted body. Dropped when empty. Clamped with the same complete-
+  /// line cut a `markdown` node uses, at the tighter per-row ceiling.
+  static func parseListItemMarkdown(_ raw: Any?) -> (text: String, truncated: Bool)? {
+    guard let raw = raw as? String else { return nil }
+    let source = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !source.isEmpty else { return nil }
+    return PluginVocabMarkdownParser.clamp(source, maxChars: PluginVocabLimits.maxListItemMarkdownChars)
   }
 
   /// Hover-card payload. Dropped whole when it has neither a title nor text.
@@ -609,6 +621,31 @@ extension PluginPanelParser {
       alt: alt,
       maxHeight: (maxHeight ?? 0) > 0 ? maxHeight : nil
     ))
+  }
+
+  static func parseAvatar(
+    _ object: [String: Any],
+    path: String,
+    context: inout ParseContext
+  ) -> PluginVocabNode {
+    guard let name = cleanString(object["name"], max: PluginVocabLimits.maxLabelChars) else {
+      return invalid("avatar", "`name` is required", path: path, context: &context)
+    }
+    let sizeRaw = (object["size"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    let size = PluginVocabAvatar.Size(rawValue: sizeRaw ?? "")
+    return .avatar(PluginVocabAvatar(
+      name: name,
+      src: mediaSrc(object["src"]),
+      size: size
+    ))
+  }
+
+  static func parseAvatarValue(_ raw: Any?) -> PluginVocabAvatar? {
+    guard let object = raw as? [String: Any],
+          let name = cleanString(object["name"], max: PluginVocabLimits.maxLabelChars) else {
+      return nil
+    }
+    return PluginVocabAvatar(name: name, src: mediaSrc(object["src"]), size: nil)
   }
 
   static func parseKeyValue(

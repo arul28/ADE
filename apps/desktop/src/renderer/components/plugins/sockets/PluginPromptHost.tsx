@@ -17,10 +17,11 @@ import {
  * The one question a plugin action can put on screen.
  *
  * Mounted once in `AppShell`, it draws whatever `pluginPromptStore` holds: a
- * single text field, at the control that was pressed, with the plugin's own
- * question above it. Enter submits, Escape and a click outside cancel — and a
- * cancel invokes nothing at all, which is the rule that makes the verb safe to
- * put behind any button.
+ * text field, or a picker when the question carried `options`, at the control
+ * that was pressed, with the plugin's own question above it. Enter submits a
+ * typed answer, a list row submits its value, Escape and a click outside cancel
+ * — and a cancel invokes nothing at all, which is the rule that makes the verb
+ * safe to put behind any button.
  *
  * A popover rather than a modal on purpose. The whole reason the verb exists is
  * "a Log it button that saves a one-line note of what I'm doing": taking the
@@ -47,14 +48,14 @@ const ANCHOR_GAP = 8;
  * against the right edge still gets a card the reader can read and type into.
  * Centred when the press had no locatable control at all.
  */
-function cardPosition(anchor: PluginPromptAnchor | null, viewport: { width: number; height: number }): {
+function cardPosition(
+  anchor: PluginPromptAnchor | null,
+  viewport: { width: number; height: number },
+  estimatedHeight: number,
+): {
   left: number;
   top: number;
 } {
-  // Tall enough for the question, the field and the buttons. An estimate rather
-  // than a measurement, because the flip decision has to be made before the card
-  // has been laid out, and being a few pixels out only shifts a clamp.
-  const estimatedHeight = 148;
   if (!anchor) {
     return {
       left: Math.max(EDGE_MARGIN, (viewport.width - CARD_WIDTH) / 2),
@@ -93,6 +94,17 @@ export function PluginPromptHost() {
     return () => window.cancelAnimationFrame(handle);
   }, [token]);
 
+  React.useEffect(() => {
+    if (token === null) return;
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      event.preventDefault();
+      closePluginPrompt(token);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [token]);
+
   const overBudget = pluginUtf8ByteLength(text) > PLUGIN_PROMPT_TEXT_MAX_BYTES;
 
   if (!request) return null;
@@ -103,17 +115,23 @@ export function PluginPromptHost() {
     ?? plugin?.displayName
     ?? request.pluginId;
   const submitLabel = request.prompt.submitLabel ?? "Save";
+  const options = request.prompt.options ?? [];
+  // Tall enough for the question plus either a field or a capped list. An
+  // estimate rather than a measurement, because the flip decision has to be
+  // made before the card has been laid out, and being a few pixels out only
+  // shifts a clamp.
+  const estimatedHeight = options.length > 0
+    ? 96 + Math.min(options.length * 36, 240)
+    : 148;
   const position = cardPosition(request.anchor, {
     width: window.innerWidth,
     height: window.innerHeight,
-  });
+  }, estimatedHeight);
 
   const cancel = () => closePluginPrompt(request.token);
-  const submit = () => {
-    if (overBudget) return;
-    // The store takes the card down before it runs the continuation — see
-    // `submitPluginPrompt`.
-    submitPluginPrompt(text);
+  const submit = (value = text) => {
+    if (pluginUtf8ByteLength(value) > PLUGIN_PROMPT_TEXT_MAX_BYTES) return;
+    submitPluginPrompt(value);
   };
 
   return (
@@ -156,37 +174,74 @@ export function PluginPromptHost() {
             {`${plugin.displayName} plugin`}
           </div>
         ) : null}
-        <input
-          ref={inputRef}
-          value={text}
-          placeholder={request.prompt.placeholder ?? ""}
-          onChange={(event) => setText(event.target.value)}
-          onKeyDown={(event) => {
-            if (event.key === "Enter") {
-              event.preventDefault();
-              submit();
-            } else if (event.key === "Escape") {
-              event.preventDefault();
-              cancel();
-            }
-          }}
-          style={{
-            width: "100%",
-            padding: `${SPACING.xs}px ${SPACING.sm}px`,
-            borderRadius: 6,
-            border: `1px solid ${overBudget ? COLORS.danger : COLORS.border}`,
-            background: COLORS.recessedBg,
-            color: COLORS.textPrimary,
-            fontFamily: SANS_FONT,
-            fontSize: FONT_SIZES.base,
-            outline: "none",
-          }}
-        />
-        {overBudget ? (
+        {options.length > 0 ? (
+          <div
+            role="listbox"
+            aria-label={title}
+            style={{
+              display: "flex",
+              flexDirection: "column",
+              gap: 2,
+              maxHeight: 240,
+              overflowY: "auto",
+            }}
+          >
+            {options.map((option) => (
+              <button
+                key={option.value}
+                type="button"
+                role="option"
+                onClick={() => submit(option.value)}
+                style={{
+                  textAlign: "left",
+                  padding: `${SPACING.xs}px ${SPACING.sm}px`,
+                  borderRadius: 6,
+                  border: `1px solid ${COLORS.border}`,
+                  background: COLORS.recessedBg,
+                  color: COLORS.textPrimary,
+                  fontFamily: SANS_FONT,
+                  fontSize: FONT_SIZES.base,
+                  cursor: "pointer",
+                }}
+              >
+                {option.label ?? option.value}
+              </button>
+            ))}
+          </div>
+        ) : (
+          <input
+            ref={inputRef}
+            value={text}
+            placeholder={request.prompt.placeholder ?? ""}
+            onChange={(event) => setText(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") {
+                event.preventDefault();
+                submit();
+              } else if (event.key === "Escape") {
+                event.preventDefault();
+                cancel();
+              }
+            }}
+            style={{
+              width: "100%",
+              padding: `${SPACING.xs}px ${SPACING.sm}px`,
+              borderRadius: 6,
+              border: `1px solid ${overBudget ? COLORS.danger : COLORS.border}`,
+              background: COLORS.recessedBg,
+              color: COLORS.textPrimary,
+              fontFamily: SANS_FONT,
+              fontSize: FONT_SIZES.base,
+              outline: "none",
+            }}
+          />
+        )}
+        {options.length === 0 && overBudget ? (
           <div style={{ fontSize: FONT_SIZES.sm, color: COLORS.danger }}>
             That is too long to save. Shorten it and try again.
           </div>
         ) : null}
+        {options.length === 0 ? (
         <div style={{ display: "flex", justifyContent: "flex-end", gap: SPACING.sm }}>
           <button
             type="button"
@@ -206,7 +261,7 @@ export function PluginPromptHost() {
           </button>
           <button
             type="button"
-            onClick={submit}
+            onClick={() => submit()}
             disabled={overBudget}
             style={{
               padding: `${SPACING.xs}px ${SPACING.md}px`,
@@ -222,6 +277,25 @@ export function PluginPromptHost() {
             {submitLabel}
           </button>
         </div>
+        ) : (
+          <button
+            type="button"
+            onClick={cancel}
+            style={{
+              alignSelf: "flex-end",
+              padding: `${SPACING.xs}px ${SPACING.md}px`,
+              borderRadius: 6,
+              border: `1px solid ${COLORS.border}`,
+              background: "transparent",
+              color: COLORS.textSecondary,
+              fontFamily: SANS_FONT,
+              fontSize: FONT_SIZES.base,
+              cursor: "pointer",
+            }}
+          >
+            Cancel
+          </button>
+        )}
       </div>
     </div>
   );

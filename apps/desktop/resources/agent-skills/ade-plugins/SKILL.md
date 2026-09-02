@@ -135,15 +135,15 @@ Rule of thumb for anything not in the table: **if it is rows of things with butt
 Say which clients will draw the thing, in the same message as the placement. Two facts do most of the damage when they are left out:
 
 - **A kind absent on a client is absent, not degraded.** `slash-command`, `command-palette-action`, `settings-section`, `work-rail-pane`, `drawer-tab`, `dialog-section` and `graph-node` do not draw on iOS at all. The TUI draws exactly three kinds: `row-badge`, `row-menu-item` and `toolbar-action`. Composer actions draw on desktop, web and iOS — iOS's compact layout draws them labeled — and the TUI draws none. Never read this list from memory: `PLUGIN_SOCKET_CLIENT_SUPPORT` is one boolean per client per kind and it moves as parity lands, so read it at the moment you write the claim.
-- **`icon` is a token, and the token list is the whole namespace.** Both clients resolve it against the same 69 tokens (64 generic plus 5 brand marks) — desktop to a Phosphor glyph or a vendor mark, iOS to an SF Symbol or a bundled logo asset — and anything not on the list draws the puzzle piece on **both**. So an icon that renders anywhere renders everywhere, and an unrecognised string is unrecognised identically. There is no per-client escape hatch: naming a raw SF Symbol does not work on the phone, and never portably did. The generic tokens:
+- **`icon` is a token, and the token list is the whole namespace.** Both clients resolve the closed catalogue against the same 74 tokens (69 generic including five `priority-*` marks, plus 5 ADE-shipped brand marks) — desktop to a Phosphor glyph or a vendor mark, iOS to an SF Symbol, a custom SwiftUI priority histogram, or a bundled logo asset — and anything not on the list draws the puzzle piece on **both**, unless the plugin shipped a sanitized SVG for that `brand:*` suffix. So an icon that renders anywhere renders everywhere, and an unrecognised string is unrecognised identically. There is no per-client escape hatch: naming a raw SF Symbol does not work on the phone, and never portably did. The generic tokens:
 
-  `beer` `bell` `bookmark` `brain` `bug` `calendar` `chart` `chart-bar` `chat` `clock` `clock-counter-clockwise` `cloud` `code` `compass` `cube` `currency` `database` `desktop` `device-mobile` `envelope` `eye` `file` `flag` `folder` `gear` `git-branch` `git-commit` `git-pull-request` `globe` `graph` `heart` `image` `kanban` `key` `lightning` `link` `list` `list-checks` `lock` `magic` `microphone` `music` `note` `package` `palette` `play` `plug` `puzzle` `robot` `rocket` `rows` `shield` `sparkle` `star` `storefront` `table` `tag` `terminal` `timer` `toolbox` `trend` `users` `video` `wrench`
+  `beer` `bell` `bookmark` `brain` `bug` `calendar` `chart` `chart-bar` `chat` `clock` `clock-counter-clockwise` `cloud` `code` `compass` `cube` `currency` `database` `desktop` `device-mobile` `envelope` `eye` `file` `flag` `folder` `gear` `git-branch` `git-commit` `git-pull-request` `globe` `graph` `heart` `image` `kanban` `key` `lightning` `link` `list` `list-checks` `lock` `magic` `microphone` `music` `note` `package` `palette` `play` `plug` `puzzle` `robot` `rocket` `rows` `shield` `sparkle` `star` `storefront` `table` `tag` `terminal` `timer` `toolbox` `trend` `users` `video` `wrench` `priority-urgent` `priority-high` `priority-medium` `priority-low` `priority-none`
 
-  And five **brand tokens**, for a plugin whose whole subject is one vendor's product:
+  Five **brand tokens** ADE already ships, for a plugin whose whole subject is one of ADE's own vendors:
 
   `brand:claude` `brand:codex` `brand:cursor` `brand:github` `brand:openai`
 
-  A brand token draws that vendor's real mark — the same one ADE already draws for the provider elsewhere — instead of a generic glyph. The set is closed and small on purpose: a vendor is only in it when every client already ships artwork for it, so there is no `brand:linear`, and there will be no new one without a logo on desktop AND iOS. `brand:anything-else` is not a special case; it is an unknown token and draws the puzzle piece like any other.
+  A closed-set brand token draws that vendor's real mark — the same one ADE already draws for the provider elsewhere — instead of a generic glyph. For any other vendor, declare `brandIcons` on the manifest: `{ "linear": "icons/linear.svg" }` names a path-only mono SVG (8 KiB, 8 icons, no script, no `foreignObject`). The host sanitizes it to a viewBox plus paths, writes it into the reserved `ade.brandIcons` collection, and every client draws `brand:linear` from that list. A suffix the plugin did not ship still puzzles, identically.
 
   **Three slots do not honour a brand token, on every client alike.** A `badge` node, a list item's `badge`, and an `emptyState` node all degrade it — the badge chips to their text-only form, the empty state to the puzzle piece. A badge glyph draws at 8pt and an empty-state mark at hero size, and a vendor logo reads as a smudge at one and as branding-the-wrong-thing at the other. Name a generic token for those three and a brand token anywhere else.
 
@@ -414,7 +414,7 @@ Say the consequence out loud when you ship one: **installing a plugin is trustin
 Three shapes that fit the platform well:
 
 - **A Jira mirror.** The Mac engine polls Jira with the user's token and writes ~50 issues into a synced collection; the phone renders them in a panel, offline, holding no token.
-- **A CI dashboard.** One row per branch, green or amber (there is no red), recomputed by the machine that owns the repo and identical on every device.
+- **A CI dashboard.** One row per branch, green, amber or red, recomputed by the machine that owns the repo and identical on every device.
 - **A live agent task tracker.** An agent updates rows through your CLI word or your action handler while every open client watches them move.
 
 ### The lines you cannot cross
@@ -537,7 +537,8 @@ Parsing is **strict on keys it knows, tolerant of keys it does not**: an unknown
 | `version` | yes | `major.minor.patch`, optional `-pre`/`+build` tail |
 | `displayName` | no | Defaults to `name` |
 | `description` | no | Defaults to `""` |
-| `icon` / `accent` | no | `accent` is a 3- or 6-digit hex color. `icon` is a **token from one shared 64-name list**, drawn as a Phosphor glyph on desktop and an SF Symbol on iOS; anything else puzzle-pieces on every client. The names are in *Per-client honesty* |
+| `icon` / `accent` | no | `accent` is a 3- or 6-digit hex color. `icon` is a **token from the shared catalogue** (69 generic including `priority-*`, plus 5 ADE-shipped `brand:` marks), drawn as a Phosphor glyph on desktop and an SF Symbol or custom mark on iOS; anything else puzzle-pieces on every client unless you also shipped that `brand:*` suffix under `brandIcons`. The names are in *Per-client honesty* |
+| `brandIcons` | no | `{ "<token>": "<relative>.svg" }`. Token suffix is lowercase kebab, 1–32 characters. The file is a path-only mono SVG (8 KiB, 8 icons). The host sanitizes it and every client draws `brand:<token>` from the result |
 | `minAdeVersion` | no | Floor. An ADE below it will not load the plugin; an unknown host version never locks the user out |
 | `vocabVersion` | no | Panel-schema vocabulary version. Positive integer, defaults to `1` |
 | `entry` | no | Relative path to the entry module. **Omit for UI-only plugins** (themes, static panels) — they run no code at all |
@@ -794,7 +795,7 @@ ade.events.on("webhook.received", async (event) => {
 });
 ```
 
-- **The URL is the setup step.** Show it to the person, or let them copy it from your plugin's Marketplace page, which lists every declared channel. `ade plugin doctor <id>` prints the same URLs, which is what to use when the plugin is installed and not running.
+- **The URL is the setup step.** Show it to the person, or let them copy it from your plugin's Marketplace page, which lists every declared channel. `ade plugin doctor <id>` prints the same URLs, which is what to use when the plugin is installed and not running. `ade.webhooks.status()` is this plugin's row on the host's delivery ledger — last received, pending, last drain error — so a settings panel can print what actually arrived.
 - **Delivery is at-least-once, and `ack` is not optional.** A delivery you do not ack is redelivered on the next drain, and abandoned after five attempts. `event.id` is stable across redeliveries, so it is the key to dedupe on if your handler is not idempotent.
 - **`body` is a string, capped at 64 KiB.** Past that it arrives with `truncated: true` rather than not at all — parse defensively.
 - **`headers` is a short allowlist.** Content type, user agent and the common webhook/delivery-id headers. Authorization, cookies and anything else the sender attached never reach you.
@@ -1027,24 +1028,25 @@ A panel is a JSON document. `v` is the vocabulary version, `fallback` is **requi
 | `markdown` | **`text`** — formatted prose. One field: no `maxHeight`, no variant, no tone. See *Prose with structure* below for the subset, which is the same on all four clients |
 | `badge` | **`text`**, `tone`, `icon` |
 | `button` | **`label`**, **`onPress`** (a `VocabAction`), `kind` (`primary`\|`default`\|`quiet`), `icon`, `disabled` |
-| `list` | **`items[]` or `bind`**, `emptyText`, `selectable` `{stateKey, actions[] (≤4), max?}`. Item: **`title`**, `key`, `subtitle`, `meta`, `tone`, `icon`, `onPress`, `badge` `{text, tone?, icon?}`, `mono`, `actions[]` (≤3), `overflow[]` (≤6) |
+| `list` | **`items[]` or `bind`**, `emptyText`, `selectable` `{stateKey, actions[] (≤4), max?}`. Item: **`title`**, `key`, `subtitle`, `meta`, `tone`, `icon`, `onPress`, `badge` `{text, tone?, icon?}`, `mono`, `markdown`, `avatar` `{name, src?}`, `actions[]` (≤3), `overflow[]` (≤6), `preview` `{title?, text?}` |
 | `table` | **`columns[]`** and **`rows[]` or `bind`**, `emptyText`. Column: **`key`**, **`label`**, `align` |
 | `form` | **`fields[]`**, and **`submit` `{label, onPress}` or `applyOnChange` (a `VocabAction`)** — at least one, both allowed. Field kinds: `text`, `secret`, `select`, `toggle`, `number`. See *A form with no Apply button* |
 | `chart` | **`kind`** (`line`\|`bar`), **`series[]`** of `{id, label?, tone?, points:[{x,y}]}`, `title`, `emptyText` |
 | `video` | **`src`**, `poster`, `title`. A source over `maxSrcChars` is refused, never shortened — a truncated `data:` URI still passes the scheme check and then decodes to nothing |
 | `image` | **`src`**, **`alt`**, `maxHeight`. Same `src` rule as `video` |
+| `avatar` | **`name`**, `src`, `size` (`sm`\|`md`\|`lg`). A face: the photo when `src` loads, otherwise the initials of `name` (one letter, or two for "Jane Doe"). `src` uses the same https/`data:` rule as `image`. A list row may also carry `avatar: { name, src? }` |
 | `divider` | `label` |
 | `keyValue` | **`rows[]` or `bind`**, `emptyText`. Row: **`key`**, `value`, `tone` |
 | `emptyState` | **`title`**, `description`, `icon`, `action` `{label, onPress}` |
 | `segmented` | **`stateKey`**, **`options[]`** (2–8) of `{value, label?, badge?}`, `optionsFrom` `{collection, valueField, labelField?, keyPrefix?}`, `label`, `default`, `style` (`segmented`\|`toggle`), `onChange`. The one control that holds state — see *A filter with no round trip*. With `optionsFrom` the literal `options` may be as few as one, and the control draws as a menu past eight |
 
-Tones are `neutral`, `accent`, `success`, `warning`. **There is no red.** Any red-ish value you write (`danger`, `error`, `fail`) folds to `warning` — the house rule cannot be bypassed by a payload.
+Tones are `neutral`, `accent`, `success`, `warning`, `destructive`. `destructive` is red — a delete, a failed check, a cancel. `warning` stays amber. Any red-ish value you write (`danger`, `error`, `fail`, `failed`, `critical`, `red`) folds to `destructive`, so a payload cannot invent a sixth colour or paint a failure as a warning. ADE's own cards still fold red to amber; that house rule is the product's, not the plugin vocabulary's.
 
 `bind` reads your own `plugin_collections` rows: `{collection, keyPrefix?, limit?, allowActions?, where?}`. The rows must **already be in render shape** for the component that binds them — a `list` binding reads `{title, subtitle?, …}` values, a `table` binding reads column-keyed records. The renderer does no reshaping.
 
 `onPress` is `{action, args?, confirm?}`. `args` is flat scalars only (nested objects are dropped — that is where "data, never code" would start to leak). `confirm` makes the client ask before dispatching, on **every** client — a list row asks exactly as a button does.
 
-**Put a row's whole story on the row.** A `list` item carries a status chip (`badge`), a monospace line for a value meant to be compared (`mono` — an id, a branch, a short sha), up to three trailing buttons (`actions`) and up to six more behind an overflow control (`overflow`). Each action is `{action, args?, confirm?, label, kind?, icon?}` — an `onPress` plus a required `label`, since a button on a row has no other way to say what it does.
+**Put a row's whole story on the row.** A `list` item carries a status chip (`badge`), a monospace line for a value meant to be compared (`mono` — an id, a branch, a short sha), a formatted body (`markdown` — the same subset as a `markdown` node, clamped to 4,000 characters), up to three trailing buttons (`actions`) and up to six more behind an overflow control (`overflow`). Each action is `{action, args?, confirm?, label, kind?, icon?}` — an `onPress` plus a required `label`, since a button on a row has no other way to say what it does.
 
 ```json
 { "component": "list", "items": [{
@@ -1101,16 +1103,17 @@ characters you typed.
 | Inline code | `` `a` `` | Swallows everything inside it: `` `**a**` `` is four literal characters |
 | Fenced code | ```` ```ts ```` … ```` ``` ```` | The info string's first word is the language. An unclosed fence still renders |
 | Links | `[text](https://…)`, `<https://…>` | **`https:` only** — see below |
+| Images | `![alt](https://…)` | **`https:` only.** A `data:` / `javascript:` / `http:` destination keeps the alt and loses the picture. The terminal draws `[image: alt]`. A self-contained thumbnail still belongs on the `image` node |
 | Lists | `- a`, `1. a` | Ordered lists keep their start number. Nesting is allowed |
 | Task list | `- [x] a`, `- [ ] a` | **Drawn inert.** A picture of the source document, never a control |
 | Blockquote | `> a` | Its content is parsed as blocks |
+| Pipe table | `\| a \| b \|` plus a delimiter row | GFM alignment (`:---`, `:---:`, `---:`). 8 columns, 40 body rows. The `table` node still exists for data grids |
 | Thematic break | `---` | |
 
 | NOT in the subset | What you get | Use instead |
 |---|---|---|
 | Raw HTML | The characters, escaped | Nothing. This is the security line and there is no way through it |
-| Images | The alt text | The `image` node, which has a source ceiling and a scheme gate |
-| Tables | The pipes, as text | The `table` node, which has columns a client can lay out |
+| `data:` images | The alt text | The `image` node, which has a source ceiling and a scheme gate |
 | Bare URLs | Text, not a link | `[text](url)`. Three clients disagree about where a bare URL ends |
 | Setext headings, indented code | A paragraph | `#` and a fence, which nobody types by accident |
 
@@ -1120,13 +1123,14 @@ characters you typed.
 goes out through the client's plugin-link opener — the one that logs your plugin
 id — never straight to a browser.
 
-**Length.** `maxMarkdownChars` is 4,000, the same ceiling as `text`, and a panel
-is capped at 65,536 bytes either way. Past the node ceiling the document is cut
-and drawn **as its source, in monospace, with a line saying so** — because a cut
-lands wherever it lands, regularly inside a fence or a link, and half-parsed
-prose says less about what happened than the text does. Past
-`maxMarkdownBlocks` (100) the rest is dropped and the panel says that too. Send
-less prose rather than relying on either.
+**Length.** `maxMarkdownChars` is 16,000 — four Linear-sized issue bodies, a
+quarter of the 65,536-byte panel. `text` stays at 4,000 because it is still a
+paragraph. Past the node ceiling the document is cut at the last complete line
+and drawn **as markdown, with a line saying the rest is not shown**. Past
+`maxMarkdownBlocks` (100) the rest is dropped and the panel says that too. A
+list row may carry `markdown` of its own, clamped to
+`maxListItemMarkdownChars` (4,000), without spending a body node — that is how
+a comment thread is a list rather than 50 `markdown` nodes.
 
 Per-client: desktop, the web client and iPhone draw it as formatted prose. The
 terminal draws it as lines that keep the structure — a heading is bold, a bullet
@@ -1156,13 +1160,14 @@ renderer reshapes nothing.
 ]}
 ```
 
-Two things to size for. A comment thread is many `markdown` nodes, and each one
-costs a node against `maxNodes` (200) and its characters against the panel's
-65,536-byte budget — so publish the last N comments, not all of them, and let
-the reader open the full thread on the web. And the body you fetched is somebody
-else's text: it may contain HTML, a `javascript:` link or 40 KB of prose, and
-you do not need to clean any of it. The subset already refuses all three,
-identically, on every client.
+Two things to size for. A comment thread can be many `markdown` nodes, or one
+`list` whose rows carry `markdown` — the second does not spend `maxNodes` per
+comment. Each standalone `markdown` node still costs a node against `maxNodes`
+(200) and its characters against the panel's 65,536-byte budget — so publish
+the last N comments, not all of them, and let the reader open the full thread
+on the web. And the body you fetched is somebody else's text: it may contain
+HTML, a `javascript:` link or 40 KB of prose, and you do not need to clean any
+of it. The subset already refuses all three, identically, on every client.
 
 ### A form with no Apply button
 
@@ -1371,12 +1376,12 @@ A refresh handler is invoked like any other panel action — one args object, ca
 
 | Component | Desktop / web | iOS | `ade code` TUI |
 |---|---|---|---|
-| `stack`, `text`, `badge`, `button`, `list`, `table`, `keyValue`, `divider`, `emptyState` | full | full | full |
+| `stack`, `text`, `badge`, `button`, `list`, `table`, `keyValue`, `divider`, `emptyState`, `avatar` | full | full | full |
 | `segmented` | full | full | full (numbered options; ←→ cycles) |
 | `segmented` with `optionsFrom` past 8 options | dropdown | `Menu` | one line naming the choice; ←→ cycles |
 | `group` | full | full | full (`▾`/`▸` header; Enter folds) |
 | `list` with `selectable` | checkbox per row; **shift-click extends** | tap target per row; no range | `[x]`/`[ ]` per row; no range |
-| `markdown` | full (headings, emphasis, code, links, lists, quotes) | native attributed text, same subset | styled text; links shown as text + url |
+| `markdown` | full (headings, emphasis, code, links, https images, GFM tables, lists, quotes) | native attributed text plus images, same subset | styled text; links shown as text + url; images as `[image: alt]`; tables as aligned columns |
 | `form` | full | full | full (via the composer prompt line) |
 | `video`, `image` | full | full | named placeholder; `Ctrl+Y` copies a link to the panel |
 | `chart` | full | named marker | named placeholder |
@@ -1392,7 +1397,7 @@ Two consequences worth designing around: **put a `deeplink` in every `fallback`*
 
 ### Vocabulary limits
 
-`maxNodes` 200 · `maxDepth` 8 · `maxSchemaBytes` 65,536 · `maxSelectOptions` 40 · `maxTableRows` 100 · `maxTableColumns` 8 · `maxListItems` 250 · `listPageSize` 100 · `maxKeyValueRows` 60 · `maxChartSeries` 3 · `maxChartPoints` 200 · `maxFormFields` 24 · `maxTextChars` 4,000 · `maxLabelChars` 200 · `maxValueChars` 1,000 · `maxSrcChars` 8,192 · `maxBindingAllowActions` 16 · `maxStateKeys` 8 · `maxStateOptions` 8 · `maxBoundStateOptions` 50 · `maxSelectionKeys` 2 · `maxSelectedRows` 100 · `maxBulkActions` 4 · `maxWhereClauses` 4 · `maxWhereDepth` 3 · `maxWhereNodes` 24 · `maxWhereValues` 20 · `maxMarkdownChars` 4,000 · `maxMarkdownBlocks` 100 · `maxMarkdownDepth` 3 · `maxMarkdownSpans` 200.
+`maxNodes` 200 · `maxDepth` 8 · `maxSchemaBytes` 65,536 · `maxSelectOptions` 40 · `maxTableRows` 100 · `maxTableColumns` 8 · `maxListItems` 1000 · `listPageSize` 100 · `maxKeyValueRows` 60 · `maxChartSeries` 3 · `maxChartPoints` 200 · `maxFormFields` 24 · `maxTextChars` 4,000 · `maxLabelChars` 200 · `maxValueChars` 1,000 · `maxSrcChars` 8,192 · `maxBindingAllowActions` 16 · `maxStateKeys` 8 · `maxStateOptions` 8 · `maxBoundStateOptions` 50 · `maxSelectionKeys` 2 · `maxSelectedRows` 100 · `maxBulkActions` 4 · `maxWhereClauses` 4 · `maxWhereDepth` 3 · `maxWhereNodes` 24 · `maxWhereValues` 20 · `maxMarkdownChars` 16,000 · `maxMarkdownBlocks` 100 · `maxMarkdownDepth` 3 · `maxMarkdownSpans` 200 · `maxMarkdownTableColumns` 8 · `maxMarkdownTableRows` 40 · `maxListItemMarkdownChars` 4,000.
 
 These are part of the contract, not a client's private defence — a schema over any of them is invalid everywhere, identically.
 
@@ -1697,7 +1702,7 @@ The call site reads misleadingly — `useSurfaceContributions("work", "chat-head
 
 - Each entry is `{label, actionId, icon?, danger?}` — `label` capped at 40, `actionId` at 64, both required or that entry is skipped.
 - **Six entries maximum.** Over-cap entries are **truncated, not dropped**, so a plugin that grew a seventh still renders its first six and its primary press. A plugin needing more than six related verbs wants a panel, where it owns the layout.
-- `icon` is a token from the same 64-name list the button's own `icon` takes, and degrades the same way: an unknown token draws the puzzle piece on both clients. Absent means the puzzle piece too, so a two-entry menu that names no icons shows the same generic mark twice — name them.
+- `icon` is a token from the same catalogue the button's own `icon` takes (see *Per-client honesty*), and degrades the same way: an unknown token draws the puzzle piece on both clients. Absent means the puzzle piece too, so a two-entry menu that names no icons shows the same generic mark twice — name them.
 - `danger` spends the product's destructive styling, and is honoured only alongside the plugin attribution the same menu draws.
 - **The primary press is unchanged.** It still invokes `actionId`. Absent `menu` renders byte-identically to a button written before the field existed, so adding a dropdown to an existing plugin is additive and removing one is safe.
 - **Degradation is per entry, and never costs you the button.** A malformed entry drops alone; a `menu` that is not an array, or one whose every entry is malformed, degrades to a plain button. The contribution itself is never dropped — which is why `menu` is an ordinary optional manifest field rather than a `manifestExtra`: a split button with a broken menu is still a perfectly good button.
@@ -1724,7 +1729,7 @@ On desktop the chevron and the button are drawn as **one joined control** — a 
   "color": "#7C6FF0" }
 ```
 
-This is the narrow answer to "I want my button to look like mine". The wide one — a `theme` — recolours the whole application, and a plugin that only wanted its own button coloured should not have to repaint ADE to get it. `accent` in the manifest does not reach a socket at all; panel `tone` is a four-value enum and buttons never had one.
+This is the narrow answer to "I want my button to look like mine". The wide one — a `theme` — recolours the whole application, and a plugin that only wanted its own button coloured should not have to repaint ADE to get it. `accent` in the manifest does not reach a socket at all; panel `tone` is a five-value enum (`neutral`/`accent`/`success`/`warning`/`destructive`) and buttons never had one.
 
 **The colour has to be legible in both themes, or it is refused.** The rule, and why it is a rule:
 

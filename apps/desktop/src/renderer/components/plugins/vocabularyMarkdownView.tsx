@@ -62,6 +62,46 @@ const BODY_STYLE: React.CSSProperties = {
 
 /** One inline run. Flags nest as elements; the text itself is never markup. */
 function MarkdownSpan({ span, pluginId }: { span: VocabMarkdownSpan; pluginId: string }) {
+  if (span.src !== undefined) {
+    const src = /^https:/i.test(span.src) ? span.src : undefined;
+    const image = src ? (
+      <img
+        src={src}
+        alt={span.text}
+        loading="lazy"
+        style={{
+          display: "inline-block",
+          maxWidth: "100%",
+          maxHeight: 280,
+          verticalAlign: "middle",
+          border: `1px solid ${COLORS.borderMuted}`,
+          borderRadius: RADII.md,
+        }}
+      />
+    ) : (
+      <>{span.text}</>
+    );
+    if (span.href === undefined) return image;
+    const href = span.href;
+    return (
+      <a
+        href={href}
+        target="_blank"
+        rel="noopener noreferrer"
+        onClick={(event) => {
+          event.preventDefault();
+          openPluginExternalUrl(href, { pluginId, source: "markdown" });
+        }}
+        onAuxClick={(event) => {
+          event.preventDefault();
+          openPluginExternalUrl(href, { pluginId, source: "markdown" });
+        }}
+      >
+        {image}
+      </a>
+    );
+  }
+
   let content: React.ReactNode = span.text;
 
   if (span.code) {
@@ -255,8 +295,62 @@ function MarkdownBlocks({
                 style={{ margin: 0, border: "none", borderTop: `1px solid ${COLORS.borderMuted}` }}
               />
             );
+          case "table": {
+            const alignCss = (value: (typeof block.align)[number] | undefined): React.CSSProperties["textAlign"] => {
+              if (value === "center") return "center";
+              if (value === "right") return "right";
+              return "left";
+            };
+            const cellStyle = (column: number, header: boolean): React.CSSProperties => ({
+              padding: "4px 8px",
+              textAlign: alignCss(block.align[column]),
+              fontFamily: SANS_FONT,
+              fontSize: header ? 11 : 12,
+              fontWeight: header ? 600 : 400,
+              color: header ? COLORS.textPrimary : COLORS.textSecondary,
+              borderBottom: `1px solid ${COLORS.borderMuted}`,
+              verticalAlign: "top",
+            });
+            return (
+              <div key={index} style={{ overflowX: "auto", minWidth: 0 }}>
+                <table
+                  style={{
+                    borderCollapse: "collapse",
+                    width: "100%",
+                    fontFamily: SANS_FONT,
+                    fontSize: 12,
+                  }}
+                >
+                  <thead>
+                    <tr>
+                      {block.header.map((cell, column) => (
+                        <th key={column} style={cellStyle(column, true)}>
+                          <MarkdownSpans spans={cell} pluginId={pluginId} />
+                        </th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {block.rows.map((row, rowIndex) => (
+                      <tr key={rowIndex}>
+                        {row.map((cell, column) => (
+                          <td key={column} style={cellStyle(column, false)}>
+                            <MarkdownSpans spans={cell} pluginId={pluginId} />
+                          </td>
+                        ))}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            );
+          }
+          default: {
+            const _exhaustive: never = block;
+            void _exhaustive;
+            return null;
+          }
         }
-        return null;
       })}
     </>
   );
@@ -272,39 +366,34 @@ function TruncationNote({ text }: { text: string }) {
 export function VocabMarkdown({
   node,
   context,
+  compact = false,
 }: {
   node: VocabMarkdownNode;
   context: VocabRenderContext;
+  /** Tighter spacing for a list row's body. */
+  compact?: boolean;
 }) {
   // The parse is memoized on the source, not on the node: the host hands back a
-  // fresh record on every poll, and re-parsing 4 KB of prose several times a
+  // fresh record on every poll, and re-parsing 16 KB of prose several times a
   // minute for an unchanged document is work nobody asked for.
   const document = React.useMemo(
-    () => (node.truncated ? null : parseVocabMarkdown(node.text)),
-    [node.text, node.truncated],
+    () => parseVocabMarkdown(node.text),
+    [node.text],
   );
 
-  if (document === null) {
-    // Clamped at the node ceiling: the cut lands wherever it lands, regularly
-    // inside a fence or a link, so the markdown of this string is not the
-    // document's markdown. The source, plainly, plus a line saying why.
-    return (
-      <div style={{ display: "grid", gap: 6, minWidth: 0 }}>
-        <p style={{ ...BODY_STYLE, fontFamily: MONO_FONT, fontSize: 11 }}>{node.text}</p>
-        <TruncationNote text="This text was too long to format, so it is shown as written." />
-      </div>
-    );
-  }
-
-  if (document.blocks.length === 0) return null;
+  if (document.blocks.length === 0 && !node.truncated) return null;
 
   return (
     <div
       data-tour={`plugin:${context.pluginId}.markdown`}
-      style={{ display: "grid", gap: 8, minWidth: 0 }}
+      style={{ display: "grid", gap: compact ? 4 : 8, minWidth: 0 }}
     >
-      <MarkdownBlocks blocks={document.blocks} pluginId={context.pluginId} />
-      {document.truncated ? <TruncationNote text="The rest of this text is not shown." /> : null}
+      {document.blocks.length > 0 ? (
+        <MarkdownBlocks blocks={document.blocks} pluginId={context.pluginId} />
+      ) : null}
+      {node.truncated || document.truncated ? (
+        <TruncationNote text="The rest of this text is not shown." />
+      ) : null}
     </div>
   );
 }

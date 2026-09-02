@@ -26,31 +26,17 @@ import SwiftUI
 struct PluginVocabMarkdownView: View {
   let markdown: PluginVocabMarkdown
   @ObservedObject var store: PluginPaneStore
+  var compact = false
 
   var body: some View {
-    if markdown.truncated {
-      // Clamped at the node ceiling: the cut lands wherever it lands, regularly
-      // inside a fence or a link, so the markdown of this string is not the
-      // document's markdown. The source, plainly, plus a line saying why.
-      VStack(alignment: .leading, spacing: 6) {
-        Text(markdown.text)
-          .font(.system(.caption, design: .monospaced))
-          .foregroundStyle(ADEColor.textSecondary)
-          .textSelection(.enabled)
-        PluginVocabMarkdownNote(text: "This text was too long to format, so it is shown as written.")
+    let document = PluginVocabMarkdownParser.parse(markdown.text)
+    VStack(alignment: .leading, spacing: compact ? 4 : 8) {
+      PluginVocabMarkdownBlocks(blocks: document.blocks, store: store)
+      if markdown.truncated || document.truncated {
+        PluginVocabMarkdownNote(text: "The rest of this text is not shown.")
       }
-      .frame(maxWidth: .infinity, alignment: .leading)
-      .fixedSize(horizontal: false, vertical: true)
-    } else {
-      let document = PluginVocabMarkdownParser.parse(markdown.text)
-      VStack(alignment: .leading, spacing: 8) {
-        PluginVocabMarkdownBlocks(blocks: document.blocks, store: store)
-        if document.truncated {
-          PluginVocabMarkdownNote(text: "The rest of this text is not shown.")
-        }
-      }
-      .frame(maxWidth: .infinity, alignment: .leading)
     }
+    .frame(maxWidth: .infinity, alignment: .leading)
   }
 }
 
@@ -131,6 +117,8 @@ private struct PluginVocabMarkdownBlockView: View {
       .frame(maxWidth: .infinity, alignment: .leading)
     case .rule:
       Divider().overlay(ADEColor.border.opacity(0.6))
+    case let .table(align, header, rows):
+      PluginVocabMarkdownTable(align: align, header: header, rows: rows, store: store)
     }
   }
 
@@ -171,13 +159,136 @@ private struct PluginVocabMarkdownMarker: View {
   }
 }
 
+/// One block's inline runs.
+///
+/// Text-only paragraphs stay one `AttributedString` so they wrap as a
+/// paragraph. A run with `src` is a picture, which `AttributedString` cannot
+/// carry, so that paragraph becomes text chunks and `AsyncImage`s stacked in
+/// reading order — Linear comments put images on their own line anyway.
+private struct PluginVocabMarkdownText: View {
+  let spans: [PluginVocabMarkdownSpan]
+  let font: Font
+  @ObservedObject var store: PluginPaneStore
+
+  var body: some View {
+    if spans.contains(where: { $0.src != nil }) {
+      VStack(alignment: .leading, spacing: 6) {
+        ForEach(Array(chunks.enumerated()), id: \.offset) { _, chunk in
+          switch chunk {
+          case let .text(runs):
+            PluginVocabMarkdownAttributed(spans: runs, font: font, store: store)
+          case let .image(span):
+            PluginVocabMarkdownImage(span: span)
+          }
+        }
+      }
+      .frame(maxWidth: .infinity, alignment: .leading)
+    } else {
+      PluginVocabMarkdownAttributed(spans: spans, font: font, store: store)
+    }
+  }
+
+  private enum Chunk {
+    case text([PluginVocabMarkdownSpan])
+    case image(PluginVocabMarkdownSpan)
+  }
+
+  private var chunks: [Chunk] {
+    var out: [Chunk] = []
+    var text: [PluginVocabMarkdownSpan] = []
+    for span in spans {
+      if span.src != nil {
+        if !text.isEmpty {
+          out.append(.text(text))
+          text = []
+        }
+        out.append(.image(span))
+      } else {
+        text.append(span)
+      }
+    }
+    if !text.isEmpty { out.append(.text(text)) }
+    return out
+  }
+}
+
+private struct PluginVocabMarkdownImage: View {
+  let span: PluginVocabMarkdownSpan
+
+  var body: some View {
+    if let url = span.src {
+      AsyncImage(url: url) { phase in
+        switch phase {
+        case let .success(loaded):
+          loaded
+            .resizable()
+            .scaledToFit()
+            .frame(maxHeight: 280)
+            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        case .failure:
+          Text(span.text)
+            .font(.caption)
+            .foregroundStyle(ADEColor.textMuted)
+        default:
+          ADESkeletonView(height: 120, cornerRadius: 8)
+        }
+      }
+      .accessibilityLabel(span.text)
+    } else {
+      Text(span.text)
+        .font(.caption)
+        .foregroundStyle(ADEColor.textMuted)
+    }
+  }
+}
+
+private struct PluginVocabMarkdownTable: View {
+  let align: [PluginVocabMarkdownTableAlign]
+  let header: [[PluginVocabMarkdownSpan]]
+  let rows: [[[PluginVocabMarkdownSpan]]]
+  @ObservedObject var store: PluginPaneStore
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 0) {
+      row(header, header: true)
+      Divider().overlay(ADEColor.border.opacity(0.5))
+      ForEach(Array(rows.enumerated()), id: \.offset) { _, cells in
+        row(cells, header: false)
+      }
+    }
+    .frame(maxWidth: .infinity, alignment: .leading)
+  }
+
+  private func row(_ cells: [[PluginVocabMarkdownSpan]], header: Bool) -> some View {
+    HStack(alignment: .top, spacing: 8) {
+      ForEach(Array(cells.enumerated()), id: \.offset) { index, spans in
+        PluginVocabMarkdownText(
+          spans: spans,
+          font: header ? .caption.weight(.semibold) : .caption,
+          store: store
+        )
+        .frame(maxWidth: .infinity, alignment: frameAlign(index))
+      }
+    }
+    .padding(.vertical, 4)
+  }
+
+  private func frameAlign(_ index: Int) -> Alignment {
+    switch align.indices.contains(index) ? align[index] : .left {
+    case .left: return .leading
+    case .center: return .center
+    case .right: return .trailing
+    }
+  }
+}
+
 /// One block's inline runs, as one `AttributedString`.
 ///
 /// One string rather than a row of `Text` views so the paragraph wraps as a
 /// paragraph — an `HStack` of runs would break between them and leave ragged
 /// lines. Links are `.link` attributes, and `openURL` is overridden below so a
 /// tap goes out through the plugin's own path instead of straight to Safari.
-private struct PluginVocabMarkdownText: View {
+private struct PluginVocabMarkdownAttributed: View {
   let spans: [PluginVocabMarkdownSpan]
   let font: Font
   @ObservedObject var store: PluginPaneStore

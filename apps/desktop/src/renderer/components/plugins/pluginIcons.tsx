@@ -66,6 +66,11 @@ import {
   type Icon as PhosphorIcon,
 } from "@phosphor-icons/react";
 import { Claude, Codex, Cursor, Github, OpenAI } from "@lobehub/icons";
+import {
+  isPluginBrandTokenName,
+  pluginBrandTokenKey,
+  type PluginBrandGlyph,
+} from "../../../shared/plugins/vocabularyBrandIcons";
 
 /**
  * Manifest icon names → glyphs.
@@ -88,6 +93,91 @@ import { Claude, Codex, Cursor, Github, OpenAI } from "@lobehub/icons";
  * client and not the other is worse than a name neither has: the author sees
  * their plugin working and has no reason to look.
  */
+
+type PriorityLevel = "urgent" | "high" | "medium" | "low" | "none";
+
+/**
+ * Linear's own histogram — three bars, or a bang in a square for urgent —
+ * as the five tokens High/Medium/Low used to share as `chart-bar`.
+ *
+ * Drawn here rather than borrowed from Phosphor's cell-signal set so the
+ * phone (custom SwiftUI) and desktop show the same picture, and so Urgent is
+ * not a lightning bolt next to three identical bar charts.
+ */
+function priorityGlyph(level: PriorityLevel): PhosphorIcon {
+  function PriorityGlyph({
+    size = 16,
+    color,
+    className,
+    style,
+    ...rest
+  }: {
+    size?: number | string;
+    color?: string;
+    className?: string;
+    style?: React.CSSProperties;
+    weight?: unknown;
+    [key: string]: unknown;
+  }) {
+    const { weight: _weight, ...passthrough } = rest;
+    const pixels = typeof size === "number" ? size : Number.parseFloat(String(size)) || 16;
+    const fill = color ?? "currentColor";
+    return (
+      <span
+        {...(passthrough as Record<string, unknown>)}
+        className={className}
+        style={{
+          display: "inline-flex",
+          alignItems: "center",
+          justifyContent: "center",
+          lineHeight: 0,
+          color: fill,
+          opacity: 1,
+          ...style,
+        }}
+      >
+        <svg
+          width={pixels}
+          height={pixels}
+          viewBox="0 0 16 16"
+          aria-hidden="true"
+          style={{ display: "block" }}
+        >
+          {level === "urgent" ? (
+            <>
+              <rect x="2" y="2" width="12" height="12" rx="3" fill="currentColor" />
+              <rect x="7.2" y="4.4" width="1.6" height="5.2" rx="0.8" fill="#fff" />
+              <rect x="7.2" y="10.6" width="1.6" height="1.6" rx="0.8" fill="#fff" />
+            </>
+          ) : level === "none" ? (
+            <rect x="3" y="7.2" width="10" height="1.6" rx="0.8" fill="currentColor" opacity="0.4" />
+          ) : (
+            [0, 1, 2].map((index) => {
+              const filled = level === "high" ? true : level === "medium" ? index < 2 : index < 1;
+              const heights = [5, 8.5, 12];
+              const h = heights[index]!;
+              return (
+                <rect
+                  key={index}
+                  x={3.2 + index * 3.4}
+                  y={14 - h - 1.6}
+                  width="2.6"
+                  height={h}
+                  rx="0.6"
+                  fill="currentColor"
+                  opacity={filled ? 1 : 0.35}
+                />
+              );
+            })
+          )}
+        </svg>
+      </span>
+    );
+  }
+  PriorityGlyph.displayName = `PriorityGlyph(${level})`;
+  return PriorityGlyph as unknown as PhosphorIcon;
+}
+
 const PLUGIN_ICONS: Record<string, PhosphorIcon> = {
   beer: BeerStein,
   bell: Bell,
@@ -153,6 +243,11 @@ const PLUGIN_ICONS: Record<string, PhosphorIcon> = {
   users: UsersThree,
   video: VideoCamera,
   wrench: Wrench,
+  "priority-urgent": priorityGlyph("urgent"),
+  "priority-high": priorityGlyph("high"),
+  "priority-medium": priorityGlyph("medium"),
+  "priority-low": priorityGlyph("low"),
+  "priority-none": priorityGlyph("none"),
 };
 
 /* ── Brand tokens ─────────────────────────────────────────────── */
@@ -176,15 +271,13 @@ const PLUGIN_ICONS: Record<string, PhosphorIcon> = {
  * 2. **No new artwork.** Each entry points at a logo the product already draws
  *    somewhere else, so a brand token can never be the reason a mark is
  *    out of date.
- * 3. **Unknown degrades identically.** `brand:whatever` is not a family of
- *    tokens with a special fallback; it is an unknown token, and it draws the
- *    same puzzle piece any other unknown token draws.
+ * 3. **Unknown degrades identically.** `brand:whatever` with no shipped file
+ *    and no closed-catalogue entry is an unknown token, and it draws the same
+ *    puzzle piece any other unknown token draws.
  *
- * `linear` is the notable absence: `@lobehub/icons` publishes no Linear mark and
- * the iOS asset catalogue has none, so there is nothing to point at on two of
- * the four clients. ADE's own Linear tile artwork lives in
- * {@link OFFICIAL_PLUGIN_LOGOS} below, which is a full-bleed square for the
- * gallery rather than a mono glyph for a rail.
+ * A plugin that needs a mark ADE does not ship — Linear, Jira — names a
+ * `brandIcons` SVG in its manifest. The host sanitizes it to paths and every
+ * client draws that list. See `vocabularyBrandIcons.ts`.
  */
 type BrandMark = React.ComponentType<{ size?: number | string; className?: string; style?: React.CSSProperties }>;
 
@@ -249,12 +342,72 @@ const PLUGIN_BRAND_ICONS: Record<string, PhosphorIcon> = {
   "brand:openai": brandGlyph(OpenAI, "OpenAI"),
 };
 
+const shippedBrandGlyphCache = new Map<string, PhosphorIcon>();
+
+function shippedBrandGlyph(glyph: PluginBrandGlyph, label: string): PhosphorIcon {
+  const cacheKey = `${glyph.viewBox}\0${glyph.paths.map((entry) => `${entry.evenodd ? "e" : "n"}:${entry.d}`).join("\0")}`;
+  const cached = shippedBrandGlyphCache.get(cacheKey);
+  if (cached) return cached;
+  function ShippedBrandGlyph({
+    size = 16,
+    color,
+    className,
+    style,
+    ...rest
+  }: {
+    size?: number | string;
+    color?: string;
+    className?: string;
+    style?: React.CSSProperties;
+    weight?: unknown;
+    [key: string]: unknown;
+  }) {
+    const { weight: _weight, ...passthrough } = rest;
+    const pixels = typeof size === "number" ? size : Number.parseFloat(String(size)) || 16;
+    return (
+      <span
+        {...(passthrough as Record<string, unknown>)}
+        className={className}
+        style={{
+          display: "inline-flex",
+          alignItems: "center",
+          justifyContent: "center",
+          lineHeight: 0,
+          ...(color ? { color } : {}),
+          ...style,
+        }}
+      >
+        <svg
+          width={pixels}
+          height={pixels}
+          viewBox={glyph.viewBox}
+          fill="currentColor"
+          aria-hidden="true"
+          style={{ display: "block" }}
+        >
+          {glyph.paths.map((entry, index) => (
+            <path
+              key={index}
+              d={entry.d}
+              {...(entry.evenodd ? { fillRule: "evenodd" as const } : {})}
+            />
+          ))}
+        </svg>
+      </span>
+    );
+  }
+  ShippedBrandGlyph.displayName = `ShippedBrandGlyph(${label})`;
+  const Icon = ShippedBrandGlyph as unknown as PhosphorIcon;
+  shippedBrandGlyphCache.set(cacheKey, Icon);
+  return Icon;
+}
+
 /** Brand token names, for docs, the authoring skill and the parity tests. */
 export const PLUGIN_BRAND_ICON_NAMES: readonly string[] = Object.keys(PLUGIN_BRAND_ICONS).sort();
 
 /** Whether a token names a vendor mark rather than a generic glyph. */
 export function isPluginBrandIconName(name: string | null | undefined): boolean {
-  return Object.hasOwn(PLUGIN_BRAND_ICONS, (name ?? "").trim().toLowerCase());
+  return isPluginBrandTokenName(name);
 }
 
 /** The glyph for a plugin that named no icon, or named one this build lacks. */
@@ -278,9 +431,16 @@ export const PLUGIN_ICON_NAMES: readonly string[] = [
  * is asked to render, and a tab-rail glyph renders above the route's error
  * boundary — so a one-word manifest field could take the whole app chrome down.
  */
-export function pluginIcon(name: string | null | undefined): PhosphorIcon {
+export function pluginIcon(
+  name: string | null | undefined,
+  shipped?: Readonly<Record<string, PluginBrandGlyph>>,
+): PhosphorIcon {
   const key = (name ?? "").trim().toLowerCase();
   if (Object.hasOwn(PLUGIN_BRAND_ICONS, key)) return PLUGIN_BRAND_ICONS[key]!;
+  const token = pluginBrandTokenKey(key);
+  if (token && shipped && Object.hasOwn(shipped, token)) {
+    return shippedBrandGlyph(shipped[token]!, key);
+  }
   return Object.hasOwn(PLUGIN_ICONS, key) ? PLUGIN_ICONS[key]! : DEFAULT_PLUGIN_ICON;
 }
 
@@ -463,11 +623,17 @@ export function pluginIdentity(input: {
   icon?: string | null;
   accent?: string | null;
   iconUrl?: string | null;
+  brandIcons?: Readonly<Record<string, PluginBrandGlyph>>;
 }): PluginIdentity {
   const hash = hashPluginId(input.pluginId);
   const named = (input.icon ?? "").trim().toLowerCase();
+  const shippedKey = pluginBrandTokenKey(named);
   const hasNamedIcon = named.length > 0
-    && (Object.hasOwn(PLUGIN_ICONS, named) || Object.hasOwn(PLUGIN_BRAND_ICONS, named));
+    && (
+      Object.hasOwn(PLUGIN_ICONS, named)
+      || Object.hasOwn(PLUGIN_BRAND_ICONS, named)
+      || (shippedKey !== null && Boolean(input.brandIcons && Object.hasOwn(input.brandIcons, shippedKey)))
+    );
   const glyph = hasNamedIcon
     ? named
     : PLUGIN_IDENTITY_GLYPHS[hash % PLUGIN_IDENTITY_GLYPHS.length]!;
@@ -479,7 +645,7 @@ export function pluginIdentity(input: {
     : PLUGIN_IDENTITY_COLORS[(hash >>> 8) % PLUGIN_IDENTITY_COLORS.length]!;
   const published = input.iconUrl?.trim();
   return {
-    Icon: pluginIcon(glyph),
+    Icon: pluginIcon(glyph, input.brandIcons),
     color,
     imageUrl: published ? published : officialPluginLogo(input.pluginId),
   };

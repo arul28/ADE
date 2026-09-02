@@ -51,6 +51,11 @@ struct PluginVocabularyNodeView: View {
       PluginVocabVideoView(video: video)
     case let .image(image):
       PluginVocabImageView(image: image)
+    case let .avatar(avatar):
+      PluginVocabAvatarView(
+        avatar: avatar,
+        pointSize: CGFloat(avatar.size?.points ?? PluginVocabAvatar.Size.md.points)
+      )
     case let .divider(label):
       PluginVocabDividerView(label: label)
     case let .keyValue(keyValue):
@@ -71,14 +76,14 @@ struct PluginVocabularyNodeView: View {
 // MARK: - Tone
 
 extension PluginVocabTone {
-  /// House rule, inherited from `adeCard.ts`: there is no red. A failure is
-  /// amber, so a plugin cannot paint an alarm into a surface it does not own.
+  /// `destructive` is red (delete, failed, cancel). `warning` stays amber.
   var color: Color {
     switch self {
     case .neutral: return ADEColor.textSecondary
     case .accent: return ADEColor.accent
     case .success: return ADEColor.success
     case .warning: return ADEColor.warning
+    case .destructive: return ADEColor.danger
     }
   }
 
@@ -177,8 +182,8 @@ private struct PluginVocabGroupView: View {
             .font(.system(size: 10, weight: .semibold))
             .foregroundStyle(ADEColor.textMuted)
             .rotationEffect(.degrees(isOpen ? 90 : 0))
-          if PluginSymbol.drawsIcon(group.icon) {
-            PluginSymbol.glyph(group.icon, fallback: "puzzlepiece.extension", pointSize: 12)
+          if PluginSymbol.drawsIcon(group.icon, shipped: store.brandIcons) {
+            PluginSymbol.glyph(group.icon, fallback: "puzzlepiece.extension", pointSize: 12, shipped: store.brandIcons)
           }
           Text(group.title)
             .font(.subheadline.weight(.semibold))
@@ -440,6 +445,28 @@ struct PluginVocabBulkReport: Equatable {
   var visibleRowKeys: [String]
 }
 
+enum PluginVocabBulk {
+  /// Lists that share a `stateKey` contribute one report whose visible keys
+  /// are the union, in tree order. Two different keys stay two reports, so the
+  /// bar can still first-win.
+  static func unioned(_ reports: [PluginVocabBulkReport]) -> [PluginVocabBulkReport] {
+    var merged: [PluginVocabBulkReport] = []
+    for report in reports {
+      if let index = merged.firstIndex(where: { $0.selectable.stateKey == report.selectable.stateKey }) {
+        var keys = merged[index].visibleRowKeys
+        var seen = Set(keys)
+        for key in report.visibleRowKeys where seen.insert(key).inserted {
+          keys.append(key)
+        }
+        merged[index].visibleRowKeys = keys
+      } else {
+        merged.append(report)
+      }
+    }
+    return merged
+  }
+}
+
 enum PluginVocabBulkPreferenceKey: PreferenceKey {
   static var defaultValue: [PluginVocabBulkReport] = []
 
@@ -448,13 +475,14 @@ enum PluginVocabBulkPreferenceKey: PreferenceKey {
   }
 }
 
-/// The one bulk bar for the pane. First non-empty visible selection wins.
+/// The one bulk bar for the pane. Lists that share a selection key union their
+/// on-screen ticks; two different keys still first-win.
 struct PluginVocabActiveBulkBar: View {
   let reports: [PluginVocabBulkReport]
   @ObservedObject var store: PluginPaneStore
 
   var body: some View {
-    if let report = reports.first(where: {
+    if let report = PluginVocabBulk.unioned(reports).first(where: {
       !store.selectedKeys(in: $0.selectable, visibleRowKeys: $0.visibleRowKeys).isEmpty
     }) {
       PluginVocabBulkBar(
@@ -644,8 +672,8 @@ private struct PluginVocabBulkActionButton: View {
       HStack(spacing: 5) {
         if isBusy {
           ProgressView().controlSize(.mini)
-        } else if PluginSymbol.drawsIcon(entry.icon) {
-          PluginSymbol.glyph(entry.icon, fallback: "puzzlepiece.extension", pointSize: 10)
+        } else if PluginSymbol.drawsIcon(entry.icon, shipped: store.brandIcons) {
+          PluginSymbol.glyph(entry.icon, fallback: "puzzlepiece.extension", pointSize: 10, shipped: store.brandIcons)
         }
         Text(entry.label)
           .font(.caption2.weight(.semibold))
@@ -707,6 +735,15 @@ private struct PluginVocabListRow: View {
           content
         }
       }
+      if let markdown = item.markdown, !markdown.isEmpty {
+        PluginVocabMarkdownView(
+          markdown: PluginVocabMarkdown(text: markdown, truncated: item.markdownTruncated),
+          store: store,
+          compact: true
+        )
+        .padding(.leading, tickKey == nil ? 0 : 28)
+        .padding(.bottom, 8)
+      }
       if !item.actions.isEmpty || !item.overflow.isEmpty {
         HStack(spacing: 8) {
           ForEach(item.actions) { entry in
@@ -765,14 +802,17 @@ private struct PluginVocabListRow: View {
 
   private var content: some View {
     HStack(spacing: 10) {
-      if PluginSymbol.drawsIcon(item.icon) {
+      if PluginSymbol.drawsIcon(item.icon, shipped: store.brandIcons) {
         // The tone colour reaches a symbol token and passes over a `brand:` one:
         // a vendor's mark carries its own colours and tinting it to the row's
         // tone would flatten it. The fixed 18pt column keeps the two kinds in
         // the same place either way.
-        PluginSymbol.glyph(item.icon, fallback: "puzzlepiece.extension", pointSize: 13)
+        PluginSymbol.glyph(item.icon, fallback: "puzzlepiece.extension", pointSize: 13, shipped: store.brandIcons)
           .foregroundStyle(item.tone.color)
           .frame(width: 18)
+      }
+      if let avatar = item.avatar {
+        PluginVocabAvatarView(avatar: avatar, pointSize: 22)
       }
       VStack(alignment: .leading, spacing: 2) {
         HStack(spacing: 6) {
@@ -840,8 +880,8 @@ private struct PluginVocabRowActionButton: View {
       HStack(spacing: 5) {
         if isBusy {
           ProgressView().controlSize(.mini)
-        } else if PluginSymbol.drawsIcon(entry.icon) {
-          PluginSymbol.glyph(entry.icon, fallback: "puzzlepiece.extension", pointSize: 10)
+        } else if PluginSymbol.drawsIcon(entry.icon, shipped: store.brandIcons) {
+          PluginSymbol.glyph(entry.icon, fallback: "puzzlepiece.extension", pointSize: 10, shipped: store.brandIcons)
         }
         Text(entry.label)
           .font(.caption2.weight(.semibold))
@@ -890,11 +930,11 @@ private struct PluginVocabRowOverflowMenu: View {
           ADEHaptics.light()
           store.perform(entry.action, label: entry.label)
         } label: {
-          if PluginSymbol.drawsIcon(entry.icon) {
+          if PluginSymbol.drawsIcon(entry.icon, shipped: store.brandIcons) {
             Label {
               Text(entry.label)
             } icon: {
-              PluginSymbol.image(entry.icon, fallback: "puzzlepiece.extension")
+              PluginSymbol.glyph(entry.icon, fallback: "puzzlepiece.extension", pointSize: 16, shipped: store.brandIcons)
             }
           } else {
             Text(entry.label)

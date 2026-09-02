@@ -79,6 +79,7 @@ import {
   type PluginSdkMethod,
   pluginScheduleIdMissingMessage,
   readPluginScheduleId,
+  type PluginWebhookIngressStatus,
 } from "../../../shared/plugins/sdk";
 import {
   canPluginUnlinkIssueRef,
@@ -649,6 +650,7 @@ export function createPluginSdkServer(deps: {
   webhooks?: {
     url: (pluginId: string, channelId: string) => string | null;
     ack: (pluginId: string, deliveryId: string) => void;
+    status?: (pluginId: string) => Promise<PluginWebhookIngressStatus>;
   };
   /**
    * The chat sessions this plugin owns, for `ade.chat.*`.
@@ -817,7 +819,9 @@ export function createPluginSdkServer(deps: {
     if (isReservedPluginCollection(collection)) {
       throw new PluginSdkError(
         "not_permitted",
-        `Collection "${collection}" is reserved. Use ade.memory.get/set/delete/list instead.`,
+        collection === PLUGIN_MEMORY_COLLECTION
+          ? `Collection "${collection}" is reserved. Use ade.memory.get/set/delete/list instead.`
+          : `Collection "${collection}" is reserved.`,
       );
     }
     if (!Object.prototype.hasOwnProperty.call(manifest.collections, collection)) {
@@ -1212,6 +1216,17 @@ export function createPluginSdkServer(deps: {
           if (!deps.webhooks) throw pluginWebhookIngressUnavailable();
           deps.webhooks.ack(pluginId, requireString(params, "deliveryId"));
           return null;
+        }
+
+        case "webhooks.status": {
+          if (!deps.webhooks?.status) throw pluginWebhookIngressUnavailable();
+          if (manifest.webhookIngress.length === 0) {
+            throw new PluginSdkError(
+              "invalid_args",
+              `${pluginId} has no webhookIngress channels.`,
+            );
+          }
+          return await deps.webhooks.status(pluginId);
         }
 
         case "automations.emitTrigger": {

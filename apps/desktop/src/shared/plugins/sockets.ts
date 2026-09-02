@@ -840,9 +840,9 @@ export type PluginActivityEntryPayload = {
  * it gets a word rather than a free-text label, and every one of them is drawn
  * dashed in the plugin's own accent.
  *
- * No destructive word here, and no red anywhere, for the same reason
- * {@link PluginBadgeTone} has none: `blocks` is amber. A plugin cannot paint a
- * lane as failed.
+ * No destructive word here, and no red on the edge itself: `blocks` is amber.
+ * A plugin cannot paint a lane as failed. Badge tone is a different closed
+ * set — panels and badges do have `destructive`.
  */
 export const PLUGIN_GRAPH_EDGE_KINDS = ["link", "tracks", "blocks"] as const;
 

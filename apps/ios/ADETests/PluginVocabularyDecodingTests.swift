@@ -65,6 +65,31 @@ final class PluginVocabularyDecodingTests: XCTestCase {
     XCTAssertFalse(PluginRenderSupport.isRenderable(schema.body[2]))
   }
 
+  func testAvatarParsesAndFallsABlankName() throws {
+    let schema = try panel(parse(#"""
+    {
+      "v": 1,
+      "fallback": { "title": "T", "text": "t" },
+      "body": [
+        { "component": "avatar", "name": "Jane Doe", "src": "https://example.test/j.png", "size": "lg" },
+        { "component": "avatar" },
+        { "component": "list", "items": [{ "title": "ENG-1", "avatar": { "name": "Linear" } }] }
+      ]
+    }
+    """#))
+    guard case let .avatar(avatar) = schema.body[0] else { return XCTFail("expected an avatar node") }
+    XCTAssertEqual(avatar.name, "Jane Doe")
+    XCTAssertEqual(avatar.src, "https://example.test/j.png")
+    XCTAssertEqual(avatar.size, .lg)
+    XCTAssertTrue(PluginRenderSupport.isRenderable(schema.body[0]))
+    if case .invalid = schema.body[1] {} else { XCTFail("an avatar with no name must not parse") }
+    guard case let .list(list) = schema.body[2] else { return XCTFail("expected a list") }
+    XCTAssertEqual(list.items?.first?.avatar?.name, "Linear")
+    XCTAssertEqual(PluginVocabAvatar.initials("Jane Doe"), "JD")
+    XCTAssertEqual(PluginVocabAvatar.initials("Linear"), "L")
+    XCTAssertEqual(PluginVocabAvatar.initials("   "), "?")
+  }
+
   func testUnknownTopLevelAndNodeFieldsAreIgnored() throws {
     let schema = try panel(parse(#"""
     {
@@ -195,7 +220,7 @@ final class PluginVocabularyDecodingTests: XCTestCase {
     XCTAssertEqual(schema.body[1], .text(PluginVocabText(text: "still here")))
   }
 
-  func testRedTonesFoldToWarningSoAPayloadCannotPaintAnAlarm() throws {
+  func testRedTonesFoldToDestructive() throws {
     let schema = try panel(parse(#"""
     {
       "v": 1,
@@ -203,7 +228,7 @@ final class PluginVocabularyDecodingTests: XCTestCase {
       "body": [{ "component": "badge", "text": "Broken", "tone": "danger" }]
     }
     """#))
-    XCTAssertEqual(schema.body, [.badge(PluginVocabBadge(text: "Broken", tone: .warning))])
+    XCTAssertEqual(schema.body, [.badge(PluginVocabBadge(text: "Broken", tone: .destructive))])
   }
 
   func testActionArgsKeepScalarsAndDropNestedValues() throws {
@@ -437,6 +462,16 @@ final class PluginVocabularyDecodingTests: XCTestCase {
     XCTAssertEqual(item?.preview?.title, "Login fails")
     XCTAssertEqual(item?.preview?.text, "Assigned to you")
     XCTAssertNil(PluginPanelParser.parseListItem(["title": "ISS-1", "preview": "nope"])?.preview)
+  }
+
+  func testARowMarkdownIsRowDataNotABodyNode() {
+    let item = PluginPanelParser.parseListItem([
+      "title": "kai",
+      "markdown": "The fix is in `sessionRedirect.ts`."
+    ])
+    XCTAssertEqual(item?.markdown, "The fix is in `sessionRedirect.ts`.")
+    XCTAssertFalse(item?.markdownTruncated ?? true)
+    XCTAssertNil(PluginPanelParser.parseListItem(["title": "kai", "markdown": "   "])?.markdown)
   }
 
   func testARowActionNeedsBothAnIdAndALabel() {
@@ -1077,10 +1112,41 @@ final class PluginVocabularyDecodingTests: XCTestCase {
     XCTAssertEqual(prompt.submitLabel, "Log")
     XCTAssertEqual(prompt.context?["laneId"], .string("lane-7"))
     XCTAssertTrue(result.askedForPrompt)
+    XCTAssertTrue(prompt.options.isEmpty)
 
     let envelopeLevel = try invokeResult(#"{ "ok": true, "prompt": { "id": "note" } }"#)
     XCTAssertNil(envelopeLevel.prompt, "`prompt` beside `ok` is an envelope field no plugin writes.")
     XCTAssertFalse(envelopeLevel.askedForPrompt)
+  }
+
+  /// Closed choices turn the question into a picker. Junk is skipped, duplicate
+  /// values keep the first, and extras past the select ceiling drop — the same
+  /// rules a form `select` is held to, so a "link to a lane" list and a launch
+  /// model's list cannot disagree about how long a flat menu may be.
+  func testPromptOptionsDecodeAsAPickerSkippingJunkAndCappingTheList() throws {
+    let result = try invokeResult(#"""
+    { "result": { "prompt": {
+        "id": "lane",
+        "options": [
+          { "value": "a", "label": "First" },
+          { "value": "a", "label": "Dup" },
+          { "value": "" },
+          7,
+          { "value": "b" }
+        ]
+    } } }
+    """#)
+    let prompt = try XCTUnwrap(result.prompt)
+    XCTAssertEqual(prompt.options.map(\.value), ["a", "b"])
+    XCTAssertEqual(prompt.options.first?.label, "First")
+    XCTAssertEqual(prompt.options.last?.label, "b", "A missing label falls back to the value.")
+
+    let empty = try invokeResult(#"{ "result": { "prompt": { "id": "lane", "options": [] } } }"#)
+    XCTAssertEqual(try XCTUnwrap(empty.prompt).options, [])
+
+    let tooMany = (0...PluginVocabLimits.maxSelectOptions).map { "{ \"value\": \"lane-\($0)\" }" }.joined(separator: ",")
+    let capped = try invokeResult(#"{ "result": { "prompt": { "id": "lane", "options": [\#(tooMany)] } } }"#)
+    XCTAssertEqual(try XCTUnwrap(capped.prompt).options.count, PluginVocabLimits.maxSelectOptions)
   }
 
   /// Title, placeholder and submit label are the tolerant half: a value that is
@@ -1212,16 +1278,16 @@ final class PluginVocabularyDecodingTests: XCTestCase {
     ), "A card declaration naming no panel permits nothing.")
   }
 
-  /// `PluginBadgeTone` has no red, deliberately, so a plugin cannot make its
-  /// row the loudest thing in a list it does not own.
-  func testActivityEntryToneFoldsRedOntoWarning() throws {
+  /// `error` / `danger` / `failed` / `red` fold onto `destructive`, the same
+  /// house rule every other surface uses. `warning` stays amber.
+  func testActivityEntryToneFoldsRedOntoDestructive() throws {
     for spelling in ["error", "danger", "failed", "red"] {
       let entry = try XCTUnwrap(contribution(
         socket: "activity-entry",
         payloadJSON: #"{ "title": "T", "tone": "\#(spelling)" }"#,
         entityId: "app"
       ))
-      XCTAssertEqual(entry.activityEntry?.tone, .warning, "\(spelling) must fold to warning")
+      XCTAssertEqual(entry.activityEntry?.tone, .destructive, "\(spelling) must fold to destructive")
     }
   }
 
@@ -2184,10 +2250,10 @@ final class PluginVocabularyDecodingTests: XCTestCase {
   /// glyph, so every assertion about "this names a real SF Symbol" is false of
   /// them while they are perfectly correct.
   ///
-  /// Kept just as literal as the list above, and for the same reason. A brand
-  /// token only belongs on the list when BOTH clients already ship that vendor's
-  /// mark; `brand:linear` is the one that does not, on either side, and adding it
-  /// here would be the "one manifest, two pictures" bug in its quietest form.
+  /// Kept just as literal as the list above, and for the same reason. Closed-set
+  /// brand tokens only belong here when BOTH clients already ship that vendor's
+  /// mark. A plugin that needs Linear's mark ships a sanitized SVG through
+  /// `brandIcons` rather than waiting for a new ADE release.
   private static let desktopBrandTokens = [
     "brand:claude",
     "brand:codex",
@@ -2196,11 +2262,35 @@ final class PluginVocabularyDecodingTests: XCTestCase {
     "brand:openai",
   ]
 
+  /// Linear-style priority histogram. Custom SwiftUI on the phone, custom SVG
+  /// on desktop — neither is an SF Symbol, so they are not in
+  /// ``desktopIconTokens``.
+  private static let desktopPriorityTokens = [
+    "priority-urgent",
+    "priority-high",
+    "priority-medium",
+    "priority-low",
+    "priority-none",
+  ]
+
   func testEveryDesktopIconTokenDrawsSomethingOnThePhone() {
     for token in Self.desktopIconTokens {
       XCTAssertNotNil(
         PluginSymbol.symbol(token),
         "`\(token)` is offered to manifest authors on desktop but falls back to the puzzle piece here."
+      )
+    }
+  }
+
+  func testEveryDesktopPriorityTokenDrawsSomethingOnThePhone() {
+    for token in Self.desktopPriorityTokens {
+      XCTAssertTrue(
+        PluginSymbol.drawsIcon(token),
+        "`\(token)` is offered to manifest authors on desktop but draws nothing here."
+      )
+      XCTAssertNil(
+        PluginSymbol.symbol(token),
+        "`\(token)` must stay a custom mark, not an SF Symbol that cannot tell High from Low."
       )
     }
   }
@@ -2214,7 +2304,9 @@ final class PluginVocabularyDecodingTests: XCTestCase {
   /// map, so the identical token drew a mug on iOS and a puzzle piece on the
   /// desktop beside it.
   func testThePhoneDrawsNoTokenDesktopHasNeverHeardOf() {
-    let desktop = Set(Self.desktopIconTokens).union(Self.desktopBrandTokens)
+    let desktop = Set(Self.desktopIconTokens)
+      .union(Self.desktopBrandTokens)
+      .union(Self.desktopPriorityTokens)
     for token in PluginSymbol.tokenNames {
       XCTAssertTrue(
         desktop.contains(token),
@@ -2222,11 +2314,11 @@ final class PluginVocabularyDecodingTests: XCTestCase {
       )
     }
     // Same count both ways, so neither list can drift by an entry the loops
-    // above happen not to reach. `tokenNames` spans both kinds, so the desktop
+    // above happen not to reach. `tokenNames` spans every kind, so the desktop
     // side is counted the same way.
     XCTAssertEqual(
       PluginSymbol.tokenNames.count,
-      Self.desktopIconTokens.count + Self.desktopBrandTokens.count
+      Self.desktopIconTokens.count + Self.desktopBrandTokens.count + Self.desktopPriorityTokens.count
     )
   }
 
@@ -2264,9 +2356,11 @@ final class PluginVocabularyDecodingTests: XCTestCase {
       }
     }
     XCTAssertEqual(
-      Set(PluginSymbol.symbolTokenNames).union(PluginSymbol.brandTokenNames),
+      Set(PluginSymbol.symbolTokenNames)
+        .union(PluginSymbol.brandTokenNames)
+        .union(PluginSymbol.priorityTokenNames),
       Set(PluginSymbol.tokenNames),
-      "Every token must be covered by exactly one of the two kind-specific walks."
+      "Every token must be covered by exactly one of the kind-specific walks."
     )
   }
 
@@ -2330,10 +2424,16 @@ final class PluginVocabularyDecodingTests: XCTestCase {
       "puzzlepiece.extension"
     )
 
-    // Neither side of the list has a Linear mark, so the token an author would
-    // most plausibly guess must stay unknown until both do.
+    // A plugin-shipped glyph is what makes `brand:linear` draw. Without one it
+    // is still an unknown token, the same as `brand:nope`.
     XCTAssertNil(PluginSymbol.brandAsset("brand:linear"))
     XCTAssertFalse(PluginSymbol.drawsIcon("brand:linear"))
+    let linear = PluginBrandGlyph.parse([
+      "viewBox": "0 0 24 24",
+      "paths": [["d": "M0 0 L24 24", "evenodd": true]],
+    ])
+    XCTAssertNotNil(linear)
+    XCTAssertTrue(PluginSymbol.drawsIcon("brand:linear", shipped: ["linear": linear!]))
 
     // A raw asset name is not an icon, prefixed or not — the asset-catalogue
     // twin of `testARawSystemSymbolNameIsNotAnIcon`.
@@ -4091,6 +4191,29 @@ final class PluginVocabGroupSelectionTests: XCTestCase {
 
     // The third list still draws its rows; it simply draws no ticks and no bar.
     XCTAssertEqual(PluginVocabState.selectionDeclarations(in: nodes).map(\.stateKey), ["one", "two"])
+  }
+
+  func testGroupedListsSharingASelectionKeyUnionTheirVisibleRows() {
+    let selectable = PluginVocabSelectable(
+      stateKey: "batch",
+      actions: [PluginVocabListItemAction(action: PluginVocabAction(action: "go"), label: "Go")],
+      max: 100
+    )
+    let started = PluginVocabBulkReport(selectable: selectable, visibleRowKeys: ["a"])
+    let todo = PluginVocabBulkReport(selectable: selectable, visibleRowKeys: ["b"])
+    let other = PluginVocabBulkReport(
+      selectable: PluginVocabSelectable(
+        stateKey: "prs",
+        actions: [PluginVocabListItemAction(action: PluginVocabAction(action: "merge"), label: "Merge")],
+        max: 100
+      ),
+      visibleRowKeys: ["pr-1"]
+    )
+
+    let unioned = PluginVocabBulk.unioned([started, todo, other])
+    XCTAssertEqual(unioned.map(\.selectable.stateKey), ["batch", "prs"])
+    XCTAssertEqual(unioned.first?.visibleRowKeys, ["a", "b"])
+    XCTAssertEqual(unioned.last?.visibleRowKeys, ["pr-1"])
   }
 
   // MARK: - The selection lifecycle

@@ -406,6 +406,12 @@ private struct PluginOpenURLPayload: Decodable, Equatable {
   var url: String
 }
 
+/// One closed choice on a `{prompt}`. The answer's `text` is `value`.
+struct PluginActionPromptOption: Equatable {
+  var value: String
+  var label: String
+}
+
 /// The `{prompt}` verb: a one-field question an action asks before it can
 /// finish. Mirrors `PluginActionPrompt` in
 /// `apps/desktop/src/shared/plugins/sdk.ts`.
@@ -445,9 +451,13 @@ struct PluginActionPrompt: Decodable, Equatable {
   /// A plugin-authored pointer, handed back untouched in the answer. Bounded
   /// like a navigation's context and used the same way.
   var context: [String: RemoteJSONValue]?
+  /// Closed choices. Non-empty means every client draws a picker and the
+  /// answer's `text` is the chosen value. Empty is still one line of free text.
+  /// Capped at ``PluginVocabLimits/maxSelectOptions``.
+  var options: [PluginActionPromptOption]
 
   private enum CodingKeys: String, CodingKey {
-    case id, title, placeholder, submitLabel, context
+    case id, title, placeholder, submitLabel, context, options
   }
 
   init(
@@ -455,13 +465,15 @@ struct PluginActionPrompt: Decodable, Equatable {
     title: String? = nil,
     placeholder: String? = nil,
     submitLabel: String? = nil,
-    context: [String: RemoteJSONValue]? = nil
+    context: [String: RemoteJSONValue]? = nil,
+    options: [PluginActionPromptOption] = []
   ) {
     self.id = id
     self.title = title
     self.placeholder = placeholder
     self.submitLabel = submitLabel
     self.context = context
+    self.options = options
   }
 
   /// Throws only on an unusable `id`, which is the one field the question
@@ -491,6 +503,7 @@ struct PluginActionPrompt: Decodable, Equatable {
     context = PluginPanelContext.read(
       value: (try? container.decodeIfPresent(RemoteJSONValue.self, forKey: .context)) ?? nil
     )
+    options = Self.readOptions(container)
   }
 
   /// Trimmed, non-empty, and REFUSED rather than cut past its ceiling. Mirrors
@@ -504,6 +517,34 @@ struct PluginActionPrompt: Decodable, Equatable {
     max: Int
   ) -> String? {
     guard let raw = (try? container.decodeIfPresent(String.self, forKey: key)) ?? nil else { return nil }
+    let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmed.isEmpty, trimmed.count <= max else { return nil }
+    return trimmed
+  }
+
+  /// Closed choices, first-wins on duplicate values, extras past the select
+  /// ceiling dropped. A malformed entry is skipped so one bad lane does not
+  /// take the whole question with it.
+  private static func readOptions(
+    _ container: KeyedDecodingContainer<CodingKeys>
+  ) -> [PluginActionPromptOption] {
+    guard let raw = (try? container.decodeIfPresent([RemoteJSONValue].self, forKey: .options)) ?? nil
+    else { return [] }
+    var seen = Set<String>()
+    var options: [PluginActionPromptOption] = []
+    for entry in raw {
+      guard options.count < PluginVocabLimits.maxSelectOptions else { break }
+      guard case let .object(object) = entry else { continue }
+      guard let value = boundedJSON(object["value"], max: PluginVocabLimits.maxValueChars),
+            seen.insert(value).inserted else { continue }
+      let label = boundedJSON(object["label"], max: PluginVocabLimits.maxLabelChars)
+      options.append(PluginActionPromptOption(value: value, label: label ?? value))
+    }
+    return options
+  }
+
+  private static func boundedJSON(_ value: RemoteJSONValue?, max: Int) -> String? {
+    guard case let .string(raw) = value else { return nil }
     let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !trimmed.isEmpty, trimmed.count <= max else { return nil }
     return trimmed

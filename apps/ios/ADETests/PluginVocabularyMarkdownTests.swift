@@ -24,6 +24,9 @@ final class PluginVocabularyMarkdownTests: XCTestCase {
         out.append(contentsOf: allSpans(blocks))
       case let .list(_, _, items):
         for item in items { out.append(contentsOf: allSpans(item.blocks)) }
+      case let .table(_, header, rows):
+        for cell in header { out.append(contentsOf: cell) }
+        for row in rows { for cell in row { out.append(contentsOf: cell) } }
       case .code, .rule:
         break
       }
@@ -44,6 +47,11 @@ final class PluginVocabularyMarkdownTests: XCTestCase {
         out.append(plain(blocks))
       case let .list(_, _, items):
         for item in items { out.append(plain(item.blocks)) }
+      case let .table(_, header, rows):
+        out.append(header.map { $0.map(\.text).joined() }.joined(separator: " | "))
+        for row in rows {
+          out.append(row.map { $0.map(\.text).joined() }.joined(separator: " | "))
+        }
       case .rule:
         break
       }
@@ -60,6 +68,7 @@ final class PluginVocabularyMarkdownTests: XCTestCase {
       case .quote: return "quote"
       case .list: return "list"
       case .rule: return "rule"
+      case .table: return "table"
       }
     }
   }
@@ -206,10 +215,37 @@ final class PluginVocabularyMarkdownTests: XCTestCase {
     XCTAssertEqual(kinds(blocks("Title\n===")), ["paragraph"])
   }
 
-  func testAnImageBecomesItsAltText() {
+  func testAnHttpsImageKeepsItsAltAndSrc() {
     let parsed = blocks("Before ![a diagram](https://ade.dev/x.png) after")
     XCTAssertEqual(plain(parsed), "Before a diagram after")
-    XCTAssertTrue(allSpans(parsed).allSatisfy { $0.href == nil })
+    let image = allSpans(parsed).first { $0.src != nil }
+    XCTAssertEqual(image?.src?.absoluteString, "https://ade.dev/x.png")
+    XCTAssertNil(image?.href)
+  }
+
+  func testADataImageKeepsItsAlt() {
+    let parsed = blocks("![secret](data:image/png;base64,abcd)")
+    XCTAssertEqual(plain(parsed), "secret")
+    XCTAssertTrue(allSpans(parsed).allSatisfy { $0.src == nil })
+  }
+
+  func testAPipeTableWithAlignment() {
+    let parsed = blocks("| Name | State |\n| :--- | ---: |\n| ISS-1 | Open |\n| ISS-2 | **Done** |")
+    XCTAssertEqual(kinds(parsed), ["table"])
+    guard case let .table(align, _, rows) = parsed.first else {
+      return XCTFail("expected a table")
+    }
+    XCTAssertEqual(align, [.left, .right])
+    XCTAssertEqual(plain(parsed), "Name | State\nISS-1 | Open\nISS-2 | Done")
+    XCTAssertTrue(allSpans(parsed).contains { $0.text == "Done" && $0.bold })
+    XCTAssertEqual(rows.count, 2)
+  }
+
+  func testAParagraphEndsWhereATableBegins() {
+    XCTAssertEqual(
+      kinds(blocks("intro\n| a | b |\n| --- | --- |\n| 1 | 2 |")),
+      ["paragraph", "table"]
+    )
   }
 
   func testLineBreaksSurviveInsideAParagraph() {
@@ -300,7 +336,9 @@ final class PluginVocabularyMarkdownTests: XCTestCase {
 
   func testTheNodeIsRenderableSoItNeverDrawsAsAMarker() {
     XCTAssertTrue(PluginRenderSupport.renderableComponents.contains("markdown"))
-    XCTAssertEqual(PluginVocabLimits.maxMarkdownChars, PluginVocabLimits.maxTextChars)
+    XCTAssertEqual(PluginVocabLimits.maxMarkdownChars, 16_000)
+    XCTAssertGreaterThan(PluginVocabLimits.maxMarkdownChars, PluginVocabLimits.maxTextChars)
+    XCTAssertEqual(PluginVocabLimits.maxListItemMarkdownChars, PluginVocabLimits.maxTextChars)
   }
 
   // MARK: - A golden issue body

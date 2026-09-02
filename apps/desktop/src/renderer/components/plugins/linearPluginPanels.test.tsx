@@ -86,9 +86,8 @@ const contract = require_(path.join(pluginRoot, "panels/contract.js")) as {
   STATE_SORT: string;
   STATE_TEAM: string;
   STATE_UPDATED: string;
-  STATE_VIEW: string;
-  flatIssueKey: (rank: number, issueId: string) => string;
-  flatKeyPrefix: () => string;
+  STATE_SEARCH: string;
+  groupIssueKey: (stateId: string, rank: number, issueId: string) => string;
   groupKeyPrefix: (stateId: string) => string;
 };
 
@@ -143,10 +142,6 @@ function connectedIssuesView(over: Record<string, unknown> = {}) {
     age: "2 minutes ago",
     ...over,
   };
-}
-
-function flatIssuesView() {
-  return connectedIssuesView({ view: "flat" });
 }
 
 /** One issue with every optional half present: prose, labels, children, a thread. */
@@ -243,7 +238,6 @@ function launchView() {
 function everyPanel(): { name: string; schema: Panel }[] {
   return [
     { name: "issues (grouped list)", schema: panels.buildIssuesPanel(connectedIssuesView()) },
-    { name: "issues (flat list)", schema: panels.buildIssuesPanel(flatIssuesView()) },
     { name: "issue (detail)", schema: panels.buildIssuePanel(issueDetailView()) },
     { name: "settings (connected)", schema: panels.buildSettingsPanel(connectedSettingsView()) },
     { name: "settings (disconnected)", schema: panels.buildSettingsPanel(disconnectedSettingsView()) },
@@ -356,7 +350,11 @@ describe("every ade-linear panel, against the shared parser", () => {
 describe("the issues panel's filter strip", () => {
   const schema = panels.buildIssuesPanel(connectedIssuesView());
   const result = parsed(schema, "issues");
-  const declarations = collectVocabStateDeclarations(result.panel.body);
+  const declarations = collectVocabStateDeclarations(
+    result.panel.body,
+    undefined,
+    result.panel.chrome,
+  );
   const byKey = new Map(declarations.map((entry) => [entry.stateKey, entry]));
 
   /**
@@ -372,7 +370,7 @@ describe("the issues panel's filter strip", () => {
       contract.STATE_ASSIGNEE,
       contract.STATE_PRIORITY,
       contract.STATE_SORT,
-      contract.STATE_VIEW,
+      contract.STATE_SEARCH,
     ]) {
       expect(byKey.has(key), `no control declared \`${key}\``).toBe(true);
     }
@@ -500,28 +498,25 @@ describe("the issues panel's lists", () => {
    * the failure `allowActions` exists to prevent. The subset check is the audit
    * — a widened allowlist in a builder shows up here rather than in production.
    */
-  it("binds the flat list to the flat key space, with a batch inside its ceilings", () => {
-    const result = parsed(panels.buildIssuesPanel(flatIssuesView()), "issues (flat)");
+  it("binds every grouped list to its key space, with a shared batch inside its ceilings", () => {
+    const result = parsed(panels.buildIssuesPanel(connectedIssuesView()), "issues (grouped)");
     const lists = allNodes(result.panel.body).filter(
       (node): node is VocabListNode => node.component === "list",
     );
-    expect(lists).toHaveLength(1);
-    const [flat] = lists;
-    expect(flat.bind?.collection).toBe(contract.COLLECTION_ISSUES);
-    expect(flat.bind?.keyPrefix).toBe(contract.flatKeyPrefix());
-    for (const action of flat.bind?.allowActions ?? []) {
-      expect(contract.ISSUE_ROW_ACTIONS, `binding allows \`${action}\``).toContain(action);
-    }
-
-    const selectable = flat.selectable;
-    expect(selectable, "the flat list is the one that ticks and it does not").toBeDefined();
-    expect(selectable?.stateKey).toBe(contract.STATE_BATCH);
-    expect(selectable?.actions.length).toBeLessThanOrEqual(VOCAB_LIMITS.maxBulkActions);
-    expect(selectable?.max ?? 0).toBeLessThanOrEqual(VOCAB_LIMITS.maxSelectedRows);
-    // A bulk verb the row binding does not allow would draw a button that
-    // dispatches an id the panel never declared.
-    for (const action of selectable?.actions ?? []) {
-      expect(contract.ISSUE_ROW_ACTIONS, `bulk action \`${action.action}\``).toContain(action.action);
+    expect(lists.length).toBeGreaterThan(0);
+    for (const list of lists) {
+      expect(list.bind?.collection).toBe(contract.COLLECTION_ISSUES);
+      for (const action of list.bind?.allowActions ?? []) {
+        expect(contract.ISSUE_ROW_ACTIONS, `binding allows \`${action}\``).toContain(action);
+      }
+      const selectable = list.selectable;
+      expect(selectable, "a grouped list is the one that ticks and it does not").toBeDefined();
+      expect(selectable?.stateKey).toBe(contract.STATE_BATCH);
+      expect(selectable?.actions.length).toBeLessThanOrEqual(VOCAB_LIMITS.maxBulkActions);
+      expect(selectable?.max ?? 0).toBeLessThanOrEqual(VOCAB_LIMITS.maxSelectedRows);
+      for (const action of selectable?.actions ?? []) {
+        expect(contract.ISSUE_ROW_ACTIONS, `bulk action \`${action.action}\``).toContain(action.action);
+      }
     }
 
     const declared = collectVocabSelectionDeclarations(result.panel.body);
@@ -553,6 +548,7 @@ describe("the issues panel's lists", () => {
       );
       expect(list, `${group.stateName} holds no list`).toBeDefined();
       expect(list.bind?.keyPrefix).toBe(contract.groupKeyPrefix(group.stateId));
+      expect(node.icon, `${group.stateName} has no group icon`).toBeTruthy();
     }
 
     // One fetch per section plus the three option collections, and no duplicate
@@ -606,62 +602,59 @@ describe("the issues panel, rendered by the desktop renderer", () => {
     },
   ];
 
-  /** The row shape `issueFormat.js` materializes, as the binding reads it. */
-  function issueRows(): PluginCollectionRow[] {
-    return ISSUES.map((issue, index) => ({
-      key: contract.flatIssueKey(index + 1, issue.id),
-      value: {
-        key: issue.id,
-        title: issue.title,
-        subtitle: `${issue.identifier} · ${issue.stateName}`,
-        mono: issue.identifier,
-        meta: "updated 2 minutes ago",
-        badge: { text: issue.stateName, tone: issue.stateType === "completed" ? "success" : "accent" },
-        icon: "kanban",
-        tone: "neutral",
-        projectId: issue.projectId,
-        assigneeId: issue.assigneeId,
-        priority: issue.priority,
-        updatedAt: issue.updatedAt,
-        stateType: issue.stateType,
-        onPress: { action: contract.ACTIONS.openIssue, args: { issueId: issue.id } },
-      },
-    }));
+  function groupStateId(stateType: string): string {
+    if (stateType === "started") return "state_started";
+    if (stateType === "unstarted") return "state_unstarted";
+    return "state_done";
   }
 
-  /**
-   * The key is computed from the panel rather than spelled: `bindingKey` puts a
-   * NUL between the collection and the prefix, and a host that keyed its map any
-   * other way answers every binding with a miss and draws an empty list. Reading
-   * it back off the schema is what proves the two agree.
-   */
-  function flatBindingKey(schema: unknown): string {
-    const result = parsed(schema, "issues (flat)");
-    const bindings = collectVocabBindings(result.panel.body).filter(
-      (binding) => binding.collection === contract.COLLECTION_ISSUES,
+  /** The row shape `issueFormat.js` materializes, keyed in the grouped space. */
+  function groupedIssueRows(): Map<string, PluginCollectionRow[]> {
+    return new Map(
+      ISSUES.map((issue, index) => {
+        const stateId = groupStateId(issue.stateType);
+        return [
+          bindingKey({
+            collection: contract.COLLECTION_ISSUES,
+            keyPrefix: contract.groupKeyPrefix(stateId),
+          }),
+          [
+            {
+              key: contract.groupIssueKey(stateId, index + 1, issue.id),
+              value: {
+                key: issue.id,
+                title: issue.title,
+                subtitle: `${issue.identifier} · ${issue.stateName}`,
+                mono: issue.identifier,
+                meta: "updated 2 minutes ago",
+                badge: { text: issue.stateName, tone: issue.stateType === "completed" ? "success" : "accent" },
+                icon: "kanban",
+                tone: "neutral",
+                projectId: issue.projectId,
+                assigneeId: issue.assigneeId,
+                priority: issue.priority,
+                updatedAt: issue.updatedAt,
+                stateType: issue.stateType,
+                onPress: { action: contract.ACTIONS.openIssue, args: { issueId: issue.id } },
+              },
+            } as PluginCollectionRow,
+          ],
+        ];
+      }),
     );
-    expect(bindings).toHaveLength(1);
-    const [only] = distinctBindings(schema).filter(
-      (binding) => binding.collection === contract.COLLECTION_ISSUES,
-    );
-    expect(bindingKey(only)).toBe(bindingKey(bindings[0]));
-    return bindingKey(only);
   }
 
   it("draws every issue the collection answered, under the filter strip", () => {
-    const schema = panels.buildIssuesPanel(flatIssuesView());
-    const result = parsed(schema, "issues (flat)");
-    const rowsByBinding = new Map<string, PluginCollectionRow[]>([
-      [flatBindingKey(schema), issueRows()],
-    ]);
-
+    const schema = panels.buildIssuesPanel(connectedIssuesView());
+    const result = parsed(schema, "issues");
     const { container } = render(
       <PluginPanelView
         schema={schema}
         context={makeContext({
-          rowsByBinding,
-          declarations: collectVocabStateDeclarations(result.panel.body),
+          rowsByBinding: groupedIssueRows(),
+          declarations: collectVocabStateDeclarations(result.panel.body, undefined, result.panel.chrome),
           selectionDeclarations: collectVocabSelectionDeclarations(result.panel.body),
+          groupOpen: () => true,
         })}
       />,
     );
@@ -684,19 +677,20 @@ describe("the issues panel, rendered by the desktop renderer", () => {
       COPY.filterAssignee,
       COPY.filterPriority,
       COPY.filterSort,
-      COPY.filterView,
       COPY.filterUpdated,
       COPY.filterTeam,
     ]) {
       expect(text, `the “${label}” filter never rendered`).toContain(label);
     }
 
+    expect(container.querySelector('input[type="search"]')?.getAttribute("placeholder")).toBe(COPY.search);
+
     // The rows came from a collection, so the empty line must NOT be there —
     // that is the shape a mis-keyed binding produces and it looks like an empty
     // workspace rather than like a bug.
     expect(text).not.toContain(COPY.noIssues);
 
-    // Every row is tickable, which is the whole reason the flat view exists.
+    // Grouped lists share one batch key, so every drawn row is tickable.
     const boxes = container.querySelectorAll('input[type="checkbox"]');
     expect(boxes).toHaveLength(ISSUES.length);
   });

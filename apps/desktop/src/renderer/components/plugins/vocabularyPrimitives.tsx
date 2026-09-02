@@ -2,6 +2,7 @@ import { CheckCircle, WarningCircle } from "@phosphor-icons/react";
 
 import { COLORS, SANS_FONT } from "../lanes/laneDesignTokens";
 import type { PluginCollectionRow } from "../../lib/pluginRuntimeBridge";
+import type { PluginBrandGlyph } from "../../../shared/plugins/vocabularyBrandIcons";
 import type {
   VocabAction,
   VocabGroupNode,
@@ -41,6 +42,8 @@ export type VocabDispatch = (
 
 export type VocabRenderContext = {
   pluginId: string;
+  /** Sanitized `brand:*` glyphs this plugin shipped. Absent means none. */
+  brandIcons?: Readonly<Record<string, PluginBrandGlyph>>;
   /** Rows already fetched for every binding in the panel, keyed by `bindingKey`. */
   rowsByBinding: ReadonlyMap<string, PluginCollectionRow[]>;
   dispatch: VocabDispatch;
@@ -129,6 +132,7 @@ export const TONE_COLOR: Record<VocabTone, string> = {
   accent: COLORS.accent,
   success: COLORS.success,
   warning: COLORS.warning,
+  destructive: COLORS.danger,
 };
 
 /** "Nothing here yet" at the size of the component it replaces. */

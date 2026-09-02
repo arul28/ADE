@@ -155,6 +155,9 @@ export function toInstalledPlugin(summary: PluginSummary): PluginClientInstalled
     ...(summary.urlMatchers && summary.urlMatchers.length > 0
       ? { urlMatchers: summary.urlMatchers }
       : {}),
+    ...(summary.brandIcons && Object.keys(summary.brandIcons).length > 0
+      ? { brandIcons: summary.brandIcons }
+      : {}),
     installedAt: summary.installedAt,
   };
 }

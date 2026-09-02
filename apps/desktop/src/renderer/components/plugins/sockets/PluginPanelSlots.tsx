@@ -110,9 +110,9 @@ export function usePluginPanelSlots(
         // place — so no new manifest field is needed to point a drawer tab at a
         // page. Resolved only where a guest can run; elsewhere `entryHtml` stays
         // absent and the panel is drawn.
+        const installed = installedPlugins.find((plugin) => plugin.pluginId === contribution.pluginId);
         const entryHtml = webviewSupported
-          ? installedPlugins
-            .find((plugin) => plugin.pluginId === contribution.pluginId)
+          ? installed
             ?.tabs.find(
               (tab) => tab.kind === "webview"
                 && tab.panelId === contribution.payload.panelId
@@ -126,7 +126,7 @@ export function usePluginPanelSlots(
           pluginId: contribution.pluginId,
           panelId: contribution.payload.panelId,
           label: contribution.payload.label,
-          icon: pluginIcon(contribution.payload.icon),
+          icon: pluginIcon(contribution.payload.icon, installed?.brandIcons),
           displayName: identity?.displayName ?? contribution.pluginId,
           ...(entryHtml ? { entryHtml } : {}),
         });

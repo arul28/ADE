@@ -50,6 +50,7 @@ import {
 import { isValidPluginKeybinding } from "./keybindings";
 import { isValidPluginNetworkHost, PLUGIN_NETWORK_HOSTS_MAX } from "./network";
 import { isRecord, oneOf, trimmed as trimmedString } from "./parse";
+import { PLUGIN_BRAND_ICON_LIMITS } from "./vocabularyBrandIcons";
 import {
   compilePluginUrlMatcherPattern,
   coreSmartLinkHostOwner,
@@ -693,6 +694,15 @@ export type PluginManifest = {
   accent?: string;
   minAdeVersion?: string;
   vocabVersion: number;
+  /**
+   * Plugin-shipped mono glyphs, keyed by the suffix of a `brand:` token.
+   *
+   * `{ "linear": "icons/linear.svg" }` makes `icon: "brand:linear"` resolve to
+   * that file, after the host sanitizes it. Closed-catalogue tokens
+   * (`brand:cursor` and friends) still win when both exist. See
+   * `vocabularyBrandIcons.ts`.
+   */
+  brandIcons?: Record<string, string>;
   /** Absent for UI-only plugins (themes, static panels) — they run no code. */
   entry?: string;
   surfaces: PluginManifestSurface[];
@@ -1879,6 +1889,46 @@ function parseUrlMatchers(
 // ------------------------ end engine registrations -------------------------
 
 /**
+ * `brandIcons` — token suffix to a plugin-relative SVG path.
+ *
+ * A known-key object: a malformed value is an error on that entry, an unknown
+ * shape for the field itself is an error, and extra keys past the ceiling are
+ * dropped with a warning. Paths must be safe and end in `.svg`; the host
+ * sanitizes the file at load and refuses anything that is not a path-only
+ * mono mark.
+ */
+function parseBrandIcons(raw: unknown, ctx: ParseContext): Record<string, string> | undefined {
+  if (raw === undefined) return undefined;
+  if (!isRecord(raw) || Array.isArray(raw)) {
+    ctx.errors.push("brandIcons must be an object of token → relative .svg path");
+    return undefined;
+  }
+  const parsed: Record<string, string> = {};
+  for (const [key, value] of Object.entries(raw)) {
+    const token = key.trim().toLowerCase();
+    if (!PLUGIN_BRAND_ICON_LIMITS.tokenPattern.test(token)) {
+      ctx.drop(`brandIcons.${key} is not a brand token suffix (lowercase kebab, 1–32 characters)`);
+      continue;
+    }
+    const file = trimmedString(value);
+    if (!file || !isSafePluginRelativePath(file) || !file.toLowerCase().endsWith(".svg")) {
+      ctx.drop(`brandIcons.${key} must be a relative path ending in .svg`);
+      continue;
+    }
+    if (Object.keys(parsed).length >= PLUGIN_BRAND_ICON_LIMITS.maxIcons) {
+      ctx.drop(`brandIcons.${key} exceeds the ${PLUGIN_BRAND_ICON_LIMITS.maxIcons}-icon ceiling`);
+      continue;
+    }
+    if (Object.hasOwn(parsed, token)) {
+      ctx.drop(`brandIcons.${key} repeats ${token}`);
+      continue;
+    }
+    parsed[token] = file;
+  }
+  return Object.keys(parsed).length > 0 ? parsed : undefined;
+}
+
+/**
  * Ceilings on a tool declaration. A tool schema is prompt text: every property
  * name, description and enum value is rendered into the system prompt of every
  * session the plugin is enabled in, on every runtime. Unlike a panel (which the
@@ -2275,6 +2325,7 @@ export function parsePluginManifest(raw: unknown): PluginManifestParseResult {
   const projectSecrets = parseProjectSecrets(raw.projectSecrets, ctx);
   const authSessions = parseAuthSessions(raw.authSessions, ctx);
   const credentialHandoff = parseCredentialHandoff(raw.credentialHandoff, ctx, official);
+  const brandIcons = parseBrandIcons(raw.brandIcons, ctx);
 
   // Identity must be VALID here, not merely present: `manifest.name` is joined
   // into a filesystem path and a secret namespace, so a caller that ignores
@@ -2318,6 +2369,7 @@ export function parsePluginManifest(raw: unknown): PluginManifestParseResult {
       ...(credentialHandoff.length > 0 ? { credentialHandoff } : {}),
       ...(projectSecrets.length > 0 ? { projectSecrets } : {}),
       ...(theme ? { theme } : {}),
+      ...(brandIcons ? { brandIcons } : {}),
       official,
     },
     errors,

@@ -47,6 +47,7 @@ import {
   type PluginNotificationResult,
   type PluginSchedule,
   type PluginSdkMethod,
+  type PluginWebhookIngressStatus,
 } from "../../../../shared/plugins/sdk";
 import type { PluginManifest } from "../../../../shared/plugins/manifest";
 import type { PluginEntityKind, PluginSocketKind } from "../../../../shared/plugins/sockets";
@@ -317,6 +318,9 @@ export function runPluginChild(): void {
       ack: async (deliveryId) => {
         await callHost("webhooks.ack", { deliveryId });
       },
+      status: async () => (
+        await callHost("webhooks.status", {})
+      ) as PluginWebhookIngressStatus,
     },
     chat: {
       createSession: async (input) => (

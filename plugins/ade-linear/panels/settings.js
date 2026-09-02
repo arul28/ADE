@@ -387,6 +387,16 @@ function ingressBlock(input = {}) {
 
   const rows = [{ key: "Webhook", value: value(ingress.status ?? "Not set up"), tone: ingress.tone ?? "neutral" }];
   if (ingress.lastEvent) rows.push({ key: "Last event", value: value(ingress.lastEvent) });
+  if (Number(ingress.pendingDeliveries) > 0) {
+    rows.push({
+      key: "Waiting",
+      value: value(`${ingress.pendingDeliveries} unacked`),
+      tone: "warning",
+    });
+  }
+  if (ingress.drainError) {
+    rows.push({ key: "Drain", value: value(ingress.drainError), tone: "danger" });
+  }
 
   const block = [
     { component: "divider", label: "Automations" },

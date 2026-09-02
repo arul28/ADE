@@ -135,6 +135,7 @@ enum PluginPanelParser {
     case "chart": return parseChart(object, path: path, context: &context)
     case "video": return parseVideo(object, path: path, context: &context)
     case "image": return parseImage(object, path: path, context: &context)
+    case "avatar": return parseAvatar(object, path: path, context: &context)
     case "divider":
       return .divider(label: cleanString(object["label"], max: PluginVocabLimits.maxLabelChars))
     case "keyValue": return parseKeyValue(object, path: path, context: &context)

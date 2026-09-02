@@ -98,9 +98,8 @@ describe("contributed activity entries", () => {
     const { container } = render(<PluginActivityEntries />);
 
     await waitFor(() => expect(screen.getByText("Spend cap reached")).toBeTruthy());
-    // `warning` is the pane's amber; nothing maps to red, because
-    // `PluginBadgeTone` has none — a plugin cannot make its row the loudest
-    // thing in a list it does not own.
+    // `warning` is the pane's amber. `destructive` is its red — a different
+    // tone, not a louder warning.
     expect(container.querySelector(".activity-tone-amber")).toBeTruthy();
     expect(container.querySelector(".activity-tone-red")).toBeNull();
   });

@@ -33,8 +33,8 @@ final class PluginContributionTests: XCTestCase {
     let contribution = try XCTUnwrap(badge(plugin: "coverage", text: "82%", tone: "error"))
     XCTAssertEqual(contribution.entityKind, .pr)
     XCTAssertEqual(contribution.entityId, "42")
-    // No red anywhere in the product: an "error" tone folds to warning.
-    XCTAssertEqual(contribution.badge?.tone, .warning)
+    // `error` is red: it folds onto `destructive`, the same house rule panels use.
+    XCTAssertEqual(contribution.badge?.tone, .destructive)
     XCTAssertEqual(contribution.badge?.text, "82%")
   }
 

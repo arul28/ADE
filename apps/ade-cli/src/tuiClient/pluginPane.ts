@@ -13,7 +13,7 @@
 // only state (the selected index) lives in app.tsx like every other pane's.
 //
 // Terminal subset (design decision D8). Rendered richly: stack, group, text,
-// badge, button, list, table, keyValue, divider, emptyState, markdown, and form
+// badge, button, list, table, keyValue, divider, emptyState, markdown, avatar, and form
 // via the composer funnel. Rendered as a labeled placeholder line: video, image, chart,
 // and any component name a future vocabulary version adds. A placeholder is
 // deliberate, not a failure — it names what is there and how to see it, because
@@ -43,6 +43,7 @@ import {
   parseVocabMarkdown,
   readPluginActionResetState,
   vocabApplyStateChange,
+  vocabAvatarInitials,
   vocabClearRowSelection,
   vocabContextRows,
   vocabCycleStateValue,
@@ -223,6 +224,11 @@ export type PluginPaneRow =
        * the position is what carries the meaning in a terminal.
        */
       mono: string | null;
+      /**
+       * Initials chip, `[JD]`. A terminal cannot fetch a photo, so a row that
+       * shipped `avatar.src` still draws the letters.
+       */
+      avatar: string | null;
     }
   | { kind: "tableHead"; key: string; indent: number; cells: string[]; widths: number[]; aligns: ("left" | "right")[] }
   | { kind: "tableRow"; key: string; indent: number; cells: string[]; widths: number[]; aligns: ("left" | "right")[] }
@@ -261,6 +267,11 @@ export type PluginPaneRow =
       indent: number;
       /** Ticked rows that are actually on screen — what a verb here acts on. */
       count: number;
+      /**
+       * The selection this bar spends. Grouped lists that share a key union
+       * their counts; two different keys still first-win in walk order.
+       */
+      stateKey: string;
       buttons: PluginPaneButton[];
     }
   | {
@@ -903,8 +914,55 @@ function walkMarkdown(
       case "rule":
         push(ctx, { kind: "divider", key: blockKey, indent, label: null });
         return;
+      case "table": {
+        const lines = formatMarkdownTable(block);
+        lines.forEach((line, lineIndex) => {
+          push(ctx, {
+            kind: "markdown",
+            key: `${blockKey}.row[${lineIndex}]`,
+            indent,
+            prefix: take(),
+            variant: lineIndex === 0 ? "subtitle" : "code",
+            parts: [{ text: line }],
+          });
+        });
+        return;
+      }
+      default: {
+        const _exhaustive: never = block;
+        void _exhaustive;
+        return;
+      }
     }
   });
+}
+
+function formatMarkdownTable(
+  block: Extract<VocabMarkdownBlock, { kind: "table" }>,
+): string[] {
+  const cellText = (cells: readonly VocabMarkdownSpan[]): string =>
+    cells.map((span) => span.text).join("");
+  const header = block.header.map(cellText);
+  const body = block.rows.map((row) => row.map(cellText));
+  const columns = header.length;
+  const widths = Array.from({ length: columns }, (_u, index) => Math.max(
+    header[index]?.length ?? 0,
+    ...body.map((row) => row[index]?.length ?? 0),
+    1,
+  ));
+  const padCell = (value: string, index: number): string => {
+    const width = widths[index] ?? 1;
+    const align = block.align[index] ?? "left";
+    if (align === "right") return value.padStart(width);
+    if (align === "center") {
+      const pad = width - value.length;
+      return `${" ".repeat(Math.floor(pad / 2))}${value}${" ".repeat(Math.ceil(pad / 2))}`;
+    }
+    return value.padEnd(width);
+  };
+  const line = (cells: readonly string[]) =>
+    Array.from({ length: columns }, (_u, index) => padCell(cells[index] ?? "", index)).join(" | ");
+  return [line(header), ...body.map(line)];
 }
 
 function walkNodes(nodes: readonly VocabNode[], path: string, indent: number, ctx: WalkContext): void {
@@ -975,22 +1033,9 @@ function walkNode(node: VocabNode, key: string, indent: number, ctx: WalkContext
       return;
     }
     case "markdown": {
-      if (node.truncated) {
-        // Clamped at the node ceiling. The cut lands wherever it lands, so the
-        // markdown of this string is not the document's markdown — the source,
-        // as written, plus the line that says why.
-        push(ctx, { kind: "text", key, indent, text: node.text, variant: "code", tone: "neutral" });
-        push(ctx, {
-          kind: "note",
-          key: `${key}.truncated`,
-          indent,
-          text: "This text was too long to format, so it is shown as written.",
-        });
-        return;
-      }
       const document = parseVocabMarkdown(node.text);
       walkMarkdown(document.blocks, key, indent, "", "", ctx);
-      if (document.truncated) {
+      if (node.truncated || document.truncated) {
         push(ctx, {
           kind: "note",
           key: `${key}.more`,
@@ -1081,6 +1126,7 @@ function walkNode(node: VocabNode, key: string, indent: number, ctx: WalkContext
           tick,
           badge: item.badge ? { text: item.badge.text, tone: item.badge.tone ?? "neutral" } : null,
           mono: item.mono ?? null,
+          avatar: item.avatar ? vocabAvatarInitials(item.avatar.name) : null,
         });
         // The row's buttons, on their own indented line beneath it.
         //
@@ -1095,6 +1141,18 @@ function walkNode(node: VocabNode, key: string, indent: number, ctx: WalkContext
           indent + 1,
           ctx,
         );
+        if (item.markdown) {
+          const document = parseVocabMarkdown(item.markdown);
+          walkMarkdown(document.blocks, `${key}.item[${index}].md`, indent + 1, "", "", ctx);
+          if (item.markdownTruncated || document.truncated) {
+            push(ctx, {
+              kind: "note",
+              key: `${key}.item[${index}].md.more`,
+              indent: indent + 1,
+              text: "The rest of this text is not shown.",
+            });
+          }
+        }
       });
       // The page line, above the bar and below the rows: it belongs to the list
       // it counts, and a reader who has just been told there are 43 more rows
@@ -1154,6 +1212,7 @@ function walkNode(node: VocabNode, key: string, indent: number, ctx: WalkContext
             key: `${key}.bulk`,
             indent,
             count: visible.length,
+            stateKey: selectionDeclaration.stateKey,
             buttons,
           });
         }
@@ -1354,6 +1413,17 @@ function walkNode(node: VocabNode, key: string, indent: number, ctx: WalkContext
         indent,
         label: placeholderLabel(node.component, title),
         hint: placeholderHint(ctx.hasDeeplink),
+      });
+      return;
+    }
+    case "avatar": {
+      push(ctx, {
+        kind: "text",
+        key,
+        indent,
+        text: `[${vocabAvatarInitials(node.name)}] ${node.name}`,
+        variant: "body",
+        tone: "neutral",
       });
       return;
     }
@@ -1637,16 +1707,20 @@ export function buildPluginPaneModel(input: PluginPaneInput): PluginPaneModel {
  * One bulk bar for the pane, pinned with chrome.footer.
  *
  * Each selectable list would otherwise emit its own bar. A grouped view of
- * seven lists is seven bars in a terminal; the first non-empty one in walk
- * order is the panel's bar, matching desktop.
+ * seven lists that share a selection key unions their on-screen ticks into one
+ * count; two *different* selection keys still first-win in walk order.
  */
 function takeFirstBulkBar(rows: PluginPaneRow[], from: number): PluginPaneRow | null {
   const body = rows.slice(from);
-  const bars = body.filter((row) => row.kind === "bulkBar");
+  const bars = body.filter((row): row is Extract<PluginPaneRow, { kind: "bulkBar" }> => row.kind === "bulkBar");
   if (bars.length === 0) return null;
   const rest = body.filter((row) => row.kind !== "bulkBar");
   rows.splice(from, body.length, ...rest);
-  return bars[0] ?? null;
+  const first = bars[0];
+  const count = bars
+    .filter((bar) => bar.stateKey === first.stateKey)
+    .reduce((sum, bar) => sum + bar.count, 0);
+  return count === first.count ? first : { ...first, count };
 }
 
 function walkChrome(

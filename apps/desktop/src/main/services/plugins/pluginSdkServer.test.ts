@@ -730,6 +730,7 @@ describe("createPluginSdkServer webhooks", () => {
 
     expect(await codeOf(() => handle("webhooks.url", {}))).toBe("unsupported_method");
     expect(await codeOf(() => handle("webhooks.ack", { deliveryId: "d-1" }))).toBe("unsupported_method");
+    expect(await codeOf(() => handle("webhooks.status", {}))).toBe("unsupported_method");
   });
 
   it("acks by delivery id, scoped to the calling plugin", async () => {
@@ -747,6 +748,44 @@ describe("createPluginSdkServer webhooks", () => {
     expect(await handle("webhooks.ack", { deliveryId: "d-1" })).toBeNull();
     expect(acked).toEqual([{ pluginId: "graph", deliveryId: "d-1" }]);
     expect(await codeOf(() => handle("webhooks.ack", {}))).toBe("invalid_args");
+  });
+
+  it("returns this plugin's ledger row and refuses a plugin that never declared ingress", async () => {
+    const row = {
+      pluginId: "graph",
+      state: "ready" as const,
+      relayBaseUrl: "https://relay.example",
+      channels: [],
+      lastReceivedAt: "2026-09-01T12:00:00.000Z",
+      lastPolledAt: "2026-09-01T12:01:00.000Z",
+      lastError: null,
+      pendingDeliveries: 2,
+      abandonedDeliveries: 0,
+    };
+    const asked: string[] = [];
+    const { handle } = createServer({
+      manifest: declaringIngress(),
+      webhooks: {
+        url: () => "https://relay.example/plugin/graph/webhook",
+        ack: () => {},
+        status: async (pluginId) => {
+          asked.push(pluginId);
+          return row;
+        },
+      },
+    });
+
+    expect(await handle("webhooks.status", {})).toEqual(row);
+    expect(asked).toEqual(["graph"]);
+
+    const undeclared = createServer({
+      webhooks: {
+        url: () => "https://relay.example/plugin/graph/webhook",
+        ack: () => {},
+        status: async () => row,
+      },
+    });
+    expect(await codeOf(() => undeclared.handle("webhooks.status", {}))).toBe("invalid_args");
   });
 
   // A plugin that could read the relay secret could hand its own ingress to

@@ -6,6 +6,7 @@ import { openAdeDeeplink } from "../../lib/openExternal";
 import { pluginIcon } from "./pluginIcons";
 import {
   VocabActiveBulkBar,
+  VocabAvatar,
   VocabBadge,
   VocabBulkBarHost,
   VocabButton,
@@ -84,6 +85,7 @@ function VocabNodeView({
               ? (node.align ?? "center")
               : (node.align ?? "stretch"),
             ...(node.wrap ? { flexWrap: "wrap" } : {}),
+            ...(horizontal && !node.wrap ? { flexWrap: "nowrap", overflowX: "auto" } : {}),
             minWidth: 0,
           }}
         >
@@ -121,6 +123,8 @@ function VocabNodeView({
       return <VocabVideo node={node} context={context} />;
     case "image":
       return <VocabImage node={node} />;
+    case "avatar":
+      return <VocabAvatar node={node} context={context} />;
     case "divider":
       return <VocabDivider node={node} />;
     case "keyValue":
@@ -164,7 +168,7 @@ function VocabGroupSection({
   children: React.ReactNode;
 }) {
   const open = context.groupOpen(node);
-  const Icon = node.icon ? pluginIcon(node.icon) : null;
+  const Icon = node.icon ? pluginIcon(node.icon, context.brandIcons) : null;
   return (
     <section style={{ display: "grid", gap: 8, minWidth: 0 }}>
       <button
@@ -374,7 +378,7 @@ function VocabChromeNavButton({
   action: VocabChromeNavAction;
   context: VocabRenderContext;
 }) {
-  const Icon = action.icon ? pluginIcon(action.icon) : null;
+  const Icon = action.icon ? pluginIcon(action.icon, context.brandIcons) : null;
   return (
     <button
       type="button"

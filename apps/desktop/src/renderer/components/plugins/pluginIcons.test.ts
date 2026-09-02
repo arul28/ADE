@@ -276,8 +276,38 @@ describe("brand icon tokens", () => {
   it("degrades an unknown brand token exactly like any other unknown token", () => {
     for (const name of ["brand:linear", "brand:", "brand:nope", "brand", "cursor"]) {
       expect(pluginIcon(name), `${name} resolved to something`).toBe(DEFAULT_PLUGIN_ICON);
-      expect(isPluginBrandIconName(name)).toBe(false);
     }
+    // A well-formed `brand:*` is still a brand token even when this build has
+    // no artwork for it — badges and empty states skip it rather than drawing
+    // a puzzle at 8pt. The prefix is not a licence to invent a closed-set mark.
+    expect(isPluginBrandIconName("brand:linear")).toBe(true);
+    expect(isPluginBrandIconName("brand:nope")).toBe(true);
+    expect(isPluginBrandIconName("brand:")).toBe(false);
+    expect(isPluginBrandIconName("brand")).toBe(false);
+    expect(isPluginBrandIconName("cursor")).toBe(false);
+  });
+
+  it("draws a plugin-shipped sanitized glyph for a well-formed brand token", () => {
+    const glyph = { viewBox: "0 0 24 24", paths: [{ d: "M0 0 L24 24", evenodd: true as const }] };
+    const Icon = pluginIcon("brand:linear", { linear: glyph });
+    expect(Icon).not.toBe(DEFAULT_PLUGIN_ICON);
+    const markup = renderToStaticMarkup(createElement(Icon, { size: 16, color: "#5E6AD2" }));
+    expect(markup).toContain("0 0 24 24");
+    expect(markup).toContain("M0 0 L24 24");
+    expect(markup).toContain("evenodd");
+    expect(pluginIdentity({
+      pluginId: "ade-linear",
+      icon: "brand:linear",
+      brandIcons: { linear: glyph },
+    }).Icon).toBe(Icon);
+  });
+
+  it("draws Linear-style priority marks that are not the puzzle piece", () => {
+    for (const name of ["priority-urgent", "priority-high", "priority-medium", "priority-low", "priority-none"]) {
+      expect(PLUGIN_ICON_NAMES, name).toContain(name);
+      expect(pluginIcon(name), name).not.toBe(DEFAULT_PLUGIN_ICON);
+    }
+    expect(pluginIcon("priority-high")).not.toBe(pluginIcon("priority-low"));
   });
 
   /**

@@ -13,7 +13,7 @@
 // recency are top-level fields of every issue row and the binding's `where`
 // compares them to the live value of a `segmented` control.
 //
-// Three cannot be, and are round trips through `applyFilters`:
+// Three cannot be, and are round trips through `applyFilters` / `searchIssues`:
 //
 // - **The state preset** (All / Active / Backlog) decides which GROUPS exist. A
 //   `where` hides rows inside a section; it cannot remove the section, so a
@@ -21,17 +21,16 @@
 //   sends `stateTypes` to Linear for the same reason.
 // - **Sort** is the order rows are written in. `collections.list` orders by key
 //   and the client never re-sorts (rule 3), so a new sort is new keys.
-// - **View** switches the node tree between grouped sections and one flat
-//   selectable list, and a predicate cannot change a tree.
+// - **Search** is Linear's own text match, not a client `contains`. The nav-bar
+//   field (`chrome.search`) commits on blur and Enter; four `where` clauses is
+//   already the ceiling, so the query cannot also ride as a fifth predicate.
 //
-// ## Why the view control exists at all
+// ## Grouping and a batch, together
 //
-// A bulk bar is computed per LIST, against the keys that list can see. Seven
-// grouped lists sharing one selection key would therefore draw seven bars, each
-// counting and acting on its own section — so grouping and a cross-group batch
-// cannot both be on screen in vocabulary v1. Rather than pick one, the panel
-// offers both and says which it is showing: grouped is the default and matches
-// the phone's built-in, flat is where the desktop's multi-select lives.
+// Every state group's list declares the same `selectable` key. The host unions
+// ticks across those lists into one bar, so grouping and a cross-group batch
+// are both on screen — the same picture the compiled desktop and the phone
+// already draw. There is no flat-list toggle.
 
 "use strict";
 
@@ -51,11 +50,10 @@ const {
   STATE_PRESET,
   STATE_PRIORITY,
   STATE_PROJECT,
+  STATE_SEARCH,
   STATE_SORT,
   STATE_TEAM,
   STATE_UPDATED,
-  STATE_VIEW,
-  flatKeyPrefix,
   groupKeyPrefix,
 } = require("./contract");
 
@@ -67,6 +65,7 @@ const {
   fallback,
   label,
   prose,
+  stateIcon,
   value,
 } = require("./common");
 
@@ -74,10 +73,9 @@ const {
  * The vocabulary's ceiling on distinct `segmented` keys in one panel.
  *
  * Spelled here rather than only in `LIMITS` because this panel is the one that
- * can actually reach it: eight controls is every axis the built-in has plus the
- * two this panel adds, and a ninth would fail the WHOLE panel rather than drop
- * one control. {@link filterStrip} builds in importance order and cuts the tail,
- * so the axis that goes is the one the built-in never had.
+ * can actually reach it. Search spends a state key of its own in `chrome.search`,
+ * so the strip keeps seven segmented axes and slices a ninth. {@link filterStrip}
+ * builds in importance order and cuts the tail.
  */
 const MAX_FILTER_CONTROLS = 8;
 
@@ -86,7 +84,7 @@ const MAX_FILTER_CONTROLS = 8;
  *
  * Two nodes per group, and `VOCAB_LIMITS.maxNodes` is 200 for the whole panel —
  * which the filter strip, the search row and the footer also spend from. Groups
- * are one per distinct state id across up to 250 issues, and every Linear TEAM
+ * are one per distinct state id across up to 1000 issues, and every Linear TEAM
  * has its own state ids, so a sixteen-team workspace reaches ninety-odd. The
  * parser fails the whole panel on overflow rather than truncating, so the
  * ceiling has to be enforced here or the reader gets a fallback card instead of
@@ -125,11 +123,6 @@ const UPDATED_RANGES = [
   { value: "-24h", label: COPY.updatedDay },
   { value: "-7d", label: COPY.updatedWeek },
   { value: "-30d", label: COPY.updatedMonth },
-];
-
-const VIEWS = [
-  { value: "grouped", label: COPY.viewGrouped },
-  { value: "flat", label: COPY.viewFlat },
 ];
 
 /**
@@ -239,18 +232,6 @@ function sortControl(input) {
   };
 }
 
-function viewControl(input) {
-  return {
-    component: "segmented",
-    stateKey: STATE_VIEW,
-    label: COPY.filterView,
-    style: "toggle",
-    default: input.view === "flat" ? "flat" : "grouped",
-    options: VIEWS,
-    onChange: onFilterChange(),
-  };
-}
-
 /** Client-side and free: no `onChange`, because nothing needs refetching. */
 function updatedControl() {
   return {
@@ -263,20 +244,17 @@ function updatedControl() {
 }
 
 /**
- * The team control — the one axis the built-in does not have.
- *
- * It earns a key only in a workspace with more than one team, and it is LAST in
- * the strip's importance order, so it is the control that goes when the eight
- * keys are spent. A single-team workspace would get a filter that can only ever
- * mean "all", which is the two-option floor the vocabulary refuses anyway.
- */
-/**
  * The team control. A round trip, not a client `where`.
  *
  * `valueField: "key"` and not `"id"`: the value this sends back is stored as
  * the `teamKey` filter and reaches Linear as `team: { key: { eq } }`, which is
  * the only shape its `IssueFilter` offers. Binding the id would have sent a
  * uuid where a key belongs and matched nothing.
+ *
+ * It earns a key only in a workspace with more than one team, and it is LAST in
+ * the strip's importance order, so it is the control that goes when the eight
+ * keys are spent. A single-team workspace would get a filter that can only ever
+ * mean "all", which is the two-option floor the vocabulary refuses anyway.
  */
 function teamControl(input = {}) {
   return {
@@ -295,7 +273,9 @@ function teamControl(input = {}) {
  *
  * Building the list and slicing it is the whole safety story: a ninth
  * `segmented` fails the entire panel, so the strip must never be able to grow
- * past the ceiling however many optional axes the workspace turns on.
+ * past the ceiling however many optional axes the workspace turns on. `wrap` is
+ * off so a crowded strip scrolls as a chip row rather than wrapping into a
+ * second filter block.
  */
 function filterStrip(input = {}) {
   const children = [presetControl(input)];
@@ -304,7 +284,6 @@ function filterStrip(input = {}) {
   if (input.hasPeople || input.viewerId) children.push(assigneeControl(input));
   children.push(priorityControl());
   children.push(sortControl(input));
-  children.push(viewControl(input));
   children.push(updatedControl());
   if (input.hasTeams) children.push(teamControl(input));
 
@@ -312,58 +291,37 @@ function filterStrip(input = {}) {
     component: "stack",
     direction: "horizontal",
     gap: "sm",
-    wrap: true,
+    wrap: false,
     align: "center",
     children: children.slice(0, MAX_FILTER_CONTROLS),
   };
 }
 
 /**
- * The search affordance, and the way back out of every filter.
+ * The way back out of a live filter or a persisted search.
  *
- * The built-in has a live text field — `.searchable` in the phone's nav bar, an
- * input in the desktop toolbar — and the vocabulary has no search node, so this
- * is a button that answers `{prompt}`: the client asks the question in its own
- * chrome (a popover on desktop, an alert on the phone, an inline field in the
- * terminal) and invokes the same action again with the answer.
- *
- * When a search is live the strip says so and offers the way out, because a
- * filtered list with no visible filter is the thing a reader files a bug about.
- * `Reset filters` is the desktop's own button and clears the CONTROLS as well as
- * the query — a handler answering `{resetState: [...]}` is the only thing that
- * can, since panel state belongs to the client.
+ * Typing happens in `chrome.search`. This row is only the visible remainder: a
+ * badge when the data layer still has a query (a restored session, or a host
+ * whose nav-bar field is empty), and Reset filters, which is the only verb that
+ * can move client state.
  */
 function searchRow(input = {}) {
   const query = input.query ?? null;
-  const children = [
-    {
-      component: "button",
-      label: COPY.search,
-      kind: "quiet",
-      onPress: { action: ACTIONS.searchIssues },
-    },
-  ];
+  if (!query && !input.filtersActive) return null;
+  const children = [];
   if (query) {
-    children.unshift({ component: "badge", text: label(`“${query}”`), tone: "accent", icon: "tag" });
-    children.push({
-      component: "button",
-      label: COPY.clearSearch,
-      kind: "quiet",
-      onPress: { action: ACTIONS.clearSearch },
-    });
+    children.push({ component: "badge", text: label(`“${query}”`), tone: "accent", icon: "tag" });
   }
-  if (query || input.filtersActive) {
-    children.push({
-      component: "button",
-      label: COPY.resetFilters,
-      kind: "quiet",
-      onPress: { action: ACTIONS.clearFilters },
-    });
-  }
+  children.push({
+    component: "button",
+    label: COPY.resetFilters,
+    kind: "quiet",
+    onPress: { action: ACTIONS.clearFilters },
+  });
   return { component: "stack", direction: "horizontal", gap: "sm", wrap: true, align: "center", children };
 }
 
-/** The binding both views share, differing only in which keys they read. */
+/** The binding every state group shares. */
 function issueBinding(keyPrefix) {
   return {
     collection: COLLECTION_ISSUES,
@@ -371,6 +329,41 @@ function issueBinding(keyPrefix) {
     limit: LIMITS.maxListItems,
     allowActions: ISSUE_ROW_ACTIONS,
     where: issueWhere(),
+  };
+}
+
+/**
+ * Four bulk verbs, which is `maxBulkActions`, and the two that create lanes ask
+ * first — a mistake here costs eleven lanes, which is the case `confirm` on a
+ * batch was added for. The two launch verbs are the built-in's
+ * `BATCH_ACTIONS_CONFIG` with its own words; the other two are verbs the
+ * built-in does not have on either surface and are marked as additions in the
+ * parity report rather than passed off as parity.
+ *
+ * Every grouped list uses this same key, so ticks in Started and ticks in Todo
+ * land on one bar.
+ */
+function batchSelectable() {
+  return {
+    stateKey: STATE_BATCH,
+    max: LIMITS.maxSelectedRows,
+    actions: [
+      {
+        action: ACTIONS.launchLaneAndAgent,
+        label: COPY.launchMany,
+        kind: "primary",
+        icon: "sparkle",
+        confirm: "Create a lane and start an agent for each selected issue?",
+      },
+      {
+        action: ACTIONS.launchLaneOnly,
+        label: COPY.laneMany,
+        icon: "git-branch",
+        confirm: "Create a lane for each selected issue?",
+      },
+      { action: ACTIONS.assignToMe, label: COPY.assignToMe, icon: "users" },
+      { action: ACTIONS.linkToLane, label: COPY.linkToLane, icon: "link" },
+    ],
   };
 }
 
@@ -389,6 +382,7 @@ function stateGroups(groups) {
     component: "group",
     title: label(group.stateName || group.stateType || "Other"),
     groupKey: String(group.stateId),
+    icon: stateIcon(group.stateType),
     ...(group.count != null ? { badge: String(group.count) } : {}),
     defaultOpen: group.defaultOpen !== false,
     children: [
@@ -396,6 +390,7 @@ function stateGroups(groups) {
         component: "list",
         bind: issueBinding(groupKeyPrefix(group.stateId)),
         emptyText: COPY.noIssues,
+        selectable: batchSelectable(),
       },
     ],
   }));
@@ -410,51 +405,11 @@ function stateGroups(groups) {
       component: "text",
       variant: "caption",
       text: value(
-        `${dropped} more workflow ${dropped === 1 ? "state" : "states"} are not shown here.`
-        + " Switch to the flat view to see every issue in one list.",
+        `${dropped} more workflow ${dropped === 1 ? "state" : "states"} are not shown here.`,
       ),
     });
   }
   return nodes;
-}
-
-/**
- * The flat list, and the only list in this panel that ticks.
- *
- * Four bulk verbs, which is `maxBulkActions`, and the two that create lanes ask
- * first — a mistake here costs eleven lanes, which is the case `confirm` on a
- * batch was added for. The two launch verbs are the built-in's
- * `BATCH_ACTIONS_CONFIG` with its own words; the other two are verbs the
- * built-in does not have on either surface and are marked as additions in the
- * parity report rather than passed off as parity.
- */
-function flatList() {
-  return {
-    component: "list",
-    bind: issueBinding(flatKeyPrefix()),
-    emptyText: COPY.noIssues,
-    selectable: {
-      stateKey: STATE_BATCH,
-      max: LIMITS.maxSelectedRows,
-      actions: [
-        {
-          action: ACTIONS.launchLaneAndAgent,
-          label: COPY.launchMany,
-          kind: "primary",
-          icon: "sparkle",
-          confirm: "Create a lane and start an agent for each selected issue?",
-        },
-        {
-          action: ACTIONS.launchLaneOnly,
-          label: COPY.laneMany,
-          icon: "git-branch",
-          confirm: "Create a lane for each selected issue?",
-        },
-        { action: ACTIONS.assignToMe, label: COPY.assignToMe, icon: "users" },
-        { action: ACTIONS.linkToLane, label: COPY.linkToLane, icon: "link" },
-      ],
-    },
-  };
 }
 
 /**
@@ -478,6 +433,20 @@ function issuesFallback(text) {
   );
 }
 
+function issuesChrome(input = {}) {
+  const footer = issuesFooter(input);
+  return {
+    search: {
+      stateKey: STATE_SEARCH,
+      placeholder: COPY.search,
+      onChange: { action: ACTIONS.searchIssues },
+    },
+    ...(footer
+      ? { footer: [{ component: "text", variant: "caption", text: value(footer) }] }
+      : {}),
+  };
+}
+
 /**
  * The issue list panel.
  *
@@ -487,7 +456,7 @@ function issuesFallback(text) {
  * reader who is not connected has no use for a filter strip.
  */
 function buildIssuesPanel(input = {}) {
-  const { state = "list", error = null, groups = [], query = null, title = "Linear" } = input;
+  const { state = "list", error = null, groups = [], title = "Linear" } = input;
 
   if (state === "loading") {
     return {
@@ -553,9 +522,10 @@ function buildIssuesPanel(input = {}) {
     };
   }
 
-  const body = [filterStrip(input), searchRow(input)];
+  const filters = searchRow(input);
+  const body = [filterStrip(input), ...(filters ? [filters] : [])];
 
-  if (state === "empty" || (input.view !== "flat" && groups.length === 0)) {
+  if (state === "empty" || groups.length === 0) {
     body.push({
       component: "emptyState",
       title: COPY.noIssuesTitle,
@@ -563,19 +533,17 @@ function buildIssuesPanel(input = {}) {
       icon: "kanban",
       action: { label: COPY.resetFilters, onPress: { action: ACTIONS.clearFilters } },
     });
-  } else if (input.view === "flat") {
-    body.push(flatList());
   } else {
     body.push(...stateGroups(groups));
   }
 
-  const footer = issuesFooter(input);
-  if (footer) {
-    body.push({ component: "divider" });
-    body.push({ component: "text", variant: "caption", text: value(footer) });
-  }
-
-  return { v: 1, title, fallback: issuesFallback(), body };
+  return {
+    v: 1,
+    title,
+    fallback: issuesFallback(),
+    chrome: issuesChrome(input),
+    body,
+  };
 }
 
 module.exports = {
@@ -583,10 +551,8 @@ module.exports = {
   SORT_ORDERS,
   STATE_PRESETS,
   UPDATED_RANGES,
-  VIEWS,
   buildIssuesPanel,
   filterStrip,
-  flatList,
   issueBinding,
   issueWhere,
   issuesFooter,

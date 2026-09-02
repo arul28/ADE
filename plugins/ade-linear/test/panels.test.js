@@ -41,7 +41,7 @@ function everyNode(value, found = []) {
 }
 
 function nodesOf(panel, component) {
-  return everyNode(panel.body).filter((node) => node.component === component);
+  return everyNode(panel).filter((node) => node.component === component);
 }
 
 function schemaBytes(panel) {
@@ -137,7 +137,7 @@ const ISSUE = {
 describe("the issue list panel", () => {
   it("stays inside every ceiling that fails a whole panel", () => {
     const panel = panels.buildIssuesPanel(issuesView());
-    const nodes = everyNode(panel.body);
+    const nodes = everyNode(panel);
 
     // Each of these refuses the panel outright rather than dropping one node,
     // so a list that grew past one of them is a blank screen, not a poorer one.
@@ -157,12 +157,14 @@ describe("the issue list panel", () => {
     assert.equal(new Set(keys).size, keys.length, "two controls share a state key");
     assert.ok(keys.length <= MAX_FILTER_CONTROLS, `${keys.length} controls`);
     assert.ok(keys.includes(contract.STATE_PRESET));
-    assert.ok(keys.includes(contract.STATE_VIEW));
+    assert.ok(!keys.includes(contract.STATE_VIEW));
+    assert.equal(panel.chrome.search.stateKey, contract.STATE_SEARCH);
   });
 
   it("keeps the strip under the ceiling even when every optional axis is on", () => {
     const panel = panels.buildIssuesPanel(issuesView());
-    assert.equal(nodesOf(panel, "segmented").length, MAX_FILTER_CONTROLS);
+    assert.ok(nodesOf(panel, "segmented").length <= MAX_FILTER_CONTROLS);
+    assert.equal(nodesOf(panel, "segmented").length, 7);
   });
 
   it("draws no literal control with more options than a strip can hold", () => {
@@ -204,7 +206,7 @@ describe("the issue list panel", () => {
   it("filters four axes on the client and no more", () => {
     // Four is `maxWhereClauses`. A fifth is dropped with a warning, which is a
     // filter that silently stops filtering — so the count is pinned here.
-    const panel = panels.buildIssuesPanel(issuesView({ view: "flat" }));
+    const panel = panels.buildIssuesPanel(issuesView());
     const [list] = nodesOf(panel, "list");
     assert.equal(list.bind.where.length, 4);
     assert.deepEqual(
@@ -228,31 +230,28 @@ describe("the issue list panel", () => {
     // not re-open a section the reader just closed.
     assert.equal(groups[3].defaultOpen, false);
     assert.equal(groups[0].badge, "4");
+    assert.equal(groups[0].icon, "play");
     for (const [index, group] of groups.entries()) {
       const [list] = everyNode(group.children).filter((node) => node.component === "list");
       assert.equal(list.bind.keyPrefix, contract.groupKeyPrefix(GROUPS[index].stateId));
     }
   });
 
-  it("ticks and batches only in the flat view", () => {
+  it("ticks and batches across grouped lists, on one shared key", () => {
     const grouped = panels.buildIssuesPanel(issuesView());
-    assert.equal(nodesOf(grouped, "list").filter((node) => node.selectable).length, 0);
-
-    const flat = panels.buildIssuesPanel(issuesView({ view: "flat" }));
-    const selectable = nodesOf(flat, "list").filter((node) => node.selectable);
-    // One bar, not seven: a bulk bar is computed per list, so grouping and a
-    // cross-group batch cannot both be on screen in vocabulary v1.
-    assert.equal(selectable.length, 1);
-    const { actions, max, stateKey } = selectable[0].selectable;
-    assert.equal(stateKey, contract.STATE_BATCH);
-    assert.ok(actions.length <= LIMITS.maxBulkActions, `${actions.length} bulk actions`);
-    assert.ok(max <= LIMITS.maxSelectedRows);
-    // The two that create lanes ask first. A mistake here costs eleven lanes.
-    assert.ok(actions[0].confirm && actions[1].confirm);
+    const selectable = nodesOf(grouped, "list").filter((node) => node.selectable);
+    assert.equal(selectable.length, GROUPS.length);
+    for (const list of selectable) {
+      const { actions, max, stateKey } = list.selectable;
+      assert.equal(stateKey, contract.STATE_BATCH);
+      assert.ok(actions.length <= LIMITS.maxBulkActions, `${actions.length} bulk actions`);
+      assert.ok(max <= LIMITS.maxSelectedRows);
+      assert.ok(actions[0].confirm && actions[1].confirm);
+    }
   });
 
   it("lets a bound row press only the verbs the panel itself declared", () => {
-    const panel = panels.buildIssuesPanel(issuesView({ view: "flat" }));
+    const panel = panels.buildIssuesPanel(issuesView());
     for (const list of nodesOf(panel, "list")) {
       assert.ok(list.bind.allowActions.length <= 16);
       for (const action of list.bind.allowActions) {
@@ -312,9 +311,11 @@ describe("the issue list panel", () => {
   it("says which filters are on when a search is live", () => {
     const panel = panels.buildIssuesPanel(issuesView({ query: "handoff", filtersActive: true }));
     const labels = nodesOf(panel, "button").map((node) => node.label);
-    assert.ok(labels.includes(COPY.clearSearch));
+    assert.ok(!labels.includes(COPY.clearSearch));
     assert.ok(labels.includes(COPY.resetFilters));
     assert.ok(nodesOf(panel, "badge").some((node) => node.text.includes("handoff")));
+    assert.equal(panel.chrome.search.placeholder, COPY.search);
+    assert.equal(panel.chrome.search.onChange.action, contract.ACTIONS.searchIssues);
   });
 });
 
@@ -411,7 +412,7 @@ describe("the issue detail panel", () => {
     assert.deepEqual(launches.map((node) => node.label), [COPY.launchOne, COPY.laneOne]);
 
     const actions = nodesOf(panel, "button").map((node) => node.onPress.action);
-    assert.ok(actions.includes(contract.ACTIONS.openInLinear));
+    assert.ok(panel.chrome.navActions.some((action) => action.action === contract.ACTIONS.openInLinear));
     assert.ok(actions.includes(contract.ACTIONS.commentOnIssue));
   });
 
@@ -618,6 +619,7 @@ describe("the issue row a list binds", () => {
     // all — which is what the materialized row did before this function.
     const readable = new Set([
       "title", "key", "subtitle", "meta", "tone", "icon", "mono", "badge", "onPress", "actions", "overflow",
+      "preview", "avatar", "markdown",
     ]);
     for (const key of Object.keys(issueListRow(ISSUE_ROW))) {
       assert.ok(readable.has(key), `${key} is invisible to the row reader`);
@@ -639,14 +641,15 @@ describe("the issue row a list binds", () => {
     assert.equal(issueIdFromRowKey(null), null);
   });
 
-  it("carries the state as an icon, a tone AND a chip, which is both built-ins", () => {
-    // The phone leads with a state icon; the desktop puts the state in its group
-    // header. A row has a slot for each, so this is both rather than a choice.
+  it("leads with the priority glyph when Linear set one, and the state otherwise", () => {
     const row = issueListRow(ISSUE_ROW);
-    assert.equal(row.icon, "play");
+    assert.equal(row.icon, "priority-high");
     assert.equal(row.tone, "accent");
     assert.deepEqual(row.badge, { text: "In Progress", tone: "accent", icon: "play" });
     assert.equal(row.mono, "ADE-122");
+    assert.deepEqual(row.preview, { title: "ADE-122", text: ISSUE_ROW.title });
+    assert.deepEqual(row.avatar, { name: "Ada" });
+    assert.equal(issueListRow({ ...ISSUE_ROW, priority: 0 }).icon, "play");
   });
 
   it("puts the lane first in the meta line, because it changes what a press means", () => {
@@ -702,6 +705,7 @@ describe("the issue row a list binds", () => {
     assert.equal(row.key, "c1");
     assert.ok(row.title.startsWith("Grace"));
     assert.ok(!row.subtitle.includes("\n"));
+    assert.ok(row.markdown.includes("Looks right"));
   });
 });
 
@@ -716,7 +720,7 @@ describe("the ids the two halves share", () => {
     // `url` argument. This walks every action every panel declares and fails if
     // one names a core-owned id that would be answered with the wrong shape.
     const panelsToCheck = [
-      panels.buildIssuesPanel(issuesView({ view: "flat" })),
+      panels.buildIssuesPanel(issuesView()),
       panels.buildIssuePanel({ state: "detail", issue: ISSUE }),
       panels.buildSettingsPanel({ connection: CONNECTION, showAutolinks: true, autolinks: [] }),
       panels.buildSettingsPanel({ connection: { connected: false } }),
@@ -727,7 +731,9 @@ describe("the ids the two halves share", () => {
       if (action && typeof action.action === "string") dispatched.add(action.action);
     };
     for (const panel of panelsToCheck) {
-      for (const node of everyNode(panel.body)) {
+      collect(panel.chrome?.search?.onChange);
+      for (const action of panel.chrome?.navActions ?? []) collect(action);
+      for (const node of everyNode(panel)) {
         collect(node.onPress);
         collect(node.onChange);
         collect(node.applyOnChange);
@@ -770,8 +776,8 @@ describe("the ids the two halves share", () => {
     assert.deepEqual(openInLinear.args, { issueId: "i1" });
 
     const panel = panels.buildIssuePanel({ state: "detail", issue: ISSUE });
-    const button = nodesOf(panel, "button").find((node) => node.onPress.action === "openInLinear");
-    assert.deepEqual(button.onPress.args, { issueId: ISSUE.id });
+    const open = panel.chrome.navActions.find((action) => action.action === "openInLinear");
+    assert.deepEqual(open.args, { issueId: ISSUE.id });
   });
 
   it("uses an id the data half does not own for a link that is not an issue", () => {
@@ -1037,5 +1043,24 @@ describe("which Linear app the connection is made with", () => {
     assert.ok(webhook, "no Webhook row on the settings panel");
     assert.equal(webhook.tone, "warning");
     assert.match(JSON.stringify(webhook.value), /Waiting for the signing secret/);
+  });
+
+  it("prints the drain's last event, unacked count and error from the ledger", () => {
+    const panel = panels.buildSettingsPanel({
+      connection: { connected: true, organizationName: "Acme" },
+      ingress: {
+        status: "Endpoint ready",
+        url: "https://relay.ade.dev/hook/abc",
+        secretStored: true,
+        webhooksPossible: true,
+        lastEvent: "2026-09-01 12:00 UTC",
+        pendingDeliveries: 2,
+        drainError: "relay timed out",
+      },
+    });
+    const rows = everyNode(panel.body).flatMap((node) => node.rows ?? []);
+    assert.match(JSON.stringify(rows.find((row) => row.key === "Last event")?.value), /2026-09-01 12:00 UTC/);
+    assert.match(JSON.stringify(rows.find((row) => row.key === "Waiting")?.value), /2 unacked/);
+    assert.match(JSON.stringify(rows.find((row) => row.key === "Drain")?.value), /relay timed out/);
   });
 });

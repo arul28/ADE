@@ -33,8 +33,10 @@ import {
   pluginPromptHint,
   pluginPromptOutcome,
   pluginPromptPlaceholder,
+  pluginPromptResolveChoice,
   pluginPromptTitle,
   pluginPromptTooLongNotice,
+  pluginPromptUnknownChoiceNotice,
 } from "../pluginPrompt";
 import type { AdeCodeConnection } from "../types";
 import { PLUGIN_FIXTURES } from "../../../../desktop/src/renderer/components/plugins/pluginFixtures";
@@ -251,6 +253,18 @@ describe("plugin pane model", () => {
       .toEqual(["open-agent", "stop", "archive"]);
     const stop = model.interactives[1];
     expect(stop.kind === "action" ? stop.action.confirm : null).toBe("Stop this agent?");
+  });
+
+  it("draws avatar initials on a node and on a list row", () => {
+    const model = build(panel([
+      { component: "avatar", name: "Jane Doe" },
+      { component: "list", items: [{ title: "ENG-1", avatar: { name: "Linear" } }] },
+    ]));
+    const face = model.rows.find((row) => row.kind === "text");
+    expect(face?.kind === "text" ? face.text : null).toBe("[JD] Jane Doe");
+    const item = model.rows.find((row) => row.kind === "listItem");
+    expect(item?.kind === "listItem" ? item.avatar : null).toBe("L");
+    expect(item?.kind === "listItem" ? item.title : null).toBe("ENG-1");
   });
 
   it("keeps a hundred rich rows in one list without spending the node budget", () => {
@@ -1074,7 +1088,12 @@ async function dispatchPluginAction(input: {
     const typed = input.answers[asked] ?? null;
     // Esc. Nothing is invoked and no follow-up runs.
     if (typed === null) return { followed, notices };
-    const next = pluginPromptAnswerArgs(outcome.request, typed);
+    const resolved = pluginPromptResolveChoice(outcome.request, typed);
+    if (resolved === null) {
+      notices.push(pluginPromptUnknownChoiceNotice(outcome.request));
+      return { followed, notices };
+    }
+    const next = pluginPromptAnswerArgs(outcome.request, resolved);
     if (!next) {
       notices.push(pluginPromptTooLongNotice(outcome.request));
       return { followed, notices };
@@ -1231,6 +1250,82 @@ describe("the plugin action prompt", () => {
     expect(pluginPromptPlaceholder(bare.request)).toBe("");
     expect(pluginPromptHint(bare.request)).toBe("↵ Submit · esc cancel");
   });
+
+  it("resolves a picker by value, label, or unique prefix, and refuses the rest", () => {
+    const asked = pluginPromptOutcome({
+      result: {
+        prompt: {
+          id: "lane",
+          title: "Link to a lane",
+          options: [
+            { value: "lane-1", label: "Alpha" },
+            { value: "lane-2", label: "Beta" },
+            { value: "other", label: "Also" },
+          ],
+        },
+      },
+      pluginId: "linear",
+      displayName: "Linear",
+      actionId: "linkToLane",
+      args: {},
+      label: "Link to a lane",
+    });
+    if (asked.kind !== "ask") throw new Error("expected a picker");
+    expect(pluginPromptHint(asked.request)).toBe("type a name · ↵ Submit · esc cancel");
+    expect(pluginPromptPlaceholder(asked.request)).toBe("type a name from the list");
+    expect(pluginPromptResolveChoice(asked.request, "lane-2")).toBe("lane-2");
+    expect(pluginPromptResolveChoice(asked.request, "alpha")).toBe("lane-1");
+    expect(pluginPromptResolveChoice(asked.request, "Be")).toBe("lane-2");
+    expect(pluginPromptResolveChoice(asked.request, "al")).toBeNull();
+    expect(pluginPromptResolveChoice(asked.request, "nope")).toBeNull();
+    expect(pluginPromptAnswerArgs(asked.request, "nope")).toBeNull();
+  });
+
+  it("re-invokes a picker with the option value, not the typed label", async () => {
+    const { connection, calls } = promptConnection([
+      {
+        prompt: {
+          id: "lane",
+          title: "Link to a lane",
+          options: [{ value: "lane-2", label: "Beta" }],
+        },
+      },
+      { message: "Linked 1 issue." },
+    ]);
+
+    const run = await dispatchPluginAction({
+      connection,
+      args: { issueId: "issue-1" },
+      answers: ["beta"],
+    });
+
+    expect(calls[1]?.args).toEqual({
+      issueId: "issue-1",
+      prompt: { id: "lane", text: "lane-2" },
+    });
+    expect(run.followed).toEqual([{ message: "Linked 1 issue." }]);
+  });
+
+  it("refuses a picker answer that is not a choice, rather than sending it", async () => {
+    const { connection, calls } = promptConnection([{
+      prompt: {
+        id: "lane",
+        title: "Link to a lane",
+        options: [{ value: "lane-1", label: "One" }],
+      },
+    }]);
+
+    const run = await dispatchPluginAction({
+      connection,
+      args: {},
+      answers: ["nope"],
+    });
+
+    expect(calls).toHaveLength(1);
+    expect(run.notices).toEqual([
+      "Link to a lane: that is not one of the choices. Type a name from the list and press enter.",
+    ]);
+  });
 });
 
 describe("the markdown node in the terminal", () => {
@@ -1321,15 +1416,37 @@ describe("the markdown node in the terminal", () => {
     expect(lines(markdown("- one\n  - nested"))).toEqual(["• one", "  • nested"]);
   });
 
-  it("shows an over-long document as its source, with the line that says why", () => {
+  it("renders an over-long document as markdown with a line saying the rest is not shown", () => {
     const model = build(panel([
-      { component: "markdown", text: `# Heading\n\n${"a".repeat(4_000)}` },
+      { component: "markdown", text: `# Heading\n\n${"a".repeat(VOCAB_LIMITS.maxMarkdownChars)}` },
     ]));
-    const first = model.rows[0];
-    expect(first?.kind === "text" && first.variant).toBe("code");
-    expect(first?.kind === "text" && first.text.startsWith("# Heading")).toBe(true);
-    expect(model.rows.some((row) => row.kind === "note" && row.text.includes("shown as written")))
+    expect(lines(model)[0]).toBe("Heading");
+    expect(model.rows.some((row) => row.kind === "note" && row.text.includes("rest of this text")))
       .toBe(true);
+    expect(model.rows.some((row) => row.kind === "note" && row.text.includes("shown as written")))
+      .toBe(false);
+  });
+
+  it("draws a pipe table as aligned rows rather than as pipes", () => {
+    const model = markdown("| Name | State |\n| --- | ---: |\n| ISS-1 | Open |");
+    expect(lines(model).some((line) => line.includes("ISS-1") && line.includes("Open"))).toBe(true);
+    expect(model.rows.some((row) => row.kind === "placeholder")).toBe(false);
+  });
+
+  it("draws a markdown image as a named placeholder, not as pixels", () => {
+    const model = markdown("See ![a diagram](https://ade.dev/x.png).");
+    const row = model.rows.find((entry) => entry.kind === "markdown");
+    if (row?.kind !== "markdown") throw new Error("expected a markdown row");
+    expect(row.parts.some((span) => span.src === "https://ade.dev/x.png")).toBe(true);
+  });
+
+  it("draws list-row markdown under the row rather than as a separate body node", () => {
+    const model = build(panel([{
+      component: "list",
+      items: [{ title: "kai", markdown: "The fix is in `sessionRedirect.ts`." }],
+    }]));
+    expect(model.rows.some((row) => row.kind === "listItem" && row.title === "kai")).toBe(true);
+    expect(lines(model).some((line) => line.includes("sessionRedirect.ts"))).toBe(true);
   });
 
   it("says so when a document has more blocks than a panel draws", () => {
@@ -1523,6 +1640,38 @@ describe("a selectable list in the terminal", () => {
     expect(bars[0]?.kind === "bulkBar" && bars[0].count).toBe(1);
     expect(model.chromeFooterCount).toBeGreaterThanOrEqual(1);
     expect(model.rows[model.rows.length - 1]?.kind).toBe("bulkBar");
+  });
+
+  it("unions ticks across grouped lists that share a selection key", () => {
+    const schema = panel([
+      {
+        component: "group",
+        title: "Started",
+        children: [{
+          component: "list",
+          items: [{ title: "a", key: "a" }],
+          selectable: { stateKey: "batch", actions: [{ action: "go", label: "Go" }] },
+        }],
+      },
+      {
+        component: "group",
+        title: "Todo",
+        children: [{
+          component: "list",
+          items: [{ title: "b", key: "b" }],
+          selectable: { stateKey: "batch", actions: [{ action: "go", label: "Go" }] },
+        }],
+      },
+    ]);
+    const empty = build(schema);
+    const model = build(schema, {
+      selection: { batch: ["a", "b"] },
+      selectionSignature: empty.selectionSignature,
+    });
+    const bars = model.rows.filter((row) => row.kind === "bulkBar");
+    expect(bars).toHaveLength(1);
+    expect(bars[0]?.kind === "bulkBar" && bars[0].count).toBe(2);
+    expect(pluginPaneSelectionPayload(model, "batch")).toEqual(["a", "b"]);
   });
 
   it("leaves a ticked row the filter hid out of the batch, without unticking it", () => {

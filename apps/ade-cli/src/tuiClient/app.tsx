@@ -84,8 +84,10 @@ import {
   pluginPromptHint,
   pluginPromptOutcome,
   pluginPromptPlaceholder,
+  pluginPromptResolveChoice,
   pluginPromptTitle,
   pluginPromptTooLongNotice,
+  pluginPromptUnknownChoiceNotice,
   type PluginPromptRequest,
 } from "./pluginPrompt";
 import { rollupPrChecks } from "../../../desktop/src/shared/prChecksRollup";
@@ -10717,7 +10719,12 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
   const submitPluginPrompt = useCallback(async (): Promise<void> => {
     const session = pluginPromptRef.current;
     if (!session) return;
-    const args = pluginPromptAnswerArgs(session.request, promptRef.current);
+    const resolved = pluginPromptResolveChoice(session.request, promptRef.current);
+    if (resolved === null) {
+      addNotice(pluginPromptUnknownChoiceNotice(session.request), "error");
+      return;
+    }
+    const args = pluginPromptAnswerArgs(session.request, resolved);
     if (!args) {
       addNotice(pluginPromptTooLongNotice(session.request), "error");
       return;

@@ -23,7 +23,7 @@ import Foundation
 /// `<script>` is five words on a screen, not markup — the same structural
 /// answer the TS module gives, reached the same way.
 enum PluginVocabMarkdownLimits {
-  static let maxChars = 4_000
+  static let maxChars = 16_000
   static let maxBlocks = 100
   /// Container nesting. A top-level block is depth 1.
   static let maxDepth = 3
@@ -31,6 +31,12 @@ enum PluginVocabMarkdownLimits {
   static let maxSpans = 200
   /// A fence's info string, read down to its first word.
   static let maxLanguageChars = 32
+  /// GFM pipe-table columns. Matches `maxTableColumns` on the `table` node.
+  static let maxTableColumns = 8
+  /// Body rows of one pipe table. Tighter than `maxTableRows` (100).
+  static let maxTableRows = 40
+  /// Source on one list row's `markdown` field. Mirrors `maxListItemMarkdownChars`.
+  static let maxListItemChars = 4_000
 }
 
 /// One run of inline text and how it is drawn. Mirrors `VocabMarkdownSpan`.
@@ -47,6 +53,8 @@ struct PluginVocabMarkdownSpan: Equatable {
   var code = false
   /// An `https:` destination, already through ``PluginInvokeResult/parseOpenURL(_:)``.
   var href: URL?
+  /// An `https:` image source, already through the same gate. `text` is the alt.
+  var src: URL? = nil
 }
 
 /// One row of a `list` block. `task` is present only for a task-list row, and is
@@ -66,6 +74,15 @@ indirect enum PluginVocabMarkdownBlock: Equatable {
   case quote(blocks: [PluginVocabMarkdownBlock])
   case list(ordered: Bool, start: Int, items: [PluginVocabMarkdownItem])
   case rule
+  case table(
+    align: [PluginVocabMarkdownTableAlign],
+    header: [[PluginVocabMarkdownSpan]],
+    rows: [[[PluginVocabMarkdownSpan]]]
+  )
+}
+
+enum PluginVocabMarkdownTableAlign: Equatable {
+  case left, center, right
 }
 
 struct PluginVocabMarkdownDocument: Equatable {
@@ -87,8 +104,23 @@ enum PluginVocabMarkdownParser {
     // A final newline TERMINATES the last line rather than starting an empty one.
     if lines.count > 1, lines[lines.count - 1].isEmpty { lines.removeLast() }
     var budget = PluginVocabMarkdownLimits.maxBlocks
-    let blocks = parseBlocks(lines, depth: 1, budget: &budget)
-    return PluginVocabMarkdownDocument(blocks: blocks, truncated: budget <= 0)
+    var truncated = false
+    let blocks = parseBlocks(lines, depth: 1, budget: &budget, truncated: &truncated)
+    return PluginVocabMarkdownDocument(blocks: blocks, truncated: truncated || budget <= 0)
+  }
+
+  /// Cut a document to `maxChars` at the last complete line in the window.
+  /// Mirrors `clampVocabMarkdownSource`.
+  static func clamp(_ source: String, maxChars: Int = PluginVocabMarkdownLimits.maxChars) -> (text: String, truncated: Bool) {
+    guard source.count > maxChars else { return (source, false) }
+    let slice = String(source.prefix(maxChars))
+    if let newline = slice.lastIndex(of: "\n") {
+      let offset = slice.distance(from: slice.startIndex, to: newline)
+      if offset >= maxChars / 2 {
+        return (String(slice[..<newline]), true)
+      }
+    }
+    return (slice, true)
   }
 
   // MARK: Blocks
@@ -109,7 +141,8 @@ enum PluginVocabMarkdownParser {
   private static func parseBlocks(
     _ lines: [String],
     depth: Int,
-    budget: inout Int
+    budget: inout Int,
+    truncated: inout Bool
   ) -> [PluginVocabMarkdownBlock] {
     var blocks: [PluginVocabMarkdownBlock] = []
     let nestable = depth < PluginVocabMarkdownLimits.maxDepth
@@ -161,6 +194,39 @@ enum PluginVocabMarkdownParser {
         continue
       }
 
+      if isTableStart(lines, at: index) {
+        let headerCells = splitTableCells(line) ?? []
+        let delimiterCells = splitTableCells(lines[index + 1]) ?? []
+        let alignAll = readTableAlign(delimiterCells) ?? []
+        let columns = min(max(1, alignAll.count), PluginVocabMarkdownLimits.maxTableColumns)
+        let align = Array(alignAll.prefix(columns))
+        let header = tableCellsToSpans(headerCells, columns: columns)
+        var rows: [[[PluginVocabMarkdownSpan]]] = []
+        index += 2
+        while index < lines.count {
+          let candidate = lines[index]
+          if isBlank(candidate) || splitTableCells(candidate) == nil { break }
+          if isTableRowInterrupt(candidate, nestable: nestable) { break }
+          if rows.count >= PluginVocabMarkdownLimits.maxTableRows {
+            truncated = true
+            index += 1
+            while index < lines.count {
+              let extra = lines[index]
+              if isBlank(extra) || splitTableCells(extra) == nil { break }
+              if isTableRowInterrupt(extra, nestable: nestable) { break }
+              index += 1
+            }
+            break
+          }
+          rows.append(tableCellsToSpans(splitTableCells(candidate) ?? [], columns: columns))
+          index += 1
+        }
+        if budget <= 0 { break }
+        budget -= 1
+        blocks.append(.table(align: align, header: header, rows: rows))
+        continue
+      }
+
       if nestable, readQuote(line) != nil {
         var body: [String] = []
         while index < lines.count {
@@ -177,7 +243,7 @@ enum PluginVocabMarkdownParser {
         // against the same budget — nesting cannot buy more nodes.
         if budget <= 0 { break }
         budget -= 1
-        blocks.append(.quote(blocks: parseBlocks(body, depth: depth + 1, budget: &budget)))
+        blocks.append(.quote(blocks: parseBlocks(body, depth: depth + 1, budget: &budget, truncated: &truncated)))
         continue
       }
 
@@ -219,7 +285,7 @@ enum PluginVocabMarkdownParser {
           content.append(contentsOf: body)
           items.append(PluginVocabMarkdownItem(
             task: task?.task,
-            blocks: parseBlocks(content, depth: depth + 1, budget: &budget)
+            blocks: parseBlocks(content, depth: depth + 1, budget: &budget, truncated: &truncated)
           ))
           if budget <= 0 { break }
         }
@@ -234,6 +300,7 @@ enum PluginVocabMarkdownParser {
         if !paragraph.isEmpty {
           let starts = readHeading(next) != nil || isRule(next) || readFence(next) != nil
             || (nestable && (readQuote(next) != nil || readBullet(next) != nil || readOrdered(next) != nil))
+            || isTableStart(lines, at: index)
           if starts { break }
         }
         paragraph.append(next.trimmingCharacters(in: .whitespaces))
@@ -327,6 +394,73 @@ enum PluginVocabMarkdownParser {
     return nil
   }
 
+  // MARK: Tables
+
+  /// Split a GFM table row into cells. `nil` when the line has no pipe. Mirrors
+  /// `splitTableCells`.
+  private static func splitTableCells(_ line: String) -> [String]? {
+    let raw = line.trimmingCharacters(in: .whitespaces)
+    guard raw.contains("|") else { return nil }
+    var cells: [String] = []
+    var current = ""
+    let characters = Array(raw)
+    var index = raw.hasPrefix("|") ? 1 : 0
+    while index < characters.count {
+      let char = characters[index]
+      if char == "\\", index + 1 < characters.count {
+        current.append(characters[index + 1])
+        index += 2
+        continue
+      }
+      if char == "|" {
+        cells.append(current.trimmingCharacters(in: .whitespaces))
+        current = ""
+        index += 1
+        continue
+      }
+      current.append(char)
+      index += 1
+    }
+    let trailingPipe = raw.hasSuffix("|") && current.isEmpty && !raw.hasSuffix("\\|")
+    if !trailingPipe {
+      cells.append(current.trimmingCharacters(in: .whitespaces))
+    }
+    return cells.isEmpty ? nil : cells
+  }
+
+  private static func readTableAlign(_ cells: [String]) -> [PluginVocabMarkdownTableAlign]? {
+    guard !cells.isEmpty else { return nil }
+    var align: [PluginVocabMarkdownTableAlign] = []
+    for cell in cells {
+      var token = String(cell.filter { !$0.isWhitespace })
+      let left = token.hasPrefix(":")
+      let right = token.hasSuffix(":")
+      if left { token.removeFirst() }
+      if right, !token.isEmpty { token.removeLast() }
+      guard token.count >= 3, token.allSatisfy({ $0 == "-" }) else { return nil }
+      if left && right { align.append(.center) }
+      else if right { align.append(.right) }
+      else { align.append(.left) }
+    }
+    return align
+  }
+
+  private static func isTableStart(_ lines: [String], at index: Int) -> Bool {
+    guard index + 1 < lines.count,
+          splitTableCells(lines[index]) != nil,
+          let delimiter = splitTableCells(lines[index + 1]) else { return false }
+    return readTableAlign(delimiter) != nil
+  }
+
+  private static func tableCellsToSpans(_ cells: [String], columns: Int) -> [[PluginVocabMarkdownSpan]] {
+    (0..<columns).map { parseInline($0 < cells.count ? cells[$0] : "") }
+  }
+
+  private static func isTableRowInterrupt(_ line: String, nestable: Bool) -> Bool {
+    readHeading(line) != nil || isRule(line) || readFence(line) != nil
+      || (nestable && (readQuote(line) != nil || readBullet(line) != nil || readOrdered(line) != nil))
+  }
+
   // MARK: Inline
 
   private struct SpanStyle {
@@ -334,6 +468,7 @@ enum PluginVocabMarkdownParser {
     var italic = false
     var strike = false
     var href: URL?
+    var src: URL?
   }
 
   /// ASCII punctuation a backslash may escape, per CommonMark.
@@ -353,6 +488,7 @@ enum PluginVocabMarkdownParser {
        last.italic == style.italic,
        last.strike == style.strike,
        last.href == style.href,
+       last.src == style.src,
        last.code == code {
       last.text += text
       spans[spans.count - 1] = last
@@ -364,7 +500,8 @@ enum PluginVocabMarkdownParser {
       italic: style.italic,
       strike: style.strike,
       code: code,
-      href: style.href
+      href: style.href,
+      src: style.src
     ))
   }
 
@@ -416,11 +553,18 @@ enum PluginVocabMarkdownParser {
         }
       }
 
-      // `![alt](url)` — the image is omitted and the alt text stays.
+      // `![alt](url)` — https images become a span with `src`; anything else
+      // keeps the alt as prose, the same way a refused link keeps its words.
       if char == "!", index + 1 < source.count, source[index + 1] == "[",
          let link = readLink(source, start: index + 1) {
         flush()
-        spans.append(contentsOf: parseInline(Array(link.text), style: style, depth: depth + 1))
+        if let url = PluginInvokeResult.parseOpenURL(link.url) {
+          var imageStyle = style
+          imageStyle.src = url
+          push(&spans, link.text.isEmpty ? "image" : link.text, imageStyle)
+        } else {
+          spans.append(contentsOf: parseInline(Array(link.text), style: style, depth: depth + 1))
+        }
         index = link.end
         continue
       }

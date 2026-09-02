@@ -92,10 +92,10 @@ Proposed split (one Opus 5 medium agent per feature, each across all four client
 - seam test agent: cross-half contract test as before.
 
 ### Unit B — every extracted plugin becomes a real `supersedes` plugin
-Today's inventory (`plugins/`): ade-linear (real, supersedes), ade-cursor-cloud (real, supersedes, 3.4k lines, 7 gaps), ade-graph / ade-review / ade-history / ade-ios-sim / ade-app-control (`enables` gating shells with 0 lines of code — they only unlock compiled surfaces), ade-log-viewer (489 lines), ade-voice (1.7k lines), themes.
+Today's inventory (`plugins/`): ade-linear (real, supersedes), ade-cursor-cloud (real, supersedes, 3.4k lines, 6 gaps), ade-graph / ade-review / ade-history / ade-ios-sim / ade-app-control (`enables` gating shells with 0 lines of code — they only unlock compiled surfaces), ade-log-viewer (489 lines), ade-voice (1.7k lines), themes.
 Required end state for each of graph, review, history, ios-sim, app-control (and cursor-cloud's 7 gaps): a real plugin that re-implements the compiled feature on desktop AND mobile (where the compiled feature exists on mobile), flipped to `supersedes` exactly like Linear: compiled stays in the install; plugin install hides every compiled surface and the plugin's version stands in its place; disable brings the compiled version back.
 First step per shell: a parity map like `docs/reports/linear-plugin-parity-map.md` (what the compiled surface does on each client; which seams the plugin needs; which vocabulary nodes are missing). Expect new platform work: graph needs a canvas (Tier 2 webview on desktop; decide mobile), ios-sim and app-control drive local processes (simctl, computer-use) and stream screens — the plugin child needs a process/stream seam, or these need a declared capability the host brokers. "Expand language or logic as needed" is the owner's explicit permission to grow the platform.
-Cursor Cloud's 7 open gaps: `webhooks.status()` ledger read (shared with Linear gap), secret reveal, navigate-to-settings, PX-11 tab badge, artifact download, launch strip, CLI alias.
+Cursor Cloud's remaining gaps: secret reveal, navigate-to-settings, PX-11 tab badge, artifact download, launch strip, CLI alias. `webhooks.status()` is on the SDK.
 Proposed split: 5 parity-map agents in parallel (read-only, Opus 5 medium) -> coordinator writes one spec per shell -> per-shell build with core/panels split + seam test -> supersedes flip agent per shell (use the Linear flip commit 54df53935 as the template: builtinSurfaces row, manifest presence, gating predicate at every entry point on 4 clients, iOS `awaitDrawsBuiltin`, TUI rows tagged, tests inverted).
 
 ### Unit C — the combined acceptance build
@@ -105,7 +105,9 @@ One build with ALL plugins installable. Run the install-switch test above for ev
 Linear ~16.5k lines (5.4k renderer + 2.9k iOS + 8.2k main), legacy lane columns, owner rows, PX-14-style migration cards. MUST ride the same commit: rename `skills/ade-linear/SKILL.md` env var `ADE_LINEAR_ISSUE_IDS` -> `ADE_PLUGIN_LINEAR_ISSUE_IDS` (the host env prefix is fixed; a one-commit lag silently loses every agent's issue context). Also: fix core's `updatedFrom` misread (`linearAutomationDispatch.ts:82`) with the trigger remap; the pre-existing dead `linear_dispatcher`/`linear_sync` picker rows in `adeActionSchemas.ts:1436-1468`.
 
 ## Remaining Linear core-removal gap list (no blockers)
-1. skill env rename (rides the removal commit). 2. `webhooks.status()` SDK read. 3. 250 vs 500 list (Unit A). 4. comment rows plain text (Unit A). 5. no picker node (Unit A). 6. `github.listRepoAutolinks` read-back (plugin follow-up). 7. core `updatedFrom` bug. 8. `builtin:linear` scaffolding dies with core. 9. custom-client `admin` scope (product decision above).
+1. skill env rename (rides the removal commit). 2. `github.listRepoAutolinks` read-back (plugin follow-up). 3. core `updatedFrom` bug. 4. `builtin:linear` scaffolding dies with core. 5. custom-client `admin` scope (product decision above).
+
+Cursor Cloud's remaining gaps: secret reveal, navigate-to-settings, PX-11 tab badge, artifact download, launch strip, CLI alias. `webhooks.status()` is on the SDK.
 
 ## Other logged backlog
 - Remote-machine Marketplace: when the global project tab points at another machine, the Marketplace must show that machine's marketplace; today it throws.

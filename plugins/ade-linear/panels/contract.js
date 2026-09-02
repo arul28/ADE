@@ -74,9 +74,10 @@ const COLLECTION_PEOPLE = "people";
  * only way to have both — the alternative is re-sorting on the client, which
  * rule 3 forbids and which no client could do anyway.
  *
- * The cost is one duplicate row per issue. At the vocabulary's 250-row ceiling
- * that is 500 rows, and a dressed row measures a few hundred bytes — bound rows
- * live in `plugin_collections` and never touch `maxSchemaBytes`.
+ * The cost is one duplicate row per issue. At the vocabulary's 1000-row ceiling
+ * that is 2000 bound rows plus the canonical copy, and a dressed row measures a
+ * few hundred bytes — bound rows live in `plugin_collections` and never touch
+ * `maxSchemaBytes`.
  */
 const ISSUE_KEY_FLAT = "flat:";
 const ISSUE_KEY_GROUP = "group:";
@@ -178,8 +179,8 @@ const PANEL_LAUNCH = "launch";
  * Seven of the vocabulary's eight per-panel state keys, spent on the issue list.
  *
  * `group` costs none — a folded section is client-local and never enters this
- * table — which is what leaves the whole filter budget for filters. The eighth
- * key is deliberately unspent, so one more axis costs no redesign.
+ * table — which is what leaves the whole filter budget for filters. Search
+ * spends the eighth key (`chrome.search`), so a ninth axis would fail the panel.
  */
 const STATE_PRESET = "state";
 const STATE_PROJECT = "project";
@@ -189,8 +190,10 @@ const STATE_SORT = "sort";
 const STATE_TEAM = "team";
 const STATE_UPDATED = "updated";
 const STATE_VIEW = "view";
+/** The nav-bar search field. Short on purpose: it is also a `$state` key. */
+const STATE_SEARCH = "q";
 
-/** The selection key the flat list's ticks live under. */
+/** The selection key every grouped list's ticks live under. */
 const STATE_BATCH = "batch";
 
 /**
@@ -220,16 +223,15 @@ function issuePriorityKey(identifier) {
  * the two halves of this plugin is a table that will eventually disagree, in a
  * way no test on either side can see.
  *
- * The vocabulary has exactly four tones (`VocabTone`): `neutral`, `accent`,
- * `success`, `warning`. Anything else is coerced to the fallback, so a tone
+ * The vocabulary has five tones (`VocabTone`): `neutral`, `accent`,
+ * `success`, `warning`, `destructive`. Anything else is coerced to the fallback, so a tone
  * invented here would not fail — it would silently render flat, which is the
- * worst of both outcomes. There is no red anywhere a plugin reaches, so this is
- * a real narrowing and the mapping is chosen rather than derived: `started` is
+ * worst of both outcomes. `started` is
  * the one a reader scans for, so it takes `accent`; `completed` is the only
  * settled-and-good state, so it takes `success`; `triage` is the only one that
  * wants attention, so it takes `warning`. `canceled` reads neutral rather than
- * loud on purpose — the only louder tone is `warning`, and a cancelled issue is
- * not a warning, it is a closed one.
+ * loud on purpose — cancelled is closed, not a warning. Destructive is reserved
+ * for Urgent priority, not for a workflow state.
  */
 const STATE_TONES = Object.freeze({
   triage: "warning",
@@ -353,6 +355,7 @@ const ISSUE_ROW_ACTIONS = [
  */
 const PROMPT_SEARCH = "search";
 const PROMPT_COMMENT = "comment";
+const PROMPT_LANE = "lane";
 
 module.exports = {
   ACTIONS,
@@ -375,12 +378,14 @@ module.exports = {
   PANEL_SETTINGS,
   PRIORITY_LABELS,
   PROMPT_COMMENT,
+  PROMPT_LANE,
   PROMPT_SEARCH,
   STATE_ASSIGNEE,
   STATE_BATCH,
   STATE_PRESET,
   STATE_PRIORITY,
   STATE_PROJECT,
+  STATE_SEARCH,
   STATE_SORT,
   STATE_TEAM,
   STATE_TONES,

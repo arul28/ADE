@@ -157,7 +157,8 @@ describe("filters and search", () => {
     const host = makeHost();
     const result = await bind(host).clearFilters();
     assert.deepEqual(result.resetState, FILTER_STATE_KEYS);
-    assert.ok(!result.resetState.includes(contract.STATE_VIEW), "the layout is not a filter");
+    assert.ok(result.resetState.includes(contract.STATE_SEARCH), "a leftover query is a filter");
+    assert.ok(!result.resetState.includes(contract.STATE_VIEW), "the leftover layout key is not a control");
     assert.ok(!result.resetState.includes(contract.STATE_BATCH), "the ticks are not a filter");
   });
 
@@ -172,6 +173,14 @@ describe("filters and search", () => {
     const answered = await handlers.searchIssues({ prompt: { id: contract.PROMPT_SEARCH, text: " handoff " } });
     assert.deepEqual(host.calls.find((call) => call.path === "data.search").args, ["handoff"]);
     assert.ok(answered.message.includes("handoff"));
+  });
+
+  it("reads the nav-bar field without asking a prompt", async () => {
+    const host = makeHost();
+    const answered = await bind(host).searchIssues({ [contract.STATE_SEARCH]: " login " });
+    assert.deepEqual(host.calls.find((call) => call.path === "data.search").args, ["login"]);
+    assert.ok(answered.message.includes("login"));
+    assert.ok(!answered.prompt);
   });
 
   it("reads an emptied field as a cleared search, not a search for nothing", async () => {
@@ -254,6 +263,35 @@ describe("launching work", () => {
     const result = await bind(host).openLaunch({ issueId: "issue-1" });
     assert.ok(!("navigate" in result), "navigated to a panel that is not declared");
     assert.ok(reached(host).includes("flows.spawnAgentOnIssue"));
+  });
+
+  it("asks which lane to link to instead of taking the first one", async () => {
+    const host = makeHost();
+    host.flows.linkIssueToLane = (...args) => {
+      host.calls.push({ path: "flows.linkIssueToLane", args });
+      const laneId = args[1];
+      if (!laneId) {
+        return {
+          prompt: {
+            id: contract.PROMPT_LANE,
+            title: "Link to a lane",
+            options: [{ value: "lane-1", label: "One" }, { value: "lane-2", label: "Two" }],
+          },
+        };
+      }
+      return { linked: Array.isArray(args[0]) ? args[0].length : 1 };
+    };
+    const asked = await bind(host).linkToLane({ issueId: "issue-1" });
+    assert.equal(asked.prompt?.id, contract.PROMPT_LANE);
+    assert.equal(host.calls.find((call) => call.path === "flows.linkIssueToLane").args[1], null);
+
+    const linked = await bind(host).linkToLane({
+      issueId: "issue-1",
+      prompt: { id: contract.PROMPT_LANE, text: "lane-2" },
+    });
+    assert.equal(linked.message, "Linked 1 issue.");
+    const [, laneId] = host.calls.filter((call) => call.path === "flows.linkIssueToLane").at(-1).args;
+    assert.equal(laneId, "lane-2");
   });
 });
 

@@ -19,7 +19,7 @@
  */
 
 import { bounded, finite, isRecord, oneOf, trimmed } from "./parse";
-import { VOCAB_MARKDOWN_LIMITS } from "./vocabularyMarkdown";
+import { VOCAB_MARKDOWN_LIMITS, clampVocabMarkdownSource } from "./vocabularyMarkdown";
 import {
   VOCAB_STATE_LIMITS,
   evaluateVocabWhere,
@@ -84,7 +84,16 @@ export const VOCAB_LIMITS = {
   maxDepth: 8,
   /** Serialized schema size. Matches the `schema_json` column budget. */
   maxSchemaBytes: 65_536,
-  maxSelectOptions: 40,
+  /**
+   * Options one form `select` may hold.
+   *
+   * 80 rather than 40, because 40 was one model-picker short of a workspace
+   * that lists every provider's models. A bound `segmented` already holds 50
+   * ({@link VOCAB_STATE_LIMITS.maxBoundStateOptions}); a launch form's model
+   * field is the same kind of list and was the one still truncated. Past 80
+   * the honest answer is still a search, not a longer menu.
+   */
+  maxSelectOptions: 80,
   maxTableRows: 100,
   maxTableColumns: 8,
   /**
@@ -191,6 +200,7 @@ export type VocabComponentName =
   | "chart"
   | "video"
   | "image"
+  | "avatar"
   | "divider"
   | "keyValue"
   | "emptyState"
@@ -198,11 +208,15 @@ export type VocabComponentName =
   | (string & {});
 
 /**
- * Semantic tone. No `danger`/red — a failure is amber, the same house rule
- * stated at the top of `../adeCard.ts`. {@link normalizeVocabTone} folds any
- * red-ish value an author invents into `warning` so a payload cannot bypass it.
+ * Semantic tone.
+ *
+ * `destructive` is the red: a delete, a failed check, a cancel. `warning` stays
+ * amber — blocked, at risk, needs attention but not an alarm. Authors may write
+ * `danger` / `error` / `failed` / `red`; {@link normalizeVocabTone} folds those
+ * onto `destructive` so a payload cannot invent a sixth colour, and cannot
+ * paint a failure as a warning.
  */
-export type VocabTone = "neutral" | "accent" | "success" | "warning";
+export type VocabTone = "neutral" | "accent" | "success" | "warning" | "destructive";
 
 export function normalizeVocabTone(value: unknown): VocabTone {
   const tone = typeof value === "string" ? value.trim().toLowerCase() : "";
@@ -217,13 +231,15 @@ export function normalizeVocabTone(value: unknown): VocabTone {
       return "success";
     case "warning":
     case "warn":
+      return "warning";
+    case "destructive":
     case "danger":
     case "error":
     case "critical":
     case "fail":
     case "failed":
     case "red":
-      return "warning";
+      return "destructive";
     default:
       return "neutral";
   }
@@ -344,8 +360,9 @@ export type VocabTextNode = {
  * Formatted prose: an issue body, a comment, a release note.
  *
  * The subset is `./vocabularyMarkdown.ts` and is the same on all four clients —
- * headings, emphasis, code, links, lists, quotes and inert task checkboxes.
- * There is no raw HTML anywhere in it, and a link is `https:` only.
+ * headings, emphasis, code, links, lists, quotes, inert task checkboxes, https
+ * images and GFM pipe tables. There is no raw HTML anywhere in it, and a link
+ * or a markdown image is `https:` only.
  *
  * One field, on purpose. There is no `maxHeight` twin of {@link VocabImageNode}
  * here: an image has an intrinsic pixel size a panel has to bound, prose has a
@@ -361,12 +378,11 @@ export type VocabMarkdownNode = {
   /**
    * Set by the parser when the source was over the ceiling and was cut.
    *
-   * A clamped document renders as PLAIN TEXT with a marker rather than as
-   * markdown, on every client. That is not squeamishness about length: a cut
-   * lands wherever the ceiling falls, which is regularly inside a fence, a link
-   * or an emphasis run, so the markdown of a truncated document is not the
-   * document's markdown — a half-open fence swallows the rest of it as code.
-   * Showing the source says "this was cut" in a way half-parsed prose cannot.
+   * The cut is at the last complete line in the window (see
+   * {@link clampVocabMarkdownSource}), and every client still formats what
+   * remains as markdown. The renderer adds a line saying the rest is not shown.
+   * There is no "dump as plain source" path: that was the 4,000-character
+   * reduction this flag used to mean.
    */
   truncated?: boolean;
 };
@@ -457,6 +473,24 @@ export type VocabListItem = {
    * collection can ship it the same way it ships `subtitle`.
    */
   preview?: VocabListItemPreview;
+  /**
+   * Formatted body under the row, parsed with the same subset as a `markdown`
+   * node. Not a body node — it is row data, so a bound collection can ship a
+   * comment thread without spending `maxNodes` per comment.
+   *
+   * Clamped to {@link VOCAB_LIMITS.maxListItemMarkdownChars} (4,000), not the
+   * document ceiling: a hundred drawn rows of 16 KiB would stall a phone. The
+   * host sets {@link VocabListItem.markdownTruncated} when it cuts.
+   */
+  markdown?: string;
+  /** Set by the host when {@link VocabListItem.markdown} was over its ceiling. */
+  markdownTruncated?: true;
+  /**
+   * Face beside the title. Initials from {@link vocabAvatarInitials} when `src`
+   * is absent or will not load. Not a body node — a bound collection can ship
+   * it the same way it ships `subtitle`.
+   */
+  avatar?: VocabAvatar;
 };
 
 /** What a list row shows when the pointer rests on it. */
@@ -601,6 +635,39 @@ export type VocabImageNode = {
   alt: string;
   maxHeight?: number;
 };
+
+/**
+ * A face: a photo when `src` loads, otherwise the initials of `name`.
+ *
+ * The product reference is Linear's org/workspace avatar. One letter for a
+ * single word, two for "Jane Doe". `src` uses the same https/`data:` rule as
+ * {@link VocabImageNode}.
+ */
+export type VocabAvatar = {
+  name: string;
+  src?: string;
+};
+
+export type VocabAvatarSize = "sm" | "md" | "lg";
+
+export type VocabAvatarNode = {
+  component: "avatar";
+  name: string;
+  src?: string;
+  size?: VocabAvatarSize;
+};
+
+/**
+ * One or two initials from a display name. Empty after trim is `"?"` so a
+ * missing name still draws a chip rather than a hole.
+ */
+export function vocabAvatarInitials(name: string): string {
+  const words = name.trim().split(/\s+/).filter((word) => word.length > 0);
+  if (words.length === 0) return "?";
+  const first = words[0]!.charAt(0);
+  const second = words.length > 1 ? words[1]!.charAt(0) : "";
+  return `${first}${second}`.toUpperCase();
+}
 
 export type VocabDividerNode = {
   component: "divider";
@@ -762,6 +829,7 @@ export type VocabNode =
   | VocabChartNode
   | VocabVideoNode
   | VocabImageNode
+  | VocabAvatarNode
   | VocabDividerNode
   | VocabKeyValueNode
   | VocabEmptyStateNode
@@ -1193,6 +1261,11 @@ function readListItem(
   const actions = parseListItemActions(raw.actions, VOCAB_LIMITS.maxListItemActions, gate);
   const overflow = parseListItemActions(raw.overflow, VOCAB_LIMITS.maxListItemOverflow, gate);
   const preview = parseListItemPreview(raw.preview);
+  const markdownSource = trimmed(raw.markdown);
+  const markdown = markdownSource === null
+    ? undefined
+    : clampVocabMarkdownSource(markdownSource, VOCAB_LIMITS.maxListItemMarkdownChars);
+  const avatar = parseAvatar(raw.avatar);
   return {
     title,
     ...(itemKey !== null ? { key: itemKey } : {}),
@@ -1206,6 +1279,9 @@ function readListItem(
     ...(actions !== undefined ? { actions } : {}),
     ...(overflow !== undefined ? { overflow } : {}),
     ...(preview !== undefined ? { preview } : {}),
+    ...(markdown !== undefined ? { markdown: markdown.text } : {}),
+    ...(markdown?.truncated ? { markdownTruncated: true as const } : {}),
+    ...(avatar !== undefined ? { avatar } : {}),
   };
 }
 
@@ -1219,6 +1295,15 @@ function parseListItemPreview(raw: unknown): VocabListItemPreview | undefined {
     ...(title !== undefined ? { title } : {}),
     ...(text !== undefined ? { text } : {}),
   };
+}
+
+/** Face on a row or an `avatar` node. Dropped when `name` is missing. */
+function parseAvatar(raw: unknown): VocabAvatar | undefined {
+  if (!isRecord(raw)) return undefined;
+  const name = vocabString(raw.name, VOCAB_LIMITS.maxLabelChars);
+  if (name === undefined) return undefined;
+  const src = vocabMediaSrc(raw.src);
+  return { name, ...(src !== undefined ? { src } : {}) };
 }
 
 function parseListItem(raw: unknown): VocabListItem | null {
@@ -1397,17 +1482,17 @@ export const NODE_PARSERS: Record<string, VocabNodeParser> = {
 
   markdown: (raw, ctx) => {
     // NOT `vocabString`: its ellipsis would be appended INSIDE the document, so
-    // a cut that landed in a fence would render `…` as code and the marker the
-    // reader needs would be invisible. Over the ceiling the node keeps the text
-    // it can and says so in a field, which is what every client reads to decide
-    // between drawing prose and drawing the source.
+    // a cut that landed in a fence would render `…` as code. Over the ceiling
+    // the node keeps every complete line it can (see
+    // {@link clampVocabMarkdownSource}) and says so in a field. Clients still
+    // format that window as markdown.
     const source = trimmed(raw.text);
     if (source === null) return ctx.invalid("`text` is required");
-    const truncated = source.length > VOCAB_LIMITS.maxMarkdownChars;
+    const clamped = clampVocabMarkdownSource(source);
     return {
       component: "markdown",
-      text: truncated ? source.slice(0, VOCAB_LIMITS.maxMarkdownChars) : source,
-      ...(truncated ? { truncated: true as const } : {}),
+      text: clamped.text,
+      ...(clamped.truncated ? { truncated: true as const } : {}),
     };
   },
 
@@ -1593,6 +1678,19 @@ export const NODE_PARSERS: Record<string, VocabNodeParser> = {
       src,
       alt,
       ...(maxHeight !== undefined && maxHeight > 0 ? { maxHeight: Math.floor(maxHeight) } : {}),
+    };
+  },
+
+  avatar: (raw, ctx) => {
+    const name = vocabString(raw.name, VOCAB_LIMITS.maxLabelChars);
+    if (name === undefined) return ctx.invalid("`name` is required");
+    const src = vocabMediaSrc(raw.src);
+    const size = enumValue(raw.size, ["sm", "md", "lg"] as const);
+    return {
+      component: "avatar",
+      name,
+      ...(src !== undefined ? { src } : {}),
+      ...(size !== undefined ? { size } : {}),
     };
   },
 

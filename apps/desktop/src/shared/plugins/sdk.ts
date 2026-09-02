@@ -31,6 +31,7 @@
 
 import { PLUGIN_URL_MAX_CHARS, bounded, httpsUrl, isRecord, oneOf } from "./parse";
 import { isValidPluginManifestIdentifier } from "./manifest";
+import { VOCAB_LIMITS } from "./vocabularyNodes";
 import type {
   PluginAuthCallbackKind,
   PluginManifest,
@@ -63,6 +64,7 @@ import type {
   PluginSocketKind,
   PluginSurfaceId,
 } from "./sockets";
+import { PLUGIN_BRAND_ICONS_COLLECTION, type PluginBrandGlyph } from "./vocabularyBrandIcons";
 
 /** SDK surface version announced to the child in `hello`. */
 export const PLUGIN_SDK_VERSION = 0;
@@ -1693,6 +1695,19 @@ export type AdePluginSdk = {
      * no-op rather than an error.
      */
     ack(deliveryId: string): Promise<void>;
+    /**
+     * This plugin's row on the host's delivery ledger.
+     *
+     * The Marketplace doctor and `ade plugin doctor` already read the same
+     * row through a host action. A panel could not: `url` and `ack` are the
+     * only verbs the child had, so Linear's settings strip had to print
+     * `lastEvent: null` even when the drain was receiving. Scoped to the
+     * calling plugin — there is no way to ask for somebody else's ledger.
+     *
+     * Rejects with `unsupported_method` on a host that runs no ingress drain,
+     * and with `invalid_args` when this plugin declared no `webhookIngress`.
+     */
+    status(): Promise<PluginWebhookIngressStatus>;
   };
 
   /**
@@ -2433,6 +2448,16 @@ export type PluginActionPrompt = {
    * between two invocations of itself.
    */
   context?: Record<string, unknown>;
+  /**
+   * Closed choices. When this is present and non-empty, every client draws a
+   * picker rather than a text field, and the answer's `text` is the chosen
+   * option's `value`. Absent or empty is still one line of free text.
+   *
+   * Capped at {@link VOCAB_LIMITS.maxSelectOptions}, the same ceiling a form
+   * `select` uses, so a launch model's list and a "link to a lane" list cannot
+   * disagree about how long a flat menu may be.
+   */
+  options?: ReadonlyArray<{ value: string; label?: string }>;
 };
 
 /** What the client puts under `args.prompt` when it re-invokes the action. */
@@ -2466,6 +2491,8 @@ export function readPluginActionPrompt(result: unknown): PluginActionPrompt | nu
   if (placeholder) prompt.placeholder = placeholder;
   const submitLabel = bounded(request.submitLabel, PLUGIN_PROMPT_SUBMIT_LABEL_MAX_CHARS);
   if (submitLabel) prompt.submitLabel = submitLabel;
+  const options = readPluginActionPromptOptions(request.options);
+  if (options) prompt.options = options;
   const context = request.context;
   if (!isRecord(context)) return prompt;
   let json: string;
@@ -2477,6 +2504,33 @@ export function readPluginActionPrompt(result: unknown): PluginActionPrompt | nu
   if (!json || pluginUtf8ByteLength(json) > PLUGIN_NAVIGATE_CONTEXT_MAX_BYTES) return prompt;
   prompt.context = context;
   return prompt;
+}
+
+/**
+ * Closed choices on a prompt, or `undefined` when there are none worth drawing.
+ *
+ * Malformed entries are skipped rather than failing the question: a picker that
+ * lost one lane is still a picker, and dropping the whole `{prompt}` would take
+ * the reader back to "link to the first lane" with no way to say why. Past
+ * {@link VOCAB_LIMITS.maxSelectOptions} the extras are dropped, same as a form
+ * `select`. Duplicate values keep the first.
+ */
+function readPluginActionPromptOptions(
+  raw: unknown,
+): ReadonlyArray<{ value: string; label?: string }> | undefined {
+  if (!Array.isArray(raw) || raw.length === 0) return undefined;
+  const options: Array<{ value: string; label?: string }> = [];
+  const seen = new Set<string>();
+  for (const entry of raw) {
+    if (options.length >= VOCAB_LIMITS.maxSelectOptions) break;
+    if (!isRecord(entry)) continue;
+    const value = bounded(entry.value, VOCAB_LIMITS.maxValueChars);
+    if (!value || seen.has(value)) continue;
+    seen.add(value);
+    const label = bounded(entry.label, VOCAB_LIMITS.maxLabelChars);
+    options.push(label ? { value, label } : { value });
+  }
+  return options.length > 0 ? options : undefined;
 }
 
 /**
@@ -2987,15 +3041,18 @@ export const PLUGIN_FILE_PICKER_EXTENSIONS_MAX = 24;
  */
 export const PLUGIN_MEMORY_COLLECTION = "ade.memory";
 
+export { PLUGIN_BRAND_ICONS_COLLECTION };
+
 /**
- * True for the one collection name `collections.*` must refuse.
+ * True for the collection names `collections.*` must refuse.
  *
  * A function rather than an inline comparison because both doors check it — the
  * declared-collection gate and the memory verbs' own scoping — and a second
  * spelling would mean one of them let the name through.
  */
 export function isReservedPluginCollection(collection: string): boolean {
-  return collection === PLUGIN_MEMORY_COLLECTION;
+  return collection === PLUGIN_MEMORY_COLLECTION
+    || collection === PLUGIN_BRAND_ICONS_COLLECTION;
 }
 
 /**
@@ -3194,6 +3251,7 @@ export type PluginSdkMethod =
   | "automations.emitTrigger"
   | "webhooks.url"
   | "webhooks.ack"
+  | "webhooks.status"
   | "chat.createSession"
   | "chat.appendAssistant"
   | "chat.appendUser"
@@ -3410,6 +3468,14 @@ export type PluginSummary = {
   searchProviders?: PluginManifestSearchProvider[];
   keybindings?: PluginManifestKeybinding[];
   urlMatchers?: PluginManifestUrlMatcher[];
+  /**
+   * Sanitized plugin-shipped `brand:*` glyphs, keyed by token suffix.
+   *
+   * Optional: a host that predates the field, or a plugin that shipped none,
+   * reports the plugin without it, and absent then means "no extra marks",
+   * which is the closed-catalogue-only answer.
+   */
+  brandIcons?: Record<string, PluginBrandGlyph>;
   restartCount: number;
   lastCrashAt: string | null;
 };
@@ -4124,6 +4190,10 @@ export type PluginClientInstalled = {
    * the right answer rather than merely the safe one.
    */
   urlMatchers?: readonly PluginManifestUrlMatcher[];
+  /**
+   * Sanitized plugin-shipped `brand:*` glyphs. Absent means none.
+   */
+  brandIcons?: Readonly<Record<string, PluginBrandGlyph>>;
   /**
    * ISO install timestamp from the machine registry — what makes the matrix's
    * "first installed wins" decidable rather than a coin flip on load order.

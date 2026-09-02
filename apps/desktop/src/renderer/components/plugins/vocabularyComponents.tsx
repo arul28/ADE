@@ -13,8 +13,11 @@ import {
 import { DEFAULT_PLUGIN_ICON, isPluginBrandIconName, pluginIcon } from "./pluginIcons";
 import { EmptyLine, InlineError, TONE_COLOR } from "./vocabularyPrimitives";
 import type { VocabRenderContext } from "./vocabularyPrimitives";
+import { VocabMarkdown } from "./vocabularyMarkdownView";
 import type {
   VocabAction,
+  VocabAvatar,
+  VocabAvatarNode,
   VocabBadgeNode,
   VocabBinding,
   VocabButtonNode,
@@ -45,7 +48,7 @@ import {
   coerceBoundKeyValueRow,
   coerceBoundListItem,
   coerceBoundTableRow,
-  vocabListKey,
+  vocabAvatarInitials,
   vocabListPage,
   vocabListPageLabel,
   vocabSelectedRowKeys,
@@ -80,12 +83,16 @@ export type {
 } from "./vocabularyPrimitives";
 export { VocabChart } from "./vocabularyChart";
 export { VocabForm, initialFormValues } from "./vocabularyForm";
-export { VocabMarkdown } from "./vocabularyMarkdownView";
+export { VocabMarkdown };
 
 const GAP_PX = { none: 0, sm: 6, md: 12, lg: 20 } as const;
 
 export function stackGap(gap: keyof typeof GAP_PX | undefined): number {
   return GAP_PX[gap ?? "md"];
+}
+
+function vocabIcon(name: string | undefined, context: VocabRenderContext) {
+  return name ? pluginIcon(name, context.brandIcons) : null;
 }
 
 /* ── Text, badge, divider ───────────────────────────────────────────────── */
@@ -217,7 +224,7 @@ export function VocabButton({
   context: VocabRenderContext;
 }) {
   const { pending, error, run } = useVocabActionRunner(context);
-  const Icon = node.icon ? pluginIcon(node.icon) : null;
+  const Icon = node.icon ? vocabIcon(node.icon, context) : null;
   const kind = node.kind ?? "default";
   const disabled = node.disabled === true || pending;
 
@@ -477,10 +484,11 @@ function boundKeyedRows(
 /**
  * One selection bar for the whole panel, not one under every list.
  *
- * A grouped Linear-style view would otherwise draw seven bars. Two lists both
- * claiming ticks still produce one bar: the first non-empty report in tree
- * order wins, which is the same "one word — N selected" the selection ceiling
- * already assumed.
+ * A grouped Linear-style view would otherwise draw seven bars. Lists that share
+ * a `stateKey` union their on-screen ticks into that one bar — seven state
+ * groups ticking one batch is still one word, "N selected". Two *different*
+ * selection keys both claiming the bar still first-wins in tree order, which is
+ * the same ceiling `maxSelectionKeys` already assumed.
  */
 type VocabBulkReport = {
   stateKey: string;
@@ -516,9 +524,24 @@ export function VocabBulkBarHost({ children }: { children: React.ReactNode }) {
     });
   }, []);
   const active = React.useMemo(() => {
+    const merged = new Map<string, VocabBulkReport>();
     for (const entry of Object.values(reports)) {
-      if (entry.keys.length > 0) return entry;
+      if (entry.keys.length === 0) continue;
+      const prev = merged.get(entry.stateKey);
+      if (!prev) {
+        merged.set(entry.stateKey, entry);
+        continue;
+      }
+      const seen = new Set(prev.keys);
+      const keys = [...prev.keys];
+      for (const key of entry.keys) {
+        if (seen.has(key)) continue;
+        seen.add(key);
+        keys.push(key);
+      }
+      merged.set(entry.stateKey, { ...prev, keys });
     }
+    for (const entry of merged.values()) return entry;
     return null;
   }, [reports]);
   return (
@@ -588,7 +611,11 @@ export function VocabList({
     ? vocabSelectedRowKeys(context.selection, selectable.stateKey, visibleKeys)
     : [];
   const tickedKey = ticked.join("\0");
-  const listId = vocabListKey(node);
+  // Instance identity, not `vocabListKey`. That helper keys paging by what a
+  // list reads, so two grouped lists that share a selection key (and no bind)
+  // collide as `sel:<stateKey>` and the second overwrites the first's ticks.
+  // Paging still uses `vocabListKey`; the bar must not.
+  const bulkReportId = React.useId();
   const reportBulk = React.useContext(VocabBulkReportBus);
   const showMoreListRows = context.showMoreListRows;
   const showMore = React.useCallback(() => {
@@ -598,16 +625,16 @@ export function VocabList({
   React.useEffect(() => {
     if (!reportBulk) return;
     if (!ticking || tickedKey === "") {
-      reportBulk(listId, null);
+      reportBulk(bulkReportId, null);
       return;
     }
-    reportBulk(listId, {
+    reportBulk(bulkReportId, {
       stateKey: selectable.stateKey,
       selectable,
       keys: tickedKey.split("\0"),
     });
-    return () => reportBulk(listId, null);
-  }, [reportBulk, listId, ticking, tickedKey, selectable]);
+    return () => reportBulk(bulkReportId, null);
+  }, [reportBulk, bulkReportId, ticking, tickedKey, selectable]);
 
   return (
     <div style={{ display: "grid", gap: 8, minWidth: 0 }}>
@@ -813,7 +840,7 @@ function VocabListRow({
 }) {
   const [hovered, setHovered] = React.useState(false);
   const { pending, error, run } = useVocabActionRunner(context);
-  const Icon = item.icon ? pluginIcon(item.icon) : null;
+  const Icon = item.icon ? vocabIcon(item.icon, context) : null;
   // Same 8pt chip as a standalone badge on the phone, so the same rule — see
   // {@link VocabBadge}. The row's own `icon` is a full-size slot and keeps them.
   const BadgeIcon = item.badge?.icon && !isPluginBrandIconName(item.badge.icon)
@@ -830,6 +857,9 @@ function VocabListRow({
     <>
       {Icon ? (
         <Icon size={14} weight="regular" color={TONE_COLOR[tone]} aria-hidden style={{ flexShrink: 0 }} />
+      ) : null}
+      {item.avatar ? (
+        <VocabAvatarMark avatar={item.avatar} size={22} active={context.active} />
       ) : null}
       <span style={{ minWidth: 0, display: "grid", gap: 1 }}>
         <span style={{ display: "flex", alignItems: "center", gap: 6, minWidth: 0 }}>
@@ -975,6 +1005,22 @@ function VocabListRow({
           />
         ) : null}
       </div>
+      {item.markdown ? (
+        <div
+          data-testid="plugin-list-item-markdown"
+          style={{ padding: "0 8px 8px", minWidth: 0 }}
+        >
+          <VocabMarkdown
+            node={{
+              component: "markdown",
+              text: item.markdown,
+              ...(item.markdownTruncated ? { truncated: true } : {}),
+            }}
+            context={context}
+            compact
+          />
+        </div>
+      ) : null}
       {error ? <InlineError message={error} /> : null}
       {showCard && preview ? <VocabHoverCard preview={preview} /> : null}
     </li>
@@ -1083,7 +1129,7 @@ function VocabRowAction({
   disabled: boolean;
   onRun: (action: VocabAction) => Promise<void>;
 }) {
-  const Icon = action.icon ? pluginIcon(action.icon) : null;
+  const Icon = action.icon ? vocabIcon(action.icon, context) : null;
   const kind = action.kind ?? "default";
   const compact: React.CSSProperties = { height: 24, padding: "0 8px", fontSize: 11, gap: 5 };
   const style: React.CSSProperties = kind === "primary"
@@ -1192,7 +1238,7 @@ function VocabRowOverflow({
           }}
         >
           {actions.map((action, index) => {
-            const Icon = action.icon ? pluginIcon(action.icon) : null;
+            const Icon = action.icon ? vocabIcon(action.icon, context) : null;
             return (
               <button
                 key={`${action.action}:${index}`}
@@ -1434,6 +1480,67 @@ export function VocabImage({ node }: { node: VocabImageNode }) {
         borderRadius: RADII.md,
       }}
     />
+  );
+}
+
+const AVATAR_PX = { sm: 20, md: 28, lg: 36 } as const;
+
+export function VocabAvatar({ node, context }: { node: VocabAvatarNode; context: VocabRenderContext }) {
+  return (
+    <VocabAvatarMark
+      avatar={{ name: node.name, ...(node.src ? { src: node.src } : {}) }}
+      size={AVATAR_PX[node.size ?? "md"]}
+      active={context.active}
+    />
+  );
+}
+
+function VocabAvatarMark({
+  avatar,
+  size,
+  active,
+}: {
+  avatar: VocabAvatar;
+  size: number;
+  active: boolean;
+}) {
+  const src = mediaSrc(avatar.src);
+  const initials = vocabAvatarInitials(avatar.name);
+  const [failed, setFailed] = React.useState(false);
+  const showImage = Boolean(src) && active && !failed;
+  return (
+    <span
+      aria-hidden
+      title={avatar.name}
+      style={{
+        display: "inline-flex",
+        alignItems: "center",
+        justifyContent: "center",
+        width: size,
+        height: size,
+        flexShrink: 0,
+        borderRadius: "50%",
+        overflow: "hidden",
+        background: COLORS.recessedBg,
+        border: `1px solid ${COLORS.borderMuted}`,
+        fontFamily: SANS_FONT,
+        fontSize: Math.max(9, Math.round(size * 0.42)),
+        fontWeight: 600,
+        color: COLORS.textSecondary,
+        lineHeight: 1,
+      }}
+    >
+      {showImage ? (
+        <img
+          src={src}
+          alt=""
+          onError={() => setFailed(true)}
+          style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }}
+        />
+      ) : (
+        initials
+      )}
+    </span>
   );
 }
 

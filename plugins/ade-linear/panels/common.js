@@ -69,16 +69,16 @@ function fallback(text, link) {
 const LIMITS = {
   maxNodes: 200,
   maxSchemaBytes: 65_536,
-  maxListItems: 250,
+  maxListItems: 1000,
   maxKeyValueRows: 60,
   maxFormFields: 24,
   maxTextChars: 4_000,
-  maxMarkdownChars: 4_000,
+  maxMarkdownChars: 16_000,
   maxLabelChars: 200,
   maxValueChars: 1_000,
   maxStateOptions: 8,
   maxBoundStateOptions: 50,
-  maxSelectOptions: 40,
+  maxSelectOptions: 80,
   maxListItemActions: 3,
   maxBulkActions: 4,
   maxSelectedRows: 100,
@@ -141,9 +141,8 @@ function prose(text) {
  *
  * Node-level icons name tokens, never artwork, so Linear's hand-drawn state
  * rings — a dashed circle, a quarter-swept ring, a filled disc with a check —
- * become the nearest thing in a closed 69-name list. There is no `brand:linear`
- * and there will not be one without a mark shipped on desktop AND iOS, so this
- * is the honest ceiling rather than a shortcut.
+ * become the nearest thing in the closed generic list. The Linear mark itself
+ * is `brand:linear`, shipped as `icons/linear.svg` in this package.
  */
 const STATE_ICONS = {
   triage: "flag",
@@ -169,18 +168,17 @@ function stateIcon(stateType) {
 /**
  * Priority as the built-in labels it (`linearPriorityLabel`), plus a token.
  *
- * Linear draws priority as a bar histogram — three bars with three, two or one
- * filled. One icon token cannot say that, so High, Medium and Low share
- * `chart-bar` and their labels carry the difference. Urgent is the one the
- * reader must not miss, so it gets a glyph of its own and the only non-neutral
- * tone.
+ * Linear draws priority as a bar histogram — four bars with four, three, two or
+ * one filled. The vocabulary's `priority-*` tokens are that histogram, so each
+ * level is a distinct glyph rather than a shared `chart-bar`. Urgent is the
+ * one the reader must not miss, so it takes the destructive tone.
  */
 const PRIORITIES = [
-  { value: "1", label: "Urgent", icon: "lightning", tone: "warning" },
-  { value: "2", label: "High", icon: "chart-bar", tone: "neutral" },
-  { value: "3", label: "Medium", icon: "chart-bar", tone: "neutral" },
-  { value: "4", label: "Low", icon: "chart-bar", tone: "neutral" },
-  { value: "0", label: "No priority", tone: "neutral" },
+  { value: "1", label: "Urgent", icon: "priority-urgent", tone: "destructive" },
+  { value: "2", label: "High", icon: "priority-high", tone: "warning" },
+  { value: "3", label: "Medium", icon: "priority-medium", tone: "neutral" },
+  { value: "4", label: "Low", icon: "priority-low", tone: "neutral" },
+  { value: "0", label: "No priority", icon: "priority-none", tone: "neutral" },
 ];
 
 function priorityEntry(priority) {
@@ -215,7 +213,6 @@ const COPY = {
   filterPriority: "Priority",
   filterSort: "Sort",
   filterUpdated: "Updated",
-  filterView: "View",
   resetFilters: "Reset filters",
 
   sortUpdated: "Recently updated",
@@ -229,11 +226,8 @@ const COPY = {
   updatedWeek: "This week",
   updatedMonth: "This month",
 
-  viewGrouped: "Grouped by state",
-  viewFlat: "Flat list",
-
-  // Search. The built-in has a live text field in the toolbar; the vocabulary
-  // has no search node, so this is a prompt and the copy says the same thing.
+  // Search. The built-in has a live text field in the toolbar; this panel
+  // uses the same words on `chrome.search`.
   search: "Search issues…",
   searchTitle: "Search issues",
   searchPlaceholder: "Title, identifier, or description",
@@ -283,6 +277,9 @@ const COPY = {
   commentTitle: "Add a comment",
   commentPlaceholder: "One line",
   commentSubmit: "Comment",
+  linkLaneTitle: "Link to a lane",
+  linkLanePlaceholder: "Choose a lane",
+  linkLaneSubmit: "Link",
   assignToMe: "Assign to me",
 
   // Property labels — `IssueProperties`, in the built-in's order.

@@ -2,11 +2,11 @@
 //
 // A `list` binding reads a stored row and reshapes NOTHING: `readListItem` in
 // `shared/plugins/vocabularyNodes.ts` looks for `title`, `key`, `subtitle`,
-// `meta`, `tone`, `icon`, `mono`, `badge`, `onPress`, `actions` and `overflow`,
-// and every other field on the row is invisible. So a row carrying `badgeText`
-// and `badgeTone` draws no badge, and a row carrying no `onPress` cannot be
-// pressed — the reader sees a title, a subtitle, and a list that does not
-// respond.
+// `meta`, `tone`, `icon`, `mono`, `badge`, `onPress`, `actions`, `overflow`,
+// `preview`, `markdown` and `avatar`, and every other field on the row is
+// invisible. So a row carrying `badgeText` and `badgeTone` draws no badge, and a
+// row carrying no `onPress` cannot be pressed — the reader sees a title, a
+// subtitle, and a list that does not respond.
 //
 // That is why this file is in the PANELS half rather than beside the Linear
 // client. Which glyph a state gets, which of four tones it takes, whether a
@@ -27,7 +27,7 @@
 
 "use strict";
 
-const { COPY, label, priorityEntry, stateIcon, stateTone, value } = require("./common");
+const { COPY, LIMITS, clamp, label, priorityEntry, stateIcon, stateTone, value } = require("./common");
 const { ACTIONS } = require("./contract");
 
 /**
@@ -48,6 +48,7 @@ function issueListRow(issue, options = {}) {
   const id = String(source.id ?? "");
   const identifier = String(source.identifier ?? "");
   const stateType = source.stateType ?? null;
+  const priority = priorityEntry(source.priority);
 
   const row = {
     // Declared, never inherited. See the module comment.
@@ -59,10 +60,18 @@ function issueListRow(issue, options = {}) {
     // Monospace, under the subtitle: the desktop draws the identifier in a
     // 54px mono column and this is the vocabulary's only monospace on a row.
     mono: value(identifier),
-    icon: stateIcon(stateType),
+    // Priority wins the leading glyph when Linear set one: the state already
+    // has the group header, the chip, and the tone. No-priority rows keep the
+    // state icon so the row is never blank on the left.
+    icon: priority && priority.value !== "0" && priority.icon ? priority.icon : stateIcon(stateType),
     tone: stateTone(stateType),
+    preview: { title: identifier, text: source.title || identifier },
     onPress: { action: ACTIONS.openIssue, args: { issueId: id } },
   };
+
+  if (source.assigneeName) {
+    row.avatar = { name: String(source.assigneeName) };
+  }
 
   // The state chip. `badge`, not `badgeText` — the reader coerces one and
   // ignores the other, which is the whole reason this function exists.
@@ -164,6 +173,7 @@ function commentListRow(comment) {
     key: String(source.id ?? ""),
     title: label(`${author}${when}`),
     subtitle: value(flatten(source.body)),
+    markdown: clamp(source.body ?? "", LIMITS.maxTextChars),
     icon: "chat",
   };
 }

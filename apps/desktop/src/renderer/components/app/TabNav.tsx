@@ -429,7 +429,7 @@ export function TabNav({ githubStatus }: { githubStatus?: GitHubStatus | null })
               return {
                 to: `/plugin/${plugin.pluginId}`,
                 label: tab.title || plugin.displayName,
-                icon: pluginIcon(tab.icon ?? plugin.icon),
+                icon: pluginIcon(tab.icon ?? plugin.icon, plugin.brandIcons),
                 accent: plugin.accent,
                 attention: plugin.attention === true,
                 description: `A tab from the ${plugin.displayName} plugin.`,

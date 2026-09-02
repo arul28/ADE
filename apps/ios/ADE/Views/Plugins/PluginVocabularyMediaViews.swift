@@ -149,8 +149,8 @@ struct PluginVocabButtonView: View {
       HStack(spacing: 6) {
         if isBusy {
           ProgressView().controlSize(.mini)
-        } else if PluginSymbol.drawsIcon(button.icon) {
-          PluginSymbol.glyph(button.icon, fallback: "puzzlepiece.extension", pointSize: 11)
+        } else if PluginSymbol.drawsIcon(button.icon, shipped: store.brandIcons) {
+          PluginSymbol.glyph(button.icon, fallback: "puzzlepiece.extension", pointSize: 11, shipped: store.brandIcons)
         }
         Text(button.label)
           .font(.caption.weight(.semibold))
@@ -292,14 +292,15 @@ struct PluginInlineEmptyText: View {
 /// header that all drew a generic cloud beside the word "Cursor" — the plugin
 /// looked unfinished in exactly the places its identity mattered most.
 ///
-/// So the namespace has a second, smaller, equally CLOSED half: `brand:<vendor>`
-/// tokens that resolve to the provider-logo assets this app already ships for
-/// its own runtimes. Closed for the same reason the first half is — a token that
-/// draws on one client and puzzles on the other is one manifest with two
-/// pictures — and small because a token only earns a place when BOTH clients
-/// already carry that vendor's mark. `brand:linear` is deliberately absent: no
-/// asset exists on either side, and inventing one here would break parity in the
-/// direction that is hardest to notice.
+/// So the namespace has a second, smaller half: `brand:<vendor>` tokens. ADE
+/// ships five of them as bundled assets (`claude`, `codex`, `cursor`, `github`,
+/// `openai`) because those logos already live on every client. Any other vendor
+/// is a plugin-shipped glyph: the host sanitizes a path-only SVG into
+/// `ade.brandIcons`, and ``glyph(_:fallback:pointSize:weight:shipped:)`` draws
+/// it. `brand:linear` is absent from the bundled set on purpose — inventing a
+/// Linear asset here would be a new ADE release for someone else's logo — and
+/// present once the plugin ships `brandIcons.linear`. Without that row it
+/// puzzles, identically to `brand:nope`.
 ///
 /// A brand token is an IMAGE, not a symbol name, which is why ``symbol(_:)``
 /// keeps returning nil for one and callers reach for ``image(_:fallback:)`` or
@@ -415,18 +416,35 @@ enum PluginSymbol {
     "brand:openai": "ProviderOpenAI",
   ]
 
+  /// Linear-style priority histogram. Drawn in SwiftUI, not as SF `chart.bar`,
+  /// so High / Medium / Low are distinct pictures — the same marks desktop
+  /// draws in `pluginIcons.tsx`.
+  private static let priorityTokens: Set<String> = [
+    "priority-urgent",
+    "priority-high",
+    "priority-medium",
+    "priority-low",
+    "priority-none",
+  ]
+
   /// Every token this build maps, of either kind, for the parity test that
   /// walks the shared list. The two kinds are also exposed separately below,
   /// because "does this resolve to a real SF Symbol" is a question only the
   /// symbol half can be asked — a brand token resolves to an asset and would
-  /// fail that check while being perfectly correct.
-  static var tokenNames: [String] { (Array(tokens.keys) + Array(brandTokens.keys)).sorted() }
+  /// fail that check while being perfectly correct. Priority tokens are a
+  /// third kind: custom SwiftUI, no SF name.
+  static var tokenNames: [String] {
+    (Array(tokens.keys) + Array(brandTokens.keys) + Array(priorityTokens)).sorted()
+  }
 
   /// The symbol half only: tokens that must name a glyph in this OS catalogue.
   static var symbolTokenNames: [String] { tokens.keys.sorted() }
 
   /// The brand half only: tokens that must name an image in this bundle.
   static var brandTokenNames: [String] { brandTokens.keys.sorted() }
+
+  /// Custom SwiftUI priority marks — not SF Symbols, so ``symbol(_:)`` is nil.
+  static var priorityTokenNames: [String] { priorityTokens.sorted() }
 
   static func exists(_ name: String) -> Bool {
     UIImage(systemName: name) != nil
@@ -481,8 +499,22 @@ enum PluginSymbol {
   /// the call sites that render nothing rather than a puzzle piece when a row
   /// names no usable icon — a menu row without an image is ordinary on iOS,
   /// where a stamped-on generic mark is not.
-  static func drawsIcon(_ name: String?) -> Bool {
-    symbol(name) != nil || brandAsset(name) != nil
+  static func drawsIcon(_ name: String?, shipped: [String: PluginBrandGlyph] = [:]) -> Bool {
+    symbol(name) != nil
+      || brandAsset(name) != nil
+      || priorityLevel(name) != nil
+      || shippedGlyph(name, shipped: shipped) != nil
+  }
+
+  static func priorityLevel(_ name: String?) -> String? {
+    guard let raw = normalized(name), priorityTokens.contains(raw) else { return nil }
+    return raw
+  }
+
+  static func shippedGlyph(_ name: String?, shipped: [String: PluginBrandGlyph]) -> PluginBrandGlyph? {
+    guard let raw = normalized(name), raw.hasPrefix("brand:") else { return nil }
+    let key = String(raw.dropFirst("brand:".count))
+    return shipped[key]
   }
 
   /// The icon for a `Label`'s image slot: the vendor's mark for a brand token,
@@ -516,9 +548,15 @@ enum PluginSymbol {
     _ name: String?,
     fallback: String,
     pointSize: CGFloat,
-    weight: Font.Weight = .semibold
+    weight: Font.Weight = .semibold,
+    shipped: [String: PluginBrandGlyph] = [:]
   ) -> some View {
-    if let asset = brandAsset(name) {
+    if let glyph = shippedGlyph(name, shipped: shipped) {
+      PluginShippedBrandGlyph(glyph: glyph, pointSize: pointSize)
+    } else if let level = priorityLevel(name) {
+      PluginPriorityMark(token: level)
+        .frame(width: pointSize, height: pointSize)
+    } else if let asset = brandAsset(name) {
       Image(asset)
         .renderingMode(.original)
         .resizable()
@@ -538,5 +576,101 @@ enum PluginSymbol {
       return nil
     }
     return raw.lowercased()
+  }
+}
+
+/// Linear's three-bar histogram (or a bang in a square for urgent). Matches
+/// desktop `priorityGlyph` in `pluginIcons.tsx` so High / Medium / Low are
+/// distinct pictures rather than three copies of SF `chart.bar`.
+struct PluginPriorityMark: View {
+  let token: String
+
+  var body: some View {
+    Canvas { context, size in
+      let scale = min(size.width, size.height) / 16
+      func rect(_ x: CGFloat, _ y: CGFloat, _ w: CGFloat, _ h: CGFloat, rx: CGFloat) -> Path {
+        Path(roundedRect: CGRect(x: x * scale, y: y * scale, width: w * scale, height: h * scale), cornerRadius: rx * scale)
+      }
+      if token == "priority-urgent" {
+        context.fill(rect(2, 2, 12, 12, rx: 3), with: .foreground)
+        var bang = rect(7.2, 4.4, 1.6, 5.2, rx: 0.8)
+        bang.addPath(rect(7.2, 10.6, 1.6, 1.6, rx: 0.8))
+        context.fill(bang, with: .color(.white))
+      } else if token == "priority-none" {
+        context.opacity = 0.4
+        context.fill(rect(3, 7.2, 10, 1.6, rx: 0.8), with: .foreground)
+      } else {
+        let filledCount = token == "priority-high" ? 3 : token == "priority-medium" ? 2 : 1
+        let heights: [CGFloat] = [5, 8.5, 12]
+        for index in 0..<3 {
+          context.opacity = index < filledCount ? 1 : 0.35
+          let h = heights[index]
+          context.fill(rect(3.2 + CGFloat(index) * 3.4, 14 - h - 1.6, 2.6, h, rx: 0.6), with: .foreground)
+        }
+      }
+    }
+    .accessibilityHidden(true)
+  }
+}
+
+struct PluginShippedBrandGlyph: View {
+  let glyph: PluginBrandGlyph
+  var pointSize: CGFloat
+
+  var body: some View {
+    ZStack {
+      ForEach(Array(glyph.paths.enumerated()), id: \.offset) { _, entry in
+        PluginBrandPathShape(d: entry.d, box: glyph.box)
+          .fill(style: FillStyle(eoFill: entry.evenodd))
+      }
+    }
+    .frame(width: pointSize, height: pointSize)
+    .accessibilityHidden(true)
+  }
+}
+
+private struct PluginBrandPathShape: Shape {
+  let d: String
+  let box: (minX: Double, minY: Double, width: Double, height: Double)
+
+  func path(in rect: CGRect) -> Path {
+    let sx = rect.width / CGFloat(box.width)
+    let sy = rect.height / CGFloat(box.height)
+    let transform = CGAffineTransform(
+      a: sx, b: 0, c: 0, d: sy,
+      tx: rect.minX - CGFloat(box.minX) * sx,
+      ty: rect.minY - CGFloat(box.minY) * sy
+    )
+    return parseSVGPath(d).applying(transform)
+  }
+}
+
+struct PluginVocabAvatarView: View {
+  let avatar: PluginVocabAvatar
+  var pointSize: CGFloat
+
+  var body: some View {
+    let initials = PluginVocabAvatar.initials(avatar.name)
+    Group {
+      if let src = avatar.src, let url = PluginMediaURL.resolve(src) {
+        AsyncImage(url: url) { phase in
+          switch phase {
+          case let .success(image):
+            image.resizable().scaledToFill()
+          default:
+            Text(initials)
+          }
+        }
+      } else {
+        Text(initials)
+      }
+    }
+    .font(.system(size: max(9, pointSize * 0.42), weight: .semibold))
+    .foregroundStyle(ADEColor.textSecondary)
+    .frame(width: pointSize, height: pointSize)
+    .background(ADEColor.surfaceBackground)
+    .clipShape(Circle())
+    .overlay(Circle().stroke(ADEColor.border.opacity(0.35), lineWidth: 0.5))
+    .accessibilityLabel(avatar.name)
   }
 }

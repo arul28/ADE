@@ -26,6 +26,7 @@ const TONE_COLOR = {
   accent: theme.vocabToneColor("accent"),
   success: theme.vocabToneColor("success"),
   warning: theme.vocabToneColor("warning"),
+  destructive: theme.vocabToneColor("destructive"),
 } as const;
 
 /** Rows visible at once. Matches the density of the activity and details panes. */
@@ -62,7 +63,8 @@ function truncateSpans(
   const kept: VocabMarkdownSpan[] = [];
   let used = 0;
   for (const span of parts) {
-    const cost = span.text.length + (span.href !== undefined ? span.href.length + 3 : 0);
+    const imageLabel = span.src !== undefined ? `[image: ${span.text}]` : span.text;
+    const cost = imageLabel.length + (span.href !== undefined ? span.href.length + 3 : 0);
     if (used + cost <= budget) {
       kept.push(span);
       used += cost;
@@ -177,7 +179,7 @@ function PluginRow({
                 {` ${box}`}
               </Text>
             ) : null}
-            {`${box ? "" : " "}${endTruncate(`${row.title}${badge}${meta}`, Math.max(4, inner - 2 - box.length))}`}
+            {`${box ? "" : " "}${row.avatar ? `[${row.avatar}] ` : ""}${endTruncate(`${row.title}${badge}${meta}`, Math.max(4, inner - 2 - box.length - (row.avatar ? row.avatar.length + 4 : 0)))}`}
           </Text>
           {row.subtitle ? (
             <Text color={theme.color.t4} dimColor wrap="truncate-end">
@@ -370,7 +372,7 @@ function PluginRow({
                     ? theme.color.t1
                     : base}
               >
-                {span.text}
+                {span.src !== undefined ? `[image: ${span.text}]` : span.text}
               </Text>
               {/* A terminal cannot hide a destination behind a word, and should
                   not try: the URL is printed beside the words it belongs to, so

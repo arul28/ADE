@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   VOCAB_MARKDOWN_LIMITS,
+  clampVocabMarkdownSource,
   parseVocabMarkdown,
   vocabMarkdownPlainText,
   type VocabMarkdownBlock,
@@ -32,6 +33,10 @@ function allSpans(list: readonly VocabMarkdownBlock[]): VocabMarkdownSpan[] {
     if (block.kind === "heading" || block.kind === "paragraph") out.push(...block.spans);
     if (block.kind === "quote") out.push(...allSpans(block.blocks));
     if (block.kind === "list") for (const item of block.items) out.push(...allSpans(item.blocks));
+    if (block.kind === "table") {
+      for (const cell of block.header) out.push(...cell);
+      for (const row of block.rows) for (const cell of row) out.push(...cell);
+    }
   }
   return out;
 }
@@ -179,10 +184,53 @@ describe("parseVocabMarkdown — the subset", () => {
     expect(blocks("Title\n===").map((block) => block.kind)).toEqual(["paragraph"]);
   });
 
-  it("omits an image and keeps its alt text", () => {
+  it("admits an https image and keeps its alt", () => {
     const parsed = blocks("Before ![a diagram](https://ade.dev/x.png) after");
     expect(text(parsed)).toBe("Before a diagram after");
-    expect(allSpans(parsed).every((span) => span.href === undefined)).toBe(true);
+    const image = allSpans(parsed).find((span) => span.src !== undefined);
+    expect(image?.src).toBe("https://ade.dev/x.png");
+    expect(image?.href).toBeUndefined();
+  });
+
+  it("refuses a data: image and keeps its alt as prose", () => {
+    const parsed = blocks("![secret](data:image/png;base64,abcd)");
+    expect(text(parsed)).toBe("secret");
+    expect(allSpans(parsed).every((span) => span.src === undefined)).toBe(true);
+  });
+
+  it("reads a GFM pipe table with alignment", () => {
+    const parsed = blocks([
+      "| Name | State |",
+      "| :--- | ---: |",
+      "| ISS-1 | Open |",
+      "| ISS-2 | **Done** |",
+    ].join("\n"));
+    expect(parsed.map((block) => block.kind)).toEqual(["table"]);
+    const table = parsed[0];
+    if (table?.kind !== "table") throw new Error("expected a table");
+    expect(table.align).toEqual(["left", "right"]);
+    expect(text([table])).toBe("Name | State\nISS-1 | Open\nISS-2 | Done");
+    expect(allSpans([table]).find((span) => span.text === "Done")?.bold).toBe(true);
+  });
+
+  it("ends a paragraph where a table begins", () => {
+    expect(blocks("intro\n| a | b |\n| --- | --- |\n| 1 | 2 |").map((block) => block.kind))
+      .toEqual(["paragraph", "table"]);
+  });
+
+  it("drops extra table columns and extra table rows rather than exploding", () => {
+    const header = Array.from({ length: 12 }, (_u, i) => `h${i}`).join(" | ");
+    const delim = Array.from({ length: 12 }, () => "---").join(" | ");
+    const extraRows = Array.from(
+      { length: VOCAB_MARKDOWN_LIMITS.maxMarkdownTableRows + 5 },
+      (_u, i) => `r${i} | x`,
+    );
+    const parsed = parseVocabMarkdown(`| ${header} |\n| ${delim} |\n${extraRows.map((row) => `| ${row} |`).join("\n")}`);
+    const table = parsed.blocks[0];
+    if (table?.kind !== "table") throw new Error("expected a table");
+    expect(table.header).toHaveLength(VOCAB_MARKDOWN_LIMITS.maxMarkdownTableColumns);
+    expect(table.rows.length).toBe(VOCAB_MARKDOWN_LIMITS.maxMarkdownTableRows);
+    expect(parsed.truncated).toBe(true);
   });
 
   it("keeps line breaks inside a paragraph and separates blocks on a blank line", () => {
@@ -273,8 +321,21 @@ describe("the markdown node", () => {
     expect(parsed.text.endsWith("…")).toBe(false);
   });
 
+  it("cuts an over-long document at the last complete line, not mid-fence", () => {
+    const source = `# Title\n\n\`\`\`ts\n${"const x = 1;\n".repeat(2_000)}`;
+    const clamped = clampVocabMarkdownSource(source);
+    expect(clamped.truncated).toBe(true);
+    expect(clamped.text.endsWith("\n")).toBe(false);
+    expect(clamped.text.includes("# Title")).toBe(true);
+    // The window still parses as markdown rather than as a source dump.
+    const parsed = parseVocabMarkdown(clamped.text);
+    expect(parsed.blocks[0]?.kind).toBe("heading");
+  });
+
   it("is a known component, so no client reports it as unknown", () => {
-    expect(VOCAB_LIMITS.maxMarkdownChars).toBe(VOCAB_LIMITS.maxTextChars);
+    expect(VOCAB_LIMITS.maxMarkdownChars).toBe(16_000);
+    expect(VOCAB_LIMITS.maxMarkdownChars).toBeGreaterThan(VOCAB_LIMITS.maxTextChars);
+    expect(VOCAB_LIMITS.maxListItemMarkdownChars).toBe(VOCAB_LIMITS.maxTextChars);
     expect(node({ text: "x" }).component).toBe("markdown");
   });
 });

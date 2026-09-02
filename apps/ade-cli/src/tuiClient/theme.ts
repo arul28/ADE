@@ -162,7 +162,7 @@ export function agentStatusGlyph(kind: AgentStatusKind): string {
 const RAIL_GLYPH = "▎";
 
 /**
- * The plugin vocabulary's four semantic tones, as terminal tokens.
+ * The plugin vocabulary's five semantic tones, as terminal tokens.
  *
  * Color discipline is ADE's, never the plugin's: a schema or a socket payload
  * names a tone and this table picks the token, so a plugin cannot paint the
@@ -176,6 +176,7 @@ const VOCAB_TONE_COLOR = {
   accent: VIOLET,
   success: DONE,
   warning: ATTENTION,
+  destructive: ERROR,
 } as const;
 
 export type VocabToneName = keyof typeof VOCAB_TONE_COLOR;

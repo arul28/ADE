@@ -46,6 +46,7 @@ export function PluginWebviewOverlayHost() {
       displayName: plugin.displayName,
       icon: plugin.icon,
       accent: plugin.accent,
+      brandIcons: plugin.brandIcons,
       title: surface.title,
       panelId: surface.panelId,
       entryHtml,
@@ -60,7 +61,7 @@ export function PluginWebviewOverlayHost() {
   }, [request, resolved]);
 
   const open = Boolean(request && resolved);
-  const Icon = pluginIcon(resolved?.icon ?? undefined);
+  const Icon = pluginIcon(resolved?.icon ?? undefined, resolved?.brandIcons);
   const stack = usePluginOverlayStack(resolved?.panelId ?? null, resolved?.title ?? null);
 
   return (

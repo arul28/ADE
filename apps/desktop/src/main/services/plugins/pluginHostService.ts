@@ -80,6 +80,7 @@ import {
   pluginChatDeliveryAction,
   hasPluginActionAuthSessionRequest,
   isReservedPluginActionName,
+  PLUGIN_BRAND_ICONS_COLLECTION,
   readPluginActionAuthSessionRequest,
   reservedPluginActionMessage,
   type PluginChatRuntimeEventName,
@@ -101,6 +102,7 @@ import {
   type PluginEntityChangeFamily,
 } from "./pluginEntityChanges";
 import { createPluginInstallService, type PluginInstalledPlugin, type PluginInstallService } from "./pluginInstallService";
+import { loadPluginBrandIcons } from "./pluginBrandIconLoader";
 import { createPluginInstallServiceAdapter, toPluginPresenceRow } from "./pluginInstallServiceAdapter";
 import {
   createPluginSdkServer,
@@ -694,6 +696,7 @@ function toSummary(
   runtime: { status: PluginRuntimeStatus; restartCount: number; lastCrashAt: string | null },
 ): PluginSummary {
   const manifest = installed.manifest;
+  const brandIcons = loadPluginBrandIcons(installed.root, manifest);
   return {
     pluginId: installed.record.pluginId,
     version: manifest?.version ?? installed.record.version,
@@ -739,6 +742,7 @@ function toSummary(
     // Smart-link matchers ride the summary for the same reason: the composer
     // draws a chip from a pasted URL with no plugin running to ask.
     urlMatchers: manifest?.urlMatchers ?? [],
+    ...(Object.keys(brandIcons).length > 0 ? { brandIcons } : {}),
     restartCount: runtime.restartCount,
     lastCrashAt: runtime.lastCrashAt,
   };
@@ -1429,6 +1433,13 @@ function createHost(args: PluginHostServiceArgs): PluginHostService {
           if (!ingress) throw pluginWebhookIngressUnavailable();
           ingress.ack(webhookPluginId, deliveryId);
         },
+        status: async (webhookPluginId) => {
+          const ingress = requireProject(webhookPluginId).binding.webhookIngress;
+          if (!ingress) throw pluginWebhookIngressUnavailable();
+          const [row] = await ingress.getStatus(webhookPluginId);
+          if (!row) throw pluginWebhookIngressUnavailable();
+          return row;
+        },
       },
       // The chat seam. Every verb but `createSession` is addressed by a session
       // id, which is globally unique, so ownership resolves it to the right
@@ -1610,6 +1621,38 @@ function createHost(args: PluginHostServiceArgs): PluginHostService {
   };
 
   /**
+   * Host-write the sanitized `brand:*` glyphs into the reserved collection
+   * every client already syncs. The plugin cannot name this collection, so a
+   * child cannot replace a sanitized path with a `<script>`.
+   */
+  const publishBrandIcons = (installed: PluginInstalledPlugin): void => {
+    const pluginId = installed.record.pluginId;
+    const glyphs = loadPluginBrandIcons(installed.root, installed.manifest);
+    const keep = new Set(Object.keys(glyphs));
+    for (const attached of projects.values()) {
+      try {
+        const existing = attached.data.listCollection(pluginId, PLUGIN_BRAND_ICONS_COLLECTION, {
+          limit: 32,
+        });
+        for (const row of existing) {
+          if (!keep.has(row.key)) {
+            attached.data.deleteCollection(pluginId, PLUGIN_BRAND_ICONS_COLLECTION, row.key);
+          }
+        }
+        for (const [token, glyph] of Object.entries(glyphs)) {
+          attached.data.putCollection(pluginId, PLUGIN_BRAND_ICONS_COLLECTION, token, glyph);
+        }
+      } catch (error) {
+        logger.warn("plugin.brand_icons_publish_failed", {
+          pluginId,
+          projectId: attached.binding.projectId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+  };
+
+  /**
    * Materialize the panels a manifest DECLARES, so a plugin that ships no code
    * still renders — and retire the rows it no longer declares, so the table
    * says exactly what the manifest on disk says.
@@ -1766,6 +1809,7 @@ function createHost(args: PluginHostServiceArgs): PluginHostService {
     for (const plugin of installed.values()) {
       if (!plugin.record.enabled || !plugin.manifest) continue;
       seedDeclaredPanels(plugin, options?.replacePanelsFor === plugin.record.pluginId);
+      publishBrandIcons(plugin);
       if (!pluginHasRuntimeEntry(plugin.manifest)) continue;
       startQuietly(ensureSupervisor(plugin));
     }

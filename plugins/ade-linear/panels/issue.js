@@ -66,7 +66,7 @@ const {
 /** How many sub-issue rows this card draws. The heading says so when it cuts. */
 const MAX_SUB_ISSUES = 50;
 
-const COMMENT_WINDOW = 20;
+const COMMENT_WINDOW = 40;
 
 /**
  * The header: what the issue is, and what is true about it right now.
@@ -224,13 +224,45 @@ function labelChips(labels) {
 }
 
 /**
- * Everything the reader can do to this issue from here.
- *
- * The two launch verbs are the built-in's `SINGLE_LAUNCH_ACTIONS`, with its
- * words. `Open in Linear` answers `{openUrl}`, which is `https:`-only on every
- * client and goes out through the opener that logs this plugin's id.
+ * Assign and comment stay in the body. Launch and Open in Linear live in
+ * chrome — a sticky footer for the two verbs that start work, and a nav action
+ * for the way out to Linear.app — so they stay on screen while the description
+ * scrolls.
  */
 function issueActions(issue) {
+  return {
+    component: "stack",
+    direction: "horizontal",
+    gap: "sm",
+    wrap: true,
+    children: [
+      {
+        component: "button",
+        label: COPY.assignToMe,
+        kind: "quiet",
+        icon: "users",
+        onPress: { action: ACTIONS.assignToMe, args: { issueId: String(issue.id) } },
+      },
+      {
+        component: "button",
+        label: COPY.comment,
+        kind: "quiet",
+        icon: "chat",
+        onPress: { action: ACTIONS.commentOnIssue, args: { issueId: String(issue.id) } },
+      },
+    ],
+  };
+}
+
+function issueChrome(issue) {
+  const navActions = issue.url
+    ? [{
+        action: ACTIONS.openInLinear,
+        args: { issueId: String(issue.id) },
+        label: COPY.openInLinear,
+        icon: "link",
+      }]
+    : undefined;
   // Both launch verbs open the CONFIGURATION panel rather than launching with
   // the plugin's defaults, which is the phone's own flow: `LinearLaunchScreen`
   // is one screen serving both, and `laneOnly` hides the agent half of it and
@@ -240,52 +272,32 @@ function issueActions(issue) {
   // `openLaunch` falls back to launching directly when the host offers no
   // `flows.openLaunch`, so a build whose manifest has no `launch` panel still
   // does the thing the button says.
-  const buttons = [
-    {
-      component: "button",
-      label: COPY.launchOne,
-      kind: "primary",
-      icon: "sparkle",
-      onPress: { action: ACTIONS.openLaunch, args: { issueId: String(issue.id), laneOnly: false } },
-    },
-    {
-      component: "button",
-      label: COPY.laneOne,
-      icon: "git-branch",
-      onPress: { action: ACTIONS.openLaunch, args: { issueId: String(issue.id), laneOnly: true } },
-    },
-    {
-      component: "button",
-      label: COPY.assignToMe,
-      kind: "quiet",
-      icon: "users",
-      onPress: { action: ACTIONS.assignToMe, args: { issueId: String(issue.id) } },
-    },
-    {
-      component: "button",
-      label: COPY.comment,
-      kind: "quiet",
-      icon: "chat",
-      onPress: { action: ACTIONS.commentOnIssue, args: { issueId: String(issue.id) } },
-    },
-  ];
-
-  // `{issueId}`, never `{url}`. `openInLinear` is the DATA half's handler — it
-  // wins the merge and resolves the URL from the stored row, so a button that
-  // passed a `url` would be answered with "That issue has no Linear link." The
-  // stored row is also the fresher source: an issue that moved workspace has a
-  // new URL there and an old one baked into a published schema.
-  if (issue.url) {
-    buttons.push({
-      component: "button",
-      label: COPY.openInLinear,
-      kind: "quiet",
-      icon: "link",
-      onPress: { action: ACTIONS.openInLinear, args: { issueId: String(issue.id) } },
-    });
-  }
-
-  return { component: "stack", direction: "horizontal", gap: "sm", wrap: true, children: buttons };
+  return {
+    ...(navActions ? { navActions } : {}),
+    footer: [
+      {
+        component: "stack",
+        direction: "horizontal",
+        gap: "sm",
+        wrap: true,
+        children: [
+          {
+            component: "button",
+            label: COPY.launchOne,
+            kind: "primary",
+            icon: "sparkle",
+            onPress: { action: ACTIONS.openLaunch, args: { issueId: String(issue.id), laneOnly: false } },
+          },
+          {
+            component: "button",
+            label: COPY.laneOne,
+            icon: "git-branch",
+            onPress: { action: ACTIONS.openLaunch, args: { issueId: String(issue.id), laneOnly: true } },
+          },
+        ],
+      },
+    ],
+  };
 }
 
 /**
@@ -510,6 +522,7 @@ function buildIssuePanel(input = {}) {
       `${issue.identifier} · ${clamp(issue.title ?? "", 120)}`,
       DEEPLINK_ISSUE,
     ),
+    chrome: issueChrome(issue),
     body,
   };
 }

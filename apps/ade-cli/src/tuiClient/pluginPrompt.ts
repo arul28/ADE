@@ -109,7 +109,9 @@ export function pluginPromptTitle(request: PluginPromptRequest): string {
 
 /** Grey text for the empty field. Empty string means "draw no hint". */
 export function pluginPromptPlaceholder(request: PluginPromptRequest): string {
-  return request.prompt.placeholder ?? "";
+  if (request.prompt.placeholder) return request.prompt.placeholder;
+  if ((request.prompt.options ?? []).length > 0) return "type a name from the list";
+  return "";
 }
 
 export function pluginPromptSubmitLabel(request: PluginPromptRequest): string {
@@ -118,7 +120,41 @@ export function pluginPromptSubmitLabel(request: PluginPromptRequest): string {
 
 /** The hint line under the field: how to send it and how to back out. */
 export function pluginPromptHint(request: PluginPromptRequest): string {
+  const options = request.prompt.options ?? [];
+  if (options.length > 0) {
+    return `type a name · ↵ ${pluginPromptSubmitLabel(request)} · esc cancel`;
+  }
   return `↵ ${pluginPromptSubmitLabel(request)} · esc cancel`;
+}
+
+/**
+ * Resolve typed text against a picker's options.
+ *
+ * Exact value, then exact label (case-insensitive), then a unique prefix.
+ * `null` when the question is a picker and the typed text is not one of the
+ * choices — sending a free-text string a handler will treat as a lane id is
+ * how "link to a lane" used to pick the wrong one.
+ */
+export function pluginPromptResolveChoice(request: PluginPromptRequest, text: string): string | null {
+  const options = request.prompt.options ?? [];
+  if (options.length === 0) return text;
+  const typed = text.trim();
+  if (!typed) return null;
+  const lower = typed.toLowerCase();
+  const exactValue = options.find((option) => option.value === typed);
+  if (exactValue) return exactValue.value;
+  const exactLabel = options.find((option) => (option.label ?? option.value).toLowerCase() === lower);
+  if (exactLabel) return exactLabel.value;
+  const prefixed = options.filter((option) => {
+    const label = (option.label ?? option.value).toLowerCase();
+    return option.value.toLowerCase().startsWith(lower) || label.startsWith(lower);
+  });
+  return prefixed.length === 1 ? prefixed[0]?.value ?? null : null;
+}
+
+/** What the reader is told when they typed something that is not a choice. */
+export function pluginPromptUnknownChoiceNotice(request: PluginPromptRequest): string {
+  return `${pluginPromptTitle(request)}: that is not one of the choices. Type a name from the list and press enter.`;
 }
 
 /**
@@ -133,7 +169,9 @@ export function pluginPromptAnswerArgs(
   request: PluginPromptRequest,
   text: string,
 ): Record<string, unknown> | null {
-  const answer = buildPluginActionPromptAnswer(request.prompt, text);
+  const resolved = pluginPromptResolveChoice(request, text);
+  if (resolved === null) return null;
+  const answer = buildPluginActionPromptAnswer(request.prompt, resolved);
   if (!answer) return null;
   return { ...request.args, prompt: answer };
 }

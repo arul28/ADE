@@ -33,17 +33,18 @@ import { usePluginSurfaceContributions, useSurfaceContributions } from "./useSur
 /**
  * Vocabulary tone → the Activity pane's colour vocabulary.
  *
- * Two closed sets that mean the same four things by different names. The pane
+ * Two closed sets that mean the same five things by different names. The pane
  * speaks in colours because its own rows are typed by event kind, and the
  * socket taxonomy speaks in tones because a plugin should not be picking
- * colours. Nothing maps to red: `PluginBadgeTone` has no red, deliberately, so
- * a plugin cannot make its row the loudest thing in a list it does not own.
+ * colours. `destructive` is the pane's red — a failed check, a spend cap that
+ * already broke — and `warning` stays amber.
  */
 const ACTIVITY_TONE_CLASS: Record<PluginBadgeTone, string> = {
   neutral: "neutral",
   accent: "violet",
   success: "emerald",
   warning: "amber",
+  destructive: "red",
 };
 
 const SECTION_ID = "notifications:plugins";

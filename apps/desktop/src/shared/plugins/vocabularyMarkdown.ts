@@ -34,25 +34,21 @@
  * deliberately stronger than an allowlist: an allowlist is a list someone has to
  * maintain, and this is a shape that cannot express the attack.
  *
- * Links are the one place a document reaches outside itself, and they pass the
- * same gate the `{openUrl}` action verb passes — {@link httpsUrl}, `https:`
- * only, with a host. A `javascript:` or `data:` destination loses the link and
- * keeps its text.
+ * Links and markdown images are the two places a document reaches outside
+ * itself, and both pass the same gate the `{openUrl}` action verb passes —
+ * {@link httpsUrl}, `https:` only, with a host. A `javascript:` or `data:`
+ * destination loses the link (or the picture) and keeps its text.
  *
  * ## What is NOT in the subset, and why
  *
- * - **Images.** The vocabulary already has an `image` node with a source
- *   ceiling, a scheme gate and a per-client media path. An inline image would
- *   need all of that a second time, inside a run model that has no room for it.
- *   `![alt](url)` renders as its alt text; a panel that wants a picture uses the
- *   node that was built for one.
- * - **Tables.** `table` is a node, with columns a client can lay out. A pipe
- *   table inside prose is the same content with none of that.
  * - **Raw HTML.** See above.
  * - **Bare-URL autolinking.** Three clients, three URL-detection regexes, three
  *   answers about where `https://x.com/a.` ends. Write `[text](url)`.
  * - **Setext headings and indented code.** `===` under a line and a four-space
  *   indent are both things people produce by accident; `#` and a fence are not.
+ * - **`data:` images.** Markdown images pass the same `https:` gate as links. A
+ *   self-contained thumbnail still belongs on the `image` node, which is the
+ *   one place a `data:` URI has a source ceiling.
  */
 
 import { PLUGIN_URL_MAX_CHARS, httpsUrl } from "./parse";
@@ -74,7 +70,18 @@ export type VocabMarkdownSpan = {
   code?: true;
   /** An `https:` destination, already normalized by {@link httpsUrl}. */
   href?: string;
+  /**
+   * An `https:` image source, already normalized by {@link httpsUrl}.
+   *
+   * `text` is the alt. A refused destination (anything but `https:` with a host)
+   * never sets this — the alt stays as prose, the same way a refused link keeps
+   * its words.
+   */
+  src?: string;
 };
+
+/** Column alignment of a GFM pipe table, one entry per kept column. */
+export type VocabMarkdownTableAlign = "left" | "center" | "right";
 
 /** One row of a `list` block. */
 export type VocabMarkdownItem = {
@@ -96,7 +103,13 @@ export type VocabMarkdownBlock =
   | { kind: "code"; language?: string; text: string }
   | { kind: "quote"; blocks: VocabMarkdownBlock[] }
   | { kind: "list"; ordered: boolean; start: number; items: VocabMarkdownItem[] }
-  | { kind: "rule" };
+  | { kind: "rule" }
+  | {
+      kind: "table";
+      align: VocabMarkdownTableAlign[];
+      header: VocabMarkdownSpan[][];
+      rows: VocabMarkdownSpan[][][];
+    };
 
 export type VocabMarkdownDocument = {
   blocks: VocabMarkdownBlock[];
@@ -115,36 +128,75 @@ export type VocabMarkdownDocument = {
  * Spread into `VOCAB_LIMITS` so a schema author reads one table, and declared
  * here so the parser and the ceilings it enforces live together.
  *
- * `maxMarkdownChars` matches `maxTextChars` on purpose. Markdown is prose and
- * `text` is already the prose ceiling, so a paragraph does not earn more room
- * for being formatted. The number also sits right against the panel budget: a
- * schema is capped at 65,536 bytes, so sixteen documents at this length fill a
- * whole panel — which is the shape of a comment thread whose entries are each a
- * screen of prose, and past it the writer's own byte ceiling is what refuses,
- * exactly as it does for every other node.
+ * `maxMarkdownChars` is 16,000 — four Linear-sized issue bodies, a quarter of
+ * the 65,536-byte panel budget. Matching `maxTextChars` (4,000) was the reason
+ * an issue description dumped as plain source: the body was over the cap, the
+ * cut landed inside a fence, and every client refused to format it. A `text`
+ * node is still a paragraph and keeps 4,000; a `markdown` node is a document.
+ *
+ * A source over the cap is cut at the last complete line in the window (see
+ * {@link clampVocabMarkdownSource}) and still parsed as markdown. The renderer
+ * says the rest is not shown rather than dumping the source as monospace.
  *
  * `maxMarkdownBlocks` exists because the character cap alone does not bound the
- * render tree: 4,000 characters of `- a\n- b\n…` is a thousand list rows, which
- * is a thousand views on a phone. `maxMarkdownDepth` bounds the same thing
- * downwards — past it a `>` or a `-` is literal text rather than another
- * container.
+ * render tree: 16,000 characters of `- a\n- b\n…` is still thousands of list
+ * rows, which is thousands of views on a phone. `maxMarkdownDepth` bounds the
+ * same thing downwards — past it a `>` or a `-` is literal text rather than
+ * another container.
+ *
+ * `maxListItemMarkdownChars` is the per-row ceiling. A comment thread drawn as
+ * list rows must not parse 16 KiB of markdown a hundred times on a phone; 4,000
+ * is one comment, and it does not count against `maxNodes`.
  */
 export const VOCAB_MARKDOWN_LIMITS = {
-  maxMarkdownChars: 4_000,
+  maxMarkdownChars: 16_000,
   maxMarkdownBlocks: 100,
   /** Container nesting. A top-level block is depth 1. */
   maxMarkdownDepth: 3,
   /** Runs in one block, after which the rest of the block is one plain run. */
   maxMarkdownSpans: 200,
-  /** A link destination. The same ceiling the `{openUrl}` verb uses. */
+  /** A link or markdown-image destination. The same ceiling `{openUrl}` uses. */
   maxMarkdownHrefChars: PLUGIN_URL_MAX_CHARS,
   /** A fence's info string, read down to its first word. */
   maxMarkdownLanguageChars: 32,
+  /** GFM pipe-table columns. Matches `maxTableColumns` on the `table` node. */
+  maxMarkdownTableColumns: 8,
+  /**
+   * Body rows of one pipe table. Tighter than `maxTableRows` (100): 16,000
+   * characters of `|a|` would otherwise explode into a grid a phone cannot
+   * draw, and a comment table is not a data table.
+   */
+  maxMarkdownTableRows: 40,
+  /** Source on one list row's `markdown` field. */
+  maxListItemMarkdownChars: 4_000,
 } as const;
+
+/**
+ * Cut a document to `maxChars` at the last complete line in the window.
+ *
+ * A hard slice lands wherever it lands — inside a fence, a link, a table row —
+ * and the markdown of that string is not the document's markdown. Trimming to
+ * the last newline in the second half of the window keeps every complete line
+ * the cap could hold. No newline in that half means one run of prose, and the
+ * hard slice is honest. Never an ellipsis: it would render as content.
+ *
+ * The host calls this before {@link parseVocabMarkdown}. The parser itself does
+ * not clamp; it formats what it is given.
+ */
+export function clampVocabMarkdownSource(
+  source: string,
+  maxChars: number = VOCAB_MARKDOWN_LIMITS.maxMarkdownChars,
+): { text: string; truncated: boolean } {
+  if (source.length <= maxChars) return { text: source, truncated: false };
+  const slice = source.slice(0, maxChars);
+  const newline = slice.lastIndexOf("\n");
+  const cut = newline >= Math.floor(maxChars / 2) ? newline : maxChars;
+  return { text: slice.slice(0, cut), truncated: true };
+}
 
 /* ── Inline ─────────────────────────────────────────────────────────────── */
 
-type SpanStyle = { bold?: true; italic?: true; strike?: true; href?: string };
+type SpanStyle = { bold?: true; italic?: true; strike?: true; href?: string; src?: string };
 
 /**
  * Append a run, merging it into the previous one when nothing about it changed.
@@ -162,7 +214,8 @@ function pushSpan(spans: VocabMarkdownSpan[], text: string, style: SpanStyle, co
     && last.bold === style.bold
     && last.italic === style.italic
     && last.strike === style.strike
-    && last.href === style.href
+    &&     last.href === style.href
+    && last.src === style.src
     && last.code === code
   ) {
     last.text += text;
@@ -175,6 +228,7 @@ function pushSpan(spans: VocabMarkdownSpan[], text: string, style: SpanStyle, co
     ...(style.strike ? { strike: style.strike } : {}),
     ...(code ? { code } : {}),
     ...(style.href !== undefined ? { href: style.href } : {}),
+    ...(style.src !== undefined ? { src: style.src } : {}),
   });
 }
 
@@ -262,13 +316,18 @@ function parseInline(source: string, style: SpanStyle = {}, depth = 0): VocabMar
       }
     }
 
-    // `![alt](url)` — the image is omitted (see the module comment) and the alt
-    // text stays, which is the only part of an image a run model can carry.
+    // `![alt](url)` — https images become a span with `src`; anything else
+    // keeps the alt as prose, the same way a refused link keeps its words.
     if (char === "!" && source[index + 1] === "[") {
       const parsed = readLink(source, index + 1);
       if (parsed) {
         flush();
-        for (const span of parseInline(parsed.text, style, depth + 1)) spans.push(span);
+        const src = httpsUrl(parsed.url, VOCAB_MARKDOWN_LIMITS.maxMarkdownHrefChars);
+        if (src !== null) {
+          pushSpan(spans, parsed.text.length > 0 ? parsed.text : "image", { ...style, src });
+        } else {
+          for (const span of parseInline(parsed.text, style, depth + 1)) spans.push(span);
+        }
         index = parsed.end;
         continue;
       }
@@ -432,7 +491,74 @@ const ORDERED = /^(\s*)(\d{1,9})[.)]\s+(.*)$/;
 const QUOTE = /^ {0,3}>\s?(.*)$/;
 const TASK = /^\[([ xX])\]\s+(.*)$/;
 
-type BlockWalk = { blocks: VocabMarkdownBlock[]; budget: number };
+type BlockWalk = { blocks: VocabMarkdownBlock[]; budget: number; truncated: boolean };
+
+/**
+ * Split a GFM table row into cells. `null` when the line has no pipe, so a
+ * paragraph of prose cannot become a one-cell table by accident.
+ *
+ * Leading and trailing pipes are the delimiter, not cells. `\|` is a pipe
+ * inside a cell. Column count is decided later against the delimiter row.
+ */
+function splitTableCells(line: string): string[] | null {
+  const raw = line.trim();
+  if (!raw.includes("|")) return null;
+  const cells: string[] = [];
+  let current = "";
+  let index = raw.startsWith("|") ? 1 : 0;
+  for (; index < raw.length; index += 1) {
+    const char = raw[index]!;
+    if (char === "\\" && index + 1 < raw.length) {
+      current += raw[index + 1];
+      index += 1;
+      continue;
+    }
+    if (char === "|") {
+      cells.push(current.trim());
+      current = "";
+      continue;
+    }
+    current += char;
+  }
+  if (!(raw.endsWith("|") && current.length === 0 && !raw.endsWith("\\|"))) {
+    cells.push(current.trim());
+  }
+  return cells.length > 0 ? cells : null;
+}
+
+function readTableAlign(cells: readonly string[]): VocabMarkdownTableAlign[] | null {
+  if (cells.length === 0) return null;
+  const align: VocabMarkdownTableAlign[] = [];
+  for (const cell of cells) {
+    const token = cell.replace(/\s/g, "");
+    if (!/^:?-{3,}:?$/.test(token)) return null;
+    const left = token.startsWith(":");
+    const right = token.endsWith(":");
+    align.push(left && right ? "center" : right ? "right" : "left");
+  }
+  return align;
+}
+
+function isTableStart(lines: readonly string[], index: number): boolean {
+  const header = splitTableCells(lines[index] ?? "");
+  const next = lines[index + 1];
+  if (!header || next === undefined) return false;
+  const delimiter = splitTableCells(next);
+  return delimiter !== null && readTableAlign(delimiter) !== null;
+}
+
+function tableCellsToSpans(cells: readonly string[], columns: number): VocabMarkdownSpan[][] {
+  const out: VocabMarkdownSpan[][] = [];
+  for (let index = 0; index < columns; index += 1) {
+    out.push(parseInline(cells[index] ?? ""));
+  }
+  return out;
+}
+
+function isTableRowInterrupt(line: string, nestable: boolean): boolean {
+  return HEADING.test(line) || RULE.test(line) || FENCE.test(line)
+    || (nestable && (QUOTE.test(line) || BULLET.test(line) || ORDERED.test(line)));
+}
 
 function isBlank(line: string): boolean {
   return line.trim().length === 0;
@@ -505,6 +631,40 @@ function parseBlocks(lines: string[], depth: number, walk: BlockWalk): VocabMark
       continue;
     }
 
+    if (isTableStart(lines, index)) {
+      const headerCells = splitTableCells(line) ?? [];
+      const delimiterCells = splitTableCells(lines[index + 1] ?? "") ?? [];
+      const alignAll = readTableAlign(delimiterCells) ?? [];
+      const columns = Math.min(
+        Math.max(1, alignAll.length),
+        VOCAB_MARKDOWN_LIMITS.maxMarkdownTableColumns,
+      );
+      const align = alignAll.slice(0, columns);
+      const header = tableCellsToSpans(headerCells, columns);
+      const rows: VocabMarkdownSpan[][][] = [];
+      index += 2;
+      while (index < lines.length) {
+        const candidate = lines[index]!;
+        if (isBlank(candidate) || splitTableCells(candidate) === null) break;
+        if (isTableRowInterrupt(candidate, nestable)) break;
+        if (rows.length >= VOCAB_MARKDOWN_LIMITS.maxMarkdownTableRows) {
+          walk.truncated = true;
+          index += 1;
+          while (index < lines.length) {
+            const extra = lines[index]!;
+            if (isBlank(extra) || splitTableCells(extra) === null) break;
+            if (isTableRowInterrupt(extra, nestable)) break;
+            index += 1;
+          }
+          break;
+        }
+        rows.push(tableCellsToSpans(splitTableCells(candidate) ?? [], columns));
+        index += 1;
+      }
+      if (!push({ kind: "table", align, header, rows })) break;
+      continue;
+    }
+
     if (nestable && QUOTE.test(line)) {
       const body: string[] = [];
       while (index < lines.length) {
@@ -568,6 +728,7 @@ function parseBlocks(lines: string[], depth: number, walk: BlockWalk): VocabMark
       if (paragraph.length > 0 && (
         HEADING.test(next) || RULE.test(next) || FENCE.test(next)
         || (nestable && (QUOTE.test(next) || BULLET.test(next) || ORDERED.test(next)))
+        || isTableStart(lines, index)
       )) break;
       paragraph.push(next.trim());
       index += 1;
@@ -594,7 +755,11 @@ function parseBlocks(lines: string[], depth: number, walk: BlockWalk): VocabMark
  * `maxMarkdownBlocks` however the characters are arranged.
  */
 export function parseVocabMarkdown(source: string): VocabMarkdownDocument {
-  const walk: BlockWalk = { blocks: [], budget: VOCAB_MARKDOWN_LIMITS.maxMarkdownBlocks };
+  const walk: BlockWalk = {
+    blocks: [],
+    budget: VOCAB_MARKDOWN_LIMITS.maxMarkdownBlocks,
+    truncated: false,
+  };
   // `\r\n` and a lone `\r` both mean one line break. A document written on
   // Windows must not render as one long line with visible control characters.
   const lines = source.replace(/\r\n?/g, "\n").split("\n");
@@ -602,7 +767,7 @@ export function parseVocabMarkdown(source: string): VocabMarkdownDocument {
   // Left in, it became a trailing blank line inside an unclosed code fence.
   if (lines.length > 1 && lines[lines.length - 1] === "") lines.pop();
   const blocks = parseBlocks(lines, 1, walk);
-  return { blocks, truncated: walk.budget <= 0 };
+  return { blocks, truncated: walk.truncated || walk.budget <= 0 };
 }
 
 /**
@@ -630,8 +795,19 @@ export function vocabMarkdownPlainText(blocks: readonly VocabMarkdownBlock[]): s
         case "list":
           for (const item of block.items) walk(item.blocks);
           break;
+        case "table":
+          out.push(block.header.map((cell) => cell.map((span) => span.text).join("")).join(" | "));
+          for (const row of block.rows) {
+            out.push(row.map((cell) => cell.map((span) => span.text).join("")).join(" | "));
+          }
+          break;
         case "rule":
           break;
+        default: {
+          const _exhaustive: never = block;
+          void _exhaustive;
+          break;
+        }
       }
     }
   };

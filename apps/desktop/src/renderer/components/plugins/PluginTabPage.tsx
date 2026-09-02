@@ -392,7 +392,7 @@ function PluginPageShell({
   fill?: boolean;
   children?: React.ReactNode;
 }) {
-  const Icon = pluginIcon(plugin?.icon);
+  const Icon = pluginIcon(plugin?.icon, plugin?.brandIcons);
   return (
     <div
       data-tour={`plugin:${pluginId}.page`}

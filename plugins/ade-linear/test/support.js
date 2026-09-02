@@ -196,6 +196,25 @@ function createSdk(overrides = {}) {
       async ack(deliveryId) {
         calls.push(["webhooks.ack", deliveryId]);
       },
+      async status() {
+        calls.push(["webhooks.status"]);
+        if (overrides.webhookStatusThrows) {
+          const error = new Error("no ingress");
+          error.code = "unsupported_method";
+          throw error;
+        }
+        return overrides.webhookStatus ?? {
+          pluginId: "ade-linear",
+          state: "unconfigured",
+          relayBaseUrl: "https://relay.example",
+          channels: [],
+          lastReceivedAt: null,
+          lastPolledAt: null,
+          lastError: null,
+          pendingDeliveries: 0,
+          abandonedDeliveries: 0,
+        };
+      },
     },
     auth: {
       async beginSession(input) {

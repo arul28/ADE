@@ -76,7 +76,12 @@ export function PluginChatCard({
     if (!pluginId) return undefined;
     const summary = installed.find((entry) => entry.pluginId === pluginId);
     if (!summary) return undefined;
-    return pluginIdentity({ pluginId, icon: summary.icon, accent: summary.accent }).Icon;
+    return pluginIdentity({
+      pluginId,
+      icon: summary.icon,
+      accent: summary.accent,
+      brandIcons: summary.brandIcons,
+    }).Icon;
   }, [installed, pluginId]);
 
   /**

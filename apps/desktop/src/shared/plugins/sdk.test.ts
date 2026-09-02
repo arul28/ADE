@@ -32,6 +32,7 @@ import {
   readPluginActionWebview,
   readPluginNotificationDeeplink,
 } from "./sdk";
+import { VOCAB_LIMITS } from "./vocabulary";
 
 describe("collections.put wire shape", () => {
   it("puts nothing extra on the wire when no option was named", () => {
@@ -415,6 +416,30 @@ describe("a prompt in an action response", () => {
   it("drops an over-ceiling pointer and still asks", () => {
     expect(readPluginActionPrompt({ prompt: { id: "note", context: { blob: "x".repeat(4096) } } }))
       .toEqual({ id: "note" });
+  });
+
+  it("reads closed options as a picker, skipping junk and capping the list", () => {
+    expect(readPluginActionPrompt({
+      prompt: {
+        id: "lane",
+        options: [
+          { value: "a", label: "First" },
+          { value: "a", label: "Dup" },
+          { value: "" },
+          7,
+          { value: "b" },
+        ],
+      },
+    })).toEqual({
+      id: "lane",
+      options: [{ value: "a", label: "First" }, { value: "b" }],
+    });
+    expect(readPluginActionPrompt({ prompt: { id: "lane", options: [] } })).toEqual({ id: "lane" });
+    const tooMany = Array.from({ length: VOCAB_LIMITS.maxSelectOptions + 1 }, (_, i) => ({
+      value: `lane-${i}`,
+    }));
+    expect(readPluginActionPrompt({ prompt: { id: "lane", options: tooMany } })?.options)
+      .toHaveLength(VOCAB_LIMITS.maxSelectOptions);
   });
 
   it("refuses a prompt with no usable id, since the answer would be unattributable", () => {

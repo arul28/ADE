@@ -55,22 +55,23 @@ const {
   PANEL_LAUNCH,
   PANEL_SETTINGS,
   PROMPT_COMMENT,
+  PROMPT_LANE,
   PROMPT_SEARCH,
   STATE_ASSIGNEE,
   STATE_BATCH,
   STATE_PRESET,
   STATE_PRIORITY,
   STATE_PROJECT,
+  STATE_SEARCH,
   STATE_SORT,
   STATE_TEAM,
   STATE_UPDATED,
-  STATE_VIEW,
 } = require("./panels/contract");
 
 const { COPY } = require("./panels/common");
 const { issueIdFromRowKey } = require("./panels/rows");
 
-/** The state keys `Reset filters` clears. `view` is deliberately not among them. */
+/** The state keys `Reset filters` clears. Search is among them; ticks are not. */
 const FILTER_STATE_KEYS = [
   STATE_PRESET,
   STATE_PROJECT,
@@ -79,17 +80,16 @@ const FILTER_STATE_KEYS = [
   STATE_SORT,
   STATE_TEAM,
   STATE_UPDATED,
+  STATE_SEARCH,
 ];
 
 /**
- * The state keys a filter change CARRIES, which is the reset list plus `view`.
+ * The state keys a filter change CARRIES: the reset list minus search.
  *
- * Two lists rather than one, because the two verbs want different sets: a reset
- * must not throw the reader back to the grouped list they moved away from, and
- * a change must carry `view` or the flat toggle moves and nothing happens —
- * grouped and flat are two different key spaces, not a predicate.
+ * Search goes through `searchIssues`, not `setFilters`, so a segmented change
+ * must not rewrite the query.
  */
-const APPLIED_STATE_KEYS = [...FILTER_STATE_KEYS, STATE_VIEW];
+const APPLIED_STATE_KEYS = FILTER_STATE_KEYS.filter((key) => key !== STATE_SEARCH);
 
 /* ── Reading the frame ──────────────────────────────────────────────────── */
 
@@ -259,7 +259,7 @@ function bind(host) {
      * A filter control moved.
      *
      * Four of the seven controls filter on the client and do not reach here at
-     * all. The three that do — the state preset, the sort and the view — change
+     * all. The three that do — the state preset, the sort and the team — change
      * which rows exist or which order they are written in, so this refetches and
      * republishes. The control's own value arrives in `args` under its state key.
      */
@@ -281,9 +281,8 @@ function bind(host) {
      * `{resetState}` is the only thing that can move a control: panel state is
      * per-viewer and lives on the client, so a plugin republishing a schema with
      * different defaults would not touch a control the reader has already
-     * touched. The `view` key is left alone on purpose — which layout somebody
-     * is reading in is not a filter, and resetting it would move the panel out
-     * from under them.
+     * touched. Search is among the keys because a leftover query with empty
+     * chips is the thing a reader files a bug about.
      */
     async clearFilters() {
       await invoke(host.data?.setFilters, [{ reset: true }], "");
@@ -292,37 +291,44 @@ function bind(host) {
     },
 
     /**
-     * Search, as a question rather than as a field.
-     *
-     * The vocabulary has no search node, so the first call asks and the second
-     * one — the same handler, re-invoked by the client with the answer — runs
-     * the search. An empty answer is a cleared search rather than a search for
-     * nothing, which is what a reader who wiped the field meant.
+     * Search. The nav-bar field commits `{ q }` on blur and Enter. Hosts that
+     * have no chrome field still ask `{prompt}` and re-invoke with the answer.
+     * An empty answer is a cleared search rather than a search for nothing,
+     * which is what a reader who wiped the field meant.
      */
     async searchIssues(args) {
-      const answer = promptAnswer(args, PROMPT_SEARCH);
-      if (answer === null) {
-        return {
-          prompt: {
-            id: PROMPT_SEARCH,
-            title: COPY.searchTitle,
-            placeholder: COPY.searchPlaceholder,
-            submitLabel: COPY.searchSubmit,
-          },
-        };
+      const frame = args && typeof args === "object" ? args : {};
+      let text = null;
+      if (typeof frame[STATE_SEARCH] === "string") {
+        text = frame[STATE_SEARCH];
+      } else {
+        const answer = promptAnswer(args, PROMPT_SEARCH);
+        if (answer === null) {
+          return {
+            prompt: {
+              id: PROMPT_SEARCH,
+              title: COPY.searchTitle,
+              placeholder: COPY.searchPlaceholder,
+              submitLabel: COPY.searchSubmit,
+            },
+          };
+        }
+        text = answer;
       }
-      const text = answer.trim();
-      const result = await invoke(host.data?.search, [text], "Search needs the plugin's data layer.");
+      const query = text.trim();
+      const result = await invoke(host.data?.search, [query], "Search needs the plugin's data layer.");
       await publish(PANEL_ISSUES);
       if (!result.ok) return { message: result.message, ok: false };
-      return { message: text ? `Searching for “${text}”.` : "Search cleared." };
+      return { message: query ? `Searching for “${query}”.` : "Search cleared." };
     },
 
-    /** The badge's companion, and the only way out of a search on a phone. */
+    /** The way out of a search on a host that still draws a Clear button. */
     async clearSearch() {
       const result = await invoke(host.data?.search, [""], "Search needs the plugin's data layer.");
       await publish(PANEL_ISSUES);
-      return result.ok ? { message: "Search cleared." } : { message: result.message, ok: false };
+      return result.ok
+        ? { message: "Search cleared.", resetState: [STATE_SEARCH] }
+        : { message: result.message, ok: false };
     },
 
     /* ── Launching work ─────────────────────────────────────────────────── */
@@ -349,23 +355,27 @@ function bind(host) {
     /**
      * Attach an issue to a lane that already exists.
      *
-     * A verb the built-in has on neither surface. It is a row action and a bulk
-     * action because the case it exists for is the one the conflict badge
-     * announces: the issue already has a lane, and what the reader wants is the
-     * link, not a twelfth worktree.
+     * Asks which lane when the press did not name one. Taking `lanes[0]` was
+     * the reduced answer: a project with two lanes silently linked to the
+     * wrong one. The picker is a `{prompt}` with `options`, one hop, same as
+     * a comment — the chosen value comes back as `args.prompt.text`.
      */
     async linkToLane(args) {
       const ids = issueIdsFrom(args);
       if (ids.length === 0) return { message: "Pick an issue first.", ok: false };
+      const laneId = firstString(args.laneId, promptAnswer(args, PROMPT_LANE));
       const result = await invoke(
-        host,
-        "flows.linkIssueToLane",
-        [ids],
+        host.flows?.linkIssueToLane,
+        [ids, laneId],
         "Linking an issue to a lane is not available in this ADE build.",
       );
+      if (result.missing) return { message: result.message, ok: false };
+      if (!result.ok) return { message: result.message, ok: false };
+      if (result.value && typeof result.value === "object" && result.value.prompt) {
+        return { prompt: result.value.prompt };
+      }
       await publish(PANEL_ISSUES);
       await publish(PANEL_ISSUE);
-      if (!result.ok) return { message: result.message, ok: false };
       return { resetState: [STATE_BATCH], message: `Linked ${countLabel(ids.length)}.` };
     },
 
