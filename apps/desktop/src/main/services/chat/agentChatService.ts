@@ -367,10 +367,16 @@ import type {
   AgentChatCursorConfigOption,
   AgentChatCursorConfigValue,
   AgentChatCursorModeSnapshot,
+  AgentChatHostInstructions,
+  AgentChatInstructionsCapability,
   AgentChatMcpCapability,
   AgentChatMcpServerConfig,
   AgentChatOpenCodePermissionMode,
+  AgentChatPermissionCapability,
   AgentChatPermissionMode,
+  AgentChatPermissionPolicy,
+  AgentChatSettingSources,
+  AgentChatSettingSourcesCapability,
   CodexPlanState,
   CodexModerationMetadata,
   AgentChatMcpToolSource,
@@ -825,11 +831,110 @@ import {
   resolveCallerMcpCapability,
   type CallerMcpServers,
 } from "../../../shared/callerMcpServers";
+import {
+  CLAUDE_SETTING_SOURCE_MAP,
+  normalizeHostInstructions,
+  normalizeInstructionsCapability,
+  normalizePermissionCapability,
+  normalizeSettingSources,
+  mergeHostSessionConfig,
+  normalizeSettingSourcesCapability,
+  pickHostSessionConfig,
+  resolveInstructionsCapability,
+  resolvePermissionCapability,
+  resolveSettingSourcesCapability,
+  type HostSessionConfigFields,
+} from "../../../shared/hostSessionConfig";
+import {
+  evaluatePermissionPolicy,
+  normalizePermissionPolicy,
+  policyAllowedMcpServers,
+  policyToClaudeToolLists,
+} from "../../../shared/permissionPolicy";
+import {
+  claudeBuiltInIsReadOnly,
+  claudeToolInputPaths,
+  claudeToolNeedsApproval,
+  normalizeToolNameForApproval,
+} from "./claudeToolGate";
+import {
+  codexApprovalAutoAccepts,
+  codexApprovalDeniesByPolicy,
+  codexApprovalPathStaysWithinRoot,
+  codexCommandApprovalStaysWithinRoot,
+  codexPermissionsStayWithinRoot,
+  resolveCodexContainmentRoot,
+} from "./codexApprovalContainment";
+import {
+  PERSONAL_CHAT_SYSTEM_PROMPT,
+  isPersonalSession,
+  resolvePersonalHostCwd,
+  resolvePersonalSystemPrompt,
+} from "./personalSession";
 import type { ProcessRegistryService } from "../runtime/processRegistryService";
 
 const requireFromRuntime = createRequire(
   typeof __filename === "string" ? __filename : fileURLToPath(import.meta.url),
 );
+
+/**
+ * Compile-time proof that `CLAUDE_SETTING_SOURCE_MAP` names layers the Claude
+ * Agent SDK actually accepts.
+ *
+ * The map lives in `shared/hostSessionConfig.ts`, which must not import the
+ * Claude SDK, so it is typed `readonly string[]` there and the assignment at
+ * the use site needs a cast. An unchecked cast means a typo — `"porject"` —
+ * compiles and silently loads no configuration layers at all, which looks
+ * exactly like a working chat until someone asks why their project settings
+ * are ignored.
+ *
+ * This declaration is the check. It costs nothing at runtime (types only) and
+ * it lives here because this is the one layer where both types are visible.
+ */
+const _claudeSettingSourceMapIsAssignable: Record<
+  AgentChatSettingSources,
+  readonly NonNullable<ClaudeSDKOptions["settingSources"]>[number][]
+> = CLAUDE_SETTING_SOURCE_MAP;
+void _claudeSettingSourceMapIsAssignable;
+
+/**
+ * The surfaces host session configuration applies on.
+ *
+ * `permissionPolicy`, `instructions`, and `settingSources` are the SDK's
+ * embedder-facing knobs. They are declared on the base create args, so the CLI
+ * escape hatch (`ade chat create --arg-json permissionPolicy=…`) can put them
+ * on a Work chat — where no ADE surface renders them, no user can see or remove
+ * one, and a permission policy would quietly replace ADE's own approval
+ * prompting for that lane. The spec scopes all three to the personal/SDK
+ * surface, so that is where they are honored and nowhere else.
+ *
+ * A dropped field is not an error: the chat behaves exactly as it did before
+ * the field existed, which is what an unusable value already does.
+ */
+const HOST_SESSION_CONFIG_SURFACE: AgentChatSession["surface"] = "personal";
+
+function hostSessionConfigApplies(surface: AgentChatSession["surface"] | undefined): boolean {
+  return (surface ?? "work") === HOST_SESSION_CONFIG_SURFACE;
+}
+
+/** Sessions already warned about, so a rehydrate loop cannot repeat the line. */
+const hostSessionConfigDropWarned = new Set<string>();
+
+function warnHostSessionConfigDropped(
+  logger: Logger,
+  sessionId: string,
+  surface: AgentChatSession["surface"] | undefined,
+  fields: readonly string[],
+): void {
+  if (fields.length === 0) return;
+  if (hostSessionConfigDropWarned.has(sessionId)) return;
+  hostSessionConfigDropWarned.add(sessionId);
+  logger.warn("agent_chat.host_session_config_ignored_off_surface", {
+    sessionId,
+    surface: surface ?? "work",
+    fields: fields.join(","),
+  });
+}
 
 function resolveClaudeAgentSdkVersion(): string {
   try {
@@ -1265,7 +1370,7 @@ type PersistedChatState = {
    */
   eventSequence?: number;
   updatedAt: string;
-};
+} & HostSessionConfigFields;
 
 const MAX_MODEL_HANDOFF_HISTORY = 8;
 
@@ -2583,6 +2688,13 @@ function validateSessionReadyForTurn(managed: ManagedChatSession): { ready: true
   return { ready: true };
 }
 
+/**
+ * Whether anything is waiting on an answer. The cheap size check.
+ *
+ * Runs on the send path for every message, so it stays a set of `.size` tests.
+ * {@link collectPendingInputRequests} returns WHAT is pending and must consult
+ * the same stores in the same order; the two are read together.
+ */
 function hasLivePendingInput(managed: ManagedChatSession | null | undefined): boolean {
   if (!managed) return false;
   if (managed.localPendingInputs.size > 0) return true;
@@ -2596,6 +2708,51 @@ function hasLivePendingInput(managed: ManagedChatSession | null | undefined): bo
   // `localPendingInputs`, which the check above already covered.
   if (runtime.kind === "pi" || runtime.kind === "acp") return false;
   return false;
+}
+
+/**
+ * The listable pending requests behind {@link hasLivePendingInput}.
+ *
+ * Every store that one checks, in the same order, so "this session is blocked"
+ * and "here is what is blocking it" cannot disagree — a session that reports
+ * `awaitingInput: true` with an empty request list is exactly the "blocked with
+ * nothing to show" state the pending-inputs action exists to remove.
+ *
+ * Cursor and Droid are the deliberate exception, and the reason this is not
+ * simply `hasLivePendingInput`'s size check inverted. Their `permissionWaiters`
+ * hold a resolver function and no `PendingInputRequest`: the request object was
+ * never built, so there is nothing to return for them. A session blocked on one
+ * reports `awaitingInput: true` and an empty list, which is a gap in those two
+ * runtimes rather than in this function. Pi and the ACP providers raise their
+ * cards through `localPendingInputs`, which the first loop covers.
+ *
+ * `hasLivePendingInput` is NOT derived from this. It runs on the send path for
+ * every message, and answering "is anything pending" by allocating an array of
+ * everything pending is the wrong shape for that.
+ */
+function collectPendingInputRequests(
+  managed: ManagedChatSession | null | undefined,
+): PendingInputRequest[] {
+  if (!managed) return [];
+  const requests: PendingInputRequest[] = [];
+  const seen = new Set<string>();
+  const add = (request: PendingInputRequest | null | undefined): void => {
+    if (!request) return;
+    const key = request.itemId ?? request.requestId;
+    if (!key || seen.has(key)) return;
+    seen.add(key);
+    requests.push(request);
+  };
+  for (const pending of managed.localPendingInputs.values()) add(pending.request);
+  const runtime = managed.runtime;
+  if (runtime) {
+    if (runtime.kind === "claude" || runtime.kind === "codex") {
+      for (const pending of runtime.approvals.values()) add(pending.request);
+    } else if (runtime.kind === "opencode") {
+      for (const pending of runtime.pendingApprovals.values()) add(pending.request);
+    }
+  }
+  return requests;
 }
 
 // Frozen because it is returned by reference to every caller with no live work;
@@ -7125,104 +7282,23 @@ function isSessionCodexFullAuto(
     && resolveSessionCodexSandbox(session, "read-only") === "danger-full-access";
 }
 
-function codexApprovalPathStaysWithinLane(
-  managed: Pick<ManagedChatSession, "laneWorktreePath">,
-  candidate: string | null | undefined,
-): boolean {
-  const trimmed = typeof candidate === "string" ? candidate.trim() : "";
-  if (!trimmed.length) return false;
-  try {
-    resolvePathWithinRoot(managed.laneWorktreePath, trimmed, { allowMissing: true });
-    return true;
-  } catch {
-    return false;
-  }
+/**
+ * The containment root for one managed session, as a plain string.
+ *
+ * The one place the session's own worktree meets the host policy's root. Every
+ * predicate below takes the result; none of them takes a session.
+ */
+function codexContainmentRoot(
+  managed: Pick<ManagedChatSession, "laneWorktreePath" | "session">,
+): string {
+  return resolveCodexContainmentRoot(managed.session, managed.laneWorktreePath);
 }
 
-function codexPermissionPathStaysWithinLane(
-  managed: Pick<ManagedChatSession, "laneWorktreePath">,
-  cwd: string,
-  candidate: string | null | undefined,
+/** Whether ADE answers this session's Codex approvals itself. */
+function codexSessionAutoAccepts(
+  managed: Pick<ManagedChatSession, "session">,
 ): boolean {
-  const trimmed = typeof candidate === "string" ? candidate.trim() : "";
-  if (!trimmed.length) return false;
-  const resolvedCandidate = path.isAbsolute(trimmed)
-    ? trimmed
-    : path.join(cwd, trimmed);
-  return codexApprovalPathStaysWithinLane(managed, resolvedCandidate);
-}
-
-function codexFileSystemPermissionsStayWithinLane(
-  managed: Pick<ManagedChatSession, "laneWorktreePath">,
-  cwd: string,
-  fileSystemPermissions: Record<string, unknown>,
-): boolean {
-  const legacyPaths = [
-    ...(Array.isArray(fileSystemPermissions.read) ? fileSystemPermissions.read : []),
-    ...(Array.isArray(fileSystemPermissions.write) ? fileSystemPermissions.write : []),
-  ];
-  for (const candidate of legacyPaths) {
-    if (typeof candidate !== "string" || !codexPermissionPathStaysWithinLane(managed, cwd, candidate)) {
-      return false;
-    }
-  }
-
-  const entries = fileSystemPermissions.entries;
-  if (entries == null) return true;
-  if (!Array.isArray(entries)) return false;
-  for (const entryValue of entries) {
-    const entry = asRecord(entryValue);
-    if (!entry) return false;
-    if (entry.access === "deny") continue;
-    const entryPath = asRecord(entry.path);
-    if (!entryPath) return false;
-    if (entryPath.type === "path") {
-      if (!codexPermissionPathStaysWithinLane(managed, cwd, typeof entryPath.path === "string" ? entryPath.path : null)) {
-        return false;
-      }
-      continue;
-    }
-    if (entryPath.type === "special") {
-      const value = asRecord(entryPath.value);
-      if (value?.kind !== "project_roots") return false;
-      const subpath = value.subpath;
-      if (subpath == null) return false;
-      if (typeof subpath !== "string" || !codexPermissionPathStaysWithinLane(managed, managed.laneWorktreePath, subpath)) {
-        return false;
-      }
-      continue;
-    }
-    return false;
-  }
-  return true;
-}
-
-function codexPermissionsStayWithinLane(
-  managed: Pick<ManagedChatSession, "laneWorktreePath">,
-  cwd: string | null | undefined,
-  permissions: unknown,
-): boolean {
-  const permissionCwd = typeof cwd === "string" && cwd.trim().length
-    ? cwd.trim()
-    : managed.laneWorktreePath;
-  if (!codexApprovalPathStaysWithinLane(managed, permissionCwd)) return false;
-  const permissionRecord = asRecord(permissions);
-  if (!permissionRecord) return permissions == null;
-  if (permissionRecord.fileSystem == null) return true;
-  const fileSystemPermissions = asRecord(permissionRecord.fileSystem);
-  return fileSystemPermissions
-    ? codexFileSystemPermissionsStayWithinLane(managed, permissionCwd, fileSystemPermissions)
-    : false;
-}
-
-function codexCommandApprovalStaysWithinLane(
-  managed: Pick<ManagedChatSession, "laneWorktreePath">,
-  cwd: string | null | undefined,
-  additionalPermissions: unknown,
-): boolean {
-  if (!codexApprovalPathStaysWithinLane(managed, cwd)) return false;
-  return additionalPermissions == null
-    || codexPermissionsStayWithinLane(managed, cwd, additionalPermissions);
+  return codexApprovalAutoAccepts(managed.session, isSessionCodexFullAuto(managed.session));
 }
 
 type CodexCollaborationModePayload = {
@@ -7445,12 +7521,13 @@ function buildCodexDeveloperInstructions(args: {
     | "spawnKind"
     | "orchestrationStepId"
     | "surface"
+    | "instructions"
   >;
   collaborationMode: "default" | "plan";
   /** Optional Linear-tracked-work directive appended to the base instructions. */
   linearDirective?: string | null;
 }): string {
-  if (args.session.surface === "personal") return PERSONAL_CHAT_SYSTEM_PROMPT;
+  if (args.session.surface === "personal") return resolvePersonalSystemPrompt(args.session);
   const promptMode = args.collaborationMode === "plan" || args.session.interactionMode === "plan"
     ? "planning"
     : "coding";
@@ -7487,9 +7564,10 @@ function buildOpenCodeSystemPrompt(args: {
     | "orchestrationParentSessionId"
     | "orchestrationStepId"
     | "spawnKind"
+    | "instructions"
   >;
 }): string {
-  if (args.session.surface === "personal") return PERSONAL_CHAT_SYSTEM_PROMPT;
+  if (args.session.surface === "personal") return resolvePersonalSystemPrompt(args.session);
   const mode = args.session.permissionMode === "plan" || args.session.interactionMode === "plan"
     ? "planning"
     : "coding";
@@ -8019,17 +8097,6 @@ function resolveClaudeStrictMcpConfig(
 ): boolean {
   if (isOrchestrationLeadSession(session)) return true;
   return session.strictMcpConfig ?? lightweight;
-}
-
-const PERSONAL_CHAT_SYSTEM_PROMPT = [
-  "You are a general-purpose AI assistant in an ADE personal chat.",
-  "This conversation is not attached to a software project, repository, branch, lane, or pull request.",
-  "Answer the user's request directly. Do not assume they want coding work or inspect files unless they explicitly ask.",
-  "If filesystem or shell work is explicitly requested, keep it inside the scratch working directory provided by the runtime.",
-].join(" ");
-
-function isPersonalSession(session: Pick<AgentChatSession, "surface">): boolean {
-  return session.surface === "personal";
 }
 
 function personalChatUserPromptFallback(
@@ -8877,38 +8944,6 @@ export function createAgentChatService(args: {
     return collection;
   };
 
-  const CLAUDE_READ_ONLY_TOOLS = new Set([
-    "read", "glob", "grep", "toolsearch", "tasklist", "taskget",
-    "webfetch", "websearch",
-  ]);
-
-  const normalizeToolNameForApproval = (toolName: string): string =>
-    toolName.trim().toLowerCase().replace(/[^a-z0-9]+/g, "_");
-
-  const claudeToolNeedsApproval = (
-    toolName: string,
-    _input: Record<string, unknown>,
-    permissionMode: string,
-  ): boolean => {
-    const normalized = normalizeToolNameForApproval(toolName);
-    // bypassPermissions → never prompt
-    if (permissionMode === "bypassPermissions") return false;
-    // plan mode → handled elsewhere (deny writes entirely)
-    if (permissionMode === "plan") return false;
-    // Read-only tools never need approval
-    if (CLAUDE_READ_ONLY_TOOLS.has(normalized)) return false;
-    // acceptEdits → only prompt for Bash
-    if (permissionMode === "acceptEdits") {
-      return normalized.includes("bash");
-    }
-    // default → prompt for mutating tools (Bash, Write, Edit, NotebookEdit, Agent, etc.)
-    if (normalized.includes("bash") || normalized.includes("write") || normalized.includes("edit")
-      || normalized.includes("agent") || normalized.includes("notebookedit")) {
-      return true;
-    }
-    return false;
-  };
-
   const buildClaudeToolApprovalDescription = (
     toolName: string,
     input: Record<string, unknown>,
@@ -9097,6 +9132,44 @@ export function createAgentChatService(args: {
         behavior: "deny",
         message: "Orchestrator lead sessions cannot use Claude's direct coding tools. Use orchestration tools like spawnAgent instead.",
       };
+    }
+
+    // ── Host permission policy, evaluated once ──
+    // Placed ahead of every tool-specific interception below so that a refusal
+    // is absolute. `AskUserQuestion` and ADE's own `ask_user` both auto-allow
+    // themselves further down — correctly, because each carries its own answer
+    // UI and a generic "Allow this tool?" card would only hide the real
+    // question behind an extra click. But an auto-allow that ran before the
+    // policy would silently override `deniedTools: ["AskUserQuestion"]`, and a
+    // rule the host wrote is not something ADE may decline to apply.
+    //
+    // Only the deny verdict returns here. Allow and ask are settled in the
+    // generic section, after the interceptions, because for those tools
+    // "permitted to run" means "present the question", not "return allow and
+    // skip the machinery that asks it".
+    //
+    // Nothing on this path infers risk from a tool name. ADE's own heuristic
+    // is a substring test that prompts for a read-only `list_agents` and stays
+    // silent for a destructive `delete_project`; a host that stated its rules
+    // gets those rules and only those.
+    const hostPermissionPolicy = managed.session.permissionPolicy;
+    //
+    // No `cwd` is passed. A Claude session has exactly one working directory
+    // for its whole life, so handing it to `sandboxRoot` containment as the
+    // candidate for `Bash` made the check a constant: with the session running
+    // inside the root — the normal configuration — every command was allowed,
+    // whatever it was. A tool that names no path is therefore judged by the
+    // tool rules and then by `fallback`, and a host that wants unattended
+    // commands names `Bash` in `allowedTools`.
+    const policyDecision: "allow" | "deny" | "ask" | null = hostPermissionPolicy
+      ? evaluatePermissionPolicy(hostPermissionPolicy, {
+        toolName,
+        provider: "claude",
+        paths: claudeToolInputPaths(input),
+      })
+      : null;
+    if (policyDecision === "deny") {
+      return { behavior: "deny", message: "Denied by the host permission policy." };
     }
 
     // ── EnterPlanMode interception ──
@@ -9360,6 +9433,30 @@ export function createAgentChatService(args: {
       };
     }
 
+    // ── Host permission policy: the "allow" and "ask" halves ──
+    // The "deny" half already ran at the top of this callback, ahead of every
+    // tool-specific interception. The other two verdicts are settled here
+    // instead, because neither one should skip that machinery: `EnterPlanMode`,
+    // `ExitPlanMode`, and `AskUserQuestion` are not gates that an allow-listed
+    // tool may bypass, they are how those tools work. Returning allow before
+    // them would let a model ask a question the user never sees.
+    if (policyDecision === "allow") return { behavior: "allow", updatedInput: input };
+    if (policyDecision === "ask") {
+      // One class of tool is exempt from asking: Claude's own read-only
+      // built-ins. A host on `fallback: "ask"` must not get a card for every
+      // file read — that is how a user learns to click Allow without reading
+      // it, which costs more safety than the cards buy.
+      //
+      // Matched against a LITERAL name set, never a substring. Nothing on this
+      // path infers risk from a name. A host tool cannot reach the exemption
+      // by accident either: every member of the set is a bare built-in name,
+      // and an MCP tool always normalizes with its `mcp_<server>_` prefix
+      // still attached.
+      if (claudeBuiltInIsReadOnly(toolName)) {
+        return { behavior: "allow", updatedInput: input };
+      }
+    }
+
     // ── Tool permission prompts ──
     // Surface approval prompts for non-bypass permission modes so the user can
     // allow or deny individual tool calls (matching the opencode runtime pattern).
@@ -9372,7 +9469,13 @@ export function createAgentChatService(args: {
     if (isAskUserToolName(toolName) && isAutoAllowAskUserEnabled()) {
       return { behavior: "allow", updatedInput: input };
     }
-    if (claudeToolNeedsApproval(toolName, input, effectivePermMode)) {
+    // Reaching here under a policy means the policy said "ask": allow and deny
+    // both returned above. So the policy decides, and `claudeToolNeedsApproval`
+    // is not consulted at all — with no policy its behavior is unchanged.
+    const needsApproval = policyDecision !== null
+      ? policyDecision === "ask"
+      : claudeToolNeedsApproval(toolName, input, effectivePermMode);
+    if (needsApproval) {
       // Check session-wide overrides — user already said "Allow for Session" for this tool
       if (runtime.approvalOverrides.has(normalizedToolName)) {
         return { behavior: "allow", updatedInput: input };
@@ -12721,7 +12824,7 @@ export function createAgentChatService(args: {
       recordPiSessionOwner({ sessionFile: existingPiSessionFile, owner: "sdk", ownerSessionId: managed.session.id });
     }
     const systemPrompt = isPersonalSession(managed.session)
-      ? PERSONAL_CHAT_SYSTEM_PROMPT
+      ? resolvePersonalSystemPrompt(managed.session)
       : buildCodingAgentSystemPrompt({
           cwd: managed.laneWorktreePath,
           mode: managed.session.interactionMode === "plan" || managed.session.permissionMode === "plan" ? "planning" : "coding",
@@ -13413,6 +13516,14 @@ export function createAgentChatService(args: {
     return fallback();
   };
 
+  /**
+   * KNOWN GAP: this helper takes a lane id and no session, so it resolves the
+   * LANE's worktree. A personal chat whose host named a `requestedCwd` runs
+   * somewhere else, and the sha reported for such a session is the lane's, not
+   * the directory the agent is working in. Closing it means threading the
+   * session through every caller, which is a change this pass did not make; the
+   * two callers that hold a `managed` take the directory from it instead.
+   */
   const computeHeadShaBestEffort = async (laneId: string): Promise<string | null> => {
     let cwd: string;
     try {
@@ -13464,17 +13575,10 @@ export function createAgentChatService(args: {
     if (!afterSha || beforeSha === afterSha) return;
 
     try {
-      let cwd: string;
-      try {
-        ({ laneWorktreePath: cwd } = resolveLaneLaunchContext({
-          laneService,
-          projectRoot,
-          laneId,
-          purpose: "turn diff summary",
-        }));
-      } catch {
-        return;
-      }
+      // Same rule as the Codex rewind: a `managed` in hand names the directory
+      // the session actually runs in, so take it rather than re-resolving from
+      // the lane id.
+      const cwd = managed.laneWorktreePath;
       const result = await runGit(["diff", "--numstat", `${beforeSha}..${afterSha}`], { cwd, timeoutMs: 10_000 });
       if (result.exitCode !== 0) return;
 
@@ -13532,19 +13636,33 @@ export function createAgentChatService(args: {
     args: { purpose: string; requestedCwd?: string | null },
   ): LaneLaunchContext & { laneId: string; laneDirectiveKey: string | null } => {
     const laneId = resolveManagedExecutionLaneId(managed);
+    // One place, so a refresh cannot resolve a different directory than the
+    // create did and silently tear the runtime down every turn.
+    const personalHostCwd = resolvePersonalHostCwd(managed.session);
     const launchContext = resolveLaneLaunchContext({
       laneService,
       projectRoot,
       laneId,
       purpose: args.purpose,
-      requestedCwd: args.requestedCwd,
+      // Withheld for the same reason as at create: the lane launch context
+      // contains a requested cwd INSIDE the lane worktree and refuses anything
+      // outside it, so a host directory has to bypass it rather than be
+      // rejected by it.
+      requestedCwd: personalHostCwd ? undefined : args.requestedCwd,
     });
+    // One substitution, written once. It used to be a local for the directive
+    // key plus a conditional spread three lines later, which is two expressions
+    // of one rule and two places to change it.
+    const override = personalHostCwd
+      ? { laneWorktreePath: personalHostCwd, cwd: personalHostCwd }
+      : null;
     return {
       ...launchContext,
+      ...override,
       laneId,
       laneDirectiveKey: buildLaneDirectiveKey({
         laneId,
-        laneWorktreePath: launchContext.laneWorktreePath,
+        laneWorktreePath: override?.laneWorktreePath ?? launchContext.laneWorktreePath,
       }),
     };
   };
@@ -13838,6 +13956,12 @@ export function createAgentChatService(args: {
         ? { strictMcpConfig: managed.session.strictMcpConfig }
         : {}),
       ...(managed.session.mcpCapability ? { mcpCapability: managed.session.mcpCapability } : {}),
+      // Host session configuration: the three requests and the three reports of
+      // what the provider did with them. Persisted because a thread reopened by
+      // key sends no first message, so nothing else would carry the host's
+      // persona, its configuration layers, or its permission rules — and the
+      // tool gate reads the policy on every call.
+      ...pickHostSessionConfig(managed.session),
       ...(managed.runtimeTitleAdopted ? { runtimeTitleAdopted: true } : {}),
       ...(managed.session.permissionMode ? { permissionMode: managed.session.permissionMode } : {}),
       ...(managed.session.identityKey ? { identityKey: managed.session.identityKey } : {}),
@@ -14173,10 +14297,39 @@ export function createAgentChatService(args: {
         ? record.strictMcpConfig
         : undefined;
       const mcpCapability = normalizeCallerMcpCapability(record.mcpCapability, strictMcpConfig === true);
-      const identityKey = normalizeIdentityKey(record.identityKey);
       const surface = record.surface === "automation" || record.surface === "personal"
         ? record.surface
         : "work";
+      // Read back under the same surface rule the create path applies. A record
+      // written by an older build, or edited on disk, must not reintroduce a
+      // policy on a Work chat by way of a restart.
+      const hostConfigApplies = hostSessionConfigApplies(surface);
+      const hostInstructions = hostConfigApplies ? normalizeHostInstructions(record.instructions) : null;
+      const hostSettingSources = hostConfigApplies ? normalizeSettingSources(record.settingSources) : null;
+      // Re-derived, not trusted: a record written before a provider row changed
+      // would otherwise keep reporting the old verdict for the rest of the
+      // session's life. The persisted value is the fallback for a record whose
+      // provider this build has no table row for.
+      const instructionsCapability = hostInstructions
+        ? resolveInstructionsCapability(provider, hostInstructions)
+        : normalizeInstructionsCapability(record.instructionsCapability);
+      const settingSourcesCapability = hostSettingSources
+        ? resolveSettingSourcesCapability(provider, hostSettingSources)
+        : normalizeSettingSourcesCapability(record.settingSourcesCapability);
+      const permissionPolicy = hostConfigApplies ? normalizePermissionPolicy(record.permissionPolicy) : null;
+      const permissionCapability = permissionPolicy
+        ? resolvePermissionCapability(provider, permissionPolicy, {
+          callerMcpServerNames: Object.keys(callerMcpServers ?? {}),
+        })
+        : normalizePermissionCapability(record.permissionCapability);
+      if (!hostConfigApplies) {
+        warnHostSessionConfigDropped(logger, sessionId, surface, [
+          ...(record.permissionPolicy != null ? ["permissionPolicy"] : []),
+          ...(record.instructions != null ? ["instructions"] : []),
+          ...(record.settingSources != null ? ["settingSources"] : []),
+        ]);
+      }
+      const identityKey = normalizeIdentityKey(record.identityKey);
       const capabilityMode = normalizeCapabilityMode(record.capabilityMode);
       const completion = normalizePersistedCompletion(record.completion);
       const codexGoal = normalizeCodexGoalPayload(record.codexGoal);
@@ -14349,6 +14502,17 @@ export function createAgentChatService(args: {
         ...(callerMcpServers ? { mcpServers: callerMcpServers } : {}),
         ...(strictMcpConfig !== undefined ? { strictMcpConfig } : {}),
         ...(mcpCapability ? { mcpCapability } : {}),
+        // Passed straight in: `pickHostSessionConfig` drops every field whose
+        // value is null or undefined, so an absent key and a key holding
+        // undefined produce the identical object.
+        ...pickHostSessionConfig({
+          permissionPolicy,
+          instructions: hostInstructions,
+          settingSources: hostSettingSources,
+          instructionsCapability,
+          settingSourcesCapability,
+          permissionCapability,
+        }),
         ...(permissionMode ? { permissionMode } : {}),
         ...(identityKey ? { identityKey } : {}),
         surface,
@@ -17690,7 +17854,7 @@ export function createAgentChatService(args: {
       const cwd = typeof metadata.cwd === "string" && metadata.cwd.trim().length
         ? metadata.cwd
         : managed.laneWorktreePath;
-      if (!codexPermissionsStayWithinLane(managed, cwd, pending.permissions)) return;
+      if (!codexPermissionsStayWithinRoot(codexContainmentRoot(managed), cwd, pending.permissions)) return;
       runtime.sendResponse(pending.requestId, {
         permissions: pending.permissions ?? {},
         scope: "turn",
@@ -17699,13 +17863,17 @@ export function createAgentChatService(args: {
       const cwd = typeof metadata.cwd === "string" && metadata.cwd.trim().length
         ? metadata.cwd
         : managed.laneWorktreePath;
-      if (!codexCommandApprovalStaysWithinLane(managed, cwd, metadata.additionalPermissions)) return;
+      if (!codexCommandApprovalStaysWithinRoot(
+        codexContainmentRoot(managed),
+        cwd,
+        metadata.additionalPermissions,
+      )) return;
       runtime.sendResponse(pending.requestId, {
         decision: mapApprovalDecisionForCodex("accept"),
       });
     } else if (pending.kind === "file_change") {
       const grantRoot = typeof metadata.grantRoot === "string" ? metadata.grantRoot : null;
-      if (!codexApprovalPathStaysWithinLane(managed, grantRoot)) return;
+      if (!codexApprovalPathStaysWithinRoot(codexContainmentRoot(managed), grantRoot)) return;
       runtime.sendResponse(pending.requestId, {
         decision: mapApprovalDecisionForCodex("accept"),
       });
@@ -17726,10 +17894,68 @@ export function createAgentChatService(args: {
     managed: ManagedChatSession,
     runtime: CodexRuntime,
   ): void => {
-    if (!isSessionCodexFullAuto(managed.session)) return;
+    if (!codexSessionAutoAccepts(managed)) return;
     for (const [itemId, pending] of [...runtime.approvals.entries()]) {
       autoApproveCodexRuntimeApproval(managed, runtime, itemId, pending);
     }
+  };
+
+  /**
+   * Record a Codex approval the host policy refuses.
+   *
+   * `fallback: "deny"` exists for an embedder that renders no approval card, so
+   * the app-server has to be answered on the spot — an unanswered request parks
+   * the turn with nobody able to release it. The request is still emitted
+   * first, and only then resolved: a refusal the transcript never mentions
+   * reads to the user as the agent silently deciding not to act.
+   *
+   * Nothing is stored in `runtime.approvals`, because there is nothing left to
+   * answer. A later `approve()` on this item finds no pending entry and takes
+   * the already-settled path, which is the truth.
+   */
+  /**
+   * Refuse one Codex approval on the policy's behalf, or leave it alone.
+   *
+   * Returns true when it acted, so each of the three approval handlers reads
+   * `if (declineCodexApprovalByPolicy(...)) return;` and nothing else. It owns
+   * BOTH halves of the refusal — the wire answer to the app-server and the two
+   * transcript events — because splitting them meant the helper could not be
+   * read without also reading all three call sites to learn that the request
+   * had already been answered.
+   *
+   * Order matters and is asserted by test: the app-server is answered first, so
+   * the turn is never left waiting on a request ADE has already decided; then
+   * `approval_request`, so a host that renders cards sees what was refused;
+   * then `pending_input_resolved` with `resolution: "declined"`, which settles
+   * that card in place. Nothing is put into `runtime.approvals`, because there
+   * is no answer left for anyone to give.
+   *
+   * `response` is the payload this particular Codex method expects for a
+   * refusal — a `decision` for command and file-change, an empty grant for a
+   * permissions request, which is the same shape a user's Deny sends.
+   */
+  const declineCodexApprovalByPolicy = (
+    managed: ManagedChatSession,
+    runtime: CodexRuntime,
+    id: string | number,
+    response: Record<string, unknown>,
+    request: PendingInputRequest,
+    ui: {
+      kind: "command" | "file_change" | "tool_call";
+      description: string;
+      detail?: Record<string, unknown>;
+    },
+  ): boolean => {
+    if (!codexApprovalDeniesByPolicy(managed.session)) return false;
+    runtime.sendResponse(id, response);
+    emitPendingInputRequest(managed, request, ui);
+    emitPendingInputResolved(managed, {
+      itemId: request.itemId ?? request.requestId,
+      decision: "decline",
+      turnId: request.turnId ?? null,
+      questions: request.questions,
+    });
+    return true;
   };
 
   const normalizePendingInputAnswers = (
@@ -18907,6 +19133,40 @@ export function createAgentChatService(args: {
     const rowGoal = typeof row.goal === "string" && row.goal.trim().length
       ? row.goal.trim()
       : null;
+    // Same rule as the create path: a rehydrated personal chat with a host cwd
+    // resumes in that directory. Reading it from the lane row instead would
+    // move the agent back into the scratch workspace on the first restart, and
+    // the files the user has been working on would stop being in front of it.
+    const rehydratedPersonalHostCwd = resolvePersonalHostCwd({
+      surface: persisted?.surface ?? "work",
+      requestedCwd: persisted?.requestedCwd ?? null,
+    });
+    // Normalized rather than copied: the record is JSON from disk, and a
+    // half-written server map or a capability report from an older build would
+    // otherwise be handed to the provider adapters as if ADE had validated it.
+    const rehydratedCallerMcpServers = normalizeCallerMcpServers(persisted?.mcpServers);
+    // Tristate. An explicit `false` is the embedder asking for the user's MCP
+    // config back on a lightweight session that is strict by default, so
+    // collapsing it to absent silently re-isolates the chat on the first
+    // restart.
+    const rehydratedStrictMcpConfig = typeof persisted?.strictMcpConfig === "boolean"
+      ? persisted.strictMcpConfig
+      : undefined;
+    const rehydratedMcpCapability = normalizeCallerMcpCapability(
+      persisted?.mcpCapability,
+      rehydratedStrictMcpConfig === true,
+    );
+    // Normalized for the same reason, and with more at stake: this object is a
+    // tool gate. A half-written policy read back from disk and handed to
+    // `evaluatePermissionPolicy` unvalidated would decide what runs.
+    const rehydratedPermissionPolicy = normalizePermissionPolicy(persisted?.permissionPolicy);
+    // The capability reports are NOT re-derived here, deliberately. `persisted`
+    // comes from `readPersistedState`, which is the one reader of the record and
+    // already re-derives every verdict from the persisted args plus the
+    // provider before returning. Deriving them a second time here would be two
+    // copies of one rule, which is how the rule starts disagreeing with itself.
+    // The other branch of `persisted` above, the redundant-source
+    // reconstruction, builds a minimal record that carries no verdict at all.
 
     const managed: ManagedChatSession = {
       session: {
@@ -18960,6 +19220,22 @@ export function createAgentChatService(args: {
         ...(persisted?.requestedCwd != null && String(persisted.requestedCwd).trim().length
           ? { requestedCwd: String(persisted.requestedCwd).trim() }
           : {}),
+        // Carried onto the rehydrated session, not just left in the file: this
+        // object is what the next `persistChatState` writes back, so a field
+        // missing here is a field the first update after a restart deletes.
+        // That is how the caller-MCP trio below used to vanish — the chat kept
+        // its injected servers for exactly as long as nobody renamed it.
+        ...(rehydratedCallerMcpServers ? { mcpServers: rehydratedCallerMcpServers } : {}),
+        ...(rehydratedStrictMcpConfig !== undefined
+          ? { strictMcpConfig: rehydratedStrictMcpConfig }
+          : {}),
+        ...(rehydratedMcpCapability ? { mcpCapability: rehydratedMcpCapability } : {}),
+        // The policy is re-normalized above rather than trusted off disk; the
+        // other five ride through as persisted.
+        ...pickHostSessionConfig({
+          ...persisted,
+          permissionPolicy: rehydratedPermissionPolicy ?? undefined,
+        }),
         ...collectOrchestrationFields(null, persisted),
         createdAt: row.startedAt,
         lastActivityAt: persisted?.updatedAt ?? row.endedAt ?? row.startedAt
@@ -18968,7 +19244,7 @@ export function createAgentChatService(args: {
       transcriptBytesWritten: fileSizeOrZero(row.transcriptPath || path.join(transcriptsDir, `${sessionId}.chat.jsonl`)),
       transcriptLimitReached: false,
       metadataPath: metadataPathFor(sessionId),
-      laneWorktreePath: lane.worktreePath,
+      laneWorktreePath: rehydratedPersonalHostCwd ?? lane.worktreePath,
       runtime: null,
       preview: row.lastOutputPreview ?? null,
       closed: row.status !== "running",
@@ -26550,8 +26826,12 @@ export function createAgentChatService(args: {
         ? params.cwd
         : managed.laneWorktreePath;
       if (
-        isSessionCodexFullAuto(managed.session)
-        && codexCommandApprovalStaysWithinLane(managed, commandCwd, params.additionalPermissions)
+        codexSessionAutoAccepts(managed)
+        && codexCommandApprovalStaysWithinRoot(
+          codexContainmentRoot(managed),
+          commandCwd,
+          params.additionalPermissions,
+        )
       ) {
         runtime.sendResponse(id, { decision: mapApprovalDecisionForCodex("accept") });
         return;
@@ -26576,17 +26856,23 @@ export function createAgentChatService(args: {
         },
         turnId: requestTurnId,
       };
+      const commandDetail = {
+        additionalPermissions: params.additionalPermissions ?? null,
+        command: params.command ?? null,
+        cwd: params.cwd ?? null,
+        reason: params.reason ?? null,
+      };
+      if (declineCodexApprovalByPolicy(managed, runtime, id, { decision: mapApprovalDecisionForCodex("decline") }, request, {
+        kind: "command",
+        description,
+        detail: commandDetail,
+      })) return;
       runtime.approvals.set(itemId, { requestId: id, kind: "command", request });
       markCodexTurnProgress(managed, runtime, request.turnId);
       emitPendingInputRequest(managed, request, {
         kind: "command",
         description,
-        detail: {
-          additionalPermissions: params.additionalPermissions ?? null,
-          command: params.command ?? null,
-          cwd: params.cwd ?? null,
-          reason: params.reason ?? null,
-        },
+        detail: commandDetail,
       });
       return;
     }
@@ -26603,7 +26889,10 @@ export function createAgentChatService(args: {
         runtime.sendResponse(id, { decision: "decline" });
         return;
       }
-      if (isSessionCodexFullAuto(managed.session) && codexApprovalPathStaysWithinLane(managed, params.grantRoot)) {
+      if (
+        codexSessionAutoAccepts(managed)
+        && codexApprovalPathStaysWithinRoot(codexContainmentRoot(managed), params.grantRoot)
+      ) {
         runtime.sendResponse(id, { decision: mapApprovalDecisionForCodex("accept") });
         return;
       }
@@ -26625,15 +26914,21 @@ export function createAgentChatService(args: {
         },
         turnId: requestTurnId,
       };
+      const fileChangeDetail = {
+        grantRoot: params.grantRoot ?? null,
+        reason: params.reason ?? null,
+      };
+      if (declineCodexApprovalByPolicy(managed, runtime, id, { decision: mapApprovalDecisionForCodex("decline") }, request, {
+        kind: "file_change",
+        description,
+        detail: fileChangeDetail,
+      })) return;
       runtime.approvals.set(itemId, { requestId: id, kind: "file_change", request });
       markCodexTurnProgress(managed, runtime, request.turnId);
       emitPendingInputRequest(managed, request, {
         kind: "file_change",
         description,
-        detail: {
-          grantRoot: params.grantRoot ?? null,
-          reason: params.reason ?? null,
-        },
+        detail: fileChangeDetail,
       });
       return;
     }
@@ -26684,8 +26979,12 @@ export function createAgentChatService(args: {
         return;
       }
       if (
-        isSessionCodexFullAuto(managed.session)
-        && codexPermissionsStayWithinLane(managed, params.cwd, params.permissions)
+        codexSessionAutoAccepts(managed)
+        && codexPermissionsStayWithinRoot(
+          codexContainmentRoot(managed),
+          params.cwd,
+          params.permissions,
+        )
       ) {
         runtime.sendResponse(id, {
           permissions: params.permissions ?? {},
@@ -26714,6 +27013,18 @@ export function createAgentChatService(args: {
         },
         turnId: requestTurnId,
       };
+      const permissionsDetail = {
+        cwd: params.cwd ?? null,
+        environmentId: params.environmentId ?? null,
+        permissions: params.permissions ?? null,
+        reason: params.reason ?? null,
+      };
+      // An empty grant is Codex's "no": the same shape a user's Deny sends.
+      if (declineCodexApprovalByPolicy(managed, runtime, id, { permissions: {}, scope: "turn" }, request, {
+        kind: "tool_call",
+        description,
+        detail: permissionsDetail,
+      })) return;
       runtime.approvals.set(itemId, {
         requestId: id,
         kind: "permissions",
@@ -26724,12 +27035,7 @@ export function createAgentChatService(args: {
       emitPendingInputRequest(managed, request, {
         kind: "tool_call",
         description,
-        detail: {
-          cwd: params.cwd ?? null,
-          environmentId: params.environmentId ?? null,
-          permissions: params.permissions ?? null,
-          reason: params.reason ?? null,
-        },
+        detail: permissionsDetail,
       });
       return;
     }
@@ -31759,7 +32065,66 @@ export function createAgentChatService(args: {
       path: claudeExecutable.path,
     });
     if (personalSession) {
-      opts.systemPrompt = PERSONAL_CHAT_SYSTEM_PROMPT;
+      opts.systemPrompt = resolvePersonalSystemPrompt(managed.session);
+      // Set for all four values, including "none" → []. An omitted
+      // `settingSources` and an empty array are not documented to be the same
+      // thing in the Agent SDK, and which on-disk config an embedder's chat
+      // loads must be a property of ADE rather than of a dependency default.
+      opts.settingSources = [
+        ...CLAUDE_SETTING_SOURCE_MAP[managed.session.settingSources ?? "none"],
+      ] as ClaudeSDKOptions["settingSources"];
+      // The tool gate, and ONLY when the caller supplied a policy. A personal
+      // chat without one keeps the behavior it has always had — no
+      // `canUseTool`, no tool lists, no `approval_request` — because installing
+      // a gate on every existing SDK chat would start parking turns for hosts
+      // that render no approval card.
+      const permissionPolicy = managed.session.permissionPolicy;
+      if (permissionPolicy) {
+        // The two lists are the enforcement, not a fast path. Measured against
+        // Agent SDK 0.3.258: `allowedTools` and `disallowedTools` are applied
+        // by the CLI, which removes a denied tool from the model's catalog,
+        // while `canUseTool` did not fire on any permission mode tried. So a
+        // policy that only wired the prompt would enforce nothing.
+        //
+        // Under `fallback: "deny"` the list already carries every mutating
+        // built-in the policy did not name (see `policyToClaudeToolLists`).
+        const { allowedTools, disallowedTools } = policyToClaudeToolLists(permissionPolicy);
+        if (allowedTools.length) {
+          opts.allowedTools = Array.from(new Set([...(opts.allowedTools ?? []), ...allowedTools]));
+        }
+        if (disallowedTools.length) {
+          opts.disallowedTools = Array.from(new Set([
+            ...(opts.disallowedTools ?? []),
+            ...disallowedTools,
+          ]));
+        }
+        if (permissionPolicy.fallback === "deny") {
+          // Tool lists do not scope MCP: a server the policy never named would
+          // still be reachable. `allowManagedMcpServersOnly` is the switch that
+          // does, so a deny fallback restricts the session to the servers the
+          // policy names.
+          //
+          // Merged, never assigned over. ADE's own managed servers are already
+          // in this object on the paths that build one, and dropping them here
+          // would take away the orchestration or CTO tools with no diagnostic —
+          // the exact silent capability loss the block above guards against.
+          const existingAllowedMcpServers = opts.managedSettings?.allowedMcpServers ?? [];
+          const policyServerNames = policyAllowedMcpServers(permissionPolicy)
+            .filter((serverName) => !existingAllowedMcpServers.some(
+              (server) => server.serverName === serverName,
+            ))
+            .map((serverName) => ({ serverName }));
+          opts.managedSettings = {
+            ...(opts.managedSettings ?? {}),
+            allowedMcpServers: [...existingAllowedMcpServers, ...policyServerNames],
+            allowManagedMcpServersOnly: true,
+          };
+        }
+        // Kept wired as a second line even under a deny fallback. It is not
+        // load-bearing on the SDK version measured, but if a future version
+        // starts calling back, the gate is already there and already denies.
+        opts.canUseTool = buildClaudeCanUseTool(runtime, managed) as ClaudeSDKOptions["canUseTool"];
+      }
     } else if (!lightweight) {
       opts.toolConfig = {
         askUserQuestion: {
@@ -33614,6 +33979,9 @@ export function createAgentChatService(args: {
     cursorConfigValues: requestedCursorConfigValues,
     mcpServers: requestedMcpServers,
     strictMcpConfig: requestedStrictMcpConfig,
+    permissionPolicy: requestedPermissionPolicy,
+    instructions: requestedInstructions,
+    settingSources: requestedSettingSources,
     permissionMode: requestedPermMode,
     identityKey,
     surface,
@@ -33643,12 +34011,22 @@ export function createAgentChatService(args: {
     if (!normalizedParentSessionId && requestedSpawnKind) {
       throw new Error("spawnKind requires orchestrationParentSessionId.");
     }
+    // A personal chat's host cwd REPLACES the synthetic lane root (see
+    // `resolvePersonalHostCwd`), so it must not be resolved INSIDE that root:
+    // `resolveLaneLaunchContext` contains every requested cwd within the lane
+    // worktree and refuses anything outside it, which is correct for a project
+    // lane and would reject every host directory before the override below
+    // ever ran.
+    const personalHostCwd = resolvePersonalHostCwd({
+      surface: surface ?? "work",
+      requestedCwd,
+    });
     const launchContext = resolveLaneLaunchContext({
       laneService,
       projectRoot,
       laneId,
       purpose: "start this chat",
-      requestedCwd,
+      requestedCwd: personalHostCwd ? undefined : requestedCwd,
     });
     const normalizedIdempotencyKey = typeof idempotencyKey === "string" ? idempotencyKey.trim() : "";
     if (normalizedIdempotencyKey.length > 256 || normalizedIdempotencyKey.includes("\0")) {
@@ -33829,6 +34207,49 @@ export function createAgentChatService(args: {
         strictRequested: requestedStrictMcpConfig === true,
       })
       : null;
+    // A structured permission policy is the SDK's third form of `permissions`,
+    // alongside the two presets. It is normalized once here and persisted, so
+    // every later read — the Claude tool gate, the Codex approval handlers, a
+    // model switch — sees the same validated object rather than re-parsing what
+    // the caller sent. An unusable policy normalizes to null and the session
+    // behaves exactly as it did before the field existed.
+    //
+    // Scoped to the personal/SDK surface. `permissionPolicy` sits on the base
+    // create args, so `ade chat create --lane <lane> --arg-json
+    // permissionPolicy=…` reaches this path for a Work chat, where the policy
+    // would replace ADE's own approval prompting for a lane whose UI renders no
+    // policy and offers no way to remove one.
+    const hostConfigApplies = hostSessionConfigApplies(surface);
+    const callerPermissionPolicy = hostConfigApplies
+      ? normalizePermissionPolicy(requestedPermissionPolicy)
+      : null;
+    const callerPermissionCapability = hostConfigApplies && requestedPermissionPolicy != null
+      ? resolvePermissionCapability(effectiveProvider, callerPermissionPolicy, {
+        callerMcpServerNames: Object.keys(callerMcpServers ?? {}),
+      })
+      : null;
+    // Host instructions and configuration layers, normalized once here for the
+    // same reason: the six provider prompt builders and the Claude option
+    // builder all read the persisted value rather than re-parsing what the
+    // caller sent. Unusable input normalizes to null and the chat behaves
+    // exactly as it did before these fields existed — but the capability report
+    // is keyed off what the caller SENT, so "you asked and we could not use it"
+    // is still reported rather than looking like nothing was ever asked.
+    const callerInstructions = hostConfigApplies ? normalizeHostInstructions(requestedInstructions) : null;
+    const callerSettingSources = hostConfigApplies ? normalizeSettingSources(requestedSettingSources) : null;
+    const callerInstructionsCapability = callerInstructions
+      ? resolveInstructionsCapability(effectiveProvider, callerInstructions)
+      : null;
+    const callerSettingSourcesCapability = callerSettingSources
+      ? resolveSettingSourcesCapability(effectiveProvider, callerSettingSources)
+      : null;
+    if (!hostConfigApplies) {
+      warnHostSessionConfigDropped(logger, sessionId, surface, [
+        ...(requestedPermissionPolicy != null ? ["permissionPolicy"] : []),
+        ...(requestedInstructions != null ? ["instructions"] : []),
+        ...(requestedSettingSources != null ? ["settingSources"] : []),
+      ]);
+    }
     const capabilityMode = inferCapabilityMode(effectiveProvider);
     // Identity-pinned sessions (CTO + worker agents) are locked to full-auto.
     // Discard the native provider permission overrides supplied by callers so
@@ -33840,9 +34261,23 @@ export function createAgentChatService(args: {
     const orchestrationLeadRequested =
       effectiveInteractionMode === "orchestrator-lead" || requestedOrchestrationRole === "lead";
     const permissionsPinned = identityPinned || orchestrationLeadRequested;
-    const effectiveClaudePermissionMode = permissionsPinned ? undefined : requestedClaudePermissionMode;
-    const effectiveCodexApprovalPolicy = permissionsPinned ? undefined : requestedCodexApprovalPolicy;
-    const effectiveCodexSandbox = permissionsPinned ? undefined : requestedCodexSandbox;
+    // A structured policy needs a coarse per-provider dial that leaves its own
+    // rules reachable: Claude's `default` mode is the one that still calls
+    // `canUseTool`, and Codex's `on-request` + `workspace-write` is the pair
+    // that still raises the approval requests the policy is evaluated in.
+    // `bypassPermissions` or `never` would run wide and never consult the
+    // policy at all. An explicit per-provider value from the caller always
+    // wins — the policy fills a gap, it does not overrule a stated choice.
+    const policyDrivesPermissions = callerPermissionPolicy != null && !permissionsPinned;
+    const effectiveClaudePermissionMode = permissionsPinned
+      ? undefined
+      : requestedClaudePermissionMode ?? (policyDrivesPermissions ? "default" : undefined);
+    const effectiveCodexApprovalPolicy = permissionsPinned
+      ? undefined
+      : requestedCodexApprovalPolicy ?? (policyDrivesPermissions ? "on-request" : undefined);
+    const effectiveCodexSandbox = permissionsPinned
+      ? undefined
+      : requestedCodexSandbox ?? (policyDrivesPermissions ? "workspace-write" : undefined);
     const effectiveCodexConfigSource = permissionsPinned ? undefined : requestedCodexConfigSource;
     const requestedDroidPermissionMode = permissionsPinned ? undefined : requestedDroidPermissionModeArg;
     let effectivePermissionMode = identityKey
@@ -34001,6 +34436,18 @@ export function createAgentChatService(args: {
           ? { strictMcpConfig: requestedStrictMcpConfig }
           : {}),
         ...(callerMcpCapability ? { mcpCapability: callerMcpCapability } : {}),
+        ...(callerPermissionPolicy ? { permissionPolicy: callerPermissionPolicy } : {}),
+        ...(callerPermissionCapability
+          ? { permissionCapability: callerPermissionCapability }
+          : {}),
+        ...(callerInstructions ? { instructions: callerInstructions } : {}),
+        ...(callerSettingSources ? { settingSources: callerSettingSources } : {}),
+        ...(callerInstructionsCapability
+          ? { instructionsCapability: callerInstructionsCapability }
+          : {}),
+        ...(callerSettingSourcesCapability
+          ? { settingSourcesCapability: callerSettingSourcesCapability }
+          : {}),
         ...(identityKey ? { identityKey } : {}),
         surface: surface ?? "work",
         automationId: automationId?.trim() ? automationId.trim() : null,
@@ -34031,7 +34478,7 @@ export function createAgentChatService(args: {
       transcriptBytesWritten: fileSizeOrZero(transcriptPath),
       transcriptLimitReached: false,
       metadataPath,
-      laneWorktreePath: launchContext.laneWorktreePath,
+      laneWorktreePath: personalHostCwd ?? launchContext.laneWorktreePath,
       runtime: null,
       preview: null,
       closed: false,
@@ -39077,7 +39524,7 @@ export function createAgentChatService(args: {
       const isFirstSendForLane = managed.lastLaneDirectiveKey !== args.laneDirectiveKey;
       if (personalSession || isFirstSendForLane) {
         const injected = personalSession
-          ? PERSONAL_CHAT_SYSTEM_PROMPT
+          ? resolvePersonalSystemPrompt(managed.session)
           : await buildCursorSdkInjectedSystemPrompt({
               runtime: "local",
               laneWorktreePath: managed.laneWorktreePath,
@@ -39835,7 +40282,7 @@ export function createAgentChatService(args: {
     let cloudComposed = args.promptText;
     if (!isFollowUp) {
       const injected = isPersonalSession(managed.session)
-        ? PERSONAL_CHAT_SYSTEM_PROMPT
+        ? resolvePersonalSystemPrompt(managed.session)
         : await buildCursorSdkInjectedSystemPrompt({
             runtime: "cloud",
             laneWorktreePath: managed.laneWorktreePath,
@@ -41189,7 +41636,7 @@ export function createAgentChatService(args: {
 
       runtime.eventMapperState = createDroidSdkEventMapperState();
       const droidHarnessPrompt = isPersonalSession(managed.session)
-        ? PERSONAL_CHAT_SYSTEM_PROMPT
+        ? resolvePersonalSystemPrompt(managed.session)
         : buildCodingAgentSystemPrompt({
             cwd: managed.laneWorktreePath,
             mode: resolveDroidSdkInteractionMode(managed.session) === "spec" ? "planning" : "coding",
@@ -44989,6 +45436,13 @@ export function createAgentChatService(args: {
       ...(liveSession?.mcpCapability || persisted?.mcpCapability
         ? { mcpCapability: liveSession?.mcpCapability ?? persisted?.mcpCapability }
         : {}),
+      // Host session configuration, for the same reason: an embedder that asked
+      // for instructions or a settingSources value learns here whether the
+      // provider took them, and cannot tell "applied" from "silently dropped"
+      // any other way. Merged per field, so a live session that has rehydrated
+      // its policy but not its capability report still reports the persisted
+      // one.
+      ...mergeHostSessionConfig(liveSession, persisted),
       ...(liveSession?.cursorCloudAgentId || persisted?.cursorCloudAgentId
         ? { cursorCloudAgentId: liveSession?.cursorCloudAgentId ?? persisted?.cursorCloudAgentId }
         : {}),
@@ -46349,6 +46803,25 @@ export function createAgentChatService(args: {
       responseText,
     });
   };
+
+  /**
+   * Every request this session is still waiting on an answer for.
+   *
+   * An embedder that reloads its UI loses the `approval_request` events it
+   * already received, and a card it cannot redraw is indistinguishable from a
+   * turn that is simply slow. This reads the same stores `hasLivePendingInput`
+   * consults, so "the session is blocked" and "here is what is blocking it"
+   * can never disagree.
+   *
+   * It reads resident runtime state only, and is therefore empty after a
+   * restart — the provider process that raised the request died with it, so
+   * there is nothing left to answer.
+   */
+  const listPendingInputs = (
+    { sessionId }: { sessionId: string },
+  ): { requests: PendingInputRequest[] } => ({
+    requests: collectPendingInputRequests(ensureManagedSession(sessionId)),
+  });
 
   const availableModelsRequests = new Map<string, Promise<AgentChatModelInfo[]>>();
   const modelCatalogRequests = new Map<string, Promise<AgentChatModelCatalog>>();
@@ -47718,6 +48191,32 @@ export function createAgentChatService(args: {
           hasServers: managed.session.mcpServers != null,
           strictRequested: managed.session.strictMcpConfig === true,
         });
+      }
+      // Same reasoning for the host configuration reports. A thread that moves
+      // from Claude to Droid keeps its instructions text, but "applied on a
+      // real system-prompt channel" stops being true the moment it moves, and
+      // an embedder reading a stale "applied" would never learn that.
+      if (managed.session.instructions) {
+        managed.session.instructionsCapability = resolveInstructionsCapability(
+          nextProvider,
+          managed.session.instructions,
+        );
+      }
+      if (managed.session.settingSources) {
+        managed.session.settingSourcesCapability = resolveSettingSourcesCapability(
+          nextProvider,
+          managed.session.settingSources,
+        );
+      }
+      // The policy itself follows the chat; what the new provider can do with
+      // it does not. A thread that moves from Claude to OpenCode keeps its
+      // rules and loses their enforcement, and the report has to say so.
+      if (managed.session.permissionPolicy) {
+        managed.session.permissionCapability = resolvePermissionCapability(
+          nextProvider,
+          managed.session.permissionPolicy,
+          { callerMcpServerNames: Object.keys(managed.session.mcpServers ?? {}) },
+        );
       }
 
       const modelChanged =
@@ -49512,12 +50011,12 @@ export function createAgentChatService(args: {
     files: CodexRewindFileRestore[],
   ): Promise<string[]> => {
     if (!files.length) return [];
-    const { laneWorktreePath: cwd } = resolveLaneLaunchContext({
-      laneService,
-      projectRoot,
-      laneId: resolveManagedExecutionLaneId(managed),
-      purpose: "Codex file rewind",
-    });
+    // The session's own directory, not one re-resolved from its lane id. They
+    // are the same for every non-personal session; a personal chat with a host
+    // `requestedCwd` runs in the user's repository while its lane still names
+    // the synthetic scratch worktree, and restoring files there would report
+    // success against a directory the user never asked about.
+    const cwd = managed.laneWorktreePath;
     const restored: string[] = [];
     for (const file of files) {
       if (!isSafeRelativeGitPath(file.path)) continue;
@@ -50896,6 +51395,7 @@ export function createAgentChatService(args: {
     ensureIdentitySession,
     getCtoAttention,
     approveToolUse,
+    listPendingInputs,
     respondToInput,
     dismissPendingInputForSettlement,
     requestChatInput,

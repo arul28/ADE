@@ -1,4 +1,6 @@
-import path from "node:path";
+import { foldsCase, pathApiFor, stripExtendedLengthPrefix } from "../../../shared/pathContainment";
+
+export { stripExtendedLengthPrefix };
 
 /**
  * Filesystem path comparison that respects the platform's case rules.
@@ -12,44 +14,10 @@ import path from "node:path";
  *
  * Linux is genuinely case-sensitive, so the folding has to be platform-aware
  * rather than unconditional. `platform` is injectable so the contract can be
- * tested for `win32`, `darwin`, and `linux` from any host.
+ * tested for `win32`, `darwin`, and `linux` from any host. Case folding and
+ * path grammar come from {@link foldsCase} and {@link pathApiFor} in
+ * `pathContainment.ts` — one rule, two call sites.
  */
-
-/** Platforms whose filesystems resolve paths case-insensitively by default. */
-function isCaseInsensitivePlatform(platform: NodeJS.Platform): boolean {
-  return platform === "win32" || platform === "darwin";
-}
-
-/**
- * Drop Windows' extended-length (`\\?\`) prefix from a path.
- *
- * The prefix opts a path out of Win32 path parsing — MAX_PATH, `.`/`..`
- * collapsing, separator translation — so tools that open long paths hand it to
- * the OS and then record whatever they were given. Codex does exactly that:
- * 116 of the 117 cwd-bearing rows in a real `~/.codex/state_5.sqlite` are
- * `\\?\C:\...`.
- *
- * Node's own path parser does not understand the prefix. `\\?\C:\` looks like a
- * UNC root (`\\server\share`), so `path.relative("C:\\repo", "\\\\?\\C:\\repo")`
- * returns `\\?\C:` rather than `""` and every containment check answers
- * "outside". `fs.realpathSync` is no rescue: it returns the prefix verbatim.
- *
- * So the prefix has to come off at the boundary — wherever a provider-recorded
- * path enters ADE — and never be reintroduced. `\\?\UNC\server\share` is the
- * escaped spelling of `\\server\share` and folds back to it; everything else
- * loses four characters. Non-Windows input is returned untouched, since `\\?\`
- * is a legal (if bizarre) POSIX filename.
- */
-export function stripExtendedLengthPrefix(
-  input: string | null | undefined,
-  platform: NodeJS.Platform = process.platform,
-): string {
-  if (!input) return input ?? "";
-  if (platform !== "win32") return input;
-  if (input.startsWith("\\\\?\\UNC\\")) return `\\\\${input.slice(8)}`;
-  if (input.startsWith("\\\\?\\")) return input.slice(4);
-  return input;
-}
 
 /**
  * Canonical key for a filesystem path, safe to use in `===`, `Map`, and `Set`.
@@ -65,7 +33,7 @@ export function stripExtendedLengthPrefix(
  */
 export function pathKey(input: string, platform: NodeJS.Platform = process.platform): string {
   if (!input) return "";
-  const api = platform === "win32" ? path.win32 : path.posix;
+  const api = pathApiFor(platform);
   // Windows accepts both separators; normalize before resolving so a path that
   // mixes them collapses to one form. The `\\?\` strip runs first so a path that
   // slipped past a boundary strip still keys the same as its plain spelling —
@@ -80,7 +48,7 @@ export function pathKey(input: string, platform: NodeJS.Platform = process.platf
   if (resolved.length > 1 && resolved.endsWith(api.sep) && api.parse(resolved).root !== resolved) {
     resolved = resolved.slice(0, -1);
   }
-  return isCaseInsensitivePlatform(platform) ? resolved.toLowerCase() : resolved;
+  return foldsCase(platform) ? resolved.toLowerCase() : resolved;
 }
 
 /**
@@ -92,7 +60,7 @@ export function pathKey(input: string, platform: NodeJS.Platform = process.platf
  */
 export function pathComparisonKey(value: string, platform: NodeJS.Platform = process.platform): string {
   if (!value) return "";
-  return isCaseInsensitivePlatform(platform) ? value.toLowerCase() : value;
+  return foldsCase(platform) ? value.toLowerCase() : value;
 }
 
 /** True when both paths address the same location on this platform. */
@@ -117,7 +85,7 @@ export function isPathInside(
   platform: NodeJS.Platform = process.platform,
 ): boolean {
   if (!candidate || !parent) return false;
-  const api = platform === "win32" ? path.win32 : path.posix;
+  const api = pathApiFor(platform);
   const candidateKey = pathKey(candidate, platform);
   const parentKey = pathKey(parent, platform);
   if (candidateKey === parentKey) return true;

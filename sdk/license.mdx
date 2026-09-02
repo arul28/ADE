@@ -1,0 +1,45 @@
+---
+title: "License"
+description: "What each ADE artifact you can embed is licensed under, and whether a proprietary app may ship the runtime binary."
+icon: "scale-balanced"
+---
+
+This page records the license of every ADE artifact an embedder can consume. It states facts, not legal advice. For anything that matters to your product, ask your own counsel.
+
+## What each artifact is licensed under
+
+| Artifact | License | Notes |
+|---|---|---|
+| [`@ade-dev/sdk`](https://www.npmjs.com/package/@ade-dev/sdk) | MIT | Declared in the package metadata. A copy of the license ships in the tarball. |
+| [`@ade-dev/chat-ui`](https://www.npmjs.com/package/@ade-dev/chat-ui) | MIT | Declared in the package metadata. A copy of the license ships in the tarball. |
+| The ADE runtime binary | AGPL-3.0-only, with the [ADE Runtime Embedding Exception](https://github.com/arul28/ADE/blob/main/RUNTIME-EMBEDDING-EXCEPTION.md) | Built from this repository. Both documents ship in every `@ade-dev/runtime-*` package. |
+| ADE desktop and the `ade` CLI | AGPL-3.0-only | The application itself. |
+
+The runtime binary redistributes third-party components under their own licenses. The `NOTICE` file at the repository root reproduces each one, and the desktop app ships that file with the application.
+
+## May a proprietary app ship the runtime binary?
+
+Yes, on three conditions:
+
+1. The binary is **unmodified**. Take it byte for byte from a GitHub release of `arul28/ADE` or from an `@ade-dev/runtime-*` npm package.
+2. Your application consumes it through the documented `@ade-dev/sdk` interface.
+3. You keep the runtime's own license and notices with it.
+
+Re-signing the binary and its native modules with your own code-signing identity does not count as modifying it. macOS and Windows require that of any application that bundles them, and [Bundling](/sdk/bundling) gives the exact commands.
+
+Under those conditions the exception says that shipping the runtime inside your application does not, by that act alone, make your application subject to the AGPL. You may distribute your application under terms of your choice, including proprietary terms.
+
+## What stays AGPL-3.0-only
+
+- The runtime binary itself. The exception adds a permission around it; it does not relicense it.
+- ADE desktop, the `ade` CLI, and every part of this repository outside the two MIT packages.
+- Any **modified** runtime. Patching, recompiling, or building from changed ADE source produces a modified work, and the AGPL applies to it in full.
+- Any product that links ADE source code, or that drives internal interfaces `@ade-dev/sdk` does not document.
+
+Anyone who receives an unmodified runtime binary may rely on the exception, whether they got it from ADE or inside somebody else's product.
+
+## How the repository keeps this honest
+
+`scripts/check-package-licenses.mjs` runs in CI for every published package. It asserts that the SPDX identifier in the package metadata, the `LICENSE` file in the package directory, the file list of the published tarball, and the `## License` section of the package README all agree. A relicense that misses any one of those four places fails the build.
+
+The six `@ade-dev/runtime-*` packages are built by `apps/ade-cli/scripts/build-runtime-npm-packages.mjs`, which copies both the root `LICENSE` and `RUNTIME-EMBEDDING-EXCEPTION.md` into each one and refuses to publish a tarball that carries either file short.

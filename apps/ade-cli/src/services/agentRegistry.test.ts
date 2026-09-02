@@ -41,13 +41,43 @@ describe("classifyAgentCliError", () => {
       installCommand: `powershell.exe -NoProfile -Command "irm 'https://cursor.com/install?win32=true' | iex"`,
       authCommand: "cursor-agent login",
     });
+    // Factory ships a Windows installer; the POSIX `curl … | sh` line is a dead
+    // end there, and `npm install -g droid` is not Factory's documented install.
     expect(classifyForWindows("'droid.cmd' is not recognized as an internal or external command")).toMatchObject({
       agent: "droid",
       displayName: "Factory Droid",
       category: "missing",
-      installCommand: "npm install -g droid",
+      installCommand: `powershell.exe -NoProfile -Command "irm https://app.factory.ai/cli/windows | iex"`,
       authCommand: "droid",
     });
+    expect(classifyForWindows("spawn claude ENOENT")).toMatchObject({
+      agent: "claude",
+      category: "missing",
+      installCommand: `powershell.exe -NoProfile -Command "irm https://claude.ai/install.ps1 | iex"`,
+      authCommand: "claude auth login",
+    });
+  });
+
+  it("takes every shipped provider's commands from the one remediation table", async () => {
+    // `providerRemediation.ts` owns the vendor strings; this registry only wraps
+    // them for the shell it hands them to. A row that drifts from the table is
+    // the bug this test exists to catch — a Windows user was told to run
+    // `npm install -g @anthropic-ai/claude-code` on one screen and Anthropic's
+    // PowerShell installer on another.
+    for (const platform of ["darwin", "win32"] as const) {
+      setPlatform(platform);
+      vi.resetModules();
+      const [{ AGENT_CLI_REGISTRY }, { resolveProviderRemediation }] = await Promise.all([
+        import("./agentRegistry"),
+        import("../../../desktop/src/shared/providerRemediation"),
+      ]);
+      for (const provider of ["claude", "codex", "cursor", "droid", "opencode", "pi"] as const) {
+        const row = AGENT_CLI_REGISTRY.find((entry) => entry.agent === provider);
+        const shared = resolveProviderRemediation(provider, platform);
+        expect(row?.authCommand).toBe(shared.loginCommand);
+        expect(row?.installCommand).toContain(shared.installCommand ?? "");
+      }
+    }
   });
 
   it("classifies unauthenticated agent CLIs with auth commands", () => {

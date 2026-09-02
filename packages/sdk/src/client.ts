@@ -1,18 +1,34 @@
 import fs from "node:fs";
 import path from "node:path";
 import { readBinaryVersion, resolveBinary } from "./binary.js";
-import { DEFAULT_RELEASE_REPO, type RuntimeDownloader } from "./download.js";
+import { buildDoctorReport } from "./doctorReport.js";
+import { resolveBundledRuntime } from "./bundledRuntime.js";
+import { DEFAULT_RELEASE_REPO } from "./download.js";
 import { AdeError, errorMessage } from "./errors.js";
 import { ChatEventStream } from "./eventStream.js";
 import { JsonRpcConnection } from "./jsonRpc.js";
-import { normalizeMcpCapability } from "./mcpCapability.js";
-import { isSupportedProvider, permissionArgs, type PermissionPreset } from "./permissions.js";
-import { PersonalChatsApi } from "./personalChats.js";
 import {
-  deriveProviderStatus,
-  flattenCatalog,
-  providerStatusFingerprint,
-} from "./providers.js";
+  canonicalThreadCwd,
+  normalizeInstructions,
+  normalizeInstructionsCapability,
+  normalizePermissionCapability,
+  normalizeSettingSources,
+  normalizeSettingSourcesCapability,
+  validateThreadCwd,
+} from "./hostConfig.js";
+import { normalizeMcpCapability } from "./mcpCapability.js";
+import {
+  isPermissionPolicy,
+  isSupportedProvider,
+  resolvePermissionArgs,
+  type PermissionPreset,
+  type ThreadPermissionPolicy,
+} from "./permissions.js";
+import { PersonalChatsApi } from "./personalChats.js";
+import { probeRuntimeSignature, type RuntimeSignature } from "./runtimeSignature.js";
+import { flattenCatalog } from "./providers.js";
+import { createProviderStatusPublisher } from "./providerStatusPublisher.js";
+import { threadOpenWarnings, threadResumeMismatchWarnings } from "./threadWarnings.js";
 import { reclaimStaleRuntime, runtimePidfilePath } from "./runtimePidfile.js";
 import { DEFAULT_ADE_ROLE, startSidecar, type Sidecar } from "./sidecar.js";
 import { resolveRuntimeSocketPath } from "./socketPath.js";
@@ -25,117 +41,27 @@ import type {
   AgentChatModelCatalog,
   AgentChatSessionSummary,
   DoctorReport,
-  McpServerConfig,
   ModelCatalogEntry,
   ProviderStatus,
+  ProviderStatusRpcResult,
   ThreadSummary,
   Unsubscribe,
 } from "./types.js";
+import type {
+  CreateAdeChatOptions,
+  InternalAdeChatOptions,
+  ThreadOpenOptions,
+  ThreadResumeOptions,
+} from "./clientOptions.js";
 
-export type CreateAdeChatOptions = {
-  /** Isolated per-app ADE state root. Created if missing. */
-  home: string;
-  /** Pin a specific `ade` build. Skips PATH discovery and the downloader. */
-  binaryPath?: string;
-  /** Release channel for the downloader: `latest` (default) or a tag. */
-  channel?: string;
-  logger?: (line: string) => void;
-};
-
-/** Escape hatches for tests and embedders. Not part of the stable surface. */
-export type InternalAdeChatOptions = CreateAdeChatOptions & {
-  /** Override the endpoint (a mock server's temp socket, for instance). */
-  socketPath?: string;
-  /** Attach to an already-running runtime instead of spawning one. */
-  attach?: boolean;
-  download?: RuntimeDownloader;
-  releaseRepo?: string;
-  allowPathDiscovery?: boolean;
-  clientName?: string;
-  /** Override the least-privilege role. Escape hatch; not for normal use. */
-  adeDefaultRole?: string;
-  startupTimeoutMs?: number;
-  pollIntervalMs?: number;
-  /** Interval for `providers.onChange` re-derivation while listeners exist. */
-  providerPollIntervalMs?: number;
-};
-
-export type ThreadOpenOptions = {
-  provider: AdeProvider;
-  model: string;
-  /**
-   * MCP servers to attach to this thread.
-   *
-   * Refused outright by providers with no MCP surface (Pi), so a thread never
-   * opens silently tool-less. Read {@link AdeThread.mcpCapability} afterwards
-   * for what the provider actually delivered.
-   *
-   * Supplying servers also turns on strict mode unless you set
-   * `loadUserMcpServers: true` — see that field.
-   */
-  mcpServers?: Record<string, McpServerConfig>;
-  /**
-   * Whether to also load the user's and project's own MCP configuration.
-   *
-   * Applies when you supply `mcpServers` or set this flag explicitly: either
-   * makes the SDK send `strictMcpConfig` — `true` to withhold the user's
-   * config, and an explicit `false` (not an omission) when you set this flag
-   * true, because omitting the key is not the same as asking for the user's
-   * servers.
-   *
-   * A thread that does neither sends no MCP field at all and lets the runtime's
-   * session profile decide. The profile SDK threads run is strict by default,
-   * so "sent nothing" means the user's own MCP config is withheld — pass
-   * `loadUserMcpServers: true` if you want it loaded.
-   *
-   * IMPORTANT — false is NOT a uniform guarantee. Only Claude can enforce it.
-   * Every other provider is best-effort because the gap is in the provider's
-   * own SDK, not in ADE:
-   *
-   * | provider | strict mode | what still loads anyway                        |
-   * |----------|-------------|------------------------------------------------|
-   * | claude   | enforced    | nothing (MCP-wise)                             |
-   * | codex    | best-effort | servers contributed by a Codex *plugin*        |
-   * | cursor   | best-effort | user-layer servers                             |
-   * | droid    | best-effort | tools appearing only after the first sweep     |
-   * | opencode | best-effort | the global OpenCode config dir (for auth)      |
-   * | pi       | unsupported | n/a — no MCP surface at all                    |
-   *
-   * That table is a summary of ADE's own `CALLER_MCP_SUPPORT` table in
-   * `apps/desktop/src/shared/callerMcpServers.ts`, which is where each level,
-   * mechanism and residual is decided; this doc comment restates it and must be
-   * updated when a row there changes.
-   *
-   * Note that even for Claude, "enforced" scopes to MCP only: the user's
-   * rules, commands, and output styles still load, because those are not MCP
-   * and are not what strict mode excludes.
-   *
-   * Do not present this to your users as "only your tools are loaded" without
-   * checking {@link AdeThread.mcpCapability}: it names the exact residual for
-   * the thread you actually got, and it is authoritative where this table is
-   * only a summary.
-   *
-   * The table above applies only when this is false. Setting it TRUE (or
-   * supplying servers and opting back in) is a delivery-only request: the
-   * user's own MCP config loads by design, the report comes back with
-   * `strictRequested: false`, `residual` is null, and `mechanism` describes how
-   * the servers were delivered rather than any enforcement. Nothing in that
-   * report claims isolation, because none was asked for.
-   */
-  loadUserMcpServers?: boolean;
-  permissions?: PermissionPreset;
-  reasoningEffort?: string;
-  title?: string;
-};
-
-/**
- * Options for reopening a key this home already knows.
- *
- * `provider` and `model` become optional because a durable thread already
- * recorded them — but they are still used if the runtime lost the session and
- * the thread has to be recreated, so a caller that has them should pass them.
- */
-export type ThreadResumeOptions = Partial<ThreadOpenOptions>;
+// Re-exported from here because `@ade-dev/sdk` has always published them from
+// this module; the split is internal and must not move a public name.
+export type {
+  CreateAdeChatOptions,
+  InternalAdeChatOptions,
+  ThreadOpenOptions,
+  ThreadResumeOptions,
+} from "./clientOptions.js";
 
 /**
  * RULE FOR ANYTHING ADDED TO THIS SURFACE — destructive while streaming.
@@ -159,7 +85,22 @@ export type ThreadResumeOptions = Partial<ThreadOpenOptions>;
  */
 export interface AdeChatClient {
   providers: {
+    /**
+     * Per-provider install, auth and availability.
+     *
+     * Served from the runtime's probe cache when the runtime supports it, and
+     * derived from the model catalog when it does not. Read `source` on each
+     * record before presenting any of it as a fact about the machine.
+     */
     status(): Promise<Record<string, ProviderStatus>>;
+    /**
+     * The same map, with the runtime's probe cache bypassed.
+     *
+     * This is the "I just installed it" button. It spawns `--version` for every
+     * provider, so it is the slow path — `status()` and the `onChange` poll
+     * never bypass the cache.
+     */
+    refresh(): Promise<Record<string, ProviderStatus>>;
     onChange(cb: (status: Record<string, ProviderStatus>) => void): Unsubscribe;
   };
   models: { list(): Promise<ModelCatalogEntry[]> };
@@ -200,8 +141,22 @@ function isAbsentSessionError(error: unknown): boolean {
   return /not found/i.test(error.message);
 }
 
+/**
+ * The provider a resumed thread runs, for attributing an approval request.
+ *
+ * The runtime's own summary wins over the stored record: a `setModel` in an
+ * earlier session may have moved the thread, and the record is only as fresh as
+ * the last write. Falls back to Claude when neither is a provider this SDK
+ * knows, which is the same closed-union default the rest of the file uses.
+ */
+function resolveThreadProvider(...candidates: Array<string | undefined>): AdeProvider {
+  for (const candidate of candidates) {
+    if (candidate && isSupportedProvider(candidate)) return candidate;
+  }
+  return "claude";
+}
+
 const PROTOCOL_VERSION = "2025-06-18";
-const DEFAULT_PROVIDER_POLL_MS = 30_000;
 const MAX_RECENT_ERRORS = 20;
 
 /**
@@ -238,9 +193,16 @@ export async function createAdeChat(
   let binary: {
     binaryPath: string;
     runtimeRoot: string | null;
-    source: DoctorReport["binary"]["source"];
+    nodeModulesPath: string | null;
+    source: DoctorReport["runtime"]["source"];
     checksumVerified: boolean;
-  } = { binaryPath: "", runtimeRoot: null, source: "option", checksumVerified: false };
+  } = {
+    binaryPath: "",
+    runtimeRoot: null,
+    nodeModulesPath: null,
+    source: "attached",
+    checksumVerified: false,
+  };
 
   if (internal.attach) {
     // Attach mode never spawns: used by tests against a mock server and by
@@ -251,11 +213,23 @@ export async function createAdeChat(
       home,
       logger,
       ...(options.binaryPath ? { binaryPath: options.binaryPath } : {}),
+      ...(options.runtimeNodeModules ? { runtimeNodeModules: options.runtimeNodeModules } : {}),
+      ...(options.runtimeRoot ? { runtimeRoot: options.runtimeRoot } : {}),
+      ...(options.allowDownload !== undefined ? { allowDownload: options.allowDownload } : {}),
       channel: options.channel ?? "latest",
       repo: internal.releaseRepo ?? DEFAULT_RELEASE_REPO,
       ...(internal.download ? { download: internal.download } : {}),
       ...(internal.allowPathDiscovery !== undefined
         ? { allowPathDiscovery: internal.allowPathDiscovery }
+        : {}),
+      ...(internal.resolveBundledFrom
+        ? {
+            resolveBundled: (bundleOptions: { platform: NodeJS.Platform; arch: string }) =>
+              resolveBundledRuntime({
+                ...bundleOptions,
+                resolveFrom: internal.resolveBundledFrom as string,
+              }),
+          }
         : {}),
     });
     binary = { ...resolved };
@@ -303,6 +277,7 @@ export async function createAdeChat(
     sidecar = await startSidecar({
       binaryPath: resolved.binaryPath,
       runtimeRoot: resolved.runtimeRoot,
+      nodeModulesPath: resolved.nodeModulesPath,
       socketPath,
       home,
       logger,
@@ -318,6 +293,19 @@ export async function createAdeChat(
     recentErrors.push({ at: new Date().toISOString(), scope, message: errorMessage(error) });
     while (recentErrors.length > MAX_RECENT_ERRORS) recentErrors.shift();
     logger(`ade sdk: ${scope} failed: ${errorMessage(error)}`);
+  };
+
+  /**
+   * The signing state of a binary does not change while that binary is running,
+   * so the probe runs at most once per client. `doctor()` is called from health
+   * checks and support flows, and two `codesign` plus `spctl` spawns on every
+   * one of them would be a real cost for a value that cannot have moved.
+   */
+  let signatureProbe: Promise<RuntimeSignature | null> | null = null;
+  const readRuntimeSignature = (): Promise<RuntimeSignature | null> => {
+    if (!binary.binaryPath) return Promise.resolve(null);
+    signatureProbe ??= probeRuntimeSignature(binary.binaryPath);
+    return signatureProbe;
   };
 
   let initialize: AdeInitializeResult;
@@ -349,6 +337,17 @@ export async function createAdeChat(
     logger("ade sdk: the runtime reports no personal chat actions; calls will fail");
   }
   const mcpSupported = capabilities?.mcpServers === true;
+  /**
+   * Whether the runtime lists the read-only `pendingInputs` action.
+   *
+   * A runtime that does not is not broken, it is older: `pendingApprovals()`
+   * then reconstructs the set from the events this client saw, which cannot
+   * include anything raised before it connected. The action list is the check
+   * rather than a try/catch, because a failed call would have to be told apart
+   * from a real error on every invocation.
+   */
+  const pendingInputsSupported =
+    Array.isArray(capabilities?.actions) && capabilities.actions.includes("pendingInputs");
 
   const chats = new PersonalChatsApi(connection);
   const store = ThreadStore.forHome(home, logger);
@@ -373,11 +372,6 @@ export async function createAdeChat(
 
   // ---- providers -----------------------------------------------------------
 
-  let providerFingerprint = "";
-  const providerListeners = new Set<(status: Record<string, ProviderStatus>) => void>();
-  let providerTimer: ReturnType<typeof setTimeout> | null = null;
-  const providerPollMs = internal.providerPollIntervalMs ?? DEFAULT_PROVIDER_POLL_MS;
-
   const readCatalog = async (
     mode: "cached" | "refresh-stale" = "refresh-stale",
   ): Promise<AgentChatModelCatalog | null> => {
@@ -389,30 +383,23 @@ export async function createAdeChat(
     }
   };
 
-  const publishProviderStatus = async (): Promise<Record<string, ProviderStatus>> => {
-    const status = deriveProviderStatus(await readCatalog("cached"));
-    const fingerprint = providerStatusFingerprint(status);
-    if (fingerprint !== providerFingerprint) {
-      providerFingerprint = fingerprint;
-      for (const listener of [...providerListeners]) {
-        try {
-          listener(status);
-        } catch {
-          // A subscriber throwing must not stop the others.
-        }
-      }
-    }
-    return status;
-  };
-
-  const scheduleProviderPoll = (): void => {
-    if (providerTimer || disposed || providerListeners.size === 0) return;
-    providerTimer = setTimeout(() => {
-      providerTimer = null;
-      void publishProviderStatus().finally(() => scheduleProviderPoll());
-    }, providerPollMs);
-    providerTimer.unref?.();
-  };
+  const providerStatus = createProviderStatusPublisher({
+    probeSupported: initialize.capabilities?.providers?.status === true,
+    readCatalog,
+    requestProbe: (refresh) =>
+      connection.request<ProviderStatusRpcResult>(
+        "providers.status",
+        { refresh },
+        { timeoutMs: 30_000 },
+      ),
+    recordError,
+    logger,
+    ...(internal.providerPollIntervalMs
+      ? { pollIntervalMs: internal.providerPollIntervalMs }
+      : {}),
+    isDisposed: () => disposed,
+  });
+  const publishProviderStatus = providerStatus.publish;
 
   // ---- threads -------------------------------------------------------------
 
@@ -457,6 +444,11 @@ export async function createAdeChat(
       );
     }
 
+    // A thread this client already opened is returned as-is, before any option
+    // is looked at — the same rule the record-backed resume below follows, and
+    // for the same reason: one key is one conversation, and re-applying options
+    // to a live one would move an agent that is already running. The mismatch
+    // warning lives on the resume path, which is where the stored values are.
     const existing = liveSessions.get(trimmedKey);
     if (existing) return Promise.resolve(existing);
 
@@ -468,6 +460,28 @@ export async function createAdeChat(
     });
     openInFlight.set(trimmedKey, started);
     return started;
+  };
+
+  /**
+   * `chats.create`, with the engine's own argument refusals translated.
+   *
+   * The engine rejects a bad `requestedCwd` or policy with a message that
+   * starts `invalid_argument:`, which arrives here as a generic `rpc_error`.
+   * A caller cannot branch on prose, and the two cases are genuinely different:
+   * `rpc_error` says the runtime failed, `invalid_option` says the arguments
+   * were wrong. Everything else is passed through untouched.
+   */
+  const createChat = async (
+    args: Record<string, unknown>,
+  ): Promise<AgentChatSessionSummary> => {
+    try {
+      return await chats.create(args);
+    } catch (error) {
+      if (error instanceof AdeError && error.code === "rpc_error" && /invalid_argument:/.test(error.message)) {
+        throw new AdeError("invalid_option", error.message, { cause: error });
+      }
+      throw error;
+    }
   };
 
   const openThreadUncached = async (
@@ -502,6 +516,51 @@ export async function createAdeChat(
           record.requestedMcp === false
             ? null
             : normalizeMcpCapability(summary.mcpCapability);
+        // The host-config reports come off the RECORD, not off `opts`. A resume
+        // re-applies what the thread was created with and ignores new options,
+        // so reading "was instructions requested?" from this call's arguments
+        // would report a capability for a request this session never made.
+        //
+        // That rule is quiet, and quiet is the problem: a caller who passes a
+        // new `cwd` and a new policy believes the agent is confined to both.
+        // Say so once, per resume, for every option that actually differs.
+        for (const line of threadResumeMismatchWarnings({
+          key: trimmedKey,
+          supplied: {
+            // Canonicalized, not merely resolved: the stored value is the
+            // engine's canonical spelling, so a plain `path.resolve` compares
+            // two names for one directory and reports a caller's own unchanged
+            // `cwd` as ignored.
+            ...(opts.cwd !== undefined ? { cwd: canonicalThreadCwd(opts.cwd) } : {}),
+            ...(opts.instructions !== undefined
+              ? { instructions: normalizeInstructions(opts.instructions) }
+              : {}),
+            ...(opts.settingSources !== undefined
+              ? { settingSources: opts.settingSources }
+              : {}),
+            ...(opts.permissions !== undefined ? { permissions: opts.permissions } : {}),
+            ...(opts.mcpServers !== undefined ? { mcpServers: opts.mcpServers } : {}),
+            ...(opts.loadUserMcpServers !== undefined
+              ? { loadUserMcpServers: opts.loadUserMcpServers }
+              : {}),
+          },
+          stored: {
+            ...(record.cwd !== undefined ? { cwd: record.cwd } : {}),
+            ...(record.instructions !== undefined ? { instructions: record.instructions } : {}),
+            ...(record.settingSources !== undefined
+              ? { settingSources: record.settingSources }
+              : {}),
+            ...(record.permissionPolicy !== undefined
+              ? { permissionPolicy: record.permissionPolicy }
+              : {}),
+            ...(record.mcpServers !== undefined ? { mcpServers: record.mcpServers } : {}),
+            ...(record.loadUserMcpServers !== undefined
+              ? { loadUserMcpServers: record.loadUserMcpServers }
+              : {}),
+          },
+        })) {
+          logger(line);
+        }
         const thread = new Thread(
           summary.sessionId,
           trimmedKey,
@@ -510,6 +569,26 @@ export async function createAdeChat(
           events,
           assertUsable,
           persistThreadModel(trimmedKey),
+          {
+            provider: resolveThreadProvider(summary.provider, record.provider),
+            instructionsCapability: normalizeInstructionsCapability(
+              summary.instructionsCapability,
+              record.instructions !== undefined,
+            ),
+            settingSourcesCapability: normalizeSettingSourcesCapability(
+              summary.settingSourcesCapability,
+              record.settingSources !== undefined,
+            ),
+            permissionCapability: normalizePermissionCapability(
+              summary.permissionCapability,
+              record.permissionPolicy !== undefined,
+            ),
+            requestedInstructions: record.instructions !== undefined,
+            requestedSettingSources: record.settingSources !== undefined,
+            requestedPermissionPolicy: record.permissionPolicy !== undefined,
+            pendingInputsSupported,
+            logger,
+          },
         );
         liveSessions.set(trimmedKey, thread);
         return thread;
@@ -541,6 +620,21 @@ export async function createAdeChat(
       );
     }
 
+    // Host configuration follows the same precedence the provider and model do:
+    // this call's options, then what the key was created with, then the
+    // client-wide default. A recreate after the runtime lost the session has to
+    // rebuild the same thread, not a differently-behaved one under the old name.
+    const instructions =
+      normalizeInstructions(opts.instructions) ??
+      record?.instructions ??
+      normalizeInstructions(options.instructions);
+    const cwd =
+      opts.cwd !== undefined ? validateThreadCwd(opts.cwd, home) : record?.cwd;
+    const settingSources = normalizeSettingSources(opts.settingSources) ?? record?.settingSources;
+    const permissions: PermissionPreset | ThreadPermissionPolicy =
+      opts.permissions ?? record?.permissionPolicy ?? "default";
+    const permissionPolicy = isPermissionPolicy(permissions) ? permissions : undefined;
+
     const mcpServers =
       opts.mcpServers !== undefined && Object.keys(opts.mcpServers).length > 0
         ? opts.mcpServers
@@ -568,12 +662,20 @@ export async function createAdeChat(
       );
     }
 
-    const created = await chats.create({
+    const created = await createChat({
       provider,
       model,
       ...(opts.title ? { title: opts.title } : {}),
       ...(opts.reasoningEffort ? { reasoningEffort: opts.reasoningEffort } : {}),
-      ...permissionArgs(provider, opts.permissions ?? "default"),
+      // A policy sends `permissionMode: "default"` plus the policy itself, so a
+      // runtime that does not understand `permissionPolicy` behaves like
+      // today's `"default"` rather than like `always-allow`. Degrading toward
+      // more prompting is the only safe direction for a permission surface.
+      ...resolvePermissionArgs(provider, permissions),
+      ...(instructions ? { instructions } : {}),
+      // `requestedCwd` is the field name the engine has always used for this.
+      ...(cwd ? { requestedCwd: cwd } : {}),
+      ...(settingSources ? { settingSources } : {}),
       // `suppliedServers`, NOT truthiness. `mcpServers: {}` is an empty object,
       // which is truthy — so a bare `opts.mcpServers` check made an empty map
       // send servers on the wire AND turn strict mode on, while every local
@@ -597,6 +699,18 @@ export async function createAdeChat(
       throw new AdeError("protocol_error", "The ADE runtime created a chat with no session id.");
     }
 
+    // The CANONICAL path, as the runtime echoes it on the create summary, not
+    // the caller's spelling. The engine resolves the path before it binds the
+    // session, so one directory reached through a symlink or in another case
+    // comes back as one string. Recording the caller's spelling made a later
+    // `open()` with the runtime's own spelling of the SAME directory log a
+    // resume mismatch and report the stored value as ignored, on a `cwd`
+    // nothing had changed. Falls back to the resolved path a runtime that
+    // echoes nothing.
+    const recordedCwd = cwd
+      ? (typeof created.requestedCwd === "string" && created.requestedCwd ? created.requestedCwd : cwd)
+      : undefined;
+
     const now = new Date().toISOString();
     await store.put({
       key: trimmedKey,
@@ -609,41 +723,40 @@ export async function createAdeChat(
       requestedMcp: askedForMcp,
       ...(suppliedServers ? { mcpServers } : {}),
       ...(loadUserMcpServers !== undefined ? { loadUserMcpServers } : {}),
+      ...(instructions ? { instructions } : {}),
+      ...(recordedCwd ? { cwd: recordedCwd } : {}),
+      ...(settingSources ? { settingSources } : {}),
+      ...(permissionPolicy ? { permissionPolicy } : {}),
     });
     const capability = normalizeMcpCapability(created.mcpCapability);
-    // Scoped to requests the runtime actually reports on: supplied servers, or
-    // an explicit strictness request. A bare `loadUserMcpServers: true` asks
-    // for nothing to be withheld and nothing to be injected, so the runtime
-    // emits no capability report BY DESIGN — warning there would cry wolf on
-    // every correct delivery-only thread, and a warning that fires when nothing
-    // is wrong stops being read when something is.
-    const expectsCapabilityReport = suppliedServers || loadUserMcpServers === false;
-    if (expectsCapabilityReport && !capability) {
-      // The caller asked and the runtime said nothing. Silence here would read
-      // downstream as "no MCP was requested", which is the one wrong conclusion
-      // available — so name it instead.
-      logger(
-        `ade sdk: thread "${trimmedKey}" requested MCP but the runtime reported no capability; treat the guarantee as unverified`,
-      );
-    }
-    // Branch on `level`, never on `delivered`. `delivered` is false for a
-    // provider with no MCP surface, and older runtimes ALSO returned false for
-    // a strict-only request (strict mode, no servers) that had in fact been
-    // enforced perfectly — so a client keyed on it reported a successful
-    // isolation request as a failure. `level` is the field that actually
-    // varies, and "unsupported" is the only value meaning nothing landed.
-    //
-    // Guarded on `suppliedServers` as well: with no servers to drop there is
-    // nothing to warn about, whatever the runtime reports.
-    if (suppliedServers && capability?.level === "unsupported") {
-      logger(
-        `ade sdk: thread "${trimmedKey}" opened WITHOUT the requested MCP servers (${capability.mechanism})`,
-      );
-    }
-    // Independent of the above, not chained to it: a best-effort residual must
-    // still surface on a thread whose servers did land.
-    if (capability?.residual) {
-      logger(`ade sdk: thread "${trimmedKey}" MCP strict mode is best-effort: ${capability.residual}`);
+    const instructionsCapability = normalizeInstructionsCapability(
+      created.instructionsCapability,
+      instructions !== undefined,
+    );
+    const settingSourcesCapability = normalizeSettingSourcesCapability(
+      created.settingSourcesCapability,
+      settingSources !== undefined,
+    );
+    const permissionCapability = normalizePermissionCapability(
+      created.permissionCapability,
+      permissionPolicy !== undefined,
+    );
+    // Every honesty rule for a freshly opened thread lives in one pure
+    // function, unit-tested directly. See `threadWarnings.ts`.
+    for (const line of threadOpenWarnings({
+      key: trimmedKey,
+      suppliedServers,
+      mcpServers,
+      loadUserMcpServers,
+      instructions,
+      settingSources,
+      permissionPolicy,
+      mcpCapability: capability,
+      instructionsCapability,
+      settingSourcesCapability,
+      permissionCapability,
+    })) {
+      logger(line);
     }
 
     const thread = new Thread(
@@ -654,6 +767,19 @@ export async function createAdeChat(
       events,
       assertUsable,
       persistThreadModel(trimmedKey),
+      {
+        provider,
+        instructionsCapability,
+        settingSourcesCapability,
+        permissionCapability,
+        // What the CALLER asked for, not what came back. `setModel` re-derives
+        // every report and needs the request, which a null report cannot carry.
+        requestedInstructions: instructions !== undefined,
+        requestedSettingSources: settingSources !== undefined,
+        requestedPermissionPolicy: permissionPolicy !== undefined,
+        pendingInputsSupported,
+        logger,
+      },
     );
     liveSessions.set(trimmedKey, thread);
     return thread;
@@ -690,19 +816,11 @@ export async function createAdeChat(
         assertUsable();
         return await publishProviderStatus();
       },
-      onChange: (cb) => {
-        providerListeners.add(cb);
-        // Seed the new listener with the current state, then start polling.
-        void publishProviderStatus().catch(() => {});
-        scheduleProviderPoll();
-        return () => {
-          providerListeners.delete(cb);
-          if (providerListeners.size === 0 && providerTimer) {
-            clearTimeout(providerTimer);
-            providerTimer = null;
-          }
-        };
+      refresh: async () => {
+        assertUsable();
+        return await publishProviderStatus(true);
       },
+      onChange: providerStatus.onChange,
     },
 
     models: {
@@ -716,12 +834,13 @@ export async function createAdeChat(
 
     doctor: async () => {
       assertUsable();
-      const [version, providerStatus, records] = await Promise.all([
+      const [version, providerStatus, records, signature] = await Promise.all([
         binary.binaryPath
-          ? readBinaryVersion(binary.binaryPath, binary.runtimeRoot)
+          ? readBinaryVersion(binary)
           : Promise.resolve(initialize.runtimeInfo?.version ?? null),
         publishProviderStatus().catch(() => ({}) as Record<string, ProviderStatus>),
         store.all(),
+        readRuntimeSignature(),
       ]);
       const socketConnected = !connection.isClosed;
       let live = 0;
@@ -733,31 +852,23 @@ export async function createAdeChat(
         const known = new Set(sessions.map((session) => session.sessionId));
         live = records.filter((record) => known.has(record.sessionId)).length;
       }
-      const providersOk = Object.values(providerStatus).some((entry) => entry.available);
-      return {
-        ok: socketConnected && events.transport !== "unavailable" && providersOk,
-        sdkVersion: SDK_VERSION,
-        binary: {
-          path: binary.binaryPath || "(attached)",
-          version: version ?? null,
-          source: binary.source,
-          checksumVerified: binary.checksumVerified,
-        },
-        socket: {
-          path: socketPath,
-          connected: socketConnected,
-          runtimeVersion: initialize.runtimeInfo?.version ?? null,
-          pid: initialize.runtimeInfo?.pid ?? sidecar?.child.pid ?? null,
-        },
+      return buildDoctorReport({
+        binary,
+        version: version ?? null,
+        signature,
+        providers: providerStatus,
+        socketPath,
+        socketConnected,
+        runtimeVersion: initialize.runtimeInfo?.version ?? null,
+        runtimePid: initialize.runtimeInfo?.pid ?? sidecar?.child.pid ?? null,
         events: {
           mode: events.transport,
           epoch: events.currentEpoch,
           gapsRecovered: events.recoveredGapCount,
         },
-        providers: providerStatus,
         threads: { tracked: records.length, live },
         recentErrors: [...recentErrors],
-      } satisfies DoctorReport;
+      });
     },
 
     exportThread: async (key) => {
@@ -778,9 +889,11 @@ export async function createAdeChat(
     dispose: async () => {
       if (disposed) return;
       disposed = true;
-      if (providerTimer) clearTimeout(providerTimer);
-      providerTimer = null;
-      providerListeners.clear();
+      providerStatus.dispose();
+      // Each thread holds a listener on the shared event stream from its
+      // constructor. Clearing the map alone left those subscribed for the life
+      // of the client, with every envelope fanned out to all of them.
+      for (const thread of liveSessions.values()) thread.dispose();
       liveSessions.clear();
       openInFlight.clear();
       await events.dispose();

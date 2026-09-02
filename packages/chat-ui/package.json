@@ -1,8 +1,8 @@
 {
   "name": "@ade-dev/chat-ui",
-  "version": "0.1.2",
+  "version": "0.2.0",
   "description": "Embeddable React chat components for the ADE SDK.",
-  "license": "AGPL-3.0-only",
+  "license": "MIT",
   "type": "module",
   "sideEffects": false,
   "main": "./dist/index.cjs",

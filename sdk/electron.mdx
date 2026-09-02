@@ -1,0 +1,197 @@
+---
+title: "Electron"
+description: "Bridge @ade-dev/sdk from Electron's main process to a sandboxed renderer: registerAdeIpc, exposeAdeBridge, createAdeIpcClient."
+icon: "atom"
+---
+
+`@ade-dev/sdk` spawns a child process and speaks over a Unix socket, so it runs in Electron's **main** process. `@ade-dev/chat-ui` is React and runs in the **renderer**. They cannot share an object.
+
+This page ships the bridge between them: three functions, one per process.
+
+```bash
+npm install @ade-dev/sdk
+```
+
+`electron` is not a dependency of this package, and not an optional peer. Every Electron object is described structurally, so any version whose `ipcMain`, `ipcRenderer` and `contextBridge` still carry these members works.
+
+## Why not run the SDK in the renderer
+
+You cannot, and you would not want to.
+
+The SDK spawns a runtime child process and connects to it over a Unix socket or a Windows named pipe. A renderer with `nodeIntegration: false` and `sandbox: true` has neither `child_process` nor `net`. Turning those on to make it fit would put a process spawner and your users' provider credentials inside the one process that renders untrusted markdown.
+
+A strict Content Security Policy closes the other door. A renderer with `default-src 'none'` cannot fetch, so it cannot reach a remote API either. Everything crosses through main. That is the correct posture, and the bridge below is what it costs.
+
+## The three files
+
+### Main
+
+```ts
+import path from "node:path";
+import { app, BrowserWindow, ipcMain } from "electron";
+import { createAdeChat } from "@ade-dev/sdk";
+import { registerAdeIpc } from "@ade-dev/sdk/electron";
+
+const client = await createAdeChat({
+  home: path.join(app.getPath("userData"), "ade"),
+});
+
+const disposeIpc = registerAdeIpc(ipcMain, client, {
+  /** Channel namespace. Defaults to "ade", giving `ade:invoke` and `ade:event`. */
+  channelPrefix: "ade",
+  /** Runs before every call. Return false and the SDK is never reached. */
+  authorize: (event, method, args) => isTrustedFrame(event.sender),
+  /** A thread key carries MCP servers and a permission policy. Pin it. */
+  allowThreadKey: (key) => key === "main",
+});
+
+const window = new BrowserWindow({
+  webPreferences: {
+    preload: require.resolve("@ade-dev/sdk/electron/preload"),
+    contextIsolation: true,
+    nodeIntegration: false,
+    sandbox: true,
+  },
+});
+
+app.on("before-quit", async () => {
+  disposeIpc();          // drop the bridge before the client
+  await client.dispose();
+});
+```
+
+`registerAdeIpc` returns a disposer. Call it before `client.dispose()` so no event is pushed at a closing runtime.
+
+### Preload
+
+```js
+const { contextBridge, ipcRenderer } = require("electron");
+const { exposeAdeBridge } = require("@ade-dev/sdk/electron/preload");
+
+exposeAdeBridge(contextBridge, ipcRenderer, { key: "ade" });
+```
+
+Read the [sandbox requirements](#sandbox-requirements) before you write this file. A sandboxed preload cannot resolve that `require`, so either bundle this module into your preload or point `webPreferences.preload` straight at the SDK's own published preload, which is already one self-contained file.
+
+### Renderer
+
+```tsx
+import { createAdeIpcClient } from "@ade-dev/sdk/electron/renderer";
+import { adaptSdkClient, AdeChat } from "@ade-dev/chat-ui";
+
+const client = adaptSdkClient(createAdeIpcClient(window.ade), {
+  providerFilter: ["claude", "codex"],
+});
+
+export function App() {
+  return <AdeChat client={client} threadKey="main" />;
+}
+```
+
+`createAdeIpcClient` returns the shape `adaptSdkClient` expects. There is no cast and no host glue.
+
+A page with no bundler cannot import an ES module over `file://`. Load `dist/electron/renderer.global.js` with a plain `<script>` tag instead and read `window.AdeElectron.createAdeIpcClient`.
+
+## Sandbox requirements
+
+A preload running under `sandbox: true` has **no module resolution**. `require` reaches Electron's own built-ins and nothing else: not a file path, not `node_modules`. A preload is therefore one of two things.
+
+<CardGroup cols={2}>
+  <Card title="The shipped file" icon="box">
+    Point `webPreferences.preload` at `require.resolve("@ade-dev/sdk/electron/preload")`. That artifact is a single file with no `require` and no `import` of any kind.
+  </Card>
+  <Card title="Your own bundle" icon="layer-group">
+    Bundle `@ade-dev/sdk/electron/preload` into your preload with esbuild, Vite or Rollup. Ship one file, with no external imports left in it.
+  </Card>
+</CardGroup>
+
+Everything that crosses `contextBridge` is structured-cloned, which drops prototypes. So the bridge exposes only plain data and functions, and the thread handle a renderer holds is an id plus functions rather than a class instance.
+
+## What crosses the bridge
+
+| surface | notes |
+| --- | --- |
+| `providers.status()` / `providers.refresh()` | request and response |
+| `providers.onChange(cb)` | a subscription; the unsubscribe reaches main |
+| `models.list()` | request and response |
+| `threads.open(key, opts)` | returns a proxied thread; `opts` is serializable, `mcpServers` included |
+| `thread.send(text, opts)` | resolves on dispatch, matching the SDK's own asymmetry |
+| `thread.steer` / `thread.interrupt` | request and response |
+| `thread.history({ limit })` | merged against the live stream; see [ordering](#ordering) |
+| `thread.setModel(id, opts)` | refuses mid-turn like the real thing |
+| `thread.approve` / `thread.pendingApprovals` | see [Permissions](/sdk/permissions) |
+| `thread.on("event" \| "status" \| "usage", cb)` | a subscription |
+| `thread.id`, `thread.mcpCapability` | snapshots, resolved at open |
+| `thread.instructionsCapability`, `settingSourcesCapability`, `permissionCapability` | snapshots, resolved at open |
+
+### Attachments are paths, not bytes
+
+`SendOptions.attachments` are `AgentChatFileRef` values with a filesystem `path`. The bridge does not upload buffers, and a `File` object from a renderer drag-and-drop is not one.
+
+Open a dialog in main, and send the path back:
+
+```ts
+ipcMain.handle("app:pick-file", async () => {
+  const result = await dialog.showOpenDialog({ properties: ["openFile"] });
+  return result.filePaths[0] ?? null;
+});
+```
+
+## Teardown guarantees
+
+`providers.onChange` and `thread.on` return an `Unsubscribe` that only main can call. A renderer that reloads drops its side and leaves main's listener attached. Nothing fails; the transcript simply starts showing every envelope twice, then three times. In development a fast-refresh loop reloads the renderer constantly, so the leak grows fast and looks like a provider bug.
+
+`registerAdeIpc` keeps a registry keyed by `webContents.id` and disposes it:
+
+- when that `webContents` emits `destroyed`;
+- on a cross-document main-frame navigation (`did-start-navigation` or `did-navigate`).
+
+A same-document navigation, such as a hash-route change, is **not** a teardown. It does not replace the renderer's JavaScript world, and tearing down there would kill a live transcript on a route change.
+
+Teardown drops listeners and forgets the bridge's handles. It does not end the conversation: the SDK keeps the session, so the renderer reopens the same key and resumes the same transcript.
+
+On the renderer side, `on()` is refcounted. Twelve components watching one thread cost main one subscription, and the last unsubscribe releases it.
+
+## Ordering
+
+`@ade-dev/chat-ui` states the rule in prose: envelope order is `sequence` first and `timestamp` second, provider clocks are not trusted, and an event emitted while `history()` is in flight must also reach the `"event"` subscriber, de-duplicated on `sessionId:sequence:timestamp:type`.
+
+The renderer half carries that rule in code. `history()` subscribes **before** it asks, buffers what arrives while the request is in flight, and returns the merge — so an envelope that reached a live subscriber is not repeated in the page, and one that reached nobody is folded into it. Each envelope is delivered exactly once, in envelope order, and `envelopeDedupeKey` is exported so you can key on the same string.
+
+An event type the SDK has never heard of passes through untouched. Adding a new event kind upstream does not need a bridge release.
+
+## Errors
+
+An `ipcMain.handle` rejection reaches the renderer as a plain `Error` with a rewritten message, which loses `AdeError.code` — the one field you branch on. So the handler never rejects. It resolves with `{ __adeError: true, name: "AdeError", code, message }` and the renderer rebuilds a real `AdeError`.
+
+```ts
+try {
+  await thread.setModel(next);
+} catch (error) {
+  if (error.code === "invalid_option") showBusyHint();
+}
+```
+
+`error.code` is the stable check. `instanceof` is not, because each subpath is a separate bundle and therefore carries its own copy of the class. Import `AdeError` from `@ade-dev/sdk/electron/renderer` if you want `instanceof` to hold in a renderer.
+
+`authorize` or `allowThreadKey` returning false rejects with code `unauthorized`, and the SDK is not called at all.
+
+## Transport degradation and restarts
+
+Two runtime facts a bridge has to survive.
+
+**`doctor().runtime` and `DoctorReport.events.mode`.** The push transport can silently become polling: `mode` reads `"push"` normally and `"drain"` when the SDK is polling instead. Nothing about the bridge changes — envelopes still arrive on the same channel — but latency does, so report `mode` in your diagnostics rather than assuming push.
+
+**`events.epoch`.** The epoch changes when the runtime restarts. Envelopes from before and after a change belong to different runtime lifetimes, so a transcript stitched across one can appear to go backwards. Read `doctor()` in main, push the epoch to your renderer, and re-run `history()` when it changes rather than trusting the buffer you already hold.
+
+Neither value crosses this bridge on its own. `doctor()` is the host's call, from main, at whatever cadence your diagnostics need.
+
+## Example app
+
+`packages/sdk/examples/electron` is a complete app with `contextIsolation: true`, `nodeIntegration: false`, `sandbox: true`, and a strict CSP meta tag. It opens a thread, sends a message and prints streamed text in about a hundred lines of vanilla JavaScript. It needs a provider CLI installed, and CI does not install it.
+
+## Next
+
+<Card title="Permissions and approvals" href="/sdk/permissions" icon="shield-check" horizontal>
+  What `approve()` answers, and what an unanswered approval blocks.
+</Card>

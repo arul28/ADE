@@ -15,6 +15,7 @@ import type {
   AgentChatEditSteerArgs,
   AgentChatModelCatalog,
   AgentChatModelCatalogArgs,
+  PendingInputRequest,
   AgentChatRecoverTurnArgs,
   AgentChatRecoverTurnResult,
   AgentChatResolveUnprocessedMessageArgs,
@@ -49,6 +50,7 @@ export const PERSONAL_CHAT_ACTIONS = [
   "resolveUnprocessedMessage",
   "respondToInput",
   "approve",
+  "pendingInputs",
   "createScheduledWork",
   "cancelScheduledWork",
   "setScheduledWorkPaused",
@@ -86,6 +88,14 @@ export function isPersonalChatActionViewerAllowed(action: PersonalChatAction): b
   return action !== "createScheduledWork";
 }
 
+/**
+ * `requestedCwd` is deliberately NOT omitted. A personal chat's agent runs in
+ * the runtime's own 0700 scratch workspace, which is the right default for a
+ * general tool and the wrong one for a host whose value is acting on the user's
+ * own files — a file written there is, to that user, gone. The scope validates
+ * the path before forwarding it (absolute, not a filesystem or drive root, not
+ * the home directory itself, not inside the runtime's own state).
+ */
 export type PersonalChatCreateArgs = Omit<
   AgentChatCreateArgs,
   | "laneId"
@@ -94,7 +104,6 @@ export type PersonalChatCreateArgs = Omit<
   | "surface"
   | "automationId"
   | "automationRunId"
-  | "requestedCwd"
   | "orchestrationRunId"
   | "orchestrationRole"
   | "orchestrationParentSessionId"
@@ -121,6 +130,7 @@ export type PersonalChatCallArgs =
   | { action: "resolveUnprocessedMessage"; args: AgentChatResolveUnprocessedMessageArgs }
   | { action: "respondToInput"; args: AgentChatRespondToInputArgs }
   | { action: "approve"; args: AgentChatApproveArgs }
+  | { action: "pendingInputs"; args: { sessionId: string } }
   | { action: "createScheduledWork"; args: AgentChatCreateScheduledWorkArgs }
   | { action: "cancelScheduledWork"; args: AgentChatCancelScheduledWorkArgs }
   | { action: "setScheduledWorkPaused"; args: AgentChatSetScheduledWorkPausedArgs }
@@ -147,6 +157,11 @@ export type PersonalChatCallArgs =
     }
   | { action: "getImageDataUrl"; args: { path: string } };
 
+/** Result of the `pendingInputs` action: every request still awaiting an answer. */
+export type PersonalChatPendingInputsResult = {
+  requests: PendingInputRequest[];
+};
+
 export type PersonalChatCallResult =
   | AgentChatSession
   | AgentChatSessionSummary
@@ -159,6 +174,7 @@ export type PersonalChatCallResult =
   | AgentChatRecoverTurnResult
   | AgentChatResolveUnprocessedMessageResult
   | AgentChatModelCatalog
+  | PersonalChatPendingInputsResult
   | PtyCreateResult
   | PtyDisposeResult
   | unknown;

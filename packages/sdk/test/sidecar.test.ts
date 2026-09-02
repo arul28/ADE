@@ -243,7 +243,7 @@ describe("binary resolution", () => {
         throw new Error("must not download");
       },
     });
-    expect(resolved).toMatchObject({ binaryPath: FAKE_BIN, source: "option" });
+    expect(resolved).toMatchObject({ binaryPath: FAKE_BIN, source: "explicit" });
   });
 
   it("rejects a binaryPath that does not exist", async () => {
@@ -271,7 +271,7 @@ describe("binary resolution", () => {
         throw new Error("must not download");
       },
     });
-    expect(resolved).toMatchObject({ binaryPath, source: "cache" });
+    expect(resolved).toMatchObject({ binaryPath, source: "cached-download" });
   });
 
   it("falls back to an `ade` found on PATH before downloading", async () => {
@@ -311,13 +311,13 @@ describe("binary resolution", () => {
         };
       },
     });
-    expect(resolved.source).toBe("download");
+    expect(resolved.source).toBe("downloaded");
     expect(seen[0]!.channel).toBe("v9.9.9");
     expect(seen[0]!.target.binaryAsset).toMatch(/^ade-/);
   });
 });
 
-describe("download integrity (A4)", () => {
+describe("download integrity", () => {
   it("fails closed when the channel publishes no SHA256SUMS", async () => {
     // An unverifiable executable is not installed. Before this, suppressing one
     // file downgraded the check to "is it big enough".
@@ -375,7 +375,7 @@ describe("download integrity (A4)", () => {
   });
 });
 
-describe("two runtimes on one home (A11)", () => {
+describe("two runtimes on one home", () => {
   it("refuses to start when an unprovable owner is recorded", async () => {
     // Spawning anyway would put two writers on one SQLite state root.
     const home = makeHome();
@@ -398,7 +398,7 @@ describe("two runtimes on one home (A11)", () => {
   });
 });
 
-describe("cached runtime is channel-aware (A17)", () => {
+describe("cached runtime is channel-aware", () => {
   /** Serves a valid, checksum-matching runtime so downloads succeed. */
   function serveRuntime(counter: { downloads: number }): typeof fetch {
     const target = resolveRuntimeTarget();

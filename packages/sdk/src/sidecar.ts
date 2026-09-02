@@ -22,6 +22,12 @@ import { resolveSpawnInvocation } from "./windowsInvocation.js";
 export type SidecarOptions = {
   binaryPath: string;
   runtimeRoot: string | null;
+  /**
+   * Value for `ADE_RUNTIME_NODE_MODULES`. Defaults to
+   * `<runtimeRoot>/node_modules`; an embedder who split the two halves inside
+   * their bundle passes it, and it is then used verbatim.
+   */
+  nodeModulesPath?: string | null;
   socketPath: string;
   home: string;
   logger: (line: string) => void;
@@ -195,6 +201,7 @@ export async function startSidecar(options: SidecarOptions): Promise<Sidecar> {
   const {
     binaryPath,
     runtimeRoot,
+    nodeModulesPath,
     socketPath,
     home,
     logger,
@@ -210,7 +217,9 @@ export async function startSidecar(options: SidecarOptions): Promise<Sidecar> {
     // A developer running the SDK from inside a configured ADE shell would
     // otherwise leak ADE_PROJECT_ROOT, ADE_DEFAULT_ROLE, ADE_SOCKET and friends
     // into an isolated runtime, silently pointing it at their real state.
-    ...scrubAdeEnv(runtimeRoot ? runtimeSpawnEnv(runtimeRoot, env) : env),
+    ...scrubAdeEnv(
+      runtimeRoot ? runtimeSpawnEnv(runtimeRoot, env, nodeModulesPath ?? undefined) : env,
+    ),
     // The isolated per-app state root. Everything the embedded profile writes
     // (db, secrets, personal chat state) lands under here rather than in the
     // developer's real ~/.ade.

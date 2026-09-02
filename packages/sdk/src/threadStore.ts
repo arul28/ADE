@@ -1,7 +1,12 @@
 import fs from "node:fs";
 import path from "node:path";
 import { errorMessage } from "./errors.js";
-import type { McpServerConfig } from "./types.js";
+import type { ThreadPermissionPolicy } from "./permissions.js";
+import type {
+  AgentChatInstructions,
+  AgentChatSettingSources,
+  McpServerConfig,
+} from "./types.js";
 
 /**
  * Durable `key -> sessionId` map at `<home>/threads.json`.
@@ -39,6 +44,19 @@ export type ThreadRecord = {
    */
   mcpServers?: Record<string, McpServerConfig>;
   loadUserMcpServers?: boolean;
+  /**
+   * The host configuration this key was created with.
+   *
+   * Stored for the same reason `mcpServers` is: when the runtime has lost the
+   * session, `open(key)` recreates it, and a recreate that dropped the
+   * instructions, the working directory, or the permission policy would hand
+   * the caller a thread with the same name and different behavior — the one
+   * outcome a durable key must not produce.
+   */
+  instructions?: AgentChatInstructions;
+  cwd?: string;
+  settingSources?: AgentChatSettingSources;
+  permissionPolicy?: ThreadPermissionPolicy;
 };
 
 type ThreadStoreFile = {
@@ -134,6 +152,26 @@ export class ThreadStore {
   }
 }
 
+function isStoredInstructions(value: unknown): value is AgentChatInstructions {
+  if (!value || typeof value !== "object") return false;
+  const record = value as Partial<AgentChatInstructions>;
+  if (record.mode !== "append" && record.mode !== "replace") return false;
+  return typeof record.text === "string" && record.text.length > 0;
+}
+
+function isStoredSettingSources(value: unknown): value is AgentChatSettingSources {
+  return value === "none" || value === "project" || value === "user" || value === "all";
+}
+
+function isStoredPermissionPolicy(value: unknown): value is ThreadPermissionPolicy {
+  if (!value || typeof value !== "object") return false;
+  const record = value as Partial<ThreadPermissionPolicy>;
+  // `fallback` is the one required field, and a policy that lost it is not a
+  // narrower policy — it is a policy with no answer for anything unmatched. Drop
+  // it rather than send a shape the engine would reject or, worse, widen.
+  return record.fallback === "ask" || record.fallback === "deny";
+}
+
 function normalize(value: unknown): ThreadStoreFile {
   if (!value || typeof value !== "object") return { ...EMPTY, threads: {} };
   const source = value as Partial<ThreadStoreFile>;
@@ -160,6 +198,20 @@ function normalize(value: unknown): ThreadStoreFile {
         : {}),
       ...(typeof record.loadUserMcpServers === "boolean"
         ? { loadUserMcpServers: record.loadUserMcpServers }
+        : {}),
+      // Each guarded on its own shape rather than copied wholesale: this file
+      // is written by an earlier version of the SDK and edited by hand, so a
+      // field that does not parse is dropped instead of being replayed onto a
+      // create call as garbage.
+      ...(isStoredInstructions(record.instructions)
+        ? { instructions: record.instructions }
+        : {}),
+      ...(typeof record.cwd === "string" && record.cwd ? { cwd: record.cwd } : {}),
+      ...(isStoredSettingSources(record.settingSources)
+        ? { settingSources: record.settingSources }
+        : {}),
+      ...(isStoredPermissionPolicy(record.permissionPolicy)
+        ? { permissionPolicy: record.permissionPolicy }
         : {}),
     };
   }

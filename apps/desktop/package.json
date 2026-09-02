@@ -5,7 +5,7 @@
   "type": "module",
   "main": "electron.cjs",
   "author": "Arul Sharma",
-  "license": "AGPL-3.0",
+  "license": "AGPL-3.0-only",
   "scripts": {
     "predev": "node ./scripts/normalize-runtime-binaries.cjs",
     "prebuild": "node ./scripts/normalize-runtime-binaries.cjs && npm run ade:build",

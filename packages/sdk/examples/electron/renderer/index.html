@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>ADE SDK Electron example</title>
+    <!--
+      Strict CSP. Nothing loads from the network, nothing runs inline, and the
+      renderer cannot fetch. Every byte it needs comes through the bridge, which
+      is why "just run the SDK in the renderer" is not an option in an app built
+      this way.
+    -->
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'none'; script-src 'self' file:; style-src 'self' file:; img-src data:; connect-src 'none';"
+    />
+    <link rel="stylesheet" href="./app.css" />
+  </head>
+  <body>
+    <main>
+      <h1>ADE SDK Electron example</h1>
+      <p id="state">Starting…</p>
+      <div id="transcript" aria-live="polite"></div>
+      <form id="composer">
+        <input id="prompt" type="text" autocomplete="off" placeholder="Ask something…" />
+        <button type="submit">Send</button>
+      </form>
+    </main>
+    <!--
+      A classic script, not a module: a page loaded over `file://` cannot import
+      an ES module. `renderer.global.js` is the SDK's own renderer half, built as
+      one file that defines `window.AdeElectron`.
+    -->
+    <script src="../node_modules/@ade-dev/sdk/dist/electron/renderer.global.js"></script>
+    <script src="./app.js"></script>
+  </body>
+</html>

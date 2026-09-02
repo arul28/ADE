@@ -38,3 +38,21 @@ export const CURSOR_WINDOWS_ARM_BLOCKER =
 export function isCursorProviderSupported(platform: string, arch: string): boolean {
   return !(platform === "win32" && arch === "arm64");
 }
+
+/**
+ * Why this provider is unavailable on this platform/arch pair, or null.
+ *
+ * The reason travels WITH the gate, so a caller that refuses a provider never
+ * has to name it. A caller that gated on a boolean and then hard-coded
+ * `CURSOR_WINDOWS_ARM_BLOCKER` as the reason is correct only while Cursor is
+ * the one gated provider; the second one added would have been refused with
+ * Cursor's sentence.
+ */
+export function providerUnavailableReason(
+  provider: string,
+  platform: string,
+  arch: string,
+): string | null {
+  if (provider !== "cursor") return null;
+  return isCursorProviderSupported(platform, arch) ? null : CURSOR_WINDOWS_ARM_BLOCKER;
+}

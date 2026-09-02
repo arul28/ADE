@@ -73,6 +73,38 @@ export type AgentChatDroidPermissionMode =
   | "agi";
 
 /**
+ * Which on-disk configuration layers a provider loads for a thread.
+ *
+ * `"none"` is the default for SDK threads and is what every 0.1.x thread got.
+ * The four values are sent verbatim; the engine decides what each one means per
+ * provider, and reports the answer on {@link AgentChatSessionSummary}.
+ */
+export type AgentChatSettingSources = "none" | "project" | "user" | "all";
+
+/** Host instructions for one thread, in the normalized wire form. */
+export type AgentChatInstructions = {
+  mode: "append" | "replace";
+  text: string;
+};
+
+/**
+ * How completely a provider honoured a host configuration request.
+ *
+ * The same three-value vocabulary the MCP report uses, for the same reason:
+ * four of the six providers cannot do the thing exactly, and a report that said
+ * only "applied" would be a lie for most embedders.
+ *
+ *   - `"applied"` — the provider received the value through a first-class
+ *     channel of its own.
+ *   - `"best-effort"` — ADE reached the same outcome through a mechanism it
+ *     already owns (a prompt prefix, a containment root), and `detail` names
+ *     what that costs.
+ *   - `"ignored"` — the provider has no switch for it and the value did not
+ *     reach the model. `detail` says so.
+ */
+export type AgentChatHostConfigLevel = "applied" | "best-effort" | "ignored";
+
+/**
  * Per-thread MCP server definition. Mirrors `AgentChatMcpServerConfig` on the
  * engine side (unit 1). Passing these sets `mcpServers` on the create call;
  * `loadUserMcpServers: false` additionally sets `strictMcpConfig: true`.
@@ -180,6 +212,90 @@ export type AgentChatEvent = {
   [key: string]: unknown;
 };
 
+/**
+ * Which provider raised a pending input request.
+ *
+ * `"acp"` covers all four ACP dialects, because the permission round trip is
+ * one method there. `"ade"` is a request ADE staged itself.
+ */
+export type PendingInputSource =
+  | "claude"
+  | "codex"
+  | "cursor"
+  | "droid"
+  | "opencode"
+  | "pi"
+  | "acp"
+  | "ade";
+
+/**
+ * What the provider is asking for.
+ *
+ * `"approval"` and `"permissions"` are the two approval-shaped kinds — a
+ * yes/no on an action the model wants to take. The other four want prose or a
+ * choice, and `AdeThread.approve` cannot answer them: render them read-only.
+ */
+export const PENDING_INPUT_KINDS = [
+  "approval",
+  "question",
+  "structured_question",
+  "permissions",
+  "plan_approval",
+  "model_selection",
+] as const;
+
+export type PendingInputKind = (typeof PENDING_INPUT_KINDS)[number];
+
+export type PendingInputOption = {
+  label: string;
+  value: string;
+  description?: string;
+  recommended?: boolean;
+  preview?: string;
+  previewFormat?: "markdown" | "html";
+};
+
+export type PendingInputQuestion = {
+  id: string;
+  header?: string;
+  question: string;
+  options?: PendingInputOption[] | null;
+  multiSelect?: boolean;
+  allowsFreeform?: boolean;
+  isSecret?: boolean;
+  defaultAssumption?: string | null;
+  impact?: string | null;
+};
+
+/**
+ * One unresolved request the provider is blocked on.
+ *
+ * Mirrors `PendingInputRequest` in chat.ts. Returned by the `pendingInputs`
+ * action and mapped to the SDK's {@link ApprovalRequest} shape before it
+ * reaches a caller.
+ */
+export type PendingInputRequest = {
+  requestId: string;
+  itemId?: string;
+  source: PendingInputSource;
+  kind: PendingInputKind;
+  title?: string | null;
+  description?: string | null;
+  questions: PendingInputQuestion[];
+  allowsFreeform: boolean;
+  blocking: boolean;
+  canProceedWithoutAnswer: boolean;
+  options?: PendingInputOption[];
+  providerMetadata?: Record<string, unknown>;
+  autoResolutionMs?: number | null;
+  turnId?: string | null;
+};
+
+/** Result of the `pendingInputs` action. */
+export type PendingInputsResult = {
+  requests: PendingInputRequest[];
+};
+
 /** The narrowed members most consumers actually branch on. */
 export type KnownAgentChatEvent =
   | { type: "user_message"; text: string; displayText?: string; messageId?: string; turnId?: string }
@@ -190,6 +306,38 @@ export type KnownAgentChatEvent =
   | { type: "tokens"; [key: string]: unknown }
   | { type: "context_usage"; [key: string]: unknown }
   | { type: "codex_token_usage"; [key: string]: unknown }
+  | {
+      /**
+       * The provider is blocked and wants a decision. Answer it with
+       * `thread.approve(itemId, …)`.
+       *
+       * AN UNANSWERED REQUEST BLOCKS THE TURN. There is no timeout anywhere in
+       * the runtime: the turn stays parked until `approve()` or `interrupt()`.
+       * A host that receives this event and renders nothing has a chat that
+       * looks frozen, so render a card for every one of them.
+       */
+      type: "approval_request";
+      itemId: string;
+      logicalItemId?: string;
+      kind: "command" | "file_change" | "tool_call";
+      description: string;
+      turnId?: string;
+      detail?: unknown;
+      /**
+       * The finer-grained kind. `"question"` and the other prose kinds ride
+       * this event because `kind` has no word for a question — they cannot be
+       * answered with approve/decline, so render them read-only.
+       */
+      requestKind?: PendingInputKind;
+    }
+  | {
+      /** An `approval_request` with this `itemId` is settled. Upgrade the card. */
+      type: "pending_input_resolved";
+      itemId: string;
+      resolution: "accepted" | "declined" | "cancelled";
+      answers?: Record<string, string | string[]>;
+      turnId?: string;
+    }
   | { type: "status"; [key: string]: unknown }
   | { type: "error"; [key: string]: unknown }
   | { type: "done"; [key: string]: unknown };
@@ -241,8 +389,41 @@ export type AgentChatSessionSummary = {
   lastOutputPreview: string | null;
   summary: string | null;
   awaitingInput?: boolean;
+  /**
+   * The working directory the runtime actually bound the session to, echoed
+   * back in its own spelling. Present only when one was requested.
+   *
+   * This is the canonical answer: the engine resolves the path before it
+   * stores it, so a symlinked or differently-cased spelling of one directory
+   * comes back as one string. A client that records the caller's spelling
+   * instead reports a resume mismatch on a `cwd` that never changed.
+   */
+  requestedCwd?: string | null;
   /** Present only when the chat was created with an MCP request. */
   mcpCapability?: McpCapabilityReport;
+  /**
+   * Present only when the chat was created with `instructions`. Absent means
+   * nothing was requested — NOT that the request was dropped.
+   */
+  instructionsCapability?: {
+    level: AgentChatHostConfigLevel;
+    mode: "append" | "replace";
+    mechanism: string;
+    detail: string | null;
+  } | null;
+  /** Present only when the chat was created with `settingSources`. */
+  settingSourcesCapability?: {
+    level: AgentChatHostConfigLevel;
+    value: AgentChatSettingSources;
+    mechanism: string;
+    detail: string | null;
+  } | null;
+  /** Present only when the chat was created with a permission policy. */
+  permissionCapability?: {
+    level: "enforced" | "best-effort" | "unsupported";
+    mechanism: string;
+    residual: string | null;
+  } | null;
   [key: string]: unknown;
 };
 
@@ -319,25 +500,104 @@ export type ModelCatalogEntry = {
 };
 
 /**
- * Per-provider authentication/availability roll-up.
+ * Per-provider installation, authentication and availability roll-up.
  *
- * DERIVED, not reported: the machine scope has no dedicated provider-auth RPC
- * (confirmed with the engine agent for unit 1), so this is computed from the
- * model catalog's `connected` / `isAvailable` / `requiresConfiguration` flags.
- * If a real `providers.status` method lands, swap the derivation for it.
+ * READ `source` FIRST. It is the field that says how much the rest of the
+ * record is worth:
+ *
+ *   - `"probed"` — the runtime resolved the binary the provider would actually
+ *     spawn, ran `--version`, and looked at the credential files the CLI itself
+ *     uses. `installed`, `binaryPath`, `version` and `authenticated` are real
+ *     measurements.
+ *   - `"derived"` — the runtime is older than the `providers.status` RPC, so
+ *     everything here comes from the model catalog. `installed` is
+ *     `modelCount > 0`, the three probe fields are null, and a UI should say
+ *     "not detected" rather than "not installed".
  */
 export type ProviderStatus = {
   provider: string;
   displayName: string;
-  /** True when at least one model of the provider reports `connected`. */
+  /**
+   * A usable binary or package was found.
+   *
+   * On a derived record this is `modelCount > 0`, which answers a different
+   * question — "does ADE know models for this provider" — so do not present it
+   * as a filesystem fact unless `source` is `"probed"`.
+   */
+  installed: boolean;
+  /** Absolute path the runtime would spawn. Null when not found or derived. */
+  binaryPath: string | null;
+  /** Verbatim first line of `--version`. Null on a timeout, or when derived. */
+  version: string | null;
+  /**
+   * Credentials the CLI can use were found.
+   *
+   * On a probed record this is a credential-file check. On a derived one it
+   * means "the catalog resolved at least one connected model", which a stale
+   * catalog can report after the credential expired — `stale` carries that.
+   */
   authenticated: boolean;
+  /** How, when the probe could tell: subscription, api-key, oauth, unknown. */
+  authMethod?: string | null;
+  /** Remediation ADE supplies. Null on a derived record. */
+  installCommand: string | null;
+  loginCommand: string | null;
+  docsUrl: string | null;
   /** True when at least one model is usable right now. */
   available: boolean;
   /** True when every usable path needs setup first. */
   requiresConfiguration: boolean;
   modelCount: number;
-  /** True when the catalog rows behind this verdict were served stale. */
+  /**
+   * True when something behind this verdict was served from the cache rather
+   * than probed on this call: a cached model catalog, or a cached probe record.
+   * It does not mean the record is past the runtime's TTL — a record inside the
+   * TTL is served from the cache and is stale by this definition.
+   */
   stale: boolean;
+  /** How this record was produced. Read this before trusting the rest. */
+  source: "probed" | "derived";
+  /** ISO timestamp of the probe, or of the derivation. */
+  checkedAt: string;
+  /** Human-readable note from the probe, when it had one. */
+  detail?: string | null;
+};
+
+/**
+ * One provider record as the `providers.status` RPC sends it.
+ *
+ * NOT a `Partial<ProviderStatus>`. `ProviderStatus` is this SDK's OUTPUT type
+ * and carries four fields only the model catalog can answer — `available`,
+ * `requiresConfiguration`, `modelCount` and the `"derived"` half of `source` —
+ * which the probe never sends and `mergeProviderStatus` deliberately takes from
+ * the catalog instead. Declaring them here would admit members that never
+ * occur.
+ *
+ * Every field is optional and widely typed on purpose: this is untrusted wire
+ * data, and `mergeProviderStatus` re-reads each one through its own guard. The
+ * shape is the one documented in `docs/features/sdk/README.md`.
+ */
+export type ProviderStatusProbeRecord = {
+  provider?: string;
+  displayName?: string;
+  installed?: boolean;
+  binaryPath?: string | null;
+  version?: string | null;
+  authenticated?: boolean;
+  authMethod?: string | null;
+  installCommand?: string | null;
+  loginCommand?: string | null;
+  docsUrl?: string | null;
+  source?: "probed";
+  stale?: boolean;
+  checkedAt?: string;
+  detail?: string | null;
+};
+
+/** Result of the `providers.status` machine RPC. */
+export type ProviderStatusRpcResult = {
+  checkedAt: string;
+  providers: Record<string, ProviderStatusProbeRecord>;
 };
 
 export type ThreadSummary = {
@@ -376,6 +636,39 @@ export type DoctorReport = {
      * "provenance was checked here", which is what an operator wants to know
      * when auditing where the running binary came from.
      */
+    checksumVerified: boolean;
+  };
+  /**
+   * Runtime provenance: which of the five resolution steps produced the binary,
+   * where its native modules came from, and whether the OS considers it signed.
+   *
+   * `binary` above is the 0.1.x view and keeps its four `source` values.
+   * `source` and `signature` here are the two fields to put in a support
+   * bundle: together they separate "the app is running the runtime we signed
+   * and shipped" from "the app quietly downloaded one on this machine", which
+   * is the difference an embedder cannot otherwise see.
+   */
+  runtime: {
+    source:
+      | "explicit"
+      | "bundled-package"
+      | "cached-download"
+      | "path"
+      | "downloaded"
+      | "attached";
+    binaryPath: string;
+    version: string | null;
+    /** `ADE_RUNTIME_ROOT` as spawned, or null when the install carries its own. */
+    runtimeRoot: string | null;
+    /** `ADE_RUNTIME_NODE_MODULES` as spawned. */
+    nodeModulesPath: string | null;
+    /**
+     * macOS and Windows only. Null on Linux, in attach mode, and whenever the
+     * check could not run — "not known", never "not signed".
+     */
+    signature: { signed: boolean; authority?: string; accepted?: boolean } | null;
+    /** True only when THIS client downloaded a runtime during its lifetime. */
+    downloadedThisSession: boolean;
     checksumVerified: boolean;
   };
   socket: {
@@ -442,6 +735,15 @@ export type AdeInitializeResult = {
   };
   capabilities?: {
     personalChats?: PersonalChatCapabilities;
+    /**
+     * Present when the runtime serves the real `providers.status` RPC. Absent
+     * means the SDK derives provider status from the model catalog instead.
+     */
+    providers?: {
+      status?: boolean;
+      /** How long the runtime caches a probe. Reported for documentation. */
+      cacheTtlMs?: number;
+    };
     [key: string]: unknown;
   };
   [key: string]: unknown;

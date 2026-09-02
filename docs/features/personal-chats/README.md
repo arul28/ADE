@@ -65,7 +65,7 @@ agent-visible project context.
 
 ## Protocol and capabilities
 
-The machine RPC exposes four methods outside project dispatch:
+The machine RPC exposes five methods outside project dispatch:
 
 - `personalChats.call({ action, args })` executes one allowlisted action;
 - `personalChats.streamEvents({ cursor, limit })` drains the personal runtime's
@@ -75,7 +75,15 @@ The machine RPC exposes four methods outside project dispatch:
   client holding the connection open. They are machine RPC methods, not entries
   in the `personalChats.call` action registry, so they are absent from
   `ade chat actions --personal`. The one-shot CLI still polls via
-  `streamEvents`.
+  `streamEvents`;
+- `providers.status({ refresh? })` reports what each CLI-backed provider
+  actually is on this machine — binary path, version, credentials, and the
+  install and login commands ADE knows for it. It is a machine-scope method, not
+  a `personalChats.call` action, advertised as
+  `capabilities.providers = { status: true, cacheTtlMs: 60000 }`. Each record is
+  cached 60 s; `refresh: true` bypasses that and is the "I just installed it"
+  button, never a poll. See
+  [Provider status](../sdk/README.md#provider-status).
 
 `runtime/info.capabilities.personalChats` advertises version 1, the exact
 action set, and two optional flags: `pushEvents` and `mcpServers`. An older
@@ -90,6 +98,52 @@ no typed `--mcp-servers` / `--strict-mcp` CLI flags in v1 — nested JSON is
 what `--arg-json` already carries, and the ADE SDK is the intended embedder
 API. The created session carries `mcpCapability`; branch on `level ===
 "enforced"`, never on the object's presence.
+
+`create` also accepts three host session arguments. `instructions`
+(`{ mode: "append" | "replace", text }`, or a bare string meaning append)
+replaces or extends ADE's own personal-chat prompt. `requestedCwd` names the
+absolute directory the provider runs in, replacing the 0700 scratch workspace.
+`settingSources` (`"none" | "project" | "user" | "all"`, default `"none"`) says
+which on-disk configuration layers the provider loads. The created session
+carries `instructionsCapability` and `settingSourcesCapability`; branch on
+`level`, never on the object's presence. See
+[Instructions, cwd, settingSources](../sdk/README.md#instructions-cwd-settingsources)
+for the per-provider tables.
+
+`requestedCwd` is validated in the scope before any session row is written, and
+the refusal message starts with `invalid_argument:`. The scope refuses a relative
+path, anything starting with `~`, a filesystem root, a Windows drive root, a bare
+UNC share root, the home directory itself, and any path inside ADE's own state
+directory. An accepted directory is created recursively at mode 0755, because the
+reason a host names one is a folder the user can open. The default scratch
+workspace is still created either way.
+
+An accepted path is canonicalized before it is stored, resolving symlinks and,
+on Windows, the real casing. The session summary echoes the canonical form, not
+the caller's string. That is a containment rule rather than a tidiness one: a
+symlink into ADE's own state directory, or a path differing only in case, would
+otherwise pass a check the real directory fails. ADE's own directories are
+canonicalized the same way before they are compared.
+
+`create` also accepts a structured `permissionPolicy`, which is the third form
+of the permission surface alongside the two presets. The created session carries
+`permissionCapability`; branch on `level`, never on the object's presence. See
+[Caller-supplied permission policy](../chat/README.md#caller-supplied-permission-policy).
+
+Two actions serve the approval loop. `approve`
+(`{ sessionId, itemId, decision, responseText? }`, decision one of `accept`,
+`accept_for_session`, `decline`, `cancel`) answers one blocked request.
+`pendingInputs` (`{ sessionId }` → `{ requests }`) lists every request still
+awaiting an answer, so a host that reloaded its UI can redraw the cards. It is
+read-only and viewer-allowed, and it reads resident runtime state only — after a
+runtime restart it is empty, because the provider process that raised each
+request died with it. An unanswered approval blocks the turn with no timeout.
+
+`pendingInputs` lists question-shaped requests too — `question`,
+`structured_question`, `plan_approval`, `model_selection` — because a host has
+to redraw those cards as well. They cannot be answered through `approve`: they
+want prose or a choice, and the engine would take the decision while the request
+stayed unanswered. The SDK refuses them client-side with `invalid_option`.
 
 Create refuses `interactionMode: "orchestrator-lead"` and
 `orchestrationRole: "lead"`. A projectless chat that led a run would report

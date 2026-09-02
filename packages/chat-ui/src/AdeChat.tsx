@@ -48,6 +48,14 @@ export type AdeChatProps = {
   hideToolCalls?: TranscriptProps["hideToolCalls"];
   hideReasoning?: TranscriptProps["hideReasoning"];
   renderMarkdown?: TranscriptProps["renderMarkdown"];
+  /**
+   * Approval card wording, or a replacement card.
+   *
+   * The card itself is not opt-in: a provider that asks for permission blocks
+   * its turn until someone answers, so a host that drew nothing would show a
+   * conversation that has silently stopped. This only changes how it looks.
+   */
+  approvals?: TranscriptProps["approvals"];
   emptyState?: ReactNode;
 
   /** Hide the model rail when the host pins a model. */
@@ -78,6 +86,7 @@ function AdeChatInner({
   hideToolCalls,
   hideReasoning,
   renderMarkdown,
+  approvals,
   emptyState,
   hideModelPicker = false,
   className,
@@ -233,6 +242,13 @@ function AdeChatInner({
     ? { onRequestAttachment }
     : {};
 
+  // Passed only when the thread can actually answer. Its ABSENCE is what makes
+  // the card read-only with a reason, so a client whose runtime has no answer
+  // path shows an honest card rather than a button that would throw.
+  const approvalHandler: Pick<TranscriptProps, "onApprove"> = thread.canApprove
+    ? { onApprove: thread.approve }
+    : {};
+
   return (
     <div className={["adechat-root", className].filter(Boolean).join(" ")} style={style}>
       {disableStyles ? null : <AdeChatStyles />}
@@ -243,6 +259,8 @@ function AdeChatInner({
         {...(hideToolCalls !== undefined ? { hideToolCalls } : {})}
         {...(hideReasoning !== undefined ? { hideReasoning } : {})}
         {...(renderMarkdown ? { renderMarkdown } : {})}
+        {...(approvals ? { approvals } : {})}
+        {...approvalHandler}
         {...(emptyState !== undefined ? { emptyState } : {})}
       />
       <Composer

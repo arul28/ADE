@@ -234,6 +234,48 @@ injected servers on Pi. An empty `mcpServers` map is not a request — it is
 omitted entirely so a capability report is not invented for a chat that asked
 for nothing.
 
+## Caller-supplied permission policy
+
+The same embedder can hand ADE a structured `permissionPolicy` at create time:
+`allowedTools`, `deniedTools`, `autoApproveMcpServers`, `sandboxRoot`, and a
+required `fallback` of `"ask"` or `"deny"`. It is normalized once by
+`shared/permissionPolicy.ts`, persisted on the session, and re-read on every
+tool call, so a chat reopened by key is gated the way its creator asked.
+
+A policy present and no explicit per-provider permission value sets
+`claudePermissionMode: "default"` and `codexApprovalPolicy: "on-request"` with
+`codexSandbox: "workspace-write"`. Those are the dials that still raise the
+requests the policy is evaluated in. `bypassPermissions` or `never` would run
+wide and never consult it.
+
+The policy is honored on the personal (SDK) surface only. `permissionPolicy`,
+`instructions`, and `settingSources` are declared on the base create args, so
+the CLI escape hatch can put one on a Work chat; there it is ignored and the
+drop is logged once, because no ADE Work surface renders a policy or offers a
+user any way to see or remove it.
+
+On Claude the policy installs a `canUseTool` gate on the personal path, which
+that path has never had. Without a policy nothing changes: no gate, no tool
+lists, no approval events. `Bash` names no path, so it is decided by the tool
+rules and then by `fallback`; an embedder that wants unattended commands names
+`Bash` in `allowedTools`.
+
+On Codex the sandbox decides before the policy does: under `sandbox:
+workspace-write` a command or file change inside the thread's `cwd`, `$TMPDIR`
+or `/tmp` raises no approval request, so the policy governs sandbox escapes
+only. For an escape, a policy that names `sandboxRoot` replaces the lane
+worktree with it as the containment root the three approval handlers check, and
+a request that stays inside it is accepted without asking. A policy with NO
+`sandboxRoot` named no directory to contain against, so nothing is
+auto-accepted and every escape goes to `fallback`.
+
+Codex raises no approval for a plain MCP tool call, so the policy's tool fields
+do not gate MCP there. The session says so in `permissionCapability.residual`.
+`PERMISSION_POLICY_SUPPORT` in `shared/hostSessionConfig.ts` is the source of
+truth. An unanswered approval blocks the turn until it is answered or the turn
+is interrupted; there is no timeout. See
+[ADE SDK](../sdk/README.md#permission-policy-and-approvals).
+
 ## Durable scheduled work
 
 Every chat provider runtime and ADE-tracked provider CLI can create an ADE-owned

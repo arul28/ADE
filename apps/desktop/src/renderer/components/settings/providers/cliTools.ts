@@ -2,19 +2,29 @@
  * What each CLI-backed provider is called, how it authenticates, and how it is
  * installed — including the Windows install path, which is a different command
  * for every vendor and used to be missing entirely.
+ *
+ * The install commands themselves come from
+ * `apps/desktop/src/shared/providerRemediation.ts`, the one table for every
+ * shipped provider. This module adds only the prose a Settings card wants
+ * around them ("ensure `droid` is on PATH"), so a card and a setup screen
+ * cannot name two different installers for one vendor.
  */
+import { resolveProviderRemediation } from "../../../../shared/providerRemediation";
 import type { AiClaudeAvailability, AiProviderConnectionStatus } from "../../../../shared/types";
 import { rendererPlatformAttribute } from "../../../lib/platform";
 
 export type CliName = "claude" | "codex" | "cursor" | "droid";
 
+/** The shared table's command for one CLI on one platform, never empty. */
+function sharedInstallCommand(cli: CliName, platform: NodeJS.Platform): string {
+  const resolved = resolveProviderRemediation(cli, platform);
+  return resolved.installCommand ?? resolved.docsUrl ?? "";
+}
+
 // Factory ships a native Windows build of `droid` with its own installer and
 // its own way of setting an environment variable — a POSIX `export` line and a
 // bare docs link leave a Windows user with nothing to run.
 // https://docs.factory.ai/cli/getting-started/quickstart
-const DROID_INSTALL_HINT = rendererPlatformAttribute() === "win32"
-  ? "irm https://app.factory.ai/cli/windows | iex — installs droid.exe into %USERPROFILE%\\bin and puts it on PATH"
-  : "curl -fsSL https://app.factory.ai/cli | sh — ensure `droid` is on PATH";
 const DROID_LOGIN_CMD = rendererPlatformAttribute() === "win32"
   ? "setx FACTORY_API_KEY … (or sign in via `droid` interactive login)"
   : "export FACTORY_API_KEY=… (or sign in via `droid` interactive login)";
@@ -35,31 +45,34 @@ export const CLI_TOOLS: CliTool[] = [
     label: "Claude Code",
     authStory: "Uses your claude login — Claude Pro/Max subscription or ANTHROPIC_API_KEY.",
     loginCmd: "claude auth login or set ANTHROPIC_API_KEY",
-    installHint: "npm install -g @anthropic-ai/claude-code",
+    installHint: sharedInstallCommand("claude", "darwin"),
     // Anthropic's documented Windows installs: the PowerShell native installer
     // (drops claude.exe in %USERPROFILE%\.localin) or WinGet.
-    windowsInstallHint: "irm https://claude.ai/install.ps1 | iex (PowerShell), or winget install Anthropic.ClaudeCode",
+    windowsInstallHint: `${sharedInstallCommand("claude", "win32")} (PowerShell), or winget install Anthropic.ClaudeCode`,
   },
   {
     cli: "codex",
     label: "Codex CLI",
     authStory: "Uses your ChatGPT sign-in — Plus/Pro subscription or OPENAI_API_KEY.",
     loginCmd: "codex login",
-    installHint: "npm install -g @openai/codex",
+    installHint: sharedInstallCommand("codex", "darwin"),
   },
   {
     cli: "cursor",
     label: "Cursor",
     authStory: "Sign in with Cursor or use a Cursor API key.",
     loginCmd: "Sign in with Cursor or add a Cursor API key",
-    installHint: "Get a Cursor API key from https://cursor.com/dashboard/api",
+    // This card asks for a key rather than an install, so it points at the
+    // table's docs URL instead of its install command.
+    installHint: `Get a Cursor API key from ${resolveProviderRemediation("cursor", "darwin").docsUrl ?? ""}`,
   },
   {
     cli: "droid",
     label: "Droid",
     authStory: "Uses your Factory login or FACTORY_API_KEY.",
     loginCmd: DROID_LOGIN_CMD,
-    installHint: DROID_INSTALL_HINT,
+    installHint: `${sharedInstallCommand("droid", "darwin")} — ensure \`droid\` is on PATH`,
+    windowsInstallHint: `${sharedInstallCommand("droid", "win32")} — installs droid.exe into %USERPROFILE%\\bin and puts it on PATH`,
   },
 ];
 

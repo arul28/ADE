@@ -43,6 +43,7 @@ packages/chat-ui/
     transcript/
       Transcript.tsx             scroll container + row views + ActivityIndicator
       ToolChip.tsx
+      ApprovalCard.tsx           inline approval card
       transcriptRows.ts          ported row collapsing/grouping
       markdown.tsx               dependency-free markdown renderer
     models/
@@ -58,7 +59,7 @@ packages/chat-ui/
   examples/
     fakeClient.ts                typed in-memory client
     basic.tsx                    full assembly, both shapes
-  test/                          106 tests
+  test/                          225 tests
 ```
 
 Ported files carry a provenance header naming their ADE desktop source and what
@@ -83,8 +84,13 @@ Transcript above, composer with the model rail below. No header bar.
 | `disableStyles` | `boolean` | `false` | skip the injected stylesheet |
 | `placeholder`, `sendOnEnter`, `onRequestAttachment` | | | forwarded to `<Composer>` |
 | `hideToolCalls`, `hideReasoning`, `renderMarkdown`, `emptyState` | | | forwarded to `<Transcript>` |
+| `approvals` | `{ render?, labels? }` | — | approval card wording, or a replacement card |
 | `hideModelPicker` | `boolean` | `false` | when the host pins a model |
 | `className` | `string` | — | |
+
+The approval card itself is not opt-in. A provider that asks for permission
+parks its turn until someone answers, so a host that drew nothing would show a
+conversation that had silently stopped. `approvals` changes only how it looks.
 
 ### `<Composer>`
 
@@ -124,12 +130,48 @@ it.
 | `hideReasoning` | `boolean` | `false` | |
 | `expandReasoning` | `boolean` | `false` | reasoning starts collapsed |
 | `renderMarkdown` | `(text: string) => ReactNode` | built-in | |
+| `onApprove` | `(itemId, decision) => void \| Promise<void>` | — | omit to render approval cards read-only |
+| `approvals` | `{ render?, labels? }` | — | custom approval card and button wording |
 | `emptyState` | `ReactNode` | `"No messages yet."` | |
 | `className` | `string` | — | |
 
 Card set: user text, assistant markdown, collapsed reasoning, tool chips,
-error. Plain overflow scroll (no virtualization in v1), pinned to the bottom
-and released as soon as the reader scrolls up.
+approvals, error. Plain overflow scroll (no virtualization in v1), pinned to
+the bottom and released as soon as the reader scrolls up.
+
+### Approval cards
+
+An `approval_request` becomes an `approval` row and renders inline where the
+request happened, not as a modal — the reader needs to see what the agent was
+doing when it asked. `pending_input_resolved` settles the same card in place,
+and a turn that ends unanswered marks it expired. The card never disappears and
+never takes focus from the composer.
+
+Two rules keep a live card from being drawn dead, which is a hang rather than a
+cosmetic bug — the buttons go read-only while the runtime still waits:
+
+- **A turn ending is `done`, or a `status` of `completed` / `failed` /
+  `interrupted`. Never `error`.** An `error` ends no turn on either layer: an
+  OpenCode per-tool failure emits one and keeps streaming, and the Codex
+  planning-approval guard emits one to decline a single request.
+- **A restored row is live by construction.** `pendingApprovals()` is the
+  engine's authoritative "still blocked right now" list, read after the history
+  window, so no ending in that history expires it. Only an explicit resolution
+  settles it. Restored rows sort in at the instant they were read rather than
+  being appended.
+
+| Decision | Button | Meaning |
+|---|---|---|
+| `accept` | Allow once | this call only |
+| `accept_always` | Always allow | stop asking for this in this session |
+| `reject` | Reject | refuse, and let the model hear why |
+
+`requestKind` of `question`, `structured_question`, `plan_approval` or
+`model_selection` renders read-only: those want prose or a choice this surface
+cannot carry, and `@ade-dev/sdk`'s own `approve()` refuses them with
+`invalid_option` rather than sending a verdict the request cannot use. A thread
+with no `approve` also renders read-only, with a line saying the host cannot
+answer.
 
 ### `<ModelPicker>`
 
@@ -155,10 +197,17 @@ Free-floating — the host decides placement.
 | `status` | `ProviderStatus` | required on `ProviderCard` |
 | `renderAction` | `(command, kind: "install" \| "login") => ReactNode` | replace the copy button |
 | `onCopy` | `(command: string) => void \| Promise<void>` | override the clipboard write |
+| `showDetail` | `boolean` (default `false`) | add a line with the version and a truncated binary path |
 | `className` | `string` | |
 
 `<ProviderCards>` adds `statuses`, `client`, and `onlyNeedsAttention` (default
-`true`) and renders one card per provider needing action.
+`true`) and renders one card per provider needing action. `showDetail` is
+forwarded to every card.
+
+A missing provider reads "Not installed" only when `source` is `"probed"` —
+a runtime looked and found nothing. When the status was derived from the model
+catalog nobody looked, so the card says "Not detected" instead. Telling someone
+to install a CLI they already have is the failure that distinction removes.
 
 ## Activity labels
 
@@ -203,20 +252,33 @@ Light/dark is inferred from the background's luminance (override with
 `scheme`). Non-hex colors (`var(--brand)`, `color-mix(...)`) pass straight
 through; derived tints are only computed for hex inputs.
 
-## SDK contract assumptions
+## What `adaptSdkClient` produces
 
 `src/sdkTypes.ts` is the *view* contract this package renders against — a copy,
 not an import, so the package is standalone and any client shape can satisfy it.
 `src/adapters/sdkClient.ts` bridges a real `@ade-dev/sdk` client onto it and does
 import that package's types (type-only, and `@ade-dev/sdk` is an optional peer, so
-nothing reaches the bundle). `@ade-dev/sdk` must honour these:
+nothing reaches the bundle).
+
+The list below is the adapter's **output** contract: what every component here
+may assume about the client it is handed. Write your own client — a WebSocket
+proxy, an Electron IPC bridge, a fake — and these are the rules to meet.
+
+One such client is checked here rather than described: `test/electronBridge.test.tsx`
+assigns `createAdeIpcClient()` from `@ade-dev/sdk/electron/renderer` to
+`SdkLikeChatClient` with no cast, then drives a full turn through
+`registerAdeIpc` and `<AdeChat>`. A drift between that bridge and this contract
+is a typecheck failure, not a runtime surprise.
 
 1. **`client.providers.status()`** resolves `ProviderStatus[]` with `installed`
    and `authenticated` as separate booleans. Both true means selectable.
    `loginCommand` / `installCommand` are copy-pasteable shell strings.
+   `source` says whether `installed` was probed or derived, and the card's
+   wording depends on it.
 2. **`client.providers.onChange(cb)`** fires with the *full* status list (not a
    delta) and returns an unsubscribe function. A status change may also change
    the model catalog, so the hook re-reads `models.list()` after each one.
+   `refresh()` is optional and is never called by a poll.
 3. **`client.models.list()`** resolves the full catalog. `providerId` must match
    a `ProviderStatus.id`; models whose provider has no status entry still render
    (grouped under the raw id) but are never selectable.
@@ -226,7 +288,11 @@ nothing reaches the bundle). `@ade-dev/sdk` must honour these:
    envelope-based (`sequence`, then `timestamp`); provider clocks are not
    trusted. Events emitted while `history()` is in flight must also reach the
    `"event"` subscriber — the hook de-duplicates the overlap on
-   `sessionId:sequence:timestamp:type`.
+   `sessionId:sequence:timestamp:type` and then re-sorts, so a live envelope
+   that beat the page still renders in its own place. The canonical definition
+   of that key is `envelopeDedupeKey` in `@ade-dev/sdk`
+   (`src/electron/protocol.ts`); this package mirrors it because the SDK is an
+   optional peer.
 6. **Streaming text** may be sent either as growing snapshots or as deltas; both
    collapse correctly. Chunks of one message must share a `messageId`, or
    failing that a `turnId` + `itemId`.
@@ -241,6 +307,34 @@ nothing reaches the bundle). `@ade-dev/sdk` must honour these:
 10. **Unknown event types are ignored, not rendered.** The SDK may add event
     kinds without breaking this package, but anything it wants drawn here needs
     a matching row kind.
+11. **`approval_request` blocks the turn until it is answered.** An
+    `approval_request` and its `pending_input_resolved` must share an `itemId`
+    (or a matching `logicalItemId`), and a turn that ends without an answer
+    must emit `done`, `error`, or a terminal `status` so the card can settle.
+12. **`thread.approve` and `thread.pendingApprovals` are optional.** A client
+    that omits `approve` gets a read-only card with a line saying why, never a
+    throw. `pendingApprovals()` is read once on open, so a reload restores the
+    cards a lost live stream would otherwise have taken with it.
+
+## What `@ade-dev/sdk` actually returns
+
+The adapter exists because the two shapes do not meet. The differences that
+catch people writing their own proxy:
+
+- `providers.status()` returns a **`Record<string, ProviderStatus>` keyed by
+  provider id**, not an array.
+- A status record calls the id `provider`, not `id`, and carries
+  `available` / `requiresConfiguration` / `modelCount` / `stale` — fields this
+  package folds into `installed` and a `detail` sentence.
+- A catalog entry calls its provider `provider` and its usability
+  `isAvailable`, where the view contract uses `providerId` and `available`.
+- `threads.open(key, opts)` takes the SDK's own option names (`provider`,
+  `model`), which `adaptSdkClient` maps from `providerId` / `modelId`.
+- `send(text, { attachments })` is positional, and an attachment is a
+  `{ path }` file ref rather than the view's `ChatAttachment`.
+- `on("status")` and `on("usage")` deliver raw envelopes; the adapter maps them
+  to `{ state, turnId }` and `{ inputTokens, … }` and drops anything that maps
+  to nothing.
 
 ## Development
 
@@ -248,7 +342,7 @@ Requires Node 22 (`/opt/homebrew/opt/node@22/bin` on macOS).
 
 ```bash
 npm install            # in packages/chat-ui
-npm test               # vitest, 106 tests
+npm test               # vitest, 225 tests
 npm run typecheck      # tsc --noEmit
 npm run build          # tsup → dist/ (ESM + CJS + d.ts)
 ```
@@ -257,4 +351,4 @@ From the repo root: `npm run test:chat-ui`, `npm run build:chat-ui`.
 
 ## License
 
-AGPL-3.0-only. See [LICENSE](./LICENSE).
+MIT. See [LICENSE](./LICENSE). ADE itself remains AGPL-3.0-only; see the [ADE Runtime Embedding Exception](https://github.com/arul28/ADE/blob/main/RUNTIME-EMBEDDING-EXCEPTION.md) for shipping the runtime binary in your app.

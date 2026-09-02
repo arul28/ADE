@@ -1757,6 +1757,48 @@ export type PendingInputRequest = {
   turnId?: string | null;
 };
 
+/**
+ * The six fields an embedder's session configuration is made of.
+ *
+ * The three requests — `permissionPolicy`, `instructions`, `settingSources` —
+ * and the three reports of what the provider did with them. They travel
+ * together everywhere, so they are declared once here and intersected into
+ * every shape that carries them: the live session, the summary an embedder
+ * reads, and the persisted record. A seventh field added here reaches all
+ * three at once, which is what stops a field being written to the session and
+ * then silently dropped on persist.
+ *
+ * `hostSessionConfig.ts` re-exports this and owns the helpers that copy the
+ * set at runtime, `pickHostSessionConfig` and `mergeHostSessionConfig`.
+ */
+export type HostSessionConfigFields = {
+  /** Structured tool-permission policy the caller supplied at create time. */
+  permissionPolicy?: AgentChatPermissionPolicy;
+  /**
+   * Host instructions, normalized. Persisted so a resumed chat re-applies the
+   * same prompt without the embedder resending it — a thread that is reopened
+   * by key sends no first message, so nothing else would carry the persona.
+   */
+  instructions?: AgentChatHostInstructions;
+  /** Which on-disk configuration layers the provider loads. Absent means "none". */
+  settingSources?: AgentChatSettingSources;
+  /**
+   * What the chat's provider could actually do with the caller's instructions.
+   * Present only when instructions were supplied.
+   */
+  instructionsCapability?: AgentChatInstructionsCapability;
+  /**
+   * What the chat's provider could actually do with `settingSources`. Present
+   * only when the caller named a value.
+   */
+  settingSourcesCapability?: AgentChatSettingSourcesCapability;
+  /**
+   * What the chat's provider can enforce of the caller's permission policy.
+   * Present only when a policy was supplied.
+   */
+  permissionCapability?: AgentChatPermissionCapability;
+};
+
 export type AgentChatSession = {
   id: string;
   laneId: string;
@@ -1853,7 +1895,7 @@ export type AgentChatSession = {
   requestedCwd?: string | null;
   createdAt: string;
   lastActivityAt: string;
-} & OrchestrationSessionFields;
+} & HostSessionConfigFields & OrchestrationSessionFields;
 
 export type AgentChatSessionSummary = {
   sessionId: string;
@@ -1971,7 +2013,7 @@ export type AgentChatSessionSummary = {
    * session has no attached issues.
    */
   linearIssueLinks?: SessionLinearIssueLink[];
-} & OrchestrationSessionFields;
+} & HostSessionConfigFields & OrchestrationSessionFields;
 
 export type AgentChatTranscriptEntry = {
   role: "user" | "assistant";
@@ -2369,6 +2411,147 @@ export type AgentChatMcpCapability = {
   strictRequested: boolean;
 };
 
+/**
+ * How completely a provider honored a host configuration request.
+ *
+ * "applied" — the provider received exactly what the caller asked for.
+ * "best-effort" — ADE used the strongest mechanism the provider exposes, and
+ *   the capability's `detail` names what is different about it.
+ * "ignored" — the request did not reach the provider at all.
+ *
+ * Deliberately a different word set from `AgentChatMcpCapability["level"]`.
+ * That one grades an *isolation* claim, where "enforced" means a thing provably
+ * does not happen; this one grades a *delivery* claim.
+ */
+export type AgentChatHostConfigLevel = "applied" | "best-effort" | "ignored";
+
+/**
+ * Host instructions for one chat.
+ *
+ * `append` keeps ADE's own personal-chat prompt and adds the host text after
+ * it. `replace` uses the host text alone, which is what a chat branded as the
+ * host's own assistant wants — ADE's text names ADE.
+ *
+ * One field with a mode rather than two optional fields, because "system
+ * prompt" plus "append system prompt" has a four-state matrix and two of those
+ * states are somebody's bug.
+ */
+export type AgentChatHostInstructions = {
+  mode: "append" | "replace";
+  text: string;
+};
+
+/**
+ * What the provider actually did with `instructions`.
+ *
+ * Present only when a caller supplied instructions, mirroring `mcpCapability`:
+ * absent means never requested, not "ignored". Only two of six providers have
+ * no real instruction channel, and on those the text rides the prompt ADE
+ * already injects, which `detail` says plainly.
+ */
+export type AgentChatInstructionsCapability = {
+  level: AgentChatHostConfigLevel;
+  mode: "append" | "replace";
+  /** The channel the text travelled on, or why it did not travel. */
+  mechanism: string;
+  /** Non-null when the level is not "applied": what an embedder should know. */
+  detail: string | null;
+};
+
+/**
+ * Which on-disk configuration layers a provider loads for this chat.
+ *
+ * "none" is the default for a personal/SDK chat and is today's behavior.
+ * "project" loads files in the chat's own working directory (CLAUDE.md,
+ * AGENTS.md); "user" loads the user's own global config; "all" loads both plus
+ * the local layer. A host that ships its own CLAUDE.md in `requestedCwd` wants
+ * "project" — "all" pulls the user's personal config into a host-branded
+ * assistant, which an embedder should have to ask for explicitly.
+ */
+export type AgentChatSettingSources = "none" | "project" | "user" | "all";
+
+/**
+ * What the provider actually did with `settingSources`.
+ *
+ * The level is per requested value, because a provider can honor one value and
+ * not another: Codex always reads AGENTS.md from the thread cwd and has no
+ * switch, so "project" describes what it already does while "none" cannot be
+ * honored at all.
+ */
+export type AgentChatSettingSourcesCapability = {
+  level: AgentChatHostConfigLevel;
+  value: AgentChatSettingSources;
+  mechanism: string;
+  detail: string | null;
+};
+
+/**
+ * What the provider can enforce of a structured permission policy.
+ *
+ * Same word set as `AgentChatMcpCapability["level"]` on purpose: this is an
+ * enforcement claim, not a delivery one. "unsupported" is also what a session
+ * that carries no policy reports, so an embedder never reads an enforcement
+ * claim for rules it did not write.
+ */
+export type AgentChatPermissionCapability = {
+  level: "enforced" | "best-effort" | "unsupported";
+  mechanism: string;
+  /**
+   * The clauses of the policy that are not applied as written, or null when
+   * every clause is.
+   *
+   * Non-null does NOT imply "best-effort". A clause can go unapplied while the
+   * level stays "enforced", because what replaced it is STRICTER than what was
+   * asked for: `sandboxRoot` is never applied on Claude under `fallback:
+   * "deny"`, and the reason is that every mutating built-in the policy did not
+   * name is denied outright instead. Read `level` for the enforcement claim and
+   * this field for what was traded to make it.
+   */
+  residual: string | null;
+};
+
+/**
+ * A structured tool-permission policy supplied by an embedder at create time.
+ *
+ * Tool names are provider-neutral. An MCP tool is named `mcp:<server>:<tool>`,
+ * and `mcp:<server>:*` names every tool of that server. Any other string is
+ * matched against the provider's own tool name, case-insensitively, with an
+ * optional trailing `*` for a prefix match. Built-in tool names are
+ * provider-specific, so `Bash` is a Claude name and does not exist on Codex.
+ *
+ * Precedence on Claude, highest first: `deniedTools`, then `allowedTools` and
+ * `autoApproveMcpServers`, then `sandboxRoot` containment (which applies to
+ * commands and file writes only), then `fallback`.
+ *
+ * On Codex only the last two rungs exist: the three tool fields are read by the
+ * Claude tool-list builder and the Claude `canUseTool` hook and by nothing
+ * else, so a Codex decision is containment and then `fallback`, with the
+ * command text never consulted.
+ *
+ * `fallback` is required. A policy with no fallback has no obvious default, and
+ * defaulting to "ask" would park a turn for an embedder that renders no
+ * approval card.
+ *
+ * What each provider does with this object is reported on the session as
+ * `permissionCapability`. `PERMISSION_POLICY_SUPPORT` in
+ * `shared/hostSessionConfig.ts` is the source of truth.
+ */
+export type AgentChatPermissionPolicy = {
+  /** Tools that run without asking. */
+  allowedTools?: string[];
+  /** Tools that are refused outright and never asked about. Wins over `allowedTools`. */
+  deniedTools?: string[];
+  /** Every tool of these MCP servers is allowed. Equivalent to `mcp:<server>:*`. */
+  autoApproveMcpServers?: string[];
+  /**
+   * Absolute path. Commands and file writes inside it are allowed; outside it
+   * they follow `fallback`.
+   */
+  sandboxRoot?: string;
+  /** What happens to anything the rules above do not match. */
+  fallback: "ask" | "deny";
+};
+
 export type AgentChatCreateArgs = {
   laneId: string;
   provider: AgentChatProvider;
@@ -2461,6 +2644,40 @@ export type AgentChatCreateArgs = {
    * policy, not a preference.
    */
   strictMcpConfig?: boolean;
+  /**
+   * Structured tool-permission policy. The presence of this object is a third
+   * accepted form of the SDK's `permissions` field, alongside the two presets.
+   *
+   * Honored differently per provider — Claude enforces it through
+   * `allowedTools`/`disallowedTools` plus a `canUseTool` gate, Codex applies
+   * only `sandboxRoot` and `fallback` because it raises no approval for a plain
+   * MCP call. Read `permissionCapability` on the created session for the
+   * machine-readable version.
+   */
+  permissionPolicy?: AgentChatPermissionPolicy;
+  /**
+   * Host instructions for this chat, replacing or extending ADE's own
+   * personal-chat prompt.
+   *
+   * A bare string is accepted and means `{ mode: "append", text }`. Every
+   * provider carries the text, but only four carry it on a real instruction
+   * channel; on Cursor and Droid it joins the prompt ADE already prefixes into
+   * the turn. Read `instructionsCapability` on the created session for the
+   * per-provider truth. `INSTRUCTIONS_SUPPORT` in `shared/hostSessionConfig.ts`
+   * is the source that report is computed from.
+   */
+  instructions?: AgentChatHostInstructions | string;
+  /**
+   * Which on-disk configuration layers this chat's provider loads.
+   *
+   * Defaults to "none" for a personal chat, which is the behavior every
+   * existing caller already gets. Honored fully on Claude only; Codex reports
+   * "project" and "all" as best-effort because it always reads AGENTS.md from
+   * the chat's working directory and offers no switch, and the remaining four
+   * providers report "ignored". Read `settingSourcesCapability` on the created
+   * session rather than assuming the value took effect.
+   */
+  settingSources?: AgentChatSettingSources;
 };
 
 export type AgentChatImportExternalSessionArgs = {
