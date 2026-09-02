@@ -1,0 +1,35 @@
+---
+title: "v1.2.73"
+description: "Release notes for ADE v1.2.73 - September 2, 2026"
+---
+
+Claude chats get per-task stop, four stop modes, a kind-classified `/context` card, and Don't continue at the usage limit. The ADE SDK is 0.2.0: instructions, working directory, permissions, approvals, an Electron bridge, and a bundled runtime.
+
+---
+
+## Claude
+
+- **Stop one task without stopping the rest.** Square stop on a spawn card, Chat Info row, scheduled job, or `ade chat stop-task` ends that task; siblings keep running.
+- **Stop has four modes.** Turn only, turn and queue (the default), turn and background, or all three. Default Stop no longer tears down Claude background jobs once per-task stop is available. Settling a session still backgrounds the turn.
+- **Don't continue parks at the plan limit.** Auto-continue is on for every chat; opt out per chat. ADE parks until Claude's window resets, then notifies. A busy query is interrupted without killing background work.
+- **`/context` is classified by kind.** Rows use `used`, `free`, `buffer`, and `deferred` — never the category name `"free"`.
+- **A model switch is a quiet divider**, not a chat message. Classifier context is only explicit approvals and text you typed.
+
+## Work chat
+
+- **Queued and staged messages stay cancellable.** Codex queue ids are recovered; cancel and edit failures surface instead of looking successful. Touch clients keep the controls without hover.
+- **Cursor mode and ADE full-auto stay separate.** Clearing a Cursor mode on one client reaches the others. Droid autonomy, including AGI, survives CLI, RPC, sync, and resume.
+- **Subagent trees show spawn depth.** Finished branches collapse. Files a subagent returned are a copyable list. Ambient housekeeping stays out of activity.
+- **`ade chat status` is the live turn.** RUNNING, BLOCKED, or IDLE with exit 0, 1, or 2. `ade chat show` stays the session summary.
+- **Permission prompts honor `default_to_no`.** Elevated-risk asks are not recommended Allow, and there is no Allow for Session on those. Terminal-only slash commands stay out of agent palettes.
+
+## ADE SDK
+
+- **`@ade-dev/sdk` and `@ade-dev/chat-ui` are 0.2.0.** A thread can carry `instructions`, `cwd`, `settingSources`, and a structured permission policy. `thread.approve()` answers a blocked request; chat-ui draws the card inline.
+- **Electron embedders get a supported bridge.** `@ade-dev/sdk/electron` registers main, preload (sandbox-safe), and renderer. Two windows never see each other's events.
+- **The runtime can ship inside a signed app.** Platform packages publish as `@ade-dev/runtime-*` when a GitHub release is made public. `doctor().runtime` reports which resolution step produced the binary.
+
+## iOS
+
+- **Work matches desktop stop and Don't continue.** Four-mode stop, per-task square stop, and a Don't-continue banner. The kind-classified `/context` card stays desktop-only; the meter still decodes kind.
+- **Subagent trees, returned files, and queued-message controls** match desktop, including touch-reachable cancel and edit.
