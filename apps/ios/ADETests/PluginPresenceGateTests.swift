@@ -70,6 +70,24 @@ final class PluginPresenceGateTests: XCTestCase {
   ///
   /// The emptiness check is not decoration: each state below is a loop, and a
   /// loop over an empty list passes without asserting anything.
+  /// A plugin id no built-in surface has an owner claim on.
+  ///
+  /// Asserted rather than assumed, so a future surface that adopts this id
+  /// fails here — naming the fixture — instead of failing the case that uses it.
+  private func unownedPluginId(
+    file: StaticString = #filePath,
+    line: UInt = #line
+  ) -> String {
+    let id = "ade-not-an-owner"
+    XCTAssertFalse(
+      PluginBuiltinSurface.allCases.contains { $0.ownerPluginId == id },
+      "\(id) is now a surface owner; pick another id for the stand-in.",
+      file: file,
+      line: line
+    )
+    return id
+  }
+
   private func supersededSurfaces(
     file: StaticString = #filePath,
     line: UInt = #line
@@ -295,7 +313,14 @@ final class PluginPresenceGateTests: XCTestCase {
       let sync = FakePresenceSync()
       // Another machine's plugin, positively answered. A reply that does not
       // name this owner is as good as an empty one for this surface.
-      sync.reply = PluginPresenceListResult(plugins: [entry("ade-graph")])
+      //
+      // The id is DERIVED rather than written down. It used to be the literal
+      // "ade-graph", which stopped being "some other plugin" the day Graph
+      // became a supersedes surface of its own: the fixture then named the
+      // owner of the surface under test and the loop failed on `graph` alone.
+      // Any id no surface claims keeps the case honest through the next
+      // extraction too.
+      sync.reply = PluginPresenceListResult(plugins: [entry(unownedPluginId())])
       let gate = PluginPresenceGate(sync: sync)
 
       await gate.refresh()

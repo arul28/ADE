@@ -460,7 +460,12 @@ extension SyncService {
     // and all silently dropped the verb, so "Open PR" worked on the desktop and
     // did nothing at all on the phone.
     if let url = result?.openURL {
-      UIApplication.shared.open(url)
+      // `open(_:)` is the async form on iOS and returns whether the system
+      // found a handler. Awaited rather than fired, so the settings notice and
+      // the navigate below cannot land on screen before the browser has come
+      // forward; the answer is discarded because an https URL the phone cannot
+      // open is not something a plugin can be told anything useful about.
+      _ = await UIApplication.shared.open(url)
     }
     if let entryId = result?.openSettings {
       pluginSettingsNotice = PluginSettingsNotice(
