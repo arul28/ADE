@@ -2748,7 +2748,7 @@ describe("createAgentChatService", () => {
     expect(service.resumeSession).toBeTypeOf("function");
     expect(service.listSessions).toBeTypeOf("function");
     expect(service.getSessionSummary).toBeTypeOf("function");
-    expect(service.hasActiveWorkloads).toBeTypeOf("function");
+    expect(service.getTurnStatus).toBeTypeOf("function");
     expect(service.getChatTranscript).toBeTypeOf("function");
     expect(service.getChatTranscriptPage).toBeTypeOf("function");
     expect(service.ensureIdentitySession).toBeTypeOf("function");
@@ -3741,6 +3741,7 @@ describe("createAgentChatService", () => {
           enabledPlugins?: Record<string, boolean>;
           outputStyle?: string;
           fastMode?: boolean;
+          dialogExpiry?: string;
         };
         skills?: string;
         plugins?: Array<{ type?: string; path?: string }>;
@@ -3763,6 +3764,7 @@ describe("createAgentChatService", () => {
         // ADE's own default, which applies only while no settings file states one.
         workflowSizeGuideline: "medium",
         fastMode: false,
+        dialogExpiry: "never",
         enabledPlugins: expect.objectContaining({
           "learning-output-style@claude-code-plugins": false,
           "learning-output-style@claude-plugins-official": false,
@@ -12103,6 +12105,13 @@ describe("createAgentChatService", () => {
       expect(summary).not.toBeNull();
       expect(summary!.sessionId).toBe(created.id);
       expect(summary!.provider).toBe("opencode");
+
+      const status = await service.getTurnStatus(created.id);
+      expect(status).toMatchObject({
+        sessionId: created.id,
+        phase: "idle",
+        provider: "opencode",
+      });
     });
 
     it("surfaces and updates the first mirrored Claude SDK tag", async () => {
@@ -14048,6 +14057,100 @@ describe("createAgentChatService", () => {
       turnDone!();
       await expect(sendPromise).resolves.toBeUndefined();
     });
+
+    it("treats ambient tasks like skip_transcript and never counts them as activity", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      let streamCall = 0;
+      let warmupComplete = false;
+      let ambientLive = false;
+      let holdAmbientComplete!: () => void;
+      const holdAmbientCompletePromise = new Promise<void>((resolve) => { holdAmbientComplete = resolve; });
+      let turnDone: (() => void) | null = null;
+      const turnDonePromise = new Promise<void>((resolve) => { turnDone = resolve; });
+      const send = vi.fn().mockResolvedValue(undefined);
+      const setPermissionMode = vi.fn().mockResolvedValue(undefined);
+      const stream = vi.fn(() => (async function* () {
+        streamCall += 1;
+        if (streamCall === 1) {
+          yield { type: "system", subtype: "init", session_id: "sdk-ambient-1", slash_commands: [] };
+          warmupComplete = true;
+          yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+          return;
+        }
+        yield {
+          type: "system",
+          subtype: "task_started",
+          task_id: "task-ambient-true",
+          description: "Generate session title",
+          task_type: "other",
+          ambient: true,
+        };
+        yield {
+          type: "system",
+          subtype: "background_tasks_changed",
+          tasks: [{
+            task_id: "task-ambient-true",
+            description: "Generate session title",
+            ambient: true,
+          }],
+        };
+        ambientLive = true;
+        await holdAmbientCompletePromise;
+        yield {
+          type: "system",
+          subtype: "task_notification",
+          task_id: "task-ambient-true",
+          status: "completed",
+          summary: "Done",
+        };
+        await turnDonePromise;
+        yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+      })());
+      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+        send,
+        stream,
+        close: vi.fn(),
+        sessionId: "sdk-ambient-1",
+        setPermissionMode,
+      } as any);
+
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+      });
+
+      await vi.waitFor(() => {
+        expect(warmupComplete).toBe(true);
+      });
+
+      const sendPromise = service.sendMessage({
+        sessionId: session.id,
+        text: "Drive an ambient task.",
+      });
+
+      await vi.waitFor(() => {
+        expect(events.some((e) => e.event.type === "status")).toBe(true);
+        expect(ambientLive).toBe(true);
+      });
+
+      expect(events.filter((e) =>
+        e.event.type === "subagent_started"
+        || e.event.type === "subagent_progress"
+        || e.event.type === "subagent_result"
+      )).toEqual([]);
+
+      holdAmbientComplete();
+      turnDone!();
+      await expect(sendPromise).resolves.toBeUndefined();
+      await vi.waitFor(() => {
+        expect(service.hasActiveWorkloads()).toBe(false);
+      });
+    });
   });
 
   // --------------------------------------------------------------------------
@@ -15521,6 +15624,9 @@ describe("createAgentChatService", () => {
 
       expect(names).toContain("/agents");
       expect(names).toContain("/output-style");
+      expect(names).not.toContain("/exit");
+      expect(names).not.toContain("/quit");
+      expect(names).not.toContain("/statusline");
       expect(commands).toEqual(expect.arrayContaining([
         expect.objectContaining({
           name: "/shipLane",
@@ -15718,6 +15824,45 @@ describe("createAgentChatService", () => {
       const commands = service.getSlashCommands({ sessionId: session.id });
       const loginCmd = commands.find((c: any) => c.name === "/login");
       expect(loginCmd).toBeUndefined();
+    });
+
+    it("filters SDK terminal_slash_commands extras from a live Claude session palette", async () => {
+      let warmupComplete = false;
+      const stream = vi.fn(() => (async function* () {
+        yield {
+          type: "system",
+          subtype: "init",
+          session_id: "sdk-terminal-slash",
+          slash_commands: ["/compact", "/exit", "/foo-cli"],
+          terminal_slash_commands: ["/foo-cli"],
+        };
+        warmupComplete = true;
+        yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+      })());
+      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+        send: vi.fn().mockResolvedValue(undefined),
+        stream,
+        close: vi.fn(),
+        sessionId: "sdk-terminal-slash",
+        setPermissionMode: vi.fn().mockResolvedValue(undefined),
+      } as any);
+
+      const { service } = createService();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+      });
+      await vi.waitFor(() => {
+        expect(warmupComplete).toBe(true);
+      });
+
+      const names = service.getSlashCommands({ sessionId: session.id }).map((command) => command.name);
+      expect(names).toContain("/compact");
+      expect(names).not.toContain("/exit");
+      expect(names).not.toContain("/quit");
+      expect(names).not.toContain("/statusline");
+      expect(names).not.toContain("/foo-cli");
     });
 
     it("advertises the ADE-hosted Claude output-style command", async () => {
@@ -18556,6 +18701,45 @@ describe("createAgentChatService", () => {
       expect(events.some((event) =>
         event.event.type === "status" && event.event.turnStatus === "interrupted")).toBe(true);
       expect(readPersistedChatState(session.id).cursorSdkAgentId).toBe("cursor-sdk-agent-1");
+    });
+
+    it("routes messageSession kind auto on Cursor through interrupt-and-continue", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      const { service, session } = await startBusyCursorSession(events);
+
+      const result = await service.messageSession({
+        sessionId: session.id,
+        text: "Do this instead.",
+        kind: "auto",
+      });
+
+      expect(result.routedAction).toBe("steer");
+      await vi.waitFor(() => {
+        expect(mockState.cursorSdkSendCalls.length).toBeGreaterThanOrEqual(2);
+      });
+      expect(String(mockState.cursorSdkSendCalls[1]?.promptText ?? ""))
+        .toContain("Do this instead.");
+      expect(events.some((event) =>
+        event.event.type === "status" && event.event.turnStatus === "interrupted")).toBe(true);
+    });
+
+    it("keeps messageSession kind queue on Cursor queued instead of interrupting", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      const { service, session } = await startBusyCursorSession(events);
+
+      const result = await service.messageSession({
+        sessionId: session.id,
+        text: "Then update the docs.",
+        kind: "queue",
+      });
+
+      expect(result.routedAction).toBe("steer");
+      expect(result.queued).toBe(true);
+      expect(mockState.cursorSdkSendCalls).toHaveLength(1);
+      await vi.waitFor(() => {
+        expect(events.some((event) =>
+          event.event.type === "user_message" && event.event.deliveryState === "queued")).toBe(true);
+      });
     });
 
     it("still clears queued Droid steers on interrupt-replace, unlike Cursor", async () => {
@@ -21628,6 +21812,118 @@ describe("createAgentChatService", () => {
         && event.event.turnId?.startsWith("claude-idle-") === true,
       )).toBe(false);
       expect(service.hasActiveWorkloads()).toBe(false);
+    });
+
+    it("keeps idle ambient tasks out of visible chat info", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      const setPermissionMode = vi.fn().mockResolvedValue(undefined);
+      const send = vi.fn().mockResolvedValue(undefined);
+      let streamCall = 0;
+      let startAmbient!: () => void;
+      let holdAmbientComplete!: () => void;
+      let ambientLive = false;
+      let ambientDrained = false;
+      const startAmbientPromise = new Promise<void>((resolve) => { startAmbient = resolve; });
+      const holdAmbientCompletePromise = new Promise<void>((resolve) => { holdAmbientComplete = resolve; });
+
+      const stream = vi.fn(() => (async function* () {
+        streamCall += 1;
+        if (streamCall === 1) {
+          yield {
+            type: "system",
+            subtype: "init",
+            session_id: "sdk-idle-ambient",
+            slash_commands: [],
+          };
+          return;
+        }
+
+        yield {
+          type: "result",
+          subtype: "success",
+          is_error: false,
+          session_id: "sdk-idle-ambient",
+          usage: { input_tokens: 1, output_tokens: 1 },
+        };
+
+        await startAmbientPromise;
+        yield {
+          type: "system",
+          subtype: "task_started",
+          session_id: "sdk-idle-ambient",
+          task_id: "task-ambient-idle-true",
+          description: "Generate session title",
+          task_type: "other",
+          ambient: true,
+        };
+        yield {
+          type: "system",
+          subtype: "background_tasks_changed",
+          tasks: [{
+            task_id: "task-ambient-idle-true",
+            description: "Generate session title",
+            ambient: true,
+          }],
+        };
+        ambientLive = true;
+        await holdAmbientCompletePromise;
+        yield {
+          type: "system",
+          subtype: "task_notification",
+          session_id: "sdk-idle-ambient",
+          task_id: "task-ambient-idle-true",
+          status: "completed",
+          summary: "Done",
+        };
+        yield {
+          type: "result",
+          subtype: "success",
+          is_error: false,
+          session_id: "sdk-idle-ambient",
+          usage: { input_tokens: 1, output_tokens: 1 },
+        };
+        ambientDrained = true;
+      })());
+
+      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+        send,
+        stream,
+        close: vi.fn(),
+        sessionId: "sdk-idle-ambient",
+        setPermissionMode,
+      } as any);
+
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+      });
+
+      await service.runSessionTurn({
+        sessionId: session.id,
+        text: "Complete a visible turn, then let idle ambient housekeeping run.",
+      });
+
+      startAmbient();
+      await vi.waitFor(() => {
+        expect(ambientLive).toBe(true);
+      });
+      expect(events.filter((event) =>
+        event.sessionId === session.id
+        && (event.event.type === "subagent_started"
+          || event.event.type === "subagent_progress"
+          || event.event.type === "subagent_result")
+        && (event.event as { taskId?: string }).taskId === "task-ambient-idle-true",
+      )).toEqual([]);
+      expect(service.hasActiveWorkloads()).toBe(false);
+
+      holdAmbientComplete();
+      await vi.waitFor(() => {
+        expect(ambientDrained).toBe(true);
+      });
     });
 
     it("delivers queued steers after an idle Claude turn completes", async () => {
@@ -31685,6 +31981,14 @@ describe("createAgentChatService", () => {
       expect(readPersistedChatState(session.id).awaitingInput).toBe(true);
       return { service, session, events, approvalEvent };
     };
+
+    it("includes runtime Codex approvals in getTurnStatus ask fields", async () => {
+      const { service, session } = await stageCompletedCodexPlanApproval();
+      const status = await service.getTurnStatus(session.id);
+      expect(status?.phase).toBe("blocked");
+      expect(status?.ask?.title).toBeTruthy();
+      expect(status?.ask?.title).not.toBe("awaiting input");
+    });
 
     it("defaults interaction mode to null or undefined", async () => {
       const { service } = createService();

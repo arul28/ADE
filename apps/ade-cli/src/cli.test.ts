@@ -4909,7 +4909,7 @@ describe("ADE CLI", () => {
     expect(text).toContain("assistant 2026-06-29T12:00:01.000Z");
   });
 
-  it("builds chat show/status as positional session summary calls", () => {
+  it("builds chat show as a session summary and chat status as turn status", () => {
     const show = buildCliPlan(["chat", "show", "chat-1"]);
     expect(show.kind).toBe("execute");
     if (show.kind !== "execute") return;
@@ -4925,14 +4925,36 @@ describe("ADE CLI", () => {
     const status = buildCliPlan(["chat", "status", "--session-id", "chat-2"]);
     expect(status.kind).toBe("execute");
     if (status.kind !== "execute") return;
+    expect(status.formatter).toBe("chat-status");
     expect(status.steps[0]?.params).toEqual({
       name: "run_ade_action",
       arguments: {
         domain: "chat",
-        action: "getSessionSummary",
+        action: "getTurnStatus",
         argsList: ["chat-2"],
       },
     });
+    expect(status.exitCodeFromResult?.({ phase: "running", sessionId: "chat-2" })).toBe(0);
+    expect(status.exitCodeFromResult?.({ phase: "idle", sessionId: "chat-2" })).toBe(1);
+    expect(status.exitCodeFromResult?.({ phase: "blocked", sessionId: "chat-2" })).toBe(2);
+  });
+
+  it("formats chat turn status as a RUNNING/BLOCKED/IDLE tree", () => {
+    const text = formatOutput(
+      {
+        sessionId: "chat-1",
+        phase: "running",
+        turnElapsedMs: 12_000,
+        lastActivityMsAgo: 1_000,
+        queuedMessageCount: 0,
+        currentTool: { name: "Bash" },
+        subagents: [],
+      },
+      { ...baseResolveOpts(), projectRoot: null, workspaceRoot: null, text: true },
+      "chat-status",
+    );
+    expect(text).toContain("RUNNING");
+    expect(text).toContain("Bash");
   });
 
   it("maps chat list filters to the listSessions action", () => {

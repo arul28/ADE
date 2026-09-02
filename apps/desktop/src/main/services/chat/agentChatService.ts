@@ -421,14 +421,30 @@ import {
   isAcpChatProvider,
   legacyPermissionModeFromDroidPermissionMode,
   spawnCompletedNoticeMessage,
+  defaultActiveTurnDispatchMode,
   supportsActiveTurnDispatchMode,
   unsupportedActiveTurnDispatchModeMessage,
   waitingOnYouDescription,
   type AcpChatProvider,
   type AgentChatAcpConfigSnapshot,
   type AgentChatAcpPermissionMode,
+  type AgentChatResourceLink,
 } from "../../../shared/types/chat";
 import { providerDisplayLabel } from "../../../shared/pendingInputLabels";
+import { buildClaudeToolApprovalOptions, claudeToolNeedsDefaultToNo } from "../../../shared/claudePermissionDialog";
+import {
+  collectClaudeTerminalSlashCommandNames,
+  filterClaudeGuiSlashCommands,
+} from "../../../shared/claudeGuiSlashCommands";
+import {
+  isClaudeHousekeepingTask,
+  parseClaudeResourceLinks,
+  readClaudeSpawnDepth,
+} from "../../../shared/claudeAgentSdkFields";
+import {
+  deriveChatTurnStatus,
+  type ChatTurnStatusSnapshot,
+} from "../../../shared/chatTurnStatus";
 import {
   flattenAnswerForSingleStringProvider,
   ownQuestionValue,
@@ -1781,6 +1797,8 @@ type ClaudeActiveSubagent = {
    * symmetrically with the spawn.
    */
   skipTranscript?: boolean;
+  spawnDepth?: number;
+  resourceLinks?: AgentChatResourceLink[];
   /**
    * A Claude Code task run that is neither a real subagent (no agentType /
    * agentId, task_type not "subagent"/"local_workflow") nor a background shell
@@ -1933,6 +1951,8 @@ type ClaudeRuntime = {
   activeProviderCronIds: Set<string>;
   activeProviderCronIdsByPrompt: Map<string, Set<string>>;
   slashCommands: Array<{ name: string; description: string; argumentHint?: string }>;
+  /** Runtime `terminal_slash_commands` from init, unioned with the known CLI-only set. */
+  terminalSlashCommandNames: Set<string>;
   busy: boolean;
   activeTurnId: string | null;
   /** Orders active-turn steers after the parent turn's first SDK input push. */
@@ -1988,6 +2008,25 @@ function resetClaudeProcessBackgroundLevel(runtime: ClaudeRuntime): void {
   runtime.backgroundTaskTypeById.clear();
   runtime.backgroundTasksLevelObserved = false;
   syncClaudeBackgroundWorkAnchor(runtime);
+}
+
+function claudeTaskTreeFields(
+  msg: Record<string, unknown>,
+  existing?: Pick<ClaudeActiveSubagent, "spawnDepth" | "resourceLinks">,
+): { spawnDepth?: number; resourceLinks?: AgentChatResourceLink[] } {
+  const spawnDepth = readClaudeSpawnDepth(msg) ?? existing?.spawnDepth;
+  const parsedLinks = parseClaudeResourceLinks(msg);
+  const resourceLinks = parsedLinks.length ? parsedLinks : existing?.resourceLinks;
+  return {
+    ...(spawnDepth != null ? { spawnDepth } : {}),
+    ...(resourceLinks?.length ? { resourceLinks } : {}),
+  };
+}
+
+function rememberClaudeTerminalSlashCommands(runtime: ClaudeRuntime, raw: unknown): void {
+  for (const name of collectClaudeTerminalSlashCommandNames(raw)) {
+    runtime.terminalSlashCommandNames.add(name);
+  }
 }
 
 function settleClaudeInitialInputDispatch(
@@ -2892,7 +2931,9 @@ function claudeHasBoundedWorkload(runtime: ClaudeRuntime): boolean {
  */
 function claudeHasBackgroundWorkload(runtime: ClaudeRuntime): boolean {
   const hasUnlevelledSubagent = [...runtime.activeSubagents.values()].some(
-    (subagent) => !subagent.background || !runtime.backgroundTasksLevelObserved,
+    (subagent) =>
+      !subagent.skipTranscript
+      && (!subagent.background || !runtime.backgroundTasksLevelObserved),
   );
   return Boolean(hasUnlevelledSubagent || runtime.liveBackgroundTaskIds.size > 0);
 }
@@ -9549,11 +9590,9 @@ export function createAgentChatService(args: {
           id: "tool_decision",
           header: toolName,
           question: description,
-          options: [
-            { label: "Allow", value: "allow", recommended: true },
-            { label: "Allow for Session", value: "allow_session" },
-            { label: "Deny", value: "deny" },
-          ],
+          options: buildClaudeToolApprovalOptions({
+            defaultToNo: claudeToolNeedsDefaultToNo(sdkOptions),
+          }),
           allowsFreeform: true,
         }],
         allowsFreeform: true,
@@ -9668,6 +9707,8 @@ export function createAgentChatService(args: {
         turnId: event.turnId ?? undefined,
         startTimestamp: previous?.startTimestamp ?? timestamp,
         background: event.background ?? false,
+        spawnDepth: event.spawnDepth ?? previous?.spawnDepth,
+        resourceLinks: event.resourceLinks?.length ? event.resourceLinks : previous?.resourceLinks,
       });
       return;
     }
@@ -9693,6 +9734,8 @@ export function createAgentChatService(args: {
         lastToolName: event.lastToolName ?? previous?.lastToolName,
         background: previous?.background,
         usage: event.usage ?? previous?.usage,
+        spawnDepth: event.spawnDepth ?? previous?.spawnDepth,
+        resourceLinks: event.resourceLinks?.length ? event.resourceLinks : previous?.resourceLinks,
       });
       return;
     }
@@ -9724,6 +9767,8 @@ export function createAgentChatService(args: {
       lastToolName: previous?.lastToolName,
       background: previous?.background,
       usage: event.usage ?? previous?.usage,
+      spawnDepth: event.spawnDepth ?? previous?.spawnDepth,
+      resourceLinks: event.resourceLinks?.length ? event.resourceLinks : previous?.resourceLinks,
     });
   };
 
@@ -16562,6 +16607,9 @@ export function createAgentChatService(args: {
       const task = asRecord(rawTask);
       const taskId = compactString(task?.task_id);
       if (!task || !taskId) continue;
+      if (isClaudeHousekeepingTask(task) || runtime.activeSubagents.get(taskId)?.skipTranscript) {
+        continue;
+      }
       nextIds.add(taskId);
       const rawLevelTaskType = compactString(task.task_type);
       if (rawLevelTaskType) nextTaskTypes.set(taskId, rawLevelTaskType);
@@ -20732,7 +20780,7 @@ export function createAgentChatService(args: {
         parentToolUseId: existing?.parentToolUseId,
       })) return true;
     }
-    if (subtype === "task_started" && msg.skip_transcript === true) {
+    if (subtype === "task_started" && isClaudeHousekeepingTask(msg)) {
       runtime.activeSubagents.set(taskId, {
         taskId,
         description: compactString(msg.description) ?? "",
@@ -20886,6 +20934,7 @@ export function createAgentChatService(args: {
         ...(taskType ? { taskType } : {}),
         ...(workflowName ? { workflowName } : {}),
         ...(model ? { model } : {}),
+        ...claudeTaskTreeFields(msg, existing),
       });
       if (taskType === "cron") {
         const scheduledWorkId = nativeCronScheduleId;
@@ -20915,6 +20964,7 @@ export function createAgentChatService(args: {
         ...(taskType ? { taskType } : {}),
         ...(workflowName ? { workflowName } : {}),
         ...optionalSubagentModelFields(model),
+        ...claudeTaskTreeFields(msg, existing),
         turnId,
       });
       return true;
@@ -20964,6 +21014,7 @@ export function createAgentChatService(args: {
         ...optionalSubagentModelFields(existing?.model ?? model),
         ...(taskType ? { taskType } : {}),
         ...(workflowName ? { workflowName } : {}),
+        ...claudeTaskTreeFields(msg, existing),
         turnId,
       });
       return true;
@@ -21143,6 +21194,7 @@ export function createAgentChatService(args: {
     if (isClaudeForwardedSubagentMessage(msg)) return;
 
     if (msg.type === "system" && record.subtype === "init") {
+      rememberClaudeTerminalSlashCommands(runtime, record.terminal_slash_commands);
       const initCommands = Array.isArray(record.slash_commands) ? record.slash_commands : [];
       if (initCommands.length) applyClaudeSlashCommands(runtime, initCommands as any[]);
       applyClaudeProtocolCapabilities(managed, record.capabilities);
@@ -22402,6 +22454,7 @@ export function createAgentChatService(args: {
             adoptClaudeProviderSessionId(managed, runtime, initSessionId);
           }
           reportedInitModel = normalizeReportedModelName(initMsg.model) ?? reportedInitModel;
+          rememberClaudeTerminalSlashCommands(runtime, initMsg.terminal_slash_commands);
           if (Array.isArray(initMsg.slash_commands)) {
             applyClaudeSlashCommands(runtime, initMsg.slash_commands);
           }
@@ -22881,6 +22934,7 @@ export function createAgentChatService(args: {
             ...(taskType ? { taskType } : {}),
             ...(workflowName ? { workflowName } : {}),
             ...(model ? { model } : {}),
+            ...claudeTaskTreeFields(taskMsg as Record<string, unknown>, existing),
           });
           emitChatEvent(managed, {
             type: "subagent_progress",
@@ -22903,6 +22957,7 @@ export function createAgentChatService(args: {
             ...(taskType ? { taskType } : {}),
             ...(workflowName ? { workflowName } : {}),
             ...optionalSubagentModelFields(model),
+            ...claudeTaskTreeFields(taskMsg as Record<string, unknown>, existing),
             turnId,
           });
           if (workflowProgress && workflowProgress.agents.length > 0) {
@@ -23056,6 +23111,7 @@ export function createAgentChatService(args: {
               ...(taskType ? { taskType } : {}),
               ...(workflowName ? { workflowName } : {}),
               ...(model ? { model } : {}),
+              ...claudeTaskTreeFields(taskMsg as Record<string, unknown>, existing),
             });
             emitChatEvent(managed, {
               type: "subagent_progress",
@@ -23068,6 +23124,7 @@ export function createAgentChatService(args: {
               summary,
               ...optionalSubagentModelFields(model),
               ...(taskType ? { taskType } : {}),
+              ...claudeTaskTreeFields(taskMsg as Record<string, unknown>, existing),
               ...(workflowName ? { workflowName } : {}),
               turnId,
             });
@@ -23082,7 +23139,7 @@ export function createAgentChatService(args: {
         // summary writer) with skip_transcript=true; those must not surface.
         if (msg.type === "system" && (msg as any).subtype === "task_started") {
           const taskMsg = msg as any;
-          if (taskMsg.skip_transcript === true) {
+          if (isClaudeHousekeepingTask(taskMsg)) {
             const skippedId = typeof taskMsg.task_id === "string" && taskMsg.task_id.trim().length
               ? taskMsg.task_id.trim()
               : null;
@@ -23200,6 +23257,7 @@ export function createAgentChatService(args: {
               ...(taskType ? { taskType } : {}),
               ...(workflowName ? { workflowName } : {}),
               ...(model ? { model } : {}),
+              ...claudeTaskTreeFields(taskMsg as Record<string, unknown>, existingStarted),
             });
           const remappedTodoItems = remapClaudeTaskTodoFromRuntimeEvent(
             claudeTaskTodoMap(managed, runtime),
@@ -23228,6 +23286,7 @@ export function createAgentChatService(args: {
             ...(taskType ? { taskType } : {}),
             ...(workflowName ? { workflowName } : {}),
             ...optionalSubagentModelFields(model),
+            ...claudeTaskTreeFields(taskMsg as Record<string, unknown>, existingStarted),
             turnId,
           });
           continue;
@@ -23344,6 +23403,7 @@ export function createAgentChatService(args: {
             } : undefined,
             ...(taskType ? { taskType } : {}),
             ...(workflowName ? { workflowName } : {}),
+            ...claudeTaskTreeFields(taskMsg as Record<string, unknown>, existing),
             turnId,
           });
           // A workflow task that ends with agents still mid-flight (stop,
@@ -32052,6 +32112,7 @@ export function createAgentChatService(args: {
         enabledPlugins: CLAUDE_SESSION_DISABLED_PLUGINS,
         fastMode: sessionEffectiveFastMode(managed.session),
         ...(workflowSizeGuideline ? { workflowSizeGuideline } : {}),
+        dialogExpiry: "never",
       },
       ...(pluginPaths.length ? { plugins: pluginPaths.map((pluginPath) => ({ type: "local" as const, path: pluginPath })) } : {}),
       permissionMode: claudePermissionMode as any,
@@ -32815,7 +32876,10 @@ export function createAgentChatService(args: {
         ...command,
       });
     }
-    runtime.slashCommands = [...existing.values()].sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: "base" }));
+    runtime.slashCommands = filterClaudeGuiSlashCommands(
+      [...existing.values()],
+      runtime.terminalSlashCommandNames,
+    ).sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: "base" }));
   };
 
   const deliverNextQueuedSteer = async (
@@ -33401,6 +33465,7 @@ export function createAgentChatService(args: {
       activeProviderCronIds: new Set(),
       activeProviderCronIdsByPrompt: new Map(),
       slashCommands: [],
+      terminalSlashCommandNames: new Set(),
       busy: false,
       activeTurnId: null,
       initialInputDispatchGate: null,
@@ -43412,15 +43477,18 @@ export function createAgentChatService(args: {
       ((normalizedKind === "auto" || (normalizedKind === "wake" && !wakeNeedsQueue))
         && activeTarget);
     if (steerTarget) {
+      const dispatchMode = isSpawnCompletion && managed.session.provider === "claude"
+        ? "inline" as const
+        : normalizedKind === "auto"
+          ? defaultActiveTurnDispatchMode(managed.session.provider)
+          : "queue";
       const result = await steerWithOptions({
         sessionId,
         text,
         attachments,
         contextAttachments,
         metadata,
-        ...(isSpawnCompletion && managed.session.provider === "claude"
-          ? { dispatchMode: "inline" as const }
-          : {}),
+        ...(dispatchMode === "queue" ? {} : { dispatchMode }),
       }, { allowPendingInput: isSpawnCompletion });
       if (result.reason === "queue_full") {
         throw new Error("The Claude steer queue is full; the message was not queued.");
@@ -45694,6 +45762,45 @@ export function createAgentChatService(args: {
     const row = sessionService.get(trimmed);
     if (!row || !isChatToolType(row.toolType)) return null;
     return await summarizeSessionRow(row);
+  };
+
+  const getTurnStatus = async (sessionId: string): Promise<ChatTurnStatusSnapshot | null> => {
+    const summary = await getSessionSummary(sessionId);
+    if (!summary) return null;
+    const trimmed = sessionId.trim();
+    const managed = managedSessions.get(trimmed) ?? null;
+    const pending = managed ? collectPendingInputRequests(managed)[0] : undefined;
+    const queuedMessageCount = managed?.runtime && "pendingSteers" in managed.runtime
+      ? managed.runtime.pendingSteers.length
+      : 0;
+    const snapshots = await getTrackedSubagents(trimmed);
+    const runningWithTool = snapshots.find((snapshot) => snapshot.status === "running" && snapshot.lastToolName?.trim());
+    return deriveChatTurnStatus({
+      sessionId: summary.sessionId,
+      provider: summary.provider,
+      sessionStatus: summary.status,
+      currentTurnStartedAt: summary.currentTurnStartedAt ?? null,
+      lastActivityAt: summary.lastActivityAt ?? null,
+      awaitingInput: summary.awaitingInput === true,
+      pendingTitle: pending?.title ?? null,
+      pendingDescription: pending?.description ?? null,
+      queuedMessageCount,
+      currentTool: runningWithTool?.lastToolName
+        ? { name: runningWithTool.lastToolName }
+        : null,
+      subagents: snapshots.map((snapshot) => ({
+        taskId: snapshot.taskId,
+        ...(snapshot.agentId ? { agentId: snapshot.agentId } : {}),
+        parentAgentId: snapshot.parentAgentId ?? null,
+        description: snapshot.description,
+        status: snapshot.status,
+        ...(snapshot.background != null ? { background: snapshot.background } : {}),
+        ...(snapshot.spawnDepth != null ? { spawnDepth: snapshot.spawnDepth } : {}),
+        startTimestamp: snapshot.startTimestamp,
+        ...(snapshot.usage?.durationMs != null ? { durationMs: snapshot.usage.durationMs } : {}),
+        ...(snapshot.resourceLinks?.length ? { resourceLinks: snapshot.resourceLinks } : {}),
+      })),
+    });
   };
 
   /**
@@ -49033,7 +49140,10 @@ export function createAgentChatService(args: {
           argumentHint: cmd.argumentHint,
           source: "sdk" as const,
         }));
-      return mergeSlashCommands([projectCommands, CLAUDE_BUILT_IN_SLASH_COMMANDS, runtimeCommands]);
+      return filterClaudeGuiSlashCommands(
+        mergeSlashCommands([projectCommands, CLAUDE_BUILT_IN_SLASH_COMMANDS, runtimeCommands]),
+        managed?.runtime?.kind === "claude" ? managed.runtime.terminalSlashCommandNames : [],
+      );
     }
 
     // Codex SDK commands
@@ -51526,6 +51636,7 @@ export function createAgentChatService(args: {
     resumeSession,
     listSessions,
     getSessionSummary,
+    getTurnStatus,
     ensureSessionSurface,
     hasActiveWorkloads,
     hasRetainableSessions,

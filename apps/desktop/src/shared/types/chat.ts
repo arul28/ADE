@@ -754,6 +754,13 @@ export type AgentChatScheduledWorkOrigin =
   | "background_task"
   | "sdk";
 
+/** Files a backgrounded MCP task returned on `task_notification`. */
+export type AgentChatResourceLink = {
+  uri?: string;
+  name?: string;
+  path?: string;
+};
+
 export type AgentChatEvent =
   | {
       type: "user_message";
@@ -1087,6 +1094,9 @@ export type AgentChatEvent =
       taskType?: "subagent" | "background" | "local_workflow" | "cron" | "other";
       spawnKind?: AgentChatSpawnKind;
       workflowName?: string;
+      /** SDK spawn_depth when the host publishes it; 0 is the top-level agent. */
+      spawnDepth?: number;
+      resourceLinks?: AgentChatResourceLink[];
       turnId?: string;
     }
   | {
@@ -1111,6 +1121,8 @@ export type AgentChatEvent =
       lastToolName?: string;
       taskType?: "subagent" | "background" | "local_workflow" | "cron" | "other";
       workflowName?: string;
+      spawnDepth?: number;
+      resourceLinks?: AgentChatResourceLink[];
       turnId?: string;
     }
   | {
@@ -1139,6 +1151,8 @@ export type AgentChatEvent =
       worktreeBranch?: string;
       totalTokens?: number;
       toolUseCount?: number;
+      spawnDepth?: number;
+      resourceLinks?: AgentChatResourceLink[];
       turnId?: string;
     }
   | {
@@ -2125,6 +2139,8 @@ export type AgentChatSubagentSnapshot = {
     /** USD cost, when the runtime reports a per-subagent figure (OpenCode). */
     costUsd?: number;
   };
+  spawnDepth?: number;
+  resourceLinks?: AgentChatResourceLink[];
 };
 
 export type AgentChatSubagentListArgs = {

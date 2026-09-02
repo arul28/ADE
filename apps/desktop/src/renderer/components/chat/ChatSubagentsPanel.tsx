@@ -6,6 +6,7 @@ import {
   Check,
   Circle,
   CircleHalf,
+  CopySimple,
   Pause,
   Play,
   Square,
@@ -16,6 +17,8 @@ import { cn } from "../ui/cn";
 import { formatDurationMs, formatSubagentDurationMs } from "../../lib/format";
 import type { ChatScheduledWorkSnapshot, ChatSubagentSnapshot } from "./chatExecutionSummary";
 import { derivePlan, subagentTreeDepth } from "./chatExecutionSummary";
+import { annotateSubagentTree, shouldAutoCollapseFinishedSubtree } from "../../../shared/chatSubagentTree";
+import { resourceLinkCopyPaths } from "../../../shared/claudeAgentSdkFields";
 import type { TodoItemSnapshot } from "./chatExecutionSummary";
 import { ChatTaskList } from "./ChatTasksPanel";
 import type { ChatInfoPlanStep, PaneSectionKey } from "../../../shared/chatSubagents";
@@ -64,6 +67,10 @@ const EMPTY_PANE_UI_STATE: PaneUiStorageState = { collapsed: {}, earlier: {} };
 const EMPTY_PANE_CLEARED_STATE: PaneClearedStorageState = { subagents: [], background: [], schedule: [] };
 const PANE_SECTION_KEYS: PaneSectionKey[] = ["progress", "tasks", "subagents", "background", "schedule"];
 const PANE_EARLIER_SECTION_KEYS = ["subagents", "background", "schedule"] as const;
+
+function subagentIdentity(snapshot: ChatSubagentSnapshot): string {
+  return snapshot.agentId?.trim() || snapshot.taskId;
+}
 
 export function chatPaneUiStorageKey(sessionId: string): string {
   return `${PANE_UI_STORAGE_PREFIX}:${sessionId}`;
@@ -802,6 +809,9 @@ function SubagentRow({
   canViewFullTranscript,
   onClick,
   depth = 0,
+  treePrefix = "",
+  collapsedDescendantCount = 0,
+  onToggleCollapsedSubtree,
   spawnedChatTitle = null,
   sessionModelLabel = null,
 }: {
@@ -811,6 +821,10 @@ function SubagentRow({
   expanded: boolean;
   /** Nesting depth (parentAgentId chain); indents the row one level per ancestor. */
   depth?: number;
+  /** Connector-glyph prefix such as `│  └ `. Empty for roots. */
+  treePrefix?: string;
+  collapsedDescendantCount?: number;
+  onToggleCollapsedSubtree?: () => void;
   /** True while we're checking whether this agent has a pullable transcript. */
   probing: boolean;
   /** Whether this runtime can surface a full child transcript (drives the
@@ -843,6 +857,7 @@ function SubagentRow({
   const isStopped = snapshot.status === "stopped";
   const isFailed = snapshot.status === "failed";
   const [nowMs, setNowMs] = useState(() => Date.now());
+  const [filesOpen, setFilesOpen] = useState(false);
   useEffect(() => {
     if (!isRunning) return;
     const intervalId = window.setInterval(() => setNowMs(Date.now()), 1000);
@@ -864,25 +879,48 @@ function SubagentRow({
   // summary) — shown only when it adds something beyond the description.
   const summaryRaw = (snapshot.finalSummary ?? snapshot.summary)?.trim();
   const summaryText = summaryRaw && summaryRaw !== snapshot.description?.trim() ? summaryRaw : null;
+  const filePaths = resourceLinkCopyPaths(snapshot.resourceLinks ?? []);
+  const copyFilePaths = useCallback(() => {
+    if (!filePaths.length || typeof navigator === "undefined" || !navigator.clipboard?.writeText) return;
+    void navigator.clipboard.writeText(filePaths.join("\n"));
+  }, [filePaths]);
 
   return (
-    <div style={depth > 0 ? { paddingLeft: depth * 14 } : undefined}>
+    <div>
+      <div className="flex w-full items-stretch">
+        {treePrefix || depth > 0 ? (
+          <span aria-hidden className="shrink-0 self-center pl-2 font-mono text-[11px] leading-none text-fg/30 whitespace-pre">
+            {treePrefix || `${"  ".repeat(Math.max(0, depth - 1))}└ `}
+          </span>
+        ) : null}
+        {collapsedDescendantCount > 0 && onToggleCollapsedSubtree ? (
+          <button
+            type="button"
+            title="Show nested agents"
+            aria-label="Show nested agents"
+            onClick={(event) => {
+              event.preventDefault();
+              event.stopPropagation();
+              onToggleCollapsedSubtree();
+            }}
+            className="shrink-0 self-center rounded-sm px-0.5 text-fg/40 hover:text-fg/70"
+          >
+            <CaretRight size={10} weight="bold" />
+          </button>
+        ) : null}
       <button
         type="button"
         onClick={onClick}
         title={isSpawnedChat ? "Open the spawned chat" : (snapshot.description || "View subagent details")}
         data-selected={selected || undefined}
         className={cn(
-          "group relative flex w-full items-center gap-2.5 rounded-md px-2 py-1.5 text-left",
+          "group relative flex min-w-0 flex-1 items-center gap-2.5 rounded-md px-2 py-1.5 text-left",
           "transition-colors duration-150",
           "hover:bg-white/[0.04]",
           (selected || expanded)
             && "bg-[color:color-mix(in_srgb,var(--color-accent)_10%,transparent)] ring-1 ring-inset ring-[color:color-mix(in_srgb,var(--color-accent)_30%,transparent)]",
         )}
       >
-        {depth > 0 ? (
-          <span aria-hidden className="-mr-1 shrink-0 self-center text-[12px] leading-none text-fg/25">↳</span>
-        ) : null}
         <ChatSubagentGlyph id={snapshot.agentId ?? snapshot.taskId} color={color} status={snapshot.status} />
 
         <span
@@ -950,6 +988,38 @@ function SubagentRow({
           {time ? <span className="text-fg/35 group-hover:text-fg/50">{time}</span> : null}
         </span>
       </button>
+      </div>
+
+      {filePaths.length > 0 ? (
+        <div className="mx-2 mb-1">
+          <div className="flex items-center gap-1.5">
+            <button
+              type="button"
+              onClick={() => setFilesOpen((open) => !open)}
+              className="inline-flex items-center gap-1 rounded-sm px-1 py-0.5 font-sans text-[11px] text-fg/50 hover:bg-white/[0.04] hover:text-fg/70"
+            >
+              {filesOpen ? <CaretDown size={10} weight="bold" /> : <CaretRight size={10} weight="bold" />}
+              {filePaths.length} file{filePaths.length === 1 ? "" : "s"} returned
+            </button>
+            <button
+              type="button"
+              onClick={copyFilePaths}
+              title="Copy all paths"
+              className="inline-flex items-center gap-0.5 rounded-sm px-1 py-0.5 font-sans text-[10.5px] text-fg/40 hover:bg-white/[0.04] hover:text-fg/70"
+            >
+              <CopySimple size={11} />
+              copy paths
+            </button>
+          </div>
+          {filesOpen ? (
+            <ul className="mt-0.5 space-y-0.5 pl-4 font-mono text-[10.5px] text-fg/45">
+              {filePaths.map((path) => (
+                <li key={path} className="truncate">{path}</li>
+              ))}
+            </ul>
+          ) : null}
+        </div>
+      ) : null}
 
       {/* No pullable transcript → a tiny details drawer slides out beneath the
           row instead of taking over the chat with an empty page. */}
@@ -1195,18 +1265,71 @@ export function ChatSubagentsPanel({
     };
   }, [snapshots]);
 
+  const [expandedFinishedIds, setExpandedFinishedIds] = useState<Set<string>>(() => new Set());
+  const annotatedSubagents = useMemo(() => annotateSubagentTree(subagents), [subagents]);
+  const treeById = useMemo(() => {
+    const map = new Map<string, (typeof annotatedSubagents)[number]["tree"]>();
+    for (const entry of annotatedSubagents) {
+      map.set(subagentIdentity(entry.node), entry.tree);
+    }
+    return map;
+  }, [annotatedSubagents]);
   const pinnedSubagentIds = useMemo(() => new Set(
     [selectedTaskId, expandedTaskId].filter((id): id is string => Boolean(id)),
   ), [expandedTaskId, selectedTaskId]);
+  const hiddenDescendantIds = useMemo(() => {
+    const hidden = new Set<string>();
+    const byId = new Map(subagents.map((snapshot) => [subagentIdentity(snapshot), snapshot]));
+    const isPinned = (snapshot: ChatSubagentSnapshot | undefined, id: string): boolean => {
+      if (pinnedSubagentIds.has(id)) return true;
+      if (!snapshot) return false;
+      return pinnedSubagentIds.has(snapshot.taskId) || pinnedSubagentIds.has(subagentIdentity(snapshot));
+    };
+    for (const { node, tree } of annotatedSubagents) {
+      const id = subagentIdentity(node);
+      if (expandedFinishedIds.has(id)) continue;
+      const descendantStatuses = tree.descendantIds.map((descendantId) => byId.get(descendantId)?.status);
+      if (shouldAutoCollapseFinishedSubtree(node, descendantStatuses)) {
+        for (const descendantId of tree.descendantIds) {
+          if (isPinned(byId.get(descendantId), descendantId)) continue;
+          hidden.add(descendantId);
+        }
+      }
+    }
+    return hidden;
+  }, [annotatedSubagents, expandedFinishedIds, pinnedSubagentIds, subagents]);
+  const collapsedCountById = useMemo(() => {
+    const counts = new Map<string, number>();
+    const byId = new Map(subagents.map((snapshot) => [subagentIdentity(snapshot), snapshot]));
+    for (const { node, tree } of annotatedSubagents) {
+      const id = subagentIdentity(node);
+      if (expandedFinishedIds.has(id)) continue;
+      const descendantStatuses = tree.descendantIds.map((descendantId) => byId.get(descendantId)?.status);
+      if (shouldAutoCollapseFinishedSubtree(node, descendantStatuses)) {
+        counts.set(id, tree.descendantIds.filter((descendantId) => hiddenDescendantIds.has(descendantId)).length);
+      }
+    }
+    return counts;
+  }, [annotatedSubagents, expandedFinishedIds, hiddenDescendantIds, subagents]);
+
   const clearedSubagentIds = useMemo(() => new Set(paneCleared.subagents), [paneCleared.subagents]);
   const clearedBackgroundIds = useMemo(() => new Set(paneCleared.background), [paneCleared.background]);
   const clearedScheduleIds = useMemo(() => new Set(paneCleared.schedule), [paneCleared.schedule]);
 
-  const subagentGroups = useMemo(() => groupPaneSectionItems(subagents, {
-    isEarlier: isEarlierSubagentSnapshot,
-    isCleared: (snapshot) => clearedSubagentIds.has(snapshot.taskId),
-    isPinned: (snapshot) => pinnedSubagentIds.has(snapshot.taskId),
-  }), [clearedSubagentIds, pinnedSubagentIds, subagents]);
+  const subagentGroups = useMemo(() => {
+    const grouped = groupPaneSectionItems(subagents, {
+      isEarlier: isEarlierSubagentSnapshot,
+      isCleared: (snapshot) => clearedSubagentIds.has(snapshot.taskId),
+      isPinned: (snapshot) =>
+        pinnedSubagentIds.has(snapshot.taskId) || pinnedSubagentIds.has(subagentIdentity(snapshot)),
+    });
+    const visible = (items: ChatSubagentSnapshot[]) => items.filter((item) => !hiddenDescendantIds.has(subagentIdentity(item)));
+    return {
+      ...grouped,
+      active: visible(grouped.active),
+      earlier: visible(grouped.earlier),
+    };
+  }, [clearedSubagentIds, hiddenDescendantIds, pinnedSubagentIds, subagents]);
   const backgroundGroups = useMemo(() => groupPaneSectionItems(backgroundItems, {
     isEarlier: isEarlierBackgroundItem,
     isCleared: (snapshot) => clearedBackgroundIds.has(snapshot.id),
@@ -1391,7 +1514,18 @@ export function ChatSubagentsPanel({
       probing={probingTaskId === snap.taskId}
       canViewFullTranscript={canTakeover}
       category={snap.background ? "background" : "subagent"}
-      depth={subagentTreeDepth(snap, snapshots)}
+      depth={treeById.get(subagentIdentity(snap))?.depth ?? subagentTreeDepth(snap, snapshots)}
+      treePrefix={treeById.get(subagentIdentity(snap))?.prefix ?? ""}
+      collapsedDescendantCount={collapsedCountById.get(subagentIdentity(snap)) ?? 0}
+      onToggleCollapsedSubtree={() => {
+        const id = subagentIdentity(snap);
+        setExpandedFinishedIds((current) => {
+          const next = new Set(current);
+          if (next.has(id)) next.delete(id);
+          else next.add(id);
+          return next;
+        });
+      }}
       spawnedChatTitle={
         snap.childSessionId != null
           ? resolveSpawnedChatTitle?.(snap.childSessionId) ?? null

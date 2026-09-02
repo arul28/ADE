@@ -605,6 +605,10 @@ describe("ADE_ACTION_ALLOWLIST shape", () => {
     expect(getAdeActionInputContract("chat", "getSessionSummary")).toMatchObject({
       input: expect.stringContaining("scalar sessionId"),
     });
+    expect(getAdeActionInputContract("chat", "getTurnStatus")).toMatchObject({
+      description: expect.stringContaining("RUNNING"),
+      input: expect.stringContaining("scalar sessionId"),
+    });
     expect(getAdeActionInputContract("chat", "readTranscript")).toMatchObject({
       input: expect.stringContaining("limit"),
     });
@@ -765,6 +769,7 @@ describe("ADE_ACTION_ALLOWLIST shape", () => {
     const createSession = vi.fn(async (args?: unknown) => ({ sessionId: "chat-new", args }));
     const getAvailableModels = vi.fn(async (args: { provider?: string }) => [{ id: args.provider ?? "any" }]);
     const getSessionSummary = vi.fn(async (sessionId: string) => ({ sessionId }));
+    const getTurnStatus = vi.fn(async (sessionId: string) => ({ sessionId, phase: "idle" }));
     const readTranscript = vi.fn(async (sessionId: string, limit?: number, since?: string) => ([
       { role: "user", text: sessionId, timestamp: since ?? "now", limit },
     ]));
@@ -783,6 +788,7 @@ describe("ADE_ACTION_ALLOWLIST shape", () => {
         createSession,
         getAvailableModels,
         getSessionSummary,
+        getTurnStatus,
         readTranscript,
         getChatEventHistory,
         getChatEventHistoryPage,
@@ -795,6 +801,7 @@ describe("ADE_ACTION_ALLOWLIST shape", () => {
       createSession?: (args?: unknown) => Promise<unknown>;
       getAvailableModels?: (args?: unknown) => Promise<unknown>;
       getSessionSummary?: (args?: unknown) => Promise<unknown>;
+      getTurnStatus?: (args?: unknown) => Promise<unknown>;
       readTranscript?: (args?: unknown) => Promise<unknown>;
       getChatEventHistory?: (args?: unknown, options?: unknown) => Promise<unknown>;
       getChatEventHistoryPage?: (args?: unknown, options?: unknown) => Promise<unknown>;
@@ -809,6 +816,11 @@ describe("ADE_ACTION_ALLOWLIST shape", () => {
     await expect(chat.getSessionSummary?.("chat-2")).resolves.toEqual({ sessionId: "chat-2" });
     expect(getSessionSummary).toHaveBeenNthCalledWith(1, "chat-1");
     expect(getSessionSummary).toHaveBeenNthCalledWith(2, "chat-2");
+
+    await expect(chat.getTurnStatus?.({ sessionId: " chat-1 " })).resolves.toEqual({ sessionId: "chat-1", phase: "idle" });
+    await expect(chat.getTurnStatus?.("chat-2")).resolves.toEqual({ sessionId: "chat-2", phase: "idle" });
+    expect(getTurnStatus).toHaveBeenNthCalledWith(1, "chat-1");
+    expect(getTurnStatus).toHaveBeenNthCalledWith(2, "chat-2");
 
     await expect(chat.createSession?.({
       laneId: "lane-1",

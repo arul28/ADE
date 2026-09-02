@@ -495,6 +495,14 @@ function createRuntime() {
         lastActivityAt: "2026-03-17T19:00:00.000Z",
         createdAt: "2026-03-17T19:00:00.000Z",
       })),
+      getTurnStatus: vi.fn(async (sessionId: string) => ({
+        sessionId,
+        phase: "idle",
+        activity: "idle",
+        live: false,
+        hasAsk: false,
+        queued: 0,
+      })),
       createScheduledWork: vi.fn(async ({ sessionId, cron, runAt, prompt, recurring = true }: {
         sessionId: string;
         cron?: string;
@@ -3479,6 +3487,11 @@ describe("adeRpcServer", () => {
     const getSessionSummary = chatActions.structuredContent.actions.find((entry: { action: string }) => entry.action === "getSessionSummary");
     expect(getSessionSummary).toMatchObject({
       input: expect.stringContaining("scalar sessionId"),
+    });
+    const getTurnStatus = chatActions.structuredContent.actions.find((entry: { action: string }) => entry.action === "getTurnStatus");
+    expect(getTurnStatus).toMatchObject({
+      input: expect.stringContaining("scalar sessionId"),
+      example: expect.stringContaining("chat.getTurnStatus"),
     });
     const smartLinkPreview = chatActions.structuredContent.actions.find(
       (entry: { action: string }) => entry.action === "resolveSmartLinkPreview",
