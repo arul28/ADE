@@ -86,6 +86,7 @@ function fakeApi(overrides = {}) {
     createRun: async () => ({ run: { id: "r2", status: "CREATING" } }),
     cancelRun: async () => ({ id: "r1" }),
     listArtifacts: async () => ({ items: [] }),
+    getArtifactDownloadUrl: async () => ({ url: "" }),
     streamRun: async () => ({ text: async () => sseBody([]) }),
     ...overrides,
   };
@@ -350,6 +351,33 @@ describe("polling follows attention", () => {
     assert.deepEqual(host.of("attachBranch")[0].args[1], { branch: "cursor/fix-1" });
     // An absolute path is refused by the host, so it is made lane-relative here.
     assert.deepEqual(host.of("setArtifacts")[0].args[1], [{ path: "report.md", bytes: 12 }]);
+  });
+
+  it("hands the host the signed download URL so the file can land in the lane", async () => {
+    const { runtime, host } = runtimeWith({
+      api: fakeApi({
+        streamRun: async () => ({
+          text: async () => sseBody([
+            { type: "assistant", message: { content: [{ type: "text", text: "pushed" }] } },
+            { type: "status", status: "FINISHED" },
+          ]),
+        }),
+        getRun: async () => ({
+          id: "r1",
+          status: "FINISHED",
+          git: { branches: [{ repoUrl: "https://github.com/acme/app", branch: "cursor/fix-1" }] },
+        }),
+        listArtifacts: async () => ({ items: [{ path: "/report.md", sizeBytes: 12 }] }),
+        getArtifactDownloadUrl: async () => ({ url: "https://files.cursor.com/report.md", expiresAt: "2099-01-01T00:00:00.000Z" }),
+      }),
+    });
+
+    await runtime.poll("s-1", "a1");
+    assert.deepEqual(host.of("setArtifacts")[0].args[1], [{
+      path: "report.md",
+      bytes: 12,
+      sourceUrl: "https://files.cursor.com/report.md",
+    }]);
   });
 
   it("does not attach a branch for a run that is still going", async () => {

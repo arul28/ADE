@@ -452,6 +452,7 @@ import {
   PLUGIN_CHAT_PARTS_MAX,
   PLUGIN_CHAT_TEXT_MAX_BYTES,
   PLUGIN_CHAT_ARTIFACTS_MAX,
+  PLUGIN_CHAT_ARTIFACT_MAX_BYTES,
   PLUGIN_CHAT_WRITES_PER_SESSION_BURST,
   PLUGIN_CHAT_WRITE_BURST_WINDOW_MS,
   PluginSdkError,
@@ -464,6 +465,7 @@ import {
   type PluginChatTranscriptEntry,
   type PluginChatUserAppend,
 } from "../../../shared/plugins/sdk";
+import { PLUGIN_BUILTIN_SURFACE_OWNER_IDS } from "../../../shared/plugins/builtinSurfaceRegistry";
 import { providerDisplayLabel } from "../../../shared/pendingInputLabels";
 import {
   flattenAnswerForSingleStringProvider,
@@ -886,6 +888,22 @@ import type { ProcessRegistryService } from "../runtime/processRegistryService";
 const requireFromRuntime = createRequire(
   typeof __filename === "string" ? __filename : fileURLToPath(import.meta.url),
 );
+
+/**
+ * Cursor owns the name of a cloud agent. Plugin-owned chats address that agent
+ * through `runtimeRef.externalId`, so the compiled rename lock — which keys on
+ * `cursorCloudAgentId` — only fires if we stamp the same id here.
+ */
+function lockCursorOwnedPluginChatName(
+  session: { cursorCloudAgentId?: string },
+  pluginId: string,
+  externalId: string,
+): void {
+  if (pluginId !== PLUGIN_BUILTIN_SURFACE_OWNER_IDS["cursor-cloud"]) return;
+  const id = externalId.trim();
+  if (!id) return;
+  session.cursorCloudAgentId = id;
+}
 
 function resolveClaudeAgentSdkVersion(): string {
   try {
@@ -39793,6 +39811,76 @@ export function createAgentChatService(args: {
     return segments.join("/");
   };
 
+  const sanitizePluginCacheSegment = (raw: string): string => {
+    const cleaned = raw.replace(/[^A-Za-z0-9._-]+/g, "-").replace(/^-+|-+$/g, "");
+    return cleaned.slice(0, 80) || "item";
+  };
+
+  const decodePluginArtifactContents = (contents: string): Buffer | null => {
+    try {
+      const buffer = Buffer.from(contents, "base64");
+      if (!buffer.byteLength || buffer.byteLength > PLUGIN_CHAT_ARTIFACT_MAX_BYTES) return null;
+      return buffer;
+    } catch {
+      return null;
+    }
+  };
+
+  const downloadPluginArtifactSourceUrl = async (url: string): Promise<Buffer | null> => {
+    try {
+      const response = await fetch(url, {
+        method: "GET",
+        redirect: "follow",
+        signal: AbortSignal.timeout(30_000),
+      });
+      if (!response.ok) return null;
+      const finalUrl = response.url || url;
+      const parsed = new URL(finalUrl);
+      if (parsed.protocol !== "https:") return null;
+      const buffer = Buffer.from(await response.arrayBuffer());
+      if (buffer.byteLength > PLUGIN_CHAT_ARTIFACT_MAX_BYTES) return null;
+      return buffer;
+    } catch {
+      return null;
+    }
+  };
+
+  /**
+   * Write one plugin artifact into the lane cache.
+   *
+   * Returns the lane-relative path that landed, or null when there was nothing
+   * to write (no bytes, no worktree, or a download that failed).
+   */
+  const materializePluginArtifact = async (
+    managed: ManagedChatSession,
+    pluginId: string,
+    externalId: string,
+    safeRel: string,
+    artifact: PluginChatArtifact,
+  ): Promise<string | null> => {
+    const worktree = managed.laneWorktreePath?.trim() || "";
+    if (!worktree) return null;
+    let buffer: Buffer | null = null;
+    if (typeof artifact.contents === "string" && artifact.contents.length) {
+      buffer = decodePluginArtifactContents(artifact.contents);
+    } else if (typeof artifact.sourceUrl === "string" && artifact.sourceUrl.length) {
+      buffer = await downloadPluginArtifactSourceUrl(artifact.sourceUrl);
+    }
+    if (!buffer) return null;
+    const destPath = path.join(
+      worktree,
+      ".ade",
+      "cache",
+      "plugin-artifacts",
+      sanitizePluginCacheSegment(pluginId),
+      sanitizePluginCacheSegment(externalId),
+      safeRel,
+    );
+    fs.mkdirSync(path.dirname(destPath), { recursive: true });
+    fs.writeFileSync(destPath, buffer);
+    return path.relative(worktree, destPath);
+  };
+
   const cloudArtifactsDirFor = (managed: ManagedChatSession, agentId: string, runId: string): string =>
     path.join(
       managed.laneWorktreePath,
@@ -40842,10 +40930,9 @@ export function createAgentChatService(args: {
       if (!existing) continue;
       if (existing.pluginId !== pluginId) continue;
       if (existing.runtimeId !== runtimeId || existing.externalId !== externalId) continue;
-      if (label) {
-        candidate.session.runtimeLabel = label;
-        persistChatState(candidate);
-      }
+      lockCursorOwnedPluginChatName(candidate.session, pluginId, externalId);
+      if (label) candidate.session.runtimeLabel = label;
+      persistChatState(candidate);
       return { sessionId: candidate.session.id, runtimeId, externalId, created: false };
     }
 
@@ -40868,6 +40955,7 @@ export function createAgentChatService(args: {
         );
       }
       adopted.session.runtimeRef = ref;
+      lockCursorOwnedPluginChatName(adopted.session, pluginId, externalId);
       if (label) adopted.session.runtimeLabel = label;
       persistChatState(adopted);
       return { sessionId: adopted.session.id, runtimeId, externalId, created: false };
@@ -40884,6 +40972,7 @@ export function createAgentChatService(args: {
     });
     const managed = managedSessions.get(created.id) ?? ensureManagedSession(created.id);
     managed.session.runtimeRef = ref;
+    lockCursorOwnedPluginChatName(managed.session, pluginId, externalId);
     if (label) managed.session.runtimeLabel = label;
     persistChatState(managed);
     return { sessionId: managed.session.id, runtimeId, externalId, created: true };
@@ -40996,6 +41085,8 @@ export function createAgentChatService(args: {
         );
       }
       chargePluginChatWrite(sessionId);
+      const pluginId = managed.session.runtimeRef?.pluginId ?? "plugin";
+      const externalId = managed.session.runtimeRef?.externalId ?? sessionId;
       const rows: AdeCardRow[] = [];
       for (const artifact of artifacts as PluginChatArtifact[]) {
         const safeRel = sanitizeArtifactRelativePath(artifact?.path ?? "");
@@ -41003,9 +41094,10 @@ export function createAgentChatService(args: {
         // plugin believes it wrote somewhere this card would point the user,
         // and silently rewriting it would show them the wrong file.
         if (!safeRel) continue;
+        const written = await materializePluginArtifact(managed, pluginId, externalId, safeRel, artifact);
         rows.push({
-          text: artifact.label?.trim().slice(0, 120) || safeRel,
-          detail: safeRel,
+          text: artifact.label?.trim().slice(0, 120) || safeRel.split(/[\\/]/).pop() || safeRel,
+          detail: written ?? safeRel,
         });
       }
       if (!rows.length) return;
@@ -41218,6 +41310,7 @@ export function createAgentChatService(args: {
     if (!isAgentChatRuntimeRef(ref)) return null;
     managed.session.runtimeRef = ref;
     managed.session.provider = PLUGIN_CHAT_PROVIDER;
+    lockCursorOwnedPluginChatName(managed.session, ref.pluginId, externalId);
     const label = resolvePluginRuntimeLabel(ref);
     if (label) managed.session.runtimeLabel = label;
     persistChatState(managed);
@@ -41280,7 +41373,9 @@ export function createAgentChatService(args: {
 
     const matched = (() => {
       for (const [, managed] of managedSessions) {
-        if (managed.session.cursorCloudAgentId === trimmedAgent) return managed;
+        if (managed.session.cursorCloudAgentId !== trimmedAgent) continue;
+        if (isPluginOwnedChatSession(managed.session)) continue;
+        return managed;
       }
       return null;
     })();
@@ -41326,10 +41421,10 @@ export function createAgentChatService(args: {
 
     let managed: ManagedChatSession | null = null;
     for (const candidate of managedSessions.values()) {
-      if (candidate.session.cursorCloudAgentId === agentId) {
-        managed = candidate;
-        break;
-      }
+      if (candidate.session.cursorCloudAgentId !== agentId) continue;
+      if (isPluginOwnedChatSession(candidate.session)) continue;
+      managed = candidate;
+      break;
     }
     if (!managed) {
       const rows = sessionService.list({ toolTypes: ["cursor"], limit: 500 });
@@ -41337,6 +41432,7 @@ export function createAgentChatService(args: {
         if (!isChatToolType(row.toolType)) continue;
         const persisted = readPersistedState(row.id);
         if (persisted?.cursorCloudAgentId !== agentId) continue;
+        if (isPluginOwnedChatSession(persisted)) continue;
         try {
           managed = ensureManagedSession(row.id);
         } catch (error) {
@@ -42046,11 +42142,15 @@ export function createAgentChatService(args: {
     }
     if (!managed) {
       for (const candidate of managedSessions.values()) {
-        if (candidate.session.cursorCloudAgentId === trimmedAgent) {
-          managed = candidate;
-          break;
-        }
+        if (candidate.session.cursorCloudAgentId !== trimmedAgent) continue;
+        if (isPluginOwnedChatSession(candidate.session)) continue;
+        managed = candidate;
+        break;
       }
+    }
+
+    if (managed && isPluginOwnedChatSession(managed.session)) {
+      return { sessionId: managed.session.id, session: managed.session };
     }
 
     const existedBefore = Boolean(managed);

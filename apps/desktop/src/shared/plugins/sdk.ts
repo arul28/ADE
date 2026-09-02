@@ -1003,6 +1003,15 @@ export const PLUGIN_CHAT_PARTS_MAX = 64;
 /** Most artifacts one `setArtifacts` call may list. */
 export const PLUGIN_CHAT_ARTIFACTS_MAX = 50;
 
+/** Largest file `setArtifacts` will write into the lane. Same ceiling compiled Cursor Cloud uses. */
+export const PLUGIN_CHAT_ARTIFACT_MAX_BYTES = 10 * 1024 * 1024;
+
+/** Base64 of {@link PLUGIN_CHAT_ARTIFACT_MAX_BYTES}, with a little headroom for padding. */
+export const PLUGIN_CHAT_ARTIFACT_CONTENTS_MAX_CHARS = 14_000_000;
+
+/** Longest `sourceUrl` `setArtifacts` will fetch. Same ceiling as `{openUrl}`. */
+export const PLUGIN_CHAT_ARTIFACT_SOURCE_URL_MAX_CHARS = PLUGIN_URL_MAX_CHARS;
+
 /**
  * A piece of an assistant turn.
  *
@@ -1084,7 +1093,41 @@ export type PluginChatArtifact = {
   path: string;
   label?: string;
   bytes?: number;
+  /**
+   * File bytes, base64. The host writes them into the lane cache because the
+   * plugin child does not receive the worktree path.
+   */
+  contents?: string;
+  /**
+   * HTTPS URL the host fetches and writes in the same cache. Use this when the
+   * bytes live behind a signed URL the child's declared-host guard would refuse.
+   */
+  sourceUrl?: string;
 };
+
+/** HTTPS download URL a `setArtifacts` call may ask the host to fetch. */
+export function readPluginChatArtifactSourceUrl(value: unknown): string | undefined {
+  const href = httpsUrl(value, PLUGIN_CHAT_ARTIFACT_SOURCE_URL_MAX_CHARS);
+  if (!href) return undefined;
+  let parsed: URL;
+  try {
+    parsed = new URL(href);
+  } catch {
+    return undefined;
+  }
+  const host = parsed.hostname.toLowerCase();
+  if (
+    host === "localhost"
+    || host === "127.0.0.1"
+    || host === "::1"
+    || host === "[::1]"
+    || host.endsWith(".localhost")
+  ) {
+    return undefined;
+  }
+  if (parsed.username || parsed.password) return undefined;
+  return href;
+}
 
 /** One historical turn, for {@link AdePluginSdk.chat.hydrate}. */
 export type PluginChatTranscriptEntry = {
@@ -1744,11 +1787,13 @@ export type AdePluginSdk = {
     /** Report what the conversation is doing. See {@link PluginChatStatus}. */
     emitStatus(sessionId: string, status: PluginChatStatus): Promise<void>;
     /**
-     * Declare the files this run produced in the lane, as a proof-artifact card.
+     * Declare the files this run produced, as a proof-artifact card.
      *
-     * The plugin writes the files itself (it has the filesystem); this is how
-     * they become something the user sees rather than something they would
-     * have to go looking for.
+     * The plugin child has no lane worktree path (`lanes.list()` withholds it).
+     * Pass `contents` (base64) or `sourceUrl` (https) and the host writes the
+     * file into `.ade/cache/plugin-artifacts/…` then points the card at it.
+     * A path alone still draws the card, for a plugin that already wrote the
+     * file itself.
      */
     setArtifacts(sessionId: string, artifacts: PluginChatArtifact[]): Promise<void>;
     /**
@@ -2294,6 +2339,77 @@ export function readPluginActionOpenUrl(result: unknown): PluginActionOpenUrl | 
 export function hasPluginActionOpenUrlRequest(result: unknown): boolean {
   if (!isRecord(result)) return false;
   return typeof result.openUrl === "string" || isRecord(result.openUrl);
+}
+
+// ---------------------------------------------------------------------------
+// Action-response settings
+// ---------------------------------------------------------------------------
+
+/**
+ * Host settings pages a plugin action may open.
+ *
+ * Closed on purpose. `{openSettings}` is the one verb that leaves the plugin's
+ * own surface for ADE's own UI, and an open list would let a plugin send the
+ * reader to billing, secrets, or any other page. Add an id here only when a
+ * plugin has a real empty-state that cannot be a panel of its own — and the
+ * four clients honour the new id in the same change.
+ */
+export const PLUGIN_OPEN_SETTINGS_ENTRY_IDS = ["agents.provider.cursor"] as const;
+
+export type PluginOpenSettingsEntryId = (typeof PLUGIN_OPEN_SETTINGS_ENTRY_IDS)[number];
+
+export type PluginActionOpenSettings = { entryId: PluginOpenSettingsEntryId };
+
+/**
+ * Read a host-settings request out of whatever an action returned.
+ *
+ * Tolerant in the same way as {@link readPluginActionNavigation}: most results
+ * carry no settings request, so anything unrecognizable is `null` rather than
+ * an error. Unknown ids drop rather than opening a guessed page.
+ *
+ * Accepts both `{ openSettings: "agents.provider.cursor" }` and
+ * `{ openSettings: { entryId: "agents.provider.cursor" } }`.
+ */
+export function readPluginActionOpenSettings(result: unknown): PluginActionOpenSettings | null {
+  if (!isRecord(result)) return null;
+  const request = result.openSettings;
+  const entryId = typeof request === "string"
+    ? request.trim()
+    : isRecord(request) && typeof request.entryId === "string"
+      ? request.entryId.trim()
+      : "";
+  const allowed = oneOf(entryId, PLUGIN_OPEN_SETTINGS_ENTRY_IDS);
+  return allowed ? { entryId: allowed } : null;
+}
+
+/**
+ * Whether an action's result asked to open settings at all, however malformed.
+ * The warning half of the pair, so a refused id is a logged line rather than a
+ * button that silently does nothing.
+ */
+export function hasPluginActionOpenSettingsRequest(result: unknown): boolean {
+  if (!isRecord(result)) return false;
+  return typeof result.openSettings === "string" || isRecord(result.openSettings);
+}
+
+/**
+ * The in-app settings place one allowed entry id opens.
+ *
+ * Kept next to the id list so a client that cannot import the settings
+ * manifest still lands on the same tab and anchor the desktop Settings page
+ * uses. A new id without a case here does not compile.
+ */
+export function pluginOpenSettingsTarget(
+  entryId: PluginOpenSettingsEntryId,
+): { tab: string; anchor: string } {
+  switch (entryId) {
+    case "agents.provider.cursor":
+      return { tab: "agents", anchor: "ai-provider-cursor" };
+    default: {
+      const _exhaustive: never = entryId;
+      return _exhaustive;
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------

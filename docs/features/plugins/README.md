@@ -604,7 +604,7 @@ its own timer inside the child; the host only says when it matters.
 | `appendAssistant(sessionId, chunk)` | Stream a piece of the reply. Chunks coalesce into one turn; `done: true` closes it. |
 | `appendUser(sessionId, input)` | Append a user turn ADE did not originate. Deduped by `fingerprint`, suffix-tolerantly. |
 | `emitStatus(sessionId, status)` | `running` \| `idle` \| `failed` \| `finished`. This is what settles the session. |
-| `setArtifacts(sessionId, artifacts)` | Lane-relative files, drawn as a proof-artifact card. |
+| `setArtifacts(sessionId, artifacts)` | Proof-artifact card. Pass `contents` (base64) or `sourceUrl` (`https:`) and the host writes the file into `.ade/cache/plugin-artifacts/…`; a path alone still draws the card. |
 | `attachBranch(sessionId, {branch, remote?})` | Fetch the branch into the lane so the ordinary branch and PR affordances light up. |
 | `hydrate(sessionId, transcript, options?)` | Backfill history, oldest first. See **Paging a backfill** below. |
 
@@ -1528,9 +1528,13 @@ all four clients:
   rule is not a defence against the plugin, which is code the user installed; it
   closes the two abuses that do not need one — `file:` would make a link a local
   read, `javascript:` and `data:` would make it script — and refuses `ade:`
-  because in-app destinations belong to `navigate` and `fallback.deeplink`,
-  which pass an installed-and-enabled gate this would bypass. Every open is
-  logged with the plugin id.
+  because in-app destinations belong to `navigate`, `fallback.deeplink`, and
+  `{openSettings}`. Every open is logged with the plugin id.
+- **`openSettings`** (`readPluginActionOpenSettings`) opens one closed host
+  settings page. Today that list is `agents.provider.cursor` — the Cursor API
+  key page the Cursor Cloud empty state needs. Desktop and the web client
+  navigate there. The phone and the TUI have no such page (the key lives on the
+  Mac) and say so. Unknown ids drop rather than opening a guessed page.
 - **`prompt`** (`readPluginActionPrompt`) asks one question and re-invokes the
   same action with `args.prompt = {id, text, context?}`. With `options` it is a
   picker: desktop and web draw a list, iOS a sheet, the TUI matches typed text
@@ -1843,10 +1847,16 @@ favour of the page it exists to replace. The parser refuses the combination.
 
 What is gated for Cursor Cloud: the top-bar quick-view button and its fleet
 modal (`CursorCloudQuickViewButton`, which carries the gate itself so neither of
-`TopBar`'s two call sites can forget it), the composer's "Cursor Cloud" machine
-row plus the cloud mode, Advanced menu and secrets picker that descend from it
-(`cursorCloudAvailable` in `AgentChatPane`), the phone's Work top-bar button and
-`CursorCloudPaneSheet`, and the TUI's `/cloud`.
+`TopBar`'s two call sites can forget it), the composer's cloud mode plus the
+Advanced menu and secrets picker that descend from it (`cursorCloudAvailable` in
+`AgentChatPane`), the compiled fleet side panel (`ChatCursorCloudPanel`, still
+gated), the phone's Work top-bar button and `CursorCloudPaneSheet`, and the
+TUI's `/cloud`. Main deleted `CursorCloudInlineLaunch`; compiled launch is
+composer-native, not a strip. When `ade-cursor-cloud` is installed,
+`ade cursor cloud <word>` is an alias for that plugin's declared CLI words
+(`agents`, `runs`, `artifacts`, `repos`, `me`); `ade cursor cloud models` still
+uses the compiled Cursor SDK path because the plugin does not declare `models`.
+Disable the plugin and the compiled `ade cursor cloud` path returns.
 
 What is gated for Linear, on all four clients:
 
@@ -2084,7 +2094,7 @@ is where that stands today, on this branch.
 | plugin | polarity | own code | state |
 |---|---|---|---|
 | `ade-linear` | `supersedes` | 8,795 lines (14,296 with its tests) | A real plugin. Panels, sockets, tools, CLI words, automation triggers and steps, a webhook channel, a sign-in flow, a credential handoff and a URL matcher |
-| `ade-cursor-cloud` | `supersedes` | 3,439 lines (4,643 with tests) | A real plugin, with a chat runtime. 6 gaps still open: secret reveal, navigate-to-settings, a tab badge, artifact download, the launch strip, and a CLI alias. `webhooks.status()` is on the SDK; Linear's settings strip reads the ledger. |
+| `ade-cursor-cloud` | `supersedes` | 3,439 lines (4,643 with tests) | A real plugin, with a chat runtime. Remaining gaps: secret reveal, a tab badge, composer-native launch parity (the launch strip is gone on main). Landed: `webhooks.status()` on the SDK; `ade cursor cloud` aliases the plugin's CLI words when it is installed; plugin-owned cloud chats stamp `cursorCloudAgentId` so Cursor's rename lock applies; `{openSettings}` opens the Cursor provider page from the no-key empty state; create sends REST `model: { id, params? }` and fails closed when the form named reasoning or speed the catalog cannot express; finished-run artifact files are host-fetched into the lane cache. |
 | `ade-graph` | `enables` | 0 | A gating shell: `plugin.json`, an icon, a README and a one-panel schema |
 | `ade-review` | `enables` | 0 | Gating shell |
 | `ade-history` | `enables` | 0 | Gating shell |

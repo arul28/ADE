@@ -55,6 +55,7 @@ const {
   laneSecretsKey,
   readLaunchForm,
 } = require("./launch");
+const { catalogControlOptions, readCatalog, verifyCreateModel } = require("./modelSelection");
 const { createChatRuntime } = require("./runtime");
 const { clampFleetBudget } = require("./repoMatch");
 
@@ -666,11 +667,15 @@ exports.actions = {
     }
 
     let models = [];
+    let reasoningOptions = [];
+    let showSpeed = false;
     try {
       const listed = await api.listModels();
-      models = (Array.isArray(listed?.items) ? listed.items : [])
-        .map((entry) => (typeof entry === "string" ? entry : entry?.id))
-        .filter((entry) => typeof entry === "string");
+      const catalog = readCatalog(listed?.items);
+      models = catalog.map((row) => row.id);
+      const controls = catalogControlOptions(catalog);
+      reasoningOptions = controls.reasoning;
+      showSpeed = controls.speed;
     } catch {
       // A key without the models scope draws the form without the picker and
       // Cursor picks its own default, which is the same run one tap later.
@@ -685,6 +690,8 @@ exports.actions = {
     await publish("launch", buildLaunchPanel({
       lanes: lanes.map((row) => ({ id: row.id, name: row.name })),
       models,
+      reasoningOptions,
+      showSpeed,
       secretNames: Array.isArray(remembered?.names) ? remembered.names : [],
       selectedSecrets: Array.isArray(remembered?.names) ? remembered.names : [],
       rememberSecretNames: Boolean(remembered?.names?.length),
@@ -731,11 +738,29 @@ exports.actions = {
     }
 
     const envVars = await collectSecretValues((name) => sdk.secrets.get(name), form.secretNames);
+
+    let catalog = [];
+    let catalogError = null;
+    try {
+      const listed = await api.listModels();
+      catalog = readCatalog(listed?.items);
+    } catch (error) {
+      catalogError = error?.message ?? "Cursor's model catalog did not load";
+    }
+    const verified = verifyCreateModel({
+      modelId: form.model,
+      reasoningEffort: form.reasoningEffort,
+      fastMode: form.fastMode,
+      catalog,
+      catalogError,
+    });
+    if (!verified.ok) return { message: verified.message, ok: false };
+
     const request = buildCreateRequest({
       prompt: form.prompt,
       repoUrl,
       branch: lane.branchRef,
-      model: form.model,
+      model: verified.model,
       openPr: form.openPr,
       envVars,
       name: agentNameFromPrompt(form.prompt),
@@ -779,6 +804,11 @@ exports.actions = {
   },
 
   /* ── Automation steps and agent tools ──────────────────────────────── */
+
+  /** Open ADE's Cursor provider settings page (desktop/web) or name it (phone, TUI). */
+  async openCursorSettings() {
+    return { openSettings: "agents.provider.cursor" };
+  },
 
   /** The `list_agents` tool, and the `agents` CLI word. */
   async listAgents(args) {

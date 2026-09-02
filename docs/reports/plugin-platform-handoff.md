@@ -4,14 +4,14 @@ Linear ticket: ADE-148 (https://linear.app/ade-linear/issue/ADE-148). Keep this 
 
 The `plugin-platform` branch is a three-week program. The coordinating Claude session lost access on 2026-09-01. This ticket is the full handoff. Read it top to bottom before you touch the branch.
 
-Branch: `plugin-platform` (origin). Last commit: `54df53935`. Tree is clean at that commit. Base: `main` (last merged through #1192).
+Branch: `plugin-platform` (origin). Last merged `origin/main` at `9bb2b26b3` (2026-09-02). Unit A is committed (`02090d9e7`). Unit B is in progress. Compiled Linear and Cursor Cloud stay in the binary until Unit C passes.
 
 ## Read these first, in this order
 
 1. `docs/features/plugins/README.md` — the platform contract. Updated at the handoff commit to cover every seam listed below (auth sessions, credential handoff, official client broker, issue links, session env, URL matchers, graph-node socket, vocabulary growth, the two polarities, program status).
 2. `docs/logging.md` — section "Plugins" (new at the handoff commit): every `plugin.*` structured event, its sink, and what may reach PostHog.
 3. `docs/reports/linear-plugin-parity-map.md` — the 113-row audit of the compiled Linear integration vs the plugin. The 7 C items and 5 B items in it are all built.
-4. `docs/reports/cursor-cloud-plugin-extraction-spec.md` — Cursor Cloud extraction spec (wave 1 shipped; 7 gaps open, listed below).
+4. `docs/reports/cursor-cloud-plugin-extraction-spec.md` — Cursor Cloud extraction spec (wave 1 shipped). Remaining gaps after merging origin/main are listed under Unit B below.
 5. `docs/reports/custom-ui-reach-design.md` — Tier 2 (webview) reach design.
 6. `plugins/ade-linear/` — the worked example of a real plugin (8.8k lines JS, 467 node tests, `test/*.test.js`). Read `plugin.json` first, then `index.js`, `connect.js`, `flows.js`, `panels/contract.js`.
 7. `plugins/README.md` — plugin authoring guide.
@@ -92,10 +92,16 @@ Proposed split (one Opus 5 medium agent per feature, each across all four client
 - seam test agent: cross-half contract test as before.
 
 ### Unit B — every extracted plugin becomes a real `supersedes` plugin
-Today's inventory (`plugins/`): ade-linear (real, supersedes), ade-cursor-cloud (real, supersedes, 3.4k lines, 6 gaps), ade-graph / ade-review / ade-history / ade-ios-sim / ade-app-control (`enables` gating shells with 0 lines of code — they only unlock compiled surfaces), ade-log-viewer (489 lines), ade-voice (1.7k lines), themes.
-Required end state for each of graph, review, history, ios-sim, app-control (and cursor-cloud's 7 gaps): a real plugin that re-implements the compiled feature on desktop AND mobile (where the compiled feature exists on mobile), flipped to `supersedes` exactly like Linear: compiled stays in the install; plugin install hides every compiled surface and the plugin's version stands in its place; disable brings the compiled version back.
+Today's inventory (`plugins/`): ade-linear (real, supersedes, Unit A landed), ade-cursor-cloud (real, supersedes; CLI alias and rename lock landed after the main merge; remaining gaps below), ade-graph / ade-review / ade-history / ade-ios-sim / ade-app-control (`enables` gating shells with 0 lines of code — they only unlock compiled surfaces), ade-log-viewer (489 lines), ade-voice (1.7k lines), themes.
+Required end state for each of graph, review, history, ios-sim, app-control (and cursor-cloud's remaining gaps): a real plugin that re-implements the compiled feature on desktop AND mobile (where the compiled feature exists on mobile), flipped to `supersedes` exactly like Linear: compiled stays in the install; plugin install hides every compiled surface and the plugin's version stands in its place; disable brings the compiled version back.
 First step per shell: a parity map like `docs/reports/linear-plugin-parity-map.md` (what the compiled surface does on each client; which seams the plugin needs; which vocabulary nodes are missing). Expect new platform work: graph needs a canvas (Tier 2 webview on desktop; decide mobile), ios-sim and app-control drive local processes (simctl, computer-use) and stream screens — the plugin child needs a process/stream seam, or these need a declared capability the host brokers. "Expand language or logic as needed" is the owner's explicit permission to grow the platform.
-Cursor Cloud's remaining gaps: secret reveal, navigate-to-settings, PX-11 tab badge, artifact download, launch strip, CLI alias. `webhooks.status()` is on the SDK.
+Cursor Cloud remaining gaps after merging origin/main:
+- secret reveal
+- PX-11 tab badge (optional)
+- composer-native launch parity (main deleted `CursorCloudInlineLaunch`; compiled launch is cloud mode + Advanced menu + secrets picker + model eligibility + git remote, not a strip)
+- `webhooks.status()` is on the SDK; Linear's settings strip reads the ledger; the Cursor Cloud fleet does not yet
+Landed against this list: `ade cursor cloud <word>` aliases the plugin's declared CLI words when `ade-cursor-cloud` is installed (disable restores the compiled SDK path; `models` stays compiled because the plugin does not declare it); plugin-owned Cursor Cloud chats stamp `cursorCloudAgentId` so Cursor's rename lock applies on every client; `{openSettings: "agents.provider.cursor"}` opens ADE's Cursor provider page on desktop/web and names it on the phone and TUI; create sends REST `model: { id, params? }` (not a string) and fails closed when the launch form named reasoning or speed the `GET /v1/models` catalog cannot express; a finished run's artifact files are fetched by the host from the signed HTTPS URL and written into the lane cache.
+ACP providers (Qwen/Kimi/Grok/Copilot) on main are not plugin-extraction work.
 Proposed split: 5 parity-map agents in parallel (read-only, Opus 5 medium) -> coordinator writes one spec per shell -> per-shell build with core/panels split + seam test -> supersedes flip agent per shell (use the Linear flip commit 54df53935 as the template: builtinSurfaces row, manifest presence, gating predicate at every entry point on 4 clients, iOS `awaitDrawsBuiltin`, TUI rows tagged, tests inverted).
 
 ### Unit C — the combined acceptance build
@@ -107,7 +113,7 @@ Linear ~16.5k lines (5.4k renderer + 2.9k iOS + 8.2k main), legacy lane columns,
 ## Remaining Linear core-removal gap list (no blockers)
 1. skill env rename (rides the removal commit). 2. `github.listRepoAutolinks` read-back (plugin follow-up). 3. core `updatedFrom` bug. 4. `builtin:linear` scaffolding dies with core. 5. custom-client `admin` scope (product decision above).
 
-Cursor Cloud's remaining gaps: secret reveal, navigate-to-settings, PX-11 tab badge, artifact download, launch strip, CLI alias. `webhooks.status()` is on the SDK.
+Cursor Cloud remaining gaps after merging origin/main: secret reveal, PX-11 tab badge, composer-native launch parity (the launch strip is gone on main). CLI alias, the Cursor rename lock for plugin-owned chats, `{openSettings}` for the Cursor provider page, REST `model: { id, params? }` fail-closed on create, and host-fetched artifact files in the lane cache are landed. `webhooks.status()` is on the SDK.
 
 ## Other logged backlog
 - Remote-machine Marketplace: when the global project tab points at another machine, the Marketplace must show that machine's marketplace; today it throws.

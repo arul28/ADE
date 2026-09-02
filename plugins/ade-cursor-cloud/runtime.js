@@ -293,8 +293,10 @@ function createChatRuntime(deps) {
    * The branch is the artifact that matters — it is the code — and the host
    * fetches it into the lane worktree, which is what lights up the ordinary
    * branch and PR affordances for work that happened somewhere else. Cursor's
-   * own artifact files are listed too, and a download that the child's network
-   * guard refuses costs the list, never the branch.
+   * own artifact files are listed too. A signed HTTPS URL rides with the
+   * listing so the host can fetch and write the file into the lane cache — the
+   * child has no worktree path, and the download host is usually not
+   * `api.cursor.com`. A mint that fails still lists the path.
    */
   async function settleFinishedRun(sessionId, agentId, runId, status) {
     if (chatStateForRunStatus(status) !== "finished") return;
@@ -308,13 +310,25 @@ function createChatRuntime(deps) {
     const listed = await api.listArtifacts(agentId).catch(() => null);
     const items = Array.isArray(listed?.items) ? listed.items : [];
     if (!items.length) return;
-    const artifacts = items
-      .slice(0, 50)
-      .map((entry) => ({
-        path: String(entry?.path ?? "").replace(/^\/+/, ""),
+    const artifacts = [];
+    for (const entry of items.slice(0, 50)) {
+      const artifactPath = String(entry?.path ?? "").replace(/^\/+/, "");
+      if (!artifactPath) continue;
+      if (Number.isFinite(entry?.sizeBytes) && entry.sizeBytes > 10 * 1024 * 1024) continue;
+      const artifact = {
+        path: artifactPath,
         ...(Number.isFinite(entry?.sizeBytes) ? { bytes: entry.sizeBytes } : {}),
-      }))
-      .filter((entry) => entry.path);
+      };
+      try {
+        const download = await api.getArtifactDownloadUrl(agentId, artifactPath);
+        const sourceUrl = typeof download?.url === "string" ? download.url.trim() : "";
+        if (sourceUrl.startsWith("https:")) artifact.sourceUrl = sourceUrl;
+      } catch {
+        // A signed URL this child cannot mint still lists the file; the host
+        // has nothing to fetch and the card names the path.
+      }
+      artifacts.push(artifact);
+    }
     if (!artifacts.length) return;
     await host.chat.setArtifacts(sessionId, artifacts).catch((error) => {
       log("warn", `Could not list the run's artifacts: ${error?.message ?? error}`);

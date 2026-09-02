@@ -78,6 +78,7 @@ import {
 } from "../../desktop/src/shared/machinePresence";
 import { SEARCH_DOC_KINDS } from "../../desktop/src/shared/types/search";
 import type { AgentChatDispatchSteerMode } from "../../desktop/src/shared/types/chat";
+import { PLUGIN_BUILTIN_SURFACE_OWNER_IDS } from "../../desktop/src/shared/plugins/builtinSurfaceRegistry";
 import type { TerminalSessionSummary } from "../../desktop/src/shared/types/sessions";
 import {
   formatWorkingDuration,
@@ -13501,6 +13502,50 @@ function buildGithubPlan(args: string[]): CliPlan {
   );
 }
 
+/**
+ * `ade cursor cloud <word>` aliases `ade ade-cursor-cloud <word>` when that
+ * plugin is installed. Not a new manifest field: the owner id is the
+ * `cursor-cloud` builtin-surface owner, and the words are the ones its
+ * `cli` array already declares. Singular forms match the compiled CLI.
+ *
+ * `models` is not in that array, so it still uses the compiled Cursor SDK path.
+ */
+const CURSOR_CLOUD_PLUGIN_CLI_WORDS: Record<string, string> = {
+  agents: "agents",
+  agent: "agents",
+  runs: "runs",
+  run: "runs",
+  artifacts: "artifacts",
+  artifact: "artifacts",
+  repos: "repos",
+  repo: "repos",
+  repositories: "repos",
+  me: "me",
+  whoami: "me",
+  user: "me",
+};
+
+function cursorCloudPluginCliArgs(args: readonly string[]): string[] | null {
+  const word = args.find((arg) => arg !== "--" && !arg.startsWith("-")) ?? null;
+  if (word === null) return [...args];
+  const canonical = CURSOR_CLOUD_PLUGIN_CLI_WORDS[word.toLowerCase()];
+  if (!canonical) return null;
+  let replaced = false;
+  return args.map((arg) => {
+    if (!replaced && arg === word) {
+      replaced = true;
+      return canonical;
+    }
+    return arg;
+  });
+}
+
+function cursorCloudPluginAliasUsageText(): string {
+  const pluginId = PLUGIN_BUILTIN_SURFACE_OWNER_IDS["cursor-cloud"];
+  const usage = pluginCliUsageText(pluginId).replaceAll(`ade ${pluginId} `, "ade cursor cloud ");
+  return `${usage}\nModels still use the compiled Cursor SDK path:\n  ade cursor cloud models\n`;
+}
+
 function buildCursorPlan(args: string[]): CliPlan {
   // ade cursor <surface> <group> <sub> ... — only "cloud" is wired today.
   const surface = firstPositional(args);
@@ -13511,6 +13556,26 @@ function buildCursorPlan(args: string[]): CliPlan {
     throw new CliUsageError(
       `Unknown 'ade cursor' surface '${surface}'. The only supported surface is 'cloud'.`,
     );
+  }
+  // Supersedes: with the plugin installed and enabled, `ade cursor cloud`
+  // must not keep talking to the compiled SDK behind the plugin's back.
+  const pluginArgs = cursorCloudPluginCliArgs(args);
+  const pluginRoute = pluginArgs
+    ? resolvePluginCliRoute(PLUGIN_BUILTIN_SURFACE_OWNER_IDS["cursor-cloud"], pluginArgs)
+    : null;
+  if (pluginRoute) {
+    if (!pluginRoute.command || hasHelpFlag(args)) {
+      return { kind: "help", text: cursorCloudPluginAliasUsageText() };
+    }
+    return {
+      kind: "execute",
+      label: `plugin ${pluginRoute.pluginId} ${pluginRoute.command}`,
+      steps: [actionStep("result", "plugin", "invoke", {
+        pluginId: pluginRoute.pluginId,
+        action: pluginRoute.command,
+        argv: pluginArgs,
+      })],
+    };
   }
   if (hasHelpFlag(args)) {
     const group = peekFirstPositional(args)?.toLowerCase();

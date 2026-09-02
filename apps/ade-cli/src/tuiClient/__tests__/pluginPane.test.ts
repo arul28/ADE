@@ -42,6 +42,7 @@ import type { AdeCodeConnection } from "../types";
 import { PLUGIN_FIXTURES } from "../../../../desktop/src/renderer/components/plugins/pluginFixtures";
 import {
   readPluginActionNavigation,
+  readPluginActionOpenSettings,
   type PluginSummary,
 } from "../../../../desktop/src/shared/plugins/sdk";
 import { VOCAB_LIMITS, vocabListPagesToCeiling } from "../../../../desktop/src/shared/plugins/vocabulary";
@@ -1034,6 +1035,14 @@ describe("plugin pane navigation from an action", () => {
     expect(readPluginActionNavigation({
       navigate: { panelId: "detail", target: "tools-pane", context: { issue: "ISS-14" } },
     })).toMatchObject({ panelId: "detail", context: { issue: "ISS-14" } });
+  });
+});
+
+describe("plugin pane openSettings from an action", () => {
+  it("reads the Cursor provider page and drops anything else", () => {
+    expect(readPluginActionOpenSettings({ openSettings: "agents.provider.cursor" }))
+      .toEqual({ entryId: "agents.provider.cursor" });
+    expect(readPluginActionOpenSettings({ openSettings: "billing.plans" })).toBeNull();
   });
 });
 

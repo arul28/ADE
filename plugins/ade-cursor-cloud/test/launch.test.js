@@ -30,6 +30,8 @@ describe("reading the launch form", () => {
     assert.equal(form.prompt, "fix the flaky sync test");
     assert.equal(form.laneId, "lane-7");
     assert.equal(form.model, "composer-2");
+    assert.equal(form.reasoningEffort, null);
+    assert.equal(form.fastMode, null);
     assert.equal(form.openPr, true);
     assert.deepEqual(form.secretNames, ["DATABASE_URL"]);
   });
@@ -37,6 +39,14 @@ describe("reading the launch form", () => {
   it("treats an untouched model select as Cursor's default, not as a model named ''", () => {
     assert.equal(readLaunchForm({ model: "" }).model, null);
     assert.equal(readLaunchForm({}).model, null);
+  });
+
+  it("reads speed as a tri-state so an untouched control is not 'standard'", () => {
+    assert.equal(readLaunchForm({}).fastMode, null);
+    assert.equal(readLaunchForm({ fastMode: "" }).fastMode, null);
+    assert.equal(readLaunchForm({ fastMode: "fast" }).fastMode, true);
+    assert.equal(readLaunchForm({ fastMode: "standard" }).fastMode, false);
+    assert.equal(readLaunchForm({ reasoningEffort: "high" }).reasoningEffort, "high");
   });
 
   it("refuses a secret in Cursor's own namespace", () => {
@@ -86,7 +96,7 @@ describe("the create request", () => {
       prompt: { text: "fix it" },
       repos: [{ url: "https://github.com/acme/app", startingRef: "ade/fix" }],
       name: "fix it",
-      model: "composer-2",
+      model: { id: "composer-2" },
       autoCreatePR: true,
       envVars: { DATABASE_URL: "postgres://x" },
     });
@@ -95,6 +105,15 @@ describe("the create request", () => {
     // plugin's own collection instead.
     assert.equal("metadata" in request, false);
     assert.equal("webhook" in request, false);
+  });
+
+  it("sends model as { id, params } when the form resolved them", () => {
+    const request = buildCreateRequest({
+      prompt: "go",
+      repoUrl: "https://github.com/acme/app",
+      model: { id: "composer-2", params: [{ id: "reasoning", value: "high" }] },
+    });
+    assert.deepEqual(request.model, { id: "composer-2", params: [{ id: "reasoning", value: "high" }] });
   });
 
   it("omits everything the user did not choose", () => {
@@ -146,10 +165,14 @@ describe("the launch panel", () => {
     const panel = buildLaunchPanel({
       lanes: [{ id: "lane-1", name: "One" }],
       models: ["a", "b"],
+      reasoningOptions: [{ value: "high", label: "High" }],
+      showSpeed: true,
       secretNames: Array.from({ length: 40 }, (_, i) => `S${i}`),
     });
     const form = panel.body.find((node) => node.component === "form");
     assert.ok(form.fields.length <= 24, "maxFormFields is 24");
+    assert.ok(form.fields.some((field) => field.id === "reasoningEffort"));
+    assert.ok(form.fields.some((field) => field.id === "fastMode"));
   });
 });
 
@@ -197,7 +220,8 @@ describe("the fleet filter row", () => {
 describe("the fleet panel's five states", () => {
   it("points at Settings rather than showing an empty list with no key", () => {
     const panel = buildFleetPanel({ state: "no-key" });
-    assert.match(JSON.stringify(panel.body), /AI connections/);
+    assert.match(JSON.stringify(panel.body), /Agents → Cursor/);
+    assert.ok(JSON.stringify(panel.body).includes("openCursorSettings"));
     assert.ok(!JSON.stringify(panel.body).includes('"list"'));
   });
 

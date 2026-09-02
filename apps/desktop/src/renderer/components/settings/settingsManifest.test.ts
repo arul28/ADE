@@ -1,5 +1,9 @@
 /* @vitest-environment jsdom */
 import { afterEach, describe, expect, it } from "vitest";
+import {
+  PLUGIN_OPEN_SETTINGS_ENTRY_IDS,
+  pluginOpenSettingsTarget,
+} from "../../../shared/plugins/sdk";
 import { SETTINGS_SECTIONS } from "../app/settingsSections";
 import {
   availableSettingsEntries,
@@ -79,6 +83,13 @@ describe("settings manifest", () => {
     expect(settingsRouteFor("appearance.launch-prompt")).toBe("/settings?tab=appearance#chat-launch-clipboard");
     expect(resolveSettingsHash("chat-launch-clipboard")?.tab).toBe("appearance");
     expect(settingsRouteFor("nope.missing")).toBe("/settings");
+  });
+
+  it("keeps every plugin-openable settings id reachable", () => {
+    for (const entryId of PLUGIN_OPEN_SETTINGS_ENTRY_IDS) {
+      const target = pluginOpenSettingsTarget(entryId);
+      expect(settingsRouteFor(entryId)).toBe(`/settings?tab=${target.tab}#${target.anchor}`);
+    }
   });
 
   it("resolves current tab ids unchanged", () => {

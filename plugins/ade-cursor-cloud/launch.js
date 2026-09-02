@@ -58,10 +58,18 @@ function readLaunchForm(args = {}) {
     const name = key.slice("secret:".length);
     if (isInjectableSecretName(name) && !secretNames.includes(name)) secretNames.push(name);
   }
+  const speed = typeof args.fastMode === "string" ? args.fastMode.trim() : "";
   return {
     prompt: typeof args.prompt === "string" ? args.prompt.trim() : "",
     laneId: typeof args.laneId === "string" && args.laneId.trim() ? args.laneId.trim() : null,
     model: typeof args.model === "string" && args.model.trim() ? args.model.trim() : null,
+    reasoningEffort: typeof args.reasoningEffort === "string" && args.reasoningEffort.trim()
+      ? args.reasoningEffort.trim()
+      : null,
+    // "" is no opinion. "fast" / "standard" are the two values Cursor's
+    // catalog actually names. A boolean toggle would send `false` for an
+    // untouched control and that would fail-close every launch.
+    fastMode: speed === "fast" ? true : speed === "standard" ? false : null,
     openPr: args.openPr === true,
     rememberSecretNames: args.rememberSecretNames === true,
     secretNames: secretNames.slice(0, MAX_ATTACHED_SECRETS),
@@ -89,9 +97,10 @@ function findConnectedRepo(repositories, remoteUrl) {
 /**
  * The create body, in `V1CreateAgentRequest` shape.
  *
- * Only the fields `POST /v1/agents` actually accepts. `model` is omitted rather
- * than sent empty, so a form left on "Cursor's default" gets Cursor's default
- * instead of a validation error about a model named "".
+ * Only the fields `POST /v1/agents` actually accepts. `model` is the REST
+ * `{ id, params? }` object, omitted rather than sent empty, so a form left on
+ * "Cursor's default" gets Cursor's default instead of a validation error about
+ * a model named "".
  */
 function buildCreateRequest(input) {
   const { prompt, repoUrl, branch, model, openPr, envVars, name } = input;
@@ -100,11 +109,36 @@ function buildCreateRequest(input) {
     repos: [{ url: repoUrl, ...(branch ? { startingRef: branch } : {}) }],
   };
   if (name) request.name = name;
-  if (model) request.model = model;
+  const modelField = readCreateModelField(model);
+  if (modelField) request.model = modelField;
   if (openPr) request.autoCreatePR = true;
   const env = envVars && typeof envVars === "object" ? envVars : null;
   if (env && Object.keys(env).length) request.envVars = env;
   return request;
+}
+
+/**
+ * REST `model` is `{ id, params? }`. A leftover string id is wrapped so an
+ * older caller cannot send the shape Cursor's catalog silently substitutes.
+ */
+function readCreateModelField(model) {
+  if (typeof model === "string") {
+    const id = model.trim();
+    return id ? { id } : null;
+  }
+  if (!model || typeof model !== "object") return null;
+  const id = typeof model.id === "string" ? model.id.trim() : "";
+  if (!id) return null;
+  const params = Array.isArray(model.params)
+    ? model.params
+      .map((entry) => {
+        const paramId = typeof entry?.id === "string" ? entry.id.trim() : "";
+        const value = typeof entry?.value === "string" ? entry.value.trim() : "";
+        return paramId && value ? { id: paramId, value } : null;
+      })
+      .filter(Boolean)
+    : [];
+  return params.length ? { id, params } : { id };
 }
 
 /**
@@ -155,6 +189,7 @@ module.exports = {
   findConnectedRepo,
   isInjectableSecretName,
   laneSecretsKey,
+  readCreateModelField,
   readLaunchForm,
   repoCaption,
 };

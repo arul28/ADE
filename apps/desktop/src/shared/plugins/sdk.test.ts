@@ -29,6 +29,11 @@ import {
   pluginInvokeActionMissingMessage,
   readPluginActionDialogEdit,
   readPluginActionOpenUrl,
+  readPluginActionOpenSettings,
+  readPluginChatArtifactSourceUrl,
+  hasPluginActionOpenSettingsRequest,
+  PLUGIN_OPEN_SETTINGS_ENTRY_IDS,
+  pluginOpenSettingsTarget,
   readPluginActionWebview,
   readPluginNotificationDeeplink,
 } from "./sdk";
@@ -369,6 +374,31 @@ describe("action navigation", () => {
   });
 });
 
+describe("action openSettings", () => {
+  it("reads both shapes a plugin might write", () => {
+    expect(readPluginActionOpenSettings({ openSettings: "agents.provider.cursor" }))
+      .toEqual({ entryId: "agents.provider.cursor" });
+    expect(readPluginActionOpenSettings({ openSettings: { entryId: "agents.provider.cursor" } }))
+      .toEqual({ entryId: "agents.provider.cursor" });
+  });
+
+  it("drops an id this build has never heard of", () => {
+    expect(readPluginActionOpenSettings({ openSettings: "billing.plans" })).toBeNull();
+    expect(readPluginActionOpenSettings({ openSettings: { entryId: "agents.providers" } })).toBeNull();
+    expect(readPluginActionOpenSettings({ openSettings: 7 })).toBeNull();
+    expect(hasPluginActionOpenSettingsRequest({ openSettings: "billing.plans" })).toBe(true);
+    expect(hasPluginActionOpenSettingsRequest({ message: "done" })).toBe(false);
+  });
+
+  it("maps every allowed id to a settings tab and anchor", () => {
+    for (const entryId of PLUGIN_OPEN_SETTINGS_ENTRY_IDS) {
+      const target = pluginOpenSettingsTarget(entryId);
+      expect(target.tab.length).toBeGreaterThan(0);
+      expect(target.anchor.length).toBeGreaterThan(0);
+    }
+  });
+});
+
 describe("plugin.invoke action name", () => {
   it("reads either spelling, preferring the canonical one", () => {
     expect(readPluginInvokeAction({ action: "openStories" })).toBe("openStories");
@@ -469,5 +499,15 @@ describe("a prompt in an action response", () => {
     // its character count suggests — the same rule the composer verb uses.
     const multiByte = "é".repeat(PLUGIN_PROMPT_TEXT_MAX_BYTES / 2 + 1);
     expect(buildPluginActionPromptAnswer({ id: "note" }, multiByte)).toBeNull();
+  });
+});
+
+describe("chat.setArtifacts sourceUrl", () => {
+  it("accepts https and refuses loopback", () => {
+    expect(readPluginChatArtifactSourceUrl("https://files.cursor.com/a.bin"))
+      .toBe("https://files.cursor.com/a.bin");
+    expect(readPluginChatArtifactSourceUrl("http://files.cursor.com/a.bin")).toBeUndefined();
+    expect(readPluginChatArtifactSourceUrl("https://localhost/a.bin")).toBeUndefined();
+    expect(readPluginChatArtifactSourceUrl("https://user:pass@files.cursor.com/a.bin")).toBeUndefined();
   });
 });

@@ -41,6 +41,8 @@ import {
   PLUGIN_AUTOMATION_TRIGGERS_PER_BURST,
   isPluginChatStatusState,
   PLUGIN_CHAT_ARTIFACTS_MAX,
+  PLUGIN_CHAT_ARTIFACT_CONTENTS_MAX_CHARS,
+  PLUGIN_CHAT_ARTIFACT_MAX_BYTES,
   PLUGIN_CHAT_HYDRATE_MAX_ENTRIES,
   PLUGIN_CHAT_PARTS_MAX,
   PLUGIN_CHAT_STATUS_STATES,
@@ -73,6 +75,7 @@ import {
   type PluginOfficialOAuthClient,
   type PluginSessionIssues,
   readPluginNotificationDeeplink,
+  readPluginChatArtifactSourceUrl,
   type PluginNotificationInput,
   type PluginNotificationResult,
   type PluginSchedule,
@@ -1382,10 +1385,20 @@ export function createPluginSdkServer(deps: {
             const bytes = typeof entry.bytes === "number" && Number.isFinite(entry.bytes) && entry.bytes >= 0
               ? Math.trunc(entry.bytes)
               : undefined;
+            const contents = typeof entry.contents === "string" ? entry.contents : undefined;
+            if (contents !== undefined && contents.length > PLUGIN_CHAT_ARTIFACT_CONTENTS_MAX_CHARS) {
+              throw new PluginSdkError(
+                "invalid_args",
+                `"artifacts[${index}].contents" is larger than ${PLUGIN_CHAT_ARTIFACT_MAX_BYTES} bytes.`,
+              );
+            }
+            const sourceUrl = readPluginChatArtifactSourceUrl(entry.sourceUrl);
             return {
               path: requireLaneRelativePath(entry.path, `artifacts[${index}].path`),
               ...(typeof entry.label === "string" && entry.label ? { label: entry.label.slice(0, 120) } : {}),
               ...(bytes !== undefined ? { bytes } : {}),
+              ...(contents ? { contents } : {}),
+              ...(sourceUrl ? { sourceUrl } : {}),
             };
           });
           chargeChatWrite(sessionId);

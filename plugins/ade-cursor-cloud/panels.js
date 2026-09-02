@@ -177,10 +177,9 @@ function buildFleetPanel(input = {}) {
     body.push({
       component: "emptyState",
       title: "Connect Cursor first",
-      // A plugin cannot navigate to ADE's own settings page, so the sentence
-      // has to carry the route. See the platform gap noted in the README.
-      description: "Add a Cursor API key in Settings → AI connections, then refresh this panel.",
+      description: "Add a Cursor API key in Settings → Agents → Cursor, then refresh this panel.",
       icon: "key",
+      action: { label: "Open Cursor settings", onPress: { action: "openCursorSettings" } },
     });
     body.push({
       component: "button",
@@ -410,6 +409,8 @@ function buildAgentPanel(input = {}) {
  */
 function buildLaunchPanel(input = {}) {
   const { lanes = [], models = [], secretNames = [], unavailable = null, draft = "" } = input;
+  const reasoningOptions = Array.isArray(input.reasoningOptions) ? input.reasoningOptions : [];
+  const showSpeed = input.showSpeed === true;
 
   if (input.state === "loading") {
     return {
@@ -474,6 +475,35 @@ function buildLaunchPanel(input = {}) {
     });
   }
 
+  if (reasoningOptions.length) {
+    fields.push({
+      kind: "select",
+      id: "reasoningEffort",
+      label: "Reasoning",
+      help: "Left on default, Cursor picks the variant. A pick this catalog cannot express fails the launch rather than running a different model.",
+      options: [
+        { value: "", label: "Cursor's default" },
+        ...reasoningOptions.slice(0, 7).map((entry) => ({ value: entry.value, label: entry.label })),
+      ],
+      value: "",
+    });
+  }
+
+  if (showSpeed) {
+    fields.push({
+      kind: "select",
+      id: "fastMode",
+      label: "Speed",
+      help: "Left on default, Cursor picks the tier. Fast and standard are sent as model params, not as a guess.",
+      options: [
+        { value: "", label: "Cursor's default" },
+        { value: "fast", label: "Fast" },
+        { value: "standard", label: "Standard" },
+      ],
+      value: "",
+    });
+  }
+
   fields.push({
     kind: "toggle",
     id: "openPr",
@@ -484,8 +514,10 @@ function buildLaunchPanel(input = {}) {
 
   // One toggle per remembered secret name. The vocabulary has no multi-select,
   // and a toggle each is honest: the reader sees every name they are attaching.
-  // Names only — a value never enters a panel schema.
-  for (const name of secretNames.slice(0, 18)) {
+  // Names only — a value never enters a panel schema. Cap so the form stays
+  // inside maxFormFields (24) after the reasoning/speed controls.
+  const secretBudget = Math.max(0, 24 - fields.length - (secretNames.length ? 1 : 0));
+  for (const name of secretNames.slice(0, Math.min(18, secretBudget))) {
     fields.push({
       kind: "toggle",
       id: `secret:${name}`,

@@ -3263,6 +3263,17 @@ final class PluginActionResponseTests: XCTestCase {
     XCTAssertNil(try result(#"{"ok":true,"result":null}"#).openURL)
   }
 
+  func testOpenSettingsReadsBothShapesAndRefusesUnknownIds() throws {
+    let object = try result(#"{"ok":true,"result":{"openSettings":{"entryId":"agents.provider.cursor"}}}"#)
+    XCTAssertEqual(object.openSettings, "agents.provider.cursor")
+
+    let bare = try result(#"{"ok":true,"result":{"openSettings":"agents.provider.cursor"}}"#)
+    XCTAssertEqual(bare.openSettings, "agents.provider.cursor")
+
+    XCTAssertNil(try result(#"{"ok":true,"result":{"openSettings":"billing.plans"}}"#).openSettings)
+    XCTAssertNil(PluginInvokeResult.parseOpenSettings("agents.providers"))
+  }
+
   /// A `navigate` carrying a placement this client has no places for.
   ///
   /// `target` is desktop's field: it chooses between the plugin's tab and the

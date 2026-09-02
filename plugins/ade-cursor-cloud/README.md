@@ -68,6 +68,10 @@ lane it belongs to.
   is why the webhook matters — it is what wakes a chat nobody is watching.
 - **A finished run attaches its branch** to the session, so ADE fetches it into
   the lane worktree and the ordinary branch and PR affordances light up.
+- **Artifact files** are listed on the chat as a proof card and written into
+  `.ade/cache/plugin-artifacts/` in the lane. The plugin asks Cursor for a
+  signed HTTPS URL; the host fetches it, because the child's declared-host
+  guard only covers `api.cursor.com`.
 
 ## Secrets
 

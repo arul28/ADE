@@ -156,6 +156,12 @@ struct PluginInvokeResult: Decodable, Equatable {
   /// was sent. Mirrors `readPluginActionOpenUrl` in
   /// `apps/desktop/src/shared/plugins/sdk.ts`.
   var openURL: URL?
+  /// Host settings page the action asked to open, when it asked at all.
+  ///
+  /// Closed list — the same `PLUGIN_OPEN_SETTINGS_ENTRY_IDS` desktop reads.
+  /// The phone has no Cursor API-key page (the key lives on the Mac), so the
+  /// pane store turns a recognised id into a sentence rather than a route.
+  var openSettings: String?
   /// Which `segmented` controls the action asked to put back on their defaults.
   ///
   /// The explicit reset in the panel-state lifecycle. A plugin that just
@@ -184,7 +190,7 @@ struct PluginInvokeResult: Decodable, Equatable {
   var authSession: PluginInvokeAuthSession?
 
   private enum CodingKeys: String, CodingKey {
-    case ok, message, error, result, navigate, composer, openUrl, resetState, prompt, authSession
+    case ok, message, error, result, navigate, composer, openUrl, openSettings, resetState, prompt, authSession
   }
 
   init(
@@ -193,6 +199,7 @@ struct PluginInvokeResult: Decodable, Equatable {
     navigate: PluginInvokeNavigation? = nil,
     composer: PluginInvokeComposerEdit? = nil,
     openURL: URL? = nil,
+    openSettings: String? = nil,
     resetState: PluginInvokeStateReset? = nil,
     prompt: PluginActionPrompt? = nil,
     authSession: PluginInvokeAuthSession? = nil
@@ -203,6 +210,7 @@ struct PluginInvokeResult: Decodable, Equatable {
     self.navigate = navigate
     self.composer = composer
     self.openURL = openURL
+    self.openSettings = openSettings
     self.resetState = resetState
     self.prompt = prompt
   }
@@ -239,6 +247,39 @@ struct PluginInvokeResult: Decodable, Equatable {
     return url
   }
 
+  /// Closed list matching `PLUGIN_OPEN_SETTINGS_ENTRY_IDS`.
+  static let allowedOpenSettingsEntryIds: Set<String> = ["agents.provider.cursor"]
+
+  /// The `{openSettings}` verb. Unknown ids drop rather than opening a guessed page.
+  static func parseOpenSettings(_ raw: Any?) -> String? {
+    let text: String?
+    if let string = raw as? String {
+      text = string
+    } else if let object = raw as? [String: Any] {
+      text = object["entryId"] as? String
+    } else {
+      text = nil
+    }
+    guard let trimmed = text?.trimmingCharacters(in: .whitespacesAndNewlines),
+          allowedOpenSettingsEntryIds.contains(trimmed) else {
+      return nil
+    }
+    return trimmed
+  }
+
+  /// What the phone says when a plugin asks to open a host settings page.
+  ///
+  /// The Cursor API key lives on the Mac. Naming the page is the honest
+  /// answer; inventing a phone settings route would send the reader nowhere.
+  static func openSettingsNotice(for entryId: String) -> String {
+    switch entryId {
+    case "agents.provider.cursor":
+      return "Add a Cursor API key in ADE Settings → Agents → Cursor on the Mac that holds this plugin."
+    default:
+      return "Open ADE Settings on the Mac that holds this plugin."
+    }
+  }
+
   init(from decoder: Decoder) throws {
     guard let container = try? decoder.container(keyedBy: CodingKeys.self) else { return }
     ok = (try? container.decodeIfPresent(Bool.self, forKey: .ok)) ?? true
@@ -264,6 +305,11 @@ struct PluginInvokeResult: Decodable, Equatable {
         openURL = Self.parseOpenURL(object.url)
       } else if let bare = (try? handlerResult.decodeIfPresent(String.self, forKey: .openUrl)) ?? nil {
         openURL = Self.parseOpenURL(bare)
+      }
+      if let object = (try? handlerResult.decodeIfPresent(PluginOpenSettingsPayload.self, forKey: .openSettings)) ?? nil {
+        openSettings = Self.parseOpenSettings(object.entryId)
+      } else if let bare = (try? handlerResult.decodeIfPresent(String.self, forKey: .openSettings)) ?? nil {
+        openSettings = Self.parseOpenSettings(bare)
       }
       // `true` for every control, or a list of the keys to reset. Anything else
       // is read as "the action said nothing about state", which is what almost
@@ -404,6 +450,11 @@ struct PluginInvokeAuthSession: Decodable, Equatable {
 /// can tell it apart from the bare-string form.
 private struct PluginOpenURLPayload: Decodable, Equatable {
   var url: String
+}
+
+/// The object form of the `{openSettings}` verb.
+private struct PluginOpenSettingsPayload: Decodable, Equatable {
+  var entryId: String
 }
 
 /// One closed choice on a `{prompt}`. The answer's `text` is `value`.

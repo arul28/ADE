@@ -1443,6 +1443,12 @@ final class PluginPaneStore: ObservableObject {
       if let url = result.openURL {
         openExternalURL(url)
       }
+      if let entryId = result.openSettings {
+        actionMessage = PluginActionMessage(
+          text: PluginInvokeResult.openSettingsNotice(for: entryId),
+          isFailure: false
+        )
+      }
       // Before the navigation as well: a reset belongs to the panel the action
       // ran on, and a navigation replaces that panel's controls anyway.
       if let reset = result.resetState {

@@ -67,6 +67,7 @@ import {
 } from "../../../shared/plugins/sdk";
 import { applyPluginDialogEdit } from "./sockets/dialogTarget";
 import { applyPluginActionOpenUrl } from "./pluginActionOpenUrl";
+import { applyPluginActionOpenSettings } from "./pluginActionOpenSettings";
 import { openPluginPrompt, readPluginPromptAnchor } from "./sockets/pluginPromptStore";
 
 /**
@@ -582,6 +583,7 @@ export function PluginPanelHost({
       // footer link a panel cannot express as a node, because `text` is never
       // linkified on any client. `https:` only; the reader refuses the rest.
       applyPluginActionOpenUrl(result, { pluginId, actionId: action.action });
+      applyPluginActionOpenSettings(result, { pluginId, actionId: action.action });
       const navigation = readPluginActionNavigation(result);
       if (navigation) onNavigate?.(navigation);
 

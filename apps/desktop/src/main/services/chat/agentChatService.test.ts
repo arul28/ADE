@@ -48000,6 +48000,7 @@ describe("agentChatService plugin-owned conversations", () => {
       expect(bound.created).toBe(true);
       expect(session?.provider).toBe("plugin");
       expect(session?.runtimeRef).toEqual(RUNTIME_REF);
+      expect(session?.cursorCloudAgentId).toBe(RUNTIME_REF.externalId);
       // The runtime's own name, resolved from the manifest by the host. Every
       // client needs it and none of them can read a manifest.
       expect(session?.runtimeLabel).toMatchObject({ displayName: "Cursor Cloud", icon: "Cloud" });
@@ -48014,6 +48015,74 @@ describe("agentChatService plugin-owned conversations", () => {
         });
       expect(again.created).toBe(false);
       expect(again.sessionId).toBe(bound.sessionId);
+    } finally {
+      runtime.detach();
+      service.forceDisposeAll();
+    }
+  });
+
+  it("refuses a rename on a cursor-cloud plugin chat the same way compiled cloud chats do", async () => {
+    const runtime = installFakePluginRuntime();
+    const { service } = createOwnedService();
+    try {
+      const { bound } = await bindOwnedSession(service);
+      await expect(service.updateSession({
+        sessionId: bound.sessionId,
+        title: "ADE-owned title",
+        manuallyNamed: true,
+      })).rejects.toThrow("agent names are managed by Cursor");
+    } finally {
+      runtime.detach();
+      service.forceDisposeAll();
+    }
+  });
+
+  it("writes plugin artifact bytes into the lane cache and cards the landed path", async () => {
+    const runtime = installFakePluginRuntime();
+    const { service } = createOwnedService();
+    try {
+      const { bound, writer } = await bindOwnedSession(service);
+      await writer.setArtifacts(bound.sessionId, [{
+        path: "report.md",
+        label: "report.md",
+        contents: Buffer.from("pulled from Cursor").toString("base64"),
+      }]);
+      const landed = path.join(
+        tmpRoot,
+        ".ade",
+        "cache",
+        "plugin-artifacts",
+        "ade-cursor-cloud",
+        "bc-42",
+        "report.md",
+      );
+      expect(fs.readFileSync(landed, "utf8")).toBe("pulled from Cursor");
+    } finally {
+      runtime.detach();
+      service.forceDisposeAll();
+    }
+  });
+
+  it("does not stamp a Cursor agent id onto a plugin chat that is not Cursor Cloud", async () => {
+    const runtime = installFakePluginRuntime();
+    const { service } = createOwnedService();
+    try {
+      const writer = findPluginChatRuntimeWriterForProjectRoot(tmpRoot);
+      expect(writer).toBeTruthy();
+      const bound = await writer!.createSession("ade-linear", {
+        runtimeId: "issues",
+        externalId: "ENG-1",
+        laneId: "lane-1",
+        title: "A Linear chat",
+      });
+      const session = await service.getSessionSummary(bound.sessionId);
+      expect(session?.runtimeRef?.pluginId).toBe("ade-linear");
+      expect(session?.cursorCloudAgentId).toBeUndefined();
+      await expect(service.updateSession({
+        sessionId: bound.sessionId,
+        title: "Local title",
+        manuallyNamed: true,
+      })).resolves.toBeTruthy();
     } finally {
       runtime.detach();
       service.forceDisposeAll();
@@ -48362,6 +48431,7 @@ describe("agentChatService plugin-owned conversations", () => {
       const after = await service.getSessionSummary(cursorSession.id);
       expect(after?.provider).toBe("plugin");
       expect(after?.runtimeRef?.externalId).toBe("bc-legacy");
+      expect(after?.cursorCloudAgentId).toBe("bc-legacy");
 
       // Idempotent: running it twice changes nothing.
       expect(service.adoptSessionIntoPluginRuntime({

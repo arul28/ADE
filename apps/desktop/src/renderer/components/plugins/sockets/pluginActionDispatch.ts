@@ -21,6 +21,7 @@ import {
   type PluginActionNavigation,
 } from "../../../../shared/plugins/sdk";
 import { applyPluginActionOpenUrl } from "../pluginActionOpenUrl";
+import { applyPluginActionOpenSettings } from "../pluginActionOpenSettings";
 import type { PluginSurfaceContext } from "../../../../shared/plugins/context";
 import {
   pluginSocketInvokeTimeoutMs,
@@ -156,6 +157,7 @@ export function runPluginSocketAction(
       // navigation for the same reason the composer edit is: an action that
       // opens a link and then moves the panel should do both.
       applyPluginActionOpenUrl(result, { pluginId, actionId });
+      applyPluginActionOpenSettings(result, { pluginId, actionId });
 
       // An action may ask to be followed: "I filed the issue, here it is."
       const navigation = readPluginActionNavigation(result);

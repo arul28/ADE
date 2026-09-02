@@ -76,6 +76,8 @@ import {
   readPluginActionComposerEdit,
   readPluginActionNavigation,
   readPluginActionOpenUrl,
+  readPluginActionOpenSettings,
+  hasPluginActionOpenSettingsRequest,
 } from "../../../desktop/src/shared/plugins/sdk";
 import { builtinSurfaceDrawn } from "../../../desktop/src/shared/plugins/builtinSurfaces";
 import type { PluginSurfaceContext } from "../../../desktop/src/shared/plugins/context";
@@ -10671,6 +10673,31 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
   }, [addNotice]);
 
   /**
+   * The `{openSettings}` verb, in a terminal.
+   *
+   * The TUI has no Settings surface to open, so the honest answer is a notice
+   * that names the page. Desktop and the web client navigate; the phone says
+   * the same sentence because the Cursor key lives on the Mac.
+   */
+  const applyPluginOpenSettings = useCallback((result: unknown, label: string): void => {
+    if (!hasPluginActionOpenSettingsRequest(result)) return;
+    const request = readPluginActionOpenSettings(result);
+    if (!request) {
+      addNotice(`${label} asked to open a settings page this build does not open.`, "info");
+      return;
+    }
+    switch (request.entryId) {
+      case "agents.provider.cursor":
+        addNotice(`${label}: add a Cursor API key in ADE Settings → Agents → Cursor.`, "info");
+        return;
+      default: {
+        const _exhaustive: never = request.entryId;
+        return _exhaustive;
+      }
+    }
+  }, [addNotice]);
+
+  /**
    * The `{prompt}` verb: ask the one question, then run the action again.
    *
    * Returns true when the question is now on screen, which is the caller's
@@ -10791,7 +10818,10 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
           ...(statePayload ? { state: statePayload } : {}),
         };
         const result = await invokePluginAction(conn, current.state.pluginId, declared, args);
-        const follow = (value: unknown): void => applyPluginOpenUrl(value, current.state.displayName);
+        const follow = (value: unknown): void => {
+          applyPluginOpenUrl(value, current.state.displayName);
+          applyPluginOpenSettings(value, current.state.displayName);
+        };
         // A declared refresh may ask before it fetches ("which sprint?"). The
         // panel still reloads below either way — the question is about what the
         // NEXT refresh returns, not about whether this pane may redraw.
@@ -10814,7 +10844,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       panelId: current.state.panelId,
       context: current.state.context ?? null,
     }, options);
-  }, [addNotice, applyPluginOpenUrl, askPluginPrompt, loadPluginPane]);
+  }, [addNotice, applyPluginOpenUrl, applyPluginOpenSettings, askPluginPrompt, loadPluginPane]);
 
   useEffect(() => {
     if (rightPane.kind !== "plugin-panel" || !rightOpen || !connection) return;
@@ -10947,6 +10977,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     };
     const follow = async (result: unknown): Promise<void> => {
       applyPluginOpenUrl(result, entry.label);
+      applyPluginOpenSettings(result, entry.label);
       const navigation = readPluginActionNavigation(result);
       if (navigation) {
         setRightSelectionIndex(0);
@@ -10976,7 +11007,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     } catch (error) {
       addNotice(error instanceof Error ? error.message : String(error), "error");
     }
-  }, [addNotice, applyPluginComposerEdit, applyPluginOpenUrl, askPluginPrompt, loadPluginPane]);
+  }, [addNotice, applyPluginComposerEdit, applyPluginOpenUrl, applyPluginOpenSettings, askPluginPrompt, loadPluginPane]);
 
   /**
    * The TUI's row menu: what plugins contribute for the focused lane or chat,
@@ -11264,6 +11295,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     updatePluginPaneState((state) => ({ ...state, editing: null }));
     const follow = async (result: unknown): Promise<void> => {
       applyPluginOpenUrl(result, label);
+      applyPluginOpenSettings(result, label);
       // A plugin may put the reader back on a filter that still has rows: after
       // archiving everything "Active" was showing, an empty list is a puzzle and
       // "All" is an answer. Queued before the refetch below, so the reload reads
@@ -11313,7 +11345,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       setRightPane((pane) => (pane.kind === "plugin-panel" ? { ...pane, error: message } : pane));
       addNotice(message, "error");
     }
-  }, [addNotice, applyPluginOpenUrl, askPluginPrompt, loadPluginPane, refreshPluginPane, setPromptValue, stashActiveInput, updatePluginPaneState]);
+  }, [addNotice, applyPluginOpenUrl, applyPluginOpenSettings, askPluginPrompt, loadPluginPane, refreshPluginPane, setPromptValue, stashActiveInput, updatePluginPaneState]);
 
   const activateRightPaneListItem = useCallback((selectedId: string, actionKind: NonNullable<Extract<RightPaneContent, { kind: "list" }>["action"]>["kind"]) => {
     if (actionKind === "copy-secret") {
@@ -15135,6 +15167,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     const who = row?.pluginName ?? pluginId;
     const follow = async (result: unknown): Promise<void> => {
       applyPluginOpenUrl(result, label);
+      applyPluginOpenSettings(result, label);
       const navigation = readPluginActionNavigation(result);
       if (navigation) {
         setRightSelectionIndex(0);
@@ -15164,7 +15197,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     } catch (error) {
       addNotice(error instanceof Error ? error.message : String(error), "error");
     }
-  }, [addNotice, applyPluginComposerEdit, applyPluginOpenUrl, askPluginPrompt, loadPluginPane]);
+  }, [addNotice, applyPluginComposerEdit, applyPluginOpenUrl, applyPluginOpenSettings, askPluginPrompt, loadPluginPane]);
 
   const runKeybindingAction = useCallback((action: TuiResolvedKeybindingAction): boolean => {
     // The parameterized plugin escape, checked before the closed union: a
