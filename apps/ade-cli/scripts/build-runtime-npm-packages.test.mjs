@@ -8,6 +8,7 @@ import test from "node:test";
 import {
   EXCEPTION_FILE_NAME,
   META_PACKAGE_NAME,
+  NPM_PACK_MAX_BUFFER_BYTES,
   RUNTIME_TARGETS,
   buildMetaPackage,
   buildRuntimePackage,
@@ -119,6 +120,32 @@ test("sets the executable bit on the runtime binary", () => {
     const mode = fs.statSync(path.join(packageDir, "bin", "ade")).mode & 0o777;
     assert.equal(mode & 0o111, 0o111, `expected an executable binary, got mode ${mode.toString(8)}`);
   });
+});
+
+test("npm pack dry-run buffer is large enough for a real native tree", () => {
+  assert.ok(NPM_PACK_MAX_BUFFER_BYTES >= 50 * 1024 * 1024);
+  const source = fs.readFileSync(new URL("./build-runtime-npm-packages.mjs", import.meta.url), "utf8");
+  assert.match(source, /maxBuffer:\s*NPM_PACK_MAX_BUFFER_BYTES/);
+});
+
+test("Windows native archive is ade-win32-x64.native.tar.gz, not glued onto .exe", () => {
+  assert.deepEqual(runtimeAssetNames("win32-x64"), {
+    binaryAsset: "ade-win32-x64.exe",
+    archiveAsset: "ade-win32-x64.native.tar.gz",
+  });
+  assert.deepEqual(runtimeAssetNames("linux-x64"), {
+    binaryAsset: "ade-linux-x64",
+    archiveAsset: "ade-linux-x64.native.tar.gz",
+  });
+});
+
+test("publish workflow checksum step uses runtimeAssetNames", () => {
+  const workflow = fs.readFileSync(
+    new URL("../../../.github/workflows/publish-runtime-packages.yml", import.meta.url),
+    "utf8",
+  );
+  assert.match(workflow, /runtimeAssetNames/);
+  assert.doesNotMatch(workflow, /ade-win32-x64\\.exe\(\\\.native\\.tar\\.gz\)\?/);
 });
 
 test("names the Windows binary ade.exe", () => {
