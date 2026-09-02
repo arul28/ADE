@@ -42,18 +42,10 @@ type ChatUserMinimapProps = {
   keyboardFocusRequestId?: number | null;
 };
 
-/** Lens widths by distance from the hovered tick; index 3+ is "everything else". */
-const LENS_WIDTHS = ["w-6", "w-4", "w-2.5", "w-2"] as const;
-
-function lensWidthClass(distance: number | null): string {
-  if (distance === null) return LENS_WIDTHS[LENS_WIDTHS.length - 1]!;
-  return LENS_WIDTHS[Math.min(distance, LENS_WIDTHS.length - 1)]!;
-}
-
 /**
  * Tick colour, in precedence order: turn outcome > viewport-active > lens centre
- * > rest. A failed/stopped turn is rare and worth more than the position cue,
- * which the lens width still conveys.
+ * > rest. Tick geometry stays constant so colour remains the only type-specific
+ * visual treatment.
  */
 function tickToneClass(
   outcome: ChatUserMinimapTurnOutcome | null,
@@ -72,11 +64,6 @@ function turnOutcomeLabel(outcome: ChatUserMinimapTurnOutcome | null): string | 
   if (outcome === "failed") return "Turn failed";
   if (outcome === "interrupted") return "Stopped";
   return null;
-}
-
-/** Colour alone must never carry the signal, so these ticks also render thicker. */
-function isAttentionOutcome(outcome: ChatUserMinimapTurnOutcome | null): boolean {
-  return outcome === "failed" || outcome === "interrupted";
 }
 
 function targetsPreviewCard(target: EventTarget): boolean {
@@ -228,7 +215,6 @@ export function ChatUserMinimap({
               else onLoadOlderHistory?.();
             }}
           >
-            <span aria-hidden="true" className="mt-1 block h-px w-4 bg-[var(--color-fg)]/45" />
             <span aria-hidden="true" className="absolute left-0 top-0 text-[9px] leading-none text-fg/50">↑</span>
           </button>
         ) : null}
@@ -274,8 +260,6 @@ export function ChatUserMinimap({
           }}
         >
           {entries.map((entry, index) => {
-            const lensDistance =
-              resolvedPreviewIndex === null ? null : Math.abs(index - resolvedPreviewIndex);
             const outcome = entry.turnOutcome;
             const kind = entry.kind ?? "user";
             const isPrimary = kind === "user";
@@ -287,18 +271,12 @@ export function ChatUserMinimap({
                 data-outcome={outcome ?? undefined}
                 data-minimap-kind={kind}
                 className={cn(
-                  "pointer-events-none absolute -translate-y-1/2 transition-[background-color,width] duration-150",
-                  kind === "compact" && "left-[2px] h-1.5 w-1.5 rotate-45 rounded-[1px]",
-                  kind === "queued" && "left-[1px] h-1 w-1 rounded-[1px]",
-                  isPrimary && "left-0 rounded-full",
-                  isPrimary && (isAttentionOutcome(outcome) ? "h-1" : "h-0.5"),
-                  isPrimary && lensWidthClass(lensDistance),
+                  "pointer-events-none absolute left-0 h-0.5 w-2 -translate-y-1/2 rounded-full",
                   tickToneClass(
                     outcome,
                     isPrimary && (entry.fullUserOrdinal === activeIndex || index === resolvedKeyboardIndex),
-                    isPrimary && lensDistance === 0,
+                    isPrimary && resolvedPreviewIndex === index,
                   ),
-                  kind === "compact" && (outcome === "failed" ? "bg-red-400/80" : "bg-amber-300/70"),
                   kind === "queued" && "bg-cyan-300/70",
                 )}
                 style={{ top: `${resolveMinimapTopPercent(index, itemCount)}%` }}

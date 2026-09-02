@@ -82,18 +82,12 @@ vi.mock("./useWorkLaneContextMenu", () => ({
 vi.mock("./CliSessionWorkSurfaceHeader", () => ({
   CliSessionWorkSurfaceHeader: ({
     session,
-    onToggleSessionsPane,
-    sessionsPaneCollapsed = false,
-    sessionsPaneCount,
     onToggleToolsPane,
     toolsPaneOpen = false,
     onTogglePrPane,
     prPaneOpen = false,
   }: {
     session: TerminalSessionSummary;
-    onToggleSessionsPane?: () => void;
-    sessionsPaneCollapsed?: boolean;
-    sessionsPaneCount?: number;
     onToggleToolsPane?: () => void;
     toolsPaneOpen?: boolean;
     onTogglePrPane?: () => void;
@@ -102,19 +96,8 @@ vi.mock("./CliSessionWorkSurfaceHeader", () => ({
     <div
       data-testid="work-cli-session-header"
       data-session-id={session.id}
-      data-sessions-pane-collapsed={String(sessionsPaneCollapsed)}
-      data-sessions-pane-count={String(sessionsPaneCount ?? "")}
       data-tools-pane-open={String(toolsPaneOpen)}
     >
-      {onToggleSessionsPane ? (
-        <button
-          type="button"
-          aria-label="Toggle sessions pane"
-          onClick={onToggleSessionsPane}
-        >
-          Sessions
-        </button>
-      ) : null}
       {onToggleToolsPane ? (
         <button
           type="button"
@@ -782,8 +765,7 @@ describe("WorkViewArea", () => {
     expect(externalSessionsListMock).not.toHaveBeenCalled();
   });
 
-  it("keeps the Work sidebar toggles available on closed agent CLI sessions", () => {
-    const onToggleSessionsPane = vi.fn();
+  it("keeps the Work tools toggle available on closed agent CLI sessions", () => {
     const onToggleWorkSidebar = vi.fn();
     const session = {
       ...makeSession(),
@@ -810,9 +792,6 @@ describe("WorkViewArea", () => {
         onLaunchPtySession={resolvePtyLaunch}
         onShowDraftKind={() => {}}
         closingPtyIds={new Set()}
-        sessionsPaneCollapsed
-        sessionsPaneListCount={6}
-        onToggleSessionsPane={onToggleSessionsPane}
         workSidebarOpen
         onToggleWorkSidebar={onToggleWorkSidebar}
       />,
@@ -821,14 +800,11 @@ describe("WorkViewArea", () => {
     const header = local.getByTestId("work-cli-session-header");
 
     expect(header.getAttribute("data-session-id")).toBe("session-1");
-    expect(header.getAttribute("data-sessions-pane-collapsed")).toBe("true");
-    expect(header.getAttribute("data-sessions-pane-count")).toBe("6");
     expect(header.getAttribute("data-tools-pane-open")).toBe("true");
+    expect(local.queryByRole("button", { name: "Toggle sessions pane" })).toBeNull();
 
-    fireEvent.click(local.getByRole("button", { name: "Toggle sessions pane" }));
     fireEvent.click(local.getByRole("button", { name: "Toggle tools pane" }));
 
-    expect(onToggleSessionsPane).toHaveBeenCalledTimes(1);
     expect(onToggleWorkSidebar).toHaveBeenCalledTimes(1);
   });
 

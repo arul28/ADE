@@ -227,9 +227,6 @@ export function CliSessionWorkSurfaceHeader({
   onInfoClick,
   onContextMenu,
   onStopRunningSession,
-  onToggleSessionsPane,
-  sessionsPaneCollapsed,
-  sessionsPaneCount,
   onToggleToolsPane,
   toolsPaneOpen,
   onTogglePrPane,
@@ -243,9 +240,6 @@ export function CliSessionWorkSurfaceHeader({
   onInfoClick?: SessionMouseHandler;
   onContextMenu?: SessionMouseHandler;
   onStopRunningSession?: (session: TerminalSessionSummary) => void;
-  onToggleSessionsPane?: () => void;
-  sessionsPaneCollapsed?: boolean;
-  sessionsPaneCount?: number;
   onToggleToolsPane?: () => void;
   toolsPaneOpen?: boolean;
   /** When set, the PR pill toggles the floating PR pane over the terminal
@@ -298,9 +292,6 @@ export function CliSessionWorkSurfaceHeader({
             }
           : undefined
       }
-      onToggleSessionsPane={onToggleSessionsPane}
-      sessionsPaneCollapsed={sessionsPaneCollapsed}
-      sessionsPaneCount={sessionsPaneCount}
       onToggleToolsPane={onToggleToolsPane}
       toolsPaneOpen={toolsPaneOpen}
       trailingActions={

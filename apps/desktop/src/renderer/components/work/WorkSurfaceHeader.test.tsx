@@ -3,6 +3,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { WorkSurfaceHeader } from "./WorkSurfaceHeader";
+import { WorkHeaderToolsToggle } from "./WorkHeaderPaneToggles";
 import { setSessionMetadataGenerating } from "../../state/sessionMetadataGeneratingStore";
 
 vi.mock("../chat/ChatGitToolbar", () => ({
@@ -217,5 +218,29 @@ describe("WorkSurfaceHeader", () => {
     );
     const accessory = screen.getByRole("button", { name: "Cursor Cloud" });
     expect(accessory.previousSibling?.textContent).toBe("Cursor Chat");
+  });
+
+  it("mirrors the sidebar glyph on the Tools pane toggle", () => {
+    const onToggle = vi.fn();
+    render(
+      <WorkSurfaceHeader
+        title="Chat"
+        onToggleToolsPane={onToggle}
+        toolsPaneOpen={false}
+      />,
+    );
+    const button = screen.getByRole("button", { name: "Open Tools pane" });
+    const icon = button.querySelector("svg");
+    expect(icon?.getAttribute("class") ?? "").toContain("-scale-x-100");
+    expect(icon?.getAttribute("width")).toBe("16");
+    expect(icon?.getAttribute("height")).toBe("16");
+    fireEvent.click(button);
+    expect(onToggle).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps the Tools toggle mirrored while the pane is open", () => {
+    render(<WorkHeaderToolsToggle open onToggle={() => {}} />);
+    const button = screen.getByRole("button", { name: "Close Tools pane" });
+    expect(button.querySelector("svg")?.getAttribute("class") ?? "").toContain("-scale-x-100");
   });
 });

@@ -5139,7 +5139,7 @@ describe("AgentChatPane submit recovery", () => {
     expect(await screen.findByRole("button", { name: "Login to Claude" })).toBeTruthy();
   });
 
-  it("keeps the committed model visible until the backend confirms the switch", async () => {
+  it("keeps model handoff local until the next message is sent", async () => {
     const session = buildSession("session-1", { status: "idle" });
     const sessions = [session];
     let resolveUpdateSession!: (value: AgentChatSessionSummary) => void;
@@ -5147,7 +5147,7 @@ describe("AgentChatPane submit recovery", () => {
       resolveUpdateSession = resolve;
     }));
     const warmupModel = vi.fn().mockResolvedValue(undefined);
-    installAdeMocks({
+    const { send } = installAdeMocks({
       sessions,
       includeClaudeModel: true,
     });
@@ -5157,6 +5157,9 @@ describe("AgentChatPane submit recovery", () => {
     renderPane(session);
 
     const trigger = await screen.findByRole("button", { name: /^Select model/ });
+    const chatChrome = document.querySelector("[data-chat-chrome-tint]") as HTMLElement | null;
+    expect(chatChrome).toBeTruthy();
+    const committedAccent = chatChrome?.style.getPropertyValue("--chat-accent");
     const currentLabel = getModelById(session.modelId ?? "")?.displayName ?? session.modelId ?? "";
     const nextLabel = getModelById("anthropic/claude-sonnet-5")?.displayName ?? "Claude Sonnet 5";
     const nextLabelPattern = new RegExp(escapeRegExp(nextLabel), "i");
@@ -5167,13 +5170,20 @@ describe("AgentChatPane submit recovery", () => {
     fireEvent.click(await screen.findByRole("tab", { name: /^Anthropic$/i }));
     await clickEnabledModelOption(nextLabelPattern);
 
+    expect(updateSession).not.toHaveBeenCalled();
+    expect(screen.getByRole("button", { name: /^Select model/ }).textContent ?? "").toContain(nextLabel);
+    expect(chatChrome?.style.getPropertyValue("--chat-accent")).toBe(committedAccent);
+    expect(warmupModel).not.toHaveBeenCalled();
+
+    fireEvent.change(await screen.findByRole("textbox"), { target: { value: "Use the new model." } });
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
     await waitFor(() => {
       expect(updateSession).toHaveBeenCalledWith(expect.objectContaining({
         sessionId: session.sessionId,
         modelId: "anthropic/claude-sonnet-5",
       }), null);
     });
-    expect(screen.getByRole("button", { name: /^Select model/ }).textContent ?? "").toContain(currentLabel);
+    expect(send).not.toHaveBeenCalled();
     expect(warmupModel).not.toHaveBeenCalled();
 
     const updatedSession: AgentChatSessionSummary = {
@@ -5190,21 +5200,226 @@ describe("AgentChatPane submit recovery", () => {
     resolveUpdateSession(updatedSession);
 
     await waitFor(() => {
-      expect(screen.getByRole("button", { name: /^Select model/ }).textContent ?? "").toContain(nextLabel);
+      expect(send).toHaveBeenCalled();
     });
+    expect(screen.getByRole("button", { name: /^Select model/ }).textContent ?? "").toContain(nextLabel);
+    expect(warmupModel).not.toHaveBeenCalled();
+  });
+
+  it("does not carry a pending model pick onto another locked chat", async () => {
+    const sessionA = buildSession("session-a", { status: "idle", title: "Chat A" });
+    const sessionB = buildSession("session-b", { status: "idle", title: "Chat B" });
+    const updateSession = vi.fn().mockResolvedValue(sessionB);
+    const { send } = installAdeMocks({
+      sessions: [sessionA, sessionB],
+      includeClaudeModel: true,
+    });
+    window.ade.agentChat.updateSession = updateSession as any;
+
+    const view = renderPane(sessionA);
+    const trigger = await screen.findByRole("button", { name: /^Select model/ });
+    const currentLabel = getModelById(sessionA.modelId ?? "")?.displayName ?? sessionA.modelId ?? "";
+    const nextLabel = getModelById("anthropic/claude-sonnet-5")?.displayName ?? "Claude Sonnet 5";
+    const nextLabelPattern = new RegExp(escapeRegExp(nextLabel), "i");
+    expect(trigger.textContent ?? "").toContain(currentLabel);
+
+    fireEvent.pointerDown(trigger, { button: 0 });
+    fireEvent.click(trigger);
+    fireEvent.click(await screen.findByRole("tab", { name: /^Anthropic$/i }));
+    await clickEnabledModelOption(nextLabelPattern);
+
+    expect(updateSession).not.toHaveBeenCalled();
+    expect(screen.getByRole("button", { name: /^Select model/ }).textContent ?? "").toContain(nextLabel);
+
+    view.rerender(
+      <MemoryRouter>
+        <AgentChatPane
+          laneId={sessionB.laneId}
+          lockSessionId={sessionB.sessionId}
+          hideSessionTabs
+          initialSessionSummary={sessionB}
+          onSessionCreated={vi.fn()}
+        />
+      </MemoryRouter>,
+    );
+
     await waitFor(() => {
-      expect(warmupModel).toHaveBeenCalledWith({
+      expect(screen.getByRole("button", { name: /^Select model/ }).textContent ?? "").toContain(currentLabel);
+    });
+    expect(screen.getByRole("button", { name: /^Select model/ }).textContent ?? "").not.toContain(nextLabel);
+
+    fireEvent.change(await screen.findByRole("textbox"), { target: { value: "Stay on B's model." } });
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+
+    await waitFor(() => {
+      expect(send).toHaveBeenCalledWith(expect.objectContaining({
+        sessionId: sessionB.sessionId,
+      }), null);
+    });
+    expect(updateSession).not.toHaveBeenCalledWith(expect.objectContaining({
+      sessionId: sessionB.sessionId,
+      modelId: "anthropic/claude-sonnet-5",
+    }), expect.anything());
+  });
+
+  it("keeps reasoning changes local until Send while a model handoff is pending", async () => {
+    const session = buildSession("session-1", { status: "idle", reasoningEffort: "medium" });
+    const sessions = [session];
+    let resolveUpdateSession!: (value: AgentChatSessionSummary) => void;
+    const updateSession = vi.fn().mockImplementation(() => new Promise((resolve) => {
+      resolveUpdateSession = resolve;
+    }));
+    const { send } = installAdeMocks({
+      sessions,
+      includeClaudeModel: true,
+    });
+    window.ade.agentChat.updateSession = updateSession as any;
+
+    renderPane(session);
+
+    const trigger = await screen.findByRole("button", { name: /^Select model/ });
+    const nextLabel = getModelById("anthropic/claude-sonnet-5")?.displayName ?? "Claude Sonnet 5";
+    const nextLabelPattern = new RegExp(escapeRegExp(nextLabel), "i");
+
+    fireEvent.pointerDown(trigger, { button: 0 });
+    fireEvent.click(trigger);
+    fireEvent.click(await screen.findByRole("tab", { name: /^Anthropic$/i }));
+    await clickEnabledModelOption(nextLabelPattern);
+
+    const reasoningTrigger = await screen.findByLabelText("Reasoning effort");
+    fireEvent.pointerDown(reasoningTrigger, { button: 0 });
+    fireEvent.click(reasoningTrigger);
+    fireEvent.click(await screen.findByRole("radio", { name: /^High/i }));
+
+    expect(updateSession).not.toHaveBeenCalled();
+
+    fireEvent.change(await screen.findByRole("textbox"), { target: { value: "Think harder on the new model." } });
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+    await waitFor(() => {
+      expect(updateSession).toHaveBeenCalledWith(expect.objectContaining({
         sessionId: session.sessionId,
         modelId: "anthropic/claude-sonnet-5",
-      }, null);
+        reasoningEffort: "high",
+      }), null);
+    });
+    expect(send).not.toHaveBeenCalled();
+
+    const updatedSession: AgentChatSessionSummary = {
+      ...session,
+      provider: "claude",
+      model: "claude-sonnet-5",
+      modelId: "anthropic/claude-sonnet-5",
+      reasoningEffort: "high",
+    };
+    sessions[0] = updatedSession;
+    resolveUpdateSession(updatedSession);
+
+    await waitFor(() => {
+      expect(send).toHaveBeenCalled();
     });
   });
 
-  it("keeps the committed model visible when the backend rejects a switch", async () => {
+  it("loads slash commands for the pending model from the lane, not the committed session", async () => {
+    const session = buildSession("session-1", { status: "idle" });
+    installAdeMocks({
+      sessions: [session],
+      includeClaudeModel: true,
+    });
+    vi.mocked(window.ade.agentChat.slashCommands).mockImplementation(async (args) => {
+      if (args.provider === "claude") {
+        return [{
+          name: "/agents",
+          description: "Manage agent configurations.",
+          source: "sdk",
+        }];
+      }
+      return [];
+    });
+
+    renderPane(session);
+
+    const trigger = await screen.findByRole("button", { name: /^Select model/ });
+    const nextLabel = getModelById("anthropic/claude-sonnet-5")?.displayName ?? "Claude Sonnet 5";
+    const nextLabelPattern = new RegExp(escapeRegExp(nextLabel), "i");
+
+    fireEvent.pointerDown(trigger, { button: 0 });
+    fireEvent.click(trigger);
+    fireEvent.click(await screen.findByRole("tab", { name: /^Anthropic$/i }));
+    await clickEnabledModelOption(nextLabelPattern);
+
+    await waitFor(() => {
+      const pendingFetch = vi.mocked(window.ade.agentChat.slashCommands).mock.calls.find((call) => {
+        const args = call[0] as { laneId?: string; provider?: string; sessionId?: string };
+        return args.provider === "claude" && args.laneId === "lane-1" && !args.sessionId;
+      });
+      expect(pendingFetch).toBeTruthy();
+    });
+  });
+
+  it("keeps the pending model's permission mode local until Send", async () => {
+    const session = buildSession("session-1", { status: "idle" });
+    const sessions = [session];
+    let resolveUpdateSession!: (value: AgentChatSessionSummary) => void;
+    const updateSession = vi.fn().mockImplementation(() => new Promise((resolve) => {
+      resolveUpdateSession = resolve;
+    }));
+    const { send } = installAdeMocks({
+      sessions,
+      includeClaudeModel: true,
+    });
+    window.ade.agentChat.updateSession = updateSession as any;
+
+    renderPane(session);
+
+    const trigger = await screen.findByRole("button", { name: /^Select model/ });
+    const nextLabel = getModelById("anthropic/claude-sonnet-5")?.displayName ?? "Claude Sonnet 5";
+    const nextLabelPattern = new RegExp(escapeRegExp(nextLabel), "i");
+
+    fireEvent.pointerDown(trigger, { button: 0 });
+    fireEvent.click(trigger);
+    fireEvent.click(await screen.findByRole("tab", { name: /^Anthropic$/i }));
+    await clickEnabledModelOption(nextLabelPattern);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Claude permission mode" }));
+    fireEvent.click(await screen.findByRole("option", { name: /^Bypass/ }));
+
+    expect(updateSession).not.toHaveBeenCalled();
+    expect(screen.getByRole("button", { name: "Claude permission mode" }).textContent ?? "").toMatch(/Bypass/i);
+
+    fireEvent.change(await screen.findByRole("textbox"), { target: { value: "Use bypass on the new model." } });
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+    await waitFor(() => {
+      expect(updateSession).toHaveBeenCalledWith(expect.objectContaining({
+        sessionId: session.sessionId,
+        modelId: "anthropic/claude-sonnet-5",
+        claudePermissionMode: "bypassPermissions",
+      }), null);
+    });
+    expect(send).not.toHaveBeenCalled();
+
+    const updatedSession: AgentChatSessionSummary = {
+      ...session,
+      provider: "claude",
+      model: "claude-sonnet-5",
+      modelId: "anthropic/claude-sonnet-5",
+      permissionMode: "full-auto",
+      interactionMode: "default",
+      claudePermissionMode: "bypassPermissions",
+    };
+    sessions[0] = updatedSession;
+    resolveUpdateSession(updatedSession);
+
+    await waitFor(() => {
+      expect(send).toHaveBeenCalled();
+    });
+    expect(screen.getByRole("button", { name: "Claude permission mode" }).textContent ?? "").toMatch(/Bypass/i);
+  });
+
+  it("does not attempt a failed model handoff before Send", async () => {
     const session = buildSession("session-1", { status: "idle", fastMode: true });
     const updateSession = vi.fn().mockRejectedValue(new Error("switch failed"));
     const warmupModel = vi.fn().mockResolvedValue(undefined);
-    installAdeMocks({
+    const { send } = installAdeMocks({
       sessions: [session],
       includeClaudeModel: true,
     });
@@ -5225,6 +5440,11 @@ describe("AgentChatPane submit recovery", () => {
     fireEvent.click(await screen.findByRole("tab", { name: /^Anthropic$/i }));
     await clickEnabledModelOption(nextLabelPattern);
 
+    expect(updateSession).not.toHaveBeenCalled();
+    expect(screen.getByRole("button", { name: /^Select model/ }).textContent ?? "").toContain(nextLabel);
+
+    fireEvent.change(await screen.findByRole("textbox"), { target: { value: "Try the handoff." } });
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
     await waitFor(() => {
       expect(updateSession).toHaveBeenCalledWith(expect.objectContaining({
         sessionId: session.sessionId,
@@ -5232,9 +5452,9 @@ describe("AgentChatPane submit recovery", () => {
       }), null);
     });
     await waitFor(() => {
-      expect(screen.getByRole("button", { name: /^Select model/ }).textContent ?? "").toContain(currentLabel);
+      expect(send).not.toHaveBeenCalled();
     });
-    expect(screen.getByRole("button", { name: /^Select model/ }).textContent ?? "").toContain("Fast");
+    expect(screen.getByRole("button", { name: /^Select model/ }).textContent ?? "").toContain(nextLabel);
     expect(warmupModel).not.toHaveBeenCalled();
   });
 

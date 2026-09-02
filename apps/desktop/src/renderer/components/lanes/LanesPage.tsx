@@ -106,6 +106,7 @@ import type {
   IntegrationProposal,
   LaneDeleteProgress,
 } from "../../../shared/types";
+import { machineIdForBinding } from "../../../shared/machineIdentity";
 import { eventMatchesBinding, getEffectiveBinding } from "../../lib/keybindings";
 import { SmartTooltip } from "../ui/SmartTooltip";
 import { docs } from "../../onboarding/docsLinks";
@@ -420,6 +421,7 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
   const keybindings = useAppStore((s) => s.keybindings);
   const activeProjectRoot = useAppStore(selectActiveProjectRoot);
   const activeProjectStateKey = useAppStore(selectActiveProjectStateKey);
+  const projectBinding = useAppStore((s) => s.projectBinding);
   const getActiveProjectRoot = useCallback(() => {
     return selectActiveProjectRoot(appStore.getState());
   }, [appStore]);
@@ -1331,6 +1333,7 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
     setWorkViewState,
     selectLane,
     navigate,
+    boundMachineId: machineIdForBinding(projectBinding),
   });
 
   useEffect(() => {

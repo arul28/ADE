@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useState, type CSSProperties } from "react";
+import { useEffect, useMemo, useState, type CSSProperties, type ReactNode } from "react";
+import { AppWindow } from "@phosphor-icons/react";
 
 import {
   editorTargetDefinition,
@@ -19,6 +20,7 @@ export function OpenInSubmenu({
   style,
   hoverBackground,
   label = "Open in",
+  icon,
 }: {
   rootPath: string;
   remote?: OpenPathInEditorRemote | null;
@@ -27,6 +29,7 @@ export function OpenInSubmenu({
   style?: CSSProperties;
   hoverBackground?: string;
   label?: string;
+  icon?: ReactNode;
 }) {
   const [installed, setInstalled] = useState<EditorTarget[]>([]);
   const [loading, setLoading] = useState(true);
@@ -81,6 +84,11 @@ export function OpenInSubmenu({
   return (
     <MenuSubmenu
       label={label}
+      icon={icon ?? (
+        <span aria-hidden data-menu-icon="" className="inline-flex shrink-0 text-fg/45">
+          <AppWindow size={13} weight="duotone" />
+        </span>
+      )}
       className={className}
       style={style}
       hoverBackground={hoverBackground}

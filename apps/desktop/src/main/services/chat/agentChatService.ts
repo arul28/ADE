@@ -315,6 +315,7 @@ import type {
   AgentChatModelCatalogArgs,
   AgentChatModelCatalogRefreshProvider,
   AgentChatModelInfo,
+  AgentChatModelHandoff,
   AgentChatProvider,
   AgentChatPrepareCrossMachineHandoffArgs,
   AgentChatPrepareCrossMachineHandoffResult,
@@ -1079,6 +1080,7 @@ type PersistedChatState = {
   provider: AgentChatProvider;
   model: string;
   modelId?: string;
+  modelHandoffHistory?: AgentChatModelHandoff[];
   sessionProfile?: "light" | "workflow";
   reasoningEffort?: string | null;
   fastMode?: boolean;
@@ -1206,6 +1208,28 @@ type PersistedChatState = {
   eventSequence?: number;
   updatedAt: string;
 };
+
+const MAX_MODEL_HANDOFF_HISTORY = 8;
+
+function normalizeModelHandoffHistory(value: unknown): AgentChatModelHandoff[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const history = value.flatMap((candidate): AgentChatModelHandoff[] => {
+    if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) return [];
+    const record = candidate as Record<string, unknown>;
+    const fromProvider = typeof record.fromProvider === "string" ? record.fromProvider.trim() : "";
+    const toProvider = typeof record.toProvider === "string" ? record.toProvider.trim() : "";
+    if (!fromProvider || !toProvider) return [];
+    const fromModelId = typeof record.fromModelId === "string" ? record.fromModelId.trim() : "";
+    const toModelId = typeof record.toModelId === "string" ? record.toModelId.trim() : "";
+    return [{
+      fromProvider,
+      toProvider,
+      ...(fromModelId ? { fromModelId } : {}),
+      ...(toModelId ? { toModelId } : {}),
+    }];
+  });
+  return history.length ? history.slice(-MAX_MODEL_HANDOFF_HISTORY) : undefined;
+}
 
 function normalizeContinuityRecovery(value: unknown): AgentChatContinuityRecovery | undefined {
   if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
@@ -13523,6 +13547,9 @@ export function createAgentChatService(args: {
       provider: managed.session.provider,
       model: managed.session.model,
       ...(managed.session.modelId ? { modelId: managed.session.modelId } : {}),
+      ...(managed.session.modelHandoffHistory?.length
+        ? { modelHandoffHistory: managed.session.modelHandoffHistory }
+        : {}),
       ...(managed.session.sessionProfile ? { sessionProfile: managed.session.sessionProfile } : {}),
       ...(managed.session.reasoningEffort ? { reasoningEffort: managed.session.reasoningEffort } : {}),
       ...(managed.session.fastMode === true ? { fastMode: true } : {}),
@@ -13812,6 +13839,7 @@ export function createAgentChatService(args: {
       const modelId = storedModelId.length
         ? (getModelById(storedModelId) ?? resolveModelAlias(storedModelId))?.id
         : resolveModelIdFromStoredValue(model, provider);
+      const modelHandoffHistory = normalizeModelHandoffHistory(record.modelHandoffHistory);
       const sessionProfile = normalizeSessionProfile(record.sessionProfile);
       const reasoningEffort = normalizeReasoningEffort(record.reasoningEffort);
       const fastMode = readLegacyFastMode(record as Record<string, unknown>);
@@ -13990,6 +14018,7 @@ export function createAgentChatService(args: {
         provider,
         model,
         ...(modelId ? { modelId } : {}),
+        ...(modelHandoffHistory ? { modelHandoffHistory } : {}),
         ...(sessionProfile ? { sessionProfile } : {}),
         ...(reasoningEffort ? { reasoningEffort } : {}),
         ...(fastMode ? { fastMode: true } : {}),
@@ -18502,6 +18531,9 @@ export function createAgentChatService(args: {
         provider,
         model,
         ...(hydratedModelId ? { modelId: hydratedModelId } : {}),
+        ...(persisted?.modelHandoffHistory?.length
+          ? { modelHandoffHistory: persisted.modelHandoffHistory }
+          : {}),
         ...(persisted?.sessionProfile ? { sessionProfile: persisted.sessionProfile } : {}),
         ...(rowGoal ? { goal: rowGoal } : {}),
         reasoningEffort: persisted?.reasoningEffort ?? null,
@@ -24225,8 +24257,10 @@ export function createAgentChatService(args: {
             `${args.promptText}${attachmentHint}`,
           ].filter((section): section is string => Boolean(section)).join("\n\n");
 
+      const previousEventAbort = runtime.eventAbortController;
       const abortController = new AbortController();
       runtime.eventAbortController = abortController;
+      previousEventAbort?.abort();
       runtime.textByPartId.clear();
       runtime.reasoningByPartId.clear();
       runtime.partTypeByPartId.clear();
@@ -24297,15 +24331,20 @@ export function createAgentChatService(args: {
         },
       });
 
+      let promptFailure: unknown = null;
       const promptAccepted = runtime.handle.client.session.promptAsync(
         openCodePromptBody,
         { throwOnError: true },
-      );
-
-      await promptAccepted;
-      if (args.onBackendDispatched) {
-        args.onBackendDispatched();
-      }
+      ).then(() => {
+        args.onBackendDispatched?.();
+      }).catch((error: unknown) => {
+        promptFailure = error;
+        abortController.abort();
+        throw error;
+      });
+      // Drain the live-only SSE immediately. Awaiting promptAsync first loses
+      // `message.updated` on fast follow-up turns; the role gate then drops
+      // every assistant part while `session.idle` still completes the turn.
 
       let stepNumber = 0;
       // Role of every message OpenCode tells us about, keyed by message id.
@@ -25166,6 +25205,12 @@ export function createAgentChatService(args: {
           continue;
         }
       }
+      try {
+        await promptAccepted;
+      } catch (error) {
+        if (!parentSessionIdle) throw promptFailure ?? error;
+      }
+      abortController.abort();
       if (!parentSessionIdle || runtime.subagentSessions.size > 0) {
         throw new Error("OpenCode event stream ended before the parent and child sessions became idle");
       }
@@ -43606,6 +43651,7 @@ export function createAgentChatService(args: {
       : undefined;
     const backgroundWork = runtimeBackgroundWork(liveManaged?.runtime ?? null);
     const activeBackgroundTaskCount = totalBackgroundWork(backgroundWork);
+    const modelHandoffHistory = liveSession?.modelHandoffHistory ?? persisted?.modelHandoffHistory;
     const backgroundWorkSince = runtimeBackgroundWorkSince(liveManaged?.runtime ?? null);
     // Reported even when nothing is live in the runtime's own bookkeeping: a
     // session holding an SDK process with no background work is exactly the
@@ -43639,6 +43685,7 @@ export function createAgentChatService(args: {
       provider,
       model,
       ...(hydratedModelId ? { modelId: hydratedModelId } : {}),
+      ...(modelHandoffHistory?.length ? { modelHandoffHistory } : {}),
       sessionProfile: liveSession?.sessionProfile ?? persisted?.sessionProfile,
       title: row.title ?? null,
       goal: row.goal ?? null,
@@ -46264,6 +46311,7 @@ export function createAgentChatService(args: {
       || droidPermissionMode !== undefined
       || cursorModeId !== undefined
       || cursorConfigValues !== undefined;
+    let modelHandoff: AgentChatModelHandoff | null = null;
 
     if (modelId !== undefined) {
       const nextModelId = String(modelId ?? "").trim();
@@ -46285,6 +46333,9 @@ export function createAgentChatService(args: {
         });
       }
       const previousProvider = managed.session.provider;
+      const previousModelId = managed.session.modelId
+        ?? resolveModelIdFromStoredValue(managed.session.model, previousProvider)
+        ?? managed.session.model;
 
       // A model switch can cross providers, which means it can move a chat onto
       // a provider that cannot honor the MCP request the chat was created with.
@@ -46326,6 +46377,14 @@ export function createAgentChatService(args: {
         previousProvider !== nextProvider
         || managed.session.modelId !== descriptor.id
         || managed.session.model !== nextModel;
+      if (modelChanged) {
+        modelHandoff = {
+          fromProvider: previousProvider,
+          toProvider: nextProvider,
+          ...(previousModelId ? { fromModelId: previousModelId } : {}),
+          toModelId: descriptor.id,
+        };
+      }
 
       const previousCodexRuntime = managed.runtime?.kind === "codex" ? managed.runtime : null;
       const liveCodexSettings = previousProvider === "codex"
@@ -46778,15 +46837,25 @@ export function createAgentChatService(args: {
       dismissSubagentTakeoverPrompt({ sessionId });
     }
 
+    if (modelHandoff) {
+      managed.session.modelHandoffHistory = [
+        ...(managed.session.modelHandoffHistory ?? []),
+        modelHandoff,
+      ].slice(-MAX_MODEL_HANDOFF_HISTORY);
+      emitChatEvent(managed, {
+        type: "model_handoff",
+        ...modelHandoff,
+      });
+    }
+
     persistChatState(managed);
     return managed.session;
   };
 
   /**
-   * Trigger early warmup of the Claude query for an existing chat session.
-   * Called from the renderer when the user selects a Claude/Anthropic model in the
-   * model picker — before they've submitted a message — so the ~30s subprocess
-   * cold-start happens while they're still composing.
+   * Explicitly pre-warm a provider query for an existing chat session.
+   * Model selection itself stays local; callers opt into this only for flows
+   * that intentionally prepare a runtime before the next message is sent.
    */
   const warmupModel = async ({
     sessionId,

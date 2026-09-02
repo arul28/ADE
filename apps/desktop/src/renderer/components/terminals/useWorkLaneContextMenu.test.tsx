@@ -144,6 +144,7 @@ describe("useWorkLaneContextMenu", () => {
       draftKind: "chat",
       orchestratorEnabled: false,
       draftLaneId: "lane-remote",
+      draftMachineId: null,
       activeItemId: null,
       selectedItemId: null,
     });
@@ -219,6 +220,7 @@ describe("useWorkLaneContextMenu", () => {
     ) => Record<string, unknown>;
     expect(updater({})).toMatchObject({
       draftKind: "chat",
+      orchestratorEnabled: false,
       draftLaneId: "lane-remote",
       draftMachineId: "studio",
       activeItemId: null,

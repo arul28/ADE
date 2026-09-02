@@ -1,5 +1,22 @@
 import React from "react";
-import type { LaneSummary } from "../../../shared/types";
+import {
+  ChatCircle,
+  Columns,
+  Copy,
+  FolderOpen,
+  Gear,
+  GitBranch,
+  Globe,
+  Link,
+  Palette,
+  Path,
+  PushPin,
+  PushPinSlash,
+  Stack,
+  X,
+  type Icon,
+} from "@phosphor-icons/react";
+import type { LaneSummary, OpenProjectBinding } from "../../../shared/types";
 import type { OpenInTarget } from "../../../shared/editorTargets";
 import { buildDeeplink } from "../../../shared/deeplinks";
 import { buildWebClientUrl } from "../../../shared/webClientUrl";
@@ -7,6 +24,18 @@ import { openExternalUrl } from "../../lib/openExternal";
 import { revealLabel } from "../../lib/platform";
 import { COLORS, MONO_FONT } from "./laneDesignTokens";
 import { LANE_CLASSIC_COLORS, LANE_RAINBOW_COLORS, colorsInUse, type LaneColor } from "./laneColorPalette";
+
+export function LaneMenuGlyph({ icon: Icon }: { icon: Icon }) {
+  return (
+    <span
+      aria-hidden
+      data-menu-icon=""
+      style={{ display: "inline-flex", flexShrink: 0, opacity: 0.45 }}
+    >
+      <Icon size={13} weight="duotone" />
+    </span>
+  );
+}
 
 /**
  * The lane menu's items, as data.
@@ -26,6 +55,7 @@ export type LaneMenuAction = {
   label: string;
   onSelect: () => void;
   dataTour?: string;
+  icon?: Icon;
 };
 
 /** A group entry that is not a row — today only the colour swatch grid. */
@@ -49,6 +79,7 @@ export type LaneMenuGroup = {
   entries: LaneMenuEntry[];
   /** Rendered as a hover submenu rather than inline rows. */
   submenu?: boolean;
+  icon?: Icon;
 };
 
 export type LaneMenuArgs = {
@@ -68,7 +99,16 @@ export type LaneMenuArgs = {
   onStartChatInLane?: (laneId: string) => void;
   onToggleWorkPin?: (laneId: string) => void;
   workPinnedLaneIds?: string[];
+  /** Work-sidebar pin key; foreign lanes use `machineId:laneId`. */
+  workPinLaneId?: string;
   openIn?: OpenInTarget;
+  /** Pin appearance/manage writes to a foreign runtime. */
+  runtimePin?: OpenProjectBinding | null;
+  /**
+   * Split/tab actions navigate the local Lanes tab. A foreign lane is not in
+   * that tab, so the session card's Lane submenu omits them.
+   */
+  omitTabActions?: boolean;
 };
 
 /**
@@ -113,7 +153,10 @@ export function buildLaneMenuGroups(args: LaneMenuArgs): LaneMenuGroup[] {
     onStartChatInLane,
     onToggleWorkPin,
     workPinnedLaneIds,
+    workPinLaneId,
     openIn,
+    runtimePin = null,
+    omitTabActions = false,
   } = args;
 
   const isInSplit = visibleLaneIds.includes(laneId);
@@ -135,18 +178,22 @@ export function buildLaneMenuGroups(args: LaneMenuArgs): LaneMenuGroup[] {
       kind: "action",
       key: "start-chat",
       label: "Start chat in lane",
+      icon: ChatCircle,
       dataTour: "lanes.startChatInLane",
       onSelect: () => { onClose(); onStartChatInLane(laneId); },
     });
   }
+  const pinId = workPinLaneId ?? laneId;
+  const isWorkPinned = Boolean(workPinnedLaneIds?.includes(pinId));
   if (lane && onToggleWorkPin) {
     top.push({
       kind: "action",
       key: "work-pin",
-      label: workPinnedLaneIds?.includes(laneId)
+      label: isWorkPinned
         ? "Unpin from Work sidebar"
         : "Pin to Work sidebar",
-      onSelect: () => { onClose(); onToggleWorkPin(laneId); },
+      icon: isWorkPinned ? PushPinSlash : PushPin,
+      onSelect: () => { onClose(); onToggleWorkPin(pinId); },
     });
   }
   if (top.length) groups.push({ key: "lane", entries: top });
@@ -158,6 +205,7 @@ export function buildLaneMenuGroups(args: LaneMenuArgs): LaneMenuGroup[] {
       kind: "action",
       key: "reveal",
       label: revealLabel,
+      icon: FolderOpen,
       dataTour: "lanes.manageLane",
       onSelect: () => {
         onClose();
@@ -170,6 +218,7 @@ export function buildLaneMenuGroups(args: LaneMenuArgs): LaneMenuGroup[] {
       kind: "action",
       key: "open-web",
       label: "Open in web",
+      icon: Globe,
       onSelect: () => {
         onClose();
         openExternalUrl(buildWebClientUrl({ kind: "lane", laneId }));
@@ -187,6 +236,7 @@ export function buildLaneMenuGroups(args: LaneMenuArgs): LaneMenuGroup[] {
       kind: "action",
       key: "copy-lane-link",
       label: "Copy ADE Lane Link",
+      icon: Link,
       onSelect: () => {
         onClose();
         void (async () => {
@@ -221,6 +271,7 @@ export function buildLaneMenuGroups(args: LaneMenuArgs): LaneMenuGroup[] {
         kind: "action",
         key: "copy-branch-link",
         label: "Copy Branch Link (Cross-Machine)",
+        icon: GitBranch,
         onSelect: () => {
           onClose();
           void fetchRepoForCopy().then((repo) => {
@@ -246,6 +297,7 @@ export function buildLaneMenuGroups(args: LaneMenuArgs): LaneMenuGroup[] {
         kind: "action",
         key: "copy-linear-link",
         label: "Copy Linear Issue Link",
+        icon: Link,
         onSelect: () => {
           onClose();
           window.ade.app.writeClipboardText(linearUrl).catch(() => {});
@@ -260,6 +312,7 @@ export function buildLaneMenuGroups(args: LaneMenuArgs): LaneMenuGroup[] {
       kind: "action",
       key: "copy-path",
       label: isRemoteProject ? "Copy Remote Path" : "Copy Path",
+      icon: Path,
       ...(isRemoteProject ? { dataTour: "lanes.manageLane" } : {}),
       onSelect: () => {
         onClose();
@@ -267,7 +320,7 @@ export function buildLaneMenuGroups(args: LaneMenuArgs): LaneMenuGroup[] {
       },
     });
   }
-  if (copy.length) groups.push({ key: "copy", label: "Copy", entries: copy, submenu: true });
+  if (copy.length) groups.push({ key: "copy", label: "Copy", entries: copy, submenu: true, icon: Copy });
 
   if (lane && openIn) {
     groups.push({
@@ -277,47 +330,54 @@ export function buildLaneMenuGroups(args: LaneMenuArgs): LaneMenuGroup[] {
   }
 
   // ── Tabs: everything about which lanes are on screen.
-  const tabs: LaneMenuEntry[] = [];
-  if (!isInSplit) {
+  if (!omitTabActions) {
+    const tabs: LaneMenuEntry[] = [];
+    if (!isInSplit) {
+      tabs.push({
+        kind: "action",
+        key: "open-split",
+        label: "Open in Split",
+        icon: Columns,
+        onSelect: () => { onClose(); selectLane(laneId); },
+      });
+    }
+    if (isInSplit && splitCount > 1 && !isPrimary) {
+      tabs.push({
+        kind: "action",
+        key: "remove-split",
+        label: "Remove from Split",
+        icon: X,
+        onSelect: () => { onClose(); onRemoveFromSplit(laneId); },
+      });
+    }
+    if (isInSplit && splitCount > 1) {
+      tabs.push({
+        kind: "action",
+        key: "close-other-tabs",
+        label: "Close Other Tabs",
+        icon: X,
+        onSelect: () => { onClose(); onCloseOtherSplits(laneId); },
+      });
+    }
     tabs.push({
       kind: "action",
-      key: "open-split",
-      label: "Open in Split",
-      onSelect: () => { onClose(); selectLane(laneId); },
+      key: "select-all",
+      label: "Select All Lanes",
+      icon: Stack,
+      onSelect: () => { onClose(); onSelectAll(); },
+    });
+    groups.push({
+      key: "tabs",
+      label: splitCount > 1 ? `${splitCount} tabs open` : "Tabs",
+      entries: tabs,
     });
   }
-  if (isInSplit && splitCount > 1 && !isPrimary) {
-    tabs.push({
-      kind: "action",
-      key: "remove-split",
-      label: "Remove from Split",
-      onSelect: () => { onClose(); onRemoveFromSplit(laneId); },
-    });
-  }
-  if (isInSplit && splitCount > 1) {
-    tabs.push({
-      kind: "action",
-      key: "close-other-tabs",
-      label: "Close Other Tabs",
-      onSelect: () => { onClose(); onCloseOtherSplits(laneId); },
-    });
-  }
-  tabs.push({
-    kind: "action",
-    key: "select-all",
-    label: "Select All Lanes",
-    onSelect: () => { onClose(); onSelectAll(); },
-  });
-  groups.push({
-    key: "tabs",
-    label: splitCount > 1 ? `${splitCount} tabs open` : "Tabs",
-    entries: tabs,
-  });
 
   if (lane) {
     groups.push({
       key: "color",
       label: "Color",
+      icon: Palette,
       entries: [{
         kind: "custom",
         key: "swatches",
@@ -326,6 +386,7 @@ export function buildLaneMenuGroups(args: LaneMenuArgs): LaneMenuGroup[] {
             ctxLane={lane}
             lanesById={lanesById}
             onChanged={onAppearanceChanged}
+            runtimePin={runtimePin}
           />
         ),
       }],
@@ -339,6 +400,7 @@ export function buildLaneMenuGroups(args: LaneMenuArgs): LaneMenuGroup[] {
       kind: "action",
       key: "manage",
       label: "Manage Lane",
+      icon: Gear,
       // Do not call selectLane here. On Work, that action navigates to the
       // Lanes tab (split-open). Manage must stay on the surface that opened it.
       onSelect: () => { onClose(); onManage(laneId); },
@@ -349,6 +411,7 @@ export function buildLaneMenuGroups(args: LaneMenuArgs): LaneMenuGroup[] {
       kind: "action",
       key: "batch-manage",
       label: `Manage ${deletableVisibleIds.length} Open Lanes...`,
+      icon: Gear,
       onSelect: () => { onClose(); onBatchManage(deletableVisibleIds); },
     });
   }
@@ -371,10 +434,12 @@ export function ColorSwatchRow({
   ctxLane,
   lanesById,
   onChanged,
+  runtimePin = null,
 }: {
   ctxLane: LaneSummary;
   lanesById: Map<string, LaneSummary>;
   onChanged?: () => void | Promise<void>;
+  runtimePin?: OpenProjectBinding | null;
 }) {
   const [error, setError] = React.useState<string | null>(null);
   const [busy, setBusy] = React.useState(false);
@@ -394,7 +459,7 @@ export function ColorSwatchRow({
     setError(null);
     setBusy(true);
     try {
-      await window.ade.lanes.updateAppearance({ laneId: ctxLane.id, color: next });
+      await window.ade.lanes.updateAppearance({ laneId: ctxLane.id, color: next }, runtimePin);
       await onChanged?.();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to set color");
