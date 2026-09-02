@@ -209,6 +209,7 @@ enum PluginRenderSupport {
     "keyValue",
     "emptyState",
     "segmented",
+    "canvas",
   ]
 
   static func isRenderable(_ node: PluginVocabNode) -> Bool {
@@ -1143,6 +1144,33 @@ final class PluginPaneStore: ObservableObject {
       }
       table.bind = nil
       return .table(table)
+
+    case var .canvas(canvas):
+      guard let bind = canvas.bind else { return node }
+      let rows = entries(for: bind, limit: PluginVocabLimits.maxListItems)
+      var items = rows.compactMap { entry in
+        PluginPanelParser.parseBoundListItem(
+          entry.value,
+          allowActions: bind.allowActions,
+          rowKey: entry.key
+        )
+      }
+      if let onSelect = canvas.onSelect {
+        items = items.map { item in
+          guard item.onPress == nil, let key = item.key else { return item }
+          var next = item
+          var action = onSelect
+          action.args["id"] = .text(key)
+          next.onPress = action
+          return next
+        }
+      }
+      canvas.items = items
+      canvas.bind = nil
+      if let edges = canvas.edges {
+        _ = entries(for: edges, limit: PluginVocabLimits.maxListItems)
+      }
+      return .canvas(canvas)
 
     default:
       return node

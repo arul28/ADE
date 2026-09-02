@@ -64,6 +64,8 @@ struct PluginVocabularyNodeView: View {
       PluginVocabEmptyStateView(emptyState: emptyState, store: store)
     case let .segmented(segmented):
       PluginVocabSegmentedView(segmented: segmented, store: store)
+    case let .canvas(canvas):
+      PluginVocabCanvasView(canvas: canvas, store: store)
     default:
       // Unreachable: `isRenderable` gated every case above. Kept so a component
       // added to the renderable set without a branch here shows a marker rather
@@ -491,6 +493,21 @@ struct PluginVocabActiveBulkBar: View {
         store: store
       )
     }
+  }
+}
+
+private struct PluginVocabCanvasView: View {
+  let canvas: PluginVocabCanvas
+  @ObservedObject var store: PluginPaneStore
+
+  var body: some View {
+    PluginVocabListView(
+      list: PluginVocabList(
+        items: canvas.items,
+        emptyText: canvas.emptyText
+      ),
+      store: store
+    )
   }
 }
 

@@ -13,9 +13,10 @@
 // only state (the selected index) lives in app.tsx like every other pane's.
 //
 // Terminal subset (design decision D8). Rendered richly: stack, group, text,
-// badge, button, list, table, keyValue, divider, emptyState, markdown, avatar, and form
-// via the composer funnel. Rendered as a labeled placeholder line: video, image, chart,
-// and any component name a future vocabulary version adds. A placeholder is
+// badge, button, list, table, keyValue, divider, emptyState, markdown, avatar, form
+// via the composer funnel, and canvas (as a list of the same bound rows). Rendered
+// as a labeled placeholder line: video, image, chart, and any component name a
+// future vocabulary version adds. A placeholder is
 // deliberate, not a failure — it names what is there and how to see it, because
 // a blank gap is indistinguishable from a broken plugin.
 //
@@ -1217,6 +1218,47 @@ function walkNode(node: VocabNode, key: string, indent: number, ctx: WalkContext
           });
         }
       }
+      return;
+    }
+    case "canvas": {
+      const bound = boundKeyedValues(node.bind, ctx);
+      const items = (bound ?? [])
+        .map((entry) => coerceBoundListItem(entry.value, node.bind.allowActions, entry.key))
+        .filter((item): item is VocabListItem => item !== null)
+        .slice(0, VOCAB_LIMITS.maxCanvasItems);
+      if (items.length === 0) {
+        push(ctx, { kind: "note", key, indent, text: node.emptyText ?? "Nothing here yet." });
+        return;
+      }
+      items.forEach((item, index) => {
+        const selectAction = item.onPress
+          ?? (node.onSelect && item.key
+            ? { ...node.onSelect, args: { ...node.onSelect.args, id: item.key } }
+            : node.onSelect ?? null);
+        const selection = selectAction
+          ? addInteractive(ctx, { kind: "action", label: item.title, action: selectAction })
+          : null;
+        push(ctx, {
+          kind: "listItem",
+          key: `${key}.item[${index}]`,
+          indent,
+          title: item.title,
+          subtitle: item.subtitle ?? null,
+          meta: item.meta ?? null,
+          tone: item.tone ?? "neutral",
+          selection,
+          tick: null,
+          badge: item.badge ? { text: item.badge.text, tone: item.badge.tone ?? "neutral" } : null,
+          mono: item.mono ?? null,
+          avatar: item.avatar ? vocabAvatarInitials(item.avatar.name) : null,
+        });
+        pushRowActions(
+          [...(item.actions ?? []), ...(item.overflow ?? [])],
+          `${key}.item[${index}].actions`,
+          indent + 1,
+          ctx,
+        );
+      });
       return;
     }
     case "table": {

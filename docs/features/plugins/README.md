@@ -32,7 +32,7 @@ Node built-ins:
 |---|---|
 | `apps/desktop/src/shared/plugins/manifest.ts` | `plugin.json` contract, strict-on-known/tolerant-of-unknown parser, id and relative-path validation, `minAdeVersion` gate, the `tab`/`pane`/`webview` surface kinds and the `entryHtml` rule |
 | `apps/desktop/src/shared/plugins/vocabulary.ts` | Panel schema v1: component union, `VOCAB_LIMITS`, degradation ladder, `parsePluginPanel`, panel `chrome` (search, nav actions, sticky footer), the reserved bindings (`vocabReservedRows` over `$context` and `$state`), `collectVocabStateDeclarations` |
-| `apps/desktop/src/shared/plugins/vocabularyNodes.ts` | The 17 v1 components and their parsers, `VOCAB_LIMITS`, the `group` node and `vocabGroupKey`, the row-action allowlist (`boundRowAction`) |
+| `apps/desktop/src/shared/plugins/vocabularyNodes.ts` | The 18 v1 components and their parsers, `VOCAB_LIMITS`, the `group` node and `vocabGroupKey`, the row-action allowlist (`boundRowAction`), the `canvas` engines (`git-dag`, `swimlane`, `graph`) |
 | `apps/desktop/src/shared/plugins/vocabularyState.ts` | Client-evaluated panel state: the `segmented` control's declarations, `chrome.search`, the `where` grammar (`contains` included) and its three-valued evaluator, the `$state` binding (`VOCAB_STATE_COLLECTION`), the row selection a `list.selectable` owns, the signature/normalize/reset lifecycle, `readPluginActionResetState` |
 | `apps/desktop/src/shared/plugins/vocabularyMarkdown.ts` | The `markdown` node's subset: a bounded block/span AST, `VOCAB_MARKDOWN_LIMITS`, `https:`-only links, GFM pipe tables, https images, and no HTML path at all |
 | `apps/desktop/src/shared/plugins/vocabularyBrandIcons.ts` | Plugin-shipped `brand:*` glyphs: the reserved `ade.brandIcons` collection, the fail-closed SVG sanitizer, and the portable `{ viewBox, paths }` shape |
@@ -1132,6 +1132,15 @@ desktop and web that is structural: `useVocabActionRunner` in
 list row cannot skip the prompt a button asks. iOS holds the same shape in
 `PluginPaneStore.perform`.
 
+**A `canvas` is a named host engine, not a drawing surface.** `{ component:
+"canvas", engine: "git-dag" | "swimlane" | "graph", bind }` is data: the plugin
+writes render-ready rows (and, for `graph`, an `edges` binding) and the host
+picks an engine ADE already owns. There is no script payload and no SVG the
+plugin authored. Desktop draws the git commit DAG, a lane swimlane, or a
+node-link graph; iOS and the terminal draw the same bound rows as a list. A
+canvas `onSelect` fires when a node has no row `onPress`, with `id` taken from
+the row's key. Bound row actions still go through `allowActions`.
+
 **Paging a list, and saying so.** A plugin list used to stop dead at 100 rows
 while the built-in it replaced paged to 500, and it stopped SILENTLY — the reader
 saw a complete-looking list that was not one. `vocabularyPaging.ts` fixes both
@@ -2175,11 +2184,12 @@ oversight:
 - **The TUI draws 3 of the 18 socket kinds** — `row-badge`, `row-menu-item` and
   `toolbar-action` — and only on the `lanes` and `work` surfaces, which are the
   surfaces it lists rows for.
-- **iOS renders 16 of the 17 v1 components.** `chart` shows a named marker: a
+- **iOS renders 17 of the 18 v1 components.** `chart` shows a named marker: a
   sparse line or bar chart is the least useful thing to squeeze onto a
-  phone-width panel and the most expensive to draw well.
-- **The TUI renders 14 of 17.** `video`, `image` and `chart` show named
-  placeholders. An `avatar` draws as `[JD] Jane Doe` — initials, never a photo.
+  phone-width panel and the most expensive to draw well. `canvas` draws as a
+  list of the same bound rows the desktop paints with a host engine.
+- **The TUI renders 15 of 18.** `video`, `image` and `chart` show named
+  placeholders. `canvas` draws as a list. An `avatar` draws as `[JD] Jane Doe` — initials, never a photo.
 - **A plugin ships a brand glyph as a path-only SVG.** ADE still ships five
   vendor marks (`brand:claude`, `brand:codex`, `brand:cursor`, `brand:github`,
   `brand:openai`) because those logos already live on every client. Any other

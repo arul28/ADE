@@ -27,6 +27,7 @@ import {
   stackGap,
   type VocabRenderContext,
 } from "./vocabularyComponents";
+import { VocabCanvas } from "./vocabularyCanvas";
 import {
   VOCAB_STATE_LIMITS,
   parsePluginPanel,
@@ -119,6 +120,8 @@ function VocabNodeView({
       return <VocabForm node={node} context={context} />;
     case "chart":
       return <VocabChart node={node} />;
+    case "canvas":
+      return <VocabCanvas node={node} context={context} />;
     case "video":
       return <VocabVideo node={node} context={context} />;
     case "image":

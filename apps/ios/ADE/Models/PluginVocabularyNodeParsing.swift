@@ -699,4 +699,31 @@ extension PluginPanelParser {
     }
     return .emptyState(node)
   }
+
+  static func parseCanvas(
+    _ object: [String: Any],
+    path: String,
+    context: inout ParseContext
+  ) -> PluginVocabNode {
+    guard let rawEngine = object["engine"] as? String,
+          let engine = PluginVocabCanvas.Engine(rawValue: rawEngine) else {
+      return invalid(
+        "canvas",
+        "`engine` must be `git-dag`, `swimlane`, or `graph`",
+        path: path,
+        context: &context
+      )
+    }
+    guard let bind = parseBinding(object["bind"], path: "\(path).bind", context: &context) else {
+      return invalid("canvas", "`bind` is required", path: path, context: &context)
+    }
+    let edges = parseBinding(object["edges"], path: "\(path).edges", context: &context)
+    return .canvas(PluginVocabCanvas(
+      engine: engine,
+      bind: bind,
+      edges: edges,
+      emptyText: cleanString(object["emptyText"], max: PluginVocabLimits.maxValueChars),
+      onSelect: parseAction(object["onSelect"])
+    ))
+  }
 }

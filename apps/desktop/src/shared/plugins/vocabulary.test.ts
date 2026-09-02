@@ -65,6 +65,7 @@ describe("parsePluginPanel — valid schemas", () => {
           submit: { label: "Save", onPress: { action: "save" } },
         },
         { component: "chart", kind: "line", series: [{ id: "a", points: [{ x: 0, y: 1 }] }] },
+        { component: "canvas", engine: "git-dag", bind: { collection: "commits" } },
         { component: "video", src: "file:///clip.mp4" },
         { component: "image", src: "file:///shot.png", alt: "Screenshot" },
         { component: "avatar", name: "Jane Doe" },
@@ -86,6 +87,7 @@ describe("parsePluginPanel — valid schemas", () => {
       "table",
       "form",
       "chart",
+      "canvas",
       "video",
       "image",
       "avatar",
@@ -156,6 +158,48 @@ describe("parsePluginPanel — valid schemas", () => {
       { collection: "meta" },
     ]);
     expect(countVocabNodes(result.panel.body)).toBe(3);
+  });
+
+  it("parses a canvas and fetches both node and edge bindings", () => {
+    const result = parsePluginPanel(panel([
+      {
+        component: "canvas",
+        engine: "git-dag",
+        bind: { collection: "commits", allowActions: ["openCommit"] },
+        onSelect: { action: "openCommit" },
+        emptyText: "No commits",
+      },
+      {
+        component: "canvas",
+        engine: "graph",
+        bind: { collection: "nodes" },
+        edges: { collection: "edges" },
+      },
+      { component: "canvas", engine: "map", bind: { collection: "x" } },
+      { component: "canvas", engine: "git-dag" },
+    ]));
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.panel.body[0]).toMatchObject({
+      component: "canvas",
+      engine: "git-dag",
+      bind: { collection: "commits", allowActions: ["openCommit"] },
+      onSelect: { action: "openCommit" },
+      emptyText: "No commits",
+    });
+    expect(result.panel.body[1]).toMatchObject({
+      component: "canvas",
+      engine: "graph",
+      bind: { collection: "nodes" },
+      edges: { collection: "edges" },
+    });
+    expect(result.panel.body[2]).toMatchObject({ component: "__invalid", name: "canvas" });
+    expect(result.panel.body[3]).toMatchObject({ component: "__invalid", name: "canvas" });
+    expect(collectVocabBindings(result.panel.body)).toEqual([
+      { collection: "commits", allowActions: ["openCommit"] },
+      { collection: "nodes" },
+      { collection: "edges" },
+    ]);
   });
 });
 
@@ -407,6 +451,7 @@ describe("fallback helpers", () => {
 describe("the component list", () => {
   it("is derived from the parsers, so a name cannot be published without one", () => {
     expect(VOCAB_COMPONENTS_V1).toContain("stack");
+    expect(VOCAB_COMPONENTS_V1).toContain("canvas");
     for (const name of VOCAB_COMPONENTS_V1) {
       expect(isKnownVocabComponent(name), `${name} is published but unparseable`).toBe(true);
     }

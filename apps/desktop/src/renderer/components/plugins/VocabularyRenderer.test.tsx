@@ -188,6 +188,49 @@ describe("PluginPanelView", () => {
     expect(dispatch).toHaveBeenCalledWith(expect.objectContaining({ action: "open-agent" }));
   });
 
+  it("draws a git-dag canvas from bound commits and selects by row key", async () => {
+    const dispatch = vi.fn(async () => {});
+    const rowsByBinding = new Map<string, PluginCollectionRow[]>([
+      [bindingKey({ collection: "commits" }), [
+        {
+          key: "abc1234deadbeef",
+          value: {
+            title: "Fix the rail",
+            sha: "abc1234deadbeef",
+            shortSha: "abc1234",
+            parents: [],
+            authorName: "Ada",
+            authoredAt: "2026-09-01T00:00:00Z",
+          },
+        } as PluginCollectionRow,
+      ]],
+    ]);
+    render(
+      <PluginPanelView
+        schema={{
+          v: 1,
+          fallback: { title: "T", text: "B" },
+          body: [{
+            component: "canvas",
+            engine: "git-dag",
+            bind: { collection: "commits" },
+            onSelect: { action: "openCommit" },
+          }],
+        }}
+        context={makeContext({ dispatch, rowsByBinding })}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /Fix the rail/ }));
+    await waitFor(() => expect(dispatch).toHaveBeenCalledTimes(1));
+    expect(dispatch).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: "openCommit",
+        args: expect.objectContaining({ id: "abc1234deadbeef" }),
+      }),
+    );
+  });
+
   it("draws a rich row and keeps its trailing buttons out of the row's own press", async () => {
     const dispatch = vi.fn(async (_action: VocabAction, _args?: Record<string, unknown>) => {});
     render(

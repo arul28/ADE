@@ -628,6 +628,10 @@ export function collectVocabBindings(nodes: readonly VocabNode[]): VocabBinding[
         case "keyValue":
           if (node.bind) found.push(node.bind);
           break;
+        case "canvas":
+          if (node.bind) found.push(node.bind);
+          if (node.edges) found.push(node.edges);
+          break;
         case "segmented":
           // A control's `optionsFrom` is a fetch like any other: the rows it
           // reads are the reader's projects, and a host that collected only

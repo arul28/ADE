@@ -142,6 +142,13 @@ export const VOCAB_LIMITS = {
   maxKeyValueRows: 60,
   maxChartSeries: 3,
   maxChartPoints: 200,
+  /**
+   * Rows one `canvas` may bind. Same ceiling as a `list`: the bytes live in
+   * `plugin_collections`, not the schema, and the host engine virtualizes.
+   * A git-dag of 1000 commits is the History search window; past that the
+   * plugin pages.
+   */
+  maxCanvasItems: 1000,
   maxFormFields: 24,
   maxTextChars: 4_000,
   maxLabelChars: 200,
@@ -198,6 +205,7 @@ export type VocabComponentName =
   | "table"
   | "form"
   | "chart"
+  | "canvas"
   | "video"
   | "image"
   | "avatar"
@@ -622,6 +630,42 @@ export type VocabChartNode = {
   emptyText?: string;
 };
 
+/**
+ * A host-rendered interactive graph. Data, never code.
+ *
+ * Three named engines, each a recurring ADE shape the host already knows how
+ * to draw. The plugin materializes render-ready rows (and, for `graph`,
+ * edges); the client picks the engine and paints. There is no script payload,
+ * no SVG path the plugin authored, and no way to smuggle drawing code into a
+ * contract whose safety is "data, never code".
+ *
+ * - `git-dag` — newest-first commits with `parents[]`. Desktop draws ADE's
+ *   commit graph; phone and terminal draw the same rows as a list.
+ * - `swimlane` — timestamped events with `laneId`. Desktop draws lane columns;
+ *   other clients list.
+ * - `graph` — nodes plus an optional `edges` binding. Desktop draws a node-link
+ *   canvas; other clients list the nodes.
+ *
+ * Bound row shape is the list row (`title`, `subtitle`, `onPress`, …) plus
+ * engine fields the host reads without reshaping: `sha`/`parents` for git-dag,
+ * `laneId`/`t` for swimlane, `x`/`y`/`source`/`target` for graph.
+ */
+export type VocabCanvasEngine = "git-dag" | "swimlane" | "graph";
+
+export type VocabCanvasNode = {
+  component: "canvas";
+  engine: VocabCanvasEngine;
+  bind: VocabBinding;
+  /** Edge rows for `graph`. Ignored by the other engines. */
+  edges?: VocabBinding;
+  emptyText?: string;
+  /**
+   * Pressed when a node has no row `onPress`. The host adds `id` from the
+   * row's key so the plugin does not have to repeat it on every row.
+   */
+  onSelect?: VocabAction;
+};
+
 export type VocabVideoNode = {
   component: "video";
   src: string;
@@ -827,6 +871,7 @@ export type VocabNode =
   | VocabTableNode
   | VocabFormNode
   | VocabChartNode
+  | VocabCanvasNode
   | VocabVideoNode
   | VocabImageNode
   | VocabAvatarNode
@@ -1123,8 +1168,8 @@ export type VocabNodeParseContext = {
   invalid: (reason: string) => VocabInvalidNode;
   /** Parse a child. `null` once a ceiling stopped the walk — stop reading siblings. */
   child: (raw: unknown, index: number) => VocabNode | null;
-  /** Read this node's `bind`. `null` when absent or malformed. */
-  binding: (raw: unknown) => VocabBinding | null;
+  /** Read a binding on this node. `field` defaults to `bind`. */
+  binding: (raw: unknown, field?: string) => VocabBinding | null;
 };
 
 export type VocabNodeParser = (
@@ -1654,6 +1699,26 @@ export const NODE_PARSERS: Record<string, VocabNodeParser> = {
     };
   },
 
+  canvas: (raw, ctx) => {
+    const engine = enumValue(raw.engine, ["git-dag", "swimlane", "graph"] as const);
+    if (engine === undefined) {
+      return ctx.invalid("`engine` must be `git-dag`, `swimlane`, or `graph`");
+    }
+    const bind = raw.bind !== undefined ? ctx.binding(raw.bind) : null;
+    if (bind === null) return ctx.invalid("`bind` is required");
+    const edges = raw.edges !== undefined ? ctx.binding(raw.edges, "edges") : null;
+    const emptyText = vocabString(raw.emptyText, VOCAB_LIMITS.maxValueChars);
+    const onSelect = parseAction(raw.onSelect);
+    return {
+      component: "canvas",
+      engine,
+      bind,
+      ...(edges !== null ? { edges } : {}),
+      ...(emptyText !== undefined ? { emptyText } : {}),
+      ...(onSelect !== null ? { onSelect } : {}),
+    };
+  },
+
   video: (raw, ctx) => {
     const src = vocabMediaSrc(raw.src);
     if (src === undefined) return ctx.invalid("`src` is required");
@@ -1896,6 +1961,6 @@ export function parseVocabNode(
     invalid: (reason) => invalidNode(name, reason, path, state),
     child: (childRaw, index) =>
       parseVocabNode(childRaw, `${path}.children[${index}]`, depth + 1, state),
-    binding: (bindRaw) => parseBinding(bindRaw, `${path}.bind`, state),
+    binding: (bindRaw, field = "bind") => parseBinding(bindRaw, `${path}.${field}`, state),
   });
 }

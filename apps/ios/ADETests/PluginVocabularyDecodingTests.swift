@@ -65,6 +65,34 @@ final class PluginVocabularyDecodingTests: XCTestCase {
     XCTAssertFalse(PluginRenderSupport.isRenderable(schema.body[2]))
   }
 
+  func testCanvasParsesAndIsRenderableAsAList() throws {
+    let schema = try panel(parse(#"""
+    {
+      "v": 1,
+      "fallback": { "title": "T", "text": "t" },
+      "body": [
+        {
+          "component": "canvas",
+          "engine": "git-dag",
+          "bind": { "collection": "commits", "allowActions": ["openCommit"] },
+          "onSelect": { "action": "openCommit" },
+          "emptyText": "No commits"
+        },
+        { "component": "canvas", "engine": "map", "bind": { "collection": "x" } },
+        { "component": "canvas", "engine": "git-dag" }
+      ]
+    }
+    """#))
+    guard case let .canvas(canvas) = schema.body[0] else { return XCTFail("expected a canvas") }
+    XCTAssertEqual(canvas.engine, .gitDag)
+    XCTAssertEqual(canvas.bind?.collection, "commits")
+    XCTAssertEqual(canvas.onSelect?.action, "openCommit")
+    XCTAssertEqual(canvas.emptyText, "No commits")
+    XCTAssertTrue(PluginRenderSupport.isRenderable(schema.body[0]))
+    if case .invalid = schema.body[1] {} else { XCTFail("unknown engine must not parse") }
+    if case .invalid = schema.body[2] {} else { XCTFail("canvas without bind must not parse") }
+  }
+
   func testAvatarParsesAndFallsABlankName() throws {
     let schema = try panel(parse(#"""
     {

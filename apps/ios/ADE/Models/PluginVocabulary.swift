@@ -588,6 +588,24 @@ struct PluginVocabChart: Equatable {
   var emptyText: String?
 }
 
+/// A host-rendered graph. The phone draws the same bound rows as a list.
+/// Mirrors `VocabCanvasNode`.
+struct PluginVocabCanvas: Equatable {
+  enum Engine: String {
+    case gitDag = "git-dag"
+    case swimlane
+    case graph
+  }
+
+  var engine: Engine
+  var bind: PluginVocabBinding?
+  var edges: PluginVocabBinding?
+  var emptyText: String?
+  var onSelect: PluginVocabAction?
+  /// Filled when the pane resolves `bind`. The view draws these as a list.
+  var items: [PluginVocabListItem]?
+}
+
 struct PluginVocabVideo: Equatable {
   var src: String
   var poster: String?
@@ -706,6 +724,7 @@ indirect enum PluginVocabNode: Equatable {
   case table(PluginVocabTable)
   case form(PluginVocabForm)
   case chart(PluginVocabChart)
+  case canvas(PluginVocabCanvas)
   case video(PluginVocabVideo)
   case image(PluginVocabImage)
   case avatar(PluginVocabAvatar)
@@ -730,6 +749,7 @@ indirect enum PluginVocabNode: Equatable {
     case .table: return "table"
     case .form: return "form"
     case .chart: return "chart"
+    case .canvas: return "canvas"
     case .video: return "video"
     case .image: return "image"
     case .avatar: return "avatar"

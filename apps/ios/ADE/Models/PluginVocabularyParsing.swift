@@ -133,6 +133,7 @@ enum PluginPanelParser {
     case "table": return parseTable(object, path: path, context: &context)
     case "form": return parseForm(object, path: path, context: &context)
     case "chart": return parseChart(object, path: path, context: &context)
+    case "canvas": return parseCanvas(object, path: path, context: &context)
     case "video": return parseVideo(object, path: path, context: &context)
     case "image": return parseImage(object, path: path, context: &context)
     case "avatar": return parseAvatar(object, path: path, context: &context)
