@@ -146,6 +146,34 @@ export function formatAutoResumeTime(fireAtMs: number): string {
   }
 }
 
+/** Clock-only label for the usage-limit dialog ("3:40 PM"). */
+export function formatAutoResumeClock(fireAtMs: number): string {
+  const date = new Date(fireAtMs);
+  if (Number.isNaN(date.getTime())) return "";
+  try {
+    return new Intl.DateTimeFormat(undefined, {
+      hour: "numeric",
+      minute: "2-digit",
+    }).format(date);
+  } catch {
+    return date.toLocaleTimeString();
+  }
+}
+
+/**
+ * Wireframe copy: "Reset at 3:40 PM (47 min)". Omits the remaining window
+ * when the reset instant has already passed.
+ */
+export function formatUsageLimitResetLabel(resetAtMs: number, nowMs: number = Date.now()): string {
+  const clock = formatAutoResumeClock(resetAtMs);
+  if (!clock) return "";
+  const remainingMs = resetAtMs - nowMs;
+  if (!Number.isFinite(remainingMs) || remainingMs <= 0) return `Reset at ${clock}`;
+  const minutes = Math.max(1, Math.round(remainingMs / 60_000));
+  const remaining = minutes < 60 ? `${minutes} min` : `${Math.round(minutes / 60)} hr`;
+  return `Reset at ${clock} (${remaining})`;
+}
+
 /**
  * The one "auto-resume is armed" sentence. The host writes it into the chat as
  * a system notice; the renderer's recovery card shows it live next to Cancel.
@@ -153,4 +181,11 @@ export function formatAutoResumeTime(fireAtMs: number): string {
  */
 export function autoResumeScheduledMessage(fireAtMs: number): string {
   return `Auto-resume scheduled for ${formatAutoResumeTime(fireAtMs)}`;
+}
+
+/** Default on; explicit `false` is the per-chat opt-out. */
+export function sessionAutoContinueAtUsageLimit(
+  session: { autoContinueAtUsageLimit?: boolean | null } | null | undefined,
+): boolean {
+  return session?.autoContinueAtUsageLimit !== false;
 }

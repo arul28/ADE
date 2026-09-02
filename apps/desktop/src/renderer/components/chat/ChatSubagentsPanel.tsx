@@ -565,10 +565,12 @@ function ScheduledWorkRow({
   snapshot,
   schedulesPaused = false,
   onCancel,
+  onStop,
 }: {
   snapshot: ChatScheduledWorkSnapshot;
   schedulesPaused?: boolean;
   onCancel?: () => void;
+  onStop?: () => void;
 }) {
   const isPaused = schedulesPaused || snapshot.status === "paused";
   const isActive = snapshot.status === "running" || snapshot.status === "fired";
@@ -661,6 +663,17 @@ function ScheduledWorkRow({
             className="flex h-5 w-5 items-center justify-center rounded-sm text-fg/25 opacity-0 transition-all hover:bg-white/[0.06] hover:text-rose-200/80 group-hover:opacity-100 focus-visible:opacity-100"
           >
             <X aria-hidden size={11} weight="bold" />
+          </button>
+        ) : null}
+        {onStop && isActive && snapshot.sourceTaskId ? (
+          <button
+            type="button"
+            onClick={onStop}
+            aria-label={`Stop ${snapshot.title}`}
+            title="Stop this background task"
+            className="flex h-5 w-5 items-center justify-center rounded-sm text-fg/25 opacity-0 transition-all hover:bg-rose-500/10 hover:text-rose-200/80 group-hover:opacity-100 focus-visible:opacity-100"
+          >
+            <Square aria-hidden size={10} weight="fill" />
           </button>
         ) : null}
       </div>
@@ -814,6 +827,7 @@ function SubagentRow({
   onToggleCollapsedSubtree,
   spawnedChatTitle = null,
   sessionModelLabel = null,
+  onStop,
 }: {
   snapshot: ChatSubagentSnapshot;
   selected: boolean;
@@ -836,6 +850,7 @@ function SubagentRow({
   /** Parent session model label used only when the envelope has no model. */
   sessionModelLabel?: string | null;
   onClick: () => void;
+  onStop?: (snapshot: ChatSubagentSnapshot) => void;
 }) {
   const isSpawnedChat = snapshot.childSessionId != null;
   // Spawned-chat rows read as the chat they open: prefer the resolved live
@@ -988,6 +1003,21 @@ function SubagentRow({
           {time ? <span className="text-fg/35 group-hover:text-fg/50">{time}</span> : null}
         </span>
       </button>
+      {isRunning && onStop && !isSpawnedChat ? (
+        <button
+          type="button"
+          aria-label={`Stop ${name}`}
+          title="Stop this subagent"
+          onClick={(event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            onStop(snapshot);
+          }}
+          className="mr-1 flex h-7 w-7 shrink-0 items-center justify-center self-center rounded-md text-fg/45 transition-colors hover:bg-rose-500/10 hover:text-rose-200/90"
+        >
+          <Square aria-hidden size={10} weight="fill" />
+        </button>
+      ) : null}
       </div>
 
       {filePaths.length > 0 ? (
@@ -1102,6 +1132,7 @@ export function ChatSubagentsPanel({
   onToggleSchedulesPaused,
   onCancelScheduledWork,
   onStopBackgroundTask,
+  onStopSubagent,
   sessionModelLabel = null,
 }: {
   sessionId?: string | null;
@@ -1145,6 +1176,7 @@ export function ChatSubagentsPanel({
   onCancelScheduledWork?: (snapshot: ChatScheduledWorkSnapshot) => void;
   /** Stop a running Codex background terminal via `thread/backgroundTerminals/terminate`. */
   onStopBackgroundTask?: (snapshot: ChatScheduledWorkSnapshot) => void;
+  onStopSubagent?: (snapshot: ChatSubagentSnapshot) => void;
   sessionModelLabel?: string | null;
 }) {
   const [expanded, setExpanded] = useState(false);
@@ -1532,6 +1564,7 @@ export function ChatSubagentsPanel({
           : null
       }
       sessionModelLabel={sessionModelLabel}
+      onStop={onStopSubagent}
       onClick={() => handleRowClick(snap)}
     />
   );
@@ -1674,7 +1707,18 @@ export function ChatSubagentsPanel({
             </button>
           ) : null}</>}
           idOf={(item) => item.id}
-          renderActiveRow={(item) => <ScheduledWorkRow snapshot={item} schedulesPaused={schedulesPaused} onCancel={onCancelScheduledWork ? () => onCancelScheduledWork(item) : undefined} />}
+          renderActiveRow={(item) => (
+            <ScheduledWorkRow
+              snapshot={item}
+              schedulesPaused={schedulesPaused}
+              onCancel={onCancelScheduledWork ? () => onCancelScheduledWork(item) : undefined}
+              onStop={
+                item.sourceTaskId && onStopBackgroundTask
+                  ? () => onStopBackgroundTask(item)
+                  : undefined
+              }
+            />
+          )}
           renderEarlierRow={(item) => isFiredOneShotWakeup(item)
             ? <ScheduleHistoryRow snapshot={item} />
             : <ScheduledWorkRow snapshot={item} schedulesPaused={schedulesPaused} />}

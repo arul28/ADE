@@ -158,6 +158,8 @@ export type SubagentSpawnAnchorRenderEvent = {
    * subagent). The whole card becomes a button that navigates to this session.
    */
   childSessionId: string | null;
+  /** Provider task id for the per-task stop control; null when this card navigates. */
+  taskId: string | null;
   /** Cosmetic relationship + completion-report policy; null for runtime-native subagents. */
   spawnKind: AgentChatSpawnKind | null;
   /** Final result summary, surfaced on the card once the agent settles. */
@@ -241,6 +243,8 @@ export type BackgroundJobLineRenderEvent = {
   agentKey: string;
   label: string;
   startedAt: string | null;
+  /** Provider task id when ADE can stop this job via `stopTask`. */
+  taskId?: string | null;
 } & (
   | { status: "running" }
   | {
@@ -397,6 +401,11 @@ type SubagentAnchorState = {
   error: string | null;
   /** Child session id for a spawned ADE chat (`chat:<id>` taskId); null otherwise. */
   childSessionId: string | null;
+  /**
+   * Provider task id for per-task stop. Null for spawned ADE chats (`chat:<id>`)
+   * — those navigate rather than stop in-place.
+   */
+  taskId: string | null;
   /** Spawn-kind carried on the `subagent_started` event; null for runtime-native subagents. */
   spawnKind: AgentChatSpawnKind | null;
   /** Result-only usage/worktree metadata surfaced on the result card. */
@@ -1421,6 +1430,7 @@ function spawnAnchorEvent(
     startedAt: state.startedAt,
     endedAt: state.endedAt,
     childSessionId: state.childSessionId,
+    taskId: state.taskId,
     spawnKind: state.spawnKind,
     resultSummary: state.resultSummary,
     parentLabel: anchors ? resolveParentLabel(state, anchors) : null,
@@ -1456,6 +1466,9 @@ function enrichSubagentStateFromEvent(
   const taskId = subagentText(event.taskId);
   if (taskId && taskId.startsWith("chat:") && !state.childSessionId) {
     state.childSessionId = subagentText(event.agentId) ?? (taskId.slice("chat:".length) || null);
+  }
+  if (taskId && !taskId.startsWith("chat:") && !state.taskId) {
+    state.taskId = taskId;
   }
   if (record.spawnKind === "subagent" || record.spawnKind === "peer") {
     state.spawnKind = record.spawnKind;
@@ -1531,6 +1544,7 @@ function handleSubagentLifecycleEvent(
       resultSummary: null,
       error: null,
       childSessionId: null,
+      taskId: taskId && !taskId.startsWith("chat:") ? taskId : null,
       spawnKind: null,
       totalTokens: null,
       toolUseCount: null,
@@ -1584,6 +1598,7 @@ function handleSubagentLifecycleEvent(
           label: backgroundJobLabel(state),
           status: "running",
           startedAt: state.startedAt,
+          taskId: state.taskId,
         });
       }
       return true;
@@ -1639,6 +1654,7 @@ function handleSubagentLifecycleEvent(
       exitCode: backgroundExitCode(event),
       durationMs: durationMsBetween(state.startedAt, timestamp),
       startedAt: state.startedAt,
+      taskId: state.taskId,
     });
     return true;
   }
@@ -2209,19 +2225,28 @@ export function appendCollapsedChatTranscriptEvent(
     const label = backgroundCommandLabel(event.title ?? "")
       || event.title
       || "Background command";
+    const providerTaskId = event.sourceTaskId?.trim() || null;
     upsertBackgroundJobLine(
       rows,
       context,
       expectedKey,
       envelope.timestamp,
       status === "running"
-        ? { type: "background_job_line", agentKey: taskKey, label, startedAt, status }
+        ? {
+            type: "background_job_line",
+            agentKey: taskKey,
+            label,
+            startedAt,
+            status,
+            taskId: providerTaskId,
+          }
         : {
             type: "background_job_line",
             agentKey: taskKey,
             label,
             startedAt,
             status,
+            taskId: providerTaskId,
             // The scheduled-work wire format carries no exit code; duration is
             // measured from the row's own first sighting instead of trusting
             // the free-text summary the emitter composes.

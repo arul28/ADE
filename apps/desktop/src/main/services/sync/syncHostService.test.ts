@@ -93,6 +93,9 @@ function toText(raw: Buffer | ArrayBuffer | Buffer[]): string {
   return Buffer.from(raw).toString("utf8");
 }
 
+/** Hello after pairing can stall on a loaded Windows runner; 5s was too tight. */
+const SYNC_TEST_HELLO_TIMEOUT_MS = process.platform === "win32" ? 20_000 : 5_000;
+
 function createMessageQueue(ws: WebSocket) {
   const queued: ParsedSyncEnvelope[] = [];
   const waiters: Array<{
@@ -124,7 +127,8 @@ function createMessageQueue(ws: WebSocket) {
         const timer = setTimeout(() => {
           const index = waiters.findIndex((entry) => entry.resolve === resolve);
           if (index >= 0) waiters.splice(index, 1);
-          reject(new Error(`Timed out waiting for ${type}`));
+          const queuedTypes = queued.map((entry) => entry.type).join(",") || "none";
+          reject(new Error(`Timed out waiting for ${type} (queued: ${queuedTypes})`));
         }, timeoutMs);
         waiters.push({ type, resolve, reject, timer });
       });
@@ -167,7 +171,7 @@ async function connectClient(args: {
     },
     compressionThresholdBytes: 100_000,
   }));
-  const helloOk = await queue.next("hello_ok");
+  const helloOk = await queue.next("hello_ok", SYNC_TEST_HELLO_TIMEOUT_MS);
   return {
     ws,
     queue,

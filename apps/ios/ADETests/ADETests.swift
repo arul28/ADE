@@ -7392,6 +7392,13 @@ final class ADETests: XCTestCase {
               ],
             ],
             [
+              "action": "chat.stopTask",
+              "policy": [
+                "viewerAllowed": true,
+                "queueable": false,
+              ],
+            ],
+            [
               "action": "chat.restoreCancelledQueue",
               "policy": [
                 "viewerAllowed": true,
@@ -7420,6 +7427,7 @@ final class ADETests: XCTestCase {
     XCTAssertFalse(service.isChatRemoteActionQueueable("chat.setScheduledWorkPaused", sessionId: "chat-1"))
     XCTAssertTrue(service.supportsChatRemoteAction("chat.dispatchSteer", sessionId: "chat-1"))
     XCTAssertTrue(service.supportsChatRemoteAction("chat.interruptWithQueueMode", sessionId: "chat-1"))
+    XCTAssertTrue(service.supportsChatRemoteAction("chat.stopTask", sessionId: "chat-1"))
     XCTAssertTrue(service.supportsChatRemoteAction("chat.restoreCancelledQueue", sessionId: "chat-1"))
     service.configureConnectedTransportForTesting()
     XCTAssertTrue(service.canInvokeChatRemoteAction("chat.setScheduledWorkPaused", sessionId: "chat-1"))
@@ -13621,6 +13629,138 @@ final class ADETests: XCTestCase {
       XCTAssertEqual(capability.modes, [.queue], "expected queue-only for \(provider)")
       XCTAssertEqual(capability.atomicDispatchModes, [], "expected no atomic dispatch for \(provider)")
     }
+  }
+
+  func testWorkChatStopCapabilityMirrorsDesktopStopMatrix() {
+    XCTAssertEqual(
+      WorkChatStopCapability.modes,
+      [.stopOnly, .stopAndClear, .stopAndBackground, .stopAndClearAndBackground]
+    )
+    XCTAssertEqual(WorkChatStopCapability.defaultMode, .stopAndClear)
+    XCTAssertEqual(WorkChatStopCapability.copy(mode: .stopOnly, jobCount: 3).title, "Turn only")
+    XCTAssertEqual(WorkChatStopCapability.copy(mode: .stopAndClear, jobCount: 3).title, "Turn + queue")
+    XCTAssertEqual(
+      WorkChatStopCapability.copy(mode: .stopAndBackground, jobCount: 3).title,
+      "Turn + background (3 jobs)"
+    )
+    XCTAssertEqual(
+      WorkChatStopCapability.copy(mode: .stopAndClearAndBackground, jobCount: 1).title,
+      "Turn + queue + background (1 job)"
+    )
+    XCTAssertEqual(AgentChatStopMode.stopOnly.rawValue, "stop_only")
+    XCTAssertEqual(AgentChatStopMode.stopAndClear.rawValue, "stop_and_clear")
+    XCTAssertEqual(AgentChatStopMode.stopAndBackground.rawValue, "stop_and_background")
+    XCTAssertEqual(AgentChatStopMode.stopAndClearAndBackground.rawValue, "stop_and_clear_and_background")
+  }
+
+  func testAgentChatSessionSummaryDecodesUsageLimitParkFields() throws {
+    let data = Data(#"""
+    {
+      "sessionId":"chat-1",
+      "laneId":"lane-1",
+      "provider":"claude",
+      "model":"claude-sonnet",
+      "status":"idle",
+      "startedAt":"2026-07-08T00:00:00.000Z",
+      "lastActivityAt":"2026-07-08T00:00:03.000Z",
+      "autoContinueAtUsageLimit":false,
+      "usageLimitParkedUntil":"2026-07-08T00:47:00.000Z",
+      "activeBackgroundTaskCount":3
+    }
+    """#.utf8)
+    let summary = try JSONDecoder().decode(AgentChatSessionSummary.self, from: data)
+    XCTAssertEqual(summary.autoContinueAtUsageLimit, false)
+    XCTAssertEqual(summary.usageLimitParkedUntil, "2026-07-08T00:47:00.000Z")
+    XCTAssertEqual(summary.activeBackgroundTaskCount, 3)
+  }
+
+  func testAgentChatContextUsageCategoryDecodesKindNotName() throws {
+    let data = Data(#"""
+    {"name":"Free","tokens":1200,"percentage":12,"kind":"used"}
+    """#.utf8)
+    let category = try JSONDecoder().decode(AgentChatContextUsageCategory.self, from: data)
+    XCTAssertEqual(category.name, "Free")
+    XCTAssertEqual(category.kind, "used")
+  }
+
+  func testWorkUsageLimitOptOutShowsWhenParkedAndHidesWhenOptedOut() {
+    let now = Date(timeIntervalSince1970: 1_783_468_800)
+    let parked = "2026-07-08T00:47:00.000Z"
+    XCTAssertTrue(
+      WorkUsageLimitOptOut.shouldShow(
+        autoContinueAtUsageLimit: nil,
+        usageLimitParkedUntil: parked,
+        scheduledWork: nil,
+        now: now
+      )
+    )
+    XCTAssertFalse(
+      WorkUsageLimitOptOut.shouldShow(
+        autoContinueAtUsageLimit: false,
+        usageLimitParkedUntil: parked,
+        scheduledWork: nil,
+        now: now
+      )
+    )
+    let label = workUsageLimitResetLabel(parked, now: now)
+    XCTAssertTrue(label.hasPrefix("Reset at "))
+    XCTAssertTrue(label.contains("47 min"))
+  }
+
+  func testAgentChatScheduledWorkItemDecodesAutoResumeSource() throws {
+    let data = Data(#"""
+    {
+      "id":"auto-resume:chat-1",
+      "sessionId":"chat-1",
+      "kind":"wakeup",
+      "status":"scheduled",
+      "title":"Auto-resume",
+      "prompt":"continue",
+      "createdAt":"2026-07-08T00:00:00.000Z",
+      "durable":true,
+      "cancellable":true,
+      "source":"auto_resume_limit",
+      "nextRunAt":"2026-07-08T00:47:00.000Z"
+    }
+    """#.utf8)
+    let item = try JSONDecoder().decode(AgentChatScheduledWorkItem.self, from: data)
+    XCTAssertEqual(item.source, "auto_resume_limit")
+    XCTAssertTrue(WorkUsageLimitOptOut.isPendingAutoResume(item))
+    XCTAssertTrue(
+      WorkUsageLimitOptOut.shouldShow(
+        autoContinueAtUsageLimit: nil,
+        usageLimitParkedUntil: nil,
+        scheduledWork: [item],
+        now: Date(timeIntervalSince1970: 1_783_468_800)
+      )
+    )
+  }
+
+  func testWorkSubagentCanStopTaskSkipsSpawnedChatsAndSettledRows() {
+    func snap(taskId: String, status: WorkSubagentSnapshot.Status, agentType: String? = "code-reviewer") -> WorkSubagentSnapshot {
+      WorkSubagentSnapshot(
+        taskId: taskId,
+        agentId: taskId,
+        agentType: agentType,
+        parentToolUseId: nil,
+        description: "Audit chat renderer",
+        background: false,
+        label: nil,
+        model: nil,
+        reasoningEffort: nil,
+        status: status,
+        lastToolName: nil,
+        latestSummary: nil,
+        turnId: nil,
+        startedAt: nil,
+        updatedAt: nil
+      )
+    }
+    let running = snap(taskId: "agent-1", status: .running)
+    XCTAssertTrue(workSubagentCanStopTask(running))
+    XCTAssertEqual(workSubagentStopLabel(running), "Stop code-reviewer")
+    XCTAssertFalse(workSubagentCanStopTask(snap(taskId: "agent-1", status: .succeeded)))
+    XCTAssertFalse(workSubagentCanStopTask(snap(taskId: "chat:child-1", status: .running)))
   }
 
   func testSyncChatMessageDeliveryParsesQueuedSteerResult() {

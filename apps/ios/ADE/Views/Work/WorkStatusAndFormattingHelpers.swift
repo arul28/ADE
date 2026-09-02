@@ -1417,6 +1417,22 @@ func relativeTimestamp(_ value: String) -> String {
   return RelativeDateTimeFormatter().localizedString(for: date, relativeTo: Date())
 }
 
+/// Clock-only usage-limit label matching desktop `formatUsageLimitResetLabel`
+/// ("Reset at 3:40 PM (47 min)"). Omits the remaining window after the reset.
+func workUsageLimitResetLabel(_ iso: String?, now: Date = Date()) -> String {
+  guard let iso, let date = workParsedDate(iso) else { return "" }
+  let formatter = DateFormatter()
+  formatter.locale = .current
+  formatter.dateStyle = .none
+  formatter.timeStyle = .short
+  let clock = formatter.string(from: date)
+  let remainingMs = date.timeIntervalSince(now) * 1000
+  if remainingMs <= 0 { return "Reset at \(clock)" }
+  let minutes = max(1, Int((remainingMs / 60_000).rounded()))
+  let remaining = minutes < 60 ? "\(minutes) min" : "\(Int((Double(minutes) / 60.0).rounded())) hr"
+  return "Reset at \(clock) (\(remaining))"
+}
+
 /// Ultra-compact relative-time label for sidebar rows: "now", "12m", "3h", "2d". Mirrors
 /// the desktop `relativeTimeCompact` (`apps/desktop/src/renderer/lib/format.ts`).
 func relativeTimestampCompact(_ value: String) -> String {

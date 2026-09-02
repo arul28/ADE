@@ -327,6 +327,15 @@ export function createAgentChatNamespace(infra: AdapterInfra): AdeNamespace<"age
         false,
       );
     },
+    stopTask: async (args: unknown, pin?: RuntimePinArg) => {
+      guardPin("stopTask", pin);
+      return await call(
+        "chat.stopTask",
+        args,
+        { sessionId: "", taskId: "", stopped: false },
+        false,
+      );
+    },
     restoreCancelledQueue: async (args: unknown, pin?: RuntimePinArg) => {
       guardPin("restoreCancelledQueue", pin);
       return await call<AgentChatRestoreCancelledQueueResult>(

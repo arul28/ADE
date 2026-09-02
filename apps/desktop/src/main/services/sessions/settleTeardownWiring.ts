@@ -1,3 +1,4 @@
+import { SETTLE_TEARDOWN_STOP_MODE, type AgentChatStopMode } from "../../../shared/chatStopModes";
 import { createSessionSettleTeardown, residueCountBucket } from "./sessionSettleTeardown";
 import type { SettleResidueItem, SettleTeardownContext, SettleTeardownOutcome } from "./sessionSettleTeardown";
 import type { ProductAnalyticsCapture } from "../../../shared/types/productAnalytics";
@@ -17,7 +18,7 @@ import type { ProductAnalyticsCapture } from "../../../shared/types/productAnaly
 
 /** Only what teardown needs, so neither caller has to hand over a whole service. */
 export type SettleTeardownChatService = {
-  interrupt: (args: { sessionId: string; mode: "stop_only" | "stop_and_clear" }) => Promise<unknown>;
+  interrupt: (args: { sessionId: string; mode: AgentChatStopMode }) => Promise<unknown>;
   getSessionSummary: (sessionId: string) => Promise<{
     status: string;
     activeBackgroundTaskCount?: number | null;
@@ -69,12 +70,12 @@ export function createSettleTeardownWiring(deps: SettleTeardownWiringDeps): Sett
   };
   const runSettleTeardown = createSessionSettleTeardown({
     interrupt: async (sessionId) => {
-      // `stop_only`, never `stop_and_clear`: the latter also cancels the user's
-      // QUEUED turns. Design 3c's rule is that losing a settle costs one click
-      // while losing the user's work is unrecoverable, and a queued prompt is
-      // the user's work. If a queued turn then starts, C3 clears the settle —
-      // which is R1, and already the accepted trade.
-      await deps.agentChatService.interrupt({ sessionId, mode: "stop_only" });
+      // `stop_and_background`, never `stop_and_clear`: the latter also cancels
+      // the user's QUEUED turns. Design 3c's rule is that losing a settle costs
+      // one click while losing the user's work is unrecoverable, and a queued
+      // prompt is the user's work. After perTaskStopAffordance, `stop_only`
+      // would also spare background work — settle still has to stop that.
+      await deps.agentChatService.interrupt({ sessionId, mode: SETTLE_TEARDOWN_STOP_MODE });
     },
     readActiveWork: async (sessionId) => {
       const summary = await deps.agentChatService.getSessionSummary(sessionId);

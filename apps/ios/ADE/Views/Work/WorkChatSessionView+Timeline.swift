@@ -198,7 +198,13 @@ extension WorkChatSessionView {
       )
       .equatable()
     case .subagent(let row):
-      WorkSubagentTimelineRowView(row: row, onOpen: onSelectSubagentRow)
+      WorkSubagentTimelineRowView(
+        row: row,
+        onOpen: onSelectSubagentRow,
+        onStop: onStopSubagentTask.map { stop in
+          { snapshot in await stop(snapshot.taskId) }
+        }
+      )
     case .subagentStoppedGroup(let model):
       WorkSubagentStoppedGroupCardView(
         model: model,

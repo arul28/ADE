@@ -33,8 +33,9 @@ describe("settle teardown wiring", () => {
     await wiring.runSettleTeardown("session-1", neverAborted);
 
     // `stop_and_clear` cancels queued follow-ups. Losing a settle costs one
-    // click; losing prompts the user already typed is unrecoverable.
-    expect(interrupt).toHaveBeenCalledWith({ sessionId: "session-1", mode: "stop_only" });
+    // click; losing prompts the user already typed is unrecoverable. After
+    // the stop matrix, settle still stops background work.
+    expect(interrupt).toHaveBeenCalledWith({ sessionId: "session-1", mode: "stop_and_background" });
   });
 
   it("treats a persisted Claude background job as work, even when the runtime is gone", async () => {

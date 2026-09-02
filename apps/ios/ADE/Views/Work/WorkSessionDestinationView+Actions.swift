@@ -254,6 +254,37 @@ extension WorkSessionDestinationView {
   }
 
   @MainActor
+  func optOutUsageLimitAutoContinue() async {
+    do {
+      if let schedule = WorkUsageLimitOptOut.pendingSchedule(composerChatSummary?.scheduledWork),
+         syncService.canInvokeChatRemoteAction("chat.cancelScheduledWork", sessionId: sessionId) {
+        _ = try? await syncService.cancelScheduledWork(sessionId: sessionId, scheduleId: schedule.id)
+      }
+      _ = try await syncService.updateChatSession(
+        sessionId: sessionId,
+        autoContinueAtUsageLimit: false
+      )
+      await refreshChatStateAfterAction(forceRemote: true)
+      errorMessage = nil
+    } catch {
+      ADEHaptics.error()
+      errorMessage = error.localizedDescription
+    }
+  }
+
+  @MainActor
+  func stopChatTask(taskId: String) async {
+    do {
+      try await syncService.stopChatTask(sessionId: sessionId, taskId: taskId)
+      await refreshChatStateAfterAction(forceRemote: true)
+      errorMessage = nil
+    } catch {
+      ADEHaptics.error()
+      errorMessage = error.localizedDescription
+    }
+  }
+
+  @MainActor
   func recoverCodexTurn(sessionId targetSessionId: String, turnId: String, action: String) async throws -> String {
     let result = try await syncService.recoverCodexTurn(
       sessionId: targetSessionId,

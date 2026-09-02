@@ -148,6 +148,7 @@ export const MOBILE_SYNC_REQUIRED_REMOTE_COMMAND_ACTIONS = [
   "chat.getChatEventHistory",
   "chat.send",
   "chat.interrupt",
+  "chat.stopTask",
   "chat.steer",
   "chat.cancelSteer",
   "chat.editSteer",

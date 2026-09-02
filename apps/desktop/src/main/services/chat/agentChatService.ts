@@ -302,6 +302,8 @@ import type {
   AgentChatInteractionMode,
   AgentChatInterruptArgs,
   AgentChatInterruptResult,
+  AgentChatStopTaskArgs,
+  AgentChatStopTaskResult,
   AgentChatRestoreCancelledQueueArgs,
   AgentChatRestoreCancelledQueueResult,
   AgentChatStopMode,
@@ -576,7 +578,32 @@ import {
   snapshotFromClaudeSessionQuotaText,
   type ClaudeSessionQuotaSnapshot,
 } from "../../../shared/claudeSessionQuota";
-import { isAutoResumeScheduledWork } from "../../../shared/chatAutoResume";
+import {
+  autoResumeFireAtMs,
+  isAutoResumeScheduledWork,
+  isPendingAutoResumeScheduledWork,
+  isUsageLimitChatError,
+  sessionAutoContinueAtUsageLimit,
+} from "../../../shared/chatAutoResume";
+import {
+  CLAUDE_PER_TASK_STOP_CONTROLS_REACHABLE,
+  DEFAULT_AGENT_CHAT_STOP_MODE,
+  parseAgentChatStopMode,
+  shouldDeclarePerTaskStopAffordance,
+  stopModeClearsQueue,
+  stopModeStopsBackground,
+} from "../../../shared/chatStopModes";
+import {
+  buildClassifierContext,
+  classifierContextAuditMessage,
+  type UserAuthoredClassifierInput,
+} from "../../../shared/claudeClassifierContext";
+import { normalizeClaudeContextUsage as normalizeStructuredClaudeContextUsage } from "../../../shared/claudeContextUsage";
+import {
+  claudeModelSwitchAdditionalContext,
+  claudeModelSwitchDividerMessage,
+  parseClaudeModelSwitchArgs,
+} from "../../../shared/claudeModelSwitch";
 import { createChatAutoResumeCoordinator } from "./chatAutoResumeCoordinator";
 import type { ChatAutoResumeAnalyticsProperties } from "./chatAutoResumeCoordinator";
 import { buildAdeCliAgentGuidance } from "../../../shared/adeCliGuidance";
@@ -1250,6 +1277,9 @@ type PersistedChatState = {
   sessionProfile?: "light" | "workflow";
   reasoningEffort?: string | null;
   fastMode?: boolean;
+  /** Explicit `false` is the per-chat opt-out; absent means on. */
+  autoContinueAtUsageLimit?: boolean;
+  usageLimitParkedUntil?: string | null;
   codexServiceTier?: string | null;
   executionMode?: AgentChatExecutionMode | null;
   interactionMode?: AgentChatInteractionMode | null;
@@ -1974,6 +2004,12 @@ type ClaudeRuntime = {
   interrupted: boolean;
   /** Set when early interrupt events have been emitted to avoid duplicate emission later. */
   interruptEventsEmitted: boolean;
+  /**
+   * User Stop chose a mode that spares background tasks (`stop_only` /
+   * `stop_and_clear`). The query must stay alive so those tasks can finish;
+   * settling them here would undo `perTaskStopAffordance`.
+   */
+  spareBackgroundOnInterrupt?: boolean;
   /** Set when a reasoning effort change is requested mid-turn; flushed when idle. */
   pendingSessionReset?: boolean;
   /** Clear Claude SDK continuity on the deferred reset; used after mode changes the old session cannot apply. */
@@ -1988,6 +2024,12 @@ type ClaudeRuntime = {
   resumeIdleWatchdog?: (() => void) | null;
   /** Set after we've emitted the once-per-session "Approaching plan limit" notice. */
   rateLimitWarningEmitted: boolean;
+  /**
+   * User-authored classifierContext keyed by tool_use_id, captured at the
+   * approval waiter and consumed by PostToolUse. Never holds tool output or
+   * model text.
+   */
+  pendingClassifierContextByToolUseId: Map<string, UserAuthoredClassifierInput>;
 };
 
 /**
@@ -3533,6 +3575,11 @@ type ManagedChatSession = {
   runtimeInvalidated: boolean;
   /** Set after we've emitted the once-per-session Claude plan-limit notice. */
   claudeRateLimitWarningEmitted: boolean;
+  /**
+   * ISO instant this chat is parked waiting for a usage-limit reset. Used when
+   * Claude's SDK-native auto-continue is waiting (no ADE scheduled-work row).
+   */
+  usageLimitParkedUntil?: string | null;
   /**
    * In-memory only: this chat's Claude session UUID hit a hard plan/session
    * quota. ADE restart clears it. The next send reaps (already done) and
@@ -8334,6 +8381,7 @@ export function createAgentChatService(args: {
    * `ChatAutoResumeAnalyticsProperties`.
    */
   onAutoResumeOutcome?: (properties: ChatAutoResumeAnalyticsProperties) => void;
+  onUsageLimitAutoResumed?: (args: { sessionId: string; title?: string | null }) => void;
   onSessionEnded?: (args: { laneId: string; sessionId: string; exitCode: number | null }) => void;
   onLinearIssueChatLinked?: (args: {
     laneId: string;
@@ -8404,6 +8452,7 @@ export function createAgentChatService(args: {
     onChatMentionsExpanded,
     onSessionMetadataRegenerated,
     onAutoResumeOutcome,
+    onUsageLimitAutoResumed,
     onSessionEnded,
     onLinearIssueChatLinked,
     getDirtyFileTextForPath,
@@ -9213,6 +9262,19 @@ export function createAgentChatService(args: {
     };
   };
 
+  const rememberUserAuthoredClassifierContext = (
+    runtime: ClaudeRuntime,
+    toolUseId: unknown,
+    input: UserAuthoredClassifierInput,
+  ): void => {
+    const id = typeof toolUseId === "string" ? toolUseId.trim() : "";
+    if (!id) return;
+    // Session-override and policy auto-allows never call this. If ADE cannot
+    // attribute a statement to the user, buildClassifierContext returns null.
+    if (!buildClassifierContext(input)) return;
+    runtime.pendingClassifierContextByToolUseId.set(id, input);
+  };
+
   const buildClaudeCanUseTool = (
     runtime: ClaudeRuntime,
     managed: ManagedChatSession,
@@ -9411,6 +9473,10 @@ export function createAgentChatService(args: {
       }
 
       if (approved) {
+        rememberUserAuthoredClassifierContext(runtime, sdkOptions?.toolUseID, {
+          typedText: response.responseText,
+          explicitApproval: true,
+        });
         // Switch session out of plan mode so the UI reflects the transition.
         if (managed.session.permissionMode === "plan" || managed.session.interactionMode === "plan") {
           applyClaudePlanModeTransition(managed.session, "default");
@@ -9630,6 +9696,10 @@ export function createAgentChatService(args: {
         runtime.approvalOverrides.add(normalizedToolName);
       }
       if (approved) {
+        rememberUserAuthoredClassifierContext(runtime, sdkOptions?.toolUseID, {
+          typedText: response.responseText,
+          explicitApproval: true,
+        });
         return {
           behavior: "allow",
           ...(response.decision === "accept_for_session" && sdkOptions?.suggestions?.length
@@ -14034,6 +14104,8 @@ export function createAgentChatService(args: {
       ...(managed.session.sessionProfile ? { sessionProfile: managed.session.sessionProfile } : {}),
       ...(managed.session.reasoningEffort ? { reasoningEffort: managed.session.reasoningEffort } : {}),
       ...(managed.session.fastMode === true ? { fastMode: true } : {}),
+      ...(managed.session.autoContinueAtUsageLimit === false ? { autoContinueAtUsageLimit: false } : {}),
+      ...(managed.usageLimitParkedUntil ? { usageLimitParkedUntil: managed.usageLimitParkedUntil } : {}),
       ...(managed.session.codexServiceTier !== undefined ? { codexServiceTier: managed.session.codexServiceTier } : {}),
         ...(managed.session.executionMode ? { executionMode: managed.session.executionMode } : {}),
         ...(managed.session.interactionMode ? { interactionMode: managed.session.interactionMode } : {}),
@@ -14367,6 +14439,11 @@ export function createAgentChatService(args: {
       const sessionProfile = normalizeSessionProfile(record.sessionProfile);
       const reasoningEffort = normalizeReasoningEffort(record.reasoningEffort);
       const fastMode = readLegacyFastMode(record as Record<string, unknown>);
+      const autoContinueAtUsageLimit = record.autoContinueAtUsageLimit === false ? false : undefined;
+      const usageLimitParkedUntil = typeof record.usageLimitParkedUntil === "string"
+        && record.usageLimitParkedUntil.trim().length
+        ? record.usageLimitParkedUntil.trim()
+        : undefined;
       const hasCodexServiceTier = Object.prototype.hasOwnProperty.call(record, "codexServiceTier");
       const codexServiceTier = hasCodexServiceTier ? normalizeCodexServiceTier(record.codexServiceTier) : undefined;
       const executionMode = normalizePersistedExecutionMode(record.executionMode);
@@ -14591,6 +14668,8 @@ export function createAgentChatService(args: {
         ...(sessionProfile ? { sessionProfile } : {}),
         ...(reasoningEffort ? { reasoningEffort } : {}),
         ...(fastMode ? { fastMode: true } : {}),
+        ...(autoContinueAtUsageLimit === false ? { autoContinueAtUsageLimit: false } : {}),
+        ...(usageLimitParkedUntil ? { usageLimitParkedUntil } : {}),
         ...(hasCodexServiceTier ? { codexServiceTier } : {}),
         ...(executionMode ? { executionMode } : {}),
           ...(interactionMode ? { interactionMode } : {}),
@@ -15354,6 +15433,14 @@ export function createAgentChatService(args: {
     return null;
   };
 
+  const parkUsageLimitIfAutoContinuing = (managed: ManagedChatSession): void => {
+    if (!sessionAutoContinueAtUsageLimit(managed.session)) return;
+    const fireAt = autoResumeFireAtMs(usageLimitResetAtMs(managed), Date.now());
+    if (fireAt == null) return;
+    managed.usageLimitParkedUntil = new Date(fireAt).toISOString();
+    persistChatState(managed);
+  };
+
   type CommitChatEventOptions = {
     liveEvent?: AgentChatEvent;
   };
@@ -15365,12 +15452,18 @@ export function createAgentChatService(args: {
   ): void => {
     const decoratedEvent = event.type === "error" ? decorateAgentCliError(managed, event) : event;
     if (decoratedEvent.type === "error") {
-      autoResume.maybeArmAfterUsageLimit({
-        sessionId: managed.session.id,
-        provider: managed.session.provider,
-        resetAtMs: usageLimitResetAtMs(managed),
-        error: decoratedEvent,
-      });
+      const autoContinue = sessionAutoContinueAtUsageLimit(managed.session);
+      if (autoContinue && managed.session.provider !== "claude") {
+        autoResume.maybeArmAfterUsageLimit({
+          sessionId: managed.session.id,
+          provider: managed.session.provider,
+          resetAtMs: usageLimitResetAtMs(managed),
+          error: decoratedEvent,
+        });
+      }
+      if (autoContinue && isUsageLimitChatError(decoratedEvent)) {
+        parkUsageLimitIfAutoContinuing(managed);
+      }
     }
     const liveEvent = options.liveEvent ?? decoratedEvent;
     const storedEvent = compactChatEventForStorage(decoratedEvent);
@@ -15741,6 +15834,35 @@ export function createAgentChatService(args: {
 
     if (normalizedEvent.type === "todo_update") {
       managed.todoItems = normalizedEvent.items;
+    }
+
+    if (
+      managed.usageLimitParkedUntil
+      && normalizedEvent.type === "user_message"
+      && normalizedEvent.deliveryState !== "queued"
+    ) {
+      const autoResumeTurn = isAutoResumeScheduledWork({
+        id: normalizedEvent.metadata?.scheduledWake?.scheduleId,
+      });
+      managed.usageLimitParkedUntil = null;
+      persistChatState(managed);
+      if (autoResumeTurn) {
+        onUsageLimitAutoResumed?.({
+          sessionId: managed.session.id,
+          title: sessionService.get(managed.session.id)?.title ?? null,
+        });
+      }
+    } else if (
+      managed.usageLimitParkedUntil
+      && normalizedEvent.type === "status"
+      && normalizedEvent.turnStatus === "started"
+    ) {
+      managed.usageLimitParkedUntil = null;
+      persistChatState(managed);
+      onUsageLimitAutoResumed?.({
+        sessionId: managed.session.id,
+        title: sessionService.get(managed.session.id)?.title ?? null,
+      });
     }
 
     if (
@@ -19291,6 +19413,7 @@ export function createAgentChatService(args: {
         ...(rowGoal ? { goal: rowGoal } : {}),
         reasoningEffort: persisted?.reasoningEffort ?? null,
         fastMode: persisted?.fastMode === true,
+        ...(persisted?.autoContinueAtUsageLimit === false ? { autoContinueAtUsageLimit: false } : {}),
         executionMode: persisted?.executionMode ?? null,
           interactionMode: persisted?.interactionMode ?? null,
           ...(persisted?.claudePermissionMode ? { claudePermissionMode: persisted.claudePermissionMode } : {}),
@@ -19382,6 +19505,7 @@ export function createAgentChatService(args: {
       lastLaneDirectiveKey: persisted?.lastLaneDirectiveKey ?? null,
       runtimeInvalidated: false,
       claudeRateLimitWarningEmitted: false,
+      ...(persisted?.usageLimitParkedUntil ? { usageLimitParkedUntil: persisted.usageLimitParkedUntil } : {}),
       claudeSessionQuotaSnapshot: null,
       codexTerminalTurnIds: new Set<string>(persisted?.codexTerminalTurnIds ?? []),
       codexAutomaticRecoveryAttempted: persisted?.codexAutomaticRecoveryAttempted === true,
@@ -20616,6 +20740,7 @@ export function createAgentChatService(args: {
     captureTurnBeforeSha(managed);
     runtime.interrupted = false;
     runtime.interruptEventsEmitted = false;
+    runtime.spareBackgroundOnInterrupt = false;
     runtime.busy = true;
     runtime.activeTurnId = turnId;
     setSessionActive(managed);
@@ -21976,6 +22101,7 @@ export function createAgentChatService(args: {
     };
     runtime.interrupted = false;
     runtime.interruptEventsEmitted = false;
+    runtime.spareBackgroundOnInterrupt = false;
     runtime.resolvedToolUseIds.clear();
     setSessionActive(managed);
 
@@ -24055,7 +24181,7 @@ export function createAgentChatService(args: {
       clearClaudeTurnTimers();
       runtime.pauseIdleWatchdog = null;
       runtime.resumeIdleWatchdog = null;
-      if (runtime.interrupted) {
+      if (runtime.interrupted && !runtime.spareBackgroundOnInterrupt) {
         await stopActiveClaudeSubagents(managed, runtime, turnId, "Interrupted");
       }
       const finalStatus: ClaudeTerminalStatus = runtime.interrupted
@@ -24095,9 +24221,9 @@ export function createAgentChatService(args: {
       // A background shell survives the turn boundary as a "running" row on
       // purpose: the query is NOT closed here (see above), so its real
       // completion still arrives on a later turn via system:task_notification.
-      // Only true teardown paths (interrupt — handled above via
-      // stopActiveClaudeSubagents — reset/dispose, host-restart rebind) settle
-      // them as stopped.
+      // Only true teardown paths (background-killing interrupt, reset/dispose,
+      // host-restart rebind) settle them as stopped. Default Stop spares them
+      // once per-task stop exists.
       if (!runtime.interruptEventsEmitted) {
         emitChatEvent(managed, { type: "status", turnStatus: finalStatus, turnId });
         void emitTurnDiffSummaryIfChanged(managed, turnId);
@@ -24176,9 +24302,11 @@ export function createAgentChatService(args: {
       flushOpenClaudeToolUses(finalToolStatus);
       flushClaudeStructuredActivities(finalToolStatus);
 
-      // Only close the query on genuine errors. User interrupts close and
-      // clear the session immediately in interrupt() so the next turn cannot
-      // consume buffered events from the abandoned stream.
+      // Only close the query on genuine errors. User interrupts that spare
+      // background work leave the query open so background completions can
+      // still arrive; production interrupt keeps the stream open and the
+      // success path starts the idle reader. Abort throws still land here —
+      // do not close() or an idle-reader terminate would reap those jobs.
       if (!runtime.interrupted) {
         try { runtime.query?.close(); } catch { /* ignore */ }
         runtime.inputPump?.close();
@@ -24192,14 +24320,16 @@ export function createAgentChatService(args: {
         runtime.warmupDone = null;
         claudeSubprocessReaper.reapForSession(managed.session.id, "claude_turn_failed");
       }
-      await stopActiveClaudeSubagents(
-        managed,
-        runtime,
-        turnId,
-        finalToolStatus === "interrupted"
-          ? "Interrupted"
-          : "Claude's query ended before this task reported completion.",
-      );
+      if (!(runtime.interrupted && runtime.spareBackgroundOnInterrupt)) {
+        await stopActiveClaudeSubagents(
+          managed,
+          runtime,
+          turnId,
+          finalToolStatus === "interrupted"
+            ? "Interrupted"
+            : "Claude's query ended before this task reported completion.",
+        );
+      }
       const doneModel = buildDoneModelPayload();
       void emitTurnDiffSummaryIfChanged(managed, turnId);
 
@@ -27937,6 +28067,97 @@ export function createAgentChatService(args: {
         turnId,
       });
     }));
+  };
+
+  const stopTask = async (
+    { sessionId, taskId }: AgentChatStopTaskArgs,
+  ): Promise<AgentChatStopTaskResult> => {
+    const managed = ensureManagedSession(sessionId);
+    const id = taskId.trim();
+    if (!id) {
+      return { sessionId, taskId, stopped: false, reason: "A task id is required." };
+    }
+    if (managed.runtime?.kind !== "claude") {
+      return {
+        sessionId,
+        taskId: id,
+        stopped: false,
+        reason: "Per-task stop is only available for Claude chats.",
+      };
+    }
+    const runtime = managed.runtime;
+    const existing = runtime.activeSubagents.get(id);
+    if (!existing && !runtime.liveBackgroundTaskIds.has(id)) {
+      return { sessionId, taskId: id, stopped: false, reason: "That task is not running." };
+    }
+    const turnId = runtime.activeTurnId ?? undefined;
+    const control = getClaudeQueryControl(runtime.query);
+    if (typeof control.stopTask !== "function") {
+      return {
+        sessionId,
+        taskId: id,
+        stopped: false,
+        reason: "The Claude query did not expose a task stop control.",
+      };
+    }
+    try {
+      await awaitClaudeControlCall(
+        `Stopping Claude task '${id}'`,
+        CLAUDE_STOP_TASK_TIMEOUT_MS,
+        () => control.stopTask!(id),
+      );
+    } catch (error) {
+      logger.warn("agent_chat.claude_stop_task_failed", {
+        sessionId: managed.session.id,
+        taskId: id,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return {
+        sessionId,
+        taskId: id,
+        stopped: false,
+        reason: error instanceof Error ? error.message : String(error),
+      };
+    }
+    const tracked = runtime.activeSubagents.get(id) ?? existing;
+    if (tracked && isBackgroundShellCommand({
+      taskType: tracked.taskType,
+      agentType: tracked.agentType,
+      command: tracked.command,
+      description: tracked.description,
+    })) {
+      emitClaudeBackgroundTaskUpdate(managed, runtime, {
+        taskId: id,
+        status: "stopped",
+        title: tracked.description,
+        summary: "Stopped by user",
+        command: tracked.command,
+        ...(turnId ? { turnId } : {}),
+      });
+    } else if (tracked && !tracked.skipTranscript && !tracked.nonAgentTaskRun) {
+      emitClaudeSubagentResult(managed, runtime, {
+        type: "subagent_result",
+        taskId: id,
+        ...(tracked.agentId ? { agentId: tracked.agentId } : {}),
+        ...(tracked.agentType ? { agentType: tracked.agentType } : {}),
+        parentToolUseId: tracked.parentToolUseId ?? undefined,
+        status: "stopped",
+        summary: "Stopped by user",
+        finalSummary: "Stopped by user",
+        ...optionalSubagentModelFields(tracked.model),
+        turnId,
+      });
+    }
+    runtime.activeSubagents.delete(id);
+    runtime.liveBackgroundTaskIds.delete(id);
+    runtime.seenBackgroundTaskIds.delete(id);
+    runtime.backgroundTaskTypeById.delete(id);
+    if (tracked?.parentToolUseId) {
+      runtime.taskToolInputByToolUseId.delete(tracked.parentToolUseId);
+    }
+    syncClaudeBackgroundWorkAnchor(runtime);
+    persistChatState(managed);
+    return { sessionId, taskId: id, stopped: true };
   };
 
   type CodexCollabAgentState = {
@@ -31937,20 +32158,42 @@ export function createAgentChatService(args: {
       {
         hooks: [
           async (input: HookInput) => {
+            // Classifier context is computed first and returned on this same
+            // PostToolUse completion. A late `{ async: true }` value is ignored.
+            const toolUseId = input.hook_event_name === "PostToolUse" ? input.tool_use_id : undefined;
+            const pending = toolUseId
+              ? runtime.pendingClassifierContextByToolUseId.get(toolUseId) ?? null
+              : null;
+            if (toolUseId) runtime.pendingClassifierContextByToolUseId.delete(toolUseId);
+            const relay = pending ? buildClassifierContext(pending) : null;
+            if (relay) {
+              const audit = classifierContextAuditMessage(relay);
+              emitChatEvent(managed, {
+                type: "system_notice",
+                noticeKind: "info",
+                status: "classifier_context",
+                message: audit.message,
+                ...(audit.detail ? { detail: audit.detail } : {}),
+                turnId: runtime.activeTurnId ?? undefined,
+              });
+            }
             await handleClaudeScheduledWorkPostToolUse(managed, runtime, input);
             const trimmed = buildClaudeTrimmedToolOutput(input);
-            if (!trimmed) return { continue: true };
-            logger.info("agent_chat.claude_post_tool_use_trimmed", {
-              sessionId: managed.session.id,
-              toolName: input.hook_event_name === "PostToolUse" ? input.tool_name : undefined,
-              originalBytes: trimmed.originalBytes,
-              trimmedBytes: trimmed.trimmedBytes,
-            });
+            if (trimmed) {
+              logger.info("agent_chat.claude_post_tool_use_trimmed", {
+                sessionId: managed.session.id,
+                toolName: input.hook_event_name === "PostToolUse" ? input.tool_name : undefined,
+                originalBytes: trimmed.originalBytes,
+                trimmedBytes: trimmed.trimmedBytes,
+              });
+            }
+            if (!trimmed && !relay) return { continue: true };
             return {
               continue: true,
               hookSpecificOutput: {
                 hookEventName: "PostToolUse" as const,
-                updatedToolOutput: trimmed.updatedToolOutput,
+                ...(trimmed ? { updatedToolOutput: trimmed.updatedToolOutput } : {}),
+                ...(relay ? { classifierContext: relay.classifierContext } : {}),
               },
             };
           },
@@ -32024,7 +32267,37 @@ export function createAgentChatService(args: {
         ],
       },
     ],
-  });
+    PreModelSwitch: [
+      {
+        hooks: [
+          async () => ({ continue: true }),
+        ],
+      },
+    ],
+    PostModelSwitch: [
+      {
+        hooks: [
+          async (input: HookInput) => {
+            const switchArgs = parseClaudeModelSwitchArgs(input);
+            emitChatEvent(managed, {
+              type: "system_notice",
+              noticeKind: "info",
+              status: "model_switched",
+              message: claudeModelSwitchDividerMessage(switchArgs),
+              turnId: runtime.activeTurnId ?? undefined,
+            });
+            return {
+              continue: true,
+              hookSpecificOutput: {
+                hookEventName: "PostModelSwitch" as const,
+                additionalContext: claudeModelSwitchAdditionalContext(switchArgs),
+              },
+            };
+          },
+        ],
+      },
+    ],
+  }) as NonNullable<ClaudeSDKOptions["hooks"]>;
 
   /**
    * Build stable Agent SDK query options from the managed session state.
@@ -32135,7 +32408,14 @@ export function createAgentChatService(args: {
         laneId: managed.session.laneId,
         cwd: managed.laneWorktreePath,
       }),
-    };
+      autoContinueAtUsageLimit: sessionAutoContinueAtUsageLimit(managed.session),
+      ...(shouldDeclarePerTaskStopAffordance({
+        stopTaskExposed: true,
+        stopControlsReachable: CLAUDE_PER_TASK_STOP_CONTROLS_REACHABLE,
+      })
+        ? { perTaskStopAffordance: true }
+        : {}),
+    } as ClaudeSDKOptions;
     if (isOrchestrationLeadSession(managed.session)) {
       opts.disallowedTools = Array.from(new Set([
         ...(opts.disallowedTools ?? []),
@@ -33495,8 +33775,10 @@ export function createAgentChatService(args: {
       approvals: new Map<string, PendingClaudeApproval>(),
       interrupted: false,
       interruptEventsEmitted: false,
+      spareBackgroundOnInterrupt: false,
       approvalOverrides: new Set<string>(persisted?.approvalOverrides ?? []),
       resolvedToolUseIds: new Set<string>(),
+      pendingClassifierContextByToolUseId: new Map(),
       rateLimitWarningEmitted: managed.claudeRateLimitWarningEmitted,
     };
     for (const steer of runtime.pendingSteers) {
@@ -36805,6 +37087,7 @@ export function createAgentChatService(args: {
     );
     managed.claudeQuotaCardWasLive = true;
     managed.claudeQuotaCardLiveChecked = true;
+    parkUsageLimitIfAutoContinuing(managed);
     void emitAdeCard({
       sessionId: managed.session.id,
       card: buildClaudeSessionQuotaCard({
@@ -44043,9 +44326,10 @@ export function createAgentChatService(args: {
   };
 
   const interrupt = async (
-    { sessionId, mode = "stop_and_clear" }: AgentChatInterruptArgs,
+    { sessionId, mode: rawMode = "stop_and_clear" }: AgentChatInterruptArgs,
     internalOptions: { requireClaudeProviderInterrupt?: boolean } = {},
   ): Promise<AgentChatInterruptResult> => {
+    const mode = parseAgentChatStopMode(rawMode);
     const managed = ensureManagedSession(sessionId);
     const result: AgentChatInterruptResult = {
       mode,
@@ -44072,7 +44356,7 @@ export function createAgentChatService(args: {
       // unrecoverable, and the opposite of the rule that losing a settle costs
       // one click while losing the user's work does not. Default is
       // `stop_and_clear`, so the Stop button is unaffected.
-      if (mode === "stop_and_clear") cancelQueuedSteers(managed, managed.runtime, "interrupted");
+      if (stopModeClearsQueue(mode)) cancelQueuedSteers(managed, managed.runtime, "interrupted");
       persistChatState(managed);
       for (const pending of managed.runtime.pendingApprovals.values()) {
         rejectOpenCodePendingApproval(managed.runtime.handle, pending).catch(() => {});
@@ -44118,7 +44402,7 @@ export function createAgentChatService(args: {
         cancelCursorPermissionWaiter(w, "Cursor tool approval was cancelled because the turn was interrupted.");
       }
       rt.permissionWaiters.clear();
-      if (mode === "stop_and_clear") cancelQueuedSteers(managed, rt, "interrupted");
+      if (stopModeClearsQueue(mode)) cancelQueuedSteers(managed, rt, "interrupted");
       return result;
     }
 
@@ -44131,7 +44415,7 @@ export function createAgentChatService(args: {
       } catch {
         // ignore
       }
-      if (mode === "stop_and_clear") cancelQueuedSteers(managed, rt, "interrupted");
+      if (stopModeClearsQueue(mode)) cancelQueuedSteers(managed, rt, "interrupted");
       cancelPendingInputsFrom(managed, "pi", "ade");
       persistChatState(managed);
       return result;
@@ -44139,7 +44423,7 @@ export function createAgentChatService(args: {
 
     if (managed.session.provider === "pi") {
       piRuntimeSetupInterruptRequested.set(managed, true);
-      if (mode === "stop_and_clear") {
+      if (stopModeClearsQueue(mode)) {
         cancelQueuedSteers(managed, { pendingSteers: [], activeTurnId: null }, "interrupted");
       }
       setSessionIdle(managed);
@@ -44167,7 +44451,7 @@ export function createAgentChatService(args: {
           error: error instanceof Error ? error.message : String(error),
         });
       }
-      if (mode === "stop_and_clear") cancelQueuedSteers(managed, rt, "interrupted");
+      if (stopModeClearsQueue(mode)) cancelQueuedSteers(managed, rt, "interrupted");
       persistChatState(managed);
       return result;
     }
@@ -44176,7 +44460,7 @@ export function createAgentChatService(args: {
       // The stop landed while the session was still opening, so there is no
       // runtime to cancel. Clear the queue and idle the row, the same way the
       // Pi no-runtime arm does.
-      if (mode === "stop_and_clear") {
+      if (stopModeClearsQueue(mode)) {
         cancelQueuedSteers(managed, { pendingSteers: [], activeTurnId: null }, "interrupted");
       }
       cancelPendingInputsFrom(managed, "acp", "ade");
@@ -44197,13 +44481,13 @@ export function createAgentChatService(args: {
         cancelDroidPermissionWaiter(w, "Droid tool approval was cancelled because the turn was interrupted.");
       }
       rt.permissionWaiters.clear();
-      if (mode === "stop_and_clear") cancelQueuedSteers(managed, rt, "interrupted");
+      if (stopModeClearsQueue(mode)) cancelQueuedSteers(managed, rt, "interrupted");
       return result;
     }
 
     if (managed.session.provider === "droid") {
       droidRuntimeSetupInterruptRequested.set(managed, true);
-      if (mode === "stop_and_clear") {
+      if (stopModeClearsQueue(mode)) {
         cancelQueuedSteers(managed, { pendingSteers: [], activeTurnId: null }, "interrupted");
       }
       persistChatState(managed);
@@ -44212,7 +44496,7 @@ export function createAgentChatService(args: {
 
     if (managed.session.provider === "cursor") {
       cursorRuntimeSetupInterruptRequested.set(managed, true);
-      if (mode === "stop_and_clear") {
+      if (stopModeClearsQueue(mode)) {
         cancelQueuedSteers(managed, { pendingSteers: [], activeTurnId: null }, "interrupted");
       }
       persistChatState(managed);
@@ -44236,7 +44520,7 @@ export function createAgentChatService(args: {
       // to a turn that IS running still goes when the app-server aborts it,
       // because the request behind the card dies with the turn either way.
       const settleCardsIfClearing = (): void => {
-        if (mode !== "stop_and_clear") return;
+        if (!stopModeClearsQueue(mode)) return;
         settleCodexPendingInputs(managed, runtime);
       };
       if (!managed.session.threadId) {
@@ -44348,7 +44632,7 @@ export function createAgentChatService(args: {
     });
     const claudeControl = getClaudeQueryControl(runtime.query);
     let interruptResponse: SDKControlInterruptResponse | undefined;
-    const localQueuedForRecovery = mode === "stop_and_clear"
+    const localQueuedForRecovery = stopModeClearsQueue(mode)
       ? [...runtime.pendingSteers]
       : [];
     // Remove ADE-local staged messages before awaiting the provider interrupt.
@@ -44361,7 +44645,7 @@ export function createAgentChatService(args: {
     const knownQueuedMessagesAtInterrupt = new Map(runtime.knownQueuedMessages);
     const cancelQueuedCapability = managed.session.protocolCapabilities?.includes("interrupt_cancel_queued_v1") === true;
     const requestClaudeInterrupt = async (): Promise<SDKControlInterruptResponse | undefined> => {
-      if (mode === "stop_and_clear" && cancelQueuedCapability && claudeControl.interruptWithOptions) {
+      if (stopModeClearsQueue(mode) && cancelQueuedCapability && claudeControl.interruptWithOptions) {
         return await awaitClaudeControlCall(
           "Claude interrupt and queue cancellation",
           CLAUDE_INTERRUPT_REQUEST_TIMEOUT_MS,
@@ -44374,7 +44658,7 @@ export function createAgentChatService(args: {
         CLAUDE_INTERRUPT_REQUEST_TIMEOUT_MS,
         () => claudeControl.interrupt!(),
       );
-      if (mode !== "stop_and_clear" || !response?.still_queued?.length || !claudeControl.cancelAsyncMessage) {
+      if (!stopModeClearsQueue(mode) || !response?.still_queued?.length || !claudeControl.cancelAsyncMessage) {
         return response;
       }
       const cancelled: string[] = [];
@@ -44401,6 +44685,7 @@ export function createAgentChatService(args: {
     // Set interrupted before touching the runtime so the streaming loop can
     // break cleanly while the underlying SDK stream is aborted below.
     runtime.interrupted = true;
+    runtime.spareBackgroundOnInterrupt = !stopModeStopsBackground(mode);
     const interruptedTurnId = runtime.activeTurnId;
     if (runtime.busy && interruptedTurnId) {
       runtime.interruptEventsEmitted = true;
@@ -44415,7 +44700,9 @@ export function createAgentChatService(args: {
     }
     cancelClaudeWarmup(managed, runtime, "interrupt");
     settleClaudeInitialInputDispatch(runtime, new Error("Claude turn was interrupted before its input was dispatched."));
-    await stopActiveClaudeSubagents(managed, runtime, interruptedTurnId ?? undefined, "Interrupted by user");
+    if (stopModeStopsBackground(mode)) {
+      await stopActiveClaudeSubagents(managed, runtime, interruptedTurnId ?? undefined, "Interrupted by user");
+    }
     if (!internalOptions.requireClaudeProviderInterrupt) {
       try {
         if (claudeControl.interrupt || claudeControl.interruptWithOptions) {
@@ -44432,13 +44719,16 @@ export function createAgentChatService(args: {
     const normalizedInterrupt = normalizeClaudeInterruptReceipt(interruptResponse);
     const preserveQueryForQueuedMessages = normalizedInterrupt.stillQueuedUuids.length > 0;
     const providerCancelledUuids = normalizedInterrupt.cancelledUuids;
-    if (!preserveQueryForQueuedMessages) {
+    // Resetting the query reaps the Claude process and orphans every still-open
+    // task. That is correct for background-killing Stop; it is the opposite of
+    // `perTaskStopAffordance` for Turn-only / Turn+queue.
+    if (!preserveQueryForQueuedMessages && stopModeStopsBackground(mode)) {
       // Invalidate the idle reader and any already-issued `next()` promise as
       // part of the same reset. Clearing only query/inputPump lets that stale
       // promise consume the next turn after an interrupt.
       await resetClaudeQuerySession(managed, runtime, "interrupt");
     }
-    if (mode === "stop_and_clear") {
+    if (stopModeClearsQueue(mode)) {
       const localQueuedCount = localQueuedForRecovery.length;
       result.cancelledQueuedCount = localQueuedCount + providerCancelledUuids.length;
       const providerCancelledSteers = providerCancelledUuids.flatMap((uuid) => {
@@ -45574,6 +45864,11 @@ export function createAgentChatService(args: {
         error: error instanceof Error ? error.message : String(error),
       });
     }
+    const pendingAutoResume = scheduledWork.find((item) => isPendingAutoResumeScheduledWork(item));
+    const usageLimitParkedUntil = pendingAutoResume?.nextRunAt
+      ?? liveManaged?.usageLimitParkedUntil
+      ?? persisted?.usageLimitParkedUntil
+      ?? null;
     // Preserve an explicit null from the live session instead of falling back
     // to an older persisted native mode. The distinction matters to clients:
     // Cursor's mode is nullable because null means the user cleared the native
@@ -45702,6 +45997,8 @@ export function createAgentChatService(args: {
       summary: row.summary ?? null,
       ...(provider === "claude" ? { claudeTag } : {}),
       nextWakeAt,
+      ...(usageLimitParkedUntil ? { usageLimitParkedUntil } : {}),
+      autoContinueAtUsageLimit: sessionAutoContinueAtUsageLimit(liveSession ?? persisted),
       activeBackgroundTaskCount,
       // Omitted when nothing is live, like every other optional field here: a
       // zero record carries no information and would ride along on every
@@ -48349,6 +48646,7 @@ export function createAgentChatService(args: {
     permissionMode,
     spawnKind: requestedSpawnKind,
     subagentTakeoverPromptShown,
+    autoContinueAtUsageLimit: requestedAutoContinueAtUsageLimit,
   }: AgentChatUpdateSessionArgs): Promise<AgentChatSession> => {
     const fastMode = requestedFastModeArg ?? requestedLegacyFastModeArg;
     const managed = ensureManagedSession(sessionId);
@@ -48756,6 +49054,29 @@ export function createAgentChatService(args: {
         managed.session.fastMode = true;
       } else {
         delete managed.session.fastMode;
+      }
+    }
+    if (requestedAutoContinueAtUsageLimit !== undefined) {
+      if (requestedAutoContinueAtUsageLimit === false) {
+        managed.session.autoContinueAtUsageLimit = false;
+        if (managed.usageLimitParkedUntil) {
+          managed.usageLimitParkedUntil = null;
+        }
+        autoResume.cancelForSession(sessionId, "opted_out_of_auto_continue");
+        const runtime = managed.runtime;
+        if (
+          runtime?.kind === "claude"
+          && runtime.query
+          && (runtime.busy || runtime.activeTurnId)
+        ) {
+          try {
+            await interrupt({ sessionId, mode: DEFAULT_AGENT_CHAT_STOP_MODE });
+          } catch {
+            // Opt-out is persisted even if the live query cannot be interrupted.
+          }
+        }
+      } else {
+        delete managed.session.autoContinueAtUsageLimit;
       }
     }
     const nextClaudeFastModeSetting = managed.session.provider === "claude"
@@ -50132,47 +50453,7 @@ export function createAgentChatService(args: {
 
   const normalizeClaudeContextUsage = (
     usage: SDKControlGetContextUsageResponse,
-  ): AgentChatContextUsage => {
-    const totalTokens = Number.isFinite(usage.totalTokens) ? Math.max(0, usage.totalTokens) : 0;
-    const maxTokens = Number.isFinite(usage.maxTokens) ? Math.max(0, usage.maxTokens) : 0;
-    const denominator = maxTokens > 0 ? maxTokens : totalTokens > 0 ? totalTokens : 1;
-    const categories = (Array.isArray(usage.categories) ? usage.categories : [])
-      .map((category): AgentChatContextUsage["categories"][number] | null => {
-        const name = typeof category.name === "string" ? category.name.trim() : "";
-        const tokens = Number.isFinite(category.tokens) ? Math.max(0, category.tokens) : 0;
-        if (!name.length && tokens === 0) return null;
-        return {
-          name: name || "Other",
-          tokens,
-          percentage: tokens > 0 ? (tokens / denominator) * 100 : 0,
-          ...(typeof category.color === "string" && category.color.trim().length ? { color: category.color.trim() } : {}),
-          ...(category.isDeferred === true ? { isDeferred: true } : {}),
-        };
-      })
-      .filter((category): category is AgentChatContextUsage["categories"][number] => Boolean(category));
-
-    if (maxTokens > totalTokens && !categories.some((category) => category.name.trim().toLowerCase() === "free")) {
-      const freeTokens = maxTokens - totalTokens;
-      categories.push({
-        name: "Free",
-        tokens: freeTokens,
-        percentage: maxTokens > 0 ? (freeTokens / maxTokens) * 100 : 0,
-      });
-    }
-
-    return {
-      categories,
-      totalTokens,
-      maxTokens,
-      rawMaxTokens: Number.isFinite(usage.rawMaxTokens) ? Math.max(0, usage.rawMaxTokens) : maxTokens,
-      percentage: Number.isFinite(usage.percentage)
-        ? Math.max(0, Math.min(100, usage.percentage))
-        : maxTokens > 0
-          ? (totalTokens / maxTokens) * 100
-          : 0,
-      ...(typeof usage.model === "string" && usage.model.trim().length ? { model: usage.model.trim() } : {}),
-    };
-  };
+  ): AgentChatContextUsage => normalizeStructuredClaudeContextUsage(usage);
 
   const normalizeClaudeRewindFilesResult = (
     result: ClaudeRewindFilesResult,
@@ -51599,6 +51880,8 @@ export function createAgentChatService(args: {
     dispatchSteer,
     cancelDispatchedSteer,
     interrupt,
+    interruptWithQueueMode: interrupt,
+    stopTask,
     /**
      * Is a persisted Claude `--bg` job actually still running?
      *

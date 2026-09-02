@@ -455,7 +455,13 @@ func workSessionRowPresentation(
     phase: phase,
     badge: badge,
     tone: resolved.presentation.tone,
-    status: workSessionStatusSlot(session: session, phase: phase, resolved: resolved, now: now)
+    status: workSessionStatusSlot(
+      session: session,
+      phase: phase,
+      resolved: resolved,
+      now: now,
+      parkedUntil: summary?.usageLimitParkedUntil
+    )
   )
 }
 
@@ -483,7 +489,8 @@ private func workSessionStatusSlot(
   session: TerminalSessionSummary,
   phase: CanonicalSessionPhase,
   resolved: (kind: SessionBadgeKind?, presentation: ActivityPhasePresentation),
-  now: Date
+  now: Date,
+  parkedUntil: String?
 ) -> WorkSessionStatusPresentation? {
   // needsYou skips the overlay gate entirely and falls straight through to the
   // phase table below, which already says "Needs you" in amber.
@@ -515,6 +522,20 @@ private func workSessionStatusSlot(
     }
 
     if phase == .settled { return nil }
+  }
+
+  if (phase == .ready || phase == .idle),
+     let parkedUntil,
+     let parkedDate = workParsedDate(parkedUntil),
+     parkedDate > now {
+    return WorkSessionStatusPresentation(
+      label: "Parked",
+      tone: .neutral,
+      glyph: .waiting,
+      showsElapsed: false,
+      prominent: false,
+      kind: nil
+    )
   }
 
   return WorkSessionStatusPresentation(

@@ -154,6 +154,7 @@ describe("isAllowedAdeAction", () => {
     expect(isAllowedAdeAction("chat", "getCodexGoal")).toBe(true);
     expect(isAllowedAdeAction("chat", "resetCodexMemory")).toBe(true);
     expect(isAllowedAdeAction("chat", "terminateCodexBackgroundTerminal")).toBe(true);
+    expect(isAllowedAdeAction("chat", "stopTask")).toBe(true);
     expect(isAllowedAdeAction("git", "getCommit")).toBe(true);
   });
 
@@ -212,7 +213,7 @@ describe("isAllowedAdeAction", () => {
       "resolveSmartLinkPreview", "resolveUnprocessedMessage", "respondToInput",
       "restoreCancelledQueue", "rewindFiles", "saveTempAttachment", "sendMessage",
       "setClaudeOutputStyle", "setCodexGoal", "setCodexGoalStatus", "setParallelLaunchState",
-      "setScheduledWorkPaused", "steer", "suggestLaneNameFromPrompt",
+      "setScheduledWorkPaused", "steer", "stopTask", "suggestLaneNameFromPrompt",
       "terminateCodexBackgroundTerminal", "unarchiveSession", "updateSession",
       "validateCrossMachineSource", "warmupModel",
       // src/main/services/remoteRuntime/remoteConnectionService.ts

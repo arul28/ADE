@@ -405,6 +405,8 @@ import type {
   AgentChatValidateCrossMachineSourceArgs,
   AgentChatInterruptArgs,
   AgentChatInterruptResult,
+  AgentChatStopTaskArgs,
+  AgentChatStopTaskResult,
   AgentChatRestoreCancelledQueueArgs,
   AgentChatRestoreCancelledQueueResult,
   AgentChatRecoverTurnArgs,
@@ -1428,6 +1430,7 @@ const MUTATING_CHAT_ACTIONS = new Set<string>([
   "respondToInput",
   "approveToolUse",
   "interrupt",
+  "stopTask",
   "restoreCancelledQueue",
   "recoverTurn",
   "recoverCodexTurn",
@@ -6672,6 +6675,21 @@ const adeBridge = {
         "interrupt",
         { args },
         () => ipcRenderer.invoke(IPC.agentChatInterrupt, args),
+      );
+      agentChatSummaryCache.clear();
+      return result;
+    },
+    stopTask: async (
+      args: AgentChatStopTaskArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<AgentChatStopTaskResult> => {
+      agentChatSummaryCache.clear();
+      const result = await callPinnedOrBoundRuntimeActionOr<AgentChatStopTaskResult>(
+        pin,
+        "chat",
+        "stopTask",
+        { args },
+        () => ipcRenderer.invoke(IPC.agentChatStopTask, args),
       );
       agentChatSummaryCache.clear();
       return result;

@@ -461,6 +461,15 @@ export class PersonalChatScope {
         await this.requirePersonalSession(service, readSessionId(args));
         result = await service.interrupt(args as never);
         break;
+      case "stopTask": {
+        const sessionId = readSessionId(args);
+        await this.requirePersonalSession(service, sessionId);
+        result = await service.stopTask({
+          sessionId,
+          taskId: requiredString(args.taskId, "taskId"),
+        });
+        break;
+      }
       case "restoreCancelledQueue":
         await this.requirePersonalSession(service, readSessionId(args));
         result = await service.restoreCancelledQueue(args as never);

@@ -309,6 +309,11 @@ export type TerminalSessionSummary = {
   chatIdleSinceAt?: string | null;
   /** Earliest armed, unpaused scheduled wake for chat-backed sessions. */
   nextWakeAt?: string | null;
+  /**
+   * ISO instant this chat is parked waiting for a usage-limit reset. Distinct
+   * from `nextWakeAt` so the session list can read Parked instead of Waiting.
+   */
+  usageLimitParkedUntil?: string | null;
   /** Current ADE-chat mode, projected for desktop Work-row presentation only. */
   chatActivityMode?: "planning" | null;
   /** Authoritative provider-reported background tasks still running after the foreground turn. */

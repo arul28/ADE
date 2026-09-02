@@ -7684,14 +7684,18 @@ export function AgentChatPane({
     () => (selectedSession?.scheduledWork ?? []).find(isPendingAutoResumeScheduledWork) ?? null,
     [selectedSession?.scheduledWork],
   );
+  const usageLimitParkedUntil = selectedSession?.usageLimitParkedUntil ?? null;
+  const usageLimitParkedUntilMs = usageLimitParkedUntil ? Date.parse(usageLimitParkedUntil) : Number.NaN;
+  const sdkUsageLimitParked = Number.isFinite(usageLimitParkedUntilMs);
   // The schedule belongs to the failure that armed it, which is always the most
   // recent usage-limit error in the transcript. Anchoring to it keeps every
   // older usage-limit card in the same chat from advertising a live schedule.
-  // Gated on the schedule: without one there is nothing to anchor, and the walk
-  // below is a full-transcript scan that would otherwise re-run on every event
-  // append for the overwhelmingly common case of a chat with no armed resume.
+  // Gated on the schedule or an SDK-native parked wait: without one there is
+  // nothing to anchor, and the walk below is a full-transcript scan that would
+  // otherwise re-run on every event append for the overwhelmingly common case
+  // of a chat with no armed resume.
   const latestRateLimitFailureEventId = useMemo(() => {
-    if (!pendingAutoResumeSchedule) return null;
+    if (!pendingAutoResumeSchedule && !sdkUsageLimitParked) return null;
     for (let index = selectedEventsForDisplay.length - 1; index >= 0; index -= 1) {
       const envelope = selectedEventsForDisplay[index];
       const event = envelope?.event;
@@ -7700,26 +7704,36 @@ export function AgentChatPane({
       return providerFailureEventId(envelope.timestamp, event);
     }
     return null;
-  }, [pendingAutoResumeSchedule, selectedEventsForDisplay]);
+  }, [pendingAutoResumeSchedule, sdkUsageLimitParked, selectedEventsForDisplay]);
   const autoResumeContextValue = useMemo<ChatAutoResumeState>(() => {
-    if (!selectedSessionId || !pendingAutoResumeSchedule) return null;
-    const scheduleId = pendingAutoResumeSchedule.id;
+    if (!selectedSessionId || (!pendingAutoResumeSchedule && !sdkUsageLimitParked)) return null;
+    const scheduleId = pendingAutoResumeSchedule?.id ?? null;
     const sessionId = selectedSessionId;
     return {
       scheduleId,
-      nextRunAt: pendingAutoResumeSchedule.nextRunAt ?? null,
+      nextRunAt: pendingAutoResumeSchedule?.nextRunAt ?? usageLimitParkedUntil ?? null,
       anchorEventId: latestRateLimitFailureEventId,
       cancel: async () => {
         try {
-          const result = await window.ade.agentChat.cancelScheduledWork(
-            { sessionId, scheduleId },
-            chatRuntimePinRef.current,
-          );
+          if (scheduleId) {
+            const result = await window.ade.agentChat.cancelScheduledWork(
+              { sessionId, scheduleId },
+              chatRuntimePinRef.current,
+            );
+            patchSessionSummary(sessionId, {
+              scheduledWork: (selectedSession?.scheduledWork ?? []).filter((item) =>
+                item.id !== scheduleId || !(
+                  result.providerCancellationConfirmed || result.schedule.status === "cancelled"
+                )),
+            });
+          }
+          await window.ade.agentChat.updateSession({
+            sessionId,
+            autoContinueAtUsageLimit: false,
+          }, chatRuntimePinRef.current);
           patchSessionSummary(sessionId, {
-            scheduledWork: (selectedSession?.scheduledWork ?? []).filter((item) =>
-              item.id !== scheduleId || !(
-                result.providerCancellationConfirmed || result.schedule.status === "cancelled"
-              )),
+            autoContinueAtUsageLimit: false,
+            usageLimitParkedUntil: null,
           });
           scheduleSessionsRefresh();
           return null;
@@ -7733,8 +7747,10 @@ export function AgentChatPane({
     patchSessionSummary,
     pendingAutoResumeSchedule,
     scheduleSessionsRefresh,
+    sdkUsageLimitParked,
     selectedSession?.scheduledWork,
     selectedSessionId,
+    usageLimitParkedUntil,
   ]);
 
   useLayoutEffect(() => {
@@ -12209,19 +12225,45 @@ export function AgentChatPane({
           setError(cancelError instanceof Error ? cancelError.message : String(cancelError));
         });
       } : undefined}
-      onStopBackgroundTask={selectedSessionId && (selectedSession?.provider ?? sessionProvider) === "codex" ? (snapshot) => {
+      onStopBackgroundTask={selectedSessionId ? (snapshot) => {
         const processId = snapshot.sourceTaskId?.trim();
         if (!processId) {
           setError("This background command has no process id to stop.");
           return;
         }
-        void window.ade.agentChat.codex.terminateBackgroundTerminal({
-          sessionId: selectedSessionId,
-          processId,
-        }, chatRuntimePinRef.current).catch((stopError) => {
-          setError(stopError instanceof Error ? stopError.message : String(stopError));
-        });
+        const provider = selectedSession?.provider ?? sessionProvider;
+        if (provider === "codex") {
+          void window.ade.agentChat.codex.terminateBackgroundTerminal({
+            sessionId: selectedSessionId,
+            processId,
+          }, chatRuntimePinRef.current).catch((stopError) => {
+            setError(stopError instanceof Error ? stopError.message : String(stopError));
+          });
+          return;
+        }
+        if (provider === "claude") {
+          void window.ade.agentChat.stopTask({
+            sessionId: selectedSessionId,
+            taskId: processId,
+          }, chatRuntimePinRef.current).catch((stopError) => {
+            setError(stopError instanceof Error ? stopError.message : String(stopError));
+          });
+          return;
+        }
+        setError("Per-task stop is not available for this provider.");
       } : undefined}
+      onStopSubagent={selectedSessionId && (selectedSession?.provider ?? sessionProvider) === "claude"
+        ? (snapshot) => {
+          const taskId = snapshot.taskId.trim();
+          if (!taskId || snapshot.childSessionId) return;
+          void window.ade.agentChat.stopTask({
+            sessionId: selectedSessionId,
+            taskId,
+          }, chatRuntimePinRef.current).catch((stopError) => {
+            setError(stopError instanceof Error ? stopError.message : String(stopError));
+          });
+        }
+        : undefined}
       variant="pane"
       className="h-full"
       onSelectSubagent={(selection) => {
@@ -13397,6 +13439,7 @@ export function AgentChatPane({
             onInterrupt={(mode) => {
               void interrupt(mode);
             }}
+            backgroundJobCount={selectedSession?.activeBackgroundTaskCount ?? 0}
             onApproval={(decision, responseText, answers) => {
               void approve(decision, responseText, answers);
             }}
@@ -14275,6 +14318,20 @@ export function AgentChatPane({
                         onDismissUnprocessedMessage={handleDismissUnprocessedMessage}
                         onRetryProviderFailure={handleListRetryProviderFailure}
                         onChooseProviderFailureModel={handleListChooseProviderFailureModel}
+                        onStopSubagent={
+                          !subagentView
+                          && selectedSessionId
+                          && (selectedSession?.provider ?? sessionProvider) === "claude"
+                            ? (taskId) => {
+                                void window.ade.agentChat.stopTask({
+                                  sessionId: selectedSessionId,
+                                  taskId,
+                                }, chatRuntimePinRef.current).catch((stopError) => {
+                                  setError(stopError instanceof Error ? stopError.message : String(stopError));
+                                });
+                              }
+                            : undefined
+                        }
                         mosaic={subagentView ? undefined : mosaicContext}
                         scrollToRowKeyRequest={subagentView ? null : wakeJumpRequest}
                         scrollToPromptHistoryRequest={subagentView ? null : promptHistoryJumpRequest}

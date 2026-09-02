@@ -63,6 +63,7 @@ import { normalizeAppPackageChannel } from "../../../shared/packageChannel";
 import { findRecentProjectForRepo } from "../projects/repoProjectResolver";
 import { getModelById } from "../../../shared/modelRegistry";
 import { isAgentChatTurnRecoveryAction } from "../../../shared/types/chat";
+import { isAgentChatStopMode } from "../../../shared/chatStopModes";
 import {
   convertHeicBufferToJpeg,
   HeicAttachmentConversionError,
@@ -433,6 +434,8 @@ import type {
   AgentChatValidateCrossMachineSourceArgs,
   AgentChatInterruptArgs,
   AgentChatInterruptResult,
+  AgentChatStopTaskArgs,
+  AgentChatStopTaskResult,
   AgentChatRestoreCancelledQueueArgs,
   AgentChatRestoreCancelledQueueResult,
   AgentChatRecoverTurnArgs,
@@ -8031,7 +8034,7 @@ export function registerIpc({
       throw new Error("A chat session id is required.");
     }
     const rawMode = (arg as { mode?: unknown }).mode;
-    if (rawMode !== undefined && rawMode !== "stop_and_clear" && rawMode !== "stop_only") {
+    if (rawMode !== undefined && !isAgentChatStopMode(rawMode)) {
       throw new Error("Invalid chat stop mode.");
     }
     const request: AgentChatInterruptArgs = {
@@ -8039,6 +8042,22 @@ export function registerIpc({
       ...(rawMode ? { mode: rawMode } : {}),
     };
     return await ctx.agentChatService.interrupt(request);
+  });
+
+  ipcMain.handle(IPC.agentChatStopTask, async (_event, arg: unknown): Promise<AgentChatStopTaskResult> => {
+    const ctx = ensureAgentChatContext();
+    if (
+      !arg
+      || typeof arg !== "object"
+      || typeof (arg as { sessionId?: unknown }).sessionId !== "string"
+      || typeof (arg as { taskId?: unknown }).taskId !== "string"
+    ) {
+      throw new Error("A chat session id and task id are required.");
+    }
+    return await ctx.agentChatService.stopTask({
+      sessionId: (arg as { sessionId: string }).sessionId,
+      taskId: (arg as { taskId: string }).taskId,
+    });
   });
 
   ipcMain.handle(IPC.agentChatRestoreCancelledQueue, async (

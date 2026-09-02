@@ -4535,19 +4535,77 @@ describe("ADE CLI", () => {
       "chat-1",
       "--keep-queue",
       "--clear-queue",
-    ])).toThrow(/only one of --mode, --keep-queue, or --clear-queue/);
+    ])).toThrow(/Use only one of --keep-queue or --clear-queue/);
     expect(() => buildCliPlan([
       "chat",
       "interrupt",
       "chat-1",
       "--arg",
       "mode=discard_everything",
-    ])).toThrow(/stop_and_clear or stop_only/);
+    ])).toThrow(/stop_and_clear, stop_only, stop_and_background, or stop_and_clear_and_background/);
     expect(() => buildCliPlan([
       "chat",
       "restore-queue",
       "chat-1",
     ])).toThrow(/recoveryId/);
+
+    const stopTask = expectExecutePlan(buildCliPlan([
+      "chat",
+      "stop-task",
+      "chat-1",
+      "task-A",
+    ]));
+    expect(stopTask.label).toBe("chat stop task");
+    expect(stopTask.steps[0]?.params).toMatchObject({
+      arguments: {
+        domain: "chat",
+        action: "stopTask",
+        args: { sessionId: "chat-1", taskId: "task-A" },
+      },
+    });
+
+    const personalStopTask = expectExecutePlan(buildCliPlan([
+      "chat",
+      "stop-task",
+      "personal-1",
+      "--personal",
+      "--task",
+      "task-B",
+    ]));
+    expect(personalStopTask.machineOnly).toBe(true);
+    expect(personalStopTask.steps[0]?.params).toEqual({
+      action: "stopTask",
+      args: { sessionId: "personal-1", taskId: "task-B" },
+    });
+
+    const stopTaskFlagFirst = expectExecutePlan(buildCliPlan([
+      "chat",
+      "stop-task",
+      "--task",
+      "task-A",
+      "chat-1",
+    ]));
+    expect(stopTaskFlagFirst.steps[0]?.params).toMatchObject({
+      arguments: {
+        domain: "chat",
+        action: "stopTask",
+        args: { sessionId: "chat-1", taskId: "task-A" },
+      },
+    });
+
+    const personalStopTaskFlagFirst = expectExecutePlan(buildCliPlan([
+      "chat",
+      "stop-task",
+      "--personal",
+      "--task",
+      "task-B",
+      "personal-1",
+    ]));
+    expect(personalStopTaskFlagFirst.machineOnly).toBe(true);
+    expect(personalStopTaskFlagFirst.steps[0]?.params).toEqual({
+      action: "stopTask",
+      args: { sessionId: "personal-1", taskId: "task-B" },
+    });
   });
 
   it("routes chat demote, promote, and keep-reporting to spawn-kind actions", () => {

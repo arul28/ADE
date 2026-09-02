@@ -2683,6 +2683,7 @@ const SCOPED_CHAT_ACTIONS = new Set([
   // all CTO-only and refuse a session-bound agent outright — no scoping needed.
   "interrupt",
   "interruptWithQueueMode",
+  "stopTask",
   "restoreCancelledQueue",
   "setSpawnKind",
   "dismissSubagentTakeoverPrompt",

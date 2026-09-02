@@ -79,7 +79,6 @@ import {
   writeChatCompanionUiState,
 } from "./chatCompanionUiState";
 import { CHAT_AUTH_RECOVERED_EVENT, CHAT_AUTH_RETRY_REJECTED_EVENT, CHAT_RETRY_AUTH_TURN_EVENT } from "./AgentCliAuthCard";
-import { formatAutoResumeTime } from "../../../shared/chatAutoResume";
 import {
   isChatSessionRetained,
   releaseAllRetainedChatSessions,
@@ -642,6 +641,8 @@ function installAdeMocks(options?: {
     providerCancellationRequested: true,
     providerCancellationConfirmed: true,
   }));
+  const updateSession = vi.fn().mockResolvedValue(undefined);
+  const stopTask = vi.fn().mockResolvedValue({ stopped: true });
   const deleteLane = vi.fn().mockResolvedValue(undefined);
   const writeClipboardText = vi.fn().mockResolvedValue(undefined);
   const chatEventListeners = new Set<(event: AgentChatEventEnvelope) => void>();
@@ -737,10 +738,11 @@ function installAdeMocks(options?: {
       editSteer: vi.fn().mockResolvedValue(undefined),
       cancelSteer,
       dispatchSteer,
-      updateSession: vi.fn().mockResolvedValue(undefined),
+      updateSession,
       archive,
       unarchive,
       interrupt: vi.fn().mockResolvedValue(undefined),
+      stopTask,
       recoverTurn,
       recoverCodexTurn,
       resolveUnprocessedMessage,
@@ -884,6 +886,8 @@ function installAdeMocks(options?: {
     setCodexGoalStatus,
     setScheduledWorkPaused,
     cancelScheduledWork,
+    updateSession,
+    stopTask,
     deleteLane,
     suggestLaneName,
     renameLane,
@@ -4039,7 +4043,7 @@ describe("AgentChatPane submit recovery", () => {
         source: "auto_resume_limit",
       }],
     });
-    const { cancelScheduledWork } = installAdeMocks({
+    const { cancelScheduledWork, updateSession } = installAdeMocks({
       sessions: [session],
       eventHistory: {
         sessionId: session.sessionId,
@@ -4076,14 +4080,20 @@ describe("AgentChatPane submit recovery", () => {
     renderPane(session);
 
     const banner = await screen.findByTestId("auto-resume-scheduled");
-    expect(banner.textContent).toContain("Auto-resume scheduled for");
-    expect(banner.textContent).toContain(formatAutoResumeTime(Date.parse(nextRunAt)));
+    expect(banner.textContent).toContain("Usage limit reached");
+    expect(banner.textContent).toContain("Continue automatically");
 
-    fireEvent.click(screen.getByRole("button", { name: "Cancel auto-resume" }));
+    fireEvent.click(screen.getByRole("button", { name: "Don't continue" }));
     await waitFor(() => {
       expect(cancelScheduledWork).toHaveBeenCalledWith({
         sessionId: session.sessionId,
         scheduleId: "auto-resume:session-1",
+      }, null);
+    });
+    await waitFor(() => {
+      expect(updateSession).toHaveBeenCalledWith({
+        sessionId: session.sessionId,
+        autoContinueAtUsageLimit: false,
       }, null);
     });
     await waitFor(() => expect(screen.queryByTestId("auto-resume-scheduled")).toBeNull());
@@ -4149,8 +4159,8 @@ describe("AgentChatPane submit recovery", () => {
 
     expect(await screen.findByText("Usage limit")).toBeTruthy();
     const banner = await screen.findByTestId("auto-resume-scheduled");
-    expect(banner.textContent).toContain("Auto-resume scheduled for");
-    expect(screen.getByRole("button", { name: "Cancel auto-resume" })).toBeTruthy();
+    expect(banner.textContent).toContain("Usage limit reached");
+    expect(screen.getByRole("button", { name: "Don't continue" })).toBeTruthy();
   });
 
   it("offers the pending auto-resume only on the newest usage-limit card", async () => {
