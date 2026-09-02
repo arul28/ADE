@@ -10690,6 +10690,9 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       case "agents.provider.cursor":
         addNotice(`${label}: add a Cursor API key in ADE Settings → Agents → Cursor.`, "info");
         return;
+      case "secrets.secrets":
+        addNotice(`${label}: manage project secrets in ADE Settings → Secrets.`, "info");
+        return;
       default: {
         const _exhaustive: never = request.entryId;
         return _exhaustive;

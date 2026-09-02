@@ -536,6 +536,14 @@ export type PluginActionButtonPayload = {
    * this field must never re-derive it from raw payload text.
    */
   color?: string;
+  /**
+   * `composer-action` only in meaning: this button claims the composer's Send.
+   *
+   * Parsed on all four action-button kinds (one arm) so the field cannot
+   * drift. Only the composer row honours it: a click arms the button instead
+   * of invoking, and Enter/Send invokes this action with `args.send === true`.
+   */
+  ownsSend?: boolean;
 };
 
 /**
@@ -1161,6 +1169,7 @@ export function parsePluginContributionPayload<K extends PluginSocketKind>(
           ...(raw.disabled === true ? { disabled: true } : {}),
           ...(menu.length > 0 ? { menu } : {}),
           ...(color ? { color } : {}),
+          ...(raw.ownsSend === true ? { ownsSend: true } : {}),
         };
       }
       case "row-badge": {

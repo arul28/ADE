@@ -1531,10 +1531,12 @@ all four clients:
   because in-app destinations belong to `navigate`, `fallback.deeplink`, and
   `{openSettings}`. Every open is logged with the plugin id.
 - **`openSettings`** (`readPluginActionOpenSettings`) opens one closed host
-  settings page. Today that list is `agents.provider.cursor` — the Cursor API
-  key page the Cursor Cloud empty state needs. Desktop and the web client
-  navigate there. The phone and the TUI have no such page (the key lives on the
-  Mac) and say so. Unknown ids drop rather than opening a guessed page.
+  settings page. The list is `agents.provider.cursor` (the Cursor API key page
+  the Cursor Cloud empty state needs) and `secrets.secrets` (the host Secrets
+  tab a launch form uses instead of putting values on a panel). Desktop and
+  the web client navigate there. The phone and the TUI have no such page
+  (keys and secrets live on the Mac) and say so. Unknown ids drop rather than
+  opening a guessed page.
 - **`prompt`** (`readPluginActionPrompt`) asks one question and re-invokes the
   same action with `args.prompt = {id, text, context?}`. With `options` it is a
   picker: desktop and web draw a list, iOS a sheet, the TUI matches typed text
@@ -1671,6 +1673,14 @@ rather than to a tab, and a settings section belongs to a page named in its
 payload. They are surfaces rather than a second concept because everything
 downstream — the manifest field, the contribution read, the per-slot cap, the
 ordering rule — is identical.
+
+**A `composer-action` may claim Send** with `ownsSend: true`. A click then arms
+the button instead of invoking; Enter/Send invokes that action with
+`args.send === true` and the live composer context (draft, model, reasoning,
+fast). The Advanced menu item still invokes immediately — that is the form.
+Absent `ownsSend`, a click invokes as it always did. The phone has no Send
+intercept, so it ignores the field and the click still opens the plugin's own
+surface.
 
 The taxonomy is closed and small so an author learns it once and every client can
 implement it exhaustively at compile time; a nineteenth kind is a platform change
@@ -2094,7 +2104,7 @@ is where that stands today, on this branch.
 | plugin | polarity | own code | state |
 |---|---|---|---|
 | `ade-linear` | `supersedes` | 8,795 lines (14,296 with its tests) | A real plugin. Panels, sockets, tools, CLI words, automation triggers and steps, a webhook channel, a sign-in flow, a credential handoff and a URL matcher |
-| `ade-cursor-cloud` | `supersedes` | 3,439 lines (4,643 with tests) | A real plugin, with a chat runtime. Remaining gaps: secret reveal, a tab badge, composer-native launch parity (the launch strip is gone on main). Landed: `webhooks.status()` on the SDK; `ade cursor cloud` aliases the plugin's CLI words when it is installed; plugin-owned cloud chats stamp `cursorCloudAgentId` so Cursor's rename lock applies; `{openSettings}` opens the Cursor provider page from the no-key empty state; create sends REST `model: { id, params? }` and fails closed when the form named reasoning or speed the catalog cannot express; finished-run artifact files are host-fetched into the lane cache. |
+| `ade-cursor-cloud` | `supersedes` | 3,439 lines (4,643 with tests) | A real plugin, with a chat runtime. Composer Send is claimed via `ownsSend` (Enter launches the cloud agent from the live draft; Advanced still opens the form). Fleet Automations strip reads `webhooks.status()`. `{openSettings}` opens the Cursor provider page or the host Secrets tab. Remaining gap: a tab badge (spec-optional). Landed: `ade cursor cloud` aliases the plugin's CLI words when it is installed; plugin-owned cloud chats stamp `cursorCloudAgentId` so Cursor's rename lock applies; create sends REST `model: { id, params? }` and fails closed when the form named reasoning or speed the catalog cannot express; finished-run artifact files are host-fetched into the lane cache. |
 | `ade-graph` | `enables` | 0 | A gating shell: `plugin.json`, an icon, a README and a one-panel schema |
 | `ade-review` | `enables` | 0 | Gating shell |
 | `ade-history` | `enables` | 0 | Gating shell |

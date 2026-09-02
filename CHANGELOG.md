@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Plugins
+
+- A `composer-action` can claim Send (`ownsSend`). Cursor Cloud uses it so Enter launches the cloud agent from the live draft, and Advanced still opens the form. Fleet Automations reads the host webhook ledger. `{openSettings}` can open the host Secrets tab so a launch form never carries a secret value.
+
 ## [1.2.71] - 2026-09-01
 
 ### Claude models

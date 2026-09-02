@@ -77,6 +77,37 @@ function readLaunchForm(args = {}) {
 }
 
 /**
+ * The composer's Send, as the same fields the form would have posted.
+ *
+ * `args.send === true` is the ownsSend intercept. The prompt is the live
+ * draft, the model is the composer picker, and Fast is only sent when the
+ * toggle is actually on — a default-false boolean must not become REST
+ * `standard` and fail-close the launch.
+ */
+function readComposerLaunch(args = {}) {
+  const context = args.context && args.context.kind === "composer" ? args.context : null;
+  const draft = typeof context?.draft === "string" ? context.draft.trim() : "";
+  const prompt = draft || (typeof args.prompt === "string" ? args.prompt.trim() : "");
+  const laneId = (typeof context?.laneId === "string" && context.laneId.trim())
+    || (typeof args.laneId === "string" && args.laneId.trim())
+    || "";
+  const model = (typeof context?.modelId === "string" && context.modelId.trim())
+    || (typeof args.model === "string" && args.model.trim())
+    || "";
+  const reasoning = typeof context?.reasoningEffort === "string" ? context.reasoningEffort.trim() : "";
+  return {
+    prompt,
+    laneId: laneId || null,
+    model: model || null,
+    reasoningEffort: reasoning || null,
+    fastMode: context?.fastMode === true ? true : null,
+    openPr: args.openPr === true,
+    rememberSecretNames: false,
+    secretNames: [],
+  };
+}
+
+/**
  * Is this lane's remote one Cursor can clone?
  *
  * Compared through `repoMatchKey`, so `git@github.com:owner/repo.git` and
@@ -190,6 +221,7 @@ module.exports = {
   isInjectableSecretName,
   laneSecretsKey,
   readCreateModelField,
+  readComposerLaunch,
   readLaunchForm,
   repoCaption,
 };

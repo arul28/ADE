@@ -8,7 +8,7 @@ import {
   PLUGIN_COMPOSER_ACTION_INVOKE_TIMEOUT_MS,
   PLUGIN_SOCKET_INVOKE_TIMEOUT_DEFAULT_MS,
 } from "../../../../shared/plugins/sockets";
-import { PluginComposerActions } from "./PluginComposerActions";
+import { PluginComposerActions, type PluginComposerSendOwner } from "./PluginComposerActions";
 import {
   registerPluginComposerTarget,
   resetPluginComposerTargets,
@@ -43,7 +43,7 @@ beforeAll(() => {
         name: "prompts",
         version: "1.0.0",
         sockets: [
-          { socket: "composer-action", surface: "work", id: "bug", label: "Bug report", actionId: "bug", order: 1 },
+          { socket: "composer-action", surface: "work", id: "bug", label: "Bug report", actionId: "bug", order: 1, ownsSend: true },
           {
             socket: "composer-action",
             surface: "work",
@@ -365,5 +365,45 @@ describe("contributed composer buttons", () => {
         ade.plugins.invoke = original;
       }
     });
+  });
+
+  it("arms an ownsSend button instead of invoking, and a second press disarms", async () => {
+    const owners: PluginComposerSendOwner[] = [];
+    function Harness() {
+      const [owner, setOwner] = React.useState<PluginComposerSendOwner>(null);
+      owners.push(owner);
+      return (
+        <PluginComposerActions
+          sessionId="chat-1"
+          laneId="lane-1"
+          readDraft={() => ({ draft: "", cursor: null })}
+          sendOwner={owner}
+          onSendOwnerChange={setOwner}
+        />
+      );
+    }
+
+    render(<Harness />);
+    await waitFor(() => expect(screen.getByText("Bug report")).toBeTruthy());
+    const button = screen.getByText("Bug report").closest("button");
+    if (!button) throw new Error("expected a contributed button");
+
+    await act(async () => {
+      fireEvent.click(button);
+    });
+    expect(invoked).toHaveLength(0);
+    expect(button.getAttribute("aria-pressed")).toBe("true");
+    expect(owners.at(-1)).toEqual({
+      pluginId: "prompts",
+      actionId: "bug",
+      label: "Bug report",
+    });
+
+    await act(async () => {
+      fireEvent.click(button);
+    });
+    expect(invoked).toHaveLength(0);
+    expect(button.getAttribute("aria-pressed")).toBe("false");
+    expect(owners.at(-1)).toBeNull();
   });
 });

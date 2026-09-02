@@ -10,6 +10,7 @@ const {
   findConnectedRepo,
   isInjectableSecretName,
   laneSecretsKey,
+  readComposerLaunch,
   readLaunchForm,
 } = require("../launch");
 const { buildFleetPanel, buildLaunchPanel, fleetFilterRow, fleetWhere, unavailableReason } = require("../panels");
@@ -47,6 +48,28 @@ describe("reading the launch form", () => {
     assert.equal(readLaunchForm({ fastMode: "fast" }).fastMode, true);
     assert.equal(readLaunchForm({ fastMode: "standard" }).fastMode, false);
     assert.equal(readLaunchForm({ reasoningEffort: "high" }).reasoningEffort, "high");
+  });
+
+  it("reads a composer Send as the same fields, without turning Fast-off into standard", () => {
+    const form = readComposerLaunch({
+      send: true,
+      context: {
+        kind: "composer",
+        laneId: "lane-7",
+        draft: "  fix the flaky sync test  ",
+        modelId: "composer-2",
+        reasoningEffort: "high",
+        fastMode: false,
+      },
+    });
+    assert.equal(form.prompt, "fix the flaky sync test");
+    assert.equal(form.laneId, "lane-7");
+    assert.equal(form.model, "composer-2");
+    assert.equal(form.reasoningEffort, "high");
+    assert.equal(form.fastMode, null);
+    assert.equal(readComposerLaunch({
+      context: { kind: "composer", draft: "go", fastMode: true },
+    }).fastMode, true);
   });
 
   it("refuses a secret in Cursor's own namespace", () => {
@@ -159,6 +182,8 @@ describe("the launch panel", () => {
     assert.equal(secret.kind, "toggle");
     assert.equal(secret.value, true);
     assert.ok(!JSON.stringify(panel).includes("postgres"), "a value never enters a panel schema");
+    const secretsButton = panel.body.find((node) => node.label === "Manage project secrets");
+    assert.equal(secretsButton?.onPress?.action, "openSecretsSettings");
   });
 
   it("stays inside the form's field ceiling", () => {
@@ -223,6 +248,27 @@ describe("the fleet panel's five states", () => {
     assert.match(JSON.stringify(panel.body), /Agents → Cursor/);
     assert.ok(JSON.stringify(panel.body).includes("openCursorSettings"));
     assert.ok(!JSON.stringify(panel.body).includes('"list"'));
+  });
+
+  it("draws the Automations strip from the host ledger, including a copyable URL", () => {
+    const panel = buildFleetPanel({
+      state: "empty",
+      counts: { active: 0, lanes: 0, unlinked: 0, total: 0, archived: 0 },
+      webhook: {
+        status: "Endpoint ready",
+        tone: "neutral",
+        lastEvent: "2026-09-02 07:00 UTC",
+        pendingDeliveries: 0,
+        drainError: null,
+        url: "https://relay.example/plugin/ade-cursor-cloud/webhook",
+      },
+    });
+    const json = JSON.stringify(panel.body);
+    assert.match(json, /Automations/);
+    assert.match(json, /Endpoint ready/);
+    assert.match(json, /2026-09-02 07:00 UTC/);
+    assert.ok(json.includes("copyWebhookUrl"));
+    assert.ok(json.includes("https://relay.example/plugin/ade-cursor-cloud/webhook"));
   });
 
   it("offers a retry on an error", () => {

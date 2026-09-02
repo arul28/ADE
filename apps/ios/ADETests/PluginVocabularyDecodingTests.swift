@@ -3272,6 +3272,7 @@ final class PluginActionResponseTests: XCTestCase {
 
     XCTAssertNil(try result(#"{"ok":true,"result":{"openSettings":"billing.plans"}}"#).openSettings)
     XCTAssertNil(PluginInvokeResult.parseOpenSettings("agents.providers"))
+    XCTAssertEqual(PluginInvokeResult.parseOpenSettings("secrets.secrets"), "secrets.secrets")
   }
 
   /// A `navigate` carrying a placement this client has no places for.

@@ -256,6 +256,15 @@ export type PluginManifestSocket = {
    * of the two themes never reaches the field.
    */
   color?: string;
+  /**
+   * `composer-action` only in meaning: this button claims the composer's Send.
+   *
+   * Not a `manifestExtra`. A button that did not claim Send is still a
+   * perfectly good button, and dropping the contribution over a boolean the
+   * other three action-button kinds ignore would be the opposite of what the
+   * requirement table is for.
+   */
+  ownsSend?: boolean;
   /** `file-viewer` only: lowercase extensions including the dot. */
   extensions?: string[];
   /** `filter-chip` only. */
@@ -1206,6 +1215,7 @@ function parseSockets(raw: unknown, ctx: ParseContext): PluginManifestSocket[] {
       ...(actionId ? { actionId } : {}),
       ...(menu.length > 0 ? { menu } : {}),
       ...(color ? { color } : {}),
+      ...(entry.ownsSend === true ? { ownsSend: true } : {}),
       ...(extensions && extensions.length ? { extensions } : {}),
       ...(trimmedString(entry.filterKey) ? { filterKey: trimmedString(entry.filterKey)! } : {}),
       ...(command ? { command } : {}),

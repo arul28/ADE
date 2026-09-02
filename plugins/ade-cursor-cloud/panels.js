@@ -85,6 +85,65 @@ function boundList(keyPrefix, emptyText) {
 }
 
 /**
+ * When the drain last received a delivery, as a line a fleet row can print.
+ *
+ * The ledger stores ISO-8601. A schema cannot format dates, so this is
+ * pre-formatted the same way Linear's settings strip is.
+ */
+function formatWebhookLastEvent(iso) {
+  if (typeof iso !== "string" || !iso.trim()) return null;
+  const at = Date.parse(iso);
+  if (Number.isNaN(at)) return iso.trim();
+  return new Date(at).toISOString().replace("T", " ").slice(0, 16) + " UTC";
+}
+
+/**
+ * The Automations strip: relay health, last event, the URL to paste.
+ *
+ * Cursor's channel has no `verify`, so there is no signing-secret row. The
+ * URL is drawn as `code` as well as offered on a copy button, because a copy
+ * that silently fails on a surface with no clipboard would leave a reader
+ * with no way to get the string at all.
+ */
+function webhookStrip(webhook) {
+  if (!webhook) return [];
+  const rows = [
+    { key: "Webhook", value: webhook.status ?? "Unknown", ...(webhook.tone ? { tone: webhook.tone } : {}) },
+  ];
+  if (webhook.lastEvent) rows.push({ key: "Last event", value: webhook.lastEvent });
+  if (Number(webhook.pendingDeliveries) > 0) {
+    rows.push({
+      key: "Pending",
+      value: String(webhook.pendingDeliveries),
+      tone: "warning",
+    });
+  }
+  if (webhook.drainError) {
+    rows.push({ key: "Drain", value: webhook.drainError, tone: "danger" });
+  }
+  const block = [
+    { component: "divider", label: "Automations" },
+    { component: "keyValue", rows },
+  ];
+  if (webhook.url) {
+    block.push({
+      component: "text",
+      variant: "caption",
+      text: "Paste this URL into Cursor's webhook settings so a finished run wakes ADE.",
+    });
+    block.push({ component: "text", variant: "code", text: webhook.url });
+    block.push({
+      component: "button",
+      label: "Copy the webhook URL",
+      kind: "quiet",
+      icon: "link",
+      onPress: { action: "copyWebhookUrl" },
+    });
+  }
+  return block;
+}
+
+/**
  * The filter row: status, lane, archived.
  *
  * Every option value is a string the plugin already wrote onto each row, so
@@ -156,6 +215,7 @@ function buildFleetPanel(input = {}) {
     counts = { active: 0, lanes: 0, unlinked: 0, total: 0, archived: 0 },
     footer = null,
     relay = null,
+    webhook = null,
   } = input;
 
   const body = [];
@@ -187,6 +247,7 @@ function buildFleetPanel(input = {}) {
       kind: "quiet",
       onPress: { action: "openAllAgents" },
     });
+    body.push(...webhookStrip(webhook));
     return { v: 1, title: "Cursor Cloud", fallback: fallback(
       "Add a Cursor API key in ADE's Settings → AI connections to see your cloud agents.",
       DEEPLINK_FLEET,
@@ -207,14 +268,14 @@ function buildFleetPanel(input = {}) {
     ), body };
   }
 
-  if (relay === "error") {
+  if (!webhook && relay === "error") {
     body.push({
       component: "text",
       variant: "caption",
       tone: "warning",
       text: "Live updates hit an error — statuses may be stale. Use refresh.",
     });
-  } else if (relay === "unconfigured") {
+  } else if (!webhook && relay === "unconfigured") {
     body.push({
       component: "text",
       variant: "caption",
@@ -241,6 +302,7 @@ function buildFleetPanel(input = {}) {
     body.push(boundList("unlinked:", "Nothing unlinked matches this filter."));
   }
 
+  body.push(...webhookStrip(webhook));
   body.push({ component: "divider" });
   body.push({
     component: "stack",
@@ -553,6 +615,12 @@ function buildLaunchPanel(input = {}) {
         fields: fields.slice(0, 24),
         submit: { label: "Launch in Cursor Cloud", onPress: { action: "createRun" } },
       },
+      {
+        component: "button",
+        label: "Manage project secrets",
+        kind: "quiet",
+        onPress: { action: "openSecretsSettings" },
+      },
     ],
   };
 }
@@ -588,5 +656,6 @@ module.exports = {
   buildFleetPanel,
   buildLaunchPanel,
   fleetFooter,
+  formatWebhookLastEvent,
   unavailableReason,
 };

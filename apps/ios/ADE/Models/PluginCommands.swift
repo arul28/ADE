@@ -159,8 +159,8 @@ struct PluginInvokeResult: Decodable, Equatable {
   /// Host settings page the action asked to open, when it asked at all.
   ///
   /// Closed list — the same `PLUGIN_OPEN_SETTINGS_ENTRY_IDS` desktop reads.
-  /// The phone has no Cursor API-key page (the key lives on the Mac), so the
-  /// pane store turns a recognised id into a sentence rather than a route.
+  /// The phone has no host Settings surface (keys and secrets live on the Mac),
+  /// so the pane store turns a recognised id into a sentence rather than a route.
   var openSettings: String?
   /// Which `segmented` controls the action asked to put back on their defaults.
   ///
@@ -248,7 +248,7 @@ struct PluginInvokeResult: Decodable, Equatable {
   }
 
   /// Closed list matching `PLUGIN_OPEN_SETTINGS_ENTRY_IDS`.
-  static let allowedOpenSettingsEntryIds: Set<String> = ["agents.provider.cursor"]
+  static let allowedOpenSettingsEntryIds: Set<String> = ["agents.provider.cursor", "secrets.secrets"]
 
   /// The `{openSettings}` verb. Unknown ids drop rather than opening a guessed page.
   static func parseOpenSettings(_ raw: Any?) -> String? {
@@ -275,6 +275,8 @@ struct PluginInvokeResult: Decodable, Equatable {
     switch entryId {
     case "agents.provider.cursor":
       return "Add a Cursor API key in ADE Settings → Agents → Cursor on the Mac that holds this plugin."
+    case "secrets.secrets":
+      return "Manage project secrets in ADE Settings → Secrets on the Mac that holds this plugin."
     default:
       return "Open ADE Settings on the Mac that holds this plugin."
     }

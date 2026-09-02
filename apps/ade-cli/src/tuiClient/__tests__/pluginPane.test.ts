@@ -1042,6 +1042,8 @@ describe("plugin pane openSettings from an action", () => {
   it("reads the Cursor provider page and drops anything else", () => {
     expect(readPluginActionOpenSettings({ openSettings: "agents.provider.cursor" }))
       .toEqual({ entryId: "agents.provider.cursor" });
+    expect(readPluginActionOpenSettings({ openSettings: "secrets.secrets" }))
+      .toEqual({ entryId: "secrets.secrets" });
     expect(readPluginActionOpenSettings({ openSettings: "billing.plans" })).toBeNull();
   });
 });

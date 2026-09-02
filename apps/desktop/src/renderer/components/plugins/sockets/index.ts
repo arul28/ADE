@@ -9,7 +9,7 @@
 
 export { PluginRowBadges } from "./PluginRowBadges";
 export { PluginToolbarActions } from "./PluginToolbarActions";
-export { PluginComposerActions } from "./PluginComposerActions";
+export { PluginComposerActions, type PluginComposerSendOwner } from "./PluginComposerActions";
 export { PluginChatHeaderActions } from "./PluginChatHeaderActions";
 export { PluginChatCard } from "./PluginChatCard";
 export {

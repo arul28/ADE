@@ -124,6 +124,7 @@ export function payloadFromManifestSocket(socket: PluginManifestSocket): unknown
         actionId: socket.actionId,
         ...(socket.menu ? { menu: socket.menu } : {}),
         ...(socket.color ? { color: socket.color } : {}),
+        ...(socket.ownsSend === true ? { ownsSend: true } : {}),
       };
     case "row-badge":
       // A manifest badge has no value of its own — it is the declaration a

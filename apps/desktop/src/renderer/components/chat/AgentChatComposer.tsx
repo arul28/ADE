@@ -135,6 +135,7 @@ import {
   PluginComposerActions,
   registerPluginComposerTarget,
   runPluginSocketAction,
+  type PluginComposerSendOwner,
   type PluginComposerTarget,
 } from "../plugins/sockets";
 import type { PluginComposerContext } from "../../../shared/plugins/context";
@@ -3691,6 +3692,27 @@ export function AgentChatComposer({
   }), [composerLaneId, composerMachineBinding?.key, composerMachineBinding?.rootPath, sessionId]);
 
   /**
+   * Model / effort / speed as they read right now.
+   *
+   * Spread onto a plugin composer context at invoke time, never stored in the
+   * contribution identity — a model change must not re-render the accessory
+   * row the way a draft change must not.
+   */
+  const readComposerState = useCallback(() => ({
+    modelId: modelId ?? null,
+    reasoningEffort: reasoningEffort ?? null,
+    fastMode: fastMode === true ? true : null,
+  }), [fastMode, modelId, reasoningEffort]);
+
+  /**
+   * Which plugin currently claims Enter/Send, when one `ownsSend` button is on.
+   *
+   * Lifted here so submit can see it. The accessory row only toggles; it does
+   * not invoke the launch on click.
+   */
+  const [pluginSendOwner, setPluginSendOwner] = useState<PluginComposerSendOwner>(null);
+
+  /**
    * The whole typed context, read at the moment a plugin is invoked.
    *
    * For any caller that invokes a plugin action FROM this composer without
@@ -3703,7 +3725,8 @@ export function AgentChatComposer({
     kind: "composer",
     ...composerPluginIdentity,
     ...readComposerDraft(),
-  }), [composerPluginIdentity, readComposerDraft]);
+    ...readComposerState(),
+  }), [composerPluginIdentity, readComposerDraft, readComposerState]);
 
   const insertNodeAtTextOffset = useCallback((editor: HTMLElement, node: Node, offset: number) => {
     const walker = document.createTreeWalker(editor, NodeFilter.SHOW_TEXT);
@@ -5086,6 +5109,29 @@ export function AgentChatComposer({
       onSubmit();
       return;
     }
+    // A plugin that claimed Send is the cloud-launch path once the compiled
+    // machine-picker row is gone. Same early-outs as the built-in cloud branch:
+    // empty draft is a blocked send, not a local runtime fallback.
+    if (pluginSendOwner) {
+      if (busy || backgroundLaunchBusy || parallelLaunchBusy || composerInputLocked) return;
+      const trimmed = draft.trim();
+      if (trimmed.length === 0 && contextAttachmentCount === 0) {
+        onSubmitBlocked?.("Say what the agent should do.");
+        return;
+      }
+      const issueContextPrompt = buildChatContextAttachmentPrompt(contextAttachments);
+      const cloudPrompt = [
+        issueContextPrompt || null,
+        trimmed || (issueContextPrompt ? "Use the attached issue context." : null),
+      ].filter((part): part is string => Boolean(part)).join("\n\n");
+      void runPluginSocketAction(
+        pluginSendOwner.pluginId,
+        pluginSendOwner.actionId,
+        { ...readComposerPluginContext(), draft: cloudPrompt },
+        { socket: "composer-action", args: { send: true } },
+      );
+      return;
+    }
     // Cloud submit only fires when the chat is fresh enough to launch a new cloud run. Once any
     // turns have been exchanged the cloud target is unavailable, so this branch is gated on
     // `cursorCloudCanLaunch` to defend against a stale `cursorCloudModeActive=true`.
@@ -5120,7 +5166,7 @@ export function AgentChatComposer({
       return;
     }
     onSubmit();
-  }, [activeTurnHasContent, allowAttachmentOnlySubmit, appControlContextItems.length, attachments, attachments.length, backgroundLaunchBusy, busy, composerInputLocked, contextAttachmentCount, contextAttachments, cursorCloudCanLaunch, cursorCloudHasEligibleModels, cursorCloudModeActive, cursorCloudModelReady, draft, hasComposerContextContent, iosElementContextItems.length, onDraftChange, onSubmit, onSubmitBlocked, onSubmitToCloud, pendingImageAttachments.length, pendingInput, parallelChatMode, parallelLaunchBusy, parallelModelSlots.length, runPluginSlashCommand, singleModelBlockedMessage, singleModelReady, typedPluginSlashCommand]);
+  }, [activeTurnHasContent, allowAttachmentOnlySubmit, appControlContextItems.length, attachments, attachments.length, backgroundLaunchBusy, busy, composerInputLocked, contextAttachmentCount, contextAttachments, cursorCloudCanLaunch, cursorCloudHasEligibleModels, cursorCloudModeActive, cursorCloudModelReady, draft, hasComposerContextContent, iosElementContextItems.length, onDraftChange, onSubmit, onSubmitBlocked, onSubmitToCloud, pendingImageAttachments.length, pendingInput, parallelChatMode, parallelLaunchBusy, parallelModelSlots.length, pluginSendOwner, readComposerPluginContext, runPluginSlashCommand, singleModelBlockedMessage, singleModelReady, typedPluginSlashCommand]);
 
   const submitActiveTurnDraft = useCallback(() => {
     if (effectiveActiveTurnSendMode === "queue") {
@@ -5200,6 +5246,9 @@ export function AgentChatComposer({
     && parallelModelSlots.length >= 2
     && (draft.trim().length > 0 || attachments.length > 0 || contextAttachmentCount > 0);
   const singleReady = !parallelChatMode && singleModelReady && activeTurnHasContent;
+  const pluginSendArmed = Boolean(pluginSendOwner) && !parallelChatMode;
+  const pluginSendReady = pluginSendArmed
+    && (draft.trim().length > 0 || contextAttachmentCount > 0);
   const cloudModeActiveForSend = cursorCloudCanLaunch && cursorCloudModeActive && !parallelChatMode;
   const cloudSendBlock = cloudModeActiveForSend
     ? cursorCloudSendBlock({
@@ -5214,9 +5263,9 @@ export function AgentChatComposer({
     && !parallelLaunchBusy
     && !composerInputLocked
     && !hasPendingImageAttachments
-    && (parallelReady || (cloudModeActiveForSend
-      ? cloudSendBlock === null
-      : singleReady));
+    && (parallelReady
+      || pluginSendReady
+      || (!pluginSendArmed && (cloudModeActiveForSend ? cloudSendBlock === null : singleReady)));
   const activeSteerEnabled = !composerInputLocked && !hasPendingImageAttachments && activeTurnHasContent;
   const backgroundSendEnabled = Boolean(onSubmitInBackground)
     && !busy
@@ -5237,6 +5286,12 @@ export function AgentChatComposer({
       if (parallelModelSlots.length < 2) return "Add at least two models";
       if (draft.trim().length === 0 && attachments.length === 0 && contextAttachmentCount === 0) return "Add a message or at least one attachment";
       return "Send to all lanes";
+    }
+    if (pluginSendArmed) {
+      if (!pluginSendReady) return "Say what the agent should do.";
+      return pluginSendOwner
+        ? `Send to ${pluginSendOwner.label}`
+        : "Send";
     }
     if (cloudModeActiveForSend) {
       if (cloudSendBlock) return cloudSendBlock.reason;
@@ -6330,6 +6385,9 @@ export function AgentChatComposer({
               <PluginComposerActions
                 {...composerPluginIdentity}
                 readDraft={readComposerDraft}
+                readComposerState={readComposerState}
+                sendOwner={pluginSendOwner}
+                onSendOwnerChange={setPluginSendOwner}
                 active={isActive}
               />
             ) : null}

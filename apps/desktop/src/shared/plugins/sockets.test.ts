@@ -92,6 +92,10 @@ describe("composer-action", () => {
       .toEqual({ label: "Refine", actionId: "refine", icon: "sparkle" });
     expect(parsePluginContributionPayload("composer-action", { label: "Refine", actionId: "refine", disabled: true }))
       .toEqual({ label: "Refine", actionId: "refine", disabled: true });
+    expect(parsePluginContributionPayload("composer-action", { label: "Cloud", actionId: "launch", ownsSend: true }))
+      .toEqual({ label: "Cloud", actionId: "launch", ownsSend: true });
+    expect(parsePluginContributionPayload("composer-action", { label: "Cloud", actionId: "launch", ownsSend: false }))
+      .toEqual({ label: "Cloud", actionId: "launch" });
   });
 
   it("refuses a button with nothing to invoke", () => {
@@ -152,6 +156,19 @@ describe("a composer-action declared in a plugin.json", () => {
       icon: "Microphone",
       actionId: "dictate",
     }]);
+  });
+
+  it("keeps ownsSend on a declared composer-action, so Send can be claimed without publishing", () => {
+    const result = parsePluginManifestJson(manifestJson({
+      socket: "composer-action",
+      surface: "work",
+      id: "cloud",
+      label: "Cursor Cloud",
+      actionId: "openLaunch",
+      ownsSend: true,
+    }));
+    expect(result.errors).toEqual([]);
+    expect(result.manifest?.sockets[0]?.ownsSend).toBe(true);
   });
 
   // The failure this table exists to prevent: a socket that parses clean,

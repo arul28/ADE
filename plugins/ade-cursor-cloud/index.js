@@ -12,7 +12,8 @@
 //     seam — the user's turns arrive as `chat.turn`, the replies stream back;
 //   * the webhook is a declared `webhookIngress` channel at ADE's relay, and
 //     the events arrive as `webhook.received` with an ack;
-//   * the launch path is a `composer-action` that opens a form panel.
+//   * the launch path is a `composer-action` that claims Send (`ownsSend`) and
+//     still opens an Advanced form for secrets, model params, and the PR toggle.
 //
 // Nothing here needs `official: true`. A community author could write every
 // line of it, which is the test the extraction was for.
@@ -45,6 +46,7 @@ const {
   buildFleetPanel,
   buildLaunchPanel,
   fleetFooter,
+  formatWebhookLastEvent,
   unavailableReason,
 } = require("./panels");
 const {
@@ -52,7 +54,10 @@ const {
   buildCreateRequest,
   collectSecretValues,
   findConnectedRepo,
+  isInjectableSecretName,
   laneSecretsKey,
+  MAX_ATTACHED_SECRETS,
+  readComposerLaunch,
   readLaunchForm,
 } = require("./launch");
 const { catalogControlOptions, readCatalog, verifyCreateModel } = require("./modelSelection");
@@ -74,7 +79,7 @@ let disposed = false;
 const subscriptions = [];
 
 /** The last assembled fleet, so an action does not refetch what it just read. */
-let cache = { at: 0, grouped: null, items: [], archivedCount: 0, lanes: [] };
+let cache = { at: 0, grouped: null, items: [], archivedCount: 0, lanes: [], webhookUrl: null };
 
 function log(level, message, fields) {
   sdk?.log(level, message, fields);
@@ -224,6 +229,45 @@ async function publishRows(grouped, now) {
 }
 
 /**
+ * The host's delivery ledger for this plugin, as the fleet panel draws it.
+ *
+ * `webhooks.status()` is the same row Linear's settings strip already uses.
+ * This channel has no `verify`, so there is no signing-secret row — only
+ * whether the relay is configured, whether events are arriving, and the URL
+ * to paste into Cursor.
+ */
+async function readWebhookSnapshot() {
+  if (!sdk) return null;
+  const status = await sdk.webhooks.status().catch(() => null);
+  const url = await sdk.webhooks.url("cursor").catch(() => null);
+  cache.webhookUrl = typeof url === "string" && url.trim() ? url.trim() : null;
+  if (!status && !cache.webhookUrl) return null;
+  const state = status?.state;
+  let caption = "Webhook";
+  let tone = "neutral";
+  if (state === "ready") {
+    caption = "Endpoint ready";
+  } else if (state === "error") {
+    caption = "Live updates hit an error";
+    tone = "warning";
+  } else if (state === "unconfigured" || state === "undeclared" || !state) {
+    caption = "Live updates not configured yet";
+    tone = "warning";
+  }
+  const drainError = typeof status?.lastError === "string" && status.lastError.trim()
+    ? status.lastError.trim()
+    : null;
+  return {
+    status: caption,
+    tone,
+    lastEvent: formatWebhookLastEvent(status?.lastReceivedAt),
+    pendingDeliveries: Number(status?.pendingDeliveries) || 0,
+    drainError,
+    url: cache.webhookUrl,
+  };
+}
+
+/**
  * The whole fleet read: Cursor, then the lanes, then the rows, then the panel.
  *
  * One function rather than four, because every entry point wants all of it —
@@ -233,10 +277,11 @@ async function publishRows(grouped, now) {
 async function refreshFleet(options = {}) {
   if (!sdk || disposed) return { state: "loading" };
   const now = Date.now();
+  const webhook = await readWebhookSnapshot();
 
   if (!(await api.hasKey())) {
-    cache = { at: now, grouped: null, items: [], archivedCount: 0, lanes: [] };
-    await publish("fleet", buildFleetPanel({ state: "no-key" }));
+    cache = { at: now, grouped: null, items: [], archivedCount: 0, lanes: [], webhookUrl: cache.webhookUrl };
+    await publish("fleet", buildFleetPanel({ state: "no-key", webhook }));
     return { state: "no-key" };
   }
 
@@ -248,11 +293,15 @@ async function refreshFleet(options = {}) {
     );
   } catch (error) {
     if (isMissingKeyError(error)) {
-      await publish("fleet", buildFleetPanel({ state: "no-key" }));
+      await publish("fleet", buildFleetPanel({ state: "no-key", webhook }));
       return { state: "no-key" };
     }
     log("warn", `Could not read the cloud fleet: ${error?.message ?? error}`);
-    await publish("fleet", buildFleetPanel({ state: "error", error: error?.message ?? String(error) }));
+    await publish("fleet", buildFleetPanel({
+      state: "error",
+      error: error?.message ?? String(error),
+      webhook,
+    }));
     return { state: "error", error: error?.message ?? String(error) };
   }
 
@@ -263,6 +312,7 @@ async function refreshFleet(options = {}) {
     items: assembled.items,
     archivedCount: assembled.archivedCount,
     lanes: laneOptions(assembled.items),
+    webhookUrl: cache.webhookUrl,
   };
   await publishRows(grouped, now);
 
@@ -274,12 +324,13 @@ async function refreshFleet(options = {}) {
     archived: assembled.archivedCount,
   };
   const schema = assembled.items.length === 0
-    ? buildFleetPanel({ state: "empty", counts })
+    ? buildFleetPanel({ state: "empty", counts, webhook })
     : buildFleetPanel({
       state: "list",
       counts,
       laneOptions: cache.lanes,
       footer: fleetFooter({ shown: counts.total, age: "just now" }),
+      webhook,
     });
   await publish("fleet", schema);
   return { state: assembled.items.length ? "list" : "empty", counts };
@@ -329,6 +380,18 @@ function requireAgentId(args) {
 function failureMessage(error, fallback) {
   if (error instanceof CursorApiError || error?.code) return error.message ?? fallback;
   return error?.message ?? fallback;
+}
+
+/**
+ * A successful launch, plus a draft-clear when Send produced it.
+ *
+ * `{composer: {replaceText: ""}}` is the platform's own "empty is meaningful
+ * for replace" verb. Clearing here rather than in the composer means a failed
+ * launch leaves the prompt on screen.
+ */
+function launchedFrom(fromComposer, result) {
+  if (!fromComposer) return result;
+  return { ...result, composer: { replaceText: "" } };
 }
 
 /* ── Lifecycle ───────────────────────────────────────────────────────────── */
@@ -612,14 +675,16 @@ exports.actions = {
   /* ── Launch ────────────────────────────────────────────────────────── */
 
   /**
-   * The composer button: draw the launch form for this lane.
+   * The composer button: draw the launch form for this lane, or Send.
    *
-   * Everything the form needs is read before it is drawn — the lane's remote,
-   * Cursor's connected repositories, the models, the names this lane attached
-   * last time — so the reader is told Cursor cannot take the work BEFORE they
-   * have typed a paragraph into a form that was never going to submit.
+   * `args.send === true` is Enter after the button claimed Send. That path
+   * creates the agent from the live draft instead of opening the form — the
+   * same gesture the built-in machine-picker row used. The Advanced menu item
+   * still opens the form for secrets, model params, and the PR toggle.
    */
   async openLaunch(args) {
+    if (args?.send === true) return await exports.actions.createRun(args);
+
     const context = args?.context ?? null;
     const laneId = context?.kind === "composer" ? context.laneId : (args?.laneId ?? null);
     const draft = context?.kind === "composer" ? context.draft ?? "" : "";
@@ -709,7 +774,8 @@ exports.actions = {
    * which is what the built-in composer produced and what this has to match.
    */
   async createRun(args) {
-    const form = readLaunchForm(args);
+    const fromComposer = args?.send === true;
+    const form = fromComposer ? readComposerLaunch(args) : readLaunchForm(args);
     if (!form.prompt) return { message: "Say what the agent should do.", ok: false };
 
     let lanes = [];
@@ -720,6 +786,16 @@ exports.actions = {
     }
     const lane = lanes.find((row) => row.id === form.laneId) ?? lanes[0] ?? null;
     if (!lane) return { message: "Open a lane first — a cloud agent works on a lane's branch.", ok: false };
+
+    if (fromComposer) {
+      const remembered = await sdk.collections.get("laneSecrets", laneSecretsKey(lane.id)).catch(() => null);
+      const names = Array.isArray(remembered?.names) ? remembered.names : [];
+      form.secretNames = names
+        .filter((name) => isInjectableSecretName(name))
+        .slice(0, MAX_ATTACHED_SECRETS);
+      const config = await sdk.config.get().catch(() => ({}));
+      form.openPr = config?.autoOpenPr === true;
+    }
 
     const laneRemote = await getOriginRemote().catch(() => null);
     let repositories = [];
@@ -793,14 +869,17 @@ exports.actions = {
       // "it failed" would send the reader looking for work that is under way.
       log("warn", `Launched ${agentId} but could not bind a chat: ${error?.message ?? error}`);
       void refreshFleet();
-      return {
+      return launchedFrom(fromComposer, {
         message: "Launched on Cursor Cloud. Open it from the fleet to follow along.",
         navigate: { panelId: "fleet" },
-      };
+      });
     }
 
     void refreshFleet();
-    return { message: "Launched on Cursor Cloud.", navigate: { panelId: "fleet" } };
+    return launchedFrom(fromComposer, {
+      message: "Launched on Cursor Cloud.",
+      navigate: { panelId: "fleet" },
+    });
   },
 
   /* ── Automation steps and agent tools ──────────────────────────────── */
@@ -808,6 +887,32 @@ exports.actions = {
   /** Open ADE's Cursor provider settings page (desktop/web) or name it (phone, TUI). */
   async openCursorSettings() {
     return { openSettings: "agents.provider.cursor" };
+  },
+
+  /** Open ADE's Secrets tab. The launch form never carries a secret value. */
+  async openSecretsSettings() {
+    return { openSettings: "secrets.secrets" };
+  },
+
+  /**
+   * The webhook URL, onto the clipboard.
+   *
+   * The URL is also drawn as `code` on the fleet panel, because a copy that
+   * silently fails on a surface with no clipboard would leave a reader with no
+   * way to get the string at all.
+   */
+  async copyWebhookUrl() {
+    const url = cache.webhookUrl
+      || await sdk.webhooks.url("cursor").catch(() => null);
+    if (typeof url !== "string" || !url.trim()) {
+      return { message: "No webhook URL yet.", ok: false };
+    }
+    try {
+      await sdk.clipboard.write(url);
+      return { message: "Webhook URL copied." };
+    } catch {
+      return { message: "This surface has no clipboard. The URL is on the panel.", ok: false };
+    }
   },
 
   /** The `list_agents` tool, and the `agents` CLI word. */

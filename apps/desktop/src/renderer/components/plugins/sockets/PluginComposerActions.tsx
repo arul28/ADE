@@ -78,6 +78,19 @@ const CHEVRON_CLASS =
   "inline-flex h-7 shrink-0 items-center rounded-r-lg border-l border-fg/[0.10] px-1"
   + " text-muted-fg/45 transition-colors hover:bg-violet-500/[0.06] hover:text-violet-300/60";
 
+/**
+ * The composer-action currently claiming Send, when one is armed.
+ *
+ * `ownsSend` is a toggle, not an invoke: the button looks ON, and Enter/Send
+ * invokes this action with `args.send === true` instead of the local runtime.
+ * Null means Send is ADE's own.
+ */
+export type PluginComposerSendOwner = {
+  pluginId: string;
+  actionId: string;
+  label: string;
+} | null;
+
 export function PluginComposerActions({
   surface = "work",
   sessionId,
@@ -85,6 +98,9 @@ export function PluginComposerActions({
   projectRoot = null,
   laneId = null,
   readDraft,
+  readComposerState,
+  sendOwner = null,
+  onSendOwnerChange,
   active = true,
 }: {
   /** The core surface the composer lives on. Only Work has one today. */
@@ -96,6 +112,21 @@ export function PluginComposerActions({
   laneId?: string | null;
   /** Reads the live draft and caret. Must be stable — it is called on click. */
   readDraft: () => { draft: string; cursor: number | null };
+  /**
+   * Model / effort / speed as they read at invoke time.
+   *
+   * Optional so a composer that has no model row still contributes buttons.
+   * Spread onto the context next to the live draft.
+   */
+  readComposerState?: () => {
+    modelId: string | null;
+    reasoningEffort: string | null;
+    fastMode: boolean | null;
+  };
+  /** Which ownsSend contribution currently claims Enter/Send. */
+  sendOwner?: PluginComposerSendOwner;
+  /** Arm or disarm an ownsSend contribution. Absent, ownsSend clicks invoke. */
+  onSendOwnerChange?: (owner: PluginComposerSendOwner) => void;
   active?: boolean;
 }) {
   /**
@@ -141,9 +172,33 @@ export function PluginComposerActions({
     if (busyKeysRef.current.includes(key)) return;
     busyKeysRef.current = [...busyKeysRef.current, key];
     setBusyKeys(busyKeysRef.current);
-    void invoke(pluginId, actionId, { ...identity, ...readDraft() }, { socket: "composer-action" })
+    void invoke(
+      pluginId,
+      actionId,
+      { ...identity, ...readDraft(), ...(readComposerState?.() ?? {}) },
+      { socket: "composer-action" },
+    )
       .finally(() => setBusyKeys((keys) => keys.filter((entry) => entry !== key)));
-  }, [identity, invoke, readDraft]);
+  }, [identity, invoke, readComposerState, readDraft]);
+
+  const press = React.useCallback((
+    contribution: { pluginId: string; payload: { actionId: string; label: string; ownsSend?: boolean } },
+    key: string,
+  ) => {
+    if (contribution.payload.ownsSend === true && onSendOwnerChange) {
+      const armed = sendOwner?.pluginId === contribution.pluginId
+        && sendOwner?.actionId === contribution.payload.actionId;
+      onSendOwnerChange(armed
+        ? null
+        : {
+          pluginId: contribution.pluginId,
+          actionId: contribution.payload.actionId,
+          label: contribution.payload.label,
+        });
+      return;
+    }
+    run(contribution.pluginId, contribution.payload.actionId, key);
+  }, [onSendOwnerChange, run, sendOwner]);
 
   if (contributions.length === 0) return null;
 
@@ -157,8 +212,23 @@ export function PluginComposerActions({
    * it puts the active state where the user is already looking.
    */
   const running = contributions.filter((entry) => busyKeys.includes(contributionKey(entry)));
-  const idle = contributions.filter((entry) => !busyKeys.includes(contributionKey(entry)));
-  const ordered = running.length > 0 ? [...running, ...idle] : contributions;
+  const armed = contributions.filter((entry) => (
+    entry.payload.ownsSend === true
+    && sendOwner?.pluginId === entry.pluginId
+    && sendOwner?.actionId === entry.payload.actionId
+    && !busyKeys.includes(contributionKey(entry))
+  ));
+  const idle = contributions.filter((entry) => (
+    !busyKeys.includes(contributionKey(entry))
+    && !(
+      entry.payload.ownsSend === true
+      && sendOwner?.pluginId === entry.pluginId
+      && sendOwner?.actionId === entry.payload.actionId
+    )
+  ));
+  const ordered = (running.length > 0 || armed.length > 0)
+    ? [...running, ...armed, ...idle]
+    : contributions;
   const visible = ordered.slice(0, VISIBLE_LIMIT);
   const hidden = ordered.slice(VISIBLE_LIMIT);
   const dataTour = `plugin:${surface}.composer-action`;
@@ -168,13 +238,22 @@ export function PluginComposerActions({
       {visible.map((contribution) => {
         const key = contributionKey(contribution);
         const busy = busyKeys.includes(key);
+        const claimed = contribution.payload.ownsSend === true
+          && sendOwner?.pluginId === contribution.pluginId
+          && sendOwner?.actionId === contribution.payload.actionId;
+        const lit = busy || claimed;
         const menu = contribution.payload.menu ?? [];
         const split = menu.length > 0;
-        /* A running button keeps the platform's busy chrome rather than the
-           plugin's tint: inline styles outrank classes, so painting the colour
-           here would paint over the only signal that says it is working. */
-        const tint = busy ? {} : socketTintStyle(contribution.payload.color);
+        /* A running or armed button keeps the platform's busy chrome rather than
+           the plugin's tint: inline styles outrank classes, so painting the
+           colour here would paint over the only signal that says it is on. */
+        const tint = lit ? {} : socketTintStyle(contribution.payload.color);
         const base = split ? BUTTON_SPLIT_CLASS : BUTTON_CLASS;
+        const title = busy
+          ? `${contribution.payload.label} — running…`
+          : claimed
+            ? `${contribution.payload.label} — Send launches here. Press to turn off.`
+            : contribution.payload.label;
         return (
           <SocketBoundary key={key}>
             <SocketSplitGroup>
@@ -182,16 +261,17 @@ export function PluginComposerActions({
                 type="button"
                 data-tour={dataTour}
                 data-busy={busy || undefined}
-                className={busy ? `${base} ${BUTTON_BUSY_CLASS}` : base}
+                className={lit ? `${base} ${BUTTON_BUSY_CLASS}` : base}
                 style={tint}
-                title={busy ? `${contribution.payload.label} — running…` : contribution.payload.label}
+                title={title}
                 aria-busy={busy || undefined}
+                aria-pressed={contribution.payload.ownsSend === true ? claimed : undefined}
                 // Only the plugin's own `disabled` greys the button out. A running
                 // one stays enabled and refuses re-entry in `run` instead — see
                 // BUTTON_BUSY_CLASS for why a minutes-long action must not look
                 // like a dead control.
                 disabled={contribution.payload.disabled === true}
-                onClick={() => run(contribution.pluginId, contribution.payload.actionId, key)}
+                onClick={() => press(contribution, key)}
               >
                 <SocketIcon name={contribution.payload.icon} size={12} />
                 <span className="truncate">{contribution.payload.label}</span>
@@ -199,12 +279,13 @@ export function PluginComposerActions({
               {/* Menu actions share the BUTTON's busy key on purpose: the two
                   halves are one control, so a menu action that records for two
                   minutes lights the button the user is looking at and refuses a
-                  second press from either half. */}
+                  second press from either half. Menu items still invoke — they
+                  are Advanced, not the Send claim. */}
               <SocketSplitMenu
                 items={menu}
                 label={contribution.payload.label}
                 dataTour={`${dataTour}-menu`}
-                className={busy ? `${CHEVRON_CLASS} ${BUTTON_BUSY_CLASS}` : CHEVRON_CLASS}
+                className={lit ? `${CHEVRON_CLASS} ${BUTTON_BUSY_CLASS}` : CHEVRON_CLASS}
                 style={tint}
                 onSelect={(item) => run(contribution.pluginId, item.actionId, key)}
               />
@@ -225,7 +306,7 @@ export function PluginComposerActions({
                 <SocketMenuRow
                   label={contribution.payload.label}
                   {...(contribution.payload.icon ? { icon: contribution.payload.icon } : {})}
-                  onClick={() => run(contribution.pluginId, contribution.payload.actionId, key)}
+                  onClick={() => press(contribution, key)}
                 />
                 <SocketMenuSubRows
                   items={contribution.payload.menu ?? []}

@@ -2350,11 +2350,18 @@ export function hasPluginActionOpenUrlRequest(result: unknown): boolean {
  *
  * Closed on purpose. `{openSettings}` is the one verb that leaves the plugin's
  * own surface for ADE's own UI, and an open list would let a plugin send the
- * reader to billing, secrets, or any other page. Add an id here only when a
- * plugin has a real empty-state that cannot be a panel of its own — and the
- * four clients honour the new id in the same change.
+ * reader to billing or any other page. Add an id here only when a plugin has a
+ * real empty-state that cannot be a panel of its own — and the four clients
+ * honour the new id in the same change.
+ *
+ * `secrets.secrets` is the host Secrets tab, not a plugin-store secret. A
+ * panel must never carry a secret value; this id is how a launch form sends
+ * the reader to name and reveal credentials ADE already holds.
  */
-export const PLUGIN_OPEN_SETTINGS_ENTRY_IDS = ["agents.provider.cursor"] as const;
+export const PLUGIN_OPEN_SETTINGS_ENTRY_IDS = [
+  "agents.provider.cursor",
+  "secrets.secrets",
+] as const;
 
 export type PluginOpenSettingsEntryId = (typeof PLUGIN_OPEN_SETTINGS_ENTRY_IDS)[number];
 
@@ -2405,6 +2412,8 @@ export function pluginOpenSettingsTarget(
   switch (entryId) {
     case "agents.provider.cursor":
       return { tab: "agents", anchor: "ai-provider-cursor" };
+    case "secrets.secrets":
+      return { tab: "secrets", anchor: "secrets" };
     default: {
       const _exhaustive: never = entryId;
       return _exhaustive;

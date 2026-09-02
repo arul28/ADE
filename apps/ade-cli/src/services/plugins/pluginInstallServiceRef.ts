@@ -139,6 +139,13 @@ export type SyncPluginRecordSocket = {
    * illegible colour on a surface just because it reached it over sync.
    */
   color?: string;
+  /**
+   * A composer-action that claims Send. On the wire for the same reason `menu`
+   * is: the web client and the phone have no manifest on disk, and a Cursor
+   * Cloud button that invoked on click there while it armed Send on desktop
+   * would be the half-render the taxonomy promises never happens.
+   */
+  ownsSend?: boolean;
   extensions?: string[];
   filterKey?: string;
   command?: string;

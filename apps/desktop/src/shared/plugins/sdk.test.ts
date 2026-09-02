@@ -380,6 +380,8 @@ describe("action openSettings", () => {
       .toEqual({ entryId: "agents.provider.cursor" });
     expect(readPluginActionOpenSettings({ openSettings: { entryId: "agents.provider.cursor" } }))
       .toEqual({ entryId: "agents.provider.cursor" });
+    expect(readPluginActionOpenSettings({ openSettings: "secrets.secrets" }))
+      .toEqual({ entryId: "secrets.secrets" });
   });
 
   it("drops an id this build has never heard of", () => {

@@ -37,9 +37,13 @@
       "socket": "composer-action",
       "surface": "work",
       "id": "send-to-cloud",
-      "label": "Launch in Cursor Cloud",
+      "label": "Cursor Cloud",
       "icon": "cloud",
-      "actionId": "openLaunch"
+      "actionId": "openLaunch",
+      "ownsSend": true,
+      "menu": [
+        { "label": "Advanced launch…", "actionId": "openLaunch", "icon": "cloud" }
+      ]
     },
     {
       "socket": "chat-header-action",

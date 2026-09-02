@@ -107,6 +107,25 @@ export type PluginComposerContext = {
    * when the user has not put their cursor anywhere in particular.
    */
   cursor: number | null;
+  /**
+   * The model currently selected in this composer, when there is one.
+   *
+   * Read at invoke time, not at render — the same reason `draft` is. A
+   * composer-action that launches a cloud run needs the model the user picked,
+   * and capturing it in the contribution identity would re-render the row on
+   * every model change.
+   */
+  modelId?: string | null;
+  /** Reasoning effort currently selected in this composer, when there is one. */
+  reasoningEffort?: string | null;
+  /**
+   * Fast mode as the composer toggle states it.
+   *
+   * `true` is an explicit Fast request. Absent or `false` is no opinion for
+   * REST params — sending `false` as "standard" fail-closes launches whose
+   * catalog has no service-tier control.
+   */
+  fastMode?: boolean | null;
 };
 
 /**

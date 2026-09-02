@@ -22,6 +22,19 @@ describe("applyPluginActionOpenSettings", () => {
     });
   });
 
+  it("opens the Secrets tab for a plugin that cannot put values on a panel", () => {
+    navigateToAppTarget.mockClear();
+    expect(applyPluginActionOpenSettings(
+      { openSettings: "secrets.secrets" },
+      { pluginId: "ade-cursor-cloud", actionId: "openSecretsSettings" },
+    )).toBe(true);
+    expect(navigateToAppTarget).toHaveBeenCalledWith({
+      kind: "settings",
+      tab: "secrets",
+      anchor: "secrets",
+    });
+  });
+
   it("refuses an unknown page rather than guessing", () => {
     navigateToAppTarget.mockClear();
     expect(applyPluginActionOpenSettings(
