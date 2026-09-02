@@ -32,7 +32,7 @@ Node built-ins:
 |---|---|
 | `apps/desktop/src/shared/plugins/manifest.ts` | `plugin.json` contract, strict-on-known/tolerant-of-unknown parser, id and relative-path validation, `minAdeVersion` gate, the `tab`/`pane`/`webview` surface kinds and the `entryHtml` rule |
 | `apps/desktop/src/shared/plugins/vocabulary.ts` | Panel schema v1: component union, `VOCAB_LIMITS`, degradation ladder, `parsePluginPanel`, panel `chrome` (search, nav actions, sticky footer), the reserved bindings (`vocabReservedRows` over `$context` and `$state`), `collectVocabStateDeclarations` |
-| `apps/desktop/src/shared/plugins/vocabularyNodes.ts` | The 18 v1 components and their parsers, `VOCAB_LIMITS`, the `group` node and `vocabGroupKey`, the row-action allowlist (`boundRowAction`), the `canvas` engines (`git-dag`, `swimlane`, `graph`, `workspace`) |
+| `apps/desktop/src/shared/plugins/vocabularyNodes.ts` | The 18 v1 components and their parsers, `VOCAB_LIMITS`, the `group` node and `vocabGroupKey`, the row-action allowlist (`boundRowAction`), the `canvas` engines (`git-dag`, `swimlane`, `graph`, `workspace`, `electron-control`, `simulator`) |
 | `apps/desktop/src/shared/plugins/vocabularyState.ts` | Client-evaluated panel state: the `segmented` control's declarations, `chrome.search`, the `where` grammar (`contains` included) and its three-valued evaluator, the `$state` binding (`VOCAB_STATE_COLLECTION`), the row selection a `list.selectable` owns, the signature/normalize/reset lifecycle, `readPluginActionResetState` |
 | `apps/desktop/src/shared/plugins/vocabularyMarkdown.ts` | The `markdown` node's subset: a bounded block/span AST, `VOCAB_MARKDOWN_LIMITS`, `https:`-only links, GFM pipe tables, https images, and no HTML path at all |
 | `apps/desktop/src/shared/plugins/vocabularyBrandIcons.ts` | Plugin-shipped `brand:*` glyphs: the reserved `ade.brandIcons` collection, the fail-closed SVG sanitizer, and the portable `{ viewBox, paths }` shape |
@@ -604,7 +604,7 @@ its own timer inside the child; the host only says when it matters.
 | `appendAssistant(sessionId, chunk)` | Stream a piece of the reply. Chunks coalesce into one turn; `done: true` closes it. |
 | `appendUser(sessionId, input)` | Append a user turn ADE did not originate. Deduped by `fingerprint`, suffix-tolerantly. |
 | `emitStatus(sessionId, status)` | `running` \| `idle` \| `failed` \| `finished`. This is what settles the session. |
-| `setArtifacts(sessionId, artifacts)` | Proof-artifact card. Pass `contents` (base64) or `sourceUrl` (`https:`) and the host writes the file into `.ade/cache/plugin-artifacts/…`; a path alone still draws the card. |
+| `setArtifacts(sessionId, artifacts)` | Proof-artifact card. Pass `contents` (base64) or `sourceUrl` (`https:`) and the host writes the file into `.ade/cache/plugin-artifacts/…`; a path alone still draws the card. See **Fetching an artifact's bytes** below. |
 | `attachBranch(sessionId, {branch, remote?})` | Fetch the branch into the lane so the ordinary branch and PR affordances light up. |
 | `hydrate(sessionId, transcript, options?)` | Backfill history, oldest first. See **Paging a backfill** below. |
 
@@ -624,6 +624,17 @@ one door, every verb but `createSession` through it. The refusal is worded
 identically for "no such session", "unowned session", "somebody else's session"
 and "no project open", because a caller that could tell them apart could
 enumerate the machine's conversations and their owners by probing.
+
+**Fetching an artifact's bytes.** A `sourceUrl` is capped BEFORE it is buffered:
+the declared `Content-Length` is refused first, and the body is then read in
+chunks against the same cap, because a chunked response declares nothing. The
+FINAL hop is re-validated against the rule that admitted the URL, so an allowed
+host that redirects to `localhost` is refused rather than fetched. An HTML
+content type is refused too — a sign-in page answered with 200 would otherwise
+land in the lane as a proof artifact the reader is invited to open. The
+destination path is refused when Windows cannot hold it (a device name such as
+`nul`, a reserved character, a trailing dot or space), on every platform, because
+a lane cache syncs and is read back on another machine.
 
 **Paging a backfill.** `hydrate` takes at most `PLUGIN_CHAT_HYDRATE_MAX_ENTRIES`
 (500) per call, and a real cloud conversation can be longer. A plugin sends pages
@@ -951,6 +962,13 @@ dot and a plus. Capture names are never written into the regex source: groups ar
 numbered, so a name cannot be `constructor`, cannot collide with another matcher's
 group, and cannot smuggle regex syntax.
 
+**A chip icon may be a monogram or a `brand:<id>` token the plugin ships.** The
+token is validated with the `ade.brandIcons` id rule, so a token a manifest may
+declare is exactly a token that collection can hold, and it resolves to the
+host-sanitized glyph the plugin shipped. It never renders as text: a token with
+no shipped artwork falls back to the provider's own mark rather than printing
+`brand:linear` in the chip.
+
 Ceilings, all in `urlMatchers.ts`: 8 matchers per plugin, 4 hosts per matcher, a
 200-character pattern, 12 segments, 6 captures, a 64-character label template, 48
 characters per substituted capture, an 80-character rendered label, and a
@@ -1133,14 +1151,45 @@ list row cannot skip the prompt a button asks. iOS holds the same shape in
 `PluginPaneStore.perform`.
 
 **A `canvas` is a named host engine, not a drawing surface.** `{ component:
-"canvas", engine: "git-dag" | "swimlane" | "graph" | "workspace", bind }` is
+"canvas", engine: "git-dag" | "swimlane" | "graph" | "workspace" |
+"electron-control" | "simulator", bind }` is
 data: the plugin writes render-ready rows (and, for `graph`, an `edges`
 binding) and the host picks an engine ADE already owns. There is no script
 payload and no SVG the plugin authored. Desktop draws the git commit DAG, a
-lane swimlane, a small node-link graph, or ADE's compiled workspace Graph
-page (`workspace`); iOS and the terminal draw the same bound rows as a list.
-A canvas `onSelect` fires when a node has no row `onPress`, with `id` taken
-from the row's key. Bound row actions still go through `allowActions`.
+lane swimlane, a small node-link graph, or one of the compiled ADE panes —
+the workspace Graph page (`workspace`), Electron Control (`electron-control`)
+and the iOS Simulator (`simulator`); iOS and the terminal draw the same bound
+rows as a list. A canvas `onSelect` fires when a node has no row `onPress`,
+with `id` taken from the row's key. Bound row actions still go through
+`allowActions`.
+
+**The last three engines are owned.** `workspace`, `electron-control` and
+`simulator` mount a compiled ADE pane that reads the HOST's own state — the
+workspace topology, a Chrome DevTools session, a booted simulator — and none of
+that is the plugin's data. So desktop draws one only for the plugin registered
+in `PLUGIN_BUILTIN_SURFACE_OWNER_IDS`, the same table that decides which plugin
+supersedes which compiled surface; every other plugin gets the bound rows as a
+list, which is what the phone and the terminal draw anyway. The check lives at
+the mount (`canMountHostCanvasEngine` in `vocabularyCanvas.tsx`) rather than in
+the parser: the parser is shared with clients that have no compiled pane to
+protect and is handed a schema with no plugin id, so a check there would read a
+field a plugin can write.
+
+**A canvas row presses through `useVocabActionRunner`**, the same path a list
+row and a button use, so `confirm` is asked and a refused dispatch draws a line
+under the canvas. A canvas used to call `dispatch` itself, which skipped the
+prompt a button asks and turned a refusal into an unhandled rejection.
+
+**A canvas pages** through `vocabularyPaging.ts` on the list's contract, keyed
+on the binding, so a reader who paged a canvas does not go back to page one in
+the list it falls back to. Desktop and the TUI both page. Graph edges are not
+paged with the nodes: only edges whose ends are both drawn are painted, and
+dropping edges by page would draw a graph with lines missing.
+
+**A host-engine canvas does not mount while its panel is hidden** (`context.active`),
+because both panes stream. It binds the project's runtime pin, so a remote
+checkout does not report this machine's state; with no project open it draws a
+reason instead of guessing a machine.
 
 **Paging a list, and saying so.** A plugin list used to stop dead at 100 rows
 while the built-in it replaced paged to 500, and it stopped SILENTLY — the reader
@@ -1263,7 +1312,11 @@ this is a shape that cannot express the attack
 (`vocabularyMarkdown.ts:27-41`). Links and markdown images are the two reaches
 outside the document and pass the same `https:`-only gate the `openUrl` action
 verb passes; a `javascript:` or `data:` destination loses the link (or the
-picture) and keeps its text.
+picture) and keeps its text. A markdown image a client's policy refuses — the
+desktop renderer's `img-src` is a scoped allowlist with no blanket `https:` —
+degrades to the alt text as a link that opens the picture outside ADE. The same
+code runs on both clients, so neither draws a broken frame and neither drops the
+picture silently.
 
 Deliberately out of the subset: raw HTML, bare-URL autolinking (three clients,
 three URL-detection regexes, three answers about where a URL ends — write
@@ -1545,12 +1598,15 @@ all four clients:
   the Cursor Cloud empty state needs) and `secrets.secrets` (the host Secrets
   tab a launch form uses instead of putting values on a panel). Desktop and
   the web client navigate there. The phone and the TUI have no such page
-  (keys and secrets live on the Mac) and say so. Unknown ids drop rather than
-  opening a guessed page.
+  (keys and secrets live on the Mac) and say so. An unknown id opens nothing,
+  and desktop and web refuse it out loud: a toast names the plugin, the id it
+  asked for, and the page ids that exist.
 - **`prompt`** (`readPluginActionPrompt`) asks one question and re-invokes the
   same action with `args.prompt = {id, text, context?}`. With `options` it is a
-  picker: desktop and web draw a list, iOS a sheet, the TUI matches typed text
-  against value or label (and refuses a miss). Without `options` it is still
+  picker: desktop and web draw a list, iOS a sheet, the TUI draws the choices
+  numbered and matches typed text against a value, a label or a drawn number
+  (and refuses a miss). A closed question that drew only its title asked the
+  reader to type a name from a list they were never shown. Without `options` it is still
   one line of text. It is the ledger's B1, and the gap was ordinary enough to
   be worth naming: "a Log it button that saves a one-line note of what I'm
   doing" had no shape at all, so the plugin that wanted it logged the chat's
@@ -1575,7 +1631,9 @@ all four clients:
   'x'." from appearing in the web client and vanishing on desktop, from one line
   of plugin code. iOS and the TUI have shown it since the verb existed; desktop
   and web draw the same banner, auto-dismissing after six seconds or on the next
-  dispatch.
+  dispatch. `{message}` draws on every client. A socket press has no inline
+  place for it, so desktop and the hosted web client show it as a toast, toned
+  as an error when `ok` is false; a panel still draws it inline.
 
 ### The panel refresh contract
 
@@ -1690,9 +1748,15 @@ read, the per-slot cap, the ordering rule — is identical.
 the button instead of invoking; Enter/Send invokes that action with
 `args.send === true` and the live composer context (draft, model, reasoning,
 fast). The Advanced menu item still invokes immediately — that is the form.
-Absent `ownsSend`, a click invokes as it always did. The phone has no Send
-intercept, so it ignores the field and the click still opens the plugin's own
-surface.
+Absent `ownsSend`, a click invokes as it always did.
+
+An armed Send owner is cleared by the host on two triggers a plugin cannot see:
+the composer's conversation changing, and the contribution leaving the row (an
+uninstall, a disable, or a row that stopped declaring `ownsSend`). Either way
+Send goes back to ADE rather than dispatching a plugin action behind a button
+nobody can see. iOS now honours `ownsSend`, `{openSettings}` and `{openUrl}` on
+the socket path the same way, so a toolbar button, a row menu item and a
+composer action behave there as they do on the desktop.
 
 The taxonomy is closed and small so an author learns it once and every client can
 implement it exhaustively at compile time; a nineteenth kind is a platform change
@@ -1727,7 +1791,25 @@ against `"<pluginId>/<tabSurfaceId>"` — exactly one slash, so the address cann
 collide with ADE's own surface ids. Cap 1; the pill is hidden while that tab is
 active in this window. Durable clear is optional `viewAction` on the panel: the
 host invokes `{ viewed: true }` when the panel is visible and `{ viewed: false }`
-when it is hidden, silently. Cursor Cloud uses this for unread finished agents.
+when it is hidden, silently. The viewed lifecycle fires for `webview` tabs too,
+so a plugin whose only rail surface is a webview is told the reader opened it.
+Cursor Cloud uses this for unread finished agents, and it persists the count in
+its own unsynced collection so a plugin restart republishes the same number
+rather than counting back up from zero.
+
+**The pill draws at most 6 characters**, cut rather than ellipsized, on desktop
+(`PLUGIN_TAB_BADGE_TEXT_MAX`) and on iOS. A `row-badge` payload allows 32, which
+reads correctly on a lane row and covers the glyph it belongs to on a 20px rail
+icon. The full text is not lost: a clamped pill puts it in the tooltip when the
+plugin published no tooltip of its own, and the tab's accessible name reads the
+tooltip, else the pill.
+
+**`pluginRailTabSurface` (`manifest.ts`) is the one rule for which surface a rail
+tab, its badge address and its default panel mean**: the first surface in
+manifest order whose kind is `tab` or `webview`. Desktop, iOS and the TUI all
+read it. A tab badge is addressed by `"<pluginId>/<surfaceId>"`, so two clients
+picking different surfaces off one manifest read two different addresses for one
+pill — which is what a plugin whose webview came first used to get.
 
 **A `command-palette-action` receives `args.subject`** (the ledger's B5): the
 focused chat, else the selected lane, else `{kind: "none"}`, built by
@@ -1826,10 +1908,16 @@ plugins only. Those roots are appended to `ADE_AGENT_SKILLS_DIRS` for every
 runtime, passed to Codex as `skills/extraRoots`, handed to Claude as
 `--plugin-dir` (which is why a plugin skills root ships a `.claude-plugin/plugin.json`
 marker, since Claude reads plugin roots and never the env var), and listed by
-`ade skill list`. So the install gate is the only mechanism: `ade-linear`,
-`ade-ios-simulator` and `ade-app-control` live in
-`plugins/<id>/skills/` rather than in ADE's shared bundled root, and a machine
-without the plugin never loads them. The capability underneath is not fenced
+`ade skill list`. Every official plugin skills root carries that marker, and a
+test walks the `plugins/` directory to prove it: without the marker a skill
+loads on every other runtime and silently never loads on Claude.
+
+**A plugin's skills supersede ADE's own, they do not unlock them.** ADE still
+bundles `ade-linear`, `ade-ios-simulator` and `ade-app-control`, and a machine
+with no plugin installed reads exactly those copies. Plugin roots come FIRST in
+the candidate order and the catalogue keeps the first sighting of a name, so
+with the plugin installed `ade skill show` returns the plugin's copy and lists
+the name once. The capability underneath is not fenced
 off — `xcrun simctl`, the Linear API and AppleScript are still there; what the
 plugin carries is ADE's premium layer over them.
 
@@ -1875,6 +1963,13 @@ install that has no owner plugin, and it is the compiled product it has always
 been; install the plugin, and every compiled surface for that product steps
 aside for the plugin's own.
 
+The polarity also decides what a compiled ACTION DOMAIN does. Under `supersedes`
+a compiled domain keeps dispatching on a machine with no plugin installed, which
+is the product ADE has always shipped. Once the plugin is installed the domain
+stops being ADVERTISED in the agent's action catalog; it is not refused. The
+refusal machinery — `policyDenied` with a `plugin_not_installed` reason, never
+`methodNotFound` — stays for a future `enables` vertical.
+
 The polarity also decides what a manifest may say. A `supersedes` surface is
 never named by `surfaces[].builtin`: that field means "ADE draws its compiled
 page in my place", and honouring it would suppress the plugin's OWN rail item in
@@ -1891,6 +1986,8 @@ composer-native, not a strip. When `ade-cursor-cloud` is installed,
 `ade cursor cloud <word>` is an alias for that plugin's declared CLI words
 (`agents`, `runs`, `artifacts`, `repos`, `me`); `ade cursor cloud models` still
 uses the compiled Cursor SDK path because the plugin does not declare `models`.
+The alias reads the first STANDALONE positional word, skipping value-carrying
+flags, so a flag whose value spells `agents` is not mistaken for the word.
 Disable the plugin and the compiled `ade cursor cloud` path returns.
 
 What is gated for Linear, on all four clients:
@@ -1943,6 +2040,18 @@ a `work-rail-pane` (no attribution chrome, native rail colour). Disable it and
 the compiled tab id comes back. Phone and terminal list a bound status row;
 they never compiled those panes. `ade app-control` and `ade ios-sim` stay on
 the host.
+
+**The Work rail through the install window.** The gate hides the compiled tab
+one tick before the plugin's pane arrives, so the compiled Control/Simulator tab
+keeps its slot while both are visible and the reader never sees two identical
+buttons. A persisted `ios` selection heals on a host where the pane can never
+arrive — a non-Mac, or a remote checkout — rather than sitting under a Git pane
+forever. A persisted plugin slot waits for the registry before it remaps, because
+"not resolved yet" is not "the plugin is gone".
+
+**A redirect to a plugin route keeps the query.** A deeplink or a stored route
+naming a superseded compiled surface carries its search and hash across the hop,
+so `#/graph?focusLane=…` reaches the plugin tab with a lane to focus.
 
 ### Agent tooling
 
@@ -2111,6 +2220,14 @@ official plugins and layers a live index on top when one becomes reachable.
 | TUI | `/plugin-view [plugin]` opens a panel in the right pane; forms go through the composer prompt line; `Ctrl+Y` copies an `ade://plugin/<id>/<panel>` link to the open panel (and still copies a lane or PR link when one of those rows is focused) |
 | CLI | `ade plugin …`, `ade <pluginId> <cmd>` for manifest-declared CLI words, and `ade link plugin <plugin-id> <panel-id> [--ctx '<json>']` to mint a panel link |
 | Chat | The `plugin_install` `ade_card` variant, for agent-built install flows. The whole lifecycle is reachable this way: `install` asks once per source, and `uninstall`/`enable`/`disable` ask every time |
+
+**What the terminal draws.** A markdown table sizes to the pane and truncates a
+cell rather than wrapping it, because a wrapped row turns a grid into a
+paragraph. Links and images inside a table cell print — a destination beside its
+words, an image as its alt — the same two shapes the pane already draws for
+markdown outside a table. An icon flows through the `group`, `badge`, `button`,
+list-item and empty-state rows. A `brand:*` token prints one mono mark, or the
+unknown mark when nobody shipped that artwork, and never the raw token.
 
 **The iOS back stack.** `navigate` used to REPLACE the pane in place and clear its
 state, so a plugin sending a reader from a list into a detail screen gave them no

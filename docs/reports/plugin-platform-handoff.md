@@ -144,3 +144,27 @@ Cursor Cloud remaining gaps after merging origin/main: secret reveal, composer-n
 
 ## Handoff commit
 `54df53935` at ticket creation. QUALITY PASS COMPLETE (2026-09-01, commits 54df53935..c47e2779a, all pushed, tree clean). 62 findings (A 32 + B 30): every fixable item is fixed and committed; gated to the owner: OAuth redirect URI 19837 registration on ADE's Linear app; issue state order; custom-client `admin` scope; iOS deep-link wait-for-hello; the loopback "Close the other program" copy on Windows exclusion ranges. Landed commits: docs d23d957fc 3e6e3be99; reports c19610122 ebc117deb 366e6fe9d; fixes e8654e229 b12b591a0 f5b6daacb 0fe27c974 8244ddefc 29fe9aa9a 8ee4464a9 e7b2300c5 47cee6102 24ab8762e 856da8413 0ab6de037 c47e2779a. Final gates: desktop tsc + ade-cli tsc clean; 4,340 desktop vitest; ade-cli sync 703 + tuiClient 1,505; plugin node 495; iOS 202 Plugin* XCTest (real xcodebuild); validate-platform-gates passes; CI runs plugin suites by glob. `/test` was NOT run at the handoff (owner.s call).
+
+## 2026-09-02 fix pass
+
+Four Opus agents reviewed `02090d9e7..61ee82327` and counted 35 review defects
+(badges 8, Unit B 11, Unit A 16) plus 4 red gates (desktop typecheck 2 errors,
+desktop lint 4 rules-of-hooks errors, 7 CLI tests, 21 desktop tests), 39 items in
+total. One badge item — a supersedes plugin could not badge on desktop — did not
+reproduce and was hardened only. Everything else is fixed in the tree (90 files).
+
+- Badges: `pluginRailTabSurface` is the one rule for which surface a rail tab,
+  its badge address and its default panel mean; the pill clamps to 6 characters;
+  a gated plugin badges its compiled tab; Cursor Cloud persists its count.
+- Unit B: canvas host engines are owner-only, page like a list, honour `confirm`
+  and pause while hidden; markdown images degrade to a link; socket actions show
+  `{message}` and refuse an unknown `{openSettings}` id out loud.
+- Unit A: `sourceUrl` fetches cap before buffering, re-validate the final hop and
+  refuse both HTML and a path Windows cannot hold; iOS honours `ownsSend`,
+  `{openSettings}` and `{openUrl}` on the socket path.
+- Gates: superseded action domains dispatch with no plugin installed and stop
+  being advertised once it is; skills roots carry the `.claude-plugin` marker;
+  the Work rail keeps its Control/Simulator slot through an install.
+
+Not verified: iOS. `xcodebuild` is blocked by the 30 GB disk gate. Unit C
+acceptance is the next gate.
