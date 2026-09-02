@@ -65,7 +65,7 @@
     "ade:typecheck": "npm --prefix ../ade-cli run typecheck",
     "ade:test": "npm --prefix ../ade-cli run test",
     "regen-cli-help": "node ./scripts/regen-ade-cli-help.cjs",
-    "lint": "node ./node_modules/eslint/bin/eslint.js \"src/**/*.{ts,tsx}\"",
+    "lint": "node --max-old-space-size=8192 ./node_modules/eslint/bin/eslint.js \"src/**/*.{ts,tsx}\"",
     "rebuild:native": "node ./scripts/rebuild-native.mjs",
     "version:ci": "node ./scripts/set-ci-version.mjs",
     "version:release": "node ./scripts/set-release-version.mjs"
