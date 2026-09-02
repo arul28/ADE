@@ -775,6 +775,55 @@ describe("parseCursorCliModelsStdout", () => {
     ]);
   });
 
+  it("does not treat a Fast variant's default reasoning as the requested effort", async () => {
+    cursorModelsListMock.mockResolvedValue([
+      {
+        id: "grok-4.6",
+        displayName: "Grok 4.6",
+        parameters: [
+          {
+            id: "reasoning_effort",
+            displayName: "Reasoning effort",
+            values: [
+              { value: "high", displayName: "High" },
+            ],
+          },
+          {
+            id: "speed",
+            displayName: "Speed",
+            values: [
+              { value: "fast", displayName: "Fast" },
+            ],
+          },
+        ],
+        variants: [
+          {
+            displayName: "Fast",
+            params: [
+              { id: "speed", value: "fast" },
+              { id: "reasoning_effort", value: "high" },
+            ],
+          },
+        ],
+      },
+    ]);
+
+    await discoverCursorSdkModelDescriptors("crsr_test", { mode: "probe" });
+
+    expect(resolveCursorSdkModelSelectionFromCache({
+      modelSdkId: "grok-4.6",
+      reasoningEffort: "xhigh",
+      fastMode: true,
+    })).toEqual({
+      status: "partial",
+      params: [
+        { id: "speed", value: "fast" },
+        { id: "reasoning_effort", value: "high" },
+      ],
+      unmet: ["reasoning"],
+    });
+  });
+
   it("falls back to Cursor's official models API when SDK model listing fails", async () => {
     cursorModelsListMock.mockRejectedValue(new Error("SDK model listing failed"));
     const fetchMock = vi.fn(async () => ({

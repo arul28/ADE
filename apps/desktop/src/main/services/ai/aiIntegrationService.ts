@@ -1292,6 +1292,12 @@ export function createAiIntegrationService(args: {
     const apiKey = await requireCursorCloudApiKey();
     const { Agent } = await loadCursorSdk();
     const modelId = args.modelId?.trim() || "";
+    const choseExplicitControl = Boolean(args.reasoningEffort?.trim()) || args.fastMode != null;
+    if (!modelId && choseExplicitControl) {
+      throw new Error(
+        "Cursor Cloud cannot apply reasoning or speed settings without a selected model. Pick a model and try again.",
+      );
+    }
     // Before `resolveCursorCloudCreateCloudExtras`, which persists the lane's
     // remembered secret names: a launch this check rejects must leave no trace.
     // A launch that chose no controls sends no params and lets Cursor decide.

@@ -975,4 +975,25 @@ describe("aiIntegrationService", () => {
     // remembered secret names are never written.
     expect(cursorCloudMocks.resolveCursorCloudCreateCloudExtras).not.toHaveBeenCalled();
   });
+
+  it("rejects explicit cloud controls when no model id was sent", async () => {
+    const { service } = makeService({
+      availability: { claude: false, codex: false, cursor: true, droid: false },
+    });
+    mockState.detectAllAuth.mockResolvedValue([
+      { type: "api-key", provider: "cursor", key: "crsr_test", source: "store" },
+    ]);
+    const create = vi.fn();
+    cursorCloudMocks.loadCursorSdk.mockResolvedValue({ Agent: { create } });
+
+    await expect(service.createCursorCloudRun({
+      promptText: "Do not apply settings to Cursor's default model.",
+      repoUrl: "https://github.com/acme/project.git",
+      reasoningEffort: "xhigh",
+      fastMode: false,
+    })).rejects.toThrow("without a selected model");
+    expect(create).not.toHaveBeenCalled();
+    expect(mockState.verifyExplicitCursorModelSelection).not.toHaveBeenCalled();
+    expect(cursorCloudMocks.resolveCursorCloudCreateCloudExtras).not.toHaveBeenCalled();
+  });
 });

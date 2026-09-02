@@ -1206,27 +1206,29 @@ export function resolveCursorSdkModelSelectionFromCache(
   // onto one of its values, is unmet. A stale draft carrying a reasoning effort
   // from a previously selected model must not block a model such as
   // `composer-2.5`, whose catalog row has no reasoning parameter at all.
+  // Presence of a parameter is not enough: a Fast variant that also carries a
+  // default reasoning value must not satisfy a different requested effort.
   const unmet: CursorSdkModelSelectionUnmetControl[] = [];
-  if (
-    reasoning
-    && reasoningParameterIds.size > 0
-    && !params.some((param) => reasoningParameterIds.has(param.id))
-  ) {
-    unmet.push("reasoning");
+  if (reasoning && reasoningParameterIds.size > 0) {
+    const matched = params.some((param) =>
+      reasoningParameterIds.has(param.id)
+      && normalizeCursorMetadataText(param.value) === reasoning
+    );
+    if (!matched) unmet.push("reasoning");
   }
-  if (
-    wantsFast
-    && serviceTierParameterIds.size > 0
-    && !params.some((param) => serviceTierParameterIds.has(param.id))
-  ) {
-    unmet.push("fast");
+  if (wantsFast && serviceTierParameterIds.size > 0) {
+    const matched = params.some((param) =>
+      serviceTierParameterIds.has(param.id)
+      && normalizeCursorServiceTierValue(param.value) === "fast"
+    );
+    if (!matched) unmet.push("fast");
   }
-  if (
-    wantsStandard
-    && serviceTierParameterIds.size > 0
-    && !params.some((param) => serviceTierParameterIds.has(param.id))
-  ) {
-    unmet.push("standard");
+  if (wantsStandard && serviceTierParameterIds.size > 0) {
+    const matched = params.some((param) =>
+      serviceTierParameterIds.has(param.id)
+      && normalizeCursorServiceTierValue(param.value) === "standard"
+    );
+    if (!matched) unmet.push("standard");
   }
   if (unmet.length) return { status: "partial", params, unmet };
   // An explicitly-known model with no parameterized controls is still a valid

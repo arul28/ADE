@@ -40481,12 +40481,10 @@ export function createAgentChatService(args: {
         }
       };
       const lastRemoteNameReadAt = cursorCloudRemoteNameReadAt.get(managed.session.id);
-      let remoteNameReadThisPass = false;
       if (
         lastRemoteNameReadAt === undefined
         || Date.now() - lastRemoteNameReadAt >= CURSOR_CLOUD_REMOTE_NAME_READ_TTL_MS
       ) {
-        remoteNameReadThisPass = true;
         await readRemoteName();
       }
       let runs: CursorCloudLatestRun[] = [];
@@ -40583,8 +40581,7 @@ export function createAgentChatService(args: {
         !isCloudRunStillLive(run.status) && !hydratedBefore.has(run.runId) && hydrated.has(run.runId)
       ));
       if (
-        !remoteNameReadThisPass
-        && (emittedVisible || runReachedTerminalThisPass)
+        (emittedVisible || runReachedTerminalThisPass)
         && sessionTitleIsDefault(managed)
       ) {
         const placeholderReads = cursorCloudPlaceholderNameReads.get(managed.session.id) ?? 0;

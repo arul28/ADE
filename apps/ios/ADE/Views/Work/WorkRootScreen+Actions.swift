@@ -910,7 +910,8 @@ extension WorkRootScreen {
       runtimeState: normalizedRuntimeState(for: summary),
       resumeCommand: nil,
       resumeMetadata: nil,
-      chatIdleSinceAt: summary.idleSinceAt
+      chatIdleSinceAt: summary.idleSinceAt,
+      cursorCloudAgentId: summary.cursorCloudAgentId
     )
   }
 

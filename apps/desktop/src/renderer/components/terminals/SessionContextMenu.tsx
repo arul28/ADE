@@ -322,7 +322,7 @@ function SessionContextMenuPanel({
     if (finalizedRef.current) return;
     finalizedRef.current = true;
     const trimmed = draft.trim();
-    if (trimmed.length > 0) {
+    if (trimmed.length > 0 && canRename) {
       onRename(session, trimmed, binding);
     }
     onClose();

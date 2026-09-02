@@ -4852,16 +4852,16 @@ export function AgentChatComposer({
       && onSubmitToCloud
     ) {
       if (busy || backgroundLaunchBusy || parallelLaunchBusy || composerInputLocked) return;
+      const trimmed = draft.trim();
       const block = cursorCloudSendBlock({
         hasEligibleModels: cursorCloudHasEligibleModels,
         modelReady: cursorCloudModelReady,
-        hasContent: hasComposerContextContent,
+        hasContent: trimmed.length > 0 || contextAttachmentCount > 0,
       });
       if (block) {
         if (block.notify) onSubmitBlocked?.(block.reason);
         return;
       }
-      const trimmed = draft.trim();
       const issueContextPrompt = buildChatContextAttachmentPrompt(contextAttachments);
       const cloudPrompt = [
         issueContextPrompt || null,
@@ -4962,7 +4962,7 @@ export function AgentChatComposer({
     ? cursorCloudSendBlock({
       hasEligibleModels: cursorCloudHasEligibleModels,
       modelReady: cursorCloudModelReady,
-      hasContent: hasComposerContextContent,
+      hasContent: draft.trim().length > 0 || contextAttachmentCount > 0,
     })
     : null;
   const hasPendingImageAttachments = pendingImageAttachments.length > 0;
