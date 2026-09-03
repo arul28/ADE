@@ -309,7 +309,7 @@ export function readPluginPageAsset(
   }
   // Written as the ESCAPE, never as a literal NUL byte: a source file holding
   // one is binary to git, which stops diffing it and hides every later change.
-  if (relative.includes(" ")) {
+  if (relative.includes("\u0000")) {
     throw new Error("Plugin page asset path is invalid.");
   }
   if (path.isAbsolute(relative) || relative.startsWith("/") || relative.startsWith("\\") || /^[A-Za-z]:/.test(relative)) {
