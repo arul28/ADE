@@ -181,68 +181,147 @@ struct PluginPageSurface: View {
     }
 }
 
-/// The prompt, confirmation dialog, confirm alert and toast a page can raise,
-/// as one modifier so the surface body stays small.
+/// The prompt, confirmation dialog, confirm alert and toast a page can raise.
+/// Four small modifiers with their bindings and titles precomputed, because one
+/// long chain of alerts stalls the type checker on a real build.
 private struct PluginPageSurfaceChrome: ViewModifier {
     @ObservedObject var coordinator: PluginPageSurfaceCoordinator
 
     func body(content: Content) -> some View {
         content
-            .alert(
-                coordinator.pendingPrompt?.title ?? "",
-                isPresented: Binding(
-                    get: { coordinator.pendingPrompt != nil && coordinator.pendingPrompt?.options.isEmpty != false },
-                    set: { if !$0 { coordinator.answerPrompt(nil) } }
-                ),
-                presenting: coordinator.pendingPrompt
-            ) { prompt in
-                TextField(prompt.placeholder ?? "", text: $coordinator.promptDraft)
-                Button("Cancel", role: .cancel) { coordinator.answerPrompt(nil) }
-                Button(prompt.submitLabel ?? "Submit") {
-                    coordinator.answerPrompt(coordinator.promptDraft)
-                }
-            } message: { prompt in
-                if let context = prompt.context, !context.isEmpty { Text(context) }
-            }
-            .confirmationDialog(
-                coordinator.pendingPrompt?.title ?? "",
-                isPresented: Binding(
-                    get: { coordinator.pendingPrompt?.options.isEmpty == false },
-                    set: { if !$0 { coordinator.answerPrompt(nil) } }
-                ),
-                titleVisibility: .visible,
-                presenting: coordinator.pendingPrompt
-            ) { prompt in
-                ForEach(prompt.options, id: \.value) { option in
-                    Button(option.label) { coordinator.answerPrompt(option.value) }
-                }
-                Button("Cancel", role: .cancel) { coordinator.answerPrompt(nil) }
-            }
-            .alert(
-                coordinator.confirmation?.title ?? "",
-                isPresented: Binding(
-                    get: { coordinator.confirmation != nil },
-                    set: { if !$0 { coordinator.answerConfirm(false) } }
-                ),
-                presenting: coordinator.confirmation
-            ) { pending in
-                Button("Cancel", role: .cancel) { coordinator.answerConfirm(false) }
-                Button(
-                    pending.confirmLabel,
-                    role: pending.destructive ? .destructive : nil
-                ) { coordinator.answerConfirm(true) }
-            } message: { pending in
-                if !pending.body.isEmpty { Text(pending.body) }
-            }
-            .overlay(alignment: .bottom) {
-                if let toast = coordinator.toast {
-                    PluginPageToastView(toast: toast)
-                        .padding(.horizontal, 16)
-                        .padding(.bottom, 24)
-                        .transition(.move(edge: .bottom).combined(with: .opacity))
-                }
-            }
+            .modifier(PluginPagePromptAlert(coordinator: coordinator))
+            .modifier(PluginPagePromptChoices(coordinator: coordinator))
+            .modifier(PluginPageConfirmAlert(coordinator: coordinator))
+            .modifier(PluginPageToastOverlay(coordinator: coordinator))
+    }
+}
+
+/// A free-text prompt: an alert with one text field.
+private struct PluginPagePromptAlert: ViewModifier {
+    @ObservedObject var coordinator: PluginPageSurfaceCoordinator
+
+    private var title: String { coordinator.pendingPrompt?.title ?? "" }
+
+    private var isPresented: Binding<Bool> {
+        Binding(
+            get: {
+                guard let prompt = coordinator.pendingPrompt else { return false }
+                return prompt.options.isEmpty
+            },
+            set: { shown in if !shown { coordinator.answerPrompt(nil) } }
+        )
+    }
+
+    func body(content: Content) -> some View {
+        content.alert(title, isPresented: isPresented, presenting: coordinator.pendingPrompt) { prompt in
+            promptFields(prompt)
+        } message: { prompt in
+            promptMessage(prompt)
+        }
+    }
+
+    @ViewBuilder
+    private func promptFields(_ prompt: PluginActionPrompt) -> some View {
+        TextField(prompt.placeholder ?? "", text: $coordinator.promptDraft)
+        Button("Cancel", role: .cancel) { coordinator.answerPrompt(nil) }
+        Button(prompt.submitLabel ?? "Submit") { coordinator.answerPrompt(coordinator.promptDraft) }
+    }
+
+    @ViewBuilder
+    private func promptMessage(_ prompt: PluginActionPrompt) -> some View {
+        if let context = prompt.context, !context.isEmpty { Text(context) }
+    }
+}
+
+/// A closed-choice prompt: a confirmation dialog with one button per option.
+private struct PluginPagePromptChoices: ViewModifier {
+    @ObservedObject var coordinator: PluginPageSurfaceCoordinator
+
+    private var title: String { coordinator.pendingPrompt?.title ?? "" }
+
+    private var isPresented: Binding<Bool> {
+        Binding(
+            get: {
+                guard let prompt = coordinator.pendingPrompt else { return false }
+                return !prompt.options.isEmpty
+            },
+            set: { shown in if !shown { coordinator.answerPrompt(nil) } }
+        )
+    }
+
+    func body(content: Content) -> some View {
+        content.confirmationDialog(
+            title,
+            isPresented: isPresented,
+            titleVisibility: .visible,
+            presenting: coordinator.pendingPrompt
+        ) { prompt in
+            choiceButtons(prompt)
+        }
+    }
+
+    @ViewBuilder
+    private func choiceButtons(_ prompt: PluginActionPrompt) -> some View {
+        ForEach(prompt.options, id: \.value) { option in
+            Button(option.label) { coordinator.answerPrompt(option.value) }
+        }
+        Button("Cancel", role: .cancel) { coordinator.answerPrompt(nil) }
+    }
+}
+
+/// A yes/no confirmation raised by the page.
+private struct PluginPageConfirmAlert: ViewModifier {
+    @ObservedObject var coordinator: PluginPageSurfaceCoordinator
+
+    private var title: String { coordinator.confirmation?.title ?? "" }
+
+    private var isPresented: Binding<Bool> {
+        Binding(
+            get: { coordinator.confirmation != nil },
+            set: { shown in if !shown { coordinator.answerConfirm(false) } }
+        )
+    }
+
+    func body(content: Content) -> some View {
+        content.alert(title, isPresented: isPresented, presenting: coordinator.confirmation) { pending in
+            confirmButtons(pending)
+        } message: { pending in
+            confirmMessage(pending)
+        }
+    }
+
+    @ViewBuilder
+    private func confirmButtons(_ pending: PluginPageConfirm) -> some View {
+        Button("Cancel", role: .cancel) { coordinator.answerConfirm(false) }
+        Button(pending.confirmLabel, role: pending.destructive ? .destructive : nil) {
+            coordinator.answerConfirm(true)
+        }
+    }
+
+    @ViewBuilder
+    private func confirmMessage(_ pending: PluginPageConfirm) -> some View {
+        if !pending.body.isEmpty { Text(pending.body) }
+    }
+}
+
+/// The toast a page raised, drawn at the bottom of the surface.
+private struct PluginPageToastOverlay: ViewModifier {
+    @ObservedObject var coordinator: PluginPageSurfaceCoordinator
+
+    func body(content: Content) -> some View {
+        content
+            .overlay(alignment: .bottom) { toastView }
             .animation(.easeOut(duration: 0.18), value: coordinator.toast)
+    }
+
+    @ViewBuilder
+    private var toastView: some View {
+        if let toast = coordinator.toast {
+            PluginPageToastView(toast: toast)
+                .padding(.horizontal, 16)
+                .padding(.bottom, 24)
+                .transition(.move(edge: .bottom).combined(with: .opacity))
+        }
     }
 }
 
