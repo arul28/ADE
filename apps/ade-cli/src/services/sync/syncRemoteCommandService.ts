@@ -6477,17 +6477,30 @@ function registerPluginRemoteCommands({ args, register }: RemoteCommandRegistrat
   }, "runtime");
 
   /**
-   * One of the plugin's own settings, read back for its page.
+   * The plugin's own settings, read back for its page. One key, or all of them.
    *
-   * Answers `{ value }` rather than the bare value: `null` is a legitimate
-   * setting value, and a bare `null` on the wire would be indistinguishable
-   * from a command that answered nothing. The phone unwraps this shape.
+   * Two callers with two shapes, and both are the same read underneath. The
+   * phone's page bridge asks for ONE key, because that is what a form field
+   * binds to. The desktop and web bridge contract (`pluginRuntimeBridge.ts`
+   * `getConfig`) is a WHOLE-RECORD read, because a page there is handed its
+   * settings object at handshake. A `key` is therefore optional rather than two
+   * commands: one command means one validation, one scope and one host call,
+   * and a second name for the same read is a second thing to keep in step.
+   *
+   * The answer says which question it answered. `{ value }` for a key, and
+   * `{ config }` for the record — never both, and never a bare value: `null` is
+   * a legitimate setting, and on its own it would be indistinguishable from a
+   * command that answered nothing. A caller reads the field it asked for.
    */
   register("plugins.getConfig", { viewerAllowed: true }, async (payload) => {
     const pluginId = parsePluginId(payload);
-    const key = typeof payload.key === "string" ? payload.key.trim() : "";
-    if (!key) throw new Error("A plugin setting key is required.");
     const config = await requirePluginPageHostService().readConfig({ pluginId });
+    // Absent and empty are the same request here, which is the one place this
+    // command is deliberately lenient: `{ key: "" }` is a caller that has no key
+    // to name, and answering the whole record is what it can use. A key the
+    // caller DID name is answered exactly, below.
+    const key = typeof payload.key === "string" ? payload.key.trim() : "";
+    if (!key) return { config };
     // A key the manifest does not declare reads as `null`, not as an error: a
     // page asking for a setting it has not been given yet is the normal first
     // run, and `config.get` on desktop answers the same way.

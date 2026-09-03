@@ -3917,8 +3917,8 @@ describe("plugin remote commands", () => {
         .rejects.toThrow(/collection/i);
       await expect(service.execute(makePayload("plugins.putCollection", { pluginId: "hn", collection: "saved" })))
         .rejects.toThrow(/key/i);
-      await expect(service.execute(makePayload("plugins.getConfig", { pluginId: "hn" })))
-        .rejects.toThrow(/setting key/i);
+      // Only the WRITE requires a key. A read with none is the whole-record
+      // question, which is the case below.
       await expect(service.execute(makePayload("plugins.setConfig", { pluginId: "hn" })))
         .rejects.toThrow(/setting key/i);
     });
@@ -3951,6 +3951,42 @@ describe("plugin remote commands", () => {
       // error — `config.get` on desktop answers the same way.
       await expect(service.execute(makePayload("plugins.getConfig", { pluginId: "hn", key: "never-set" })))
         .resolves.toEqual({ value: null });
+    });
+
+    it("answers the whole record when the caller names no key", async () => {
+      setPluginPageHostService(pageHost() as never);
+      const { service } = createService({});
+
+      // The desktop and web bridge contract (`pluginRuntimeBridge.ts`
+      // `getConfig`) is a whole-record read, and the phone's form binds to one
+      // setting. One command answers both rather than two names for one read.
+      for (const payload of [
+        makePayload("plugins.getConfig", { pluginId: "hn" }),
+        // An empty key is a caller with none to name, not a setting called "".
+        makePayload("plugins.getConfig", { pluginId: "hn", key: "  " }),
+      ]) {
+        await expect(service.execute(payload))
+          .resolves.toEqual({ config: { token: "abc", pageSize: 25, muted: null } });
+      }
+    });
+
+    it("says which question it answered rather than answering both", async () => {
+      setPluginPageHostService(pageHost() as never);
+      const { service } = createService({});
+
+      const keyed = await service.execute(makePayload("plugins.getConfig", {
+        pluginId: "hn",
+        key: "token",
+      })) as Record<string, unknown>;
+      const whole = await service.execute(makePayload("plugins.getConfig", {
+        pluginId: "hn",
+      })) as Record<string, unknown>;
+
+      // A record beside a `value` would make a keyed read look like it also
+      // answered for every other setting; a `value: null` beside a record would
+      // be a claim about a setting nobody asked about.
+      expect("config" in keyed).toBe(false);
+      expect("value" in whole).toBe(false);
     });
 
     it("writes exactly the one setting the page named", async () => {

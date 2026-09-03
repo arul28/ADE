@@ -2313,13 +2313,32 @@ export type SyncRemoteCommandAction =
   // state.
   | "plugins.getPanel"
   | "plugins.getCollection"
-  // The page tier's three writes. A plugin PAGE on the phone — the plugin's own
-  // HTML in a guest whose plugin id the host derived from the frame origin —
-  // reads its collections from the replicated mirror, but a write and the
-  // plugin's own settings have nowhere local to go. These carry them to the
-  // machine, where the SAME host functions the desktop webview bridge calls
-  // apply the declared-collection rule, the store's budgets, the manifest
-  // validation and the refusal of `secret` settings.
+  // The page tier's three writes. A plugin PAGE — the plugin's own HTML in a
+  // guest whose plugin id the host derived from the frame origin — reads its
+  // collections from the replicated mirror on the phone and from a panel
+  // snapshot on the web, but a write and the plugin's own settings have nowhere
+  // local to go. These carry them to the machine, where the SAME host functions
+  // the desktop webview bridge calls apply the declared-collection rule, the
+  // store's budgets, the manifest validation and the refusal of `secret`
+  // settings.
+  //
+  // The payloads, because two clients send them and both must agree:
+  //
+  //   plugins.putCollection  {pluginId, collection, key, value?}  -> {ok}
+  //   plugins.getConfig      {pluginId, key?}                     -> {value} | {config}
+  //   plugins.setConfig      {pluginId, key, value?}              -> {config}
+  //
+  // `key`, not `id`: it is the name of the column, of the phone's own bridge
+  // field and of the desktop bridge's parameter, and a fourth spelling on this
+  // one hop would be a rename with nothing on either end asking for it. An
+  // absent `value` means `null` rather than "no change" — a page clearing a
+  // field sends no value, and reading that as "leave it alone" would leave the
+  // old value standing while the page believed it was gone.
+  //
+  // `plugins.getConfig` answers `{value}` for a named key and `{config}` for the
+  // whole record when `key` is absent — one read, because the phone's form binds
+  // to one setting while the desktop and web bridge contract hands a page its
+  // whole settings object.
   | "plugins.putCollection"
   | "plugins.getConfig"
   | "plugins.setConfig"
