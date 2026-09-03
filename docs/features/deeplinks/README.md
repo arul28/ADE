@@ -233,9 +233,9 @@ ADE CLI — outbound + inbound:
   panel) to a canonical `ade://` URL, including parsing GitHub PR URLs to lift
   owner/repo/number when the right-pane only carries the URL.
   `buildWebClientUrlForRow` in the same file resolves the focused row to
-  the hosted web-client form (`https://app.ade-app.dev/open?...`) instead, and
-  answers null for a plugin panel because the hosted client has no plugin tabs.
-  A panel whose ids the grammar will not carry falls back to the plugin's own
+  the hosted web-client form (`https://app.ade-app.dev/open?...`) instead, for
+  every row kind including a plugin panel — the hosted client mounts the same
+  `/plugin/<id>` route desktop does. A panel whose ids the grammar will not carry falls back to the plugin's own
   `fallback.deeplink` from the panel schema.
 - `apps/ade-cli/src/adeRpcServer.ts` — `app/navigate` accepts `plugin`, validating
   both ids with the shared manifest rules and applying the same 2 KiB
@@ -337,7 +337,7 @@ would advertise something the reader may have deliberately removed.
 |---------|--------|
 | Desktop renderer | Opens `/plugin/<id>?panel=…` when the plugin is installed **and** enabled and the registry has resolved. Anything else is a refusal toast naming the plugin. |
 | Hosted web client | Mounts the same `/plugin/<id>?panel=…` route the desktop App does, so `targetToWebPath` answers a path for a panel rather than null. The route does not promise the plugin is installed on whichever machine the browser connects to: the page says "Not installed here" in desktop's own words, which is why it is a route and not a null that would strand the reader on the welcome surface with nothing said. The ADE Code TUI mints the hosted form for a panel row for that reason. |
-| ADE Code TUI | `Ctrl+Y` over an open panel copies the `ade://` link; the web-link sibling says panels are desktop-only. |
+| ADE Code TUI | `Ctrl+Y` over an open panel copies the `ade://` link, and the web-link sibling mints the hosted form for the same row. |
 | iOS | No project open bounces to the send-to-Mac card, same as any other cross-machine link. With a project open, it awaits the paired machine's presence answer for that plugin (a cold-launch tap can arrive before the machine has reported what it has installed) and, if the wait comes up empty, shows a named refusal alert rather than opening nothing. |
 | `ade link plugin` | Mints the link without checking whether the plugin is installed anywhere — a link is a coordinate, and the receiving install is what decides. |
 

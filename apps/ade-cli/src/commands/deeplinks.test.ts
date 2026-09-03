@@ -316,11 +316,14 @@ describe("ade link", () => {
       .toThrow(CliDeeplinkUsageError);
   });
 
-  // The web client has no route for a plugin panel, so a --web link would round
-  // -trip cleanly and then open the welcome screen for whoever was sent it.
-  it("refuses --web for a plugin panel rather than minting a link to nowhere", () => {
-    expect(() => runLinkCommand(["plugin", "ade-graph", "overview", "--web", "--no-clipboard"]))
-      .toThrow(CliDeeplinkUsageError);
+  // The hosted client now mounts the same `/plugin/<id>?panel=…` route desktop
+  // does, so a panel link is one the reader can open there.
+  it("mints a hosted web link for a plugin panel", () => {
+    const r = runLinkCommand(["plugin", "ade-graph", "overview", "--web", "--no-clipboard"]);
+    expect(r.exitCode).toBe(0);
+    expect(r.output).toContain("https://app.ade-app.dev/open?type=plugin");
+    expect(r.output).toContain("plugin=ade-graph");
+    expect(r.output).toContain("panel=overview");
   });
 
   it("refuses plugin or panel ids the shared parser would reject", () => {

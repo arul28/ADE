@@ -465,13 +465,13 @@ function buildLinkPlan(args: string[]): LinkPlan {
     if (!pluginId || !panelId) {
       throw new CliDeeplinkUsageError("ade link plugin <plugin-id> <panel-id> [--ctx '<json-object>']");
     }
-    // A plugin panel has no web route — `targetToWebPath` answers null for this
-    // kind — so a `--web` link would round-trip fine and then land its reader on
-    // the welcome screen. Refused at minting, the same way the TUI refuses to
-    // offer a web link for a plugin row.
-    if (wantsWeb) {
-      throw new CliDeeplinkUsageError("Plugin panels open in the desktop app, so --web has no link to mint.");
-    }
+    // `--web` mints a panel link like any other kind. It used to be refused
+    // here because the hosted client had no plugin route and `targetToWebPath`
+    // answered null, so the link would have landed its reader on the welcome
+    // screen. That client now mounts the same `/plugin/<id>?panel=…` route
+    // desktop does, and the page itself says "Not installed here" when the
+    // connected machine lacks the plugin — a better answer than withholding
+    // the link from the reader who does have it.
     const context = parseCtxFlag(flags.valued.get("ctx"));
     return plan({
       kind: "plugin",
