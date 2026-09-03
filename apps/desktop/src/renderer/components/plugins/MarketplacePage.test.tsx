@@ -30,6 +30,8 @@ vi.mock("../../state/appStore", () => ({
     select({
       installedPlugins: registry.plugins,
       pluginsLoaded: true,
+      pluginsLoadFailure: null,
+      projectBinding: null,
       pluginThemeId: null,
       refreshInstalledPlugins: async () => {
         registry.refreshes += 1;
@@ -101,6 +103,7 @@ function installedPlugin(overrides: Partial<InstalledPlugin> = {}): InstalledPlu
 const CATALOGUE = {
   listings: [listing()],
   state: { kind: "live" as const, fetchedAt: null, origin: "cache" as const },
+  registry: { kind: "ready" as const },
   loading: false,
   refreshing: false,
   refresh: () => {},
@@ -117,6 +120,7 @@ const CATALOGUE = {
 
 vi.mock("./useMarketplace", () => ({
   useMarketplaceCatalogue: () => CATALOGUE,
+  useMarketplaceMachineName: () => null,
   usePluginPresence: () => ({ rows: [], loading: false }),
   usePluginRepoStars: () => new Map<string, number>(),
 }));

@@ -18,7 +18,12 @@ import { useRootAppStore } from "../../state/appStore";
 import { pluginIdentity } from "./pluginIcons";
 import { MarketplaceDetailPage } from "./MarketplaceDetailPage";
 import { PluginInstallDialog, type InstallDialogTarget } from "./PluginInstallDialog";
-import { useMarketplaceCatalogue, usePluginPresence, usePluginRepoStars } from "./useMarketplace";
+import {
+  useMarketplaceCatalogue,
+  useMarketplaceMachineName,
+  usePluginPresence,
+  usePluginRepoStars,
+} from "./useMarketplace";
 import {
   CoverageDots,
   FilterChip,
@@ -33,6 +38,7 @@ import {
 import {
   DEFAULT_MARKETPLACE_QUERY,
   SURFACE_LABELS,
+  describeMarketplaceRegistry,
   deriveMachineCoverage,
   deriveSurfaceFacets,
   featuredListings,
@@ -45,6 +51,7 @@ import {
   type MarketplaceIndexState,
   type MarketplaceListing,
   type MarketplaceQuery,
+  type MarketplaceRegistryState,
   type MarketplaceSort,
 } from "./marketplaceModel";
 import type { PluginSurfaceId } from "../../../shared/plugins/sockets";
@@ -95,6 +102,7 @@ function MarketplaceGallery() {
   const catalogue = useMarketplaceCatalogue();
   const installed = useRootAppStore((state) => state.installedPlugins);
   const presence = usePluginPresence(true);
+  const machineName = useMarketplaceMachineName();
 
   const refreshInstalledPlugins = useRootAppStore((state) => state.refreshInstalledPlugins);
 
@@ -131,8 +139,14 @@ function MarketplaceGallery() {
 
   /* A host with no install action is not a broken Marketplace — it is a window
      with no project attached, which is most of what "this button does nothing"
-     turned out to mean. The gallery still browses; only the actions go quiet. */
-  const canManage = catalogue.capabilities.install;
+     turned out to mean. The gallery still browses; only the actions go quiet.
+
+     A machine that did not answer for its own registry goes quiet for the same
+     reason and a different one: `installed` is EMPTY in that state and does not
+     mean empty, so every row would offer an Install for a plugin that may well
+     be installed there already. Browsing is still right; acting is not. */
+  const registryReady = catalogue.registry.kind === "ready";
+  const canManage = catalogue.capabilities.install && registryReady;
 
   const thisMachineKey = React.useMemo(
     () => presence.rows.find((row) => row.isThisMachine)?.machineKey ?? null,
@@ -219,9 +233,13 @@ function MarketplaceGallery() {
 
         <IndexNotice state={catalogue.state} onRefresh={catalogue.refresh} />
 
-        {canManage ? null : (
+        <RegistryNotice state={catalogue.registry} machineName={machineName} />
+
+        {canManage || !registryReady ? null : (
           <InlineNotice tone="muted">
-            Open a project to manage plugins on this machine.
+            {machineName
+              ? `Open a project on ${machineName} to manage its plugins.`
+              : "Open a project to manage plugins on this machine."}
           </InlineNotice>
         )}
 
@@ -495,6 +513,29 @@ function IndexNotice({
       Couldn’t reach the plugin directory — showing the plugins that ship with ADE.
     </InlineNotice>
   );
+}
+
+/**
+ * The one place the page talks about the MACHINE.
+ *
+ * Separate from {@link IndexNotice}, which talks about the directory. The two
+ * are different facts and fail independently, and folding them into one line
+ * produced the sentence this page must never say: "no plugins", about a machine
+ * nobody managed to ask.
+ *
+ * Silent while the registry is good or still loading — see
+ * `describeMarketplaceRegistry`.
+ */
+function RegistryNotice({
+  state,
+  machineName,
+}: {
+  state: MarketplaceRegistryState;
+  machineName: string | null;
+}) {
+  const message = describeMarketplaceRegistry({ state, machineName });
+  if (!message) return null;
+  return <InlineNotice tone="muted">{message}</InlineNotice>;
 }
 
 /* ── Featured ───────────────────────────────────────────────────────────── */

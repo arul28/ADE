@@ -2221,7 +2221,7 @@ newer published manifest is unknown here.
 
 | Client | Entry |
 |---|---|
-| Desktop | Plugin tabs below the nav divider; Marketplace above Account; panels via the vocabulary renderer. A `webview` surface joins the same rail and draws the plugin's own page instead of a panel |
+| Desktop | Plugin tabs below the nav divider; Marketplace above Account. The Marketplace is a machine-level route whose plugin calls follow the project tab's runtime, so it shows and acts on the bound machine; a machine that cannot answer for its registry gets a named state line and read-only browsing, never a spinner; panels via the vocabulary renderer. A `webview` surface joins the same rail and draws the plugin's own page instead of a panel |
 | Web | Same React renderer, view-scoped data over a roster-style `plugin_subscribe` stream; Marketplace and plugin tabs lazy-loaded and absent from the sign-in graph. `/plugin/:id` is a route root, so a reload or a shared link lands in the App and `PluginTabPage` gives the real answer — the panel, "Not installed here", or "Turned off" — rather than dropping the reader at the welcome surface |
 | iOS | Read and action-invoke only — no local CRR writes to `plugin_*`. Panes mount as a sheet from an overflow menu and the machine screen, with a back stack over the plugin's panels |
 | TUI | `/plugin-view [plugin]` opens a panel in the right pane; forms go through the composer prompt line; `Ctrl+Y` copies an `ade://plugin/<id>/<panel>` link to the open panel (and still copies a lane or PR link when one of those rows is focused) |

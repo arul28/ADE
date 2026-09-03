@@ -20,7 +20,6 @@ import { openExternalUrl } from "../../lib/openExternal";
 import { parsePluginManifest, type PluginManifest } from "../../../shared/plugins/manifest";
 import { builtinSurfaceOwner } from "../../../shared/plugins/builtinSurfaces";
 import {
-  installPlugin,
   openPluginLogs,
   readPluginManifest,
   readPluginReadme,
@@ -43,7 +42,12 @@ import {
   WebhooksRail,
   WhereItShowsUpRail,
 } from "./MarketplaceDetailRail";
-import { useMarketplaceCatalogue, usePluginPresence, usePluginRepoStars } from "./useMarketplace";
+import {
+  useMarketplaceCatalogue,
+  useMarketplaceMachineName,
+  usePluginPresence,
+  usePluginRepoStars,
+} from "./useMarketplace";
 import { PluginMediaGallery } from "./PluginMediaGallery";
 import { PluginStarButton } from "./PluginStarButton";
 import {
@@ -57,6 +61,7 @@ import {
 } from "./marketplaceUi";
 import {
   deriveMachineCoverage,
+  describeMarketplaceRegistry,
   describePluginAdds,
   describePluginDownload,
   describePluginResources,
@@ -90,6 +95,16 @@ export function MarketplaceDetailPage({ pluginId }: { pluginId: string }) {
   const installed = useRootAppStore((state) => state.installedPlugins);
   const refreshInstalledPlugins = useRootAppStore((state) => state.refreshInstalledPlugins);
   const presence = usePluginPresence(true);
+  const machineName = useMarketplaceMachineName();
+  /* A machine that did not answer for its own registry has an EMPTY installed
+     list that does not mean empty, so every control that acts on this plugin
+     would be acting on a guess. The page still reads; it stops offering. */
+  const registryMessage = describeMarketplaceRegistry({
+    state: catalogue.registry,
+    machineName,
+  });
+  const registryReady = catalogue.registry.kind === "ready";
+  const canInstall = catalogue.capabilities.install && registryReady;
 
   const listing = React.useMemo(
     () => catalogue.listings.find((entry) => entry.pluginId === pluginId) ?? null,
@@ -217,8 +232,8 @@ export function MarketplaceDetailPage({ pluginId }: { pluginId: string }) {
         state={state}
         busy={busy}
         stars={stars.get(listing.pluginId) ?? listing.stars}
-        canInstall={catalogue.capabilities.install}
-        canManage={catalogue.capabilities.enable || catalogue.capabilities.uninstall}
+        canInstall={canInstall}
+        canManage={registryReady && (catalogue.capabilities.enable || catalogue.capabilities.uninstall)}
         enabled={installedPlugin?.enabled ?? false}
         onInstall={() => setInstallTarget({ kind: "listing", listing })}
         onToggleEnabled={(enabled) => void run(() => setPluginEnabled(pluginId, enabled))}
@@ -230,9 +245,14 @@ export function MarketplaceDetailPage({ pluginId }: { pluginId: string }) {
 
       {actionError ? <InlineNotice>{actionError}</InlineNotice> : null}
 
-      {catalogue.capabilities.install ? null : (
+      {/* The machine, not the directory. Silent when the machine answered. */}
+      {registryMessage ? <InlineNotice tone="muted">{registryMessage}</InlineNotice> : null}
+
+      {catalogue.capabilities.install || !registryReady ? null : (
         <InlineNotice tone="muted">
-          Open a project to manage plugins on this machine.
+          {machineName
+            ? `Open a project on ${machineName} to manage its plugins.`
+            : "Open a project to manage plugins on this machine."}
         </InlineNotice>
       )}
 
@@ -242,14 +262,12 @@ export function MarketplaceDetailPage({ pluginId }: { pluginId: string }) {
           from={state.version}
           to={state.available}
           busy={busy}
-          canInstall={catalogue.capabilities.install}
-          onUpdate={() => void run(async () => {
-            await installPlugin({
-              source: listing.source,
-              pluginId: listing.pluginId,
-              version: listing.version,
-            });
-          })}
+          canInstall={canInstall}
+          /* The dialog, not a direct install. An update replaces running code
+             with code nobody here has read, and the "Adds" disclosure is the
+             whole of ADE's plugin permission model — a second button that
+             skipped it would be a second permission model. */
+          onUpdate={() => setInstallTarget({ kind: "listing", listing, intent: "update" })}
         />
       ) : null}
 
@@ -271,19 +289,19 @@ export function MarketplaceDetailPage({ pluginId }: { pluginId: string }) {
             listing={listing}
             busy={busy}
             canRemote={catalogue.capabilities.remoteInstall}
+            canInstall={canInstall}
             supportsPresence={catalogue.capabilities.machines}
             loading={presence.loading}
-            onInstallOn={(machineKey, isThisMachine) => void run(async () => {
-              // No `machineKey` for this machine. The host reads its presence as
-              // "install somewhere else" and routes the whole thing down the
-              // remote path, which fails — so the very first install on a
-              // machine, the one people do most, was the one that never worked.
-              await installPlugin({
-                source: listing.source,
-                pluginId: listing.pluginId,
-                version: listing.version,
-                ...(isThisMachine ? {} : { machineKey }),
-              });
+            /* Every install on this page opens the same dialog, this row
+               included. It used to install on the press — the disclosure the
+               header's button shows was simply absent from the rail, so which
+               button you happened to use decided whether ADE told you what the
+               plugin adds before it ran its code. The machine rides along so
+               the dialog installs where the row said. */
+            onInstallOn={(machineKey, machineName, isThisMachine) => setInstallTarget({
+              kind: "listing",
+              listing,
+              machine: { machineKey, machineName, isThisMachine },
             })}
             onSetEnabled={(machineKey, enabled, isThisMachine) => void run(() =>
               setPluginEnabled(pluginId, enabled, isThisMachine ? undefined : machineKey))}

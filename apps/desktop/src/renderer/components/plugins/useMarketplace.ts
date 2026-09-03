@@ -17,6 +17,7 @@ import {
   parseMarketplaceEntry,
   type MarketplaceIndexState,
   type MarketplaceListing,
+  type MarketplaceRegistryState,
 } from "./marketplaceModel";
 
 /**
@@ -37,6 +38,16 @@ import {
 export type MarketplaceCatalogue = {
   listings: MarketplaceListing[];
   state: MarketplaceIndexState;
+  /**
+   * Whether the machine behind this page answered for its installed plugins.
+   *
+   * Separate from `state`, which is about the DIRECTORY. The two fail
+   * independently: a machine that cannot be reached still has a catalogue to
+   * browse, and a directory that cannot be fetched says nothing about the
+   * machine. Reporting either as the other is what turned an unreachable
+   * runtime into a page that never finished loading.
+   */
+  registry: MarketplaceRegistryState;
   /** True only for the first load; a refresh keeps the current list on screen. */
   loading: boolean;
   refreshing: boolean;
@@ -47,6 +58,7 @@ export type MarketplaceCatalogue = {
 export function useMarketplaceCatalogue(): MarketplaceCatalogue {
   const installed = useRootAppStore((state) => state.installedPlugins);
   const pluginsLoaded = useRootAppStore((state) => state.pluginsLoaded);
+  const pluginsLoadFailure = useRootAppStore((state) => state.pluginsLoadFailure);
 
   const [live, setLive] = React.useState<{
     listings: MarketplaceListing[];
@@ -106,14 +118,49 @@ export function useMarketplaceCatalogue(): MarketplaceCatalogue {
     [capabilities.browse, installed, live],
   );
 
+  /**
+   * The registry's own state, and the reason the page can finish loading.
+   *
+   * `pluginsLoaded` is only ever true for an answer the store TRUSTS, and the
+   * registry retries a failed load forever on a backoff — correct for a boot
+   * race, fatal as a loading gate. A page that waited on `pluginsLoaded` alone
+   * showed its skeleton for as long as the machine stayed unreachable, which is
+   * how a project bound to another machine read as a Marketplace that never
+   * opened. A recorded failure settles the page instead, with a sentence.
+   */
+  const registry = React.useMemo<MarketplaceRegistryState>(() => {
+    if (pluginsLoaded) return { kind: "ready" };
+    if (pluginsLoadFailure === "unavailable") return { kind: "unavailable" };
+    if (pluginsLoadFailure === "error") return { kind: "unreachable" };
+    return { kind: "loading" };
+  }, [pluginsLoadFailure, pluginsLoaded]);
+
   return {
     listings: catalogue.listings,
     state: catalogue.state,
-    loading: loading || !pluginsLoaded,
+    registry,
+    loading: loading || registry.kind === "loading",
     refreshing,
     refresh: React.useCallback(() => setRefreshToken((token) => token + 1), []),
     capabilities,
   };
+}
+
+/**
+ * The machine every plugin call on this page acts on, when it is not this one.
+ *
+ * The Marketplace is a machine-level route, but `window.ade.plugins` follows the
+ * project tab's runtime — so with a project bound to another machine, "install"
+ * installs THERE and "installed" lists what is there. The page has to be able to
+ * say which machine that is: without the name, an unreachable runtime and an
+ * empty machine are the same blank list.
+ *
+ * Null when the calls stay on this computer, which needs no name.
+ */
+export function useMarketplaceMachineName(): string | null {
+  const binding = useRootAppStore((state) => state.projectBinding);
+  if (binding?.kind !== "remote") return null;
+  return binding.runtimeName || binding.displayName || null;
 }
 
 /* ── Stars ──────────────────────────────────────────────────────────────── */

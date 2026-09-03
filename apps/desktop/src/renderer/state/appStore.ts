@@ -9,7 +9,11 @@ import { MODEL_REGISTRY, type ModelDescriptor } from "../../shared/modelRegistry
 import { parseCodedErrorMessage } from "../lib/codedError";
 import { toAdeRecoveryErrorCode, type AdeRecoveryErrorCode } from "../../shared/types/recovery";
 import { isWebClientMode } from "../lib/webClientMode";
-import { loadInstalledPlugins, type InstalledPlugin } from "../lib/pluginRuntimeBridge";
+import {
+  loadInstalledPlugins,
+  type InstalledPlugin,
+  type InstalledPluginsLoadFailure,
+} from "../lib/pluginRuntimeBridge";
 import { getAiStatusCached, invalidateAiDiscoveryCache } from "../lib/aiDiscoveryCache";
 import { hasConfiguredAiProvider } from "../lib/aiProviderStatus";
 import { getKeybindingsCoalesced, listLaneSnapshotsCoalesced, listLanesCoalesced } from "../lib/laneReadCache";
@@ -1205,6 +1209,21 @@ export type AppState = {
    */
   pluginsLoaded: boolean;
   /**
+   * Why the last registry load produced no answer the store could trust, or
+   * null when the last attempt succeeded (or none has finished yet).
+   *
+   * `pluginsLoaded` alone cannot tell "still loading" from "asked, and the
+   * machine did not answer". Every surface that waits on the registry read the
+   * first state as a spinner, so a project bound to a machine that cannot
+   * answer for plugins left the Marketplace on its skeleton forever. This field
+   * is what makes that a page with a state line on it instead.
+   *
+   * `unavailable` is the typed `plugins_unavailable` — that machine runs no
+   * plugin host. `error` is a call that rejected: an unreachable runtime, or a
+   * machine on a build with no `plugin` action domain.
+   */
+  pluginsLoadFailure: InstalledPluginsLoadFailure | null;
+  /**
    * Bumped whenever the web client's federated adapter swaps to a different
    * target (machine connect, project/tab switch). `usePluginRegistrySync`
    * depends on it to re-fetch the registry: the swap itself carries no
@@ -1665,6 +1684,7 @@ const createAppState: StateCreator<AppState> = (set, get) => {
   promptStashButtonEnabled: initialUserPreferences.promptStashButtonEnabled,
   installedPlugins: [],
   pluginsLoaded: false,
+  pluginsLoadFailure: null,
   pluginAdapterGeneration: 0,
   pluginThemeId: initialUserPreferences.pluginThemeId,
   pluginViewState: initialUserPreferences.pluginViewState,
@@ -1865,6 +1885,13 @@ const createAppState: StateCreator<AppState> = (set, get) => {
               (rootPath) => rootPath !== projectBinding.rootPath,
             )
           : prev.openProjectTabRoots,
+        // The plugin calls follow this binding, so a recorded failure belongs to
+        // the machine that WAS bound. Carrying it across the switch would have
+        // the Marketplace name the new machine as the one it cannot reach.
+        ...(prev.pluginsLoadFailure !== null
+          && prev.projectBinding?.key !== projectBinding?.key
+          ? { pluginsLoadFailure: null }
+          : {}),
       };
     }),
   setProjectHydrated: (projectHydrated) => set({ projectHydrated }),
@@ -2175,7 +2202,8 @@ const createAppState: StateCreator<AppState> = (set, get) => {
       persistUserPreferencesFrom({ ...prev, promptStashButtonEnabled: enabled });
       return { promptStashButtonEnabled: enabled };
     }),
-  setInstalledPlugins: (plugins) => set({ installedPlugins: plugins, pluginsLoaded: true }),
+  setInstalledPlugins: (plugins) =>
+    set({ installedPlugins: plugins, pluginsLoaded: true, pluginsLoadFailure: null }),
   refreshInstalledPlugins: async () => {
     // A host with no plugin namespace resolves as a confirmed empty registry —
     // it cannot answer and never will — so `pluginsLoaded` still settles there.
@@ -2184,12 +2212,23 @@ const createAppState: StateCreator<AppState> = (set, get) => {
     // a failed or raced load cannot be read as "no plugins are installed". The
     // caller retries; see `usePluginRegistrySync`.
     const load = await loadInstalledPlugins();
-    if (!load.ok) return false;
-    set({ installedPlugins: load.plugins, pluginsLoaded: true });
+    if (!load.ok) {
+      // The registry itself is left alone — see the comment above. The REASON
+      // is recorded, because a surface that only sees "not loaded" cannot tell
+      // a load still in flight from one the machine refused.
+      set({ pluginsLoadFailure: load.reason });
+      return false;
+    }
+    set({ installedPlugins: load.plugins, pluginsLoaded: true, pluginsLoadFailure: null });
     return true;
   },
   bumpPluginAdapterGeneration: () =>
-    set((prev) => ({ pluginAdapterGeneration: prev.pluginAdapterGeneration + 1 })),
+    // The failure belongs to the target that was there before the swap. A new
+    // one has not failed yet, so it does not inherit the last one's sentence.
+    set((prev) => ({
+      pluginAdapterGeneration: prev.pluginAdapterGeneration + 1,
+      ...(prev.pluginsLoadFailure === null ? {} : { pluginsLoadFailure: null }),
+    })),
   setPluginThemeId: (pluginId) =>
     set((prev) => {
       const value = normalizePluginThemeId(pluginId);

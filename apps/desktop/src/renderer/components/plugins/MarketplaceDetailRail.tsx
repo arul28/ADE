@@ -47,6 +47,7 @@ export function MachineRail({
   listing,
   busy,
   canRemote,
+  canInstall,
   supportsPresence,
   loading,
   onInstallOn,
@@ -57,9 +58,20 @@ export function MachineRail({
   busy: boolean;
   /** False → the other machines are shown as coverage only, with no controls. */
   canRemote: boolean;
+  /**
+   * False → no Install button on any row. The host cannot install, or the
+   * machine never answered for what it already has, and offering an install
+   * against an unread registry is offering to reinstall something.
+   */
+  canInstall: boolean;
   supportsPresence: boolean;
   loading: boolean;
-  onInstallOn: (machineKey: string, isThisMachine: boolean) => void;
+  /**
+   * Opens the install dialog for that machine. It does NOT install: every
+   * install on this page goes through the one dialog that discloses what the
+   * plugin adds.
+   */
+  onInstallOn: (machineKey: string, machineName: string, isThisMachine: boolean) => void;
   onSetEnabled: (machineKey: string, enabled: boolean, isThisMachine: boolean) => void;
 }) {
   const present = rows.filter((row) => row.state === "installed" || row.state === "outdated").length;
@@ -119,11 +131,12 @@ export function MachineRail({
                   >
                     {row.state === "disabled" ? "Turn on" : "Turn off"}
                   </button>
-                ) : listing.source ? (
+                ) : listing.source && canInstall ? (
                   <button
                     type="button"
                     disabled={busy}
-                    onClick={() => onInstallOn(row.machineKey, row.isThisMachine)}
+                    onClick={() => onInstallOn(row.machineKey, row.machineName, row.isThisMachine)}
+                    data-tour="plugin:marketplace.machine-install"
                     style={{
                       ...outlineButton({ height: 22, padding: "0 8px", fontSize: 10.5 }),
                       background: "transparent",

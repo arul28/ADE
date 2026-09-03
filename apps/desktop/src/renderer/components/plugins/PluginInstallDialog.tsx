@@ -48,8 +48,33 @@ import {
  * is how a user with a working plugin on disk concluded ADE could not take it.
  */
 
+/**
+ * The machine an install acts on, when a control names one.
+ *
+ * Only the machine matrix does — every other entry point installs on whichever
+ * machine the page's plugin calls already reach. Carried here rather than
+ * resolved inside the dialog because the row the reader pressed is the only
+ * thing that knows which machine they meant.
+ */
+export type InstallDialogMachine = {
+  machineKey: string;
+  machineName: string;
+  isThisMachine: boolean;
+};
+
 export type InstallDialogTarget =
-  | { kind: "listing"; listing: MarketplaceListing }
+  | {
+    kind: "listing";
+    listing: MarketplaceListing;
+    /** Absent → whichever machine this page's plugin calls already reach. */
+    machine?: InstallDialogMachine;
+    /**
+     * `update` only changes the wording. An update replaces running code with
+     * code nobody here has read, so it discloses exactly as an install does and
+     * goes through this same dialog.
+     */
+    intent?: "install" | "update";
+  }
   /**
    * The source-first form. `source` pre-fills the field and reads the manifest
    * immediately, which is how the in-chat approval card's "View in Marketplace"
@@ -208,10 +233,14 @@ export function PluginInstallDialog({
     if (!source) return;
     setPhase({ status: "installing" });
     try {
+      const machine = target?.kind === "listing" ? target.machine : undefined;
       const result = await installPlugin({
         source,
         ...(listing?.pluginId ? { pluginId: listing.pluginId } : {}),
         ...(target?.kind === "listing" ? { version: target.listing.version } : {}),
+        // No `machineKey` for this machine: the host reads its own presence key
+        // as "install somewhere else" and takes the remote path, which fails.
+        ...(machine && !machine.isThisMachine ? { machineKey: machine.machineKey } : {}),
       });
       await refreshInstalledPlugins();
       onInstalled?.(result.pluginId);
@@ -225,7 +254,12 @@ export function PluginInstallDialog({
   };
 
   const identity = listing ? pluginIdentity(listing) : null;
-  const title = listing ? `Install ${listing.displayName}` : "Install a plugin";
+  const updating = target?.kind === "listing" && target.intent === "update";
+  const verb = updating ? "Update" : "Install";
+  const onMachine = target?.kind === "listing" && target.machine && !target.machine.isThisMachine
+    ? ` on ${target.machine.machineName}`
+    : "";
+  const title = listing ? `${verb} ${listing.displayName}${onMachine}` : "Install a plugin";
 
   return (
     <LaneDialogShell
@@ -239,7 +273,7 @@ export function PluginInstallDialog({
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 }}>
           <span style={{ fontFamily: SANS_FONT, fontSize: 11, color: COLORS.textDim, minWidth: 0 }}>
             {phase.status === "installing"
-              ? "Installing…"
+              ? `${updating ? "Updating" : "Installing"}…`
               : source || (folderPicker
                 ? "Paste a repository URL, or choose a folder"
                 : "Paste a repository URL")}
@@ -264,7 +298,7 @@ export function PluginInstallDialog({
                 cursor: busy || !source ? "default" : "pointer",
               }}
             >
-              {phase.status === "installing" ? "Installing…" : "Install"}
+              {phase.status === "installing" ? `${updating ? "Updating" : "Installing"}…` : verb}
             </button>
           </span>
         </div>

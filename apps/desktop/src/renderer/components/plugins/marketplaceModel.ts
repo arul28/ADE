@@ -203,6 +203,60 @@ export type MarketplaceIndexState =
   /** This host has no directory access at all. */
   | { kind: "unsupported" };
 
+/**
+ * Whether the machine this page acts on answered for its own installed plugins.
+ *
+ * The Marketplace is a MACHINE-level page whose calls follow the project tab's
+ * runtime, so "installed" means installed on THAT machine — the remote one when
+ * the active project is bound to another machine. The registry read is the only
+ * part of the page that can fail per machine, and it used to fail silently: the
+ * page waited on a load that never settled and drew its skeleton forever, which
+ * reads as a Marketplace that does not open.
+ *
+ * So the failure is a state with a sentence, not an absence.
+ */
+export type MarketplaceRegistryState =
+  /** The machine answered. `installed` is fact. */
+  | { kind: "ready" }
+  /** Asked; the first answer has not arrived. */
+  | { kind: "loading" }
+  /** That machine runs no plugin host, and never will within this session. */
+  | { kind: "unavailable" }
+  /** The call rejected — an unreachable machine, or one with no `plugin` domain. */
+  | { kind: "unreachable" };
+
+/**
+ * The one sentence the page says about a machine that did not answer.
+ *
+ * Pure, and separated from the component, because the wording is the whole
+ * behaviour here: what a reader must never conclude is "this plugin is not
+ * installed" from a machine that was never asked. Naming the machine is what
+ * makes the difference between the two readings visible.
+ *
+ * Returns null while the answer is good or still coming — there is nothing
+ * honest to say then, and a reassurance line is noise.
+ */
+export function describeMarketplaceRegistry(input: {
+  state: MarketplaceRegistryState;
+  /**
+   * The machine the page acts on, when it is not this one. Null means the
+   * calls are staying on this computer, so no name is needed to place them.
+   */
+  machineName: string | null;
+}): string | null {
+  const { state, machineName } = input;
+  if (state.kind === "ready" || state.kind === "loading") return null;
+  const machine = machineName?.trim() || null;
+  if (state.kind === "unavailable") {
+    return machine
+      ? `${machine} doesn’t run plugins, so it can’t say what is installed there. This is the catalogue only.`
+      : "Plugins aren’t available on this computer. This is the catalogue only.";
+  }
+  return machine
+    ? `Can’t reach ${machine}, so what is installed there is unknown. This is the catalogue only.`
+    : "This computer isn’t answering about plugins, so what is installed is unknown. This is the catalogue only.";
+}
+
 export type MergedCatalogue = {
   listings: MarketplaceListing[];
   state: MarketplaceIndexState;
