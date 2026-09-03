@@ -22,6 +22,7 @@ const {
   readString,
 } = require("./format");
 const { build } = require("./panels");
+const { createPageActions } = require("./pageActions");
 
 const PUBLISH_ATTEMPTS = 5;
 const PUBLISH_RETRY_MS = 3_000;
@@ -162,7 +163,32 @@ exports.deactivate = async () => {
   sdk = null;
 };
 
+/**
+ * The handlers the plugin's own HTML PAGE invokes over the webview bridge.
+ *
+ * Built at LOAD, with `deps` reading this module's live `sdk` binding through a
+ * getter: it is null until `activate` runs, and a table that captured it by
+ * value would capture the null. A page is a webview the reader can open the
+ * instant the tab is drawn, which is well before `activate`'s first lane read
+ * has settled — a page that got "no such action" there would draw its empty
+ * state and stay there.
+ */
+const pageActions = createPageActions({
+  get sdk() { return sdk; },
+});
+
+/**
+ * The action table the host dispatches into.
+ *
+ * The two halves are DISJOINT — no id is defined by both, and
+ * `test/pageActions.test.js` asserts it — so the merge order decides nothing.
+ * Every panel action the manifest names (`refreshGraph`, `openGraph`,
+ * `openLane`, the two tools) still resolves, because the vocabulary panels are
+ * the fallback for every client that cannot draw the page.
+ */
 exports.actions = {
+  ...pageActions,
+
   async refreshGraph() {
     const result = await refreshGraph();
     if (result.error) return { message: result.error, ok: false };
@@ -192,6 +218,7 @@ exports.actions = {
 };
 
 exports.__internals = {
+  pageActions,
   viewFor,
   publish,
   refreshGraph,

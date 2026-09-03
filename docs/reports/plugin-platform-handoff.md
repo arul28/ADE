@@ -194,3 +194,108 @@ and `plugins/ade-linear/dist/` exist in the working tree and are NOT committed.
 Outstanding verification: iOS is UNVERIFIED on this Mac — `xcodebuild` is
 blocked by the 30 GB disk gate, and the MacBook build is pending. No official
 plugin ships a page yet, so the page-tier acceptance walk has not run.
+
+## 2026-09-03 handoff to the next coordinator (usage cliff)
+
+Read in this order: this section, `docs/reports/plugin-page-tier-spec.md`,
+`docs/reports/plugin-page-tier-wave2-spec.md`, then every
+`plugins/<id>/page/PARITY.md`. Ticket ADE-148 has the day-by-day comments.
+
+### What happened, in order
+1. Took over at `61ee82327`. Four Opus review agents over `02090d9e7..61ee82327`
+   found 35 defects + 4 red gates; five fix batches closed all; iOS verified
+   244/0 on a real `xcodebuild` (5546a1623).
+2. The owner deleted the lane by accident; the branch was recovered from
+   dangling commits. Edit only under `.ade/worktrees/plugin-platform-c7103e2e`.
+3. Alpha acceptance walk on the owner's MacBook Pro. The install flip worked.
+   The JSON vocabulary panels looked like a form generator; sign-in never opened
+   a browser on desktop (renderer discarded the authSession URL); the
+   credential handoff never worked. Owner verdict: a regression.
+4. PIVOT (owner): the webview is the primary page tier on desktop, hosted web
+   and iOS (WKWebView); the JSON vocabulary is frozen and will be deleted except
+   the terminal profile. Built: bridge v2 (relay, control-flow answers), desktop
+   placements (popover, settings section, composer picker, destroy-when-hidden),
+   web iframe host (sandbox header + service worker), iOS WKWebView host +
+   asset channel + bundled pages, `@ade-dev/ui` kit (8 subpaths, desktop
+   consumes it as a COPIED `file:` dep), Linear 2.0.0 ported one-to-one to a page
+   with 15 parity gaps closed, remote plugin config/collection writes, docs.
+   Gates green at `d575a53d2`; iOS 333/0 at `f8f4d1381`.
+5. Second walk: the owner found the header quick view broken, the launch
+   kickoff never sent, settings bloated, generic automations tile, extra
+   buttons. Three plan rounds locked WAVE 2 (`plugin-page-tier-wave2-spec.md`).
+6. Merged `origin/main` (10 commits, 9 conflicts) → `29c540311`, green.
+7. Six wave-2 builders ran in parallel and were STOPPED mid-flight at the
+   owner's usage limit. Their tree is committed as WIP `14a483582` on branch
+   `plugin-platform-wave2-wip` (= `plugin-platform` + one commit). NOT green.
+
+### Where each batch stopped (all uncommitted work is in the WIP commit)
+- w2p-a (sockets `composer-menu-item`, `chat-menu-item`, `machine-entry`,
+  `automation-trigger-tile`, `automation-template`; host pickers renderer side;
+  chat chrome; header system; page error card): partially built; check
+  `apps/desktop/src/shared/plugins/sockets.ts`, `renderer/components/plugins/sockets/**`,
+  `renderer/components/app/TopBar.tsx`, `renderer/components/automations/**`.
+- w2p-b (bridge verbs `ui.pick*`, `ui.openPathInEditor`, `sockets.list/invoke`,
+  `chat.setHeader`, `attachBranch.prUrl`, `host.subscribe` kinds
+  operation/conflict/review, `runtimeRef.capabilities`, per-runtime rename lock,
+  `page.error`, `hostEngine.place/release`; iOS mirrors + pull to refresh;
+  doctor page checks): partially built; iOS side reported picker shapes in
+  `apps/ios/ADE/Models/PluginPageWave2.swift`; nothing built on this Mac
+  (disk gate) — all Swift UNVERIFIED until a MacBook build.
+- w2-linear (kickoff fix, remove quick view/chat-header/bar button, composer
+  menu item, issue-context menu item, slim settings, templates, trigger tile,
+  webhook auto-register, host pickers in the launch form): partially built.
+- w2-cursor-cloud (entire feature as a plugin): page dir created; partial.
+- w2-graph-history: Graph page in progress (`plugins/ade-graph/page`,
+  `pageActions.js`); History not started or early.
+- w2-review-control-sim: ade-review is 2.0.0 (page tier, green on its own);
+  index row `marketplaceLocalIndex.ts` / `registry/seed-entries.json` NOT yet
+  re-synced (pilotPackages red on ade-review 1.1.0 vs 2.0.0); Electron Control /
+  iOS Sim Control pages and the rename list not started or early.
+
+### Resume protocol
+1. `cd .ade/worktrees/plugin-platform-c7103e2e && git branch --show-current`
+   must be `plugin-platform-wave2-wip`. Node 22 via `brew --prefix node@22`;
+   desktop typecheck needs `NODE_OPTIONS=--max-old-space-size=12288`; deps are
+   installed in-tree (never `npm --prefix … install`; kit reinstall is
+   `cd apps/desktop && npm install ../../packages/ui --install-links`).
+2. Run both typechecks and the plugin suites; list what is red per area.
+3. Finish each batch per the wave-2 spec with Opus 5 subagents (owner rule:
+   Fable/coordinator writes specs and judges; never spawns Fable subagents;
+   medium effort for routine, high for hard; agents never commit; commit by
+   explicit path per batch; never `git add -A`).
+4. Then: delete the desktop/web/iOS vocabulary renderers (keep the terminal
+   profile), docs, full gates, fast-forward `plugin-platform`, MacBook builds,
+   ONE owner test round (desktop one-to-one Linear, Cursor Cloud, Graph,
+   History, Review, Electron Control, iOS Sim Control; phone Linear + Cursor
+   Cloud; header system).
+
+### The owner's MacBook Pro (acceptance builds run THERE, never on the main Mac)
+- Tailscale `100.117.237.95` (`macbook-pro-97`), SSH `arul@100.117.237.95`
+  with this Mac's key already authorized (BatchMode works). Connectivity flaps;
+  wrap commands in retries. Keep it awake with `setsid nohup caffeinate -dims &`.
+- Worktree there: `/Users/arul/ADE/.ade/worktrees/alpha-build-1b4714f3`
+  (branch plugin-platform; `git fetch && git merge --ff-only`). Node 22.13.1 at
+  `/Users/arul/.asdf/installs/nodejs/22.13.1/bin`. Logs and scripts in
+  `~/alpha-build-logs/`: `round3.sh` (deps + kit + page sync + iOS build +
+  11 Plugin XCTest classes + Alpha package + install + relaunch), `ios-only.sh`,
+  `alpha-adhoc.sh`, `adea` (the Alpha-home CLI wrapper), `sim-udid`
+  (iPhone 17 Pro, iOS 26.2). Xcode 26.6.
+- Alpha: `npm run package:alpha -- --skip-install` builds ad-hoc; install by
+  `ditto` into `/Applications/ADE Alpha.app` and `open -a`. Ad-hoc = two
+  keychain password prompts per relaunch. SIGNED builds only work from the
+  owner's own Terminal (`--sign 30DBB64B65F04B3619DF489A1FF8B74D4DC0BC23`);
+  over SSH codesign fails with errSecInternalComponent. Never `--sign-auto`
+  there (a foreign Developer ID cert is in that keychain).
+- Alpha home `~/.ade-alpha`; `~/.ade-alpha/bin/ade` is a stale binary — use
+  `~/alpha-build-logs/adea` (runs the worktree cli.cjs with ADE_HOME set).
+  Plugin installs need `--role cto`.
+- The bundled iOS pages come from `node scripts/sync-bundled-plugin-pages.mjs`;
+  run it after any plugin page rebuild.
+
+### Owner rules that stand
+Gating shells are not acceptable. Compiled owners stay in the binary until the
+acceptance walk passes. One-to-one with the compiled UI is the bar. Hit every
+surface (desktop, web, iOS, TUI, CLI). Windows is part of done. Do not invent
+platform semantics. Plugins are plain files; pages ship source + committed
+`dist/`. Never edit the project-root checkout. Never push a red tree to
+`plugin-platform`.

@@ -1,21 +1,35 @@
 {
   "name": "ade-graph",
-  "version": "1.1.0",
+  "version": "2.0.0",
   "displayName": "Graph",
-  "description": "Lanes, commits and PR overlays on one canvas — the same Graph ADE already ships, as a plugin.",
+  "description": "Lanes, commits and PR overlays on one canvas \u2014 the same Graph ADE already ships, as a plugin.",
   "icon": "graph",
   "accent": "#6366F1",
   "vocabVersion": 1,
   "entry": "index.js",
   "surfaces": [
     {
-      "kind": "tab",
+      "kind": "webview",
       "id": "graph",
       "title": "Graph",
       "icon": "graph",
+      "entryHtml": "dist/index.html",
       "panelId": "graph",
       "order": 50,
       "mobile": true
+    },
+    {
+      "kind": "webview",
+      "id": "lane",
+      "title": "Lane",
+      "icon": "git-branch",
+      "entryHtml": "dist/index.html",
+      "panelId": "lane",
+      "popover": {
+        "width": 720,
+        "height": 520
+      },
+      "mobile": false
     }
   ],
   "panels": [
@@ -45,7 +59,9 @@
     }
   ],
   "collections": {
-    "lanes": { "sync": true }
+    "lanes": {
+      "sync": true
+    }
   },
   "tools": [
     {
@@ -65,13 +81,20 @@
       "input": {
         "type": "object",
         "properties": {
-          "laneId": { "type": "string", "description": "The lane id to fetch." }
+          "laneId": {
+            "type": "string",
+            "description": "The lane id to fetch."
+          }
         },
-        "required": ["laneId"]
+        "required": [
+          "laneId"
+        ]
       }
     }
   ],
   "cli": [],
-  "skills": ["skills"],
+  "skills": [
+    "skills"
+  ],
   "official": true
 }
