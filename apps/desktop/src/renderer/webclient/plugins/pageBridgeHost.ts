@@ -26,6 +26,7 @@ import {
   PLUGIN_WEBVIEW_BRIDGE_VERSION,
   PLUGIN_WEBVIEW_CONFIRM_BODY_MAX_CHARS,
   PLUGIN_WEBVIEW_CONFIRM_TITLE_MAX_CHARS,
+  PLUGIN_WEBVIEW_CHAT_TURNS_MAX,
   PLUGIN_WEBVIEW_HOST_COALESCE_MS,
   PLUGIN_WEBVIEW_HOST_IDS_MAX,
   PLUGIN_WEBVIEW_LIST_MAX_ROWS,
@@ -35,8 +36,10 @@ import {
   isPluginWebviewHostKind,
   isPluginWebviewMethod,
   isPluginWebviewToastLevel,
+  type PluginWebviewChatTurn,
   type PluginWebviewComposerAttach,
   type PluginWebviewConfirm,
+  type PluginWebviewDialogSubmit,
   type PluginWebviewContext,
   type PluginWebviewEventName,
   type PluginWebviewHostEvent,
@@ -72,7 +75,22 @@ export type PluginPageUiHandlers = {
   composerAttach?: (issue: PluginWebviewComposerAttach) => boolean;
   openSettings: (target: { entryId: string } | { socketId: string }) => boolean;
   openDeeplink: (url: string) => void;
-  /** Content height of a `settings-section` guest, already capped by the host. */
+  /**
+   * Hand a `dialog-picker` guest's chosen issue to the dialog drawing it.
+   *
+   * Three outcomes rather than a boolean, and the page hears a different
+   * sentence for each: the dialog took it, the dialog turned it down, or no
+   * dialog is listening on this guest at all. Absent on a client with no
+   * dialog store — the verb is then refused rather than resolving quietly.
+   */
+  dialogSubmit?: (answer: PluginWebviewDialogSubmit) => "applied" | "refused" | "unlistened";
+  /**
+   * Content height of a size-to-content guest, already capped by the host.
+   *
+   * Honoured in `settings-section` and `dialog-picker` — the two placements
+   * that sit inside a taller ADE surface. Every other placement fills a frame
+   * the host already sized, and the React host drops the report there.
+   */
   resize?: (height: number) => void;
 };
 
@@ -251,6 +269,23 @@ export function createPluginPageHost(options: PluginPageHostOptions): PluginPage
       case "surface.close":
         options.ui.closeSurface();
         return undefined;
+      case "dialog.submit": {
+        // Placement first, and it is the host's own word about where it drew
+        // this guest — never the page's claim. A tab that could name the issue
+        // for a dialog nobody opened would be writing into a form the reader is
+        // not looking at, which is why the contract refuses it everywhere else.
+        if (options.context.placement !== "dialog-picker") {
+          throw new Error("Only a page drawn inside a dialog can answer it.");
+        }
+        const answer = readDialogSubmit(params);
+        if (!answer) throw new Error("That issue can’t be handed to the dialog.");
+        const submit = options.ui.dialogSubmit;
+        if (!submit) throw new Error("This client can’t answer a dialog from a page yet.");
+        const verdict = submit(answer);
+        if (verdict === "unlistened") throw new Error("That dialog isn’t open any more.");
+        if (verdict === "refused") throw new Error("The dialog didn’t accept that issue.");
+        return undefined;
+      }
       case "composer.insert": {
         const text = stringArg(params.text);
         if (!text) throw new Error("There was nothing to insert.");
@@ -470,6 +505,20 @@ function readConfirm(value: unknown): PluginWebviewConfirm | null {
   };
 }
 
+/**
+ * A `dialog.submit` payload, in the shape main's own bridge server reads it.
+ *
+ * `{issue}` at the top level of `params`, not nested under an `answer` key, so
+ * one page calls one verb the same way on both clients. `issue: null` is a real
+ * answer — the reader cleared the selection — and is distinguished from a
+ * malformed record, which is refused.
+ */
+function readDialogSubmit(params: Record<string, unknown>): PluginWebviewDialogSubmit | null {
+  if (params.issue === null) return { issue: null };
+  const issue = readComposerAttach(params.issue);
+  return issue ? { issue } : null;
+}
+
 function readComposerAttach(value: unknown): PluginWebviewComposerAttach | null {
   const record = asRecord(value);
   const provider = stringArg(record.provider);
@@ -498,26 +547,53 @@ export function coalesceHostEvents(
   emit: (event: PluginWebviewHostEvent) => void,
   windowMs: number,
 ): { deliver: (event: PluginWebviewHostEvent) => void; cancel: () => void } {
-  const pending = new Map<PluginWebviewHostKind, { ids: Set<string>; overflow: boolean }>();
+  const pending = new Map<
+    PluginWebviewHostKind,
+    { ids: Set<string>; overflow: boolean; turns: Map<string, PluginWebviewChatTurn> }
+  >();
   let timer: ReturnType<typeof setTimeout> | null = null;
 
   const flush = (): void => {
     timer = null;
     for (const [kind, entry] of pending) {
-      emit({ kind, ids: [...entry.ids], overflow: entry.overflow });
+      const turns = [...entry.turns.values()];
+      emit({
+        kind,
+        ids: [...entry.ids],
+        overflow: entry.overflow,
+        ...(turns.length > 0 ? { turns } : {}),
+      });
     }
     pending.clear();
   };
 
   return {
     deliver(event) {
-      const entry = pending.get(event.kind) ?? { ids: new Set<string>(), overflow: false };
+      const entry = pending.get(event.kind)
+        ?? { ids: new Set<string>(), overflow: false, turns: new Map<string, PluginWebviewChatTurn>() };
       for (const id of event.ids) {
         if (entry.ids.size >= PLUGIN_WEBVIEW_HOST_IDS_MAX) {
           entry.overflow = true;
           break;
         }
         entry.ids.add(id);
+      }
+      // Last state wins, per turn. Within one coalescing window a turn can go
+      // started → failed, and the page must be told where it ENDED up: sending
+      // both would have it draw a spinner it then has to unwind, and sending
+      // the first would leave a dead turn drawn as running. Keyed by session
+      // and turn together so two turns of one session do not overwrite one
+      // another.
+      for (const turn of event.turns ?? []) {
+        const key = `${turn.sessionId}\u0000${turn.turnId ?? ""}`;
+        if (!entry.turns.has(key) && entry.turns.size >= PLUGIN_WEBVIEW_CHAT_TURNS_MAX) {
+          // Past the cap the frame stops carrying turns and says so: the page
+          // refetches the sessions it watches rather than patching a partial
+          // list it cannot tell is partial.
+          entry.overflow = true;
+          continue;
+        }
+        entry.turns.set(key, turn);
       }
       if (event.overflow) entry.overflow = true;
       pending.set(event.kind, entry);

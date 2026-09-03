@@ -877,6 +877,58 @@ describe("parseDeeplink — plugin", () => {
   });
 });
 
+describe("lane drawer + welcome", () => {
+  it("parses a lane drawer from both forms", () => {
+    expect(expectOk(parseDeeplink(`ade://lane/${UUID}?drawer=stack`)))
+      .toEqual({ kind: "lane", laneId: UUID, drawer: "stack" });
+    expect(expectOk(parseDeeplink(`https://ade-app.dev/open?type=lane&id=${UUID}&drawer=stack`)))
+      .toEqual({ kind: "lane", laneId: UUID, drawer: "stack" });
+  });
+
+  it("round-trips a lane drawer in both forms", () => {
+    const ade = buildDeeplink({ kind: "lane", laneId: UUID, drawer: "stack" }, { form: "ade" });
+    expect(ade).toBe(`ade://lane/${UUID}?drawer=stack`);
+    expect(expectOk(parseDeeplink(ade))).toEqual({ kind: "lane", laneId: UUID, drawer: "stack" });
+
+    const https = buildDeeplink({ kind: "lane", laneId: UUID, drawer: "stack" });
+    expect(https).toBe(`https://ade-app.dev/open?type=lane&id=${UUID}&drawer=stack`);
+    expect(expectOk(parseDeeplink(https))).toEqual({ kind: "lane", laneId: UUID, drawer: "stack" });
+  });
+
+  it("drops a drawer this build does not know and still opens the lane", () => {
+    // The `?tab=` leniency rule: a link minted by a newer ADE must not fail to
+    // open a lane on an older one over a panel it cannot draw.
+    expect(expectOk(parseDeeplink(`ade://lane/${UUID}?drawer=holodeck`)))
+      .toEqual({ kind: "lane", laneId: UUID });
+    expect(expectOk(parseDeeplink(`https://ade-app.dev/open?type=lane&id=${UUID}&drawer=`)))
+      .toEqual({ kind: "lane", laneId: UUID });
+  });
+
+  it("carries the drawer beside an envelope", () => {
+    expect(expectOk(parseDeeplink(`ade://lane/${UUID}?drawer=STACK&repo=arul/ade`)))
+      .toEqual({ kind: "lane", laneId: UUID, drawer: "stack", envelope: { repoOwner: "arul", repoName: "ade" } });
+  });
+
+  it("parses and round-trips the project picker in both forms", () => {
+    expect(expectOk(parseDeeplink("ade://welcome"))).toEqual({ kind: "welcome" });
+    expect(expectOk(parseDeeplink("https://ade-app.dev/open?type=welcome"))).toEqual({ kind: "welcome" });
+    expect(buildDeeplink({ kind: "welcome" }, { form: "ade" })).toBe("ade://welcome");
+    expect(buildDeeplink({ kind: "welcome" })).toBe("https://ade-app.dev/open?type=welcome");
+  });
+
+  it("maps both onto the navigation targets the dispatcher reads", () => {
+    expect(deeplinkToNavigationTarget({ kind: "lane", laneId: UUID, drawer: "stack" }))
+      .toEqual({ kind: "lane", laneId: UUID, drawer: "stack", envelope: null });
+    expect(deeplinkToNavigationTarget({ kind: "lane", laneId: UUID }))
+      .toEqual({ kind: "lane", laneId: UUID, drawer: null, envelope: null });
+    expect(deeplinkToNavigationTarget({ kind: "welcome" })).toEqual({ kind: "welcome" });
+  });
+
+  it("describes the project picker", () => {
+    expect(describeTarget({ kind: "welcome" })).toBe("project picker");
+  });
+});
+
 describe("looksLikeAdeDeeplink", () => {
   it("matches ade:// urls", () => {
     expect(looksLikeAdeDeeplink("ade://lane/abc")).toBe(true);

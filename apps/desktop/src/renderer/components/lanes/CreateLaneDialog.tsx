@@ -295,6 +295,29 @@ export function CreateLaneDialog({
    * one would EMPTY the control the plugin meant to fill. Free text — the name —
    * is written verbatim; the dialog's own validation is what judges it.
    */
+  /**
+   * The issue a contributed `dialog-picker` page chose.
+   *
+   * The SAME setter the built-in picker's `onSelectIssue` calls, deliberately:
+   * everything downstream — the lane name, `linearIssueBranchName`, the branch
+   * conflict check, the mode switch out of "existing" — reads
+   * `selectedLinearIssue` and nothing else, so a page that fills this slot gets
+   * every one of those behaviours without any of them learning that a plugin
+   * exists. `null` clears it, exactly as the card's own Clear button does.
+   *
+   * Refused mid-creation for the same reason `handlePluginSetField` is: the
+   * form is disabled and the lane name is already spent, so a write here would
+   * be a value the user cannot correct before it is used.
+   */
+  const handlePluginSelectIssue = React.useCallback(
+    (issue: LaneLinearIssue | null): boolean => {
+      if (busy || laneCreated) return false;
+      setSelectedLinearIssue(issue);
+      return true;
+    },
+    [busy, laneCreated, setSelectedLinearIssue],
+  );
+
   const handlePluginSetField = React.useCallback(
     (field: PluginDialogField<"create-lane">, value: string): boolean => {
       // Mid-creation the whole form is disabled; a write here would be a value
@@ -848,6 +871,7 @@ export function CreateLaneDialog({
           laneName={createLaneName || null}
           projectKey={projectKey}
           onSetField={handlePluginSetField}
+          onSelectIssue={handlePluginSelectIssue}
           active={open}
         />
 

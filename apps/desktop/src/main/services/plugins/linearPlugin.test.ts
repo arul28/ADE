@@ -389,16 +389,20 @@ describe("installing ade-linear from the bundled directory", () => {
     expect(installed.record.source.kind).toBe("builtin");
     expect(installed.record.enabled).toBe(true);
 
-    // Six surfaces, one page. Every placement Linear draws is a `webview`
+    // Seven surfaces, one page. Every placement Linear draws is a `webview`
     // surface pointing at the same `dist/index.html`; the page reads the host's
-    // injected `surfaceId` to know which of the six it is. `issues` keeps its id
-    // from the tab it replaced, because a tab badge is addressed by
+    // injected `surfaceId` to know which of the seven it is. `issues` keeps its
+    // id from the tab it replaced, because a tab badge is addressed by
     // `"<pluginId>/<surfaceId>"`.
     expect(installed.manifest?.surfaces.map((surface) => surface.id)).toEqual([
       "issues",
       "quickview",
       "settings",
       "picker",
+      // The Create-lane and Create-PR picker, drawn inside ADE's own dialogs.
+      // Its own surface rather than a reuse of `picker`: the composer picker
+      // answers with `composer.attach` and this one with `dialog.submit`.
+      "dialog-picker",
       "badge-card",
       "issue-context",
     ]);
@@ -413,6 +417,10 @@ describe("installing ade-linear from the bundled directory", () => {
       "composer-action",
       "chat-header-action",
       "row-badge",
+      // The two dialog pickers. Both name the same page and the same panel;
+      // `dialog` is what tells them apart, and it is why the payload carries it.
+      "dialog-section",
+      "dialog-section",
       "graph-node",
       "settings-section",
       "command-palette-action",
@@ -422,9 +430,9 @@ describe("installing ade-linear from the bundled directory", () => {
       // The transcript's issue context.
       "chat-card",
     ]);
-    // Six of the nine sockets name a page to draw instead of their panel, and
-    // each names one this manifest actually declares — an unresolvable id would
-    // silently fall back to the panel forever.
+    // Nine of the eleven sockets name a page to draw instead of their panel,
+    // and each names one this manifest actually declares — an unresolvable id
+    // would silently fall back to the panel forever.
     const surfaceIds = new Set(installed.manifest?.surfaces.map((surface) => surface.id) ?? []);
     const upgraded = (installed.manifest?.sockets ?? []).filter((socket) => socket.webviewSurfaceId);
     expect(upgraded.map((socket) => socket.id)).toEqual([
@@ -432,6 +440,8 @@ describe("installing ade-linear from the bundled directory", () => {
       "attach-issue",
       "chat-issue",
       "lane-issue",
+      "create-lane-issue",
+      "create-pr-issue",
       "connection",
       "top-bar-issues",
       "issue-context",

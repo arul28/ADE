@@ -12,8 +12,25 @@ describe("deeplinkToNavigationTarget", () => {
     expect(deeplinkToNavigationTarget({ kind: "lane", laneId: UUID })).toEqual({
       kind: "lane",
       laneId: UUID,
+      // Normalized to null rather than omitted, the same way `envelope` is: the
+      // renderer's dispatcher reads the field, and "absent" and "no drawer"
+      // must not be two shapes it has to tell apart.
+      drawer: null,
       envelope: null,
     });
+  });
+
+  it("carries a lane drawer through to the navigation target", () => {
+    expect(deeplinkToNavigationTarget({ kind: "lane", laneId: UUID, drawer: "stack" })).toEqual({
+      kind: "lane",
+      laneId: UUID,
+      drawer: "stack",
+      envelope: null,
+    });
+  });
+
+  it("maps the project picker, which carries no id at all", () => {
+    expect(deeplinkToNavigationTarget({ kind: "welcome" })).toEqual({ kind: "welcome" });
   });
 
   it("maps session targets to the Work route", () => {
@@ -180,7 +197,7 @@ describe("handleDeeplinkUrl", () => {
     expect(dispatch).toHaveBeenCalledTimes(1);
     expect(dispatch).toHaveBeenCalledWith(
       expect.objectContaining({
-        target: { kind: "lane", laneId: UUID, envelope: null },
+        target: { kind: "lane", laneId: UUID, drawer: null, envelope: null },
         source: "deeplink:test",
       }),
     );
@@ -207,6 +224,28 @@ describe("handleDeeplinkUrl", () => {
         },
       },
     });
+  });
+
+  it("dispatches a lane drawer link", () => {
+    const dispatch = vi.fn();
+    handleDeeplinkUrl(`ade://lane/${UUID}?drawer=stack`, "test", dispatch, vi.fn());
+    expect(dispatch).toHaveBeenCalledWith(
+      expect.objectContaining({
+        target: { kind: "lane", laneId: UUID, drawer: "stack", envelope: null },
+      }),
+    );
+  });
+
+  it("dispatches the project picker from both link forms", () => {
+    const dispatch = vi.fn();
+    handleDeeplinkUrl("ade://welcome", "test", dispatch, vi.fn());
+    handleDeeplinkUrl("https://ade-app.dev/open?type=welcome", "test", dispatch, vi.fn());
+    expect(dispatch).toHaveBeenCalledTimes(2);
+    for (const call of dispatch.mock.calls) {
+      expect(call[0]).toEqual(
+        expect.objectContaining({ target: { kind: "welcome" } }),
+      );
+    }
   });
 
   it("logs and skips dispatching invalid URLs", () => {

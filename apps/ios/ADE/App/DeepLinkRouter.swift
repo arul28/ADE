@@ -97,8 +97,26 @@ final class DeepLinkRouter {
       // Lanes are a local-only desktop concept — the iOS client has no
       // counterpart UI, so we surface a "Send to your computer" card instead of
       // trying to navigate.
+      //
+      // `?drawer=stack` needs nothing here and must not grow a branch: the
+      // WHOLE URL is what crosses to the Mac, so the drawer the link named is
+      // opened by the desktop's own router — the one surface that has a stack
+      // graph to open. Parsing it on the phone would be parsing a parameter
+      // this client can never act on.
       guard let laneId = pathComponents.first,
             ADEDeepLinkURLParsing.isValidUUID(laneId) else { return }
+      postSendToMac(url: url)
+    case "welcome":
+      // `ade://welcome` — the project picker. Same answer as `lane`, and for a
+      // sharper version of the same reason: the picker is the DESKTOP's project
+      // picker, and this client has no project-picking surface at all (it
+      // follows whatever project the paired Mac has open). So the link is
+      // bounced to the machine that can honour it rather than silently doing
+      // nothing on the phone.
+      //
+      // No path components to validate — the target carries no id, which is
+      // what makes it the one link a page can send when there is no project
+      // open to address anything else against.
       postSendToMac(url: url)
     case "file":
       let path = pathComponents.joined(separator: "/")
@@ -226,7 +244,13 @@ final class DeepLinkRouter {
     let query = ADEDeepLinkURLParsing.adeQueryValues(from: components)
     switch query["type"]?.lowercased() {
     case "lane":
+      // As in the `ade://` switch above: `&drawer=` rides along inside the URL
+      // that crosses to the Mac, so there is nothing for this client to read.
       guard ADEDeepLinkURLParsing.isValidUUID(query["id"]) else { return true }
+      postSendToMac(url: url)
+    case "welcome":
+      // The https mirror of `ade://welcome`. No id to validate; bounced to the
+      // Mac for the same reason.
       postSendToMac(url: url)
     case "session":
       guard let sessionId = query["id"],

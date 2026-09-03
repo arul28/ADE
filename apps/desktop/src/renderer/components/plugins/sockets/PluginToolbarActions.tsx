@@ -3,6 +3,7 @@ import React from "react";
 import type { PluginSurfaceId } from "../../../../shared/plugins/sockets";
 import type { PluginSurfaceContext } from "../../../../shared/plugins/context";
 import { contributionKey } from "./contributionModel";
+import { usePluginDeclaredWebviewPress } from "./usePluginDeclaredWebview";
 import { usePluginSocketInvoke, useSurfaceContributions } from "./useSurfaceContributions";
 import { brandIconsProp, usePluginBrandIcons } from "./usePluginBrandIcons";
 import { SocketBoundary } from "./SocketBoundary";
@@ -106,6 +107,24 @@ export function PluginToolbarActions({
     context: resolvedContext,
   });
   const invoke = usePluginSocketInvoke();
+  // A toolbar button that DECLARED a page opens it under itself instead of
+  // invoking — see `usePluginDeclaredWebviewPress`. One that declared none
+  // invokes exactly as it always did.
+  const openDeclaredPage = usePluginDeclaredWebviewPress();
+  const press = React.useCallback((contribution: {
+    pluginId: string;
+    payload: { actionId: string; webviewSurfaceId?: string };
+  }) => {
+    if (openDeclaredPage({
+      socket: "toolbar-action",
+      pluginId: contribution.pluginId,
+      ...(contribution.payload.webviewSurfaceId
+        ? { surfaceId: contribution.payload.webviewSurfaceId }
+        : {}),
+      subject: resolvedContext,
+    })) return;
+    void invoke(contribution.pluginId, contribution.payload.actionId, resolvedContext);
+  }, [invoke, openDeclaredPage, resolvedContext]);
   // The declaring plugin's own artwork. Without it `brand:linear` resolved to
   // the puzzle piece here while the tab rail beside it drew Linear's mark.
   const brandIconsFor = usePluginBrandIcons();
@@ -134,7 +153,7 @@ export function PluginToolbarActions({
             {...(contribution.payload.disabled ? { disabled: true } : {})}
             {...(chrome === "shell" ? { chrome } : {})}
             style={{ ...(menu.length > 0 && chrome !== "shell" ? SPLIT_BUTTON_STYLE : {}), ...tint }}
-            onClick={() => invoke(contribution.pluginId, contribution.payload.actionId, resolvedContext)}
+            onClick={() => press(contribution)}
           />
         );
         return (
@@ -171,7 +190,7 @@ export function PluginToolbarActions({
                 label={contribution.payload.label}
                 {...(contribution.payload.icon ? { icon: contribution.payload.icon } : {})}
                 {...brandIconsProp(brandIconsFor(contribution.pluginId))}
-                onClick={() => invoke(contribution.pluginId, contribution.payload.actionId, resolvedContext)}
+                onClick={() => press(contribution)}
               />
               <SocketMenuSubRows
                 items={contribution.payload.menu ?? []}

@@ -1129,6 +1129,13 @@ function AppNavigationBridge() {
   const project = useAppStore((s) => s.project);
   const lanes = useAppStore((s) => s.lanes);
   const refreshLanes = useAppStore((s) => s.refreshLanes);
+  // The project picker is a GUARD, not a route: `ProjectTabHost` renders
+  // `ProjectWelcomePage` while `showWelcome` is set, on whatever route is
+  // current. A `welcome` target therefore raises the flag rather than
+  // navigating anywhere the router knows about. This bridge is mounted outside
+  // every `AppStoreProvider`, so the setter is the ROOT store's — the same
+  // store `ProjectTabHost` reads the flag from.
+  const setShowWelcome = useAppStore((s) => s.setShowWelcome);
   const [inboundTarget, setInboundTarget] = React.useState<InboundDeeplinkTarget | null>(null);
   // Refs keep async dispatch paths reading FRESH state: the switch-project
   // modal re-dispatches after `switchToPath`, and a callback captured before
@@ -1349,7 +1356,22 @@ function AppNavigationBridge() {
       const params = new URLSearchParams();
       params.set("laneId", target.laneId);
       if (target.sessionId) params.set("sessionId", target.sessionId);
+      // `?drawer=` is spelled exactly as `LinearQuickViewButton` writes it by
+      // hand (`#/lanes?drawer=stack`), so the deeplink route and the in-app
+      // shortcut are one URL rather than two spellings LanesPage has to know.
+      // LanesPage reads it, opens the drawer, and strips the param.
+      if (target.drawer) params.set("drawer", target.drawer);
       navigate(`/lanes?${params.toString()}`);
+      return true;
+    }
+
+    if (target.kind === "welcome") {
+      // No route to push: the picker takes over whatever surface is current
+      // once the flag is set. `/work` is named anyway so a link that arrives
+      // while a gated or plugin route is showing leaves the reader somewhere
+      // legitimate after they pick a project and the guard falls away.
+      setShowWelcome(true);
+      navigate("/work");
       return true;
     }
 
@@ -1451,7 +1473,7 @@ function AppNavigationBridge() {
     }
 
     return false;
-  }, [navigate, refreshLanes, resolvePortableFallback]);
+  }, [navigate, refreshLanes, resolvePortableFallback, setShowWelcome]);
 
   // The modal's post-switch retry loop must always call the LATEST dispatcher
   // (fresh lanes/project), not the instance captured when the card rendered.

@@ -506,6 +506,12 @@ export const IPC = {
    * from the cache and pushes the `theme` event to that window's guests.
    */
   pluginWebviewThemePublish: "ade.plugin.webview.themePublish",
+  /**
+   * Renderer → main: one chat turn moved. Payload {@link PluginWebviewChatTurn}.
+   * Main fans it out to that window's guests that subscribed to the `chat`
+   * host kind, coalesced the way the entity families are.
+   */
+  pluginWebviewChatPublish: "ade.plugin.webview.chatPublish",
   /** Renderer → main: a guest's surface came on or off screen. */
   pluginWebviewSurfaceState: "ade.plugin.webview.surfaceState",
   /**

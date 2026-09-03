@@ -9,6 +9,7 @@ import { pluginIcon } from "../pluginIcons";
 import { PluginPanelHost } from "../PluginPanelHost";
 import { PluginWebviewHost, supportsPluginWebviews } from "../PluginWebviewHost";
 import { contributionKey } from "./contributionModel";
+import { resolvePluginSlotWebview } from "./pluginDeclaredWebview";
 import { pluginPanelSlotId } from "./panelSlotId";
 import { SocketBoundary } from "./SocketBoundary";
 import { SocketIcon } from "./socketUi";
@@ -106,21 +107,19 @@ export function usePluginPanelSlots(
         if (seen.has(id)) continue;
         seen.add(id);
         const identity = identities.get(contribution.pluginId);
-        // A `webview` surface of the same plugin whose panel this slot names is
-        // what turns the slot into a custom-HTML host. Matched on `panelId`
-        // because that is the link the surface already declares — a webview
-        // surface names the very panel every non-desktop client renders in its
-        // place — so no new manifest field is needed to point a drawer tab at a
-        // page. Resolved only where a guest can run; elsewhere `entryHtml` stays
-        // absent and the panel is drawn.
+        // Which page this slot draws, if any — the socket's own declared
+        // surface id first, the panel match second, and null on a client that
+        // cannot host a guest. The rule and its reasons live in
+        // `resolvePluginSlotWebview`, beside the other seven hosts' resolution,
+        // so the rail cannot come to a different answer than the rest of them.
         const installed = installedPlugins.find((plugin) => plugin.pluginId === contribution.pluginId);
-        const surface = webviewSupported
-          ? installed?.tabs.find(
-            (tab) => tab.kind === "webview"
-              && tab.panelId === contribution.payload.panelId
-              && Boolean(tab.entryHtml),
-          ) ?? null
-          : null;
+        const surface = resolvePluginSlotWebview({
+          pluginId: contribution.pluginId,
+          panelId: contribution.payload.panelId,
+          payload: contribution.payload,
+          installed: installedPlugins,
+          supported: webviewSupported,
+        });
         const entryHtml = surface?.entryHtml ?? undefined;
         slots.push({
           id,
@@ -131,7 +130,7 @@ export function usePluginPanelSlots(
           icon: pluginIcon(contribution.payload.icon, installed?.brandIcons),
           displayName: identity?.displayName ?? contribution.pluginId,
           ...(entryHtml ? { entryHtml } : {}),
-          ...(surface && entryHtml ? { webviewSurfaceId: surface.id } : {}),
+          ...(surface && entryHtml ? { webviewSurfaceId: surface.surfaceId } : {}),
         });
       }
       return slots;

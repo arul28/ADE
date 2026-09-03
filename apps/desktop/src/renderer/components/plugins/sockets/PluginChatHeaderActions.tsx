@@ -3,6 +3,7 @@ import React from "react";
 import type { PluginSessionContext } from "../../../../shared/plugins/context";
 import type { PluginSurfaceId } from "../../../../shared/plugins/sockets";
 import { contributionKey } from "./contributionModel";
+import { usePluginDeclaredWebviewPress } from "./usePluginDeclaredWebview";
 import { usePluginSocketInvoke, useSurfaceContributions } from "./useSurfaceContributions";
 import { brandIconsProp, usePluginBrandIcons } from "./usePluginBrandIcons";
 import { SocketBoundary } from "./SocketBoundary";
@@ -151,6 +152,32 @@ export function PluginChatHeaderActions({
       .finally(() => setBusyKeys((keys) => keys.filter((entry) => entry !== key)));
   }, [invoke, session]);
 
+  /**
+   * A header button that DECLARED a page opens it under itself.
+   *
+   * No busy state for that path, and none is missing: opening a page is a
+   * render, not a round trip to the plugin's process, so there is nothing to
+   * wait through. A button with no declared page invokes and lights up exactly
+   * as before.
+   */
+  const openDeclaredPage = usePluginDeclaredWebviewPress();
+  const press = React.useCallback((
+    contribution: { pluginId: string; payload: { actionId: string; webviewSurfaceId?: string } },
+    key: string,
+  ) => {
+    if (session && openDeclaredPage({
+      socket: "chat-header-action",
+      pluginId: contribution.pluginId,
+      ...(contribution.payload.webviewSurfaceId
+        ? { surfaceId: contribution.payload.webviewSurfaceId }
+        : {}),
+      // The chat this header belongs to — which is the whole reason this kind
+      // exists apart from `toolbar-action`, and the page gets it too.
+      subject: session,
+    })) return;
+    run(contribution.pluginId, contribution.payload.actionId, key);
+  }, [openDeclaredPage, run, session]);
+
   if (!session || contributions.length === 0) return null;
 
   /**
@@ -191,7 +218,7 @@ export function PluginChatHeaderActions({
                 title={busy ? `${contribution.payload.label} — running…` : contribution.payload.label}
                 aria-busy={busy || undefined}
                 disabled={contribution.payload.disabled === true}
-                onClick={() => run(contribution.pluginId, contribution.payload.actionId, key)}
+                onClick={() => press(contribution, key)}
               >
                 <SocketIcon
                   name={contribution.payload.icon}
@@ -228,7 +255,7 @@ export function PluginChatHeaderActions({
                   label={contribution.payload.label}
                   {...(contribution.payload.icon ? { icon: contribution.payload.icon } : {})}
                   {...brandIconsProp(brandIconsFor(contribution.pluginId))}
-                  onClick={() => run(contribution.pluginId, contribution.payload.actionId, key)}
+                  onClick={() => press(contribution, key)}
                 />
                 <SocketMenuSubRows
                   items={contribution.payload.menu ?? []}

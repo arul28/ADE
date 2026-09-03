@@ -323,7 +323,8 @@ export type PluginManifestSocket = {
    * its `panelId`, on a client that can host a plugin page.
    *
    * Read on the kinds that have somewhere to put one — the settings section,
-   * the four action buttons, the row badge. `panelId` stays required wherever
+   * the dialog section, the four action buttons, the row badge and the chat
+   * card. `panelId` stays required wherever
    * it was required, because it is what every other client draws; this is the
    * upgrade, never the replacement. Unresolvable ids cost nothing: the drawing
    * client looks the surface up in the plugin's own declarations and falls back

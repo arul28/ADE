@@ -19,8 +19,10 @@ import type { PluginManifest } from "../../../shared/plugins/manifest";
 import { PLUGIN_CLIPBOARD_TEXT_MAX_BYTES, type PluginDetail } from "../../../shared/plugins/sdk";
 import {
   PLUGIN_WEBVIEW_BRIDGE_VERSION,
+  PLUGIN_WEBVIEW_CHAT_TURNS_MAX,
   PLUGIN_WEBVIEW_LIST_MAX_ROWS,
   type PluginWebviewEventFrame,
+  type PluginWebviewHostEvent,
   type PluginWebviewUiRequest,
 } from "../../../shared/plugins/webviewBridge";
 import { emitPluginEntityChange, resetPluginEntityChangeListenersForTests } from "./pluginEntityChanges";
@@ -458,6 +460,190 @@ describe("host.subscribe", () => {
 
     await expect(h.server.handle(SENDER, request("host.subscribe", { kinds: ["repo"] })))
       .rejects.toMatchObject({ code: "invalid_args" });
+  });
+});
+
+describe("the chat host kind", () => {
+  /** The one `host` frame a chat subscriber was sent, after the window fired. */
+  const chatFrame = (frames: PluginWebviewEventFrame[]): PluginWebviewHostEvent => {
+    const host = frames.filter((frame) => frame.event === "host");
+    expect(host).toHaveLength(1);
+    return host[0]!.payload as PluginWebviewHostEvent;
+  };
+
+  it("coalesces a session's turns so the LAST state wins", async () => {
+    const h = harness();
+    await h.server.handle(SENDER, request("host.subscribe", { kinds: ["chat"] }));
+
+    // Started and then failed inside one window. "Started" is no longer true,
+    // and a page handed both would have to work out which came last.
+    h.server.publishChatTurn(5, { sessionId: "s1", state: "started" });
+    h.server.publishChatTurn(5, { sessionId: "s2", state: "started" });
+    h.server.publishChatTurn(5, { sessionId: "s1", state: "failed", message: "Model refused." });
+    expect(h.sent).toHaveLength(0);
+
+    h.fireTimers();
+
+    const payload = chatFrame(h.sent);
+    expect(payload.kind).toBe("chat");
+    // `ids` keeps the order the sessions FIRST moved in, not the order of the
+    // last state each landed on.
+    expect(payload.ids).toEqual(["s1", "s2"]);
+    expect(payload.overflow).toBe(false);
+    expect(payload.turns).toEqual([
+      { sessionId: "s1", state: "failed", message: "Model refused." },
+      { sessionId: "s2", state: "started" },
+    ]);
+  });
+
+  it("delivers nothing to a guest that did not subscribe to chat", async () => {
+    const h = harness();
+    await h.server.handle(SENDER, request("host.subscribe", { kinds: ["lane", "pr"] }));
+    h.server.publishChatTurn(5, { sessionId: "s1", state: "completed" });
+    h.fireTimers();
+    expect(h.sent).toHaveLength(0);
+  });
+
+  it("delivers nothing to a guest in another window", async () => {
+    const h = harness();
+    const otherSent: PluginWebviewEventFrame[] = [];
+    const OTHER_ID = 78;
+    registerPluginWebviewGuest({
+      webContentsId: OTHER_ID,
+      pluginId: "demo-plugin",
+      hostWindowId: 9,
+      context: { subject: null, surfaceId: "browser", placement: "tab" },
+      send: (_channel, payload) => {
+        otherSent.push(payload as PluginWebviewEventFrame);
+      },
+    });
+    const otherSender = { webContentsId: OTHER_ID, frameUrl: SENDER.frameUrl };
+    await h.server.handle(SENDER, request("host.subscribe", { kinds: ["chat"] }));
+    await h.server.handle(otherSender, request("host.subscribe", { kinds: ["chat"] }));
+
+    h.server.publishChatTurn(5, { sessionId: "s1", state: "started" });
+    h.fireTimers();
+
+    expect(chatFrame(h.sent).ids).toEqual(["s1"]);
+    // The other window's renderer publishes its own conversations. Painting it
+    // with this one would name a session from a checkout it was never opened in.
+    expect(otherSent).toHaveLength(0);
+  });
+
+  it("drops a turn that is not a turn at all", async () => {
+    const h = harness();
+    await h.server.handle(SENDER, request("host.subscribe", { kinds: ["chat"] }));
+    h.server.publishChatTurn(5, { sessionId: "s1", state: "thinking" });
+    h.server.publishChatTurn(5, { state: "started" });
+    h.server.publishChatTurn(5, null);
+    h.fireTimers();
+    expect(h.sent).toHaveLength(0);
+  });
+
+  it("says overflow and carries no turns past the cap", async () => {
+    const h = harness();
+    await h.server.handle(SENDER, request("host.subscribe", { kinds: ["chat"] }));
+    for (let index = 0; index < PLUGIN_WEBVIEW_CHAT_TURNS_MAX + 25; index += 1) {
+      h.server.publishChatTurn(5, { sessionId: `s${index}`, state: "started" });
+    }
+    h.fireTimers();
+
+    const payload = chatFrame(h.sent);
+    expect(payload.overflow).toBe(true);
+    expect(payload.ids).toHaveLength(PLUGIN_WEBVIEW_CHAT_TURNS_MAX);
+    // The page is being told to refetch the sessions it watches; half a turn
+    // list beside that instruction is the half it would patch from instead.
+    expect(payload.turns).toBeUndefined();
+  });
+
+  it("keeps the entity families buffered the way they always were", async () => {
+    const h = harness();
+    await h.server.handle(SENDER, request("host.subscribe", { kinds: ["chat", "lane"] }));
+    emitPluginEntityChange({ family: "lane", ids: ["l1"], projectRoot: "/repo" });
+    h.server.publishChatTurn(5, { sessionId: "s1", state: "completed" });
+    h.fireTimers();
+
+    expect(h.sent).toEqual([
+      { event: "host", payload: { kind: "lane", ids: ["l1"], overflow: false } },
+      {
+        event: "host",
+        payload: {
+          kind: "chat",
+          ids: ["s1"],
+          overflow: false,
+          turns: [{ sessionId: "s1", state: "completed" }],
+        },
+      },
+    ]);
+  });
+});
+
+describe("dialog.submit", () => {
+  /** Redraw the guest in the placement a dialog picker actually gets. */
+  const asDialogPicker = (): void => {
+    registerPluginWebviewGuest({
+      webContentsId: GUEST_ID,
+      pluginId: "demo-plugin",
+      hostWindowId: 5,
+      context: { subject: null, surfaceId: "browser", placement: "dialog-picker" },
+      send: () => {},
+    });
+  };
+
+  it("relays the chosen issue to the owning window", async () => {
+    const h = harness();
+    asDialogPicker();
+    const pending = h.server.handle(SENDER, request("dialog.submit", {
+      issue: {
+        provider: "linear",
+        issueId: "iss-1",
+        identifier: "ADE-148",
+        title: "Page tier",
+        url: "https://linear.app/ade/issue/ADE-148",
+      },
+    }));
+    await h.answer(0, undefined);
+    await expect(pending).resolves.toBeNull();
+    expect(h.requests[0]).toMatchObject({
+      verb: "dialog.submit",
+      placement: "dialog-picker",
+      args: {
+        issue: {
+          provider: "linear",
+          issueId: "iss-1",
+          identifier: "ADE-148",
+          title: "Page tier",
+          url: "https://linear.app/ade/issue/ADE-148",
+        },
+      },
+    });
+  });
+
+  it("relays a null issue as the reader clearing their choice", async () => {
+    const h = harness();
+    asDialogPicker();
+    const pending = h.server.handle(SENDER, request("dialog.submit", { issue: null }));
+    await h.answer(0, undefined);
+    await expect(pending).resolves.toBeNull();
+    expect(h.requests[0]?.args).toEqual({ issue: null });
+  });
+
+  it("refuses a page that is not drawn as a dialog picker", async () => {
+    const h = harness();
+    // The harness guest is a popover, which is where a page would be if it
+    // tried to answer a dialog nobody opened.
+    await expect(h.server.handle(SENDER, request("dialog.submit", { issue: null })))
+      .rejects.toMatchObject({ code: "not_permitted" });
+    expect(h.requests).toHaveLength(0);
+  });
+
+  it("refuses an issue that is missing the facts a dialog derives from", async () => {
+    const h = harness();
+    asDialogPicker();
+    await expect(h.server.handle(SENDER, request("dialog.submit", {
+      issue: { provider: "linear", issueId: "iss-1" },
+    }))).rejects.toMatchObject({ code: "invalid_args" });
+    expect(h.requests).toHaveLength(0);
   });
 });
 

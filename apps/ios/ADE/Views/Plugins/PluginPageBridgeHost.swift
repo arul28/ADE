@@ -75,6 +75,37 @@ protocol PluginPageBridgeHosting: AnyObject {
     func pluginPageApply(_ result: PluginInvokeResult, pluginId: String) async
     func pluginPageOpenDeeplink(_ url: URL)
     func pluginPageTheme() -> PluginPageThemeSnapshot
+    /// Hand a `dialog-picker` guest's chosen issue to the dialog drawing it.
+    ///
+    /// Returns whether it landed. `false` is the honest report of a form that
+    /// cannot take it right now, and the page hears it as a rejected promise
+    /// rather than a silent success it would draw as "selected".
+    func pluginPageDialogSubmit(_ answer: PluginPageDialogSubmit) -> Bool
+    /// This page's own content height, already clamped. A placement that is not
+    /// sized to content ignores it.
+    func pluginPageResize(height: Int)
+}
+
+/// Defaults for the two verbs a surface may legitimately have no answer for.
+///
+/// A no-op default rather than a required method: only a dialog picker can
+/// answer a dialog, and only a size-to-content placement has a height to apply,
+/// so every other host would be writing an empty body. The BRIDGE still refuses
+/// `dialog.submit` outside `dialog-picker` before it ever reaches a host, so a
+/// default that silently returns false is not how the rule is enforced.
+extension PluginPageBridgeHosting {
+    func pluginPageDialogSubmit(_ answer: PluginPageDialogSubmit) -> Bool { false }
+    func pluginPageResize(height: Int) {}
+}
+
+/// The answer a page drawn as a `dialog-picker` gives its dialog.
+///
+/// The SAME issue `PluginPageComposerAttach` carries, deliberately: a page that
+/// can fill the composer's chip already builds this record. `issue: nil` is a
+/// real answer — the reader cleared the selection — which a dialog must be able
+/// to hear or a chosen issue could never be undone from inside the page.
+struct PluginPageDialogSubmit: Equatable {
+    var issue: IssueRef?
 }
 
 // MARK: - Verb payloads
@@ -300,6 +331,15 @@ struct PluginPageBridgeError: Error, Equatable {
     static func failed(_ message: String) -> PluginPageBridgeError {
         PluginPageBridgeError(code: "failed", message: message)
     }
+
+    /// The verb exists and this guest may not use it HERE.
+    ///
+    /// Its own code rather than a generic failure, and the same word the
+    /// desktop relay answers with: "not in this placement" is a permanent fact
+    /// about where the page is drawn, not something a retry could change.
+    static func notPermitted(_ message: String) -> PluginPageBridgeError {
+        PluginPageBridgeError(code: "not_permitted", message: message)
+    }
 }
 
 // MARK: - The bridge
@@ -327,6 +367,14 @@ final class PluginPageBridge {
     /// The host-event kinds this guest asked for. Empty until `host.subscribe`,
     /// so a page that never subscribes is never woken.
     private(set) var subscribedHostKinds: Set<PluginPageHostKind> = []
+
+    /// Where the host drew this guest.
+    ///
+    /// The HOST's own word, captured from the context it encoded into the
+    /// source URL, never the page's claim — it is what `dialog.submit` is gated
+    /// on, and a page that could name its own placement could answer a dialog
+    /// nobody opened.
+    var placement: PluginPagePlacement?
 
     init(
         dataSource: PluginPageBridgeDataSource,
@@ -366,6 +414,8 @@ final class PluginPageBridge {
         case .themeGet: return host?.pluginPageTheme().jsonValue ?? PluginPageThemeSnapshot(scheme: "dark", tokens: [:]).jsonValue
         case .hostSubscribe: return hostSubscribe(request)
         case .hostUnsubscribe: return hostUnsubscribe(request)
+        case .dialogSubmit: return try dialogSubmit(request, pluginId: pluginId)
+        case .uiResize: return resize(request)
         }
     }
 
@@ -544,6 +594,49 @@ final class PluginPageBridge {
             )
         }
         host?.pluginPageComposerAttach(PluginPageComposerAttach(issue: ref))
+        return nil
+    }
+
+    /// Answer the dialog this page is drawn inside.
+    ///
+    /// Placement first, and it is the host's own word: a tab that could name the
+    /// issue for a dialog nobody opened would be writing into a form the reader
+    /// is not looking at, which is why the contract refuses it everywhere but
+    /// `dialog-picker`.
+    private func dialogSubmit(_ request: PluginPageBridgeRequest, pluginId: String) throws -> Any? {
+        guard placement == .dialogPicker else {
+            throw PluginPageBridgeError.notPermitted("Only a page drawn inside a dialog can answer it.")
+        }
+        // An explicit null clears the reader's previous choice, and is a real
+        // answer rather than a malformed one.
+        if case .null? = request.params["issue"] {
+            guard host?.pluginPageDialogSubmit(PluginPageDialogSubmit(issue: nil)) == true else {
+                throw PluginPageBridgeError.failed("That dialog isn\u{2019}t open any more.")
+            }
+            return nil
+        }
+        guard case .object(let raw)? = request.params["issue"],
+              var parsed = parseIssueRefValue(.object(raw.mapValues(Self.remoteJSON)))
+        else {
+            throw PluginPageBridgeError.invalidParams(
+                "dialog.submit needs an issue with a provider, an issueId, a key and a title."
+            )
+        }
+        // Stamped with the CALLING page's plugin id, exactly as composer.attach
+        // stamps it: a page cannot answer a dialog on another plugin's behalf.
+        parsed.pluginId = pluginId
+        guard host?.pluginPageDialogSubmit(PluginPageDialogSubmit(issue: parsed)) == true else {
+            throw PluginPageBridgeError.failed("The dialog didn\u{2019}t accept that issue.")
+        }
+        return nil
+    }
+
+    /// A content-height report. Answers nothing, by contract.
+    private func resize(_ request: PluginPageBridgeRequest) -> Any? {
+        guard case .number(let raw)? = request.params["height"],
+              let height = clampPluginPageHeight(raw)
+        else { return nil }
+        host?.pluginPageResize(height: height)
         return nil
     }
 

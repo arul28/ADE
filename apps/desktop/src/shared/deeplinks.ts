@@ -3,7 +3,7 @@
 // ---------------------------------------------------------------------------
 //
 // Two surface forms, identical semantics:
-//   ade://lane/<uuid>
+//   ade://lane/<uuid>[?drawer=stack]
 //   ade://session/<id>[?lane=<uuid>&event=<seq>&offset=<bytes>]
 //   ade://file/<repo-relative-path>[?line=<n>&lane=<uuid>]
 //   ade://commit/<sha>[?lane=<uuid>]
@@ -13,9 +13,10 @@
 //   ade://linear-issue/<ADE-123>[?branch=<branch>]
 //   ade://issue/<provider>/<issue-key>[?branch=<branch>&plugin=<plugin-id>]
 //   ade://plugin/<plugin-id>/<panel-id>[?ctx=<json-object>]
+//   ade://welcome
 //
-//   https://ade-app.dev/open?type=<lane|session|file|commit|artifact|branch|pr|linear-issue|issue|plugin>&...
-//   (param names: lane→id; session→id[+lane,event,offset]; file→path[+line,lane];
+//   https://ade-app.dev/open?type=<lane|session|file|commit|artifact|branch|pr|linear-issue|issue|plugin|welcome>&...
+//   (param names: lane→id[+drawer]; session→id[+lane,event,offset]; file→path[+line,lane];
 //    commit→sha[+lane]; artifact→id; branch→repo&branch[+pr]; pr→repo&number[+tab];
 //    linear-issue→issue[+branch]; issue→provider&issue[+branch,plugin];
 //    plugin→plugin&panel[+ctx])
@@ -35,6 +36,11 @@
 // small object an action's `{navigate:{context}}` carries — the two are one
 // value reaching a panel by two routes. It is capped and parsed leniently: a
 // context that is too big or malformed is dropped and the panel still opens.
+//
+// Lane links may name a drawer to open with the lane (`?drawer=`), parsed with
+// the same leniency `?tab=` gets. `welcome` names no entity at all: it is the
+// project picker, which is the one surface a link may need to reach when there
+// is no project open to address anything else against.
 //
 // PR links may name the detail sub-tab to land on (`?tab=`). The value is
 // parsed leniently: an unknown tab is dropped, never failing the whole link,
@@ -97,7 +103,47 @@ export type DeeplinkOwnership = {
   projectRoot?: string;
 };
 
-export type DeeplinkLaneTarget = { kind: "lane"; laneId: string; envelope?: DeeplinkEnvelope };
+/**
+ * A drawer a lane link may open alongside the lane.
+ *
+ * One value today, and a union rather than a bare string so a second one is a
+ * compile-time decision in the router as well as here. `stack` is the stack
+ * graph the lanes header reveals — the surface a launch flow sends the reader
+ * to once the lane exists, which is why it is the first one addressable.
+ */
+export type DeeplinkLaneDrawer = "stack";
+
+const LANE_DRAWERS: ReadonlySet<string> = new Set<DeeplinkLaneDrawer>(["stack"]);
+
+/**
+ * Lenient, exactly like {@link parsePrDetailTabParam}: a drawer this build does
+ * not know is dropped and the lane still opens. A link minted by a newer ADE
+ * must not fail to open a lane on an older one over a panel it cannot draw.
+ */
+export function parseLaneDrawerParam(raw: string | null | undefined): DeeplinkLaneDrawer | undefined {
+  if (!raw) return undefined;
+  const normalized = raw.trim().toLowerCase();
+  return LANE_DRAWERS.has(normalized) ? (normalized as DeeplinkLaneDrawer) : undefined;
+}
+
+export type DeeplinkLaneTarget = {
+  kind: "lane";
+  laneId: string;
+  /** A drawer to open with the lane. Omitted → the lanes page opens none. */
+  drawer?: DeeplinkLaneDrawer;
+  envelope?: DeeplinkEnvelope;
+};
+
+/**
+ * The project picker.
+ *
+ * The one target with no id, and it needs one: a plugin page whose reader has
+ * no project open can offer to pick one, and "navigate to the welcome screen"
+ * was reachable from ADE's own code and from nowhere else. It carries no
+ * envelope because there is nothing to fall back to — the picker IS the
+ * fallback.
+ */
+export type DeeplinkWelcomeTarget = { kind: "welcome" };
 export type DeeplinkSessionTarget = {
   kind: "session";
   sessionId: string;
@@ -222,7 +268,8 @@ export type DeeplinkTarget =
   | DeeplinkPrTarget
   | DeeplinkLinearIssueTarget
   | DeeplinkIssueTarget
-  | DeeplinkPluginTarget;
+  | DeeplinkPluginTarget
+  | DeeplinkWelcomeTarget;
 
 /**
  * Read a `linear-issue` target as the neutral `issue` shape.
@@ -585,11 +632,14 @@ function buildAdeUrl(target: DeeplinkTarget): string {
   switch (target.kind) {
     case "lane": {
       const params = new URLSearchParams();
+      if (target.drawer) params.set("drawer", target.drawer);
       appendEnvelopeParams(params, target.envelope);
       const qs = params.toString();
       const base = `${ADE_DEEPLINK_SCHEME}://lane/${encodeURIComponent(target.laneId)}`;
       return qs ? `${base}?${qs}` : base;
     }
+    case "welcome":
+      return `${ADE_DEEPLINK_SCHEME}://welcome`;
     case "session": {
       const params = new URLSearchParams();
       if (target.laneId) params.set("lane", target.laneId);
@@ -666,7 +716,11 @@ function buildHttpsUrl(target: DeeplinkTarget): string {
     case "lane":
       params.set("type", "lane");
       params.set("id", target.laneId);
+      if (target.drawer) params.set("drawer", target.drawer);
       appendEnvelopeParams(params, target.envelope);
+      break;
+    case "welcome":
+      params.set("type", "welcome");
       break;
     case "session":
       params.set("type", "session");
@@ -779,8 +833,15 @@ function parseAdeUrl(url: URL, rawUrl: string): ParseResult {
       return { ok: false, error: { kind: "malformed", reason: "invalid lane id" }, rawUrl };
     }
     const envelope = readEnvelopeParams(url.searchParams);
-    return { ok: true, target: { kind: "lane", laneId, ...(envelope ? { envelope } : {}) }, rawUrl };
+    const drawer = parseLaneDrawerParam(url.searchParams.get("drawer"));
+    return {
+      ok: true,
+      target: { kind: "lane", laneId, ...(drawer ? { drawer } : {}), ...(envelope ? { envelope } : {}) },
+      rawUrl,
+    };
   }
+
+  if (host === "welcome") return { ok: true, target: { kind: "welcome" }, rawUrl };
 
   if (host === "session") {
     const sessionId = pathSegments[0] ? safeDecode(pathSegments[0]) : "";
@@ -892,8 +953,14 @@ function parseHttpsParams(url: URL, rawUrl: string): ParseResult {
     const laneId = url.searchParams.get("id") ?? "";
     if (!isValidUuid(laneId)) return { ok: false, error: { kind: "malformed", reason: "invalid lane id" }, rawUrl };
     const envelope = readEnvelopeParams(url.searchParams);
-    return { ok: true, target: { kind: "lane", laneId, ...(envelope ? { envelope } : {}) }, rawUrl };
+    const drawer = parseLaneDrawerParam(url.searchParams.get("drawer"));
+    return {
+      ok: true,
+      target: { kind: "lane", laneId, ...(drawer ? { drawer } : {}), ...(envelope ? { envelope } : {}) },
+      rawUrl,
+    };
   }
+  if (type === "welcome") return { ok: true, target: { kind: "welcome" }, rawUrl };
   if (type === "session") {
     const sessionId = url.searchParams.get("id") ?? "";
     if (!isValidOpaqueId(sessionId)) {
@@ -1230,6 +1297,8 @@ export function describeTarget(target: DeeplinkTarget): string {
       return target.branch ? `${target.issueKey} (${target.branch})` : target.issueKey;
     case "plugin":
       return `${target.pluginId} · ${target.panelId}`;
+    case "welcome":
+      return "project picker";
   }
 }
 
@@ -1243,7 +1312,14 @@ export function describeTarget(target: DeeplinkTarget): string {
 export function deeplinkToNavigationTarget(target: DeeplinkTarget): AppNavigationTarget {
   switch (target.kind) {
     case "lane":
-      return { kind: "lane", laneId: target.laneId, envelope: target.envelope ?? null };
+      return {
+        kind: "lane",
+        laneId: target.laneId,
+        drawer: target.drawer ?? null,
+        envelope: target.envelope ?? null,
+      };
+    case "welcome":
+      return { kind: "welcome" };
     case "session":
       return {
         kind: "work",

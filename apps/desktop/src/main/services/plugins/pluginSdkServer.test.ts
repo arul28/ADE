@@ -885,6 +885,27 @@ describe("createPluginSdkServer chat", () => {
     return { handle, calls };
   }
 
+  it("answers chat.capabilities on a host that binds no chat service at all", async () => {
+    // No `requireChat()`, no args, no ownership: the answer is the same for
+    // every plugin and every project, so a page building a launch form can read
+    // it even where nothing has bound a chat service.
+    const { handle } = createServer();
+    const answer = await handle("chat.capabilities", {}) as {
+      providers: { provider: string; permissionField: string; defaultPermissionMode: string;
+        permissionModes: { value: string }[] }[];
+      models: { id: string; provider: string; fastMode: boolean }[];
+    };
+
+    expect(answer.providers.map((entry) => entry.provider))
+      .toEqual(["claude", "codex", "cursor", "droid", "opencode"]);
+    const claude = answer.providers.find((entry) => entry.provider === "claude")!;
+    // The provider's OWN launch field, not the unified `permissionMode`.
+    expect(claude.permissionField).toBe("claudePermissionMode");
+    expect(claude.permissionModes.map((option) => option.value)).toContain(claude.defaultPermissionMode);
+    expect(answer.models.length).toBeGreaterThan(0);
+    expect(answer.models.some((model) => model.fastMode)).toBe(true);
+  });
+
   it("binds a session to a runtime the manifest declares", async () => {
     const { handle, calls } = chatServer();
     const result = await handle("chat.createSession", {
@@ -894,6 +915,50 @@ describe("createPluginSdkServer chat", () => {
     // The plugin id is the one the server was BUILT for; the plugin never
     // states its own.
     expect(calls[0]?.args[0]).toBe("graph");
+  });
+
+  it("carries permissionMode and fastMode through actions.invoke unchanged", async () => {
+    // `actions.invoke` is a pass-through by design — role, scope and allowlist
+    // policy live in the action layer. This pins that the two launch controls
+    // `chat.capabilities` advertises actually SURVIVE the hop: a page that read
+    // the fast toggle and the permission ladder would be offering the reader
+    // controls the launch silently dropped otherwise.
+    const invocations: { domain: string; action: string; args: Record<string, unknown> }[] = [];
+    const { handle } = createServer({
+      invokeAdeAction: async (domain: string, action: string, args: Record<string, unknown>) => {
+        invocations.push({ domain, action, args });
+        return { sessionId: "session-9" };
+      },
+    } as never);
+
+    const createArgs = {
+      laneId: "lane-1",
+      provider: "codex",
+      model: "openai/gpt-5.6-sol",
+      permissionMode: "full-auto",
+      fastMode: true,
+      reasoningEffort: "xhigh",
+    };
+    const launchArgs = {
+      laneId: "lane-1",
+      provider: "claude",
+      model: "anthropic/claude-opus-5",
+      permissionMode: "plan",
+      fastMode: false,
+    };
+    await handle("actions.invoke", { domain: "chat", action: "createSession", args: createArgs });
+    await handle("actions.invoke", { domain: "chat", action: "launchCli", args: launchArgs });
+
+    expect(invocations).toEqual([
+      { domain: "chat", action: "createSession", args: createArgs },
+      { domain: "chat", action: "launchCli", args: launchArgs },
+    ]);
+    // Named rather than left to the deep-equality above, so a future rewrite of
+    // the pass-through that "normalizes" either field fails here by name.
+    expect(invocations[0]?.args.permissionMode).toBe("full-auto");
+    expect(invocations[0]?.args.fastMode).toBe(true);
+    expect(invocations[1]?.args.permissionMode).toBe("plan");
+    expect(invocations[1]?.args.fastMode).toBe(false);
   });
 
   it("refuses a runtime the manifest never declared", async () => {
@@ -1178,7 +1243,7 @@ describe("createPluginSdkServer lanes", () => {
     }))).toBe("unsupported_method");
   });
 
-  it("never hands a plugin a worktree path, an attached root or a device roster", async () => {
+  it("reports the lane's own worktree as `path` and still hides the attached root and device roster", async () => {
     const { handle } = laneServer();
 
     const listed = (await handle("lanes.list", {})) as Record<string, unknown>[];
@@ -1187,13 +1252,29 @@ describe("createPluginSdkServer lanes", () => {
     for (const projected of [listed[0], fetched]) {
       expect(projected).toBeTruthy();
       expect(Object.keys(projected!).sort()).toEqual([...PLUGIN_LANE_SUMMARY_FIELDS].sort());
+      // On the list, and renamed: a plugin does not know where ADE put the
+      // LANE, and a page showing the reader which checkout it lives in had no
+      // way to derive it.
+      expect(projected!.path).toBe("/Users/arul/Projects/ADE/.ade/worktrees/fix-parser");
       expect(projected).not.toHaveProperty("worktreePath");
+      // Still off: a second path with a different meaning, and a roster of the
+      // user's machines.
       expect(projected).not.toHaveProperty("attachedRootPath");
       expect(projected).not.toHaveProperty("devicesOpen");
       // The value survived the projection, so the assertions above are about
       // an allowlist and not about a lane row that happened to be empty.
       expect(projected!.branchRef).toBe("arul/fix-parser");
     }
+  });
+
+  it("reports a null path for a lane the host has no worktree for", async () => {
+    const { handle } = laneServer({
+      lanes: [laneRow({ id: "lane-1", worktreePath: undefined })],
+    });
+    const fetched = (await handle("lanes.get", { laneId: "lane-1" })) as Record<string, unknown>;
+    // Null rather than absent, so a page can tell "no local checkout" from "an
+    // older host did not report one".
+    expect(fetched).toHaveProperty("path", null);
   });
 
   it("projects every issue link on a lane through the issue-link allowlist", async () => {

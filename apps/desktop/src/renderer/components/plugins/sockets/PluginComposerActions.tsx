@@ -3,6 +3,7 @@ import React from "react";
 import type { PluginComposerContext } from "../../../../shared/plugins/context";
 import type { PluginSurfaceId } from "../../../../shared/plugins/sockets";
 import { contributionKey } from "./contributionModel";
+import { usePluginDeclaredWebviewPress } from "./usePluginDeclaredWebview";
 import { usePluginSocketInvoke, useSurfaceContributions } from "./useSurfaceContributions";
 import { brandIconsProp, usePluginBrandIcons } from "./usePluginBrandIcons";
 import { SocketBoundary } from "./SocketBoundary";
@@ -206,8 +207,22 @@ export function PluginComposerActions({
       .finally(() => setBusyKeys((keys) => keys.filter((entry) => entry !== key)));
   }, [identity, invoke, readComposerState, readDraft]);
 
+  /**
+   * A composer button that DECLARED a page opens it as a picker over the
+   * composer — the `picker` placement, anchored on the accessory row rather
+   * than on the button, so the card stays still as the row's contents change.
+   *
+   * Checked AFTER the Send claim and before the invoke: `ownsSend` is a toggle
+   * over the composer's own Send and a page is a thing to open, so a
+   * contribution declaring both means "arm me", and arming is what the reader
+   * pressed. In practice no contribution declares both.
+   */
+  const openDeclaredPage = usePluginDeclaredWebviewPress();
   const press = React.useCallback((
-    contribution: { pluginId: string; payload: { actionId: string; label: string; ownsSend?: boolean } },
+    contribution: {
+      pluginId: string;
+      payload: { actionId: string; label: string; ownsSend?: boolean; webviewSurfaceId?: string };
+    },
     key: string,
   ) => {
     if (contribution.payload.ownsSend === true && onSendOwnerChange) {
@@ -222,8 +237,19 @@ export function PluginComposerActions({
         });
       return;
     }
+    if (openDeclaredPage({
+      socket: "composer-action",
+      pluginId: contribution.pluginId,
+      ...(contribution.payload.webviewSurfaceId
+        ? { surfaceId: contribution.payload.webviewSurfaceId }
+        : {}),
+      // The composer's identity, not the live draft: a picker is opened to
+      // choose something, and the draft it will write into is read when the
+      // page answers, not when the card opens.
+      subject: identity,
+    })) return;
     run(contribution.pluginId, contribution.payload.actionId, key);
-  }, [onSendOwnerChange, run, sendOwner]);
+  }, [identity, onSendOwnerChange, openDeclaredPage, run, sendOwner]);
 
   if (contributions.length === 0) return null;
 

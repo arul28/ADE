@@ -12,6 +12,7 @@ import type {
   CreateIntegrationPrResult,
   GitUpstreamSyncStatus,
   GitBranchSummary,
+  LaneLinearIssue,
   LaneSummary,
 } from "../../../shared/types";
 import {
@@ -701,7 +702,57 @@ export function CreatePrModal({
     () => lanes.find((lane) => lane.id === normalLaneId) ?? null,
     [lanes, normalLaneId],
   );
-  const selectedNormalLinearIssue = selectedNormalLane?.linearIssue ?? null;
+  /**
+   * The issue a contributed `dialog-picker` page chose, when the lane carries
+   * none of its own.
+   *
+   * The lane's link WINS, and that ordering is the whole point: a lane that is
+   * already linked to an issue has a fact behind it — the link row — while a
+   * page's answer is a choice made in this dialog for this PR. Letting the page
+   * override would let a picker silently re-point a PR at an issue the lane is
+   * not on.
+   *
+   * Cleared when the dialog closes, so a choice made for one PR does not follow
+   * the reader into the next one, and cleared when the reader picks a different
+   * lane, for the same reason the body effect resets on a lane with no issue.
+   */
+  const [pluginLinearIssue, setPluginLinearIssue] = React.useState<LaneLinearIssue | null>(null);
+  React.useEffect(() => {
+    if (!open) setPluginLinearIssue(null);
+  }, [open]);
+  React.useEffect(() => {
+    setPluginLinearIssue(null);
+  }, [normalLaneId]);
+  /**
+   * The slot every Linear behaviour in this dialog reads.
+   *
+   * One value, so the magic word (`Fixes` / `Refs`), the body preview, the
+   * `closeLinearIssueOnMerge` argument and the issue card cannot disagree about
+   * which issue this PR is about — see the note on
+   * `effectiveCloseLinearIssueOnMerge` below, which is derived from the same
+   * one.
+   */
+  const selectedNormalLinearIssue = selectedNormalLane?.linearIssue ?? pluginLinearIssue;
+
+  /**
+   * Take a `dialog-picker` page's issue, exactly as the lane's own link is
+   * taken.
+   *
+   * Refused while the dialog is busy creating: the body has already been sent,
+   * so a write here would change what the reader sees without changing what
+   * GitHub received. Refused too when the lane already carries an issue, which
+   * is the honest answer to a page trying to override a real link — the page
+   * hears it rather than drawing a selection this dialog ignored.
+   */
+  const handlePluginSelectIssue = React.useCallback(
+    (issue: LaneLinearIssue | null): boolean => {
+      if (busy) return false;
+      if (selectedNormalLane?.linearIssue) return false;
+      setPluginLinearIssue(issue);
+      return true;
+    },
+    [busy, selectedNormalLane],
+  );
   /**
    * Who owns close-on-merge once `ade-linear` is installed, and why hiding the
    * card was never enough on its own.
@@ -934,7 +985,11 @@ export function CreatePrModal({
     try {
       if (mode === "normal") {
         const lane = lanes.find((l) => l.id === normalLaneId);
-        const linearIssue = lane?.linearIssue ?? null;
+        // The resolved slot, not the lane's link alone: a page-picked issue is
+        // what the body preview and the close-on-merge control have been about
+        // since the reader chose it, and the created PR has to carry the same
+        // reference the dialog has been showing.
+        const linearIssue = selectedNormalLinearIssue;
         const title = normalTitle.trim() || normalDefaultTitle || lane?.name || "PR";
         const body = linearIssue
           ? ensureLinearPrReference(normalBody, linearIssue, effectiveCloseLinearIssueOnMerge, { preserveExisting: false })
@@ -1973,6 +2028,7 @@ export function CreatePrModal({
                   branch={selectedNormalLane?.branchRef ?? null}
                   projectKey={projectBindingKey}
                   onSetField={handlePluginSetField}
+                  onSelectIssue={handlePluginSelectIssue}
                   active={open}
                 />
               </div>

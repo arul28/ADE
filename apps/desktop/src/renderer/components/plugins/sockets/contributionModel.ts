@@ -158,7 +158,12 @@ export function payloadFromManifestSocket(socket: PluginManifestSocket): unknown
     // so its title wins. What the declaration is FOR is naming which panel the
     // plugin may draw in a transcript at all.
     case "chat-card":
-      return { panelId: socket.panelId, title: socket.label, icon: socket.icon };
+      return {
+        panelId: socket.panelId,
+        title: socket.label,
+        icon: socket.icon,
+        ...(socket.webviewSurfaceId ? { webviewSurfaceId: socket.webviewSurfaceId } : {}),
+      };
     // `command` arrives already normalized (one leading slash stripped, trimmed,
     // lowercased) and is refused at manifest parse when malformed, so it is
     // passed through rather than re-normalized here — two normalizers would be
@@ -194,7 +199,12 @@ export function payloadFromManifestSocket(socket: PluginManifestSocket): unknown
     // one-word manifest edit and nothing here has to change.
     case "work-rail-pane":
     case "drawer-tab":
-      return { label: socket.label, panelId: socket.panelId, icon: socket.icon };
+      return {
+        label: socket.label,
+        panelId: socket.panelId,
+        icon: socket.icon,
+        ...(socket.webviewSurfaceId ? { webviewSurfaceId: socket.webviewSurfaceId } : {}),
+      };
     // Like a row badge, a manifest activity entry is the declaration a dynamic
     // row fills in: neutral tone, because a static entry cannot know whether
     // the thing it describes currently needs anyone. `actionLabel` is left off
@@ -211,7 +221,12 @@ export function payloadFromManifestSocket(socket: PluginManifestSocket): unknown
     // create-lane and manage-lane are both `lanes`, and a section that could
     // not tell them apart would be wrong on one of them every time.
     case "dialog-section":
-      return { dialog: socket.dialog, panelId: socket.panelId, title: socket.label };
+      return {
+        dialog: socket.dialog,
+        panelId: socket.panelId,
+        title: socket.label,
+        ...(socket.webviewSurfaceId ? { webviewSurfaceId: socket.webviewSurfaceId } : {}),
+      };
     default: {
       /**
        * Exhaustive on purpose.

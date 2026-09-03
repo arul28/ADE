@@ -7,8 +7,18 @@ import type {
   PluginDialogKind,
   PluginSurfaceId,
 } from "../../../../shared/plugins/sockets";
+import type { LaneLinearIssue } from "../../../../shared/types/lanes";
+import { useRootAppStore } from "../../../state/appStore";
 import { PluginPanelHost } from "../PluginPanelHost";
+import { PluginWebviewHost, supportsPluginWebviews } from "../PluginWebviewHost";
 import { contributionKey } from "./contributionModel";
+import { resolvePluginDeclaredWebview } from "./pluginDeclaredWebview";
+import { readPluginDialogIssueAnswer } from "./pluginDialogIssue";
+import {
+  PLUGIN_SETTINGS_SECTION_DEFAULT_HEIGHT,
+  PLUGIN_SETTINGS_SECTION_MIN_HEIGHT,
+} from "./PluginSettingsSections";
+import { registerPluginWebviewDialogHandler } from "./pluginWebviewDialogStore";
 import { registerPluginDialogTarget, type PluginDialogTarget } from "./dialogTarget";
 import { SocketBoundary } from "./SocketBoundary";
 import { SocketIcon } from "./socketUi";
@@ -59,6 +69,7 @@ export function PluginDialogSections<K extends PluginDialogKind>({
   branch = null,
   projectKey = null,
   onSetField,
+  onSelectIssue,
   active = true,
 }: {
   dialog: K;
@@ -75,6 +86,22 @@ export function PluginDialogSections<K extends PluginDialogKind>({
    * whether the value landed; `false` draws the quiet refusal line.
    */
   onSetField: (field: PluginDialogField<K>, value: string) => boolean;
+  /**
+   * Take the issue a `dialog-picker` page chose, exactly as this dialog takes
+   * its own picker's.
+   *
+   * The SAME state, not a parallel one: Create-lane feeds
+   * `setSelectedLinearIssue`, so the lane name and the branch derive as they
+   * always did, and Create-PR fills the slot its magic word and its
+   * close-on-merge argument already read. `null` clears the selection, which is
+   * a real answer — a choice made inside a page has to be undoable from inside
+   * it. Returns whether the value landed; `false` is what a form mid-submit
+   * honestly reports, and the page hears it as a rejected promise.
+   *
+   * Absent on a dialog with no issue slot (manage-lane), which is what makes a
+   * page's `dialog.submit` there a refusal rather than a silent success.
+   */
+  onSelectIssue?: (issue: LaneLinearIssue | null) => boolean;
   /** False while the dialog is mounted but not visible. */
   active?: boolean;
 }) {
@@ -101,6 +128,11 @@ export function PluginDialogSections<K extends PluginDialogKind>({
   );
   const { identities } = usePluginSurfaceContributions(surface, active);
   const brandIconsFor = usePluginBrandIcons();
+  // The registry, for resolving a section's `webviewSurfaceId` to a page — the
+  // same read `PluginSettingsSections` makes, through the same resolver, so the
+  // two placements cannot disagree about what an unresolvable id means.
+  const installedPlugins = useRootAppStore((state) => state.installedPlugins);
+  const webviewSupported = supportsPluginWebviews();
 
   const [refused, setRefused] = React.useState(false);
   React.useEffect(() => {
@@ -175,23 +207,18 @@ export function PluginDialogSections<K extends PluginDialogKind>({
                 <span style={{ fontWeight: 600, color: COLORS.textSecondary }}>{title}</span>
                 {title === name ? null : <span style={{ opacity: 0.7 }}>· {name}</span>}
               </header>
-              <PluginPanelHost
+              <PluginDialogSectionBody
                 pluginId={contribution.pluginId}
                 panelId={contribution.payload.panelId}
+                page={resolvePluginDeclaredWebview({
+                  pluginId: contribution.pluginId,
+                  surfaceId: contribution.payload.webviewSurfaceId,
+                  installed: installedPlugins,
+                  supported: webviewSupported,
+                })}
                 active={active}
-                surfaceContext={context}
-                onNavigate={(navigation) => {
-                  // A dialog cannot follow a plugin anywhere: the user is
-                  // mid-form and the form is modal, so leaving would discard
-                  // what they have typed. Said out loud rather than dropped in
-                  // silence, because the plugin author has no other way to
-                  // learn that this one verb does not apply here.
-                  console.warn(
-                    "[plugin dialog] a dialog section cannot navigate",
-                    contribution.pluginId,
-                    navigation.panelId,
-                  );
-                }}
+                context={context}
+                {...(onSelectIssue ? { onSelectIssue } : {})}
               />
             </section>
           </SocketBoundary>
@@ -205,6 +232,137 @@ export function PluginDialogSections<K extends PluginDialogKind>({
           This plugin couldn’t fill in a field here.
         </p>
       ) : null}
+    </div>
+  );
+}
+
+/**
+ * One section's body: the plugin's own page, or the panel it falls back to.
+ *
+ * The fallback is not announced, for the reason `PluginSettingsSectionBody`
+ * states: a `dialog-section` names a `panelId` and MAY name a
+ * `webviewSurfaceId`, the panel is what the manifest promised every client, and
+ * a host that can draw the page draws the page.
+ *
+ * What is different here is that the page can ANSWER. A dialog picker is a
+ * search box over a live list — the thing a vocabulary panel cannot be — and
+ * the reader's choice has to reach the form the picker is sitting in. It does
+ * that through `dialog.submit`, which arrives on the relay addressed by the
+ * guest's own key, so this component registers the handler for exactly the
+ * guest it put on screen and drops it the moment that guest goes.
+ *
+ * The height ceiling is the settings section's, imported rather than restated:
+ * both are a page inside a taller ADE surface with no height of its own, both
+ * grow from the same `ui.resize` report, and two ceilings for one behaviour is
+ * how the two drift.
+ */
+function PluginDialogSectionBody({
+  pluginId,
+  panelId,
+  page,
+  active,
+  context,
+  onSelectIssue,
+}: {
+  pluginId: string;
+  panelId: string;
+  /** The resolved page, or null to draw the panel. */
+  page: { surfaceId: string; entryHtml: string } | null;
+  active: boolean;
+  context: PluginDialogContext;
+  onSelectIssue?: (issue: LaneLinearIssue | null) => boolean;
+}) {
+  const [height, setHeight] = React.useState<number | null>(null);
+
+  /**
+   * The live answer path, read at CALL time rather than captured.
+   *
+   * A page may submit at any moment after it loads, and the dialog's own
+   * handler identity changes as the form's state does. A ref keeps the
+   * registration stable — the guest is not recreated because a parent
+   * re-rendered — while still routing the answer to the form as it is NOW,
+   * which is the same rule the section's `{dialog:{setField}}` path keeps.
+   */
+  const selectRef = React.useRef(onSelectIssue);
+  selectRef.current = onSelectIssue;
+
+  /**
+   * Registered synchronously as the guest announces its key, and unregistered
+   * as it announces the loss of one.
+   *
+   * Not an effect: an effect runs a commit later, and the window between a page
+   * becoming live and this component being told about it is a window where a
+   * fast page's answer would find no listener and be refused. The host calls
+   * back in the right order (key, then null), so the cleanup below is only for
+   * an unmount that races it.
+   */
+  const unregisterRef = React.useRef<(() => void) | null>(null);
+  const handleGuestKey = React.useCallback((guestKey: string | null) => {
+    unregisterRef.current?.();
+    unregisterRef.current = guestKey
+      ? registerPluginWebviewDialogHandler(guestKey, (answer) => {
+        const apply = selectRef.current;
+        // No issue slot on this dialog: refused rather than swallowed, so the
+        // page can say so instead of drawing a selection nothing took.
+        if (!apply) return false;
+        // Read for THIS plugin, so the link the dialog stores names whose it
+        // is. A malformed record — no key, no title — is a refusal, never a
+        // half-filled form.
+        const read = readPluginDialogIssueAnswer(answer, pluginId);
+        if (!read) return false;
+        return apply(read.issue);
+      })
+      : null;
+  }, [pluginId]);
+  React.useEffect(() => () => {
+    unregisterRef.current?.();
+    unregisterRef.current = null;
+  }, []);
+
+  if (!page) {
+    return (
+      <PluginPanelHost
+        pluginId={pluginId}
+        panelId={panelId}
+        active={active}
+        surfaceContext={context}
+        onNavigate={(navigation) => {
+          // A dialog cannot follow a plugin anywhere: the user is mid-form and
+          // the form is modal, so leaving would discard what they have typed.
+          // Said out loud rather than dropped in silence, because the plugin
+          // author has no other way to learn that this one verb does not apply
+          // here.
+          console.warn(
+            "[plugin dialog] a dialog section cannot navigate",
+            pluginId,
+            navigation.panelId,
+          );
+        }}
+      />
+    );
+  }
+
+  return (
+    <div
+      style={{
+        display: "flex",
+        minHeight: 0,
+        height: Math.max(
+          PLUGIN_SETTINGS_SECTION_MIN_HEIGHT,
+          height ?? PLUGIN_SETTINGS_SECTION_DEFAULT_HEIGHT,
+        ),
+      }}
+    >
+      <PluginWebviewHost
+        pluginId={pluginId}
+        entryHtml={page.entryHtml}
+        active={active}
+        placement="dialog-picker"
+        surfaceId={page.surfaceId}
+        onContentHeight={setHeight}
+        onGuestKey={handleGuestKey}
+        context={{ subject: context }}
+      />
     </div>
   );
 }

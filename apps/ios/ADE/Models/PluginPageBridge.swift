@@ -93,6 +93,30 @@ enum PluginPageBridgeMethod: String, CaseIterable, Equatable {
     case themeGet = "theme.get"
     case hostSubscribe = "host.subscribe"
     case hostUnsubscribe = "host.unsubscribe"
+    /// Hand the chosen issue to the ADE dialog a `dialog-picker` page is drawn
+    /// inside. Refused in every other placement.
+    case dialogSubmit = "dialog.submit"
+    /// This page's own content height, for a placement sized to its content.
+    ///
+    /// On desktop this is NOT a bridge method: it rides a dedicated channel
+    /// straight to the element hosting the frame, because it is a report rather
+    /// than a request. The phone has exactly ONE channel to the host, so the
+    /// report rides it and is answered with nothing — the same fact reaching
+    /// the same place, by the only road this client has.
+    case uiResize = "ui.resize"
+}
+
+/// Tallest a page may ask its own frame to be. `PLUGIN_WEBVIEW_MAX_HEIGHT_PX`.
+let pluginPageMaxHeightPx = 2_000
+
+/// The height a host should apply, or nil when the page said nothing usable.
+///
+/// A value that is not a finite positive number is nil rather than zero: "the
+/// page said nothing usable" and "the page wants to be invisible" are different
+/// instructions, and collapsing them would hide a broken observer.
+func clampPluginPageHeight(_ value: Double?) -> Int? {
+    guard let value, value.isFinite, value > 0 else { return nil }
+    return min(Int(value.rounded(.up)), pluginPageMaxHeightPx)
 }
 
 /// Where the host drew a guest.
@@ -109,6 +133,11 @@ enum PluginPagePlacement: String, Equatable {
     case popover
     case settingsSection = "settings-section"
     case composerPicker = "composer-picker"
+    /// A page drawn INSIDE one of ADE's own dialogs, in place of its built-in
+    /// issue picker. Like `settings-section` it sits inside a taller surface,
+    /// which is why both are sized to their content and neither closes anything
+    /// on `surface.close`.
+    case dialogPicker = "dialog-picker"
 }
 
 /// The events a page may listen for. Mirrors `PLUGIN_WEBVIEW_EVENTS`.
@@ -123,6 +152,48 @@ enum PluginPageHostKind: String, Equatable, CaseIterable {
     case lane
     case session
     case pr
+    /// Not an entity family, and the one kind that carries more than identity:
+    /// a `chat` frame reports where a session's TURN is. A page that launched
+    /// an agent cannot re-derive "that turn failed" from the session's
+    /// existence — the session exists either way. See `PluginPageChatTurn`.
+    case chat
+}
+
+/// Where a chat session's current turn is, as a page hears it.
+///
+/// Three states rather than the five the app tracks: a page draws a launched
+/// issue as running, done or broken, and `interrupted` is a `failed` the reader
+/// caused on purpose — which is still not "Ready". `message` is the host's own
+/// failure sentence and is present only on `failed`.
+struct PluginPageChatTurn: Equatable {
+    enum State: String, Equatable {
+        case started
+        case completed
+        case failed
+    }
+
+    var sessionId: String
+    var state: State
+    var turnId: String?
+    var message: String?
+
+    /// Ceiling on a failure sentence handed to a page.
+    static let messageMaxChars = 400
+
+    /// What one coalesced `chat` frame may carry before it says `overflow`.
+    static let turnsMax = 100
+
+    var jsonValue: [String: Any] {
+        var encoded: [String: Any] = ["sessionId": sessionId, "state": state.rawValue]
+        if let turnId, !turnId.isEmpty { encoded["turnId"] = turnId }
+        // Only on a failure, exactly as `sanitizePluginWebviewChatTurn` rules:
+        // a sentence on a completed turn would be a second, unspecified channel
+        // a page would learn to read.
+        if state == .failed, let message, !message.isEmpty {
+            encoded["message"] = String(message.prefix(Self.messageMaxChars))
+        }
+        return encoded
+    }
 }
 
 /// The project a plugin page is running against.

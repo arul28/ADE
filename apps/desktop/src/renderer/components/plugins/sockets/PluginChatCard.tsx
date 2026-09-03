@@ -2,7 +2,9 @@ import React from "react";
 
 import { AdeCard } from "../../chat/AdeCard";
 import { PluginPanelHost } from "../PluginPanelHost";
+import { PluginWebviewHost, supportsPluginWebviews } from "../PluginWebviewHost";
 import { pluginIdentity } from "../pluginIcons";
+import { resolvePluginDeclaredWebview } from "./pluginDeclaredWebview";
 import { useRootAppStore } from "../../../state/appStore";
 import { SocketBoundary } from "./SocketBoundary";
 import { useSurfaceContributions } from "./useSurfaceContributions";
@@ -13,6 +15,18 @@ import {
   readAdeCardPanel,
   type AdeCardPayload,
 } from "../../../../shared/adeCard";
+
+/**
+ * How tall a page drawn inside a transcript card is.
+ *
+ * A card is a row in a conversation the reader scrolls, so its body cannot
+ * size itself to whatever a page asks for: a page reporting 2,000 pixels would
+ * push the rest of the conversation off the screen, and the transcript's own
+ * scroll anchoring would fight the guest's. A fixed frame with the page
+ * scrolling inside it is the honest shape, and it is the same rule a rail pane
+ * keeps — which is why the placement a card's page is told is `pane`.
+ */
+const PLUGIN_CHAT_CARD_PAGE_HEIGHT = 320;
 
 /**
  * The `chat-card` socket: a plugin's panel, drawn inside a transcript card.
@@ -151,13 +165,39 @@ export function PluginChatCard({
     ...(context ? { context } : {}),
   });
 
-  const declared = React.useMemo(
+  /**
+   * The declaration that permits this card to draw a panel at all, and the page
+   * it may draw instead.
+   *
+   * One search rather than two: the contribution that permits the panel is also
+   * the one that names the page, so a card whose plugin declared
+   * `webviewSurfaceId` draws its own HTML — the `issue-context` case, where the
+   * transcript row is the issue as the plugin renders it everywhere else —
+   * while a card whose plugin declared none keeps the vocabulary panel. The
+   * PERMISSION is unchanged either way: an emit still cannot paint a panel or a
+   * page the manifest did not declare for this `panelId`.
+   */
+  const declaration = React.useMemo(
     () => (pluginId && panel
-      ? contributions.some(
+      ? contributions.find(
         (entry) => entry.pluginId === pluginId && entry.payload.panelId === panel.panelId,
-      )
-      : false),
+      ) ?? null
+      : null),
     [contributions, panel, pluginId],
+  );
+  const declared = declaration !== null;
+
+  const webviewSupported = supportsPluginWebviews();
+  const page = React.useMemo(
+    () => (pluginId
+      ? resolvePluginDeclaredWebview({
+        pluginId,
+        surfaceId: declaration?.payload.webviewSurfaceId,
+        installed,
+        supported: webviewSupported,
+      })
+      : null),
+    [declaration, installed, pluginId, webviewSupported],
   );
 
   if (!pluginId || !panel || !declared) {
@@ -179,13 +219,35 @@ export function PluginChatCard({
       {...(authorIcon ? { authorIcon } : {})}
       panel={(
         <SocketBoundary>
-          <PluginPanelHost
-            pluginId={pluginId}
-            panelId={panel.panelId}
-            active={active}
-            {...(panel.context ? { renderContext: panel.context } : {})}
-            {...(context ? { surfaceContext: context } : {})}
-          />
+          {page ? (
+            // A card body is a frame the transcript already sized, so the guest
+            // fills it exactly as a rail pane's does — `pane` is the placement
+            // the page is told, and `ui.resize` is read and dropped there. The
+            // subject is the chat this row lives in, injected by the host and
+            // unforgeable; `panel.context` rides as the plugin's own pointer,
+            // which is what tells the page WHICH issue this card is about.
+            <div style={{ display: "flex", height: PLUGIN_CHAT_CARD_PAGE_HEIGHT, minHeight: 0 }}>
+              <PluginWebviewHost
+                pluginId={pluginId}
+                entryHtml={page.entryHtml}
+                active={active}
+                placement="pane"
+                surfaceId={page.surfaceId}
+                context={{
+                  subject: context ?? null,
+                  ...(panel.context ? { pointer: panel.context } : {}),
+                }}
+              />
+            </div>
+          ) : (
+            <PluginPanelHost
+              pluginId={pluginId}
+              panelId={panel.panelId}
+              active={active}
+              {...(panel.context ? { renderContext: panel.context } : {})}
+              {...(context ? { surfaceContext: context } : {})}
+            />
+          )}
         </SocketBoundary>
       )}
     />

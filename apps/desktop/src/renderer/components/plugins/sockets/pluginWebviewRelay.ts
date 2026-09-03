@@ -2,6 +2,7 @@ import {
   isPluginWebviewUiVerb,
   type PluginWebviewComposerAttach,
   type PluginWebviewConfirm,
+  type PluginWebviewDialogSubmit,
   type PluginWebviewToast,
   type PluginWebviewUiRequest,
   type PluginWebviewUiResponse,
@@ -18,6 +19,7 @@ import { showPluginActionMessage } from "../pluginActionToast";
 import { rootAppStoreApi } from "../../../state/appStore";
 import { applyPluginComposerEdit } from "./composerTarget";
 import { applyPluginDialogEdit } from "./dialogTarget";
+import { submitPluginWebviewDialogAnswer } from "./pluginWebviewDialogStore";
 import { applyPluginActionNavigation } from "./pluginActionDispatch";
 import { closePluginWebviewGuest, getPluginWebviewGuest } from "./pluginWebviewGuestRegistry";
 import { openPluginWebviewConfirm } from "./pluginWebviewConfirmStore";
@@ -312,6 +314,42 @@ export async function handlePluginWebviewUiRequest(
         });
       });
       return { ok: true, value: confirmed };
+    }
+
+    case "dialog.submit": {
+      // The args key is read tolerantly on purpose. The bridge member takes one
+      // `answer` object (`dialog.submit({issue})`), and main forwards a page's
+      // params under whatever name the preload gave them — `{answer: {issue}}`
+      // for a faithful forward, `{issue}` for a flattened one. Both mean the
+      // same thing here, and a page whose promise hangs because two processes
+      // disagreed about an envelope is the failure the relay contract exists to
+      // prevent. Anything else is malformed and refused with a sentence.
+      const envelope = args.answer;
+      const payload = envelope && typeof envelope === "object" && !Array.isArray(envelope)
+        ? envelope as Record<string, unknown>
+        : args;
+      const issue = payload.issue;
+      // `null` is a real answer — the reader cleared the selection — so the
+      // check is on the FIELD's presence, not its truthiness. A record is
+      // passed through as the page sent it: reading its five facts is the
+      // dialog's job, because the dialog is what knows which plugin owns the
+      // link it is about to store.
+      if (!("issue" in payload)) {
+        return { ok: false, message: "That selection was malformed." };
+      }
+      if (issue !== null && (typeof issue !== "object" || Array.isArray(issue))) {
+        return { ok: false, message: "That selection was malformed." };
+      }
+      const outcome = submitPluginWebviewDialogAnswer(request.guestKey, {
+        issue: issue as PluginWebviewDialogSubmit["issue"],
+      });
+      if (outcome === "applied") return okAnswer;
+      // Refused and unlistened are told apart because the plugin author can act
+      // on the difference: one is a form that would not take the value, the
+      // other is a page calling the verb from somewhere there is no form at all.
+      return outcome === "refused"
+        ? { ok: false, message: "This dialog couldn’t use that issue." }
+        : { ok: false, message: "There is no dialog on screen to fill in." };
     }
 
     case "actionResult": {

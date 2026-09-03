@@ -43,6 +43,7 @@ import type {
   PluginWebhookIngressStatus,
 } from "../shared/plugins/sdk";
 import type {
+  PluginWebviewChatTurn,
   PluginWebviewSurfaceState,
   PluginWebviewThemeSnapshot,
   PluginWebviewUiResponse,
@@ -445,6 +446,9 @@ export function createPluginBridge(deps: PluginBridgeDeps) {
       },
       publishTheme: (snapshot: PluginWebviewThemeSnapshot): void => {
         sendMain(IPC.pluginWebviewThemePublish, snapshot);
+      },
+      publishChatTurn: (turn: PluginWebviewChatTurn): void => {
+        sendMain(IPC.pluginWebviewChatPublish, turn);
       },
       setSurfaceState: (state: PluginWebviewSurfaceState): void => {
         sendMain(IPC.pluginWebviewSurfaceState, state);

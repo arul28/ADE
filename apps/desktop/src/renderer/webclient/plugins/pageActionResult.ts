@@ -40,8 +40,8 @@ import { applyPluginComposerEdit } from "../../components/plugins/sockets/compos
 import { applyPluginDialogEdit } from "../../components/plugins/sockets/dialogTarget";
 import {
   applyPluginActionNavigation,
+  openPluginActionWebview,
 } from "../../components/plugins/sockets/pluginActionDispatch";
-import { openPluginWebviewOverlay } from "../../components/plugins/sockets/pluginWebviewOverlayStore";
 import { rootAppStoreApi } from "../../state/appStore";
 
 export type PluginPageAnswerSource = {
@@ -84,11 +84,23 @@ export function applyPluginPageActionAnswers(
     const plugin = rootAppStoreApi.getState().installedPlugins.find((entry) => entry.pluginId === pluginId);
     const surfaceExists = plugin?.enabled && plugin.tabs.some((tab) => tab.id === overlay.surfaceId);
     if (surfaceExists) {
-      openPluginWebviewOverlay({
+      // The PLACEMENT router, not an overlay call: `openWebview` names where
+      // the plugin wants its page, and this read the field and then opened an
+      // overlay regardless — so a page answering `{openWebview:{placement:
+      // "picker"}}` got an overlay on web and a composer picker on desktop, for
+      // one plugin, one action and one reader. `openPluginActionWebview` is the
+      // single place that decides what a client can give a placement, including
+      // the picker-with-no-composer fallback, so both hosts route through it.
+      openPluginActionWebview({
         pluginId,
         surfaceId: overlay.surfaceId,
+        ...(overlay.placement ? { placement: overlay.placement } : {}),
         subject: context,
         ...(overlay.context ? { pointer: overlay.context } : {}),
+        // No pressed control on this path: a page's own `invoke` has no button
+        // rect to sample, so a popover placement anchors the way the dispatcher
+        // anchors an unanchored one.
+        anchor: null,
       });
     } else {
       console.warn("[plugin page webview] openWebview named an unknown surface", pluginId, overlay.surfaceId);

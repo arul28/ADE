@@ -63,7 +63,10 @@ final class PluginPageBridgeTests: XCTestCase {
             ])
             XCTAssertEqual(request.method, method)
         }
-        XCTAssertEqual(PluginPageBridgeMethod.allCases.count, 20)
+        // 20 + `dialog.submit` + `ui.resize`. The count is here so a verb added
+        // to the closed list is a deliberate edit of the permission model
+        // rather than something that arrives with a feature.
+        XCTAssertEqual(PluginPageBridgeMethod.allCases.count, 22)
     }
 
     func testAnUnknownMethodIsRefusedByName() {
@@ -284,6 +287,92 @@ final class PluginPageBridgeTests: XCTestCase {
         XCTAssertEqual(ref.key, "ADE-1")
         XCTAssertEqual(ref.title, "One")
         XCTAssertEqual(ref.url, "https://linear.app/x/ADE-1")
+    }
+
+    /// `dialog.submit` is gated on the HOST's word about where it drew the page.
+    ///
+    /// A tab that could name the issue for a dialog nobody opened would be
+    /// writing into a form the reader is not looking at, so the refusal is
+    /// `not_permitted` — a permanent fact about the placement, not something a
+    /// retry could change.
+    @MainActor
+    func testDialogSubmitIsRefusedOutsideTheDialogPicker() async {
+        let host = RecordingPageHost()
+        let bridge = PluginPageBridge(dataSource: FakePageDataSource(), host: host)
+        bridge.placement = .tab
+
+        do {
+            _ = try await bridge.handle(request(.dialogSubmit, [
+                "issue": [
+                    "provider": "jira",
+                    "issueId": "10001",
+                    "key": "OPS-7",
+                    "title": "Rotate the key",
+                ],
+            ]), pluginId: "ade-jira")
+            XCTFail("a tab must not be able to answer a dialog")
+        } catch let error as PluginPageBridgeError {
+            XCTAssertEqual(error.code, "not_permitted")
+        } catch {
+            XCTFail("unexpected error \(error)")
+        }
+        XCTAssertTrue(host.dialogSubmits.isEmpty)
+    }
+
+    @MainActor
+    func testDialogSubmitStampsTheCallingPluginAndCarriesAClearedSelection() async throws {
+        let host = RecordingPageHost()
+        let bridge = PluginPageBridge(dataSource: FakePageDataSource(), host: host)
+        bridge.placement = .dialogPicker
+
+        _ = try await bridge.handle(request(.dialogSubmit, [
+            "issue": [
+                "pluginId": "ade-impostor",
+                "provider": "jira",
+                "issueId": "10001",
+                "key": "OPS-7",
+                "title": "Rotate the key",
+            ],
+        ]), pluginId: "ade-jira")
+        XCTAssertEqual(host.dialogSubmits.first?.issue?.pluginId, "ade-jira")
+
+        // `issue: null` is a real answer: the reader cleared the selection.
+        _ = try await bridge.handle(request(.dialogSubmit, ["issue": NSNull()]), pluginId: "ade-jira")
+        XCTAssertEqual(host.dialogSubmits.count, 2)
+        XCTAssertNil(host.dialogSubmits.last?.issue)
+    }
+
+    /// A height report answers nothing and is clamped at the shared ceiling, so
+    /// one page is the same height on the phone and on the desktop.
+    @MainActor
+    func testResizeReportsAClampedHeightAndAnswersNothing() async throws {
+        let host = RecordingPageHost()
+        let bridge = PluginPageBridge(dataSource: FakePageDataSource(), host: host)
+
+        let answer = try await bridge.handle(request(.uiResize, ["height": 420]), pluginId: "ade-jira")
+        XCTAssertNil(answer)
+        _ = try await bridge.handle(request(.uiResize, ["height": 99_000]), pluginId: "ade-jira")
+        // Nothing usable: dropped rather than applied as zero.
+        _ = try await bridge.handle(request(.uiResize, ["height": 0]), pluginId: "ade-jira")
+        XCTAssertEqual(host.heights, [420, pluginPageMaxHeightPx])
+    }
+
+    /// A turn's failure sentence is the one thing a `chat` frame carries beyond
+    /// identity, and only on a failure.
+    @MainActor
+    func testChatTurnEncodesTheFailureSentenceAndNothingElse() {
+        let failed = PluginPageChatTurn(
+            sessionId: "sess-1",
+            state: .failed,
+            turnId: "t1",
+            message: String(repeating: "x", count: PluginPageChatTurn.messageMaxChars + 20)
+        )
+        XCTAssertEqual(failed.jsonValue["sessionId"] as? String, "sess-1")
+        XCTAssertEqual(failed.jsonValue["state"] as? String, "failed")
+        XCTAssertEqual((failed.jsonValue["message"] as? String)?.count, PluginPageChatTurn.messageMaxChars)
+
+        let completed = PluginPageChatTurn(sessionId: "sess-1", state: .completed, turnId: "t1", message: "ignored")
+        XCTAssertNil(completed.jsonValue["message"])
     }
 
     /// The owner of a link decides who may later remove it, so it is stamped
@@ -638,6 +727,9 @@ private final class RecordingPageHost: PluginPageBridgeHosting {
     var settings: [(entryId: String?, socketId: String?)] = []
     var confirmAnswer = false
     var promptAnswer: String?
+    var dialogSubmits: [PluginPageDialogSubmit] = []
+    var dialogSubmitAnswer = true
+    var heights: [Int] = []
 
     func pluginPageCloseSurface() { closes += 1 }
     func pluginPageComposerAttach(_ attach: PluginPageComposerAttach) { attached.append(attach) }
@@ -660,4 +752,11 @@ private final class RecordingPageHost: PluginPageBridgeHosting {
     func pluginPageApply(_ result: PluginInvokeResult, pluginId: String) async { applied.append((result, pluginId)) }
     func pluginPageOpenDeeplink(_ url: URL) { deeplinks.append(url) }
     func pluginPageTheme() -> PluginPageThemeSnapshot { PluginPageTheme.snapshot(scheme: .dark) }
+
+    func pluginPageDialogSubmit(_ answer: PluginPageDialogSubmit) -> Bool {
+        dialogSubmits.append(answer)
+        return dialogSubmitAnswer
+    }
+
+    func pluginPageResize(height: Int) { heights.append(height) }
 }

@@ -92,7 +92,9 @@ struct PluginPageHostView: UIViewRepresentable {
     var colorScheme: ColorScheme
 
     func makeCoordinator() -> Coordinator {
-        Coordinator(pluginId: pluginId, dataSource: dataSource, host: host)
+        let coordinator = Coordinator(pluginId: pluginId, dataSource: dataSource, host: host)
+        coordinator.placement = context.placement.flatMap(PluginPagePlacement.init(rawValue:))
+        return coordinator
     }
 
     func makeUIView(context uiContext: Context) -> WKWebView {
@@ -138,6 +140,7 @@ struct PluginPageHostView: UIViewRepresentable {
     }
 
     func updateUIView(_ webView: WKWebView, context uiContext: Context) {
+        uiContext.coordinator.placement = context.placement.flatMap(PluginPagePlacement.init(rawValue:))
         uiContext.coordinator.host = host
         uiContext.coordinator.deliverChanged(revision: changeRevision)
         uiContext.coordinator.deliverTheme(scheme: colorScheme)
@@ -226,7 +229,11 @@ struct PluginPageHostView: UIViewRepresentable {
               toast: function (toast) { return call("ui.toast", toast || {}); },
               dismissToast: function (id) { return call("ui.dismissToast", { id: id }); },
               prompt: function (prompt) { return call("ui.prompt", prompt || {}); },
-              confirm: function (confirm) { return call("ui.confirm", confirm || {}); }
+              confirm: function (confirm) { return call("ui.confirm", confirm || {}); },
+              resize: function (height) { call("ui.resize", { height: height }); }
+            }),
+            dialog: Object.freeze({
+              submit: function (answer) { return call("dialog.submit", answer || {}); }
             }),
             clipboard: Object.freeze({
               read: function () { return call("clipboard.read", {}); },
@@ -260,8 +267,18 @@ struct PluginPageHostView: UIViewRepresentable {
     @MainActor
     final class Coordinator: NSObject, WKScriptMessageHandlerWithReply, WKNavigationDelegate {
         let pluginId: String
+        /// Where the host drew this guest, captured from the context the host
+        /// itself encoded. Re-applied whenever the bridge is rebuilt, because a
+        /// bridge that forgot its placement would refuse `dialog.submit` from
+        /// the one page allowed to make it.
+        var placement: PluginPagePlacement? {
+            didSet { bridge.placement = placement }
+        }
         var host: PluginPageBridgeHosting? {
-            didSet { bridge = PluginPageBridge(dataSource: dataSource, host: host) }
+            didSet {
+                bridge = PluginPageBridge(dataSource: dataSource, host: host)
+                bridge.placement = placement
+            }
         }
 
         private let dataSource: PluginPageBridgeDataSource
@@ -359,13 +376,28 @@ struct PluginPageHostView: UIViewRepresentable {
 
         /// A host entity moved. Delivered only to a page that subscribed to that
         /// kind, which is what `host.subscribe` is for.
-        func deliverHostEvent(kind: PluginPageHostKind, ids: [String], overflow: Bool) {
+        func deliverHostEvent(
+            kind: PluginPageHostKind,
+            ids: [String],
+            overflow: Bool,
+            turns: [PluginPageChatTurn] = []
+        ) {
             guard bridge.subscribedHostKinds.contains(kind) else { return }
-            emit(event: .host, payload: [
+            var payload: [String: Any] = [
                 "kind": kind.rawValue,
                 "ids": Array(ids.prefix(PluginPageHostEventLimits.maxIds)),
-                "overflow": overflow || ids.count > PluginPageHostEventLimits.maxIds,
-            ])
+                "overflow": overflow
+                    || ids.count > PluginPageHostEventLimits.maxIds
+                    || turns.count > PluginPageChatTurn.turnsMax,
+            ]
+            // Only on a `chat` frame, and only when there is something to say.
+            // An entity frame carries identity and nothing else — the rule the
+            // entity bus itself keeps — so it must not grow an empty field a
+            // page would learn to read.
+            if kind == .chat, !turns.isEmpty {
+                payload["turns"] = turns.prefix(PluginPageChatTurn.turnsMax).map(\.jsonValue)
+            }
+            emit(event: .host, payload: payload)
         }
 
         private func emit(event: PluginPageBridgeEvent, payload: [String: Any]) {

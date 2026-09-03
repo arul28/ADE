@@ -49,6 +49,7 @@ import {
   type PluginSdkMethod,
   type PluginWebhookIngressStatus,
 } from "../../../../shared/plugins/sdk";
+import type { PluginChatCapabilities } from "../../../../shared/plugins/chatCapabilities";
 import type { PluginManifest } from "../../../../shared/plugins/manifest";
 import type { PluginEntityKind, PluginSocketKind } from "../../../../shared/plugins/sockets";
 import { installPluginNetworkGuard } from "./pluginChildNetworkGuard";
@@ -323,6 +324,11 @@ export function runPluginChild(): void {
       ) as PluginWebhookIngressStatus,
     },
     chat: {
+      // A read, and the only one in this namespace. No args, and nothing the
+      // host has to check ownership of — see the host arm.
+      capabilities: async () => (
+        await callHost("chat.capabilities", {})
+      ) as PluginChatCapabilities,
       createSession: async (input) => (
         await callHost("chat.createSession", { input })
       ) as PluginChatSessionRef,

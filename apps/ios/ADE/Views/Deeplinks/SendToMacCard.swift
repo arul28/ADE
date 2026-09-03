@@ -18,6 +18,10 @@ struct SendToMacTarget: Equatable, Identifiable {
     /// A panel of a plugin. The context a link may carry is not described here:
     /// it is a detail for the panel to render, never a name for the card.
     case plugin(pluginId: String, panelId: String)
+    /// The desktop's project picker. The one kind with no id, because the
+    /// picker is what a link reaches for when there is no project open to
+    /// address anything else against.
+    case welcome
     case other
   }
 
@@ -79,6 +83,9 @@ struct SendToMacTarget: Equatable, Identifiable {
       } else {
         self.kind = .other
       }
+    case "welcome":
+      // No path components, by design: the target carries no id.
+      self.kind = .welcome
     case "repo":
       if parts.count >= 4,
          parts[2].lowercased() == "branch",
@@ -155,6 +162,8 @@ struct SendToMacTarget: Equatable, Identifiable {
     case "artifact":
       guard let id = query["id"], ADEDeepLinkURLParsing.isValidOpaqueId(id) else { return .other }
       return .artifact(id: id)
+    case "welcome":
+      return .welcome
     case "branch":
       guard let repo = ADEDeepLinkURLParsing.splitRepo(query["repo"]),
             let branch = query["branch"],
@@ -201,6 +210,7 @@ struct SendToMacTarget: Equatable, Identifiable {
     case .pr: return "Pull request shared with you"
     case .linearIssue: return "Linear issue shared with you"
     case .plugin: return "Plugin panel shared with you"
+    case .welcome: return "Open a project on your computer"
     case .other: return "Shared from your computer"
     }
   }
@@ -240,6 +250,8 @@ struct SendToMacTarget: Equatable, Identifiable {
       return identifier
     case .plugin(let pluginId, let panelId):
       return "\(pluginId) · \(panelId)"
+    case .welcome:
+      return "This opens the project picker on your Mac."
     case .other:
       return url.absoluteString
     }
@@ -261,6 +273,9 @@ struct SendToMacTarget: Equatable, Identifiable {
     switch kind {
     case .lane, .session, .commit, .artifact:
       return envelope?.repoSlug == nil
+    case .welcome:
+      // A sentence, not an identifier.
+      return false
     case .file, .repoBranch, .pr, .linearIssue, .plugin, .other:
       return true
     }
@@ -370,6 +385,7 @@ struct SendToMacCard: View {
     case .pr: return "arrow.triangle.merge"
     case .linearIssue: return "smallcircle.filled.circle"
     case .plugin: return "puzzlepiece.extension"
+    case .welcome: return "folder.badge.plus"
     case .other: return "link"
     }
   }

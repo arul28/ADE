@@ -469,6 +469,10 @@ describe("web route translation", () => {
       panelId: "overview",
       context: { issue: "ISS-14" },
     },
+    // Appended rather than filed next to the bare lane above: the round-trip
+    // test below pins two paths BY INDEX, and moving them is how that assertion
+    // starts describing a different target than it names.
+    { kind: "lane", laneId: "11111111-2222-3333-4444-555555555555", drawer: "stack" },
   ];
 
   /** Every target in this block is routable; a null here IS the failure. */
@@ -483,6 +487,31 @@ describe("web route translation", () => {
     expect(paths.map(parseWebPath)).toEqual(targets);
     expect(paths[0]).toBe("/lanes?laneId=11111111-2222-3333-4444-555555555555");
     expect(paths[1]).toBe("/work?sessionId=sess-abc123");
+  });
+
+  it("carries a lane drawer into the route and reads it back", () => {
+    // The same query the desktop dispatcher builds, so one lane-plus-drawer is
+    // one address on both clients.
+    expect(targetToWebPath({
+      kind: "lane",
+      laneId: "11111111-2222-3333-4444-555555555555",
+      drawer: "stack",
+    })).toBe("/lanes?laneId=11111111-2222-3333-4444-555555555555&drawer=stack");
+    expect(parseWebPath("/lanes?laneId=11111111-2222-3333-4444-555555555555&drawer=stack"))
+      .toEqual({ kind: "lane", laneId: "11111111-2222-3333-4444-555555555555", drawer: "stack" });
+  });
+
+  it("drops a drawer this build does not know and still opens the lane", () => {
+    expect(parseWebPath("/lanes?laneId=11111111-2222-3333-4444-555555555555&drawer=holodeck"))
+      .toEqual({ kind: "lane", laneId: "11111111-2222-3333-4444-555555555555" });
+  });
+
+  it("routes the project picker to the landing route the shell boots on", () => {
+    // Deliberately NOT round-tripped: `/work` with no params is the ordinary
+    // work route, and reading it back as "the reader asked for the picker"
+    // would hijack every plain reload.
+    expect(targetToWebPath({ kind: "welcome" })).toBe("/work");
+    expect(parseWebPath("/work")).toBeNull();
   });
 
   it("routes a plugin panel to the same address the desktop App uses", () => {

@@ -6777,6 +6777,15 @@ export function registerIpc({
     pluginWebviewBridgeServer.publishTheme(win.id, arg);
   });
 
+  ipcMain.on(IPC.pluginWebviewChatPublish, (event, arg: unknown) => {
+    // Same shape as the theme publish, and for the same reason: only a real ADE
+    // window may speak for its own guests, and the window id is read from the
+    // sender rather than taken from the payload.
+    const win = BrowserWindow.fromWebContents(event.sender);
+    if (!win) return;
+    pluginWebviewBridgeServer.publishChatTurn(win.id, arg);
+  });
+
   ipcMain.on(IPC.pluginWebviewSurfaceState, (event, arg: unknown) => {
     if (!BrowserWindow.fromWebContents(event.sender)) return;
     if (!isRecord(arg)) return;

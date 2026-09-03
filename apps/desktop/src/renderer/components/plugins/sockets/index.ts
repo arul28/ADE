@@ -78,6 +78,19 @@ export {
   type PluginComposerTarget,
 } from "./composerTarget";
 export {
+  PLUGIN_SOCKET_WEBVIEW_ACTION_PLACEMENT,
+  PLUGIN_SOCKET_WEBVIEW_PLACEMENT,
+  readDeclaredWebviewSurfaceId,
+  resolvePluginDeclaredWebview,
+  type PluginDeclaredWebview,
+} from "./pluginDeclaredWebview";
+export {
+  registerPluginWebviewDialogHandler,
+  submitPluginWebviewDialogAnswer,
+  unregisterPluginWebviewDialogHandler,
+  type PluginWebviewDialogHandler,
+} from "./pluginWebviewDialogStore";
+export {
   applyPluginDialogEdit,
   registerPluginDialogTarget,
   reportPluginDialogRefusal,

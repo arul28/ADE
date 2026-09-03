@@ -5,6 +5,7 @@ import { contributionKey } from "./contributionModel";
 import { pluginActionSubject } from "./surfaceContexts";
 import { rootAppStoreApi, selectActiveProjectStateKey } from "../../../state/appStore";
 import { runPluginSocketAction } from "./pluginActionDispatch";
+import { usePluginDeclaredWebviewPress } from "./usePluginDeclaredWebview";
 import { formatPluginChordForDisplay, usePluginKeybindings } from "./usePluginKeybindings";
 import { usePluginSurfaceContributions, useSurfaceContributions } from "./useSurfaceContributions";
 
@@ -72,6 +73,10 @@ export function usePluginPaletteCommands(active: boolean): PluginPaletteCommand[
   // matrix's OUTPUT, never from the manifest declarations, so a plugin that
   // asked for ⌘K and lost gets no chip — see `PluginPaletteCommand.shortcut`.
   const { bindings } = usePluginKeybindings();
+  // A palette row that DECLARED a page opens it as a focused overlay instead of
+  // invoking — the palette belongs to no place on screen, so there is nothing
+  // to anchor a card to. A row that declared none invokes as it always did.
+  const openDeclaredPage = usePluginDeclaredWebviewPress();
   const shortcuts = React.useMemo(() => {
     const map = new Map<string, string>();
     for (const binding of bindings) {
@@ -112,6 +117,19 @@ export function usePluginPaletteCommands(active: boolean): PluginPaletteCommand[
             // press time off the live store, because the rows were built when
             // the palette opened and the reader may have moved since.
             const subject = pluginActionSubject(readPaletteSubjectInput());
+            if (openDeclaredPage({
+              socket: "command-palette-action",
+              pluginId: contribution.pluginId,
+              ...(contribution.payload.webviewSurfaceId
+                ? { surfaceId: contribution.payload.webviewSurfaceId }
+                : {}),
+              // The same subject the invoke would have carried, so a page
+              // opened from ⌘K knows which chat or lane the reader was on.
+              // `{kind: "none"}` is the palette's way of saying there was
+              // nothing to be on, which a page reads as a null subject — the
+              // same thing a full tab webview gets.
+              subject: subject.kind === "none" ? null : subject,
+            })) return;
             void runPluginSocketAction(
               contribution.pluginId,
               contribution.payload.actionId,
@@ -125,7 +143,7 @@ export function usePluginPaletteCommands(active: boolean): PluginPaletteCommand[
           },
         };
       }),
-    [contributions, identities, shortcuts],
+    [contributions, identities, openDeclaredPage, shortcuts],
   );
 }
 

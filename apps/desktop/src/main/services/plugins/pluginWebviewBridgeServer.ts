@@ -62,15 +62,19 @@ import {
   PLUGIN_WEBVIEW_BRIDGE_VERSION,
   PLUGIN_WEBVIEW_CONFIRM_BODY_MAX_CHARS,
   PLUGIN_WEBVIEW_CONFIRM_TITLE_MAX_CHARS,
+  PLUGIN_WEBVIEW_CHAT_TURNS_MAX,
   PLUGIN_WEBVIEW_HOST_COALESCE_MS,
   PLUGIN_WEBVIEW_HOST_IDS_MAX,
   PLUGIN_WEBVIEW_LIST_MAX_ROWS,
   PLUGIN_WEBVIEW_TOAST_LABEL_MAX_CHARS,
   PLUGIN_WEBVIEW_TOAST_MESSAGE_MAX_CHARS,
+  sanitizePluginWebviewChatTurn,
   sanitizePluginWebviewTheme,
   type PluginWebviewChangeEvent,
+  type PluginWebviewChatTurn,
   type PluginWebviewComposerAttach,
   type PluginWebviewConfirm,
+  type PluginWebviewDialogSubmit,
   type PluginWebviewEventFrame,
   type PluginWebviewEventName,
   type PluginWebviewHandshake,
@@ -201,6 +205,19 @@ export type PluginWebviewBridgeServer = {
    * window's guests as the `theme` event.
    */
   publishTheme(hostWindowId: number | null, payload: unknown): void;
+  /**
+   * One chat turn's move, published by the renderer of the window it happened
+   * in, for that window's guests subscribed to the `chat` kind.
+   *
+   * It arrives the way the theme does rather than off `subscribeToPluginEntityChanges`
+   * for a reason worth stating: that bus is a module-level emitter only the
+   * `ade-cli` daemon publishes on, so in the Electron main process — where this
+   * server actually runs — it is silent in a shipping build. A `chat` frame fed
+   * from it would work in a test and never fire for a user. The renderer that
+   * owns the conversation is the one party that knows a turn started or died,
+   * so it is the publisher.
+   */
+  publishChatTurn(hostWindowId: number | null, payload: unknown): void;
   dispose(): void;
 };
 
@@ -291,6 +308,23 @@ export function readPluginWebviewComposerAttach(
     }
   }
   return { provider, issueId, identifier, title, ...(url ? { url } : {}) };
+}
+
+/**
+ * Read a dialog answer, or refuse.
+ *
+ * `{issue: null}` is the one shape that is not an issue and is still valid: it
+ * is how a page says the reader CLEARED their choice, which a dialog must be
+ * able to hear or a selection made inside the page could never be undone. Every
+ * other shape goes through {@link readPluginWebviewComposerAttach}, deliberately
+ * — the composer chip and the dialog answer are the same five facts, and two
+ * readers for one record is how they drift.
+ */
+export function readPluginWebviewDialogSubmit(
+  params: Record<string, unknown>,
+): PluginWebviewDialogSubmit {
+  if (params.issue === null) return { issue: null };
+  return { issue: readPluginWebviewComposerAttach(params) };
 }
 
 /**
@@ -454,8 +488,19 @@ export function createPluginWebviewBridgeServer(
   type HostSubscription = {
     guest: PluginWebviewGuest;
     kinds: Set<PluginWebviewHostKind>;
-    /** Ids gathered since the last flush, per family. */
-    buffer: Map<PluginWebviewHostKind, { ids: Set<string>; overflow: boolean }>;
+    /**
+     * Ids gathered since the last flush, per family.
+     *
+     * `turns` is set on the `chat` entry alone and is what makes that family
+     * different: an entity id is a bare "this moved", but a turn carries a
+     * STATE, and two states for one session inside one window are not both
+     * true. Keyed by session id so the last one written wins, while `ids` keeps
+     * the insertion order the frame reports.
+     */
+    buffer: Map<
+      PluginWebviewHostKind,
+      { ids: Set<string>; overflow: boolean; turns?: Map<string, PluginWebviewChatTurn> }
+    >;
     cancelFlush: (() => void) | null;
   };
   const hostSubscriptions = new Map<string, HostSubscription>();
@@ -472,6 +517,12 @@ export function createPluginWebviewBridgeServer(
         kind,
         ids: [...entry.ids],
         overflow: entry.overflow,
+        // An overflowed chat frame carries NO turns: the page is being told to
+        // refetch the sessions it watches, and half a turn list beside that
+        // instruction is the half a page would patch from instead.
+        ...(kind === "chat" && entry.turns && !entry.overflow
+          ? { turns: [...entry.turns.values()] }
+          : {}),
       };
       push(subscription.guest, "host", payload);
     }
@@ -498,6 +549,36 @@ export function createPluginWebviewBridgeServer(
     // documents that explicitly — so the frame goes out with an empty list
     // rather than being dropped.
     subscription.buffer.set(kind, entry);
+    if (subscription.cancelFlush) return;
+    subscription.cancelFlush = setTimer(() => flushHost(subscriptionId), PLUGIN_WEBVIEW_HOST_COALESCE_MS);
+  };
+
+  /**
+   * Fold one turn into a subscription's `chat` buffer.
+   *
+   * Last state wins inside the coalescing window: a session that started and
+   * then failed within the same 120ms delivers `failed` only, because "started"
+   * is no longer true and a page told both would have to know which came last.
+   * The session id keeps its ORIGINAL position in `ids`, so the frame's id order
+   * is the order the sessions first moved in.
+   */
+  const bufferChatTurn = (
+    subscription: HostSubscription,
+    subscriptionId: string,
+    turn: PluginWebviewChatTurn,
+  ): void => {
+    const entry = subscription.buffer.get("chat")
+      ?? { ids: new Set<string>(), overflow: false, turns: new Map<string, PluginWebviewChatTurn>() };
+    const turns = entry.turns ?? new Map<string, PluginWebviewChatTurn>();
+    entry.turns = turns;
+    if (!turns.has(turn.sessionId) && turns.size >= PLUGIN_WEBVIEW_CHAT_TURNS_MAX) {
+      // Past the cap the frame stops naming turns at all — see the flush.
+      entry.overflow = true;
+    } else {
+      turns.set(turn.sessionId, turn);
+      entry.ids.add(turn.sessionId);
+    }
+    subscription.buffer.set("chat", entry);
     if (subscription.cancelFlush) return;
     subscription.cancelFlush = setTimer(() => flushHost(subscriptionId), PLUGIN_WEBVIEW_HOST_COALESCE_MS);
   };
@@ -802,6 +883,22 @@ export function createPluginWebviewBridgeServer(
         return null;
       }
 
+      case "dialog.submit": {
+        // Refused on the PLACEMENT the host captured at attach, not on anything
+        // the page says about itself. A tab that could answer a dialog would be
+        // filling in a form the reader is not looking at — and it would be
+        // choosing the lane name for a Create-lane sheet somebody else opened.
+        if (guestPlacement(guest) !== "dialog-picker") {
+          throw new PluginSdkError(
+            "not_permitted",
+            "Only a page drawn as a dialog picker can answer a dialog.",
+          );
+        }
+        const { issue } = readPluginWebviewDialogSubmit(params);
+        await relay(guest, "dialog.submit", { issue });
+        return null;
+      }
+
       case "composer.insert": {
         const text = requireString(params, "text");
         if (pluginUtf8ByteLength(text) > PLUGIN_COMPOSER_TEXT_MAX_BYTES) {
@@ -875,7 +972,7 @@ export function createPluginWebviewBridgeServer(
         const kinds = new Set<PluginWebviewHostKind>();
         for (const kind of raw) if (isPluginWebviewHostKind(kind)) kinds.add(kind);
         if (kinds.size === 0) {
-          throw new PluginSdkError("invalid_args", '"kinds" must name lane, session or pr.');
+          throw new PluginSdkError("invalid_args", '"kinds" must name lane, session, pr or chat.');
         }
         hostSubscriptionSeq += 1;
         const subscriptionId = `${guest.webContentsId}:${hostSubscriptionSeq}`;
@@ -973,6 +1070,30 @@ export function createPluginWebviewBridgeServer(
         // one would make two windows on different themes fight.
         if (hostWindowId != null && guest.hostWindowId !== hostWindowId) continue;
         push(guest, "theme", theme);
+      }
+    },
+
+    publishChatTurn(hostWindowId, payload) {
+      // Sanitized rather than trusted even though the publisher is ADE's own
+      // renderer, for the same reason the theme is: this crosses into an
+      // untrusted guest. A frame that is not a turn is dropped silently — the
+      // producer has nothing to do with a refusal, and a page hearing a
+      // malformed turn is worse than hearing none.
+      const turn = sanitizePluginWebviewChatTurn(payload);
+      if (!turn) return;
+      for (const [subscriptionId, subscription] of [...hostSubscriptions]) {
+        if (getPluginWebviewGuest(subscription.guest.webContentsId) !== subscription.guest) {
+          subscription.cancelFlush?.();
+          hostSubscriptions.delete(subscriptionId);
+          continue;
+        }
+        if (!subscription.kinds.has("chat")) continue;
+        // A window publishes for its OWN guests, exactly as it does for the
+        // theme. A page in another window is watching another project's
+        // conversations, and there is no reason it should learn a session id
+        // from a checkout it was never opened in.
+        if (subscription.guest.hostWindowId !== hostWindowId) continue;
+        bufferChatTurn(subscription, subscriptionId, turn);
       }
     },
 

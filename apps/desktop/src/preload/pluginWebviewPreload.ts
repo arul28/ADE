@@ -52,6 +52,7 @@ import {
   type PluginWebviewComposerAttach,
   type PluginWebviewConfirm,
   type PluginWebviewContext,
+  type PluginWebviewDialogSubmit,
   type PluginWebviewEventName,
   type PluginWebviewHandshake,
   type PluginWebviewHostKind,
@@ -230,6 +231,20 @@ const adePlugin: AdePluginWebviewBridge = {
     },
     insert: async (text: string) => {
       await call("composer.insert", { text });
+    },
+  },
+
+  dialog: {
+    // The same `{issue}` frame `composer.attach` sends, deliberately: the two
+    // verbs carry the identical record and differ only in where the host puts
+    // it. `null` rides as `null` rather than being dropped — it is the answer
+    // that clears a previous choice, and a page that could not send it would
+    // have no way to undo one. Where the page is drawn is not asserted here:
+    // the host reads the placement it captured at attach and refuses anything
+    // but a `dialog-picker`, because a claim from inside the guest is not a
+    // fact about where ADE drew it.
+    submit: async (answer: PluginWebviewDialogSubmit) => {
+      await call("dialog.submit", { issue: answer?.issue ?? null });
     },
   },
 

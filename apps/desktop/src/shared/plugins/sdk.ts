@@ -56,6 +56,7 @@ import type {
   LaneSummary,
   LaneType,
 } from "../types/lanes";
+import type { PluginChatCapabilities } from "./chatCapabilities";
 import { isPluginDialogField } from "./sockets";
 import type {
   PluginDialogField,
@@ -1185,8 +1186,15 @@ export type PluginChatSessionRef = {
  * ({@link toPluginLaneSummary}) rather than a delete-list, which is the version
  * that stays correct when a field is added to `LaneSummary` later.
  *
- * A plugin that genuinely needs the worktree already has the filesystem and
- * knows where it put its own files; it does not need ADE to hand it a path.
+ * The worktree path IS on the list, as `path`, and it is the one field that
+ * was argued back on. The argument against it was that a plugin with the
+ * filesystem already knows where it put its own files — true, and beside the
+ * point: a plugin does not know where ADE put the LANE. A page that wants to
+ * show the reader which checkout a lane lives in, or hand the path to a
+ * terminal, had no way to learn it and no way to derive it. `attachedRootPath`
+ * and `devicesOpen` stay off: the first is a second path with a different
+ * meaning that no surface has asked for, and the second is a roster of the
+ * user's machines.
  */
 export type PluginLaneSummary = {
   id: string;
@@ -1202,6 +1210,14 @@ export type PluginLaneSummary = {
   folder: string | null;
   createdAt: string;
   archivedAt: string | null;
+  /**
+   * The lane's worktree on THIS machine, absolute, or null.
+   *
+   * Null rather than absent when the host has no path for the lane — a remote
+   * binding, or a lane whose worktree has not been created — so a page can tell
+   * "there is no local checkout" from "an older host did not report one".
+   */
+  path: string | null;
   /** The lane's primary issue, on whichever tracker owns it. */
   primaryIssue: IssueRef | null;
   /** Every issue link on the lane, across trackers. */
@@ -1226,6 +1242,7 @@ export const PLUGIN_LANE_SUMMARY_FIELDS = [
   "folder",
   "createdAt",
   "archivedAt",
+  "path",
   "primaryIssue",
   "issueLinks",
 ] as const satisfies readonly (keyof PluginLaneSummary)[];
@@ -1314,6 +1331,10 @@ export function toPluginLaneSummary(lane: LaneSummary): PluginLaneSummary {
     folder: lane.folder ?? null,
     createdAt: lane.createdAt,
     archivedAt: lane.archivedAt ?? null,
+    // `?? null` even though the internal field is required: a lane read back
+    // from an older peer over sync can arrive without it, and an undefined here
+    // would reach a page as a missing key rather than as the documented null.
+    path: lane.worktreePath ?? null,
     primaryIssue: lane.primaryIssue ?? null,
     // Projected rather than passed through, so the lane surface has ONE rule
     // about what an issue link may carry rather than one per verb.
@@ -1770,6 +1791,27 @@ export type AdePluginSdk = {
    * `chat.turn` is a conversation source; one that does not is not.
    */
   chat: {
+    /**
+     * What a launch form may offer: permission vocabularies per provider, and
+     * fast mode plus the reasoning ladder per model.
+     *
+     * The one READ in this namespace, and the odd one out on purpose: every
+     * other method here writes into a conversation this plugin owns, and this
+     * one owns nothing. It is here rather than under `actions` because it
+     * answers a question about chat and nothing else, and because a plugin
+     * building a launch form should not have to know that ADE's model registry
+     * is reachable as an action at all.
+     *
+     * Static: the answer does not depend on the project, the lane or the
+     * plugin, so it needs no gate beyond the one every SDK call has. It changes
+     * only when ADE ships a new model or a new provider, which is a new app
+     * version — so a page may read it once at mount rather than per launch.
+     *
+     * See {@link PluginChatCapabilities} for what the two lists mean, and note
+     * that a chosen permission value goes in the provider's OWN launch field
+     * (`permissionField`), not in the unified `permissionMode`.
+     */
+    capabilities(): Promise<PluginChatCapabilities>;
     /**
      * Bind a session to one of this plugin's declared runtimes.
      *
@@ -3460,6 +3502,7 @@ export type PluginSdkMethod =
   | "webhooks.url"
   | "webhooks.ack"
   | "webhooks.status"
+  | "chat.capabilities"
   | "chat.createSession"
   | "chat.appendAssistant"
   | "chat.appendUser"

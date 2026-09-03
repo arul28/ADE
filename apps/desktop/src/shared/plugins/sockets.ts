@@ -786,6 +786,8 @@ export type PluginChatCardPayload = {
   panelId: string;
   title?: string;
   icon?: string;
+  /** See the note on {@link PluginActionButtonPayload.webviewSurfaceId}. */
+  webviewSurfaceId?: string;
 };
 
 /**
@@ -847,6 +849,17 @@ export type PluginPanelHostPayload = {
   label: string;
   panelId: string;
   icon?: string;
+  /**
+   * See the note on {@link PluginActionButtonPayload.webviewSurfaceId}.
+   *
+   * The rail and the drawer were the LAST two placements resolving a page by
+   * matching `panelId` against the plugin's `webview` surfaces instead of
+   * reading a declared id. That match is first-declaration-wins, so a plugin
+   * with three surfaces sharing one `panelId` — ade-linear has exactly that —
+   * got whichever appeared first in its manifest, and reordering the file
+   * silently swapped the pane. Naming the surface makes the choice the author's.
+   */
+  webviewSurfaceId?: string;
 };
 
 /** A row in the activity pane. Mostly published dynamically, as events happen. */
@@ -1020,6 +1033,18 @@ export type PluginDialogSectionPayload = {
   dialog: PluginDialogKind;
   panelId: string;
   title?: string;
+  /**
+   * See the note on {@link PluginActionButtonPayload.webviewSurfaceId}.
+   *
+   * On a dialog section the upgrade is the whole point of the socket rather
+   * than a nicety: the surface it replaces in ADE's own dialogs is a PICKER —
+   * the Create-lane issue chooser and the Create-PR issue reference — and a
+   * picker is a search box over a live list, which a vocabulary panel cannot
+   * be. A section that names one is drawn as a `dialog-picker` guest, sized to
+   * the height the page reports, and answers the dialog through
+   * `dialog.submit`. One that does not keeps drawing its panel.
+   */
+  webviewSurfaceId?: string;
 };
 
 /**
@@ -1268,6 +1293,9 @@ export function parsePluginContributionPayload<K extends PluginSocketKind>(
           panelId,
           ...(bounded(raw.title, 60) ? { title: bounded(raw.title, 60)! } : {}),
           ...(bounded(raw.icon, 40) ? { icon: bounded(raw.icon, 40)! } : {}),
+          ...(bounded(raw.webviewSurfaceId, 64)
+            ? { webviewSurfaceId: bounded(raw.webviewSurfaceId, 64)! }
+            : {}),
         };
       }
       case "slash-command": {
@@ -1307,6 +1335,9 @@ export function parsePluginContributionPayload<K extends PluginSocketKind>(
           label,
           panelId,
           ...(bounded(raw.icon, 40) ? { icon: bounded(raw.icon, 40)! } : {}),
+          ...(bounded(raw.webviewSurfaceId, 64)
+            ? { webviewSurfaceId: bounded(raw.webviewSurfaceId, 64)! }
+            : {}),
         };
       }
       case "activity-entry": {
@@ -1348,6 +1379,9 @@ export function parsePluginContributionPayload<K extends PluginSocketKind>(
           dialog,
           panelId,
           ...(bounded(raw.title, 60) ? { title: bounded(raw.title, 60)! } : {}),
+          ...(bounded(raw.webviewSurfaceId, 64)
+            ? { webviewSurfaceId: bounded(raw.webviewSurfaceId, 64)! }
+            : {}),
         };
       }
       default: {

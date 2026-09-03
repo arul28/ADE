@@ -23,6 +23,7 @@ import {
   isValidIssueProvider,
   parseDeeplink,
   parseDeeplinkPluginContext,
+  parseLaneDrawerParam,
   type DeeplinkTarget,
 } from "../../../shared/deeplinks";
 import {
@@ -32,6 +33,17 @@ import {
 
 // A base only used to give relative paths a parseable origin; never emitted.
 const DUMMY_ORIGIN = "https://web-shell.invalid";
+
+/**
+ * Where a `welcome` target lands on the hosted client.
+ *
+ * The literal value of `WebClientRoot`'s own `WELCOME_PATH`, restated rather
+ * than imported: `WebClientRoot` imports this module, so importing it back
+ * would close a cycle. The shared App renders its project picker on any app
+ * route while no project is open, which is why the landing route is the
+ * ordinary work route and not a page of its own — the two must stay equal.
+ */
+const WELCOME_PATH = "/work";
 
 /**
  * Parse the pre-App `/open` URL (or its raw query string) into a deeplink
@@ -76,7 +88,13 @@ export function targetToWebPath(target: DeeplinkTarget): string | null {
   switch (target.kind) {
     case "lane":
       params.set("laneId", target.laneId);
+      // Same param the desktop dispatcher writes, so the two clients address
+      // one lane-plus-drawer the same way and `parseWebPath` reads it back.
+      if (target.drawer) params.set("drawer", target.drawer);
       return withQuery("/lanes", params);
+    case "welcome":
+      // No id to carry and no query to build: the picker IS the destination.
+      return WELCOME_PATH;
     case "session":
       params.set("sessionId", target.sessionId);
       if (target.laneId) params.set("laneId", target.laneId);
@@ -199,7 +217,11 @@ export function parseWebPath(pathAndQuery: string): DeeplinkTarget | null {
       };
     }
     const laneId = params.get("laneId");
-    return laneId ? { kind: "lane", laneId } : null;
+    if (!laneId) return null;
+    // Lenient in the shared parser's own way: a drawer this build does not know
+    // is dropped and the lane link still round-trips.
+    const drawer = parseLaneDrawerParam(params.get("drawer"));
+    return { kind: "lane", laneId, ...(drawer ? { drawer } : {}) };
   }
 
   if (pathname === "/files") {

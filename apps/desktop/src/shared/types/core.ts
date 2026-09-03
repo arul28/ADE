@@ -420,7 +420,15 @@ export type AppNavigationTarget =
       kind: "lane";
       laneId: string;
       sessionId?: string | null;
+      /** A drawer to open with the lane. See `DeeplinkLaneDrawer`. */
+      drawer?: "stack" | null;
       envelope?: DeeplinkEnvelope | null;
+    }
+  /**
+   * The project picker. No id, no envelope — see `DeeplinkWelcomeTarget`.
+   */
+  | {
+      kind: "welcome";
     }
   | {
       kind: "pr";

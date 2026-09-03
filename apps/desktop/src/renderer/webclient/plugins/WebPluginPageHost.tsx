@@ -6,6 +6,11 @@ import { applyPluginActionOpenSettings } from "../../components/plugins/pluginAc
 import { applyPluginComposerEdit } from "../../components/plugins/sockets/composerTarget";
 import { closePluginWebviewOverlay } from "../../components/plugins/sockets/pluginWebviewOverlayStore";
 import { closePluginWebviewPopover } from "../../components/plugins/sockets/pluginWebviewPopoverStore";
+import { submitPluginWebviewDialogAnswer } from "../../components/plugins/sockets/pluginWebviewDialogStore";
+import {
+  createPluginWebviewChatTurnDedupe,
+  pluginWebviewChatTurnFromEvent,
+} from "../../components/plugins/sockets/PluginWebviewRelayHost";
 import {
   getPluginPrompt,
   openPluginPrompt,
@@ -30,6 +35,7 @@ import {
 import {
   PLUGIN_WEBVIEW_LIST_MAX_ROWS,
   PLUGIN_WEBVIEW_MAX_HEIGHT_PX,
+  type PluginWebviewChatTurn,
   type PluginWebviewContext,
   type PluginWebviewHostEvent,
   type PluginWebviewHostKind,
@@ -79,6 +85,7 @@ export function WebPluginPageHost({
   entryHtml,
   active,
   context = null,
+  onGuestKey,
 }: {
   pluginId: string;
   /** Plugin-relative path from the manifest surface, already validated there. */
@@ -87,6 +94,19 @@ export function WebPluginPageHost({
   active: boolean;
   /** The subject to inject. Null for a full tab or pane. See the desktop host. */
   context?: PluginWebviewContext | null;
+  /**
+   * Told this guest's key as it goes live, and null as it goes away — the same
+   * prop, in the same order, as the desktop host's.
+   *
+   * It is what lets a dialog register itself as the destination for this page's
+   * `dialog.submit`: `pluginWebviewDialogStore` is keyed per GUEST, so an
+   * answer reaches the form the reader is actually sitting in and not whichever
+   * dialog happened to open last. The key here is the guest's own nonce —
+   * minted per guest, unforgeable, and namespaced away from a desktop key
+   * (which is a decimal `webContents` id) so the two cannot collide in one
+   * store.
+   */
+  onGuestKey?: ((guestKey: string | null) => void) | undefined;
 }) {
   const frameRef = React.useRef<HTMLIFrameElement | null>(null);
   const bridgeRef = React.useRef<PluginPageHost | null>(null);
@@ -102,8 +122,16 @@ export function WebPluginPageHost({
   // host merely forwards to was handed back with a new identity.
   const confirmRef = React.useRef(confirm.confirmAsync);
   confirmRef.current = confirm.confirmAsync;
+  // Held in a ref for the reason the desktop host holds its own: a caller
+  // passing a fresh closure each render must not tear the guest down.
+  const guestKeyRef = React.useRef(onGuestKey);
+  guestKeyRef.current = onGuestKey;
 
   const placement: PluginWebviewPlacement = context?.placement ?? "tab";
+  // The two placements that sit INSIDE a taller ADE surface and therefore have
+  // no height of their own to fill, exactly as `ui.resize` is documented. Every
+  // other placement fills a frame this client already sized.
+  const sizesToContent = placement === "settings-section" || placement === "dialog-picker";
   // Folded into one string so a parent handing a fresh-but-equal object each
   // render does not tear the guest down, exactly as the desktop host does it.
   const contextKey = React.useMemo(() => (context ? JSON.stringify(context) : ""), [context]);
@@ -205,6 +233,7 @@ export function WebPluginPageHost({
             else openExternalUrl(url);
           },
           resize: (height) => setSectionHeight(height),
+          dialogSubmit: (answer) => submitPluginWebviewDialogAnswer(nonce, answer),
         },
         data: {
           invoke: (action, args) => invokePluginAction(pluginId, action, args),
@@ -233,6 +262,10 @@ export function WebPluginPageHost({
         subscribeHostEntities: subscribeHostEntities,
       });
       bridgeRef.current = host;
+      // Announced BEFORE the frame is navigated, for the same reason the host
+      // is built first: a fast page can submit as its first statement, and a
+      // dialog told about the guest a commit later would refuse that answer.
+      guestKeyRef.current?.(nonce);
       frame.setAttribute("src", documentUrl.toString());
 
       bootTimer = setTimeout(() => {
@@ -257,6 +290,9 @@ export function WebPluginPageHost({
     return () => {
       cancelled = true;
       if (bootTimer) clearTimeout(bootTimer);
+      // Null before the guest goes, so a registration cannot outlive the guest
+      // it was made for.
+      guestKeyRef.current?.(null);
       bridgeRef.current?.dispose();
       bridgeRef.current = null;
       // `about:blank` before the element goes: a frame removed with a live
@@ -286,13 +322,13 @@ export function WebPluginPageHost({
       style={{
         position: "relative",
         display: "flex",
-        flex: placement === "settings-section" ? "0 0 auto" : 1,
+        flex: sizesToContent ? "0 0 auto" : 1,
         minHeight: 0,
         minWidth: 0,
         // The shared ceiling, not a local one: the same page must not be a
         // different height on desktop and on web. The host has already clamped
         // what the guest reported; this is the style that applies it.
-        ...(placement === "settings-section" && sectionHeight
+        ...(sizesToContent && sectionHeight
           ? { height: Math.min(sectionHeight, PLUGIN_WEBVIEW_MAX_HEIGHT_PX) }
           : {}),
       }}
@@ -494,15 +530,19 @@ export function askPrompt(pluginId: string, prompt: PluginActionPrompt): Promise
  */
 export function closeSurfaceFor(placement: PluginWebviewPlacement): void {
   if (placement === "tab" || placement === "pane" || placement === "drawer") return;
-  if (placement === "settings-section") return;
+  // A settings section and a dialog picker are both PART of a surface the
+  // reader opened, not something drawn over it. There is nothing above either
+  // to dismiss, so `surface.close` is the documented no-op — falling through
+  // would close an unrelated overlay the reader still has open.
+  if (placement === "settings-section" || placement === "dialog-picker") return;
   if (placement === "popover" || placement === "composer-picker") closePluginWebviewPopover();
   else closePluginWebviewOverlay();
 }
 
 /**
- * Lane, session and PR movement, as identity-only frames.
+ * Lane, session, PR and chat-turn movement, as host frames.
  *
- * The three subscriptions are the ones `window.ade` publishes on both clients,
+ * The entity subscriptions are the ones `window.ade` publishes on both clients,
  * so this is the same feed the app's own surfaces redraw from. Ids are read out
  * of each payload where the payload has one, and an event with no id it
  * recognises is reported as an overflow — "something in this family moved,
@@ -532,6 +572,28 @@ function subscribeHostEntities(
   if (kinds.includes("pr")) {
     const prs = ade?.prs as { onEvent?: (listener: (event: unknown) => void) => () => void } | undefined;
     const stop = prs?.onEvent?.(report("pr"));
+    if (stop) stops.push(stop);
+  }
+  if (kinds.includes("chat")) {
+    // The one kind that is not an entity family, and the one that carries more
+    // than identity: `turns` says where a session's turn ENDED up, because a
+    // page that launched an agent cannot re-derive "that turn failed" from the
+    // session's existence. Same reading as the desktop relay's producer, from
+    // the same exported mapper, so the two clients cannot disagree about what a
+    // failed turn is. No poll and no timer: this is the chat stream ADE's own
+    // chat surfaces redraw from.
+    const chat = ade?.agentChat as
+      | { onEvent?: (listener: (envelope: unknown) => void) => () => void }
+      | undefined;
+    const isNewTurn = createPluginWebviewChatTurnDedupe();
+    const stop = chat?.onEvent?.((envelope) => {
+      const turn: PluginWebviewChatTurn | null = pluginWebviewChatTurnFromEvent(envelope);
+      // A provider re-emitting a status must not reach the page twice; a page
+      // counting running turns gets that wrong. The coalescer downstream keeps
+      // the LAST state of a turn within one window, which is a different job.
+      if (!turn || !isNewTurn(turn)) return;
+      deliver({ kind: "chat", ids: [turn.sessionId], overflow: false, turns: [turn] });
+    });
     if (stop) stops.push(stop);
   }
   return () => {

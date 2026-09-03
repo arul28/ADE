@@ -774,6 +774,7 @@ import type {
   PluginWebhookIngressStatus,
 } from "../shared/plugins/sdk";
 import type {
+  PluginWebviewChatTurn,
   PluginWebviewSurfaceState,
   PluginWebviewThemeSnapshot,
   PluginWebviewUiResponse,
@@ -2563,6 +2564,12 @@ declare global {
           onUiRequest: (cb: (request: unknown) => void) => () => void;
           respondUi: (response: PluginWebviewUiResponse) => void;
           publishTheme: (snapshot: PluginWebviewThemeSnapshot) => void;
+          /**
+           * One chat turn's move, for the guests of THIS window that follow the
+           * `chat` host kind. Published by the renderer because it is the only
+           * party that sees a turn start or die.
+           */
+          publishChatTurn: (turn: PluginWebviewChatTurn) => void;
           setSurfaceState: (state: PluginWebviewSurfaceState) => void;
           onReload: (cb: (event: unknown) => void) => () => void;
         };

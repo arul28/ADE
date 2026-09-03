@@ -10,6 +10,7 @@ import {
   type PluginProviderKeyId,
 } from "../../../shared/plugins/manifest";
 import { isRecord } from "../../../shared/plugins/parse";
+import { pluginChatCapabilities } from "../../../shared/plugins/chatCapabilities";
 import {
   isPluginEntityKind,
   isPluginSocketKind,
@@ -1302,6 +1303,16 @@ export function createPluginSdkServer(deps: {
           return null;
         }
 
+        case "chat.capabilities": {
+          // A pure READ of the model registry and the permission unions: no
+          // args to validate, nothing owned to check, and no `requireChat()` —
+          // the answer is the same for every plugin, every project and every
+          // lane, so there is no ownership question to ask and no host binding
+          // to require. A plugin building a launch form can read it on a host
+          // that binds no chat service at all.
+          return pluginChatCapabilities();
+        }
+
         case "chat.createSession": {
           const chat = requireChat();
           const input = optionalRecord(params.input, "input");
@@ -1497,10 +1508,18 @@ export function createPluginSdkServer(deps: {
         }
 
         // The lane surface. Read verbs project through `toPluginLaneSummary`
-        // rather than answering with `LaneSummary`: the internal shape carries
-        // `worktreePath`, `attachedRootPath` and `devicesOpen`, and a plugin
-        // that asked which lanes exist has no business learning where they live
-        // on disk or which of the user's machines has them open.
+        // rather than answering with `LaneSummary`: the projection is a fixed
+        // allowlist, so a field added to the internal shape later cannot reach
+        // a plugin because nobody remembered to delete it.
+        //
+        // The worktree path IS on that list, as `path`. It used to be excluded
+        // alongside `attachedRootPath` and `devicesOpen`, and the exclusion was
+        // wrong for a reason the other two are not: a plugin does not know where
+        // ADE put the LANE, and a page showing the reader which checkout a lane
+        // lives in — or handing the path to a terminal — had no way to derive
+        // it. `attachedRootPath` and `devicesOpen` stay off; the first is a
+        // second path with a different meaning nothing has asked for, and the
+        // second is a roster of the user's machines.
         case "lanes.list": {
           const lanes = requireLanes();
           return (await lanes.list(pluginId)).map(toPluginLaneSummary) satisfies PluginLaneSummary[];

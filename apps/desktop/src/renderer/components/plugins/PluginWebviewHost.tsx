@@ -106,6 +106,7 @@ export function PluginWebviewHost({
   surfaceId = null,
   onRequestClose,
   onContentHeight,
+  onGuestKey,
   hideGraceMs = 0,
 }: {
   pluginId: string;
@@ -144,6 +145,22 @@ export function PluginWebviewHost({
    * resizing ADE's window from a script.
    */
   onContentHeight?: ((height: number) => void) | undefined;
+  /**
+   * This guest's `guestKey` while it is live, and `null` the moment it is not.
+   *
+   * The relay is addressed by `guestKey` and nothing else — main derives it from
+   * the `webContents` that called, so a page cannot forge it — and a host that
+   * has to ANSWER a relayed request needs the same number to register itself
+   * against. The dialog picker is the case: a page calls `dialog.submit`, and
+   * the only thing that can say which form the answer belongs in is the
+   * component that put that particular guest on screen.
+   *
+   * Called with the key once the guest is attached and with `null` on the way
+   * out, in that order, so a caller's registration cannot outlive the guest it
+   * was made for. Held in a ref rather than in the effect's dependencies: a
+   * caller passing a fresh closure each render must not recreate the guest.
+   */
+  onGuestKey?: ((guestKey: string | null) => void) | undefined;
   /**
    * How long a hidden guest survives before it is destroyed.
    *
@@ -217,6 +234,8 @@ export function PluginWebviewHost({
   closeRef.current = onRequestClose;
   const heightRef = React.useRef(onContentHeight);
   heightRef.current = onContentHeight;
+  const guestKeyRef = React.useRef(onGuestKey);
+  guestKeyRef.current = onGuestKey;
 
   React.useEffect(() => {
     const host = hostRef.current;
@@ -261,6 +280,10 @@ export function PluginWebviewHost({
       // element appear or vanish, so the window says so. With destroy-when-
       // hidden this is nearly always the pair around one guest's whole life.
       relay?.setSurfaceState({ guestKey, attached: true });
+      // After the registry, so a host told the key can rely on the guest being
+      // resolvable by it — a `surface.close` racing a `dialog.submit` finds
+      // both halves or neither.
+      guestKeyRef.current?.(guestKey);
     };
     const onFail = (event: Event) => {
       const detail = event as Event & { errorDescription?: string; isMainFrame?: boolean };
@@ -312,6 +335,12 @@ export function PluginWebviewHost({
       // dismissed while its page had a confirm pending must not be able to open
       // ADE's UI on the way down.
       if (guestKey) relay?.setSurfaceState({ guestKey, attached: false });
+      // Told BEFORE the registry drops the guest and before the element goes,
+      // so a host unregisters its own handler while the key it registered under
+      // is still the live one. Unconditional: a guest that never reached
+      // `dom-ready` never announced a key, and `null` is then a no-op the
+      // caller can apply without checking.
+      guestKeyRef.current?.(null);
       unregister?.();
       guest.removeEventListener("dom-ready", onReady);
       guest.removeEventListener("did-fail-load", onFail);
@@ -337,6 +366,11 @@ export function PluginWebviewHost({
           entryHtml={entryHtml}
           active={active}
           context={envelope}
+          // Forwarded, not dropped: a `dialog-picker` page on the web client
+          // registers itself as the destination for its own `dialog.submit`
+          // through this key, and a host that swallowed it would answer every
+          // submit "no dialog is listening" while the dialog was on screen.
+          onGuestKey={onGuestKey}
         />
       </React.Suspense>
     );

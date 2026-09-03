@@ -131,6 +131,7 @@ export const PLUGIN_WEBVIEW_PLACEMENTS = [
   "popover",
   "settings-section",
   "composer-picker",
+  "dialog-picker",
 ] as const;
 
 export type PluginWebviewPlacement = (typeof PLUGIN_WEBVIEW_PLACEMENTS)[number];
@@ -383,6 +384,7 @@ export const PLUGIN_WEBVIEW_METHODS = [
   "theme.get",
   "host.subscribe",
   "host.unsubscribe",
+  "dialog.submit",
 ] as const;
 
 export type PluginWebviewMethod = (typeof PLUGIN_WEBVIEW_METHODS)[number];
@@ -479,13 +481,19 @@ export function sanitizePluginWebviewTheme(value: unknown): PluginWebviewThemeSn
 }
 
 /**
- * The host entity families a page may follow live.
+ * The host families a page may follow live.
  *
- * The same three the SDK's change events name, and for the same reason a page
- * needs them: a Linear browser that does not hear about a new lane draws a
- * stale list until the reader reloads it.
+ * The first three are the entity families the SDK's change events name, and a
+ * page needs them for the same reason: a Linear browser that does not hear
+ * about a new lane draws a stale list until the reader reloads it.
+ *
+ * `chat` is the fourth and it is not an entity family. It reports where a
+ * chat session's TURN is — started, completed or failed — because a page that
+ * launched an agent has no other way to learn that the first turn died. A
+ * launched issue would sit on "Ready" forever, which is the one state it is
+ * certainly not in. See {@link PluginWebviewChatTurn}.
  */
-export const PLUGIN_WEBVIEW_HOST_KINDS = ["lane", "session", "pr"] as const;
+export const PLUGIN_WEBVIEW_HOST_KINDS = ["lane", "session", "pr", "chat"] as const;
 
 export type PluginWebviewHostKind = (typeof PLUGIN_WEBVIEW_HOST_KINDS)[number];
 
@@ -518,7 +526,96 @@ export type PluginWebviewHostEvent = {
   kind: PluginWebviewHostKind;
   ids: string[];
   overflow: boolean;
+  /**
+   * Turn states, on a `chat` frame only. `ids` carries the same session ids, so
+   * a page that only wants "this session moved" reads `ids` and ignores this.
+   *
+   * The one narrowing of the identity-only rule above, and it is narrow on
+   * purpose: a turn carries its lifecycle position and the host's own failure
+   * sentence, and nothing else. No prompt, no reply, no tool name, no token
+   * count. It is here because "the turn you launched failed" is a fact the page
+   * cannot re-derive from identity — the session exists either way.
+   */
+  turns?: PluginWebviewChatTurn[];
 };
+
+/**
+ * Where a chat session's current turn is.
+ *
+ * Three states rather than the five the app tracks internally: a page draws a
+ * launched issue as running, done or broken, and `interrupted` is a `failed`
+ * the reader caused on purpose — which is still not "Ready". The host maps
+ * `interrupted` onto `failed` so a page has one error path rather than two.
+ */
+export const PLUGIN_WEBVIEW_CHAT_TURN_STATES = ["started", "completed", "failed"] as const;
+
+export type PluginWebviewChatTurnState = (typeof PLUGIN_WEBVIEW_CHAT_TURN_STATES)[number];
+
+export function isPluginWebviewChatTurnState(
+  value: unknown,
+): value is PluginWebviewChatTurnState {
+  return PLUGIN_WEBVIEW_CHAT_TURN_STATES.some((state) => state === value);
+}
+
+/**
+ * One turn's move, as a page hears it.
+ *
+ * `message` is the host's own failure sentence and is present only on `failed`.
+ * It is the sentence ADE would show the reader, so a page can draw the same one
+ * rather than inventing "Something went wrong".
+ */
+export type PluginWebviewChatTurn = {
+  sessionId: string;
+  state: PluginWebviewChatTurnState;
+  /** The host's turn id, when the producer knows it. Opaque to the page. */
+  turnId?: string;
+  /** Only on `failed`. Bounded by {@link PLUGIN_WEBVIEW_CHAT_MESSAGE_MAX_CHARS}. */
+  message?: string;
+};
+
+/** Ceiling on a failure sentence handed to a page. */
+export const PLUGIN_WEBVIEW_CHAT_MESSAGE_MAX_CHARS = 400;
+
+/**
+ * Turns one coalesced `chat` frame carries.
+ *
+ * Lower than {@link PLUGIN_WEBVIEW_HOST_IDS_MAX} because a turn is a record and
+ * an id is a string: a batch launch of fifty issues is the realistic ceiling,
+ * and past it the frame says `overflow` and the page refetches the sessions it
+ * is watching.
+ */
+export const PLUGIN_WEBVIEW_CHAT_TURNS_MAX = 100;
+
+/**
+ * Trim one turn report to what a guest may be handed, or refuse it.
+ *
+ * Shape-checked even though the publisher is ADE's own renderer, for the same
+ * reason {@link sanitizePluginWebviewTheme} is: this value crosses into an
+ * untrusted guest, and an unbounded message would be a per-turn cost every
+ * plugin page pays.
+ */
+export function sanitizePluginWebviewChatTurn(value: unknown): PluginWebviewChatTurn | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const record = value as Record<string, unknown>;
+  const sessionId = typeof record.sessionId === "string" ? record.sessionId.trim() : "";
+  if (!sessionId) return null;
+  if (!isPluginWebviewChatTurnState(record.state)) return null;
+  const turnId = typeof record.turnId === "string" ? record.turnId.trim() : "";
+  const rawMessage = typeof record.message === "string" ? record.message.trim() : "";
+  // A message on a state that is not a failure is dropped rather than carried:
+  // the field means "why this turn broke", and a sentence on a completed turn
+  // would be a second, unspecified channel a page would learn to read.
+  const message =
+    record.state === "failed" && rawMessage
+      ? rawMessage.slice(0, PLUGIN_WEBVIEW_CHAT_MESSAGE_MAX_CHARS)
+      : "";
+  return {
+    sessionId,
+    state: record.state,
+    ...(turnId ? { turnId } : {}),
+    ...(message ? { message } : {}),
+  };
+}
 
 /**
  * A toast a page asked ADE to show. Same levels ADE's own toasts use.
@@ -570,6 +667,25 @@ export type PluginWebviewComposerAttach = {
   identifier: string;
   title: string;
   url?: string | null;
+};
+
+/**
+ * The answer a page drawn as a `dialog-picker` gives its dialog.
+ *
+ * The SAME five facts {@link PluginWebviewComposerAttach} carries, and
+ * deliberately the same shape rather than a second issue type: a page that can
+ * fill the composer's issue chip already builds this record, and a picker that
+ * had to build a different one for the Create-lane dialog would be two
+ * serialisers for one concept. What differs is where the record goes — a
+ * composer chip, or the dialog's own name, branch and PR-reference derivation —
+ * and that is the host's business, not the page's.
+ *
+ * `issue: null` is a real answer: it means "the reader cleared the selection",
+ * which a dialog must be able to hear or a chosen issue could never be undone
+ * from inside the page.
+ */
+export type PluginWebviewDialogSubmit = {
+  issue: PluginWebviewComposerAttach | null;
 };
 
 /**
@@ -640,6 +756,7 @@ export const PLUGIN_WEBVIEW_UI_VERBS = [
   "ui.dismissToast",
   "ui.prompt",
   "ui.confirm",
+  "dialog.submit",
   "actionResult",
 ] as const;
 
@@ -917,6 +1034,22 @@ export type AdePluginWebviewBridge = {
     insert(text: string): Promise<void>;
   };
 
+  dialog: {
+    /**
+     * Hand the chosen issue to the ADE dialog this page is drawn inside.
+     *
+     * Only meaningful in the `dialog-picker` placement. The dialog uses the
+     * answer exactly as it used its own built-in picker's: Create-lane derives
+     * the lane name and the branch from it, Create-PR derives the reference and
+     * its magic word. Pass `{ issue: null }` to clear a previous choice.
+     *
+     * Refused with `not_permitted` in every other placement — a tab that could
+     * name the issue for a dialog nobody opened would be writing into a form
+     * the reader is not looking at.
+     */
+    submit(answer: PluginWebviewDialogSubmit): Promise<void>;
+  };
+
   ui: {
     /** Raise a toast. The returned id is what {@link dismissToast} takes. */
     toast(toast: PluginWebviewToast): Promise<{ id: string }>;
@@ -931,6 +1064,13 @@ export type AdePluginWebviewBridge = {
     /**
      * Report this page's own content height so a size-to-content placement can
      * grow around it. Call it from a `ResizeObserver`.
+     *
+     * Honoured in `settings-section` and `dialog-picker` — the two placements
+     * that sit INSIDE a taller ADE surface and therefore have no height of
+     * their own to fill. Every other placement fills a frame the host already
+     * sized, so the report is read and dropped. This is the ONLY supported way
+     * a page states its height: writing `documentElement.style.height` or
+     * posting a private `postMessage` reaches nothing on any host.
      *
      * Synchronous and void, and the ONLY member here that is — see
      * {@link PLUGIN_WEBVIEW_RESIZE_CHANNEL}. It is a report to the element

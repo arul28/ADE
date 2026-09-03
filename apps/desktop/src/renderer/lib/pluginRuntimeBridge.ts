@@ -20,6 +20,7 @@
 
 import { isPluginsUnavailable } from "../../shared/plugins/sdk";
 import type {
+  PluginWebviewChatTurn,
   PluginWebviewSurfaceState,
   PluginWebviewThemeSnapshot,
   PluginWebviewUiResponse,
@@ -237,6 +238,7 @@ export type PluginWebviewRelayMembers = {
   onUiRequest: (cb: (request: unknown) => void) => () => void;
   respondUi: (response: PluginWebviewUiResponse) => void;
   publishTheme: (snapshot: PluginWebviewThemeSnapshot) => void;
+  publishChatTurn: (turn: PluginWebviewChatTurn) => void;
   setSurfaceState: (state: PluginWebviewSurfaceState) => void;
   onReload: (cb: (event: unknown) => void) => () => void;
 };
