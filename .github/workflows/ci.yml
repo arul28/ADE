@@ -175,6 +175,22 @@ jobs:
       - run: cd apps/web && npm run typecheck
       - run: cd apps/web && npm run test:analytics
       - run: npm run test:posthog
+      - run: npm run test:plugin-pages
+      # The bundled plugin pages are generated from each plugin's committed
+      # dist, and they are an iOS app resource — nothing at build time regenerates
+      # them for a developer. Re-running the sync and requiring a clean tree is
+      # what stops a rebuilt page from being committed without its bundled copy,
+      # which would ship a phone drawing the previous page.
+      - name: Bundled plugin pages match the committed plugin dists
+        run: |
+          node scripts/sync-bundled-plugin-pages.mjs --strict
+          if [[ -n "$(git status --porcelain apps/ios/ADE/Resources/BundledPluginPages)" ]]; then
+            echo "::error::Bundled plugin pages are stale. Run 'npm run sync:plugin-pages' and commit the result."
+            git status --porcelain apps/ios/ADE/Resources/BundledPluginPages
+            git --no-pager diff -- apps/ios/ADE/Resources/BundledPluginPages | head -50
+            exit 1
+          fi
+        shell: bash
 
   typecheck-webhook-relay:
     needs: install

@@ -34,6 +34,13 @@
  *
  * Run it with `npm run sync:plugin-pages`, and BEFORE any iOS archive — the
  * bundle is an iOS app resource, so a stale copy ships silently.
+ *
+ * `--strict` turns every warning into a failure. Each warning this script emits
+ * is about a plugin that DECLARES a `webview` surface and whose page could not
+ * be bundled — unbuilt, served from the plugin root, or missing its own entry
+ * file — so on a release runner they are all the same fact: the archive would
+ * ship without a page the plugin says it has, and the phone would silently fall
+ * back to the vocabulary panel with nothing anywhere saying why.
  */
 
 import crypto from "node:crypto";
@@ -310,8 +317,13 @@ function isMainModule() {
 }
 
 if (isMainModule()) {
+  const strict = process.argv.slice(2).includes("--strict");
+  const warnings = [];
   const report = syncBundledPluginPages({
-    warn: (message) => console.warn(`sync-bundled-plugin-pages: ${message}`),
+    warn: (message) => {
+      warnings.push(message);
+      console.warn(`sync-bundled-plugin-pages: ${message}`);
+    },
   });
   if (report.plugins.length === 0) {
     console.log("sync-bundled-plugin-pages: no plugin ships a built page yet.");
@@ -324,5 +336,12 @@ if (isMainModule()) {
   }
   if (report.removedPlugins > 0) {
     console.log(`sync-bundled-plugin-pages: removed ${report.removedPlugins} stale plugin directories`);
+  }
+  if (strict && warnings.length > 0) {
+    console.error(
+      `sync-bundled-plugin-pages: --strict — ${warnings.length} plugin page(s) could not be bundled. `
+        + "Build the pages before archiving.",
+    );
+    process.exit(1);
   }
 }

@@ -241,6 +241,16 @@ main() {
   local ipa_path="${work_dir}/ADE.ipa"
   rm -rf "${archive_path}" "${ipa_path}"
 
+  # Bundled plugin pages are an iOS app RESOURCE, so a stale copy ships silently
+  # — the phone would draw the last release's page and have no way to know. The
+  # sync is regenerated from each plugin's committed dist right before the
+  # archive, and `--strict` fails the run when a plugin that declares a `webview`
+  # surface has no page to bundle rather than shipping an app that falls back to
+  # the vocabulary panel for it.
+  require_cmd node
+  notice 'Syncing bundled plugin pages into the iOS app resources'
+  ( cd "${root}" && node scripts/sync-bundled-plugin-pages.mjs --strict )
+
   create_posthog_xcconfig "${root}"
 
   asc doctor
