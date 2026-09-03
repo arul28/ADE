@@ -168,3 +168,29 @@ reproduce and was hardened only. Everything else is fixed in the tree (90 files)
 
 Not verified: iOS. `xcodebuild` is blocked by the 30 GB disk gate. Unit C
 acceptance is the next gate.
+
+## 2026-09-03 pivot to the page tier
+
+Owner decision after the Linear acceptance walk on the Alpha build: the JSON
+vocabulary cannot reach the quality of the compiled pages, so the WEBVIEW is the
+primary plugin page tier on desktop, hosted web and iOS. The vocabulary is
+frozen, not deleted; the terminal draws a frozen "terminal profile". Spec:
+`docs/reports/plugin-page-tier-spec.md` (`1f72bb4e5`). Ticket ADE-148.
+
+Landed, `1f72bb4e5..e933845c5`:
+
+- `2c5f6b11b` terminal profile frozen to eight nodes; the frozen render arms stay behind `TERMINAL_PROFILE_ONLY` for one later sweep.
+- `4df39e06d` bridge v2 — 20 methods, three events, control-flow answers on `invoke`, `ade plugin create --webview`.
+- `46bdf4243` desktop placements (popover, settings section, composer picker), destroy-when-hidden, the renderer relay, `webviewSurfaceId`, `openWebview.placement`, `popover: {width, height}`.
+- `1bb47b982` + `e933845c5` `packages/ui` as `@ade-dev/ui`, five entry points; the desktop app consumes it through `file:../../packages/ui`.
+- `86edbdd35` cold-launch manifest retry, top-bar cluster no-drag and shell chrome, brand glyphs in every socket, first refresh on a seeded panel, desktop back stack.
+- `0054ff0de` iOS page host — WKWebView, `ade-plugin://` scheme handler, content-addressed cache, bundled pre-seeded pages, the sync asset channel.
+- `047cba2c3` `6f67682c9` `1cf5c0eea` `d5563289f` hosted web page host — sandboxed same-origin iframe, service worker, cached assets, lazy load.
+- `fbb227210` `00c8dff4c` `plugins.putCollection/getConfig/setConfig`.
+
+In flight: the `ade-linear` port to the page tier. `plugins/ade-linear/page/`
+and `plugins/ade-linear/dist/` exist in the working tree and are NOT committed.
+
+Outstanding verification: iOS is UNVERIFIED on this Mac — `xcodebuild` is
+blocked by the 30 GB disk gate, and the MacBook build is pending. No official
+plugin ships a page yet, so the page-tier acceptance walk has not run.

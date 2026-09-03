@@ -10,17 +10,28 @@ else:
 
 - **Code runs only on the machine that owns the plugin**, in a supervised Node
   child process. There is no remote execution path.
-- **UI is declarative data, never code.** A plugin ships a versioned JSON *panel
-  schema*; desktop, web, iOS, and the `ade code` TUI each interpret that same
-  JSON with their own native widgets. One plugin therefore works across four
-  independent release trains (desktop auto-update, App Store review, npm, web)
-  without shipping anything executable to three of them.
+- **A plugin's UI has two tiers, and the page is the primary one.** A `webview`
+  surface ships the plugin's own HTML, and desktop, the hosted web client and
+  iOS each draw it in an isolated guest. Under it sits the *vocabulary*: a
+  versioned JSON panel schema that every client interprets with its own native
+  widgets, across four independent release trains (desktop auto-update, App
+  Store review, npm, web).
 
-There is one deliberate exception to the second rule: a **`webview` surface**
-renders the plugin's own HTML page in a sandboxed guest, on the desktop only. It
-still declares a panel, and that panel is what every other client shows in its
-place — so the escape hatch costs a platform, never a blank space. See
-[The webview tier](#the-webview-tier).
+The second rule used to read “UI is declarative data, never code”, with a page
+as a desktop-only escape hatch. The owner inverted it on 2026-09-03, after the
+Linear acceptance walk on the Alpha build: the vocabulary cannot reach the
+quality of the compiled pages it was meant to replace, so the page is the tier a
+plugin designs for. The decision and its acceptance test are
+`docs/reports/plugin-page-tier-spec.md`.
+
+The exception inverted with it. The vocabulary is FROZEN, not deleted, and it is
+now what a client draws when it cannot draw the page. A `webview` surface still
+declares a `panelId`, and that panel is what the `ade code` TUI draws, what a
+phone holding no cached page draws, and what a client older than the page host
+draws — so a plugin that ships a page still works everywhere it worked before.
+The terminal draws a frozen SUBSET of the vocabulary, the *terminal profile*.
+See [The page tier](#the-page-tier) and
+[The vocabulary contract](#the-vocabulary-contract).
 
 ## Source file map
 
@@ -42,7 +53,7 @@ Node built-ins:
 | `apps/desktop/src/shared/plugins/sessionSetup.ts` | `sessionSetup`: the static `ADE_PLUGIN_` key prefix, the reserved host names, the caps, and `parsePluginSessionSetup` |
 | `apps/desktop/src/shared/plugins/builtinSurfaces.ts` | `BUILTIN_SURFACE_OWNERS`: which plugin owns which compiled surface, its `presence`, its `actionDomains` and its `actionNames` |
 | `apps/desktop/src/shared/plugins/installDisclosure.ts` | `describeManifestAdds`: the one place every "Adds:" sentence is written, sign-in flows and credential handoffs included |
-| `apps/desktop/src/shared/plugins/webviewBridge.ts` | The `window.adePlugin` contract: bridge version, the `ade-plugin://` origin and per-plugin partition, `PLUGIN_WEBVIEW_CSP`, the closed method list |
+| `apps/desktop/src/shared/plugins/webviewBridge.ts` | The `window.adePlugin` contract: `PLUGIN_WEBVIEW_BRIDGE_VERSION` (2), the `ade-plugin://` origin and per-plugin partition, `PLUGIN_WEBVIEW_CSP`, the closed method list, `PLUGIN_WEBVIEW_PLACEMENTS`, the three event names, the theme snapshot and its sanitizer, the host-event kinds and their coalescing, the toast/confirm/composer payloads, the UI verbs and their timeouts, the resize channel and its clamp |
 | `apps/desktop/src/shared/plugins/sockets.ts` | Socket kinds, surface ids, entity kinds, per-kind payload validation, deterministic placement ordering, row-badge overflow split |
 | `apps/desktop/src/shared/plugins/context.ts` | Read-only surface contexts (`pr`, `lane`, `session`, `file`, `surface`) and their contribution keys |
 | `apps/desktop/src/shared/plugins/sdk.ts` | SDK v0 surface, budgets, error codes, NDJSON child frames, install-registry records, the `plugin` action domain, action-response navigation (`readPluginActionNavigation`, `PLUGIN_NAVIGATE_CONTEXT_MAX_BYTES`) |
@@ -84,7 +95,10 @@ Sync and CLI:
 
 | File | Responsibility |
 |---|---|
-| `apps/ade-cli/src/services/plugins/pluginTableWriters.ts` | The single budget-enforcing writer for every `plugin_*` table |
+| `apps/ade-cli/src/services/plugins/pluginTableWriters.ts` | The single budget-enforcing writer for every `plugin_*` table, and the `seeded` stamp on a panel materialized from the manifest |
+| `apps/ade-cli/src/services/sync/pluginPageAssets.ts` | The host half of the page asset channel: the hashed manifest walk, the per-file read, the containment guard, `PLUGIN_PAGE_ASSET_MAX_BYTES` and the served directory |
+| `apps/ade-cli/src/services/plugins/pluginPageHostRef.ts` | The late-bound ref through which the sync command service reaches the machine's plugin host writers |
+| `apps/ade-cli/src/services/sync/syncRemoteCommandService.ts` | Among the plugin commands, `plugins.putCollection`, `plugins.getConfig` and `plugins.setConfig` — the page tier's writes from the phone and the web |
 | `apps/ade-cli/src/services/plugins/pluginPresenceService.ts` | Per-machine presence fan-out and cache |
 | `apps/ade-cli/src/services/plugins/pluginRegistryService.ts` | Registry index fetch with etag cache; `DEFAULT_PLUGIN_REGISTRY_INDEX_URL` |
 | `apps/ade-cli/src/services/plugins/pluginInstallPing.ts` | Install count ping to the push relay |
@@ -105,6 +119,15 @@ Renderer (desktop and web share this code):
 | `apps/desktop/src/renderer/components/plugins/MarketplacePage.tsx`, `MarketplaceDetailPage.tsx` | Gallery, facets, detail page, machine coverage matrix |
 | `apps/desktop/src/renderer/components/plugins/PluginInstallDialog.tsx`, `PluginConfigForm.tsx`, `PluginThemePreview.tsx` | Install, settings, theme preview/apply |
 | `apps/desktop/src/renderer/components/plugins/marketplaceLocalIndex.ts` | Bundled offline index so the Marketplace works before a live registry exists |
+| `apps/desktop/src/renderer/components/plugins/PluginWebviewHost.tsx` | One guest, in whichever placement asked for it; the shared resize clamp, and the lazy load of the web page host |
+| `apps/desktop/src/renderer/components/plugins/sockets/pluginWebviewRelay.ts` | The renderer half of the page relay: every UI verb, the action-result appliers, and the rule that every request is answered exactly once |
+| `apps/desktop/src/renderer/components/plugins/sockets/PluginWebviewPopoverHost.tsx`, `pluginWebviewPopoverStore.ts` | The anchored popover placement, its one-at-a-time rule and its default 520×640 |
+| `apps/desktop/src/renderer/components/plugins/sockets/pluginWebviewTheme.ts` | The `--ade-*` snapshot the window publishes to its guests |
+| `apps/desktop/src/renderer/components/plugins/sockets/pluginWebviewGuestRegistry.ts`, `pluginWebviewReloadStore.ts`, `pluginWebviewConfirmStore.ts`, `pluginWebviewOverlayStore.ts` | Which guests are live, the `version:revision` reload key, and the two host-drawn cards a page can raise |
+| `apps/desktop/src/renderer/webclient/plugins/` | The hosted web page host: `WebPluginPageHost.tsx`, `pageAssets.ts`, `pageDocument.ts`, `pageProtocol.ts`, `pageBridgeHost.ts`, `pageBridgeGuest.ts`, `pageActionResult.ts`, `pageTheme.ts`, `pageServiceWorkerClient.ts` and `pluginPageServiceWorker.js` |
+| `apps/desktop/src/renderer/webclient/adapter/plugins.ts` | The web client's plugin calls, including the asset reads and the collection and config writes |
+| `apps/desktop/src/renderer/webclient/public/_headers` | `frame-src`/`worker-src` on the client, and the `sandbox; default-src 'none'` policy on `/assets/plugin-pages/*` |
+| `packages/ui` | `@ade-dev/ui`: the tokens, the theme and its injected stylesheet string, the primitives, the icon subpath and the markdown subpath — consumed by the desktop app through `file:../../packages/ui` |
 | `apps/desktop/src/renderer/lib/pluginRuntimeBridge.ts` | `window.ade.plugins` bridge |
 | `apps/desktop/src/renderer/components/app/pluginDeeplinkRoute.ts` | Where an `ade://plugin/…` link goes: the same hide-everything gate the compiled surfaces use, or a plain refusal |
 | `apps/desktop/src/renderer/components/chat/PluginInstallChatCard.tsx` | The `plugin_install` `ade_card` variant for agent-built install flows |
@@ -116,6 +139,10 @@ iOS and TUI:
 |---|---|
 | `apps/ios/ADE/Models/PluginVocabularyParsing.swift`, `PluginVocabularyState.swift`, `PluginRecords.swift` | Swift transcription of the panel, panel-state and socket contracts |
 | `apps/ios/ADE/Views/Plugins/PluginPaneStore.swift` | `PluginRenderSupport.renderableComponents` — the iOS renderable set — plus the panel back stack (`PluginPanelStackEntry`) and the pane's auth, prompt and selection state |
+| `apps/ios/ADE/Views/Plugins/PluginPageSurface.swift`, `PluginPageHostView.swift` | Where a page is drawn on the phone, how a requested placement is narrowed to what the device can draw, and the vocabulary panel it falls back to |
+| `apps/ios/ADE/Views/Plugins/PluginPageBridgeHost.swift`, `apps/ios/ADE/Models/PluginPageBridge.swift` | Bridge v2 on the phone: reads from the replicated mirror, `invoke` and writes over RPC, the same control-flow answers a socket press honours |
+| `apps/ios/ADE/Services/PluginPageAssetStore.swift`, `PluginPageSchemeHandler.swift` | The content-addressed cache keyed on plugin, version and revision, the bundled pre-seeded entries, and the `ade-plugin://` scheme handler with the closed MIME map and the desktop policy |
+| `apps/ios/ADE/Resources/BundledPluginPages/` | Pre-seeded page entries for official plugins, laid out by path rather than by hash |
 | `apps/ios/ADE/Views/Plugins/PluginPresenceGate.swift` | Is the owner installed and enabled on the ATTACHED machine, and does that draw or hide the compiled surface (`drawsBuiltin`) |
 | `apps/ios/ADE/Views/Plugins/PluginAuthSessionRunner.swift` | The phone's `ASWebAuthenticationSession` runner for a plugin sign-in, and the callback parameters it posts back |
 | `apps/ios/ADE/Views/Plugins/PluginVocabularyView.swift`, `PluginVocabFormView.swift`, `PluginVocabularyMediaViews.swift`, `PluginVocabularyMarkdownViews.swift`, `PluginSocketViews.swift`, `PluginPaneSheet.swift`, `PluginEntryMenu.swift` | Native rendering and entry points |
@@ -202,7 +229,7 @@ one supervised child process:
 
 The child is an ordinary Node process, so before this it could reach any host on
 the internet with nothing declaring it, disclosing it at install, allowlisting it
-or auditing it — the webview tier was strictly stricter than the child tier that
+or auditing it — the page tier was strictly stricter than the child tier that
 holds the plugin's secrets.
 
 - A manifest declares `network: { hosts: [...] }`. **Absent means no outbound
@@ -1102,6 +1129,16 @@ because dropping the oldest one would be data loss nobody asked for.
 
 ### The vocabulary contract
 
+**The vocabulary is FROZEN at v1**, by the owner decision recorded in
+`docs/reports/plugin-page-tier-spec.md`. What changed on 2026-09-03 is its
+standing, not its shape: it is no longer the tier a plugin designs for, it is
+what a client draws when it cannot draw the page — see
+[The page tier](#the-page-tier). Frozen is not deleted. Every component below
+still parses identically on every client, every panel a plugin already published
+still renders, and the terminal draws the subset named in
+[the terminal profile](#client-entry-points). Deletion waits until no official
+plugin needs the vocabulary at all.
+
 `VOCAB_VERSION` is 1. The component-name union is deliberately **open**
 (`| (string & {})`, the `AdeCardVariant` idiom) so adding a component later is
 not a breaking change for a client compiled today; an unrecognized name renders
@@ -1675,6 +1712,24 @@ dispatched *before* the refetch, so the gesture means "go and get new data"; a
 refresh that fails still refetches and reports why. Absent, nothing changes on
 any client.
 
+**A panel materialized from the manifest runs its refresh once, for the reader.**
+The host stamps `seeded: true` into a panel it built from the manifest's schema
+file, and the plugin's own `panels.update` clears it; `readPluginPanelSeeded` is
+the one reader. A seeded panel is a placeholder — a "Loading…" card — so every
+plugin tab drew it and then sat on it, and Graph and Review both opened on
+"Loading…" until somebody found the Refresh control. Desktop, the terminal and
+the phone now each dispatch the declared `refreshAction` once when a seeded
+panel is first drawn. It is silent, on the host's own bookkeeping path: no
+spinner on the reader's Refresh button, no success report, and a failure
+swallowed, because a first refresh that could not reach its API must leave the
+seeded card and the working control exactly where they were. It refetches either
+way. The priming is remembered per PLUGIN and PANEL rather than per mount, so
+leaving the tab and coming back is not a second reason to spend the plugin's
+rate limit, and the memory is dropped the moment a non-seeded row for that panel
+is seen — which is what lets a reinstall that seeds the row again earn its one
+refresh, and why a row that stays seeded stays primed and cannot re-fire in a
+loop.
+
 It reaches the clients inside `schema_json` rather than in a column, because
 `plugin_panels` is a CRR table with a frozen SQL shape — the same reason the
 resolved `mobile` flag lives there, and the reason a client that predates the key
@@ -1691,48 +1746,78 @@ is the one thing they tap without reading, so naming another plugin's panel is
 refused. A refused link costs the destination and never the notification. It
 rides to the phone; the desktop notification bridge has no destination field.
 
-### The webview tier
+### The page tier
 
-A `webview` surface is the one place a plugin ships UI code. It renders the
-plugin's own HTML in a sandboxed guest on the desktop, and every other client
-renders the surface's `panelId` panel instead — `panelId` is required on a
+A `webview` surface is where a plugin ships its own UI code, and since the
+2026-09-03 pivot it is the tier a plugin designs for. Three clients host a page:
+the desktop app, the hosted web client and iOS. Every client that cannot host
+one renders the surface's `panelId` panel instead — `panelId` is required on a
 webview surface precisely because the fallback is what keeps the cross-surface
-promise honest. `builtin` and `webview` cannot be combined: a gate draws
-nothing and a page draws everything, and honouring both would ask the client
-which of the two it is looking at.
+promise honest. `builtin` and `webview` cannot be combined: a gate draws nothing
+and a page draws everything, and honouring both would ask the client which of
+the two it is looking at.
 
-**One origin per plugin.** Pages are served over `ade-plugin://<pluginId>/…`,
-which resolves to that plugin's install directory and nothing above it. A custom
-scheme rather than `file:` for exactly one reason: with `file:` every plugin
-would share one origin, `'self'` in the CSP would mean "the whole filesystem",
-and storage would be shared. Requests are refused unless their real path
-(symlinks followed) is still inside the install directory; a directory URL
-resolves to `index.html` and a directory itself is a 404, never a listing. Only
-an installed *and enabled* plugin has an origin at all, so disabling a plugin
-closes its pages. Content types come from a closed map, and every response —
-refusals included — carries the CSP and `nosniff`.
+**One origin per plugin.** On desktop and on iOS pages are served over
+`ade-plugin://<pluginId>/…`, which resolves to that plugin's own files and
+nothing above them. A custom scheme rather than `file:` for exactly one reason:
+with `file:` every plugin would share one origin, `'self'` in the CSP would mean
+"the whole filesystem", and storage would be shared. Requests are refused unless
+their real path (symlinks followed) is still inside the install directory; a
+directory URL resolves to `index.html` and a directory itself is a 404, never a
+listing. Only an installed *and enabled* plugin has an origin at all, so
+disabling a plugin closes its pages. Content types come from a closed map, and
+every response — refusals included — carries the CSP and `nosniff`. One served
+file is capped at `PLUGIN_WEBVIEW_FILE_MAX_BYTES` (16 MiB), inside the install
+cap that already bounds the whole tree at 5,000 files and 64 MiB.
 
 **The policy** is `PLUGIN_WEBVIEW_CSP`: `script-src 'self'` (no CDN, no inline
 script — a plugin that wants a library vendors it), `style-src 'self'
-'unsafe-inline'`, `img-src`/`media-src` reaching `https:`, `connect-src https:`
-so a page can call its own service, and `form-action`, `frame-ancestors`,
-`base-uri`, `object-src` all closed. The guest runs sandboxed and
-context-isolated, in a **non-persistent per-plugin session partition**: cookies,
-storage, and caches die with the window, so plugin state belongs in collections
-where it is budgeted and visible in the usage meter. Links leave for
-the user's real browser; navigation away from the plugin's own origin is
-refused; new windows are denied.
+'unsafe-inline'`, `img-src`/`media-src` reaching `https:`, `font-src 'self'
+data:`, `connect-src https:` so a page can call its own service, and
+`form-action`, `frame-ancestors`, `base-uri`, `object-src` all closed. The
+desktop guest runs sandboxed and context-isolated, in a **non-persistent
+per-plugin session partition**: cookies, storage, and caches die with the
+window, so plugin state belongs in collections where it is budgeted and visible
+in the usage meter. Links leave for the user's real browser; navigation away
+from the plugin's own origin is refused; new windows are denied.
+
+#### Bridge version 2
 
 **The bridge** is `window.adePlugin`, published by a preload that exposes
 nothing else — no `window.ade`, no `require`, no raw IPC.
-`PLUGIN_WEBVIEW_BRIDGE_VERSION` is **1** and moves the way `PLUGIN_SDK_VERSION`
-does: additive, never re-shaped. The closed method list is `collections.get`,
-`collections.put`, `collections.list`, `invoke`, `config.get`, and
-`openDeeplink`; `collections.list` returns at most 500 rows, and every
-collection named must be declared in the manifest. Absent on purpose, and not
-stubbed: `secrets` (a page is the last place credentials should be readable),
-`contributions.publish` and `panels.update` (a page draws itself; publishing
-into other surfaces is the child's job), and `collections.delete`.
+`PLUGIN_WEBVIEW_BRIDGE_VERSION` is **2** and moves the way `PLUGIN_SDK_VERSION`
+does: additive, never re-shaped. `PLUGIN_WEBVIEW_METHODS` is the closed list,
+and the list IS the permission model — a page cannot widen it:
+
+| group | methods |
+|---|---|
+| Data | `collections.get`, `collections.put`, `collections.list`, `config.get`, `config.set` |
+| The plugin's own code | `invoke` |
+| Destinations | `openDeeplink`, `openSettings` |
+| The surface it lives in | `surface.close` |
+| The composer | `composer.attach`, `composer.insert` |
+| ADE's own UI | `ui.toast`, `ui.dismissToast`, `ui.prompt`, `ui.confirm` |
+| The machine around it | `clipboard.read`, `clipboard.write` |
+| Theme and live data | `theme.get`, `host.subscribe`, `host.unsubscribe` |
+
+`collections.list` returns at most 500 rows, and every collection named must be
+declared in the manifest. Absent on purpose, and not stubbed: `secrets` (a page
+is the one place a plugin's credentials should never be readable),
+`contributions.publish` and `panels.update` (a page draws itself; publishing into
+other surfaces is the child process's job), and `collections.delete`.
+`config.set` IS present, because a plugin's settings page is a page and a form
+that cannot save what it renders is the reason the verb was added; the host
+refuses a `secret`-kind setting on this path the same way it does on the child's.
+
+Three events reach a page, on one channel with the name in the frame:
+`changed` (the plugin's own collections moved), `theme` (the host republished
+its scheme and its `--ade-*` tokens), and `host` (a lane, a session or a pull
+request moved). A `host` frame carries identity and nothing else — the kind, the
+ids, and an `overflow` flag when more moved than
+`PLUGIN_WEBVIEW_HOST_IDS_MAX` (200) — and the host coalesces for
+`PLUGIN_WEBVIEW_HOST_COALESCE_MS` (120 ms) first, because a rebase moves a dozen
+lanes in a few milliseconds and the page redraws once either way. A page follows
+a family by calling `host.subscribe`.
 
 **The plugin id is never on the wire.** Every call is answered against the id
 the host derives from the guest's own frame URL, cross-checked against the entry
@@ -1740,13 +1825,248 @@ the window layer wrote when it approved the attach. A `pluginId` field in a
 payload would be a claim, and honouring a claim is how one plugin reads
 another's collections — so there is no such field to ignore.
 
-Reads and `invoke` go through the ordinary `plugin` action domain, and fall
-through to the project runtime the guest's window is bound to when the Electron
-main process holds no host. Writing does not: `PLUGIN_DOMAIN_ACTIONS` is a
-closed list mirrored by the RPC schema and iOS's compile-time allowlist, and a
-write action on it would let any client write any plugin's rows. The bridge
-reaches the host service's own writer instead — which is why a page's write
-needs an in-process host (see *Accepted v1 limitations*).
+**An `invoke` honours the same control-flow answers a socket press honours.**
+The page calls its own handler and the HOST reads the return value, so a plugin
+that answers `{navigate}` from a button and from a page gets the same behaviour
+from both. Main handles `openUrl`, `authSession` and `prompt` before the result
+reaches the window. The window then applies `{message}`, a composer edit, a
+dialog field, `{openSettings}` and `{navigate}`, under the same
+one-destination rule the socket path applies: `openSettings` and `navigate` in
+one result are one destination written twice, so the settings page wins and the
+navigation is dropped. A navigation out of an anchored page closes the card it
+was drawn in.
+
+**The relay is the renderer's half.** Main owns every question of permission —
+who asked, whether that guest's surface is on screen, how long the page may wait
+(`PLUGIN_WEBVIEW_UI_TIMEOUT_MS`, 10 s; ten minutes for a question). What is left
+over is the part only the window can do: move a piece of ADE's own UI.
+`pluginWebviewRelay.ts` is that part, and it is a router over the appliers the
+SOCKET path already uses rather than a second implementation of any of them, so
+a page's `composer.attach` reaches the same composer a `composer-action`'s
+`{composer}` answer reaches. Its one non-negotiable rule is that EVERY request is
+answered exactly once: an unknown verb, a guest that has already gone and an
+applier that threw all become `{ ok: false, message }`, because on the other end
+of every request is a page holding a promise.
+
+#### Placements
+
+Seven, in `PLUGIN_WEBVIEW_PLACEMENTS`: `tab`, `pane`, `drawer`, `overlay`,
+`popover`, `settings-section`, `composer-picker`. It is a closed list because it
+is half of the relay's addressing — `surface.close` means "close the popover",
+"close the picker" or "do nothing" depending on this value alone.
+
+- **Tab, pane and drawer** come from the manifest: the plugin declared the
+  surface there, and the page fills a frame the host already owns.
+- **Overlay** is what an `openWebview` answer opens by default.
+- **Popover** is anchored under the control that was pressed. **Composer
+  picker** is the same card over the composer, and the two share one store,
+  because they are one object wearing different anchors: what separates them is
+  where the card points and what finishes it — a popover is read and dismissed,
+  a picker ends when the page attaches something to the composer. One anchored
+  page at a time, and the cap is not negotiable here: a guest is a whole
+  renderer process, so a second open REPLACES the first rather than stacking.
+  Escape, a click outside and `surface.close` all dismiss it, and a second press
+  of the same control closes it rather than opening a second copy.
+- **Settings section**: a `settings-section` socket may name a webview surface,
+  and the section body is then the guest, sized from the page's own resize
+  message and capped at `PLUGIN_WEBVIEW_MAX_HEIGHT_PX` (2,000).
+
+**Every placement destroys its guest when it is hidden.** Not "keeps it alive
+and stops painting": one live guest per placement, and state lives in the
+plugin's collections rather than in the guest, whose partition is
+non-persistent anyway.
+
+A page in an anchored placement may ask for a size. `popover: { width, height }`
+on the manifest surface is a HINT, not a size the plugin sets — the host clamps
+it to the window and falls back to 520×640 when it is absent. A tab, a pane and
+the overlay all fill a frame the host owns, so only the two anchored placements
+have a size to ask about.
+
+Two fields connect the declarative sockets to the page tier, and both are
+additions rather than replacements:
+
+- **`webviewSurfaceId` on a socket payload** names a webview surface of the same
+  plugin that this contribution draws INSTEAD of its `panelId`, on a client that
+  can host a page. It is read on the kinds with somewhere to put one: the four
+  action buttons, the row badge and the settings section. `panelId` stays
+  required and stays the contract. An unresolvable id costs nothing — the
+  drawing client looks the surface up in the plugin's OWN declarations and falls
+  back to the panel, which is where it was going anyway. The parser proves only
+  the shape (64 characters), because it also runs on the phone and in the
+  daemon, where there is no registry to resolve an id against.
+- **`openWebview.placement`** on an action's answer asks for `overlay`,
+  `popover` or `picker`. `PLUGIN_ACTION_WEBVIEW_PLACEMENTS` is deliberately
+  shorter than the host's own list: an action may ask only for the three hosts a
+  press can summon, and a button that could move itself into the Work rail would
+  be a plugin rearranging ADE's furniture from a click handler. Absent means
+  `overlay`, which is what every `openWebview` meant before, and an unknown
+  value is dropped rather than refusing the open.
+
+**Hot reload.** A guest is recreated — not reloaded — when the bytes under it
+change, keyed on `version:revision`. `reload()` would re-run whatever the guest
+already fetched; a fresh key gives it a fresh load of the new files, and
+`revision` is in the key because `ade plugin dev` re-copies a source tree over
+the installed one without moving the version.
+
+**Scaffolding one.** `ade plugin create <name> --webview` writes a plugin whose
+surface is its own page: a `webview` surface with an `entryHtml`, a `panelId`
+that still names a panel, and a framework-free `page/` with an external
+stylesheet and a deferred external script. Framework-free on purpose — an inline
+`<script>` and a CDN are both refused by the CSP the host serves, so the
+starter has the shape a real build has to produce as well.
+
+#### The hosted web client
+
+The web client has no custom scheme to give a plugin, so it builds the same
+isolation out of what a browser hands it. A page draws in an `<iframe>` at a
+same-origin path under `/assets/plugin-pages/`, and a **service worker** answers
+every request in that space out of Cache Storage. The stored response — not the
+client's own policy — is what makes the guest opaque: it carries
+`Content-Security-Policy: sandbox allow-scripts`, so the frame is the app's own
+origin while the document inside it has none.
+
+The worker is a pass-through over Cache Storage and nothing more: which media
+types exist, what the guest's policy says and which bytes a plugin may ship are
+all decided when the response is built and stored with it, so the worker cannot
+hold a second opinion about any of them. It intercepts nothing outside its own
+space, so installing it does not make the client offline-capable. A miss is a
+404 rather than a pass to the network, where the origin's single-page fallback
+would hand a plugin's frame the whole signed-in ADE client.
+
+Two headers back that up. The client's own policy names `frame-src 'self'` and
+`worker-src 'self'` — no third-party frame, and no `blob:` or `data:` frame
+either, both of which would inherit the client's policy instead of taking the
+worker's. And `/assets/plugin-pages/*` is served with
+`Content-Security-Policy: sandbox; default-src 'none'`, with no
+`allow-scripts`: if the worker is ever not controlling the path, whatever the
+origin serves there loads with an opaque origin and cannot run a line of script.
+The client also refuses to create the frame until the worker is active; the
+header is the half that survives a change to the client.
+
+The bytes come over the sync file channel, the same one the phone uses, and the
+bridge is `postMessage` with the host as the only counterpart. A page's writes
+go to the machine as remote commands.
+
+#### iOS
+
+The phone draws a page in a `WKWebView` inside a `UIViewRepresentable`. A
+`WKURLSchemeHandler` serves the cached files at `ade-plugin://<id>/` with the
+same closed MIME map and the desktop's content policy, delivered as a header
+because that is where WebKit applies one. A `WKScriptMessageHandler` carries
+bridge v2.
+
+The cache is **content-addressed**: files are stored under their SHA-256 in a
+`blobs/` directory, and an entry is keyed on plugin id plus version plus
+revision. Official plugins can ship a **pre-seeded** entry inside the app —
+`ADE/Resources/BundledPluginPages/<pluginId>/` holds a manifest and the files
+laid out by path rather than by hash, because a build phase copies files and not
+blobs, and the store knows which layout it is reading from the entry's `source`.
+A bundled entry wins over a download at the same version and revision, and loses
+to any newer version the phone fetches. The directory holds nothing but its
+README today; a page is copied in once it is built.
+
+Reads and writes split. A page **reads** its collections from the replicated
+`plugin_*` mirror, which is what makes it work offline. `invoke`, collection
+writes and config go to the machine **over RPC**. One live guest at a time. The
+fallback is never an "open this on your Mac" card: a phone with no cached page
+draws the plugin's vocabulary panel, which is the tier it has drawn since the
+vocabulary shipped.
+
+Placements on the phone are `tab`, `popover`, `settings-section` and
+`composer-picker`, narrowed to what the device can draw: a `popover` is a
+popover on a regular-width screen and a sheet on a compact one, and the settings
+section and the picker are sheets, because neither has an anchor there.
+
+#### The asset channel and the page's writes
+
+Two actions on the sync file channel serve a plugin's built page, both gated on
+the peer advertising `pluginTables`:
+
+| action | args | answers |
+|---|---|---|
+| `plugin.pageAssets.manifest` | `{pluginId}` | `{pluginId, version, revision, entry, files: [{path, bytes, sha256}]}` |
+| `plugin.pageAssets.read` | `{pluginId, path, sha256}` | `{path, bytes, sha256, contentBase64}` |
+
+Two rather than one because the caller caches by content hash: it lists first,
+downloads only the hashes it lacks, and a page that did not change costs one
+round trip. The read must NAME the hash it expects, and a mismatch is a refusal
+rather than a body — a file that changed between the manifest and the read would
+be stored under the wrong key and served forever. Containment is the guard
+`readArtifact` uses (`resolvePathWithinRoot`, symlinks followed), the per-file
+ceiling is `PLUGIN_PAGE_ASSET_MAX_BYTES` (8 MiB) because one frame carries the
+file base64-encoded, and the served directory is the surface's `entryHtml`
+directory, else `dist`.
+
+Three remote commands carry what a page cannot do locally:
+
+```
+plugins.putCollection  {pluginId, collection, key, value?}  -> {ok}
+plugins.getConfig      {pluginId, key?}                     -> {value} | {config}
+plugins.setConfig      {pluginId, key, value?}              -> {config}
+```
+
+They resolve the SAME host writers the desktop bridge calls, through a
+late-bound ref (`pluginPageHostRef.ts`), so the declared-collection rule, the
+store's budgets, the manifest validation and the refusal of `secret` settings
+stay in one place. An absent `value` means `null` rather than "no change": a
+page clearing a field sends no value, and reading that as "leave it alone" would
+leave the old value standing while the page believed it was gone.
+`plugins.getConfig` answers `{value}` for a named key and `{config}` for the
+whole record when no key is named, because the phone's form binds to one setting
+while the bridge contract hands a page its whole settings object.
+
+#### The UI kit
+
+`packages/ui` is published as **`@ade-dev/ui`** by the existing SDK workflow, and
+the desktop app consumes the very same modules through `file:../../packages/ui`
+plus re-export shims at the old component paths, so the kit and the app cannot
+drift apart. React 18 or 19 is a peer dependency.
+
+Five entry points, so a page pays only for what it draws:
+
+| path | contents | pulls |
+|---|---|---|
+| `@ade-dev/ui/tokens` | `COLORS`, the spacing/size/radius scales, the style builders, `INPUT_CLS` | nothing, not even React |
+| `@ade-dev/ui/theme` | `applyAdeTheme`, the palettes, `injectAdeStyles`, `<AdeStyles/>` | react |
+| `@ade-dev/ui` | `Button`, `Chip`, `EmptyState`, `PaneHeader`, `cn`, the settings shell, the Linear brand and issue helpers, plus everything above | react, clsx, tailwind-merge |
+| `@ade-dev/ui/icons` | `LaneIcon`, `BranchIcon` | `@phosphor-icons/react` |
+| `@ade-dev/ui/markdown` | `Markdown`, `SAFE_PREVIEW_SCHEMA`, `markdownUrlTransform` | react-markdown, remark-gfm, rehype-raw, rehype-sanitize |
+
+The icon set and the markdown stack are deliberately NOT re-exported from the
+barrel. `@phosphor-icons/react` ships without a `sideEffects` declaration, so a
+bundler that sees it through the barrel keeps the entire set: importing one
+design token that way grew ADE's own web client entry graph from 301 KB to
+5,496 KB.
+
+The kit's CSS ships as a **string**, not a `.css` file, so a page needs no
+Tailwind build, no CDN and no external stylesheet to look like the app;
+`style-src 'unsafe-inline'` is what lets the injected `<style>` apply. Nothing
+injects at import time — `injectAdeStyles()` and `<AdeStyles/>` are explicit and
+idempotent. The desktop app never injects it: its components carry the original
+Tailwind utilities alongside the `ade-*` class names, so inside the app Tailwind
+draws them and the sheet is inert. That is what keeps one component from
+drifting into two appearances. Components read `--ade-*` custom
+properties, so handing `theme.get()`'s snapshot to `applyAdeTheme` re-themes the
+whole page in one call, and doing it again on every `theme` event keeps the page
+with the app. Unknown token names are dropped rather than written. With no
+bridge answer the built-in `darkTheme`/`lightTheme` palettes apply and follow
+`prefers-color-scheme`.
+
+Fonts are vendored, never linked: `--ade-font-sans` asks for Geist and
+`--ade-font-mono` for JetBrains Mono, `font-src 'self'` is the whole allowance,
+so the `.woff2` files are copied into the plugin's own built directory and
+declared there.
+
+#### Build policy
+
+A page plugin keeps its **source and its built output both in the repository**:
+the page's own `src/` beside a committed `dist/`, built with Vite. Install
+copies the tree as it stands, minus `.git` and `node_modules`, under the
+existing 5,000-file and 64 MiB cap — so the committed
+`dist/` is what a user installs and a build step is never run on their machine.
+Every asset reference is relative, because the page's origin is
+`ade-plugin://<id>` and nothing outside it loads, and there are no inline
+scripts, because the CSP refuses them.
 
 ### Sockets
 
@@ -1908,6 +2228,41 @@ iOS and the TUI do not, and that absence is a fact about a whole TAB rather than
 missing renderer arm: the phone ships no Graph canvas at all and the terminal
 draws no canvas, so neither can grow an arm for this kind without first growing
 the tab.
+
+**One hook resolves a plugin's own brand glyphs, in every socket.** ADE compiles
+five vendor marks in, and a `brand:*` token outside that closed set can only be
+resolved from the artwork the PACKAGE shipped — the host sanitizes it into
+`ade.brandIcons` at install and hands it back on the installed record. A
+renderer that does not pass those rows draws the puzzle piece for exactly the
+plugins that took the trouble to ship a mark, which is what the top bar did:
+`PluginToolbarActions` drew a puzzle piece for `brand:linear` while the tab rail
+two pixels away drew Linear's own logo. So it is a hook rather than a prop
+threaded from six places. `usePluginBrandIcons` is the one lookup every socket
+renderer makes, memoized on the installed list's identity so a hundred rows
+share one map, and a registry that has not loaded yet answers `undefined`
+rather than taking a tab down with it.
+
+**The top-bar cluster opts out of the drag region and wears the header's own
+chrome.** The window header IS a drag region, and a child that does not opt out
+of it is not clickable: pressing the plugin button moved the window instead of
+invoking the action. The cluster carries the same `no-drag` opt-out every other
+control in that bar carries, and draws with the header's compact chrome, so it
+is the height and radius of the shell buttons it sits between rather than a
+taller, double-edged box.
+
+**A failed manifest read at cold launch is never latched.** Every STATIC socket
+— the top-bar button, the row menu entry, the palette command — is declared in a
+manifest, so the socket layer caches one manifest read per plugin, keyed on the
+install set. On a cold launch the plugin host lives in the daemon and has not
+bound yet, so the first read refuses with a typed `plugins_unavailable`, and the
+install set does not change when the host merely binds later: banking that
+refusal as "this plugin declares nothing" drew an empty top bar until the next
+relaunch. Three changes together close it. A refusal falls through to
+`plugins.get`, whose detail record carries the same manifest. A failed read is
+dropped from the cache the moment it answers, so the next reveal asks again. And
+a load in which ANY manifest is unreadable is reported as a failed load, so the
+store keeps what it had, stays stale, and retries on its existing schedule
+rather than settling empty.
 
 Static contributions come from the manifest; dynamic per-entity values come from
 `plugin_contributions` rows computed by the machine that owns the data. Actions
@@ -2252,8 +2607,8 @@ newer published manifest is unknown here.
 | Client | Entry |
 |---|---|
 | Desktop | Plugin tabs below the nav divider; Marketplace above Account. The Marketplace is a machine-level route whose plugin calls follow the project tab's runtime, so it shows and acts on the bound machine; a machine that cannot answer for its registry gets a named state line and read-only browsing, never a spinner; panels via the vocabulary renderer. A `webview` surface joins the same rail and draws the plugin's own page instead of a panel |
-| Web | Same React renderer, view-scoped data over a roster-style `plugin_subscribe` stream; Marketplace and plugin tabs lazy-loaded and absent from the sign-in graph. `/plugin/:id` is a route root, so a reload or a shared link lands in the App and `PluginTabPage` gives the real answer — the panel, "Not installed here", or "Turned off" — rather than dropping the reader at the welcome surface |
-| iOS | Read and action-invoke only — no local CRR writes to `plugin_*`. Panes mount as a sheet from an overflow menu and the machine screen, with a back stack over the plugin's panels |
+| Web | Same React renderer, view-scoped data over a roster-style `plugin_subscribe` stream; Marketplace and plugin tabs lazy-loaded and absent from the sign-in graph. `/plugin/:id` is a route root, so a reload or a shared link lands in the App and `PluginTabPage` gives the real answer — the panel, "Not installed here", or "Turned off" — rather than dropping the reader at the welcome surface. A page draws in a sandboxed same-origin iframe served by a service worker, and the page host itself is lazy-loaded |
+| iOS | Read and action-invoke only — no local CRR writes to `plugin_*`; a page's writes and config go to the machine as remote commands. Panes mount as a sheet from an overflow menu and the machine screen, with a back stack over the plugin's panels. A plugin that ships a page draws it in a `WKWebView` when the phone holds the assets, and the panel when it does not |
 | TUI | `/plugin-view [plugin]` opens a panel in the right pane; forms go through the composer prompt line; `Ctrl+Y` copies an `ade://plugin/<id>/<panel>` link to the open panel (and still copies a lane or PR link when one of those rows is focused) |
 | CLI | `ade plugin …`, `ade <pluginId> <cmd>` for manifest-declared CLI words, and `ade link plugin <plugin-id> <panel-id> [--ctx '<json>']` to mint a panel link |
 | Chat | The `plugin_install` `ade_card` variant, for agent-built install flows. The whole lifecycle is reachable this way: `install` asks once per source, and `uninstall`/`enable`/`disable` ask every time |
@@ -2280,16 +2635,18 @@ through `isTerminalProfileNode` rather than repeating it, and a test walks the
 constant to prove the two agree. The vocabulary is FROZEN, not deleted: every
 component still parses identically on every client, the frozen render arms are
 still in `pluginPane.ts` behind `TERMINAL_PROFILE_ONLY`, and the deletion later
-is one flag and one sweep. The paragraph below describes what the terminal drew
-BEFORE the freeze; its markdown claims no longer hold.
+is one flag and one sweep.
 
-**What the terminal draws.** A markdown table sizes to the pane and truncates a
-cell rather than wrapping it, because a wrapped row turns a grid into a
-paragraph. Links and images inside a table cell print — a destination beside its
-words, an image as its alt — the same two shapes the pane already draws for
-markdown outside a table. An icon flows through the `group`, `badge`, `button`,
-list-item and empty-state rows. A `brand:*` token prints one mono mark, or the
-unknown mark when nobody shipped that artwork, and never the raw token.
+**What the terminal draws inside the profile.** An icon flows through the
+`group`, `badge`, `button`, list-item and empty-state rows. A `brand:*` token
+prints one mono mark, or the unknown mark when nobody shipped that artwork, and
+never the raw token. A list row keeps its badge, its avatar, its `mono` line and
+its markdown, because all four belong to `list` rather than to a frozen node.
+That row markdown is the one place a table still reaches the pane: it sizes to
+the width and truncates a cell rather than wrapping it, because a wrapped row
+turns a grid into a paragraph, and a link inside a cell prints its destination
+beside its words while an image prints its alt. A STANDALONE `markdown` or
+`table` node draws the marker instead.
 
 **The iOS back stack.** `navigate` used to REPLACE the pane in place and clear its
 state, so a plugin sending a reader from a list into a detail screen gave them no
@@ -2311,6 +2668,22 @@ oldest dropped, so a plugin navigating in a loop cannot grow it without bound.
 The panel picker EMPTIES the stack rather than pushing onto it: it is a lateral
 move between the plugin's top-level panels, not a drill-down.
 
+**The desktop back stack.** Desktop plugin tabs have the same stack with the
+same semantics, and it arrived for the same reason: a `navigate` replaced the
+panel with nothing behind it, and the browser Back the URL implies is not
+available inside the desktop app at all. A push writes the destination to the
+URL, so it is the same address a `plugin` deeplink would have produced —
+shareable, restorable and reachable by Back — while the entry beneath it holds
+the address being left plus a SNAPSHOT of everything client-local: the panel
+state, the row selection, the collapsed groups and the per-list page counts. The
+snapshot is held in the component rather than written to the query, because it
+is the reader's state and none of it belongs in a shareable address. A pop is a
+Back control, Escape, or `Mod+[`. Escape yields to any layer above the panel —
+a plugin's own prompt card, a `navigate:popover` panel, a row's overflow menu —
+checked against the document rather than by listener order, because both
+handlers live on `window` and which one React mounted first is not a contract.
+The cap is eight with the oldest dropped, the number iOS uses.
+
 A plugin panel is addressable: `ade://plugin/<plugin-id>/<panel-id>[?ctx=<json>]`,
 with the `https://ade-app.dev/open?type=plugin&plugin=…&panel=…` form alongside
 it. It is the one target kind whose destination may genuinely not exist on the
@@ -2322,6 +2695,10 @@ ladder in [Deeplinks](../deeplinks/README.md).
 
 The platform exists to carry ADE's own compiled features out of the binary. This
 is where that stands today, on this branch.
+
+The page tier is built on all three hosts and no official plugin ships a page
+yet. The `ade-linear` port to the page tier is IN PROGRESS. Every plugin below
+therefore still draws vocabulary panels, and the table describes that.
 
 | plugin | polarity | own code | state |
 |---|---|---|---|
