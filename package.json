@@ -3,6 +3,7 @@
   "private": true,
   "scripts": {
     "dev": "npm run dev:desktop",
+    "sync:plugin-pages": "node scripts/sync-bundled-plugin-pages.mjs",
     "dev:all": "node scripts/dev-all.mjs",
     "dev:code": "node scripts/dev-code.mjs --auto",
     "dev:code:attach": "node scripts/dev-code.mjs --attach",
@@ -22,14 +23,15 @@
     "runtime:build": "npm --prefix apps/ade-cli run build",
     "setup": "npm run install:apps",
     "stop": "node scripts/dev-runtime-stop.mjs",
-    "test": "npm run test:posthog && npm --prefix apps/web run test:analytics && npm run test:desktop:sharded && npm --prefix apps/ade-cli run test && npm run test:sdk && npm run test:chat-ui",
+    "test": "npm run test:plugin-pages && npm run test:posthog && npm --prefix apps/web run test:analytics && npm run test:desktop:sharded && npm --prefix apps/ade-cli run test && npm run test:sdk && npm run test:chat-ui",
     "test:chat-ui": "npm --prefix packages/chat-ui run test",
-    "test:ci": "npm run test:posthog && npm --prefix apps/web run test:analytics && npm run test:desktop:sharded && npm --prefix apps/ade-cli run test && npm run test:sdk && npm run test:chat-ui",
+    "test:ci": "npm run test:plugin-pages && npm run test:posthog && npm --prefix apps/web run test:analytics && npm run test:desktop:sharded && npm --prefix apps/ade-cli run test && npm run test:sdk && npm run test:chat-ui",
     "test:coverage": "npm --prefix apps/desktop run test:coverage && npm --prefix apps/ade-cli run test",
     "test:desktop:sharded": "node scripts/run-desktop-test-shards.mjs",
     "test:sdk": "npm --prefix packages/sdk run test",
     "typecheck:chat-ui": "npm --prefix packages/chat-ui run typecheck",
     "typecheck:sdk": "npm --prefix packages/sdk run typecheck",
-    "test:posthog": "node scripts/posthog/provision.mjs --validate && node --test scripts/posthog/provision.test.mjs"
+    "test:posthog": "node scripts/posthog/provision.mjs --validate && node --test scripts/posthog/provision.test.mjs",
+    "test:plugin-pages": "node --test scripts/sync-bundled-plugin-pages.test.mjs"
   }
 }

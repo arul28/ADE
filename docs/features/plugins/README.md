@@ -135,6 +135,19 @@ Renderer (desktop and web share this code):
 
 iOS and TUI:
 
+A phone fetches a plugin's page over the sync file channel and caches it by
+content hash, so an official plugin's page also ships INSIDE the app as a
+pre-seeded cache entry — that is what makes a fresh install draw a real page
+before it has ever reached a machine. Those bundled entries are generated:
+`scripts/sync-bundled-plugin-pages.mjs` (`npm run sync:plugin-pages`) copies the
+`dist/` of every plugin declaring a `webview` surface into
+`apps/ios/ADE/Resources/BundledPluginPages/<pluginId>/`, writes the
+`manifest.json` the store reads, and deletes what a plugin stopped shipping. Run
+it and commit the result whenever a bundled plugin's page is rebuilt, and always
+before an iOS archive — these are app resources, so a stale copy ships silently.
+The Xcode project references the directory as a folder, so new files need no
+per-file registration.
+
 | File | Responsibility |
 |---|---|
 | `apps/ios/ADE/Models/PluginVocabularyParsing.swift`, `PluginVocabularyState.swift`, `PluginRecords.swift` | Swift transcription of the panel, panel-state and socket contracts |

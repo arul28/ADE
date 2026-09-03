@@ -1,0 +1,38 @@
+{
+  "pluginId": "ade-linear",
+  "version": "2.0.0",
+  "revision": 0,
+  "entry": "index.html",
+  "files": [
+    {
+      "path": "assets/index-CfdJ2rc2.css",
+      "bytes": 70033,
+      "sha256": "7b62ee1e5c370da2e646ef38d3307a6e8360817add5854a703bba0841070db12"
+    },
+    {
+      "path": "assets/index-CxwqiivG.js",
+      "bytes": 545789,
+      "sha256": "2024ccb2100494bf501e712252c6881b81cf23fcb9d47c95faeef3c820ac8081"
+    },
+    {
+      "path": "fonts/Geist-Variable.woff2",
+      "bytes": 69436,
+      "sha256": "e24cec106619c03f0b3519e31b9bc55e0d5e926b6a95b8d798cd8cef215b1505"
+    },
+    {
+      "path": "fonts/GeistMono-Variable.woff2",
+      "bytes": 71004,
+      "sha256": "5f687a5dd4c87da13deaff9f6b9503d5e62249ff501265a96b134565f9aa8c87"
+    },
+    {
+      "path": "fonts/jetbrains-mono-latin-wght-normal.woff2",
+      "bytes": 40404,
+      "sha256": "18be452724bfdc236c074ca94a249a7f41a86752c7d04ab258ce9ed5651f6a7e"
+    },
+    {
+      "path": "index.html",
+      "bytes": 367,
+      "sha256": "33bbd6a90593e7505766a8197ce6962ee6e37a814d90a1d9951adaab84eb4555"
+    }
+  ]
+}
