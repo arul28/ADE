@@ -3,7 +3,7 @@ import ReactMarkdown, { type Components } from "react-markdown";
 import { HighlightedCode } from "./CodeHighlighter";
 import rehypeRaw from "rehype-raw";
 import rehypeSanitize from "rehype-sanitize";
-import { SAFE_PREVIEW_SCHEMA, markdownUrlTransform } from "@ade-dev/ui";
+import { SAFE_PREVIEW_SCHEMA, markdownUrlTransform } from "@ade-dev/ui/markdown";
 import remarkGfm from "remark-gfm";
 import { openUrlInAdeBrowser } from "../../lib/openExternal";
 import { cn } from "../ui/cn";
@@ -25,7 +25,7 @@ import {
 export {
   SAFE_PREVIEW_SCHEMA,
   markdownUrlTransform as chatMarkdownUrlTransform,
-} from "@ade-dev/ui";
+} from "@ade-dev/ui/markdown";
 
 type Tone = "sky" | "amber" | "neutral";
 

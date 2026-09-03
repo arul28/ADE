@@ -4,6 +4,18 @@
  * The desktop app consumes the same modules through `file:../../packages/ui`
  * and re-export shims at the old paths, so a plugin page and the app it runs
  * inside cannot drift.
+ *
+ * This barrel deliberately does NOT re-export the icon set or the markdown
+ * stack. Both are large graphs that most callers never draw, and pulling them
+ * in here made one design-token import cost the web client several megabytes.
+ * They have their own entry points instead:
+ *
+ *   import { COLORS, SPACING } from "@ade-dev/ui/tokens";     // no React at all
+ *   import { applyAdeTheme } from "@ade-dev/ui/theme";
+ *   import { BranchIcon } from "@ade-dev/ui/icons";           // pulls phosphor
+ *   import { Markdown } from "@ade-dev/ui/markdown";          // pulls remark/rehype
+ *
+ * Import the narrowest path that covers what you need.
  */
 
 export {
@@ -31,26 +43,27 @@ export {
   recessedStyle,
   tokens,
 } from "./tokens";
+export { CARD_STYLE, INPUT_CLS, INPUT_STYLE } from "./primitives/inputStyles";
 export type { AdeColorScheme, AdeTheme, AdeToken } from "./tokens";
 
 export {
+  ADE_STYLE_ID,
+  AdeStyles,
+  adeCss,
   applyAdeTheme,
   createTheme,
   darkTheme,
+  injectAdeStyles,
   lightTheme,
   themeForScheme,
   themeToCss,
-} from "./theme/createTheme";
-export { ADE_STYLE_ID, adeCss, injectAdeStyles } from "./theme/styles";
-export { AdeStyles } from "./theme/AdeStyles";
+} from "./theme/index";
 
 export { cn } from "./primitives/cn";
 export { Button } from "./primitives/Button";
 export { Chip } from "./primitives/Chip";
 export { EmptyState } from "./primitives/EmptyState";
 export { PaneHeader } from "./primitives/PaneHeader";
-export { BranchIcon, LaneIcon } from "./primitives/vcsIcons";
-export { CARD_STYLE, INPUT_CLS, INPUT_STYLE } from "./primitives/inputStyles";
 export {
   ConsentToggleSection,
   SettingsSectionShell,
@@ -58,14 +71,6 @@ export {
   settingsSectionDescriptionStyle,
   settingsSectionTitleStyle,
 } from "./primitives/SettingsSectionShell";
-export {
-  Markdown,
-  SAFE_PREVIEW_SCHEMA,
-  buildMarkdownComponents,
-  isWindowsAbsolutePath,
-  markdownUrlTransform,
-} from "./primitives/Markdown";
-export type { MarkdownProps } from "./primitives/Markdown";
 
 export {
   LINEAR_BRAND,

@@ -5,7 +5,7 @@ import {
   SAFE_PREVIEW_SCHEMA,
   isWindowsAbsolutePath,
   markdownUrlTransform,
-} from "../src/index";
+} from "../src/markdown";
 
 afterEach(cleanup);
 

@@ -5,6 +5,12 @@
  * nothing defines `--ade-*`, so each token collapses to the exact `--color-*`
  * reference this module has always emitted and `index.css` still owns the
  * palette. A plugin page has no `index.css`, so it sets `--ade-*` instead.
+ *
+ * Imported from the `/tokens` subpath, never the barrel. Almost every renderer
+ * module reaches these tokens, and the barrel used to carry the icon set —
+ * which ships without a `sideEffects` declaration, so no bundler could shake it
+ * out. That one import path grew the web client's entry graph from 301 KB to
+ * 5,496 KB. `/tokens` pulls nothing at all, not even React.
  */
 export {
   APP_FONT_STACK,
@@ -27,4 +33,4 @@ export {
   outlineButton,
   primaryButton,
   recessedStyle,
-} from "@ade-dev/ui";
+} from "@ade-dev/ui/tokens";

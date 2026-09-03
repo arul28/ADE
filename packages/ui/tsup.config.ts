@@ -1,7 +1,19 @@
 import { defineConfig } from "tsup";
 
 export default defineConfig({
-  entry: ["src/index.ts"],
+  // One entry per public subpath. Splitting them is what keeps
+  // `@ade-dev/ui/tokens` free of React, `@phosphor-icons/react` and the
+  // markdown stack: a bundler following the barrel would otherwise retain the
+  // whole icon set, which is what blew the web client's entry graph past its
+  // budget.
+  entry: {
+    index: "src/index.ts",
+    tokens: "src/tokens.ts",
+    theme: "src/theme/index.ts",
+    icons: "src/icons.ts",
+    markdown: "src/markdown.ts",
+  },
+  splitting: true,
   format: ["esm", "cjs"],
   dts: true,
   sourcemap: true,

@@ -1,17 +1,16 @@
 import { cleanup, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
 import {
-  BranchIcon,
   Button,
   Chip,
   EmptyState,
   INPUT_CLS,
-  LaneIcon,
   PaneHeader,
   SettingsSectionShell,
   SettingsToggle,
   cn,
 } from "../src/index";
+import { BranchIcon, LaneIcon } from "../src/icons";
 
 afterEach(cleanup);
 

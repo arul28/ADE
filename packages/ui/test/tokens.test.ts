@@ -85,3 +85,25 @@ describe("style builders", () => {
     expect(healthColor("anything-else")).toBe(COLORS.textDim);
   });
 });
+
+describe("entry points", () => {
+  it("keeps the icon set and the markdown stack out of the barrel", async () => {
+    // The reason this package is split at all: `@phosphor-icons/react` ships
+    // without a `sideEffects` declaration, so anything that can see it through
+    // the barrel keeps the WHOLE set. One design-token import taking that path
+    // grew ADE's web client entry graph from 301 KB to 5,496 KB.
+    const barrel = await import("../src/index");
+    for (const name of ["LaneIcon", "BranchIcon", "Markdown", "SAFE_PREVIEW_SCHEMA"]) {
+      expect(barrel, name).not.toHaveProperty(name);
+    }
+    expect(await import("../src/icons")).toHaveProperty("BranchIcon");
+    expect(await import("../src/markdown")).toHaveProperty("Markdown");
+  });
+
+  it("serves the design tokens without React", async () => {
+    const tokensEntry = await import("../src/tokens");
+    expect(tokensEntry.COLORS).toBeTruthy();
+    expect(tokensEntry.INPUT_CLS).toContain("ade-input");
+    expect(tokensEntry).not.toHaveProperty("Button");
+  });
+});

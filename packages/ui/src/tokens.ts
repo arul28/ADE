@@ -361,3 +361,12 @@ export function formatTimestamp(iso: string): string {
     return iso;
   }
 }
+
+/**
+ * The input chrome lives beside the other tokens on `@ade-dev/ui/tokens`.
+ *
+ * `INPUT_CLS` is a class string and `INPUT_STYLE` an empty style object, so
+ * they cost nothing to import and belong with the rest of the design values
+ * rather than behind the component barrel.
+ */
+export { CARD_STYLE, INPUT_CLS, INPUT_STYLE } from "./primitives/inputStyles";

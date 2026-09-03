@@ -8,7 +8,7 @@
  *
  * `extractError` and `parseList` are not UI and stay here.
  */
-export { CARD_STYLE, INPUT_CLS, INPUT_STYLE } from "@ade-dev/ui";
+export { CARD_STYLE, INPUT_CLS, INPUT_STYLE } from "@ade-dev/ui/tokens";
 
 /** Extract a human-readable error message from an unknown thrown value. */
 export function extractError(err: unknown): string {
