@@ -2231,6 +2231,19 @@ describe("createSyncRemoteCommandService", () => {
       }));
     });
 
+    it("work.startCliSession forwards explicit Droid native autonomy", async () => {
+      await service.execute(makePayload("work.startCliSession", {
+        laneId: "lane-1",
+        provider: "droid",
+        permissionMode: "default",
+        droidPermissionMode: "agi",
+      }));
+
+      const call = ptyService.create.mock.calls.at(-1)?.[0];
+      expect(call?.startupCommand).toContain('\\\"interactionMode\\\":\\\"agi\\\"');
+      expect(call?.startupCommand).toContain('\\\"autonomyLevel\\\":\\\"off\\\"');
+    });
+
     it("work.startCliSession uses desktop-sized defaults when dimensions are omitted", async () => {
       await service.execute(makePayload("work.startCliSession", {
         laneId: "lane-1",

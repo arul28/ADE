@@ -2,6 +2,7 @@ import type {
   AgentChatCodexApprovalPolicy,
   AgentChatCodexConfigSource,
   AgentChatCodexSandbox,
+  AgentChatDroidPermissionMode,
   AgentChatEventEnvelope,
   AgentChatEventHistoryPage,
   AgentChatPermissionMode,
@@ -1900,6 +1901,7 @@ export type SyncStartCliSessionArgs = {
   laneId: string;
   provider: SyncCliLaunchProvider;
   permissionMode?: AgentChatPermissionMode | null;
+  droidPermissionMode?: AgentChatDroidPermissionMode | null;
   title?: string | null;
   initialInput?: string | null;
   cols?: number;
@@ -2087,6 +2089,7 @@ export type SyncRemoteCommandAction =
   | "chat.create"
   | "chat.send"
   | "chat.interrupt"
+  | "chat.stopTask"
   | "chat.recoverCodexTurn"
   | "chat.recoverTurn"
   | "chat.resolveUnprocessedMessage"

@@ -27,6 +27,50 @@ import { AdeChat, createTheme, adaptSdkClient } from "@ade-dev/chat-ui";
 
 `adaptSdkClient` maps a real `@ade-dev/sdk` client onto the view contract. Any SDK-shaped proxy works — for example a renderer that talks to main over a WebSocket.
 
+## Approvals
+
+A provider that asks for permission parks its turn until someone answers. `<AdeChat>` draws a card for every `approval_request` and answers it through `thread.approve()`, so a blocked conversation looks blocked rather than broken.
+
+The card renders **inline in the transcript**, at the position of the request, not as a modal — the reader has to see what the agent was doing when it asked. It shows the description, and for a `command` request the command itself in a monospace block. Three buttons:
+
+| Button | Decision | Meaning |
+|---|---|---|
+| Allow once | `accept` | this call only |
+| Always allow | `accept_always` | stop asking for this for the rest of the session |
+| Reject | `reject` | refuse, and let the model hear why |
+
+Once answered, the card stays on screen in a settled state. A card that disappears is indistinguishable from one that was never answered. A turn that ends with the request unanswered marks it expired.
+
+The card is keyboard reachable and never takes focus from the composer.
+
+```tsx
+<AdeChat
+  client={adaptSdkClient(ade)}
+  threadKey="assistant"
+  approvals={{
+    labels: {
+      title: (request) => `Let the assistant ${request.description.toLowerCase()}?`,
+      accept: "Just this once",
+      acceptAlways: "Always",
+      reject: "No",
+    },
+  }}
+/>;
+```
+
+Pass `approvals.render` to replace the card entirely; it receives the request and a `respond(decision)` callback.
+
+Two cases render read-only rather than offering buttons:
+
+- **A `requestKind` of `question`, `structured_question`, `plan_approval` or `model_selection`.** These want prose or a choice this surface cannot carry, and Allow would send an answer that means nothing to the model.
+- **A thread with no `approve`.** An older SDK, a proxy, or a fake. The card says the host cannot answer approvals instead of throwing.
+
+After a reload, `<AdeChat>` calls `thread.pendingApprovals()` once on open and restores a card for every outstanding request the transcript no longer carries. A restored card sorts into the transcript at the instant it was read, not at the end, so it sits where the conversation actually is.
+
+A restored card is **live by construction**. It came from the engine's authoritative "still blocked right now" list, read after the history window, so nothing in that history can expire it — an ending recorded before the request was even restored says only that some earlier turn finished. Only an explicit `pending_input_resolved` settles it. Drawing a genuinely blocked request as expired is a hang: the buttons go read-only while the runtime still waits for the answer.
+
+A turn ends a card when `done` arrives, or a `status` of `completed`, `failed` or `interrupted`. An `error` never does. An error does not end a turn on either layer — OpenCode emits one per failing tool and keeps streaming, and Codex emits one to decline a single request — so treating it as an ending would expire a live card and leave the provider blocked.
+
 ## Activity labels
 
 Tool names stay in the agent transcript. Your users should see a sentence.
@@ -71,8 +115,28 @@ Every piece is importable without `<AdeChat>`:
 | `<Transcript>` | Rows, tool chips, reasoning, empty state. |
 | `<ModelPicker>` | Grouped catalog; disabled when the provider is not authenticated. |
 | `<ProviderCard>` / `<ProviderCards>` | Install / login copy for providers that need attention. |
+| `<ApprovalCard>` | One inline approval, with Allow once / Always allow / Reject. |
 
 Composer rule: submitting during a running turn dispatches `onSteer`, never a second `onSend`. A failed send restores the draft.
+
+## Provider cards
+
+`<ProviderCard>` reads `ProviderStatus.source` before it says anything about the machine.
+
+- **`source: "probed"`** — a runtime looked at the filesystem. `installed: false` renders "Not installed", and `binaryPath` and `version` are real.
+- **`source: "derived"`** — nobody looked; `installed` is "ADE knows models for this provider". The card renders **"Not detected"** instead, because telling someone to install a CLI they already have is worse than saying you are not sure.
+
+`showDetail` adds a line with the probed version and a truncated binary path. It is off by default, and the basename is never cut — "…/claude" identifies the binary where a head-first truncation would not.
+
+`commandHints` is now an **override**, not the source. A probing runtime already supplies `installCommand`, `loginCommand` and `docsUrl`; use hints to change ADE's wording, not to supply it. A host that set them in 0.1.x sees exactly the copy it had.
+
+```tsx
+<ProviderCards
+  client={client}
+  showDetail
+  onlyNeedsAttention={false}
+/>;
+```
 
 ## Next
 

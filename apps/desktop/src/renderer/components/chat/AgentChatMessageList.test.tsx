@@ -666,7 +666,7 @@ describe("AgentChatMessageList transcript rendering", () => {
       },
     ]);
     // The per-turn "live" snapshot only feeds the composer meter — no inline card.
-    expect(screen.queryByText("Context usage")).toBeNull();
+    expect(screen.queryByTestId("claude-context-card")).toBeNull();
 
     // The user-requested `/context` command still renders its breakdown card.
     rerender(
@@ -676,14 +676,36 @@ describe("AgentChatMessageList transcript rendering", () => {
             {
               sessionId: "session-1",
               timestamp: "2026-03-17T10:00:01.000Z",
-              event: { type: "context_usage", origin: "command", usage, turnId: "turn-1" },
+              event: {
+                type: "context_usage",
+                origin: "command",
+                usage: {
+                  ...usage,
+                  categories: [
+                    { name: "Messages", tokens: 82_000, percentage: 41, kind: "used" },
+                    { name: "MCP tools", tokens: 31_000, percentage: 16, kind: "used", mcpServers: [
+                      { name: "posthog", tokens: 18_000 },
+                      { name: "linear", tokens: 9_000 },
+                    ] },
+                    { name: "Free", tokens: 64_000, percentage: 32, kind: "free" },
+                    { name: "Compaction gap", tokens: 8_000, percentage: 4, kind: "buffer" },
+                  ],
+                },
+                turnId: "turn-1",
+              },
             },
           ]}
         />
         <LocationProbe />
       </MemoryRouter>,
     );
-    expect(screen.getByText("Context usage")).toBeTruthy();
+    const card = screen.getByTestId("claude-context-card");
+    expect(card.textContent).toContain("Context · claude-opus-4-8");
+    expect(card.textContent).toContain("used");
+    expect(card.textContent).toContain("free");
+    expect(card.textContent).toContain("buffer");
+    expect(card.textContent).toContain("posthog");
+    expect(card.textContent).toContain("linear");
   });
 
   it("renders Codex goal lifecycle rows in user-facing language", () => {

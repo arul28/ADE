@@ -166,6 +166,7 @@ import {
   captureAgentTurnSettledAnalytics,
   captureChatAutoResumeAnalytics,
   captureChatMentionsExpandedAnalytics,
+  captureClaudeHooksIgnoredAnalytics,
   captureSessionMetadataRegeneratedAnalytics,
 } from "../../desktop/src/main/services/analytics/agentTurnProductAnalytics";
 import { createSessionDeltaService } from "../../desktop/src/main/services/sessions/sessionDeltaService";
@@ -1802,6 +1803,11 @@ export async function createAdeRuntime(args: {
           // hot path.
           emitPluginEntityChange({ family: "session", ids: [event.sessionId], projectRoot });
         },
+        onClaudeHooksIgnored: (event) => captureClaudeHooksIgnoredAnalytics({
+          analytics: productAnalyticsService,
+          projectId,
+          event,
+        }),
         onChatMentionsExpanded: (event) => captureChatMentionsExpandedAnalytics({
           analytics: productAnalyticsService,
           projectId,

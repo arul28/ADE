@@ -122,12 +122,21 @@ export function parseChecksums(body: string): Map<string, string> {
  * Environment a spawned ADE runtime binary needs so it can load the native
  * modules that ship in the archive rather than whatever happens to be on the
  * host's NODE_PATH. Mirrors `set_runtime_env` in install-runtime.sh.
+ *
+ * `nodeModulesPath` defaults to `<runtimeRoot>/node_modules`, which is the
+ * layout every ADE installer produces. An embedder who relocated the two halves
+ * inside their bundle passes it explicitly, and it is then used verbatim: the
+ * binary resolves `ADE_RUNTIME_NODE_MODULES` on its own, so silently deriving
+ * the path would point a signed app at a directory that is not there.
  */
 export function runtimeSpawnEnv(
   runtimeRoot: string,
   base: NodeJS.ProcessEnv = process.env,
+  nodeModulesPath?: string,
 ): NodeJS.ProcessEnv {
-  const nodeModules = path.join(runtimeRoot, "node_modules");
+  const nodeModules = nodeModulesPath?.trim()
+    ? path.resolve(nodeModulesPath.trim())
+    : path.join(runtimeRoot, "node_modules");
   const previous = base.NODE_PATH?.trim();
   return {
     ...base,

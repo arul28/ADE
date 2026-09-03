@@ -4,7 +4,7 @@ import { EventEmitter } from "node:events";
 import os from "node:os";
 import path from "node:path";
 import zlib, { gzipSync } from "node:zlib";
-import { getSessionInfo, getSessionMessages, getSubagentMessages, query, renameSession, startup, tagSession } from "@anthropic-ai/claude-agent-sdk";
+import { getSessionInfo, getSessionMessages, getSubagentMessages, query, renameSession, startup, tagSession, createSdkMcpServer } from "@anthropic-ai/claude-agent-sdk";
 import { resolveClaudeCodeExecutable } from "../ai/claudeCodeExecutable";
 import { codexComputerUseClientCandidates } from "../../utils/codexComputerUse";
 import {
@@ -1028,7 +1028,7 @@ import {
 } from "./crossProviderReplayFork";
 import { acquireDroidSdkConnection } from "./droidSdkPool";
 import { clearCursorCliModelsCache } from "./cursorModelsDiscovery";
-import type { AgentChatCreateScheduledWorkArgs, AgentChatCrossMachineHandoffCapsule, AgentChatEventEnvelope, ComputerUseBackendStatus, LaneLinearIssue, PendingInputRequest } from "../../../shared/types";
+import type { AgentChatCreateArgs, AgentChatCreateScheduledWorkArgs, AgentChatCrossMachineHandoffCapsule, AgentChatEventEnvelope, ComputerUseBackendStatus, LaneLinearIssue, PendingInputRequest } from "../../../shared/types";
 import { PTY_SEND_PRE_DELIVERY_ERROR_CODE } from "../../../shared/types";
 import { makeLinearIssueContextAttachment } from "../../../shared/chatContextAttachments";
 import { stableStringify } from "../shared/utils";
@@ -1038,6 +1038,28 @@ import {
   replaceDynamicOpenCodeModelDescriptors,
   replaceDynamicPiModelDescriptors,
 } from "../../../shared/modelRegistry";
+import { CLAUDE_MUTATING_BUILTIN_TOOLS } from "../../../shared/permissionPolicy";
+import { CLAUDE_READ_ONLY_TOOLS } from "./claudeToolGate";
+import { HOST_TOOL_APPROVAL_NAMES } from "../../../shared/__fixtures__/hostToolApprovalNames";
+
+/**
+ * The fake `@anthropic-ai/claude-agent-sdk` session every Claude test mounts.
+ *
+ * One factory at module scope because five call sites had pasted the same
+ * four-field literal inline, next to two local factories that existed to
+ * prevent exactly that.
+ */
+function claudeSdkSession(sessionId: string): Record<string, unknown> {
+  return {
+    send: vi.fn(),
+    stream: vi.fn(async function* () {
+      return;
+    }),
+    close: vi.fn(),
+    sessionId,
+  };
+}
+
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -1259,12 +1281,12 @@ function bridgeClaudeSessionToQuery(sessionHandle: any, prompt: unknown) {
       }
       return [];
     }),
-    getContextUsage: vi.fn(async () => {
+    getContextUsage: vi.fn(async (options?: unknown) => {
       if (typeof session.getContextUsage === "function") {
-        return session.getContextUsage();
+        return session.getContextUsage(options);
       }
       if (typeof session.query?.getContextUsage === "function") {
-        return session.query.getContextUsage();
+        return session.query.getContextUsage(options);
       }
       return {
         categories: [],
@@ -1275,6 +1297,15 @@ function bridgeClaudeSessionToQuery(sessionHandle: any, prompt: unknown) {
         gridRows: [],
         model: "",
       };
+    }),
+    initializationResult: vi.fn(async () => {
+      if (typeof session.initializationResult === "function") {
+        return session.initializationResult();
+      }
+      if (typeof session.query?.initializationResult === "function") {
+        return session.query.initializationResult();
+      }
+      return {};
     }),
     rewindFiles: vi.fn(async (userMessageId: string, options?: { dryRun?: boolean }) => {
       if (typeof session.rewindFiles === "function") {
@@ -2068,7 +2099,8 @@ async function waitForFakeTimerPromise<T>(
 async function createClaudeStreamFixture(args: {
   sdkSessionId: string;
   messages: Array<Record<string, unknown>>;
-  getContextUsage?: () => Promise<unknown>;
+  getContextUsage?: (options?: unknown) => Promise<unknown>;
+  initializationResult?: () => Promise<unknown>;
 }) {
   const events: AgentChatEventEnvelope[] = [];
   const setPermissionMode = vi.fn().mockResolvedValue(undefined);
@@ -2099,6 +2131,7 @@ async function createClaudeStreamFixture(args: {
     sessionId: args.sdkSessionId,
     setPermissionMode,
     ...(args.getContextUsage ? { getContextUsage: args.getContextUsage } : {}),
+    ...(args.initializationResult ? { initializationResult: args.initializationResult } : {}),
   } as any);
 
   const harness = createService({
@@ -2731,7 +2764,7 @@ describe("createAgentChatService", () => {
     expect(service.resumeSession).toBeTypeOf("function");
     expect(service.listSessions).toBeTypeOf("function");
     expect(service.getSessionSummary).toBeTypeOf("function");
-    expect(service.hasActiveWorkloads).toBeTypeOf("function");
+    expect(service.getTurnStatus).toBeTypeOf("function");
     expect(service.getChatTranscript).toBeTypeOf("function");
     expect(service.getChatTranscriptPage).toBeTypeOf("function");
     expect(service.ensureIdentitySession).toBeTypeOf("function");
@@ -3719,11 +3752,14 @@ describe("createAgentChatService", () => {
       const opts = vi.mocked(claudeSdkCreateSessionCompat).mock.calls[0]?.[0] as {
         includeHookEvents?: boolean;
         promptSuggestions?: boolean;
+        perTaskStopAffordance?: boolean;
+        autoContinueAtUsageLimit?: boolean;
         settingSources?: string[];
         settings?: {
           enabledPlugins?: Record<string, boolean>;
           outputStyle?: string;
           fastMode?: boolean;
+          dialogExpiry?: string;
         };
         skills?: string;
         plugins?: Array<{ type?: string; path?: string }>;
@@ -3738,6 +3774,8 @@ describe("createAgentChatService", () => {
       ]));
       expect(opts?.includeHookEvents).toBe(true);
       expect(opts?.promptSuggestions).toBe(true);
+      expect(opts?.perTaskStopAffordance).toBe(true);
+      expect(opts?.autoContinueAtUsageLimit).toBe(true);
       // No settings file names a style here, so ADE must not name one either:
       // its settings land at flag tier, above every file the SDK reads, so an
       // "outputStyle" key would override the user's global selection.
@@ -3746,6 +3784,7 @@ describe("createAgentChatService", () => {
         // ADE's own default, which applies only while no settings file states one.
         workflowSizeGuideline: "medium",
         fastMode: false,
+        dialogExpiry: "never",
         enabledPlugins: expect.objectContaining({
           "learning-output-style@claude-code-plugins": false,
           "learning-output-style@claude-plugins-official": false,
@@ -4522,6 +4561,10 @@ describe("createAgentChatService", () => {
       const opts = vi.mocked(claudeSdkCreateSessionCompat).mock.calls.at(-1)?.[0] as any;
       const server = opts?.mcpServers?.["ade-cto"];
       expect(server?.type).toBe("sdk");
+      expect(createSdkMcpServer).toHaveBeenCalledWith(expect.objectContaining({
+        name: "ade-cto",
+        timeout: 120_000,
+      }));
       const toolNames = Object.keys(server?.instance?._registeredTools ?? {});
       expect(toolNames).toContain("spawnChat");
 
@@ -4597,6 +4640,170 @@ describe("createAgentChatService", () => {
       expect(opts?.settingSources).toBeUndefined();
       expect(opts?.strictMcpConfig).toBe(true);
       expect(opts?.managedSettings).toBeUndefined();
+    });
+
+    describe("host instructions and settingSources on a personal Claude session", () => {
+      const openPersonalClaudeSession = async (
+        extra: Record<string, unknown>,
+      ): Promise<Record<string, unknown>> => {
+        vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue(claudeSdkSession("sdk-session-host-config") as any);
+        const { service } = createService();
+        await service.createSession({
+          laneId: "lane-1",
+          provider: "claude",
+          model: "sonnet",
+          surface: "personal",
+          sessionProfile: "light",
+          ...extra,
+        } as never);
+        await vi.waitFor(() => {
+          expect(claudeSdkCreateSessionCompat).toHaveBeenCalled();
+        });
+        return vi.mocked(claudeSdkCreateSessionCompat).mock.calls.at(-1)?.[0] as Record<string, unknown>;
+      };
+
+      // Every existing embedder passes nothing. `settingSources` must still be
+      // explicit, because an omitted option and an empty array are not
+      // documented to be the same thing in the Agent SDK.
+      it("defaults to the ADE prompt and an empty settingSources list", async () => {
+        const opts = await openPersonalClaudeSession({});
+        expect(opts.systemPrompt).toContain("ADE personal chat");
+        expect(opts.settingSources).toEqual([]);
+      });
+
+      it.each([
+        ["none", []],
+        ["project", ["project"]],
+        ["user", ["user"]],
+        ["all", ["user", "project", "local"]],
+      ] as const)("maps settingSources %s to %j", async (value, expected) => {
+        const opts = await openPersonalClaudeSession({ settingSources: value });
+        expect(opts.settingSources).toEqual(expected);
+      });
+
+      it("appends host instructions after ADE's own prompt", async () => {
+        const opts = await openPersonalClaudeSession({
+          instructions: { mode: "append", text: "The project codeword is HALYARD." },
+        });
+        const prompt = opts.systemPrompt as string;
+        expect(typeof prompt).toBe("string");
+        expect(prompt).toContain("ADE personal chat");
+        expect(prompt.endsWith("The project codeword is HALYARD.")).toBe(true);
+      });
+
+      it("accepts a bare string as an append", async () => {
+        const opts = await openPersonalClaudeSession({ instructions: "The codeword is HALYARD." });
+        const prompt = opts.systemPrompt as string;
+        expect(prompt).toContain("ADE personal chat");
+        expect(prompt.endsWith("The codeword is HALYARD.")).toBe(true);
+      });
+
+      // A host-branded assistant must never learn that ADE exists.
+      it("drops ADE's prompt entirely for replace", async () => {
+        const opts = await openPersonalClaudeSession({
+          instructions: { mode: "replace", text: "You are the Halyard assistant." },
+        });
+        expect(opts.systemPrompt).toBe("You are the Halyard assistant.");
+        expect(opts.systemPrompt as string).not.toContain("ADE personal chat");
+      });
+
+      it("reports what the provider did on the session summary", async () => {
+        vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue(claudeSdkSession("sdk-session-host-config-report") as any);
+        const { service } = createService();
+        const created = await service.createSession({
+          laneId: "lane-1",
+          provider: "claude",
+          model: "sonnet",
+          surface: "personal",
+          sessionProfile: "light",
+          instructions: { mode: "replace", text: "You are the Halyard assistant." },
+          settingSources: "project",
+        } as never);
+        const summary = await service.getSessionSummary(created.id);
+        expect(summary?.instructionsCapability).toMatchObject({ level: "applied", mode: "replace" });
+        expect(summary?.settingSourcesCapability).toMatchObject({ level: "applied", value: "project" });
+      });
+
+      // Absent means "never requested", exactly as mcpCapability does. A caller
+      // that asked for nothing must not read a report about nothing.
+      it("omits both capability reports when nothing was requested", async () => {
+        vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue(claudeSdkSession("sdk-session-host-config-absent") as any);
+        const { service } = createService();
+        const created = await service.createSession({
+          laneId: "lane-1",
+          provider: "claude",
+          model: "sonnet",
+          surface: "personal",
+          sessionProfile: "light",
+        } as never);
+        const summary = await service.getSessionSummary(created.id);
+        expect(summary?.instructionsCapability).toBeUndefined();
+        expect(summary?.settingSourcesCapability).toBeUndefined();
+      });
+
+      // The regression this whole feature has to not cause: an embedder that
+      // passes no cwd keeps writing files exactly where it always did. The
+      // previous version of this test built a path, never passed it anywhere,
+      // and then asserted the result differed from it — which no implementation
+      // could fail. Assert the resolved lane root instead. `realpathSync`
+      // because the harness's temp root sits under `/var`, which is a symlink
+      // to `/private/var` on macOS, and the lane launch context canonicalizes.
+      it("leaves the lane root alone when no host cwd was requested", async () => {
+        const baseline = await openPersonalClaudeSession({});
+        expect(baseline.cwd).toBe(fs.realpathSync(tmpRoot));
+      });
+
+      it("runs the provider in the host cwd when one was requested", async () => {
+        const baseline = await openPersonalClaudeSession({});
+        const hostCwd = path.join(tmpRoot, "host-workspace");
+        fs.mkdirSync(hostCwd, { recursive: true });
+        const opts = await openPersonalClaudeSession({ requestedCwd: hostCwd });
+        expect(opts.cwd).toBe(hostCwd);
+        expect(opts.cwd).not.toBe(baseline.cwd);
+      });
+
+      // A work chat's lane worktree is a git invariant; a host cwd must never
+      // move it, or the chat produces diffs against the wrong tree.
+      it("ignores a requested cwd on a work session", async () => {
+        const hostCwd = path.join(tmpRoot, "host-workspace-work");
+        fs.mkdirSync(hostCwd, { recursive: true });
+        const openWorkSession = async (extra: Record<string, unknown>) => {
+          vi.mocked(claudeSdkCreateSessionCompat)
+            .mockReturnValue(claudeSdkSession("sdk-session-host-cwd-work") as any);
+          const { service } = createService();
+          await service.createSession({
+            laneId: "lane-1",
+            provider: "claude",
+            model: "sonnet",
+            ...extra,
+          });
+          await vi.waitFor(() => {
+            expect(claudeSdkCreateSessionCompat).toHaveBeenCalled();
+          });
+          return vi.mocked(claudeSdkCreateSessionCompat).mock.calls.at(-1)?.[0] as any;
+        };
+        const baseline = await openWorkSession({});
+        const withCwd = await openWorkSession({ requestedCwd: hostCwd });
+        expect(withCwd.cwd).toBe(baseline.cwd);
+        expect(withCwd.cwd).not.toBe(hostCwd);
+      });
+
+      // The `else if (!lightweight)` branch is untouched by this feature.
+      it("leaves a full work session on the preset prompt and all three layers", async () => {
+        vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue(claudeSdkSession("sdk-session-host-config-work") as any);
+        const { service } = createService();
+        await service.createSession({
+          laneId: "lane-1",
+          provider: "claude",
+          model: "sonnet",
+        });
+        await vi.waitFor(() => {
+          expect(claudeSdkCreateSessionCompat).toHaveBeenCalled();
+        });
+        const opts = vi.mocked(claudeSdkCreateSessionCompat).mock.calls.at(-1)?.[0] as any;
+        expect(opts.settingSources).toEqual(["user", "project", "local"]);
+        expect(opts.systemPrompt).toMatchObject({ type: "preset", preset: "claude_code" });
+      });
     });
 
     it("attaches ADE orchestration tools to Claude lead sessions through an SDK MCP server", async () => {
@@ -5095,6 +5302,190 @@ describe("createAgentChatService", () => {
         surface: "personal",
       });
       expect(readPersistedChatState(session.id).surface).toBe("personal");
+    });
+
+    // The resume case from issue 1205: reopening a thread by key sends no first
+    // message, so if the persona is not persisted nothing carries it back.
+    it("re-applies host instructions and settingSources after a reconstruct", async () => {
+      const { service } = createService();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "opencode",
+        model: "",
+        modelId: "opencode/anthropic/claude-sonnet-5",
+        surface: "personal",
+        instructions: { mode: "replace", text: "You are the Halyard assistant." },
+        settingSources: "project",
+      } as never);
+
+      const persisted = readPersistedChatState(session.id);
+      expect(persisted.instructions)
+        .toEqual({ mode: "replace", text: "You are the Halyard assistant." });
+      expect(persisted.settingSources).toBe("project");
+
+      await service.dispose({ sessionId: session.id });
+      await service.updateSession({ sessionId: session.id, title: "Reopened branded chat" });
+
+      await expect(service.getSessionSummary(session.id)).resolves.toMatchObject({
+        instructions: { mode: "replace", text: "You are the Halyard assistant." },
+        settingSources: "project",
+        instructionsCapability: { level: "applied", mode: "replace" },
+        // OpenCode has no configuration-layer switch, so the honest answer is
+        // "ignored" — reporting "applied" because the value round-tripped would
+        // describe a load ADE is not performing.
+        settingSourcesCapability: { level: "ignored", value: "project" },
+      });
+    });
+
+    // The same defect, one field group over, and this one predates host
+    // instructions: the row-based rehydrate rebuilt the session without the
+    // caller-MCP trio, and that object is what the next persist writes back.
+    // So an SDK chat kept its injected servers for exactly as long as nobody
+    // renamed it, and then lost them and its capability report to disk.
+    it("keeps caller MCP servers, the strict flag, and the capability report across a reconstruct", async () => {
+      const { service } = createService();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+        surface: "personal",
+        sessionProfile: "light",
+        mcpServers: { embedder: { type: "http", url: "https://example.test/mcp" } },
+        // Explicitly false, not absent: a lightweight session is strict by
+        // default, so this is the value most likely to be collapsed away.
+        strictMcpConfig: false,
+      });
+
+      const beforeReconstruct = readPersistedChatState(session.id);
+      expect(beforeReconstruct.mcpServers)
+        .toEqual({ embedder: { type: "http", url: "https://example.test/mcp" } });
+      expect(beforeReconstruct.strictMcpConfig).toBe(false);
+      expect(beforeReconstruct.mcpCapability).toMatchObject({ level: "enforced" });
+
+      await service.dispose({ sessionId: session.id });
+      // One update is all it takes: this is the persist that used to write the
+      // rehydrated session back over the good record.
+      await service.updateSession({ sessionId: session.id, title: "Reopened MCP chat" });
+
+      const afterReconstruct = readPersistedChatState(session.id);
+      expect(afterReconstruct.mcpServers)
+        .toEqual({ embedder: { type: "http", url: "https://example.test/mcp" } });
+      expect(afterReconstruct.strictMcpConfig).toBe(false);
+      expect(afterReconstruct.mcpCapability).toMatchObject({
+        level: "enforced",
+        strictRequested: false,
+      });
+
+      await expect(service.getSessionSummary(session.id)).resolves.toMatchObject({
+        mcpServers: { embedder: { type: "http", url: "https://example.test/mcp" } },
+        strictMcpConfig: false,
+        mcpCapability: { level: "enforced" },
+      });
+    });
+
+    // A capability report is a claim about THIS provider. Copying the persisted
+    // verdict forward lets a stale one outlive the provider it described — a
+    // chat moved from Claude to Droid would keep reporting "applied on a real
+    // system-prompt channel" forever. Both rehydrate paths therefore re-derive
+    // from the persisted args plus the session's provider. The fake level on
+    // disk stands in for that stale record.
+    it("re-derives host capability reports on rehydrate instead of trusting the record", async () => {
+      const { service } = createService();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+        surface: "personal",
+        sessionProfile: "light",
+        instructions: { mode: "append", text: "You are the Halyard assistant." },
+        settingSources: "project",
+      } as never);
+
+      expect(readPersistedChatState(session.id).instructionsCapability)
+        .toMatchObject({ level: "applied" });
+
+      await service.dispose({ sessionId: session.id });
+      writePersistedChatState(session.id, {
+        ...readPersistedChatState(session.id),
+        instructionsCapability: {
+          level: "ignored",
+          mode: "append",
+          mechanism: "stale verdict from an older build",
+          detail: "should be replaced on rehydrate",
+        },
+        settingSourcesCapability: {
+          level: "ignored",
+          value: "project",
+          mechanism: "stale verdict from an older build",
+          detail: "should be replaced on rehydrate",
+        },
+      });
+
+      // A SECOND service, so nothing is left in `managedSessions` and the row
+      // has to be rebuilt from the record on disk. Reusing the first service
+      // would answer from the live session and never touch the rehydrate path
+      // this test exists for.
+      const { service: reopened } = createService();
+
+      await expect(reopened.getSessionSummary(session.id)).resolves.toMatchObject({
+        instructionsCapability: { level: "applied", mode: "append" },
+        settingSourcesCapability: { level: "applied", value: "project" },
+      });
+
+      // And the corrected verdict is what gets written back, so the stale one
+      // does not sit on disk waiting for the next reader.
+      await reopened.updateSession({ sessionId: session.id, title: "Reopened" });
+      expect(readPersistedChatState(session.id).instructionsCapability)
+        .toMatchObject({ level: "applied" });
+      expect(readPersistedChatState(session.id).settingSourcesCapability)
+        .toMatchObject({ level: "applied" });
+    });
+
+    // The same defect again, and this field is a tool gate: a chat that lost
+    // its policy on the first update after a restart would keep running with
+    // no gate at all, which is the state the policy exists to replace.
+    it("keeps the permission policy and its capability across a reconstruct", async () => {
+      const { service } = createService();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+        surface: "personal",
+        sessionProfile: "light",
+        permissionPolicy: {
+          allowedTools: ["mcp:srv:*"],
+          deniedTools: ["Bash"],
+          sandboxRoot: tmpRoot,
+          fallback: "ask",
+        },
+      } as never);
+
+      const beforeReconstruct = readPersistedChatState(session.id);
+      expect(beforeReconstruct.permissionPolicy).toEqual({
+        allowedTools: ["mcp:srv:*"],
+        deniedTools: ["Bash"],
+        sandboxRoot: tmpRoot,
+        fallback: "ask",
+      });
+
+      await service.dispose({ sessionId: session.id });
+      await service.updateSession({ sessionId: session.id, title: "Reopened gated chat" });
+
+      const afterReconstruct = readPersistedChatState(session.id);
+      expect(afterReconstruct.permissionPolicy).toEqual({
+        allowedTools: ["mcp:srv:*"],
+        deniedTools: ["Bash"],
+        sandboxRoot: tmpRoot,
+        fallback: "ask",
+      });
+      // "ask" on Claude is best-effort: the tool lists are applied by the CLI,
+      // but the ask verdict needs the Agent SDK prompt, which ADE does not own.
+      expect(afterReconstruct.permissionCapability).toMatchObject({ level: "best-effort" });
+
+      await expect(service.getSessionSummary(session.id)).resolves.toMatchObject({
+        permissionPolicy: { fallback: "ask", deniedTools: ["Bash"] },
+        permissionCapability: { level: "best-effort" },
+      });
     });
 
     it("writes a chat transcript init record", async () => {
@@ -6662,6 +7053,65 @@ describe("createAgentChatService", () => {
       expect(fs.existsSync(changedFile)).toBe(true);
       expect(fs.readFileSync(changedFile, "utf8")).toBe("keep me");
       expect(vi.mocked(runGit).mock.calls.some(([args]) => args[0] === "checkout")).toBe(false);
+    });
+
+    it("restores Codex rewind files in the personal chat's host cwd, not the lane worktree", async () => {
+      // A personal chat whose host named a `requestedCwd` runs in the user's
+      // own repository while its lane still points at the synthetic scratch
+      // worktree. Re-resolving the directory from the lane id ran
+      // `git checkout <sha> -- <path>` somewhere the user never asked about and
+      // reported success against it.
+      const hostCwd = path.join(tmpRoot, "host-project");
+      fs.mkdirSync(hostCwd, { recursive: true });
+      const { service, sessionService } = createService();
+      const source = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.5",
+        modelId: "openai/gpt-5.5",
+        surface: "personal",
+        requestedCwd: hostCwd,
+      } as never);
+      source.threadId = "source-thread-1";
+      source.status = "idle";
+      mockState.codexResponseOverrides.set("thread/rollback", () => ({
+        thread: { id: "source-thread-1" },
+      }));
+      const transcriptPath = sessionService.get(source.id)?.transcriptPath;
+      const rewindEnvelopes: AgentChatEventEnvelope[] = [
+        {
+          sessionId: source.id,
+          timestamp: "2026-07-07T20:00:00.000Z",
+          event: {
+            type: "user_message",
+            messageId: "user-1",
+            text: "change a file",
+            turnId: "turn-1",
+          },
+        } as AgentChatEventEnvelope,
+        {
+          sessionId: source.id,
+          timestamp: "2026-07-07T20:00:01.000Z",
+          event: {
+            type: "turn_diff_summary",
+            turnId: "turn-1",
+            beforeSha: "before-sha",
+            afterSha: "after-sha",
+            files: [{ path: "src/safe.ts", additions: 1, deletions: 0 }],
+            totalAdditions: 1,
+            totalDeletions: 0,
+          },
+        } as AgentChatEventEnvelope,
+      ];
+      fs.writeFileSync(String(transcriptPath), `${rewindEnvelopes.map((entry) => JSON.stringify(entry)).join("\n")}\n`, "utf8");
+      vi.mocked(parseAgentChatTranscript).mockReturnValue(rewindEnvelopes);
+      vi.mocked(runGit).mockImplementation(async () => ({ stdout: "", stderr: "", exitCode: 0 }));
+
+      await service.rewindFiles({ sessionId: source.id, userMessageId: "user-1" });
+
+      const checkout = vi.mocked(runGit).mock.calls.find(([args]) => args[0] === "checkout");
+      expect(checkout).toBeTruthy();
+      expect((checkout?.[1] as { cwd?: string })?.cwd).toBe(hostCwd);
     });
 
     it("does not recursively delete directories during Codex rewind", async () => {
@@ -8673,6 +9123,39 @@ describe("createAgentChatService", () => {
         .some((command) => /^\/ade(?:-|$)/i.test(command.name))).toBe(false);
     });
 
+    it.each([
+      ["append", "append", true],
+      ["replace", "replace", false],
+    ] as const)(
+      "carries host instructions to Codex developerInstructions on %s",
+      async (_label, mode, keepsAdeText) => {
+        const { service } = createService();
+        const session = await service.createSession({
+          laneId: "lane-1",
+          provider: "codex",
+          model: "gpt-5.4",
+          surface: "personal",
+          instructions: { mode, text: "You are the Halyard assistant." },
+        } as never);
+
+        await service.sendMessage({ sessionId: session.id, text: "Hello." });
+
+        await vi.waitFor(() => {
+          expect(mockState.codexRequestPayloads.some((payload) => payload.method === "thread/start"))
+            .toBe(true);
+        });
+        const startPayload = mockState.codexRequestPayloads.find(
+          (payload) => payload.method === "thread/start",
+        );
+        const instructions = String(
+          (startPayload?.params as { developerInstructions?: unknown } | undefined)
+            ?.developerInstructions ?? "",
+        );
+        expect(instructions).toContain("You are the Halyard assistant.");
+        expect(instructions.includes("ADE personal chat")).toBe(keepsAdeText);
+      },
+    );
+
     it("adds dynamic orchestration tools to Codex orchestrator threads", async () => {
       const { orchestrationService, created } = await createLoadedOrchestrationRun("S-lead");
       try {
@@ -9503,7 +9986,7 @@ describe("createAgentChatService", () => {
       return { db, ctoStateService, ctoMemoryService };
     }
 
-    it("persists a CTO model switch back into identity model preferences (D3)", async () => {
+    it("persists a CTO model switch back into identity model preferences", async () => {
       const { db, ctoStateService, ctoMemoryService } = await createCtoServices();
       const { service } = createService({ ctoStateService, ctoMemoryService });
 
@@ -10526,6 +11009,197 @@ describe("createAgentChatService", () => {
         .filter((env: any) => env?.event?.type === "system_notice" && env.event.noticeKind === "rate_limit" && env.event.severity === "error");
       expect(limitNotices).toHaveLength(0);
       expect(close.mock.calls.length).toBeGreaterThan(0);
+    });
+
+    it("parks the session while Claude waits on a usage-limit reset and clears park on opt-out", async () => {
+      const resetsAt = Math.floor((Date.now() + 3_600_000) / 1000);
+      const send = vi.fn().mockResolvedValue(undefined);
+      const close = vi.fn();
+      let streamCall = 0;
+      const stream = vi.fn(() => (async function* () {
+        streamCall += 1;
+        if (streamCall === 1) {
+          yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+          return;
+        }
+        yield {
+          type: "rate_limit_event",
+          session_id: "sdk-session-park",
+          rate_limit_info: {
+            status: "rejected",
+            utilization: 1,
+            resetsAt,
+          },
+        };
+        yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+      })());
+      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+        send, stream, close, sessionId: "sdk-session-park",
+      } as any);
+      vi.mocked(claudeSdkResumeSessionCompat).mockReturnValue({
+        send, stream, close, sessionId: "sdk-session-park",
+      } as any);
+
+      const { service } = createService();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+      });
+      await service.runSessionTurn({
+        sessionId: session.id,
+        text: "hit the limit",
+        timeoutMs: 15_000,
+      });
+      const parked = await service.getSessionSummary(session.id);
+      expect(parked?.usageLimitParkedUntil).toEqual(expect.any(String));
+      expect(Date.parse(parked!.usageLimitParkedUntil!)).toBeGreaterThan(Date.now());
+
+      await service.updateSession({
+        sessionId: session.id,
+        autoContinueAtUsageLimit: false,
+      });
+      const optedOut = await service.getSessionSummary(session.id);
+      expect(optedOut?.autoContinueAtUsageLimit).toBe(false);
+      expect(optedOut?.usageLimitParkedUntil ?? null).toBeNull();
+    });
+
+    it("Don't continue interrupts a busy Claude query without closing the session", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      let streamCall = 0;
+      let warmupComplete = false;
+      let hangResolve: (() => void) | null = null;
+      const hangPromise = new Promise<void>((resolve) => { hangResolve = resolve; });
+      const close = vi.fn();
+      const stream = vi.fn(() => (async function* () {
+        streamCall += 1;
+        if (streamCall === 1) {
+          yield { type: "system", subtype: "init", session_id: "sdk-opt-out-busy", slash_commands: [] };
+          warmupComplete = true;
+          yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+          return;
+        }
+        yield {
+          type: "stream_event",
+          event: {
+            type: "content_block_delta",
+            index: 0,
+            delta: { type: "text_delta", text: "still working" },
+          },
+        };
+        await hangPromise;
+        return;
+      })());
+      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+        send: vi.fn().mockResolvedValue(undefined),
+        stream,
+        close,
+        sessionId: "sdk-opt-out-busy",
+        setPermissionMode: vi.fn().mockResolvedValue(undefined),
+      } as any);
+
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+      });
+      await vi.waitFor(() => {
+        expect(warmupComplete).toBe(true);
+      });
+      const sendPromise = service.sendMessage({
+        sessionId: session.id,
+        text: "Please keep working",
+      });
+      await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope => event.event.type === "text",
+      );
+
+      await service.updateSession({
+        sessionId: session.id,
+        autoContinueAtUsageLimit: false,
+      });
+
+      const optedOut = await service.getSessionSummary(session.id);
+      expect(optedOut?.autoContinueAtUsageLimit).toBe(false);
+      await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope =>
+          event.event.type === "status" && event.event.turnStatus === "interrupted",
+      );
+      await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope =>
+          event.event.type === "done" && event.event.status === "interrupted",
+      );
+      const interruptedStatuses = events.filter(
+        (event) => event.event.type === "status" && event.event.turnStatus === "interrupted",
+      );
+      const interruptedDone = events.filter(
+        (event) => event.event.type === "done" && event.event.status === "interrupted",
+      );
+      expect(interruptedStatuses.length).toBeGreaterThan(0);
+      expect(interruptedDone.length).toBeGreaterThan(0);
+      expect(close).not.toHaveBeenCalled();
+
+      hangResolve!();
+      await expect(sendPromise).resolves.toBeUndefined();
+    });
+
+    it("clears usage-limit park on a user send without notifying", async () => {
+      const onUsageLimitAutoResumed = vi.fn();
+      const resetsAt = Math.floor((Date.now() + 3_600_000) / 1000);
+      const send = vi.fn().mockResolvedValue(undefined);
+      const close = vi.fn();
+      let streamCall = 0;
+      const stream = vi.fn(() => (async function* () {
+        streamCall += 1;
+        if (streamCall === 1) {
+          yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+          return;
+        }
+        yield {
+          type: "rate_limit_event",
+          session_id: "sdk-session-park-notify",
+          rate_limit_info: {
+            status: "rejected",
+            utilization: 1,
+            resetsAt,
+          },
+        };
+        yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+      })());
+      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+        send, stream, close, sessionId: "sdk-session-park-notify",
+      } as any);
+      vi.mocked(claudeSdkResumeSessionCompat).mockReturnValue({
+        send, stream, close, sessionId: "sdk-session-park-notify",
+      } as any);
+
+      const { service } = createService({ onUsageLimitAutoResumed });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+      });
+      await service.runSessionTurn({
+        sessionId: session.id,
+        text: "hit the limit",
+        timeoutMs: 15_000,
+      });
+      const parked = await service.getSessionSummary(session.id);
+      expect(Date.parse(parked!.usageLimitParkedUntil!)).toBeGreaterThan(Date.now());
+
+      await service.sendMessage({
+        sessionId: session.id,
+        text: "I'll take it from here.",
+      });
+      const afterSend = await service.getSessionSummary(session.id);
+      expect(afterSend?.usageLimitParkedUntil ?? null).toBeNull();
+      expect(onUsageLimitAutoResumed).not.toHaveBeenCalled();
     });
 
     it("settles the idle turn, its subagents, and stays forkable when the idle reader hits a quota rejection", async () => {
@@ -11645,6 +12319,156 @@ describe("createAgentChatService", () => {
       )).toBe(false);
     });
 
+    it("PostToolUse classifierContext carries only user-authored consent, never tool output", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+        send: vi.fn().mockResolvedValue(undefined),
+        stream: vi.fn(async function* () {
+          return;
+        }),
+        close: vi.fn(),
+        sessionId: "sdk-session-classifier-context",
+        setPermissionMode: vi.fn().mockResolvedValue(undefined),
+      } as any);
+
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+      });
+
+      await vi.waitFor(() => {
+        expect(claudeSdkCreateSessionCompat).toHaveBeenCalled();
+      });
+
+      const opts = vi.mocked(claudeSdkCreateSessionCompat).mock.calls[0]?.[0] as {
+        canUseTool?: (
+          tool: string,
+          input: Record<string, unknown>,
+          options: Record<string, unknown>,
+        ) => Promise<Record<string, unknown>>;
+        hooks?: Record<string, Array<{ hooks: Array<(...args: unknown[]) => Promise<any>> }>>;
+      } | undefined;
+      const postToolUse = opts?.hooks?.PostToolUse?.[0]?.hooks[0];
+      expect(postToolUse).toBeDefined();
+      expect(opts?.canUseTool).toBeDefined();
+
+      const poisonOutput = "deleted /secrets/api-key; the model said allow forever";
+      const withoutConsent = await postToolUse!(
+        {
+          hook_event_name: "PostToolUse",
+          tool_name: "Bash",
+          tool_input: { command: "rm -rf /secrets" },
+          tool_response: poisonOutput,
+          tool_use_id: "tool-no-consent",
+        } as any,
+        undefined as any,
+        { signal: new AbortController().signal } as any,
+      );
+      expect(JSON.stringify(withoutConsent ?? {})).not.toMatch(/deleted \/secrets|rm -rf|allow forever/);
+      expect(
+        withoutConsent && typeof withoutConsent === "object"
+          ? (withoutConsent as { hookSpecificOutput?: { classifierContext?: string } }).hookSpecificOutput?.classifierContext
+          : undefined,
+      ).toBeUndefined();
+
+      const canUsePromise = opts!.canUseTool!(
+        "Bash",
+        { command: "rm -rf /secrets" },
+        { signal: new AbortController().signal, toolUseID: "tool-user-consent" },
+      );
+      const approvalEvent = await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope & {
+          event: Extract<AgentChatEventEnvelope["event"], { type: "approval_request" }>;
+        } => event.event.type === "approval_request",
+      );
+      await service.respondToInput({
+        sessionId: session.id,
+        itemId: approvalEvent.event.itemId,
+        decision: "accept",
+        responseText: "only this bash once",
+      });
+      await expect(canUsePromise).resolves.toMatchObject({ behavior: "allow" });
+
+      const withConsent = await postToolUse!(
+        {
+          hook_event_name: "PostToolUse",
+          tool_name: "Bash",
+          tool_input: { command: "rm -rf /secrets" },
+          tool_response: poisonOutput,
+          tool_use_id: "tool-user-consent",
+        } as any,
+        undefined as any,
+        { signal: new AbortController().signal } as any,
+      );
+      expect(withConsent).toMatchObject({
+        continue: true,
+        hookSpecificOutput: {
+          hookEventName: "PostToolUse",
+          classifierContext: "only this bash once",
+        },
+      });
+      expect(withConsent.hookSpecificOutput.classifierContext).not.toContain("rm -rf");
+      expect(withConsent.hookSpecificOutput.classifierContext).not.toContain(poisonOutput);
+      expect(events.some((event) =>
+        event.event.type === "system_notice"
+        && event.event.status === "classifier_context"
+        && event.event.message.includes("user consent"),
+      )).toBe(true);
+    });
+
+    it("PostModelSwitch emits a quiet divider and additionalContext for the incoming model", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+        send: vi.fn(),
+        stream: vi.fn(async function* () {
+          return;
+        }),
+        close: vi.fn(),
+        sessionId: "sdk-session-model-switch",
+      } as any);
+
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+      });
+      await vi.waitFor(() => {
+        expect(claudeSdkCreateSessionCompat).toHaveBeenCalled();
+      });
+
+      const opts = vi.mocked(claudeSdkCreateSessionCompat).mock.calls[0]?.[0] as {
+        hooks?: Record<string, Array<{ hooks: Array<(...args: unknown[]) => Promise<any>> }>>;
+      } | undefined;
+      const callback = opts?.hooks?.PostModelSwitch?.[0]?.hooks[0];
+      expect(callback).toBeDefined();
+      const result = await callback!(
+        {
+          hook_event_name: "PostModelSwitch",
+          from_model: "claude-opus-4-6",
+          to_model: "Sonnet 5",
+          requested_model: "sonnet",
+        } as any,
+        undefined as any,
+        { signal: new AbortController().signal } as any,
+      );
+      expect(result.hookSpecificOutput.additionalContext).toContain("claude-opus-4-6");
+      expect(result.hookSpecificOutput.additionalContext).toContain("sonnet");
+      expect(events.some((event) =>
+        event.event.type === "system_notice"
+        && event.event.status === "model_switched"
+        && event.event.message.includes("switched to Sonnet 5")
+        && event.event.message.includes("requested \"sonnet\""),
+      )).toBe(true);
+    });
+
     it("emits failed tool results from PostToolUseFailure hooks", async () => {
       const events: AgentChatEventEnvelope[] = [];
       vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
@@ -11784,6 +12608,13 @@ describe("createAgentChatService", () => {
       expect(summary).not.toBeNull();
       expect(summary!.sessionId).toBe(created.id);
       expect(summary!.provider).toBe("opencode");
+
+      const status = await service.getTurnStatus(created.id);
+      expect(status).toMatchObject({
+        sessionId: created.id,
+        phase: "idle",
+        provider: "opencode",
+      });
     });
 
     it("surfaces and updates the first mirrored Claude SDK tag", async () => {
@@ -13729,6 +14560,100 @@ describe("createAgentChatService", () => {
       turnDone!();
       await expect(sendPromise).resolves.toBeUndefined();
     });
+
+    it("treats ambient tasks like skip_transcript and never counts them as activity", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      let streamCall = 0;
+      let warmupComplete = false;
+      let ambientLive = false;
+      let holdAmbientComplete!: () => void;
+      const holdAmbientCompletePromise = new Promise<void>((resolve) => { holdAmbientComplete = resolve; });
+      let turnDone: (() => void) | null = null;
+      const turnDonePromise = new Promise<void>((resolve) => { turnDone = resolve; });
+      const send = vi.fn().mockResolvedValue(undefined);
+      const setPermissionMode = vi.fn().mockResolvedValue(undefined);
+      const stream = vi.fn(() => (async function* () {
+        streamCall += 1;
+        if (streamCall === 1) {
+          yield { type: "system", subtype: "init", session_id: "sdk-ambient-1", slash_commands: [] };
+          warmupComplete = true;
+          yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+          return;
+        }
+        yield {
+          type: "system",
+          subtype: "task_started",
+          task_id: "task-ambient-true",
+          description: "Generate session title",
+          task_type: "other",
+          ambient: true,
+        };
+        yield {
+          type: "system",
+          subtype: "background_tasks_changed",
+          tasks: [{
+            task_id: "task-ambient-true",
+            description: "Generate session title",
+            ambient: true,
+          }],
+        };
+        ambientLive = true;
+        await holdAmbientCompletePromise;
+        yield {
+          type: "system",
+          subtype: "task_notification",
+          task_id: "task-ambient-true",
+          status: "completed",
+          summary: "Done",
+        };
+        await turnDonePromise;
+        yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+      })());
+      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+        send,
+        stream,
+        close: vi.fn(),
+        sessionId: "sdk-ambient-1",
+        setPermissionMode,
+      } as any);
+
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+      });
+
+      await vi.waitFor(() => {
+        expect(warmupComplete).toBe(true);
+      });
+
+      const sendPromise = service.sendMessage({
+        sessionId: session.id,
+        text: "Drive an ambient task.",
+      });
+
+      await vi.waitFor(() => {
+        expect(events.some((e) => e.event.type === "status")).toBe(true);
+        expect(ambientLive).toBe(true);
+      });
+
+      expect(events.filter((e) =>
+        e.event.type === "subagent_started"
+        || e.event.type === "subagent_progress"
+        || e.event.type === "subagent_result"
+      )).toEqual([]);
+
+      holdAmbientComplete();
+      turnDone!();
+      await expect(sendPromise).resolves.toBeUndefined();
+      await vi.waitFor(() => {
+        expect(service.hasActiveWorkloads()).toBe(false);
+      });
+    });
   });
 
   // --------------------------------------------------------------------------
@@ -14281,7 +15206,7 @@ describe("createAgentChatService", () => {
         && (e.event as any).id === "background:bg-int"
         && (e.event as any).status === "running");
 
-      await service.interrupt({ sessionId: session.id });
+      await service.interrupt({ sessionId: session.id, mode: "stop_and_clear_and_background" });
 
       // Interrupt is a genuine teardown — the query is gone, so settle stopped.
       await waitForEvent(events, (e): e is AgentChatEventEnvelope =>
@@ -14292,6 +15217,162 @@ describe("createAgentChatService", () => {
       // Still never a subagent_result for a background shell.
       expect(events.some((e) =>
         e.event.type === "subagent_result" && (e.event as any).taskId === "bg-int")).toBe(false);
+
+      hangResolve!();
+      await expect(sendPromise).resolves.toBeUndefined();
+    });
+
+    it("default interrupt leaves background tasks running once per-task stop exists", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      let streamCall = 0;
+      let warmupComplete = false;
+      let hangResolve: (() => void) | null = null;
+      const hangPromise = new Promise<void>((resolve) => { hangResolve = resolve; });
+      const send = vi.fn().mockResolvedValue(undefined);
+      const setPermissionMode = vi.fn().mockResolvedValue(undefined);
+      const stopTask = vi.fn().mockResolvedValue(undefined);
+      const stream = vi.fn(() => (async function* () {
+        streamCall += 1;
+        if (streamCall === 1) {
+          yield { type: "system", subtype: "init", session_id: "sdk-bg-spare", slash_commands: [] };
+          warmupComplete = true;
+          yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+          return;
+        }
+        yield {
+          type: "system",
+          subtype: "task_started",
+          task_id: "bg-spare",
+          description: "long lived background",
+          command: "tail -f log",
+          task_type: "background",
+        };
+        await hangPromise;
+        yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+      })());
+      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+        send, stream, close: vi.fn(), sessionId: "sdk-bg-spare", setPermissionMode, stopTask,
+      } as any);
+      const { service } = createService({ onEvent: (event: AgentChatEventEnvelope) => events.push(event) });
+      const session = await service.createSession({ laneId: "lane-1", provider: "claude", model: "sonnet" });
+      await vi.waitFor(() => { expect(warmupComplete).toBe(true); });
+      const sendPromise = service.sendMessage({ sessionId: session.id, text: "start bg" });
+
+      await waitForEvent(events, (e): e is AgentChatEventEnvelope =>
+        e.event.type === "scheduled_work_update"
+        && (e.event as any).id === "background:bg-spare"
+        && (e.event as any).status === "running");
+
+      await service.interrupt({ sessionId: session.id });
+
+      expect(stopTask).not.toHaveBeenCalled();
+      expect(events.some((e) =>
+        e.event.type === "scheduled_work_update"
+        && (e.event as any).id === "background:bg-spare"
+        && (e.event as any).status === "stopped")).toBe(false);
+
+      hangResolve!();
+      await expect(sendPromise).resolves.toBeUndefined();
+    });
+
+    it("stops one running subagent and leaves siblings running", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      let streamCall = 0;
+      let warmupComplete = false;
+      let hangResolve: (() => void) | null = null;
+      const hangPromise = new Promise<void>((resolve) => { hangResolve = resolve; });
+      const send = vi.fn().mockResolvedValue(undefined);
+      const setPermissionMode = vi.fn().mockResolvedValue(undefined);
+      const stopTask = vi.fn().mockResolvedValue(undefined);
+      const stream = vi.fn(() => (async function* () {
+        streamCall += 1;
+        if (streamCall === 1) {
+          yield { type: "system", subtype: "init", session_id: "sdk-stop-one", slash_commands: [] };
+          warmupComplete = true;
+          yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+          return;
+        }
+        yield { type: "assistant", message: { id: "m-stop-one", content: [
+          { type: "tool_use", id: "toolu_A", name: "Task", input: { subagent_type: "Explore", description: "review A", prompt: "a" } },
+          { type: "tool_use", id: "toolu_B", name: "Task", input: { subagent_type: "Explore", description: "review B", prompt: "b" } },
+        ], usage: { input_tokens: 1, output_tokens: 1 } } };
+        yield { type: "system", subtype: "task_started", task_id: "task-A", agent_id: "agent-A", parent_tool_use_id: "toolu_A", description: "review A" };
+        yield { type: "system", subtype: "task_started", task_id: "task-B", agent_id: "agent-B", parent_tool_use_id: "toolu_B", description: "review B" };
+        await hangPromise;
+        yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+      })());
+      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+        send, stream, close: vi.fn(), sessionId: "sdk-stop-one", setPermissionMode, stopTask,
+      } as any);
+      const { service } = createService({ onEvent: (event: AgentChatEventEnvelope) => events.push(event) });
+      const session = await service.createSession({ laneId: "lane-1", provider: "claude", model: "sonnet" });
+      await vi.waitFor(() => { expect(warmupComplete).toBe(true); });
+      const sendPromise = service.sendMessage({ sessionId: session.id, text: "spawn A and B" });
+
+      await waitForEvent(events, (e): e is AgentChatEventEnvelope =>
+        e.event.type === "subagent_started" && (e.event as any).taskId === "task-B");
+
+      await expect(service.stopTask({ sessionId: session.id, taskId: "task-A" }))
+        .resolves.toMatchObject({ stopped: true, taskId: "task-A" });
+      expect(stopTask).toHaveBeenCalledTimes(1);
+      expect(stopTask).toHaveBeenCalledWith("task-A");
+
+      await waitForEvent(events, (e): e is AgentChatEventEnvelope =>
+        e.event.type === "subagent_result"
+        && (e.event as any).taskId === "task-A"
+        && (e.event as any).status === "stopped");
+      expect(events.some((e) =>
+        e.event.type === "subagent_result" && (e.event as any).taskId === "task-B")).toBe(false);
+
+      hangResolve!();
+      await expect(sendPromise).resolves.toBeUndefined();
+    });
+
+    it("does not stop a task that belongs to a different session", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      let streamCall = 0;
+      let warmupComplete = false;
+      let hangResolve: (() => void) | null = null;
+      const hangPromise = new Promise<void>((resolve) => { hangResolve = resolve; });
+      const send = vi.fn().mockResolvedValue(undefined);
+      const setPermissionMode = vi.fn().mockResolvedValue(undefined);
+      const stopTask = vi.fn().mockResolvedValue(undefined);
+      const stream = vi.fn(() => (async function* () {
+        streamCall += 1;
+        if (streamCall <= 2) {
+          yield { type: "system", subtype: "init", session_id: `sdk-stop-cross-${streamCall}`, slash_commands: [] };
+          if (streamCall === 2) warmupComplete = true;
+          yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+          return;
+        }
+        yield { type: "system", subtype: "task_started", task_id: "task-A", description: "review A" };
+        await hangPromise;
+        yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+      })());
+      let queryN = 0;
+      vi.mocked(claudeSdkCreateSessionCompat).mockImplementation(() => {
+        queryN += 1;
+        return {
+          send,
+          stream,
+          close: vi.fn(),
+          sessionId: `sdk-stop-cross-${queryN}`,
+          setPermissionMode,
+          stopTask,
+        } as any;
+      });
+      const { service } = createService({ onEvent: (event: AgentChatEventEnvelope) => events.push(event) });
+      const session = await service.createSession({ laneId: "lane-1", provider: "claude", model: "sonnet" });
+      const other = await service.createSession({ laneId: "lane-1", provider: "claude", model: "sonnet" });
+      await vi.waitFor(() => { expect(warmupComplete).toBe(true); });
+      const sendPromise = service.sendMessage({ sessionId: session.id, text: "spawn A" });
+
+      await waitForEvent(events, (e): e is AgentChatEventEnvelope =>
+        e.event.type === "subagent_started" && (e.event as any).taskId === "task-A");
+
+      await expect(service.stopTask({ sessionId: other.id, taskId: "task-A" }))
+        .resolves.toMatchObject({ stopped: false, reason: "That task is not running." });
+      expect(stopTask).not.toHaveBeenCalled();
 
       hangResolve!();
       await expect(sendPromise).resolves.toBeUndefined();
@@ -15202,6 +16283,9 @@ describe("createAgentChatService", () => {
 
       expect(names).toContain("/agents");
       expect(names).toContain("/output-style");
+      expect(names).not.toContain("/exit");
+      expect(names).not.toContain("/quit");
+      expect(names).not.toContain("/statusline");
       expect(commands).toEqual(expect.arrayContaining([
         expect.objectContaining({
           name: "/shipLane",
@@ -15399,6 +16483,45 @@ describe("createAgentChatService", () => {
       const commands = service.getSlashCommands({ sessionId: session.id });
       const loginCmd = commands.find((c: any) => c.name === "/login");
       expect(loginCmd).toBeUndefined();
+    });
+
+    it("filters SDK terminal_slash_commands extras from a live Claude session palette", async () => {
+      let warmupComplete = false;
+      const stream = vi.fn(() => (async function* () {
+        yield {
+          type: "system",
+          subtype: "init",
+          session_id: "sdk-terminal-slash",
+          slash_commands: ["/compact", "/exit", "/foo-cli"],
+          terminal_slash_commands: ["/foo-cli"],
+        };
+        warmupComplete = true;
+        yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+      })());
+      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+        send: vi.fn().mockResolvedValue(undefined),
+        stream,
+        close: vi.fn(),
+        sessionId: "sdk-terminal-slash",
+        setPermissionMode: vi.fn().mockResolvedValue(undefined),
+      } as any);
+
+      const { service } = createService();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+      });
+      await vi.waitFor(() => {
+        expect(warmupComplete).toBe(true);
+      });
+
+      const names = service.getSlashCommands({ sessionId: session.id }).map((command) => command.name);
+      expect(names).toContain("/compact");
+      expect(names).not.toContain("/exit");
+      expect(names).not.toContain("/quit");
+      expect(names).not.toContain("/statusline");
+      expect(names).not.toContain("/foo-cli");
     });
 
     it("advertises the ADE-hosted Claude output-style command", async () => {
@@ -16133,6 +17256,29 @@ describe("createAgentChatService", () => {
       mockState.codexResponseOverrides.set("initialize", { userAgent: "codex/0.149.1" });
     };
 
+    const setupQueuedCodexTurn = async () => {
+      pin149();
+      const events: AgentChatEventEnvelope[] = [];
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.4",
+      });
+      await service.sendMessage({
+        sessionId: session.id,
+        text: "Keep this turn active.",
+      }, { awaitDispatch: true });
+      mockState.emitCodexPayload({
+        jsonrpc: "2.0",
+        method: "item/started",
+        params: { turnId: "turn-1", item: { id: "compact-1", type: "contextCompaction" } },
+      });
+      return { service, session, events };
+    };
+
     it("sends ! and /shell drafts through thread/shellCommand", async () => {
       pin149();
       const { service } = createService();
@@ -16306,6 +17452,115 @@ describe("createAgentChatService", () => {
         event.event.type === "system_notice"
         && event.event.message === "Duplicate check-in ignored.",
       )).toBe(true);
+    });
+
+    it("cancels a queued Codex message and clears the staged chip", async () => {
+      const { service, session, events } = await setupQueuedCodexTurn();
+
+      const { steerId } = await service.steer({ sessionId: session.id, text: "check in" });
+      await service.cancelSteer({ sessionId: session.id, steerId });
+
+      expect(mockState.codexRequestPayloads.some((payload) => payload.method === "thread/queue/delete")).toBe(true);
+      expect(events.some((event) =>
+        event.event.type === "system_notice"
+        && event.event.message === "Queued message cancelled."
+        && event.event.steerId === steerId,
+      )).toBe(true);
+    });
+
+    it("recovers the Codex queue submission id when the in-memory mapping is missing", async () => {
+      // `queuedSubmissionBySteerId` lives only on the runtime object, so a
+      // restart, a rehydration, or a remote-handled cancel arrives with it
+      // empty while the transcript still renders the staged chip. The server
+      // is the durable half of the mapping.
+      const { service, session } = await setupQueuedCodexTurn();
+
+      // A queue/add that reports no id leaves the runtime with no mapping —
+      // the same state a restart or a rehydrated session produces — while the
+      // server still holds the submission under the steerId ADE sent it as.
+      mockState.codexResponseOverrides.set("thread/queue/add", (payload) => ({
+        queuedSubmission: {
+          clientUserMessageId: (payload.params as { clientUserMessageId?: string }).clientUserMessageId,
+        },
+      }));
+      const { steerId } = await service.steer({ sessionId: session.id, text: "check in" });
+      mockState.codexResponseOverrides.set("thread/queue/list", {
+        queuedSubmissions: [{ id: "recovered-submission", clientUserMessageId: steerId }],
+      });
+
+      await service.cancelSteer({ sessionId: session.id, steerId, requireQueued: true });
+
+      expect(mockState.codexRequestPayloads.some((payload) =>
+        payload.method === "thread/queue/delete"
+        && (payload.params as { id?: string }).id === "recovered-submission",
+      )).toBe(true);
+    });
+
+    it("raises instead of reporting a cancellation Codex refused", async () => {
+      // Swallowing this cleared the chip while the submission stayed queued and
+      // still ran — a false success, which is worse than a visible failure.
+      const { service, session, events } = await setupQueuedCodexTurn();
+
+      const { steerId } = await service.steer({ sessionId: session.id, text: "check in" });
+      mockState.codexResponseOverrides.set("thread/queue/delete", {
+        error: { code: -32000, message: "queue is locked" },
+      });
+
+      await expect(service.cancelSteer({ sessionId: session.id, steerId })).rejects.toThrow("queue is locked");
+      expect(events.some((event) =>
+        event.event.type === "system_notice"
+        && event.event.message === "Queued message cancelled."
+        && event.event.steerId === steerId,
+      )).toBe(false);
+    });
+
+    it("keeps the staged Codex message when queue recovery itself fails", async () => {
+      const { service, session, events } = await setupQueuedCodexTurn();
+
+      mockState.codexResponseOverrides.set("thread/queue/add", (payload) => ({
+        queuedSubmission: {
+          clientUserMessageId: (payload.params as { clientUserMessageId?: string }).clientUserMessageId,
+        },
+      }));
+      const { steerId } = await service.steer({ sessionId: session.id, text: "check in" });
+      mockState.codexResponseOverrides.set("thread/queue/list", {
+        error: { code: -32000, message: "queue temporarily unavailable" },
+      });
+
+      await expect(service.cancelSteer({ sessionId: session.id, steerId })).rejects.toThrow(
+        "Could not inspect Codex's queued messages: queue temporarily unavailable",
+      );
+      expect(events.some((event) =>
+        event.event.type === "system_notice"
+        && event.event.message === "Queued message cancelled."
+        && event.event.steerId === steerId,
+      )).toBe(false);
+      expect(mockState.codexRequestPayloads.some((payload) => payload.method === "thread/queue/delete")).toBe(false);
+    });
+
+    it("clears an unrecoverable staged Codex message instead of silently doing nothing", async () => {
+      const { service, session, events } = await setupQueuedCodexTurn();
+
+      // Mapping never recorded AND the server queue is empty: nothing can
+      // deliver this message, so the chip has to clear rather than sit there
+      // with a button that does nothing every time it is pressed.
+      mockState.codexResponseOverrides.set("thread/queue/add", (payload) => ({
+        queuedSubmission: {
+          clientUserMessageId: (payload.params as { clientUserMessageId?: string }).clientUserMessageId,
+        },
+      }));
+      const { steerId } = await service.steer({ sessionId: session.id, text: "check in" });
+
+      await service.cancelSteer({ sessionId: session.id, steerId });
+
+      expect(events.some((event) =>
+        event.event.type === "system_notice"
+        && event.event.message === "Queued message cancelled."
+        && event.event.steerId === steerId,
+      )).toBe(true);
+      await expect(
+        service.cancelSteer({ sessionId: session.id, steerId, requireQueued: true }),
+      ).rejects.toThrow("no longer queued");
     });
 
     it("runs mid-turn ! commands as user shell instead of steer", async () => {
@@ -18228,6 +19483,45 @@ describe("createAgentChatService", () => {
       expect(events.some((event) =>
         event.event.type === "status" && event.event.turnStatus === "interrupted")).toBe(true);
       expect(readPersistedChatState(session.id).cursorSdkAgentId).toBe("cursor-sdk-agent-1");
+    });
+
+    it("routes messageSession kind auto on Cursor through interrupt-and-continue", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      const { service, session } = await startBusyCursorSession(events);
+
+      const result = await service.messageSession({
+        sessionId: session.id,
+        text: "Do this instead.",
+        kind: "auto",
+      });
+
+      expect(result.routedAction).toBe("steer");
+      await vi.waitFor(() => {
+        expect(mockState.cursorSdkSendCalls.length).toBeGreaterThanOrEqual(2);
+      });
+      expect(String(mockState.cursorSdkSendCalls[1]?.promptText ?? ""))
+        .toContain("Do this instead.");
+      expect(events.some((event) =>
+        event.event.type === "status" && event.event.turnStatus === "interrupted")).toBe(true);
+    });
+
+    it("keeps messageSession kind queue on Cursor queued instead of interrupting", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      const { service, session } = await startBusyCursorSession(events);
+
+      const result = await service.messageSession({
+        sessionId: session.id,
+        text: "Then update the docs.",
+        kind: "queue",
+      });
+
+      expect(result.routedAction).toBe("steer");
+      expect(result.queued).toBe(true);
+      expect(mockState.cursorSdkSendCalls).toHaveLength(1);
+      await vi.waitFor(() => {
+        expect(events.some((event) =>
+          event.event.type === "user_message" && event.event.deliveryState === "queued")).toBe(true);
+      });
     });
 
     it("still clears queued Droid steers on interrupt-replace, unlike Cursor", async () => {
@@ -21300,6 +22594,118 @@ describe("createAgentChatService", () => {
         && event.event.turnId?.startsWith("claude-idle-") === true,
       )).toBe(false);
       expect(service.hasActiveWorkloads()).toBe(false);
+    });
+
+    it("keeps idle ambient tasks out of visible chat info", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      const setPermissionMode = vi.fn().mockResolvedValue(undefined);
+      const send = vi.fn().mockResolvedValue(undefined);
+      let streamCall = 0;
+      let startAmbient!: () => void;
+      let holdAmbientComplete!: () => void;
+      let ambientLive = false;
+      let ambientDrained = false;
+      const startAmbientPromise = new Promise<void>((resolve) => { startAmbient = resolve; });
+      const holdAmbientCompletePromise = new Promise<void>((resolve) => { holdAmbientComplete = resolve; });
+
+      const stream = vi.fn(() => (async function* () {
+        streamCall += 1;
+        if (streamCall === 1) {
+          yield {
+            type: "system",
+            subtype: "init",
+            session_id: "sdk-idle-ambient",
+            slash_commands: [],
+          };
+          return;
+        }
+
+        yield {
+          type: "result",
+          subtype: "success",
+          is_error: false,
+          session_id: "sdk-idle-ambient",
+          usage: { input_tokens: 1, output_tokens: 1 },
+        };
+
+        await startAmbientPromise;
+        yield {
+          type: "system",
+          subtype: "task_started",
+          session_id: "sdk-idle-ambient",
+          task_id: "task-ambient-idle-true",
+          description: "Generate session title",
+          task_type: "other",
+          ambient: true,
+        };
+        yield {
+          type: "system",
+          subtype: "background_tasks_changed",
+          tasks: [{
+            task_id: "task-ambient-idle-true",
+            description: "Generate session title",
+            ambient: true,
+          }],
+        };
+        ambientLive = true;
+        await holdAmbientCompletePromise;
+        yield {
+          type: "system",
+          subtype: "task_notification",
+          session_id: "sdk-idle-ambient",
+          task_id: "task-ambient-idle-true",
+          status: "completed",
+          summary: "Done",
+        };
+        yield {
+          type: "result",
+          subtype: "success",
+          is_error: false,
+          session_id: "sdk-idle-ambient",
+          usage: { input_tokens: 1, output_tokens: 1 },
+        };
+        ambientDrained = true;
+      })());
+
+      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+        send,
+        stream,
+        close: vi.fn(),
+        sessionId: "sdk-idle-ambient",
+        setPermissionMode,
+      } as any);
+
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+      });
+
+      await service.runSessionTurn({
+        sessionId: session.id,
+        text: "Complete a visible turn, then let idle ambient housekeeping run.",
+      });
+
+      startAmbient();
+      await vi.waitFor(() => {
+        expect(ambientLive).toBe(true);
+      });
+      expect(events.filter((event) =>
+        event.sessionId === session.id
+        && (event.event.type === "subagent_started"
+          || event.event.type === "subagent_progress"
+          || event.event.type === "subagent_result")
+        && (event.event as { taskId?: string }).taskId === "task-ambient-idle-true",
+      )).toEqual([]);
+      expect(service.hasActiveWorkloads()).toBe(false);
+
+      holdAmbientComplete();
+      await vi.waitFor(() => {
+        expect(ambientDrained).toBe(true);
+      });
     });
 
     it("delivers queued steers after an idle Claude turn completes", async () => {
@@ -30802,6 +32208,73 @@ describe("createAgentChatService", () => {
       }));
     });
 
+    it("lists an OpenCode approval that is blocking the session", async () => {
+      // `hasLivePendingInput` consults five stores and `listPendingInputs` used
+      // to read two, so an OpenCode chat reported `awaitingInput: true` with an
+      // empty request list — "blocked, with nothing to show", which is exactly
+      // the state the pending-inputs action exists to remove. An embedder that
+      // reloads its UI has no other way to redraw the card.
+      const events: AgentChatEventEnvelope[] = [];
+      let releaseStream!: () => void;
+      const streamGate = new Promise<void>((resolve) => { releaseStream = () => resolve(); });
+      vi.mocked(streamText).mockImplementation(() => ({
+        fullStream: (async function* () {
+          await streamGate;
+          yield { type: "finish", usage: {} };
+        })(),
+      }) as any);
+
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "opencode",
+        model: "opencode/openai/gpt-5.4",
+        modelId: "opencode/openai/gpt-5.4",
+      });
+
+      const sendPromise = service.sendMessage({ sessionId: session.id, text: "Run something." });
+      await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope =>
+          event.event.type === "status" && event.event.turnStatus === "started",
+      );
+
+      const state = [...mockState.openCodeSessions.values()][0]!;
+      state.events.push({
+        type: "permission.asked",
+        properties: {
+          id: "perm-listable-1",
+          sessionID: "opencode-session-1",
+          permission: "bash",
+          patterns: ["rm -rf /"],
+          metadata: {},
+        },
+      });
+      const waiters = [...state.waiters];
+      state.waiters.length = 0;
+      waiters.forEach((waiter) => waiter());
+
+      await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope =>
+          event.event.type === "approval_request" && event.event.itemId === "perm-listable-1",
+      );
+
+      // The session says it is blocked...
+      await expect(service.getSessionSummary(session.id)).resolves.toMatchObject({
+        awaitingInput: true,
+      });
+      // ...and can say what by.
+      const pending = service.listPendingInputs({ sessionId: session.id });
+      expect(pending.requests.map((request) => request.itemId)).toContain("perm-listable-1");
+      expect(pending.requests[0]?.source).toBe("opencode");
+
+      releaseStream();
+      await sendPromise.catch(() => {});
+    });
+
     it("streams OpenCode assistant text from part deltas, without doubling it at the end", async () => {
       // OpenCode's processor calls updatePartDelta for every text-delta and
       // only calls updatePart at text-start and text-end. Ignoring
@@ -31513,6 +32986,14 @@ describe("createAgentChatService", () => {
       expect(readPersistedChatState(session.id).awaitingInput).toBe(true);
       return { service, session, events, approvalEvent };
     };
+
+    it("includes runtime Codex approvals in getTurnStatus ask fields", async () => {
+      const { service, session } = await stageCompletedCodexPlanApproval();
+      const status = await service.getTurnStatus(session.id);
+      expect(status?.phase).toBe("blocked");
+      expect(status?.ask?.title).toBeTruthy();
+      expect(status?.ask?.title).not.toBe("awaiting input");
+    });
 
     it("defaults interaction mode to null or undefined", async () => {
       const { service } = createService();
@@ -38851,8 +40332,10 @@ describe("createAgentChatService", () => {
           e.event.type === "subagent_started" && (e.event as any).taskId === "sub-task-2",
       );
 
-      // Now interrupt — should emit subagent_result "stopped" for both
-      await service.interrupt({ sessionId: session.id });
+      // Now interrupt on the background-killing axis — should emit
+      // subagent_result "stopped" for both. Default Stop (stop_and_clear)
+      // spares them once per-task stop exists.
+      await service.interrupt({ sessionId: session.id, mode: "stop_and_clear_and_background" });
 
       const stoppedEvents = events.filter(
         (e) => e.event.type === "subagent_result" && (e.event as any).status === "stopped",
@@ -39019,7 +40502,7 @@ describe("createAgentChatService", () => {
       await expect(sendPromise).resolves.toBeUndefined();
     });
 
-    it("emits a single interrupted status and done event and closes the Claude session", async () => {
+    it("emits a single interrupted status and done event without closing the Claude session", async () => {
       const events: AgentChatEventEnvelope[] = [];
       let streamCall = 0;
       let warmupComplete = false;
@@ -39090,7 +40573,8 @@ describe("createAgentChatService", () => {
       );
       expect(interruptedStatuses).toHaveLength(1);
       expect(interruptedDone).toHaveLength(1);
-      expect(close).toHaveBeenCalledTimes(1);
+      // Default Stop spares background work, so the query stays alive.
+      expect(close).not.toHaveBeenCalled();
 
       hangResolve!();
       await expect(sendPromise).resolves.toBeUndefined();
@@ -39101,6 +40585,68 @@ describe("createAgentChatService", () => {
       expect(events.filter(
         (event) => event.event.type === "done" && event.event.status === "interrupted",
       )).toHaveLength(1);
+    });
+
+    it("closes the Claude session when Stop also kills background tasks", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      let streamCall = 0;
+      let warmupComplete = false;
+      let hangResolve: (() => void) | null = null;
+      const hangPromise = new Promise<void>((resolve) => { hangResolve = resolve; });
+      const close = vi.fn();
+      const stream = vi.fn(() => (async function* () {
+        streamCall += 1;
+        if (streamCall === 1) {
+          yield { type: "system", subtype: "init", session_id: "sdk-bg-kill-interrupt", slash_commands: [] };
+          warmupComplete = true;
+          yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+          return;
+        }
+        yield {
+          type: "stream_event",
+          event: {
+            type: "content_block_delta",
+            index: 0,
+            delta: { type: "text_delta", text: "still working" },
+          },
+        };
+        await hangPromise;
+        return;
+      })());
+      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+        send: vi.fn().mockResolvedValue(undefined),
+        stream,
+        close,
+        sessionId: "sdk-bg-kill-interrupt",
+        setPermissionMode: vi.fn().mockResolvedValue(undefined),
+      } as any);
+
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+      });
+      await vi.waitFor(() => { expect(warmupComplete).toBe(true); });
+      const sendPromise = service.sendMessage({
+        sessionId: session.id,
+        text: "Please keep working",
+      });
+      await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope => event.event.type === "text",
+      );
+
+      await service.interrupt({
+        sessionId: session.id,
+        mode: "stop_and_clear_and_background",
+      });
+      expect(close).toHaveBeenCalledTimes(1);
+
+      hangResolve!();
+      await expect(sendPromise).resolves.toBeUndefined();
     });
 
     it("bounds hung Claude interrupt and subagent stop calls below the desktop action timeout", async () => {
@@ -39147,7 +40693,10 @@ describe("createAgentChatService", () => {
 
         vi.useFakeTimers();
         let interruptSettled = false;
-        const interruptPromise = service.interrupt({ sessionId: session.id }).then(() => {
+        const interruptPromise = service.interrupt({
+          sessionId: session.id,
+          mode: "stop_and_clear_and_background",
+        }).then(() => {
           interruptSettled = true;
         });
         await vi.advanceTimersByTimeAsync(1_999);
@@ -39225,7 +40774,7 @@ describe("createAgentChatService", () => {
       });
     });
 
-    it("resumes through a fresh SDK session after interrupt so stale stream text is not replayed", async () => {
+    it("resumes through a fresh SDK session after a background-killing interrupt so stale stream text is not replayed", async () => {
       const events: AgentChatEventEnvelope[] = [];
       let primaryStreamCall = 0;
       let releaseInterruptedStream = false;
@@ -39316,7 +40865,10 @@ describe("createAgentChatService", () => {
           event.event.type === "text" && event.event.text.includes("partial first answer"),
       );
 
-      await service.interrupt({ sessionId: session.id });
+      await service.interrupt({
+        sessionId: session.id,
+        mode: "stop_and_clear_and_background",
+      });
       releaseInterruptedStream = true;
       await firstTurn;
 
@@ -39935,6 +41487,39 @@ describe("createAgentChatService", () => {
           || (typeof arg === "object" && JSON.stringify(arg).includes("queued steer text")),
       );
       expect(deliveredSteer).toBeUndefined();
+    });
+
+    it("does not resurrect a cancelled persisted steer when no runtime is attached", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "cursor",
+        model: "composer-2",
+        modelId: "cursor/composer-2",
+      });
+      const cancelledSteerId = "persisted-steer-to-cancel";
+      const survivingSteerId = "persisted-steer-to-keep";
+      writePersistedChatState(session.id, {
+        ...readPersistedChatState(session.id),
+        pendingSteers: [
+          { steerId: cancelledSteerId, text: "Remove me" },
+          { steerId: survivingSteerId, text: "Keep me" },
+        ],
+      });
+
+      await service.cancelSteer({ sessionId: session.id, steerId: cancelledSteerId, requireQueued: true });
+
+      expect(readPersistedChatState(session.id).pendingSteers).toEqual([
+        { steerId: survivingSteerId, text: "Keep me" },
+      ]);
+      expect(events.some((event) =>
+        event.event.type === "system_notice"
+        && event.event.message === "Queued message cancelled."
+        && event.event.steerId === cancelledSteerId,
+      )).toBe(true);
     });
 
     it("editSteer updates the queued steer text and cancels on interrupt", async () => {
@@ -42468,7 +44053,7 @@ it("fails a cleanly ended OpenCode event stream and clears active child sessions
       await turn;
 
       await vi.waitFor(() => {
-        expect(getContextUsage).toHaveBeenCalled();
+        expect(getContextUsage).toHaveBeenCalledWith({ detail: "summary" });
         expect(events.map((entry) => entry.event))
           .toEqual(expect.arrayContaining([
             expect.objectContaining({
@@ -42484,6 +44069,128 @@ it("fails a cleanly ended OpenCode event stream and clears active child sessions
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it("requests a full Claude context snapshot after compact and a summary after settle", async () => {
+    const getContextUsage = vi.fn().mockResolvedValue({
+      categories: [{ name: "Messages", tokens: 40_000 }],
+      totalTokens: 40_000,
+      maxTokens: 200_000,
+      rawMaxTokens: 200_000,
+      percentage: 20,
+      gridRows: [],
+      model: "claude-sonnet-5",
+    });
+    await createClaudeStreamFixture({
+      sdkSessionId: "sdk-context-detail",
+      getContextUsage,
+      messages: [
+        {
+          type: "system",
+          subtype: "compact_boundary",
+          compact_metadata: { trigger: "auto", pre_tokens: 90_000, post_tokens: 40_000 },
+        },
+        { type: "result", subtype: "success", is_error: false, usage: { input_tokens: 1, output_tokens: 1 } },
+      ],
+    });
+    expect(getContextUsage).toHaveBeenCalledWith({ detail: "full" });
+    expect(getContextUsage).toHaveBeenCalledWith({ detail: "summary" });
+  });
+
+  it("records Claude modelUsage extras on done without changing outputTokens", async () => {
+    const events = await runClaudeStreamFixture({
+      sdkSessionId: "sdk-model-usage-extras",
+      messages: [
+        {
+          type: "result",
+          subtype: "success",
+          is_error: false,
+          usage: { input_tokens: 10, output_tokens: 20 },
+          total_cost_usd: 0.01,
+          queued_turn_count: 0,
+          user_message_uuid: "user-msg-result",
+          modelUsage: {
+            "claude-sonnet-5": {
+              inputTokens: 10,
+              outputTokens: 20,
+              thinkingTokens: 7,
+              costUSD: 0.01,
+              costBasis: "list",
+              cacheReadInputTokens: 0,
+              cacheCreationInputTokens: 0,
+              webSearchRequests: 0,
+              contextWindow: 200_000,
+              maxOutputTokens: 16_000,
+            },
+          },
+        },
+      ],
+    });
+    const done = events
+      .map((entry) => entry.event)
+      .find((event): event is Extract<AgentChatEventEnvelope["event"], { type: "done" }> => event.type === "done");
+    expect(done).toMatchObject({
+      type: "done",
+      usage: {
+        inputTokens: 10,
+        outputTokens: 20,
+        thinkingTokens: 7,
+      },
+      costUsd: 0.01,
+      costBasis: "list",
+      queuedTurnCount: 0,
+      userMessageUuid: "user-msg-result",
+    });
+  });
+
+  it("stamps user_message_uuid from the first assistant frame onto done", async () => {
+    const events = await runClaudeStreamFixture({
+      sdkSessionId: "sdk-early-user-message-uuid",
+      messages: [
+        {
+          type: "assistant",
+          user_message_uuid: "user-msg-early",
+          message: {
+            content: [{ type: "text", text: "hello" }],
+            usage: { input_tokens: 1, output_tokens: 1 },
+          },
+        },
+        {
+          type: "result",
+          subtype: "success",
+          is_error: false,
+          usage: { input_tokens: 1, output_tokens: 1 },
+        },
+      ],
+    });
+    const done = events
+      .map((entry) => entry.event)
+      .find((event): event is Extract<AgentChatEventEnvelope["event"], { type: "done" }> => event.type === "done");
+    expect(done?.userMessageUuid).toBe("user-msg-early");
+  });
+
+  it("warns when Claude reports this client's hooks were ignored", async () => {
+    const initializationResult = vi.fn().mockResolvedValue({ hooks_applied: false });
+    const onClaudeHooksIgnored = vi.fn();
+    vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+      ...makeDefaultClaudeSession(),
+      initializationResult,
+    });
+    const { service, logger } = createService({ onClaudeHooksIgnored });
+    const session = await service.createSession({
+      laneId: "lane-1",
+      provider: "claude",
+      model: "claude-sonnet-5",
+      modelId: "anthropic/claude-sonnet-5",
+    });
+    await service.sendMessage({ sessionId: session.id, text: "hello" });
+    await vi.waitFor(() => {
+      expect(onClaudeHooksIgnored).toHaveBeenCalledWith({ sessionId: session.id });
+    });
+    expect(logger.warn).toHaveBeenCalledWith(
+      "agent_chat.claude_hooks_ignored",
+      expect.objectContaining({ sessionId: session.id }),
+    );
   });
 
   it("lets natural compaction suppress the 97% fallback", async () => {
@@ -44976,6 +46683,128 @@ it("fails a cleanly ended OpenCode event stream and clears active child sessions
     await expect(service.getSessionSummary(session.id)).resolves.toMatchObject({
       cursorModeId: "agent",
     });
+  });
+
+  const setupCursorPermissionSession = async (
+    controls: Pick<AgentChatCreateArgs, "permissionMode" | "cursorModeId"> = {},
+  ) => {
+    process.env.CURSOR_API_KEY = "cursor-test-key";
+    const { service } = createService();
+    const session = await service.createSession({
+      laneId: "lane-1",
+      provider: "cursor",
+      model: "composer-2",
+      modelId: "cursor/composer-2",
+      ...controls,
+    });
+    return { service, session };
+  };
+
+  it("persists the native Cursor full-auto mode for a permissionMode-only create", async () => {
+    // `ade new chat --provider cursor --permissions full-auto` sends only
+    // `permissionMode`; the desktop composer is the only caller that sends
+    // `cursorModeId`. The session used to run full-auto while reporting mode
+    // "agent", so every mode-reading surface disagreed with the policy.
+    const { service, session } = await setupCursorPermissionSession({
+      permissionMode: "full-auto",
+    });
+
+    expect(session.cursorModeId).toBe("full-auto");
+
+    await service.sendMessage({
+      sessionId: session.id,
+      text: "Run in full auto.",
+    }, { awaitDispatch: true });
+
+    await expect(service.getSessionSummary(session.id)).resolves.toMatchObject({
+      cursorModeId: "full-auto",
+      cursorModeSnapshot: expect.objectContaining({ currentModeId: "full-auto" }),
+    });
+  });
+
+  it("leaves cursorModeId absent for the legacy modes Cursor runs as plain agent", async () => {
+    // Materialising "agent" here would be read back as a real selection and
+    // pin the chat to it, which is the durable-pin bug the Droid and Claude
+    // native controls carry the same warning about.
+    for (const permissionMode of ["default", "edit"] as const) {
+      const { session } = await setupCursorPermissionSession({
+        permissionMode,
+      });
+      expect(session.cursorModeId ?? null).toBeNull();
+    }
+  });
+
+  it("does not let an explicit Cursor mode be overwritten by the legacy permission mode", async () => {
+    const { session } = await setupCursorPermissionSession({
+      permissionMode: "full-auto",
+      cursorModeId: "agent",
+    });
+
+    expect(session.cursorModeId).toBe("agent");
+  });
+
+  it("clears a derived Cursor full-auto mode when the permission mode is lowered", async () => {
+    const { service, session } = await setupCursorPermissionSession({
+      permissionMode: "full-auto",
+    });
+    expect(session.cursorModeId).toBe("full-auto");
+
+    // Without this the derived mode outlives the request that set it and the
+    // chat keeps running full-auto after the caller asked it not to.
+    const updated = await service.updateSession({
+      sessionId: session.id,
+      permissionMode: "default",
+    });
+    expect(updated.cursorModeId ?? null).toBeNull();
+    expect(updated.permissionMode).toBe("default");
+    await expect(service.getSessionSummary(session.id)).resolves.toMatchObject({
+      cursorModeId: null,
+      cursorModeIdWasCleared: true,
+    });
+  });
+
+  it("broadcasts an explicit Cursor mode clear when lowering legacy permissions", async () => {
+    const events: AgentChatEventEnvelope[] = [];
+    const { service } = createService({
+      onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+    });
+    const cursorSession = await service.createSession({
+      laneId: "lane-1",
+      provider: "cursor",
+      model: "composer-2",
+      modelId: "cursor/composer-2",
+      permissionMode: "full-auto",
+    });
+    events.length = 0;
+
+    await service.updateSession({
+      sessionId: cursorSession.id,
+      permissionMode: "default",
+    });
+
+    const metaEvent = events
+      .map((envelope) => envelope.event)
+      .find((event): event is Extract<typeof event, { type: "session_meta_updated" }> =>
+        event.type === "session_meta_updated");
+    expect(metaEvent).toMatchObject({
+      permissionMode: "default",
+      cursorModeId: null,
+    });
+  });
+
+  it("preserves an explicit Cursor mode clear during native permission normalization", async () => {
+    const { service, session } = await setupCursorPermissionSession({
+      permissionMode: "full-auto",
+    });
+    expect(session.cursorModeId).toBe("full-auto");
+
+    const updated = await service.updateSession({
+      sessionId: session.id,
+      cursorModeId: null,
+    });
+
+    expect(updated.cursorModeId).toBeNull();
+    expect(updated.permissionMode).toBe("default");
   });
 
   it("pushes Cursor SDK mode changes into the live worker while a turn is active", async () => {
@@ -49216,3 +51045,726 @@ function agentEmitCommands(
 ): void {
   agent.emitUpdate(sessionId, { sessionUpdate: "available_commands_update", availableCommands });
 }
+
+describe("host permission policy", () => {
+  const openPersonalClaudeSession = async (
+    permissionPolicy: Record<string, unknown> | undefined,
+    sdkSessionId: string,
+  ) => {
+    vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue(claudeSdkSession(sdkSessionId) as any);
+    const events: AgentChatEventEnvelope[] = [];
+    const { service } = createService({
+      onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+    });
+    const session = await service.createSession({
+      laneId: "lane-1",
+      provider: "claude",
+      model: "sonnet",
+      sessionProfile: "light",
+      surface: "personal",
+      ...(permissionPolicy ? { permissionPolicy } : {}),
+    } as any);
+    await vi.waitFor(() => {
+      expect(claudeSdkCreateSessionCompat).toHaveBeenCalled();
+    });
+    const opts = vi.mocked(claudeSdkCreateSessionCompat).mock.calls.at(-1)?.[0] as {
+      allowedTools?: string[];
+      disallowedTools?: string[];
+      managedSettings?: {
+        allowedMcpServers?: Array<{ serverName: string }>;
+        allowManagedMcpServersOnly?: boolean;
+      };
+      canUseTool?: (
+        tool: string,
+        input: Record<string, unknown>,
+        options: Record<string, unknown>,
+      ) => Promise<Record<string, unknown>>;
+    };
+    return { service, session, opts, events };
+  };
+
+  const callTool = (
+    opts: { canUseTool?: Function },
+    tool: string,
+    input: Record<string, unknown>,
+    toolUseID: string,
+  ) => (opts.canUseTool as Function)(tool, input, {
+    signal: new AbortController().signal,
+    toolUseID,
+  }) as Promise<Record<string, unknown>>;
+
+  it("installs no tool gate on a personal chat that supplied no policy", async () => {
+    // The whole point of gating this on the policy: every SDK chat that exists
+    // today keeps running with no gate, so none of them starts parking turns
+    // on a host that renders no approval card.
+    const { opts } = await openPersonalClaudeSession(undefined, "sdk-policy-absent");
+    expect(opts.canUseTool).toBeUndefined();
+    expect(opts.allowedTools).toBeUndefined();
+    expect(opts.disallowedTools).toBeUndefined();
+  });
+
+  it("translates the policy into Claude's tool lists and wires the gate", async () => {
+    const { opts } = await openPersonalClaudeSession({
+      allowedTools: ["mcp:srv:*", "Read"],
+      deniedTools: ["Bash"],
+      fallback: "ask",
+    }, "sdk-policy-lists");
+    expect(opts.allowedTools).toEqual(["mcp__srv", "Read"]);
+    expect(opts.disallowedTools).toEqual(["Bash"]);
+    expect(typeof opts.canUseTool).toBe("function");
+  });
+
+  it("enforces a deny fallback in the tool lists, not through the prompt", async () => {
+    // The Agent SDK applies these lists itself: a disallowed tool leaves the
+    // model's catalog. `canUseTool` did not fire on the SDK version measured,
+    // so a policy that only wired the prompt would enforce nothing.
+    const { opts } = await openPersonalClaudeSession({
+      allowedTools: ["mcp:srv:*"],
+      fallback: "deny",
+    }, "sdk-policy-deny-enforced");
+
+    // The roster comes from the implementation. Restating it here meant a tool
+    // added to the deny set had to be remembered in three files.
+    for (const tool of CLAUDE_MUTATING_BUILTIN_TOOLS) {
+      expect(opts.disallowedTools).toContain(tool);
+    }
+    // A deny fallback stops the agent changing things; it does not blind it.
+    expect(opts.disallowedTools).not.toContain("Read");
+    expect(opts.disallowedTools).not.toContain("Grep");
+    // Still wired as a second line, in case a future SDK does call back.
+    expect(typeof opts.canUseTool).toBe("function");
+  });
+
+  it("scopes MCP to the servers the policy names under a deny fallback", async () => {
+    const { opts } = await openPersonalClaudeSession({
+      allowedTools: ["mcp:srv:*"],
+      fallback: "deny",
+    }, "sdk-policy-deny-mcp-scope");
+
+    expect(opts.managedSettings?.allowedMcpServers).toEqual([{ serverName: "srv" }]);
+    expect(opts.managedSettings?.allowManagedMcpServersOnly).toBe(true);
+  });
+
+  it("reads autoApproveMcpServers into the same allowlist", async () => {
+    const { opts } = await openPersonalClaudeSession({
+      autoApproveMcpServers: ["srv", "other"],
+      fallback: "deny",
+    }, "sdk-policy-deny-mcp-auto");
+
+    expect(opts.managedSettings?.allowedMcpServers)
+      .toEqual([{ serverName: "srv" }, { serverName: "other" }]);
+  });
+
+  it("leaves the catalog and MCP alone under an ask fallback", async () => {
+    // "ask" still routes through the prompt path, so removing tools up front
+    // would refuse the very work the host asked to be consulted about.
+    const { opts } = await openPersonalClaudeSession({
+      allowedTools: ["mcp:srv:*"],
+      fallback: "ask",
+    }, "sdk-policy-ask-no-additions");
+
+    expect(opts.disallowedTools).toBeUndefined();
+    expect(opts.managedSettings?.allowManagedMcpServersOnly).toBeUndefined();
+    expect(typeof opts.canUseTool).toBe("function");
+  });
+
+  it("names caller MCP servers a deny policy blocks, end to end", async () => {
+    // The report is the only place a host learns that a server it supplied in
+    // the same create call is unreachable. Both fields are set together and it
+    // is easy to set one and forget the other.
+    vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue(
+      claudeSdkSession("sdk-policy-blocked-caller") as any,
+    );
+    const { service } = createService();
+    const session = await service.createSession({
+      laneId: "lane-1",
+      provider: "claude",
+      model: "sonnet",
+      sessionProfile: "light",
+      surface: "personal",
+      mcpServers: {
+        srv: { type: "http", url: "https://example.test/srv" },
+        other: { type: "http", url: "https://example.test/other" },
+      },
+      permissionPolicy: { allowedTools: ["mcp:srv:*"], fallback: "deny" },
+    } as never);
+
+    const summary = await service.getSessionSummary(session.id);
+    expect(summary?.permissionCapability?.level).toBe("enforced");
+    expect(summary?.permissionCapability?.residual)
+      .toContain("caller MCP servers blocked by the policy: other");
+  });
+
+  it("downgrades to best-effort when the policy names one MCP tool", async () => {
+    const { service, session, opts } = await openPersonalClaudeSession({
+      allowedTools: ["mcp:srv:search"],
+      fallback: "deny",
+    }, "sdk-policy-tool-level-mcp");
+
+    // The server is still admitted — that is exactly the hole being reported.
+    expect(opts.managedSettings?.allowedMcpServers).toEqual([{ serverName: "srv" }]);
+    const summary = await service.getSessionSummary(session.id);
+    expect(summary?.permissionCapability?.level).toBe("best-effort");
+    expect(summary?.permissionCapability?.residual)
+      .toContain("individual MCP tool entries admit the whole server");
+  });
+
+  it("reports the capability level per fallback", async () => {
+    const deny = await openPersonalClaudeSession({ fallback: "deny" }, "sdk-policy-cap-deny");
+    await expect(deny.service.getSessionSummary(deny.session.id)).resolves.toMatchObject({
+      permissionCapability: { level: "enforced" },
+    });
+
+    const ask = await openPersonalClaudeSession({ fallback: "ask" }, "sdk-policy-cap-ask");
+    const askSummary = await ask.service.getSessionSummary(ask.session.id);
+    expect(askSummary?.permissionCapability?.level).toBe("best-effort");
+    expect(askSummary?.permissionCapability?.residual).toContain("permissions.defaultMode: auto");
+  });
+
+  it("allows a tool the policy names", async () => {
+    const { opts } = await openPersonalClaudeSession({
+      allowedTools: ["Bash"],
+      fallback: "deny",
+    }, "sdk-policy-allow");
+    await expect(callTool(opts, "Bash", { command: "ls" }, "tool-allow-1"))
+      .resolves.toEqual({ behavior: "allow", updatedInput: { command: "ls" } });
+  });
+
+  it("denies a tool the policy refuses, with the policy's own message", async () => {
+    const { opts, events } = await openPersonalClaudeSession({
+      deniedTools: ["Bash"],
+      fallback: "ask",
+    }, "sdk-policy-deny");
+    await expect(callTool(opts, "Bash", { command: "rm -rf /" }, "tool-deny-1"))
+      .resolves.toEqual({
+        behavior: "deny",
+        message: "Denied by the host permission policy.",
+      });
+    expect(events.some((event) => event.event.type === "approval_request")).toBe(false);
+  });
+
+  it("asks, and the answer releases the tool call", async () => {
+    const { service, session, opts, events } = await openPersonalClaudeSession({
+      fallback: "ask",
+    }, "sdk-policy-ask");
+    const pending = callTool(opts, "Bash", { command: "ls" }, "tool-ask-1");
+
+    await vi.waitFor(() => {
+      expect(events.some((event) => event.event.type === "approval_request")).toBe(true);
+    });
+    const request = events.find((event) => event.event.type === "approval_request")?.event as
+      { itemId: string; kind: string };
+    expect(request.kind).toBe("command");
+
+    // The same request a reloaded host would ask for to redraw its card.
+    expect(service.listPendingInputs({ sessionId: session.id }).requests.map((r) => r.itemId))
+      .toContain(request.itemId);
+
+    await service.approveToolUse({
+      sessionId: session.id,
+      itemId: request.itemId,
+      decision: "accept",
+    });
+    await expect(pending).resolves.toMatchObject({ behavior: "allow" });
+    expect(service.listPendingInputs({ sessionId: session.id }).requests).toEqual([]);
+  });
+
+  it("does not prompt for Claude's read-only built-ins under fallback ask", async () => {
+    // A card for every file read teaches a user to click Allow without
+    // reading it, which costs more than the cards buy. The check is literal
+    // set membership, so this is not the old substring heuristic returning.
+    const { opts, events } = await openPersonalClaudeSession({
+      fallback: "ask",
+    }, "sdk-policy-read-only");
+    // Every member of the implementation's own set, so a tool added to it is
+    // covered here without a second edit.
+    for (const tool of CLAUDE_READ_ONLY_TOOLS) {
+      await expect(callTool(opts, tool, { file_path: "README.md" }, `tool-ro-${tool}`))
+        .resolves.toEqual({ behavior: "allow", updatedInput: { file_path: "README.md" } });
+    }
+    expect(events.some((event) => event.event.type === "approval_request")).toBe(false);
+  });
+
+  it("prompts for a mutating built-in under fallback ask", async () => {
+    const { opts, events } = await openPersonalClaudeSession({
+      fallback: "ask",
+    }, "sdk-policy-mutating-builtin");
+    void callTool(opts, "Bash", { command: "ls" }, "tool-mutating-1");
+    await vi.waitFor(() => {
+      expect(events.some((event) => event.event.type === "approval_request")).toBe(true);
+    });
+  });
+
+  it("never exempts a host tool by name, however read-only it sounds", async () => {
+    // `mcp__srv__read` is not Claude's `Read`. Its risk is not knowable from
+    // its name, so it follows the fallback like any other host tool.
+    const { opts, events } = await openPersonalClaudeSession({
+      fallback: "ask",
+    }, "sdk-policy-mcp-named-read");
+    void callTool(opts, "mcp__srv__read", {}, "tool-mcp-read-1");
+    await vi.waitFor(() => {
+      expect(events.some((event) => event.event.type === "approval_request")).toBe(true);
+    });
+  });
+
+  it("denies a read-only built-in under fallback deny", async () => {
+    // The exemption belongs to "ask". `fallback: "deny"` is the no-hang mode
+    // and means what it says: nothing unmatched runs.
+    const { opts } = await openPersonalClaudeSession({
+      fallback: "deny",
+    }, "sdk-policy-read-only-denied");
+    await expect(callTool(opts, "Read", { file_path: "README.md" }, "tool-ro-denied-1"))
+      .resolves.toEqual({
+        behavior: "deny",
+        message: "Denied by the host permission policy.",
+      });
+  });
+
+  it("lets the policy deny a question tool that would otherwise auto-allow itself", async () => {
+    // `AskUserQuestion` and ADE's `ask_user` both auto-allow themselves, each
+    // because it carries its own answer UI. That is right, and it must still
+    // lose to a rule the host wrote: an auto-allow that outranked the policy
+    // would decline to apply `deniedTools`.
+    const { opts, events } = await openPersonalClaudeSession({
+      deniedTools: ["AskUserQuestion", "ask_user"],
+      fallback: "ask",
+    }, "sdk-policy-deny-ask-user");
+
+    for (const tool of ["AskUserQuestion", "ask_user"]) {
+      await expect(callTool(
+        opts,
+        tool,
+        { questions: [{ question: "Which key?", header: "Key", options: ["C", "G"] }] },
+        `tool-deny-${tool}`,
+      )).resolves.toEqual({
+        behavior: "deny",
+        message: "Denied by the host permission policy.",
+      });
+    }
+    expect(events.some((event) => event.event.type === "approval_request")).toBe(false);
+  });
+
+  it("allows every tool of a server named by a wildcard, without prompting", async () => {
+    const { opts, events } = await openPersonalClaudeSession({
+      allowedTools: ["mcp:srv:*"],
+      fallback: "ask",
+    }, "sdk-policy-mcp-wildcard");
+    // The five names issue 1208 part C calls out. Under the old substring gate
+    // three of them prompted because of "edit", "write", and "agent". The list
+    // is shared with `permissionPolicy.test.ts`, which asserts the same names
+    // against the policy evaluator one layer down.
+    for (const tool of HOST_TOOL_APPROVAL_NAMES) {
+      await expect(callTool(opts, tool, {}, `tool-${tool}`))
+        .resolves.toEqual({ behavior: "allow", updatedInput: {} });
+    }
+    expect(events.some((event) => event.event.type === "approval_request")).toBe(false);
+  });
+
+  it("never prompts under fallback deny", async () => {
+    const { opts, events } = await openPersonalClaudeSession({
+      fallback: "deny",
+    }, "sdk-policy-fallback-deny");
+    for (const tool of ["Bash", "Write", "mcp__srv__list_agents"]) {
+      await expect(callTool(opts, tool, {}, `tool-fallback-${tool}`))
+        .resolves.toEqual({
+          behavior: "deny",
+          message: "Denied by the host permission policy.",
+        });
+    }
+    expect(events.some((event) => event.event.type === "approval_request")).toBe(false);
+  });
+
+  it("auto-approves a write inside sandboxRoot and asks for one outside it", async () => {
+    const { opts, events } = await openPersonalClaudeSession({
+      sandboxRoot: tmpRoot,
+      fallback: "ask",
+    }, "sdk-policy-sandbox-root");
+
+    await expect(callTool(
+      opts,
+      "Write",
+      { file_path: path.join(tmpRoot, "notes.txt") },
+      "tool-inside-1",
+    )).resolves.toMatchObject({ behavior: "allow" });
+    expect(events.some((event) => event.event.type === "approval_request")).toBe(false);
+
+    void callTool(opts, "Write", { file_path: path.join(os.tmpdir(), "outside-of-root.txt") }, "tool-outside-1");
+    await vi.waitFor(() => {
+      expect(events.some((event) => event.event.type === "approval_request")).toBe(true);
+    });
+  });
+
+  it("reports the capability and the policy itself on the summary", async () => {
+    const { service, session } = await openPersonalClaudeSession({
+      fallback: "deny",
+    }, "sdk-policy-capability");
+    const summary = await service.getSessionSummary(session.id);
+    expect(summary?.permissionCapability?.level).toBe("enforced");
+    expect(summary?.permissionPolicy).toEqual({ fallback: "deny" });
+  });
+
+  it("re-derives the capability when the session switches provider", async () => {
+    // The title of the test above used to promise this and never did it. The
+    // report is a claim about what THIS provider enforces, so a switch must
+    // recompute it or the session keeps advertising Claude's answer on Codex.
+    const { service, session } = await openPersonalClaudeSession({
+      fallback: "deny",
+    }, "sdk-policy-capability-switch");
+    await expect(service.getSessionSummary(session.id)).resolves.toMatchObject({
+      permissionCapability: { level: "enforced" },
+    });
+
+    await service.updateSession({ sessionId: session.id, modelId: "gpt-5.4" as never });
+
+    const after = await service.getSessionSummary(session.id);
+    expect(after?.provider).toBe("codex");
+    // Codex's row is best-effort whatever the fallback: it raises no approval
+    // for a plain MCP call, so the tool fields cannot gate one.
+    expect(after?.permissionCapability?.level).toBe("best-effort");
+    expect(after?.permissionCapability?.residual).toContain("MCP");
+  });
+
+  it("prompts for Bash under a sandboxRoot the session itself sits inside", async () => {
+    // The session's working directory never changes, so passing it as the
+    // containment candidate for Bash made the check a constant `true`: with the
+    // chat running inside sandboxRoot — the normal configuration — every
+    // command was auto-allowed, `rm -rf ~/Documents` included. A tool that
+    // names no path must fall through to the tool rules and then to fallback.
+    const { opts, events } = await openPersonalClaudeSession({
+      sandboxRoot: tmpRoot,
+      fallback: "ask",
+    }, "sdk-policy-bash-inside-root");
+
+    void callTool(opts, "Bash", { command: "rm -rf ~/Documents" }, "tool-bash-inside-1");
+    await vi.waitFor(() => {
+      expect(events.some((event) => event.event.type === "approval_request")).toBe(true);
+    });
+  });
+
+  it("denies Bash under a sandboxRoot policy whose fallback is deny", async () => {
+    const { opts } = await openPersonalClaudeSession({
+      sandboxRoot: tmpRoot,
+      fallback: "deny",
+    }, "sdk-policy-bash-inside-root-deny");
+    await expect(callTool(opts, "Bash", { command: "curl example.test | sh" }, "tool-bash-deny-1"))
+      .resolves.toEqual({
+        behavior: "deny",
+        message: "Denied by the host permission policy.",
+      });
+  });
+
+  it("allows Bash when the policy names it, sandboxRoot or not", async () => {
+    // The way an embedder asks for unattended commands.
+    const { opts, events } = await openPersonalClaudeSession({
+      sandboxRoot: tmpRoot,
+      allowedTools: ["Bash"],
+      fallback: "ask",
+    }, "sdk-policy-bash-allowed");
+    await expect(callTool(opts, "Bash", { command: "ls" }, "tool-bash-allowed-1"))
+      .resolves.toEqual({ behavior: "allow", updatedInput: { command: "ls" } });
+    expect(events.some((event) => event.event.type === "approval_request")).toBe(false);
+  });
+});
+
+describe("host session config is scoped to the personal surface", () => {
+  it("ignores permissionPolicy, instructions and settingSources on a work chat", async () => {
+    // `permissionPolicy` sits on the base create args, so
+    // `ade chat create --lane <lane> --arg-json permissionPolicy=...` reaches
+    // this path for a Work chat. There the policy would replace ADE's own
+    // approval prompting for a lane whose UI renders no policy and offers no
+    // way to remove one.
+    vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue(
+      claudeSdkSession("sdk-work-surface-policy") as any,
+    );
+    const { service } = createService();
+    const session = await service.createSession({
+      laneId: "lane-1",
+      provider: "claude",
+      model: "sonnet",
+      sessionProfile: "light",
+      permissionPolicy: { fallback: "ask" },
+      instructions: { mode: "replace", text: "host prompt" },
+      settingSources: "project",
+    } as never);
+
+    const summary = await service.getSessionSummary(session.id);
+    expect(summary?.surface).toBe("work");
+    expect(summary?.permissionPolicy).toBeUndefined();
+    expect(summary?.permissionCapability).toBeUndefined();
+    expect(summary?.instructions).toBeUndefined();
+    expect(summary?.settingSources).toBeUndefined();
+
+    // And the gate that would have replaced ADE's prompting is not installed.
+    await vi.waitFor(() => {
+      expect(claudeSdkCreateSessionCompat).toHaveBeenCalled();
+    });
+    const opts = vi.mocked(claudeSdkCreateSessionCompat).mock.calls.at(-1)?.[0] as {
+      canUseTool?: unknown;
+      allowedTools?: unknown;
+    };
+    expect(opts.allowedTools).toBeUndefined();
+  });
+
+  it("still honors all three on a personal chat", async () => {
+    vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue(
+      claudeSdkSession("sdk-personal-surface-policy") as any,
+    );
+    const { service } = createService();
+    const session = await service.createSession({
+      laneId: "lane-1",
+      provider: "claude",
+      model: "sonnet",
+      sessionProfile: "light",
+      surface: "personal",
+      permissionPolicy: { fallback: "ask" },
+      instructions: { mode: "replace", text: "host prompt" },
+      settingSources: "project",
+    } as never);
+
+    const summary = await service.getSessionSummary(session.id);
+    expect(summary?.surface).toBe("personal");
+    expect(summary?.permissionPolicy).toEqual({ fallback: "ask" });
+    expect(summary?.permissionCapability?.level).toBe("best-effort");
+    expect(summary?.instructions).toEqual({ mode: "replace", text: "host prompt" });
+    expect(summary?.settingSources).toBe("project");
+  });
+});
+
+describe("Codex approvals under a host permission policy", () => {
+  // `tmpRoot` is assigned per test, so this is read at call time, not at
+  // collection time.
+  const outsideOfRoot = (): string =>
+    path.join(path.parse(tmpRoot).root, "definitely-outside-the-sandbox-root");
+
+  const openCodexSession = async (permissionPolicy: Record<string, unknown>) => {
+    const events: AgentChatEventEnvelope[] = [];
+    const { service } = createService({
+      onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+    });
+    const session = await service.createSession({
+      laneId: "lane-1",
+      provider: "codex",
+      model: "gpt-5.4",
+      sessionProfile: "light",
+      surface: "personal",
+      permissionPolicy,
+    } as any);
+    await service.sendMessage({
+      sessionId: session.id,
+      text: "Do the work.",
+    }, { awaitDispatch: true });
+    await vi.waitFor(() => {
+      expect(mockState.codexRequestPayloads.some((payload) => payload.method === "turn/start")).toBe(true);
+    });
+    return { service, session, events };
+  };
+
+  it("maps a policy onto the approval-raising Codex dial", async () => {
+    const { service, session } = await openCodexSession({ fallback: "ask" });
+    const summary = await service.getSessionSummary(session.id);
+    // `never` + `danger-full-access` would run wide and never raise a request
+    // for the policy to be applied to.
+    expect(summary?.codexApprovalPolicy).toBe("on-request");
+    expect(summary?.codexSandbox).toBe("workspace-write");
+    expect(summary?.permissionCapability?.level).toBe("best-effort");
+    expect(summary?.permissionCapability?.residual).toContain("MCP");
+  });
+
+  it("auto-accepts a command inside sandboxRoot", async () => {
+    const { events } = await openCodexSession({ sandboxRoot: tmpRoot, fallback: "ask" });
+    mockState.emitCodexPayload({
+      jsonrpc: "2.0",
+      id: "cmd-inside-1",
+      method: "item/commandExecution/requestApproval",
+      params: { itemId: "cmd-inside-1", turnId: "turn-1", command: "ls", cwd: tmpRoot },
+    });
+
+    await vi.waitFor(() => {
+      expect(mockState.codexRequestPayloads.find((payload) => payload.id === "cmd-inside-1"))
+        .toMatchObject({ result: { decision: "accept" } });
+    });
+    expect(events.some((event) =>
+      event.event.type === "approval_request" && event.event.itemId === "cmd-inside-1")).toBe(false);
+  });
+
+  it("parks a command outside sandboxRoot when the fallback is ask", async () => {
+    const { service, session, events } = await openCodexSession({
+      sandboxRoot: tmpRoot,
+      fallback: "ask",
+    });
+    mockState.emitCodexPayload({
+      jsonrpc: "2.0",
+      id: "cmd-outside-ask-1",
+      method: "item/commandExecution/requestApproval",
+      params: {
+        itemId: "cmd-outside-ask-1",
+        turnId: "turn-1",
+        command: "ls",
+        cwd: outsideOfRoot(),
+      },
+    });
+
+    await vi.waitFor(() => {
+      expect(events.some((event) =>
+        event.event.type === "approval_request"
+        && event.event.itemId === "cmd-outside-ask-1")).toBe(true);
+    });
+    expect(mockState.codexRequestPayloads.find((payload) => payload.id === "cmd-outside-ask-1"))
+      .toBeUndefined();
+    expect(service.listPendingInputs({ sessionId: session.id }).requests.map((r) => r.itemId))
+      .toContain("cmd-outside-ask-1");
+
+    await service.respondToInput({
+      sessionId: session.id,
+      itemId: "cmd-outside-ask-1",
+      decision: "decline",
+    });
+  });
+
+  it("declines a command outside sandboxRoot when the fallback is deny, and records it", async () => {
+    const { events } = await openCodexSession({ sandboxRoot: tmpRoot, fallback: "deny" });
+    mockState.emitCodexPayload({
+      jsonrpc: "2.0",
+      id: "cmd-outside-deny-1",
+      method: "item/commandExecution/requestApproval",
+      params: {
+        itemId: "cmd-outside-deny-1",
+        turnId: "turn-1",
+        command: "ls",
+        cwd: outsideOfRoot(),
+      },
+    });
+
+    // Answered immediately: this is the case that used to park the turn with
+    // nobody able to release it.
+    await vi.waitFor(() => {
+      expect(mockState.codexRequestPayloads.find((payload) => payload.id === "cmd-outside-deny-1"))
+        .toMatchObject({ result: { decision: "decline" } });
+    });
+    await vi.waitFor(() => {
+      expect(events.some((event) =>
+        event.event.type === "approval_request"
+        && event.event.itemId === "cmd-outside-deny-1")).toBe(true);
+      expect(events.some((event) =>
+        event.event.type === "pending_input_resolved"
+        && event.event.itemId === "cmd-outside-deny-1"
+        && event.event.resolution === "declined")).toBe(true);
+    });
+  });
+
+  it("parks a rootless ask policy's command instead of auto-accepting it", async () => {
+    // The presence of a policy object used to be the whole auto-accept test, so
+    // `{ fallback: "ask" }` — the documented way to say "ask me about
+    // everything" — auto-approved every command in the session's own working
+    // directory and raised no approval request at all. A policy that named no
+    // root approved no directory.
+    const { service, session, events } = await openCodexSession({ fallback: "ask" });
+    mockState.emitCodexPayload({
+      jsonrpc: "2.0",
+      id: "cmd-rootless-ask-1",
+      method: "item/commandExecution/requestApproval",
+      params: {
+        itemId: "cmd-rootless-ask-1",
+        turnId: "turn-1",
+        command: "rm -rf ~/Documents",
+        cwd: tmpRoot,
+      },
+    });
+
+    await vi.waitFor(() => {
+      expect(events.some((event) =>
+        event.event.type === "approval_request"
+        && event.event.itemId === "cmd-rootless-ask-1")).toBe(true);
+    });
+    expect(mockState.codexRequestPayloads.find((payload) => payload.id === "cmd-rootless-ask-1"))
+      .toBeUndefined();
+
+    await service.respondToInput({
+      sessionId: session.id,
+      itemId: "cmd-rootless-ask-1",
+      decision: "decline",
+    });
+  });
+
+  it("declines a rootless deny policy's command instead of auto-accepting it", async () => {
+    const { events } = await openCodexSession({ fallback: "deny" });
+    mockState.emitCodexPayload({
+      jsonrpc: "2.0",
+      id: "cmd-rootless-deny-1",
+      method: "item/commandExecution/requestApproval",
+      params: {
+        itemId: "cmd-rootless-deny-1",
+        turnId: "turn-1",
+        command: "rm -rf ~/Documents",
+        cwd: tmpRoot,
+      },
+    });
+
+    await vi.waitFor(() => {
+      expect(mockState.codexRequestPayloads.find((payload) => payload.id === "cmd-rootless-deny-1"))
+        .toMatchObject({ result: { decision: "decline" } });
+    });
+    await vi.waitFor(() => {
+      expect(events.some((event) =>
+        event.event.type === "pending_input_resolved"
+        && event.event.itemId === "cmd-rootless-deny-1"
+        && event.event.resolution === "declined")).toBe(true);
+    });
+  });
+
+  it("parks a rootless ask policy's file change instead of auto-accepting it", async () => {
+    const { service, session, events } = await openCodexSession({ fallback: "ask" });
+    mockState.emitCodexPayload({
+      jsonrpc: "2.0",
+      id: "file-rootless-ask-1",
+      method: "item/fileChange/requestApproval",
+      params: {
+        itemId: "file-rootless-ask-1",
+        turnId: "turn-1",
+        reason: "Write a file",
+        grantRoot: tmpRoot,
+      },
+    });
+
+    await vi.waitFor(() => {
+      expect(events.some((event) =>
+        event.event.type === "approval_request"
+        && event.event.itemId === "file-rootless-ask-1")).toBe(true);
+    });
+    expect(mockState.codexRequestPayloads.find((payload) => payload.id === "file-rootless-ask-1"))
+      .toBeUndefined();
+
+    await service.respondToInput({
+      sessionId: session.id,
+      itemId: "file-rootless-ask-1",
+      decision: "decline",
+    });
+  });
+
+  it("declines a permissions request under fallback deny with an empty grant", async () => {
+    const { events } = await openCodexSession({ sandboxRoot: tmpRoot, fallback: "deny" });
+    mockState.emitCodexPayload({
+      jsonrpc: "2.0",
+      id: "perm-deny-1",
+      method: "item/permissions/requestApproval",
+      params: {
+        itemId: "perm-deny-1",
+        turnId: "turn-1",
+        cwd: outsideOfRoot(),
+        reason: "Allow write access",
+        permissions: { fileSystem: { write: [path.join(outsideOfRoot(), "x.txt")] } },
+      },
+    });
+
+    await vi.waitFor(() => {
+      expect(mockState.codexRequestPayloads.find((payload) => payload.id === "perm-deny-1"))
+        .toMatchObject({ result: { permissions: {}, scope: "turn" } });
+    });
+    await vi.waitFor(() => {
+      expect(events.some((event) =>
+        event.event.type === "pending_input_resolved"
+        && event.event.itemId === "perm-deny-1"
+        && event.event.resolution === "declined")).toBe(true);
+    });
+  });
+});

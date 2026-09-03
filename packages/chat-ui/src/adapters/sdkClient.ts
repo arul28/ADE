@@ -32,7 +32,6 @@
  */
 
 import type {
-  AdeChatClient as SdkChatClient,
   AdeThread as SdkThread,
   AgentChatFileRef,
   ModelCatalogEntry,
@@ -42,6 +41,8 @@ import type {
   AdeChatClient,
   AdeThread,
   AgentChatEventEnvelope,
+  ApprovalDecision,
+  ApprovalRequest,
   ChatAttachment,
   ModelDescriptor,
   ProviderStatus,
@@ -71,6 +72,34 @@ import type {
  */
 export type { SdkProviderStatus };
 
+/**
+ * A provider status record as this adapter reads one.
+ *
+ * The catalog half is picked from the SDK's own type, so a rename over there is
+ * a compile error here. The probe half is restated as OPTIONAL, and that is the
+ * whole point: `@ade-dev/sdk` 0.2 always fills those fields (deriving them when
+ * the runtime cannot probe), but a 0.1 client, a WebSocket proxy, or a test
+ * double sends a record without them. Requiring them would reject clients that
+ * work perfectly well, and this adapter already has an honest answer for their
+ * absence — `source: "derived"`.
+ */
+export type SdkProviderStatusRecord = Pick<
+  SdkProviderStatus,
+  "provider" | "displayName" | "authenticated" | "available" | "requiresConfiguration" | "modelCount" | "stale"
+> &
+  Partial<{
+    installed: boolean;
+    binaryPath: string | null;
+    version: string | null;
+    authMethod: string | null;
+    installCommand: string | null;
+    loginCommand: string | null;
+    docsUrl: string | null;
+    source: "probed" | "derived";
+    checkedAt: string;
+    detail: string | null;
+  }>;
+
 /** The SDK's attachment reference, under this adapter's name. */
 export type SdkFileRef = AgentChatFileRef;
 
@@ -97,7 +126,16 @@ export type SdkLikeThread = Pick<
   SdkThread,
   "key" | "send" | "steer" | "interrupt" | "history" | "on"
 > &
-  Partial<Pick<SdkThread, "id" | "mcpCapability" | "setModel">>;
+  Partial<Pick<SdkThread, "id" | "mcpCapability" | "setModel">> & {
+    /**
+     * Declared structurally rather than picked from the SDK thread, for the
+     * same reason as the probe fields above: an older `@ade-dev/sdk`, a fake,
+     * or a proxy that forwards only the chat surface has no answer path, and
+     * this adapter reports its absence instead of assuming it.
+     */
+    approve?(itemId: string, decision: ApprovalDecision, responseText?: string): Promise<void>;
+    pendingApprovals?(): Promise<readonly ApprovalRequest[]>;
+  };
 
 /**
  * A client this adapter can wrap.
@@ -108,14 +146,32 @@ export type SdkLikeThread = Pick<
  * business and are deliberately not required.
  */
 export interface SdkLikeChatClient {
-  providers: SdkChatClient["providers"];
+  /**
+   * Restated rather than picked from `SdkChatClient["providers"]`, for the
+   * relaxations only: the records are `SdkProviderStatusRecord` (see above) and
+   * `refresh` is OPTIONAL, because a 0.1 client and a chat-only proxy have
+   * nothing to re-probe. A real client satisfies both, and the assignability
+   * test in `test/sdkClient.test.ts` is what keeps that true.
+   */
+  providers: {
+    status(): Promise<Record<string, SdkProviderStatusRecord>>;
+    onChange(cb: (statuses: Record<string, SdkProviderStatusRecord>) => void): Unsubscribe;
+    refresh?(): Promise<Record<string, SdkProviderStatusRecord>>;
+  };
   models: { list(): Promise<SdkModelCatalogEntry[]> };
   threads: {
     open(key: string, opts?: Record<string, unknown>): Promise<SdkLikeThread>;
   };
 }
 
-/** Per-provider shell commands the SDK cannot discover but a host usually knows. */
+/**
+ * Per-provider shell commands, as an OVERRIDE of what the runtime reports.
+ *
+ * A runtime that probes providers already knows how to install and sign in to
+ * each one, and those strings arrive on the status record. Use this to change
+ * ADE's wording — not to supply it. A hint always wins over the record, so a
+ * host that set these in 0.1.x keeps the exact copy it had.
+ */
 export type ProviderCommandHints = Record<
   string,
   { installCommand?: string; loginCommand?: string; docsUrl?: string }
@@ -228,7 +284,7 @@ export function threadUsageFromEnvelope(envelope: AgentChatEventEnvelope): Threa
 /* -------------------------------------------------------------------------- */
 
 export function providerStatusesFromSdk(
-  statuses: Record<string, SdkProviderStatus>,
+  statuses: Record<string, SdkProviderStatusRecord>,
   options: AdaptSdkClientOptions = {},
 ): ProviderStatus[] {
   const hints = options.commandHints ?? {};
@@ -236,7 +292,7 @@ export function providerStatusesFromSdk(
   const ordered = options.providerFilter
     ? options.providerFilter
         .map((id) => entries.find((entry) => entry.provider === id))
-        .filter((entry): entry is SdkProviderStatus => Boolean(entry))
+        .filter((entry): entry is SdkProviderStatusRecord => Boolean(entry))
     : entries;
 
   return ordered.map((entry) => {
@@ -244,17 +300,34 @@ export function providerStatusesFromSdk(
     const status: ProviderStatus = {
       id: entry.provider,
       displayName: entry.displayName || entry.provider,
-      // The SDK derives everything from the model catalog and has no separate
-      // "is the CLI on disk" probe, so "ADE knows models for it" is the closest
-      // honest reading of `installed`. It is never inferred from `authenticated`
-      // — that would render an unauthenticated provider as "not installed" and
-      // send the user to the wrong copyable command.
-      installed: entry.modelCount > 0,
+      // A runtime that probes the filesystem answers this directly. Only when
+      // it does not does "ADE knows models for it" stand in — the closest
+      // honest reading available from a catalog alone. It is never inferred
+      // from `authenticated`: that would render an unauthenticated provider as
+      // "not installed" and send the user to the wrong copyable command.
+      //
+      // The same derivation exists in `@ade-dev/sdk` (`src/providers.ts`,
+      // `deriveProviderStatus`). This copy is load-bearing rather than
+      // redundant: it serves 0.1 clients, WebSocket proxies and test doubles
+      // that send a record with neither `installed` nor `source`, which the SDK
+      // never has to consider. Keep the two rules identical.
+      installed: entry.installed ?? entry.modelCount > 0,
       authenticated: entry.authenticated,
     };
-    if (hint.installCommand) status.installCommand = hint.installCommand;
-    if (hint.loginCommand) status.loginCommand = hint.loginCommand;
-    if (hint.docsUrl) status.docsUrl = hint.docsUrl;
+    // `source` says which of the two readings above produced `installed`, so
+    // the card can soften "Not installed" to "Not detected" when nobody looked.
+    status.source = entry.source ?? (entry.installed === undefined ? "derived" : "probed");
+    if (entry.binaryPath) status.binaryPath = entry.binaryPath;
+    if (entry.version) status.version = entry.version;
+    if (entry.checkedAt) status.checkedAt = entry.checkedAt;
+
+    // Record first, hint last: the hint is an override of ADE's wording.
+    const installCommand = hint.installCommand ?? entry.installCommand;
+    const loginCommand = hint.loginCommand ?? entry.loginCommand;
+    const docsUrl = hint.docsUrl ?? entry.docsUrl;
+    if (installCommand) status.installCommand = installCommand;
+    if (loginCommand) status.loginCommand = loginCommand;
+    if (docsUrl) status.docsUrl = docsUrl;
 
     const detail = describeProvider(entry);
     if (detail) status.detail = detail;
@@ -262,7 +335,11 @@ export function providerStatusesFromSdk(
   });
 }
 
-function describeProvider(entry: SdkProviderStatus): string | undefined {
+function describeProvider(entry: SdkProviderStatusRecord): string | undefined {
+  // A probing runtime can say something no rung below could know — "cursor is a
+  // Node package, not a CLI", for instance. Dropping that in favour of a
+  // generic rung would be a step backwards, so it wins.
+  if (entry.detail) return entry.detail;
   if (entry.modelCount === 0) return "ADE has no models for this provider.";
   if (!entry.authenticated) return "Not signed in.";
   if (entry.requiresConfiguration) return "Needs configuration before it can run.";
@@ -336,9 +413,31 @@ class AdaptedThread implements AdeThread {
    */
   readonly setModel?: (modelId: string) => Promise<unknown>;
 
+  /**
+   * Present only when the inner thread can answer approvals, for the same
+   * reason as `setModel`: the card renders read-only rather than offering a
+   * button whose click would throw.
+   */
+  readonly approve?: (
+    itemId: string,
+    decision: ApprovalDecision,
+    responseText?: string,
+  ) => Promise<void>;
+
+  readonly pendingApprovals?: () => Promise<readonly ApprovalRequest[]>;
+
   constructor(private readonly inner: SdkLikeThread) {
     if (inner.setModel) {
       this.setModel = (modelId: string) => inner.setModel!(modelId);
+    }
+    if (inner.approve) {
+      this.approve = (itemId, decision, responseText) =>
+        responseText === undefined
+          ? inner.approve!(itemId, decision)
+          : inner.approve!(itemId, decision, responseText);
+    }
+    if (inner.pendingApprovals) {
+      this.pendingApprovals = () => inner.pendingApprovals!();
     }
   }
 
@@ -413,11 +512,20 @@ export function adaptSdkClient(
     };
   };
 
+  const refresh = sdk.providers.refresh;
   return {
     providers: {
       status: async () => providerStatusesFromSdk(await sdk.providers.status(), options),
       onChange: (cb) =>
         sdk.providers.onChange((statuses) => cb(providerStatusesFromSdk(statuses, options))),
+      // Forwarded only when the SDK client has it, so a host can tell a
+      // re-probing runtime from one that only derives statuses from a catalog.
+      ...(refresh
+        ? {
+            refresh: async () =>
+              providerStatusesFromSdk(await refresh.call(sdk.providers), options),
+          }
+        : {}),
     },
     models: {
       list: async () => {

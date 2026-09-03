@@ -1,6 +1,6 @@
 import React, { useState } from "react";
 import type { AgentChatEvent } from "../../../shared/types";
-import { formatAutoResumeTime, isUsageLimitChatError } from "../../../shared/chatAutoResume";
+import { formatUsageLimitResetLabel, isUsageLimitChatError } from "../../../shared/chatAutoResume";
 
 export type ProviderFailureRecovery = {
   kind: "capacity" | "rate_limit";
@@ -14,8 +14,9 @@ export type ProviderFailureRecovery = {
  * only this card re-renders when the schedule appears or is cancelled.
  */
 export type ChatAutoResumeState = {
-  scheduleId: string;
-  /** ISO fire time of the durable scheduled-work row. */
+  /** ADE scheduled-work id, or null when the SDK is waiting natively. */
+  scheduleId: string | null;
+  /** ISO fire time of the durable scheduled-work row or SDK parked-until instant. */
   nextRunAt: string | null;
   /**
    * {@link providerFailureEventId} of the newest usage-limit failure in this
@@ -131,19 +132,23 @@ export function ProviderFailureRecoveryCard({
       {showAutoResume ? (
         <div
           data-testid="auto-resume-scheduled"
-          className="mt-2 flex flex-wrap items-center gap-2 text-[length:calc(var(--chat-font-size)*10.5/14)] leading-relaxed text-amber-50/72"
+          className="mt-2 space-y-2 text-[length:calc(var(--chat-font-size)*10.5/14)] leading-relaxed text-amber-50/72"
         >
-          <span>{`Auto-resume scheduled for ${formatAutoResumeTime(autoResumeAt)}`}</span>
-          <button
-            type="button"
-            disabled={cancelPending}
-            className="rounded-md border border-amber-200/16 bg-amber-300/[0.07] px-2 py-0.5 font-mono text-[length:calc(var(--chat-font-size)*9/14)] font-semibold text-amber-50/80 transition-colors hover:border-amber-200/30 hover:bg-amber-300/[0.13] disabled:pointer-events-none disabled:opacity-40"
-            onClick={() => { void cancelAutoResume(); }}
-          >
-            Cancel auto-resume
-          </button>
+          <div className="font-medium text-amber-50/90">Usage limit reached</div>
+          <div>{formatUsageLimitResetLabel(autoResumeAt)}</div>
+          <div>Continue automatically</div>
+          <div className="flex justify-end">
+            <button
+              type="button"
+              disabled={cancelPending}
+              className="rounded-md border border-amber-200/16 bg-amber-300/[0.07] px-2.5 py-1 font-mono text-[length:calc(var(--chat-font-size)*9/14)] font-semibold text-amber-50/80 transition-colors hover:border-amber-200/30 hover:bg-amber-300/[0.13] disabled:pointer-events-none disabled:opacity-40"
+              onClick={() => { void cancelAutoResume(); }}
+            >
+              Don&apos;t continue
+            </button>
+          </div>
         </div>
-      ) : null}
+      ) : (
       <div className="mt-2 flex flex-wrap gap-1.5">
         <button
           type="button"
@@ -165,6 +170,7 @@ export function ProviderFailureRecoveryCard({
           Choose model
         </button>
       </div>
+      )}
       {retryError ? (
         <div role="alert" className="mt-2 text-[length:calc(var(--chat-font-size)*10/14)] leading-relaxed text-red-200/75">
           {retryError}

@@ -73,6 +73,34 @@ export function captureChatAutoResumeAnalytics(args: {
   });
 }
 
+/**
+ * One coarse fact when this client's Claude hooks were ignored because
+ * another client already configured the joined session. Identity only —
+ * no hook names, payloads, or transcripts. Dedupe per session with a
+ * one-hour minimum interval.
+ */
+export function captureClaudeHooksIgnoredAnalytics(args: {
+  analytics: AgentTurnAnalytics;
+  projectId: string;
+  event: { sessionId: string };
+}): void {
+  args.analytics.captureInternal({
+    event: "ade_feature_used",
+    surface: "api",
+    projectId: args.projectId,
+    sessionId: args.event.sessionId,
+    dedupeKey: `chat_hooks_ignored:${args.event.sessionId}`,
+    minimumIntervalMs: 60 * 60_000,
+    properties: {
+      feature: "chat",
+      action: "hooks_ignored",
+      outcome: "failed",
+      provider: "claude",
+      source: "runtime",
+    },
+  });
+}
+
 export function captureAgentTurnSettledAnalytics(args: {
   analytics: AgentTurnAnalytics;
   projectId: string;

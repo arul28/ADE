@@ -46,24 +46,41 @@ Two clients on one `home` fight over the same socket and SQLite root. Open **one
 
 Resolution order:
 
-1. `binaryPath` — pin a specific build; skips PATH and download.
-2. A previously downloaded binary in the home cache.
-3. `ade` on `PATH` (optional; tests can disable this).
-4. Download from the ADE GitHub release, fail-closed against that release's `SHA256SUMS`.
+1. `binaryPath` — pin a specific build; skips everything below.
+2. An installed `@ade-dev/runtime-<target>` platform package.
+3. A previously downloaded binary in the home cache.
+4. `ade` on `PATH` (optional; tests can disable this).
+5. Download from the ADE GitHub release, fail-closed against that release's `SHA256SUMS`.
 
 ```ts
 const ade = await createAdeChat({
   home: "./.ade-embed",
-  binaryPath: "/usr/local/bin/ade", // skip download
-  channel: "latest",                // or a release tag
+  binaryPath: "/usr/local/bin/ade",  // skip everything below
+  runtimeNodeModules: "/opt/ade/native/node_modules", // when they are not beside the binary
+  allowDownload: false,              // throw runtime_unavailable instead of fetching
+  channel: "latest",                 // or a release tag
 });
 ```
 
-Downloads verify checksums before the binary is used. A mismatch is a hard error (`checksum_mismatch`), not a warning.
+The platform package sits directly below the pinned path because installing it is itself an explicit act: it is in your lockfile and inside your bundle, and a download must never quietly take precedence over the copy you signed.
+
+`allowDownload: false` is what a shipping app wants. A packaging mistake then fails loudly in QA rather than working through a silent download on the developer's machine and failing on a locked-down user's.
+
+Downloads verify checksums before the binary is used. A mismatch is a hard error (`checksum_mismatch`), not a warning. The pinned and bundled routes skip that check by design: bytes you signed into your own bundle are verified by the OS.
+
+<Card title="Bundling" href="/sdk/bundling" icon="box" horizontal>
+  Ship the runtime inside a signed app: platform packages, `codesign` lines, entitlements, electron-builder.
+</Card>
 
 ## Electron
 
-Run `@ade-dev/sdk` from the **main process**, not the renderer. Spawn owns a child process and a Unix socket (or a Windows named pipe). Bridge events to the renderer yourself, or put [`@ade-dev/chat-ui`](/sdk/chat-ui) behind a preload that talks to main.
+Run `@ade-dev/sdk` from the **main process**, not the renderer. Spawn owns a child process and a Unix socket (or a Windows named pipe), and a sandboxed renderer has neither.
+
+Do not write the bridge yourself. `@ade-dev/sdk/electron` ships it: one function per process, listener teardown on reload, and the history-and-live ordering rule in code.
+
+<Card title="Electron bridge" href="/sdk/electron" icon="atom" horizontal>
+  `registerAdeIpc`, `exposeAdeBridge`, `createAdeIpcClient`, and what `sandbox: true` requires.
+</Card>
 
 ## Windows
 

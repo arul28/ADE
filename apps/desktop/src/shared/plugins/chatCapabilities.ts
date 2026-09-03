@@ -169,10 +169,11 @@ const OPENCODE_PERMISSION_OPTIONS: PluginChatPermissionOption[] = [
 ] satisfies { value: AgentChatOpenCodePermissionMode; label: string; detail: string }[];
 
 const DROID_PERMISSION_OPTIONS: PluginChatPermissionOption[] = [
-  { value: "read-only", label: "Read-only", detail: "No auto flag. Droid stays in read-only mode." },
-  { value: "auto-low", label: "Auto low", detail: "Passes --auto low for safe file edits." },
-  { value: "auto-medium", label: "Auto medium", detail: "Passes --auto medium for local development operations." },
-  { value: "auto-high", label: "Auto high", detail: "Passes --auto high for broader automation." },
+  { value: "read-only", label: "Read-only", detail: "No auto flag. Droid stays in read-only mode for analysis and planning." },
+  { value: "auto-low", label: "Auto low", detail: "Passes --auto low for safe file edits and low-risk operations." },
+  { value: "auto-medium", label: "Auto medium", detail: "Passes --auto medium for local development operations such as builds, tests, and package installs." },
+  { value: "auto-high", label: "Auto high", detail: "Passes --auto high for broad automation. Use only in trusted workspaces." },
+  { value: "agi", label: "AGI (orchestrator)", detail: "Droid decomposes the task into a mission and spawns worker subagents." },
 ] satisfies { value: AgentChatDroidPermissionMode; label: string; detail: string }[];
 
 const CURSOR_MODE_LABELS: Record<string, string> = {

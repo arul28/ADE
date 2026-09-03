@@ -139,6 +139,8 @@ import type {
   AgentChatValidateCrossMachineSourceArgs,
   AgentChatInterruptArgs,
   AgentChatInterruptResult,
+  AgentChatStopTaskArgs,
+  AgentChatStopTaskResult,
   AgentChatRestoreCancelledQueueArgs,
   AgentChatRestoreCancelledQueueResult,
   AgentChatRecoverTurnArgs,
@@ -1875,6 +1877,10 @@ declare global {
           args: AgentChatInterruptArgs,
           pin?: OpenProjectBinding | null,
         ) => Promise<AgentChatInterruptResult>;
+        stopTask: (
+          args: AgentChatStopTaskArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<AgentChatStopTaskResult>;
         restoreCancelledQueue: (
           args: AgentChatRestoreCancelledQueueArgs,
           pin?: OpenProjectBinding | null,

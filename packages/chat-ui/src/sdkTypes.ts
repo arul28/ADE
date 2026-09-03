@@ -4,10 +4,14 @@
  * PROVENANCE: the event shapes below are a hand-trimmed subset of
  * `apps/desktop/src/shared/types/chat.ts` (`AgentChatEvent`,
  * `AgentChatEventEnvelope`), reduced to the card set this package draws:
- * user text, assistant text, reasoning, tool call/result, error, status.
- * ADE-internal event kinds (subagent lifecycle, scheduled work, plans, todo
- * updates, approvals, delegation, ade_card, work-log grouping) are deliberately
- * absent — this package has no ADE dev concepts in it.
+ * user text, assistant text, reasoning, tool call/result, error, status, and
+ * the two approval events. ADE-internal event kinds (subagent lifecycle,
+ * scheduled work, plans, todo updates, delegation, ade_card, work-log grouping)
+ * are deliberately absent — this package has no ADE dev concepts in it.
+ *
+ * Approvals are the exception to "internal", because they are not an ADE dev
+ * concept at all: they are the provider asking the person at the keyboard for
+ * permission, and the turn stays blocked until someone answers.
  *
  * This file is a *copy*, not an import: the package is standalone and takes
  * `@ade-dev/sdk` only as an optional peer. `@ade-dev/sdk` is being built in parallel to
@@ -24,13 +28,26 @@ export type ProviderStatus = {
   /** Human label. Falls back to `id` when omitted. */
   displayName?: string;
   /**
-   * Provider binary/runtime is present. A host that can probe the filesystem
-   * should say so honestly; `adaptSdkClient` cannot, and reports the closest
-   * thing `@ade-dev/sdk` exposes (the provider has models in the catalog).
+   * Provider binary/runtime is present.
+   *
+   * Read this together with `source`. A runtime that probes the filesystem
+   * reports it directly (`source: "probed"`), and `installed: false` then means
+   * "looked, found nothing". A runtime that cannot probe leaves the adapter to
+   * derive it from the model catalog (`source: "derived"`), where the same
+   * `false` only means "ADE knows no models for it" — which is why the card
+   * says "Not detected" rather than "Not installed" in that case.
    */
   installed: boolean;
   /** Credentials are present and usable. */
   authenticated: boolean;
+  /** Absolute path of the binary the runtime would spawn. Probed hosts only. */
+  binaryPath?: string;
+  /** Version string the provider reported, verbatim. Probed hosts only. */
+  version?: string;
+  /** How `installed`, `binaryPath` and `version` were established. */
+  source?: "probed" | "derived";
+  /** ISO-8601 time the status was established. */
+  checkedAt?: string;
   /** Shell command that authenticates this provider. Rendered copyable. */
   loginCommand?: string;
   /** Shell command that installs this provider. Rendered copyable. */
@@ -100,6 +117,39 @@ export type ThreadOpenOptions = {
 
 export type ToolCallStatus = "running" | "completed" | "failed" | "interrupted";
 
+/* -------------------------------------------------------------------------- */
+/* Approvals                                                                   */
+/* -------------------------------------------------------------------------- */
+
+/** What the provider wants confirmed. */
+export type ApprovalKind = "command" | "file_change" | "tool_call";
+
+/**
+ * The three answers this package can send.
+ *
+ * `accept_always` is the one that makes approvals bearable over a long session:
+ * it settles this request and stops the provider asking again for the same
+ * thing. The client maps these onto whatever its runtime spells them.
+ */
+export type ApprovalDecision = "accept" | "accept_always" | "reject";
+
+/** An outstanding approval, as `thread.pendingApprovals()` reports one. */
+export type ApprovalRequest = {
+  itemId: string;
+  logicalItemId?: string;
+  kind: ApprovalKind;
+  requestKind?: string;
+  description: string;
+  turnId?: string;
+  detail?: unknown;
+  /**
+   * Optional on purpose: the SDK always knows which provider raised a request,
+   * but a proxy that only forwards the chat surface may not, and this package
+   * renders the same card either way.
+   */
+  provider?: ProviderId;
+};
+
 export type ChatEventUserMessage = {
   type: "user_message";
   text: string;
@@ -159,6 +209,40 @@ export type ChatEventStatus = {
   message?: string;
 };
 
+/**
+ * The provider is blocked on a person answering. The turn does not proceed
+ * until `thread.approve()` settles it or `thread.interrupt()` ends the turn, so
+ * a host that receives one and draws nothing looks frozen.
+ */
+export type ChatEventApprovalRequest = {
+  type: "approval_request";
+  itemId: string;
+  /** Stable across a provider renumbering items; preferred for matching. */
+  logicalItemId?: string;
+  /** The shape of the thing being confirmed. */
+  kind: ApprovalKind;
+  /**
+   * The finer request type. `kind` has no word for a question, so a provider
+   * asking for prose rides this event with `requestKind: "question"`. Those
+   * cannot be answered with accept/reject and render read-only here.
+   */
+  requestKind?: string;
+  description: string;
+  turnId?: string;
+  /** Provider payload: the command string, the patch, the tool input. */
+  detail?: unknown;
+};
+
+/** An `approval_request` reached a decision — by this host or by another one. */
+export type ChatEventPendingInputResolved = {
+  type: "pending_input_resolved";
+  itemId: string;
+  /** Matched when `itemId` finds no card, for a provider that renumbers items. */
+  logicalItemId?: string;
+  resolution: "accepted" | "declined" | "cancelled";
+  turnId?: string;
+};
+
 /** The event kinds this package draws. Everything else is dropped. */
 export type RenderedChatEvent =
   | ChatEventUserMessage
@@ -167,7 +251,9 @@ export type RenderedChatEvent =
   | ChatEventToolCall
   | ChatEventToolResult
   | ChatEventError
-  | ChatEventStatus;
+  | ChatEventStatus
+  | ChatEventApprovalRequest
+  | ChatEventPendingInputResolved;
 
 /**
  * Any other event kind, carried but not drawn.
@@ -216,6 +302,18 @@ export interface AdeThread {
    * accepting a click that silently does nothing.
    */
   setModel?(modelId: string): Promise<unknown>;
+  /**
+   * Answer an approval the thread emitted.
+   *
+   * OPTIONAL for the same reason as `setModel`: a client whose runtime has no
+   * answer path must be able to say so, and `ThreadState.canApprove` reports
+   * its presence so the card renders read-only instead of offering a button
+   * that would throw. Resolves once the runtime accepts the decision, not once
+   * the tool has run.
+   */
+  approve?(itemId: string, decision: ApprovalDecision, responseText?: string): Promise<void>;
+  /** Outstanding requests, so a host re-rendering after a reload restores cards. */
+  pendingApprovals?(): Promise<readonly ApprovalRequest[]>;
   history(): Promise<AgentChatEventEnvelope[]>;
   on(type: "event", cb: (envelope: AgentChatEventEnvelope) => void): Unsubscribe;
   on(type: "usage", cb: (usage: ThreadUsage) => void): Unsubscribe;
@@ -226,6 +324,13 @@ export interface AdeChatClient {
   providers: {
     status(): Promise<ProviderStatus[]>;
     onChange(cb: (statuses: ProviderStatus[]) => void): Unsubscribe;
+    /**
+     * Re-probe now, bypassing whatever cache the runtime keeps.
+     *
+     * OPTIONAL: a client that derives statuses from a catalog has nothing to
+     * re-probe. A host renders a "Check again" button only when it is present.
+     */
+    refresh?(): Promise<ProviderStatus[]>;
   };
   models: {
     list(): Promise<ModelDescriptor[]>;

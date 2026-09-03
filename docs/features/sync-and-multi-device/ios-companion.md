@@ -3329,10 +3329,19 @@ the stats and shows update guidance.
   Queue-only providers (a single mode is not a choice) keep the plain
   stage-behind-turn button, matching the desktop composer. When the host
   advertises additive `chat.interruptWithQueueMode`, Claude Stop likewise
-  becomes a split control for **Stop & clear queue**
-  and **Stop only**; the per-chat choice is stored in `UserDefaults`, carries
+  becomes a split control for the four-mode matrix (**Turn only**, **Turn + queue**,
+  **Turn + background**, **Turn + queue + background**); the per-chat choice is stored in `UserDefaults`, carries
   VoiceOver labels and haptics, and falls back to legacy Stop against older
-  brains.
+  brains. Running native subagent rows, background rows with a `sourceTaskId`,
+  and timeline spawn cards expose a square stop that calls `chat.stopTask`
+  when the host advertises it; spawned ADE chats (`chat:` task ids) are not
+  stoppable this way. A parked usage-limit chat shows **Usage limit reached**,
+  the reset clock, **Continue automatically**, and **Don't continue** above the
+  composer (`WorkUsageLimitBanner`); Don't continue opts out via
+  `updateChatSession(autoContinueAtUsageLimit: false)`. iOS still uses the
+  existing context meter rather than a kind-classified `/context` card; it
+  decodes `AgentChatContextUsageCategory.kind` so a row named Free with
+  `kind: "used"` stays used.
 - **Active-turn sends are atomic, so nothing flashes through the staged strip.**
   `AgentChatSteerRequest` carries the desktop's `dispatchMode` field
   (`"inline"` / `"interrupt"`, spelled exactly as the host validates it), and

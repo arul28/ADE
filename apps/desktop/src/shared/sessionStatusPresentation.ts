@@ -144,6 +144,8 @@ export type SessionStatusActivityContext = {
   backgroundWork?: SessionBackgroundWork | null;
   nextWakeAt?: string | null;
   nowMs?: number;
+  /** ISO instant a usage-limit auto-resume is parked until. */
+  usageLimitParkedUntil?: string | null;
 };
 
 function countSuffix(count: number): string {
@@ -224,6 +226,19 @@ export function sessionStatusPresentation(
       showsElapsed: true,
       prominent: false,
     };
+  }
+
+  if ((phase === "ready" || phase === "idle") && activity.usageLimitParkedUntil) {
+    const parkedUntil = Date.parse(activity.usageLimitParkedUntil);
+    if (Number.isFinite(parkedUntil) && parkedUntil > (activity.nowMs ?? Date.now())) {
+      return {
+        label: "Parked",
+        tone: "neutral",
+        glyph: "waiting",
+        showsElapsed: false,
+        prominent: false,
+      };
+    }
   }
 
   if ((phase === "ready" || phase === "idle") && activity.nextWakeAt) {

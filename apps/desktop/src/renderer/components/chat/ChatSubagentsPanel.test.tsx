@@ -168,6 +168,45 @@ describe("ChatSubagentsPanel (pane variant)", () => {
     expect(arg.background).toBe(true);
   });
 
+  it("stops a running native subagent without taking over the row", () => {
+    const onStopSubagent = vi.fn();
+    const onSelectSubagent = vi.fn();
+    render(
+      <ChatSubagentsPanel
+        snapshots={[baseSnapshot]}
+        events={[]}
+        variant="pane"
+        capability={CLAUDE_CAP}
+        onSelectSubagent={onSelectSubagent}
+        onStopSubagent={onStopSubagent}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Stop code-reviewer" }));
+    expect(onStopSubagent).toHaveBeenCalledTimes(1);
+    expect(onStopSubagent.mock.calls[0]![0].taskId).toBe("task-1");
+    expect(onSelectSubagent).not.toHaveBeenCalled();
+  });
+
+  it("does not offer per-task stop on a spawned ADE chat row", () => {
+    const onStopSubagent = vi.fn();
+    render(
+      <ChatSubagentsPanel
+        snapshots={[{
+          ...baseSnapshot,
+          taskId: "chat:child-1",
+          childSessionId: "child-1",
+          description: "Codex Chat",
+        }]}
+        events={[]}
+        variant="pane"
+        onStopSubagent={onStopSubagent}
+      />,
+    );
+
+    expect(screen.queryByRole("button", { name: "Stop Codex Chat" })).toBeNull();
+  });
+
   it("takes over immediately without probing for running agents on a rich-metadata runtime (codex)", () => {
     const onSelectSubagent = vi.fn<[SubagentSelection], void>();
     const probeSubagentTranscript = vi.fn().mockResolvedValue(false);
@@ -915,5 +954,114 @@ describe("ChatSubagentsPanel (pane variant)", () => {
     const header = screen.getByText("Subagents").closest("div");
     expect(header?.className).toContain("sticky");
     expect(header?.className).toContain("--work-sidebar-bg");
+  });
+
+  it("indents nested agents with connector glyphs and a collapsible files-returned row", () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.assign(navigator, { clipboard: { writeText } });
+    const parent: ChatSubagentSnapshot = {
+      ...baseSnapshot,
+      taskId: "root",
+      agentId: "root",
+      description: "typecheck desktop",
+      background: false,
+    };
+    const child: ChatSubagentSnapshot = {
+      ...baseSnapshot,
+      taskId: "child",
+      agentId: "child",
+      parentAgentId: "root",
+      description: "explore chat tests",
+      background: false,
+      spawnDepth: 1,
+      resourceLinks: [{ path: "apps/desktop/src/foo.ts" }, { path: "apps/desktop/src/bar.ts" }],
+    };
+
+    render(
+      <ChatSubagentsPanel
+        snapshots={[parent, child]}
+        events={[]}
+        variant="pane"
+      />,
+    );
+
+    expect(screen.getByText(/└/)).toBeTruthy();
+    expect(screen.getByText("2 files returned")).toBeTruthy();
+    expect(screen.queryByText("apps/desktop/src/foo.ts")).toBeNull();
+
+    fireEvent.click(screen.getByText("2 files returned"));
+    expect(screen.getByText("apps/desktop/src/foo.ts")).toBeTruthy();
+    expect(screen.getByText("apps/desktop/src/bar.ts")).toBeTruthy();
+
+    fireEvent.click(screen.getByTitle("Copy all paths"));
+    expect(writeText).toHaveBeenCalledWith("apps/desktop/src/foo.ts\napps/desktop/src/bar.ts");
+  });
+
+  it("keeps the expand caret as a sibling button, not nested inside the row", () => {
+    const parent: ChatSubagentSnapshot = {
+      ...baseSnapshot,
+      taskId: "parent",
+      agentId: "parent",
+      description: "Finished parent",
+      status: "completed",
+      background: false,
+    };
+    const child: ChatSubagentSnapshot = {
+      ...baseSnapshot,
+      taskId: "child",
+      agentId: "child",
+      parentAgentId: "parent",
+      description: "Finished child",
+      status: "completed",
+      background: false,
+    };
+
+    render(
+      <ChatSubagentsPanel
+        snapshots={[parent, child]}
+        events={[]}
+        variant="pane"
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Completed (1)" }));
+    const caret = screen.getByRole("button", { name: "Show nested agents" });
+    const row = screen.getByTitle("Finished parent");
+    expect(caret.tagName).toBe("BUTTON");
+    expect(row.tagName).toBe("BUTTON");
+    expect(row.contains(caret)).toBe(false);
+    expect(screen.queryByTitle("Finished child")).toBeNull();
+  });
+
+  it("keeps a selected finished descendant visible while auto-collapsing the rest", () => {
+    const parent: ChatSubagentSnapshot = {
+      ...baseSnapshot,
+      taskId: "parent",
+      agentId: "parent",
+      description: "Finished parent",
+      status: "completed",
+      background: false,
+    };
+    const child: ChatSubagentSnapshot = {
+      ...baseSnapshot,
+      taskId: "child",
+      agentId: "child",
+      parentAgentId: "parent",
+      description: "Finished child",
+      status: "completed",
+      background: false,
+    };
+
+    render(
+      <ChatSubagentsPanel
+        snapshots={[parent, child]}
+        events={[]}
+        variant="pane"
+        selectedTaskId="child"
+      />,
+    );
+
+    expect(screen.getByTitle("Finished child")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Show nested agents" })).toBeNull();
   });
 });

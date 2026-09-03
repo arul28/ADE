@@ -22,6 +22,8 @@ import type {
   AdeChatClient,
   AdeThread,
   AgentChatEventEnvelope,
+  ApprovalDecision,
+  ApprovalRequest,
   ModelDescriptor,
   ProviderStatus,
   SendInput,
@@ -148,12 +150,22 @@ export type ThreadState = {
   interrupt: () => Promise<void>;
   /** Switch the open thread's model in place. No-op when already bound to it. */
   setModel: (modelId: string) => Promise<void>;
+  /** Answer an approval. No-op on a thread that cannot answer them. */
+  approve: (itemId: string, decision: ApprovalDecision, responseText?: string) => Promise<void>;
+  /** Outstanding approvals, or `[]` on a thread that cannot report them. */
+  pendingApprovals: () => Promise<readonly ApprovalRequest[]>;
   /**
    * Whether the open thread can switch models at all. False for a client whose
    * thread predates `setModel`, so a host can disable its picker with a reason
    * instead of accepting a click that would do nothing.
    */
   canSetModel: boolean;
+  /**
+   * Whether the open thread can answer approvals at all. False for a client
+   * whose thread predates `approve`, so the card renders read-only with a
+   * reason instead of offering a button whose click would throw.
+   */
+  canApprove: boolean;
 };
 
 const IDLE_STATUS: ThreadStatus = { state: "idle" };
@@ -183,6 +195,23 @@ export function useAdeThread(
   const client = useAdeChatClient(options?.client);
   const [thread, setThread] = useState<AdeThread | null>(null);
   const [envelopes, setEnvelopes] = useState<AgentChatEventEnvelope[]>([]);
+  /**
+   * Requests the runtime is still blocked on that the transcript does not show.
+   *
+   * Kept beside the envelopes rather than mixed into them: they are requests,
+   * not events, and `buildTranscriptRows` takes them as such. A resolution that
+   * arrives live settles the card through the normal collapse rules.
+   */
+  const [restoredApprovals, setRestoredApprovals] = useState<readonly ApprovalRequest[]>([]);
+  /**
+   * When `restoredApprovals` was read, as an ISO timestamp.
+   *
+   * Captured once, at the restore, and held so every rebuild places the card at
+   * the same instant. `buildTranscriptRows` sorts the restored rows in at this
+   * time rather than appending them, so a message that streams in afterwards
+   * renders below the card instead of above it.
+   */
+  const [restoredAt, setRestoredAt] = useState<string | null>(null);
   const [status, setStatus] = useState<ThreadStatus>(IDLE_STATUS);
   const [usage, setUsage] = useState<ThreadUsage | null>(null);
   const [error, setError] = useState<Error | null>(null);
@@ -212,6 +241,8 @@ export function useAdeThread(
 
     setThread(null);
     setEnvelopes([]);
+    setRestoredApprovals([]);
+    setRestoredAt(null);
     setStatus(IDLE_STATUS);
     setUsage(null);
     if (!enabled) return;
@@ -242,9 +273,27 @@ export function useAdeThread(
 
         const history = await opened.history().catch(() => [] as AgentChatEventEnvelope[]);
         if (cancelled) return;
+        const restored = await readPendingApprovals(opened);
+        if (cancelled) return;
         const seen = new Set(history.map(envelopeIdentity));
         historyApplied = true;
-        setEnvelopes([...history, ...live.filter((item) => !seen.has(envelopeIdentity(item)))]);
+        const merged = sortEnvelopes([
+          ...history,
+          ...live.filter((item) => !seen.has(envelopeIdentity(item))),
+        ]);
+        // Anchor the restored cards to the transcript's own last timestamp, not
+        // to this client's clock. The row timestamps they sort against are
+        // stamped by the ENGINE, and an embedder over a WebSocket proxy or a
+        // remote runtime is a different machine: a client clock behind the host
+        // buries the live approval card up in history, and one ahead pins it at
+        // the tail forever. Captured once here rather than derived per rebuild,
+        // which would walk the card down the transcript as messages arrive. An
+        // empty transcript has nothing to anchor to, so the local clock is the
+        // only answer left, and with no rows the position cannot be wrong.
+        const restoredReadAt = merged[merged.length - 1]?.timestamp ?? new Date().toISOString();
+        setEnvelopes(merged);
+        setRestoredApprovals(restored);
+        setRestoredAt(restoredReadAt);
         setThread(opened);
         setError(null);
       })
@@ -290,7 +339,35 @@ export function useAdeThread(
     boundModelIdRef.current = nextModelId;
   }, []);
 
-  const rows = useMemo(() => buildTranscriptRows(envelopes), [envelopes]);
+  /**
+   * Answer an approval.
+   *
+   * The runtime is the only source of truth for the decision, so nothing is
+   * written into `envelopes` here: the answer comes back as
+   * `pending_input_resolved` and settles the card through the same collapse
+   * rules that a replay would use. A thread that cannot approve no-ops rather
+   * than throwing — `canApprove` is what a caller checks.
+   */
+  const approve = useCallback(
+    async (itemId: string, decision: ApprovalDecision, responseText?: string) => {
+      const target = threadRef.current;
+      if (typeof target?.approve !== "function") return;
+      if (responseText === undefined) await target.approve(itemId, decision);
+      else await target.approve(itemId, decision, responseText);
+    },
+    [],
+  );
+
+  const pendingApprovals = useCallback(async (): Promise<readonly ApprovalRequest[]> => {
+    const target = threadRef.current;
+    if (typeof target?.pendingApprovals !== "function") return [];
+    return await target.pendingApprovals();
+  }, []);
+
+  const rows = useMemo(
+    () => buildTranscriptRows(envelopes, restoredApprovals, restoredAt ?? undefined),
+    [envelopes, restoredApprovals, restoredAt],
+  );
 
   return {
     thread,
@@ -303,10 +380,89 @@ export function useAdeThread(
     steer,
     interrupt,
     setModel,
+    approve,
+    pendingApprovals,
     canSetModel: typeof thread?.setModel === "function",
+    canApprove: typeof thread?.approve === "function",
   };
 }
 
+/**
+ * The de-duplication key for history/live overlap.
+ *
+ * CANONICAL DEFINITION: `envelopeDedupeKey` in `@ade-dev/sdk`
+ * (`src/electron/protocol.ts`). This is a deliberate byte-identical mirror,
+ * because that package is an OPTIONAL peer of this one and chat-ui must work
+ * for a WebSocket proxy or a test double that has no SDK at all. The SDK's copy
+ * additionally carries a bridge-local occurrence tiebreak for sequence-less
+ * envelopes; that part is not mirrored, and the comment there says why.
+ */
 function envelopeIdentity(envelope: AgentChatEventEnvelope): string {
   return `${envelope.sessionId}:${envelope.sequence ?? "?"}:${envelope.timestamp}:${envelope.event?.type ?? "?"}`;
+}
+
+/**
+ * Envelope order: numbered envelopes first in `sequence` order, then
+ * un-numbered ones in `timestamp` order, arrival order breaking either tie.
+ *
+ * History and the live buffer are concatenated, not interleaved, so an envelope
+ * that arrived live while `history()` was in flight would otherwise render
+ * after rows that came before it. Provider clocks are not trusted, which is why
+ * `sequence` decides wherever it exists.
+ *
+ * Sequence is the PRIMARY key unconditionally, and a numbered envelope sorts
+ * before an un-numbered one whatever the two timestamps say. That is not a
+ * preference, it is what makes the comparator a valid ordering. Comparing
+ * sequence only when both sides carry one and otherwise falling through to
+ * timestamp is intransitive: with A `{seq 1, t3}`, B `{seq 2, t1}` and C
+ * `{no seq, t2}`, A sorts before B by sequence, B before C by timestamp, and C
+ * before A by timestamp. `Array.prototype.sort` given an inconsistent
+ * comparator returns an implementation-defined permutation, so the whole
+ * transcript order becomes arbitrary and adjacent text envelopes stop merging.
+ *
+ * The two groups therefore never interleave, and timestamp is consulted only
+ * within the un-numbered group. In practice every envelope the engine emits
+ * carries a sequence; the un-numbered group is the compatibility path.
+ *
+ * The positional fallback is what makes the sort stable for envelopes that
+ * compare equal — `Array.prototype.sort` is specified as stable, but the
+ * explicit index removes any doubt.
+ */
+function sortEnvelopes(envelopes: AgentChatEventEnvelope[]): AgentChatEventEnvelope[] {
+  return envelopes
+    .map((envelope, index) => ({ envelope, index }))
+    .sort((a, b) => {
+      const aSeq = typeof a.envelope.sequence === "number" ? a.envelope.sequence : null;
+      const bSeq = typeof b.envelope.sequence === "number" ? b.envelope.sequence : null;
+      if (aSeq !== null && bSeq === null) return -1;
+      if (aSeq === null && bSeq !== null) return 1;
+      if (aSeq !== null && bSeq !== null) {
+        if (aSeq !== bSeq) return aSeq - bSeq;
+        return a.index - b.index;
+      }
+      if (a.envelope.timestamp !== b.envelope.timestamp) {
+        return a.envelope.timestamp < b.envelope.timestamp ? -1 : 1;
+      }
+      return a.index - b.index;
+    })
+    .map((entry) => entry.envelope);
+}
+
+/**
+ * The requests the runtime is still waiting on, for a thread that just opened.
+ *
+ * Returns the requests themselves. Nothing is synthesized into an envelope:
+ * a thread KEY is a caller-chosen durable name and a `sessionId` is a runtime
+ * identifier, and the old code used the first where the second belonged, with
+ * invented sequence numbers that collided with the first real envelopes to
+ * arrive. `collapseTranscriptEvents` already owns the approval row shape, so it
+ * takes these directly.
+ *
+ * Never fatal: a client with no `pendingApprovals` (an older SDK, a proxy, a
+ * fake) and a call that fails both return nothing, and the thread opens.
+ */
+async function readPendingApprovals(thread: AdeThread): Promise<readonly ApprovalRequest[]> {
+  if (typeof thread.pendingApprovals !== "function") return [];
+  const pending = await thread.pendingApprovals().catch(() => [] as ApprovalRequest[]);
+  return pending.filter((request) => Boolean(request.itemId));
 }

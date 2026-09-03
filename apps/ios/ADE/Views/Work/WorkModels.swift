@@ -512,6 +512,116 @@ struct WorkActiveSendCapability: Equatable {
   }
 }
 
+/// Hand mirror of desktop `chatStopModes.ts`. iOS cannot import the TS table,
+/// so the two stay in step by this struct plus `testWorkChatStopCapabilityMirrorsDesktopStopMatrix`.
+struct WorkChatStopCapability: Equatable {
+  static let modes: [AgentChatStopMode] = [
+    .stopOnly,
+    .stopAndClear,
+    .stopAndBackground,
+    .stopAndClearAndBackground,
+  ]
+  static let defaultMode: AgentChatStopMode = .stopAndClear
+
+  static func copy(mode: AgentChatStopMode, jobCount: Int) -> (title: String, detail: String) {
+    let jobs = jobCount == 1 ? "1 job" : "\(max(0, jobCount)) jobs"
+    switch mode {
+    case .stopOnly:
+      return (
+        "Turn only",
+        "Stop the active turn. Keep queued messages and background jobs."
+      )
+    case .stopAndClear:
+      return (
+        "Turn + queue",
+        "Stop the active turn and cancel queued messages. Background jobs keep running."
+      )
+    case .stopAndBackground:
+      return (
+        "Turn + background (\(jobs))",
+        "Stop the active turn and stop \(jobs). Keep queued messages."
+      )
+    case .stopAndClearAndBackground:
+      return (
+        "Turn + queue + background (\(jobs))",
+        "Stop the active turn, cancel queued messages, and stop \(jobs)."
+      )
+    }
+  }
+
+  static func systemImage(for mode: AgentChatStopMode) -> String {
+    switch mode {
+    case .stopOnly: return "stop.fill"
+    case .stopAndClear: return "trash"
+    case .stopAndBackground: return "square.fill"
+    case .stopAndClearAndBackground: return "xmark.square.fill"
+    }
+  }
+}
+
+/// Hand mirror of desktop `chatAutoResume.ts` usage-limit opt-out. iOS cannot
+/// import the TS predicates, so this struct plus `testWorkUsageLimitOptOut*`
+/// keep the parked banner and Don’t-continue action aligned with desktop.
+struct WorkUsageLimitOptOut: Equatable {
+  static func isPendingAutoResume(_ item: AgentChatScheduledWorkItem) -> Bool {
+    guard item.source == "auto_resume_limit" else { return false }
+    switch item.status {
+    case "done", "completed", "cancelled": return false
+    default: return true
+    }
+  }
+
+  static func shouldShow(
+    autoContinueAtUsageLimit: Bool?,
+    usageLimitParkedUntil: String?,
+    scheduledWork: [AgentChatScheduledWorkItem]?,
+    now: Date = Date()
+  ) -> Bool {
+    if autoContinueAtUsageLimit == false { return false }
+    if let parkedUntil = usageLimitParkedUntil,
+       let parkedDate = workParsedDate(parkedUntil),
+       parkedDate > now {
+      return true
+    }
+    return (scheduledWork ?? []).contains(where: isPendingAutoResume)
+  }
+
+  static func pendingSchedule(_ scheduledWork: [AgentChatScheduledWorkItem]?) -> AgentChatScheduledWorkItem? {
+    scheduledWork?.first(where: isPendingAutoResume)
+  }
+
+  static func resetLabel(
+    usageLimitParkedUntil: String?,
+    scheduledWork: [AgentChatScheduledWorkItem]?,
+    now: Date = Date()
+  ) -> String {
+    workUsageLimitResetLabel(
+      usageLimitParkedUntil ?? pendingSchedule(scheduledWork)?.nextRunAt,
+      now: now
+    )
+  }
+}
+
+/// Native Claude Task subagents can be stopped one-at-a-time. Spawned ADE chats
+/// use a `chat:` task id and keep their own session stop control.
+func workSubagentCanStopTask(_ snapshot: WorkSubagentSnapshot) -> Bool {
+  guard snapshot.status == .running else { return false }
+  let taskId = snapshot.taskId.trimmingCharacters(in: .whitespacesAndNewlines)
+  guard !taskId.isEmpty, !taskId.hasPrefix("chat:") else { return false }
+  return true
+}
+
+func workSubagentStopLabel(_ snapshot: WorkSubagentSnapshot) -> String {
+  let type = snapshot.agentType?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+  if !type.isEmpty { return "Stop \(type)" }
+  return "Stop \(workSubagentMeaningfulName(snapshot))"
+}
+
+func workBackgroundCanStopTask(_ item: WorkScheduledWorkSnapshot) -> Bool {
+  item.status.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "running"
+    && !(item.sourceTaskId?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true)
+}
+
 struct WorkQueueRecoveryModel: Equatable {
   let recoveryId: String
   let messageCount: Int
@@ -1082,6 +1192,9 @@ struct WorkSubagentSnapshot: Identifiable, Equatable {
   var taskType: String? = nil
   var command: String? = nil
   var spawnKind: AgentChatSpawnKind? = nil
+  var parentAgentId: String? = nil
+  var spawnDepth: Int? = nil
+  var resourceLinks: [AgentChatResourceLink] = []
 
   var id: String { taskId }
 }
@@ -1439,6 +1552,9 @@ struct WorkChatEnvelope: Identifiable, Equatable {
   let subagentTaskType: String?
   let subagentCommand: String?
   let subagentSpawnKind: AgentChatSpawnKind?
+  let subagentParentAgentId: String?
+  let subagentSpawnDepth: Int?
+  let subagentResourceLinks: [AgentChatResourceLink]
 
   init(
     sessionId: String,
@@ -1447,7 +1563,10 @@ struct WorkChatEnvelope: Identifiable, Equatable {
     event: WorkChatEvent,
     subagentTaskType: String? = nil,
     subagentCommand: String? = nil,
-    subagentSpawnKind: AgentChatSpawnKind? = nil
+    subagentSpawnKind: AgentChatSpawnKind? = nil,
+    subagentParentAgentId: String? = nil,
+    subagentSpawnDepth: Int? = nil,
+    subagentResourceLinks: [AgentChatResourceLink] = []
   ) {
     self.sessionId = sessionId
     self.timestamp = timestamp
@@ -1456,6 +1575,9 @@ struct WorkChatEnvelope: Identifiable, Equatable {
     self.subagentTaskType = subagentTaskType
     self.subagentCommand = subagentCommand
     self.subagentSpawnKind = subagentSpawnKind
+    self.subagentParentAgentId = subagentParentAgentId
+    self.subagentSpawnDepth = subagentSpawnDepth
+    self.subagentResourceLinks = subagentResourceLinks
   }
 }
 

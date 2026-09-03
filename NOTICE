@@ -4,6 +4,9 @@ Copyright (c) 2025 Arul Sharma
 This product is licensed under the GNU Affero General Public License v3.0
 (see the LICENSE file).
 
+Distributing an unmodified ADE runtime binary inside a larger work is covered
+by the ADE Runtime Embedding Exception (see RUNTIME-EMBEDDING-EXCEPTION.md).
+
 This product redistributes the following third-party components in binary
 form. Each component is provided under its own license, reproduced below.
 

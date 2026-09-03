@@ -104,6 +104,17 @@ describe("chatSessionProjection", () => {
     expect(projected.cursorCloudAgentId).toBe("bc-cloud-agent");
   });
 
+  it("clears a parked usage-limit deadline when the chat no longer has one", () => {
+    const projected = projectChatOntoSession({
+      ...session(),
+      usageLimitParkedUntil: "2026-08-17T12:47:00.000Z",
+    }, chat({
+      usageLimitParkedUntil: null,
+    }));
+
+    expect(projected.usageLimitParkedUntil ?? null).toBeNull();
+  });
+
   it("projects model handoff history onto the Work row", () => {
     const projected = projectChatOntoSession(session(), chat({
       modelHandoffHistory: [{

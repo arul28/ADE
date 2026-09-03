@@ -14,6 +14,7 @@ import type { PluginBuiltinSurfaceId } from "../../../shared/plugins/manifest";
 import { readInstalledBuiltinSurfaces } from "../plugins/builtinSurfaceInstalls";
 import { getCtoPersonalityPreset } from "../../../shared/ctoPersonalityPresets";
 import { getDefaultModelDescriptor, listModelDescriptorsForProvider, type ModelProviderGroup } from "../../../shared/modelRegistry";
+import { AGENT_CHAT_PERMISSION_MODE_VALUES } from "../../../shared/types/chat";
 import type { AdeDb } from "../state/kvDb";
 import { nowIso, parseIsoToEpoch, safeJsonParse, uniqueStrings, writeTextAtomic } from "../shared/utils";
 import { createLogIntegrityService } from "../projects/logIntegrityService";
@@ -173,6 +174,7 @@ function buildCtoPageLines(_installedSurfaces: ReadonlySet<PluginBuiltinSurfaceI
 function buildCtoEnvironmentKnowledge(
   installedSurfaces: ReadonlySet<PluginBuiltinSurfaceId> = readInstalledBuiltinSurfaces(),
 ): string {
+  const permissionModes = AGENT_CHAT_PERMISSION_MODE_VALUES.map((mode) => `'${mode}'`).join(" | ");
   return [
   "# ADE Architecture & Concepts",
   "",
@@ -186,7 +188,8 @@ function buildCtoEnvironmentKnowledge(
   "  Tools: listLanes, inspectLane, createLane, deleteLane, renameLane, archiveLane.",
   "",
   "Native ADE Chat: A persistent AI chat session in the ADE UI with streaming responses, tool approval flow, file diff display, and full service integration. This is the primary way work gets done in ADE.",
-  "  - Created with spawnChat({ laneId?, modelId?, reasoningEffort?, title?, initialPrompt? }).",
+  "  - Created with spawnChat({ laneId?, modelId?, reasoningEffort?, title?, initialPrompt?, permissionMode? }).",
+  `  - permissionMode is ${permissionModes}. Pass it only when the user asks for a specific access level; omitting it keeps the provider default. Droid also accepts droidPermissionMode: 'read-only' | 'auto-low' | 'auto-medium' | 'auto-high' | 'agi' (read-only orchestrator mode).`,
   "  - Supports any registered model (Claude, GPT, local models).",
   "  - Has a message composer with slash commands, file attachments, model selector.",
   "  - Chat sessions belong to a lane and can be listed, steered, interrupted, or ended.",

@@ -54,6 +54,15 @@ describe("nativeLaunchControls", () => {
     expect(cliPermissionModeFromNativeControls("cursor/composer-2.5", controls)).toBe("plan");
   });
 
+  it("keeps legacy edit on writable Cursor Agent instead of read-only Ask", () => {
+    const controls = applyUnifiedPermissionToNativeControls(
+      "cursor/composer-2.5",
+      "edit",
+      defaultNativeControls(),
+    );
+    expect(controls.cursorModeId).toBe("agent");
+  });
+
   it("reads unified permission from default native controls", () => {
     const defaults = defaultNativeControls();
     expect(readUnifiedPermissionFromNativeControls("openai/gpt-5.5", defaults)).toBe("default");

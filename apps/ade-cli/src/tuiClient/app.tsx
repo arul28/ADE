@@ -21,6 +21,12 @@ import {
 } from "../../../desktop/src/shared/types/chat";
 import { providerDisplayLabel } from "../../../desktop/src/shared/pendingInputLabels";
 import {
+  parseAgentChatStopMode,
+  resolveAgentChatStopModeAlias,
+  stopModeClearsQueue,
+  stopModeStopsBackground,
+} from "../../../desktop/src/shared/chatStopModes";
+import {
   composerFileSearchQuery,
   composerTriggerForSelection,
   composerTriggerHasConfirmedPrefix,
@@ -1407,14 +1413,17 @@ function formatTokenSummary(stats: ReturnType<typeof latestTokenStats>): string 
 }
 
 function chatInterruptNotice(result: Awaited<ReturnType<typeof interruptChat>>): string {
-  if (result.mode === "stop_only") {
-    return "Stopped. Queued messages are preserved.";
+  const mode = parseAgentChatStopMode(result.mode);
+  const stoppedBackground = stopModeStopsBackground(mode);
+  const backgroundNote = stoppedBackground ? " Background jobs were stopped." : "";
+  if (!stopModeClearsQueue(mode)) {
+    return `Stopped. Queued messages are preserved.${backgroundNote}`;
   }
   if (result.cancelledQueuedCount > 0 && result.recoveryId) {
     const noun = result.cancelledQueuedCount === 1 ? "message" : "messages";
-    return `Stopped and cleared ${result.cancelledQueuedCount} queued ${noun}. Undo: /restore-queue ${result.recoveryId}`;
+    return `Stopped and cleared ${result.cancelledQueuedCount} queued ${noun}. Undo: /restore-queue ${result.recoveryId}${backgroundNote}`;
   }
-  return "Stopped.";
+  return `Stopped.${backgroundNote}`;
 }
 
 export function formatGoalBannerLine(goal: CodexThreadGoal | ClaudeActiveGoal | null): string | null {
@@ -8388,7 +8397,13 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
           codexConfigSource: configSession.codexConfigSource ?? prev.codexConfigSource,
           opencodePermissionMode: configSession.opencodePermissionMode ?? prev.opencodePermissionMode,
           droidPermissionMode: configSession.droidPermissionMode ?? prev.droidPermissionMode,
-          cursorModeId: configSession.cursorModeId ?? configSession.cursorModeSnapshot?.currentModeId ?? prev.cursorModeId,
+          // `null` is an intentional clear for the legacy permission-only
+          // paths. Only an omitted field should fall back to the snapshot or
+          // the previous chat's value; `??` would leak the previous Cursor
+          // mode into a newly hydrated session.
+          cursorModeId: configSession.cursorModeId !== undefined
+            ? configSession.cursorModeId
+            : configSession.cursorModeSnapshot?.currentModeId ?? prev.cursorModeId,
           cursorAvailableModeIds: configSession.cursorModeSnapshot?.availableModeIds ?? prev.cursorAvailableModeIds,
           cursorConfigValues: configSession.cursorConfigValues ?? prev.cursorConfigValues,
         }));
@@ -13577,18 +13592,11 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
         return;
       }
       const normalizedMode = args.trim().toLowerCase();
-      let mode: AgentChatStopMode;
-      if (!normalizedMode || normalizedMode === "clear-queue" || normalizedMode === "--clear-queue") {
-        mode = "stop_and_clear";
-      } else if (
-        normalizedMode === "keep-queue"
-        || normalizedMode === "--keep-queue"
-        || normalizedMode === "stop-only"
-        || normalizedMode === "--stop-only"
-      ) {
-        mode = "stop_only";
-      } else {
-        addNotice("Usage: /stop [keep-queue|clear-queue]", "error");
+      const mode = normalizedMode
+        ? resolveAgentChatStopModeAlias(normalizedMode)
+        : "stop_and_clear";
+      if (!mode) {
+        addNotice("Usage: /stop [keep-queue|clear-queue|background|clear-and-background]", "error");
         return;
       }
       setStreaming(false);

@@ -315,6 +315,8 @@ import type {
   AgentChatInteractionMode,
   AgentChatInterruptArgs,
   AgentChatInterruptResult,
+  AgentChatStopTaskArgs,
+  AgentChatStopTaskResult,
   AgentChatRestoreCancelledQueueArgs,
   AgentChatRestoreCancelledQueueResult,
   AgentChatStopMode,
@@ -380,10 +382,16 @@ import type {
   AgentChatCursorConfigOption,
   AgentChatCursorConfigValue,
   AgentChatCursorModeSnapshot,
+  AgentChatHostInstructions,
+  AgentChatInstructionsCapability,
   AgentChatMcpCapability,
   AgentChatMcpServerConfig,
   AgentChatOpenCodePermissionMode,
+  AgentChatPermissionCapability,
   AgentChatPermissionMode,
+  AgentChatPermissionPolicy,
+  AgentChatSettingSources,
+  AgentChatSettingSourcesCapability,
   CodexPlanState,
   CodexModerationMetadata,
   AgentChatMcpToolSource,
@@ -423,8 +431,13 @@ import {
   providerSupportsHandoffFork,
 } from "../../../shared/types";
 import {
+  AGENT_CHAT_DROID_PERMISSION_MODE_VALUES,
+  AGENT_CHAT_PERMISSION_MODE_VALUES,
+  droidPermissionModeFromLegacyPermissionMode,
   isAcpChatProvider,
+  legacyPermissionModeFromDroidPermissionMode,
   spawnCompletedNoticeMessage,
+  defaultActiveTurnDispatchMode,
   supportsActiveTurnDispatchMode,
   unsupportedActiveTurnDispatchModeMessage,
   waitingOnYouDescription,
@@ -434,7 +447,7 @@ import {
   type AcpChatProvider,
   type AgentChatAcpConfigSnapshot,
   type AgentChatAcpPermissionMode,
-
+  type AgentChatResourceLink,
 } from "../../../shared/types/chat";
 import type { AgentChatRuntimeLabel, AgentChatRuntimeRef } from "../../../shared/types/chat";
 import { AGENT_CHAT_RUNTIME_EXTERNAL_ID_MAX } from "../../../shared/types/chat";
@@ -468,6 +481,20 @@ import {
 } from "../../../shared/plugins/sdk";
 import { PLUGIN_BUILTIN_SURFACE_OWNER_IDS } from "../../../shared/plugins/builtinSurfaceRegistry";
 import { providerDisplayLabel } from "../../../shared/pendingInputLabels";
+import { buildClaudeToolApprovalOptions, claudeToolNeedsDefaultToNo } from "../../../shared/claudePermissionDialog";
+import {
+  collectClaudeTerminalSlashCommandNames,
+  filterClaudeGuiSlashCommands,
+} from "../../../shared/claudeGuiSlashCommands";
+import {
+  isClaudeHousekeepingTask,
+  parseClaudeResourceLinks,
+  readClaudeSpawnDepth,
+} from "../../../shared/claudeAgentSdkFields";
+import {
+  deriveChatTurnStatus,
+  type ChatTurnStatusSnapshot,
+} from "../../../shared/chatTurnStatus";
 import {
   flattenAnswerForSingleStringProvider,
   ownQuestionValue,
@@ -609,7 +636,32 @@ import {
   snapshotFromClaudeSessionQuotaText,
   type ClaudeSessionQuotaSnapshot,
 } from "../../../shared/claudeSessionQuota";
-import { isAutoResumeScheduledWork } from "../../../shared/chatAutoResume";
+import {
+  autoResumeFireAtMs,
+  isAutoResumeScheduledWork,
+  isPendingAutoResumeScheduledWork,
+  isUsageLimitChatError,
+  sessionAutoContinueAtUsageLimit,
+} from "../../../shared/chatAutoResume";
+import {
+  CLAUDE_PER_TASK_STOP_CONTROLS_REACHABLE,
+  DEFAULT_AGENT_CHAT_STOP_MODE,
+  parseAgentChatStopMode,
+  shouldDeclarePerTaskStopAffordance,
+  stopModeClearsQueue,
+  stopModeStopsBackground,
+} from "../../../shared/chatStopModes";
+import {
+  buildClassifierContext,
+  classifierContextAuditMessage,
+  type UserAuthoredClassifierInput,
+} from "../../../shared/claudeClassifierContext";
+import { normalizeClaudeContextUsage as normalizeStructuredClaudeContextUsage } from "../../../shared/claudeContextUsage";
+import {
+  claudeModelSwitchAdditionalContext,
+  claudeModelSwitchDividerMessage,
+  parseClaudeModelSwitchArgs,
+} from "../../../shared/claudeModelSwitch";
 import { createChatAutoResumeCoordinator } from "./chatAutoResumeCoordinator";
 import type { ChatAutoResumeAnalyticsProperties } from "./chatAutoResumeCoordinator";
 import { buildAdeCliAgentGuidance } from "../../../shared/adeCliGuidance";
@@ -853,7 +905,7 @@ import {
 } from "./cursorSdkSystemPrompt";
 import { promises as fsPromises } from "node:fs";
 import { mapStopReasonToTerminalEvents } from "./stopReasonEvents";
-import { CURSOR_AVAILABLE_MODE_IDS } from "../../../shared/cursorModes";
+import { CURSOR_AVAILABLE_MODE_IDS, legacyPermissionModeToCursorModeId } from "../../../shared/cursorModes";
 import { getApiKey } from "../ai/apiKeyStore";
 import type { createOrchestrationService } from "../orchestration/orchestrationService";
 import {
@@ -884,6 +936,46 @@ import {
   resolveCallerMcpCapability,
   type CallerMcpServers,
 } from "../../../shared/callerMcpServers";
+import {
+  CLAUDE_SETTING_SOURCE_MAP,
+  normalizeHostInstructions,
+  normalizeInstructionsCapability,
+  normalizePermissionCapability,
+  normalizeSettingSources,
+  mergeHostSessionConfig,
+  normalizeSettingSourcesCapability,
+  pickHostSessionConfig,
+  resolveInstructionsCapability,
+  resolvePermissionCapability,
+  resolveSettingSourcesCapability,
+  type HostSessionConfigFields,
+} from "../../../shared/hostSessionConfig";
+import {
+  evaluatePermissionPolicy,
+  normalizePermissionPolicy,
+  policyAllowedMcpServers,
+  policyToClaudeToolLists,
+} from "../../../shared/permissionPolicy";
+import {
+  claudeBuiltInIsReadOnly,
+  claudeToolInputPaths,
+  claudeToolNeedsApproval,
+  normalizeToolNameForApproval,
+} from "./claudeToolGate";
+import {
+  codexApprovalAutoAccepts,
+  codexApprovalDeniesByPolicy,
+  codexApprovalPathStaysWithinRoot,
+  codexCommandApprovalStaysWithinRoot,
+  codexPermissionsStayWithinRoot,
+  resolveCodexContainmentRoot,
+} from "./codexApprovalContainment";
+import {
+  PERSONAL_CHAT_SYSTEM_PROMPT,
+  isPersonalSession,
+  resolvePersonalHostCwd,
+  resolvePersonalSystemPrompt,
+} from "./personalSession";
 import type { ProcessRegistryService } from "../runtime/processRegistryService";
 
 const requireFromRuntime = createRequire(
@@ -906,6 +998,65 @@ function lockCursorOwnedPluginChatName(
   session.cursorCloudAgentId = id;
 }
 
+/**
+ * Compile-time proof that `CLAUDE_SETTING_SOURCE_MAP` names layers the Claude
+ * Agent SDK actually accepts.
+ *
+ * The map lives in `shared/hostSessionConfig.ts`, which must not import the
+ * Claude SDK, so it is typed `readonly string[]` there and the assignment at
+ * the use site needs a cast. An unchecked cast means a typo — `"porject"` —
+ * compiles and silently loads no configuration layers at all, which looks
+ * exactly like a working chat until someone asks why their project settings
+ * are ignored.
+ *
+ * This declaration is the check. It costs nothing at runtime (types only) and
+ * it lives here because this is the one layer where both types are visible.
+ */
+const _claudeSettingSourceMapIsAssignable: Record<
+  AgentChatSettingSources,
+  readonly NonNullable<ClaudeSDKOptions["settingSources"]>[number][]
+> = CLAUDE_SETTING_SOURCE_MAP;
+void _claudeSettingSourceMapIsAssignable;
+
+/**
+ * The surfaces host session configuration applies on.
+ *
+ * `permissionPolicy`, `instructions`, and `settingSources` are the SDK's
+ * embedder-facing knobs. They are declared on the base create args, so the CLI
+ * escape hatch (`ade chat create --arg-json permissionPolicy=…`) can put them
+ * on a Work chat — where no ADE surface renders them, no user can see or remove
+ * one, and a permission policy would quietly replace ADE's own approval
+ * prompting for that lane. The spec scopes all three to the personal/SDK
+ * surface, so that is where they are honored and nowhere else.
+ *
+ * A dropped field is not an error: the chat behaves exactly as it did before
+ * the field existed, which is what an unusable value already does.
+ */
+const HOST_SESSION_CONFIG_SURFACE: AgentChatSession["surface"] = "personal";
+
+function hostSessionConfigApplies(surface: AgentChatSession["surface"] | undefined): boolean {
+  return (surface ?? "work") === HOST_SESSION_CONFIG_SURFACE;
+}
+
+/** Sessions already warned about, so a rehydrate loop cannot repeat the line. */
+const hostSessionConfigDropWarned = new Set<string>();
+
+function warnHostSessionConfigDropped(
+  logger: Logger,
+  sessionId: string,
+  surface: AgentChatSession["surface"] | undefined,
+  fields: readonly string[],
+): void {
+  if (fields.length === 0) return;
+  if (hostSessionConfigDropWarned.has(sessionId)) return;
+  hostSessionConfigDropWarned.add(sessionId);
+  logger.warn("agent_chat.host_session_config_ignored_off_surface", {
+    sessionId,
+    surface: surface ?? "work",
+    fields: fields.join(","),
+  });
+}
+
 function resolveClaudeAgentSdkVersion(): string {
   try {
     const sdkEntryPath = requireFromRuntime.resolve("@anthropic-ai/claude-agent-sdk");
@@ -920,12 +1071,14 @@ function resolveClaudeAgentSdkVersion(): string {
   } catch {
     // The package metadata can be unavailable in partial development installs.
   }
-  return "0.3.220";
+  return "0.3.258";
 }
 
 const CLAUDE_AGENT_SDK_VERSION = resolveClaudeAgentSdkVersion();
 const CLAUDE_AGENT_SDK_API = "v1_query";
 const CLAUDE_POST_RESULT_DRAIN_TIMEOUT_MS = 1_000;
+/** Hung SDK MCP tool calls currently freeze the chat with no error. 120s is generous enough for slow tools. */
+const CLAUDE_SDK_MCP_TOOL_TIMEOUT_MS = 120_000;
 const CLAUDE_INTERNAL_EDE_DIAGNOSTIC_PREFIX = "[ede_diagnostic]";
 const CLAUDE_AGENT_SDK_TELEMETRY_TAGS = {
   "claude_sdk.version": CLAUDE_AGENT_SDK_VERSION,
@@ -1198,6 +1351,9 @@ type PersistedChatState = {
   sessionProfile?: "light" | "workflow";
   reasoningEffort?: string | null;
   fastMode?: boolean;
+  /** Explicit `false` is the per-chat opt-out; absent means on. */
+  autoContinueAtUsageLimit?: boolean;
+  usageLimitParkedUntil?: string | null;
   codexServiceTier?: string | null;
   executionMode?: AgentChatExecutionMode | null;
   interactionMode?: AgentChatInteractionMode | null;
@@ -1355,7 +1511,7 @@ type PersistedChatState = {
    */
   eventSequence?: number;
   updatedAt: string;
-};
+} & HostSessionConfigFields;
 
 const MAX_MODEL_HANDOFF_HISTORY = 8;
 
@@ -1762,6 +1918,8 @@ type ClaudeActiveSubagent = {
    * symmetrically with the spawn.
    */
   skipTranscript?: boolean;
+  spawnDepth?: number;
+  resourceLinks?: AgentChatResourceLink[];
   /**
    * A Claude Code task run that is neither a real subagent (no agentType /
    * agentId, task_type not "subagent"/"local_workflow") nor a background shell
@@ -1914,6 +2072,8 @@ type ClaudeRuntime = {
   activeProviderCronIds: Set<string>;
   activeProviderCronIdsByPrompt: Map<string, Set<string>>;
   slashCommands: Array<{ name: string; description: string; argumentHint?: string }>;
+  /** Runtime `terminal_slash_commands` from init, unioned with the known CLI-only set. */
+  terminalSlashCommandNames: Set<string>;
   busy: boolean;
   activeTurnId: string | null;
   /** Orders active-turn steers after the parent turn's first SDK input push. */
@@ -1935,6 +2095,12 @@ type ClaudeRuntime = {
   interrupted: boolean;
   /** Set when early interrupt events have been emitted to avoid duplicate emission later. */
   interruptEventsEmitted: boolean;
+  /**
+   * User Stop chose a mode that spares background tasks (`stop_only` /
+   * `stop_and_clear`). The query must stay alive so those tasks can finish;
+   * settling them here would undo `perTaskStopAffordance`.
+   */
+  spareBackgroundOnInterrupt?: boolean;
   /** Set when a reasoning effort change is requested mid-turn; flushed when idle. */
   pendingSessionReset?: boolean;
   /** Clear Claude SDK continuity on the deferred reset; used after mode changes the old session cannot apply. */
@@ -1949,6 +2115,12 @@ type ClaudeRuntime = {
   resumeIdleWatchdog?: (() => void) | null;
   /** Set after we've emitted the once-per-session "Approaching plan limit" notice. */
   rateLimitWarningEmitted: boolean;
+  /**
+   * User-authored classifierContext keyed by tool_use_id, captured at the
+   * approval waiter and consumed by PostToolUse. Never holds tool output or
+   * model text.
+   */
+  pendingClassifierContextByToolUseId: Map<string, UserAuthoredClassifierInput>;
 };
 
 /**
@@ -1969,6 +2141,25 @@ function resetClaudeProcessBackgroundLevel(runtime: ClaudeRuntime): void {
   runtime.backgroundTaskTypeById.clear();
   runtime.backgroundTasksLevelObserved = false;
   syncClaudeBackgroundWorkAnchor(runtime);
+}
+
+function claudeTaskTreeFields(
+  msg: Record<string, unknown>,
+  existing?: Pick<ClaudeActiveSubagent, "spawnDepth" | "resourceLinks">,
+): { spawnDepth?: number; resourceLinks?: AgentChatResourceLink[] } {
+  const spawnDepth = readClaudeSpawnDepth(msg) ?? existing?.spawnDepth;
+  const parsedLinks = parseClaudeResourceLinks(msg);
+  const resourceLinks = parsedLinks.length ? parsedLinks : existing?.resourceLinks;
+  return {
+    ...(spawnDepth != null ? { spawnDepth } : {}),
+    ...(resourceLinks?.length ? { resourceLinks } : {}),
+  };
+}
+
+function rememberClaudeTerminalSlashCommands(runtime: ClaudeRuntime, raw: unknown): void {
+  for (const name of collectClaudeTerminalSlashCommandNames(raw)) {
+    runtime.terminalSlashCommandNames.add(name);
+  }
 }
 
 function settleClaudeInitialInputDispatch(
@@ -2673,6 +2864,13 @@ function validateSessionReadyForTurn(managed: ManagedChatSession): { ready: true
   return { ready: true };
 }
 
+/**
+ * Whether anything is waiting on an answer. The cheap size check.
+ *
+ * Runs on the send path for every message, so it stays a set of `.size` tests.
+ * {@link collectPendingInputRequests} returns WHAT is pending and must consult
+ * the same stores in the same order; the two are read together.
+ */
 function hasLivePendingInput(managed: ManagedChatSession | null | undefined): boolean {
   if (!managed) return false;
   if (managed.localPendingInputs.size > 0) return true;
@@ -2686,6 +2884,51 @@ function hasLivePendingInput(managed: ManagedChatSession | null | undefined): bo
   // `localPendingInputs`, which the check above already covered.
   if (runtime.kind === "pi" || runtime.kind === "acp") return false;
   return false;
+}
+
+/**
+ * The listable pending requests behind {@link hasLivePendingInput}.
+ *
+ * Every store that one checks, in the same order, so "this session is blocked"
+ * and "here is what is blocking it" cannot disagree — a session that reports
+ * `awaitingInput: true` with an empty request list is exactly the "blocked with
+ * nothing to show" state the pending-inputs action exists to remove.
+ *
+ * Cursor and Droid are the deliberate exception, and the reason this is not
+ * simply `hasLivePendingInput`'s size check inverted. Their `permissionWaiters`
+ * hold a resolver function and no `PendingInputRequest`: the request object was
+ * never built, so there is nothing to return for them. A session blocked on one
+ * reports `awaitingInput: true` and an empty list, which is a gap in those two
+ * runtimes rather than in this function. Pi and the ACP providers raise their
+ * cards through `localPendingInputs`, which the first loop covers.
+ *
+ * `hasLivePendingInput` is NOT derived from this. It runs on the send path for
+ * every message, and answering "is anything pending" by allocating an array of
+ * everything pending is the wrong shape for that.
+ */
+function collectPendingInputRequests(
+  managed: ManagedChatSession | null | undefined,
+): PendingInputRequest[] {
+  if (!managed) return [];
+  const requests: PendingInputRequest[] = [];
+  const seen = new Set<string>();
+  const add = (request: PendingInputRequest | null | undefined): void => {
+    if (!request) return;
+    const key = request.itemId ?? request.requestId;
+    if (!key || seen.has(key)) return;
+    seen.add(key);
+    requests.push(request);
+  };
+  for (const pending of managed.localPendingInputs.values()) add(pending.request);
+  const runtime = managed.runtime;
+  if (runtime) {
+    if (runtime.kind === "claude" || runtime.kind === "codex") {
+      for (const pending of runtime.approvals.values()) add(pending.request);
+    } else if (runtime.kind === "opencode") {
+      for (const pending of runtime.pendingApprovals.values()) add(pending.request);
+    }
+  }
+  return requests;
 }
 
 // Frozen because it is returned by reference to every caller with no live work;
@@ -2821,7 +3064,9 @@ function claudeHasBoundedWorkload(runtime: ClaudeRuntime): boolean {
  */
 function claudeHasBackgroundWorkload(runtime: ClaudeRuntime): boolean {
   const hasUnlevelledSubagent = [...runtime.activeSubagents.values()].some(
-    (subagent) => !subagent.background || !runtime.backgroundTasksLevelObserved,
+    (subagent) =>
+      !subagent.skipTranscript
+      && (!subagent.background || !runtime.backgroundTasksLevelObserved),
   );
   return Boolean(hasUnlevelledSubagent || runtime.liveBackgroundTaskIds.size > 0);
 }
@@ -3422,6 +3667,11 @@ type ManagedChatSession = {
   runtimeInvalidated: boolean;
   /** Set after we've emitted the once-per-session Claude plan-limit notice. */
   claudeRateLimitWarningEmitted: boolean;
+  /**
+   * ISO instant this chat is parked waiting for a usage-limit reset. Used when
+   * Claude's SDK-native auto-continue is waiting (no ADE scheduled-work row).
+   */
+  usageLimitParkedUntil?: string | null;
   /**
    * In-memory only: this chat's Claude session UUID hit a hard plan/session
    * quota. ADE restart clears it. The next send reaps (already done) and
@@ -5526,6 +5776,35 @@ function reopenSteerSettlement(managed: ManagedChatSession, steerId: string): vo
   settledSteerIds.get(managed)?.delete(steerId);
 }
 
+/**
+ * Steers cancelled while the session had no runtime to cancel them on.
+ *
+ * `persistChatState` carries the previous file's `pendingSteers` forward
+ * verbatim whenever the live runtime is not Claude, which includes "there is no
+ * runtime". Without this set a cancel on a torn-down session clears the chip and
+ * the next Claude runtime hydrates the steer straight back onto the queue, so
+ * the cancel reads as a UI glitch and the message is still sent.
+ */
+const cancelledPersistedSteerIds = new WeakMap<ManagedChatSession, Set<string>>();
+
+function forgetPersistedSteer(managed: ManagedChatSession, steerId: string): void {
+  let ids = cancelledPersistedSteerIds.get(managed);
+  if (!ids) {
+    ids = new Set<string>();
+    cancelledPersistedSteerIds.set(managed, ids);
+  }
+  ids.add(steerId);
+}
+
+function survivingPersistedSteers(
+  managed: ManagedChatSession,
+  steers: readonly PersistedPendingSteer[],
+): PersistedPendingSteer[] {
+  const cancelled = cancelledPersistedSteerIds.get(managed);
+  if (!cancelled?.size) return [...steers];
+  return steers.filter((steer) => !cancelled.has(steer.steerId));
+}
+
 function cursorSdkSilentRunError(): Error {
   const error = new Error(CURSOR_SDK_SILENT_RUN_MESSAGE);
   error.name = CURSOR_SDK_SILENT_RUN_ERROR_NAME;
@@ -5988,6 +6267,50 @@ function extractReportedModelUsageProvenance(value: unknown): {
   };
 }
 
+const CLAUDE_MODEL_USAGE_COST_BASES = ["list", "managed", "unknown"] as const;
+type ClaudeModelUsageCostBasis = (typeof CLAUDE_MODEL_USAGE_COST_BASES)[number];
+
+function isClaudeModelUsageCostBasis(value: unknown): value is ClaudeModelUsageCostBasis {
+  return typeof value === "string"
+    && (CLAUDE_MODEL_USAGE_COST_BASES as readonly string[]).includes(value);
+}
+
+/**
+ * Display-only extras from SDK ModelUsage. thinkingTokens is already counted
+ * inside outputTokens — never add it to a total, sum, or cost. It is also
+ * partial for sessions resumed from older CLI versions, so it must not be used
+ * for reconciliation. When more than one model reports a value, skip the
+ * turn-level field rather than combining them.
+ */
+function extractClaudeModelUsageExtras(value: unknown): {
+  thinkingTokens?: number;
+  costBasis?: ClaudeModelUsageCostBasis;
+} {
+  if (!value || typeof value !== "object") return {};
+  const rows = Object.values(value as Record<string, unknown>)
+    .map(asRecord)
+    .filter((row): row is Record<string, unknown> => row !== null);
+  const thinkingValues = new Set(
+    rows
+      .map((row) => numberOrNull(row.thinkingTokens ?? row.thinking_tokens))
+      .filter((tokens): tokens is number => tokens != null),
+  );
+  const costBases = new Set(
+    rows
+      .map((row) => row.costBasis ?? row.cost_basis)
+      .filter(isClaudeModelUsageCostBasis),
+  );
+  return {
+    ...(thinkingValues.size === 1 ? { thinkingTokens: [...thinkingValues][0] } : {}),
+    ...(costBases.size === 1 ? { costBasis: [...costBases][0] } : {}),
+  };
+}
+
+function readClaudeUserMessageUuid(value: unknown): string | null {
+  const record = asRecord(value);
+  return normalizeReportedModelName(record?.user_message_uuid);
+}
+
 type ClaudeResultMetadata = {
   canonicalModel?: string;
   modelProvider?: string;
@@ -5995,11 +6318,16 @@ type ClaudeResultMetadata = {
   fastModeDisabledReason?: string;
   userMessageUuid?: string;
   requestSentWallMs?: number;
+  queuedTurnCount?: number;
+  thinkingTokens?: number;
+  costBasis?: ClaudeModelUsageCostBasis;
 };
 
 function extractClaudeResultMetadata(result: Record<string, unknown>): ClaudeResultMetadata {
   const provenance = extractReportedModelUsageProvenance(result.modelUsage);
+  const usageExtras = extractClaudeModelUsageExtras(result.modelUsage);
   const userMessageUuid = normalizeReportedModelName(result.user_message_uuid);
+  const queuedTurnCount = numberOrNull(result.queued_turn_count);
   const fastModeDisabledReason = typeof result.fast_mode_disabled_reason === "string"
     ? result.fast_mode_disabled_reason
     : result.fast_mode_disabled_reason
@@ -6007,10 +6335,12 @@ function extractClaudeResultMetadata(result: Record<string, unknown>): ClaudeRes
       : undefined;
   return {
     ...provenance,
+    ...usageExtras,
     ...(typeof result.api_error_status === "number" ? { apiErrorStatus: result.api_error_status } : {}),
     ...(fastModeDisabledReason ? { fastModeDisabledReason } : {}),
     ...(userMessageUuid ? { userMessageUuid } : {}),
     ...(typeof result.request_sent_wall_ms === "number" ? { requestSentWallMs: result.request_sent_wall_ms } : {}),
+    ...(queuedTurnCount != null ? { queuedTurnCount } : {}),
   };
 }
 
@@ -6797,7 +7127,7 @@ const PLAN_STEP_STATUS_MAP: Record<string, "pending" | "in_progress" | "complete
   failed: "failed",
 };
 
-const VALID_PERMISSION_MODES = new Set(["default", "auto", "plan", "edit", "full-auto", "config-toml"]);
+const VALID_PERMISSION_MODES = new Set<string>(AGENT_CHAT_PERMISSION_MODE_VALUES);
 const VALID_EXECUTION_MODES = new Set(["focused", "parallel", "subagents", "teams"]);
 const VALID_INTERACTION_MODES = new Set([
   "default",
@@ -6811,7 +7141,7 @@ const VALID_CODEX_APPROVAL_POLICIES = new Set(["untrusted", "on-request", "on-fa
 const VALID_CODEX_SANDBOXES = new Set(["read-only", "workspace-write", "danger-full-access"]);
 const VALID_CODEX_CONFIG_SOURCES = new Set(["flags", "config-toml"]);
 const VALID_OPENCODE_PERMISSION_MODES = new Set(["plan", "edit", "full-auto", "config-toml"]);
-const VALID_DROID_PERMISSION_MODES = new Set(["read-only", "auto-low", "auto-medium", "auto-high", "agi"]);
+const VALID_DROID_PERMISSION_MODES = new Set<string>(AGENT_CHAT_DROID_PERMISSION_MODE_VALUES);
 
 function normalizePersistedEnum<T extends string>(value: unknown, validSet: Set<string>): T | undefined {
   if (typeof value !== "string") return undefined;
@@ -6937,23 +7267,6 @@ function legacyPermissionModeToOpenCodePermissionMode(
   return mode === "default" ? "edit" : normalizeOpenCodePermissionMode(mode);
 }
 
-function legacyPermissionModeToDroidPermissionMode(
-  mode: AgentChatSession["permissionMode"] | undefined,
-): AgentChatDroidPermissionMode | undefined {
-  switch (mode) {
-    case "plan":
-      return "read-only";
-    case "edit":
-      return "auto-low";
-    case "default":
-      return "auto-medium";
-    case "full-auto":
-      return "auto-high";
-    default:
-      return undefined;
-  }
-}
-
 function legacyOpenCodePermissionModeToDroidPermissionMode(
   mode: AgentChatOpenCodePermissionMode | undefined,
 ): AgentChatDroidPermissionMode | undefined {
@@ -6969,26 +7282,9 @@ function legacyOpenCodePermissionModeToDroidPermissionMode(
   }
 }
 
-function droidPermissionModeToLegacyPermissionMode(
-  mode: AgentChatDroidPermissionMode | undefined,
-): AgentChatSession["permissionMode"] | undefined {
-  switch (mode) {
-    case "read-only":
-      return "plan";
-    case "auto-low":
-      return "edit";
-    case "auto-medium":
-      return "default";
-    case "auto-high":
-      return "full-auto";
-    default:
-      return undefined;
-  }
-}
-
 function syncLegacyPermissionMode(session: Pick<
   AgentChatSession,
-  "provider" | "permissionMode" | "interactionMode" | "claudePermissionMode" | "codexApprovalPolicy" | "codexSandbox" | "codexConfigSource" | "opencodePermissionMode" | "droidPermissionMode"
+  "provider" | "permissionMode" | "interactionMode" | "claudePermissionMode" | "codexApprovalPolicy" | "codexSandbox" | "codexConfigSource" | "opencodePermissionMode" | "droidPermissionMode" | "cursorModeId"
 >): AgentChatSession["permissionMode"] | undefined {
   if (session.provider === "claude") {
     if (session.interactionMode === "plan") {
@@ -7025,10 +7321,31 @@ function syncLegacyPermissionMode(session: Pick<
 
   if (session.provider === "droid") {
     if (session.interactionMode === "plan") return "plan";
-    return droidPermissionModeToLegacyPermissionMode(
+    return legacyPermissionModeFromDroidPermissionMode(
       session.droidPermissionMode
         ?? legacyOpenCodePermissionModeToDroidPermissionMode(session.opencodePermissionMode),
     );
+  }
+
+  if (session.provider === "cursor") {
+    switch (session.cursorModeId) {
+      case "full-auto":
+        return "full-auto";
+      case "plan":
+        return "plan";
+      case "ask":
+        return "edit";
+      case "agent":
+        return "default";
+      case null:
+        // A present null is an explicit native-mode clear, not a request to
+        // resurrect the previous OpenCode compatibility field.
+        return "default";
+      default:
+        // Undefined means an older/legacy caller did not send a native mode;
+        // preserve its already-selected legacy value while it is migrated.
+        return session.permissionMode;
+    }
   }
 
   if (session.provider === "pi") return session.permissionMode;
@@ -7047,7 +7364,7 @@ function syncLegacyPermissionMode(session: Pick<
 function applyLegacyPermissionModeToNativeControls(
   session: Pick<
     AgentChatSession,
-    "provider" | "permissionMode" | "interactionMode" | "claudePermissionMode" | "codexApprovalPolicy" | "codexSandbox" | "codexConfigSource" | "opencodePermissionMode" | "droidPermissionMode"
+    "provider" | "permissionMode" | "interactionMode" | "claudePermissionMode" | "codexApprovalPolicy" | "codexSandbox" | "codexConfigSource" | "opencodePermissionMode" | "droidPermissionMode" | "cursorModeId"
   >,
   mode: AgentChatSession["permissionMode"] | undefined,
 ): void {
@@ -7069,12 +7386,20 @@ function applyLegacyPermissionModeToNativeControls(
 
   if (session.provider === "droid") {
     session.interactionMode = mode === "plan" ? "plan" : "default";
-    session.droidPermissionMode = legacyPermissionModeToDroidPermissionMode(mode);
+    session.droidPermissionMode = droidPermissionModeFromLegacyPermissionMode(mode);
     return;
   }
 
   if (session.provider === "pi") return;
 
+  if (session.provider === "cursor") {
+    // Overwrite, never fill: this runs when the caller explicitly changed
+    // `permissionMode`, so a stale `full-auto` from an earlier request has to
+    // clear rather than outlive the mode that set it.
+    session.opencodePermissionMode = legacyPermissionModeToOpenCodePermissionMode(mode);
+    session.cursorModeId = legacyPermissionModeToCursorModeId(mode);
+    return;
+  }
   session.opencodePermissionMode = legacyPermissionModeToOpenCodePermissionMode(mode);
 }
 
@@ -7104,10 +7429,30 @@ function buildClaudePlanModeNoticeDetail(
 }
 
 
+/**
+ * Fill an absent Cursor mode from the legacy `permissionMode` the session was
+ * created or updated with. Fill only — an explicit mode is the user's own
+ * selection and outranks whatever the legacy field says, which is how picking
+ * `agent` on a `full-auto` chat stays `agent`.
+ */
+function applyCursorModeIdFromLegacyPermissionMode(
+  session: Pick<AgentChatSession, "provider" | "permissionMode" | "cursorModeId">,
+): void {
+  if (session.provider !== "cursor") return;
+  // `undefined` means the caller did not supply a native mode. `null` is an
+  // explicit clear and must survive normalization instead of being rebuilt
+  // from the legacy permission field. Empty strings remain invalid/missing
+  // input and can still fall back to the legacy field.
+  if (session.cursorModeId === null) return;
+  if (typeof session.cursorModeId === "string" && session.cursorModeId.trim().length) return;
+  const derived = legacyPermissionModeToCursorModeId(session.permissionMode);
+  if (derived) session.cursorModeId = derived;
+}
+
 function hydrateNativePermissionControls(
   session: Pick<
     AgentChatSession,
-    "provider" | "permissionMode" | "interactionMode" | "claudePermissionMode" | "codexApprovalPolicy" | "codexSandbox" | "codexConfigSource" | "opencodePermissionMode" | "droidPermissionMode"
+    "provider" | "permissionMode" | "interactionMode" | "claudePermissionMode" | "codexApprovalPolicy" | "codexSandbox" | "codexConfigSource" | "opencodePermissionMode" | "droidPermissionMode" | "cursorModeId"
   >,
 ): void {
   const orchestrationMode = isOrchestrationInteractionMode(session.interactionMode)
@@ -7126,10 +7471,12 @@ function hydrateNativePermissionControls(
       ? "plan"
       : "default");
     session.droidPermissionMode = session.droidPermissionMode
-      ?? legacyPermissionModeToDroidPermissionMode(session.permissionMode)
+      ?? droidPermissionModeFromLegacyPermissionMode(session.permissionMode)
       ?? legacyOpenCodePermissionModeToDroidPermissionMode(session.opencodePermissionMode);
   } else if (session.provider === "pi") {
     if (orchestrationMode) session.interactionMode = orchestrationMode;
+  } else if (session.provider === "cursor") {
+    applyCursorModeIdFromLegacyPermissionMode(session);
   } else {
     if (orchestrationMode) session.interactionMode = orchestrationMode;
     session.opencodePermissionMode = session.opencodePermissionMode ?? legacyPermissionModeToOpenCodePermissionMode(session.permissionMode);
@@ -7182,104 +7529,23 @@ function isSessionCodexFullAuto(
     && resolveSessionCodexSandbox(session, "read-only") === "danger-full-access";
 }
 
-function codexApprovalPathStaysWithinLane(
-  managed: Pick<ManagedChatSession, "laneWorktreePath">,
-  candidate: string | null | undefined,
-): boolean {
-  const trimmed = typeof candidate === "string" ? candidate.trim() : "";
-  if (!trimmed.length) return false;
-  try {
-    resolvePathWithinRoot(managed.laneWorktreePath, trimmed, { allowMissing: true });
-    return true;
-  } catch {
-    return false;
-  }
+/**
+ * The containment root for one managed session, as a plain string.
+ *
+ * The one place the session's own worktree meets the host policy's root. Every
+ * predicate below takes the result; none of them takes a session.
+ */
+function codexContainmentRoot(
+  managed: Pick<ManagedChatSession, "laneWorktreePath" | "session">,
+): string {
+  return resolveCodexContainmentRoot(managed.session, managed.laneWorktreePath);
 }
 
-function codexPermissionPathStaysWithinLane(
-  managed: Pick<ManagedChatSession, "laneWorktreePath">,
-  cwd: string,
-  candidate: string | null | undefined,
+/** Whether ADE answers this session's Codex approvals itself. */
+function codexSessionAutoAccepts(
+  managed: Pick<ManagedChatSession, "session">,
 ): boolean {
-  const trimmed = typeof candidate === "string" ? candidate.trim() : "";
-  if (!trimmed.length) return false;
-  const resolvedCandidate = path.isAbsolute(trimmed)
-    ? trimmed
-    : path.join(cwd, trimmed);
-  return codexApprovalPathStaysWithinLane(managed, resolvedCandidate);
-}
-
-function codexFileSystemPermissionsStayWithinLane(
-  managed: Pick<ManagedChatSession, "laneWorktreePath">,
-  cwd: string,
-  fileSystemPermissions: Record<string, unknown>,
-): boolean {
-  const legacyPaths = [
-    ...(Array.isArray(fileSystemPermissions.read) ? fileSystemPermissions.read : []),
-    ...(Array.isArray(fileSystemPermissions.write) ? fileSystemPermissions.write : []),
-  ];
-  for (const candidate of legacyPaths) {
-    if (typeof candidate !== "string" || !codexPermissionPathStaysWithinLane(managed, cwd, candidate)) {
-      return false;
-    }
-  }
-
-  const entries = fileSystemPermissions.entries;
-  if (entries == null) return true;
-  if (!Array.isArray(entries)) return false;
-  for (const entryValue of entries) {
-    const entry = asRecord(entryValue);
-    if (!entry) return false;
-    if (entry.access === "deny") continue;
-    const entryPath = asRecord(entry.path);
-    if (!entryPath) return false;
-    if (entryPath.type === "path") {
-      if (!codexPermissionPathStaysWithinLane(managed, cwd, typeof entryPath.path === "string" ? entryPath.path : null)) {
-        return false;
-      }
-      continue;
-    }
-    if (entryPath.type === "special") {
-      const value = asRecord(entryPath.value);
-      if (value?.kind !== "project_roots") return false;
-      const subpath = value.subpath;
-      if (subpath == null) return false;
-      if (typeof subpath !== "string" || !codexPermissionPathStaysWithinLane(managed, managed.laneWorktreePath, subpath)) {
-        return false;
-      }
-      continue;
-    }
-    return false;
-  }
-  return true;
-}
-
-function codexPermissionsStayWithinLane(
-  managed: Pick<ManagedChatSession, "laneWorktreePath">,
-  cwd: string | null | undefined,
-  permissions: unknown,
-): boolean {
-  const permissionCwd = typeof cwd === "string" && cwd.trim().length
-    ? cwd.trim()
-    : managed.laneWorktreePath;
-  if (!codexApprovalPathStaysWithinLane(managed, permissionCwd)) return false;
-  const permissionRecord = asRecord(permissions);
-  if (!permissionRecord) return permissions == null;
-  if (permissionRecord.fileSystem == null) return true;
-  const fileSystemPermissions = asRecord(permissionRecord.fileSystem);
-  return fileSystemPermissions
-    ? codexFileSystemPermissionsStayWithinLane(managed, permissionCwd, fileSystemPermissions)
-    : false;
-}
-
-function codexCommandApprovalStaysWithinLane(
-  managed: Pick<ManagedChatSession, "laneWorktreePath">,
-  cwd: string | null | undefined,
-  additionalPermissions: unknown,
-): boolean {
-  if (!codexApprovalPathStaysWithinLane(managed, cwd)) return false;
-  return additionalPermissions == null
-    || codexPermissionsStayWithinLane(managed, cwd, additionalPermissions);
+  return codexApprovalAutoAccepts(managed.session, isSessionCodexFullAuto(managed.session));
 }
 
 type CodexCollaborationModePayload = {
@@ -7504,12 +7770,13 @@ function buildCodexDeveloperInstructions(args: {
     | "spawnKind"
     | "orchestrationStepId"
     | "surface"
+    | "instructions"
   >;
   collaborationMode: "default" | "plan";
   /** Optional Linear-tracked-work directive appended to the base instructions. */
   linearDirective?: string | null;
 }): string {
-  if (args.session.surface === "personal") return PERSONAL_CHAT_SYSTEM_PROMPT;
+  if (args.session.surface === "personal") return resolvePersonalSystemPrompt(args.session);
   const promptMode = args.collaborationMode === "plan" || args.session.interactionMode === "plan"
     ? "planning"
     : "coding";
@@ -7546,9 +7813,10 @@ function buildOpenCodeSystemPrompt(args: {
     | "orchestrationParentSessionId"
     | "orchestrationStepId"
     | "spawnKind"
+    | "instructions"
   >;
 }): string {
-  if (args.session.surface === "personal") return PERSONAL_CHAT_SYSTEM_PROMPT;
+  if (args.session.surface === "personal") return resolvePersonalSystemPrompt(args.session);
   const mode = args.session.permissionMode === "plan" || args.session.interactionMode === "plan"
     ? "planning"
     : "coding";
@@ -7688,7 +7956,7 @@ function resolveSessionDroidPermissionModeOrNull(
   session: Pick<AgentChatSession, "droidPermissionMode" | "opencodePermissionMode" | "permissionMode">,
 ): AgentChatDroidPermissionMode | null {
   return session.droidPermissionMode
-    ?? legacyPermissionModeToDroidPermissionMode(session.permissionMode)
+    ?? droidPermissionModeFromLegacyPermissionMode(session.permissionMode)
     ?? legacyOpenCodePermissionModeToDroidPermissionMode(session.opencodePermissionMode)
     ?? null;
 }
@@ -7925,7 +8193,7 @@ function normalizeDroidReportedModelId(
 function normalizeSessionNativePermissionControls(
   session: Pick<
     AgentChatSession,
-    "provider" | "permissionMode" | "interactionMode" | "claudePermissionMode" | "codexApprovalPolicy" | "codexSandbox" | "codexConfigSource" | "opencodePermissionMode" | "droidPermissionMode"
+    "provider" | "permissionMode" | "interactionMode" | "claudePermissionMode" | "codexApprovalPolicy" | "codexSandbox" | "codexConfigSource" | "opencodePermissionMode" | "droidPermissionMode" | "cursorModeId"
   >,
   config: ResolvedChatConfig,
 ): void {
@@ -7959,6 +8227,10 @@ function normalizeSessionNativePermissionControls(
   } else if (session.provider === "pi") {
     if (orchestrationMode) session.interactionMode = orchestrationMode;
     else delete session.interactionMode;
+  } else if (session.provider === "cursor") {
+    if (orchestrationMode) session.interactionMode = orchestrationMode;
+    else delete session.interactionMode;
+    applyCursorModeIdFromLegacyPermissionMode(session);
   } else {
     if (orchestrationMode) session.interactionMode = orchestrationMode;
     else delete session.interactionMode;
@@ -8078,17 +8350,6 @@ function resolveClaudeStrictMcpConfig(
 ): boolean {
   if (isOrchestrationLeadSession(session)) return true;
   return session.strictMcpConfig ?? lightweight;
-}
-
-const PERSONAL_CHAT_SYSTEM_PROMPT = [
-  "You are a general-purpose AI assistant in an ADE personal chat.",
-  "This conversation is not attached to a software project, repository, branch, lane, or pull request.",
-  "Answer the user's request directly. Do not assume they want coding work or inspect files unless they explicitly ask.",
-  "If filesystem or shell work is explicitly requested, keep it inside the scratch working directory provided by the runtime.",
-].join(" ");
-
-function isPersonalSession(session: Pick<AgentChatSession, "surface">): boolean {
-  return session.surface === "personal";
 }
 
 function personalChatUserPromptFallback(
@@ -8219,6 +8480,11 @@ export function createAgentChatService(args: {
   onEvent?: (event: AgentChatEventEnvelope) => void;
   /** Low-frequency, content-free hook emitted once when a persisted turn reaches a terminal state. */
   onTurnSettled?: (event: AgentChatTurnSettledEvent) => void;
+  /**
+   * Content-free hook fired when this client's Claude hooks were ignored
+   * because another client already configured the joined session.
+   */
+  onClaudeHooksIgnored?: (event: { sessionId: string }) => void;
   /** Content-free hook fired when a send's composer @-mentions were expanded into pointer blocks. */
   onChatMentionsExpanded?: (event: { sessionId: string | null }) => void;
   /** Content-free hook fired after an explicit session-metadata generation request. */
@@ -8232,6 +8498,7 @@ export function createAgentChatService(args: {
    * `ChatAutoResumeAnalyticsProperties`.
    */
   onAutoResumeOutcome?: (properties: ChatAutoResumeAnalyticsProperties) => void;
+  onUsageLimitAutoResumed?: (args: { sessionId: string; title?: string | null }) => void;
   onSessionEnded?: (args: { laneId: string; sessionId: string; exitCode: number | null }) => void;
   onLinearIssueChatLinked?: (args: {
     laneId: string;
@@ -8298,9 +8565,11 @@ export function createAgentChatService(args: {
     createScheduledWorkScheduler = createChatScheduledWorkScheduler,
     onEvent,
     onTurnSettled,
+    onClaudeHooksIgnored,
     onChatMentionsExpanded,
     onSessionMetadataRegenerated,
     onAutoResumeOutcome,
+    onUsageLimitAutoResumed,
     onSessionEnded,
     onLinearIssueChatLinked,
     getDirtyFileTextForPath,
@@ -8961,38 +9230,6 @@ export function createAgentChatService(args: {
     return collection;
   };
 
-  const CLAUDE_READ_ONLY_TOOLS = new Set([
-    "read", "glob", "grep", "toolsearch", "tasklist", "taskget",
-    "webfetch", "websearch",
-  ]);
-
-  const normalizeToolNameForApproval = (toolName: string): string =>
-    toolName.trim().toLowerCase().replace(/[^a-z0-9]+/g, "_");
-
-  const claudeToolNeedsApproval = (
-    toolName: string,
-    _input: Record<string, unknown>,
-    permissionMode: string,
-  ): boolean => {
-    const normalized = normalizeToolNameForApproval(toolName);
-    // bypassPermissions → never prompt
-    if (permissionMode === "bypassPermissions") return false;
-    // plan mode → handled elsewhere (deny writes entirely)
-    if (permissionMode === "plan") return false;
-    // Read-only tools never need approval
-    if (CLAUDE_READ_ONLY_TOOLS.has(normalized)) return false;
-    // acceptEdits → only prompt for Bash
-    if (permissionMode === "acceptEdits") {
-      return normalized.includes("bash");
-    }
-    // default → prompt for mutating tools (Bash, Write, Edit, NotebookEdit, Agent, etc.)
-    if (normalized.includes("bash") || normalized.includes("write") || normalized.includes("edit")
-      || normalized.includes("agent") || normalized.includes("notebookedit")) {
-      return true;
-    }
-    return false;
-  };
-
   const buildClaudeToolApprovalDescription = (
     toolName: string,
     input: Record<string, unknown>,
@@ -9167,6 +9404,19 @@ export function createAgentChatService(args: {
     };
   };
 
+  const rememberUserAuthoredClassifierContext = (
+    runtime: ClaudeRuntime,
+    toolUseId: unknown,
+    input: UserAuthoredClassifierInput,
+  ): void => {
+    const id = typeof toolUseId === "string" ? toolUseId.trim() : "";
+    if (!id) return;
+    // Session-override and policy auto-allows never call this. If ADE cannot
+    // attribute a statement to the user, buildClassifierContext returns null.
+    if (!buildClassifierContext(input)) return;
+    runtime.pendingClassifierContextByToolUseId.set(id, input);
+  };
+
   const buildClaudeCanUseTool = (
     runtime: ClaudeRuntime,
     managed: ManagedChatSession,
@@ -9181,6 +9431,44 @@ export function createAgentChatService(args: {
         behavior: "deny",
         message: "Orchestrator lead sessions cannot use Claude's direct coding tools. Use orchestration tools like spawnAgent instead.",
       };
+    }
+
+    // ── Host permission policy, evaluated once ──
+    // Placed ahead of every tool-specific interception below so that a refusal
+    // is absolute. `AskUserQuestion` and ADE's own `ask_user` both auto-allow
+    // themselves further down — correctly, because each carries its own answer
+    // UI and a generic "Allow this tool?" card would only hide the real
+    // question behind an extra click. But an auto-allow that ran before the
+    // policy would silently override `deniedTools: ["AskUserQuestion"]`, and a
+    // rule the host wrote is not something ADE may decline to apply.
+    //
+    // Only the deny verdict returns here. Allow and ask are settled in the
+    // generic section, after the interceptions, because for those tools
+    // "permitted to run" means "present the question", not "return allow and
+    // skip the machinery that asks it".
+    //
+    // Nothing on this path infers risk from a tool name. ADE's own heuristic
+    // is a substring test that prompts for a read-only `list_agents` and stays
+    // silent for a destructive `delete_project`; a host that stated its rules
+    // gets those rules and only those.
+    const hostPermissionPolicy = managed.session.permissionPolicy;
+    //
+    // No `cwd` is passed. A Claude session has exactly one working directory
+    // for its whole life, so handing it to `sandboxRoot` containment as the
+    // candidate for `Bash` made the check a constant: with the session running
+    // inside the root — the normal configuration — every command was allowed,
+    // whatever it was. A tool that names no path is therefore judged by the
+    // tool rules and then by `fallback`, and a host that wants unattended
+    // commands names `Bash` in `allowedTools`.
+    const policyDecision: "allow" | "deny" | "ask" | null = hostPermissionPolicy
+      ? evaluatePermissionPolicy(hostPermissionPolicy, {
+        toolName,
+        provider: "claude",
+        paths: claudeToolInputPaths(input),
+      })
+      : null;
+    if (policyDecision === "deny") {
+      return { behavior: "deny", message: "Denied by the host permission policy." };
     }
 
     // ── EnterPlanMode interception ──
@@ -9327,6 +9615,10 @@ export function createAgentChatService(args: {
       }
 
       if (approved) {
+        rememberUserAuthoredClassifierContext(runtime, sdkOptions?.toolUseID, {
+          typedText: response.responseText,
+          explicitApproval: true,
+        });
         // Switch session out of plan mode so the UI reflects the transition.
         if (managed.session.permissionMode === "plan" || managed.session.interactionMode === "plan") {
           applyClaudePlanModeTransition(managed.session, "default");
@@ -9444,6 +9736,30 @@ export function createAgentChatService(args: {
       };
     }
 
+    // ── Host permission policy: the "allow" and "ask" halves ──
+    // The "deny" half already ran at the top of this callback, ahead of every
+    // tool-specific interception. The other two verdicts are settled here
+    // instead, because neither one should skip that machinery: `EnterPlanMode`,
+    // `ExitPlanMode`, and `AskUserQuestion` are not gates that an allow-listed
+    // tool may bypass, they are how those tools work. Returning allow before
+    // them would let a model ask a question the user never sees.
+    if (policyDecision === "allow") return { behavior: "allow", updatedInput: input };
+    if (policyDecision === "ask") {
+      // One class of tool is exempt from asking: Claude's own read-only
+      // built-ins. A host on `fallback: "ask"` must not get a card for every
+      // file read — that is how a user learns to click Allow without reading
+      // it, which costs more safety than the cards buy.
+      //
+      // Matched against a LITERAL name set, never a substring. Nothing on this
+      // path infers risk from a name. A host tool cannot reach the exemption
+      // by accident either: every member of the set is a bare built-in name,
+      // and an MCP tool always normalizes with its `mcp_<server>_` prefix
+      // still attached.
+      if (claudeBuiltInIsReadOnly(toolName)) {
+        return { behavior: "allow", updatedInput: input };
+      }
+    }
+
     // ── Tool permission prompts ──
     // Surface approval prompts for non-bypass permission modes so the user can
     // allow or deny individual tool calls (matching the opencode runtime pattern).
@@ -9456,7 +9772,13 @@ export function createAgentChatService(args: {
     if (isAskUserToolName(toolName) && isAutoAllowAskUserEnabled()) {
       return { behavior: "allow", updatedInput: input };
     }
-    if (claudeToolNeedsApproval(toolName, input, effectivePermMode)) {
+    // Reaching here under a policy means the policy said "ask": allow and deny
+    // both returned above. So the policy decides, and `claudeToolNeedsApproval`
+    // is not consulted at all — with no policy its behavior is unchanged.
+    const needsApproval = policyDecision !== null
+      ? policyDecision === "ask"
+      : claudeToolNeedsApproval(toolName, input, effectivePermMode);
+    if (needsApproval) {
       // Check session-wide overrides — user already said "Allow for Session" for this tool
       if (runtime.approvalOverrides.has(normalizedToolName)) {
         return { behavior: "allow", updatedInput: input };
@@ -9476,11 +9798,9 @@ export function createAgentChatService(args: {
           id: "tool_decision",
           header: toolName,
           question: description,
-          options: [
-            { label: "Allow", value: "allow", recommended: true },
-            { label: "Allow for Session", value: "allow_session" },
-            { label: "Deny", value: "deny" },
-          ],
+          options: buildClaudeToolApprovalOptions({
+            defaultToNo: claudeToolNeedsDefaultToNo(sdkOptions),
+          }),
           allowsFreeform: true,
         }],
         allowsFreeform: true,
@@ -9518,6 +9838,10 @@ export function createAgentChatService(args: {
         runtime.approvalOverrides.add(normalizedToolName);
       }
       if (approved) {
+        rememberUserAuthoredClassifierContext(runtime, sdkOptions?.toolUseID, {
+          typedText: response.responseText,
+          explicitApproval: true,
+        });
         return {
           behavior: "allow",
           ...(response.decision === "accept_for_session" && sdkOptions?.suggestions?.length
@@ -9595,6 +9919,8 @@ export function createAgentChatService(args: {
         turnId: event.turnId ?? undefined,
         startTimestamp: previous?.startTimestamp ?? timestamp,
         background: event.background ?? false,
+        spawnDepth: event.spawnDepth ?? previous?.spawnDepth,
+        resourceLinks: event.resourceLinks?.length ? event.resourceLinks : previous?.resourceLinks,
       });
       return;
     }
@@ -9620,6 +9946,8 @@ export function createAgentChatService(args: {
         lastToolName: event.lastToolName ?? previous?.lastToolName,
         background: previous?.background,
         usage: event.usage ?? previous?.usage,
+        spawnDepth: event.spawnDepth ?? previous?.spawnDepth,
+        resourceLinks: event.resourceLinks?.length ? event.resourceLinks : previous?.resourceLinks,
       });
       return;
     }
@@ -9651,6 +9979,8 @@ export function createAgentChatService(args: {
       lastToolName: previous?.lastToolName,
       background: previous?.background,
       usage: event.usage ?? previous?.usage,
+      spawnDepth: event.spawnDepth ?? previous?.spawnDepth,
+      resourceLinks: event.resourceLinks?.length ? event.resourceLinks : previous?.resourceLinks,
     });
   };
 
@@ -9843,7 +10173,7 @@ export function createAgentChatService(args: {
       applyFlagSettings?: ClaudeQuery["applyFlagSettings"];
       reloadPlugins?: ClaudeQuery["reloadPlugins"];
       supportedCommands?: () => Promise<Array<{ name?: string; description?: string }>>;
-      getContextUsage?: () => Promise<SDKControlGetContextUsageResponse>;
+      getContextUsage?: (opts?: { detail?: "summary" | "full" }) => Promise<SDKControlGetContextUsageResponse>;
       rewindFiles?: (userMessageId: string, options?: { dryRun?: boolean }) => Promise<ClaudeRewindFilesResult>;
       interrupt?: ClaudeQuery["interrupt"];
       interruptWithOptions?: (options: { cancelQueued: boolean }) => Promise<SDKControlInterruptResponse>;
@@ -12805,7 +13135,7 @@ export function createAgentChatService(args: {
       recordPiSessionOwner({ sessionFile: existingPiSessionFile, owner: "sdk", ownerSessionId: managed.session.id });
     }
     const systemPrompt = isPersonalSession(managed.session)
-      ? PERSONAL_CHAT_SYSTEM_PROMPT
+      ? resolvePersonalSystemPrompt(managed.session)
       : buildCodingAgentSystemPrompt({
           cwd: managed.laneWorktreePath,
           mode: managed.session.interactionMode === "plan" || managed.session.permissionMode === "plan" ? "planning" : "coding",
@@ -13497,6 +13827,14 @@ export function createAgentChatService(args: {
     return fallback();
   };
 
+  /**
+   * KNOWN GAP: this helper takes a lane id and no session, so it resolves the
+   * LANE's worktree. A personal chat whose host named a `requestedCwd` runs
+   * somewhere else, and the sha reported for such a session is the lane's, not
+   * the directory the agent is working in. Closing it means threading the
+   * session through every caller, which is a change this pass did not make; the
+   * two callers that hold a `managed` take the directory from it instead.
+   */
   const computeHeadShaBestEffort = async (laneId: string): Promise<string | null> => {
     let cwd: string;
     try {
@@ -13548,17 +13886,10 @@ export function createAgentChatService(args: {
     if (!afterSha || beforeSha === afterSha) return;
 
     try {
-      let cwd: string;
-      try {
-        ({ laneWorktreePath: cwd } = resolveLaneLaunchContext({
-          laneService,
-          projectRoot,
-          laneId,
-          purpose: "turn diff summary",
-        }));
-      } catch {
-        return;
-      }
+      // Same rule as the Codex rewind: a `managed` in hand names the directory
+      // the session actually runs in, so take it rather than re-resolving from
+      // the lane id.
+      const cwd = managed.laneWorktreePath;
       const result = await runGit(["diff", "--numstat", `${beforeSha}..${afterSha}`], { cwd, timeoutMs: 10_000 });
       if (result.exitCode !== 0) return;
 
@@ -13616,19 +13947,33 @@ export function createAgentChatService(args: {
     args: { purpose: string; requestedCwd?: string | null },
   ): LaneLaunchContext & { laneId: string; laneDirectiveKey: string | null } => {
     const laneId = resolveManagedExecutionLaneId(managed);
+    // One place, so a refresh cannot resolve a different directory than the
+    // create did and silently tear the runtime down every turn.
+    const personalHostCwd = resolvePersonalHostCwd(managed.session);
     const launchContext = resolveLaneLaunchContext({
       laneService,
       projectRoot,
       laneId,
       purpose: args.purpose,
-      requestedCwd: args.requestedCwd,
+      // Withheld for the same reason as at create: the lane launch context
+      // contains a requested cwd INSIDE the lane worktree and refuses anything
+      // outside it, so a host directory has to bypass it rather than be
+      // rejected by it.
+      requestedCwd: personalHostCwd ? undefined : args.requestedCwd,
     });
+    // One substitution, written once. It used to be a local for the directive
+    // key plus a conditional spread three lines later, which is two expressions
+    // of one rule and two places to change it.
+    const override = personalHostCwd
+      ? { laneWorktreePath: personalHostCwd, cwd: personalHostCwd }
+      : null;
     return {
       ...launchContext,
+      ...override,
       laneId,
       laneDirectiveKey: buildLaneDirectiveKey({
         laneId,
-        laneWorktreePath: launchContext.laneWorktreePath,
+        laneWorktreePath: override?.laneWorktreePath ?? launchContext.laneWorktreePath,
       }),
     };
   };
@@ -13885,6 +14230,9 @@ export function createAgentChatService(args: {
       managed.eventSequence,
       prevPersisted?.eventSequence,
     );
+    const survivingPreviousPendingSteers = prevPersisted?.pendingSteers?.length
+      ? survivingPersistedSteers(managed, prevPersisted.pendingSteers)
+      : [];
     const payload: PersistedChatState = {
       version: 2,
       sessionId: managed.session.id,
@@ -13898,6 +14246,8 @@ export function createAgentChatService(args: {
       ...(managed.session.sessionProfile ? { sessionProfile: managed.session.sessionProfile } : {}),
       ...(managed.session.reasoningEffort ? { reasoningEffort: managed.session.reasoningEffort } : {}),
       ...(managed.session.fastMode === true ? { fastMode: true } : {}),
+      ...(managed.session.autoContinueAtUsageLimit === false ? { autoContinueAtUsageLimit: false } : {}),
+      ...(managed.usageLimitParkedUntil ? { usageLimitParkedUntil: managed.usageLimitParkedUntil } : {}),
       ...(managed.session.codexServiceTier !== undefined ? { codexServiceTier: managed.session.codexServiceTier } : {}),
         ...(managed.session.executionMode ? { executionMode: managed.session.executionMode } : {}),
         ...(managed.session.interactionMode ? { interactionMode: managed.session.interactionMode } : {}),
@@ -13922,6 +14272,12 @@ export function createAgentChatService(args: {
         ? { strictMcpConfig: managed.session.strictMcpConfig }
         : {}),
       ...(managed.session.mcpCapability ? { mcpCapability: managed.session.mcpCapability } : {}),
+      // Host session configuration: the three requests and the three reports of
+      // what the provider did with them. Persisted because a thread reopened by
+      // key sends no first message, so nothing else would carry the host's
+      // persona, its configuration layers, or its permission rules — and the
+      // tool gate reads the policy on every call.
+      ...pickHostSessionConfig(managed.session),
       ...(managed.runtimeTitleAdopted ? { runtimeTitleAdopted: true } : {}),
       ...(managed.session.permissionMode ? { permissionMode: managed.session.permissionMode } : {}),
       ...(managed.session.identityKey ? { identityKey: managed.session.identityKey } : {}),
@@ -14017,7 +14373,11 @@ export function createAgentChatService(args: {
               })),
             }
           : {}
-        : prevPersisted?.pendingSteers?.length ? { pendingSteers: prevPersisted.pendingSteers } : {}),
+        : prevPersisted?.pendingSteers?.length
+          ? survivingPreviousPendingSteers.length
+            ? { pendingSteers: survivingPreviousPendingSteers }
+            : {}
+          : {}),
       ...(managed.runtime?.kind === "opencode"
         ? { providerSessionId: managed.runtime.handle.sessionId }
         : managed.session.provider === "opencode"
@@ -14227,6 +14587,11 @@ export function createAgentChatService(args: {
       const sessionProfile = normalizeSessionProfile(record.sessionProfile);
       const reasoningEffort = normalizeReasoningEffort(record.reasoningEffort);
       const fastMode = readLegacyFastMode(record as Record<string, unknown>);
+      const autoContinueAtUsageLimit = record.autoContinueAtUsageLimit === false ? false : undefined;
+      const usageLimitParkedUntil = typeof record.usageLimitParkedUntil === "string"
+        && record.usageLimitParkedUntil.trim().length
+        ? record.usageLimitParkedUntil.trim()
+        : undefined;
       const hasCodexServiceTier = Object.prototype.hasOwnProperty.call(record, "codexServiceTier");
       const codexServiceTier = hasCodexServiceTier ? normalizeCodexServiceTier(record.codexServiceTier) : undefined;
       const executionMode = normalizePersistedExecutionMode(record.executionMode);
@@ -14246,7 +14611,7 @@ export function createAgentChatService(args: {
       const opencodePermissionMode = normalizePersistedOpenCodePermissionMode(record.opencodePermissionMode ?? (record as any).unifiedPermissionMode);
       const droidPermissionMode = normalizePersistedDroidPermissionMode(record.droidPermissionMode)
         ?? (provider === "droid"
-          ? legacyPermissionModeToDroidPermissionMode(permissionMode)
+          ? droidPermissionModeFromLegacyPermissionMode(permissionMode)
             ?? legacyOpenCodePermissionModeToDroidPermissionMode(opencodePermissionMode)
           : undefined);
       const cursorModeSnapshot = record.cursorModeSnapshot && typeof record.cursorModeSnapshot === "object"
@@ -14263,10 +14628,39 @@ export function createAgentChatService(args: {
         ? record.strictMcpConfig
         : undefined;
       const mcpCapability = normalizeCallerMcpCapability(record.mcpCapability, strictMcpConfig === true);
-      const identityKey = normalizeIdentityKey(record.identityKey);
       const surface = record.surface === "automation" || record.surface === "personal"
         ? record.surface
         : "work";
+      // Read back under the same surface rule the create path applies. A record
+      // written by an older build, or edited on disk, must not reintroduce a
+      // policy on a Work chat by way of a restart.
+      const hostConfigApplies = hostSessionConfigApplies(surface);
+      const hostInstructions = hostConfigApplies ? normalizeHostInstructions(record.instructions) : null;
+      const hostSettingSources = hostConfigApplies ? normalizeSettingSources(record.settingSources) : null;
+      // Re-derived, not trusted: a record written before a provider row changed
+      // would otherwise keep reporting the old verdict for the rest of the
+      // session's life. The persisted value is the fallback for a record whose
+      // provider this build has no table row for.
+      const instructionsCapability = hostInstructions
+        ? resolveInstructionsCapability(provider, hostInstructions)
+        : normalizeInstructionsCapability(record.instructionsCapability);
+      const settingSourcesCapability = hostSettingSources
+        ? resolveSettingSourcesCapability(provider, hostSettingSources)
+        : normalizeSettingSourcesCapability(record.settingSourcesCapability);
+      const permissionPolicy = hostConfigApplies ? normalizePermissionPolicy(record.permissionPolicy) : null;
+      const permissionCapability = permissionPolicy
+        ? resolvePermissionCapability(provider, permissionPolicy, {
+          callerMcpServerNames: Object.keys(callerMcpServers ?? {}),
+        })
+        : normalizePermissionCapability(record.permissionCapability);
+      if (!hostConfigApplies) {
+        warnHostSessionConfigDropped(logger, sessionId, surface, [
+          ...(record.permissionPolicy != null ? ["permissionPolicy"] : []),
+          ...(record.instructions != null ? ["instructions"] : []),
+          ...(record.settingSources != null ? ["settingSources"] : []),
+        ]);
+      }
+      const identityKey = normalizeIdentityKey(record.identityKey);
       const capabilityMode = normalizeCapabilityMode(record.capabilityMode);
       const completion = normalizePersistedCompletion(record.completion);
       const codexGoal = normalizeCodexGoalPayload(record.codexGoal);
@@ -14443,6 +14837,8 @@ export function createAgentChatService(args: {
         ...(sessionProfile ? { sessionProfile } : {}),
         ...(reasoningEffort ? { reasoningEffort } : {}),
         ...(fastMode ? { fastMode: true } : {}),
+        ...(autoContinueAtUsageLimit === false ? { autoContinueAtUsageLimit: false } : {}),
+        ...(usageLimitParkedUntil ? { usageLimitParkedUntil } : {}),
         ...(hasCodexServiceTier ? { codexServiceTier } : {}),
         ...(executionMode ? { executionMode } : {}),
           ...(interactionMode ? { interactionMode } : {}),
@@ -14460,6 +14856,17 @@ export function createAgentChatService(args: {
         ...(callerMcpServers ? { mcpServers: callerMcpServers } : {}),
         ...(strictMcpConfig !== undefined ? { strictMcpConfig } : {}),
         ...(mcpCapability ? { mcpCapability } : {}),
+        // Passed straight in: `pickHostSessionConfig` drops every field whose
+        // value is null or undefined, so an absent key and a key holding
+        // undefined produce the identical object.
+        ...pickHostSessionConfig({
+          permissionPolicy,
+          instructions: hostInstructions,
+          settingSources: hostSettingSources,
+          instructionsCapability,
+          settingSourcesCapability,
+          permissionCapability,
+        }),
         ...(permissionMode ? { permissionMode } : {}),
         ...(identityKey ? { identityKey } : {}),
         surface,
@@ -15197,6 +15604,14 @@ export function createAgentChatService(args: {
     return null;
   };
 
+  const parkUsageLimitIfAutoContinuing = (managed: ManagedChatSession): void => {
+    if (!sessionAutoContinueAtUsageLimit(managed.session)) return;
+    const fireAt = autoResumeFireAtMs(usageLimitResetAtMs(managed), Date.now());
+    if (fireAt == null) return;
+    managed.usageLimitParkedUntil = new Date(fireAt).toISOString();
+    persistChatState(managed);
+  };
+
   type CommitChatEventOptions = {
     liveEvent?: AgentChatEvent;
   };
@@ -15208,12 +15623,18 @@ export function createAgentChatService(args: {
   ): void => {
     const decoratedEvent = event.type === "error" ? decorateAgentCliError(managed, event) : event;
     if (decoratedEvent.type === "error") {
-      autoResume.maybeArmAfterUsageLimit({
-        sessionId: managed.session.id,
-        provider: managed.session.provider,
-        resetAtMs: usageLimitResetAtMs(managed),
-        error: decoratedEvent,
-      });
+      const autoContinue = sessionAutoContinueAtUsageLimit(managed.session);
+      if (autoContinue && managed.session.provider !== "claude") {
+        autoResume.maybeArmAfterUsageLimit({
+          sessionId: managed.session.id,
+          provider: managed.session.provider,
+          resetAtMs: usageLimitResetAtMs(managed),
+          error: decoratedEvent,
+        });
+      }
+      if (autoContinue && isUsageLimitChatError(decoratedEvent)) {
+        parkUsageLimitIfAutoContinuing(managed);
+      }
     }
     const liveEvent = options.liveEvent ?? decoratedEvent;
     const storedEvent = compactChatEventForStorage(decoratedEvent);
@@ -15611,6 +16032,35 @@ export function createAgentChatService(args: {
     }
 
     if (
+      managed.usageLimitParkedUntil
+      && normalizedEvent.type === "user_message"
+      && normalizedEvent.deliveryState !== "queued"
+    ) {
+      const autoResumeTurn = isAutoResumeScheduledWork({
+        id: normalizedEvent.metadata?.scheduledWake?.scheduleId,
+      });
+      managed.usageLimitParkedUntil = null;
+      persistChatState(managed);
+      if (autoResumeTurn) {
+        onUsageLimitAutoResumed?.({
+          sessionId: managed.session.id,
+          title: sessionService.get(managed.session.id)?.title ?? null,
+        });
+      }
+    } else if (
+      managed.usageLimitParkedUntil
+      && normalizedEvent.type === "status"
+      && normalizedEvent.turnStatus === "started"
+    ) {
+      managed.usageLimitParkedUntil = null;
+      persistChatState(managed);
+      onUsageLimitAutoResumed?.({
+        sessionId: managed.session.id,
+        title: sessionService.get(managed.session.id)?.title ?? null,
+      });
+    }
+
+    if (
       normalizedEvent.type === "user_message"
       && normalizedEvent.deliveryState !== "queued"
       && normalizedEvent.metadata?.scheduledWake?.scheduleId
@@ -15850,7 +16300,7 @@ export function createAgentChatService(args: {
       const usage = normalizeClaudeContextUsage(await awaitClaudeControlCall(
         "Claude context usage",
         CLAUDE_INTERRUPT_REQUEST_TIMEOUT_MS,
-        () => control.getContextUsage!(),
+        () => control.getContextUsage!({ detail: origin === "compact" ? "full" : "summary" }),
       ));
       if (
         managed.runtime !== runtime
@@ -16474,6 +16924,9 @@ export function createAgentChatService(args: {
       const task = asRecord(rawTask);
       const taskId = compactString(task?.task_id);
       if (!task || !taskId) continue;
+      if (isClaudeHousekeepingTask(task) || runtime.activeSubagents.get(taskId)?.skipTranscript) {
+        continue;
+      }
       nextIds.add(taskId);
       const rawLevelTaskType = compactString(task.task_type);
       if (rawLevelTaskType) nextTaskTypes.set(taskId, rawLevelTaskType);
@@ -17827,7 +18280,7 @@ export function createAgentChatService(args: {
       const cwd = typeof metadata.cwd === "string" && metadata.cwd.trim().length
         ? metadata.cwd
         : managed.laneWorktreePath;
-      if (!codexPermissionsStayWithinLane(managed, cwd, pending.permissions)) return;
+      if (!codexPermissionsStayWithinRoot(codexContainmentRoot(managed), cwd, pending.permissions)) return;
       runtime.sendResponse(pending.requestId, {
         permissions: pending.permissions ?? {},
         scope: "turn",
@@ -17836,13 +18289,17 @@ export function createAgentChatService(args: {
       const cwd = typeof metadata.cwd === "string" && metadata.cwd.trim().length
         ? metadata.cwd
         : managed.laneWorktreePath;
-      if (!codexCommandApprovalStaysWithinLane(managed, cwd, metadata.additionalPermissions)) return;
+      if (!codexCommandApprovalStaysWithinRoot(
+        codexContainmentRoot(managed),
+        cwd,
+        metadata.additionalPermissions,
+      )) return;
       runtime.sendResponse(pending.requestId, {
         decision: mapApprovalDecisionForCodex("accept"),
       });
     } else if (pending.kind === "file_change") {
       const grantRoot = typeof metadata.grantRoot === "string" ? metadata.grantRoot : null;
-      if (!codexApprovalPathStaysWithinLane(managed, grantRoot)) return;
+      if (!codexApprovalPathStaysWithinRoot(codexContainmentRoot(managed), grantRoot)) return;
       runtime.sendResponse(pending.requestId, {
         decision: mapApprovalDecisionForCodex("accept"),
       });
@@ -17863,10 +18320,68 @@ export function createAgentChatService(args: {
     managed: ManagedChatSession,
     runtime: CodexRuntime,
   ): void => {
-    if (!isSessionCodexFullAuto(managed.session)) return;
+    if (!codexSessionAutoAccepts(managed)) return;
     for (const [itemId, pending] of [...runtime.approvals.entries()]) {
       autoApproveCodexRuntimeApproval(managed, runtime, itemId, pending);
     }
+  };
+
+  /**
+   * Record a Codex approval the host policy refuses.
+   *
+   * `fallback: "deny"` exists for an embedder that renders no approval card, so
+   * the app-server has to be answered on the spot — an unanswered request parks
+   * the turn with nobody able to release it. The request is still emitted
+   * first, and only then resolved: a refusal the transcript never mentions
+   * reads to the user as the agent silently deciding not to act.
+   *
+   * Nothing is stored in `runtime.approvals`, because there is nothing left to
+   * answer. A later `approve()` on this item finds no pending entry and takes
+   * the already-settled path, which is the truth.
+   */
+  /**
+   * Refuse one Codex approval on the policy's behalf, or leave it alone.
+   *
+   * Returns true when it acted, so each of the three approval handlers reads
+   * `if (declineCodexApprovalByPolicy(...)) return;` and nothing else. It owns
+   * BOTH halves of the refusal — the wire answer to the app-server and the two
+   * transcript events — because splitting them meant the helper could not be
+   * read without also reading all three call sites to learn that the request
+   * had already been answered.
+   *
+   * Order matters and is asserted by test: the app-server is answered first, so
+   * the turn is never left waiting on a request ADE has already decided; then
+   * `approval_request`, so a host that renders cards sees what was refused;
+   * then `pending_input_resolved` with `resolution: "declined"`, which settles
+   * that card in place. Nothing is put into `runtime.approvals`, because there
+   * is no answer left for anyone to give.
+   *
+   * `response` is the payload this particular Codex method expects for a
+   * refusal — a `decision` for command and file-change, an empty grant for a
+   * permissions request, which is the same shape a user's Deny sends.
+   */
+  const declineCodexApprovalByPolicy = (
+    managed: ManagedChatSession,
+    runtime: CodexRuntime,
+    id: string | number,
+    response: Record<string, unknown>,
+    request: PendingInputRequest,
+    ui: {
+      kind: "command" | "file_change" | "tool_call";
+      description: string;
+      detail?: Record<string, unknown>;
+    },
+  ): boolean => {
+    if (!codexApprovalDeniesByPolicy(managed.session)) return false;
+    runtime.sendResponse(id, response);
+    emitPendingInputRequest(managed, request, ui);
+    emitPendingInputResolved(managed, {
+      itemId: request.itemId ?? request.requestId,
+      decision: "decline",
+      turnId: request.turnId ?? null,
+      questions: request.questions,
+    });
+    return true;
   };
 
   const normalizePendingInputAnswers = (
@@ -18439,6 +18954,7 @@ export function createAgentChatService(args: {
       version: appVersion,
       tools: sdkTools,
       alwaysLoad: true,
+      timeout: CLAUDE_SDK_MCP_TOOL_TIMEOUT_MS,
     });
   };
 
@@ -19082,6 +19598,40 @@ export function createAgentChatService(args: {
     const rowGoal = typeof row.goal === "string" && row.goal.trim().length
       ? row.goal.trim()
       : null;
+    // Same rule as the create path: a rehydrated personal chat with a host cwd
+    // resumes in that directory. Reading it from the lane row instead would
+    // move the agent back into the scratch workspace on the first restart, and
+    // the files the user has been working on would stop being in front of it.
+    const rehydratedPersonalHostCwd = resolvePersonalHostCwd({
+      surface: persisted?.surface ?? "work",
+      requestedCwd: persisted?.requestedCwd ?? null,
+    });
+    // Normalized rather than copied: the record is JSON from disk, and a
+    // half-written server map or a capability report from an older build would
+    // otherwise be handed to the provider adapters as if ADE had validated it.
+    const rehydratedCallerMcpServers = normalizeCallerMcpServers(persisted?.mcpServers);
+    // Tristate. An explicit `false` is the embedder asking for the user's MCP
+    // config back on a lightweight session that is strict by default, so
+    // collapsing it to absent silently re-isolates the chat on the first
+    // restart.
+    const rehydratedStrictMcpConfig = typeof persisted?.strictMcpConfig === "boolean"
+      ? persisted.strictMcpConfig
+      : undefined;
+    const rehydratedMcpCapability = normalizeCallerMcpCapability(
+      persisted?.mcpCapability,
+      rehydratedStrictMcpConfig === true,
+    );
+    // Normalized for the same reason, and with more at stake: this object is a
+    // tool gate. A half-written policy read back from disk and handed to
+    // `evaluatePermissionPolicy` unvalidated would decide what runs.
+    const rehydratedPermissionPolicy = normalizePermissionPolicy(persisted?.permissionPolicy);
+    // The capability reports are NOT re-derived here, deliberately. `persisted`
+    // comes from `readPersistedState`, which is the one reader of the record and
+    // already re-derives every verdict from the persisted args plus the
+    // provider before returning. Deriving them a second time here would be two
+    // copies of one rule, which is how the rule starts disagreeing with itself.
+    // The other branch of `persisted` above, the redundant-source
+    // reconstruction, builds a minimal record that carries no verdict at all.
 
     const managed: ManagedChatSession = {
       session: {
@@ -19097,6 +19647,7 @@ export function createAgentChatService(args: {
         ...(rowGoal ? { goal: rowGoal } : {}),
         reasoningEffort: persisted?.reasoningEffort ?? null,
         fastMode: persisted?.fastMode === true,
+        ...(persisted?.autoContinueAtUsageLimit === false ? { autoContinueAtUsageLimit: false } : {}),
         executionMode: persisted?.executionMode ?? null,
           interactionMode: persisted?.interactionMode ?? null,
           ...(persisted?.claudePermissionMode ? { claudePermissionMode: persisted.claudePermissionMode } : {}),
@@ -19137,6 +19688,22 @@ export function createAgentChatService(args: {
         ...(persisted?.requestedCwd != null && String(persisted.requestedCwd).trim().length
           ? { requestedCwd: String(persisted.requestedCwd).trim() }
           : {}),
+        // Carried onto the rehydrated session, not just left in the file: this
+        // object is what the next `persistChatState` writes back, so a field
+        // missing here is a field the first update after a restart deletes.
+        // That is how the caller-MCP trio below used to vanish — the chat kept
+        // its injected servers for exactly as long as nobody renamed it.
+        ...(rehydratedCallerMcpServers ? { mcpServers: rehydratedCallerMcpServers } : {}),
+        ...(rehydratedStrictMcpConfig !== undefined
+          ? { strictMcpConfig: rehydratedStrictMcpConfig }
+          : {}),
+        ...(rehydratedMcpCapability ? { mcpCapability: rehydratedMcpCapability } : {}),
+        // The policy is re-normalized above rather than trusted off disk; the
+        // other five ride through as persisted.
+        ...pickHostSessionConfig({
+          ...persisted,
+          permissionPolicy: rehydratedPermissionPolicy ?? undefined,
+        }),
         ...collectOrchestrationFields(null, persisted),
         createdAt: row.startedAt,
         lastActivityAt: persisted?.updatedAt ?? row.endedAt ?? row.startedAt
@@ -19145,7 +19712,7 @@ export function createAgentChatService(args: {
       transcriptBytesWritten: fileSizeOrZero(row.transcriptPath || path.join(transcriptsDir, `${sessionId}.chat.jsonl`)),
       transcriptLimitReached: false,
       metadataPath: metadataPathFor(sessionId),
-      laneWorktreePath: lane.worktreePath,
+      laneWorktreePath: rehydratedPersonalHostCwd ?? lane.worktreePath,
       runtime: null,
       preview: row.lastOutputPreview ?? null,
       closed: row.status !== "running",
@@ -19174,6 +19741,7 @@ export function createAgentChatService(args: {
       lastLaneDirectiveKey: persisted?.lastLaneDirectiveKey ?? null,
       runtimeInvalidated: false,
       claudeRateLimitWarningEmitted: false,
+      ...(persisted?.usageLimitParkedUntil ? { usageLimitParkedUntil: persisted.usageLimitParkedUntil } : {}),
       claudeSessionQuotaSnapshot: null,
       codexTerminalTurnIds: new Set<string>(persisted?.codexTerminalTurnIds ?? []),
       codexAutomaticRecoveryAttempted: persisted?.codexAutomaticRecoveryAttempted === true,
@@ -20297,14 +20865,17 @@ export function createAgentChatService(args: {
       outputTokens?: number | null;
       cacheReadTokens?: number | null;
       cacheCreationTokens?: number | null;
+      thinkingTokens?: number | null;
     };
     costUsd: number | null;
+    costBasis?: ClaudeModelUsageCostBasis;
     canonicalModel?: string;
     modelProvider?: string;
     apiErrorStatus?: number;
     fastModeDisabledReason?: string;
     userMessageUuid?: string;
     requestSentWallMs?: number;
+    queuedTurnCount?: number;
     emittedToolIds: Set<string>;
     openToolUses: Map<string, { toolName: string }>;
     structuredActivity: ClaudeStructuredActivityState;
@@ -20405,6 +20976,7 @@ export function createAgentChatService(args: {
     captureTurnBeforeSha(managed);
     runtime.interrupted = false;
     runtime.interruptEventsEmitted = false;
+    runtime.spareBackgroundOnInterrupt = false;
     runtime.busy = true;
     runtime.activeTurnId = turnId;
     setSessionActive(managed);
@@ -20467,12 +21039,14 @@ export function createAgentChatService(args: {
       ...resolveClaudeTurnModelPayload(managed.session, []),
       ...(state.usage ? { usage: state.usage } : {}),
       ...(state.costUsd != null ? { costUsd: state.costUsd } : {}),
+      ...(state.costBasis ? { costBasis: state.costBasis } : {}),
       ...(state.canonicalModel ? { canonicalModel: state.canonicalModel } : {}),
       ...(state.modelProvider ? { modelProvider: state.modelProvider } : {}),
       ...(state.apiErrorStatus != null ? { apiErrorStatus: state.apiErrorStatus } : {}),
       ...(state.fastModeDisabledReason ? { fastModeDisabledReason: state.fastModeDisabledReason } : {}),
       ...(state.userMessageUuid ? { userMessageUuid: state.userMessageUuid } : {}),
       ...(state.requestSentWallMs != null ? { requestSentWallMs: state.requestSentWallMs } : {}),
+      ...(state.queuedTurnCount != null ? { queuedTurnCount: state.queuedTurnCount } : {}),
       ...(terminalReason ? { terminalReason, terminalReasonSource: "sdk" as const } : {}),
     });
     if (state.assistantText.trim().length > 0) {
@@ -20567,7 +21141,7 @@ export function createAgentChatService(args: {
         parentToolUseId: existing?.parentToolUseId,
       })) return true;
     }
-    if (subtype === "task_started" && msg.skip_transcript === true) {
+    if (subtype === "task_started" && isClaudeHousekeepingTask(msg)) {
       runtime.activeSubagents.set(taskId, {
         taskId,
         description: compactString(msg.description) ?? "",
@@ -20721,6 +21295,7 @@ export function createAgentChatService(args: {
         ...(taskType ? { taskType } : {}),
         ...(workflowName ? { workflowName } : {}),
         ...(model ? { model } : {}),
+        ...claudeTaskTreeFields(msg, existing),
       });
       if (taskType === "cron") {
         const scheduledWorkId = nativeCronScheduleId;
@@ -20750,6 +21325,7 @@ export function createAgentChatService(args: {
         ...(taskType ? { taskType } : {}),
         ...(workflowName ? { workflowName } : {}),
         ...optionalSubagentModelFields(model),
+        ...claudeTaskTreeFields(msg, existing),
         turnId,
       });
       return true;
@@ -20799,6 +21375,7 @@ export function createAgentChatService(args: {
         ...optionalSubagentModelFields(existing?.model ?? model),
         ...(taskType ? { taskType } : {}),
         ...(workflowName ? { workflowName } : {}),
+        ...claudeTaskTreeFields(msg, existing),
         turnId,
       });
       return true;
@@ -20978,6 +21555,7 @@ export function createAgentChatService(args: {
     if (isClaudeForwardedSubagentMessage(msg)) return;
 
     if (msg.type === "system" && record.subtype === "init") {
+      rememberClaudeTerminalSlashCommands(runtime, record.terminal_slash_commands);
       const initCommands = Array.isArray(record.slash_commands) ? record.slash_commands : [];
       if (initCommands.length) applyClaudeSlashCommands(runtime, initCommands as any[]);
       applyClaudeProtocolCapabilities(managed, record.capabilities);
@@ -21149,6 +21727,10 @@ export function createAgentChatService(args: {
 
     if (msg.type === "assistant") {
       const assistantMsg = record;
+      const earlyUserMessageUuid = readClaudeUserMessageUuid(assistantMsg);
+      if (earlyUserMessageUuid && !state.userMessageUuid) {
+        state.userMessageUuid = earlyUserMessageUuid;
+      }
       const betaMessage = asRecord(assistantMsg.message);
       const assistantWireUuid = compactString(assistantMsg.uuid);
       const assistantMessageId = compactString(betaMessage?.id);
@@ -21275,6 +21857,10 @@ export function createAgentChatService(args: {
 
     if (msg.type === "stream_event") {
       const streamMsg = record;
+      const earlyUserMessageUuid = readClaudeUserMessageUuid(streamMsg);
+      if (earlyUserMessageUuid && !state.userMessageUuid) {
+        state.userMessageUuid = earlyUserMessageUuid;
+      }
       const event = asRecord(streamMsg.event);
       if (!event) return;
       const turnId = startClaudeIdleTurn(managed, runtime, state);
@@ -21459,8 +22045,13 @@ export function createAgentChatService(args: {
       state.modelProvider = metadata.modelProvider;
       state.apiErrorStatus = metadata.apiErrorStatus;
       state.fastModeDisabledReason = metadata.fastModeDisabledReason;
-      state.userMessageUuid = metadata.userMessageUuid;
+      if (metadata.userMessageUuid) state.userMessageUuid = metadata.userMessageUuid;
       state.requestSentWallMs = metadata.requestSentWallMs;
+      if (metadata.queuedTurnCount != null) state.queuedTurnCount = metadata.queuedTurnCount;
+      if (metadata.costBasis) state.costBasis = metadata.costBasis;
+      if (metadata.thinkingTokens != null) {
+        state.usage = { ...state.usage, thinkingTokens: metadata.thinkingTokens };
+      }
       if (resultIsError && turnId) {
         for (const error of resultErrors.userFacing) {
           emitChatEvent(managed, { type: "error", message: error, turnId });
@@ -21746,6 +22337,7 @@ export function createAgentChatService(args: {
     };
     runtime.interrupted = false;
     runtime.interruptEventsEmitted = false;
+    runtime.spareBackgroundOnInterrupt = false;
     runtime.resolvedToolUseIds.clear();
     setSessionActive(managed);
 
@@ -21783,7 +22375,7 @@ export function createAgentChatService(args: {
     });
 
     let assistantText = "";
-    let usage: { inputTokens?: number | null; outputTokens?: number | null; cacheReadTokens?: number | null; cacheCreationTokens?: number | null } | undefined;
+    let usage: { inputTokens?: number | null; outputTokens?: number | null; cacheReadTokens?: number | null; cacheCreationTokens?: number | null; thinkingTokens?: number | null } | undefined;
     let costUsd: number | null = null;
     let resultTerminalStatus: ClaudeTerminalStatus = "completed";
     let quotaTrippedThisTurn = false;
@@ -21794,6 +22386,8 @@ export function createAgentChatService(args: {
     let resultFastModeDisabledReason: string | undefined;
     let resultUserMessageUuid: string | undefined;
     let resultRequestSentWallMs: number | undefined;
+    let resultQueuedTurnCount: number | undefined;
+    let resultCostBasis: ClaudeModelUsageCostBasis | undefined;
     let recoverFromContextOverflow = false;
     let reportedAssistantModel: string | null = null;
     let reportedInitModel: string | null = null;
@@ -22222,6 +22816,7 @@ export function createAgentChatService(args: {
             adoptClaudeProviderSessionId(managed, runtime, initSessionId);
           }
           reportedInitModel = normalizeReportedModelName(initMsg.model) ?? reportedInitModel;
+          rememberClaudeTerminalSlashCommands(runtime, initMsg.terminal_slash_commands);
           if (Array.isArray(initMsg.slash_commands)) {
             applyClaudeSlashCommands(runtime, initMsg.slash_commands);
           }
@@ -22701,6 +23296,7 @@ export function createAgentChatService(args: {
             ...(taskType ? { taskType } : {}),
             ...(workflowName ? { workflowName } : {}),
             ...(model ? { model } : {}),
+            ...claudeTaskTreeFields(taskMsg as Record<string, unknown>, existing),
           });
           emitChatEvent(managed, {
             type: "subagent_progress",
@@ -22723,6 +23319,7 @@ export function createAgentChatService(args: {
             ...(taskType ? { taskType } : {}),
             ...(workflowName ? { workflowName } : {}),
             ...optionalSubagentModelFields(model),
+            ...claudeTaskTreeFields(taskMsg as Record<string, unknown>, existing),
             turnId,
           });
           if (workflowProgress && workflowProgress.agents.length > 0) {
@@ -22876,6 +23473,7 @@ export function createAgentChatService(args: {
               ...(taskType ? { taskType } : {}),
               ...(workflowName ? { workflowName } : {}),
               ...(model ? { model } : {}),
+              ...claudeTaskTreeFields(taskMsg as Record<string, unknown>, existing),
             });
             emitChatEvent(managed, {
               type: "subagent_progress",
@@ -22888,6 +23486,7 @@ export function createAgentChatService(args: {
               summary,
               ...optionalSubagentModelFields(model),
               ...(taskType ? { taskType } : {}),
+              ...claudeTaskTreeFields(taskMsg as Record<string, unknown>, existing),
               ...(workflowName ? { workflowName } : {}),
               turnId,
             });
@@ -22902,7 +23501,7 @@ export function createAgentChatService(args: {
         // summary writer) with skip_transcript=true; those must not surface.
         if (msg.type === "system" && (msg as any).subtype === "task_started") {
           const taskMsg = msg as any;
-          if (taskMsg.skip_transcript === true) {
+          if (isClaudeHousekeepingTask(taskMsg)) {
             const skippedId = typeof taskMsg.task_id === "string" && taskMsg.task_id.trim().length
               ? taskMsg.task_id.trim()
               : null;
@@ -23020,6 +23619,7 @@ export function createAgentChatService(args: {
               ...(taskType ? { taskType } : {}),
               ...(workflowName ? { workflowName } : {}),
               ...(model ? { model } : {}),
+              ...claudeTaskTreeFields(taskMsg as Record<string, unknown>, existingStarted),
             });
           const remappedTodoItems = remapClaudeTaskTodoFromRuntimeEvent(
             claudeTaskTodoMap(managed, runtime),
@@ -23048,6 +23648,7 @@ export function createAgentChatService(args: {
             ...(taskType ? { taskType } : {}),
             ...(workflowName ? { workflowName } : {}),
             ...optionalSubagentModelFields(model),
+            ...claudeTaskTreeFields(taskMsg as Record<string, unknown>, existingStarted),
             turnId,
           });
           continue;
@@ -23164,6 +23765,7 @@ export function createAgentChatService(args: {
             } : undefined,
             ...(taskType ? { taskType } : {}),
             ...(workflowName ? { workflowName } : {}),
+            ...claudeTaskTreeFields(taskMsg as Record<string, unknown>, existing),
             turnId,
           });
           // A workflow task that ends with agents still mid-flight (stop,
@@ -23204,6 +23806,10 @@ export function createAgentChatService(args: {
         // assistant message — process content blocks
         if (msg.type === "assistant") {
           const assistantMsg = msg as any;
+          const earlyUserMessageUuid = readClaudeUserMessageUuid(assistantMsg);
+          if (earlyUserMessageUuid && !resultUserMessageUuid) {
+            resultUserMessageUuid = earlyUserMessageUuid;
+          }
           // The SDK reports a logged-out turn as an assistant message carrying
           // error="authentication_failed" (its text otherwise renders as a plain
           // bubble with no recovery affordance). Fast-fail into the re-login card.
@@ -23381,6 +23987,10 @@ export function createAgentChatService(args: {
         // stream_event — partial streaming deltas
         if (msg.type === "stream_event") {
           const streamMsg = msg as any;
+          const earlyUserMessageUuid = readClaudeUserMessageUuid(streamMsg);
+          if (earlyUserMessageUuid && !resultUserMessageUuid) {
+            resultUserMessageUuid = earlyUserMessageUuid;
+          }
           const event = streamMsg.event;
           if (!event) continue;
           markBackendDispatched();
@@ -23647,8 +24257,10 @@ export function createAgentChatService(args: {
           resultModelProvider = metadata.modelProvider;
           resultApiErrorStatus = metadata.apiErrorStatus;
           resultFastModeDisabledReason = metadata.fastModeDisabledReason;
-          resultUserMessageUuid = metadata.userMessageUuid;
+          if (metadata.userMessageUuid) resultUserMessageUuid = metadata.userMessageUuid;
           resultRequestSentWallMs = metadata.requestSentWallMs;
+          if (metadata.queuedTurnCount != null) resultQueuedTurnCount = metadata.queuedTurnCount;
+          if (metadata.costBasis) resultCostBasis = metadata.costBasis;
           if (resultMsg.usage) {
             usage = {
               inputTokens: resultMsg.usage.input_tokens ?? null,
@@ -23656,6 +24268,9 @@ export function createAgentChatService(args: {
               cacheReadTokens: resultMsg.usage.cache_read_input_tokens ?? null,
               cacheCreationTokens: resultMsg.usage.cache_creation_input_tokens ?? null,
             };
+          }
+          if (metadata.thinkingTokens != null) {
+            usage = { ...usage, thinkingTokens: metadata.thinkingTokens };
           }
           if (typeof resultMsg.total_cost_usd === "number") {
             costUsd = resultMsg.total_cost_usd;
@@ -23802,7 +24417,7 @@ export function createAgentChatService(args: {
       clearClaudeTurnTimers();
       runtime.pauseIdleWatchdog = null;
       runtime.resumeIdleWatchdog = null;
-      if (runtime.interrupted) {
+      if (runtime.interrupted && !runtime.spareBackgroundOnInterrupt) {
         await stopActiveClaudeSubagents(managed, runtime, turnId, "Interrupted");
       }
       const finalStatus: ClaudeTerminalStatus = runtime.interrupted
@@ -23842,9 +24457,9 @@ export function createAgentChatService(args: {
       // A background shell survives the turn boundary as a "running" row on
       // purpose: the query is NOT closed here (see above), so its real
       // completion still arrives on a later turn via system:task_notification.
-      // Only true teardown paths (interrupt — handled above via
-      // stopActiveClaudeSubagents — reset/dispose, host-restart rebind) settle
-      // them as stopped.
+      // Only true teardown paths (background-killing interrupt, reset/dispose,
+      // host-restart rebind) settle them as stopped. Default Stop spares them
+      // once per-task stop exists.
       if (!runtime.interruptEventsEmitted) {
         emitChatEvent(managed, { type: "status", turnStatus: finalStatus, turnId });
         void emitTurnDiffSummaryIfChanged(managed, turnId);
@@ -23855,12 +24470,14 @@ export function createAgentChatService(args: {
           ...doneModel,
           ...(usage ? { usage } : {}),
           ...(costUsd != null ? { costUsd } : {}),
+          ...(resultCostBasis ? { costBasis: resultCostBasis } : {}),
           ...(resultCanonicalModel ? { canonicalModel: resultCanonicalModel } : {}),
           ...(resultModelProvider ? { modelProvider: resultModelProvider } : {}),
           ...(resultApiErrorStatus != null ? { apiErrorStatus: resultApiErrorStatus } : {}),
           ...(resultFastModeDisabledReason ? { fastModeDisabledReason: resultFastModeDisabledReason } : {}),
           ...(resultUserMessageUuid ? { userMessageUuid: resultUserMessageUuid } : {}),
           ...(resultRequestSentWallMs != null ? { requestSentWallMs: resultRequestSentWallMs } : {}),
+          ...(resultQueuedTurnCount != null ? { queuedTurnCount: resultQueuedTurnCount } : {}),
           ...(resultTerminalReason
             ? { terminalReason: resultTerminalReason, terminalReasonSource: "sdk" as const }
             : {}),
@@ -23921,9 +24538,11 @@ export function createAgentChatService(args: {
       flushOpenClaudeToolUses(finalToolStatus);
       flushClaudeStructuredActivities(finalToolStatus);
 
-      // Only close the query on genuine errors. User interrupts close and
-      // clear the session immediately in interrupt() so the next turn cannot
-      // consume buffered events from the abandoned stream.
+      // Only close the query on genuine errors. User interrupts that spare
+      // background work leave the query open so background completions can
+      // still arrive; production interrupt keeps the stream open and the
+      // success path starts the idle reader. Abort throws still land here —
+      // do not close() or an idle-reader terminate would reap those jobs.
       if (!runtime.interrupted) {
         try { runtime.query?.close(); } catch { /* ignore */ }
         runtime.inputPump?.close();
@@ -23937,14 +24556,16 @@ export function createAgentChatService(args: {
         runtime.warmupDone = null;
         claudeSubprocessReaper.reapForSession(managed.session.id, "claude_turn_failed");
       }
-      await stopActiveClaudeSubagents(
-        managed,
-        runtime,
-        turnId,
-        finalToolStatus === "interrupted"
-          ? "Interrupted"
-          : "Claude's query ended before this task reported completion.",
-      );
+      if (!(runtime.interrupted && runtime.spareBackgroundOnInterrupt)) {
+        await stopActiveClaudeSubagents(
+          managed,
+          runtime,
+          turnId,
+          finalToolStatus === "interrupted"
+            ? "Interrupted"
+            : "Claude's query ended before this task reported completion.",
+        );
+      }
       const doneModel = buildDoneModelPayload();
       void emitTurnDiffSummaryIfChanged(managed, turnId);
 
@@ -26692,8 +27313,12 @@ export function createAgentChatService(args: {
         ? params.cwd
         : managed.laneWorktreePath;
       if (
-        isSessionCodexFullAuto(managed.session)
-        && codexCommandApprovalStaysWithinLane(managed, commandCwd, params.additionalPermissions)
+        codexSessionAutoAccepts(managed)
+        && codexCommandApprovalStaysWithinRoot(
+          codexContainmentRoot(managed),
+          commandCwd,
+          params.additionalPermissions,
+        )
       ) {
         runtime.sendResponse(id, { decision: mapApprovalDecisionForCodex("accept") });
         return;
@@ -26718,17 +27343,23 @@ export function createAgentChatService(args: {
         },
         turnId: requestTurnId,
       };
+      const commandDetail = {
+        additionalPermissions: params.additionalPermissions ?? null,
+        command: params.command ?? null,
+        cwd: params.cwd ?? null,
+        reason: params.reason ?? null,
+      };
+      if (declineCodexApprovalByPolicy(managed, runtime, id, { decision: mapApprovalDecisionForCodex("decline") }, request, {
+        kind: "command",
+        description,
+        detail: commandDetail,
+      })) return;
       runtime.approvals.set(itemId, { requestId: id, kind: "command", request });
       markCodexTurnProgress(managed, runtime, request.turnId);
       emitPendingInputRequest(managed, request, {
         kind: "command",
         description,
-        detail: {
-          additionalPermissions: params.additionalPermissions ?? null,
-          command: params.command ?? null,
-          cwd: params.cwd ?? null,
-          reason: params.reason ?? null,
-        },
+        detail: commandDetail,
       });
       return;
     }
@@ -26745,7 +27376,10 @@ export function createAgentChatService(args: {
         runtime.sendResponse(id, { decision: "decline" });
         return;
       }
-      if (isSessionCodexFullAuto(managed.session) && codexApprovalPathStaysWithinLane(managed, params.grantRoot)) {
+      if (
+        codexSessionAutoAccepts(managed)
+        && codexApprovalPathStaysWithinRoot(codexContainmentRoot(managed), params.grantRoot)
+      ) {
         runtime.sendResponse(id, { decision: mapApprovalDecisionForCodex("accept") });
         return;
       }
@@ -26767,15 +27401,21 @@ export function createAgentChatService(args: {
         },
         turnId: requestTurnId,
       };
+      const fileChangeDetail = {
+        grantRoot: params.grantRoot ?? null,
+        reason: params.reason ?? null,
+      };
+      if (declineCodexApprovalByPolicy(managed, runtime, id, { decision: mapApprovalDecisionForCodex("decline") }, request, {
+        kind: "file_change",
+        description,
+        detail: fileChangeDetail,
+      })) return;
       runtime.approvals.set(itemId, { requestId: id, kind: "file_change", request });
       markCodexTurnProgress(managed, runtime, request.turnId);
       emitPendingInputRequest(managed, request, {
         kind: "file_change",
         description,
-        detail: {
-          grantRoot: params.grantRoot ?? null,
-          reason: params.reason ?? null,
-        },
+        detail: fileChangeDetail,
       });
       return;
     }
@@ -26826,8 +27466,12 @@ export function createAgentChatService(args: {
         return;
       }
       if (
-        isSessionCodexFullAuto(managed.session)
-        && codexPermissionsStayWithinLane(managed, params.cwd, params.permissions)
+        codexSessionAutoAccepts(managed)
+        && codexPermissionsStayWithinRoot(
+          codexContainmentRoot(managed),
+          params.cwd,
+          params.permissions,
+        )
       ) {
         runtime.sendResponse(id, {
           permissions: params.permissions ?? {},
@@ -26856,6 +27500,18 @@ export function createAgentChatService(args: {
         },
         turnId: requestTurnId,
       };
+      const permissionsDetail = {
+        cwd: params.cwd ?? null,
+        environmentId: params.environmentId ?? null,
+        permissions: params.permissions ?? null,
+        reason: params.reason ?? null,
+      };
+      // An empty grant is Codex's "no": the same shape a user's Deny sends.
+      if (declineCodexApprovalByPolicy(managed, runtime, id, { permissions: {}, scope: "turn" }, request, {
+        kind: "tool_call",
+        description,
+        detail: permissionsDetail,
+      })) return;
       runtime.approvals.set(itemId, {
         requestId: id,
         kind: "permissions",
@@ -26866,12 +27522,7 @@ export function createAgentChatService(args: {
       emitPendingInputRequest(managed, request, {
         kind: "tool_call",
         description,
-        detail: {
-          cwd: params.cwd ?? null,
-          environmentId: params.environmentId ?? null,
-          permissions: params.permissions ?? null,
-          reason: params.reason ?? null,
-        },
+        detail: permissionsDetail,
       });
       return;
     }
@@ -27652,6 +28303,97 @@ export function createAgentChatService(args: {
         turnId,
       });
     }));
+  };
+
+  const stopTask = async (
+    { sessionId, taskId }: AgentChatStopTaskArgs,
+  ): Promise<AgentChatStopTaskResult> => {
+    const managed = ensureManagedSession(sessionId);
+    const id = taskId.trim();
+    if (!id) {
+      return { sessionId, taskId, stopped: false, reason: "A task id is required." };
+    }
+    if (managed.runtime?.kind !== "claude") {
+      return {
+        sessionId,
+        taskId: id,
+        stopped: false,
+        reason: "Per-task stop is only available for Claude chats.",
+      };
+    }
+    const runtime = managed.runtime;
+    const existing = runtime.activeSubagents.get(id);
+    if (!existing && !runtime.liveBackgroundTaskIds.has(id)) {
+      return { sessionId, taskId: id, stopped: false, reason: "That task is not running." };
+    }
+    const turnId = runtime.activeTurnId ?? undefined;
+    const control = getClaudeQueryControl(runtime.query);
+    if (typeof control.stopTask !== "function") {
+      return {
+        sessionId,
+        taskId: id,
+        stopped: false,
+        reason: "The Claude query did not expose a task stop control.",
+      };
+    }
+    try {
+      await awaitClaudeControlCall(
+        `Stopping Claude task '${id}'`,
+        CLAUDE_STOP_TASK_TIMEOUT_MS,
+        () => control.stopTask!(id),
+      );
+    } catch (error) {
+      logger.warn("agent_chat.claude_stop_task_failed", {
+        sessionId: managed.session.id,
+        taskId: id,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return {
+        sessionId,
+        taskId: id,
+        stopped: false,
+        reason: error instanceof Error ? error.message : String(error),
+      };
+    }
+    const tracked = runtime.activeSubagents.get(id) ?? existing;
+    if (tracked && isBackgroundShellCommand({
+      taskType: tracked.taskType,
+      agentType: tracked.agentType,
+      command: tracked.command,
+      description: tracked.description,
+    })) {
+      emitClaudeBackgroundTaskUpdate(managed, runtime, {
+        taskId: id,
+        status: "stopped",
+        title: tracked.description,
+        summary: "Stopped by user",
+        command: tracked.command,
+        ...(turnId ? { turnId } : {}),
+      });
+    } else if (tracked && !tracked.skipTranscript && !tracked.nonAgentTaskRun) {
+      emitClaudeSubagentResult(managed, runtime, {
+        type: "subagent_result",
+        taskId: id,
+        ...(tracked.agentId ? { agentId: tracked.agentId } : {}),
+        ...(tracked.agentType ? { agentType: tracked.agentType } : {}),
+        parentToolUseId: tracked.parentToolUseId ?? undefined,
+        status: "stopped",
+        summary: "Stopped by user",
+        finalSummary: "Stopped by user",
+        ...optionalSubagentModelFields(tracked.model),
+        turnId,
+      });
+    }
+    runtime.activeSubagents.delete(id);
+    runtime.liveBackgroundTaskIds.delete(id);
+    runtime.seenBackgroundTaskIds.delete(id);
+    runtime.backgroundTaskTypeById.delete(id);
+    if (tracked?.parentToolUseId) {
+      runtime.taskToolInputByToolUseId.delete(tracked.parentToolUseId);
+    }
+    syncClaudeBackgroundWorkAnchor(runtime);
+    persistChatState(managed);
+    return { sessionId, taskId: id, stopped: true };
   };
 
   type CodexCollabAgentState = {
@@ -28646,6 +29388,16 @@ export function createAgentChatService(args: {
     if (!record) return null;
     const queued = asRecord(record.queuedSubmission) ?? asRecord(record.submission);
     return stringOrNull(queued?.id) ?? stringOrNull(record.id);
+  };
+
+  type CodexQueueSubmission = { id?: string; clientUserMessageId?: string };
+  type CodexQueueListResponse = { queuedSubmissions?: CodexQueueSubmission[] };
+  const listCodexQueueSubmissions = async (
+    runtime: CodexRuntime,
+    threadId: string,
+  ): Promise<CodexQueueSubmission[]> => {
+    const listed = await runtime.request<CodexQueueListResponse>("thread/queue/list", { threadId });
+    return listed.queuedSubmissions ?? [];
   };
 
   const startCodexQueuedFollowUp = async (
@@ -30195,11 +30947,9 @@ export function createAgentChatService(args: {
       const threadId = managed.session.threadId;
       if (!threadId) return;
       try {
-        const listed = await runtime.request<{
-          queuedSubmissions?: Array<{ id?: string; clientUserMessageId?: string }>;
-        }>("thread/queue/list", { threadId });
+        const queuedSubmissions = await listCodexQueueSubmissions(runtime, threadId);
         const liveIds = new Set(
-          (listed.queuedSubmissions ?? [])
+          queuedSubmissions
             .map((submission) => String(submission.id ?? "").trim())
             .filter(Boolean),
         );
@@ -31644,20 +32394,42 @@ export function createAgentChatService(args: {
       {
         hooks: [
           async (input: HookInput) => {
+            // Classifier context is computed first and returned on this same
+            // PostToolUse completion. A late `{ async: true }` value is ignored.
+            const toolUseId = input.hook_event_name === "PostToolUse" ? input.tool_use_id : undefined;
+            const pending = toolUseId
+              ? runtime.pendingClassifierContextByToolUseId.get(toolUseId) ?? null
+              : null;
+            if (toolUseId) runtime.pendingClassifierContextByToolUseId.delete(toolUseId);
+            const relay = pending ? buildClassifierContext(pending) : null;
+            if (relay) {
+              const audit = classifierContextAuditMessage(relay);
+              emitChatEvent(managed, {
+                type: "system_notice",
+                noticeKind: "info",
+                status: "classifier_context",
+                message: audit.message,
+                ...(audit.detail ? { detail: audit.detail } : {}),
+                turnId: runtime.activeTurnId ?? undefined,
+              });
+            }
             await handleClaudeScheduledWorkPostToolUse(managed, runtime, input);
             const trimmed = buildClaudeTrimmedToolOutput(input);
-            if (!trimmed) return { continue: true };
-            logger.info("agent_chat.claude_post_tool_use_trimmed", {
-              sessionId: managed.session.id,
-              toolName: input.hook_event_name === "PostToolUse" ? input.tool_name : undefined,
-              originalBytes: trimmed.originalBytes,
-              trimmedBytes: trimmed.trimmedBytes,
-            });
+            if (trimmed) {
+              logger.info("agent_chat.claude_post_tool_use_trimmed", {
+                sessionId: managed.session.id,
+                toolName: input.hook_event_name === "PostToolUse" ? input.tool_name : undefined,
+                originalBytes: trimmed.originalBytes,
+                trimmedBytes: trimmed.trimmedBytes,
+              });
+            }
+            if (!trimmed && !relay) return { continue: true };
             return {
               continue: true,
               hookSpecificOutput: {
                 hookEventName: "PostToolUse" as const,
-                updatedToolOutput: trimmed.updatedToolOutput,
+                ...(trimmed ? { updatedToolOutput: trimmed.updatedToolOutput } : {}),
+                ...(relay ? { classifierContext: relay.classifierContext } : {}),
               },
             };
           },
@@ -31731,7 +32503,37 @@ export function createAgentChatService(args: {
         ],
       },
     ],
-  });
+    PreModelSwitch: [
+      {
+        hooks: [
+          async () => ({ continue: true }),
+        ],
+      },
+    ],
+    PostModelSwitch: [
+      {
+        hooks: [
+          async (input: HookInput) => {
+            const switchArgs = parseClaudeModelSwitchArgs(input);
+            emitChatEvent(managed, {
+              type: "system_notice",
+              noticeKind: "info",
+              status: "model_switched",
+              message: claudeModelSwitchDividerMessage(switchArgs),
+              turnId: runtime.activeTurnId ?? undefined,
+            });
+            return {
+              continue: true,
+              hookSpecificOutput: {
+                hookEventName: "PostModelSwitch" as const,
+                additionalContext: claudeModelSwitchAdditionalContext(switchArgs),
+              },
+            };
+          },
+        ],
+      },
+    ],
+  }) as NonNullable<ClaudeSDKOptions["hooks"]>;
 
   /**
    * Build stable Agent SDK query options from the managed session state.
@@ -31819,6 +32621,7 @@ export function createAgentChatService(args: {
         enabledPlugins: CLAUDE_SESSION_DISABLED_PLUGINS,
         fastMode: sessionEffectiveFastMode(managed.session),
         ...(workflowSizeGuideline ? { workflowSizeGuideline } : {}),
+        dialogExpiry: "never",
       },
       ...(pluginPaths.length ? { plugins: pluginPaths.map((pluginPath) => ({ type: "local" as const, path: pluginPath })) } : {}),
       permissionMode: claudePermissionMode as any,
@@ -31841,7 +32644,14 @@ export function createAgentChatService(args: {
         laneId: managed.session.laneId,
         cwd: managed.laneWorktreePath,
       }),
-    };
+      autoContinueAtUsageLimit: sessionAutoContinueAtUsageLimit(managed.session),
+      ...(shouldDeclarePerTaskStopAffordance({
+        stopTaskExposed: true,
+        stopControlsReachable: CLAUDE_PER_TASK_STOP_CONTROLS_REACHABLE,
+      })
+        ? { perTaskStopAffordance: true }
+        : {}),
+    } as ClaudeSDKOptions;
     if (isOrchestrationLeadSession(managed.session)) {
       opts.disallowedTools = Array.from(new Set([
         ...(opts.disallowedTools ?? []),
@@ -31917,7 +32727,66 @@ export function createAgentChatService(args: {
       path: claudeExecutable.path,
     });
     if (personalSession) {
-      opts.systemPrompt = PERSONAL_CHAT_SYSTEM_PROMPT;
+      opts.systemPrompt = resolvePersonalSystemPrompt(managed.session);
+      // Set for all four values, including "none" → []. An omitted
+      // `settingSources` and an empty array are not documented to be the same
+      // thing in the Agent SDK, and which on-disk config an embedder's chat
+      // loads must be a property of ADE rather than of a dependency default.
+      opts.settingSources = [
+        ...CLAUDE_SETTING_SOURCE_MAP[managed.session.settingSources ?? "none"],
+      ] as ClaudeSDKOptions["settingSources"];
+      // The tool gate, and ONLY when the caller supplied a policy. A personal
+      // chat without one keeps the behavior it has always had — no
+      // `canUseTool`, no tool lists, no `approval_request` — because installing
+      // a gate on every existing SDK chat would start parking turns for hosts
+      // that render no approval card.
+      const permissionPolicy = managed.session.permissionPolicy;
+      if (permissionPolicy) {
+        // The two lists are the enforcement, not a fast path. Measured against
+        // Agent SDK 0.3.258: `allowedTools` and `disallowedTools` are applied
+        // by the CLI, which removes a denied tool from the model's catalog,
+        // while `canUseTool` did not fire on any permission mode tried. So a
+        // policy that only wired the prompt would enforce nothing.
+        //
+        // Under `fallback: "deny"` the list already carries every mutating
+        // built-in the policy did not name (see `policyToClaudeToolLists`).
+        const { allowedTools, disallowedTools } = policyToClaudeToolLists(permissionPolicy);
+        if (allowedTools.length) {
+          opts.allowedTools = Array.from(new Set([...(opts.allowedTools ?? []), ...allowedTools]));
+        }
+        if (disallowedTools.length) {
+          opts.disallowedTools = Array.from(new Set([
+            ...(opts.disallowedTools ?? []),
+            ...disallowedTools,
+          ]));
+        }
+        if (permissionPolicy.fallback === "deny") {
+          // Tool lists do not scope MCP: a server the policy never named would
+          // still be reachable. `allowManagedMcpServersOnly` is the switch that
+          // does, so a deny fallback restricts the session to the servers the
+          // policy names.
+          //
+          // Merged, never assigned over. ADE's own managed servers are already
+          // in this object on the paths that build one, and dropping them here
+          // would take away the orchestration or CTO tools with no diagnostic —
+          // the exact silent capability loss the block above guards against.
+          const existingAllowedMcpServers = opts.managedSettings?.allowedMcpServers ?? [];
+          const policyServerNames = policyAllowedMcpServers(permissionPolicy)
+            .filter((serverName) => !existingAllowedMcpServers.some(
+              (server) => server.serverName === serverName,
+            ))
+            .map((serverName) => ({ serverName }));
+          opts.managedSettings = {
+            ...(opts.managedSettings ?? {}),
+            allowedMcpServers: [...existingAllowedMcpServers, ...policyServerNames],
+            allowManagedMcpServersOnly: true,
+          };
+        }
+        // Kept wired as a second line even under a deny fallback. It is not
+        // load-bearing on the SDK version measured, but if a future version
+        // starts calling back, the gate is already there and already denies.
+        opts.canUseTool = buildClaudeCanUseTool(runtime, managed) as ClaudeSDKOptions["canUseTool"];
+      }
     } else if (!lightweight) {
       opts.toolConfig = {
         askUserQuestion: {
@@ -32402,6 +33271,31 @@ export function createAgentChatService(args: {
     }
   };
 
+  const observeClaudeInitializationHooks = (
+    managed: ManagedChatSession,
+    sessionQuery: ClaudeQuery,
+  ): void => {
+    const initializationResult = typeof sessionQuery.initializationResult === "function"
+      ? sessionQuery.initializationResult.bind(sessionQuery)
+      : null;
+    if (!initializationResult) return;
+    const sessionId = managed.session.id;
+    void initializationResult().then((response) => {
+      if (response?.hooks_applied !== false) return;
+      logger.warn("agent_chat.claude_hooks_ignored", {
+        sessionId,
+        ...CLAUDE_AGENT_SDK_TELEMETRY_TAGS,
+      });
+      onClaudeHooksIgnored?.({ sessionId });
+    }).catch((error) => {
+      logger.debug("agent_chat.claude_initialization_result_failed", {
+        sessionId,
+        ...CLAUDE_AGENT_SDK_TELEMETRY_TAGS,
+        error: String(error),
+      });
+    });
+  };
+
   const startClaudeQuery = async (managed: ManagedChatSession, runtime: ClaudeRuntime): Promise<ClaudeQuery> => {
     const startGeneration = runtime.queryGeneration;
     // background_tasks_changed is per CLI process and emits no startup value.
@@ -32476,6 +33370,7 @@ export function createAgentChatService(args: {
     runtime.query = sessionQuery;
     runtime.inputPump = pump;
     runtime.warmQuery = null;
+    observeClaudeInitializationHooks(managed, sessionQuery);
     if (runtime.forkFromSdkSessionId) {
       runtime.forkFromSdkSessionId = null;
       persistChatState(managed);
@@ -32513,7 +33408,10 @@ export function createAgentChatService(args: {
         ...command,
       });
     }
-    runtime.slashCommands = [...existing.values()].sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: "base" }));
+    runtime.slashCommands = filterClaudeGuiSlashCommands(
+      [...existing.values()],
+      runtime.terminalSlashCommandNames,
+    ).sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: "base" }));
   };
 
   const deliverNextQueuedSteer = async (
@@ -33099,6 +33997,7 @@ export function createAgentChatService(args: {
       activeProviderCronIds: new Set(),
       activeProviderCronIdsByPrompt: new Map(),
       slashCommands: [],
+      terminalSlashCommandNames: new Set(),
       busy: false,
       activeTurnId: null,
       initialInputDispatchGate: null,
@@ -33128,8 +34027,10 @@ export function createAgentChatService(args: {
       approvals: new Map<string, PendingClaudeApproval>(),
       interrupted: false,
       interruptEventsEmitted: false,
+      spareBackgroundOnInterrupt: false,
       approvalOverrides: new Set<string>(persisted?.approvalOverrides ?? []),
       resolvedToolUseIds: new Set<string>(),
+      pendingClassifierContextByToolUseId: new Map(),
       rateLimitWarningEmitted: managed.claudeRateLimitWarningEmitted,
     };
     for (const steer of runtime.pendingSteers) {
@@ -33752,6 +34653,9 @@ export function createAgentChatService(args: {
     cursorConfigValues: requestedCursorConfigValues,
     mcpServers: requestedMcpServers,
     strictMcpConfig: requestedStrictMcpConfig,
+    permissionPolicy: requestedPermissionPolicy,
+    instructions: requestedInstructions,
+    settingSources: requestedSettingSources,
     permissionMode: requestedPermMode,
     identityKey,
     surface,
@@ -33783,12 +34687,22 @@ export function createAgentChatService(args: {
     if (!normalizedParentSessionId && requestedSpawnKind) {
       throw new Error("spawnKind requires orchestrationParentSessionId.");
     }
+    // A personal chat's host cwd REPLACES the synthetic lane root (see
+    // `resolvePersonalHostCwd`), so it must not be resolved INSIDE that root:
+    // `resolveLaneLaunchContext` contains every requested cwd within the lane
+    // worktree and refuses anything outside it, which is correct for a project
+    // lane and would reject every host directory before the override below
+    // ever ran.
+    const personalHostCwd = resolvePersonalHostCwd({
+      surface: surface ?? "work",
+      requestedCwd,
+    });
     const launchContext = resolveLaneLaunchContext({
       laneService,
       projectRoot,
       laneId,
       purpose: "start this chat",
-      requestedCwd,
+      requestedCwd: personalHostCwd ? undefined : requestedCwd,
     });
     const normalizedIdempotencyKey = typeof idempotencyKey === "string" ? idempotencyKey.trim() : "";
     if (normalizedIdempotencyKey.length > 256 || normalizedIdempotencyKey.includes("\0")) {
@@ -33983,6 +34897,49 @@ export function createAgentChatService(args: {
         strictRequested: requestedStrictMcpConfig === true,
       })
       : null;
+    // A structured permission policy is the SDK's third form of `permissions`,
+    // alongside the two presets. It is normalized once here and persisted, so
+    // every later read — the Claude tool gate, the Codex approval handlers, a
+    // model switch — sees the same validated object rather than re-parsing what
+    // the caller sent. An unusable policy normalizes to null and the session
+    // behaves exactly as it did before the field existed.
+    //
+    // Scoped to the personal/SDK surface. `permissionPolicy` sits on the base
+    // create args, so `ade chat create --lane <lane> --arg-json
+    // permissionPolicy=…` reaches this path for a Work chat, where the policy
+    // would replace ADE's own approval prompting for a lane whose UI renders no
+    // policy and offers no way to remove one.
+    const hostConfigApplies = hostSessionConfigApplies(surface);
+    const callerPermissionPolicy = hostConfigApplies
+      ? normalizePermissionPolicy(requestedPermissionPolicy)
+      : null;
+    const callerPermissionCapability = hostConfigApplies && requestedPermissionPolicy != null
+      ? resolvePermissionCapability(effectiveProvider, callerPermissionPolicy, {
+        callerMcpServerNames: Object.keys(callerMcpServers ?? {}),
+      })
+      : null;
+    // Host instructions and configuration layers, normalized once here for the
+    // same reason: the six provider prompt builders and the Claude option
+    // builder all read the persisted value rather than re-parsing what the
+    // caller sent. Unusable input normalizes to null and the chat behaves
+    // exactly as it did before these fields existed — but the capability report
+    // is keyed off what the caller SENT, so "you asked and we could not use it"
+    // is still reported rather than looking like nothing was ever asked.
+    const callerInstructions = hostConfigApplies ? normalizeHostInstructions(requestedInstructions) : null;
+    const callerSettingSources = hostConfigApplies ? normalizeSettingSources(requestedSettingSources) : null;
+    const callerInstructionsCapability = callerInstructions
+      ? resolveInstructionsCapability(effectiveProvider, callerInstructions)
+      : null;
+    const callerSettingSourcesCapability = callerSettingSources
+      ? resolveSettingSourcesCapability(effectiveProvider, callerSettingSources)
+      : null;
+    if (!hostConfigApplies) {
+      warnHostSessionConfigDropped(logger, sessionId, surface, [
+        ...(requestedPermissionPolicy != null ? ["permissionPolicy"] : []),
+        ...(requestedInstructions != null ? ["instructions"] : []),
+        ...(requestedSettingSources != null ? ["settingSources"] : []),
+      ]);
+    }
     const capabilityMode = inferCapabilityMode(effectiveProvider);
     // Identity-pinned sessions (CTO + worker agents) are locked to full-auto.
     // Discard the native provider permission overrides supplied by callers so
@@ -33994,9 +34951,23 @@ export function createAgentChatService(args: {
     const orchestrationLeadRequested =
       effectiveInteractionMode === "orchestrator-lead" || requestedOrchestrationRole === "lead";
     const permissionsPinned = identityPinned || orchestrationLeadRequested;
-    const effectiveClaudePermissionMode = permissionsPinned ? undefined : requestedClaudePermissionMode;
-    const effectiveCodexApprovalPolicy = permissionsPinned ? undefined : requestedCodexApprovalPolicy;
-    const effectiveCodexSandbox = permissionsPinned ? undefined : requestedCodexSandbox;
+    // A structured policy needs a coarse per-provider dial that leaves its own
+    // rules reachable: Claude's `default` mode is the one that still calls
+    // `canUseTool`, and Codex's `on-request` + `workspace-write` is the pair
+    // that still raises the approval requests the policy is evaluated in.
+    // `bypassPermissions` or `never` would run wide and never consult the
+    // policy at all. An explicit per-provider value from the caller always
+    // wins — the policy fills a gap, it does not overrule a stated choice.
+    const policyDrivesPermissions = callerPermissionPolicy != null && !permissionsPinned;
+    const effectiveClaudePermissionMode = permissionsPinned
+      ? undefined
+      : requestedClaudePermissionMode ?? (policyDrivesPermissions ? "default" : undefined);
+    const effectiveCodexApprovalPolicy = permissionsPinned
+      ? undefined
+      : requestedCodexApprovalPolicy ?? (policyDrivesPermissions ? "on-request" : undefined);
+    const effectiveCodexSandbox = permissionsPinned
+      ? undefined
+      : requestedCodexSandbox ?? (policyDrivesPermissions ? "workspace-write" : undefined);
     const effectiveCodexConfigSource = permissionsPinned ? undefined : requestedCodexConfigSource;
     const requestedDroidPermissionMode = permissionsPinned ? undefined : requestedDroidPermissionModeArg;
     let effectivePermissionMode = identityKey
@@ -34071,7 +35042,7 @@ export function createAgentChatService(args: {
           // The desktop composer always sends one; a launch that sends nothing
           // is saying nothing, and Droid resolves it from settings.json.
           droidPermissionMode: requestedDroidPermissionMode
-            ?? legacyPermissionModeToDroidPermissionMode(effectivePermissionMode)
+            ?? droidPermissionModeFromLegacyPermissionMode(effectivePermissionMode)
             ?? legacyOpenCodePermissionModeToDroidPermissionMode(requestedOpenCodePermissionMode),
         };
       }
@@ -34155,6 +35126,18 @@ export function createAgentChatService(args: {
           ? { strictMcpConfig: requestedStrictMcpConfig }
           : {}),
         ...(callerMcpCapability ? { mcpCapability: callerMcpCapability } : {}),
+        ...(callerPermissionPolicy ? { permissionPolicy: callerPermissionPolicy } : {}),
+        ...(callerPermissionCapability
+          ? { permissionCapability: callerPermissionCapability }
+          : {}),
+        ...(callerInstructions ? { instructions: callerInstructions } : {}),
+        ...(callerSettingSources ? { settingSources: callerSettingSources } : {}),
+        ...(callerInstructionsCapability
+          ? { instructionsCapability: callerInstructionsCapability }
+          : {}),
+        ...(callerSettingSourcesCapability
+          ? { settingSourcesCapability: callerSettingSourcesCapability }
+          : {}),
         ...(identityKey ? { identityKey } : {}),
         surface: surface ?? "work",
         automationId: automationId?.trim() ? automationId.trim() : null,
@@ -34185,7 +35168,7 @@ export function createAgentChatService(args: {
       transcriptBytesWritten: fileSizeOrZero(transcriptPath),
       transcriptLimitReached: false,
       metadataPath,
-      laneWorktreePath: launchContext.laneWorktreePath,
+      laneWorktreePath: personalHostCwd ?? launchContext.laneWorktreePath,
       runtime: null,
       preview: null,
       closed: false,
@@ -36485,6 +37468,7 @@ export function createAgentChatService(args: {
     );
     managed.claudeQuotaCardWasLive = true;
     managed.claudeQuotaCardLiveChecked = true;
+    parkUsageLimitIfAutoContinuing(managed);
     void emitAdeCard({
       sessionId: managed.session.id,
       card: buildClaudeSessionQuotaCard({
@@ -39338,7 +40322,7 @@ export function createAgentChatService(args: {
       const isFirstSendForLane = managed.lastLaneDirectiveKey !== args.laneDirectiveKey;
       if (personalSession || isFirstSendForLane) {
         const injected = personalSession
-          ? PERSONAL_CHAT_SYSTEM_PROMPT
+          ? resolvePersonalSystemPrompt(managed.session)
           : await buildCursorSdkInjectedSystemPrompt({
               runtime: "local",
               laneWorktreePath: managed.laneWorktreePath,
@@ -40289,7 +41273,7 @@ export function createAgentChatService(args: {
     let cloudComposed = args.promptText;
     if (!isFollowUp) {
       const injected = isPersonalSession(managed.session)
-        ? PERSONAL_CHAT_SYSTEM_PROMPT
+        ? resolvePersonalSystemPrompt(managed.session)
         : await buildCursorSdkInjectedSystemPrompt({
             runtime: "cloud",
             laneWorktreePath: managed.laneWorktreePath,
@@ -42598,7 +43582,7 @@ export function createAgentChatService(args: {
 
       runtime.eventMapperState = createDroidSdkEventMapperState();
       const droidHarnessPrompt = isPersonalSession(managed.session)
-        ? PERSONAL_CHAT_SYSTEM_PROMPT
+        ? resolvePersonalSystemPrompt(managed.session)
         : buildCodingAgentSystemPrompt({
             cwd: managed.laneWorktreePath,
             mode: resolveDroidSdkInteractionMode(managed.session) === "spec" ? "planning" : "coding",
@@ -44328,15 +45312,18 @@ export function createAgentChatService(args: {
       ((normalizedKind === "auto" || (normalizedKind === "wake" && !wakeNeedsQueue))
         && activeTarget);
     if (steerTarget) {
+      const dispatchMode = isSpawnCompletion && managed.session.provider === "claude"
+        ? "inline" as const
+        : normalizedKind === "auto"
+          ? defaultActiveTurnDispatchMode(managed.session.provider)
+          : "queue";
       const result = await steerWithOptions({
         sessionId,
         text,
         attachments,
         contextAttachments,
         metadata,
-        ...(isSpawnCompletion && managed.session.provider === "claude"
-          ? { dispatchMode: "inline" as const }
-          : {}),
+        ...(dispatchMode === "queue" ? {} : { dispatchMode }),
       }, { allowPendingInput: isSpawnCompletion });
       if (result.reason === "queue_full") {
         throw new Error("The Claude steer queue is full; the message was not queued.");
@@ -44462,73 +45449,136 @@ export function createAgentChatService(args: {
     };
   };
 
-  const cancelSteer = async ({ sessionId, steerId, requireQueued = false }: AgentChatCancelSteerArgs): Promise<void> => {
-    const managed = ensureManagedSession(sessionId);
-    const runtime = managed.runtime;
-    if (runtime?.kind === "codex") {
-      const submissionId = runtime.queuedSubmissionBySteerId.get(steerId);
-      if (!submissionId) {
-        if (requireQueued) throw new Error("This message is no longer queued.");
-        return;
+  /**
+   * Re-derive a Codex queue submission id from the app-server.
+   *
+   * `queuedSubmissionBySteerId` lives only in the runtime object, so a restart,
+   * a rehydration, or a cancel routed in from another machine arrives with it
+   * empty while the transcript still renders the staged chip. Every queue entry
+   * carries the ADE steerId ADE sent as `clientUserMessageId`, so the server is
+   * the durable side of the mapping — read it back rather than concluding the
+   * message is gone.
+   */
+  const recoverCodexQueueSubmissionId = async (
+    managed: ManagedChatSession,
+    runtime: CodexRuntime,
+    steerId: string,
+  ): Promise<string | null> => {
+    const threadId = managed.session.threadId;
+    if (!threadId) return null;
+    if (!codexServerSupportsThreadQueue(runtime.serverVersion)) return null;
+    try {
+      const queuedSubmissions = await listCodexQueueSubmissions(runtime, threadId);
+      for (const submission of queuedSubmissions) {
+        if (String(submission.clientUserMessageId ?? "").trim() !== steerId) continue;
+        const id = String(submission.id ?? "").trim();
+        if (!id) continue;
+        runtime.queuedSubmissionBySteerId.set(steerId, id);
+        return id;
       }
-      const threadId = managed.session.threadId;
-      if (threadId) {
-        try {
-          await runtime.request("thread/queue/delete", { threadId, id: submissionId });
-        } catch (error) {
-          if (requireQueued) throw error;
-          logger.warn("codex.queue.delete_failed", {
-            sessionId,
-            error: error instanceof Error ? error.message : String(error),
-          });
-        }
-      }
-      runtime.queuedSubmissionBySteerId.delete(steerId);
-      emitChatEvent(managed, {
-        type: "system_notice",
-        noticeKind: "info",
-        steerId,
-        message: "Queued message cancelled.",
-        turnId: runtime.activeTurnId ?? undefined,
+    } catch (error) {
+      logger.debug("codex.queue.recover_failed", {
+        sessionId: managed.session.id,
+        error: error instanceof Error ? error.message : String(error),
       });
-      persistChatState(managed);
-      return;
+      // A failed queue read is not evidence that the submission disappeared.
+      // Keep the staged row and let the caller surface a retryable error rather
+      // than reporting a cancellation while the app-server may still deliver it.
+      throw new Error(
+        `Could not inspect Codex's queued messages: ${error instanceof Error ? error.message : String(error)}`,
+      );
     }
-    if (!runtime) {
-      if (requireQueued) throw new Error("This message is no longer queued.");
-      return;
-    }
+    return null;
+  };
 
-    const queue = runtime.pendingSteers;
-    // Both runtimes that track in-flight dispatches splice the row out of the
-    // queue before the dispatch completes, so without this the user would be
-    // told the message is "no longer queued" while it is in fact being sent.
-    if (
-      requireQueued
-      && (runtime.kind === "claude" || runtime.kind === "cursor")
-      && runtime.dispatchingSteerIds.has(steerId)
-    ) {
-      throw new Error("This message is already being dispatched.");
-    }
-    const idx = queue.findIndex((s) => s.steerId === steerId);
-    if (idx !== -1) {
-      const [removed] = queue.splice(idx, 1);
-      if (runtime.kind === "claude" && removed) runtime.knownQueuedMessages.delete(removed.uuid);
-    } else if (requireQueued) {
-      throw new Error("This message is no longer queued.");
-    }
-    // Always emit the cancelled notice — even when the steer already left the
-    // server-side queue (e.g. dispatched inline before this call landed) — so
-    // the client display clears the staged chip on the delete-button path.
+  const finalizeCancelledSteer = (
+    managed: ManagedChatSession,
+    steerId: string,
+    turnId?: string | null,
+    options: { tombstonePersistedSteer?: boolean } = {},
+  ): void => {
+    if (options.tombstonePersistedSteer) forgetPersistedSteer(managed, steerId);
     claimSteerSettlement(managed, steerId);
     emitChatEvent(managed, {
       type: "system_notice",
       noticeKind: "info",
       steerId,
       message: "Queued message cancelled.",
-      turnId: runtime.activeTurnId ?? undefined,
+      turnId: turnId ?? undefined,
     });
-    persistChatState(managed);
+    const persisted = persistChatState(managed);
+    if (options.tombstonePersistedSteer && persisted) {
+      const cancelled = cancelledPersistedSteerIds.get(managed);
+      cancelled?.delete(steerId);
+      if (!cancelled?.size) cancelledPersistedSteerIds.delete(managed);
+    }
+  };
+
+  const cancelSteer = async ({ sessionId, steerId, requireQueued = false }: AgentChatCancelSteerArgs): Promise<void> => {
+    const managed = ensureManagedSession(sessionId);
+    const runtime = managed.runtime;
+    if (runtime?.kind === "codex") {
+      const submissionId = runtime.queuedSubmissionBySteerId.get(steerId)
+        ?? await recoverCodexQueueSubmissionId(managed, runtime, steerId);
+      const threadId = managed.session.threadId;
+      if (submissionId && threadId) {
+        try {
+          await runtime.request("thread/queue/delete", { threadId, id: submissionId });
+        } catch (error) {
+          // The submission is still on the app-server queue and will run when
+          // the turn ends. Clearing the chip here would report a cancellation
+          // that did not happen, so keep the mapping and raise instead.
+          runtime.queuedSubmissionBySteerId.set(steerId, submissionId);
+          logger.warn("codex.queue.delete_failed", {
+            sessionId,
+            error: error instanceof Error ? error.message : String(error),
+          });
+          throw new Error(
+            `Codex would not drop the queued message: ${error instanceof Error ? error.message : String(error)}`,
+          );
+        }
+      } else if (requireQueued) {
+        throw new Error("This message is no longer queued.");
+      }
+      // No submission means no queue holds the message — clear the chip rather
+      // than leaving a control that does nothing every time it is pressed.
+      runtime.queuedSubmissionBySteerId.delete(steerId);
+    } else if (!runtime) {
+      if (requireQueued) {
+        const persistedSteers = readPersistedState(managed.session.id)?.pendingSteers ?? [];
+        const stillPersisted = persistedSteers.some((steer) => steer.steerId === steerId);
+        if (!stillPersisted) throw new Error("This message is no longer queued.");
+      }
+      // A torn-down session holds no local queue, so the staged chip is the
+      // only thing left to cancel. The shared finalizer also drops the steer
+      // from persisted state before a future runtime can hydrate it.
+    } else {
+      const queue = runtime.pendingSteers;
+      // Both runtimes that track in-flight dispatches splice the row out of the
+      // queue before the dispatch completes, so without this the user would be
+      // told the message is "no longer queued" while it is in fact being sent.
+      if (
+        requireQueued
+        && (runtime.kind === "claude" || runtime.kind === "cursor")
+        && runtime.dispatchingSteerIds.has(steerId)
+      ) {
+        throw new Error("This message is already being dispatched.");
+      }
+      const idx = queue.findIndex((s) => s.steerId === steerId);
+      if (idx !== -1) {
+        const [removed] = queue.splice(idx, 1);
+        if (runtime.kind === "claude" && removed) runtime.knownQueuedMessages.delete(removed.uuid);
+      } else if (requireQueued) {
+        throw new Error("This message is no longer queued.");
+      }
+    }
+
+    // Always emit the cancelled notice — even when the steer already left the
+    // server-side queue (e.g. dispatched inline before this call landed) — so
+    // the client display clears the staged chip on the delete-button path.
+    finalizeCancelledSteer(managed, steerId, runtime?.activeTurnId, {
+      tombstonePersistedSteer: runtime == null && !managed.runtimeInvalidated,
+    });
   };
 
   const editSteer = async ({ sessionId, steerId, text }: AgentChatEditSteerArgs): Promise<void> => {
@@ -44536,10 +45586,14 @@ export function createAgentChatService(args: {
     const managed = ensureManagedSession(sessionId);
     const runtime = managed.runtime;
     if (runtime?.kind === "codex") {
-      const submissionId = runtime.queuedSubmissionBySteerId.get(steerId);
-      if (!submissionId) return;
+      // Same lost-mapping case as cancelSteer: recover from the server queue
+      // before deciding the message is gone, or an edit after a restart is a
+      // silent no-op.
+      const submissionId = runtime.queuedSubmissionBySteerId.get(steerId)
+        ?? await recoverCodexQueueSubmissionId(managed, runtime, steerId);
+      if (!submissionId) throw new Error("This message is no longer queued.");
       const threadId = managed.session.threadId;
-      if (!threadId) return;
+      if (!threadId) throw new Error("This message cannot be edited because Codex has no active thread.");
       if (!trimmed.length) {
         await cancelSteer({ sessionId, steerId, requireQueued: true });
         return;
@@ -44559,10 +45613,10 @@ export function createAgentChatService(args: {
       persistChatState(managed);
       return;
     }
-    if (!runtime) return;
+    if (!runtime) throw new Error("This message is no longer queued.");
 
     const idx = runtime.pendingSteers.findIndex((s) => s.steerId === steerId);
-    if (idx === -1) return;
+    if (idx === -1) throw new Error("This message is no longer queued.");
 
     if (!trimmed.length) {
       const [removed] = runtime.pendingSteers.splice(idx, 1);
@@ -44824,9 +45878,10 @@ export function createAgentChatService(args: {
   };
 
   const interrupt = async (
-    { sessionId, mode = "stop_and_clear" }: AgentChatInterruptArgs,
+    { sessionId, mode: rawMode = "stop_and_clear" }: AgentChatInterruptArgs,
     internalOptions: { requireClaudeProviderInterrupt?: boolean } = {},
   ): Promise<AgentChatInterruptResult> => {
+    const mode = parseAgentChatStopMode(rawMode);
     const managed = ensureManagedSession(sessionId);
     const result: AgentChatInterruptResult = {
       mode,
@@ -44862,7 +45917,7 @@ export function createAgentChatService(args: {
       // unrecoverable, and the opposite of the rule that losing a settle costs
       // one click while losing the user's work does not. Default is
       // `stop_and_clear`, so the Stop button is unaffected.
-      if (mode === "stop_and_clear") cancelQueuedSteers(managed, managed.runtime, "interrupted");
+      if (stopModeClearsQueue(mode)) cancelQueuedSteers(managed, managed.runtime, "interrupted");
       persistChatState(managed);
       for (const pending of managed.runtime.pendingApprovals.values()) {
         rejectOpenCodePendingApproval(managed.runtime.handle, pending).catch(() => {});
@@ -44908,7 +45963,7 @@ export function createAgentChatService(args: {
         cancelCursorPermissionWaiter(w, "Cursor tool approval was cancelled because the turn was interrupted.");
       }
       rt.permissionWaiters.clear();
-      if (mode === "stop_and_clear") cancelQueuedSteers(managed, rt, "interrupted");
+      if (stopModeClearsQueue(mode)) cancelQueuedSteers(managed, rt, "interrupted");
       return result;
     }
 
@@ -44921,7 +45976,7 @@ export function createAgentChatService(args: {
       } catch {
         // ignore
       }
-      if (mode === "stop_and_clear") cancelQueuedSteers(managed, rt, "interrupted");
+      if (stopModeClearsQueue(mode)) cancelQueuedSteers(managed, rt, "interrupted");
       cancelPendingInputsFrom(managed, "pi", "ade");
       persistChatState(managed);
       return result;
@@ -44929,7 +45984,7 @@ export function createAgentChatService(args: {
 
     if (managed.session.provider === "pi") {
       piRuntimeSetupInterruptRequested.set(managed, true);
-      if (mode === "stop_and_clear") {
+      if (stopModeClearsQueue(mode)) {
         cancelQueuedSteers(managed, { pendingSteers: [], activeTurnId: null }, "interrupted");
       }
       setSessionIdle(managed);
@@ -44957,7 +46012,7 @@ export function createAgentChatService(args: {
           error: error instanceof Error ? error.message : String(error),
         });
       }
-      if (mode === "stop_and_clear") cancelQueuedSteers(managed, rt, "interrupted");
+      if (stopModeClearsQueue(mode)) cancelQueuedSteers(managed, rt, "interrupted");
       persistChatState(managed);
       return result;
     }
@@ -44966,7 +46021,7 @@ export function createAgentChatService(args: {
       // The stop landed while the session was still opening, so there is no
       // runtime to cancel. Clear the queue and idle the row, the same way the
       // Pi no-runtime arm does.
-      if (mode === "stop_and_clear") {
+      if (stopModeClearsQueue(mode)) {
         cancelQueuedSteers(managed, { pendingSteers: [], activeTurnId: null }, "interrupted");
       }
       cancelPendingInputsFrom(managed, "acp", "ade");
@@ -44987,13 +46042,13 @@ export function createAgentChatService(args: {
         cancelDroidPermissionWaiter(w, "Droid tool approval was cancelled because the turn was interrupted.");
       }
       rt.permissionWaiters.clear();
-      if (mode === "stop_and_clear") cancelQueuedSteers(managed, rt, "interrupted");
+      if (stopModeClearsQueue(mode)) cancelQueuedSteers(managed, rt, "interrupted");
       return result;
     }
 
     if (managed.session.provider === "droid") {
       droidRuntimeSetupInterruptRequested.set(managed, true);
-      if (mode === "stop_and_clear") {
+      if (stopModeClearsQueue(mode)) {
         cancelQueuedSteers(managed, { pendingSteers: [], activeTurnId: null }, "interrupted");
       }
       persistChatState(managed);
@@ -45002,7 +46057,7 @@ export function createAgentChatService(args: {
 
     if (managed.session.provider === "cursor") {
       cursorRuntimeSetupInterruptRequested.set(managed, true);
-      if (mode === "stop_and_clear") {
+      if (stopModeClearsQueue(mode)) {
         cancelQueuedSteers(managed, { pendingSteers: [], activeTurnId: null }, "interrupted");
       }
       persistChatState(managed);
@@ -45026,7 +46081,7 @@ export function createAgentChatService(args: {
       // to a turn that IS running still goes when the app-server aborts it,
       // because the request behind the card dies with the turn either way.
       const settleCardsIfClearing = (): void => {
-        if (mode !== "stop_and_clear") return;
+        if (!stopModeClearsQueue(mode)) return;
         settleCodexPendingInputs(managed, runtime);
       };
       if (!managed.session.threadId) {
@@ -45138,7 +46193,7 @@ export function createAgentChatService(args: {
     });
     const claudeControl = getClaudeQueryControl(runtime.query);
     let interruptResponse: SDKControlInterruptResponse | undefined;
-    const localQueuedForRecovery = mode === "stop_and_clear"
+    const localQueuedForRecovery = stopModeClearsQueue(mode)
       ? [...runtime.pendingSteers]
       : [];
     // Remove ADE-local staged messages before awaiting the provider interrupt.
@@ -45151,7 +46206,7 @@ export function createAgentChatService(args: {
     const knownQueuedMessagesAtInterrupt = new Map(runtime.knownQueuedMessages);
     const cancelQueuedCapability = managed.session.protocolCapabilities?.includes("interrupt_cancel_queued_v1") === true;
     const requestClaudeInterrupt = async (): Promise<SDKControlInterruptResponse | undefined> => {
-      if (mode === "stop_and_clear" && cancelQueuedCapability && claudeControl.interruptWithOptions) {
+      if (stopModeClearsQueue(mode) && cancelQueuedCapability && claudeControl.interruptWithOptions) {
         return await awaitClaudeControlCall(
           "Claude interrupt and queue cancellation",
           CLAUDE_INTERRUPT_REQUEST_TIMEOUT_MS,
@@ -45164,7 +46219,7 @@ export function createAgentChatService(args: {
         CLAUDE_INTERRUPT_REQUEST_TIMEOUT_MS,
         () => claudeControl.interrupt!(),
       );
-      if (mode !== "stop_and_clear" || !response?.still_queued?.length || !claudeControl.cancelAsyncMessage) {
+      if (!stopModeClearsQueue(mode) || !response?.still_queued?.length || !claudeControl.cancelAsyncMessage) {
         return response;
       }
       const cancelled: string[] = [];
@@ -45191,6 +46246,7 @@ export function createAgentChatService(args: {
     // Set interrupted before touching the runtime so the streaming loop can
     // break cleanly while the underlying SDK stream is aborted below.
     runtime.interrupted = true;
+    runtime.spareBackgroundOnInterrupt = !stopModeStopsBackground(mode);
     const interruptedTurnId = runtime.activeTurnId;
     if (runtime.busy && interruptedTurnId) {
       runtime.interruptEventsEmitted = true;
@@ -45205,7 +46261,9 @@ export function createAgentChatService(args: {
     }
     cancelClaudeWarmup(managed, runtime, "interrupt");
     settleClaudeInitialInputDispatch(runtime, new Error("Claude turn was interrupted before its input was dispatched."));
-    await stopActiveClaudeSubagents(managed, runtime, interruptedTurnId ?? undefined, "Interrupted by user");
+    if (stopModeStopsBackground(mode)) {
+      await stopActiveClaudeSubagents(managed, runtime, interruptedTurnId ?? undefined, "Interrupted by user");
+    }
     if (!internalOptions.requireClaudeProviderInterrupt) {
       try {
         if (claudeControl.interrupt || claudeControl.interruptWithOptions) {
@@ -45222,13 +46280,16 @@ export function createAgentChatService(args: {
     const normalizedInterrupt = normalizeClaudeInterruptReceipt(interruptResponse);
     const preserveQueryForQueuedMessages = normalizedInterrupt.stillQueuedUuids.length > 0;
     const providerCancelledUuids = normalizedInterrupt.cancelledUuids;
-    if (!preserveQueryForQueuedMessages) {
+    // Resetting the query reaps the Claude process and orphans every still-open
+    // task. That is correct for background-killing Stop; it is the opposite of
+    // `perTaskStopAffordance` for Turn-only / Turn+queue.
+    if (!preserveQueryForQueuedMessages && stopModeStopsBackground(mode)) {
       // Invalidate the idle reader and any already-issued `next()` promise as
       // part of the same reset. Clearing only query/inputPump lets that stale
       // promise consume the next turn after an interrupt.
       await resetClaudeQuerySession(managed, runtime, "interrupt");
     }
-    if (mode === "stop_and_clear") {
+    if (stopModeClearsQueue(mode)) {
       const localQueuedCount = localQueuedForRecovery.length;
       result.cancelledQueuedCount = localQueuedCount + providerCancelledUuids.length;
       const providerCancelledSteers = providerCancelledUuids.flatMap((uuid) => {
@@ -46364,6 +47425,21 @@ export function createAgentChatService(args: {
         error: error instanceof Error ? error.message : String(error),
       });
     }
+    const pendingAutoResume = scheduledWork.find((item) => isPendingAutoResumeScheduledWork(item));
+    const usageLimitParkedUntil = pendingAutoResume?.nextRunAt
+      ?? liveManaged?.usageLimitParkedUntil
+      ?? persisted?.usageLimitParkedUntil
+      ?? null;
+    // Preserve an explicit null from the live session instead of falling back
+    // to an older persisted native mode. The distinction matters to clients:
+    // Cursor's mode is nullable because null means the user cleared the native
+    // selection, not that the summary omitted it.
+    const summaryCursorModeId = liveSession?.cursorModeId !== undefined
+      ? liveSession.cursorModeId
+      : persisted?.cursorModeId;
+    const summaryCursorModeSnapshot = summaryCursorModeId === null
+      ? undefined
+      : liveSession?.cursorModeSnapshot ?? persisted?.cursorModeSnapshot;
     return {
       sessionId: row.id,
       laneId: row.laneId,
@@ -46407,12 +47483,13 @@ export function createAgentChatService(args: {
       ...(liveSession?.droidPermissionMode || persisted?.droidPermissionMode
         ? { droidPermissionMode: liveSession?.droidPermissionMode ?? persisted?.droidPermissionMode }
         : {}),
-      ...(liveSession?.cursorModeSnapshot || persisted?.cursorModeSnapshot
-        ? { cursorModeSnapshot: liveSession?.cursorModeSnapshot ?? persisted?.cursorModeSnapshot }
+      ...(summaryCursorModeSnapshot
+        ? { cursorModeSnapshot: summaryCursorModeSnapshot }
         : {}),
-      ...(liveSession?.cursorModeId !== undefined || persisted?.cursorModeId !== undefined
-        ? { cursorModeId: liveSession?.cursorModeId ?? persisted?.cursorModeId ?? null }
+      ...(summaryCursorModeId !== undefined
+        ? { cursorModeId: summaryCursorModeId ?? null }
         : {}),
+      ...(summaryCursorModeId === null ? { cursorModeIdWasCleared: true } : {}),
       ...(liveSession?.cursorConfigValues || persisted?.cursorConfigValues
         ? { cursorConfigValues: liveSession?.cursorConfigValues ?? persisted?.cursorConfigValues }
         : {}),
@@ -46430,6 +47507,13 @@ export function createAgentChatService(args: {
       ...(liveSession?.mcpCapability || persisted?.mcpCapability
         ? { mcpCapability: liveSession?.mcpCapability ?? persisted?.mcpCapability }
         : {}),
+      // Host session configuration, for the same reason: an embedder that asked
+      // for instructions or a settingSources value learns here whether the
+      // provider took them, and cannot tell "applied" from "silently dropped"
+      // any other way. Merged per field, so a live session that has rehydrated
+      // its policy but not its capability report still reports the persisted
+      // one.
+      ...mergeHostSessionConfig(liveSession, persisted),
       ...(liveSession?.cursorCloudAgentId || persisted?.cursorCloudAgentId
         ? { cursorCloudAgentId: liveSession?.cursorCloudAgentId ?? persisted?.cursorCloudAgentId }
         : {}),
@@ -46486,6 +47570,8 @@ export function createAgentChatService(args: {
       summary: row.summary ?? null,
       ...(provider === "claude" ? { claudeTag } : {}),
       nextWakeAt,
+      ...(usageLimitParkedUntil ? { usageLimitParkedUntil } : {}),
+      autoContinueAtUsageLimit: sessionAutoContinueAtUsageLimit(liveSession ?? persisted),
       activeBackgroundTaskCount,
       // Omitted when nothing is live, like every other optional field here: a
       // zero record carries no information and would ride along on every
@@ -46546,6 +47632,45 @@ export function createAgentChatService(args: {
     const row = sessionService.get(trimmed);
     if (!row || !isChatToolType(row.toolType)) return null;
     return await summarizeSessionRow(row);
+  };
+
+  const getTurnStatus = async (sessionId: string): Promise<ChatTurnStatusSnapshot | null> => {
+    const summary = await getSessionSummary(sessionId);
+    if (!summary) return null;
+    const trimmed = sessionId.trim();
+    const managed = managedSessions.get(trimmed) ?? null;
+    const pending = managed ? collectPendingInputRequests(managed)[0] : undefined;
+    const queuedMessageCount = managed?.runtime && "pendingSteers" in managed.runtime
+      ? managed.runtime.pendingSteers.length
+      : 0;
+    const snapshots = await getTrackedSubagents(trimmed);
+    const runningWithTool = snapshots.find((snapshot) => snapshot.status === "running" && snapshot.lastToolName?.trim());
+    return deriveChatTurnStatus({
+      sessionId: summary.sessionId,
+      provider: summary.provider,
+      sessionStatus: summary.status,
+      currentTurnStartedAt: summary.currentTurnStartedAt ?? null,
+      lastActivityAt: summary.lastActivityAt ?? null,
+      awaitingInput: summary.awaitingInput === true,
+      pendingTitle: pending?.title ?? null,
+      pendingDescription: pending?.description ?? null,
+      queuedMessageCount,
+      currentTool: runningWithTool?.lastToolName
+        ? { name: runningWithTool.lastToolName }
+        : null,
+      subagents: snapshots.map((snapshot) => ({
+        taskId: snapshot.taskId,
+        ...(snapshot.agentId ? { agentId: snapshot.agentId } : {}),
+        parentAgentId: snapshot.parentAgentId ?? null,
+        description: snapshot.description,
+        status: snapshot.status,
+        ...(snapshot.background != null ? { background: snapshot.background } : {}),
+        ...(snapshot.spawnDepth != null ? { spawnDepth: snapshot.spawnDepth } : {}),
+        startTimestamp: snapshot.startTimestamp,
+        ...(snapshot.usage?.durationMs != null ? { durationMs: snapshot.usage.durationMs } : {}),
+        ...(snapshot.resourceLinks?.length ? { resourceLinks: snapshot.resourceLinks } : {}),
+      })),
+    });
   };
 
   /**
@@ -47814,6 +48939,25 @@ export function createAgentChatService(args: {
       responseText,
     });
   };
+
+  /**
+   * Every request this session is still waiting on an answer for.
+   *
+   * An embedder that reloads its UI loses the `approval_request` events it
+   * already received, and a card it cannot redraw is indistinguishable from a
+   * turn that is simply slow. This reads the same stores `hasLivePendingInput`
+   * consults, so "the session is blocked" and "here is what is blocking it"
+   * can never disagree.
+   *
+   * It reads resident runtime state only, and is therefore empty after a
+   * restart — the provider process that raised the request died with it, so
+   * there is nothing left to answer.
+   */
+  const listPendingInputs = (
+    { sessionId }: { sessionId: string },
+  ): { requests: PendingInputRequest[] } => ({
+    requests: collectPendingInputRequests(ensureManagedSession(sessionId)),
+  });
 
   const availableModelsRequests = new Map<string, Promise<AgentChatModelInfo[]>>();
   const modelCatalogRequests = new Map<string, Promise<AgentChatModelCatalog>>();
@@ -49100,6 +50244,7 @@ export function createAgentChatService(args: {
     permissionMode,
     spawnKind: requestedSpawnKind,
     subagentTakeoverPromptShown,
+    autoContinueAtUsageLimit: requestedAutoContinueAtUsageLimit,
   }: AgentChatUpdateSessionArgs): Promise<AgentChatSession> => {
     const fastMode = requestedFastModeArg ?? requestedLegacyFastModeArg;
     const managed = ensureManagedSession(sessionId);
@@ -49196,6 +50341,32 @@ export function createAgentChatService(args: {
           hasServers: managed.session.mcpServers != null,
           strictRequested: managed.session.strictMcpConfig === true,
         });
+      }
+      // Same reasoning for the host configuration reports. A thread that moves
+      // from Claude to Droid keeps its instructions text, but "applied on a
+      // real system-prompt channel" stops being true the moment it moves, and
+      // an embedder reading a stale "applied" would never learn that.
+      if (managed.session.instructions) {
+        managed.session.instructionsCapability = resolveInstructionsCapability(
+          nextProvider,
+          managed.session.instructions,
+        );
+      }
+      if (managed.session.settingSources) {
+        managed.session.settingSourcesCapability = resolveSettingSourcesCapability(
+          nextProvider,
+          managed.session.settingSources,
+        );
+      }
+      // The policy itself follows the chat; what the new provider can do with
+      // it does not. A thread that moves from Claude to OpenCode keeps its
+      // rules and loses their enforcement, and the report has to say so.
+      if (managed.session.permissionPolicy) {
+        managed.session.permissionCapability = resolvePermissionCapability(
+          nextProvider,
+          managed.session.permissionPolicy,
+          { callerMcpServerNames: Object.keys(managed.session.mcpServers ?? {}) },
+        );
       }
 
       const modelChanged =
@@ -49483,6 +50654,29 @@ export function createAgentChatService(args: {
         delete managed.session.fastMode;
       }
     }
+    if (requestedAutoContinueAtUsageLimit !== undefined) {
+      if (requestedAutoContinueAtUsageLimit === false) {
+        managed.session.autoContinueAtUsageLimit = false;
+        if (managed.usageLimitParkedUntil) {
+          managed.usageLimitParkedUntil = null;
+        }
+        autoResume.cancelForSession(sessionId, "opted_out_of_auto_continue");
+        const runtime = managed.runtime;
+        if (
+          runtime?.kind === "claude"
+          && runtime.query
+          && (runtime.busy || runtime.activeTurnId)
+        ) {
+          try {
+            await interrupt({ sessionId, mode: DEFAULT_AGENT_CHAT_STOP_MODE });
+          } catch {
+            // Opt-out is persisted even if the live query cannot be interrupted.
+          }
+        }
+      } else {
+        delete managed.session.autoContinueAtUsageLimit;
+      }
+    }
     const nextClaudeFastModeSetting = managed.session.provider === "claude"
       ? sessionEffectiveFastMode(managed.session)
       : false;
@@ -49622,7 +50816,7 @@ export function createAgentChatService(args: {
         ...(managed.session.codexConfigSource !== undefined ? { codexConfigSource: managed.session.codexConfigSource } : {}),
         ...(managed.session.opencodePermissionMode !== undefined ? { opencodePermissionMode: managed.session.opencodePermissionMode } : {}),
         ...(managed.session.droidPermissionMode !== undefined ? { droidPermissionMode: managed.session.droidPermissionMode } : {}),
-        ...(cursorModeId !== undefined || managed.session.cursorModeId != null
+        ...(cursorModeId !== undefined || permissionMode !== undefined || managed.session.cursorModeId != null
           ? { cursorModeId: managed.session.cursorModeId ?? null }
           : {}),
         ...(managed.session.cursorModeSnapshot ? { cursorModeSnapshot: managed.session.cursorModeSnapshot } : {}),
@@ -49909,7 +51103,15 @@ export function createAgentChatService(args: {
           argumentHint: cmd.argumentHint,
           source: "sdk" as const,
         }));
-      return withPluginSlashCommands([projectCommands, CLAUDE_BUILT_IN_SLASH_COMMANDS, runtimeCommands]);
+      // Terminal-only Claude slash commands are filtered out of the merged
+      // core list before plugin commands are offered, so a plugin command is
+      // never dropped by a name a Claude terminal build happens to own.
+      return withPluginSlashCommands([
+        filterClaudeGuiSlashCommands(
+          mergeSlashCommands([projectCommands, CLAUDE_BUILT_IN_SLASH_COMMANDS, runtimeCommands]),
+          managed?.runtime?.kind === "claude" ? managed.runtime.terminalSlashCommandNames : [],
+        ),
+      ]);
     }
 
     // Codex SDK commands
@@ -50898,47 +52100,7 @@ export function createAgentChatService(args: {
 
   const normalizeClaudeContextUsage = (
     usage: SDKControlGetContextUsageResponse,
-  ): AgentChatContextUsage => {
-    const totalTokens = Number.isFinite(usage.totalTokens) ? Math.max(0, usage.totalTokens) : 0;
-    const maxTokens = Number.isFinite(usage.maxTokens) ? Math.max(0, usage.maxTokens) : 0;
-    const denominator = maxTokens > 0 ? maxTokens : totalTokens > 0 ? totalTokens : 1;
-    const categories = (Array.isArray(usage.categories) ? usage.categories : [])
-      .map((category): AgentChatContextUsage["categories"][number] | null => {
-        const name = typeof category.name === "string" ? category.name.trim() : "";
-        const tokens = Number.isFinite(category.tokens) ? Math.max(0, category.tokens) : 0;
-        if (!name.length && tokens === 0) return null;
-        return {
-          name: name || "Other",
-          tokens,
-          percentage: tokens > 0 ? (tokens / denominator) * 100 : 0,
-          ...(typeof category.color === "string" && category.color.trim().length ? { color: category.color.trim() } : {}),
-          ...(category.isDeferred === true ? { isDeferred: true } : {}),
-        };
-      })
-      .filter((category): category is AgentChatContextUsage["categories"][number] => Boolean(category));
-
-    if (maxTokens > totalTokens && !categories.some((category) => category.name.trim().toLowerCase() === "free")) {
-      const freeTokens = maxTokens - totalTokens;
-      categories.push({
-        name: "Free",
-        tokens: freeTokens,
-        percentage: maxTokens > 0 ? (freeTokens / maxTokens) * 100 : 0,
-      });
-    }
-
-    return {
-      categories,
-      totalTokens,
-      maxTokens,
-      rawMaxTokens: Number.isFinite(usage.rawMaxTokens) ? Math.max(0, usage.rawMaxTokens) : maxTokens,
-      percentage: Number.isFinite(usage.percentage)
-        ? Math.max(0, Math.min(100, usage.percentage))
-        : maxTokens > 0
-          ? (totalTokens / maxTokens) * 100
-          : 0,
-      ...(typeof usage.model === "string" && usage.model.trim().length ? { model: usage.model.trim() } : {}),
-    };
-  };
+  ): AgentChatContextUsage => normalizeStructuredClaudeContextUsage(usage);
 
   const normalizeClaudeRewindFilesResult = (
     result: ClaudeRewindFilesResult,
@@ -51034,12 +52196,12 @@ export function createAgentChatService(args: {
     files: CodexRewindFileRestore[],
   ): Promise<string[]> => {
     if (!files.length) return [];
-    const { laneWorktreePath: cwd } = resolveLaneLaunchContext({
-      laneService,
-      projectRoot,
-      laneId: resolveManagedExecutionLaneId(managed),
-      purpose: "Codex file rewind",
-    });
+    // The session's own directory, not one re-resolved from its lane id. They
+    // are the same for every non-personal session; a personal chat with a host
+    // `requestedCwd` runs in the user's repository while its lane still names
+    // the synthetic scratch worktree, and restoring files there would report
+    // success against a directory the user never asked about.
+    const cwd = managed.laneWorktreePath;
     const restored: string[] = [];
     for (const file of files) {
       if (!isSafeRelativeGitPath(file.path)) continue;
@@ -52409,6 +53571,8 @@ export function createAgentChatService(args: {
     dispatchSteer,
     cancelDispatchedSteer,
     interrupt,
+    interruptWithQueueMode: interrupt,
+    stopTask,
     /**
      * Is a persisted Claude `--bg` job actually still running?
      *
@@ -52446,6 +53610,7 @@ export function createAgentChatService(args: {
     resumeSession,
     listSessions,
     getSessionSummary,
+    getTurnStatus,
     ensureSessionSurface,
     hasActiveWorkloads,
     hasRetainableSessions,
@@ -52462,6 +53627,7 @@ export function createAgentChatService(args: {
     ensureIdentitySession,
     getCtoAttention,
     approveToolUse,
+    listPendingInputs,
     respondToInput,
     dismissPendingInputForSettlement,
     requestChatInput,

@@ -22,7 +22,7 @@ func errorPresentation(for category: String) -> WorkErrorPresentation {
   case "auth":
     return WorkErrorPresentation(title: "Authentication issue", icon: "lock.trianglebadge.exclamationmark", tint: .danger)
   case "rate_limit":
-    return WorkErrorPresentation(title: "Rate limited", icon: "hourglass", tint: .warning)
+    return WorkErrorPresentation(title: "Usage limit reached", icon: "hourglass", tint: .warning)
   case "network":
     return WorkErrorPresentation(title: "Connection issue", icon: "wifi.exclamationmark", tint: .warning)
   case "permission":
@@ -866,7 +866,10 @@ func makeWorkChatTranscript(from entries: [AgentChatEventEnvelope]) -> [WorkChat
       event: makeWorkChatEvent(from: entry.event),
       subagentTaskType: entry.subagentTaskType,
       subagentCommand: entry.subagentCommand,
-      subagentSpawnKind: entry.subagentSpawnKind
+      subagentSpawnKind: entry.subagentSpawnKind,
+      subagentParentAgentId: entry.subagentParentAgentId,
+      subagentSpawnDepth: entry.subagentSpawnDepth,
+      subagentResourceLinks: entry.subagentResourceLinks ?? []
     )
   }
   .sorted(by: workChatEnvelopeOrderedBefore)

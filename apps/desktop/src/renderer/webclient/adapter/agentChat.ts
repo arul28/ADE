@@ -299,10 +299,13 @@ export function createAgentChatNamespace(infra: AdapterInfra): AdeNamespace<"age
     },
     cancelSteer: async (args: unknown, pin?: RuntimePinArg) => {
       guardPin("cancelSteer", pin);
-      await call("chat.cancelSteer", args, undefined, false);
+      // An unreachable host must not resolve: the message stays queued and the
+      // agent still sends it, so a silent `undefined` reads as a cancellation
+      // that never happened. Every other mutation here already throws.
+      await callRequiredMutation("chat.cancelSteer", args);
     },
     editSteer: async (args: unknown) => {
-      await call("chat.editSteer", args, undefined, false);
+      await callRequiredMutation("chat.editSteer", args);
     },
     dispatchSteer: async (args, pin) => {
       guardPin("dispatchSteer", pin);
@@ -321,6 +324,15 @@ export function createAgentChatNamespace(infra: AdapterInfra): AdeNamespace<"age
         "chat.interrupt",
         args,
         { mode: "stop_and_clear", cancelledQueuedCount: 0 },
+        false,
+      );
+    },
+    stopTask: async (args: unknown, pin?: RuntimePinArg) => {
+      guardPin("stopTask", pin);
+      return await call(
+        "chat.stopTask",
+        args,
+        { sessionId: "", taskId: "", stopped: false },
         false,
       );
     },

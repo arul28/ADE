@@ -3,12 +3,14 @@ import { discoverClaudeSlashCommands } from "./claudeSlashCommandDiscovery";
 import { discoverCodexSlashCommands } from "./codexSlashCommandDiscovery";
 import { discoverCursorSlashCommands } from "./cursorSlashCommandDiscovery";
 import { slashCommandKey } from "./markdownSlashCommandDiscovery";
+import { isClaudeTerminalOnlySlashCommand } from "../../../shared/claudeGuiSlashCommands";
 
 export function discoverAllProjectSlashCommands(workspaceRoot: string): AgentChatSlashCommand[] {
   const byName = new Map<string, AgentChatSlashCommand>();
   function add(command: { name: string; description: string; argumentHint?: string }): void {
     const key = slashCommandKey(command.name);
     if (key === "/login") return;
+    if (isClaudeTerminalOnlySlashCommand(command.name)) return;
     if (byName.has(key)) return;
     byName.set(key, {
       name: command.name,

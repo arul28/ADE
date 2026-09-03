@@ -157,15 +157,19 @@
             "pages": [
               "sdk/threads",
               "sdk/mcp",
+              "sdk/permissions",
               "sdk/chat-ui",
-              "sdk/runtime"
+              "sdk/electron",
+              "sdk/runtime",
+              "sdk/bundling"
             ]
           },
           {
             "group": "Reference",
             "icon": "code",
             "pages": [
-              "sdk/reference"
+              "sdk/reference",
+              "sdk/license"
             ]
           }
         ]
@@ -217,6 +221,8 @@
             "expanded": true,
             "pages": [
               "changelog",
+              "changelog/v1.2.73",
+              "changelog/v1.2.72",
               "changelog/v1.2.71",
               "changelog/v1.2.70",
               "changelog/v1.2.69",

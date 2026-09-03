@@ -68,6 +68,7 @@ import { buildPairingQrPayload } from "../../desktop/src/shared/pairingQr";
 import { buildWebClientPairUrl } from "../../desktop/src/shared/webClientUrl";
 import { abbreviatePathTail } from "../../desktop/src/shared/pathDisplay";
 import { CURSOR_CLI_EXECUTABLES } from "../../desktop/src/shared/providerCliExecutables";
+import { effectiveCursorModeId } from "../../desktop/src/shared/cursorModes";
 import {
   accountMachineDisplayName,
   accountMachineConnectionState,
@@ -78,8 +79,23 @@ import {
   machineStatusLine,
 } from "../../desktop/src/shared/machinePresence";
 import { SEARCH_DOC_KINDS } from "../../desktop/src/shared/types/search";
+import {
+  droidPermissionModeFromLegacyPermissionMode,
+  isAgentChatDroidPermissionMode,
+  type AgentChatDroidPermissionMode,
+} from "../../desktop/src/shared/types/chat";
 import type { AgentChatDispatchSteerMode } from "../../desktop/src/shared/types/chat";
 import { PLUGIN_BUILTIN_SURFACE_OWNER_IDS } from "../../desktop/src/shared/plugins/builtinSurfaceRegistry";
+import {
+  isAgentChatStopMode,
+  type AgentChatStopMode,
+} from "../../desktop/src/shared/chatStopModes";
+import {
+  chatTurnStatusExitCode,
+  formatChatTurnStatus,
+  type ChatTurnStatusPhase,
+  type ChatTurnStatusSnapshot,
+} from "../../desktop/src/shared/chatTurnStatus";
 import type { TerminalSessionSummary } from "../../desktop/src/shared/types/sessions";
 import {
   formatWorkingDuration,
@@ -330,6 +346,7 @@ type FormatterId =
   | "pr-comments"
   | "chat-list"
   | "chat-read"
+  | "chat-status"
   | "session-lifecycle"
   | "lane-drift"
   | "scheduled-work-create"
@@ -1802,6 +1819,9 @@ const HELP_BY_COMMAND: Record<string, string> = {
     --model <id>           Runtime model id.
     --reasoning-effort <v> Reasoning tier. Alias: --effort.
     --permissions <mode>   default | auto | plan | edit | full-auto | config-toml.
+    --droid-permission-mode <m>
+                           Droid only: read-only | auto-low | auto-medium | auto-high | agi.
+                           Aliases: --droid-autonomy, --autonomy.
     --fast                 Request fast service tier when supported.
     --no-fast, --standard  Disable fast service tier explicitly.
     --prompt <text>        First chat message or CLI initial input.
@@ -2123,7 +2143,7 @@ const HELP_BY_COMMAND: Record<string, string> = {
                                                     already carries. Add --arg strictMcpConfig=false to also load the
                                                     user's own MCP config (personal chats withhold it by default), or
                                                     --arg strictMcpConfig=true to withhold it on a project chat.
-                                                    Read mcpCapability on the created session (ade chat status
+                                                    Read mcpCapability on the created session (ade chat show
                                                     <session> --personal --json) for what the provider could honor:
                                                     only level "enforced" means the caller's servers are the whole
                                                     surface. A server the provider cannot carry fails the create.
@@ -2131,6 +2151,9 @@ const HELP_BY_COMMAND: Record<string, string> = {
     $ ade chat create --from-linear-issue ENG-431 --parent <session> --type subagent
                                                     Start a child chat with an attached issue + kickoff (alias: --linear-issue-json)
     $ ade chat send <session> --text "next step"    Send a message; steers automatically if the turn is active
+    $ ade chat show <session>                       Session summary (title, provider, model)
+    $ ade chat status <session>                     Live turn status: RUNNING / BLOCKED / IDLE
+                                                    Exit 0 running, 1 idle, 2 blocked. Use --text.
     $ ade chat note "testing desktop auth fallback" # Update the Work status line (aim for ${STATUS_NOTE_GUIDELINE_WORDS} words or fewer; truncated past ${MAX_STATUS_NOTE_CHARACTERS} characters)
     $ ade chat ask "Which account should I use?"    Escalate a blocking question to the user
                                                     'note' and 'ask' default to the caller and accept --session <id>.
@@ -2191,10 +2214,14 @@ const HELP_BY_COMMAND: Record<string, string> = {
                                                     Detach one issue (or all) from a session
     $ ade chat linear-issues <session> --text       List issues attached to a session
     $ ade chat interrupt <session>                  Stop an active turn and clear its queued messages
+    $ ade chat interrupt <session> --keep-queue     Stop the turn but preserve queued messages
+    $ ade chat interrupt <session> --stop-background
+                                                    Also stop background jobs; combine with --keep-queue
+    $ ade chat interrupt <session> --mode <mode>    stop_and_clear | stop_only | stop_and_background | stop_and_clear_and_background
+    $ ade chat stop-task <session> <taskId>         Stop one Claude background task; siblings keep running
     $ ade chat demote <session>                     Take over a subagent: it becomes a peer and reports stop
     $ ade chat promote <session>                    Restore a peer as a subagent so it reports to its parent again
     $ ade chat keep-reporting <session>             Dismiss the takeover prompt without changing the report channel
-    $ ade chat interrupt <session> --keep-queue     Stop the turn but preserve queued messages
     $ ade chat restore-queue <session> <recovery>   Restore a recently cleared queue during its undo window
     $ ade chat slash <session> --text               List slash commands for a session
     $ ade new chat --mode cli --lane <lane> --parent <session> --type subagent --prompt "fix"
@@ -2270,6 +2297,9 @@ const HELP_BY_COMMAND: Record<string, string> = {
     --kickoff <text>        Alias for --prompt.
     --permissions <mode>    Alias for --permission-mode.
     --permission-mode <m>   default | auto | plan | edit | full-auto | config-toml.
+    --droid-permission-mode <m>
+                            Droid only: read-only | auto-low | auto-medium | auto-high | agi.
+                            Aliases: --droid-autonomy, --autonomy.
     --fast                  Request fast service tier when supported.
     --no-fast, --standard   Disable fast mode explicitly.
     --print                 Start the session runtime in print mode.
@@ -2966,6 +2996,24 @@ function parseRuntimeProfile(value: string | null | undefined): "embedded" | und
   );
 }
 
+const DROID_PERMISSION_MODE_FLAGS = [
+  "--droid-permission-mode",
+  "--droid-autonomy",
+  "--autonomy",
+];
+
+function readDroidPermissionMode(args: string[]): AgentChatDroidPermissionMode | null {
+  const value = readValue(args, DROID_PERMISSION_MODE_FLAGS);
+  if (value == null) return null;
+  const normalized = value.trim().toLowerCase();
+  if (isAgentChatDroidPermissionMode(normalized)) {
+    return normalized;
+  }
+  throw new CliUsageError(
+    "droidPermissionMode must be one of read-only, auto-low, auto-medium, auto-high, or agi.",
+  );
+}
+
 function readValue(args: string[], names: string[]): string | null {
   for (let index = 0; index < args.length; index += 1) {
     const token = args[index];
@@ -3214,21 +3262,28 @@ function readLaneId(args: string[]): string | null {
   return readValue(args, ["--lane", "--lane-id"]) ?? null;
 }
 
-function normalizeChatStopMode(value: unknown): "stop_and_clear" | "stop_only" {
-  if (value === "stop_and_clear" || value === "stop_only") return value;
-  throw new CliUsageError("chat interrupt --mode must be stop_and_clear or stop_only.");
+function normalizeChatStopMode(value: unknown): AgentChatStopMode {
+  if (isAgentChatStopMode(value)) return value;
+  throw new CliUsageError("chat interrupt --mode must be stop_and_clear, stop_only, stop_and_background, or stop_and_clear_and_background.");
 }
 
-function readChatStopMode(args: string[]): "stop_and_clear" | "stop_only" {
+function readChatStopMode(args: string[]): AgentChatStopMode {
   const explicitMode = readValue(args, ["--mode"]);
   const keepQueue = readFlag(args, ["--keep-queue", "--stop-only"]);
   const clearQueue = readFlag(args, ["--clear-queue", "--stop-and-clear"]);
-  const selected = [explicitMode, keepQueue ? "stop_only" : null, clearQueue ? "stop_and_clear" : null]
-    .filter((value): value is string => value !== null);
-  if (selected.length > 1) {
-    throw new CliUsageError("Use only one of --mode, --keep-queue, or --clear-queue.");
+  const stopBackground = readFlag(args, ["--stop-background"]);
+  if (explicitMode && (keepQueue || clearQueue || stopBackground)) {
+    throw new CliUsageError("Use --mode or the queue/background flags, not both.");
   }
-  return normalizeChatStopMode(selected[0] ?? "stop_and_clear");
+  if (keepQueue && clearQueue) {
+    throw new CliUsageError("Use only one of --keep-queue or --clear-queue.");
+  }
+  if (explicitMode) return normalizeChatStopMode(explicitMode);
+  if (keepQueue && stopBackground) return "stop_and_background";
+  if (clearQueue && stopBackground) return "stop_and_clear_and_background";
+  if (stopBackground) return "stop_and_background";
+  if (keepQueue) return "stop_only";
+  return "stop_and_clear";
 }
 
 /**
@@ -4909,6 +4964,11 @@ function readChatLaunchConfig(args: string[]): JsonObject {
     "permissionMode",
     readValue(args, ["--permission-mode", "--permissions"]),
   );
+  maybePut(
+    config,
+    "droidPermissionMode",
+    readDroidPermissionMode(args),
+  );
   if (fastMode !== undefined) {
     config.fastMode = fastMode;
     // Mirror to the deprecated alias so older daemons (pre-rename) still see the selection.
@@ -5036,6 +5096,7 @@ function buildNewChatPlan(args: string[], defaultMode: "chat" | "cli"): CliPlan 
   const modelArg = readValue(args, ["--model", "--model-id"]);
   const reasoningEffort = readValue(args, ["--reasoning-effort", "--effort", "--reasoning"]);
   const permissionMode = readValue(args, ["--permission-mode", "--permissions"]);
+  const droidPermissionMode = readDroidPermissionMode(args);
   const fastMode = readFastModeFlag(args);
   const title = readValue(args, ["--title"]);
   const printConfig = readFlag(args, ["--print-config", "--dry-run"]);
@@ -5045,6 +5106,9 @@ function buildNewChatPlan(args: string[], defaultMode: "chat" | "cli"): CliPlan 
   }
   if (mode === "chat" && provider === "shell") {
     throw new CliUsageError("Chat mode provider must be claude, codex, cursor, droid, opencode, pi, qwen, kimi, grok, or copilot.");
+  }
+  if (droidPermissionMode && provider !== "droid") {
+    throw new CliUsageError("Droid autonomy is only supported for Droid chat sessions.");
   }
   if (mode === "cli") {
     const effectivePermissionMode = permissionMode ?? "default";
@@ -5080,11 +5144,7 @@ function buildNewChatPlan(args: string[], defaultMode: "chat" | "cli"): CliPlan 
         permissionMode,
         ...(orchestrationParentSessionId ? { orchestrationParentSessionId } : {}),
         ...(spawnKind ? { spawnKind } : {}),
-        droidPermissionMode: readValue(args, [
-          "--droid-permission-mode",
-          "--droid-autonomy",
-          "--autonomy",
-        ]),
+        ...(droidPermissionMode ? { droidPermissionMode } : {}),
         title,
         surface: readValue(args, ["--surface"]) ?? "work",
         ...(fastMode !== undefined ? { fastMode, codexFastMode: fastMode } : {}),
@@ -5097,6 +5157,7 @@ function buildNewChatPlan(args: string[], defaultMode: "chat" | "cli"): CliPlan 
         model: modelArg,
         modelId: modelArg,
         reasoningEffort,
+        ...(droidPermissionMode ? { droidPermissionMode } : {}),
         ...(fastMode !== undefined ? { fastMode, codexFastMode: fastMode } : {}),
         // Spawn lineage rides on resume metadata, which only agent providers
         // have — plain shell terminals can't persist it, so don't pretend.
@@ -5245,8 +5306,8 @@ function codexPermissionPreview(permissionMode: string): JsonObject | null {
   };
 }
 
-function permissionModePreview(permissionMode: string): JsonObject {
-  const mode = permissionMode || "default";
+function permissionModePreview(permissionMode: string, droidPermissionMode?: string | null): JsonObject {
+  const mode = isTrackedCliPermissionMode(permissionMode) ? permissionMode : "default";
   return {
     permissionMode: mode,
     claudePermissionMode: mode === "full-auto"
@@ -5259,20 +5320,13 @@ function permissionModePreview(permissionMode: string): JsonObject {
             ? "auto"
             : "default",
     codex: codexPermissionPreview(mode),
-    cursorMode: mode === "full-auto"
-      ? "full-auto"
-      : mode === "plan"
-        ? "plan"
-        : mode === "edit"
-          ? "ask"
-          : "agent",
-    droidPermissionMode: mode === "full-auto"
-      ? "auto-high"
-      : mode === "edit"
-        ? "auto-low"
-        : mode === "plan"
-          ? "read-only"
-          : "auto-medium",
+    // Preview the mode the created session actually persists. `edit` used to
+    // preview as `ask`, which no create path has ever produced: Cursor runs
+    // both `edit` and `default` as `agent`.
+    cursorMode: effectiveCursorModeId(null, mode),
+    droidPermissionMode: droidPermissionMode
+      ?? droidPermissionModeFromLegacyPermissionMode(mode)
+      ?? "auto-medium",
     opencodePermissionMode: mode === "default" ? "edit" : mode,
   };
 }
@@ -5339,7 +5393,7 @@ function buildChatCreateConfigPreview(
       model: asString(input.model) ?? asString(input.modelId) ?? null,
       reasoningEffort: asString(input.reasoningEffort) ?? null,
       fastMode: typeof input.fastMode === "boolean" ? input.fastMode : null,
-      ...permissionModePreview(permissionMode),
+      ...permissionModePreview(permissionMode, asString(input.droidPermissionMode)),
     },
   };
 }
@@ -7018,6 +7072,10 @@ function buildCliSessionStartPlan(
     : readValue(args, ["--message", "--prompt", "--initial-input"]);
   const permissionMode =
     readValue(args, ["--permission-mode", "--permissions"]) ?? "default";
+  const droidPermissionMode = readDroidPermissionMode(args);
+  if (droidPermissionMode && provider !== "droid") {
+    throw new CliUsageError("Droid autonomy is only supported for Droid CLI sessions.");
+  }
   if (!isTrackedCliPermissionMode(permissionMode)) {
     throw new CliUsageError(
       "permissionMode must be one of default, auto, plan, edit, full-auto, or config-toml.",
@@ -7047,6 +7105,7 @@ function buildCliSessionStartPlan(
     chatSessionId: readValue(args, ["--chat-session", "--chat-session-id"]),
     ...(orchestrationParentSessionId ? { orchestrationParentSessionId } : {}),
     ...(spawnKind ? { spawnKind } : {}),
+    ...(droidPermissionMode ? { droidPermissionMode } : {}),
     tracked: !readFlag(args, ["--untracked"]),
   });
 
@@ -7634,15 +7693,35 @@ function buildChatPlan(args: string[]): CliPlan {
       ],
     };
   }
-  if (sub === "show" || sub === "status")
+  if (sub === "show")
     return {
       kind: "execute",
-      label: "chat status",
+      label: "chat show",
       steps: [
         actionArgsListStep("result", "chat", "getSessionSummary", [
           requireValue(sessionId, "sessionId"),
         ]),
       ],
+    };
+  if (sub === "status")
+    return {
+      kind: "execute",
+      label: "chat status",
+      formatter: "chat-status",
+      steps: [
+        actionArgsListStep("result", "chat", "getTurnStatus", [
+          requireValue(sessionId, "sessionId"),
+        ]),
+      ],
+      exitCodeFromResult: (result) => {
+        const record = firstRecord(result, ["result", "status"])
+          ?? (isRecord(result) ? result : {});
+        const phase = asString(record.phase) as ChatTurnStatusPhase | undefined;
+        if (phase === "running" || phase === "idle" || phase === "blocked") {
+          return chatTurnStatusExitCode(phase);
+        }
+        return 1;
+      },
     };
   if (sub === "read" || sub === "messages" || sub === "transcript") {
     const targetSession = requireValue(sessionId, "sessionId");
@@ -7806,11 +7885,7 @@ function buildChatPlan(args: string[]): CliPlan {
           "--permission-mode",
           "--permissions",
         ]),
-        droidPermissionMode: readValue(args, [
-          "--droid-permission-mode",
-          "--droid-autonomy",
-          "--autonomy",
-        ]),
+        droidPermissionMode: readDroidPermissionMode(args),
         title: readValue(args, ["--title"]),
         surface: readValue(args, ["--surface"]) ?? "work",
         ...(fastMode !== undefined ? { fastMode, codexFastMode: fastMode } : {}),
@@ -8045,6 +8120,27 @@ function buildChatPlan(args: string[]): CliPlan {
           "chat",
           "interrupt",
           interruptArgs,
+        ),
+      ],
+    };
+  }
+  if (sub === "stop-task") {
+    const taskId = requireValue(
+      readValue(args, ["--task", "--task-id"]) ?? firstStandalonePositional(args),
+      "taskId",
+    );
+    return {
+      kind: "execute",
+      label: "chat stop task",
+      steps: [
+        actionStep(
+          "result",
+          "chat",
+          "stopTask",
+          withSession({
+            sessionId: requireValue(sessionId, "sessionId"),
+            taskId,
+          }),
         ),
       ],
     };
@@ -8586,6 +8682,7 @@ function buildPersonalChatPlan(sub: string, args: string[]): CliPlan {
     const model = readValue(args, ["--model", "--model-id"]);
     const provider = readValue(args, ["--provider"]);
     const prompt = readValue(args, ["--prompt", "--kickoff", "--kickoff-prompt"]);
+    const droidPermissionMode = readDroidPermissionMode(args);
     const fastMode = readFastModeFlag(args);
     const createArgs = collectGenericObjectArgs(args, {
       provider,
@@ -8594,6 +8691,7 @@ function buildPersonalChatPlan(sub: string, args: string[]): CliPlan {
       title: readValue(args, ["--title"]),
       reasoningEffort: readValue(args, ["--reasoning-effort", "--effort"]),
       permissionMode: readValue(args, ["--permission-mode", "--permissions"]),
+      ...(droidPermissionMode ? { droidPermissionMode } : {}),
       ...(fastMode !== undefined ? { fastMode, codexFastMode: fastMode } : {}),
       ...(prompt ? { kickoffText: prompt } : {}),
     });
@@ -8637,6 +8735,7 @@ function buildPersonalChatPlan(sub: string, args: string[]): CliPlan {
     "configure",
     "interrupt",
     "stop",
+    "stop-task",
     "restore-queue",
     "restore-cancelled-queue",
     "undo-stop",
@@ -8653,7 +8752,7 @@ function buildPersonalChatPlan(sub: string, args: string[]): CliPlan {
     "status",
   ]);
   if (!sessionSubcommands.has(sub)) {
-    throw new CliUsageError(`Personal chats support actions, action, list, create, show, read, send, steer, update, models, model-catalog, interrupt, restore-queue, recover, resolve-unprocessed, archive, unarchive, or delete; got '${sub}'.`);
+    throw new CliUsageError(`Personal chats support actions, action, list, create, show, read, send, steer, update, models, model-catalog, interrupt, stop-task, restore-queue, recover, resolve-unprocessed, archive, unarchive, or delete; got '${sub}'.`);
   }
 
   const sessionId = requireValue(
@@ -8713,6 +8812,7 @@ function buildPersonalChatPlan(sub: string, args: string[]): CliPlan {
     const provider = readValue(args, ["--provider"]);
     const reasoningEffort = readValue(args, ["--reasoning-effort", "--effort"]);
     const permissionMode = readValue(args, ["--permission-mode", "--permissions"]);
+    const droidPermissionMode = readDroidPermissionMode(args);
     const fastMode = readFastModeFlag(args);
     return {
       ...base,
@@ -8725,6 +8825,7 @@ function buildPersonalChatPlan(sub: string, args: string[]): CliPlan {
         ...(model ? { model, modelId: model } : {}),
         ...(reasoningEffort ? { reasoningEffort } : {}),
         ...(permissionMode ? { permissionMode } : {}),
+        ...(droidPermissionMode ? { droidPermissionMode } : {}),
         ...(fastMode !== undefined ? { fastMode } : {}),
       }))],
     };
@@ -8739,6 +8840,20 @@ function buildPersonalChatPlan(sub: string, args: string[]): CliPlan {
       ...base,
       label: "personal chat interrupt",
       steps: [personalChatStep("interrupt", interruptArgs)],
+    };
+  }
+  if (sub === "stop-task") {
+    const taskId = requireValue(
+      readValue(args, ["--task", "--task-id"]) ?? firstStandalonePositional(args),
+      "taskId",
+    );
+    return {
+      ...base,
+      label: "personal chat stop task",
+      steps: [personalChatStep("stopTask", collectGenericObjectArgs(args, {
+        sessionId,
+        taskId,
+      }))],
     };
   }
   if (
@@ -17484,6 +17599,7 @@ async function runServe(
     {
       createMultiProjectRpcRequestHandler,
       createPersonalChatScope,
+      createProviderStatusService,
       readMachineRuntimeActivitySummary,
     },
     { createSharedSyncListener },
@@ -17600,6 +17716,10 @@ async function runServe(
   const personalChatScope = createPersonalChatScope(
     runtimeProfile ? { runtimeProfile } : undefined,
   );
+  // Both profiles get it. An embedded runtime is exactly the case that needs
+  // it most: the embedder's first screen asks "which CLIs do you have", and
+  // without this it would have to write that detection itself.
+  const providerStatus = createProviderStatusService();
   let preferredSyncProjectId: string | null = null;
   const preferredSyncProjectRoot = process.env.ADE_PROJECT_ROOT?.trim();
   if (preferredSyncProjectRoot) {
@@ -18174,6 +18294,7 @@ async function runServe(
       projectRegistry,
       scopeRegistry,
       personalChatScope,
+      providerStatus,
       productAnalyticsService: brainProductAnalytics,
       accountAuthService: brainAccountAuthService,
       getAccountDirectoryHealth,
@@ -20614,6 +20735,15 @@ function formatExternalSessions(value: unknown): string {
   );
 }
 
+function formatChatStatus(value: unknown): string {
+  const record = firstRecord(value, ["result", "status"])
+    ?? (isRecord(value) ? value : null);
+  if (!record || typeof record.sessionId !== "string" || typeof record.phase !== "string") {
+    return "ADE chat status\n(no session)";
+  }
+  return formatChatTurnStatus(record as ChatTurnStatusSnapshot);
+}
+
 function formatChatList(value: unknown): string {
   const sessions = firstArray(value, ["sessions", "chats", "items"]);
   return renderTable(
@@ -22044,6 +22174,8 @@ function formatTextOutput(
       return formatPrComments(value);
     case "chat-list":
       return formatChatList(value);
+    case "chat-status":
+      return formatChatStatus(value);
     case "chat-read":
       return formatChatRead(value);
     case "session-lifecycle":
@@ -22193,6 +22325,7 @@ function inferFormatter(
   if (label === "pr checks") return "pr-checks";
   if (label === "pr comments") return "pr-comments";
   if (label === "chat list") return "chat-list";
+  if (label === "chat status") return "chat-status";
   if (label === "test runs") return "tests-runs";
   if (label === "proof list") return "proof-list";
   if (label === "ios simulator status") return "ios-sim-status";

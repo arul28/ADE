@@ -30,6 +30,10 @@ import type { CtoMemoryService } from "../../cto/ctoMemoryService";
 import { getErrorMessage, nowIso, parseIsoToEpoch } from "../../shared/utils";
 import { buildAdePrUrl } from "../../../../shared/deeplinks";
 import { settleAbortMessage } from "../../sessions/settleTerminalSession";
+import {
+  AGENT_CHAT_DROID_PERMISSION_MODE_VALUES,
+  AGENT_CHAT_PERMISSION_MODE_VALUES,
+} from "../../../../shared/types/chat";
 
 export interface CtoOperatorToolDeps {
   currentSessionId: string;
@@ -418,6 +422,9 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): Record<string
       "'anthropic/claude-haiku-4-5' for Haiku, 'openai/gpt-5.6-sol' for Sol). " +
       "If no modelId is passed, the CTO's default model preference is used. " +
       "Set initialPrompt to seed the chat with a task description — the agent will begin working immediately. " +
+      "Pass permissionMode only when the user asks for a specific access level; omitting it keeps the provider's " +
+      "own default, which is the safe choice. It accepts ADE's full permission contract, including auto and " +
+      "config-toml; for Droid's finer-grained levels, pass droidPermissionMode. " +
       "This creates a full ADE chat with UI, streaming, tool approval, and service integration. " +
       "Use this when the user asks for 'a chat' or 'an agent'. If they explicitly want a terminal or CLI tool, use createTerminal instead.",
     inputSchema: z.object({
@@ -426,9 +433,22 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): Record<string
       reasoningEffort: z.string().nullable().optional().describe("Reasoning effort advertised by the model, including 'max' or Codex 'ultra' when supported."),
       title: z.string().optional().describe("Display title for the chat session."),
       initialPrompt: z.string().optional().describe("Task description to seed the chat. The agent starts working immediately."),
+      permissionMode: z
+        .enum(AGENT_CHAT_PERMISSION_MODE_VALUES)
+        .optional()
+        .describe(
+          "Access level for the spawned agent, translated to each provider's native controls: "
+          + "'default' uses the provider default, 'auto' delegates approvals where supported, "
+          + "'plan' is read-only, 'edit' accepts file edits, 'full-auto' skips every approval, "
+          + "and 'config-toml' uses provider config. Omit to inherit the provider default.",
+        ),
+      droidPermissionMode: z
+        .enum(AGENT_CHAT_DROID_PERMISSION_MODE_VALUES)
+        .optional()
+        .describe("Droid-native access level; use with a Droid model when its read-only/auto/agi tier is important."),
       openInUi: z.boolean().optional().default(true).describe("Whether to open the chat in the ADE UI."),
     }),
-    execute: async ({ laneId, modelId, reasoningEffort, title, initialPrompt, openInUi }) => {
+    execute: async ({ laneId, modelId, reasoningEffort, title, initialPrompt, permissionMode, droidPermissionMode, openInUi }) => {
       try {
         // Resolve model: supports full IDs (anthropic/claude-sonnet-5), short IDs (sonnet), and aliases (opus)
         const rawModelId = modelId?.trim() || null;
@@ -447,6 +467,10 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): Record<string
           model: resolved.model,
           ...(selectedModelId ? { modelId: selectedModelId } : {}),
           reasoningEffort: reasoningEffort ?? deps.defaultReasoningEffort ?? null,
+          // Absent means absent. Sending a substituted default here would be
+          // persisted as a real selection and pin the spawned chat to it.
+          ...(permissionMode !== undefined ? { permissionMode } : {}),
+          ...(droidPermissionMode !== undefined ? { droidPermissionMode } : {}),
           surface: "work",
           sessionProfile: "workflow",
         });
@@ -476,6 +500,8 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): Record<string
           provider: session.provider,
           model: session.model,
           modelId: session.modelId ?? null,
+          permissionMode: session.permissionMode ?? null,
+          droidPermissionMode: session.droidPermissionMode ?? null,
         };
       } catch (error) {
         return { success: false, error: getErrorMessage(error) };

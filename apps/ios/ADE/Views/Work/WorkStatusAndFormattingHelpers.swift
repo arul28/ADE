@@ -161,6 +161,136 @@ func workSubagentMeaningfulName(_ snapshot: WorkSubagentSnapshot) -> String {
   return snapshot.taskId
 }
 
+func workSubagentIdentity(_ snapshot: WorkSubagentSnapshot) -> String {
+  let agentId = snapshot.agentId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+  return agentId.isEmpty ? snapshot.taskId : agentId
+}
+
+func workSubagentTreeDepth(_ snapshot: WorkSubagentSnapshot, in snapshots: [WorkSubagentSnapshot], cap: Int = 3) -> Int {
+  if let spawnDepth = snapshot.spawnDepth {
+    return min(cap, max(0, spawnDepth))
+  }
+  var byId: [String: WorkSubagentSnapshot] = [:]
+  for candidate in snapshots {
+    byId[workSubagentIdentity(candidate)] = candidate
+  }
+  var depth = 0
+  var seen = Set<String>()
+  var current: WorkSubagentSnapshot? = snapshot
+  while let node = current, depth < cap {
+    let parentId = node.parentAgentId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    if parentId.isEmpty { break }
+    let id = workSubagentIdentity(node)
+    if seen.contains(id) { break }
+    seen.insert(id)
+    guard let parent = byId[parentId], parent.taskId != node.taskId else { break }
+    depth += 1
+    current = parent
+  }
+  return depth
+}
+
+func workSubagentTreePrefix(depth: Int) -> String {
+  if depth <= 0 { return "" }
+  return String(repeating: "   ", count: max(0, depth - 1)) + "└ "
+}
+
+struct WorkSubagentTreeAnnotation: Equatable {
+  var depth: Int
+  var prefix: String
+  var glyph: String
+  var isLastSibling: Bool
+}
+
+/// Connector-glyph prefix matching desktop `annotateSubagentTree`: newest
+/// siblings first, `├` / `└` / `│`, SDK `spawnDepth` winning over a parent walk.
+func workSubagentTreeAnnotation(
+  _ snapshot: WorkSubagentSnapshot,
+  in snapshots: [WorkSubagentSnapshot],
+  cap: Int = 3
+) -> WorkSubagentTreeAnnotation {
+  func identity(_ node: WorkSubagentSnapshot) -> String { workSubagentIdentity(node) }
+  func parentId(_ node: WorkSubagentSnapshot) -> String? {
+    let parent = node.parentAgentId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    return parent.isEmpty ? nil : parent
+  }
+  func spawnOrder(_ node: WorkSubagentSnapshot) -> TimeInterval {
+    guard let stamp = node.startedAt, let date = workParsedDate(stamp) else { return 0 }
+    return date.timeIntervalSince1970
+  }
+
+  var byId: [String: WorkSubagentSnapshot] = [:]
+  for node in snapshots {
+    byId[identity(node)] = node
+  }
+  var childrenByParent: [String: [String]] = [:]
+  for node in snapshots {
+    if let parent = parentId(node), byId[parent] != nil, parent != identity(node) {
+      childrenByParent[parent, default: []].append(identity(node))
+    }
+  }
+  var lastChildByParent: [String: String] = [:]
+  for parent in Array(childrenByParent.keys) {
+    let children = (childrenByParent[parent] ?? []).sorted { left, right in
+      guard let leftNode = byId[left], let rightNode = byId[right] else { return false }
+      return spawnOrder(leftNode) > spawnOrder(rightNode)
+    }
+    childrenByParent[parent] = children
+    if let last = children.last {
+      lastChildByParent[parent] = last
+    }
+  }
+
+  let depth = workSubagentTreeDepth(snapshot, in: snapshots, cap: cap)
+  let id = identity(snapshot)
+  let parent = parentId(snapshot)
+  let isLastSibling = parent.flatMap { lastChildByParent[$0] } == id
+  let glyph = depth <= 0 ? "" : (isLastSibling ? "└" : "├")
+  var ancestorBars: [String] = []
+  if depth > 0 {
+    var chain: [Bool] = []
+    var seen = Set<String>()
+    var current: WorkSubagentSnapshot? = snapshot
+    while let node = current, chain.count < depth {
+      let nodeId = identity(node)
+      if seen.contains(nodeId) { break }
+      seen.insert(nodeId)
+      guard let currentParentId = parentId(node), let parentNode = byId[currentParentId] else { break }
+      chain.append(lastChildByParent[currentParentId] == nodeId)
+      current = parentNode
+    }
+    chain.reverse()
+    if chain.count > 1 {
+      for index in 0..<(chain.count - 1) {
+        ancestorBars.append(chain[index] ? "   " : "│  ")
+      }
+    }
+  }
+  let prefix = depth <= 0 ? "" : ancestorBars.joined() + glyph + " "
+  return WorkSubagentTreeAnnotation(
+    depth: depth,
+    prefix: prefix,
+    glyph: glyph,
+    isLastSibling: depth > 0 && isLastSibling
+  )
+}
+
+func workSubagentTreePrefix(_ snapshot: WorkSubagentSnapshot, in snapshots: [WorkSubagentSnapshot]) -> String {
+  workSubagentTreeAnnotation(snapshot, in: snapshots).prefix
+}
+
+func workSubagentResourcePaths(_ snapshot: WorkSubagentSnapshot) -> [String] {
+  var seen = Set<String>()
+  var paths: [String] = []
+  for link in snapshot.resourceLinks {
+    let path = link.copyPath?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    if path.isEmpty || seen.contains(path) { continue }
+    seen.insert(path)
+    paths.append(path)
+  }
+  return paths
+}
+
 func workSubagentSelection(from snapshot: WorkSubagentSnapshot) -> WorkSubagentSelection {
   WorkSubagentSelection(
     taskId: snapshot.taskId,
@@ -1121,6 +1251,9 @@ func workInitialRuntimeMode(_ summary: AgentChatSessionSummary) -> String {
   case "opencode":
     return workNormalizedOpenCodeRuntimeMode(summary.opencodePermissionMode ?? summary.permissionMode)
   case "cursor":
+    if summary.cursorModeIdWasCleared == true {
+      return "default"
+    }
     switch summary.cursorModeId ?? workCursorCurrentModeId(summary.cursorModeSnapshot) {
     case "plan": return "plan"
     case "ask": return "edit"
@@ -1173,7 +1306,10 @@ func workDroidRuntimeMode(droidPermissionMode: String?, permissionMode: String?)
 }
 
 func workInitialCursorModeId(_ summary: AgentChatSessionSummary) -> String {
-  summary.cursorModeId ?? workCursorCurrentModeId(summary.cursorModeSnapshot) ?? "agent"
+  if summary.cursorModeIdWasCleared == true {
+    return "agent"
+  }
+  return summary.cursorModeId ?? workCursorCurrentModeId(summary.cursorModeSnapshot) ?? "agent"
 }
 
 func workCursorModeIds(_ snapshot: RemoteJSONValue?, fallback: String) -> [String] {
@@ -1287,6 +1423,22 @@ func formattedSessionDuration(startedAt: String, endedAt: String?) -> String {
 func relativeTimestamp(_ value: String) -> String {
   guard let date = workParsedDate(value) else { return value }
   return RelativeDateTimeFormatter().localizedString(for: date, relativeTo: Date())
+}
+
+/// Clock-only usage-limit label matching desktop `formatUsageLimitResetLabel`
+/// ("Reset at 3:40 PM (47 min)"). Omits the remaining window after the reset.
+func workUsageLimitResetLabel(_ iso: String?, now: Date = Date()) -> String {
+  guard let iso, let date = workParsedDate(iso) else { return "" }
+  let formatter = DateFormatter()
+  formatter.locale = .current
+  formatter.dateStyle = .none
+  formatter.timeStyle = .short
+  let clock = formatter.string(from: date)
+  let remainingMs = date.timeIntervalSince(now) * 1000
+  if remainingMs <= 0 { return "Reset at \(clock)" }
+  let minutes = max(1, Int((remainingMs / 60_000).rounded()))
+  let remaining = minutes < 60 ? "\(minutes) min" : "\(Int((Double(minutes) / 60.0).rounded())) hr"
+  return "Reset at \(clock) (\(remaining))"
 }
 
 /// Ultra-compact relative-time label for sidebar rows: "now", "12m", "3h", "2d". Mirrors

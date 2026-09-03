@@ -91,6 +91,9 @@ private func workChatTimelineSnapshotSignature(
     combineOptional(envelope.subagentTaskType, into: &hasher)
     combineOptional(envelope.subagentCommand, into: &hasher)
     combineOptional(envelope.subagentSpawnKind.map { String(describing: $0) }, into: &hasher)
+    combineOptional(envelope.subagentParentAgentId, into: &hasher)
+    hasher.combine(envelope.subagentSpawnDepth ?? Int.min)
+    hasher.combine(envelope.subagentResourceLinks)
     combineWorkChatEventSignature(envelope.event, into: &hasher)
   }
 
@@ -830,7 +833,10 @@ func buildWorkSubagentSnapshots(from transcript: [WorkChatEnvelope]) -> [WorkSub
         updatedAt: envelope.timestamp,
         taskType: trimmedWorkSubagentText(envelope.subagentTaskType) ?? existing?.taskType,
         command: longerWorkSubagentText(existing?.command, envelope.subagentCommand),
-        spawnKind: envelope.subagentSpawnKind ?? existing?.spawnKind
+        spawnKind: envelope.subagentSpawnKind ?? existing?.spawnKind,
+        parentAgentId: trimmedWorkSubagentText(envelope.subagentParentAgentId) ?? existing?.parentAgentId,
+        spawnDepth: envelope.subagentSpawnDepth ?? existing?.spawnDepth,
+        resourceLinks: envelope.subagentResourceLinks.isEmpty ? (existing?.resourceLinks ?? []) : envelope.subagentResourceLinks
       ), order: resolved.order)
     case .subagentProgress(let taskId, let agentId, let agentType, let parentToolUseId, let description, let summary, let toolName, let label, let model, let reasoningEffort, let turnId):
       let resolved = resolve(taskId: taskId, agentId: agentId, parentToolUseId: parentToolUseId)
@@ -853,7 +859,10 @@ func buildWorkSubagentSnapshots(from transcript: [WorkChatEnvelope]) -> [WorkSub
         updatedAt: envelope.timestamp,
         taskType: trimmedWorkSubagentText(envelope.subagentTaskType) ?? existing?.taskType,
         command: longerWorkSubagentText(existing?.command, envelope.subagentCommand),
-        spawnKind: envelope.subagentSpawnKind ?? existing?.spawnKind
+        spawnKind: envelope.subagentSpawnKind ?? existing?.spawnKind,
+        parentAgentId: trimmedWorkSubagentText(envelope.subagentParentAgentId) ?? existing?.parentAgentId,
+        spawnDepth: envelope.subagentSpawnDepth ?? existing?.spawnDepth,
+        resourceLinks: envelope.subagentResourceLinks.isEmpty ? (existing?.resourceLinks ?? []) : envelope.subagentResourceLinks
       ), order: resolved.order)
     case .subagentResult(let taskId, let agentId, let agentType, let parentToolUseId, let status, let summary, let label, let model, let reasoningEffort, let turnId):
       let normalized = workSubagentStatus(from: status)
@@ -877,7 +886,10 @@ func buildWorkSubagentSnapshots(from transcript: [WorkChatEnvelope]) -> [WorkSub
         updatedAt: envelope.timestamp,
         taskType: trimmedWorkSubagentText(envelope.subagentTaskType) ?? existing?.taskType,
         command: longerWorkSubagentText(existing?.command, envelope.subagentCommand),
-        spawnKind: envelope.subagentSpawnKind ?? existing?.spawnKind
+        spawnKind: envelope.subagentSpawnKind ?? existing?.spawnKind,
+        parentAgentId: trimmedWorkSubagentText(envelope.subagentParentAgentId) ?? existing?.parentAgentId,
+        spawnDepth: envelope.subagentSpawnDepth ?? existing?.spawnDepth,
+        resourceLinks: envelope.subagentResourceLinks.isEmpty ? (existing?.resourceLinks ?? []) : envelope.subagentResourceLinks
       ), order: resolved.order)
     default:
       break
@@ -1385,7 +1397,10 @@ func workSubagentSnapshot(from remote: SyncService.AgentChatSubagentSnapshot) ->
     latestSummary: remote.finalSummary ?? remote.summary,
     turnId: remote.turnId,
     startedAt: startedAt,
-    updatedAt: updatedAt
+    updatedAt: updatedAt,
+    parentAgentId: trimmedWorkSubagentText(remote.parentAgentId),
+    spawnDepth: remote.spawnDepth,
+    resourceLinks: remote.resourceLinks ?? []
   )
 }
 
@@ -1459,7 +1474,10 @@ private func mergedWorkSubagentSnapshot(
     updatedAt: latestWorkSubagentTimestamp(remote.updatedAt, local.updatedAt),
     taskType: local.taskType ?? remote.taskType,
     command: longerWorkSubagentText(remote.command, local.command),
-    spawnKind: local.spawnKind ?? remote.spawnKind
+    spawnKind: local.spawnKind ?? remote.spawnKind,
+    parentAgentId: local.parentAgentId ?? remote.parentAgentId,
+    spawnDepth: local.spawnDepth ?? remote.spawnDepth,
+    resourceLinks: local.resourceLinks.isEmpty ? remote.resourceLinks : local.resourceLinks
   )
 }
 

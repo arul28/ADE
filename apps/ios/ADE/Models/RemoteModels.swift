@@ -1101,6 +1101,8 @@ struct AgentChatScheduledWorkItem: Codable, Identifiable, Equatable {
   var cancellable: Bool
   var late: Bool?
   var outcomeSummary: String?
+  /// Provenance for rows ADE armed itself. Older hosts omit it.
+  var source: String? = nil
 }
 
 struct AgentChatCancelScheduledWorkResult: Codable, Equatable {
@@ -1192,6 +1194,10 @@ struct AgentChatSessionSummary: Codable, Identifiable, Equatable {
   var droidPermissionMode: String?
   var cursorModeSnapshot: RemoteJSONValue?
   var cursorModeId: String?
+  /// True when the host explicitly sent `cursorModeId: null`. Optional keeps
+  /// summaries from older hosts decodable while preserving the null-vs-absent
+  /// distinction for the current host.
+  var cursorModeIdWasCleared: Bool? = nil
   var cursorConfigValues: [String: RemoteJSONValue]?
   /// Cursor Cloud agent id when this chat is a live cloud mirror. Older hosts omit it.
   var cursorCloudAgentId: String? = nil
@@ -1232,6 +1238,12 @@ struct AgentChatSessionSummary: Codable, Identifiable, Equatable {
   var scheduledWorkPaused: Bool? = nil
   /// Earliest armed, unpaused wake reported by the host. Older hosts omit it.
   var nextWakeAt: String? = nil
+  /// Claude SDK auto-continue after a claude.ai usage-limit reset. Older hosts omit it.
+  var autoContinueAtUsageLimit: Bool? = nil
+  /// ISO instant this chat is parked waiting for a usage-limit reset. Older hosts omit it.
+  var usageLimitParkedUntil: String? = nil
+  /// Live background tasks still running after the foreground turn. Older hosts omit it.
+  var activeBackgroundTaskCount: Int? = nil
   var threadId: String?
   var requestedCwd: String?
   // Orchestration-mode fields (populated when session is part of an orchestration run)
@@ -1270,6 +1282,7 @@ struct AgentChatSessionSummary: Codable, Identifiable, Equatable {
       && lhs.opencodePermissionMode == rhs.opencodePermissionMode
       && lhs.droidPermissionMode == rhs.droidPermissionMode
       && lhs.cursorModeId == rhs.cursorModeId
+      && lhs.cursorModeIdWasCleared == rhs.cursorModeIdWasCleared
       && lhs.cursorModeSnapshot == rhs.cursorModeSnapshot
       && lhs.cursorConfigValues == rhs.cursorConfigValues
       && lhs.cursorCloudAgentId == rhs.cursorCloudAgentId
@@ -1296,6 +1309,9 @@ struct AgentChatSessionSummary: Codable, Identifiable, Equatable {
       && lhs.scheduledWork == rhs.scheduledWork
       && lhs.scheduledWorkPaused == rhs.scheduledWorkPaused
       && lhs.nextWakeAt == rhs.nextWakeAt
+      && lhs.autoContinueAtUsageLimit == rhs.autoContinueAtUsageLimit
+      && lhs.usageLimitParkedUntil == rhs.usageLimitParkedUntil
+      && lhs.activeBackgroundTaskCount == rhs.activeBackgroundTaskCount
       && lhs.threadId == rhs.threadId
       && lhs.requestedCwd == rhs.requestedCwd
       && lhs.orchestrationRunId == rhs.orchestrationRunId
@@ -1444,10 +1460,12 @@ extension AgentChatSessionSummary {
     if let v = update.droidPermissionMode { droidPermissionMode = v }
     if let v = update.cursorModeId {
       cursorModeId = v
+      cursorModeIdWasCleared = false
     } else if update.cursorModeIdWasCleared {
       // Explicit `cursorModeId: null` from the host — drop the mode rather than
       // leaving the stale one in place.
       cursorModeId = nil
+      cursorModeIdWasCleared = true
     }
     if let v = update.cursorModeSnapshot { cursorModeSnapshot = v }
     if let v = update.cursorConfigValues {
@@ -1472,15 +1490,11 @@ extension AgentChatSessionSummary {
   /// never null-clears them, and a partial refresh summary that omits one must
   /// not blank the live value.
   ///
-  /// Cursor fields (`cursorModeId` / `cursorConfigValues`) copy WHOLESALE,
-  /// including a nil. The cache is authoritative for cursor state — every writer
-  /// (the `session_meta_updated` fold via `applyModeUpdate`, a full host summary
-  /// via `cacheChatSummary`, or a lane-list refresh) stores the host's true
-  /// value, and the host includes the field whenever a mode/config exists (a
-  /// clear arrives as an explicit `null`, an unset session simply has no mode).
-  /// So mirroring the cache's cursor fields — nil included — is exactly how an
-  /// explicit clear reaches the live composer, with no separate clear flag or
-  /// stateful marker to go stale.
+  /// Cursor mode copies when present; an explicit nil is applied only when
+  /// `cursorModeIdWasCleared` travels with it. The marker keeps Swift's
+  /// Optional decoder from conflating an explicit clear with an omitted field.
+  /// A later non-null mode resets the marker, so a restored host mode cannot be
+  /// re-cleared by stale state.
   mutating func mergeModeFields(from other: AgentChatSessionSummary) {
     if let v = other.permissionMode { permissionMode = v }
     if let v = other.interactionMode { interactionMode = v }
@@ -1490,7 +1504,13 @@ extension AgentChatSessionSummary {
     if let v = other.codexConfigSource { codexConfigSource = v }
     if let v = other.opencodePermissionMode { opencodePermissionMode = v }
     if let v = other.droidPermissionMode { droidPermissionMode = v }
-    cursorModeId = other.cursorModeId
+    if other.cursorModeIdWasCleared == true {
+      cursorModeId = nil
+      cursorModeIdWasCleared = true
+    } else if let v = other.cursorModeId {
+      cursorModeId = v
+      cursorModeIdWasCleared = false
+    }
     if let v = other.cursorModeSnapshot { cursorModeSnapshot = v }
     cursorConfigValues = other.cursorConfigValues
     if let v = other.spawnKind { spawnKind = v }
@@ -2453,6 +2473,8 @@ struct AgentChatContextUsageCategory: Codable, Equatable {
   var percentage: Double
   var color: String?
   var isDeferred: Bool?
+  /// SDK `categories[].kind`. Classify by this, never by matching the name "free".
+  var kind: String?
 }
 
 struct AgentChatContextUsage: Codable, Equatable {
@@ -2558,6 +2580,37 @@ struct AgentChatEventProvenance: Decodable, Equatable {
   var runId: String?
 }
 
+struct AgentChatResourceLink: Codable, Equatable, Hashable {
+  var uri: String?
+  var name: String?
+  var path: String?
+
+  var copyPath: String? {
+    if let path, !path.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+      return path
+    }
+    if let uri, !uri.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+      if uri.hasPrefix("file://") {
+        var rest = String(uri.dropFirst("file://".count))
+        rest = rest.removingPercentEncoding ?? rest
+        if rest.count >= 3 {
+          let chars = Array(rest)
+          if chars[0] == "/", chars[1].isLetter, chars[2] == ":" {
+            rest.removeFirst()
+          }
+        }
+        return rest
+      }
+      return uri
+    }
+    return nil
+  }
+
+  var displayPath: String {
+    copyPath ?? name?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+  }
+}
+
 struct AgentChatEventEnvelope: Decodable, Identifiable, Equatable {
   /// Identity must include the timestamp, not just the sequence.
   ///
@@ -2586,6 +2639,9 @@ struct AgentChatEventEnvelope: Decodable, Identifiable, Equatable {
   var subagentTaskType: String?
   var subagentCommand: String?
   var subagentSpawnKind: AgentChatSpawnKind?
+  var subagentParentAgentId: String?
+  var subagentSpawnDepth: Int?
+  var subagentResourceLinks: [AgentChatResourceLink]?
 
   init(
     sessionId: String,
@@ -2595,7 +2651,10 @@ struct AgentChatEventEnvelope: Decodable, Identifiable, Equatable {
     provenance: AgentChatEventProvenance? = nil,
     subagentTaskType: String? = nil,
     subagentCommand: String? = nil,
-    subagentSpawnKind: AgentChatSpawnKind? = nil
+    subagentSpawnKind: AgentChatSpawnKind? = nil,
+    subagentParentAgentId: String? = nil,
+    subagentSpawnDepth: Int? = nil,
+    subagentResourceLinks: [AgentChatResourceLink]? = nil
   ) {
     self.sessionId = sessionId
     self.timestamp = timestamp
@@ -2605,6 +2664,9 @@ struct AgentChatEventEnvelope: Decodable, Identifiable, Equatable {
     self.subagentTaskType = subagentTaskType
     self.subagentCommand = subagentCommand
     self.subagentSpawnKind = subagentSpawnKind
+    self.subagentParentAgentId = subagentParentAgentId
+    self.subagentSpawnDepth = subagentSpawnDepth
+    self.subagentResourceLinks = subagentResourceLinks
   }
 
   private enum CodingKeys: String, CodingKey {
@@ -2619,12 +2681,20 @@ struct AgentChatEventEnvelope: Decodable, Identifiable, Equatable {
     var taskType: String?
     var command: String?
     var spawnKind: AgentChatSpawnKind?
+    var parentAgentId: String?
+    var spawnDepth: Int?
+    var resourceLinks: [AgentChatResourceLink]?
 
     private enum CodingKeys: String, CodingKey {
       case taskType
       case taskTypeSnake = "task_type"
       case command
       case spawnKind
+      case parentAgentId
+      case spawnDepth
+      case spawnDepthSnake = "spawn_depth"
+      case resourceLinks
+      case resourceLinksSnake = "resource_links"
     }
 
     init(from decoder: Decoder) throws {
@@ -2633,6 +2703,11 @@ struct AgentChatEventEnvelope: Decodable, Identifiable, Equatable {
         ?? container.decodeIfPresent(String.self, forKey: .taskTypeSnake)
       command = try container.decodeIfPresent(String.self, forKey: .command)
       spawnKind = try container.decodeIfPresent(AgentChatSpawnKind.self, forKey: .spawnKind)
+      parentAgentId = try container.decodeIfPresent(String.self, forKey: .parentAgentId)
+      spawnDepth = try container.decodeIfPresent(Int.self, forKey: .spawnDepthSnake)
+        ?? container.decodeIfPresent(Int.self, forKey: .spawnDepth)
+      resourceLinks = try container.decodeIfPresent([AgentChatResourceLink].self, forKey: .resourceLinks)
+        ?? container.decodeIfPresent([AgentChatResourceLink].self, forKey: .resourceLinksSnake)
     }
   }
 
@@ -2647,6 +2722,9 @@ struct AgentChatEventEnvelope: Decodable, Identifiable, Equatable {
     subagentTaskType = metadata?.taskType
     subagentCommand = metadata?.command
     subagentSpawnKind = metadata?.spawnKind
+    subagentParentAgentId = metadata?.parentAgentId
+    subagentSpawnDepth = metadata?.spawnDepth
+    subagentResourceLinks = metadata?.resourceLinks
   }
 }
 
@@ -3881,6 +3959,10 @@ struct AgentChatSteerRequest: Codable, Equatable {
 struct AgentChatCancelSteerRequest: Codable, Equatable {
   var sessionId: String
   var steerId: String
+  /// The staged-row cancel path must fail if the host already delivered the
+  /// steer; otherwise a mobile refresh/cancel race can leave the user thinking
+  /// the message was removed while it still runs.
+  var requireQueued: Bool? = nil
 }
 
 struct AgentChatEditSteerRequest: Codable, Equatable {
@@ -3900,14 +3982,21 @@ struct AgentChatCancelDispatchedSteerRequest: Codable, Equatable {
   var steerId: String
 }
 
-enum AgentChatStopMode: String, Codable, Equatable {
-  case stopAndClear = "stop_and_clear"
+enum AgentChatStopMode: String, Codable, Equatable, Hashable, CaseIterable {
   case stopOnly = "stop_only"
+  case stopAndClear = "stop_and_clear"
+  case stopAndBackground = "stop_and_background"
+  case stopAndClearAndBackground = "stop_and_clear_and_background"
 }
 
 struct AgentChatInterruptRequest: Codable, Equatable {
   var sessionId: String
   var mode: AgentChatStopMode? = nil
+}
+
+struct AgentChatStopTaskRequest: Codable, Equatable {
+  var sessionId: String
+  var taskId: String
 }
 
 struct AgentChatHandoffRequest: Codable, Equatable {
@@ -4004,6 +4093,7 @@ struct AgentChatUpdateSessionRequest: Codable, Equatable {
   var manuallyNamed: Bool?
   var spawnKind: String?
   var subagentTakeoverPromptShown: Bool?
+  var autoContinueAtUsageLimit: Bool?
 }
 
 struct AgentChatTranscriptEntry: Codable, Identifiable, Equatable {

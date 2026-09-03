@@ -556,6 +556,14 @@ function createRuntime() {
         lastActivityAt: "2026-03-17T19:00:00.000Z",
         createdAt: "2026-03-17T19:00:00.000Z",
       })),
+      getTurnStatus: vi.fn(async (sessionId: string) => ({
+        sessionId,
+        phase: "idle",
+        activity: "idle",
+        live: false,
+        hasAsk: false,
+        queued: 0,
+      })),
       createScheduledWork: vi.fn(async ({ sessionId, cron, runAt, prompt, recurring = true }: {
         sessionId: string;
         cron?: string;
@@ -2495,6 +2503,41 @@ describe("adeRpcServer", () => {
     });
   });
 
+  it("preserves explicit Droid native autonomy in start_cli_session", async () => {
+    const fixture = createRuntime();
+    fixture.runtime.sessionService.get.mockReturnValue({
+      id: "session-1",
+      laneId: "lane-1",
+      ptyId: "pty-1",
+      tracked: true,
+      toolType: "droid",
+      title: "Droid",
+      status: "running",
+      resumeCommand: null,
+      resumeMetadata: null,
+    });
+    const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+
+    await initialize(handler, { role: "orchestrator" });
+    const response = await callTool(handler, "start_cli_session", {
+      laneId: "lane-1",
+      provider: "droid",
+      permissionMode: "default",
+      droidPermissionMode: "agi",
+    });
+
+    expect(response?.isError).toBeUndefined();
+    const createCall = fixture.runtime.ptyService.create.mock.calls.at(-1)?.[0] as {
+      startupCommand?: string;
+    };
+    expect(createCall.startupCommand).toContain('\\\"interactionMode\\\":\\\"agi\\\"');
+    expect(createCall.startupCommand).toContain('\\\"autonomyLevel\\\":\\\"off\\\"');
+    expect(response.structuredContent).toMatchObject({
+      provider: "droid",
+      droidPermissionMode: "agi",
+    });
+  });
+
   it("persists CLI spawn lineage in resume metadata without assigning terminal ownership", async () => {
     const fixture = createRuntime();
     fixture.runtime.sessionService.get.mockReturnValue({
@@ -3509,6 +3552,11 @@ describe("adeRpcServer", () => {
     const getSessionSummary = chatActions.structuredContent.actions.find((entry: { action: string }) => entry.action === "getSessionSummary");
     expect(getSessionSummary).toMatchObject({
       input: expect.stringContaining("scalar sessionId"),
+    });
+    const getTurnStatus = chatActions.structuredContent.actions.find((entry: { action: string }) => entry.action === "getTurnStatus");
+    expect(getTurnStatus).toMatchObject({
+      input: expect.stringContaining("scalar sessionId"),
+      example: expect.stringContaining("chat.getTurnStatus"),
     });
     const smartLinkPreview = chatActions.structuredContent.actions.find(
       (entry: { action: string }) => entry.action === "resolveSmartLinkPreview",

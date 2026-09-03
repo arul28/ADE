@@ -1377,6 +1377,15 @@ struct WorkSessionDestinationView: View {
     }
   }
 
+  private var stopTaskAction: (@MainActor (String) async -> Void)? {
+    guard syncService.canInvokeChatRemoteAction("chat.stopTask", sessionId: sessionId) else {
+      return nil
+    }
+    return { taskId in
+      await stopChatTask(taskId: taskId)
+    }
+  }
+
   @MainActor
   private func setScheduledWorkPausedOptimistically(_ paused: Bool) async {
     let previousSummary = composerChatSummary
@@ -1432,7 +1441,8 @@ struct WorkSessionDestinationView: View {
           sessionModel: composerChatSummary?.model,
           onSelect: handleSubagentSelection,
           onCancelScheduledWork: scheduledWorkCancelAction,
-          onSetScheduledWorkPaused: scheduledWorkPauseAction
+          onSetScheduledWorkPaused: scheduledWorkPauseAction,
+          onStopTask: stopTaskAction
         )
         .presentationDetents([.medium, .large])
         .presentationDragIndicator(.visible)
@@ -1873,6 +1883,8 @@ struct WorkSessionDestinationView: View {
       },
       onInterrupt: interruptSession,
       onRestoreCancelledQueue: restoreCancelledQueueAction,
+      onOptOutUsageLimitAutoContinue: optOutUsageLimitAutoContinue,
+      onStopSubagentTask: stopTaskAction,
       onApproveRequest: approveRequest,
       onRespondToQuestion: respondToQuestion,
       onSubmitQuestionAnswers: submitQuestionAnswers,

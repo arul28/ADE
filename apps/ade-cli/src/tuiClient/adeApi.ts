@@ -926,6 +926,9 @@ export async function cancelSteerMessage(
   sessionId: string,
   steerId: string,
 ): Promise<void> {
+  // Ordinary cancellation must also work for persisted staged messages when
+  // the runtime is offline. The service owns the queue-race policy; callers
+  // should not turn a local cancel into a live-runtime-only operation.
   await connection.action("chat", "cancelSteer", { sessionId, steerId });
 }
 

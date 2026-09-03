@@ -13731,6 +13731,9 @@ final class SyncService: ObservableObject {
     var lastToolName: String?
     var background: Bool?
     var usage: AgentChatSubagentUsage?
+    var parentAgentId: String?
+    var spawnDepth: Int?
+    var resourceLinks: [AgentChatResourceLink]?
   }
 
   /// Fetch a transcript page. Without `cursor` this returns the newest
@@ -13928,6 +13931,18 @@ final class SyncService: ObservableObject {
         sessionId: sessionId,
         mode: supportsQueueMode ? mode : nil
       ),
+      targetProjectId: scope.projectId,
+      targetProjectRootPath: scope.rootPath
+    )
+  }
+
+  func stopChatTask(sessionId: String, taskId: String) async throws {
+    let action = chatActionName("chat.stopTask", sessionId: sessionId)
+    try requireInvokableRemoteAction(action)
+    let scope = chatCommandScope(for: sessionId)
+    _ = try await sendChatCommand(
+      action: action,
+      payload: AgentChatStopTaskRequest(sessionId: sessionId, taskId: taskId),
       targetProjectId: scope.projectId,
       targetProjectRootPath: scope.rootPath
     )
@@ -14386,7 +14401,8 @@ final class SyncService: ObservableObject {
     computerUse: RemoteJSONValue? = nil,
     manuallyNamed: Bool? = nil,
     spawnKind: String? = nil,
-    subagentTakeoverPromptShown: Bool? = nil
+    subagentTakeoverPromptShown: Bool? = nil,
+    autoContinueAtUsageLimit: Bool? = nil
   ) async throws -> AgentChatSession {
     let scope = chatCommandScope(for: sessionId)
     return try await sendDecodableChatCommand(
@@ -14411,7 +14427,8 @@ final class SyncService: ObservableObject {
         computerUse: computerUse,
         manuallyNamed: manuallyNamed,
         spawnKind: spawnKind,
-        subagentTakeoverPromptShown: subagentTakeoverPromptShown
+        subagentTakeoverPromptShown: subagentTakeoverPromptShown,
+        autoContinueAtUsageLimit: autoContinueAtUsageLimit
       ),
       targetProjectId: scope.projectId,
       targetProjectRootPath: scope.rootPath,

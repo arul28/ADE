@@ -33,6 +33,12 @@ import {
   type PromptStashEntry,
 } from "../../../shared/types";
 import {
+  AGENT_CHAT_STOP_MODES,
+  chatStopModeCopy,
+  parseAgentChatStopMode,
+  stopModeClearsQueue,
+} from "../../../shared/chatStopModes";
+import {
   buildChatContextAttachmentPrompt,
   chatContextAttachmentKey,
   makeGitHubIssueContextAttachment,
@@ -103,7 +109,7 @@ import { GITHUB_BRAND } from "../lanes/githubBrand";
 import { LinearMark, LINEAR_BRAND } from "../lanes/linearBrand";
 import { AskQuestionComposer } from "./AskQuestionComposer";
 import { isAskQuestionRequest } from "../../../shared/pendingInputAnswers";
-import { CURSOR_MODE_LABELS } from "../../../shared/cursorModes";
+import { formatCursorModeLabel } from "../../../shared/cursorModes";
 import { ChatProposedPlanCard } from "./ChatProposedPlanCard";
 import { ChatModelSelectionPendingCard } from "./ChatModelSelectionPendingCard";
 import { ChatCommandMenu, type ChatCommandMenuItem, type ChatCommandMenuHandle } from "./ChatCommandMenu";
@@ -155,6 +161,9 @@ import {
   stageAttachmentBytesFromFile,
   type StagedAttachment,
 } from "./chatAttachmentStaging";
+import {
+  DROID_PERMISSION_OPTIONS as BASE_DROID_PERMISSION_OPTIONS,
+} from "../../lib/nativeLaunchControls";
 
 // Attachment ceilings are not a renderer constant any more: they depend on the
 // leg the bytes take, which depends on the machine that owns the chat. See
@@ -1138,24 +1147,15 @@ const OPENCODE_PERMISSION_OPTIONS: Array<PermissionModePickerOption<AgentChatOpe
   { value: "config-toml", label: "Config", detail: "Use OpenCode config files.", tone: "slate", icon: "config" },
 ];
 
-const DROID_PERMISSION_OPTIONS: Array<PermissionModePickerOption<AgentChatDroidPermissionMode>> = [
-  { value: "read-only", label: "Read-only", detail: "No auto flag. Droid stays in read-only mode for analysis and planning.", tone: "green", icon: "manual" },
-  { value: "auto-low", label: "Auto low", detail: "Passes --auto low for safe file edits and low-risk operations.", tone: "green", icon: "edit" },
-  { value: "auto-medium", label: "Auto medium", detail: "Passes --auto medium for local development operations such as builds, tests, and package installs.", tone: "amber", icon: "auto" },
-  { value: "auto-high", label: "Auto high", detail: "Passes --auto high for broad automation. Use only in trusted workspaces.", tone: "red", icon: "full" },
-  { value: "agi", label: "AGI (orchestrator)", triggerLabel: "AGI", detail: "Droid decomposes the task into a mission and spawns worker subagents (read-only at the top level). Workers appear in the subagents panel.", tone: "purple", icon: "agi" },
-];
-
-function cursorModeLabel(modeId: string): string {
-  const normalized = modeId.trim().toLowerCase();
-  if (!normalized.length) return "Agent";
-  if (CURSOR_MODE_LABELS[normalized]) return CURSOR_MODE_LABELS[normalized];
-  return normalized
-    .split(/[-_/]+/)
-    .filter(Boolean)
-    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
-    .join(" ");
-}
+const DROID_PERMISSION_OPTION_PRESENTATION: Record<AgentChatDroidPermissionMode, Pick<PermissionModePickerOption<AgentChatDroidPermissionMode>, "triggerLabel" | "tone" | "icon">> = {
+  "read-only": { tone: "green", icon: "manual" },
+  "auto-low": { tone: "green", icon: "edit" },
+  "auto-medium": { tone: "amber", icon: "auto" },
+  "auto-high": { tone: "red", icon: "full" },
+  agi: { triggerLabel: "AGI", tone: "purple", icon: "agi" },
+};
+const DROID_PERMISSION_OPTIONS: Array<PermissionModePickerOption<AgentChatDroidPermissionMode>> =
+  BASE_DROID_PERMISSION_OPTIONS.map((option) => ({ ...option, ...DROID_PERMISSION_OPTION_PRESENTATION[option.value] }));
 
 function resolveCursorModeOption(snapshot: AgentChatCursorModeSnapshot | null | undefined): AgentChatCursorConfigOption | null {
   if (!snapshot?.configOptions?.length) return null;
@@ -1195,7 +1195,15 @@ function PendingSteerItem({
           {steer.text}
         </div>
       </div>
-      <div className="flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100">
+      {/* Hidden until hover ONLY where hovering exists. A touch pointer never
+          hovers, so gating on `opacity-0` alone left every queued-message
+          control invisible on mobile and ADE Web. Both rules sit inside the
+          same media query and `group-hover` outranks the base class on
+          specificity, so the reveal never depends on stylesheet order. */}
+      <div
+        data-testid="pending-steer-actions"
+        className="flex shrink-0 items-center gap-0.5 transition-opacity [@media(hover:hover)]:opacity-0 [@media(hover:hover)]:group-hover:opacity-100 [@media(hover:hover)]:group-focus-within:opacity-100"
+      >
           {onSendNow ? (
             <SmartTooltip forceEnabled content={{ label: "Send during turn", description: `${capability.agentLabel} picks this up after the current tool step, before continuing.` }}>
               <button
@@ -1286,6 +1294,33 @@ export function activeTurnSendModesForProvider(provider: string | undefined): Ac
     agentLabel: providerDisplayLabel(provider, "the agent"),
     interruptContinues: activeTurnInterruptContinues(provider),
   };
+}
+
+/**
+ * What the staged-message strip offers, plus — when the provider has no
+ * active-turn delivery at all — why waiting is the only option. The unsupported
+ * half reads `capability.modes` (the shared per-provider table) rather than the
+ * wired handlers, so a Codex chat says Codex cannot take a message mid-turn
+ * while a Claude chat whose handler is merely unwired makes no such claim.
+ *
+ * Never mentions hovering: the controls are always visible on a touch pointer,
+ * where an instruction to hover is simply wrong.
+ */
+function stagedSteerHint(args: {
+  capability: ActiveTurnSendCapability;
+  canSendNow: boolean;
+  canInterrupt: boolean;
+}): string {
+  const actions = [
+    ...(args.canSendNow ? ["send during the turn"] : []),
+    ...(args.canInterrupt ? ["interrupt with this message"] : []),
+    "edit",
+    "remove",
+  ];
+  const list = `${actions.slice(0, -1).join(", ")} or ${actions[actions.length - 1]}`;
+  const sentence = `${list.charAt(0).toUpperCase()}${list.slice(1)}.`;
+  if (args.capability.modes.some((mode) => mode !== "queue")) return sentence;
+  return `${sentence} ${args.capability.agentLabel} cannot take a message mid-turn, so this one waits for the turn to end.`;
 }
 
 function activeTurnSendCopy(
@@ -1481,30 +1516,23 @@ function ActiveTurnSendButton({
   );
 }
 
-const ACTIVE_TURN_STOP_COPY: Record<AgentChatStopMode, { label: string; description: string }> = {
-  stop_and_clear: {
-    label: "Stop & clear queue",
-    description: "Stop the active turn and cancel messages already queued for Claude.",
-  },
-  stop_only: {
-    label: "Stop only",
-    description: "Stop the active turn but keep queued messages ready for Claude.",
-  },
-};
+const ACTIVE_TURN_STOP_MODES = AGENT_CHAT_STOP_MODES;
 
 function ActiveTurnStopButton({
   mode,
   allowQueueChoice,
+  backgroundJobCount,
   onModeChange,
   onStop,
 }: {
   mode: AgentChatStopMode;
   allowQueueChoice: boolean;
+  backgroundJobCount: number;
   onModeChange: (mode: AgentChatStopMode) => void;
   onStop: () => void;
 }) {
   const { caretRef, menuOpen, setMenuOpen } = useComposerSplitMenu("[data-active-stop-menu]");
-  const selectedCopy = ACTIVE_TURN_STOP_COPY[mode];
+  const selectedCopy = chatStopModeCopy(mode, backgroundJobCount);
 
   if (!allowQueueChoice) {
     return (
@@ -1531,10 +1559,10 @@ function ActiveTurnStopButton({
             aria-label={selectedCopy.label}
             onClick={onStop}
           >
-            {mode === "stop_and_clear" ? <Trash size={12} weight="bold" /> : <Square size={9} weight="fill" />}
+            {stopModeClearsQueue(mode) ? <Trash size={12} weight="bold" /> : <Square size={9} weight="fill" />}
           </button>
         </SmartTooltip>
-        <SmartTooltip forceEnabled content={{ label: "More stop options", description: "Choose whether queued Claude messages should be kept." }}>
+        <SmartTooltip forceEnabled content={{ label: "More stop options", description: "Choose whether queued messages and background jobs should be kept." }}>
           <button
             ref={caretRef}
             type="button"
@@ -1559,8 +1587,8 @@ function ActiveTurnStopButton({
                   className="fixed z-[100] overflow-hidden rounded-xl border border-white/[0.08] bg-[#13111A]/95 shadow-[0_18px_48px_rgba(0,0,0,0.55)] backdrop-blur-md"
                   style={composerSplitMenuPosition(caretRef.current)}
                 >
-                  {(["stop_and_clear", "stop_only"] as const).map((option, index) => {
-                    const copy = ACTIVE_TURN_STOP_COPY[option];
+                  {ACTIVE_TURN_STOP_MODES.map((option, index) => {
+                    const copy = chatStopModeCopy(option, backgroundJobCount);
                     const selected = option === mode;
                     return (
                       <button
@@ -1578,7 +1606,7 @@ function ActiveTurnStopButton({
                         )}
                       >
                         <span className="mt-0.5 inline-flex h-4 w-4 shrink-0 items-center justify-center text-red-400/75">
-                          {option === "stop_and_clear" ? <Trash size={12} weight="bold" /> : <Square size={9} weight="fill" />}
+                          {stopModeClearsQueue(option) ? <Trash size={12} weight="bold" /> : <Square size={9} weight="fill" />}
                         </span>
                         <span className="min-w-0 flex-1">
                           <span className="block text-[length:calc(var(--chat-font-size)*10/14)] font-medium text-fg/85">{copy.label}</span>
@@ -1671,6 +1699,7 @@ export function AgentChatComposer({
   backgroundLaunchBusy = false,
   backgroundLaunchLabel = "Background",
   onInterrupt,
+  backgroundJobCount = 0,
   onApproval,
   onAddAttachment,
   onRegisterDropTarget,
@@ -1846,6 +1875,8 @@ export function AgentChatComposer({
   backgroundLaunchBusy?: boolean;
   backgroundLaunchLabel?: string;
   onInterrupt: (mode?: AgentChatStopMode) => void;
+  /** Live background job count for stop-menu labels. */
+  backgroundJobCount?: number;
   onApproval: (
     decision: AgentChatApprovalDecision,
     responseText?: string | null,
@@ -2092,7 +2123,7 @@ export function AgentChatComposer({
       return;
     }
     const stored = window.localStorage.getItem(`ade.chat.stopMode.${sessionId}`);
-    setActiveTurnStopMode(stored === "stop_only" ? "stop_only" : "stop_and_clear");
+    setActiveTurnStopMode(parseAgentChatStopMode(stored));
   }, [sessionId]);
 
   const updateActiveTurnStopMode = useCallback((mode: AgentChatStopMode) => {
@@ -4421,7 +4452,7 @@ export function AgentChatComposer({
         ? cursorModeOption.options.map((option) => ({ value: option.value, label: option.label }))
         : (cmsUse?.availableModeIds ?? []).map((modeId) => ({
             value: modeId,
-            label: cursorModeLabel(modeId),
+            label: formatCursorModeLabel(modeId),
           }));
       const cursorModeOptions = modeChoices.map((option) => cursorPermissionPickerOption(option.value, option.label));
       return (
@@ -6039,6 +6070,7 @@ export function AgentChatComposer({
             <ActiveTurnStopButton
               mode={activeTurnStopMode}
               allowQueueChoice={sessionProvider === "claude"}
+              backgroundJobCount={backgroundJobCount}
               onModeChange={updateActiveTurnStopMode}
               onStop={() => onInterrupt(activeTurnStopMode)}
             />
@@ -6470,6 +6502,7 @@ export function AgentChatComposer({
                 <ActiveTurnStopButton
                   mode={activeTurnStopMode}
                   allowQueueChoice={sessionProvider === "claude"}
+                  backgroundJobCount={backgroundJobCount}
                   onModeChange={updateActiveTurnStopMode}
                   onStop={() => onInterrupt(activeTurnStopMode)}
                 />
@@ -6558,11 +6591,11 @@ export function AgentChatComposer({
               Staged {pendingSteers.length === 1 ? "message" : `messages (${pendingSteers.length})`}
             </span>
             <span className="font-sans text-[length:calc(var(--chat-font-size)*9/14)] text-fg/30">
-              {onDispatchSteerInline
-                ? "Hover to send during the turn, interrupt, edit, or remove."
-                : onDispatchSteerInterrupt
-                  ? "Hover to interrupt with this message, edit, or remove."
-                  : "Hover to edit or remove."}
+              {stagedSteerHint({
+                capability: activeTurnSendCapability,
+                canSendNow: Boolean(onDispatchSteerInline),
+                canInterrupt: Boolean(onDispatchSteerInterrupt),
+              })}
             </span>
           </div>
           {pendingSteers.map((steer) => (

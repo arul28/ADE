@@ -1,0 +1,193 @@
+---
+title: "Permissions and approvals"
+description: "The three forms of `permissions`, the per-tool policy object, and answering an approval with thread.approve() before it blocks the turn forever."
+icon: "shield-check"
+---
+
+Every thread gates tool use one of three ways: the `"default"` preset, the `"always-allow"` preset, or a policy object that names the tools individually.
+
+<Warning>
+An unanswered approval blocks the turn. There is no timeout anywhere in the runtime — the turn stays parked until you call `approve()` or `interrupt()`. Render a card for every `approval_request` you receive, or pass `fallback: "deny"` so nothing ever asks.
+</Warning>
+
+## What `"default"` actually does
+
+It is not one behavior. `"default"` leaves each provider's own handling in place, and the providers disagree:
+
+| Provider | `permissions: "default"`, no policy |
+|---|---|
+| claude | ADE installs no gate at all. The decision belongs to the Claude Agent SDK running non-interactively with no `canUseTool` callback and no terminal, which returns a refusal to the model as a tool error. You get no `approval_request`. |
+| codex | An approval request **parks the turn** until something answers it. Shell commands and file patches both do this. |
+| cursor · droid · opencode · pi | The provider's own non-interactive behavior. No ADE gate. |
+
+If you want a gate you can actually see and answer, pass a policy.
+
+## The policy object
+
+```ts
+const thread = await ade.threads.open("assistant", {
+  provider: "claude",
+  model: "claude-sonnet-4-5",
+  permissions: {
+    allowedTools: ["mcp:catalog:*", "Read", "Glob"],
+    deniedTools: ["Bash"],
+    autoApproveMcpServers: ["catalog"],
+    sandboxRoot: "/Users/me/Library/Application Support/MyApp/work",
+    fallback: "ask",
+  },
+});
+```
+
+| Field | Meaning |
+|---|---|
+| `allowedTools` | Runs without asking. Exact names, or a trailing `*` for a prefix. |
+| `deniedTools` | Refused outright, never asked about. |
+| `autoApproveMcpServers` | Every tool of these servers is allowed. Identical to `mcp:<server>:*`. |
+| `sandboxRoot` | Absolute path. File writes inside it auto-approve, as do Codex commands, file changes, and permission escalations; outside they follow `fallback`. A relative path is judged against the request's own working directory, and falls through when there is none. Claude's `Bash` names no path, so a command follows the tool rules and `fallback` rather than the root. Not applied on Claude under `fallback: "deny"` — see below. |
+| `fallback` | **Required.** What happens to everything unmatched. |
+
+Precedence on Claude, highest first: `deniedTools`, then `allowedTools` and `autoApproveMcpServers`, then `sandboxRoot` containment, then `fallback`.
+
+On Codex only the last two rungs exist. The three tool fields are Claude-only and nothing on the Codex path reads them, so a Codex decision is `sandboxRoot` containment and then `fallback`. See the Codex note below.
+
+`sandboxRoot` is containment. `cwd` is the plain working directory. They are separate fields precisely so setting one does not read as implying the other.
+
+`fallback` is required on purpose. A policy with no fallback has no answer for an unmatched tool, and defaulting to `"ask"` would silently park the turn for a host that built no approval UI. Choose it deliberately:
+
+- `"deny"` — nothing ever asks. The turn cannot park. This is what a host with no approval UI wants. On Claude it is also the stronger of the two: it takes the unnamed tools away rather than gating them.
+- `"ask"` — unmatched tools emit `approval_request` and wait for `approve()`.
+
+### One exemption from asking
+
+Under `fallback: "ask"` on Claude, the model's own read-only built-ins run without a card: `Read`, `Glob`, `Grep`, `ToolSearch`, `TaskList`, `TaskGet`, `WebFetch` and `WebSearch`. A host that wants to be asked about writes would otherwise be asked about every file read, which teaches a user to click Allow without reading it.
+
+The check is literal membership of that list, never a substring. It cannot reach one of your MCP tools: an MCP tool always keeps its `mcp__<server>__` prefix, so `mcp:docs:read` asks like anything else. A tool's risk is never inferred from its name.
+
+Name a built-in in `deniedTools` to override the exemption, or use `fallback: "deny"`, under which nothing unmatched runs at all.
+
+`deniedTools` outranks everything, including a tool that would otherwise let itself through. Claude's `AskUserQuestion` and ADE's own `ask_user` normally skip the card, because each carries its own answer UI and a generic "Allow this tool?" card would hide the real question behind an extra click. Naming either in `deniedTools` still refuses it. The mirror also holds: an `allowedTools` entry means a tool may run, not that it skips its own machinery — allow-listing `AskUserQuestion` lets it ask, it does not answer for the user.
+
+### What `fallback: "deny"` does on Claude
+
+Measured against Agent SDK 0.3.258: `allowedTools` and `disallowedTools` are enforced, because the CLI removes a denied tool from the model's catalog. The `canUseTool` callback, however, did not fire on any permission mode tried, so the prompt path cannot be relied on to enforce anything.
+
+A deny fallback is therefore expressed in what the thread is given, not in what it is asked:
+
+- Every Claude mutating built-in your policy does not name is denied up front: `Bash`, `Write`, `Edit`, `MultiEdit`, `NotebookEdit`, `Agent`, `Task`, `KillShell`. Only an explicit `allowedTools` entry keeps one. Read-only built-ins stay available — a deny fallback stops the agent changing things, it does not blind it.
+- MCP is restricted to the servers your policy names, drawn from `autoApproveMcpServers` and every `mcp:<server>:…` entry in `allowedTools`. A server you never name is unreachable, **including one you supplied yourself in `mcpServers`**. Name it in the policy to use it.
+- The `canUseTool` gate stays wired behind both, so a future SDK that does call back finds a gate that already denies.
+
+Two clauses do not survive this, and the thread's `permissionCapability` reports both rather than hiding them.
+
+`sandboxRoot` is a per-call decision about a path, and the per-call hook is the one that does not fire — so under a deny fallback a mutating built-in is refused outright rather than allowed inside the root. This does not lower the level, because refusing is stricter than the root and never looser, but the `residual` says it. If you want containment on Claude rather than refusal, use `fallback: "ask"` and answer the approvals.
+
+**An `allowedTools` entry naming one MCP tool admits its whole server.** The allowlist is per-server, so letting `mcp:srv:search` run makes `srv` reachable, and refusing `mcp:srv:delete` individually would need the hook that does not fire. A policy in that shape reports `best-effort` with a residual naming the servers whose unnamed tools are not refused:
+
+```ts
+// enforced — the whole server was the stated intent
+permissions: { allowedTools: ["mcp:srv:*"], fallback: "deny" }
+
+// best-effort — mcp:srv:delete also runs
+permissions: { allowedTools: ["mcp:srv:search"], fallback: "deny" }
+```
+
+If you need tool-level separation on Claude, split the tools across separate MCP servers and allow the whole of each.
+
+The `residual` also names any server you passed in `mcpServers` that the policy does not admit, since those are unreachable under a deny fallback.
+
+Under `fallback: "ask"` none of this applies: no tools are removed from the catalog and MCP is not scoped.
+
+## Tool names are provider-neutral
+
+MCP tools are named `mcp:<server>:<tool>`, or `mcp:<server>:*` for all of them. The runtime translates to each provider's own spelling — Claude writes `mcp__server__tool`.
+
+Any other string matches the provider's own tool name, case-insensitively, with an optional trailing `*`. Built-in tool names **are** provider-specific: `Bash` and `Edit` mean something on Claude and nothing on Pi.
+
+A tool is never gated because of what its name contains. `mcp:studio:edit_clip` and `mcp:studio:list_agents` are asked about only if your policy says so.
+
+## Per-provider enforcement
+
+| Provider | Policy level | What it means |
+|---|---|---|
+| claude, `fallback: "deny"` | **enforced**, or best-effort when an allow entry names one MCP tool | The tool lists and the MCP scope, both applied up front. See [above](#what-fallback-deny-does-on-claude). |
+| claude, `fallback: "ask"` | best-effort | The same two lists, plus a `canUseTool` callback. Residual: the ask verdict needs the Agent SDK's permission prompt, and a user-level Claude setting such as `permissions.defaultMode: auto` can pre-approve an unlisted tool before ADE's gate runs. |
+| codex | best-effort | `approvalPolicy: on-request` with a `workspace-write` sandbox. The policy governs sandbox **escapes** only, and needs a `sandboxRoot` to auto-accept anything. See the note below. |
+| cursor | unsupported | The Cursor SDK takes a mode preset, not a rule set. |
+| droid | unsupported | The Factory SDK takes an autonomy level, not a rule set. |
+| opencode | unsupported | OpenCode takes an agent profile, not a rule set. |
+| pi | unsupported | The Pi SDK takes a tool policy ADE derives from the session mode. |
+
+Read the thread's own report rather than the table, which is a summary. On Claude the level follows the policy's shape, not just the provider:
+
+```ts
+if (thread.permissionCapability?.level !== "enforced") {
+  console.warn(thread.permissionCapability?.residual);
+}
+```
+
+`permissionCapability` is `null` when the thread opened with a preset rather than a policy, and also when an older runtime reported nothing — treat the second case as unenforced.
+
+The SDK logs the same two shapes at open time: one line naming any server you supplied in `mcpServers` that a deny fallback blocks, and one naming any allow entry that admits a whole server. Neither widens the policy; both exist because neither has a symptom you would otherwise see.
+
+<Note>
+**Codex's sandbox decides more than the policy does.** Under `sandbox: workspace-write` a command or file change inside the thread's `cwd`, `$TMPDIR` or `/tmp` raises no approval request at all, so it reaches neither `sandboxRoot` nor `fallback`. Only a sandbox escape is ever put to the policy.
+
+**An escape needs a `sandboxRoot` to be auto-accepted.** A policy that names one auto-accepts escapes contained by it and sends the rest to `fallback`. A policy with no `sandboxRoot` approved no directory, so every escape goes straight to `fallback`: `"ask"` parks it on an `approval_request`, `"deny"` declines it. The presence of a policy object is not itself an approval of the working directory.
+
+**`allowedTools`, `deniedTools` and `autoApproveMcpServers` do nothing on Codex.** They are Claude-only fields, read by the Claude tool-list builder and the Claude `canUseTool` hook and by nothing else. A Codex escape is decided by `sandboxRoot` containment and then `fallback`, with the command text never consulted. Do not send `deniedTools: ["Bash(rm *)"]` to Codex and read it as a refusal — a `rm` whose working directory sits inside `sandboxRoot` is auto-accepted. To refuse on Codex, leave the escape uncontained and set `fallback: "deny"`.
+
+**Codex does not gate plain MCP tool calls either.** Its three approval methods cover shell commands, file patches, and permission grants. An MCP tool call under Codex runs with no round trip. Hosts whose whole tool surface is MCP need to know this before choosing Codex.
+</Note>
+
+## Answering an approval
+
+```ts
+thread.on("event", (envelope) => {
+  if (envelope.event.type === "approval_request") {
+    showCard(envelope.event); // itemId, kind, description, detail
+  }
+  if (envelope.event.type === "pending_input_resolved") {
+    settleCard(envelope.event.itemId, envelope.event.resolution);
+  }
+});
+
+await thread.approve(itemId, "accept");        // this one time
+await thread.approve(itemId, "accept_always"); // and every later one like it
+await thread.approve(itemId, "reject", "not this time");
+```
+
+`approve()` resolves once the runtime accepts the decision, **not** once the tool has run — the same asymmetry `send()` has.
+
+It throws `approval_not_found` when the item is not pending: a stop, a teardown, or an earlier call already settled it. The engine settles unknown items silently, so without that check a second click on Allow would look like it worked.
+
+`interrupt()` is not a substitute. It aborts the turn **without answering** the request, and a later `approve()` on that item throws `approval_not_found`.
+
+## Restoring cards after a reload
+
+Approval requests outlive the client that saw the event.
+
+```ts
+for (const request of await thread.pendingApprovals()) {
+  showCard(request);
+}
+```
+
+Requests whose `requestKind` is `"approval"` or `"permissions"` can be answered with `approve()`. The other kinds — `"question"`, `"structured_question"`, `"plan_approval"`, `"model_selection"` — want prose or a choice this surface cannot carry. Render those read-only rather than offering Allow and Reject for something that wants a sentence.
+
+`approve()` refuses those four with `invalid_option` rather than sending the decision. The engine would take an `accept` for a question and the request would stay unanswered, so the turn would park while the call resolved — the failure this check exists to make visible.
+
+Against a runtime with no `pendingInputs` action, the SDK reconstructs the list from the events this client observed and logs that it is doing so. That list cannot include anything raised before the client connected.
+
+## `"always-allow"`
+
+```ts
+permissions: "always-allow"
+```
+
+Maps to each provider's full-auto create args: `bypassPermissions` on Claude, `approval_policy: never` with `danger-full-access` on Codex, `full-auto` on OpenCode, `auto-high` on Droid. Cursor and Pi carry it as the generic full-auto mode alone. Nothing asks, and nothing is contained. It is the right choice for a trusted internal tool and the wrong one for an app holding a user's credentials.
+
+## Next
+
+<Card title="Threads" href="/sdk/threads" icon="comments" horizontal>
+  Instructions, working directory, and configuration layers.
+</Card>

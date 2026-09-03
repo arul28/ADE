@@ -49,8 +49,9 @@ Use this as the first check when an embedder chat misbehaves. `sdkVersion` is th
 |---|---|
 | `ok` | Overall health |
 | `sdkVersion` | `@ade-dev/sdk` version in *this* build |
-| `binary.path` / `binary.version` / `binary.source` | Where `ade` came from (`option`, `path`, `download`, `cache`) |
+| `binary.path` / `binary.version` / `binary.source` | Where `ade` came from (`option`, `path`, `download`, `cache`). The 0.1.x view, kept unchanged |
 | `binary.checksumVerified` | Whether *this* client checked `SHA256SUMS` (false for a pinned `binaryPath` is expected) |
+| `runtime.*` | Full runtime provenance — see the table below |
 | `socket.connected` / `socket.runtimeVersion` | Sidecar handshake |
 | `events.mode` | Push vs drain |
 | `providers` | Installed / authenticated per provider |
@@ -58,6 +59,25 @@ Use this as the first check when an embedder chat misbehaves. `sdkVersion` is th
 | `recentErrors` | Newest last, capped |
 
 See [Reference](/sdk/reference#doctor) for the full shape.
+
+### `doctor().runtime`
+
+Which of the resolution paths actually produced the running binary, and what the OS thinks of it. `source` and `signature` are the two fields to put in a support bundle: together they separate "this app is running the runtime we shipped" from "this app quietly downloaded one on this machine".
+
+| Field | What it tells you |
+|---|---|
+| `source` | `explicit`, `bundled-package`, `cached-download`, `path`, `downloaded`, or `attached` |
+| `binaryPath` | The binary that was spawned |
+| `version` | `<binary> --version`, when it answered |
+| `runtimeRoot` | `ADE_RUNTIME_ROOT` as spawned. Null when the install carries its own environment |
+| `nodeModulesPath` | `ADE_RUNTIME_NODE_MODULES` as spawned |
+| `signature` | `{ signed, authority?, accepted? }` on macOS and Windows. **Null means "not known"**, never "not signed": it is null on Linux, in attach mode, and whenever the check could not run |
+| `downloadedThisSession` | True only when *this* client downloaded a runtime during its lifetime |
+| `checksumVerified` | False on the pinned and bundled routes by design |
+
+The signature probe runs at most once per client, and never throws: `codesign -dv --verbose=2` plus `spctl --assess --type execute` on macOS, `Get-AuthenticodeSignature` through the trusted System32 PowerShell on Windows, each with a 10 second budget.
+
+A packaged build that reports `source: "downloaded"` is a packaging bug. Set `allowDownload: false` and it becomes a `runtime_unavailable` throw at startup instead. See [Bundling](/sdk/bundling).
 
 ## Windows
 

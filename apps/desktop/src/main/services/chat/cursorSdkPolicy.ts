@@ -125,13 +125,14 @@ export function resolveCursorSdkChatMode(session: CursorSessionModeInput): Curso
   const explicit = typeof session.cursorModeId === "string" ? session.cursorModeId.trim().toLowerCase() : "";
   if (explicit === "ask" || explicit === "plan") return explicit;
   if (explicit === "agent" || explicit === "default") return "agent";
-  const legacy = typeof session.opencodePermissionMode === "string"
-    ? session.opencodePermissionMode
-    : session.permissionMode === "plan"
-      ? "plan"
-      : session.permissionMode === "full-auto"
-        ? "full-auto"
-        : "edit";
+  // `permissionMode` is the canonical legacy field for Cursor. The OpenCode
+  // field remains only as a migration fallback when an older session has no
+  // canonical value at all; it must not override an explicit Cursor clear.
+  const legacy = session.permissionMode !== undefined
+    ? session.permissionMode
+    : typeof session.opencodePermissionMode === "string"
+      ? session.opencodePermissionMode
+      : "edit";
   return legacy === "plan" ? "plan" : "agent";
 }
 
@@ -147,7 +148,10 @@ export function resolveCursorSdkPolicy(session: CursorSessionModeInput): CursorS
   const explicit = typeof session.cursorModeId === "string" ? session.cursorModeId.trim().toLowerCase() : "";
   const legacyFullAuto =
     !explicit.length
-    && (session.opencodePermissionMode === "full-auto" || session.permissionMode === "full-auto");
+    && (
+      session.permissionMode === "full-auto"
+      || (session.permissionMode === undefined && session.opencodePermissionMode === "full-auto")
+    );
   if (legacyFullAuto || explicit === "full-auto") {
     return {
       chatMode: "agent",

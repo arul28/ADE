@@ -1,5 +1,6 @@
 import { Gear, ArrowSquareOut, Terminal } from "@phosphor-icons/react";
 import type { AuthType, ProviderFamily } from "../../../../shared/modelRegistry";
+import { PROVIDER_REMEDIATION } from "../../../../shared/providerRemediation";
 import { openExternalUrl } from "../../../lib/openExternal";
 import { cn } from "../../ui/cn";
 
@@ -14,9 +15,12 @@ type ProviderCopy = {
   secondary?: { label: string; action: ProviderEmptyStateAction };
 };
 
-// Curated, per-provider empty-state copy. Mirrors the install hints from
-// settings/ProvidersSection.tsx so a user landing here from the picker gets
-// the same official URLs.
+// Curated, per-provider empty-state copy.
+//
+// Every shipped provider's docs URL comes from `shared/providerRemediation.ts`,
+// the one table, so a user cannot be sent to one page from the picker and a
+// different page from Settings. The four ACP rows (Qwen, Kimi, Grok, Copilot)
+// and the two local-runtime rows are not shipped providers and name their own.
 const PROVIDER_COPY: Partial<Record<ProviderFamily, ProviderCopy>> = {
   anthropic: {
     title: "Sign in to Claude",
@@ -24,7 +28,7 @@ const PROVIDER_COPY: Partial<Record<ProviderFamily, ProviderCopy>> = {
     primary: { label: "Login to Claude", action: { kind: "open-settings" } },
     secondary: {
       label: "Claude Code docs",
-      action: { kind: "open-external", url: "https://docs.claude.com/en/docs/agents-and-tools/claude-code/setup" },
+      action: { kind: "open-external", url: PROVIDER_REMEDIATION.claude.docsUrl },
     },
   },
   openai: {
@@ -33,7 +37,7 @@ const PROVIDER_COPY: Partial<Record<ProviderFamily, ProviderCopy>> = {
     primary: { label: "Open Settings", action: { kind: "open-settings" } },
     secondary: {
       label: "Codex CLI install",
-      action: { kind: "open-external", url: "https://github.com/openai/codex" },
+      action: { kind: "open-external", url: PROVIDER_REMEDIATION.codex.docsUrl },
     },
   },
   cursor: {
@@ -42,7 +46,7 @@ const PROVIDER_COPY: Partial<Record<ProviderFamily, ProviderCopy>> = {
     primary: { label: "Open Settings", action: { kind: "open-settings" } },
     secondary: {
       label: "Get Cursor API key",
-      action: { kind: "open-external", url: "https://cursor.com/dashboard/api" },
+      action: { kind: "open-external", url: PROVIDER_REMEDIATION.cursor.docsUrl },
     },
   },
   factory: {
@@ -51,7 +55,7 @@ const PROVIDER_COPY: Partial<Record<ProviderFamily, ProviderCopy>> = {
     primary: { label: "Open Settings", action: { kind: "open-settings" } },
     secondary: {
       label: "Droid quickstart",
-      action: { kind: "open-external", url: "https://docs.factory.ai/cli/getting-started/quickstart" },
+      action: { kind: "open-external", url: PROVIDER_REMEDIATION.droid.docsUrl },
     },
   },
   opencode: {
@@ -60,7 +64,7 @@ const PROVIDER_COPY: Partial<Record<ProviderFamily, ProviderCopy>> = {
     primary: { label: "Open Settings", action: { kind: "open-settings" } },
     secondary: {
       label: "OpenCode site",
-      action: { kind: "open-external", url: "https://opencode.ai/" },
+      action: { kind: "open-external", url: PROVIDER_REMEDIATION.opencode.docsUrl },
     },
   },
   lmstudio: {
@@ -123,7 +127,7 @@ const PROVIDER_COPY: Partial<Record<ProviderFamily, ProviderCopy>> = {
     primary: { label: "Log in to Pi", action: { kind: "open-settings" } },
     secondary: {
       label: "Pi documentation",
-      action: { kind: "open-external", url: "https://github.com/earendil-works/pi" },
+      action: { kind: "open-external", url: PROVIDER_REMEDIATION.pi.docsUrl },
     },
   },
 };
@@ -177,7 +181,7 @@ function opencodeRequiredCopy(forProvider: "opencode" | "ollama" | "lmstudio"): 
     primary: { label: "Open Settings", action: { kind: "open-settings" } },
     secondary: {
       label: "OpenCode site",
-      action: { kind: "open-external", url: "https://opencode.ai/" },
+      action: { kind: "open-external", url: PROVIDER_REMEDIATION.opencode.docsUrl },
     },
   };
 }
@@ -191,7 +195,7 @@ function discoveryEmptyCopy(family: ProviderFamily): ProviderCopy {
       primary: { label: "Open Settings", action: { kind: "open-settings" } },
       secondary: {
         label: "Get Cursor API key",
-        action: { kind: "open-external", url: "https://cursor.com/dashboard/api" },
+        action: { kind: "open-external", url: PROVIDER_REMEDIATION.cursor.docsUrl },
       },
     };
   }

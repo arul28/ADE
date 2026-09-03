@@ -433,6 +433,10 @@ func parseWorkChatTranscript(_ raw: String) -> [WorkChatEnvelope] {
       let subagentCommand = optionalString(eventDict["command"])
       let subagentSpawnKind = optionalString(eventDict["spawnKind"])
         .map(AgentChatSpawnKind.init(wireValue:))
+      let subagentParentAgentId = optionalString(eventDict["parentAgentId"])
+      let subagentSpawnDepth = eventDict["spawn_depth"] as? Int
+        ?? eventDict["spawnDepth"] as? Int
+      let subagentResourceLinks = parseAgentChatResourceLinksFromEvent(eventDict)
       let event: WorkChatEvent
 
       switch type {
@@ -1075,7 +1079,10 @@ func parseWorkChatTranscript(_ raw: String) -> [WorkChatEnvelope] {
         event: event,
         subagentTaskType: subagentTaskType,
         subagentCommand: subagentCommand,
-        subagentSpawnKind: subagentSpawnKind
+        subagentSpawnKind: subagentSpawnKind,
+        subagentParentAgentId: subagentParentAgentId,
+        subagentSpawnDepth: subagentSpawnDepth,
+        subagentResourceLinks: subagentResourceLinks
       )
     }
     .sorted(by: workChatEnvelopeOrderedBefore)
@@ -1107,6 +1114,32 @@ private func workSpawnCompletionEvent(
     reasoningEffort: nil,
     turnId: optionalString(completion["childTurnId"]) ?? fallbackTurnId
   )
+}
+
+private func parseAgentChatResourceLinksFromEvent(_ eventDict: [String: Any]) -> [AgentChatResourceLink] {
+  let direct = parseAgentChatResourceLinks(
+    from: eventDict["resourceLinks"] ?? eventDict["resource_links"]
+  )
+  if !direct.isEmpty { return direct }
+  let toolResult = eventDict["tool_use_result"] ?? eventDict["toolUseResult"]
+  guard let dict = toolResult as? [String: Any] else { return [] }
+  return parseAgentChatResourceLinks(from: dict["resourceLinks"] ?? dict["resource_links"])
+}
+
+private func parseAgentChatResourceLinks(from value: Any?) -> [AgentChatResourceLink] {
+  guard let array = value as? [Any], !array.isEmpty else { return [] }
+  return array.compactMap { entry -> AgentChatResourceLink? in
+    if let path = entry as? String {
+      let trimmed = path.trimmingCharacters(in: .whitespacesAndNewlines)
+      return trimmed.isEmpty ? nil : AgentChatResourceLink(uri: trimmed, name: nil, path: trimmed)
+    }
+    guard let dict = entry as? [String: Any] else { return nil }
+    let uri = optionalString(dict["uri"])
+    let name = optionalString(dict["name"])
+    let path = optionalString(dict["path"]) ?? optionalString(dict["filePath"])
+    if uri == nil && name == nil && path == nil { return nil }
+    return AgentChatResourceLink(uri: uri, name: name, path: path)
+  }
 }
 
 private func parseAgentChatFileRefs(from value: Any?) -> [AgentChatFileRef]? {

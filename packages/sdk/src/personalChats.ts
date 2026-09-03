@@ -1,9 +1,12 @@
 import type { JsonRpcConnection } from "./jsonRpc.js";
+import type { EngineApprovalDecision } from "./approvals.js";
 import type {
   AgentChatEventHistorySnapshot,
   AgentChatFileRef,
   AgentChatModelCatalog,
   AgentChatSessionSummary,
+  PendingInputRequest,
+  PendingInputsResult,
   PersonalChatCallResponse,
 } from "./types.js";
 
@@ -89,5 +92,35 @@ export class PersonalChatsApi {
 
   updateSession(args: Record<string, unknown>): Promise<unknown> {
     return this.call("updateSession", args);
+  }
+
+  /**
+   * Answers one blocked approval.
+   *
+   * The engine settles an unknown or already-settled item silently, so a caller
+   * cannot tell a real answer from a no-op by the result. `AdeThread.approve`
+   * checks the pending set first for that reason.
+   */
+  approve(args: {
+    sessionId: string;
+    itemId: string;
+    decision: EngineApprovalDecision;
+    responseText?: string;
+  }): Promise<unknown> {
+    return this.call("approve", args, 60_000);
+  }
+
+  /**
+   * Every unresolved request for one session.
+   *
+   * Always an array: a runtime that answers `null`, or one whose result is not
+   * the documented envelope, degrades to "nothing pending" rather than a null
+   * dereference inside a render pass.
+   */
+  async pendingInputs(sessionId: string): Promise<PendingInputRequest[]> {
+    const result = await this.call<Partial<PendingInputsResult> | null>("pendingInputs", {
+      sessionId,
+    });
+    return Array.isArray(result?.requests) ? result.requests : [];
   }
 }

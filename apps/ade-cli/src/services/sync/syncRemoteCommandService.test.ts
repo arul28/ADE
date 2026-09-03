@@ -1166,7 +1166,7 @@ describe("createSyncRemoteCommandService", () => {
     await expect(service.execute(makePayload("chat.interrupt", {
       sessionId: "chat-1",
       mode: "discard_everything",
-    }))).rejects.toThrow(/stop_and_clear.*stop_only/);
+    }))).rejects.toThrow(/known stop mode/);
     await expect(service.execute(makePayload("chat.restoreCancelledQueue", {
       sessionId: "chat-1",
     }))).rejects.toThrow(/requires recoveryId/);

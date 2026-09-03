@@ -124,6 +124,7 @@ vi.mock("./permissionMapping", () => ({
 vi.mock("../../../shared/chatTranscript", () => ({ parseAgentChatTranscript: vi.fn(() => []) }));
 
 import { createAgentChatService } from "./agentChatService";
+import type { AgentChatStopMode } from "../../../shared/chatStopModes";
 import type { AgentChatEventEnvelope } from "../../../shared/types";
 
 let tempRoot: string;
@@ -255,6 +256,7 @@ function resultsFor(events: AgentChatEventEnvelope[], taskId: string) {
 async function interruptAfterEvent(
   messages: Array<Record<string, unknown>>,
   ready: (event: AgentChatEventEnvelope) => boolean,
+  mode?: AgentChatStopMode,
 ) {
   const harness = await createSession(messages, true);
   const sendPromise = harness.service.sendMessage({
@@ -264,7 +266,10 @@ async function interruptAfterEvent(
   await vi.waitFor(() => {
     expect(harness.events.some(ready)).toBe(true);
   });
-  await harness.service.interrupt({ sessionId: harness.session.id });
+  await harness.service.interrupt({
+    sessionId: harness.session.id,
+    ...(mode ? { mode } : {}),
+  });
   claudeSdk.release?.();
   await expect(sendPromise).resolves.toBeUndefined();
   return harness.events;
@@ -300,7 +305,7 @@ describe("Claude subagent result gate", () => {
     expect(resultsFor(events, taskId)).toHaveLength(0);
   });
 
-  it("emits exactly one stopped result for a subagent that emitted started", async () => {
+  it("spares a started subagent on default interrupt", async () => {
     const taskId = "real-subagent";
     const events = await interruptAfterEvent([
       {
@@ -311,6 +316,21 @@ describe("Claude subagent result gate", () => {
         task_type: "subagent",
       },
     ], (envelope) => envelope.event.type === "subagent_started" && envelope.event.taskId === taskId);
+
+    expect(resultsFor(events, taskId)).toHaveLength(0);
+  });
+
+  it("emits exactly one stopped result for a subagent when interrupt stops background work", async () => {
+    const taskId = "real-subagent";
+    const events = await interruptAfterEvent([
+      {
+        type: "system",
+        subtype: "task_started",
+        task_id: taskId,
+        description: "Inspect the chat pipeline",
+        task_type: "subagent",
+      },
+    ], (envelope) => envelope.event.type === "subagent_started" && envelope.event.taskId === taskId, "stop_and_clear_and_background");
 
     expect(resultsFor(events, taskId)).toEqual([
       expect.objectContaining({ type: "subagent_result", taskId, status: "stopped" }),
@@ -366,7 +386,7 @@ describe("Claude subagent result gate", () => {
         task_id: taskId,
         patch: { status: "in_progress", description: `Unknown ${taskId}` },
       })),
-    ], (envelope) => envelope.event.type === "subagent_progress" && envelope.event.taskId === strayIds.at(-1));
+    ], (envelope) => envelope.event.type === "subagent_progress" && envelope.event.taskId === strayIds.at(-1), "stop_and_clear_and_background");
 
     const stoppedResults = events.filter((envelope) =>
       envelope.event.type === "subagent_result" && envelope.event.status === "stopped"

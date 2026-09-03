@@ -6408,6 +6408,14 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(steer["sessionId"] as? String, "session-1")
     XCTAssertEqual(steer["text"] as? String, "Keep going")
 
+    let cancel = try jsonDictionary(from: AgentChatCancelSteerRequest(
+      sessionId: "session-1",
+      steerId: "steer-1"
+    ))
+    XCTAssertEqual(cancel["sessionId"] as? String, "session-1")
+    XCTAssertEqual(cancel["steerId"] as? String, "steer-1")
+    XCTAssertNil(cancel["requireQueued"], "Ordinary cancel must also clear persisted messages without a live runtime.")
+
     let sessionId = try jsonDictionary(from: AgentChatSessionIdRequest(sessionId: "session-1"))
     XCTAssertEqual(sessionId["sessionId"] as? String, "session-1")
 
@@ -7384,6 +7392,13 @@ final class ADETests: XCTestCase {
               ],
             ],
             [
+              "action": "chat.stopTask",
+              "policy": [
+                "viewerAllowed": true,
+                "queueable": false,
+              ],
+            ],
+            [
               "action": "chat.restoreCancelledQueue",
               "policy": [
                 "viewerAllowed": true,
@@ -7412,6 +7427,7 @@ final class ADETests: XCTestCase {
     XCTAssertFalse(service.isChatRemoteActionQueueable("chat.setScheduledWorkPaused", sessionId: "chat-1"))
     XCTAssertTrue(service.supportsChatRemoteAction("chat.dispatchSteer", sessionId: "chat-1"))
     XCTAssertTrue(service.supportsChatRemoteAction("chat.interruptWithQueueMode", sessionId: "chat-1"))
+    XCTAssertTrue(service.supportsChatRemoteAction("chat.stopTask", sessionId: "chat-1"))
     XCTAssertTrue(service.supportsChatRemoteAction("chat.restoreCancelledQueue", sessionId: "chat-1"))
     service.configureConnectedTransportForTesting()
     XCTAssertTrue(service.canInvokeChatRemoteAction("chat.setScheduledWorkPaused", sessionId: "chat-1"))
@@ -13615,6 +13631,138 @@ final class ADETests: XCTestCase {
     }
   }
 
+  func testWorkChatStopCapabilityMirrorsDesktopStopMatrix() {
+    XCTAssertEqual(
+      WorkChatStopCapability.modes,
+      [.stopOnly, .stopAndClear, .stopAndBackground, .stopAndClearAndBackground]
+    )
+    XCTAssertEqual(WorkChatStopCapability.defaultMode, .stopAndClear)
+    XCTAssertEqual(WorkChatStopCapability.copy(mode: .stopOnly, jobCount: 3).title, "Turn only")
+    XCTAssertEqual(WorkChatStopCapability.copy(mode: .stopAndClear, jobCount: 3).title, "Turn + queue")
+    XCTAssertEqual(
+      WorkChatStopCapability.copy(mode: .stopAndBackground, jobCount: 3).title,
+      "Turn + background (3 jobs)"
+    )
+    XCTAssertEqual(
+      WorkChatStopCapability.copy(mode: .stopAndClearAndBackground, jobCount: 1).title,
+      "Turn + queue + background (1 job)"
+    )
+    XCTAssertEqual(AgentChatStopMode.stopOnly.rawValue, "stop_only")
+    XCTAssertEqual(AgentChatStopMode.stopAndClear.rawValue, "stop_and_clear")
+    XCTAssertEqual(AgentChatStopMode.stopAndBackground.rawValue, "stop_and_background")
+    XCTAssertEqual(AgentChatStopMode.stopAndClearAndBackground.rawValue, "stop_and_clear_and_background")
+  }
+
+  func testAgentChatSessionSummaryDecodesUsageLimitParkFields() throws {
+    let data = Data(#"""
+    {
+      "sessionId":"chat-1",
+      "laneId":"lane-1",
+      "provider":"claude",
+      "model":"claude-sonnet",
+      "status":"idle",
+      "startedAt":"2026-07-08T00:00:00.000Z",
+      "lastActivityAt":"2026-07-08T00:00:03.000Z",
+      "autoContinueAtUsageLimit":false,
+      "usageLimitParkedUntil":"2026-07-08T00:47:00.000Z",
+      "activeBackgroundTaskCount":3
+    }
+    """#.utf8)
+    let summary = try JSONDecoder().decode(AgentChatSessionSummary.self, from: data)
+    XCTAssertEqual(summary.autoContinueAtUsageLimit, false)
+    XCTAssertEqual(summary.usageLimitParkedUntil, "2026-07-08T00:47:00.000Z")
+    XCTAssertEqual(summary.activeBackgroundTaskCount, 3)
+  }
+
+  func testAgentChatContextUsageCategoryDecodesKindNotName() throws {
+    let data = Data(#"""
+    {"name":"Free","tokens":1200,"percentage":12,"kind":"used"}
+    """#.utf8)
+    let category = try JSONDecoder().decode(AgentChatContextUsageCategory.self, from: data)
+    XCTAssertEqual(category.name, "Free")
+    XCTAssertEqual(category.kind, "used")
+  }
+
+  func testWorkUsageLimitOptOutShowsWhenParkedAndHidesWhenOptedOut() {
+    let now = Date(timeIntervalSince1970: 1_783_468_800)
+    let parked = "2026-07-08T00:47:00.000Z"
+    XCTAssertTrue(
+      WorkUsageLimitOptOut.shouldShow(
+        autoContinueAtUsageLimit: nil,
+        usageLimitParkedUntil: parked,
+        scheduledWork: nil,
+        now: now
+      )
+    )
+    XCTAssertFalse(
+      WorkUsageLimitOptOut.shouldShow(
+        autoContinueAtUsageLimit: false,
+        usageLimitParkedUntil: parked,
+        scheduledWork: nil,
+        now: now
+      )
+    )
+    let label = workUsageLimitResetLabel(parked, now: now)
+    XCTAssertTrue(label.hasPrefix("Reset at "))
+    XCTAssertTrue(label.contains("47 min"))
+  }
+
+  func testAgentChatScheduledWorkItemDecodesAutoResumeSource() throws {
+    let data = Data(#"""
+    {
+      "id":"auto-resume:chat-1",
+      "sessionId":"chat-1",
+      "kind":"wakeup",
+      "status":"scheduled",
+      "title":"Auto-resume",
+      "prompt":"continue",
+      "createdAt":"2026-07-08T00:00:00.000Z",
+      "durable":true,
+      "cancellable":true,
+      "source":"auto_resume_limit",
+      "nextRunAt":"2026-07-08T00:47:00.000Z"
+    }
+    """#.utf8)
+    let item = try JSONDecoder().decode(AgentChatScheduledWorkItem.self, from: data)
+    XCTAssertEqual(item.source, "auto_resume_limit")
+    XCTAssertTrue(WorkUsageLimitOptOut.isPendingAutoResume(item))
+    XCTAssertTrue(
+      WorkUsageLimitOptOut.shouldShow(
+        autoContinueAtUsageLimit: nil,
+        usageLimitParkedUntil: nil,
+        scheduledWork: [item],
+        now: Date(timeIntervalSince1970: 1_783_468_800)
+      )
+    )
+  }
+
+  func testWorkSubagentCanStopTaskSkipsSpawnedChatsAndSettledRows() {
+    func snap(taskId: String, status: WorkSubagentSnapshot.Status, agentType: String? = "code-reviewer") -> WorkSubagentSnapshot {
+      WorkSubagentSnapshot(
+        taskId: taskId,
+        agentId: taskId,
+        agentType: agentType,
+        parentToolUseId: nil,
+        description: "Audit chat renderer",
+        background: false,
+        label: nil,
+        model: nil,
+        reasoningEffort: nil,
+        status: status,
+        lastToolName: nil,
+        latestSummary: nil,
+        turnId: nil,
+        startedAt: nil,
+        updatedAt: nil
+      )
+    }
+    let running = snap(taskId: "agent-1", status: .running)
+    XCTAssertTrue(workSubagentCanStopTask(running))
+    XCTAssertEqual(workSubagentStopLabel(running), "Stop code-reviewer")
+    XCTAssertFalse(workSubagentCanStopTask(snap(taskId: "agent-1", status: .succeeded)))
+    XCTAssertFalse(workSubagentCanStopTask(snap(taskId: "chat:child-1", status: .running)))
+  }
+
   func testSyncChatMessageDeliveryParsesQueuedSteerResult() {
     XCTAssertEqual(syncChatMessageDelivery(from: ["ok": true, "steerId": "steer-1", "queued": true]), .queued(steerId: "steer-1"))
     XCTAssertEqual(syncChatMessageDelivery(from: ["ok": true, "steerId": "steer-1", "queued": false]), .sent)
@@ -14883,7 +15031,7 @@ final class ADETests: XCTestCase {
 
   func testWorkSubagentSnapshotsPreserveAgentIdAndRunningCount() {
     let raw = """
-    {"sessionId":"chat-1","timestamp":"2026-03-25T00:00:01.000Z","sequence":1,"event":{"type":"subagent_started","taskId":"task-1","agentId":"agent-1","parentAgentId":"parent-agent-1","description":"Docs helper","background":true,"label":"Researcher","model":"gpt-5.6-luna","reasoningEffort":"xhigh","turnId":"turn-1"}}
+    {"sessionId":"chat-1","timestamp":"2026-03-25T00:00:01.000Z","sequence":1,"event":{"type":"subagent_started","taskId":"task-1","agentId":"agent-1","parentAgentId":"parent-agent-1","spawnDepth":1,"resourceLinks":[{"path":"apps/ios/README.md"}],"description":"Docs helper","background":true,"label":"Researcher","model":"gpt-5.6-luna","reasoningEffort":"xhigh","turnId":"turn-1"}}
     {"sessionId":"chat-1","timestamp":"2026-03-25T00:00:02.000Z","sequence":2,"event":{"type":"subagent_progress","taskId":"task-1","agentId":"agent-1","summary":"Reading README.md","lastToolName":"functions.Read","label":"Researcher","model":"gpt-5.6-luna","reasoningEffort":"xhigh","turnId":"turn-1"}}
     {"sessionId":"chat-1","timestamp":"2026-03-25T00:00:03.000Z","sequence":3,"event":{"type":"subagent_started","taskId":"task-2","agentId":"agent-2","description":"Done helper","turnId":"turn-1"}}
     {"sessionId":"chat-1","timestamp":"2026-03-25T00:00:04.000Z","sequence":4,"event":{"type":"subagent_result","taskId":"task-2","agentId":"agent-2","status":"completed","summary":"Done","turnId":"turn-1"}}
@@ -14902,6 +15050,151 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(snapshots.first?.lastToolName, "functions.Read")
     XCTAssertEqual(snapshots.first?.startedAt, "2026-03-25T00:00:01.000Z")
     XCTAssertEqual(snapshots.first?.updatedAt, "2026-03-25T00:00:02.000Z")
+    XCTAssertEqual(snapshots.first?.parentAgentId, "parent-agent-1")
+    XCTAssertEqual(snapshots.first?.spawnDepth, 1)
+    XCTAssertEqual(snapshots.first?.resourceLinks.first?.path, "apps/ios/README.md")
+    XCTAssertEqual(workSubagentResourcePaths(snapshots[0]), ["apps/ios/README.md"])
+  }
+
+  func testWorkSubagentTreePrefixUsesConnectorGlyphsAndPrefersSpawnDepth() {
+    func snap(
+      _ id: String,
+      parent: String?,
+      startedAt: String,
+      spawnDepth: Int? = nil
+    ) -> WorkSubagentSnapshot {
+      WorkSubagentSnapshot(
+        taskId: id,
+        agentId: id,
+        agentType: nil,
+        parentToolUseId: nil,
+        description: id,
+        background: false,
+        label: nil,
+        model: nil,
+        reasoningEffort: nil,
+        status: .running,
+        lastToolName: nil,
+        latestSummary: nil,
+        turnId: nil,
+        startedAt: startedAt,
+        updatedAt: startedAt,
+        parentAgentId: parent,
+        spawnDepth: spawnDepth
+      )
+    }
+    let root = snap("root", parent: nil, startedAt: "2026-05-01T00:00:02.000Z")
+    let newer = snap("newer", parent: "root", startedAt: "2026-05-01T00:00:01.000Z")
+    let older = snap("older", parent: "root", startedAt: "2026-05-01T00:00:00.000Z")
+    let leaf = snap("leaf", parent: "newer", startedAt: "2026-05-01T00:00:00.500Z", spawnDepth: 2)
+    let list = [root, newer, older, leaf]
+    XCTAssertEqual(workSubagentTreePrefix(root, in: list), "")
+    XCTAssertEqual(workSubagentTreePrefix(newer, in: list), "├ ")
+    XCTAssertEqual(workSubagentTreePrefix(older, in: list), "└ ")
+    XCTAssertEqual(workSubagentTreeDepth(leaf, in: list), 2)
+    XCTAssertEqual(workSubagentTreePrefix(leaf, in: list), "│  └ ")
+  }
+
+  func testAgentChatResourceLinkDisplayPathStripsWindowsFileHostSlash() {
+    let windows = AgentChatResourceLink(uri: "file:///C:/Users/ade/src/foo.ts", name: nil, path: nil)
+    XCTAssertEqual(windows.displayPath, "C:/Users/ade/src/foo.ts")
+    let posix = AgentChatResourceLink(uri: "file:///tmp/a.ts", name: nil, path: nil)
+    XCTAssertEqual(posix.displayPath, "/tmp/a.ts")
+    let named = AgentChatResourceLink(uri: nil, name: "README", path: nil)
+    XCTAssertNil(named.copyPath)
+    XCTAssertEqual(named.displayPath, "README")
+  }
+
+  func testAgentChatEventEnvelopePrefersSpawnDepthSnakeCase() throws {
+    let json = """
+    {
+      "sessionId": "chat-1",
+      "timestamp": "2026-05-01T00:00:01.000Z",
+      "sequence": 1,
+      "event": {
+        "type": "subagent_started",
+        "taskId": "task-1",
+        "description": "Docs helper",
+        "spawn_depth": 1,
+        "spawnDepth": 9
+      }
+    }
+    """
+    let envelope = try JSONDecoder().decode(AgentChatEventEnvelope.self, from: Data(json.utf8))
+    XCTAssertEqual(envelope.subagentSpawnDepth, 1)
+  }
+
+  func testWorkTranscriptParsesNestedToolUseResultResourceLinksAndPrefersSpawnDepthSnakeCase() {
+    let raw = """
+    {"sessionId":"chat-1","timestamp":"2026-03-25T00:00:01.000Z","sequence":1,"event":{"type":"subagent_started","taskId":"task-1","agentId":"agent-1","spawn_depth":1,"spawnDepth":9,"tool_use_result":{"resource_links":[{"path":"apps/ios/Foo.swift"},{"name":"README"}]},"description":"Docs helper","turnId":"turn-1"}}
+    """
+    let snapshots = buildWorkSubagentSnapshots(from: parseWorkChatTranscript(raw))
+    XCTAssertEqual(snapshots.first?.spawnDepth, 1)
+    XCTAssertEqual(snapshots.first?.resourceLinks.count, 2)
+    XCTAssertEqual(snapshots.first?.resourceLinks.first?.path, "apps/ios/Foo.swift")
+    XCTAssertEqual(workSubagentResourcePaths(snapshots[0]), ["apps/ios/Foo.swift"])
+  }
+
+  func testWorkSubagentTreePrefixCapsConnectorsToDisplayedSpawnDepth() {
+    func snap(
+      _ id: String,
+      parent: String?,
+      startedAt: String,
+      spawnDepth: Int? = nil
+    ) -> WorkSubagentSnapshot {
+      WorkSubagentSnapshot(
+        taskId: id,
+        agentId: id,
+        agentType: nil,
+        parentToolUseId: nil,
+        description: id,
+        background: false,
+        label: nil,
+        model: nil,
+        reasoningEffort: nil,
+        status: .running,
+        lastToolName: nil,
+        latestSummary: nil,
+        turnId: nil,
+        startedAt: startedAt,
+        updatedAt: startedAt,
+        parentAgentId: parent,
+        spawnDepth: spawnDepth
+      )
+    }
+    let root = snap("root", parent: nil, startedAt: "2026-05-01T00:00:03.000Z")
+    let child = snap("child", parent: "root", startedAt: "2026-05-01T00:00:02.000Z")
+    let leaf = snap("leaf", parent: "child", startedAt: "2026-05-01T00:00:01.000Z", spawnDepth: 1)
+    let list = [root, child, leaf]
+    XCTAssertEqual(workSubagentTreeDepth(leaf, in: list), 1)
+    XCTAssertEqual(workSubagentTreePrefix(leaf, in: list), "└ ")
+  }
+
+  func testWorkSubagentSnapshotsRenderSignatureHashesEachResourceLink() {
+    func snap(_ path: String) -> WorkSubagentSnapshot {
+      WorkSubagentSnapshot(
+        taskId: "task-1",
+        agentId: "agent-1",
+        agentType: nil,
+        parentToolUseId: nil,
+        description: "Docs helper",
+        background: false,
+        label: nil,
+        model: nil,
+        reasoningEffort: nil,
+        status: .running,
+        lastToolName: nil,
+        latestSummary: nil,
+        turnId: nil,
+        startedAt: "2026-05-01T00:00:01.000Z",
+        updatedAt: "2026-05-01T00:00:01.000Z",
+        resourceLinks: [AgentChatResourceLink(uri: nil, name: nil, path: path)]
+      )
+    }
+    XCTAssertNotEqual(
+      workSubagentSnapshotsRenderSignature([snap("a.ts")]),
+      workSubagentSnapshotsRenderSignature([snap("b.ts")])
+    )
   }
 
   func testWorkSubagentSnapshotsAdoptCodexPlaceholderAndPreserveStoppedAgentName() {
@@ -17999,6 +18292,34 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(summary.requestedCwd, "apps/ios/ADE")
   }
 
+  func testAgentChatSessionSummaryPreservesExplicitCursorModeClear() throws {
+    let payload: [String: Any] = [
+      "sessionId": "chat-cleared",
+      "laneId": "lane-1",
+      "provider": "cursor",
+      "model": "composer-2",
+      "permissionMode": "default",
+      "cursorModeSnapshot": [
+        "currentModeId": "full-auto",
+        "availableModeIds": ["agent", "ask", "plan", "full-auto"],
+      ],
+      "cursorModeId": NSNull(),
+      "cursorModeIdWasCleared": true,
+      "status": "idle",
+      "startedAt": "2026-03-25T00:00:00.000Z",
+      "lastActivityAt": "2026-03-25T00:00:00.000Z",
+    ]
+
+    let summary = try JSONDecoder().decode(
+      AgentChatSessionSummary.self,
+      from: try JSONSerialization.data(withJSONObject: payload)
+    )
+
+    XCTAssertTrue(summary.cursorModeIdWasCleared == true)
+    XCTAssertEqual(workInitialRuntimeMode(summary), "default")
+    XCTAssertEqual(workInitialCursorModeId(summary), "agent")
+  }
+
   func testAgentChatMetaModeUpdateAppliesCursorConfigAndExplicitClear() throws {
     let summaryPayload: [String: Any] = [
       "sessionId": "chat-1",
@@ -18047,9 +18368,11 @@ final class ADETests: XCTestCase {
     XCTAssertTrue(clearUpdate.hasAnyField)
     summary.applyModeUpdate(clearUpdate)
     XCTAssertNil(summary.cursorModeId)
+    XCTAssertTrue(summary.cursorModeIdWasCleared == true)
 
     // A partial update that omits cursorModeId entirely must NOT clear it.
     summary.cursorModeId = "agent"
+    summary.cursorModeIdWasCleared = false
     let unrelatedUpdate = try JSONDecoder().decode(
       AgentChatSessionMetaModeUpdate.self,
       from: try JSONSerialization.data(withJSONObject: [
@@ -18085,11 +18408,11 @@ final class ADETests: XCTestCase {
 
     // The cache fold above is only half the story: the open chat view rebuilds
     // its LIVE summary from the cache via `mergeModeFields(from:)`. The cache is
-    // authoritative for cursor fields, so the merge mirrors them wholesale —
-    // nil included — which is exactly how an explicit clear reaches the live
-    // composer, with no stateful clear marker.
+    // authoritative for cursor fields, and the explicit clear marker travels
+    // with the nullable mode so Swift does not mistake null for omission.
     var cachedAfterClear = summary
     cachedAfterClear.cursorModeId = nil
+    cachedAfterClear.cursorModeIdWasCleared = true
     cachedAfterClear.cursorConfigValues = nil
     var liveSummary = summary
     liveSummary.cursorModeId = "agent"
@@ -18100,11 +18423,11 @@ final class ADETests: XCTestCase {
     XCTAssertNil(mergedCleared.cursorConfigValues, "explicit cache clear must null the live cursor config")
 
     // Regression guard (the "stale clear marker wins" bug): after a clear, a
-    // host that RESTORES a non-null mode/config must NOT be re-cleared. With no
-    // persistent clear state, each reconcile mirrors the current authoritative
-    // cache, so a restored value survives.
+    // host that RESTORES a non-null mode/config must reset the marker, so the
+    // restored value survives.
     var cachedRestored = summary
     cachedRestored.cursorModeId = "plan"
+    cachedRestored.cursorModeIdWasCleared = false
     cachedRestored.cursorConfigValues = ["voice": .bool(false)]
     var liveAfterClear = liveSummary
     liveAfterClear.cursorModeId = nil

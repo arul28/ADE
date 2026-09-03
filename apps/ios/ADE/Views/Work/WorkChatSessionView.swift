@@ -512,6 +512,9 @@ struct WorkChatSummaryRenderContext: Equatable {
   /// that can rescue a pending-input card the transcript swept without a
   /// `pending_input_resolved` receipt — see `WorkPendingInputQueue.resolved(_:)`.
   let pendingInputItemId: String?
+  let activeBackgroundTaskCount: Int?
+  let showsUsageLimitOptOut: Bool
+  let usageLimitResetLabel: String
 
   init(_ summary: AgentChatSessionSummary?, parentTitle: String? = nil) {
     guard let summary else {
@@ -535,6 +538,9 @@ struct WorkChatSummaryRenderContext: Equatable {
       self.subagentTakeoverPromptShownAt = nil
       self.parentTitle = nil
       self.pendingInputItemId = nil
+      self.activeBackgroundTaskCount = nil
+      self.showsUsageLimitOptOut = false
+      self.usageLimitResetLabel = ""
       return
     }
 
@@ -558,6 +564,16 @@ struct WorkChatSummaryRenderContext: Equatable {
     self.subagentTakeoverPromptShownAt = summary.subagentTakeoverPromptShownAt
     self.parentTitle = parentTitle
     self.pendingInputItemId = summary.pendingInputItemId
+    self.activeBackgroundTaskCount = summary.activeBackgroundTaskCount
+    self.showsUsageLimitOptOut = WorkUsageLimitOptOut.shouldShow(
+      autoContinueAtUsageLimit: summary.autoContinueAtUsageLimit,
+      usageLimitParkedUntil: summary.usageLimitParkedUntil,
+      scheduledWork: summary.scheduledWork
+    )
+    self.usageLimitResetLabel = WorkUsageLimitOptOut.resetLabel(
+      usageLimitParkedUntil: summary.usageLimitParkedUntil,
+      scheduledWork: summary.scheduledWork
+    )
   }
 
   var currentModelId: String {
@@ -715,6 +731,8 @@ struct WorkChatSessionView: View {
   let onSend: @MainActor (String, [WorkChatInputAttachment], WorkActiveSendMode) async -> Bool
   let onInterrupt: @MainActor (AgentChatStopMode) async -> Void
   let onRestoreCancelledQueue: (@MainActor (String) async -> Void)?
+  var onOptOutUsageLimitAutoContinue: (@MainActor () async -> Void)? = nil
+  var onStopSubagentTask: (@MainActor (String) async -> Void)? = nil
   let onApproveRequest: @MainActor (String, AgentChatApprovalDecision, String?) async -> Void
   let onRespondToQuestion: @MainActor (String, String, AgentChatInputAnswerValue?, String?) async -> Void
   let onSubmitQuestionAnswers: @MainActor (String, [String: AgentChatInputAnswerValue], String?) async -> Void
@@ -1675,6 +1693,20 @@ struct WorkChatSessionView: View {
         )
       }
 
+      if chatSummaryContext.showsUsageLimitOptOut,
+         let onOptOutUsageLimitAutoContinue {
+        WorkUsageLimitBanner(
+          resetLabel: chatSummaryContext.usageLimitResetLabel,
+          optingOut: actionInFlight,
+          enabled: !hostUnreachable && !actionInFlight,
+          onOptOut: {
+            await runSessionAction {
+              await onOptOutUsageLimitAutoContinue()
+            }
+          }
+        )
+      }
+
       if chatSummaryContext.spawnKind == .subagent,
          let parentId = chatSummaryContext.orchestrationParentSessionId,
          !parentId.isEmpty,
@@ -2364,6 +2396,9 @@ func workSubagentSnapshotsRenderSignature(_ snapshots: [WorkSubagentSnapshot]) -
     hasher.combine(snapshot.startedAt)
     hasher.combine(snapshot.updatedAt)
     hasher.combine(snapshot.spawnKind.map { String(describing: $0) })
+    hasher.combine(snapshot.parentAgentId)
+    hasher.combine(snapshot.spawnDepth ?? Int.min)
+    hasher.combine(snapshot.resourceLinks)
   }
   return hasher.finalize()
 }
@@ -3278,9 +3313,8 @@ private struct WorkChatComposerDraftInput: View {
     // failed-send restore that runs first would be preserved either way, but
     // binding first keeps the persisted key correct for the very first autosave.
     .task(id: draftPersistenceKey) {
-      stopMode = UserDefaults.standard.string(forKey: "\(draftPersistenceKey).stopMode") == AgentChatStopMode.stopOnly.rawValue
-        ? .stopOnly
-        : .stopAndClear
+      stopMode = AgentChatStopMode(rawValue: UserDefaults.standard.string(forKey: "\(draftPersistenceKey).stopMode") ?? "")
+        ?? WorkChatStopCapability.defaultMode
       restoreActiveSendMode()
       sendOptionsPresented = false
       stopOptionsPresented = false
@@ -3645,7 +3679,9 @@ private struct WorkChatComposerDraftInput: View {
             .frame(width: 32, height: 32)
         }
         .buttonStyle(.plain)
-        .accessibilityLabel(stopMode == .stopOnly ? "Stop turn and keep queue" : "Stop turn and clear queue")
+        .accessibilityLabel(WorkChatStopCapability.copy(mode: stopMode, jobCount: chatSummary.activeBackgroundTaskCount ?? 0).title)
+        .accessibilityValue(WorkChatStopCapability.copy(mode: stopMode, jobCount: chatSummary.activeBackgroundTaskCount ?? 0).title)
+        .accessibilityHint("Choose whether the turn, queue, and background jobs are stopped")
         .disabled(interruptInFlight)
 
         Button {
@@ -3658,26 +3694,25 @@ private struct WorkChatComposerDraftInput: View {
         }
         .buttonStyle(.plain)
         .accessibilityLabel("More stop options")
-        .accessibilityValue(stopMode == .stopOnly ? "Stop only" : "Stop and clear queue")
-        .accessibilityHint("Choose whether queued Claude messages are kept or cancelled")
+        .accessibilityValue(WorkChatStopCapability.copy(mode: stopMode, jobCount: chatSummary.activeBackgroundTaskCount ?? 0).title)
+        .accessibilityHint("Choose whether the turn, queue, and background jobs are stopped")
         .disabled(interruptInFlight)
         .popover(isPresented: $stopOptionsPresented, arrowEdge: .bottom) {
+          let jobCount = chatSummary.activeBackgroundTaskCount ?? 0
           VStack(alignment: .leading, spacing: 0) {
-            stopOption(
-              mode: .stopAndClear,
-              title: "Stop & clear queue",
-              detail: "Stop this turn and cancel staged Claude messages.",
-              systemImage: "trash"
-            )
-            Divider()
-            stopOption(
-              mode: .stopOnly,
-              title: "Stop only",
-              detail: "Stop this turn and keep staged messages.",
-              systemImage: "stop.fill"
-            )
+            ForEach(Array(WorkChatStopCapability.modes.enumerated()), id: \.element) { index, mode in
+              if index > 0 {
+                Divider().padding(.horizontal, 12)
+              }
+              stopOption(
+                mode: mode,
+                title: WorkChatStopCapability.copy(mode: mode, jobCount: jobCount).title,
+                detail: WorkChatStopCapability.copy(mode: mode, jobCount: jobCount).detail,
+                systemImage: WorkChatStopCapability.systemImage(for: mode)
+              )
+            }
           }
-          .frame(width: 260)
+          .frame(width: 300)
           .presentationCompactAdaptation(.popover)
         }
       }
@@ -3773,10 +3808,16 @@ private struct WorkChatComposerDraftInput: View {
         .controlSize(.mini)
         .tint(ADEColor.danger)
     } else if stopMode == .stopOnly {
-      Image(systemName: "stop.fill")
+      Image(systemName: WorkChatStopCapability.systemImage(for: .stopOnly))
         .font(.system(size: 10, weight: .bold))
+    } else if stopMode == .stopAndBackground {
+      Image(systemName: WorkChatStopCapability.systemImage(for: .stopAndBackground))
+        .font(.system(size: 10, weight: .bold))
+    } else if stopMode == .stopAndClearAndBackground {
+      Image(systemName: WorkChatStopCapability.systemImage(for: .stopAndClearAndBackground))
+        .font(.system(size: 11, weight: .bold))
     } else {
-      Image(systemName: "trash")
+      Image(systemName: WorkChatStopCapability.systemImage(for: .stopAndClear))
         .font(.system(size: 11, weight: .bold))
     }
   }
@@ -3885,6 +3926,64 @@ private struct WorkSubagentLineageBreadcrumb: View {
     .buttonStyle(.plain)
     .accessibilityLabel("Open parent chat, \(sourceLabel)")
     .accessibilityHint("Returns to the chat that spawned this subagent.")
+  }
+}
+
+private struct WorkUsageLimitBanner: View {
+  let resetLabel: String
+  let optingOut: Bool
+  let enabled: Bool
+  let onOptOut: @MainActor () async -> Void
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 8) {
+      Text("Usage limit reached")
+        .font(.caption.weight(.semibold))
+        .foregroundStyle(ADEColor.textPrimary)
+      if !resetLabel.isEmpty {
+        Text(resetLabel)
+          .font(.caption)
+          .foregroundStyle(ADEColor.textSecondary)
+      }
+      Text("Continue automatically")
+        .font(.caption)
+        .foregroundStyle(ADEColor.textSecondary)
+      HStack {
+        Spacer(minLength: 4)
+        Button {
+          Task { await onOptOut() }
+        } label: {
+          Group {
+            if optingOut {
+              ProgressView()
+                .controlSize(.small)
+            } else {
+              Text("Don't continue")
+                .font(.caption.weight(.semibold))
+            }
+          }
+          .frame(minWidth: 44, minHeight: 44)
+          .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(ADEColor.accent)
+        .disabled(!enabled)
+        .accessibilityLabel(
+          optingOut
+            ? "Opting out of automatic continue"
+            : (enabled ? "Don't continue" : "Don't continue unavailable")
+        )
+        .accessibilityHint("Stops this chat from resuming when the usage limit resets")
+      }
+    }
+    .padding(.leading, 12)
+    .padding(.trailing, 4)
+    .padding(.vertical, 8)
+    .background(ADEColor.warning.opacity(0.07), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+    .overlay {
+      RoundedRectangle(cornerRadius: 10, style: .continuous)
+        .stroke(ADEColor.warning.opacity(0.18), lineWidth: 1)
+    }
   }
 }
 

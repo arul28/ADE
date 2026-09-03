@@ -4952,6 +4952,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         mode: "stop_and_clear",
         cancelledQueuedCount: 0,
       }),
+      stopTask: resolvedArg({ sessionId: "", taskId: "", stopped: false }),
       restoreCancelledQueue: resolvedArg<AgentChatRestoreCancelledQueueResult>({
         restored: false,
         restoredCount: 0,

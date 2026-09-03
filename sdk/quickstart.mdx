@@ -27,7 +27,11 @@ if (!report.ok) console.error(report);
 const status = await ade.providers.status();
 ```
 
-`doctor()` reports `sdkVersion` (this package) and the runtime binary version separately — they ship on different cadences. `providers.status()` lists which CLIs are installed and authenticated. Provider credentials live in the provider's own config (`~/.claude`, `~/.codex`, `~/.cursor`, …), not under `home`.
+`doctor()` reports `sdkVersion` (this package) and the runtime binary version separately — they ship on different cadences.
+
+`providers.status()` returns a map of provider id to `{ installed, binaryPath, version, authenticated, installCommand, loginCommand, source, … }`. **Read `source` first.** `"probed"` means the runtime resolved the binary and read the credential files, so those fields are measurements; `"derived"` means the runtime is older than the probe RPC and everything comes from the model catalog, so a UI should say "not detected" rather than "not installed". `providers.refresh()` bypasses the runtime's 60-second probe cache — that is the "I just installed it" button.
+
+Provider credentials live in the provider's own config (`~/.claude`, `~/.codex`, `~/.cursor`, …), not under `home`.
 
 ## Permissions
 
@@ -39,7 +43,27 @@ const thread = await ade.threads.open("ops", {
 });
 ```
 
-`"always-allow"` maps to each provider's full-auto create args. `"default"` leaves the provider's usual approval prompts in place.
+`"always-allow"` maps to each provider's full-auto create args — `bypassPermissions` on Claude, `danger-full-access` on Codex.
+
+`"default"` leaves each provider's own handling in place, and that is not one behavior: on Claude, ADE installs no gate at all and the Agent SDK decides non-interactively; on Codex, an approval request **parks the turn until something answers it**.
+
+For anything in between, pass a policy instead of a preset:
+
+```ts
+const thread = await ade.threads.open("ops", {
+  provider: "claude",
+  model: "claude-sonnet-4-5",
+  permissions: {
+    allowedTools: ["mcp:catalog:*", "Read"],
+    deniedTools: ["Bash"],
+    fallback: "deny", // never asks, so a turn can never park
+  },
+});
+```
+
+On Claude a deny fallback is stronger than "never asks": every mutating built-in the policy does not name is removed from the model's catalog, and MCP is scoped to the servers the policy names — including servers you supplied yourself in `mcpServers`. Name them in the policy to use them.
+
+Read [Permissions and approvals](/sdk/permissions) before shipping a policy or either preset.
 
 ## React UI
 

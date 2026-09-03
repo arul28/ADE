@@ -130,6 +130,7 @@ const ANALYTICS_ONLY_ACTIONS = new Set([
   "brain_repair",
   "machine_reconnect",
   "mention_expanded",
+  "hooks_ignored",
   "metadata_regenerated",
   "transaction_failed",
   "scope_selected",

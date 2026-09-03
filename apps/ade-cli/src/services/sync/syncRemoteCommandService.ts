@@ -3,9 +3,13 @@ import path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import {
+  AGENT_CHAT_DROID_PERMISSION_MODE_VALUES,
+  droidPermissionModeFromLegacyPermissionMode,
+  isAgentChatDroidPermissionMode,
   isAgentChatTurnRecoveryAction,
   normalizeAgentChatSessionMetadataFields,
 } from "../../../../desktop/src/shared/types/chat";
+import { isAgentChatStopMode } from "../../../../desktop/src/shared/chatStopModes";
 import { runWithAbortSignal } from "./abortSignal";
 import { codedError } from "../../../../desktop/src/shared/codedError";
 import {
@@ -89,6 +93,7 @@ import type {
   AgentChatDispatchSteerArgs,
   AgentChatCancelDispatchedSteerArgs,
   AgentChatInterruptArgs,
+  AgentChatStopTaskArgs,
   AgentChatRestoreCancelledQueueArgs,
   AgentChatRecoverCodexTurnArgs,
   AgentChatRecoverTurnArgs,
@@ -1146,7 +1151,7 @@ function parsePrepareCrossMachineHandoffArgs(
   const codexSandbox = parseEnum("codexSandbox", ["read-only", "workspace-write", "danger-full-access"] as const);
   const codexConfigSource = parseEnum("codexConfigSource", ["flags", "config-toml"] as const);
   const opencodePermissionMode = parseEnum("opencodePermissionMode", ["plan", "edit", "full-auto", "config-toml"] as const);
-  const droidPermissionMode = parseEnum("droidPermissionMode", ["read-only", "auto-low", "auto-medium", "auto-high", "agi"] as const);
+  const droidPermissionMode = parseEnum("droidPermissionMode", AGENT_CHAT_DROID_PERMISSION_MODE_VALUES);
   const permissionMode = parseEnum("permissionMode", ["default", "auto", "plan", "edit", "full-auto", "config-toml"] as const);
   const cursorModeId = parseNullableString("cursorModeId");
   const cursorConfigValues = parseConfigValues();
@@ -1769,6 +1774,13 @@ function parseCliPermissionMode(value: unknown): SyncStartCliSessionArgs["permis
   return isTrackedCliPermissionMode(mode) ? mode : "default";
 }
 
+function parseCliDroidPermissionMode(value: unknown): SyncStartCliSessionArgs["droidPermissionMode"] {
+  const mode = asTrimmedString(value)?.toLowerCase();
+  if (!mode) return undefined;
+  if (isAgentChatDroidPermissionMode(mode)) return mode;
+  throw new Error("work.startCliSession requires a valid droidPermissionMode.");
+}
+
 function parseOptionalCliPermissionMode(value: unknown): SyncSendToSessionArgs["permissionMode"] {
   const mode = asTrimmedString(value);
   return isTrackedCliPermissionMode(mode) ? mode : undefined;
@@ -1796,6 +1808,10 @@ function parseOptionalCodexConfigSource(value: unknown): SyncSendToSessionArgs["
 function parseStartCliSessionArgs(value: Record<string, unknown>): SyncStartCliSessionArgs {
   const laneId = requireString(value.laneId, "work.startCliSession requires laneId.");
   const provider = parseCliProvider(value.provider);
+  const droidPermissionMode = parseCliDroidPermissionMode(value.droidPermissionMode);
+  if (droidPermissionMode && provider !== "droid") {
+    throw new Error("work.startCliSession droidPermissionMode is only supported for Droid.");
+  }
   const initialInput = typeof value.initialInput === "string" && value.initialInput.trim().length > 0
     ? value.initialInput.slice(0, 20_000)
     : null;
@@ -1803,6 +1819,7 @@ function parseStartCliSessionArgs(value: Record<string, unknown>): SyncStartCliS
     laneId,
     provider,
     permissionMode: parseCliPermissionMode(value.permissionMode),
+    ...(droidPermissionMode !== undefined ? { droidPermissionMode } : {}),
     title: asTrimmedString(value.title),
     initialInput,
     cols: asOptionalNumber(value.cols),
@@ -2111,9 +2128,10 @@ function mapPrAiPermissionModeToNativeFields(
     return { codexApprovalPolicy: "on-request", codexSandbox: "read-only", codexConfigSource: "flags" };
   }
   if (provider === "droid") {
-    if (legacy === "full-auto") return { droidPermissionMode: "auto-high" };
-    if (legacy === "edit") return { droidPermissionMode: "auto-low" };
-    return { droidPermissionMode: "read-only" };
+    // PR-AI's generic default intentionally remains review-safe read-only;
+    // the shared conversion handles the explicit plan/edit/full-auto tiers.
+    if (legacy === "default") return { droidPermissionMode: "read-only" };
+    return { droidPermissionMode: droidPermissionModeFromLegacyPermissionMode(legacy) ?? "read-only" };
   }
   if (provider === "cursor") {
     if (legacy === "full-auto") return { cursorModeId: "full-auto" };
@@ -2683,12 +2701,19 @@ function parseAgentChatCancelDispatchedSteerArgs(value: Record<string, unknown>)
 
 function parseAgentChatInterruptArgs(value: Record<string, unknown>): AgentChatInterruptArgs {
   const mode = value.mode;
-  if (mode !== undefined && mode !== "stop_and_clear" && mode !== "stop_only") {
-    throw new Error("chat.interrupt mode must be 'stop_and_clear' or 'stop_only'.");
+  if (mode !== undefined && !isAgentChatStopMode(mode)) {
+    throw new Error("chat.interrupt mode must be a known stop mode.");
   }
   return {
     sessionId: requireString(value.sessionId, "chat.interrupt requires sessionId."),
     ...(mode ? { mode } : {}),
+  };
+}
+
+function parseAgentChatStopTaskArgs(value: Record<string, unknown>): AgentChatStopTaskArgs {
+  return {
+    sessionId: requireString(value.sessionId, "chat.stopTask requires sessionId."),
+    taskId: requireString(value.taskId, "chat.stopTask requires taskId."),
   };
 }
 
@@ -4463,6 +4488,7 @@ function registerWorkRemoteCommands({ args, register }: RemoteCommandRegistratio
       return buildTrackedCliLaunchCommand({
         provider,
         permissionMode,
+        ...(parsed.droidPermissionMode !== undefined ? { droidPermissionMode: parsed.droidPermissionMode } : {}),
         sessionId: preassignedSessionId,
         model: parsed.modelId ?? parsed.model ?? undefined,
         reasoningEffort: parsed.reasoningEffort ?? undefined,
@@ -4871,6 +4897,11 @@ function registerChatRemoteCommands({ args, register }: RemoteCommandRegistratio
   });
   register("chat.interruptWithQueueMode", { viewerAllowed: true, queueable: false }, async (payload) => {
     const result = await requireService(args.agentChatService, "Agent chat service not available.").interrupt(parseAgentChatInterruptArgs(payload));
+    return { ...result, ok: true };
+  });
+  register("chat.stopTask", { viewerAllowed: true, queueable: false }, async (payload) => {
+    const result = await requireService(args.agentChatService, "Agent chat service not available.")
+      .stopTask(parseAgentChatStopTaskArgs(payload));
     return { ...result, ok: true };
   });
   register("chat.restoreCancelledQueue", { viewerAllowed: true, queueable: false }, async (payload) => {

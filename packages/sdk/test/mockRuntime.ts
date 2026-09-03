@@ -3,7 +3,12 @@ import fs from "node:fs";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
-import type { AgentChatEventEnvelope, BufferedEvent } from "../src/types.js";
+import type {
+  AgentChatEventEnvelope,
+  BufferedEvent,
+  PendingInputRequest,
+  ProviderStatusRpcResult,
+} from "../src/types.js";
 
 /**
  * An in-test ADE runtime: a real `net.Server` on a real temp socket speaking
@@ -22,6 +27,10 @@ export type MockRuntimeOptions = {
   eventEpoch?: string;
   /** Buffer capacity; exceeding it evicts and produces a gap. */
   capacity?: number;
+  /** Advertise and answer the `providers.status` RPC. Default false. */
+  providersStatus?: boolean;
+  /** Advertise the `pendingInputs` action. Default true. */
+  pendingInputs?: boolean;
 };
 
 type Session = {
@@ -35,7 +44,12 @@ type Session = {
   lastActivityAt: string;
   archivedAt: string | null;
   createArgs: Record<string, unknown>;
+  /** Echoed on every summary, the way the engine echoes the path it bound. */
+  requestedCwd?: string;
   mcpCapability: Record<string, unknown> | null;
+  instructionsCapability: Record<string, unknown> | null;
+  settingSourcesCapability: Record<string, unknown> | null;
+  permissionCapability: Record<string, unknown> | null;
 };
 
 export class MockRuntime {
@@ -69,6 +83,36 @@ export class MockRuntime {
   omitStrictRequested = false;
   /** Next `getSummary` throws this message, then clears. Empty means behave normally. */
   failNextGetSummary = "";
+  /** Next `create` throws this message, then clears. Empty means behave normally. */
+  failNextCreate = "";
+  /** Drops the instructions capability from create, as an older runtime would. */
+  suppressInstructionsCapability = false;
+  /** Drops the settingSources capability from create. */
+  suppressSettingSourcesCapability = false;
+  /** Drops the permission capability from create. */
+  suppressPermissionCapability = false;
+  /**
+   * What `create` echoes back as `requestedCwd`, when the caller sent one.
+   *
+   * Empty means "echo the caller's own string". Set it to stand in for the
+   * engine canonicalizing a symlinked or differently-cased path.
+   */
+  canonicalCwd = "";
+  /** Drops `requestedCwd` from every summary, as an older runtime would. */
+  suppressRequestedCwd = false;
+  /** Makes `providers.status` fail, so the derivation fallback can be observed. */
+  failProviderStatus = "";
+  /** What `providers.status` answers with. Replace to test the merge. */
+  providerStatusResult: ProviderStatusRpcResult = defaultProviderStatus();
+  /** Unresolved requests per session, answered by the `pendingInputs` action. */
+  readonly pendingInputsBySession = new Map<string, PendingInputRequest[]>();
+  /** Every `approve` the SDK sent, in order. */
+  readonly approvals: Array<{
+    sessionId: string;
+    itemId: string;
+    decision: string;
+    responseText?: string;
+  }> = [];
 
   constructor(options: MockRuntimeOptions = {}) {
     this.options = {
@@ -77,6 +121,8 @@ export class MockRuntime {
       rejectSubscribe: options.rejectSubscribe ?? false,
       eventEpoch: options.eventEpoch ?? randomUUID(),
       capacity: options.capacity ?? 1000,
+      providersStatus: options.providersStatus ?? false,
+      pendingInputs: options.pendingInputs ?? true,
       runtimeVersion: options.runtimeVersion ?? "1.2.69",
     };
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-sdk-mock-"));
@@ -204,12 +250,31 @@ export class MockRuntime {
           capabilities: {
             personalChats: {
               version: 1,
-              actions: ["list", "create", "getSummary", "send", "steer", "interrupt", "getEventHistory", "modelCatalog"],
+              actions: [
+                "list",
+                "create",
+                "getSummary",
+                "send",
+                "steer",
+                "interrupt",
+                "getEventHistory",
+                "modelCatalog",
+                "approve",
+                ...(this.options.pendingInputs ? ["pendingInputs"] : []),
+              ],
               pushEvents: this.options.pushEvents,
               mcpServers: this.options.mcpServers,
             },
+            ...(this.options.providersStatus
+              ? { providers: { status: true, cacheTtlMs: 60_000 } }
+              : {}),
           },
         };
+      case "providers.status": {
+        if (!this.options.providersStatus) throw new Error("Method not found");
+        if (this.failProviderStatus) throw new Error(this.failProviderStatus);
+        return this.providerStatusResult;
+      }
       case "ade/initialized":
         return null;
       case "personalChats.subscribeEvents": {
@@ -263,6 +328,11 @@ export class MockRuntime {
   private chatAction(action: string, args: Record<string, unknown>): unknown {
     switch (action) {
       case "create": {
+        if (this.failNextCreate) {
+          const message = this.failNextCreate;
+          this.failNextCreate = "";
+          throw new Error(message);
+        }
         const sessionId = `sess-${randomUUID().slice(0, 8)}`;
         const now = new Date().toISOString();
         const session: Session = {
@@ -275,7 +345,19 @@ export class MockRuntime {
           lastActivityAt: now,
           archivedAt: null,
           createArgs: args,
+          ...(typeof args.requestedCwd === "string" && !this.suppressRequestedCwd
+            ? { requestedCwd: this.canonicalCwd || args.requestedCwd }
+            : {}),
           mcpCapability: this.suppressMcpCapability ? null : this.capabilityReport(args),
+          instructionsCapability: this.suppressInstructionsCapability
+            ? null
+            : instructionsCapabilityFor(args),
+          settingSourcesCapability: this.suppressSettingSourcesCapability
+            ? null
+            : settingSourcesCapabilityFor(args),
+          permissionCapability: this.suppressPermissionCapability
+            ? null
+            : permissionCapabilityFor(args),
         };
         this.sessions.set(sessionId, session);
         return toSummary(session);
@@ -321,12 +403,51 @@ export class MockRuntime {
           session.provider = resolved.provider;
           session.model = resolved.model;
           session.modelId = resolved.modelId;
+          const switched = { ...session.createArgs, provider: session.provider };
           session.mcpCapability = this.suppressMcpCapability
             ? null
-            : this.capabilityReport({ ...session.createArgs, provider: session.provider });
+            : this.capabilityReport(switched);
+          // Re-derived on the new provider, exactly as the engine does: a policy
+          // Claude enforced is not enforced once the thread lands on Codex, and
+          // settingSources Claude applied is ignored once it lands on OpenCode.
+          session.permissionCapability = this.suppressPermissionCapability
+            ? null
+            : permissionCapabilityFor(switched);
+          session.instructionsCapability = this.suppressInstructionsCapability
+            ? null
+            : instructionsCapabilityFor(switched);
+          session.settingSourcesCapability = this.suppressSettingSourcesCapability
+            ? null
+            : settingSourcesCapabilityFor(switched);
         }
         if (typeof args.title === "string") session.title = args.title;
         return toSummary(session);
+      }
+      case "pendingInputs": {
+        const sessionId = String(args.sessionId ?? "");
+        if (!this.sessions.has(sessionId)) throw new Error("Personal chat session not found.");
+        return { requests: this.pendingInputsBySession.get(sessionId) ?? [] };
+      }
+      case "approve": {
+        const sessionId = String(args.sessionId ?? "");
+        if (!this.sessions.has(sessionId)) throw new Error("Personal chat session not found.");
+        const itemId = String(args.itemId ?? "");
+        this.approvals.push({
+          sessionId,
+          itemId,
+          decision: String(args.decision ?? ""),
+          ...(typeof args.responseText === "string" ? { responseText: args.responseText } : {}),
+        });
+        // Mirrors the engine, which settles an unknown or already-settled item
+        // SILENTLY. The mock must not throw here, or the test proving that the
+        // SDK's own pre-check is what raises `approval_not_found` would pass for
+        // the wrong reason.
+        const pending = this.pendingInputsBySession.get(sessionId) ?? [];
+        this.pendingInputsBySession.set(
+          sessionId,
+          pending.filter((request) => (request.itemId ?? request.requestId) !== itemId),
+        );
+        return { ok: true };
       }
       case "modelCatalog":
         if (this.failCatalog) throw new Error("model catalog unavailable");
@@ -435,9 +556,125 @@ function capabilityFor(args: Record<string, unknown>): Record<string, unknown> |
   };
 }
 
+/**
+ * The per-provider host-config verdicts, as a fixture.
+ *
+ * Source of truth: the `INSTRUCTIONS_SUPPORT` / `SETTING_SOURCES_SUPPORT` /
+ * `PERMISSION_POLICY_SUPPORT` tables in
+ * `apps/desktop/src/shared/hostSessionConfig.ts`. This pins only the rows the
+ * SDK tests assert on. If a level changes there, change it here too — a mock
+ * that agrees with a client bug catches nothing.
+ */
+function instructionsCapabilityFor(args: Record<string, unknown>): Record<string, unknown> | null {
+  const instructions = args.instructions as { mode?: string } | undefined;
+  if (!instructions) return null;
+  const provider = String(args.provider ?? "");
+  const bestEffort = provider === "cursor" || provider === "droid";
+  return {
+    level: bestEffort ? "best-effort" : "applied",
+    mode: instructions.mode === "replace" ? "replace" : "append",
+    mechanism: bestEffort ? `${provider} injected prompt` : `${provider} instructions`,
+    detail: bestEffort
+      ? "merged into the system text ADE already prefixes to the first turn"
+      : null,
+  };
+}
+
+function settingSourcesCapabilityFor(args: Record<string, unknown>): Record<string, unknown> | null {
+  const value = args.settingSources;
+  if (typeof value !== "string") return null;
+  const provider = String(args.provider ?? "");
+  if (provider === "claude") {
+    return { level: "applied", value, mechanism: "Agent SDK settingSources", detail: null };
+  }
+  if (provider === "codex" && (value === "project" || value === "all")) {
+    return {
+      level: "best-effort",
+      value,
+      mechanism: "codex AGENTS.md discovery",
+      detail: "Codex also always loads ~/.codex/AGENTS.md",
+    };
+  }
+  return {
+    level: "ignored",
+    value,
+    mechanism: "none",
+    detail: `${provider} exposes no switch for configuration layers`,
+  };
+}
+
+function permissionCapabilityFor(args: Record<string, unknown>): Record<string, unknown> | null {
+  if (!args.permissionPolicy) return null;
+  const provider = String(args.provider ?? "");
+  if (provider === "claude") {
+    return { level: "enforced", mechanism: "canUseTool + allowedTools", residual: null };
+  }
+  if (provider === "codex") {
+    return {
+      level: "best-effort",
+      mechanism: "approvalPolicy on-request + workspace-write sandbox",
+      residual: "Codex does not gate plain MCP tool calls, so allowedTools does not apply to them",
+    };
+  }
+  return {
+    level: "unsupported",
+    mechanism: "none",
+    residual: `${provider} has no per-tool gate; only the coarse permission mode applies`,
+  };
+}
+
+export function defaultProviderStatus(): ProviderStatusRpcResult {
+  const checkedAt = new Date().toISOString();
+  return {
+    checkedAt,
+    providers: {
+      claude: {
+        provider: "claude",
+        displayName: "Claude Code",
+        installed: true,
+        binaryPath: "/usr/local/bin/claude",
+        version: "1.0.99 (Claude Code)",
+        authenticated: true,
+        authMethod: "subscription",
+        installCommand: "npm install -g @anthropic-ai/claude-code",
+        loginCommand: "claude login",
+        docsUrl: "https://docs.claude.com/en/docs/claude-code",
+        stale: false,
+        checkedAt,
+        detail: null,
+      },
+      codex: {
+        provider: "codex",
+        displayName: "Codex",
+        installed: false,
+        binaryPath: null,
+        version: null,
+        authenticated: false,
+        authMethod: null,
+        installCommand: "npm install -g @openai/codex",
+        loginCommand: "codex login",
+        docsUrl: "https://developers.openai.com/codex",
+        stale: false,
+        checkedAt,
+        detail: null,
+      },
+    },
+  };
+}
+
 function toSummary(session: Session): Record<string, unknown> {
   return {
     ...(session.mcpCapability ? { mcpCapability: session.mcpCapability } : {}),
+    ...(session.instructionsCapability
+      ? { instructionsCapability: session.instructionsCapability }
+      : {}),
+    ...(session.settingSourcesCapability
+      ? { settingSourcesCapability: session.settingSourcesCapability }
+      : {}),
+    ...(session.permissionCapability
+      ? { permissionCapability: session.permissionCapability }
+      : {}),
+    ...(session.requestedCwd ? { requestedCwd: session.requestedCwd } : {}),
     sessionId: session.sessionId,
     laneId: "personal",
     provider: session.provider,

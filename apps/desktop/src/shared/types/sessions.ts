@@ -9,6 +9,7 @@ import type {
   AgentChatCodexConfigSource,
   AgentChatCodexSandbox,
   AgentChatCliLaunchProvider,
+  AgentChatDroidPermissionMode,
   AgentChatModelHandoff,
   AgentChatSpawnKind,
   AgentChatRuntimeRef,
@@ -187,6 +188,7 @@ export type TerminalResumeTargetKind = "session" | "thread";
 
 export type TerminalResumeLaunchConfig = {
   permissionMode?: AgentChatPermissionMode | null;
+  droidPermissionMode?: AgentChatDroidPermissionMode | null;
   model?: string | null;
   reasoningEffort?: string | null;
   fastMode?: boolean | null;
@@ -310,6 +312,11 @@ export type TerminalSessionSummary = {
   chatIdleSinceAt?: string | null;
   /** Earliest armed, unpaused scheduled wake for chat-backed sessions. */
   nextWakeAt?: string | null;
+  /**
+   * ISO instant this chat is parked waiting for a usage-limit reset. Distinct
+   * from `nextWakeAt` so the session list can read Parked instead of Waiting.
+   */
+  usageLimitParkedUntil?: string | null;
   /** Current ADE-chat mode, projected for desktop Work-row presentation only. */
   chatActivityMode?: "planning" | null;
   /** Authoritative provider-reported background tasks still running after the foreground turn. */
@@ -431,6 +438,7 @@ export type PtyCreateArgs = {
   runtimeCliLaunch?: {
     provider: AgentChatCliLaunchProvider;
     permissionMode: AgentChatPermissionMode;
+    droidPermissionMode?: AgentChatDroidPermissionMode | null;
     orchestrationRole?: OrchestrationRole | null;
     sessionId?: string;
     model?: string | null;
