@@ -15,8 +15,20 @@
 # `media-src` is spelled out rather than left to `default-src`: video and audio
 # do not fall back to `img-src`, so a `video` node was refused even where the
 # equivalent `image` node loaded.
+# `frame-src 'self'` and `worker-src 'self'` are the plugin page tier.
+#
+# A plugin's `webview` surface draws in an iframe at a same-origin path that a
+# service worker answers, and that response — not this policy — is what makes
+# the guest's origin opaque: it carries `Content-Security-Policy: sandbox
+# allow-scripts`, so the frame ADE opens here is the app's own origin while the
+# document inside it has none. `frame-src` therefore names `'self'` and nothing
+# else: no third-party frame, and no `blob:`/`data:` frame either, both of which
+# would inherit THIS policy rather than take the worker's.
+#
+# `worker-src 'self'` covers registering that worker from its own bundled path.
+# `blob:` was already here for the app's own workers and stays.
 /*
-  Content-Security-Policy: default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; media-src 'self' data: blob: https:; font-src 'self' data:; connect-src 'self' wss: https:; worker-src 'self' blob:; frame-ancestors 'none'; base-uri 'self'; form-action 'self'; object-src 'none'
+  Content-Security-Policy: default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; media-src 'self' data: blob: https:; font-src 'self' data:; connect-src 'self' wss: https:; worker-src 'self' blob:; frame-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'; object-src 'none'
   X-Content-Type-Options: nosniff
   Referrer-Policy: no-referrer
   X-Frame-Options: DENY
@@ -26,3 +38,22 @@
 /assets/*
   ! Cache-Control
   Cache-Control: public, max-age=31536000, immutable
+
+# The plugin page space, for the one request that should never reach the origin.
+#
+# Every URL under here is answered by the plugin page service worker out of
+# Cache Storage; the network only sees one if the worker is not controlling the
+# path — an install that has not activated, or storage the browser cleared. The
+# origin would then apply the single-page fallback and hand a plugin's frame the
+# whole ADE client, signed in, inside an iframe.
+#
+# `sandbox` with no `allow-scripts` is the answer: whatever the origin serves
+# here loads with an opaque origin and cannot run a line of script, so the worst
+# case is an empty frame and the host's own "didn't load" card. The client also
+# refuses to create the frame until the worker is active; this is the brace to
+# that belt, and it is the half that survives a change to the client.
+/assets/plugin-pages/*
+  ! Cache-Control
+  Content-Security-Policy: sandbox; default-src 'none'
+  Cache-Control: no-store
+  X-Content-Type-Options: nosniff

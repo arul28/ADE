@@ -52,6 +52,17 @@ import { unavailableOnHost } from "./misc";
  * `markHonestSurface`.
  */
 
+/**
+ * The two host actions that serve a plugin's built page.
+ *
+ * Spelled `plugin.` rather than `plugins.` because they are file reads on the
+ * sync file channel — siblings of `readArtifact` — rather than members of the
+ * `plugins.*` registry family. The phone calls the same two names, so a host
+ * that serves one client serves both.
+ */
+const PAGE_ASSETS_MANIFEST_ACTION = "plugin.pageAssets.manifest";
+const PAGE_ASSETS_READ_ACTION = "plugin.pageAssets.read";
+
 /** How long a one-shot panel read waits for its snapshot before giving up. */
 const PANEL_READ_TIMEOUT_MS = 8_000;
 
@@ -174,7 +185,42 @@ export type WebPluginBridge = {
   }) => Promise<void>;
   readonly presence?: () => Promise<PluginPresenceRow[]>;
   readonly onChanged?: (listener: (event: PluginChangeEvent) => void) => () => void;
+  /**
+   * The plugin's built page (`dist/`), as the host reads it off disk.
+   *
+   * The same pair the phone uses — the file channel's `readArtifact` sibling —
+   * because a browser peer and a phone are the same kind of client here: neither
+   * has the install directory, and both need the bytes to draw a `webview`
+   * surface. `manifest` first, so a client already holding the files re-fetches
+   * only the ones whose `sha256` moved; `read` for each file it is missing.
+   *
+   * Absent — not failing — on a host from before the page tier, which is what
+   * makes `supportsWebPluginPages()` able to answer honestly instead of drawing
+   * an empty frame. See the capability rule in this file's header.
+   */
+  readonly pageAssetsManifest?: (input: { pluginId: string }) => Promise<WebPluginPageManifest | null>;
+  readonly pageAssetsRead?: (input: { pluginId: string; path: string }) => Promise<WebPluginPageFile | null>;
 };
+
+/** One file of a plugin's built page, as the manifest lists it. */
+export type WebPluginPageManifestEntry = { path: string; bytes: number; sha256: string };
+
+/**
+ * What `plugin.pageAssets.manifest` answers.
+ *
+ * `revision` counts installs within the host's run, exactly as
+ * `PluginWebviewReloadEvent` does: `ade plugin dev` re-copies a source tree over
+ * the installed one without moving `version`, and a client keyed on version
+ * alone would keep serving the previous build out of its cache.
+ */
+export type WebPluginPageManifest = {
+  version: string;
+  revision: number;
+  files: WebPluginPageManifestEntry[];
+};
+
+/** One file's bytes, base64 on the wire. */
+export type WebPluginPageFile = { path: string; sha256: string; base64: string };
 
 /** What `plugins.list` returns over the wire. Wave A's record, not the UI's. */
 type RemotePluginRecord = {
@@ -557,6 +603,69 @@ export function createPluginsNamespace(infra: AdapterInfra): WebPluginBridge {
     return unwrapInvokeResult(envelope);
   };
 
+  const pageAssetsAvailable = (): boolean =>
+    commands.hasAction(PAGE_ASSETS_MANIFEST_ACTION) && commands.hasAction(PAGE_ASSETS_READ_ACTION);
+
+  /**
+   * The page manifest, shape-checked before a byte of it is believed.
+   *
+   * It arrives from the connected host and drives a cache key, a fetch list and
+   * a set of `<script>` sources, so a malformed row is dropped rather than
+   * carried: a file with no `path`, no `sha256` or a negative size cannot be
+   * cached honestly, and one bad row must not lose the other 200.
+   */
+  const pageAssetsManifest = async (input: { pluginId: string }): Promise<WebPluginPageManifest | null> => {
+    const result = await commands.call<unknown>(
+      PAGE_ASSETS_MANIFEST_ACTION,
+      { pluginId: input.pluginId },
+      { fallback: () => null, idempotent: true, cacheTtlMs: 2_000 },
+    );
+    if (!result || typeof result !== "object" || Array.isArray(result)) return null;
+    const record = result as Record<string, unknown>;
+    const version = typeof record.version === "string" ? record.version : "";
+    if (!version) return null;
+    const revision = typeof record.revision === "number" && Number.isFinite(record.revision)
+      ? Math.trunc(record.revision)
+      : 0;
+    const rawFiles = Array.isArray(record.files) ? record.files : [];
+    const files: WebPluginPageManifestEntry[] = [];
+    for (const entry of rawFiles) {
+      if (!entry || typeof entry !== "object") continue;
+      const file = entry as Record<string, unknown>;
+      const path = typeof file.path === "string" ? file.path : "";
+      const sha256 = typeof file.sha256 === "string" ? file.sha256 : "";
+      const bytes = typeof file.bytes === "number" && Number.isFinite(file.bytes) ? file.bytes : -1;
+      if (!path || !sha256 || bytes < 0) continue;
+      files.push({ path, bytes, sha256 });
+    }
+    return { version, revision, files };
+  };
+
+  const pageAssetsRead = async (input: { pluginId: string; path: string }): Promise<WebPluginPageFile | null> => {
+    const result = await commands.call<unknown>(
+      PAGE_ASSETS_READ_ACTION,
+      { pluginId: input.pluginId, path: input.path },
+      { fallback: () => null, idempotent: true },
+    );
+    if (!result || typeof result !== "object" || Array.isArray(result)) return null;
+    const record = result as Record<string, unknown>;
+    // The host names the payload field; a sibling of `readArtifact` on the file
+    // channel has historically spelled it more than one way, and a page that
+    // refuses to load because the bytes arrived under `contentBase64` rather
+    // than `base64` would be a naming disagreement presented to the reader as a
+    // broken plugin. The ALTERNATIVES ARE READ, never invented: an answer with
+    // none of them is null, which draws the honest "couldn't load" card.
+    const base64 = ["base64", "contentBase64", "dataBase64", "content"]
+      .map((key) => record[key])
+      .find((value): value is string => typeof value === "string" && value.length > 0);
+    if (base64 === undefined) return null;
+    return {
+      path: typeof record.path === "string" ? record.path : input.path,
+      sha256: typeof record.sha256 === "string" ? record.sha256 : "",
+      base64,
+    };
+  };
+
   // Mutations pass `idempotent: false`, which is what makes an unserved action
   // throw `UnsupportedRemoteCommandError` instead of resolving a fallback: no
   // request was sent, so reporting success would report an install that never
@@ -731,6 +840,15 @@ export function createPluginsNamespace(infra: AdapterInfra): WebPluginBridge {
     },
     get onChanged() {
       return onChanged;
+    },
+    // Both halves or nothing. A manifest with no way to fetch a file names a
+    // page this client cannot assemble, and the page host's own capability
+    // check reads exactly this pair.
+    get pageAssetsManifest() {
+      return pageAssetsAvailable() ? pageAssetsManifest : undefined;
+    },
+    get pageAssetsRead() {
+      return pageAssetsAvailable() ? pageAssetsRead : undefined;
     },
   });
 }
