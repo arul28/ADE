@@ -239,6 +239,84 @@ export function lookupSignIdentity(output, rawValue) {
   return entry ? toSignIdentity(entry) : null;
 }
 
+/**
+ * Entitlements that only a provisioning profile can authorize.
+ *
+ * A local channel build is signed without a profile, and AMFI refuses to launch
+ * a hardened-runtime binary that claims one of these anyway: `open` reports
+ * "Launchd job spawn failed" (RBSRequestErrorDomain 5 / POSIX 163). An ad-hoc
+ * signature is not held to this, which is why the default path never hit it.
+ */
+const RESTRICTED_ENTITLEMENT_KEYS = new Set([
+  "keychain-access-groups",
+  "application-identifier",
+  "com.apple.application-identifier",
+]);
+
+export function isRestrictedEntitlement(name) {
+  const key = (name ?? "").trim();
+  return RESTRICTED_ENTITLEMENT_KEYS.has(key) || key.startsWith("com.apple.developer.");
+}
+
+/** End offset of the XML element that starts at or after `from`. */
+function endOfNextElement(xml, from) {
+  const tagPattern = /<([A-Za-z][\w.:-]*)((?:[^>"']|"[^"]*"|'[^']*')*?)(\/?)>/g;
+  tagPattern.lastIndex = from;
+  const opening = tagPattern.exec(xml);
+  if (!opening) return null;
+  if (opening[3] === "/") return opening.index + opening[0].length;
+  const name = opening[1];
+  const pairPattern = new RegExp(`<(/?)${name}((?:[^>"']|"[^"]*"|'[^']*')*?)(/?)>`, "g");
+  pairPattern.lastIndex = opening.index + opening[0].length;
+  let depth = 1;
+  let tag = pairPattern.exec(xml);
+  while (tag) {
+    if (tag[3] !== "/") {
+      depth += tag[1] === "/" ? -1 : 1;
+      if (depth === 0) return tag.index + tag[0].length;
+    }
+    tag = pairPattern.exec(xml);
+  }
+  return null;
+}
+
+/**
+ * Remove every provisioning-restricted key, and its value, from an
+ * entitlements plist. Text in, text out: the file keeps its formatting and no
+ * plist library is needed.
+ */
+export function stripRestrictedEntitlements(source) {
+  let xml = String(source ?? "");
+  const dropped = [];
+  const keyPattern = /<key>([^<]*)<\/key>/g;
+  let searchFrom = 0;
+  for (;;) {
+    keyPattern.lastIndex = searchFrom;
+    const match = keyPattern.exec(xml);
+    if (!match) break;
+    const afterKey = match.index + match[0].length;
+    const name = match[1].trim();
+    if (!isRestrictedEntitlement(name)) {
+      searchFrom = afterKey;
+      continue;
+    }
+    const valueEnd = endOfNextElement(xml, afterKey);
+    if (valueEnd == null) {
+      searchFrom = afterKey;
+      continue;
+    }
+    let start = match.index;
+    while (start > 0 && (xml[start - 1] === " " || xml[start - 1] === "\t")) start -= 1;
+    let end = valueEnd;
+    if (xml.startsWith("\r\n", end)) end += 2;
+    else if (xml[end] === "\n") end += 1;
+    xml = xml.slice(0, start) + xml.slice(end);
+    dropped.push(name);
+    searchFrom = start;
+  }
+  return { xml, dropped };
+}
+
 /** The flag wins over the environment variable. */
 export function resolveSignSelection(options, env = process.env) {
   if (options.signIdentity) return { mode: "explicit", value: options.signIdentity, fromEnv: false };
@@ -549,8 +627,51 @@ function resolveMacSignIdentity(selection) {
   return identity;
 }
 
+const ENTITLEMENT_FILES = [
+  { key: "entitlements", name: "entitlements.mac.plist" },
+  { key: "entitlementsInherit", name: "entitlements.mac.inherit.plist" },
+];
+
+/**
+ * Give a signed local build entitlements it is allowed to claim.
+ *
+ * Returns null when nothing has to change, so the ad-hoc path and any build
+ * whose entitlements carry no restricted key keep the repo's own files.
+ */
+function prepareSignedEntitlements(desktopRoot, identity, options) {
+  if (!identity) return null;
+  const sources = ENTITLEMENT_FILES.map((entry) => ({
+    ...entry,
+    sourcePath: path.join(desktopRoot, "build", entry.name),
+  })).filter((entry) => fs.existsSync(entry.sourcePath));
+  if (sources.length === 0) return null;
+
+  const filtered = sources.map((entry) => ({
+    ...entry,
+    ...stripRestrictedEntitlements(fs.readFileSync(entry.sourcePath, "utf8")),
+  }));
+  const dropped = [...new Set(filtered.flatMap((entry) => entry.dropped))];
+  if (dropped.length === 0) return null;
+
+  const dir = path.join(os.tmpdir(), `ade-channel-entitlements-${process.pid}`);
+  process.stdout.write(
+    `[ade] Dropping provisioning-restricted entitlements for this signed build: ${dropped.join(", ")}. `
+      + "A local channel build has no provisioning profile, and macOS refuses to launch a signed app that claims them. "
+      + "Passkey and WebAuthn keychain sharing is unavailable in this build.\n",
+  );
+  if (options.dryRun) {
+    process.stdout.write(`[ade] dry-run: filtered entitlements would be written to ${dir}\n`);
+  } else {
+    fs.mkdirSync(dir, { recursive: true });
+    for (const entry of filtered) fs.writeFileSync(path.join(dir, entry.name), entry.xml);
+  }
+  const paths = {};
+  for (const entry of filtered) paths[entry.key] = path.join(dir, entry.name);
+  return { dir, paths };
+}
+
 /** The electron-builder invocation for a macOS channel build. */
-export function macBuilderArgs({ channel, config, outputRoot, identity }) {
+export function macBuilderArgs({ channel, config, outputRoot, identity, entitlements = null }) {
   const args = ["electron-builder", "--dir", "--mac", "--publish", "never"];
   if (identity) {
     args.push(`-c.mac.identity=${identity.qualifier}`);
@@ -566,6 +687,12 @@ export function macBuilderArgs({ channel, config, outputRoot, identity }) {
     // An empty string is falsy at `macPackager.js` `provisioningProfile ||
     // undefined`, which is what actually unsets it.
     args.push("-c.mac.provisioningProfile=");
+    if (entitlements?.paths.entitlements) {
+      args.push(`-c.mac.entitlements=${entitlements.paths.entitlements}`);
+    }
+    if (entitlements?.paths.entitlementsInherit) {
+      args.push(`-c.mac.entitlementsInherit=${entitlements.paths.entitlementsInherit}`);
+    }
   } else {
     args.push("-c.mac.identity=null");
   }
@@ -689,25 +816,33 @@ function buildChannel(repoRoot, channel, options) {
     );
   }
 
-  ensureHostRuntimeResources(repoRoot, options, env);
-  run("npm", ["--prefix", "apps/desktop", "run", "build"], { cwd: repoRoot, env, dryRun: options.dryRun });
-  run("npx", macBuilderArgs({ channel, config, outputRoot, identity: signIdentity }), {
-    cwd: desktopRoot,
-    env,
-    dryRun: options.dryRun,
-  });
+  const entitlements = prepareSignedEntitlements(desktopRoot, signIdentity, options);
+  try {
+    ensureHostRuntimeResources(repoRoot, options, env);
+    run("npm", ["--prefix", "apps/desktop", "run", "build"], { cwd: repoRoot, env, dryRun: options.dryRun });
+    run("npx", macBuilderArgs({ channel, config, outputRoot, identity: signIdentity, entitlements }), {
+      cwd: desktopRoot,
+      env,
+      dryRun: options.dryRun,
+    });
 
-  if (options.dryRun) return;
-  const appPath = findBuiltApp(outputRoot, config.productName);
-  if (!appPath) fail(`Build finished but no .app was found in ${outputRoot}.`);
-  postprocessChannelApp(appPath, channel, config, options);
-  signLocalMacApp(appPath, signIdentity);
-  const zipPath = zipApp(appPath, outputRoot, channel, options);
-  process.stdout.write(`\n[ade] Built ${config.productName}: ${appPath}\n`);
-  if (zipPath) process.stdout.write(`[ade] Zipped app: ${zipPath}\n`);
-  process.stdout.write(`[ade] Signed with: ${signIdentity ? signIdentity.display : "ad-hoc signature"}\n`);
-  process.stdout.write(`[ade] Bundled CLI name: ${config.cliName}\n`);
-  process.stdout.write(`[ade] Channel ADE_HOME: ${config.adeHome}\n`);
+    if (options.dryRun) return;
+    const appPath = findBuiltApp(outputRoot, config.productName);
+    if (!appPath) fail(`Build finished but no .app was found in ${outputRoot}.`);
+    postprocessChannelApp(appPath, channel, config, options);
+    signLocalMacApp(appPath, signIdentity);
+    const zipPath = zipApp(appPath, outputRoot, channel, options);
+    process.stdout.write(`\n[ade] Built ${config.productName}: ${appPath}\n`);
+    if (zipPath) process.stdout.write(`[ade] Zipped app: ${zipPath}\n`);
+    process.stdout.write(`[ade] Signed with: ${signIdentity ? signIdentity.display : "ad-hoc signature"}\n`);
+    process.stdout.write(`[ade] Bundled CLI name: ${config.cliName}\n`);
+    process.stdout.write(`[ade] Channel ADE_HOME: ${config.adeHome}\n`);
+  } finally {
+    // The bundle is already signed by here, so the filtered copies are no
+    // longer needed. `signLocalMacApp` re-seals with --preserve-metadata and
+    // reads no entitlements file.
+    if (entitlements && !options.dryRun) removePath(entitlements.dir, false);
+  }
 }
 
 function main() {

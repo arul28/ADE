@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  isRestrictedEntitlement,
   lookupSignIdentity,
   looksLikeCertificateHash,
   macBuilderArgs,
@@ -11,7 +12,26 @@ import {
   resolveSignSelection,
   selectAutoSignIdentity,
   signingCertificateType,
+  stripRestrictedEntitlements,
 } from "./package-channel.mjs";
+
+const ENTITLEMENTS_PLIST = `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+  <dict>
+    <key>com.apple.security.cs.allow-jit</key>
+    <true/>
+    <key>com.apple.security.cs.disable-library-validation</key>
+    <true/>
+    <key>com.apple.security.device.audio-input</key>
+    <true/>
+    <key>keychain-access-groups</key>
+    <array>
+      <string>VQ372F39G6.com.ade.desktop.webauthn</string>
+    </array>
+  </dict>
+</plist>
+`;
 
 const CHANNEL_CONFIG = {
   productName: "ADE Alpha",
@@ -194,4 +214,77 @@ test("keeps the channel arguments the packaged app depends on", () => {
   ]) {
     assert.ok(args.includes(expected), `missing ${expected}`);
   }
+});
+
+test("classifies the entitlements only a provisioning profile can authorize", () => {
+  assert.ok(isRestrictedEntitlement("keychain-access-groups"));
+  assert.ok(isRestrictedEntitlement("application-identifier"));
+  assert.ok(isRestrictedEntitlement("com.apple.application-identifier"));
+  assert.ok(isRestrictedEntitlement("com.apple.developer.associated-domains"));
+  assert.ok(!isRestrictedEntitlement("com.apple.security.cs.allow-jit"));
+  assert.ok(!isRestrictedEntitlement("com.apple.security.device.audio-input"));
+  assert.ok(!isRestrictedEntitlement("com.apple.security.inherit"));
+});
+
+test("drops a restricted key with its whole array value and keeps the rest", () => {
+  const { xml, dropped } = stripRestrictedEntitlements(ENTITLEMENTS_PLIST);
+  assert.deepEqual(dropped, ["keychain-access-groups"]);
+  assert.ok(!xml.includes("keychain-access-groups"));
+  assert.ok(!xml.includes("VQ372F39G6.com.ade.desktop.webauthn"));
+  assert.ok(!xml.includes("<array>"));
+  assert.ok(xml.includes("<key>com.apple.security.cs.allow-jit</key>"));
+  assert.ok(xml.includes("<key>com.apple.security.device.audio-input</key>"));
+  assert.match(xml, /<\/dict>\s*<\/plist>/);
+  assert.equal((xml.match(/<true\/>/g) ?? []).length, 3);
+});
+
+test("drops several restricted keys of different value shapes", () => {
+  const { xml, dropped } = stripRestrictedEntitlements([
+    "<dict>",
+    "  <key>application-identifier</key>",
+    "  <string>VQ372F39G6.com.ade.desktop</string>",
+    "  <key>com.apple.developer.associated-domains</key>",
+    "  <array><string>webcredentials:example.com</string></array>",
+    "  <key>com.apple.security.inherit</key>",
+    "  <true/>",
+    "</dict>",
+  ].join("\n"));
+  assert.deepEqual(dropped, ["application-identifier", "com.apple.developer.associated-domains"]);
+  assert.equal(xml, "<dict>\n  <key>com.apple.security.inherit</key>\n  <true/>\n</dict>");
+});
+
+test("leaves an unrestricted entitlements file untouched", () => {
+  const source = "<dict>\n  <key>com.apple.security.cs.allow-jit</key>\n  <true/>\n</dict>";
+  assert.deepEqual(stripRestrictedEntitlements(source), { xml: source, dropped: [] });
+});
+
+test("points a signed build at the filtered entitlements files", () => {
+  const entitlements = {
+    dir: "/tmp/ade-channel-entitlements-1",
+    paths: {
+      entitlements: "/tmp/ade-channel-entitlements-1/entitlements.mac.plist",
+      entitlementsInherit: "/tmp/ade-channel-entitlements-1/entitlements.mac.inherit.plist",
+    },
+  };
+  const identity = selectAutoSignIdentity(FIND_IDENTITY_OUTPUT);
+  const args = macBuilderArgs({
+    channel: "alpha",
+    config: CHANNEL_CONFIG,
+    outputRoot: "/repo/apps/desktop/release-alpha",
+    identity,
+    entitlements,
+  });
+  assert.ok(args.includes(`-c.mac.entitlements=${entitlements.paths.entitlements}`));
+  assert.ok(args.includes(`-c.mac.entitlementsInherit=${entitlements.paths.entitlementsInherit}`));
+
+  // The ad-hoc path keeps the repo's own entitlements files.
+  const adHoc = macBuilderArgs({
+    channel: "alpha",
+    config: CHANNEL_CONFIG,
+    outputRoot: "/repo/apps/desktop/release-alpha",
+    identity: null,
+    entitlements,
+  });
+  assert.ok(!adHoc.some((arg) => arg.startsWith("-c.mac.entitlements")));
+  assert.ok(!builderArgs(identity).some((arg) => arg.startsWith("-c.mac.entitlements")));
 });

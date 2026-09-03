@@ -236,6 +236,12 @@ the first valid `Apple Development` identity, from
 The flag wins over the environment variable. The build is still not notarized,
 which is expected for a local channel build.
 
+A signed local build has no provisioning profile, so the packager drops the
+provisioning-restricted entitlements (today `keychain-access-groups`) before
+signing. macOS refuses to launch a signed app that claims them without a
+profile. Passkey and WebAuthn keychain sharing is therefore unavailable in a
+signed local channel build. The ad-hoc build keeps the full entitlements.
+
 Local channel outputs:
 
 ```text
