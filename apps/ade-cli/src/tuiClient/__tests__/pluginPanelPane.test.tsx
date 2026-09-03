@@ -82,13 +82,13 @@ describe("PluginPanelPane", () => {
   it("draws the panel title and its rows", () => {
     const output = frame(content([
       { component: "text", text: "12 lanes tracked" },
-      { component: "keyValue", rows: [{ key: "Branch", value: "main" }] },
+      { component: "divider", label: "Lanes" },
       { component: "button", label: "Rebuild", onPress: { action: "rebuild" } },
     ]));
 
     expect(output).toContain("GRAPH");
     expect(output).toContain("12 lanes tracked");
-    expect(output).toContain("Branch");
+    expect(output).toContain("Lanes");
     expect(output).toContain("[ Rebuild ]");
     expect(output).toContain("enter runs");
   });
@@ -113,22 +113,6 @@ describe("PluginPanelPane", () => {
     expect(railed(second, "lane-b")).toBe(true);
   });
 
-  it("echoes the composer into the field being typed", () => {
-    const pane = content(
-      [
-        {
-          component: "form",
-          fields: [{ kind: "text", id: "name", label: "Name", placeholder: "lane name" }],
-          submit: { label: "Create", onPress: { action: "create" } },
-        },
-      ],
-      { editing: 0 },
-    );
-
-    expect(frame(pane, 0, "new-lane")).toContain("new-lane");
-    expect(frame(pane, 0, "new-lane")).toContain("typing below");
-  });
-
   it("cuts a long paragraph instead of letting it push the panel out of the window", () => {
     // The vocabulary allows 4,000 characters of text, which wraps to a hundred
     // lines in a 44-column pane and would carry the rows below it — and the
@@ -143,10 +127,13 @@ describe("PluginPanelPane", () => {
     expect(plain(output)).toContain("r refresh");
   });
 
-  it("names a component it cannot draw rather than leaving the pane blank", () => {
+  it("names a frozen component rather than leaving the pane blank", () => {
     const output = frame(content([{ component: "video", src: "file:///clip.mp4", title: "Demo" }]));
-    expect(output).toContain("Video · Demo");
-    expect(plain(output)).toContain("Run ade open to view it in the app");
+    expect(plain(output)).toContain("video is not drawn in the terminal");
+    // The node's own title leads the second line, ahead of the way out. That
+    // line is the one the 44-column pane truncates, which is the right one to
+    // lose: the sentence above it already answered the question.
+    expect(plain(output)).toContain("Demo · Run ade open");
   });
 
   it("shows the plugin's own fallback when the schema is unreadable", () => {
@@ -192,34 +179,11 @@ describe("PluginPanelPane", () => {
   });
 });
 
-describe("the markdown node", () => {
-  it("draws a document's structure, and prints a link's destination beside it", () => {
-    const drawn = plain(frame(content([{
-      component: "markdown",
-      text: [
-        "## Fix the redirect",
-        "",
-        "- [x] Reproduce",
-        "- [ ] Test it",
-        "",
-        "See [ADE-122](https://linear.app/x).",
-      ].join("\n"),
-    }])));
-
-    expect(drawn).toContain("Fix the redirect");
-    // The checkbox is text and stays text: nothing in this pane can press it.
-    expect(drawn).toContain("[x] Reproduce");
-    expect(drawn).toContain("[ ] Test it");
-    // A terminal cannot hide a destination behind a word, so it does not try.
-    expect(drawn).toContain("ADE-122");
-    expect(drawn).toContain("https://linear.app/x");
-  });
-
-  it("draws a script tag as characters", () => {
-    expect(plain(frame(content([{ component: "markdown", text: "<script>alert(1)</script>" }]))))
-      .toContain("<script>alert(1)</script>");
-  });
-
+/**
+ * The two profile nodes with real chrome of their own: a group's disclosure and
+ * a selectable list's tick boxes and bulk bar.
+ */
+describe("the group and the selectable list", () => {
   it("folds a group behind the house disclosure glyph", () => {
     const body = [
       { component: "group", title: "Backlog", badge: 3, children: [{ component: "text", text: "ISS-1" }] },
@@ -252,32 +216,5 @@ describe("the markdown node", () => {
     expect(ticked).toContain("1 selected");
     expect(ticked).toContain("[ Create lanes ]");
     expect(ticked).toContain("[ Clear ]");
-  });
-
-  it("draws a menu-styled control as one line rather than a strip of pills", () => {
-    const collections: PluginPaneCollectionMap = new Map([
-      [
-        bindingKey({ collection: "projects" }),
-        Array.from({ length: 12 }, (_unused, index) => ({
-          key: `row-${index}`,
-          value: { id: `p${index}`, name: `Project ${index}` },
-        })),
-      ],
-    ]);
-    const output = plain(frame(content([
-      {
-        component: "segmented",
-        stateKey: "project",
-        label: "Project",
-        options: [{ value: "", label: "All projects" }],
-        optionsFrom: { collection: "projects", valueField: "id", labelField: "name" },
-      },
-    ], { collections })));
-
-    expect(output).toContain("All projects");
-    expect(output).toContain("1/13");
-    // Not a pill in sight: one line, and the ←→ gesture that moves along it.
-    expect(output).not.toContain("[ Project 4 ]");
-    expect(output).toContain("←→");
   });
 });

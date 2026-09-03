@@ -13,6 +13,8 @@ import {
   pluginPaneClearSelection,
   pluginPaneNavigationPlacement,
   pluginPaneSettingsNotice,
+  pluginPaneSeededRefresh,
+  pluginPaneSeededRefreshKey,
   pluginPaneSelectionPayload,
   pluginPaneSelectionReset,
   pluginPaneShowMore,
@@ -24,6 +26,8 @@ import {
   pluginPaneStateReset,
   pluginPaneWindow,
   pluginTableWidths,
+  PLUGIN_TERMINAL_PROFILE_NODES,
+  isTerminalProfileNode,
   type PluginPaneCollectionMap,
   type PluginPaneInput,
   type PluginPaneModel,
@@ -109,12 +113,11 @@ function build(
 }
 
 describe("plugin pane model", () => {
-  it("renders the v1 component subset as rows in schema order", () => {
+  it("renders the terminal profile as rows in schema order", () => {
     const model = build(panel([
       { component: "text", text: "Overview", variant: "title" },
       { component: "badge", text: "12 nodes", tone: "accent" },
       { component: "divider", label: "Lanes" },
-      { component: "keyValue", rows: [{ key: "Branch", value: "main" }] },
       {
         component: "list",
         items: [{ title: "lane-a", subtitle: "3 commits", onPress: { action: "openLane", args: { id: "a" } } }],
@@ -127,7 +130,6 @@ describe("plugin pane model", () => {
       "text",
       "inline",
       "divider",
-      "keyValue",
       "listItem",
       "buttons",
     ]);
@@ -244,6 +246,77 @@ describe("plugin pane model", () => {
     expect(build({ state: "missing" }).viewAction).toBeNull();
   });
 
+  it("runs a seeded panel's declared refresh once when the pane opens", () => {
+    // The defect this exists for: every plugin tab drew the manifest's
+    // "Loading…" card and sat on it, because only `r` ran the fetch.
+    const invoked = new Set<string>();
+    const seeded = build(panel([], { seeded: true, refreshAction: "refresh-fleet" }));
+    expect(seeded.seeded).toBe(true);
+
+    const first = pluginPaneSeededRefresh(seeded, invoked);
+    expect(first?.action).toBe("refresh-fleet");
+    invoked.add(first!.key);
+
+    // Re-opening the pane on the SAME still-seeded row asks the plugin nothing
+    // a second time.
+    const reopened = build(panel([], { seeded: true, refreshAction: "refresh-fleet" }));
+    expect(pluginPaneSeededRefresh(reopened, invoked)).toBeNull();
+
+    // A row the plugin has published over is not seeded, so an open dispatches
+    // nothing — the panel is already showing real content.
+    const published = build(panel([], { refreshAction: "refresh-fleet" }));
+    expect(published.seeded).toBe(false);
+    expect(pluginPaneSeededRefresh(published, new Set())).toBeNull();
+
+    // A seeded row whose panel declared no refresh has nothing to run, and a
+    // panel with no row at all has nothing to run it against.
+    expect(pluginPaneSeededRefresh(build(panel([], { seeded: true })), new Set())).toBeNull();
+    expect(pluginPaneSeededRefresh(build({ state: "missing" }), new Set())).toBeNull();
+  });
+
+  it("keys the seeded refresh on the row, so a changed row may ask again", () => {
+    const seededAt = (updatedAt: string | null): PluginPaneModel => build({
+      state: "ok",
+      record: {
+        pluginId: "graph",
+        panelId: "main",
+        title: "Graph",
+        schema: { v: 1, fallback: FALLBACK, body: [], seeded: true, refreshAction: "refresh-fleet" },
+        vocabVersion: 1,
+        updatedAt,
+      },
+    });
+
+    const invoked = new Set<string>();
+    const first = pluginPaneSeededRefresh(seededAt("2026-09-03T10:00:00.000Z"), invoked);
+    expect(first).not.toBeNull();
+    invoked.add(first!.key);
+    expect(pluginPaneSeededRefresh(seededAt("2026-09-03T10:00:00.000Z"), invoked)).toBeNull();
+
+    // A row that actually changed — and is still seeded, because the host
+    // re-materialized the manifest schema — is a new key and may ask again.
+    const later = pluginPaneSeededRefresh(seededAt("2026-09-03T10:05:00.000Z"), invoked);
+    expect(later?.action).toBe("refresh-fleet");
+    expect(later?.key).not.toBe(first!.key);
+
+    // A host that sends no `updated_at` still gets a stable identity off the
+    // schema rather than re-asking on every open.
+    const nullFirst = pluginPaneSeededRefresh(seededAt(null), invoked);
+    expect(nullFirst).not.toBeNull();
+    invoked.add(nullFirst!.key);
+    expect(pluginPaneSeededRefresh(seededAt(null), invoked)).toBeNull();
+    expect(pluginPaneSeededRefreshKey("graph", "main", null))
+      .not.toBe(pluginPaneSeededRefreshKey("graph", "other", null));
+  });
+
+  it("reads the seeded stamp even off a schema this build cannot render", () => {
+    // Same reason the refresh action is read there: a seeded card the client
+    // cannot parse is exactly the card a first refresh is meant to replace.
+    const unreadable = build(panel([], { v: 99, seeded: true, refreshAction: "refresh-fleet" }));
+    expect(unreadable.status).toBe("fallback");
+    expect(pluginPaneSeededRefresh(unreadable, new Set())?.action).toBe("refresh-fleet");
+  });
+
   it("draws a rich row's badge and mono line, and its actions as numbered keys", () => {
     const model = build(panel([{
       component: "list",
@@ -276,13 +349,12 @@ describe("plugin pane model", () => {
     expect(stop.kind === "action" ? stop.action.confirm : null).toBe("Stop this agent?");
   });
 
-  it("draws avatar initials on a node and on a list row", () => {
+  it("draws avatar initials on a list row, the one place the profile keeps a face", () => {
+    // The `avatar` NODE is frozen; a list row's avatar is part of `list` and
+    // still draws, which is where every real panel puts a face anyway.
     const model = build(panel([
-      { component: "avatar", name: "Jane Doe" },
       { component: "list", items: [{ title: "ENG-1", avatar: { name: "Linear" } }] },
     ]));
-    const face = model.rows.find((row) => row.kind === "text");
-    expect(face?.kind === "text" ? face.text : null).toBe("[JD] Jane Doe");
     const item = model.rows.find((row) => row.kind === "listItem");
     expect(item?.kind === "listItem" ? item.avatar : null).toBe("L");
     expect(item?.kind === "listItem" ? item.title : null).toBe("ENG-1");
@@ -337,24 +409,6 @@ describe("plugin pane model", () => {
     ]);
   });
 
-  it("draws a bound cell the way the app does, not as a blank", () => {
-    // The two surfaces used to disagree: a numeric `42` rendered as 42 in the
-    // app and as an empty value here, from two coercers that each claimed to
-    // mirror the other. Both now read the vocabulary's own.
-    const collections: PluginPaneCollectionMap = new Map([
-      [
-        bindingKey({ collection: "stats" }),
-        [
-          { key: "1", value: { key: "Open", value: 42 } },
-          { key: "2", value: { key: "Passing", value: true } },
-        ],
-      ],
-    ]);
-    const model = build(panel([{ component: "keyValue", bind: { collection: "stats" } }]), { collections });
-    const values = model.rows.flatMap((row) => (row.kind === "keyValue" ? [`${row.label}=${row.value}`] : []));
-    expect(values).toEqual(["Open=42", "Passing=Yes"]);
-  });
-
   it("names a component it cannot draw instead of leaving a gap", () => {
     const model = build(panel([
       { component: "chart", kind: "line", series: [{ id: "s", points: [{ x: 1, y: 2 }] }], title: "Throughput" },
@@ -363,9 +417,16 @@ describe("plugin pane model", () => {
     ]));
 
     const placeholders = model.rows.flatMap((row) => (row.kind === "placeholder" ? [row] : []));
-    expect(placeholders.map((row) => row.label)).toEqual(["Chart · Throughput", "Video", "hologram"]);
-    // The panel declared a deeplink, so the hint points at it.
-    expect(placeholders[0]?.hint).toBe("Ctrl+Y copies a link that opens it");
+    expect(placeholders.map((row) => row.label)).toEqual([
+      "chart is not drawn in the terminal",
+      "video is not drawn in the terminal",
+      "hologram",
+    ]);
+    // The panel declared a deeplink, so the hint points at it — behind the
+    // chart's own title, which is the thing the reader came for.
+    expect(placeholders[0]?.hint).toBe("Throughput · Ctrl+Y copies a link that opens it");
+    // A name this build has never heard of is not a frozen component, and says
+    // the other true sentence.
     expect(placeholders[2]?.hint).toBe("This ADE version does not draw it yet");
     expect(model.warnings).toHaveLength(1);
   });
@@ -435,52 +496,152 @@ describe("plugin pane model", () => {
   });
 });
 
-describe("plugin pane forms", () => {
-  const formPanel = panel([
-    {
-      component: "form",
-      fields: [
-        { kind: "text", id: "name", label: "Name", placeholder: "lane name" },
-        { kind: "toggle", id: "draft", label: "Draft", value: true },
-        {
-          kind: "select",
-          id: "base",
-          label: "Base",
-          options: [{ value: "main" }, { value: "dev", label: "Develop" }],
-          value: "main",
-        },
-      ],
-      submit: { label: "Create", onPress: { action: "createLane" } },
+/* ── The frozen terminal profile ───────────────────────────────────── */
+
+/**
+ * The freeze itself (`docs/reports/plugin-page-tier-spec.md` section 1).
+ *
+ * Two halves have to agree: {@link PLUGIN_TERMINAL_PROFILE_NODES} is what the
+ * vocabulary SAYS the terminal draws, and the switch inside the pane's walk is
+ * what it actually draws. A test written against a hand-copied list would let
+ * the two drift silently, so both halves are walked from the one constant.
+ */
+describe("the frozen terminal profile", () => {
+  /** One minimal VALID node per component, so nothing degrades as `__invalid`. */
+  const NODE: Record<string, Record<string, unknown>> = {
+    stack: {
+      component: "stack",
+      direction: "vertical",
+      children: [{ component: "text", text: "inside" }],
     },
-  ]);
+    group: {
+      component: "group",
+      title: "Lanes",
+      children: [{ component: "text", text: "inside" }],
+    },
+    text: { component: "text", text: "Overview" },
+    badge: { component: "badge", text: "12" },
+    button: { component: "button", label: "Rebuild", onPress: { action: "rebuild" } },
+    list: { component: "list", items: [{ title: "lane-a" }] },
+    emptyState: { component: "emptyState", title: "Nothing yet" },
+    divider: { component: "divider", label: "Lanes" },
+    markdown: { component: "markdown", text: "# Heading" },
+    table: { component: "table", columns: [{ key: "a", label: "A" }], rows: [{ a: "1" }] },
+    keyValue: { component: "keyValue", rows: [{ key: "Branch", value: "main" }] },
+    form: {
+      component: "form",
+      fields: [{ kind: "text", id: "name", label: "Name" }],
+      submit: { label: "Save", onPress: { action: "save" } },
+    },
+    segmented: {
+      component: "segmented",
+      stateKey: "filter",
+      label: "Status",
+      options: [{ value: "", label: "All" }, { value: "active", label: "Active" }],
+    },
+    canvas: { component: "canvas", engine: "graph", bind: { collection: "nodes" } },
+    avatar: { component: "avatar", name: "Jane Doe" },
+    video: { component: "video", src: "https://ade.dev/clip.mp4", title: "The run" },
+    image: { component: "image", src: "https://ade.dev/a.png", alt: "a chart" },
+    chart: { component: "chart", kind: "line", series: [{ id: "s", points: [{ x: 1, y: 2 }] }] },
+  };
 
-  it("lays a form out as value rows plus a submit, all selectable", () => {
-    const model = build(formPanel);
-    expect(model.rows.map((row) => row.kind)).toEqual(["field", "field", "field", "submit"]);
-    expect(model.interactives.map((entry) => entry.kind)).toEqual(["field", "field", "field", "submit"]);
-    const rows = model.rows.flatMap((row) => (row.kind === "field" ? [row.display] : []));
-    expect(rows).toEqual(["lane name", "on", "main"]);
+  /** Everything the vocabulary still parses and the terminal no longer paints. */
+  const FROZEN = [
+    "markdown",
+    "table",
+    "keyValue",
+    "form",
+    "segmented",
+    "canvas",
+    "avatar",
+    "video",
+    "image",
+    "chart",
+  ] as const;
+
+  it("draws every node the profile names, and marks none of them", () => {
+    for (const component of PLUGIN_TERMINAL_PROFILE_NODES) {
+      const node = NODE[component];
+      if (!node) throw new Error(`the profile names ${component} and this test has no node for it`);
+      const model = build(panel([node]));
+      expect(model.status).toBe("ok");
+      expect(model.rows.length).toBeGreaterThan(0);
+      expect(model.rows.some((row) => row.kind === "placeholder")).toBe(false);
+      expect(model.warnings).toEqual([]);
+    }
   });
 
-  it("shows typed values and masks a secret", () => {
-    const secretPanel = panel([
-      {
-        component: "form",
-        fields: [{ kind: "secret", id: "token", label: "Token" }],
-        submit: { label: "Save", onPress: { action: "save" } },
-      },
+  it("marks every frozen node with the sentence that names it", () => {
+    for (const component of FROZEN) {
+      const node = NODE[component];
+      if (!node) throw new Error(`no node for ${component}`);
+      const model = build(panel([node]));
+      // One row, never a marker beside a half-drawn node.
+      expect(model.rows).toHaveLength(1);
+      const marker = model.rows[0];
+      if (marker?.kind !== "placeholder") throw new Error(`${component} did not degrade to the marker`);
+      expect(marker.label).toBe(`${component} is not drawn in the terminal`);
+      // The escape hatch is untouched: this panel declared a deeplink.
+      expect(marker.hint.endsWith("Ctrl+Y copies a link that opens it")).toBe(true);
+      // And nothing behind a frozen node is reachable by the keyboard.
+      expect(model.interactives).toEqual([]);
+    }
+  });
+
+  it("still names the thing, not only its kind, where the node carried one", () => {
+    const hint = (component: string): string => {
+      const row = build(panel([NODE[component]!])).rows[0];
+      return row?.kind === "placeholder" ? row.hint : "";
+    };
+    const link = "Ctrl+Y copies a link that opens it";
+    expect(hint("video")).toBe(`The run · ${link}`);
+    expect(hint("image")).toBe(`a chart · ${link}`);
+    expect(hint("avatar")).toBe(`Jane Doe · ${link}`);
+    expect(hint("segmented")).toBe(`Status · ${link}`);
+    // A node with nothing to name offers only the way out.
+    expect(hint("table")).toBe(link);
+  });
+
+  it("agrees with the vocabulary about which names it draws", () => {
+    for (const component of PLUGIN_TERMINAL_PROFILE_NODES) {
+      expect(isTerminalProfileNode(component)).toBe(true);
+    }
+    for (const component of FROZEN) expect(isTerminalProfileNode(component)).toBe(false);
+    // The two lists together are the whole v1 vocabulary. A component added in
+    // v2 without a terminal decision fails here rather than degrading in
+    // silence, which is the whole point of freezing rather than deleting.
+    expect([...PLUGIN_TERMINAL_PROFILE_NODES, ...FROZEN].sort()).toEqual(Object.keys(NODE).sort());
+  });
+
+  it("keeps a button armed, which is how the terminal takes input now that `form` is frozen", () => {
+    const model = build(panel([
+      NODE.form!,
+      { component: "button", label: "Rename lane", onPress: { action: "rename" } },
+    ]));
+    expect(model.rows.map((row) => row.kind)).toEqual(["placeholder", "buttons"]);
+    expect(model.interactives).toEqual([
+      { kind: "action", label: "Rename lane", action: { action: "rename" } },
     ]);
-    const withValue = build(secretPanel, { values: { [pluginFormValueKey("body[0]", "token")]: "hunter2" } });
-    const row = withValue.rows[0];
-    expect(row?.kind === "field" && row.display).toBe("••••••••");
   });
 
-  it("marks the field that owns the composer", () => {
-    const model = build(formPanel, { editing: 0 });
-    const rows = model.rows.flatMap((row) => (row.kind === "field" ? [row.editing] : []));
-    expect(rows).toEqual([true, false, false]);
+  it("leaves the two internal names their own sentences, which the freeze never touches", () => {
+    // A name this build has never heard of: forward compatibility, not a freeze.
+    const unknown = build(panel([{ component: "hologram" }])).rows[0];
+    expect(unknown?.kind === "placeholder" && unknown.label).toBe("hologram");
+    expect(unknown?.kind === "placeholder" && unknown.hint).toBe("This ADE version does not draw it yet");
+    // A node the author got wrong still reads as the author's mistake.
+    const invalid = build(panel([{ component: "text" }])).rows[0];
+    expect(invalid?.kind === "note" && invalid.text.startsWith("text could not be rendered")).toBe(true);
   });
+});
 
+/**
+ * The `form` node is frozen out of the terminal profile, but its value helpers
+ * are not: the frozen arm still reads them, and the sweep that deletes the arm
+ * is the thing that should delete these too.
+ */
+describe("plugin pane field helpers", () => {
   it("cycles toggles and selects without a text input", () => {
     const toggle: VocabField = { kind: "toggle", id: "draft", label: "Draft" };
     expect(cyclePluginFieldValue(toggle, "false", 1)).toBe("true");
@@ -507,65 +668,6 @@ describe("plugin pane forms", () => {
     expect(pluginFieldRawValue(field, "body[0]", {})).toBe("from-schema");
     expect(pluginFieldRawValue(field, "body[0]", { [pluginFormValueKey("body[0]", "name")]: "typed" }))
       .toBe("typed");
-  });
-
-  /**
-   * A settings form: no submit row to draw, and each field carries the action a
-   * committed edit dispatches. The `field` interactive has to carry BOTH the
-   * action and the form's whole field list, because an apply sends the same full
-   * values map a submit would and there is no submit row to read it off.
-   */
-  it("draws no submit row for a form that applies on change, and arms each field", () => {
-    const model = build(panel([
-      {
-        component: "form",
-        fields: [
-          { kind: "toggle", id: "digest", label: "Weekly digest" },
-          { kind: "select", id: "day", label: "Day", options: [{ value: "1" }, { value: "2" }], value: "1" },
-        ],
-        applyOnChange: { action: "applySettings" },
-      },
-    ]));
-
-    expect(model.rows.map((row) => row.kind)).toEqual(["field", "field"]);
-    expect(model.interactives.map((entry) => entry.kind)).toEqual(["field", "field"]);
-    for (const entry of model.interactives) {
-      expect(entry.kind).toBe("field");
-      if (entry.kind !== "field") continue;
-      expect(entry.applyOnChange).toEqual({ action: "applySettings" });
-      expect(entry.fields.map((field) => field.id)).toEqual(["digest", "day"]);
-    }
-  });
-
-  it("leaves a submit-only form's fields unarmed, so pressing one still just edits it", () => {
-    const model = build(formPanel);
-    for (const entry of model.interactives) {
-      if (entry.kind !== "field") continue;
-      expect(entry.applyOnChange).toBeUndefined();
-    }
-  });
-});
-
-/**
- * `$context` rows are a key and a scalar, so the key has to survive the read.
- * Dropping it left a `keyValue` bound to `$context` drawing its `emptyText`.
- */
-describe("plugin pane keyValue bindings", () => {
-  it("labels a bound row with the collection row's own key", () => {
-    const model = build(
-      panel([{ component: "keyValue", emptyText: "Nothing here.", bind: { collection: "meta" } }]),
-      {
-        collections: new Map([[bindingKey({ collection: "meta" }), [
-          { key: "Lane", value: "alpha-build" },
-          { key: "Logged", value: "Aug 30, 2026" },
-        ]]]),
-      },
-    );
-
-    expect(model.rows.map((row) => (row.kind === "keyValue" ? [row.label, row.value] : row.kind))).toEqual([
-      ["Lane", "alpha-build"],
-      ["Logged", "Aug 30, 2026"],
-    ]);
   });
 });
 
@@ -613,31 +715,6 @@ function listTitles(model: PluginPaneModel): string[] {
 }
 
 describe("plugin pane panel state", () => {
-  it("draws a segmented control as one row of options, with the default in force", () => {
-    const model = build(panel([STATUS_CONTROL]));
-
-    expect(model.rows.map((row) => row.kind)).toEqual(["segmented"]);
-    const row = model.rows[0];
-    expect(row?.kind === "segmented" && row.label).toBe("Status");
-    expect(row?.kind === "segmented" && row.options.map((option) => option.label)).toEqual([
-      "All",
-      "Active",
-      "Failed",
-    ]);
-    // The default is the one in force, and every option is reachable in one
-    // keystroke rather than by cycling to it.
-    expect(row?.kind === "segmented" && row.options.map((option) => option.selected)).toEqual([
-      true,
-      false,
-      false,
-    ]);
-    expect(model.interactives).toEqual([
-      { kind: "state", stateKey: "statusFilter", label: "All", value: "" },
-      { kind: "state", stateKey: "statusFilter", label: "Active", value: "active" },
-      { kind: "state", stateKey: "statusFilter", label: "Failed", value: "failed" },
-    ]);
-    expect(model.state).toEqual({ statusFilter: "" });
-  });
 
   it("keeps every row while the filter is unset, and filters once it is not", () => {
     const body = [STATUS_CONTROL, statusFilteredList()];
@@ -726,17 +803,6 @@ describe("plugin pane panel state", () => {
     expect(listTitles(model)).toEqual(["bc-3ac1", "bc-0092"]);
   });
 
-  it("reads the panel's own state back through the `$state` collection", () => {
-    const model = build(panel([
-      STATUS_CONTROL,
-      { component: "keyValue", bind: { collection: "$state" } },
-    ]), { state: { statusFilter: "active" }, stateSignature: build(panel([STATUS_CONTROL])).stateSignature });
-
-    const row = model.rows.find((entry) => entry.kind === "keyValue");
-    // The OPTION'S LABEL, not the raw value: a reader wants "Status: Active".
-    expect(row?.kind === "keyValue" && [row.label, row.value]).toEqual(["Status", "Active"]);
-  });
-
   it("answers a `$state` binding at render rather than at the fetch", async () => {
     const fetchRows = vi.fn(async () => [{ key: "k", value: "v" }]);
     const rows = await pluginPaneBindingRows({ collection: "$state" }, null, fetchRows);
@@ -809,17 +875,6 @@ describe("plugin pane panel state", () => {
     expect(pluginPaneStateReset(model, { ok: true })).toBeNull();
   });
 
-  it("dispatches an `onChange` beside the local write, never instead of it", () => {
-    const model = build(panel([{ ...STATUS_CONTROL, onChange: { action: "filterChanged" } }]));
-    expect(model.interactives[1]).toEqual({
-      kind: "state",
-      stateKey: "statusFilter",
-      label: "Active",
-      value: "active",
-      onChange: { action: "filterChanged" },
-    });
-  });
-
   it("draws the app's own filtered-rows fixture, filtered the same way", () => {
     const fixture = PLUGIN_FIXTURES.find((entry) => entry.id === "filtered-rows");
     if (!fixture) throw new Error("the filtered-rows fixture is what pins client parity");
@@ -847,7 +902,12 @@ describe("plugin pane panel state", () => {
 
     const opened = build(record, { collections });
     expect(opened.warnings).toEqual([]);
-    expect(opened.rows.some((row) => row.kind === "segmented")).toBe(true);
+    // The control itself is frozen out of the terminal, but the state it
+    // declares is not: the filter it names still selects the rows below it.
+    expect(opened.rows.some((row) => row.kind === "segmented")).toBe(false);
+    expect(opened.rows.some(
+      (row) => row.kind === "placeholder" && row.label === "segmented is not drawn in the terminal",
+    )).toBe(true);
     // Two controls, and the fixture's second one defaults to hiding archived
     // rows — so the first list opens on the four live agents.
     expect(opened.declarations.map((entry) => entry.stateKey)).toEqual(["statusFilter", "archived"]);
@@ -866,30 +926,13 @@ describe("plugin pane panel state", () => {
     for (let index = 0; index < 20; index += 1) {
       body.push({ component: "text", text: `line ${index}` });
     }
-    body.push(STATUS_CONTROL);
+    body.push({ component: "button", label: "Rebuild", onPress: { action: "rebuild" } });
     const model = build(panel(body));
 
-    // The control's options are the last interactives, and the pane has no
-    // scrollbar: moving the selection is what scrolls.
+    // The button is the last interactive, and the pane has no scrollbar: moving
+    // the selection is what scrolls.
     const window = pluginPaneWindow(model, model.interactives.length - 1, 6);
-    expect(window.rows.some((row) => row.kind === "segmented")).toBe(true);
-  });
-
-  it("identifies a state option by what it sets, not by its label", () => {
-    const model = build(panel([STATUS_CONTROL]));
-    const renamed = build(panel([{
-      ...STATUS_CONTROL,
-      options: [
-        { value: "", label: "All" },
-        { value: "active", label: "Running" },
-        { value: "failed", label: "Failed" },
-      ],
-    }]));
-
-    const key = (source: PluginPaneModel, index: number) =>
-      pluginInteractiveKey(source, source.interactives[index]!);
-    expect(key(renamed, 1)).toBe(key(model, 1));
-    expect(key(model, 2)).not.toBe(key(model, 1));
+    expect(window.rows.some((row) => row.kind === "buttons")).toBe(true);
   });
 });
 
@@ -1491,7 +1534,12 @@ describe("the plugin action prompt", () => {
   });
 });
 
-describe("the markdown node in the terminal", () => {
+/**
+ * The `markdown` NODE is frozen out of the terminal profile. A list row's own
+ * markdown is not: it belongs to `list`, which the profile keeps, and it is the
+ * one place a panel's prose still reaches a terminal reader.
+ */
+describe("list-row markdown in the terminal", () => {
   /** Every markdown row of a model, as `prefix + text`, in reading order. */
   function lines(model: PluginPaneModel): string[] {
     return model.rows.flatMap((row) =>
@@ -1500,109 +1548,6 @@ describe("the markdown node in the terminal", () => {
         : []);
   }
 
-  function markdown(text: string): PluginPaneModel {
-    return build(panel([{ component: "markdown", text }]));
-  }
-
-  it("keeps a document's structure legible rather than degrading to a placeholder", () => {
-    const model = markdown([
-      "## Fix the login redirect",
-      "",
-      "Drops `next` when the session is **stale**.",
-      "",
-      "- [x] Reproduce on main",
-      "- [ ] Add a test",
-      "",
-      "> Reviewer: ready.",
-      "",
-      "```ts",
-      "const next = 1;",
-      "```",
-      "",
-      "---",
-    ].join("\n"));
-
-    // A placeholder is what `image` and `chart` get. Prose is the one thing a
-    // terminal draws as well as anything else, so it is drawn.
-    expect(model.rows.some((row) => row.kind === "placeholder")).toBe(false);
-    expect(lines(model)).toEqual([
-      "Fix the login redirect",
-      "Drops next when the session is stale.",
-      "[x] Reproduce on main",
-      "[ ] Add a test",
-      "> Reviewer: ready.",
-      "const next = 1;",
-    ]);
-    // The rule reuses the pane's own divider rather than inventing a second one.
-    expect(model.rows[model.rows.length - 1]?.kind).toBe("divider");
-  });
-
-  it("carries emphasis as run flags, so the view can bold what the desktop bolds", () => {
-    const model = markdown("A **bold** and _italic_ and ~~gone~~ line.");
-    const row = model.rows.find((entry) => entry.kind === "markdown");
-    if (row?.kind !== "markdown") throw new Error("expected a markdown row");
-    expect(row.parts.find((span) => span.text === "bold")?.bold).toBe(true);
-    expect(row.parts.find((span) => span.text === "italic")?.italic).toBe(true);
-    expect(row.parts.find((span) => span.text === "gone")?.strike).toBe(true);
-  });
-
-  it("keeps an https link's destination beside its words", () => {
-    const model = markdown("See [ADE-122](https://linear.app/ade/issue/ADE-122).");
-    const row = model.rows.find((entry) => entry.kind === "markdown");
-    if (row?.kind !== "markdown") throw new Error("expected a markdown row");
-    const link = row.parts.find((span) => span.href !== undefined);
-    expect([link?.text, link?.href]).toEqual(["ADE-122", "https://linear.app/ade/issue/ADE-122"]);
-  });
-
-  it("refuses a javascript: link and keeps its words, exactly as the app does", () => {
-    const model = markdown("[Click me](javascript:alert(1))");
-    const row = model.rows.find((entry) => entry.kind === "markdown");
-    if (row?.kind !== "markdown") throw new Error("expected a markdown row");
-    expect(row.parts.every((span) => span.href === undefined)).toBe(true);
-    expect(lines(model)).toEqual(["Click me"]);
-  });
-
-  it("draws a script tag as text and never as a row of its own", () => {
-    expect(lines(markdown("<script>alert(1)</script>"))).toEqual(["<script>alert(1)</script>"]);
-  });
-
-  it("keeps a task checkbox inert — it is text, and nothing selects it", () => {
-    const model = markdown("- [x] done\n- [ ] not done");
-    expect(lines(model)).toEqual(["[x] done", "[ ] not done"]);
-    expect(model.interactives).toEqual([]);
-  });
-
-  it("numbers an ordered list from its own start and indents a nested item", () => {
-    expect(lines(markdown("3. three\n4. four"))).toEqual(["3. three", "4. four"]);
-    // The nested bullet sits under the parent's marker, not beside it: the
-    // continuation prefix holds the outer marker's width open.
-    expect(lines(markdown("- one\n  - nested"))).toEqual(["• one", "  • nested"]);
-  });
-
-  it("renders an over-long document as markdown with a line saying the rest is not shown", () => {
-    const model = build(panel([
-      { component: "markdown", text: `# Heading\n\n${"a".repeat(VOCAB_LIMITS.maxMarkdownChars)}` },
-    ]));
-    expect(lines(model)[0]).toBe("Heading");
-    expect(model.rows.some((row) => row.kind === "note" && row.text.includes("rest of this text")))
-      .toBe(true);
-    expect(model.rows.some((row) => row.kind === "note" && row.text.includes("shown as written")))
-      .toBe(false);
-  });
-
-  it("draws a pipe table as aligned rows rather than as pipes", () => {
-    const model = markdown("| Name | State |\n| --- | ---: |\n| ISS-1 | Open |");
-    expect(lines(model).some((line) => line.includes("ISS-1") && line.includes("Open"))).toBe(true);
-    expect(model.rows.some((row) => row.kind === "placeholder")).toBe(false);
-  });
-
-  it("draws a markdown image as a named placeholder, not as pixels", () => {
-    const model = markdown("See ![a diagram](https://ade.dev/x.png).");
-    const row = model.rows.find((entry) => entry.kind === "markdown");
-    if (row?.kind !== "markdown") throw new Error("expected a markdown row");
-    expect(row.parts.some((span) => span.src === "https://ade.dev/x.png")).toBe(true);
-  });
-
   it("draws list-row markdown under the row rather than as a separate body node", () => {
     const model = build(panel([{
       component: "list",
@@ -1610,12 +1555,6 @@ describe("the markdown node in the terminal", () => {
     }]));
     expect(model.rows.some((row) => row.kind === "listItem" && row.title === "kai")).toBe(true);
     expect(lines(model).some((line) => line.includes("sessionRedirect.ts"))).toBe(true);
-  });
-
-  it("says so when a document has more blocks than a panel draws", () => {
-    const model = markdown(Array.from({ length: 140 }, (_u, i) => `p${i}`).join("\n\n"));
-    expect(model.rows.some((row) => row.kind === "note" && row.text.includes("rest of this text")))
-      .toBe(true);
   });
 });
 
@@ -2009,63 +1948,12 @@ describe("collection-bound segmented options in the terminal", () => {
     },
   ]);
 
-  it("resolves the options from the collection, keeping the literal All first", () => {
-    const model = build(BOUND(), { collections: projects(3) });
-    expect(model.declarations[0]?.options).toEqual([
-      { value: "", label: "All projects" },
-      { value: "p0", label: "Project 0" },
-      { value: "p1", label: "Project 1" },
-      { value: "p2", label: "Project 2" },
-    ]);
-    // A bound control opens on the unset "All" rather than on whichever project
-    // the collection happened to yield first.
-    expect(model.state).toEqual({ project: "" });
-    // Four options is still a strip.
-    const row = model.rows[0];
-    expect(row?.kind).toBe("segmented");
-    expect(row?.kind === "segmented" && row.options.map((option) => option.label))
-      .toEqual(["All projects", "Project 0", "Project 1", "Project 2"]);
-  });
-
   it("is a working control on its All when the rows have not landed", () => {
     const model = build(BOUND());
     expect(model.declarations[0]?.options).toEqual([{ value: "", label: "All projects" }]);
     // And the signature does not move when they do, so the reader's filter
     // survives that transition.
     expect(model.stateSignature).toBe(build(BOUND(), { collections: projects(3) }).stateSignature);
-  });
-
-  it("draws a menu-styled control as one line, registering one interactive and not fifty", () => {
-    const model = build(BOUND(), { collections: projects(12) });
-    expect(model.declarations[0]?.options).toHaveLength(13);
-
-    const row = model.rows[0];
-    expect(row?.kind).toBe("menu");
-    expect(row?.kind === "menu" && row.label).toBe("Project");
-    expect(row?.kind === "menu" && row.value).toBe("All projects");
-    expect(row?.kind === "menu" && [row.position, row.count]).toEqual([1, 13]);
-    // ONE stop, not thirteen: fifty numbered pills would push the list this
-    // control filters off the bottom of the pane.
-    expect(model.interactives).toEqual([
-      { kind: "state", stateKey: "project", label: "All projects", value: "p0" },
-    ]);
-
-    // The single interactive names the NEXT option, so Enter advances exactly
-    // as it does on a `select` field, and ←/→ still moves either way.
-    const moved = build(BOUND(), {
-      collections: projects(12),
-      state: { project: "p0" },
-      stateSignature: model.stateSignature,
-    });
-    expect(moved.rows[0]?.kind === "menu" && moved.rows[0].value).toBe("Project 0");
-    expect(moved.rows[0]?.kind === "menu" && moved.rows[0].position).toBe(2);
-    expect(moved.interactives[0]).toEqual({
-      kind: "state",
-      stateKey: "project",
-      label: "Project 0",
-      value: "p1",
-    });
-    expect(pluginPaneStateCycle(moved, "project", -1)).toEqual({ project: "" });
   });
 
   it("filters a list against an option the collection supplied", () => {
@@ -2264,52 +2152,11 @@ describe("panel chrome", () => {
 });
 
 /**
- * The three things the terminal used to drop on its way from a schema to a row.
- *
- * Each one is the same failure in a different node: the pane knew something and
- * printed a worse version of it. A table sized by its own content instead of by
- * the pane it sits in. A link inside a table cell reduced to its words while the
- * identical link one line above printed its URL. A `brand:linear` token printed
- * as the literal text `brand:linear`. And a canvas that drew a thousand rows
- * with no line saying it had.
+ * A thing the terminal used to drop on its way from a schema to a row: the pane
+ * knew something and printed a worse version of it. A `brand:linear` token
+ * printed as the literal text `brand:linear`.
  */
 describe("what the terminal used to drop", () => {
-  const markdownLines = (model: PluginPaneModel): string[] =>
-    model.rows.flatMap((row) =>
-      row.kind === "markdown" ? [row.parts.map((span) => span.text).join("")] : []);
-
-  it("sizes a markdown table to the pane rather than to its own content", () => {
-    const text = [
-      "| Lane | Note |",
-      "| --- | --- |",
-      "| lane-1 | " + "x".repeat(200) + " |",
-    ].join("\n");
-    const model = build(panel([{ component: "markdown", text }]), { width: 40 });
-    const lines = markdownLines(model);
-
-    expect(lines.length).toBe(2);
-    // Every row fits the pane, so Ink never soft-wraps a grid into a paragraph.
-    for (const line of lines) expect(line.length).toBeLessThanOrEqual(36);
-    // The long cell is cut and says it was cut, rather than silently ending.
-    expect(lines[1]).toContain("…");
-    // A wide pane keeps the whole cell.
-    const wide = markdownLines(build(panel([{ component: "markdown", text }]), { width: 400 }));
-    expect(wide[1]).toContain("x".repeat(200));
-  });
-
-  it("keeps a link's URL and an image's alt inside a table cell", () => {
-    const text = [
-      "| Run | Shot |",
-      "| --- | --- |",
-      "| [the run](https://ade.dev/r/1) | ![a chart](https://ade.dev/c.png) |",
-    ].join("\n");
-    const model = build(panel([{ component: "markdown", text }]), { width: 200 });
-    const lines = markdownLines(model);
-
-    expect(lines[1]).toContain("the run (https://ade.dev/r/1)");
-    expect(lines[1]).toContain("[image: a chart]");
-  });
-
   it("never prints a brand token, and says when nobody shipped the mark", () => {
     const glyph = { viewBox: "0 0 24 24", paths: [{ d: "M0 0h24v24H0z" }] };
     const withIcon = build(
@@ -2360,30 +2207,6 @@ describe("what the terminal used to drop", () => {
     ]));
     const plain = generic.rows.find((row) => row.kind === "group");
     expect(plain?.kind === "group" ? plain.icon : null).toBe("git-branch");
-  });
-
-  it("pages a canvas the way it pages a list", () => {
-    const collections: PluginPaneCollectionMap = new Map([
-      [bindingKey({ collection: "nodes" }), Array.from({ length: 143 }, (_unused, index) => ({
-        key: `n${index}`,
-        value: { title: `node-${index}` },
-      }))],
-    ]);
-    const canvas = panel([{ component: "canvas", engine: "graph", bind: { collection: "nodes" } }]);
-
-    const first = build(canvas, { collections });
-    expect(first.rows.filter((row) => row.kind === "listItem")).toHaveLength(VOCAB_LIMITS.listPageSize);
-    const page = first.rows.find((row) => row.kind === "listPage");
-    if (page?.kind !== "listPage" || page.selection === null) return expect.fail("expected a page row");
-    expect(page.label).toBe("Showing 100 of 143 · Show more");
-
-    const control = first.interactives[page.selection];
-    if (control?.kind !== "listPage") return expect.fail("expected a page control");
-    const listPages = pluginPaneShowMore(first, control.listKey, control.total);
-
-    const second = build(canvas, { collections, listPages });
-    expect(second.rows.filter((row) => row.kind === "listItem")).toHaveLength(143);
-    expect(second.rows.find((row) => row.kind === "listPage")).toBeUndefined();
   });
 });
 

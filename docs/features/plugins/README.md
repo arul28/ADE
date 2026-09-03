@@ -2258,6 +2258,31 @@ newer published manifest is unknown here.
 | CLI | `ade plugin …`, `ade <pluginId> <cmd>` for manifest-declared CLI words, and `ade link plugin <plugin-id> <panel-id> [--ctx '<json>']` to mint a panel link |
 | Chat | The `plugin_install` `ade_card` variant, for agent-built install flows. The whole lifecycle is reachable this way: `install` asks once per source, and `uninstall`/`enable`/`disable` ask every time |
 
+**The terminal profile.** The terminal draws a FROZEN subset of the vocabulary,
+not all of it: `stack`, `group`, `text`, `badge`, `button`, `list`, `emptyState`
+and `divider`. Owner decision, `docs/reports/plugin-page-tier-spec.md` section 1
+— the webview is the primary page tier on desktop, hosted web and iPhone, so the
+terminal keeps the six content nodes a 44-column pane draws well plus the two
+structural ones it already drew for free. Every other component — `markdown`,
+`table`, `keyValue`, `form`, `segmented`, `canvas`, `avatar`, `video`, `image`,
+`chart` — degrades to the pane's existing marker. The marker's first line is the
+honest sentence `table is not drawn in the terminal`, naming the component the
+schema actually used; its second line carries the node's own title, if it has
+one, ahead of the way to see it (`Ctrl+Y` when the panel declared a deeplink,
+`ade open` when it did not). A `button` whose action answers with a `prompt`
+still takes input, which is how the terminal asks a question now that `form` is
+frozen, and a list row's badge, avatar and markdown still draw, because they
+belong to `list`.
+
+The one list is `PLUGIN_TERMINAL_PROFILE_NODES` in
+`apps/desktop/src/shared/plugins/vocabularyNodes.ts`; the pane gates on it
+through `isTerminalProfileNode` rather than repeating it, and a test walks the
+constant to prove the two agree. The vocabulary is FROZEN, not deleted: every
+component still parses identically on every client, the frozen render arms are
+still in `pluginPane.ts` behind `TERMINAL_PROFILE_ONLY`, and the deletion later
+is one flag and one sweep. The paragraph below describes what the terminal drew
+BEFORE the freeze; its markdown claims no longer hold.
+
 **What the terminal draws.** A markdown table sizes to the pane and truncates a
 cell rather than wrapping it, because a wrapped row turns a grid into a
 paragraph. Links and images inside a table cell print — a destination beside its

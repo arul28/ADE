@@ -19,6 +19,14 @@ import type { RightPaneContent } from "../types";
  * terminal green, which is reserved for running and success. The drawer's
  * plugin row badges read the same table, so one tone means one color wherever a
  * plugin puts it.
+ *
+ * The terminal profile freeze (`docs/reports/plugin-page-tier-spec.md` section
+ * 1) lives in `pluginPane.ts`, not here: this file draws whatever rows it is
+ * given. The arms below for `markdown`, `keyValue`, `field`, `submit`,
+ * `segmented`, `menu` and `table` are therefore unreachable while the freeze
+ * holds, because no frozen node produces those rows any more. They are FROZEN,
+ * not deleted, and the sweep that deletes the walk's frozen arms deletes these
+ * with them.
  */
 
 const TONE_COLOR = {

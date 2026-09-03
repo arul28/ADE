@@ -216,6 +216,57 @@ export type VocabComponentName =
   | (string & {});
 
 /**
+ * The frozen "terminal profile" — the component names `ade code` draws.
+ *
+ * Owner decision, `docs/reports/plugin-page-tier-spec.md` section 1: the webview
+ * becomes the primary page tier on desktop, hosted web and iPhone, and the
+ * terminal keeps a small subset of this vocabulary rather than chasing it. The
+ * vocabulary is FROZEN, not deleted: every name in {@link VocabComponentName}
+ * still parses identically on every client, and this list only says which of
+ * them the terminal draws.
+ *
+ * `stack` and `divider` join the six the spec's Terminal row names because they
+ * are structure rather than content — a stack is a joined line or a line break,
+ * a divider is a rule — and the terminal already draws both for free.
+ *
+ * Everything absent from this list — `markdown`, `table`, `keyValue`, `form`,
+ * `segmented`, `canvas`, `avatar`, `video`, `image`, `chart` — degrades to the
+ * named marker in the terminal. A `button` whose action answers with a `prompt`
+ * still takes input, which is how the terminal asks a question now that `form`
+ * is frozen.
+ *
+ * Pure data. This changes no parse: {@link parseVocabNode} accepts every
+ * component on every client exactly as before.
+ */
+export const PLUGIN_TERMINAL_PROFILE_NODES = [
+  "stack",
+  "group",
+  "text",
+  "badge",
+  "button",
+  "list",
+  "emptyState",
+  "divider",
+] as const;
+
+/** One name from {@link PLUGIN_TERMINAL_PROFILE_NODES}. */
+export type PluginTerminalProfileNode = (typeof PLUGIN_TERMINAL_PROFILE_NODES)[number];
+
+const TERMINAL_PROFILE_NODE_SET: ReadonlySet<string> = new Set(PLUGIN_TERMINAL_PROFILE_NODES);
+
+/**
+ * True when the terminal draws this component rather than marking it.
+ *
+ * Takes the raw name, not a parsed node, so a caller holding only a manifest or
+ * a wire string can ask the same question the renderer asks. The two internal
+ * names (`__unknown`, `__invalid`) are deliberately false: they are the marker
+ * itself, and each carries its own sentence.
+ */
+export function isTerminalProfileNode(component: string): boolean {
+  return TERMINAL_PROFILE_NODE_SET.has(component);
+}
+
+/**
  * Semantic tone.
  *
  * `destructive` is the red: a delete, a failed check, a cancel. `warning` stays

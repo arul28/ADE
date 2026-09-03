@@ -12,21 +12,24 @@
 // without rendering, and the view stays a memoizable stateless component whose
 // only state (the selected index) lives in app.tsx like every other pane's.
 //
-// Terminal subset (design decision D8). Rendered richly: stack, group, text,
-// badge, button, list, table, keyValue, divider, emptyState, markdown, avatar, form
-// via the composer funnel, and canvas (as a list of the same bound rows). Rendered
-// as a labeled placeholder line: video, image, chart, and any component name a
-// future vocabulary version adds. A placeholder is
-// deliberate, not a failure — it names what is there and how to see it, because
-// a blank gap is indistinguishable from a broken plugin.
+// Terminal profile (owner decision, docs/reports/plugin-page-tier-spec.md
+// section 1, superseding design decision D8). The webview is now the primary
+// page tier on desktop, hosted web and iPhone, so the terminal draws a frozen
+// subset instead of chasing the whole vocabulary: stack, group, text, badge,
+// button, list, emptyState and divider. Every other component — markdown,
+// table, keyValue, form, segmented, canvas, avatar, video, image, chart, and
+// any name a future vocabulary version adds — draws as a labeled marker line.
 //
-// `markdown` is drawn rather than placeheld, and that is not an exception to the
-// rule above: prose with structure is the one thing a terminal draws as well as
-// any client. A picture becomes a placeholder because a terminal cannot show it;
-// a heading, a bullet and a fenced block lose nothing here but their pixels.
+// A marker is deliberate, not a failure: it names the component and how to see
+// it, because a blank gap is indistinguishable from a broken plugin.
+//
+// The vocabulary is FROZEN, not deleted. The arms for the frozen components are
+// still below, unreachable behind TERMINAL_PROFILE_ONLY, so the deletion later
+// is one flag and one sweep rather than an archaeology exercise.
 // ---------------------------------------------------------------------------
 
 import {
+  PLUGIN_TERMINAL_PROFILE_NODES,
   VOCAB_CONTEXT_COLLECTION,
   VOCAB_LIMITS,
   VOCAB_LIST_SHOW_MORE_LABEL,
@@ -40,6 +43,7 @@ import {
   collectVocabSelectionDeclarations,
   collectVocabStateDeclarations,
   distinctBindings,
+  isTerminalProfileNode,
   parsePluginPanel,
   parseVocabMarkdown,
   readPluginActionResetState,
@@ -95,6 +99,7 @@ import {
   readPluginActionNavigation,
   readPluginActionOpenSettings,
   readPluginPanelRefreshAction,
+  readPluginPanelSeeded,
   readPluginPanelViewAction,
 } from "../../../desktop/src/shared/plugins/sdk";
 import {
@@ -127,6 +132,13 @@ export type PluginPaneCollectionMap = Map<string, PluginPaneCollectionRow[]>;
  * `app.tsx` reaches for the pane rather than into the desktop tree.
  */
 export { bindingKey, distinctBindings };
+
+/**
+ * The frozen terminal profile, re-exported for the same reason: a caller asking
+ * "does the terminal draw this?" reaches for the pane, not into the desktop
+ * tree. This is the SAME constant the walk gates on — there is no second list.
+ */
+export { PLUGIN_TERMINAL_PROFILE_NODES, isTerminalProfileNode };
 
 /**
  * The inline run a `markdown` row carries, re-exported for the same reason: the
@@ -656,6 +668,24 @@ export type PluginPaneModel = {
    */
   viewAction: string | null;
   /**
+   * True while this row is still the manifest's SHIPPED default — the host
+   * stamped it when it materialized the declared schema, and the plugin's own
+   * `panels.update` clears it.
+   *
+   * The pane reads it to run {@link refreshAction} once on open, so a plugin
+   * that fetches its rows is not left on its own "Loading…" card until someone
+   * finds `r`. A host that predates the stamp reads `false` and the pane
+   * behaves exactly as it did before.
+   */
+  seeded: boolean;
+  /**
+   * Identity of the stored ROW, so the once-per-row rule above has something to
+   * key on. `updated_at` when the host sent one, else a digest of the schema —
+   * a re-open on the same still-seeded row must not dispatch a second time,
+   * and a row that actually changed must be allowed to.
+   */
+  rowKey: string | null;
+  /**
    * Rows at the top that stay on screen: search, then nav actions.
    *
    * The window pins them so paging the body cannot scroll the nav bar off the
@@ -770,6 +800,76 @@ function placeholderLabel(component: string, title?: string): string {
 
 function placeholderHint(hasDeeplink: boolean): string {
   return hasDeeplink ? "Ctrl+Y copies a link that opens it" : "Run ade open to view it in the app";
+}
+
+/* ── The terminal profile freeze ────────────────────────────────────────── */
+
+/**
+ * The one switch that holds the freeze.
+ *
+ * While this is `true`, {@link walkNode} draws only the components in
+ * {@link PLUGIN_TERMINAL_PROFILE_NODES} and marks the rest. The frozen arms are
+ * kept below rather than deleted, because the vocabulary itself is frozen and
+ * not deleted: the last official plugin still publishes panels, and a component
+ * that stops parsing is a different, larger promise than a component that stops
+ * being painted here.
+ *
+ * FROZEN ARMS, for the sweep that removes them: `markdown`, `table`, `keyValue`,
+ * `form`, `segmented`, `canvas`, `avatar`, `video`, `image`, `chart`. Deleting
+ * them is this constant plus those ten `case` blocks plus whatever each one was
+ * the only caller of (`walkMarkdown`, `pluginTableWidths`, the field helpers).
+ * Nothing else in this module knows about the freeze.
+ *
+ * `__unknown` and `__invalid` are NOT frozen and never reach the gate: they are
+ * the marker itself, and each already says its own true sentence.
+ */
+const TERMINAL_PROFILE_ONLY = true;
+
+/**
+ * The subject a frozen node names, so the marker still says WHICH chart.
+ *
+ * Only the components that carry a human label appear here; the rest have
+ * nothing to name and the marker says only what kind they are.
+ */
+function frozenNodeSubject(node: VocabNode): string | undefined {
+  switch (node.component) {
+    case "chart":
+    case "video":
+      return node.title;
+    case "image":
+      return node.alt;
+    case "avatar":
+      return node.name;
+    case "segmented":
+      return node.label;
+    default:
+      return undefined;
+  }
+}
+
+/**
+ * One frozen node as the marker row.
+ *
+ * The label is the honest sentence in the reader's own words — `table is not
+ * drawn in the terminal` — and it names the component the schema actually used,
+ * so an author reading their own panel here knows which node to move to the
+ * page. The second line keeps the existing escape hatch, and carries the node's
+ * subject in front of it when it has one.
+ *
+ * The sentence goes on the LABEL line and the subject on the hint line rather
+ * than both on one: a 44-column pane fits the sentence exactly, and a marker
+ * that cuts off mid-sentence answers nothing.
+ */
+function pushFrozenNode(node: VocabNode, key: string, indent: number, ctx: WalkContext): void {
+  const subject = frozenNodeSubject(node);
+  const hint = placeholderHint(ctx.hasDeeplink);
+  push(ctx, {
+    kind: "placeholder",
+    key,
+    indent,
+    label: `${node.component} is not drawn in the terminal`,
+    hint: subject ? `${subject} · ${hint}` : hint,
+  });
 }
 
 /* ── Icons ──────────────────────────────────────────────────────────────── */
@@ -1142,6 +1242,17 @@ function walkNodes(nodes: readonly VocabNode[], path: string, indent: number, ct
 }
 
 function walkNode(node: VocabNode, key: string, indent: number, ctx: WalkContext): void {
+  // The freeze, in one place. A component outside the terminal profile never
+  // reaches its arm below, whether or not that arm still exists.
+  if (
+    TERMINAL_PROFILE_ONLY
+    && node.component !== "__unknown"
+    && node.component !== "__invalid"
+    && !isTerminalProfileNode(node.component)
+  ) {
+    pushFrozenNode(node, key, indent, ctx);
+    return;
+  }
   switch (node.component) {
     case "stack": {
       // A horizontal stack of text/badges becomes one line — that is what the
@@ -1848,6 +1959,10 @@ export function buildPluginPaneModel(input: PluginPaneInput): PluginPaneModel {
     // refetch it has always been.
     refreshAction: null as string | null,
     viewAction: null as string | null,
+    // And no row means nothing was seeded and nothing to key a first refresh
+    // on: an unreachable panel must not dispatch anything.
+    seeded: false,
+    rowKey: null as string | null,
     chromeHeaderCount: 0,
     chromeFooterCount: 0,
   };
@@ -1892,6 +2007,11 @@ export function buildPluginPaneModel(input: PluginPaneInput): PluginPaneModel {
       rows,
       refreshAction: readPluginPanelRefreshAction(record.schema),
       viewAction: readPluginPanelViewAction(record.schema),
+      // Read on the fallback path for the same reason the refresh action is: a
+      // seeded schema this build cannot parse is exactly the card a first
+      // refresh is meant to replace.
+      seeded: readPluginPanelSeeded(record.schema),
+      rowKey: pluginPanelRowKey(record),
     };
   }
 
@@ -1971,9 +2091,65 @@ export function buildPluginPaneModel(input: PluginPaneInput): PluginPaneModel {
     status: "ok",
     refreshAction: readPluginPanelRefreshAction(record.schema),
     viewAction: readPluginPanelViewAction(record.schema),
+    seeded: readPluginPanelSeeded(record.schema),
+    rowKey: pluginPanelRowKey(record),
     chromeHeaderCount,
     chromeFooterCount,
   };
+}
+
+/**
+ * Identity of one stored panel row.
+ *
+ * `updated_at` is the row identity every client already tracks, so it is the
+ * answer wherever the host sent one. A host that answers `null` still has to
+ * give the once-per-row rule something stable, and the schema itself is the
+ * only thing left — digested rather than kept whole, because a panel schema
+ * runs to 64 KiB and this value only ever gets compared.
+ */
+function pluginPanelRowKey(record: PluginPanelRecord): string {
+  if (record.updatedAt) return record.updatedAt;
+  let hash = 0x811c9dc5;
+  const text = JSON.stringify(record.schema ?? null) ?? "null";
+  for (let index = 0; index < text.length; index += 1) {
+    hash ^= text.charCodeAt(index);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return `schema:${(hash >>> 0).toString(16)}`;
+}
+
+/**
+ * The refresh a plugin pane owes its reader the moment it opens.
+ *
+ * Every plugin tab drew the manifest's seeded card and then sat on it, because
+ * the only thing that ran a declared `refreshAction` was the reader pressing
+ * `r`. So: a pane whose row is still seeded and whose panel declares a refresh
+ * dispatches it once, silently, on open.
+ *
+ * Once per ROW, never once per open — `invoked` carries the keys already
+ * dispatched, so closing and re-opening the pane on the same still-seeded row
+ * asks the plugin nothing a second time, while a row that actually changed is
+ * a new key and may ask again. A panel with no declaration, and a row the
+ * plugin has already published over, both answer `null`.
+ */
+export function pluginPaneSeededRefresh(
+  model: PluginPaneModel,
+  invoked: ReadonlySet<string>,
+): { key: string; action: string } | null {
+  if (!model.seeded) return null;
+  const action = model.refreshAction;
+  if (!action) return null;
+  const key = pluginPaneSeededRefreshKey(model.pluginId, model.panelId, model.rowKey);
+  return invoked.has(key) ? null : { key, action };
+}
+
+/** Plugin id + panel id + row identity, which is what "until the row changes" means. */
+export function pluginPaneSeededRefreshKey(
+  pluginId: string,
+  panelId: string,
+  rowKey: string | null,
+): string {
+  return JSON.stringify([pluginId, panelId, rowKey ?? ""]);
 }
 
 /**
