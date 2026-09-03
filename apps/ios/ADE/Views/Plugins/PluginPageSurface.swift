@@ -337,12 +337,12 @@ final class PluginPageSurfaceCoordinator: ObservableObject, PluginPageBridgeHost
     }
 
     func pluginPageComposerAttach(_ attach: PluginPageComposerAttach) {
-        // The phone's composer applies an attachment as text, which is what
-        // `PluginInvokeComposerEdit.insert` already carries to it. A structured
-        // chip needs the composer's own attachment model, and that is the
-        // composer's to define — see the handoff note on the Linear port.
-        let label = attach.identifier.isEmpty ? attach.title : "\(attach.identifier) \(attach.title)"
-        syncService?.pluginPageComposerEdit = .insert(label)
+        // Handed on whole, never flattened to a line of text. The composer is
+        // where this is applied because the composer is the only thing that
+        // knows which session the page was opened over, and applying it means
+        // writing ADE's own session issue link — the same row the Linear attach
+        // row writes, which is what a lane badge and a PR body read back.
+        syncService?.pluginPageComposerAttach = attach
     }
 
     func pluginPageComposerInsert(_ text: String) {

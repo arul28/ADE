@@ -3352,6 +3352,33 @@ private struct WorkChatComposerDraftInput: View {
       applyPluginComposerEdit(edit)
       syncService.pluginPageComposerEdit = nil
     }
+    // `composer.attach` is the other half, and it is not an edit: it records an
+    // issue link on this session, which is what puts the issue on the lane, in
+    // the PR body and on the desktop composer. Same clearing rule as the edit
+    // above — leaving the value set would attach the same issue again on the
+    // next redraw.
+    .onChange(of: syncService.pluginPageComposerAttach) { _, attach in
+      guard let attach, canCompose, !settingsMutationInFlight else { return }
+      syncService.pluginPageComposerAttach = nil
+      Task { await applyPluginPageAttach(attach) }
+    }
+  }
+
+  /// Record the issue a plugin page attached, or keep it in the draft.
+  ///
+  /// The fallback is deliberate and it is not the old behaviour returning: a
+  /// machine that cannot record the link has left the reader with a gesture that
+  /// did nothing, and the words are strictly better than silence — the issue is
+  /// still named in the message they are about to send. It runs only when the
+  /// attach actually failed, so a successful attach never also types.
+  @MainActor
+  private func applyPluginPageAttach(_ attach: PluginPageComposerAttach) async {
+    do {
+      try await syncService.attachPluginPageIssueToChat(chatSessionId: sessionId, attach: attach)
+    } catch {
+      let label = attach.identifier.isEmpty ? attach.title : "\(attach.identifier) \(attach.title)"
+      applyPluginComposerEdit(.insert(label))
+    }
   }
 
   /// Whether a plugin, rather than the local runtime, is where Send goes.

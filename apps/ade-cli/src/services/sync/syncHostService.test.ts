@@ -5999,6 +5999,12 @@ describe("CTO-gated Linear sync commands", () => {
         // reason as the rest: an older brain omits it and the phone hides the
         // affordance, rather than offering a flow it could not complete.
         "plugins.completeAuthSession",
+        // The page tier's three writes. A plugin page feature-detects each one
+        // and degrades on its own, so an older brain simply saves nothing
+        // rather than putting the phone into limited mode.
+        "plugins.putCollection",
+        "plugins.getConfig",
+        "plugins.setConfig",
       ]);
       expect(MOBILE_SYNC_REQUIRED_REMOTE_COMMAND_ACTIONS).not.toEqual(
         expect.arrayContaining([...MOBILE_SYNC_OPTIONAL_REMOTE_COMMAND_ACTIONS]),
@@ -6023,7 +6029,17 @@ describe("CTO-gated Linear sync commands", () => {
       // Completing a sign-in is a property of the machine that minted the
       // `state`, not of any one project: the phone that presented the flow may
       // not even have the project open when the redirect lands.
-      const runtimeScopedActions = new Set<string>(["plugins.completeAuthSession"]);
+      //
+      // The page tier's three writes are runtime-scoped for a different reason:
+      // the plugin host routes a plugin's write to the project that plugin is
+      // bound to, exactly as it does for the plugin's own child, and settings
+      // are machine-wide in any case.
+      const runtimeScopedActions = new Set<string>([
+        "plugins.completeAuthSession",
+        "plugins.putCollection",
+        "plugins.getConfig",
+        "plugins.setConfig",
+      ]);
 
       for (const action of MOBILE_SYNC_OPTIONAL_REMOTE_COMMAND_ACTIONS) {
         const viewerBlocked = viewerBlockedActions.has(action);

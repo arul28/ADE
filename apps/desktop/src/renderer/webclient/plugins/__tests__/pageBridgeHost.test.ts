@@ -3,6 +3,7 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { PLUGIN_WEBVIEW_MAX_HEIGHT_PX } from "../../../../shared/plugins/webviewBridge";
 import { createPluginPageHost, coalesceHostEvents, type PluginPageHostOptions } from "../pageBridgeHost";
 import { PLUGIN_PAGE_CHANNEL, PLUGIN_PAGE_PROTOCOL_VERSION } from "../pageProtocol";
 import type { PluginPageBundle } from "../pageAssets";
@@ -198,14 +199,19 @@ describe("the guest → host bridge", () => {
     expect(data.collectionsList).toHaveBeenCalledWith("c", { limit: 500 });
   });
 
-  it("passes a resize through, clamped", async () => {
+  it("passes a resize through at the shared ceiling, and drops an unusable one", async () => {
     const { host, guest, ui } = build();
     hosts.push(host);
     fromGuest(guest.window, { kind: "resize", height: 12_000 });
     fromGuest(guest.window, { kind: "resize", height: 240.6 });
+    // Not a height: dropped, never applied as zero. A page that measured
+    // nothing must not collapse its own section.
+    fromGuest(guest.window, { kind: "resize", height: 0 });
+    fromGuest(guest.window, { kind: "resize", height: "tall" });
     await settle();
-    expect(ui.resize).toHaveBeenNthCalledWith(1, 4_000);
+    expect(ui.resize).toHaveBeenNthCalledWith(1, PLUGIN_WEBVIEW_MAX_HEIGHT_PX);
     expect(ui.resize).toHaveBeenNthCalledWith(2, 241);
+    expect(ui.resize).toHaveBeenCalledTimes(2);
   });
 
   it("stops answering once disposed", async () => {

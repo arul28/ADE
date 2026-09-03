@@ -64,6 +64,14 @@ export const MOBILE_SYNC_OPTIONAL_REMOTE_COMMAND_ACTIONS = [
   // is worse than no button, because the browser really does complete and the
   // user is left believing they connected something.
   "plugins.completeAuthSession",
+  // The page tier's three writes. A plugin page on the phone feature-detects
+  // each one and degrades on its own — a form greys out its save button against
+  // a brain that cannot write settings, which is a better answer than a button
+  // that throws every time it is pressed. Optional, so a phone carrying a page
+  // host paired to an older brain keeps full sync and simply saves nothing.
+  "plugins.putCollection",
+  "plugins.getConfig",
+  "plugins.setConfig",
 ] as const satisfies readonly SyncRemoteCommandAction[];
 
 export const MOBILE_SYNC_REQUIRED_REMOTE_COMMAND_ACTIONS = [

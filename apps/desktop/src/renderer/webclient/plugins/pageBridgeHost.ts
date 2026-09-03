@@ -30,6 +30,7 @@ import {
   PLUGIN_WEBVIEW_HOST_IDS_MAX,
   PLUGIN_WEBVIEW_LIST_MAX_ROWS,
   PLUGIN_WEBVIEW_TOAST_LABEL_MAX_CHARS,
+  clampPluginWebviewHeight,
   PLUGIN_WEBVIEW_TOAST_MESSAGE_MAX_CHARS,
   isPluginWebviewHostKind,
   isPluginWebviewMethod,
@@ -165,8 +166,11 @@ export function createPluginPageHost(options: PluginPageHostOptions): PluginPage
     if (!message) return;
     if (message.kind === "ready") return;
     if (message.kind === "resize") {
-      const height = typeof message.height === "number" && Number.isFinite(message.height) ? message.height : 0;
-      options.ui.resize?.(Math.max(0, Math.min(4_000, Math.round(height))));
+      // The SHARED clamp, so a settings section is the same height on desktop
+      // and on web. Null means the page said nothing usable, which is different
+      // from asking to be invisible and is dropped rather than applied as zero.
+      const height = clampPluginWebviewHeight(message.height);
+      if (height !== null) options.ui.resize?.(height);
       return;
     }
     if (message.kind !== "request") return;

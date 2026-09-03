@@ -2313,6 +2313,16 @@ export type SyncRemoteCommandAction =
   // state.
   | "plugins.getPanel"
   | "plugins.getCollection"
+  // The page tier's three writes. A plugin PAGE on the phone — the plugin's own
+  // HTML in a guest whose plugin id the host derived from the frame origin —
+  // reads its collections from the replicated mirror, but a write and the
+  // plugin's own settings have nowhere local to go. These carry them to the
+  // machine, where the SAME host functions the desktop webview bridge calls
+  // apply the declared-collection rule, the store's budgets, the manifest
+  // validation and the refusal of `secret` settings.
+  | "plugins.putCollection"
+  | "plugins.getConfig"
+  | "plugins.setConfig"
   | "plugins.presenceList"
   | "plugins.presenceSync"
   // Read-only account-wide coverage matrix. Read-only is why it is

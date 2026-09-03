@@ -20,6 +20,8 @@ import {
   getPluginPresenceService,
   PLUGIN_MACHINE_UNREACHABLE_CODE,
 } from "../plugins/pluginPresenceService";
+import { requirePluginPageHostService } from "../plugins/pluginPageHostRef";
+import { isValidPluginId } from "../../../../desktop/src/shared/plugins/manifest";
 import {
   readPluginCollectionRows,
   readPluginContributions,
@@ -6013,9 +6015,20 @@ const MAX_PLUGIN_AUTH_CALLBACK_VALUE_LENGTH = 4096;
  * a per-project table, so it needs this instance's project database.
  */
 function registerPluginRemoteCommands({ args, register }: RemoteCommandRegistrationDeps): void {
+  /**
+   * The plugin id a remote caller named, checked against the manifest parser's
+   * own pattern.
+   *
+   * Shape only — whether the plugin is installed here is the install service's
+   * answer, not this function's. The check is `isValidPluginId`, imported rather
+   * than restated, so an id this daemon accepts over sync is exactly an id a
+   * manifest on this machine could have declared. Without it a payload could
+   * name `../other` or a 4 KiB string and reach a path that concatenates it.
+   */
   const parsePluginId = (payload: Record<string, unknown>): string => {
     const pluginId = typeof payload.pluginId === "string" ? payload.pluginId.trim() : "";
     if (!pluginId) throw new Error("A plugin id is required.");
+    if (!isValidPluginId(pluginId)) throw new Error(`"${pluginId}" is not a plugin id.`);
     return pluginId;
   };
 
@@ -6410,6 +6423,101 @@ function registerPluginRemoteCommands({ args, register }: RemoteCommandRegistrat
       : undefined;
     return readPluginCollectionRows(args.db, { pluginId, collection, keyPrefix, limit });
   });
+
+  /**
+   * The three writes a plugin PAGE on a phone cannot perform for itself.
+   *
+   * A page is the plugin's own HTML, drawn in a guest whose plugin id the host
+   * derives from the frame origin. Its READS come from the phone's replicated
+   * mirror, and its own handlers run through `plugins.invoke`. What is left is
+   * a collection row and the plugin's settings: rows a mirror cannot write, and
+   * a settings file no phone has.
+   *
+   * All three go to {@link requirePluginPageHostService}, which resolves the
+   * same functions the desktop's webview bridge calls. That is the point of the
+   * indirection rather than writing `plugin_collections` here through
+   * `pluginTableWriters`: the declared-collection rule, the store's budgets,
+   * the manifest validation, the refusal of a `secret` setting and the
+   * installed-and-enabled gate are enforced ONCE, so the same page cannot be
+   * held to a different rule depending on which client is drawing it. A second
+   * copy of those checks here would be a second chance to disagree — and the
+   * one that forgets a check is the one a page will find.
+   *
+   * Machine-scoped ("runtime") like `plugins.invoke`, not project-scoped like
+   * the two reads above, and for the same reason `plugins.invoke` is: the host
+   * routes a plugin's write to the project that plugin is bound to, exactly as
+   * it does for a write from the plugin's own child. A `project` scope here
+   * would promise the caller a choice the host does not offer. Settings are
+   * machine-wide in any case — one `config.json` beside the installs.
+   *
+   * `viewerAllowed`, like every `plugins.*` sibling: the install is the trust
+   * decision, and `requiresApproval` has no mechanism behind it — it would not
+   * gate these, it would only make every plugin page on a phone read-only.
+   */
+  register("plugins.putCollection", { viewerAllowed: true }, async (payload) => {
+    const pluginId = parsePluginId(payload);
+    const collection = typeof payload.collection === "string" ? payload.collection.trim() : "";
+    if (!collection) throw new Error("A plugin collection name is required.");
+    // `key`, matching the column and the phone's own bridge. The row key is
+    // the page's to choose and the host's to validate — `writeCollection`
+    // applies `assertPluginCollectionKey`, the same ceiling a plugin's child
+    // gets, so an over-long or illegal key is refused there rather than twice.
+    const key = typeof payload.key === "string" ? payload.key : "";
+    if (!key) throw new Error("A plugin collection key is required.");
+    // Absent is a real value and means `null` — the host encodes it exactly as
+    // the desktop bridge does, so a page that omits the field stores the same
+    // row on both clients rather than one storing nothing.
+    await requirePluginPageHostService().writeCollection({
+      pluginId,
+      collection,
+      key,
+      value: payload.value,
+    });
+    return { ok: true };
+  }, "runtime");
+
+  /**
+   * One of the plugin's own settings, read back for its page.
+   *
+   * Answers `{ value }` rather than the bare value: `null` is a legitimate
+   * setting value, and a bare `null` on the wire would be indistinguishable
+   * from a command that answered nothing. The phone unwraps this shape.
+   */
+  register("plugins.getConfig", { viewerAllowed: true }, async (payload) => {
+    const pluginId = parsePluginId(payload);
+    const key = typeof payload.key === "string" ? payload.key.trim() : "";
+    if (!key) throw new Error("A plugin setting key is required.");
+    const config = await requirePluginPageHostService().readConfig({ pluginId });
+    // A key the manifest does not declare reads as `null`, not as an error: a
+    // page asking for a setting it has not been given yet is the normal first
+    // run, and `config.get` on desktop answers the same way.
+    return { value: Object.prototype.hasOwnProperty.call(config, key) ? config[key] ?? null : null };
+  }, "runtime");
+
+  /**
+   * Write one of the plugin's own settings from its page.
+   *
+   * One key, because that is what a page saves: a field it just edited. The
+   * host takes a record, so this makes one — it never reads a whole record off
+   * the wire, which would let a page that meant to save one field clear every
+   * other one by omission.
+   *
+   * The plugin is NOT restarted. That restart is right for ADE's own settings
+   * form and fatal here: it would kill the child serving the page mid-save.
+   */
+  register("plugins.setConfig", { viewerAllowed: true }, async (payload) => {
+    const pluginId = parsePluginId(payload);
+    const key = typeof payload.key === "string" ? payload.key.trim() : "";
+    if (!key) throw new Error("A plugin setting key is required.");
+    // Absent means `null`, the same as it does for a collection value: a page
+    // clearing a field sends no value, and coercing that to `undefined` would
+    // leave the old value standing while the page believed it had cleared it.
+    const config = await requirePluginPageHostService().writeConfig({
+      pluginId,
+      values: { [key]: payload.value ?? null },
+    });
+    return { config };
+  }, "runtime");
 
   // Read-only: this machine reporting its own install state. The CALLER files
   // the answer under the machine key its directory gave, so nothing here has to

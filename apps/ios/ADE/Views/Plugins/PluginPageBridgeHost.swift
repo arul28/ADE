@@ -79,13 +79,160 @@ protocol PluginPageBridgeHosting: AnyObject {
 
 // MARK: - Verb payloads
 
-/// The payload the socket `{composer}` answer already carries.
+/// One issue a page asked the composer to attach.
+///
+/// The model is an `IssueRef` — the provider-neutral link ADE stores for every
+/// tracker — and not the five loose strings the bridge table lists. The strings
+/// are still what a page may send; they are the smallest ref anyone can write,
+/// and they are read INTO a ref here so the composer receives one model whether
+/// the page sent the short form or a whole ref it already had.
+///
+/// That matters because of where this ends up. The phone's composer attaches an
+/// issue by writing ADE's own session issue link — the same row the Linear
+/// attach row writes — and that row is a full legacy Linear projection with the
+/// ref embedded beside it (`__issueRef`, `shared/issueRef.ts`). Five strings
+/// cannot fill it: the host's parser REQUIRES ten non-empty fields and silently
+/// drops an issue that is missing one, which is a chip that never appears with
+/// nothing anywhere saying why. {@link laneIssue} fills all ten from the ref,
+/// exactly as `issueRefToLinearIssue` does on the machine.
 struct PluginPageComposerAttach: Equatable {
-    var provider: String
-    var issueId: String
-    var identifier: String
-    var title: String
-    var url: String?
+    /// The link itself. `pluginId` is the calling page's, stamped by the bridge.
+    var issue: IssueRef
+
+    var provider: String { issue.provider }
+    var issueId: String { issue.issueId }
+    /// The human key — `ADE-123`, `owner/repo#42`. `identifier` is the phone's
+    /// existing name for it, kept so composer code reads the same either way.
+    var identifier: String { issue.key }
+    var title: String { issue.title }
+    var url: String? { issue.url }
+
+    /// The row the phone sends to `lane.attachLinearIssueToSession`.
+    ///
+    /// The Swift twin of `issueRefToStoredLinearIssue`: the legacy projection
+    /// with the ref embedded under its reserved key. Every one of the ten fields
+    /// the host's parser requires is filled, including for a tracker that has no
+    /// such concept — a Jira issue borrows its provider name as the team key.
+    /// The mislabel on a build that predates `IssueRef` is the documented price
+    /// of never altering a replicated table; a dropped row would not be.
+    ///
+    /// `branchName` is deliberately absent: the host derives and rewrites it on
+    /// every attach (`finalizeLaneLinearIssue`), so a value invented here would
+    /// be overwritten, and inventing one that differs would be the phone
+    /// disagreeing with the machine about a branch it does not name.
+    var laneIssue: LaneLinearIssue {
+        let containerKey = trimmedOrNil(issue.container?.key) ?? issue.provider.uppercased()
+        let category = issue.state?.category.rawValue
+        let stamp = trimmedOrNil(issue.updatedAt)
+            ?? trimmedOrNil(issue.createdAt)
+            ?? ISO8601DateFormatter().string(from: Date())
+        let extra = issue.extra ?? [:]
+        return LaneLinearIssue(
+            id: issue.issueId,
+            identifier: issue.key,
+            title: issue.title,
+            description: issue.description,
+            url: issue.url,
+            projectId: extraString(extra["projectId"]) ?? "",
+            projectSlug: extraString(extra["projectSlug"]) ?? "",
+            projectName: extraString(extra["projectName"]),
+            teamId: trimmedOrNil(issue.container?.id) ?? containerKey,
+            teamKey: containerKey,
+            teamName: issue.container?.name,
+            stateId: trimmedOrNil(issue.state?.id) ?? category ?? "unstarted",
+            stateName: trimmedOrNil(issue.state?.name) ?? category ?? "unstarted",
+            stateType: category ?? "unstarted",
+            priority: Int(issue.priority?.rank ?? 0),
+            priorityLabel: Self.priorityLabel(issue.priority?.label),
+            labels: issue.labels,
+            assigneeId: issue.assignee?.id,
+            assigneeName: issue.assignee?.name,
+            creatorId: extraString(extra["creatorId"]),
+            creatorName: extraString(extra["creatorName"]),
+            dueDate: extraString(extra["dueDate"]),
+            estimate: extraNumber(extra["estimate"]),
+            createdAt: trimmedOrNil(issue.createdAt) ?? stamp,
+            updatedAt: trimmedOrNil(issue.updatedAt) ?? stamp,
+            __issueRef: Self.issueRefJSON(issue)
+        )
+    }
+
+    /// The five labels `parseLaneLinearIssueValue` accepts. Anything else is
+    /// `none` rather than a rejected row, matching `linearPriorityLabel`.
+    private static func priorityLabel(_ raw: String?) -> String {
+        let value = raw?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
+        return ["urgent", "high", "normal", "low", "none"].contains(value) ? value : "none"
+    }
+
+    /// The ref as JSON, under the same keys `parseIssueRefValue` reads.
+    ///
+    /// The inverse of that parser and written beside it in spirit: a key spelled
+    /// differently here is a field that survives the wire and then vanishes on
+    /// the next read, which is the failure a round trip is least likely to show.
+    /// Absent keys are omitted rather than sent as null — the parser reads them
+    /// the same, and the row is replicated to every peer.
+    static func issueRefJSON(_ ref: IssueRef) -> RemoteJSONValue {
+        var object: [String: RemoteJSONValue] = [
+            "pluginId": .string(ref.pluginId),
+            "provider": .string(ref.provider),
+            "issueId": .string(ref.issueId),
+            "key": .string(ref.key),
+            "title": .string(ref.title),
+        ]
+        if let url = ref.url { object["url"] = .string(url) }
+        if let state = ref.state {
+            var encoded: [String: RemoteJSONValue] = ["category": .string(state.category.rawValue)]
+            if let id = state.id { encoded["id"] = .string(id) }
+            if let name = state.name { encoded["name"] = .string(name) }
+            object["state"] = .object(encoded)
+        }
+        if let container = ref.container {
+            var encoded: [String: RemoteJSONValue] = [:]
+            if let id = container.id { encoded["id"] = .string(id) }
+            if let key = container.key { encoded["key"] = .string(key) }
+            if let name = container.name { encoded["name"] = .string(name) }
+            if !encoded.isEmpty { object["container"] = .object(encoded) }
+        }
+        if let branchName = ref.branchName { object["branchName"] = .string(branchName) }
+        if let assignee = ref.assignee {
+            var encoded: [String: RemoteJSONValue] = [:]
+            if let id = assignee.id { encoded["id"] = .string(id) }
+            if let name = assignee.name { encoded["name"] = .string(name) }
+            if !encoded.isEmpty { object["assignee"] = .object(encoded) }
+        }
+        if let priority = ref.priority {
+            var encoded: [String: RemoteJSONValue] = [:]
+            if let rank = priority.rank { encoded["rank"] = .number(rank) }
+            if let label = priority.label { encoded["label"] = .string(label) }
+            if !encoded.isEmpty { object["priority"] = .object(encoded) }
+        }
+        if !ref.labels.isEmpty { object["labels"] = .array(ref.labels.map { .string($0) }) }
+        if let description = ref.description { object["description"] = .string(description) }
+        if let createdAt = ref.createdAt { object["createdAt"] = .string(createdAt) }
+        if let updatedAt = ref.updatedAt { object["updatedAt"] = .string(updatedAt) }
+        // Held opaque, exactly as the parser hands it over: a tracker's own
+        // residue is the plugin's to read, and rewriting it here would be this
+        // phone deciding what another tracker's fields mean.
+        if let extra = ref.extra, !extra.isEmpty { object["extra"] = .object(extra) }
+        return .object(object)
+    }
+
+    private func trimmedOrNil(_ value: String?) -> String? {
+        guard let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines), !trimmed.isEmpty else {
+            return nil
+        }
+        return trimmed
+    }
+
+    private func extraString(_ value: RemoteJSONValue?) -> String? {
+        guard case .string(let raw)? = value else { return nil }
+        return raw
+    }
+
+    private func extraNumber(_ value: RemoteJSONValue?) -> Double? {
+        guard case .number(let raw)? = value, raw.isFinite else { return nil }
+        return raw
+    }
 }
 
 struct PluginPageToast: Equatable {
@@ -208,7 +355,7 @@ final class PluginPageBridge {
         case .surfaceClose:
             host?.pluginPageCloseSurface()
             return nil
-        case .composerAttach: return try composerAttach(request)
+        case .composerAttach: return try composerAttach(request, pluginId: pluginId)
         case .composerInsert: return try composerInsert(request)
         case .uiToast: return try showToast(request)
         case .uiDismissToast: return try dismissToast(request)
@@ -361,16 +508,61 @@ final class PluginPageBridge {
 
     // MARK: Composer
 
-    private func composerAttach(_ request: PluginPageBridgeRequest) throws -> Any? {
-        let attach = PluginPageComposerAttach(
-            provider: try string(request, "provider"),
-            issueId: try string(request, "issueId"),
-            identifier: try string(request, "identifier"),
-            title: try string(request, "title"),
-            url: request.params["url"]?.stringValue
-        )
-        host?.pluginPageComposerAttach(attach)
+    /// Attach an issue to the chat's composer as a chip, never as text.
+    ///
+    /// Two shapes are accepted and both become one `IssueRef`. A page that holds
+    /// a whole ref — every official tracker plugin does, because that is what
+    /// ADE hands it — sends it under `issue` and nothing is lost. A page that
+    /// knows only the five strings the bridge table lists sends those, and the
+    /// ref is built from them.
+    ///
+    /// `pluginId` is stamped from the CALLER and never read out of the payload,
+    /// the same rule `ade.lanes.linkIssue` follows on the machine: the owner of
+    /// a link is what decides who may later remove it, so a ref whose owner the
+    /// page could set would be a check against a value the page supplied.
+    private func composerAttach(_ request: PluginPageBridgeRequest, pluginId: String) throws -> Any? {
+        let ref: IssueRef
+        if case .object(let raw)? = request.params["issue"] {
+            guard var parsed = parseIssueRefValue(.object(raw.mapValues(Self.remoteJSON))) else {
+                throw PluginPageBridgeError.invalidParams(
+                    "composer.attach needs an issue with a provider, an issueId, a key and a title."
+                )
+            }
+            parsed.pluginId = pluginId
+            ref = parsed
+        } else {
+            ref = IssueRef(
+                pluginId: pluginId,
+                // Lowercased like the parser does: `Linear` and `linear` are one
+                // tracker, and a ref that disagreed with itself about which
+                // would render under a different badge than the rows beside it.
+                provider: try string(request, "provider").lowercased(),
+                issueId: try string(request, "issueId"),
+                key: try string(request, "identifier"),
+                title: try string(request, "title"),
+                url: request.params["url"]?.stringValue
+            )
+        }
+        host?.pluginPageComposerAttach(PluginPageComposerAttach(issue: ref))
         return nil
+    }
+
+    /// One bridge value as the app's own JSON type.
+    ///
+    /// The two enums are the same six cases: one is what a page speaks, the
+    /// other is what every model on this phone is decoded from. Converting is
+    /// what lets `parseIssueRefValue` — the one reader of a ref, shared with
+    /// every lane and PR surface — validate a page's payload too, rather than
+    /// this file growing a second, quietly different idea of what a ref is.
+    static func remoteJSON(_ value: PluginPageJSON) -> RemoteJSONValue {
+        switch value {
+        case .string(let raw): return .string(raw)
+        case .number(let raw): return .number(raw)
+        case .bool(let raw): return .bool(raw)
+        case .object(let raw): return .object(raw.mapValues(remoteJSON))
+        case .array(let raw): return .array(raw.map(remoteJSON))
+        case .null: return .null
+        }
     }
 
     private func composerInsert(_ request: PluginPageBridgeRequest) throws -> Any? {

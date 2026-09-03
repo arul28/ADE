@@ -20,6 +20,7 @@ import {
   setPluginAuthSessionCompleter,
   setPluginInstallService,
 } from "../plugins/pluginInstallServiceRef";
+import { setPluginPageHostService } from "../plugins/pluginPageHostRef";
 import { setPluginPresenceService } from "../plugins/pluginPresenceService";
 import { createSyncRemoteCommandService } from "./syncRemoteCommandService";
 import {
@@ -3689,6 +3690,7 @@ describe("plugin remote commands", () => {
     setPluginPresenceService(null);
     setPluginActionInvoker(null);
     setPluginAuthSessionCompleter(null);
+    setPluginPageHostService(null);
   });
 
   it("registers every plugin action as machine-scoped and reachable from a paired device", () => {
@@ -3801,6 +3803,197 @@ describe("plugin remote commands", () => {
         // a throw that loses the list.
         { collection: "stories", key: "2", value: null, updatedAt: "t2" },
       ]);
+    });
+  });
+
+  /**
+   * The page tier's three writes.
+   *
+   * A plugin page on the phone reads from its own mirror and writes through
+   * here. Every case below asserts the same property from a different angle:
+   * this layer decides NOTHING about a plugin's data. It checks the shape of
+   * what arrived, then hands the call to the one host function the desktop
+   * webview bridge calls, so a page cannot be held to a different rule
+   * depending on which client drew it.
+   */
+  describe("plugins.putCollection / getConfig / setConfig", () => {
+    function pageHost(overrides: Record<string, unknown> = {}) {
+      return {
+        writeCollection: vi.fn(),
+        readConfig: vi.fn().mockResolvedValue({ token: "abc", pageSize: 25, muted: null }),
+        writeConfig: vi.fn().mockResolvedValue({ token: "abc", pageSize: 50 }),
+        ...overrides,
+      };
+    }
+
+    it("registers all three as machine-scoped and reachable from a paired device", () => {
+      const { service } = createService({});
+      for (const action of ["plugins.putCollection", "plugins.getConfig", "plugins.setConfig"]) {
+        // Runtime, like `plugins.invoke` and unlike the two reads above: the
+        // host routes a plugin's write to the project that plugin is bound to,
+        // so a project scope would promise a choice the host does not offer.
+        expect(service.getDescriptor(action)?.scope).toBe("runtime");
+        // The install is the trust decision. `requiresApproval` has no
+        // mechanism behind it and would only make every plugin page read-only.
+        expect(service.getDescriptor(action)?.policy).toEqual({ viewerAllowed: true });
+      }
+    });
+
+    it("answers the typed unavailability when this build has no plugin host", async () => {
+      const { service } = createService({});
+      for (const payload of [
+        makePayload("plugins.putCollection", { pluginId: "hn", collection: "saved", key: "1", value: 1 }),
+        makePayload("plugins.getConfig", { pluginId: "hn", key: "token" }),
+        makePayload("plugins.setConfig", { pluginId: "hn", key: "token", value: "x" }),
+      ]) {
+        // Never a silent success: a page told its save landed when nothing was
+        // written reports the wrong thing to the person holding the phone.
+        await expect(service.execute(payload))
+          .rejects.toMatchObject({ code: PLUGIN_SERVICE_UNAVAILABLE_CODE });
+      }
+    });
+
+    it("hands one collection row to the same host writer the desktop bridge calls", async () => {
+      const host = pageHost();
+      setPluginPageHostService(host as never);
+      const { service } = createService({});
+
+      await expect(service.execute(makePayload("plugins.putCollection", {
+        pluginId: "hn",
+        collection: "saved",
+        key: "story:42",
+        value: { title: "A" },
+      }))).resolves.toEqual({ ok: true });
+
+      expect(host.writeCollection).toHaveBeenCalledWith({
+        pluginId: "hn",
+        collection: "saved",
+        key: "story:42",
+        value: { title: "A" },
+      });
+    });
+
+    it("stores an omitted value rather than dropping the write", async () => {
+      const host = pageHost();
+      setPluginPageHostService(host as never);
+      const { service } = createService({});
+
+      await service.execute(makePayload("plugins.putCollection", {
+        pluginId: "hn",
+        collection: "saved",
+        key: "story:42",
+      }));
+      // The host encodes `undefined` as `null`, exactly as the desktop bridge
+      // does, so the same page stores the same row on both clients.
+      expect(host.writeCollection).toHaveBeenCalledWith(
+        expect.objectContaining({ value: undefined }),
+      );
+    });
+
+    it("relays the host's refusal of an undeclared collection unchanged", async () => {
+      const host = pageHost({
+        writeCollection: vi.fn(() => {
+          throw new Error('Collection "secrets" is not declared in hn\'s manifest.');
+        }),
+      });
+      setPluginPageHostService(host as never);
+      const { service } = createService({});
+
+      // The rule lives in the host, with the budgets and the enabled check. A
+      // second copy here would be a second chance to disagree with desktop.
+      await expect(service.execute(makePayload("plugins.putCollection", {
+        pluginId: "hn",
+        collection: "secrets",
+        key: "1",
+        value: 1,
+      }))).rejects.toThrow(/not declared/i);
+    });
+
+    it("refuses a payload that names no collection or no key", async () => {
+      setPluginPageHostService(pageHost() as never);
+      const { service } = createService({});
+
+      await expect(service.execute(makePayload("plugins.putCollection", { pluginId: "hn", key: "1" })))
+        .rejects.toThrow(/collection/i);
+      await expect(service.execute(makePayload("plugins.putCollection", { pluginId: "hn", collection: "saved" })))
+        .rejects.toThrow(/key/i);
+      await expect(service.execute(makePayload("plugins.getConfig", { pluginId: "hn" })))
+        .rejects.toThrow(/setting key/i);
+      await expect(service.execute(makePayload("plugins.setConfig", { pluginId: "hn" })))
+        .rejects.toThrow(/setting key/i);
+    });
+
+    it("refuses a plugin id that no manifest could have declared", async () => {
+      const host = pageHost();
+      setPluginPageHostService(host as never);
+      const { service } = createService({});
+
+      for (const pluginId of ["../other", "Not An Id", "hn!"]) {
+        await expect(service.execute(makePayload("plugins.putCollection", {
+          pluginId,
+          collection: "saved",
+          key: "1",
+          value: 1,
+        }))).rejects.toThrow(/is not a plugin id/i);
+      }
+      expect(host.writeCollection).not.toHaveBeenCalled();
+    });
+
+    it("answers one setting wrapped, so a null value stays tellable from no answer", async () => {
+      setPluginPageHostService(pageHost() as never);
+      const { service } = createService({});
+
+      await expect(service.execute(makePayload("plugins.getConfig", { pluginId: "hn", key: "token" })))
+        .resolves.toEqual({ value: "abc" });
+      await expect(service.execute(makePayload("plugins.getConfig", { pluginId: "hn", key: "muted" })))
+        .resolves.toEqual({ value: null });
+      // A key the manifest does not declare is the normal first run, not an
+      // error — `config.get` on desktop answers the same way.
+      await expect(service.execute(makePayload("plugins.getConfig", { pluginId: "hn", key: "never-set" })))
+        .resolves.toEqual({ value: null });
+    });
+
+    it("writes exactly the one setting the page named", async () => {
+      const host = pageHost();
+      setPluginPageHostService(host as never);
+      const { service } = createService({});
+
+      await expect(service.execute(makePayload("plugins.setConfig", {
+        pluginId: "hn",
+        key: "pageSize",
+        value: 50,
+      }))).resolves.toEqual({ config: { token: "abc", pageSize: 50 } });
+      // One key, never a whole record off the wire: a page saving one field
+      // must not be able to clear every other one by omission.
+      expect(host.writeConfig).toHaveBeenCalledWith({ pluginId: "hn", values: { pageSize: 50 } });
+    });
+
+    it("clears a setting the page sent with no value", async () => {
+      const host = pageHost();
+      setPluginPageHostService(host as never);
+      const { service } = createService({});
+
+      await service.execute(makePayload("plugins.setConfig", { pluginId: "hn", key: "token" }));
+      // `null`, not `undefined`: the page cleared the field, and coercing that
+      // to "no change" would leave the old value standing while the page
+      // believed it was gone.
+      expect(host.writeConfig).toHaveBeenCalledWith({ pluginId: "hn", values: { token: null } });
+    });
+
+    it("relays the host's refusal of a secret setting unchanged", async () => {
+      const host = pageHost({
+        writeConfig: vi.fn(() => {
+          throw new Error('Setting "apiKey" is a secret and cannot be written here.');
+        }),
+      });
+      setPluginPageHostService(host as never);
+      const { service } = createService({});
+
+      await expect(service.execute(makePayload("plugins.setConfig", {
+        pluginId: "hn",
+        key: "apiKey",
+        value: "sk-live",
+      }))).rejects.toThrow(/secret/i);
     });
   });
 

@@ -3942,6 +3942,19 @@ final class SyncService: ObservableObject {
   /// sheet has no composer of its own, and the chat that does is behind it. The
   /// composer clears this when it applies it.
   @Published var pluginPageComposerEdit: PluginInvokeComposerEdit?
+  /// The issue a plugin page asked the composer to ATTACH, waiting for a
+  /// composer to apply it.
+  ///
+  /// Beside ``pluginPageComposerEdit`` rather than folded into it, because the
+  /// two are different acts. An edit is text the reader can still delete word by
+  /// word; an attachment is a link ADE records on the session, the same row the
+  /// Linear attach row writes, and the one a lane badge and a PR body read back.
+  /// A page that meant "attach this issue" and got a line of text got the shape
+  /// of the answer and none of the substance.
+  ///
+  /// Cleared by the composer that applies it — the composer is also the only
+  /// thing here that knows WHICH session the page was opened over.
+  @Published var pluginPageComposerAttach: PluginPageComposerAttach?
   /// A plugin link the attached machine cannot serve, waiting to be said out
   /// loud. Set by `DeepLinkRouter` and cleared by whoever shows it.
   @Published var pluginLinkRefusal: PluginLinkRefusal?
@@ -9970,6 +9983,40 @@ final class SyncService: ObservableObject {
       payload: AttachLinearIssueToSessionPayload(
         chatSessionId: chatSessionId,
         issues: [LinearIssueAttachPayload(issue: issue)]
+      )
+    )
+  }
+
+  /// The row a plugin page's `composer.attach` sends.
+  ///
+  /// A `LaneLinearIssue` rather than the Linear-shaped payload above: the page
+  /// may name any tracker, and the ref it named rides inside this row under
+  /// `__issueRef`. Encoding the struct verbatim is what carries the island — a
+  /// hand-listed payload would drop the one field that says which tracker this
+  /// is, and the link would read back as Linear on every surface.
+  private struct AttachIssueRefToSessionPayload: Encodable {
+    var chatSessionId: String
+    var issues: [LaneLinearIssue]
+  }
+
+  /// Attach the issue a plugin page named to a chat session.
+  ///
+  /// The SAME action the compiled Linear attach row calls, deliberately: the
+  /// link a plugin makes and the link ADE makes are one row in one table, read
+  /// back by the lane badge, the PR body and the desktop composer. A second
+  /// action for plugin-made links would be a second row shape for the same fact.
+  ///
+  /// The host applies its own rules to what arrives — it fills the branch name,
+  /// dedupes by issue id, and drops an issue missing a required field — so the
+  /// projection this sends fills every one of them. See
+  /// `PluginPageComposerAttach.laneIssue`.
+  func attachPluginPageIssueToChat(chatSessionId: String, attach: PluginPageComposerAttach) async throws {
+    try requireInvokableRemoteAction("lane.attachLinearIssueToSession")
+    _ = try await sendChatCommand(
+      action: "lane.attachLinearIssueToSession",
+      payload: AttachIssueRefToSessionPayload(
+        chatSessionId: chatSessionId,
+        issues: [attach.laneIssue]
       )
     )
   }

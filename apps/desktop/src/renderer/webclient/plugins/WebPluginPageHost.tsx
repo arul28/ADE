@@ -4,9 +4,13 @@ import { COLORS, RADII, SANS_FONT, outlineButton } from "../../components/lanes/
 import { PluginFallbackCard } from "../../components/plugins/VocabularyRenderer";
 import { applyPluginActionOpenSettings } from "../../components/plugins/pluginActionOpenSettings";
 import { applyPluginComposerEdit } from "../../components/plugins/sockets/composerTarget";
-import { closePluginPanelPopover } from "../../components/plugins/sockets/pluginPanelPopoverStore";
 import { closePluginWebviewOverlay } from "../../components/plugins/sockets/pluginWebviewOverlayStore";
-import { openPluginPrompt } from "../../components/plugins/sockets/pluginPromptStore";
+import { closePluginWebviewPopover } from "../../components/plugins/sockets/pluginWebviewPopoverStore";
+import {
+  getPluginPrompt,
+  openPluginPrompt,
+  subscribePluginPrompt,
+} from "../../components/plugins/sockets/pluginPromptStore";
 import { dismissToast, showToast } from "../../components/app/toast/toastStore";
 import { ConfirmDialog, useConfirmDialog } from "../../components/shared/InlineDialogs";
 import { openAdeDeeplink, openExternalUrl } from "../../lib/openExternal";
@@ -25,6 +29,7 @@ import {
 } from "../../../shared/plugins/sdk";
 import {
   PLUGIN_WEBVIEW_LIST_MAX_ROWS,
+  PLUGIN_WEBVIEW_MAX_HEIGHT_PX,
   type PluginWebviewContext,
   type PluginWebviewHostEvent,
   type PluginWebviewHostKind,
@@ -284,8 +289,11 @@ export function WebPluginPageHost({
         flex: placement === "settings-section" ? "0 0 auto" : 1,
         minHeight: 0,
         minWidth: 0,
+        // The shared ceiling, not a local one: the same page must not be a
+        // different height on desktop and on web. The host has already clamped
+        // what the guest reported; this is the style that applies it.
         ...(placement === "settings-section" && sectionHeight
-          ? { height: Math.min(sectionHeight, 1_200) }
+          ? { height: Math.min(sectionHeight, PLUGIN_WEBVIEW_MAX_HEIGHT_PX) }
           : {}),
       }}
     >
@@ -422,35 +430,72 @@ async function readCollection(
 }
 
 /**
- * Ask ADE's own one-field question and answer with the SDK's shape.
+ * Ask ADE's own one-field question and answer the page exactly once.
  *
- * The prompt store is a single-question store shared with the socket path, so a
- * page's question replaces whatever was open, exactly as a second socket press
- * does. A dismissal resolves null rather than rejecting: the page asked and the
- * reader declined, which is an answer.
+ * The dismissal path is the whole reason this is not three lines. `onSubmit`
+ * fires on an answer and never on a walk-away, so the store is watched too: the
+ * moment the standing question stops being this one, the page is told `null`.
+ * Waiting for the guest's teardown instead — which is what the first cut did —
+ * leaves a page's promise pending for as long as the reader stays on the
+ * surface, so a dismissed question reads as a button that never came back.
+ *
+ * `settle` is idempotent and the store watcher answers a microtask late, both
+ * for the same reason: `submitPluginPrompt` CLEARS the request before it calls
+ * `onSubmit`, so a watcher that answered the instant the store emptied would
+ * answer `null` for every question the reader actually answered.
+ *
+ * Deliberately the same shape as `askPluginWebviewPrompt` in the desktop relay.
+ * Two readings of "the reader walked away" would drift, and the drift would be
+ * invisible: one client answering null and the other hanging.
  */
-function askPrompt(pluginId: string, prompt: PluginActionPrompt): Promise<PluginActionPromptAnswer | null> {
+export function askPrompt(pluginId: string, prompt: PluginActionPrompt): Promise<PluginActionPromptAnswer | null> {
   return new Promise((resolve) => {
-    openPluginPrompt({
+    let settled = false;
+    let unsubscribe: (() => void) | null = null;
+    const settle = (value: PluginActionPromptAnswer | null): void => {
+      if (settled) return;
+      settled = true;
+      unsubscribe?.();
+      resolve(value);
+    };
+    const token = openPluginPrompt({
       pluginId,
-      actionId: prompt.id,
+      // No action asked this: the page did. Named so the prompt store's own
+      // console warning still points at something findable.
+      actionId: "page:ui.prompt",
       prompt,
       fallbackTitle: null,
       anchor: null,
-      onSubmit: (text) => resolve(buildPluginActionPromptAnswer(prompt, text)),
+      onSubmit: (text) => settle(buildPluginActionPromptAnswer(prompt, text)),
     });
-    // The store closes without calling `onSubmit` when the reader dismisses, so
-    // nothing resolves that promise from here. `PLUGIN_WEBVIEW_UI_ASK_TIMEOUT_MS`
-    // is the desktop's answer to the same shape; here the guest is torn down
-    // with the surface, which settles it.
+    const settleIfGone = (): void => {
+      if (getPluginPrompt()?.token === token) return;
+      queueMicrotask(() => settle(null));
+    };
+    unsubscribe = subscribePluginPrompt(settleIfGone);
+    // The store may already have moved on — a second question opened between
+    // these two calls — in which case the subscription would never fire.
+    settleIfGone();
   });
 }
 
-function closeSurfaceFor(placement: PluginWebviewPlacement): void {
-  // A tab and a pane ARE the view: there is nothing above them to close, and
-  // the desktop bridge documents the same no-op.
-  if (placement === "tab" || placement === "pane") return;
-  if (placement === "popover" || placement === "composer-picker") closePluginPanelPopover();
+/**
+ * What `surface.close` closes, by placement.
+ *
+ * Two lists, and both halves matter. A tab, a pane and a drawer tab ARE the
+ * view, and a settings section is part of a scrolling page: there is nothing
+ * above any of them to dismiss, so `surface.close` is the documented no-op
+ * rather than a call that closes something else the reader had open.
+ *
+ * The popover store here is the PAGE one, not `pluginPanelPopoverStore` — that
+ * is the vocabulary panel's quick view, a different card. Closing it would
+ * dismiss a card nobody opened and leave the page's own standing, which is what
+ * the first cut of this function did.
+ */
+export function closeSurfaceFor(placement: PluginWebviewPlacement): void {
+  if (placement === "tab" || placement === "pane" || placement === "drawer") return;
+  if (placement === "settings-section") return;
+  if (placement === "popover" || placement === "composer-picker") closePluginWebviewPopover();
   else closePluginWebviewOverlay();
 }
 

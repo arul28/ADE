@@ -260,6 +260,169 @@ final class PluginPageBridgeTests: XCTestCase {
         XCTAssertEqual(read as? String, "copied")
     }
 
+    // MARK: composer.attach
+
+    /// The short form is the smallest ref anyone can write, and it has to become
+    /// a real one: the composer attaches an issue by writing ADE's own session
+    /// link, and that row is an `IssueRef` with a legacy projection beside it.
+    @MainActor
+    func testComposerAttachReadsTheShortFormIntoAnIssueRef() async throws {
+        let host = RecordingPageHost()
+        let bridge = PluginPageBridge(dataSource: FakePageDataSource(), host: host)
+
+        _ = try await bridge.handle(request(.composerAttach, [
+            "provider": "Linear", "issueId": "abc", "identifier": "ADE-1",
+            "title": "One", "url": "https://linear.app/x/ADE-1",
+        ]), pluginId: "ade-linear")
+
+        let ref = try XCTUnwrap(host.attached.first?.issue)
+        // Lowercased: `Linear` and `linear` are one tracker, and a ref that
+        // disagreed with itself would render under a different badge than the
+        // rows beside it.
+        XCTAssertEqual(ref.provider, "linear")
+        XCTAssertEqual(ref.issueId, "abc")
+        XCTAssertEqual(ref.key, "ADE-1")
+        XCTAssertEqual(ref.title, "One")
+        XCTAssertEqual(ref.url, "https://linear.app/x/ADE-1")
+    }
+
+    /// The owner of a link decides who may later remove it, so it is stamped
+    /// from the calling guest and never read out of the body — the same rule
+    /// `ade.lanes.linkIssue` follows on the machine.
+    @MainActor
+    func testComposerAttachStampsTheCallingPluginAsTheOwner() async throws {
+        let host = RecordingPageHost()
+        let bridge = PluginPageBridge(dataSource: FakePageDataSource(), host: host)
+
+        _ = try await bridge.handle(request(.composerAttach, [
+            "issue": [
+                "pluginId": "ade-impostor",
+                "provider": "jira",
+                "issueId": "10001",
+                "key": "OPS-7",
+                "title": "Rotate the key",
+            ],
+        ]), pluginId: "ade-jira")
+
+        XCTAssertEqual(host.attached.first?.issue.pluginId, "ade-jira")
+    }
+
+    /// A page that already holds a whole ref loses nothing by sending it. The
+    /// parse is `parseIssueRefValue` — the one reader of a ref on this phone —
+    /// so a page's payload and a lane's row are validated by the same rule.
+    @MainActor
+    func testComposerAttachKeepsAWholeRefThePageSent() async throws {
+        let host = RecordingPageHost()
+        let bridge = PluginPageBridge(dataSource: FakePageDataSource(), host: host)
+
+        _ = try await bridge.handle(request(.composerAttach, [
+            "issue": [
+                "provider": "jira",
+                "issueId": "10001",
+                "key": "OPS-7",
+                "title": "Rotate the key",
+                "state": ["id": "3", "name": "In Progress", "category": "started"],
+                "container": ["id": "c1", "key": "OPS", "name": "Operations"],
+                "labels": ["security"],
+                "extra": ["sprint": "24"],
+            ],
+        ]), pluginId: "ade-jira")
+
+        let ref = try XCTUnwrap(host.attached.first?.issue)
+        XCTAssertEqual(ref.state?.category, .started)
+        XCTAssertEqual(ref.state?.name, "In Progress")
+        XCTAssertEqual(ref.container?.key, "OPS")
+        XCTAssertEqual(ref.labels, ["security"])
+        XCTAssertEqual(ref.extra?["sprint"], .string("24"))
+    }
+
+    /// The host's parser requires ten non-empty fields and drops an issue that
+    /// is missing one — silently, which is a chip that never appears with
+    /// nothing anywhere saying why. A tracker with no team and no state is the
+    /// case that exposes it.
+    @MainActor
+    func testTheAttachedRowFillsEveryFieldTheHostParserRequires() async throws {
+        let host = RecordingPageHost()
+        let bridge = PluginPageBridge(dataSource: FakePageDataSource(), host: host)
+
+        _ = try await bridge.handle(request(.composerAttach, [
+            "provider": "jira", "issueId": "10001", "identifier": "OPS-7", "title": "Rotate the key",
+        ]), pluginId: "ade-jira")
+
+        let row = try XCTUnwrap(host.attached.first?.laneIssue)
+        XCTAssertEqual(row.id, "10001")
+        XCTAssertEqual(row.identifier, "OPS-7")
+        XCTAssertEqual(row.title, "Rotate the key")
+        // A tracker with no container borrows its own name, exactly as
+        // `issueRefToLinearIssue` does: a mislabel on a build that predates
+        // `IssueRef` is the documented price, a dropped row would not be.
+        XCTAssertEqual(row.teamKey, "JIRA")
+        XCTAssertEqual(row.teamId, "JIRA")
+        XCTAssertEqual(row.stateId, "unstarted")
+        XCTAssertEqual(row.stateName, "unstarted")
+        XCTAssertEqual(row.stateType, "unstarted")
+        XCTAssertFalse((row.createdAt ?? "").isEmpty)
+        XCTAssertFalse((row.updatedAt ?? "").isEmpty)
+        // Derived by the host on every attach, so a value invented here would be
+        // the phone disagreeing with the machine about a branch it does not name.
+        XCTAssertNil(row.branchName)
+    }
+
+    /// The island is what says which tracker this is. Reading it back with the
+    /// same accessor every lane and PR surface uses is the round trip that
+    /// proves a key spelled differently would have been caught.
+    @MainActor
+    func testTheAttachedRowCarriesTheRefBackUnchanged() async throws {
+        let host = RecordingPageHost()
+        let bridge = PluginPageBridge(dataSource: FakePageDataSource(), host: host)
+
+        _ = try await bridge.handle(request(.composerAttach, [
+            "issue": [
+                "provider": "jira",
+                "issueId": "10001",
+                "key": "OPS-7",
+                "title": "Rotate the key",
+                "url": "https://jira.example/OPS-7",
+                "state": ["id": "3", "name": "In Progress", "category": "started"],
+                "container": ["id": "c1", "key": "OPS", "name": "Operations"],
+                "assignee": ["id": "u1", "name": "Ari"],
+                "priority": ["rank": 2, "label": "high"],
+                "labels": ["security"],
+                "description": "Rotate it.",
+                "createdAt": "2026-09-01T00:00:00.000Z",
+                "updatedAt": "2026-09-02T00:00:00.000Z",
+                "extra": ["sprint": "24"],
+            ],
+        ]), pluginId: "ade-jira")
+
+        let attach = try XCTUnwrap(host.attached.first)
+        XCTAssertEqual(attach.laneIssue.issueRef, attach.issue)
+        // And the legacy projection still says something true to a reader that
+        // has never heard of a ref.
+        XCTAssertEqual(attach.laneIssue.stateName, "In Progress")
+        XCTAssertEqual(attach.laneIssue.priorityLabel, "high")
+    }
+
+    /// A ref nothing can identify is refused rather than attached as a blank
+    /// chip. Both shapes refuse, because both reach the same model.
+    @MainActor
+    func testComposerAttachRefusesAnIssueItCannotIdentify() async throws {
+        let host = RecordingPageHost()
+        let bridge = PluginPageBridge(dataSource: FakePageDataSource(), host: host)
+
+        let shortForm: [String: Any] = ["provider": "linear", "issueId": "abc", "identifier": "ADE-1"]
+        let wholeRef: [String: Any] = ["issue": ["provider": "jira", "issueId": "10001"]]
+        for params in [shortForm, wholeRef] {
+            do {
+                _ = try await bridge.handle(request(.composerAttach, params), pluginId: "ade-linear")
+                XCTFail("attach with no title should refuse")
+            } catch let error as PluginPageBridgeError {
+                XCTAssertEqual(error.code, "invalid_params")
+            }
+        }
+        XCTAssertTrue(host.attached.isEmpty)
+    }
+
     @MainActor
     func testAToastIsCappedAndReturnsAnIdToDismiss() async throws {
         let host = RecordingPageHost()

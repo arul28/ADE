@@ -9,6 +9,19 @@ import type { PluginPageBundle } from "../pageAssets";
 
 const disposed = vi.fn();
 const created = vi.fn();
+const closedPopover = vi.fn();
+const closedOverlay = vi.fn();
+const promptStore = {
+  token: 0,
+  request: null as { onSubmit: (text: string) => void } | null,
+  listeners: new Set<() => void>(),
+};
+
+/** Clear the standing question the way a dismissal does, then notify. */
+function dismissPrompt(): void {
+  promptStore.request = null;
+  for (const listener of [...promptStore.listeners]) listener();
+}
 let bundle: PluginPageBundle;
 let ensure: () => Promise<{ base: string }>;
 let putUrls: string[];
@@ -43,10 +56,25 @@ vi.mock("../../../components/shared/InlineDialogs", () => ({
   ConfirmDialog: () => null,
 }));
 vi.mock("../../../components/app/toast/toastStore", () => ({ showToast: () => "id", dismissToast: () => undefined }));
-vi.mock("../../../components/plugins/sockets/pluginPromptStore", () => ({ openPluginPrompt: () => 1 }));
+vi.mock("../../../components/plugins/sockets/pluginPromptStore", () => ({
+  openPluginPrompt: (request: { onSubmit: (text: string) => void }) => {
+    promptStore.request = request;
+    promptStore.token += 1;
+    return promptStore.token;
+  },
+  getPluginPrompt: () => (promptStore.request ? { token: promptStore.token } : null),
+  subscribePluginPrompt: (listener: () => void) => {
+    promptStore.listeners.add(listener);
+    return () => promptStore.listeners.delete(listener);
+  },
+}));
 vi.mock("../../../components/plugins/sockets/composerTarget", () => ({ applyPluginComposerEdit: () => true }));
-vi.mock("../../../components/plugins/sockets/pluginPanelPopoverStore", () => ({ closePluginPanelPopover: () => undefined }));
-vi.mock("../../../components/plugins/sockets/pluginWebviewOverlayStore", () => ({ closePluginWebviewOverlay: () => undefined }));
+vi.mock("../../../components/plugins/sockets/pluginWebviewPopoverStore", () => ({
+  closePluginWebviewPopover: () => closedPopover(),
+}));
+vi.mock("../../../components/plugins/sockets/pluginWebviewOverlayStore", () => ({
+  closePluginWebviewOverlay: () => closedOverlay(),
+}));
 vi.mock("../../../components/plugins/pluginActionOpenSettings", () => ({ applyPluginActionOpenSettings: () => true }));
 vi.mock("../../../lib/pluginRuntimeBridge", () => ({
   invokePluginAction: async () => null,
@@ -59,13 +87,18 @@ vi.mock("../../../state/appStore", () => ({
   rootAppStoreApi: { getState: () => ({ installedPlugins: [] }) },
 }));
 
-import { WebPluginPageHost } from "../WebPluginPageHost";
+import { WebPluginPageHost, askPrompt, closeSurfaceFor } from "../WebPluginPageHost";
 
 const BASE = "https://app.ade-app.dev/assets/plugin-pages/";
 
 beforeEach(() => {
   disposed.mockClear();
   created.mockClear();
+  closedPopover.mockClear();
+  closedOverlay.mockClear();
+  promptStore.token = 0;
+  promptStore.request = null;
+  promptStore.listeners.clear();
   putUrls = [];
   ensure = async () => ({ base: BASE });
   bundle = {
@@ -175,5 +208,58 @@ describe("WebPluginPageHost", () => {
     expect(options.pluginId).toBe("ade-linear");
     expect(options.context.placement).toBe("popover");
     expect(options.context.subject).toMatchObject({ kind: "session", id: "chat-1" });
+  });
+});
+
+describe("closeSurfaceFor", () => {
+  it("closes the PAGE popover, never the vocabulary panel's quick view", () => {
+    closeSurfaceFor("popover");
+    closeSurfaceFor("composer-picker");
+    expect(closedPopover).toHaveBeenCalledTimes(2);
+    expect(closedOverlay).not.toHaveBeenCalled();
+  });
+
+  it("closes the overlay for an overlay", () => {
+    closeSurfaceFor("overlay");
+    expect(closedOverlay).toHaveBeenCalledTimes(1);
+    expect(closedPopover).not.toHaveBeenCalled();
+  });
+
+  it("does nothing for a placement that IS the view", () => {
+    // A tab, a pane and a drawer tab have nothing above them; a settings
+    // section is part of a scrolling page. Closing an overlay for any of these
+    // would dismiss something the reader opened for another reason.
+    for (const placement of ["tab", "pane", "drawer", "settings-section"] as const) {
+      closeSurfaceFor(placement);
+    }
+    expect(closedOverlay).not.toHaveBeenCalled();
+    expect(closedPopover).not.toHaveBeenCalled();
+  });
+});
+
+describe("askPrompt", () => {
+  it("answers with the reader's words when they submit", async () => {
+    const pending = askPrompt("ade-linear", { id: "q" });
+    promptStore.request?.onSubmit("typed");
+    await expect(pending).resolves.toMatchObject({ id: "q", text: "typed" });
+  });
+
+  it("answers null when the reader walks away, rather than hanging", async () => {
+    const pending = askPrompt("ade-linear", { id: "q" });
+    dismissPrompt();
+    // Waiting for the guest's teardown instead would leave this pending for as
+    // long as the reader stays on the surface, which reads as a button that
+    // never comes back.
+    await expect(pending).resolves.toBeNull();
+  });
+
+  it("lets a submit win the race against the store clearing", async () => {
+    const pending = askPrompt("ade-linear", { id: "q" });
+    const submit = promptStore.request?.onSubmit;
+    // `submitPluginPrompt` clears the request BEFORE it calls `onSubmit`, which
+    // is the exact order that would answer null for an answered question.
+    dismissPrompt();
+    submit?.("typed");
+    await expect(pending).resolves.toMatchObject({ text: "typed" });
   });
 });
