@@ -163,6 +163,11 @@ export function signingCertificateType(name) {
   return isDevelopment ? "development" : "distribution";
 }
 
+/** A SHA-1 certificate hash carries no certificate type, so it cannot be classified. */
+export function looksLikeCertificateHash(value) {
+  return /^[0-9A-Fa-f]{40}$/.test((value ?? "").trim());
+}
+
 /**
  * `security find-identity` prints the certificate type as part of the name, and
  * that is what a person copies. electron-builder rejects a qualifier that still
@@ -172,6 +177,12 @@ export function signingCertificateType(name) {
 export function normalizeSignIdentity(rawValue) {
   const value = (rawValue ?? "").trim();
   if (!value) return null;
+  if (looksLikeCertificateHash(value)) {
+    // Nothing in a hash says development or distribution. Only the keychain
+    // lookup can classify it, so an unresolved hash stays unclassified rather
+    // than being defaulted to distribution.
+    return { qualifier: value, display: value, type: "unknown" };
+  }
   let qualifier = value;
   for (const prefix of APPLE_CERTIFICATE_NAME_PREFIXES) {
     if (qualifier.toLowerCase().startsWith(prefix.toLowerCase())) {
@@ -195,17 +206,37 @@ export function parseCodesigningIdentities(output) {
   return identities;
 }
 
+/** Turn a keychain entry into the identity the build passes to electron-builder. */
+export function toSignIdentity(entry) {
+  return {
+    qualifier: entry.hash,
+    display: `${entry.name} (${entry.hash})`,
+    type: signingCertificateType(entry.name),
+  };
+}
+
 /** Prefer a Developer ID Application certificate, then an Apple Development one. */
 export function selectAutoSignIdentity(output) {
   const identities = parseCodesigningIdentities(output);
   const preferred = identities.find((identity) => identity.name.startsWith("Developer ID Application:"))
     ?? identities.find((identity) => identity.name.startsWith("Apple Development"));
-  if (!preferred) return null;
-  return {
-    qualifier: preferred.hash,
-    display: `${preferred.name} (${preferred.hash})`,
-    type: signingCertificateType(preferred.name),
-  };
+  return preferred ? toSignIdentity(preferred) : null;
+}
+
+/**
+ * Find the certificate a `--sign` value names, so a SHA-1 hash can be
+ * classified by the name it belongs to. The substring match is what
+ * electron-builder itself does with a qualifier.
+ */
+export function lookupSignIdentity(output, rawValue) {
+  const value = (rawValue ?? "").trim();
+  if (!value) return null;
+  const identities = parseCodesigningIdentities(output);
+  const lower = value.toLowerCase();
+  const entry = identities.find((identity) => identity.hash.toLowerCase() === lower)
+    ?? identities.find((identity) => identity.name === value)
+    ?? identities.find((identity) => identity.name.includes(value));
+  return entry ? toSignIdentity(entry) : null;
 }
 
 /** The flag wins over the environment variable. */
@@ -472,34 +503,48 @@ function signLocalMacApp(appPath, identity) {
  * `--dry-run`: the printed electron-builder command has to name the identity
  * the real build would use.
  */
-function findAutoSignIdentity() {
+function readCodesigningIdentities() {
   const result = spawnSync("security", ["find-identity", "-v", "-p", "codesigning"], {
     encoding: "utf8",
     stdio: ["ignore", "pipe", "pipe"],
   });
   if (result.error || result.status !== 0) {
     const detail = result.error?.message ?? `exited with ${result.status ?? "unknown status"}`;
-    process.stdout.write(`[ade] --sign-auto: security find-identity failed (${detail}); using an ad-hoc signature.\n`);
+    process.stdout.write(`[ade] security find-identity failed (${detail}).\n`);
     return null;
   }
-  const identity = selectAutoSignIdentity(result.stdout);
-  if (!identity) {
-    process.stdout.write(
-      "[ade] --sign-auto: no valid Developer ID Application or Apple Development identity found; using an ad-hoc signature.\n",
-    );
-    return null;
-  }
-  return identity;
+  return result.stdout;
 }
 
 function resolveMacSignIdentity(selection) {
   if (selection.mode === "adhoc") return null;
-  if (selection.mode === "auto") return findAutoSignIdentity();
+  const output = readCodesigningIdentities();
+
+  if (selection.mode === "auto") {
+    const identity = output ? selectAutoSignIdentity(output) : null;
+    if (!identity) {
+      process.stdout.write(
+        "[ade] --sign-auto: no valid Developer ID Application or Apple Development identity found; using an ad-hoc signature.\n",
+      );
+    }
+    return identity;
+  }
+
+  const source = selection.fromEnv ? "ADE_CHANNEL_SIGN_IDENTITY" : "--sign";
+  const resolved = output ? lookupSignIdentity(output, selection.value) : null;
+  if (resolved) return resolved;
+
   const identity = normalizeSignIdentity(selection.value);
-  if (!identity) {
-    fail(selection.fromEnv
-      ? "ADE_CHANNEL_SIGN_IDENTITY is set but empty. Unset it, or give a certificate name or SHA-1 hash."
-      : "--sign requires a certificate name or SHA-1 hash.");
+  if (!identity) fail(`${source} requires a certificate name or SHA-1 hash.`);
+  process.stdout.write(
+    `[ade] ${source}: ${identity.display} matches no valid codesigning identity on this Mac. `
+      + "Passing it through unresolved; the build machine must hold the certificate.\n",
+  );
+  if (identity.type === "unknown") {
+    process.stdout.write(
+      "[ade] Certificate type unknown, so -c.mac.type is left unset. Run this on the machine that holds the certificate, "
+        + "or pass the certificate NAME, to select a development certificate.\n",
+    );
   }
   return identity;
 }
@@ -513,7 +558,14 @@ export function macBuilderArgs({ channel, config, outputRoot, identity }) {
     // The repo carries no build/ade-desktop.provisionprofile, and a local
     // channel build does not need one. Left set, signing fails on the missing
     // file instead of producing a signed app.
-    args.push("-c.mac.provisioningProfile=null");
+    //
+    // The value must be EMPTY, not "null": electron-builder coerces the string
+    // "null" to null for `mac.identity` alone (`coerceValue` in
+    // electron-builder/out/builder.js), so "null" reaches
+    // `@electron/osx-sign` as a file path and it runs `security cms -D -i null`.
+    // An empty string is falsy at `macPackager.js` `provisioningProfile ||
+    // undefined`, which is what actually unsets it.
+    args.push("-c.mac.provisioningProfile=");
   } else {
     args.push("-c.mac.identity=null");
   }

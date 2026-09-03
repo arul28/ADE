@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  lookupSignIdentity,
+  looksLikeCertificateHash,
   macBuilderArgs,
   normalizeSignIdentity,
   parseArgs,
@@ -79,8 +81,37 @@ test("strips the certificate-type prefix electron-builder rejects", () => {
   assert.equal(identity.type, "distribution");
 });
 
-test("keeps a hash qualifier and an Apple Development name as given", () => {
-  assert.equal(normalizeSignIdentity(" ABCDEF ").qualifier, "ABCDEF");
+test("resolves a hash to its certificate name and classifies from the name", () => {
+  const identity = lookupSignIdentity(FIND_IDENTITY_OUTPUT, "A".repeat(40));
+  assert.equal(identity.qualifier, "A".repeat(40));
+  assert.equal(identity.type, "development");
+  assert.equal(identity.display, `Apple Development: Example Person (TEAM1234) (${"A".repeat(40)})`);
+  assert.equal(lookupSignIdentity(FIND_IDENTITY_OUTPUT, "a".repeat(40)).type, "development");
+  assert.equal(lookupSignIdentity(FIND_IDENTITY_OUTPUT, "B".repeat(40)).type, "distribution");
+});
+
+test("resolves a certificate name, including a partial one", () => {
+  assert.equal(
+    lookupSignIdentity(FIND_IDENTITY_OUTPUT, "Developer ID Application: Example Person (TEAM1234)").qualifier,
+    "B".repeat(40),
+  );
+  assert.equal(lookupSignIdentity(FIND_IDENTITY_OUTPUT, "Apple Development").type, "development");
+  assert.equal(lookupSignIdentity(FIND_IDENTITY_OUTPUT, "Nobody"), null);
+  assert.equal(lookupSignIdentity("", "Anything"), null);
+});
+
+test("leaves an unresolved hash unclassified instead of calling it distribution", () => {
+  const identity = normalizeSignIdentity("5FAF26DF55EB34277745B9C799CC7D9A0276978E");
+  assert.equal(identity.type, "unknown");
+  assert.equal(identity.qualifier, "5FAF26DF55EB34277745B9C799CC7D9A0276978E");
+  assert.ok(looksLikeCertificateHash("5faf26df55eb34277745b9c799cc7d9a0276978e"));
+  assert.ok(!looksLikeCertificateHash("Apple Development: Example Person"));
+  const args = builderArgs(identity);
+  assert.ok(args.includes("-c.mac.identity=5FAF26DF55EB34277745B9C799CC7D9A0276978E"));
+  assert.ok(!args.some((arg) => arg.startsWith("-c.mac.type=")));
+});
+
+test("keeps a name qualifier as given", () => {
   assert.equal(normalizeSignIdentity("Apple Development: Example Person").type, "development");
   assert.equal(signingCertificateType("Mac Developer: Example Person"), "development");
   assert.equal(normalizeSignIdentity("   "), null);
@@ -127,7 +158,10 @@ test("passes a distribution identity without a development type", () => {
   assert.ok(args.includes("-c.mac.identity=BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB"));
   assert.ok(!args.includes("-c.mac.identity=null"));
   assert.ok(!args.some((arg) => arg.startsWith("-c.mac.type=")));
-  assert.ok(args.includes("-c.mac.provisioningProfile=null"));
+  // Empty, never the string "null": electron-builder only coerces "null" to
+  // null for mac.identity, so "null" would reach osx-sign as a file path.
+  assert.ok(args.includes("-c.mac.provisioningProfile="));
+  assert.ok(!args.includes("-c.mac.provisioningProfile=null"));
   assert.ok(args.includes("-c.mac.notarize=false"));
 });
 
@@ -135,7 +169,13 @@ test("adds the development type for an Apple Development identity", () => {
   const args = builderArgs(normalizeSignIdentity("Apple Development: Example Person (TEAM1234)"));
   assert.ok(args.includes("-c.mac.identity=Apple Development: Example Person (TEAM1234)"));
   assert.ok(args.includes("-c.mac.type=development"));
-  assert.ok(args.includes("-c.mac.provisioningProfile=null"));
+  assert.ok(args.includes("-c.mac.provisioningProfile="));
+});
+
+test("adds the development type for a hash resolved to an Apple Development cert", () => {
+  const args = builderArgs(lookupSignIdentity(FIND_IDENTITY_OUTPUT, "A".repeat(40)));
+  assert.ok(args.includes(`-c.mac.identity=${"A".repeat(40)}`));
+  assert.ok(args.includes("-c.mac.type=development"));
 });
 
 test("keeps the channel arguments the packaged app depends on", () => {
