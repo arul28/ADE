@@ -213,10 +213,10 @@ private struct PluginPagePromptAlert: ViewModifier {
     }
 
     func body(content: Content) -> some View {
+        // `context` on a prompt is the JSON handed back to the action, not a
+        // sentence for the reader, so the alert carries no message.
         content.alert(title, isPresented: isPresented, presenting: coordinator.pendingPrompt) { prompt in
             promptFields(prompt)
-        } message: { prompt in
-            promptMessage(prompt)
         }
     }
 
@@ -225,11 +225,6 @@ private struct PluginPagePromptAlert: ViewModifier {
         TextField(prompt.placeholder ?? "", text: $coordinator.promptDraft)
         Button("Cancel", role: .cancel) { coordinator.answerPrompt(nil) }
         Button(prompt.submitLabel ?? "Submit") { coordinator.answerPrompt(coordinator.promptDraft) }
-    }
-
-    @ViewBuilder
-    private func promptMessage(_ prompt: PluginActionPrompt) -> some View {
-        if let context = prompt.context, !context.isEmpty { Text(context) }
     }
 }
 
