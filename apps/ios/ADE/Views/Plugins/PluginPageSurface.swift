@@ -119,6 +119,13 @@ struct PluginPageSurface: View {
     @StateObject private var coordinator = PluginPageSurfaceCoordinator()
 
     var body: some View {
+        content.modifier(PluginPageSurfaceChrome(coordinator: coordinator))
+    }
+
+    /// The page or the vocabulary fallback, with the load lifecycle. Kept apart
+    /// from the prompt, confirm and toast chrome so no single expression is
+    /// long enough to stall the type checker.
+    private var content: some View {
         Group {
             switch coordinator.state {
             case .page(let entry):
@@ -153,61 +160,6 @@ struct PluginPageSurface: View {
         .onChange(of: horizontalSizeClass) { _, updated in
             coordinator.sizeClass = updated
         }
-        .alert(
-            coordinator.pendingPrompt?.title ?? "",
-            isPresented: Binding(
-                get: { coordinator.pendingPrompt != nil && coordinator.pendingPrompt?.options.isEmpty != false },
-                set: { if !$0 { coordinator.answerPrompt(nil) } }
-            ),
-            presenting: coordinator.pendingPrompt
-        ) { prompt in
-            TextField(prompt.placeholder ?? "", text: $coordinator.promptDraft)
-            Button("Cancel", role: .cancel) { coordinator.answerPrompt(nil) }
-            Button(prompt.submitLabel ?? "Submit") {
-                coordinator.answerPrompt(coordinator.promptDraft)
-            }
-        } message: { prompt in
-            if let context = prompt.context, !context.isEmpty { Text(context) }
-        }
-        .confirmationDialog(
-            coordinator.pendingPrompt?.title ?? "",
-            isPresented: Binding(
-                get: { coordinator.pendingPrompt?.options.isEmpty == false },
-                set: { if !$0 { coordinator.answerPrompt(nil) } }
-            ),
-            titleVisibility: .visible,
-            presenting: coordinator.pendingPrompt
-        ) { prompt in
-            ForEach(prompt.options, id: \.value) { option in
-                Button(option.label) { coordinator.answerPrompt(option.value) }
-            }
-            Button("Cancel", role: .cancel) { coordinator.answerPrompt(nil) }
-        }
-        .alert(
-            coordinator.confirmation?.title ?? "",
-            isPresented: Binding(
-                get: { coordinator.confirmation != nil },
-                set: { if !$0 { coordinator.answerConfirm(false) } }
-            ),
-            presenting: coordinator.confirmation
-        ) { pending in
-            Button("Cancel", role: .cancel) { coordinator.answerConfirm(false) }
-            Button(
-                pending.confirmLabel,
-                role: pending.destructive ? .destructive : nil
-            ) { coordinator.answerConfirm(true) }
-        } message: { pending in
-            if !pending.body.isEmpty { Text(pending.body) }
-        }
-        .overlay(alignment: .bottom) {
-            if let toast = coordinator.toast {
-                PluginPageToastView(toast: toast)
-                    .padding(.horizontal, 16)
-                    .padding(.bottom, 24)
-                    .transition(.move(edge: .bottom).combined(with: .opacity))
-            }
-        }
-        .animation(.easeOut(duration: 0.18), value: coordinator.toast)
     }
 
     /// The context the host injects. Every field is the HOST's own word.
@@ -226,6 +178,71 @@ struct PluginPageSurface: View {
                 binding: PluginPageProjectContext.remoteBinding
             )
         )
+    }
+}
+
+/// The prompt, confirmation dialog, confirm alert and toast a page can raise,
+/// as one modifier so the surface body stays small.
+private struct PluginPageSurfaceChrome: ViewModifier {
+    @ObservedObject var coordinator: PluginPageSurfaceCoordinator
+
+    func body(content: Content) -> some View {
+        content
+            .alert(
+                coordinator.pendingPrompt?.title ?? "",
+                isPresented: Binding(
+                    get: { coordinator.pendingPrompt != nil && coordinator.pendingPrompt?.options.isEmpty != false },
+                    set: { if !$0 { coordinator.answerPrompt(nil) } }
+                ),
+                presenting: coordinator.pendingPrompt
+            ) { prompt in
+                TextField(prompt.placeholder ?? "", text: $coordinator.promptDraft)
+                Button("Cancel", role: .cancel) { coordinator.answerPrompt(nil) }
+                Button(prompt.submitLabel ?? "Submit") {
+                    coordinator.answerPrompt(coordinator.promptDraft)
+                }
+            } message: { prompt in
+                if let context = prompt.context, !context.isEmpty { Text(context) }
+            }
+            .confirmationDialog(
+                coordinator.pendingPrompt?.title ?? "",
+                isPresented: Binding(
+                    get: { coordinator.pendingPrompt?.options.isEmpty == false },
+                    set: { if !$0 { coordinator.answerPrompt(nil) } }
+                ),
+                titleVisibility: .visible,
+                presenting: coordinator.pendingPrompt
+            ) { prompt in
+                ForEach(prompt.options, id: \.value) { option in
+                    Button(option.label) { coordinator.answerPrompt(option.value) }
+                }
+                Button("Cancel", role: .cancel) { coordinator.answerPrompt(nil) }
+            }
+            .alert(
+                coordinator.confirmation?.title ?? "",
+                isPresented: Binding(
+                    get: { coordinator.confirmation != nil },
+                    set: { if !$0 { coordinator.answerConfirm(false) } }
+                ),
+                presenting: coordinator.confirmation
+            ) { pending in
+                Button("Cancel", role: .cancel) { coordinator.answerConfirm(false) }
+                Button(
+                    pending.confirmLabel,
+                    role: pending.destructive ? .destructive : nil
+                ) { coordinator.answerConfirm(true) }
+            } message: { pending in
+                if !pending.body.isEmpty { Text(pending.body) }
+            }
+            .overlay(alignment: .bottom) {
+                if let toast = coordinator.toast {
+                    PluginPageToastView(toast: toast)
+                        .padding(.horizontal, 16)
+                        .padding(.bottom, 24)
+                        .transition(.move(edge: .bottom).combined(with: .opacity))
+                }
+            }
+            .animation(.easeOut(duration: 0.18), value: coordinator.toast)
     }
 }
 
