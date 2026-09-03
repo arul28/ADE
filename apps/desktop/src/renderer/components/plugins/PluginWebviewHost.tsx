@@ -3,6 +3,8 @@ import React from "react";
 import { COLORS, RADII, SANS_FONT, outlineButton } from "../lanes/laneDesignTokens";
 import { PluginFallbackCard } from "./VocabularyRenderer";
 import { isWebClientMode } from "../../lib/webClientMode";
+import { WebPluginPageHost } from "../../webclient/plugins/WebPluginPageHost";
+import { supportsWebPluginPages } from "../../webclient/plugins/pageServiceWorkerClient";
 import { registerPluginWebviewGuest } from "./sockets/pluginWebviewGuestRegistry";
 import { usePluginWebviewReloadKey } from "./sockets/pluginWebviewReloadStore";
 import { pluginWebviewRelayBridge } from "../../lib/pluginRuntimeBridge";
@@ -134,6 +136,10 @@ export function PluginWebviewHost({
    */
   hideGraceMs?: number;
 }) {
+  // Which host draws the page. Read once per render rather than per effect: it
+  // cannot change without a reload, and two readings that disagreed would build
+  // a guest this component then refuses to paint.
+  const webClient = isWebClientMode();
   const hostRef = React.useRef<HTMLDivElement | null>(null);
   const guestRef = React.useRef<PluginWebviewElement | null>(null);
   const [state, setState] = React.useState<LoadState>({ status: "loading" });
@@ -172,18 +178,19 @@ export function PluginWebviewHost({
   // every placement carries them without each host remembering to. Main reads
   // them back off the URL at attach and stamps them onto its own guest record,
   // which is what makes a relayed request able to say where it came from.
-  const src = React.useMemo(
-    () => {
-      const envelope: PluginWebviewContext = {
-        subject: context?.subject ?? null,
-        ...(context?.pointer ? { pointer: context.pointer } : {}),
-        ...(surfaceId ? { surfaceId } : {}),
-        placement,
-      };
-      return pluginWebviewUrl(pluginId, entryHtml, envelope);
-    },
+  const envelope = React.useMemo<PluginWebviewContext>(
+    () => ({
+      subject: context?.subject ?? null,
+      ...(context?.pointer ? { pointer: context.pointer } : {}),
+      ...(surfaceId ? { surfaceId } : {}),
+      placement,
+    }),
     // eslint-disable-next-line react-hooks/exhaustive-deps -- context is folded into the string below.
-    [pluginId, entryHtml, placement, surfaceId, context ? JSON.stringify(context) : ""],
+    [placement, surfaceId, context ? JSON.stringify(context) : ""],
+  );
+  const src = React.useMemo(
+    () => pluginWebviewUrl(pluginId, entryHtml, envelope),
+    [pluginId, entryHtml, envelope],
   );
 
   // Read inside the effect rather than closed over: a close handler that
@@ -195,7 +202,11 @@ export function PluginWebviewHost({
 
   React.useEffect(() => {
     const host = hostRef.current;
-    if (!mounted || !host) return;
+    // A `<webview>` is an Electron construct. In the web client the branch
+    // below draws `WebPluginPageHost` instead, and this effect must not run at
+    // all — `document.createElement("webview")` there produces an unknown
+    // element that loads nothing and reports no `webContents` id.
+    if (webClient || !mounted || !host) return;
 
     setState({ status: "loading" });
     const guest = document.createElement("webview") as PluginWebviewElement;
@@ -292,7 +303,24 @@ export function PluginWebviewHost({
       guest.remove();
       guestRef.current = null;
     };
-  }, [pluginId, src, reloadToken, reloadKey, mounted, placement, surfaceId]);
+  }, [webClient, pluginId, src, reloadToken, reloadKey, mounted, placement, surfaceId]);
+
+  // The hosted web client draws the same page in a sandboxed same-origin frame
+  // behind a service worker. Delegated rather than reimplemented: every caller
+  // in the app already asks this component for "the plugin's page here", and
+  // teaching each of them which client it is running on would put the same
+  // branch in six places. The envelope is handed over whole, so `surfaceId` and
+  // `placement` reach that host the way they reach a guest's `__adeCtx`.
+  if (webClient) {
+    return (
+      <WebPluginPageHost
+        pluginId={pluginId}
+        entryHtml={entryHtml}
+        active={active}
+        context={envelope}
+      />
+    );
+  }
 
   return (
     <div
@@ -359,18 +387,20 @@ export function PluginWebviewHost({
  * probing for the element, because a probe that answered "yes" in a browser
  * would put an empty box where the page should be.
  *
- * TODO(w2-web-host): the web client is growing its own page host — a sandboxed
- * iframe over the sync file channel — exposed as `WebPluginPageHost` and
- * `supportsWebPluginPages()` under `renderer/webclient/`. When both exist this
- * becomes the two-line switch below, and every caller keeps its shape because
- * the fallback rule does not change: a client that cannot draw a page draws the
- * surface's `panelId` vocabulary panel.
+ * Two hosts now answer it. On the desktop the answer is always yes: a guest is
+ * an Electron `<webview>` and the runtime is always there. In the hosted web
+ * client it is `supportsWebPluginPages()`, which is a real question — a service
+ * worker, Cache Storage, a secure origin and a host that serves the page bytes
+ * are each a way for the answer to be no.
  *
- *   if (isWebClientMode()) return supportsWebPluginPages();
- *   return true;
+ * Asked as a product question rather than by probing for an element, because a
+ * probe that answered "yes" in a browser would put an empty box where the page
+ * should be. A no is never an error and never a card advertising another
+ * application: the caller draws the surface's `panelId` vocabulary panel, which
+ * is the cross-client rendering the manifest already promised.
  */
 export function supportsPluginWebviews(): boolean {
-  return !isWebClientMode();
+  return isWebClientMode() ? supportsWebPluginPages() : true;
 }
 
 export { PLUGIN_WEBVIEW_PROTOCOL };

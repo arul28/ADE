@@ -7,8 +7,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   decodePluginWebviewContext,
   PLUGIN_WEBVIEW_CONTEXT_QUERY_PARAM,
+  PLUGIN_WEBVIEW_MAX_HEIGHT_PX,
 } from "../../../shared/plugins/webviewBridge";
-import { PluginWebviewHost } from "./PluginWebviewHost";
+import {
+  PLUGIN_WEBVIEW_RESIZE_CHANNEL,
+  PluginWebviewHost,
+  supportsPluginWebviews,
+} from "./PluginWebviewHost";
 import { getPluginWebviewGuest, resetPluginWebviewGuests } from "./sockets/pluginWebviewGuestRegistry";
 import {
   applyPluginWebviewReload,
@@ -37,7 +42,16 @@ vi.mock("../../lib/pluginRuntimeBridge", () => ({
   }),
 }));
 
-vi.mock("../../lib/webClientMode", () => ({ isWebClientMode: () => false }));
+const { client } = vi.hoisted(() => ({ client: { web: false, webPages: true } }));
+vi.mock("../../lib/webClientMode", () => ({ isWebClientMode: () => client.web }));
+vi.mock("../../webclient/plugins/pageServiceWorkerClient", () => ({
+  supportsWebPluginPages: () => client.web && client.webPages,
+}));
+vi.mock("../../webclient/plugins/WebPluginPageHost", () => ({
+  WebPluginPageHost: ({ pluginId, context }: { pluginId: string; context: unknown }) => (
+    <div data-testid="web-page-host" data-plugin={pluginId}>{JSON.stringify(context)}</div>
+  ),
+}));
 
 /** Every guest currently in the document, whatever host put it there. */
 function guests(root: HTMLElement): HTMLElement[] {
@@ -62,6 +76,8 @@ beforeEach(() => {
   resetPluginWebviewGuests();
   resetPluginWebviewReloads();
   setSurfaceState.mockClear();
+  client.web = false;
+  client.webPages = true;
 });
 
 afterEach(() => {
@@ -245,7 +261,7 @@ describe("ui.resize", () => {
     const guest = guests(view.container)[0]!;
     const send = (height: unknown) => {
       const event = new Event("ipc-message") as Event & { channel?: string; args?: unknown[] };
-      event.channel = "ade:plugin-webview:resize";
+      event.channel = PLUGIN_WEBVIEW_RESIZE_CHANNEL;
       event.args = [{ height }];
       act(() => {
         guest.dispatchEvent(event);
@@ -254,8 +270,46 @@ describe("ui.resize", () => {
     send(320);
     expect(onContentHeight).toHaveBeenLastCalledWith(320);
     send(99_000);
-    expect(onContentHeight).toHaveBeenLastCalledWith(2000);
+    expect(onContentHeight).toHaveBeenLastCalledWith(PLUGIN_WEBVIEW_MAX_HEIGHT_PX);
+    // Null is not zero: a height that is not a finite positive number is
+    // dropped, so the section keeps the last good one rather than collapsing.
     send(-1);
+    send(0);
+    send(Number.NaN);
     expect(onContentHeight).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("the hosted web client", () => {
+  it("draws the web page host, never an Electron guest", () => {
+    client.web = true;
+    const view = render(
+      <PluginWebviewHost
+        pluginId="acme"
+        entryHtml="dist/index.html"
+        active
+        placement="popover"
+        surfaceId="issues"
+      />,
+    );
+    expect(view.container.querySelectorAll("webview")).toHaveLength(0);
+    const host = view.getByTestId("web-page-host");
+    expect(host.getAttribute("data-plugin")).toBe("acme");
+    // The envelope is handed over whole, so a page in the browser reads the
+    // same `surfaceId` and `placement` a desktop guest reads off `__adeCtx`.
+    expect(JSON.parse(host.textContent ?? "{}")).toMatchObject({
+      subject: null,
+      surfaceId: "issues",
+      placement: "popover",
+    });
+  });
+
+  it("reports support from the web host rather than assuming there is none", () => {
+    client.web = true;
+    expect(supportsPluginWebviews()).toBe(true);
+    client.webPages = false;
+    expect(supportsPluginWebviews()).toBe(false);
+    client.web = false;
+    expect(supportsPluginWebviews()).toBe(true);
   });
 });

@@ -5,6 +5,7 @@ import { act, cleanup, render, waitFor } from "@testing-library/react";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { parsePluginContributionPayload } from "../../../../shared/plugins/sockets";
+import { PLUGIN_WEBVIEW_RESIZE_CHANNEL } from "../../../../shared/plugins/webviewBridge";
 import { rootAppStoreApi } from "../../../state/appStore";
 import { PluginSettingsSections } from "./PluginSettingsSections";
 
@@ -164,7 +165,7 @@ describe("PluginSettingsSections with a page", () => {
     const box = guest.closest("section")?.querySelector("div[style*='height']") as HTMLElement;
     const resize = (height: number) => {
       const event = new Event("ipc-message") as Event & { channel?: string; args?: unknown[] };
-      event.channel = "ade:plugin-webview:resize";
+      event.channel = PLUGIN_WEBVIEW_RESIZE_CHANNEL;
       event.args = [{ height }];
       act(() => {
         guest.dispatchEvent(event);
