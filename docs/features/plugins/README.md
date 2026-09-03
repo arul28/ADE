@@ -383,6 +383,10 @@ state_mismatch` — named outcomes, because a plugin acts differently on each. A
 second `begin` of a live flow is `auth_session_busy` rather than a supersede: the
 previous attempt is a browser window the user is looking at right now.
 
+Desktop and the web client open the stamped `url` in the browser through the
+same opener `{openUrl}` uses. A `{message}` beside the `authSession` still
+shows. The phone opens its own web-authentication session.
+
 ### Inheriting a connection ADE already holds
 
 `credentialHandoff` is the release-day seam. `ade-linear` replaces ADE's compiled
@@ -440,6 +444,12 @@ day all of them reconnect.
   given to a package that is no longer on the machine. See
   [Connections leave with the plugin](#connections-leave-with-the-plugin) for the
   other half: the stored token goes with the package too.
+
+A host wired without the handoff seam refuses with `unsupported_method`,
+"This copy of ADE cannot hand a connection to a plugin.", not
+`auth_unavailable`. The remedy is the plugin's own sign-in. No official plugin
+uses the handoff today; `ade-linear` signs in through the official-client
+broker like any other plugin.
 
 ### Borrowing ADE's own OAuth client
 
