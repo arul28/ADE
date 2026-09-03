@@ -17,7 +17,7 @@
 // A view is per-PANEL and flat. There is no shared model with a `connection`
 // branch every builder digs into: the issue list is handed `{state, groups,
 // statePreset, …}` and the settings panel is handed `{state, connection,
-// handoffStatus, …}`, each already in the words its builder reads.
+// settings, …}`, each already in the words its builder reads.
 //
 // ## Why this module maps nothing
 //

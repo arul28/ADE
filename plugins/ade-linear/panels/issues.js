@@ -433,6 +433,36 @@ function issuesFallback(text) {
   );
 }
 
+/**
+ * The nav bar's trailing verbs, in importance order and inside the cap of four.
+ *
+ * This is what turns a pane into a page. The verbs a full-width tab needs at
+ * the top right are the three that are ABOUT the list rather than about a row —
+ * leave for Linear, fetch again, change the connection — and the body is the
+ * wrong place for all three: a button above the filter strip pushes the issues
+ * down the screen on every client, and the phone's `.searchable` nav bar has
+ * the slots sitting empty. Open-in-Linear in the body rather than the nav bar
+ * is on the handoff report's reduced list by name.
+ *
+ * `Refresh` is here as well as in `refreshAction`, and deliberately: the
+ * manifest's refresh is a GESTURE — a pull on the phone, `r` in the terminal —
+ * and on a wide desktop page a gesture nobody can see is not a control.
+ */
+function issuesNavActions(input = {}) {
+  const actions = [];
+  if (input.workspaceUrl) {
+    actions.push({
+      action: ACTIONS.openExternal,
+      args: { url: String(input.workspaceUrl) },
+      label: COPY.openInLinear,
+      icon: "brand:linear",
+    });
+  }
+  actions.push({ action: ACTIONS.refreshIssues, label: COPY.refresh, icon: "clock-counter-clockwise" });
+  actions.push({ action: ACTIONS.openSettings, label: COPY.openSettings, icon: "gear" });
+  return actions;
+}
+
 function issuesChrome(input = {}) {
   const footer = issuesFooter(input);
   return {
@@ -441,6 +471,7 @@ function issuesChrome(input = {}) {
       placeholder: COPY.search,
       onChange: { action: ACTIONS.searchIssues },
     },
+    navActions: issuesNavActions(input),
     ...(footer
       ? { footer: [{ component: "text", variant: "caption", text: value(footer) }] }
       : {}),

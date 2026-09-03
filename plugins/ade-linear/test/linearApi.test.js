@@ -220,7 +220,7 @@ describe("refreshing an expired OAuth token", () => {
     assert.equal(impl.requests[1].headers.authorization, "Bearer new-token");
   });
 
-  it("sends client_id and NO client_secret, because the handoff withholds it", async () => {
+  it("sends client_id and NO client_secret, because ADE never lends one", async () => {
     const impl = fetchQueue([
       response(200, { access_token: "t", expires_in: 60 }),
       response(200, { data: { issue: null } }),

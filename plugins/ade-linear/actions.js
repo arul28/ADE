@@ -202,6 +202,22 @@ function createOwnActions(deps) {
     },
 
     /**
+     * The same list, as the top bar's quick view.
+     *
+     * A separate handler rather than an argument on {@link openIssues}, because
+     * the two answer different navigations and every other caller of
+     * `openIssues` — the palette, the keybinding, the composer button, the CLI
+     * — wants the full tab. `target: "popover"` is the host's word for "beside
+     * the button that opened it": desktop and the web client draw a popover
+     * under the top bar, the phone a sheet, the terminal a pane. A client that
+     * draws no popover still navigates, so this is never a dead button.
+     */
+    async openIssuesQuickView() {
+      void ensureIssues();
+      return { navigate: { panelId: "issues", target: "popover" } };
+    },
+
+    /**
      * One issue's detail page.
      *
      * The row's `onPress`, a sub-issue row's, the smart-link chip's, the URL

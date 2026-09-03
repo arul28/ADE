@@ -54,10 +54,6 @@ const {
   statesKeyPrefix,
 } = require("./panels/contract");
 const { commentListRow, issueListRow } = require("./panels/rows");
-// From `connect.js`, which OWNS the handoff and writes the key. Reading it
-// here through the same helper is what keeps the synced connection row and the
-// settings card from disagreeing about whether the handoff was answered.
-const { readHandoffAnswer } = require("./connect");
 const {
   issueRefFromRow,
   normalizeComment,
@@ -799,10 +795,6 @@ function createData(options = {}) {
       organizationLogoUrl: null,
       tokenExpiresAt: credential.expiresAt ?? null,
       refreshTokenStored: Boolean(credential.refreshToken),
-      // The SDK's word (`accepted` | `declined` | `empty`), never the panel's
-      // (`offered` | `taken` | `declined`). `index.js:handoffLabel` is the one
-      // place the two vocabularies meet.
-      handoffAnswer: await readHandoffAnswer(sdk),
       webhookUrl: null,
       lastError: null,
       lastSyncAt: new Date(now()).toISOString(),

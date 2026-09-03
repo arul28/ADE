@@ -57,6 +57,7 @@ const {
   PROMPT_COMMENT,
   PROMPT_LANE,
   PROMPT_SEARCH,
+  SETTINGS_SECTION_SOCKET_ID,
   STATE_ASSIGNEE,
   STATE_BATCH,
   STATE_PRESET,
@@ -247,10 +248,29 @@ function bind(host) {
       return { navigate: { panelId: PANEL_ISSUES } };
     },
 
-    /** The gear on the list, and the sign-in prompt's second button. */
+    /**
+     * The gear on the list, and the sign-in prompt's second button.
+     *
+     * TWO verbs, because the destination is genuinely different per client and
+     * an action cannot tell which one it is running for. Desktop and the web
+     * client host this plugin's connection card as a `settings-section` on
+     * ADE's own Settings page, and that is where a reader who presses a gear
+     * expects to land — `{openSettings: {socketId}}` names the section rather
+     * than a page id, so ADE opens the tab that section resolved to. The phone
+     * and the terminal draw no Settings page for a plugin at all, so for them
+     * the same press has to stay a navigation to the plugin's own settings
+     * panel, which is the only connection screen those two have.
+     *
+     * A client honours the verb it can and ignores the other. Neither client
+     * is left with a dead gear, which is what a single verb would have cost
+     * one of them.
+     */
     async openSettings() {
       await publish(PANEL_SETTINGS);
-      return { navigate: { panelId: PANEL_SETTINGS } };
+      return {
+        openSettings: { socketId: SETTINGS_SECTION_SOCKET_ID },
+        navigate: { panelId: PANEL_SETTINGS },
+      };
     },
 
     /* ── Filters and search ─────────────────────────────────────────────── */
@@ -562,14 +582,29 @@ function bind(host) {
      *
      * The plugin names the flow and nothing else: `authSessions[0].id` in the
      * manifest is `linear`, the host stamps the URL and the transport, and the
-     * plugin never sees a client secret. That is the whole reason this is one
-     * line — a plugin that built its own authorize URL would be a plugin that
-     * could point one somewhere else.
+     * plugin never sees a client secret. That is the whole reason this is short
+     * — a plugin that built its own authorize URL would be a plugin that could
+     * point one somewhere else.
+     *
+     * A FAILURE is reported, never dressed as a start. This used to answer
+     * `{authSession: {sessionId: "linear"}}` whatever happened, so a build with
+     * no OAuth client, a flow already running, and a host with nothing to show a
+     * sign-in window in all produced a button that appeared to work and a
+     * browser that never opened. `ade.auth.beginSession` already says which of
+     * those it was; the reader is the person who has to act on it.
      */
     async connectOAuth() {
-      const result = await invoke(host.flows?.connectOAuth, [], "");
-      if (result.ok && result.value) return result.value;
-      return { authSession: { sessionId: "linear" } };
+      const result = await invoke(
+        host.flows?.connectOAuth,
+        [],
+        "Signing in needs the plugin's data layer.",
+      );
+      if (!result.ok) return { message: result.message, ok: false };
+      // The host STAMPED this: `begin` answers `{authSession: {sessionId}}` and
+      // the client fills in the live URL from it. Returning our own literal
+      // instead would name a flow the host never started.
+      if (result.value) return result.value;
+      return { message: "Could not start the Linear sign-in.", ok: false };
     },
 
     /**
@@ -586,21 +621,6 @@ function bind(host) {
       await publish(PANEL_SETTINGS);
       await publish(PANEL_ISSUES);
       return result.ok ? { message: "Connected to Linear." } : { message: result.message || COPY.apiKeyRejected, ok: false };
-    },
-
-    /**
-     * Take the connection ADE already holds.
-     *
-     * Offered once per install. ADE asks the user first and names exactly what
-     * moves, so a declined handoff is an answer rather than an error and the
-     * ordinary sign-in is still on the same screen.
-     */
-    async adoptHandoff() {
-      const result = await invoke(host.flows?.adoptHandoff, [], "This ADE build has no connection to hand over.");
-      await publish(PANEL_SETTINGS);
-      await publish(PANEL_ISSUES);
-      if (!result.ok) return { message: result.message, ok: false };
-      return { message: result.value === false ? "ADE kept the connection." : "Connected to Linear." };
     },
 
     /** Forget the credential on this machine. The button asks first. */

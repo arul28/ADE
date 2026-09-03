@@ -354,17 +354,19 @@ const HISTORY = manifest({
  * The gate is gone. `linear` is a SUPERSEDED surface now, so the plugin may not
  * name it with `builtin` at all — it draws its own panels and ADE's compiled
  * Linear steps aside. What is left is an ordinary package, and the biggest one
- * ADE ships: a `tab`, seven sockets, five panels, eight collections, three
+ * ADE ships: a `tab`, eight sockets, five panels, eight collections, three
  * settings, five automation triggers, four automation steps, a search provider,
- * a keybinding, nine agent tools, a CLI word, a skills directory, its own
- * OAuth flow and its own credential handoff. The one official-only thing is the
- * `urlMatchers` entry claiming `linear.app`, present below, which only the
- * plugin that OWNS the `linear` built-in surface may declare — and ownership,
- * not the `builtin` field, is what unlocks it.
+ * a keybinding, nine agent tools, a CLI word, a skills directory and its own
+ * OAuth flow. It declares NO credential handoff: it signs in the way a
+ * community plugin does, so an install on a machine that never connected ADE's
+ * compiled Linear is the same install as any other. The one official-only thing
+ * is the `urlMatchers` entry claiming `linear.app`, present below, which only
+ * the plugin that OWNS the `linear` built-in surface may declare — and
+ * ownership, not the `builtin` field, is what unlocks it.
  */
 const LINEAR = manifest({
   name: "ade-linear",
-  version: "1.1.0",
+  version: "1.2.0",
   displayName: "Linear",
   description: "Browse Linear issues, start a lane and an agent on one, and keep the issue moving — from ADE, on every device.",
   icon: "brand:linear",
@@ -374,7 +376,6 @@ const LINEAR = manifest({
     linear: "icons/linear.svg",
   },
   network: { hosts: ["api.linear.app"] },
-  credentialHandoff: ["linear"],
   // Declared, not optional: the install card has to be able to say "signs you
   // in to Linear" before any of the plugin's code runs, and `authorizeUrl` is
   // the one value a runtime argument may never choose.
@@ -424,8 +425,13 @@ const LINEAR = manifest({
     },
     { socket: "row-badge", surface: "lanes", id: "lane-issue", label: "Linear issue", icon: "brand:linear" },
     { socket: "graph-node", surface: "lanes", id: "graph-issue", label: "Linear issue", icon: "brand:linear" },
-    { socket: "settings-section", surface: "settings", id: "connection", label: "Linear", icon: "brand:linear", panelId: "settings" },
+    // `section` puts the card on Settings > Integrations rather than on
+    // General, which is where an unnamed section lands.
+    { socket: "settings-section", surface: "settings", id: "connection", label: "Linear", icon: "brand:linear", panelId: "settings", section: "integrations" },
     { socket: "command-palette-action", surface: "app", id: "palette-issues", label: "Linear issues", icon: "brand:linear", actionId: "openIssues" },
+    // The top bar's trailing cluster. Its action navigates to the issue list as
+    // a quick view, which is what puts Linear back beside feedback and help.
+    { socket: "toolbar-action", surface: "app", id: "top-bar-issues", label: "Linear", icon: "brand:linear", actionId: "openIssuesQuickView" },
   ],
   panels: [
     { id: "main", schemaFile: "panels/main.json", title: "Linear", icon: "brand:linear" },

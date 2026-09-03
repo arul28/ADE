@@ -95,7 +95,7 @@
       "displayName": "Linear",
       "description": "Browse Linear issues, start a lane and an agent on one, and keep the issue moving \u2014 from ADE, on every device.",
       "author": "ADE",
-      "version": "1.1.0",
+      "version": "1.2.0",
       "repo": "https://github.com/arul28/ade-linear",
       "changelogUrl": "https://github.com/arul28/ade-linear/releases",
       "iconGlyph": "list-checks",

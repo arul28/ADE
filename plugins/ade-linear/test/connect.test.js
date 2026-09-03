@@ -109,36 +109,24 @@ describe("the authorize parameters", () => {
   });
 });
 
-describe("the release-day handoff", () => {
-  it("records what the user answered, so the panel can say so", async () => {
-    const { sdk, connect } = build({ sdk: { handoff: { builtin: "linear", status: "accepted", secretNames: [] } } });
-    const result = await connect.requestHandoff();
-    assert.equal(result.status, "accepted");
-    assert.equal(await sdk.memory.get("handoffAnswer"), "accepted");
-  });
-
-  it("treats a decline as a normal state, not an error", async () => {
-    // The plugin is simply unconnected, and the ordinary sign-in is still there.
-    const { connect } = build({ sdk: { handoff: { builtin: "linear", status: "declined", secretNames: [] } } });
-    const result = await connect.requestHandoff();
-    assert.equal(result.status, "declined");
-  });
-
-  it("survives a host that refused the ask", async () => {
-    const sdk = createSdk({});
-    sdk.auth.requestHandoff = async () => { throw new Error("not permitted"); };
-    const api = createApi();
-    const connect = createConnect({ sdk, api, data: createData({ sdk, api }) });
-    assert.equal((await connect.requestHandoff()).status, "error");
+describe("the credential handoff, which this plugin no longer has", () => {
+  it("exposes no way to ask for somebody else's Linear token", () => {
+    // The plugin used to inherit the compiled integration's credential on
+    // install day. That made a real sign-in the second-best path and left the
+    // plugin's own OAuth flow untested on the only machines anyone ran it on.
+    // The verb is gone, and this is the test that keeps it gone.
+    const { connect } = build();
+    assert.equal(connect.requestHandoff, undefined);
+    assert.equal(require("../connect").readHandoffAnswer, undefined);
   });
 });
 
 describe("what the settings panel can offer", () => {
   it("can start OAuth on a build that lends an official client, with nothing stored", async () => {
     // The broker is what closed this: `client_id` identifies ADE to Linear, and
-    // before `auth.officialClient` existed the only way one reached the plugin
-    // was through the credential handoff — so a fresh install that declined it
-    // could never sign in.
+    // it is the ONLY way one reaches the plugin now that the credential handoff
+    // is gone. A public client id is not a credential, so a fresh install signs
+    // in exactly as an old one does.
     const { connect } = build();
     const status = await connect.connectStatus();
     assert.equal(status.canOAuth, true);
@@ -167,19 +155,18 @@ describe("what the settings panel can offer", () => {
   });
 
   it("recognises a stored id that IS ADE's as official", async () => {
-    // A client id that arrived through the handoff must not be mistaken for a
-    // custom one, or the sign-in would drop the webhook grant.
+    // A stored id that IS ADE's must not be mistaken for a custom one, or the
+    // sign-in would drop the webhook grant.
     const built = build();
     await built.sdk.secrets.set("LINEAR_OAUTH_CLIENT_ID", "ade-official-client");
     assert.equal((await built.connect.connectStatus()).clientSource, "official");
   });
 
-  it("stops offering the handoff once it has been answered", async () => {
-    const { sdk, connect } = build({ sdk: { handoff: { builtin: "linear", status: "declined", secretNames: [] } } });
-    assert.equal((await connect.connectStatus()).canHandoff, true);
-    await connect.requestHandoff();
-    assert.equal((await connect.connectStatus()).canHandoff, false);
-    assert.equal(await sdk.memory.get("handoffAnswer"), "declined");
+  it("says nothing about a handoff, because there is no longer one to offer", async () => {
+    const { connect } = build();
+    const status = await connect.connectStatus();
+    assert.equal("canHandoff" in status, false);
+    assert.equal("handoffAnswer" in status, false);
   });
 });
 
@@ -345,7 +332,7 @@ describe("finishing the sign-in", () => {
   });
 
   it("sends the verifier and no client secret", async () => {
-    // ADE's secret is ADE's identity to Linear, and the handoff withholds it.
+    // ADE's secret is ADE's identity to Linear, and ADE never lends it.
     // The verifier is what stands in for it.
     const { connect, fetches } = await started({ fetches: [response(200, { access_token: "at", expires_in: 60 })] });
     await connect.complete(completed());
@@ -508,23 +495,6 @@ describe("disconnecting", () => {
     const client = await connect.resolveClient();
     assert.equal(client.source, "official");
     assert.equal(client.clientId, "ade-official-client");
-  });
-
-  it("still reads an answer written under the key's old name", async () => {
-    // The stored key was renamed `handoffStatus` -> `handoffAnswer` so the SDK's
-    // vocabulary could not collide with the panel's again. A machine that had
-    // ALREADY answered kept its answer under the old name, so without this
-    // fallback it would be asked to adopt a credential it has already adopted
-    // or declined — which reads as a regression, not as a fix.
-    const { sdk, connect } = build();
-    await sdk.memory.set("handoffStatus", "declined");
-    const status = await connect.connectStatus();
-    assert.equal(status.handoffAnswer, "declined");
-    assert.equal(status.canHandoff, false, "offered the handoff to a machine that declined it");
-
-    // The new name wins whenever it has anything at all to say.
-    await sdk.memory.set("handoffAnswer", "accepted");
-    assert.equal((await connect.connectStatus()).handoffAnswer, "accepted");
   });
 
   it("cancelling is safe when nothing is running", async () => {

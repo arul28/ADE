@@ -139,7 +139,14 @@ async function activate({ connected = true, ...overrides } = {}) {
     await sdk.secrets.set("LINEAR_AUTH_MODE", "manual");
   }
   linear = linearFetch();
-  await withLinear(() => plugin.activate(sdk));
+  // Two awaits, because `activate` deliberately does NOT wait on the first
+  // read: the host gives it 20 s to answer `ready` and the read is three
+  // paginated requests away. `__internals.firstRead()` is that chain, so a test
+  // waits on the real work rather than on a timer.
+  await withLinear(async () => {
+    await plugin.activate(sdk);
+    await plugin.__internals.firstRead();
+  });
   return { sdk, linear };
 }
 
@@ -353,28 +360,19 @@ describe("the issue detail a connected reader is actually published", () => {
 /* ── Settings ───────────────────────────────────────────────────────────── */
 
 describe("the settings panel a reader is actually published", () => {
-  it("offers the adopt-handoff button while ADE is still offering the credential", async () => {
-    // `handoffLabel` maps the SDK's `accepted` | `declined` | `empty` into the
-    // panel's `offered` | `taken` | `declined`. The two once shared the name
-    // `handoffStatus`, the card compared the stored word to `offered`, and the
-    // button could never draw for anybody.
-    const { sdk } = await activate({ connected: false, handoff: { builtin: "linear" } });
+  it("publishes two ways in, and neither is somebody else's connection", async () => {
+    const { sdk } = await activate({ connected: false });
     const panel = await published(sdk, "settings");
-    assert.ok(
-      pressed(panel).has(contract.ACTIONS.adoptHandoff),
-      `no adopt button: ${[...pressed(panel)].join(", ")}`,
-    );
-  });
-
-  it("withdraws it once the handoff has been answered", async () => {
-    const { sdk } = await activate({ connected: false, handoff: { builtin: "linear", status: "declined" } });
-    const panel = await published(sdk, "settings");
-    assert.ok(!pressed(panel).has(contract.ACTIONS.adoptHandoff));
+    const verbs = pressed(panel);
+    assert.ok(verbs.has(contract.ACTIONS.connectOAuth), "no sign-in button");
+    assert.ok(verbs.has(contract.ACTIONS.connectApiKey), "no API key form");
+    assert.ok(!verbs.has("adoptHandoff"), "still offers the credential handoff");
+    assert.equal(sdk.calls.filter(([name]) => name === "auth.requestHandoff").length, 0);
   });
 
   it("words the stored auth mode as the reader's own", async () => {
-    // Stored as `manual`, which is the handoff's vocabulary and must not
-    // change; shown as "API key". That rename is `viewFor`'s, and a panel that
+    // Stored as `manual`, which is the compiled integration's vocabulary and
+    // must not change; shown as "API key". That rename is `viewFor`'s, and a panel that
     // did it itself would be the second mapper this seam had.
     const { sdk } = await activate();
     const panel = await published(sdk, "settings");
@@ -488,5 +486,87 @@ describe("the launch form a reader is actually published", () => {
     const models = form.fields.find((field) => field.id === "model");
     if (models) assert.ok(models.value, "the model picker opens on nothing");
     assert.ok(nodesOf(panel, "text").some((node) => node.variant === "code"), "no branch name to compare");
+  });
+});
+
+/* ── Activation, and the loading card that used to stand ────────────────── */
+
+describe("the first read, which activate starts and does not wait for", () => {
+  /**
+   * A `collections` namespace whose reads throw BEFORE returning a promise.
+   *
+   * That distinction is the whole test. `data.js` guards its collection calls
+   * with `.catch()`, which handles a rejected promise and does nothing at all
+   * for a verb that throws on the way in — the shape a closed SDK channel has.
+   * So this is the one injection that still reaches the chain, and it stands in
+   * for every future `await` in `refreshCatalogAndIssues` that nobody guarded.
+   */
+  function brokenCollections() {
+    const fail = () => { throw new Error("the plugin channel is closed"); };
+    return { get: fail, put: fail, delete: fail, list: fail };
+  }
+
+  it("republishes the issue list even when the first read throws", async () => {
+    // The bug: `refreshCatalogAndIssues` publishes `issues` only on its own way
+    // through, so anything that threw first left the SEEDED loading card on
+    // screen until the reader found Refresh. The republish is in a `finally`
+    // now, and this is what says so.
+    const { sdk } = await activate({ collections: brokenCollections() });
+
+    // The chain really did throw. Without this the test would still pass on a
+    // build where nothing failed at all, which proves nothing about the finally.
+    assert.ok(
+      sdk.calls.some(([name, , message]) => name === "log" && String(message).includes("The first Linear read failed")),
+      "nothing in the first read actually threw, so this test proves nothing",
+    );
+
+    const published = sdk.calls.filter(([name]) => name === "panels.update").map(([, id]) => id);
+    assert.ok(published.includes("issues"), `issues was never published: ${published.join(", ")}`);
+    const panel = sdk.panels.get("issues");
+    assert.ok(panel, "no issues panel reached the host");
+    assert.notEqual(
+      nodesOf(panel, "emptyState")[0]?.title,
+      COPY.loadingTitle,
+      "the loading card was left standing with no republish behind it",
+    );
+  });
+
+  it("publishes the connect card, not the loading card, with no credential", async () => {
+    const { sdk } = await activate({ connected: false, collections: brokenCollections() });
+    const panel = sdk.panels.get("issues");
+    assert.equal(nodesOf(panel, "emptyState")[0].title, COPY.connectTitle);
+    assert.ok(pressed(panel).has(contract.ACTIONS.connectOAuth));
+  });
+
+  it("answers ready without waiting for Linear", async () => {
+    // The host allows 20 s between spawn and `ready`, and `ready` is sent when
+    // `activate` RESOLVES. Three paginated GraphQL requests do not fit in that
+    // on a network this machine does not control, and a plugin that times out
+    // its own startup is restarted until it is dead.
+    const sdk = host();
+    await sdk.secrets.set("LINEAR_ACCESS_TOKEN", "lin_api_abcdefghijklmnopqrstuv");
+    await sdk.secrets.set("LINEAR_AUTH_MODE", "manual");
+
+    let release = null;
+    const held = new Promise((resolve) => { release = resolve; });
+    const answered = linearFetch();
+    linear = async (...args) => {
+      await held;
+      return answered(...args);
+    };
+
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = linear;
+    try {
+      // No timer: if `activate` awaited the read, this await never settles and
+      // the runner fails the test on its own timeout rather than on a guess.
+      await plugin.activate(sdk);
+      assert.equal(answered.calls.length, 0, "activate waited for Linear to answer");
+      release();
+      await plugin.__internals.firstRead();
+      assert.ok(answered.calls.length > 0, "the first read never ran");
+    } finally {
+      globalThis.fetch = realFetch;
+    }
   });
 });

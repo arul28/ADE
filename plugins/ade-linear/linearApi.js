@@ -12,15 +12,15 @@
 // value and an OAuth access token as `Bearer <token>`. Sending the wrong one
 // is a 400 with a message about the header rather than a 401, so a client that
 // guessed would report "Linear refused this token" for a token that is fine.
-// `LINEAR_AUTH_MODE` — the same `"manual" | "oauth"` vocabulary ADE stores and
-// the credential handoff copies — is what decides, and an unknown mode is an
+// `LINEAR_AUTH_MODE` — the same `"manual" | "oauth"` vocabulary ADE's own
+// compiled integration stores — is what decides, and an unknown mode is an
 // error rather than a guess.
 //
 // ## Refresh is this plugin's own network call
 //
-// The handoff copies the access token, the refresh token, the expiry and the
-// client id. It deliberately WITHHOLDS ADE's OAuth client secret, because that
-// is ADE's identity to Linear rather than the user's. So the refresh here is a
+// The exchange stores the access token, the refresh token, the expiry and the
+// client id. ADE never lends its OAuth client SECRET, because that is ADE's
+// identity to Linear rather than the user's. So the refresh here is a
 // public-client PKCE refresh: `grant_type=refresh_token` with `client_id` and
 // no secret. See the gap list in the wave report for what happens if Linear
 // ever requires the secret on that grant.
@@ -43,7 +43,7 @@ const BACKOFF_CAP_MS = 15_000;
  */
 const REFRESH_BUFFER_MS = 2 * 60_000;
 
-/** Secret names. These are the handoff's names, so a handed-over credential needs no copy. */
+/** Secret names, in this plugin's own namespace. */
 const SECRET_ACCESS_TOKEN = "LINEAR_ACCESS_TOKEN";
 const SECRET_REFRESH_TOKEN = "LINEAR_REFRESH_TOKEN";
 const SECRET_EXPIRES_AT = "LINEAR_TOKEN_EXPIRES_AT";
@@ -236,8 +236,8 @@ function createLinearApi(options = {}) {
   /**
    * Exchange a refresh token for a new access token.
    *
-   * Public-client shape: `client_id` and no `client_secret`, because the
-   * handoff withholds ADE's. Returns the new credential; throws
+   * Public-client shape: `client_id` and no `client_secret`, because ADE lends
+   * neither its own nor anyone else's. Returns the new credential; throws
    * `unauthorized` when Linear says `invalid_grant`, which is the one failure
    * that means "make the user connect again" rather than "try later".
    */

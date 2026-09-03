@@ -106,6 +106,7 @@ function issuesView(overrides = {}) {
     hasTeams: true,
     filtersActive: false,
     workspace: CONNECTION.organizationName,
+    workspaceUrl: "https://linear.app/acme",
     age: "2 minutes ago",
     ...overrides,
   };
@@ -261,6 +262,37 @@ describe("the issue list panel", () => {
         );
       }
     }
+  });
+
+  it("puts the page's own verbs in the nav bar rather than in the body", () => {
+    // The tab is a full-width page, and the three verbs that are about the LIST
+    // rather than about a row belong at the top right: a body button pushes the
+    // issues down the screen on every client and leaves the phone's nav bar
+    // empty. Open-in-Linear in the body is on the reduced list by name.
+    const panel = panels.buildIssuesPanel(issuesView());
+    const nav = panel.chrome.navActions ?? [];
+    assert.ok(nav.length > 0, "the page has no nav actions");
+    // Four is the vocabulary's ceiling and a fifth is dropped silently.
+    assert.ok(nav.length <= 4, `${nav.length} nav actions`);
+    const verbs = nav.map((entry) => entry.action);
+    assert.deepEqual(verbs, [
+      contract.ACTIONS.openExternal,
+      contract.ACTIONS.refreshIssues,
+      contract.ACTIONS.openSettings,
+    ]);
+    for (const entry of nav) {
+      assert.ok(entry.label, "a nav action with no label is dropped by the parser");
+      assert.ok(entry.icon, "a nav action with no icon draws a bare word");
+    }
+    assert.equal(nav[0].args.url, "https://linear.app/acme");
+  });
+
+  it("draws two nav verbs rather than a link to nowhere before the identity read", () => {
+    // The workspace URL is built from the organization's url key, which does
+    // not exist until the connection row lands.
+    const panel = panels.buildIssuesPanel(issuesView({ workspaceUrl: null }));
+    const verbs = (panel.chrome.navActions ?? []).map((entry) => entry.action);
+    assert.deepEqual(verbs, [contract.ACTIONS.refreshIssues, contract.ACTIONS.openSettings]);
   });
 
   it("says it is still reading rather than that nobody is connected", () => {
@@ -473,25 +505,15 @@ describe("the settings panel", () => {
     assert.ok(actions.includes(contract.ACTIONS.connectOAuth));
   });
 
-  it("offers the handoff only while ADE is still offering it", () => {
-    // Top level, and in the PANEL's vocabulary. The stored SDK word is
-    // `connection.handoffAnswer` — `accepted` | `declined` | `empty` — and
-    // `index.js:handoffLabel` is the one place the two vocabularies meet. They
-    // shared the name `handoffStatus` once, and the adopt button never drew.
-    const offered = panels.buildSettingsPanel({
-      connection: { connected: false },
-      handoffStatus: "offered",
-    });
-    assert.ok(
-      nodesOf(offered, "button").some((node) => node.onPress.action === contract.ACTIONS.adoptHandoff),
-    );
-    const declined = panels.buildSettingsPanel({
-      connection: { connected: false },
-      handoffStatus: "declined",
-    });
-    assert.ok(
-      !nodesOf(declined, "button").some((node) => node.onPress.action === contract.ACTIONS.adoptHandoff),
-    );
+  it("offers no way to inherit a connection somebody else made", () => {
+    // The card used to lead with "Use the connection ADE already has", which
+    // made a real sign-in the second-best path on the only machines anyone ran
+    // this on. Two doors now, and both of them are this plugin's own.
+    const panel = panels.buildSettingsPanel({ connection: { connected: false } });
+    const pressed = nodesOf(panel, "button").map((node) => node.onPress.action);
+    assert.ok(!pressed.includes("adoptHandoff"));
+    assert.equal(contract.ACTIONS.adoptHandoff, undefined);
+    assert.equal(JSON.stringify(panel).includes("connection ADE already has"), false);
   });
 
   it("asks before it forgets the credential, and names the blast radius", () => {
@@ -647,9 +669,28 @@ describe("the issue row a list binds", () => {
     assert.equal(row.tone, "accent");
     assert.deepEqual(row.badge, { text: "In Progress", tone: "accent", icon: "play" });
     assert.equal(row.mono, "ADE-122");
-    assert.deepEqual(row.preview, { title: "ADE-122", text: ISSUE_ROW.title });
     assert.deepEqual(row.avatar, { name: "Ada" });
     assert.equal(issueListRow({ ...ISSUE_ROW, priority: 0 }).icon, "play");
+  });
+
+  it("puts something the ROW does not already say into the hover card", () => {
+    // The card used to repeat the identifier and the title, both of which are
+    // on the row a reader is already looking at, so hovering told them nothing.
+    const row = issueListRow({ ...ISSUE_ROW, description: "The lane switches while the turn is still streaming." });
+    assert.equal(row.preview.title, "ADE-122 · In Progress");
+    assert.equal(row.preview.text, "The lane switches while the turn is still streaming.");
+    assert.notEqual(row.preview.text, row.title);
+  });
+
+  it("falls back to the meta line rather than an empty hover card", () => {
+    const row = issueListRow({ ...ISSUE_ROW, description: null });
+    assert.ok(row.preview.text.length > 0);
+    assert.equal(row.preview.text, metaLine({ ...ISSUE_ROW, description: null }));
+  });
+
+  it("clamps the hover card, because every bound row carries one three times", () => {
+    const row = issueListRow({ ...ISSUE_ROW, description: "x".repeat(4_000) });
+    assert.ok(row.preview.text.length <= 160, `${row.preview.text.length} characters`);
   });
 
   it("puts the lane first in the meta line, because it changes what a press means", () => {

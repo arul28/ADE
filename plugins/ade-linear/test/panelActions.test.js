@@ -62,7 +62,6 @@ function makeHost(options = {}) {
       openLaunch: record("flows.openLaunch"),
       connectOAuth: record("flows.connectOAuth"),
       connectApiKey: record("flows.connectApiKey"),
-      adoptHandoff: record("flows.adoptHandoff"),
       disconnect: record("flows.disconnect"),
       applySettings: record("flows.applySettings"),
       createAutolink: record("flows.createAutolink"),
@@ -379,12 +378,37 @@ describe("writing back to Linear", () => {
 });
 
 describe("the connection", () => {
-  it("names the declared flow and never builds an authorize URL", async () => {
+  it("returns the session the HOST stamped, never a literal of its own", async () => {
     // A plugin that built its own URL would be a plugin that could point one
-    // somewhere else. The host stamps the URL and the transport.
+    // somewhere else. The host stamps the URL and the transport, and this hands
+    // back exactly what it answered.
+    const host = makeHost();
+    host.flows.connectOAuth = () => ({ authSession: { sessionId: "linear" }, transport: "loopback" });
+    assert.deepEqual(
+      await bind(host).connectOAuth(),
+      { authSession: { sessionId: "linear" }, transport: "loopback" },
+    );
+  });
+
+  it("reports a sign-in that never began instead of claiming one did", async () => {
+    // `beginSession` refuses for three ordinary reasons — no OAuth client on
+    // this build, a flow already running, nothing that can show a window — and
+    // each one arrives as a message. This used to answer
+    // `{authSession: {sessionId: "linear"}}` whatever happened, so the button
+    // looked like it worked and no browser ever opened.
+    const host = makeHost({ fail: ["flows.connectOAuth"] });
+    const result = await bind(host).connectOAuth();
+    assert.equal(result.ok, false);
+    assert.ok(result.message, "a failed sign-in said nothing");
+    assert.ok(!("authSession" in result), "named a flow the host never started");
+  });
+
+  it("says so when the host has no sign-in verb at all", async () => {
     const host = makeHost();
     delete host.flows.connectOAuth;
-    assert.deepEqual(await bind(host).connectOAuth(), { authSession: { sessionId: "linear" } });
+    const result = await bind(host).connectOAuth();
+    assert.equal(result.ok, false);
+    assert.ok(!("authSession" in result));
   });
 
   it("never echoes the API key back into a message", async () => {
@@ -399,14 +423,6 @@ describe("the connection", () => {
     const result = await bind(host).connectApiKey({ apiKey: "   " });
     assert.equal(result.ok, false);
     assert.deepEqual(reached(host), []);
-  });
-
-  it("reads a declined handoff as an answer, not as a failure", async () => {
-    const host = makeHost();
-    host.flows.adoptHandoff = () => false;
-    const result = await bind(host).adoptHandoff();
-    assert.equal(result.message, "ADE kept the connection.");
-    assert.ok(!("ok" in result), "a decline is not an error");
   });
 
   it("sends the whole values map and strips the frame's own fields", async () => {

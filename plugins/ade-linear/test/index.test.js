@@ -25,7 +25,8 @@ const path = require("node:path");
 const { afterEach, describe, it } = require("node:test");
 
 const plugin = require("../index");
-const { ACTIONS, PROMPT_LANE } = require("../panels/contract");
+const contract = require("../panels/contract");
+const { ACTIONS, PROMPT_LANE } = contract;
 const panelActions = require("../panelActions");
 const { createApi, createSdk, issueNode } = require("./support");
 
@@ -69,6 +70,10 @@ async function activated(overrides = {}) {
   // a plugin that reached Linear here would be testing Linear.
   const original = plugin.__internals;
   await plugin.activate(sdk);
+  // `activate` starts the first read and does not await it, so the host can
+  // answer `ready` inside its 20 s deadline. A test asserting on what was
+  // published waits on the chain itself rather than on a timer.
+  await plugin.__internals.firstRead();
   return { sdk, original };
 }
 
@@ -179,14 +184,18 @@ describe("activate", () => {
     const { sdk } = await activated();
     const order = sdk.calls.map(([name, arg]) => (name === "events.on" ? `on:${arg}` : name));
     const listened = order.indexOf("on:auth.completed");
-    const handoff = order.indexOf("auth.requestHandoff");
+    const began = order.indexOf("auth.beginSession");
     assert.ok(listened >= 0);
-    assert.ok(handoff === -1 || listened < handoff, "the handoff ran before the listener was attached");
+    assert.ok(began === -1 || listened < began, "a sign-in began before the listener was attached");
   });
 
-  it("asks for the credential handoff exactly once", async () => {
+  it("never asks ADE to hand over the credential it already holds", async () => {
+    // The plugin used to inherit the compiled integration's Linear token on
+    // install day, which made a real sign-in the second-best path and hid
+    // whether this plugin's own sign-in worked at all. It signs in like any
+    // other plugin now, so nothing here may reach for somebody else's token.
     const { sdk } = await activated();
-    assert.equal(sdk.calls.filter(([name]) => name === "auth.requestHandoff").length, 1);
+    assert.equal(sdk.calls.filter(([name]) => name === "auth.requestHandoff").length, 0);
   });
 
   it("publishes the gating pane before anything can fail", async () => {
@@ -232,24 +241,6 @@ describe("the two facts a schema cannot compute for itself", () => {
     assert.deepEqual(expiry("not a date"), { expiresIn: null, expired: false });
   });
 
-  it("maps the handoff into the four words the settings card branches on", () => {
-    // Two vocabularies, two names. The SDK's answer is `handoffAnswer`
-    // (`accepted` | `declined` | `empty`) and the panel's word is
-    // `handoffStatus` (`offered` | `taken` | `declined`). They were both
-    // spelled `handoffStatus` once: the settings card compared the stored word
-    // to `offered`, and the adopt button could never draw.
-    const { handoffLabel } = plugin.__internals;
-    assert.equal(handoffLabel({ canHandoff: true }), "offered");
-    assert.equal(handoffLabel({ handoffAnswer: "accepted" }), "taken");
-    assert.equal(handoffLabel({ handoffAnswer: "declined" }), "declined");
-    // `empty` is null, NOT "offered": there is nothing on this machine to
-    // adopt, and a button that copies nothing is worse than no button.
-    assert.equal(handoffLabel({ handoffAnswer: "empty" }), null);
-    assert.equal(handoffLabel({}), null);
-    // And the SDK's word under the PANEL's name maps to nothing, which is what
-    // stops the two from being confused for each other again.
-    assert.equal(handoffLabel({ handoffStatus: "accepted" }), null);
-  });
 });
 
 describe("republishing a panel that is ABOUT something", () => {
@@ -537,5 +528,71 @@ describe("the lane badge published as a contribution", () => {
       assert.equal(kind, "lane");
       assert.ok(id, `${socket} was published with no id`);
     }
+  });
+});
+
+describe("where the manifest puts this plugin, which only the manifest decides", () => {
+  const socketBy = (id) => (MANIFEST.sockets ?? []).find((socket) => socket.id === id);
+
+  it("lands its settings card on Integrations rather than on General", () => {
+    // `resolvePluginSettingsTab` accepts a tab id and falls back to General for
+    // a section that names none — which is where a Linear connection is not.
+    // The two constants exist so the manifest and the `{openSettings}` verb
+    // cannot drift; this is what pins them to the manifest itself.
+    const section = socketBy(contract.SETTINGS_SECTION_SOCKET_ID);
+    assert.ok(section, `no socket called ${contract.SETTINGS_SECTION_SOCKET_ID}`);
+    assert.equal(section.socket, "settings-section");
+    assert.equal(section.surface, "settings");
+    assert.equal(section.section, contract.SETTINGS_SECTION_TAB);
+    assert.equal(section.section, "integrations");
+  });
+
+  it("puts Linear back in the window's top bar", () => {
+    // A `toolbar-action` on the `app` surface draws in the top bar's trailing
+    // cluster, beside feedback and help, and its context is the window rather
+    // than whatever tab is open.
+    const toolbar = socketBy("top-bar-issues");
+    assert.ok(toolbar, "no top-bar socket");
+    assert.equal(toolbar.socket, "toolbar-action");
+    assert.equal(toolbar.surface, "app");
+    assert.equal(toolbar.actionId, "openIssuesQuickView");
+    assert.equal(toolbar.icon, "brand:linear");
+  });
+
+  it("asks for no credential ADE already holds", () => {
+    assert.equal(MANIFEST.credentialHandoff, undefined);
+  });
+
+  it("declares the OAuth flow the sign-in names", () => {
+    // With the handoff gone this is the only door left, so a manifest that
+    // dropped it would leave the plugin with no way in at all.
+    assert.equal(MANIFEST.authSessions?.[0]?.id, "linear");
+  });
+});
+
+describe("the two navigations a client reads differently", () => {
+  it("opens the top bar's quick view beside the button, not as a whole tab", async () => {
+    await activated();
+    const result = await plugin.actions.openIssuesQuickView();
+    assert.deepEqual(result.navigate, { panelId: "issues", target: "popover" });
+  });
+
+  it("keeps the ordinary openIssues a full-tab navigation", async () => {
+    // The palette, the keybinding, the composer button and the CLI all press
+    // this one, and none of them wants a popover.
+    await activated();
+    const result = await plugin.actions.openIssues();
+    assert.deepEqual(result.navigate, { panelId: "issues" });
+  });
+
+  it("sends a gear to ADE's Settings page AND to the plugin's own panel", async () => {
+    // Two verbs, because the destination genuinely differs per client and an
+    // action cannot tell which client it is running for. Desktop and web honour
+    // `{openSettings}`; the phone and the terminal have no Settings page for a
+    // plugin and take the navigation instead. Neither is left with a dead gear.
+    await activated();
+    const result = await plugin.actions.openSettings();
+    assert.deepEqual(result.openSettings, { socketId: contract.SETTINGS_SECTION_SOCKET_ID });
+    assert.deepEqual(result.navigate, { panelId: "settings" });
   });
 });

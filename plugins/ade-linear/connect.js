@@ -1,18 +1,19 @@
 // Getting a Linear credential into this plugin's own secret store.
 //
-// Three ways in, in the order a real user meets them:
+// Two ways in, in the order a real user meets them:
 //
-//   1. **The handoff.** On the day this plugin replaces the compiled
-//      integration, every existing user already has a working Linear
-//      connection. `ade.auth.requestHandoff("linear")` shows the person a card
-//      naming exactly which secrets move, and their yes copies them. Without
-//      it, release day is a day on which everyone reconnects.
-//   2. **OAuth.** The host opens the browser (or the phone's in-app auth view),
+//   1. **OAuth.** The host opens the browser (or the phone's in-app auth view),
 //      owns the loopback listener and the `state`; the plugin supplies the
 //      query parameters, holds the PKCE verifier, and performs the exchange
 //      itself over a host it declared in `network`.
-//   3. **An API key.** `lin_api_…`, pasted. Linear takes it as a BARE
+//   2. **An API key.** `lin_api_…`, pasted. Linear takes it as a BARE
 //      `authorization` value, which is why the mode is stored beside it.
+//
+// There is deliberately no third way. This plugin used to ask ADE to hand over
+// the credential its compiled Linear surface already held, which made a real
+// sign-in the second-best path and made the plugin untestable on a machine
+// that had never connected ADE to Linear. A plugin nobody can install cleanly
+// is not a plugin, so the handoff is gone and every install signs in.
 //
 // ## Why the plugin performs the exchange
 //
@@ -27,15 +28,14 @@
 // `client_id` identifies ADE to Linear, and it is not this plugin's to invent.
 // Two doors, tried in this order:
 //
-//   1. **This plugin's own store.** Put there by the handoff
-//      (`LINEAR_OAUTH_CLIENT_ID`) or by a completed exchange, and it is what a
-//      refresh has to send. A user who registered their own OAuth app has
-//      theirs here too.
+//   1. **This plugin's own store.** Put there by a completed exchange
+//      (`LINEAR_OAUTH_CLIENT_ID`), and it is what a refresh has to send. A user
+//      who registered their own OAuth app has theirs here too.
 //   2. **`ade.auth.officialClient("linear")`.** ADE lends the honoured owner of
 //      the built-in Linear surface its OWN public client id — the same id that
-//      appears in the authorize URL of every sign-in ADE has ever run. This is
-//      what makes OAuth work on a FRESH install, where there is no connection
-//      to hand over, and on a machine where the user declined the handoff.
+//      appears in the authorize URL of every sign-in ADE has ever run. A public
+//      client id is not a credential, so this is what makes OAuth work on every
+//      install, fresh ones included.
 //
 // ADE never lends the client SECRET, and there is no shape in which it could:
 // the answer has no field for one. That is the correct outcome — the exchange
@@ -56,37 +56,6 @@ const {
 
 /** The one `authSessions[].id` the manifest declares. */
 const AUTH_SESSION_ID = "linear";
-
-/**
- * Where the handoff's ANSWER is remembered, in the SDK's own vocabulary.
- *
- * `accepted` | `declined` | `empty` | null — never the panel's words. The panel
- * says `offered` | `taken` | `declined`, and the two vocabularies once shared
- * the name `handoffStatus`: the settings panel read the stored word, compared
- * it to `offered`, and the adopt button could never draw. One name for one
- * vocabulary is what stops that from happening twice. See `handoffLabel` in
- * `index.js`, which is the only place the two words meet.
- */
-const HANDOFF_ANSWER_KEY = "handoffAnswer";
-
-/**
- * What this key was called before the rename, read only as a fallback.
- *
- * The two vocabularies both spelled themselves `handoffStatus`, which is what
- * let the settings card compare the SDK's word to the panel's and never draw
- * the adopt button. Renaming the stored one fixed that — and would have asked a
- * machine that ALREADY answered to answer again, because the answer was under
- * the old name. One extra read, only when there is nothing under the new name,
- * and only until every install has written one.
- */
-const HANDOFF_ANSWER_KEY_LEGACY = "handoffStatus";
-
-/** The handoff's answer, under either name. `null` means genuinely unanswered. */
-async function readHandoffAnswer(sdk) {
-  const answer = await sdk.memory.get(HANDOFF_ANSWER_KEY).catch(() => null);
-  if (answer !== null && answer !== undefined) return answer;
-  return (await sdk.memory.get(HANDOFF_ANSWER_KEY_LEGACY).catch(() => null)) ?? null;
-}
 
 /**
  * The scopes, ported from `linearOAuthService.ts:260`.
@@ -193,9 +162,8 @@ function createConnect(options = {}) {
    * scope list depends on it, and the only honest way to decide is to compare
    * it against ADE's. That is the same test the compiled integration uses
    * (`linearCredentialService.ts:705` — "Compare by client id, not by which
-   * branch resolved"), and it means a client id that arrived through the
-   * handoff is correctly recognised as ADE's rather than mistaken for a custom
-   * one.
+   * branch resolved"), and it means a stored id that IS ADE's is recognised as
+   * ADE's rather than mistaken for a custom one.
    */
   async function resolveClient() {
     // Refused for every plugin that does not own the built-in Linear surface,
@@ -234,30 +202,6 @@ function createConnect(options = {}) {
   }
 
   /**
-   * Ask ADE for the credential it holds for the built-in Linear surface.
-   *
-   * Asked ONCE per install by the host: after an answer, the same call returns
-   * that answer without showing a card again. A `declined` is NOT an error and
-   * is never reported as one — the plugin is simply unconnected and the
-   * ordinary sign-in is still there.
-   */
-  async function requestHandoff() {
-    let result;
-    try {
-      result = await sdk.auth.requestHandoff("linear");
-    } catch (error) {
-      log("warn", `Could not ask for the Linear credential handoff: ${error?.message ?? error}`);
-      return { status: "error", message: error?.message ?? String(error) };
-    }
-    await sdk.memory.set(HANDOFF_ANSWER_KEY, result?.status ?? null).catch(() => {});
-    if (result?.status === "accepted") {
-      log("info", "Adopted ADE's existing Linear connection.");
-      await data?.refreshConnection().catch(() => {});
-    }
-    return result ?? { status: "empty" };
-  }
-
-  /**
    * What the settings panel should offer.
    *
    * Three states, because they need three different buttons: a connection that
@@ -268,7 +212,6 @@ function createConnect(options = {}) {
   async function connectStatus() {
     const credential = await api.readCredential().catch(() => ({ token: null }));
     const client = await resolveClient();
-    const handoffAnswer = await readHandoffAnswer(sdk);
     return {
       connected: Boolean(credential.token),
       authMode: credential.authMode ?? null,
@@ -277,8 +220,6 @@ function createConnect(options = {}) {
       // because "Sign in with Linear" behaves differently for the two: ADE's
       // app carries the webhook grant and a user's own does not.
       clientSource: client?.source ?? null,
-      canHandoff: handoffAnswer === null,
-      handoffAnswer,
       // Said plainly, because the alternative is an authorize URL Linear
       // refuses and a user who cannot tell why. Reached now only where ADE
       // lends nothing — a non-owner build, or a host with no broker — rather
@@ -391,9 +332,9 @@ function createConnect(options = {}) {
    * Trade the authorization code for a token, and store it.
    *
    * A public-client exchange: `client_id` and no `client_secret`, because ADE's
-   * secret is ADE's identity to Linear rather than the user's and the handoff
-   * deliberately withholds it. `code_verifier` is what stands in for the
-   * secret, which is why the PKCE pair had to be the plugin's.
+   * secret is ADE's identity to Linear rather than the user's and ADE lends no
+   * secret to anyone. `code_verifier` is what stands in for it, which is why
+   * the PKCE pair had to be the plugin's.
    */
   async function exchange({ code, verifier, redirectUri, clientId: id }) {
     const body = new URLSearchParams({
@@ -433,9 +374,9 @@ function createConnect(options = {}) {
         ? new Date(now() + payload.expires_in * 1000).toISOString()
         : null,
     });
-    // The client id has to survive so the REFRESH can send it. It arrived with
-    // the handoff or with the user's own registration, and neither is
-    // guaranteed to still be there when the token expires.
+    // The client id has to survive so the REFRESH can send it. It came from
+    // ADE's broker or from the user's own registration, and neither is
+    // guaranteed to still answer when the token expires.
     await sdk.secrets.set(SECRET_CLIENT_ID, id);
     return { ok: true };
   }
@@ -511,20 +452,16 @@ function createConnect(options = {}) {
     connectStatus,
     disconnect,
     exchange,
-    requestHandoff,
     saveApiKey,
   };
 }
 
 module.exports = {
   API_KEY_PATTERN,
-  HANDOFF_ANSWER_KEY,
-  HANDOFF_ANSWER_KEY_LEGACY,
   AUTH_SESSION_ID,
   SCOPES_ADE_APP,
   SCOPES_CUSTOM,
   authorizeParams,
-  readHandoffAnswer,
   createConnect,
   createPkcePair,
 };

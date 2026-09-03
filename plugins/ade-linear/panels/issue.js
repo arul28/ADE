@@ -255,14 +255,27 @@ function issueActions(issue) {
 }
 
 function issueChrome(issue) {
-  const navActions = issue.url
-    ? [{
-        action: ACTIONS.openInLinear,
-        args: { issueId: String(issue.id) },
-        label: COPY.openInLinear,
-        icon: "link",
-      }]
-    : undefined;
+  // The brand mark rather than a chain link: the plugin ships `icons/linear.svg`
+  // under `brandIcons`, so `brand:linear` draws Linear's own glyph on every
+  // client and a generic `link` was the reduced version of it.
+  const navActions = [];
+  if (issue.url) {
+    navActions.push({
+      action: ACTIONS.openInLinear,
+      args: { issueId: String(issue.id) },
+      label: COPY.openInLinear,
+      icon: "brand:linear",
+    });
+  }
+  // Beside the manifest's `refreshAction`, for the same reason the list has one:
+  // the manifest's refresh is a GESTURE — a pull on the phone, `r` in the
+  // terminal — and a gesture nobody can see is not a control on a wide page.
+  navActions.push({
+    action: ACTIONS.refreshIssue,
+    args: { issueId: String(issue.id) },
+    label: COPY.refresh,
+    icon: "clock-counter-clockwise",
+  });
   // Both launch verbs open the CONFIGURATION panel rather than launching with
   // the plugin's defaults, which is the phone's own flow: `LinearLaunchScreen`
   // is one screen serving both, and `laneOnly` hides the agent half of it and
@@ -273,7 +286,7 @@ function issueChrome(issue) {
   // `flows.openLaunch`, so a build whose manifest has no `launch` panel still
   // does the thing the button says.
   return {
-    ...(navActions ? { navActions } : {}),
+    navActions,
     footer: [
       {
         component: "stack",

@@ -255,6 +255,9 @@ const COPY = {
   connectOauthBody: "Connects the workspace currently selected in Linear.",
   connectWaiting: "Waiting for Linear…",
   openSettings: "Open Linear settings",
+  // The nav-bar verb. Named separately from `retry`, which is the error card's
+  // word for the same action and reads wrong on a list that loaded fine.
+  refresh: "Refresh",
 
   // Row and detail chrome.
   hasLane: "Has lane",

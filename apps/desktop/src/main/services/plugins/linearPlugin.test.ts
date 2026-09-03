@@ -191,7 +191,6 @@ describe("the panels ade-linear publishes at runtime", () => {
         state: "connected",
         connection: { connected: true, authMode: "apiKey", viewerName: "Ada", oauthAvailable: false },
         ingress: { status: "Waiting for the signing secret", tone: "warning", url: "https://relay.example/x", secretStored: false },
-        handoffStatus: "offered",
       }, null],
       ["settings", {
         state: "connected",
@@ -399,6 +398,9 @@ describe("installing ade-linear from the bundled directory", () => {
       "graph-node",
       "settings-section",
       "command-palette-action",
+      // A `toolbar-action` on the `app` surface: the top bar's trailing
+      // cluster, whose context is the window rather than the open tab.
+      "toolbar-action",
     ]);
 
     // No `builtin` anywhere, and there cannot be one: `linear` supersedes, so
@@ -411,7 +413,11 @@ describe("installing ade-linear from the bundled directory", () => {
     expect(installed.manifest?.urlMatchers?.map((matcher) => matcher.hosts)).toEqual([["linear.app"]]);
 
     expect(installed.manifest?.network?.hosts).toEqual(["api.linear.app"]);
-    expect(installed.manifest?.credentialHandoff).toEqual(["linear"]);
+    // NO credential handoff. The plugin used to inherit the compiled
+    // integration's Linear token on install day, which made a real sign-in the
+    // second-best path and left the plugin's own OAuth flow untested on the
+    // only machines anyone ran it on. It signs in like any other plugin now.
+    expect(installed.manifest?.credentialHandoff).toBeUndefined();
     expect(installed.manifest?.webhookIngress.map((channel) => channel.id)).toEqual(["linear"]);
     // Declared, so the channel fails closed without the signing secret. It
     // costs no installed base: the built-in's webhooks run through

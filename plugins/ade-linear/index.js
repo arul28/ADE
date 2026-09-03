@@ -7,9 +7,11 @@
 //
 //   * the issue browser is a `tab` surface plus a `work-rail-pane`, drawn from
 //     a vocabulary panel bound to this plugin's own `issues` collection;
-//   * the connection is `authSessions` + `credentialHandoff` — the host opens
-//     the browser and owns the `state`, and the token is this plugin's from the
-//     moment it exists;
+//   * the connection is `authSessions` and nothing else — the host opens the
+//     browser and owns the `state`, and the token is this plugin's from the
+//     moment it exists. There is no credential handoff: this plugin signs in
+//     the way any community plugin does, so a machine that never had ADE's
+//     compiled Linear connection is not a second-class install;
 //   * the webhook is a declared `webhookIngress` channel at ADE's relay, and
 //     the events arrive as `webhook.received` with an ack;
 //   * the lane and agent flows are `lane.create`, `chat.createSession` and
@@ -18,10 +20,11 @@
 //   * the nine agent tools, the five automation triggers, the four steps, the
 //     search provider and the CLI word are all manifest registrations.
 //
-// `official: true` buys this package exactly two things: the credential handoff
-// and the official OAuth client broker — both gated on ADE owning the `linear`
-// builtin surface — plus the relaxation that lets it claim `linear.app` in a URL
-// matcher. It does NOT buy a pane: the manifest declares an ordinary `tab` with
+// `official: true` buys this package exactly one thing beyond the relaxation
+// that lets it claim `linear.app` in a URL matcher: the official OAuth client
+// broker, gated on ADE owning the `linear` builtin surface. The public client
+// id it lends is not a credential, so nothing here depends on a connection the
+// user already had. It does NOT buy a pane: the manifest declares a `tab` with
 // no `builtin` field, and `parseSurfaces` would ignore one if it were there.
 // Everything else a community author could write.
 //
@@ -133,6 +136,16 @@ let lastIssueRefreshAt = 0;
 let panelHandlers = null;
 /** `owner/repo` for the settings panel's autolink card, or null. */
 let githubRepoSlug = null;
+
+/**
+ * The chain `activate` starts and does not await, as a promise a CALLER may.
+ *
+ * The host never waits on it — that is the whole point of {@link firstRead} —
+ * but a test that asserted on the panels before it settled would be asserting
+ * on a race. Exposed through `__internals.firstRead()` so a test waits on the
+ * real work rather than on a timer.
+ */
+let firstReadPromise = Promise.resolve();
 
 /**
  * Which issue the detail and launch panels are currently ABOUT.
@@ -369,6 +382,14 @@ async function viewFor(panelId, context) {
       teamKey: filters.teamKey || null,
       filtersActive: filtersActive(filters),
       workspace: connection?.organizationName ?? null,
+      // The nav bar's Open-in-Linear destination. Built from the workspace's
+      // own url key rather than from an issue's `url`, because this verb is
+      // about the LIST: a page with nothing selected still has a workspace to
+      // open. Absent until the identity read lands, and the builder then draws
+      // two nav verbs instead of three rather than a link to nowhere.
+      workspaceUrl: connection?.organizationUrlKey
+        ? `https://linear.app/${connection.organizationUrlKey}`
+        : null,
       age: ago(snapshot.updatedAt),
     };
   }
@@ -479,17 +500,14 @@ async function viewFor(panelId, context) {
         ? {
           ...connection,
           // The builder words this as "OAuth" or "API key". The STORED
-          // vocabulary is `oauth` | `manual`, which is the handoff's own and
-          // must not change — so the rename happens here and nowhere else.
+          // vocabulary is `oauth` | `manual`, which is what a stored credential
+          // already says — so the rename happens here and nowhere else.
           authMode: connection.authMode === "manual" ? "apiKey" : connection.authMode,
           // Pre-formatted, because a schema cannot do date arithmetic.
           ...expiry(connection.tokenExpiresAt),
           oauthAvailable: status.canOAuth === true,
         }
         : null,
-      // "offered" is the one value that draws the adopt button, so it is set
-      // only while the handoff genuinely has not been answered.
-      handoffStatus: handoffLabel(status),
       settings,
       teams: (await data.teams().catch(() => [])).map((team) => ({ key: team.key, name: team.name })),
       showAutolinks: Boolean(connection?.organizationUrlKey),
@@ -599,22 +617,6 @@ function expiry(tokenExpiresAt) {
 function webhooksReachable(status) {
   const source = status?.clientSource;
   return source === "official" || source === "custom";
-}
-
-/**
- * The handoff, in the four words the settings panel branches on.
- *
- * The plugin's own vocabulary is the SDK's — `accepted`, `declined`, `empty`,
- * or unanswered. The panel's is `offered` / `taken` / `declined` / null, and
- * `offered` is what draws the adopt button. `empty` maps to null rather than to
- * `offered`: there is nothing on this machine to adopt, and a button that
- * copies nothing is worse than no button.
- */
-function handoffLabel(status) {
-  if (status?.canHandoff) return "offered";
-  if (status?.handoffAnswer === "accepted") return "taken";
-  if (status?.handoffAnswer === "declined") return "declined";
-  return null;
 }
 
 /* ── Reading ─────────────────────────────────────────────────────────────── */
@@ -906,17 +908,6 @@ function buildPanelHost() {
         return result;
       },
 
-      adoptHandoff: async () => {
-        const result = await connect.requestHandoff();
-        if (result.status === "error") throw new Error(result.message);
-        // `false` is what the panel words as "ADE kept the connection" — a
-        // decline and an empty store are both "nothing moved", and neither is
-        // an error.
-        if (result.status !== "accepted") return false;
-        await refreshCatalogAndIssues();
-        return true;
-      },
-
       disconnect: async () => {
         const result = await connect.disconnect();
         await publish("issues");
@@ -1025,18 +1016,42 @@ exports.activate = async (ade) => {
     })();
   }));
 
-  await publish("main");
-
-  // The release-day handoff. Asked once per install by the host; a `declined`
-  // is a normal state and not an error, so nothing branches on it here beyond
-  // letting the settings panel say so.
-  await connect.requestHandoff().catch(() => {});
-
-  await refreshCatalogAndIssues().catch((error) => {
-    log("warn", `The first Linear read failed: ${error?.message ?? error}`);
-  });
-  void loadModels();
+  // STARTED, not awaited. The bootstrap sends `ready` only once `activate`
+  // resolves, and the host gives it 20 s: the first read is up to three
+  // paginated GraphQL requests over a network this machine does not control,
+  // and `publishSchema` alone retries five times three seconds apart while no
+  // project is attached. Awaiting either one here spent the whole deadline and
+  // restarted the plugin for a reason no log line named as slowness.
+  firstReadPromise = firstRead();
+  void firstReadPromise;
 };
+
+/**
+ * The first publish and the first Linear read, as one chain nothing awaits.
+ *
+ * The `finally` is the contract: every exit from this chain republishes the two
+ * panels that carry a loading card. `refreshCatalogAndIssues` rejects whenever
+ * a collection write throws — a full store, a budget refusal — and it rejects
+ * BEFORE its own `publish("issues")`, so the seeded "Loading Linear issues…"
+ * card used to stand until the reader pressed Refresh. A loading card is never
+ * left standing without a republish behind it.
+ */
+async function firstRead() {
+  // In parallel with the read, because the launch form is the only panel that
+  // reads the model list and nothing on the way to the issue list waits on it.
+  // `loadModels` swallows its own failure, so this cannot reject.
+  const models = loadModels();
+  try {
+    await publish("main");
+    await refreshCatalogAndIssues();
+  } catch (error) {
+    log("warn", `The first Linear read failed: ${error?.message ?? error}`);
+  } finally {
+    await publish("issues");
+    await publish("main");
+    await models;
+  }
+}
 
 /**
  * The connection, then the near-static catalog, then the issues.
@@ -1133,8 +1148,9 @@ exports.__internals = {
   expiry,
   ownActions,
   webhooksReachable,
-  handoffLabel,
   publish,
   refreshCatalogAndIssues,
   refreshIssues,
+  /** The first read `activate` started, for a test that must not race it. */
+  firstRead: () => firstReadPromise,
 };

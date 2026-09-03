@@ -1,6 +1,6 @@
 {
   "name": "ade-linear",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "displayName": "Linear",
   "description": "Browse Linear issues, start a lane and an agent on one, and keep the issue moving \u2014 from ADE, on every device.",
   "icon": "brand:linear",
@@ -15,9 +15,6 @@
       "api.linear.app"
     ]
   },
-  "credentialHandoff": [
-    "linear"
-  ],
   "authSessions": [
     {
       "id": "linear",
@@ -162,7 +159,8 @@
       "id": "connection",
       "label": "Linear",
       "icon": "brand:linear",
-      "panelId": "settings"
+      "panelId": "settings",
+      "section": "integrations"
     },
     {
       "socket": "command-palette-action",
@@ -171,6 +169,14 @@
       "label": "Linear issues",
       "icon": "brand:linear",
       "actionId": "openIssues"
+    },
+    {
+      "socket": "toolbar-action",
+      "surface": "app",
+      "id": "top-bar-issues",
+      "label": "Linear",
+      "icon": "brand:linear",
+      "actionId": "openIssuesQuickView"
     }
   ],
   "collections": {

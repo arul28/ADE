@@ -65,7 +65,7 @@ function issueListRow(issue, options = {}) {
     // state icon so the row is never blank on the left.
     icon: priority && priority.value !== "0" && priority.icon ? priority.icon : stateIcon(stateType),
     tone: stateTone(stateType),
-    preview: { title: identifier, text: source.title || identifier },
+    preview: issuePreview(source, identifier),
     onPress: { action: ACTIONS.openIssue, args: { issueId: id } },
   };
 
@@ -128,6 +128,36 @@ function issueListRow(issue, options = {}) {
   ];
 
   return row;
+}
+
+/**
+ * How much of the description a hover card carries.
+ *
+ * Every bound row carries its own preview, and one issue is written under three
+ * key spaces — so a character here is three characters against the plugin's
+ * 2 MiB store, times up to a thousand issues. Two lines of prose is what a
+ * hover card can show without becoming the issue itself, and it is about what
+ * the title it replaces already cost.
+ */
+const MAX_PREVIEW_CHARS = 160;
+
+/**
+ * The hover card, which is the one slot that may say what the row does not.
+ *
+ * Desktop and web draw it on hover, iOS as a context-menu preview, and the TUI
+ * omits it. It used to repeat the identifier and the title — both already on
+ * the row — so hovering told the reader nothing they were not already looking
+ * at. The description is the fact a list cannot fit and the reason somebody
+ * hovers at all; the meta line stands in for an issue with no description, so
+ * the card is never empty.
+ */
+function issuePreview(issue, identifier) {
+  const stateName = issue.stateName || issue.stateType || null;
+  const summary = flatten(issue.description) || metaLine(issue) || flatten(issue.title);
+  return {
+    title: label([identifier, stateName].filter(Boolean).join(" · ") || "Issue"),
+    text: clamp(summary, MAX_PREVIEW_CHARS),
+  };
 }
 
 /**
@@ -205,4 +235,4 @@ function issueIdFromRowKey(key) {
   return id || null;
 }
 
-module.exports = { commentListRow, flatten, issueIdFromRowKey, issueListRow, metaLine };
+module.exports = { commentListRow, flatten, issueIdFromRowKey, issueListRow, issuePreview, metaLine };

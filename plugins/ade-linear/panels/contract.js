@@ -163,6 +163,27 @@ const PANEL_ISSUE = "issue";
 const PANEL_SETTINGS = "settings";
 
 /**
+ * The `sockets[]` id of the settings section this plugin mounts on ADE's own
+ * Settings page.
+ *
+ * Named here because two things have to agree on it and neither can see the
+ * other: `plugin.json` declares the socket, and `panelActions.openSettings`
+ * answers `{openSettings: {socketId}}` with it so desktop and the web client
+ * open the page that section landed on. A typo is a gear that opens nothing,
+ * so the manifest test asserts this string against the manifest.
+ */
+const SETTINGS_SECTION_SOCKET_ID = "connection";
+
+/**
+ * The Settings TAB the section asks for.
+ *
+ * `resolvePluginSettingsTab` accepts a tab id, and an unnamed section lands on
+ * General — which is where a Linear connection is not. Asserted against the
+ * manifest for the same reason as the id above.
+ */
+const SETTINGS_SECTION_TAB = "integrations";
+
+/**
  * The launch form: the phone's `LinearLaunchScreen`, as a panel.
  *
  * Declared in `plugin.json`, built by `panels/launch.js`, and navigated to by
@@ -322,7 +343,6 @@ const ACTIONS = {
   // The connection.
   connectOAuth: "connectOAuth",
   connectApiKey: "connectApiKey",
-  adoptHandoff: "adoptHandoff",
   disconnect: "disconnect",
   applySettings: "applySettings",
   createAutolink: "createAutolink",
@@ -376,6 +396,8 @@ module.exports = {
   PANEL_LAUNCH,
   PANEL_MAIN,
   PANEL_SETTINGS,
+  SETTINGS_SECTION_SOCKET_ID,
+  SETTINGS_SECTION_TAB,
   PRIORITY_LABELS,
   PROMPT_COMMENT,
   PROMPT_LANE,

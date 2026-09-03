@@ -12,13 +12,11 @@
 // ## What is different from the built-in, and why
 //
 // ADE brokers the AUTHORIZATION and the plugin holds the credential. There is
-// no `linear` provider key (`manifest.ts:489`), so this plugin cannot read the
-// token ADE already has — except once, through the credential handoff, which is
-// the release-day verb: on the day this plugin replaces the compiled
-// integration, every user who already had Linear connected is offered the
-// connection they already have rather than being asked to sign in again. A
-// declined handoff is not an error; the ordinary sign-in is still there and the
-// copy says so.
+// no `linear` provider key (`manifest.ts:489`), so this plugin never reads the
+// token ADE's compiled integration holds, and there is no credential handoff
+// either: every install signs in here, the way an install of any other plugin
+// does. That is deliberate — a card offering somebody else's connection made a
+// real sign-in the second-best path and hid whether this one worked at all.
 //
 // ## Why the preferences are a form and not a strip of controls
 //
@@ -39,9 +37,9 @@ const LINEAR_API_SETTINGS_URL = "https://linear.app/settings/api";
 /**
  * How many autolink rows this card draws.
  *
- * `LIMITS.maxListItems` is 250 and is the ceiling for a BOUND list, whose rows
- * cost the schema nothing. These rows are literal and every one of them spends
- * bytes against `maxSchemaBytes` — 250 of them beside a 250-team select
+ * `LIMITS.maxListItems` is the ceiling for a BOUND list, whose rows cost the
+ * schema nothing. These rows are literal and every one of them spends
+ * bytes against `maxSchemaBytes` — hundreds of them beside a large team select
  * measures past this file's own soft budget and, with longer team names, past
  * the hard one, at which point the host refuses the publish and the settings
  * panel goes stale. A workspace has a handful of teams; this is the bound that
@@ -142,13 +140,9 @@ function connectedCard(connection = {}) {
 }
 
 /**
- * The card a disconnected reader sees: three ways in, in the honest order.
+ * The card a disconnected reader sees: two ways in, in the honest order.
  *
- * The handoff goes first when it is available, because for an existing user it
- * is the one that costs them nothing. It is offered ONCE per install — after an
- * answer the same call returns that answer without asking again — so a panel
- * that kept drawing the button after a decline would be a button that does
- * nothing, and the plugin stops passing `handoffStatus: "offered"`.
+ * Sign-in goes first, because it is the one that carries the webhook grant.
  *
  * The API key is a `form` with a `secret` field rather than a `{prompt}`. A
  * prompt is one plain text field on every client, and a credential typed into a
@@ -180,23 +174,6 @@ function disconnectCard(input = {}) {
     body.push({ component: "text", variant: "caption", tone: "warning", text: prose(blocked) });
   } else {
     body.push({ component: "text", variant: "caption", text: COPY.connectOauthBody });
-  }
-
-  if (input.handoffStatus === "offered") {
-    body.push({
-      component: "text",
-      variant: "caption",
-      text: prose(
-        "ADE already holds a Linear connection for this machine. You can hand it to this plugin instead of signing in again — ADE will ask you first, and name exactly what moves.",
-      ),
-    });
-    body.push({
-      component: "button",
-      label: "Use the connection ADE already has",
-      kind: "primary",
-      icon: "key",
-      onPress: { action: ACTIONS.adoptHandoff },
-    });
   }
 
   body.push({ component: "divider", label: COPY.apiKeyHeading });

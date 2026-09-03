@@ -139,6 +139,9 @@ function connectedIssuesView(over: Record<string, unknown> = {}) {
     hasTeams: true,
     filtersActive: false,
     workspace: "Acme",
+    // Present so the nav bar's Open-in-Linear verb, which only draws once the
+    // identity read has landed, goes through the shared parser too.
+    workspaceUrl: "https://linear.app/acme",
     age: "2 minutes ago",
     ...over,
   };
@@ -217,7 +220,7 @@ function connectedSettingsView() {
 }
 
 function disconnectedSettingsView() {
-  return { state: "disconnected", connection: { connected: false }, handoffStatus: null };
+  return { state: "disconnected", connection: { connected: false } };
 }
 
 function launchView() {
