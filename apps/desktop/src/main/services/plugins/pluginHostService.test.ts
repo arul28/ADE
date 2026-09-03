@@ -2394,6 +2394,33 @@ describe("the ade: action namespace belongs to the host", () => {
  * manifest the host parsed, never from the plugin's own arguments. These tests
  * pin this half; `bootstrap.test.ts` pins the refusal the other half applies.
  */
+/**
+ * The remedy a plugin is given when this ADE has no connection to hand it.
+ *
+ * The Linear plugin stops offering the handoff, so the seam is on its way out
+ * — but while it is here, a host without it must not tell a plugin to open ADE
+ * and try again. `auth_unavailable` means "nothing can show a sign-in RIGHT
+ * NOW", which comes true a second later; a host with no credential store never
+ * grows one, so the honest answer is "not on this copy", and the plugin's
+ * degradation is its own sign-in.
+ */
+describe("auth.requestHandoff on a host that has no handoff", () => {
+  afterEach(closeScratch);
+
+  it("answers unsupported_method, not auth_unavailable", async () => {
+    const { supervisors } = await hostWithFixture();
+    const child = supervisors.latest("hello-plugin")!;
+
+    const refused = await child.sdk("auth.requestHandoff", { builtin: "linear" })
+      .catch((error: unknown) => error);
+
+    expect(refused).toBeInstanceOf(PluginSdkError);
+    expect((refused as PluginSdkError).code).toBe("unsupported_method");
+    expect((refused as PluginSdkError).message)
+      .toBe("This copy of ADE cannot hand a connection to a plugin.");
+  });
+});
+
 describe("the plugin action bridge caller", () => {
   afterEach(closeScratch);
 

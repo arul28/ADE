@@ -76,8 +76,6 @@ import {
   readPluginActionComposerEdit,
   readPluginActionNavigation,
   readPluginActionOpenUrl,
-  readPluginActionOpenSettings,
-  hasPluginActionOpenSettingsRequest,
 } from "../../../desktop/src/shared/plugins/sdk";
 import { builtinSurfaceDrawn } from "../../../desktop/src/shared/plugins/builtinSurfaces";
 import type { PluginSurfaceContext } from "../../../desktop/src/shared/plugins/context";
@@ -469,6 +467,8 @@ import {
 import type { AttentionSnapshot } from "../../../desktop/src/shared/types/attention";
 import { deriveProjectId } from "../services/projects/projectRegistry";
 import {
+  pluginPaneNavigationPlacement,
+  pluginPaneSettingsNotice,
   bindingKey,
   buildPluginPaneModel,
   cyclePluginFieldValue,
@@ -10695,24 +10695,12 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
    * the same sentence because the Cursor key lives on the Mac.
    */
   const applyPluginOpenSettings = useCallback((result: unknown, label: string): void => {
-    if (!hasPluginActionOpenSettingsRequest(result)) return;
-    const request = readPluginActionOpenSettings(result);
-    if (!request) {
-      addNotice(`${label} asked to open a settings page this build does not open.`, "info");
-      return;
-    }
-    switch (request.entryId) {
-      case "agents.provider.cursor":
-        addNotice(`${label}: add a Cursor API key in ADE Settings → Agents → Cursor.`, "info");
-        return;
-      case "secrets.secrets":
-        addNotice(`${label}: manage project secrets in ADE Settings → Secrets.`, "info");
-        return;
-      default: {
-        const _exhaustive: never = request.entryId;
-        return _exhaustive;
-      }
-    }
+    // The whole rule, including the one branch worth stating here: an
+    // `{openSettings}` beside a `{navigate}` says nothing, because the pane the
+    // navigation opens IS the answer and naming a page on the Mac would
+    // contradict it. See `pluginPaneSettingsNotice`.
+    const notice = pluginPaneSettingsNotice(result, label);
+    if (notice) addNotice(notice, "info");
   }, [addNotice]);
 
   /**
@@ -11022,13 +11010,18 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       applyPluginOpenSettings(result, entry.label);
       const navigation = readPluginActionNavigation(result);
       if (navigation) {
-        setRightSelectionIndex(0);
-        await loadPluginPane({
-          pluginId: entry.pluginId,
-          displayName: entry.pluginName,
-          panelId: navigation.panelId,
-          context: navigation.context ?? null,
-        }, { open: true });
+        // Every target the SDK knows lands in this one pane. The switch inside
+        // is where a target this build has never heard of has to be decided
+        // rather than quietly dropped.
+        if (pluginPaneNavigationPlacement(navigation.target) === "pane") {
+          setRightSelectionIndex(0);
+          await loadPluginPane({
+            pluginId: entry.pluginId,
+            displayName: entry.pluginName,
+            panelId: navigation.panelId,
+            context: navigation.context ?? null,
+          }, { open: true });
+        }
         return;
       }
       applyPluginComposerEdit(result, entry.label);
@@ -11355,13 +11348,15 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       // it arrives with the context the action handed us.
       const navigation = readPluginActionNavigation(result);
       if (navigation) {
-        setRightSelectionIndex(0);
-        await loadPluginPane({
-          pluginId: current.state.pluginId,
-          displayName: current.state.displayName,
-          panelId: navigation.panelId,
-          context: navigation.context ?? null,
-        }, { open: true });
+        if (pluginPaneNavigationPlacement(navigation.target) === "pane") {
+          setRightSelectionIndex(0);
+          await loadPluginPane({
+            pluginId: current.state.pluginId,
+            displayName: current.state.displayName,
+            panelId: navigation.panelId,
+            context: navigation.context ?? null,
+          }, { open: true });
+        }
         return;
       }
       await refreshPluginPane();
@@ -15212,13 +15207,15 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       applyPluginOpenSettings(result, label);
       const navigation = readPluginActionNavigation(result);
       if (navigation) {
-        setRightSelectionIndex(0);
-        await loadPluginPane({
-          pluginId,
-          displayName: who,
-          panelId: navigation.panelId,
-          context: navigation.context ?? null,
-        }, { open: true });
+        if (pluginPaneNavigationPlacement(navigation.target) === "pane") {
+          setRightSelectionIndex(0);
+          await loadPluginPane({
+            pluginId,
+            displayName: who,
+            panelId: navigation.panelId,
+            context: navigation.context ?? null,
+          }, { open: true });
+        }
         return;
       }
       applyPluginComposerEdit(result, label);

@@ -34,6 +34,7 @@ export {
 } from "./PluginPanelSlots";
 export { PluginWebviewOverlayHost } from "./PluginWebviewOverlayHost";
 export { PluginPromptHost } from "./PluginPromptHost";
+export { PluginPanelPopoverHost } from "./PluginPanelPopoverHost";
 export {
   closePluginPrompt,
   getPluginPrompt,

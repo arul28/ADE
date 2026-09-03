@@ -149,6 +149,106 @@ describe("the openUrl verb", () => {
   });
 });
 
+/**
+ * The panel half of `{authSession}`.
+ *
+ * The socket half is `sockets/pluginActionDispatch.test.ts`. The verb was
+ * dropped on BOTH paths, so both are pinned: a Connect button on a plugin's own
+ * panel is the commonest place this is pressed, and the machine that owns the
+ * plugin is the only one whose loopback listener the flow can redirect to.
+ */
+describe("the sign-in verb", () => {
+  const PRESENTATION = {
+    authSession: {
+      sessionId: "linear",
+      url: "https://linear.app/oauth/authorize?client_id=abc&state=xyz",
+      transport: "loopback" as const,
+    },
+  };
+
+  it("opens the URL the host stamped", async () => {
+    bridge.invoke.mockResolvedValue(PRESENTATION);
+    await mountPanel();
+
+    fireEvent.click(screen.getByRole("button", { name: "Run" }));
+    await waitFor(() => expect(openExternalUrl).toHaveBeenCalledWith(
+      "https://linear.app/oauth/authorize?client_id=abc&state=xyz",
+    ));
+  });
+
+  it("still draws the action's own sentence inline", async () => {
+    bridge.invoke.mockResolvedValue({ ...PRESENTATION, message: "Finish in your browser." });
+    await mountPanel();
+
+    fireEvent.click(screen.getByRole("button", { name: "Run" }));
+    await screen.findByText("Finish in your browser.");
+    expect(openExternalUrl).toHaveBeenCalledTimes(1);
+  });
+
+  it("opens nothing for a session the host dropped", async () => {
+    // The host REMOVES an `authSession` naming no live flow rather than passing
+    // a half-built instruction, so this is what reaches the panel.
+    bridge.invoke.mockResolvedValue({ authSession: { sessionId: "linear" } });
+    await mountPanel();
+
+    fireEvent.click(screen.getByRole("button", { name: "Run" }));
+    await waitFor(() => expect(bridge.invoke).toHaveBeenCalled());
+    expect(openExternalUrl).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * The same pair, on the panel path.
+ *
+ * A `settings-section` panel's own gear is where this is actually pressed, so
+ * the panel host has to apply the rule the socket dispatcher does: the client
+ * that honours `{openSettings}` drops the `{navigate}` beside it.
+ */
+describe("openSettings beside a navigate", () => {
+  it("does not also move the panel when the settings page opened", async () => {
+    const navigations: unknown[] = [];
+    bridge.panel = panelWith(RUN_BUTTON);
+    bridge.invoke.mockResolvedValue({
+      openSettings: "secrets.secrets",
+      navigate: { panelId: "settings" },
+    });
+    render(
+      <PluginPanelHost
+        pluginId="ade-cursor-cloud"
+        panelId="fleet"
+        active
+        onNavigate={(navigation) => navigations.push(navigation)}
+      />,
+    );
+    await screen.findByRole("button");
+
+    fireEvent.click(screen.getByRole("button", { name: "Run" }));
+    await waitFor(() => expect(bridge.invoke).toHaveBeenCalledTimes(1));
+    expect(navigations).toEqual([]);
+  });
+
+  it("takes the navigation when the settings request was refused", async () => {
+    const navigations: unknown[] = [];
+    bridge.panel = panelWith(RUN_BUTTON);
+    bridge.invoke.mockResolvedValue({
+      openSettings: "billing.plans",
+      navigate: { panelId: "settings" },
+    });
+    render(
+      <PluginPanelHost
+        pluginId="ade-cursor-cloud"
+        panelId="fleet"
+        active
+        onNavigate={(navigation) => navigations.push(navigation)}
+      />,
+    );
+    await screen.findByRole("button");
+
+    fireEvent.click(screen.getByRole("button", { name: "Run" }));
+    await waitFor(() => expect(navigations).toEqual([{ panelId: "settings" }]));
+  });
+});
+
 describe("the panel refresh contract", () => {
   it("offers no refresh gesture for a panel that did not declare one", async () => {
     await mountPanel();

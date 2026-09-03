@@ -467,19 +467,35 @@ extension SyncService {
       // open is not something a plugin can be told anything useful about.
       _ = await UIApplication.shared.open(url)
     }
-    if let entryId = result?.openSettings {
+    // Suppressed by a navigation, the same rule the pane store applies: the two
+    // verbs are one destination written twice, the phone takes the navigate,
+    // and a notice about a page it did not open would contradict the sheet it
+    // just presented.
+    if result?.navigate != nil {
+      // Nothing to say: the sheet below is the answer.
+    } else if let entryId = result?.openSettings {
       pluginSettingsNotice = PluginSettingsNotice(
         entryId: entryId,
         pluginLabel: pluginPresenceCatalog().label(for: contribution.pluginId)
       )
+    } else if result?.openSettingsSectionId != nil {
+      pluginSettingsNotice = PluginSettingsNotice.ownSection(
+        pluginLabel: pluginPresenceCatalog().label(for: contribution.pluginId)
+      )
     }
     if let navigation = result?.navigate {
-      presentedPluginPane = PluginPaneRequest(
-        pluginId: contribution.pluginId,
-        panelId: navigation.panelId,
-        title: pluginPresenceCatalog().label(for: contribution.pluginId),
-        context: navigation.context ?? [:]
-      )
+      // Every target opens the same sheet. The switch inside `forTarget` is
+      // where a target this build has never heard of has to be decided, rather
+      // than silently dropped by a decoder that never read it.
+      switch PluginPaneOpening.forTarget(navigation.target) {
+      case .sheet:
+        presentedPluginPane = PluginPaneRequest(
+          pluginId: contribution.pluginId,
+          panelId: navigation.panelId,
+          title: pluginPresenceCatalog().label(for: contribution.pluginId),
+          context: navigation.context ?? [:]
+        )
+      }
     }
     // After the navigation, and only on the first hop: the question is the rest
     // of the interaction the reader started, and it must not be re-askable by

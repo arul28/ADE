@@ -21,6 +21,7 @@ const registry = { plugins: [] as unknown[], loaded: true };
 
 const navigateToAppTarget = vi.fn();
 const revealPluginWorkRailPane = vi.fn();
+const openExternalUrl = vi.fn();
 const showToast = vi.fn();
 const invokePluginSocketAction = vi.fn();
 
@@ -50,6 +51,7 @@ vi.mock("../../../state/appStore", () => ({
 vi.mock("../../../lib/openExternal", () => ({
   navigateToAppTarget,
   revealPluginWorkRailPane,
+  openExternalUrl,
 }));
 
 vi.mock("../../app/toast/toastStore", () => ({ showToast }));
@@ -59,6 +61,7 @@ const {
   runPluginSocketAction,
   PLUGIN_ACTION_SLOW_NOTICE_MS,
 } = await import("./pluginActionDispatch");
+const { closePluginPanelPopover, getPluginPanelPopover } = await import("./pluginPanelPopoverStore");
 
 const MANIFEST = {
   name: "hn",
@@ -102,8 +105,10 @@ afterEach(() => {
   registry.loaded = true;
   navigateToAppTarget.mockReset();
   revealPluginWorkRailPane.mockReset();
+  openExternalUrl.mockReset();
   showToast.mockReset();
   invokePluginSocketAction.mockReset();
+  closePluginPanelPopover();
 });
 
 describe("a chat-header press that navigates", () => {
@@ -344,5 +349,174 @@ describe("what the action said about how it went", () => {
     await runPluginSocketAction("journal", "logIt", ACTION_CONTEXT);
 
     expect(showToast).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * The third outcome, at the seam the rule hands it to.
+ *
+ * `pluginNavigateTarget.test.ts` proves the resolution; this proves the
+ * dispatcher puts it in the store the popover host draws from, with the rect
+ * the press was sampled at.
+ */
+describe("a press that answers with a popover", () => {
+  it("puts the panel in the quick-view store rather than navigating", () => {
+    stores.sources = [source()];
+    registry.plugins = [installedPlugin()];
+
+    const resolution = applyPluginActionNavigation(
+      { panelId: "stories", target: "popover" },
+      {
+        pluginId: "hn",
+        context: null,
+        socket: "toolbar-action",
+        anchor: { x: 100, y: 20, width: 60, height: 28 },
+      },
+    );
+
+    expect(resolution.kind).toBe("popover");
+    expect(navigateToAppTarget).not.toHaveBeenCalled();
+    expect(revealPluginWorkRailPane).not.toHaveBeenCalled();
+    expect(showToast).not.toHaveBeenCalled();
+    expect(getPluginPanelPopover()).toMatchObject({
+      pluginId: "hn",
+      panelId: "stories",
+      anchor: { x: 100, y: 20, width: 60, height: 28 },
+    });
+  });
+
+  it("centres the card when the press came from no place on screen", () => {
+    // A keybinding, a chat-card bridge event, a menu that already closed.
+    stores.sources = [source()];
+    registry.plugins = [installedPlugin()];
+
+    applyPluginActionNavigation(
+      { panelId: "stories", target: "popover" },
+      { pluginId: "hn", context: null },
+    );
+    expect(getPluginPanelPopover()?.anchor).toBeNull();
+  });
+
+  it("refuses a popover onto a panel the plugin does not have", () => {
+    stores.sources = [source()];
+    registry.plugins = [installedPlugin()];
+
+    const resolution = applyPluginActionNavigation(
+      { panelId: "ghost", target: "popover" },
+      { pluginId: "hn", context: null, socket: "toolbar-action" },
+    );
+
+    expect(resolution.kind).toBe("unreachable");
+    expect(getPluginPanelPopover()).toBeNull();
+    expect(showToast).toHaveBeenCalledTimes(1);
+  });
+});
+
+/**
+ * The socket half of `{authSession}`.
+ *
+ * The panel half is `PluginPanelHost.test.tsx`. Both are asserted because the
+ * verb was dropped on BOTH paths, and one fixed path would have left a Connect
+ * button working on a panel and dead on a toolbar.
+ */
+describe("a press that answers with a sign-in", () => {
+  const PRESENTATION = {
+    authSession: {
+      sessionId: "linear",
+      url: "https://linear.app/oauth/authorize?client_id=abc&state=xyz",
+      transport: "loopback",
+    },
+  };
+
+  it("opens the host-stamped URL through the external opener", async () => {
+    registry.plugins = [installedPlugin({ pluginId: "ade-linear", displayName: "Linear" })];
+    invokePluginSocketAction.mockResolvedValue(PRESENTATION);
+
+    await runPluginSocketAction("ade-linear", "connect", ACTION_CONTEXT);
+
+    expect(openExternalUrl).toHaveBeenCalledWith(
+      "https://linear.app/oauth/authorize?client_id=abc&state=xyz",
+    );
+  });
+
+  it("still says what the action said, beside opening the browser", async () => {
+    registry.plugins = [installedPlugin({ pluginId: "ade-linear", displayName: "Linear" })];
+    invokePluginSocketAction.mockResolvedValue({
+      ...PRESENTATION,
+      message: "Finish in your browser.",
+    });
+
+    await runPluginSocketAction("ade-linear", "connect", ACTION_CONTEXT);
+
+    expect(openExternalUrl).toHaveBeenCalledTimes(1);
+    const toast = showToast.mock.calls[0]?.[0] as { message: string };
+    expect(toast.message).toBe("Finish in your browser.");
+  });
+});
+
+/**
+ * `{openSettings}` and `{navigate}` in one result.
+ *
+ * The pair is ONE destination written twice, not two things to do. There is no
+ * client discriminator on the action context, so a plugin whose gear belongs on
+ * ADE's Settings page here and on its own panel on a phone has to answer with
+ * both and let each client take the half it can honour. Honouring both sent the
+ * reader to Settings and moved the tab underneath, so they came back to a view
+ * they never chose.
+ */
+describe("a press that answers with both a settings page and a navigation", () => {
+  it("opens Settings and leaves the tab where the reader left it", async () => {
+    stores.sources = [source()];
+    registry.plugins = [installedPlugin()];
+    invokePluginSocketAction.mockResolvedValue({
+      openSettings: "secrets.secrets",
+      navigate: { panelId: "stories" },
+    });
+
+    await runPluginSocketAction("hn", "openSettings", ACTION_CONTEXT);
+
+    expect(navigateToAppTarget).toHaveBeenCalledTimes(1);
+    expect(navigateToAppTarget).toHaveBeenCalledWith({
+      kind: "settings",
+      tab: "secrets",
+      anchor: "secrets",
+    });
+    expect(revealPluginWorkRailPane).not.toHaveBeenCalled();
+    expect(getPluginPanelPopover()).toBeNull();
+  });
+
+  it("takes the navigation when the settings request was refused", async () => {
+    // The rule read from the other side: a client that could NOT honour the
+    // settings half is exactly the client the fallback was written for.
+    stores.sources = [source()];
+    registry.plugins = [installedPlugin()];
+    invokePluginSocketAction.mockResolvedValue({
+      openSettings: "billing.plans",
+      navigate: { panelId: "stories" },
+    });
+
+    await runPluginSocketAction("hn", "openSettings", ACTION_CONTEXT);
+
+    expect(navigateToAppTarget).toHaveBeenCalledWith({
+      kind: "plugin",
+      pluginId: "hn",
+      panelId: "stories",
+      context: null,
+    });
+  });
+
+  it("still navigates for a result carrying no settings request at all", async () => {
+    stores.sources = [source()];
+    registry.plugins = [installedPlugin()];
+    invokePluginSocketAction.mockResolvedValue({ navigate: { panelId: "stories" } });
+
+    await runPluginSocketAction("hn", "open", ACTION_CONTEXT);
+
+    expect(navigateToAppTarget).toHaveBeenCalledWith({
+      kind: "plugin",
+      pluginId: "hn",
+      panelId: "stories",
+      context: null,
+    });
   });
 });

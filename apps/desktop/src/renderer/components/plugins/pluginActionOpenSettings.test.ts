@@ -11,6 +11,25 @@ vi.mock("../../lib/openExternal", () => ({
 
 vi.mock("../app/toast/toastStore", () => ({ showToast }));
 
+/**
+ * What the settings surface has PUBLISHED right now.
+ *
+ * Stubbed at the two store modules rather than seeded through the real ones,
+ * because the question this file asks is what the verb does with an answer, and
+ * the selection itself is `contributionModel.test.ts`'s subject.
+ */
+const publishedSections = vi.hoisted(() => ({ rows: [] as unknown[] }));
+
+vi.mock("./sockets/contributionStores", () => ({
+  sourcesStore: { getSnapshot: () => ({ sources: [] }) },
+  rowsStoreFor: () => ({ getSnapshot: () => ({ rows: [] }) }),
+  derivedSetFor: () => ({}),
+}));
+
+vi.mock("./sockets/contributionModel", () => ({
+  selectContributions: () => publishedSections.rows,
+}));
+
 vi.mock("../../state/appStore", () => ({
   rootAppStoreApi: {
     getState: () => ({
@@ -123,5 +142,117 @@ describe("applyPluginActionOpenSettings", () => {
       { pluginId: "ade-cursor-cloud", actionId: "openSecretsSettings" },
     )).toBe(true);
     expect(showToast).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * The second shape of the verb: a plugin naming its OWN settings section.
+ *
+ * The closed list still governs ADE's own pages. This half needs no list,
+ * because the destination is decided by where the HOST drew the section — but
+ * only for a section this plugin really published, which is what the refusals
+ * below pin.
+ */
+describe("applyPluginActionOpenSettings for the plugin's own section", () => {
+  const section = (overrides: Record<string, unknown> = {}) => ({
+    pluginId: "ade-cursor-cloud",
+    socket: "settings-section",
+    surface: "settings",
+    id: "connection",
+    payload: { panelId: "connect", section: "integrations" },
+    ...overrides,
+  });
+
+  it("lands on the page the section is drawn on, at the plugin group", () => {
+    navigateToAppTarget.mockClear();
+    showToast.mockClear();
+    publishedSections.rows = [section()];
+
+    expect(applyPluginActionOpenSettings(
+      { openSettings: { socketId: "connection" } },
+      { pluginId: "ade-cursor-cloud", actionId: "connect" },
+    )).toBe(true);
+    expect(navigateToAppTarget).toHaveBeenCalledWith({
+      kind: "settings",
+      tab: "integrations",
+      anchor: "plugin-sections",
+    });
+    expect(showToast).not.toHaveBeenCalled();
+  });
+
+  it("follows the section's own page rather than a fixed one", () => {
+    navigateToAppTarget.mockClear();
+    publishedSections.rows = [section({
+      payload: { panelId: "connect", section: "notifications" },
+    })];
+
+    applyPluginActionOpenSettings(
+      { openSettings: { socketId: "connection" } },
+      { pluginId: "ade-cursor-cloud", actionId: "connect" },
+    );
+    expect(navigateToAppTarget).toHaveBeenCalledWith({
+      kind: "settings",
+      tab: "notifications",
+      anchor: "plugin-sections",
+    });
+  });
+
+  it("falls back to the general page for a section naming no page", () => {
+    navigateToAppTarget.mockClear();
+    publishedSections.rows = [section({ payload: { panelId: "connect" } })];
+
+    applyPluginActionOpenSettings(
+      { openSettings: { socketId: "connection" } },
+      { pluginId: "ade-cursor-cloud", actionId: "connect" },
+    );
+    expect(navigateToAppTarget).toHaveBeenCalledWith({
+      kind: "settings",
+      tab: "general",
+      anchor: "plugin-sections",
+    });
+  });
+
+  it("refuses a socket this plugin has not published, and says so", () => {
+    navigateToAppTarget.mockClear();
+    showToast.mockClear();
+    publishedSections.rows = [section()];
+
+    expect(applyPluginActionOpenSettings(
+      { openSettings: { socketId: "billing" } },
+      { pluginId: "ade-cursor-cloud", actionId: "connect" },
+    )).toBe(false);
+    expect(navigateToAppTarget).not.toHaveBeenCalled();
+    const toast = showToast.mock.calls[0]?.[0] as { title: string; message: string; tone: string };
+    expect(toast.tone).toBe("error");
+    expect(toast.title).toContain("Cursor Cloud");
+    expect(toast.message).toContain("billing");
+  });
+
+  it("refuses a socket belonging to another plugin", () => {
+    // The scope is the whole safety property: the selection is already filtered
+    // to the caller, so another plugin's section is simply not there to find.
+    navigateToAppTarget.mockClear();
+    showToast.mockClear();
+    publishedSections.rows = [];
+
+    expect(applyPluginActionOpenSettings(
+      { openSettings: { socketId: "connection" } },
+      { pluginId: "ade-cursor-cloud", actionId: "connect" },
+    )).toBe(false);
+    expect(navigateToAppTarget).not.toHaveBeenCalled();
+    expect(showToast).toHaveBeenCalledTimes(1);
+  });
+
+  it("never quotes an unbounded socket id back into the toast", () => {
+    navigateToAppTarget.mockClear();
+    showToast.mockClear();
+    publishedSections.rows = [];
+
+    applyPluginActionOpenSettings(
+      { openSettings: { socketId: "x".repeat(64) } },
+      { pluginId: "ade-cursor-cloud", actionId: "connect" },
+    );
+    const toast = showToast.mock.calls[0]?.[0] as { message: string };
+    expect(toast.message.length).toBeLessThan(200);
   });
 });

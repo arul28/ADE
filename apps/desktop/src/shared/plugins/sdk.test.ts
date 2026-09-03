@@ -23,6 +23,7 @@ import {
   pluginCollectionPutParams,
   readPluginActionComposerEdit,
   buildPluginActionPromptAnswer,
+  PLUGIN_ACTION_NAVIGATION_TARGETS,
   readPluginActionNavigation,
   readPluginActionPrompt,
   readPluginInvokeAction,
@@ -372,16 +373,35 @@ describe("action navigation", () => {
     expect(readPluginActionNavigation({ navigate: { panelId: "not a panel id" } })).toBeNull();
     expect(readPluginActionNavigation({ message: "done" })).toBeNull();
   });
+
+  it("accepts the popover placement", () => {
+    expect(readPluginActionNavigation({ navigate: { panelId: "stories", target: "popover" } }))
+      .toEqual({ panelId: "stories", target: "popover" });
+    expect(readPluginActionNavigation({
+      navigate: { panelId: "stories", target: "popover", context: { feed: "ask" } },
+    })).toEqual({ panelId: "stories", context: { feed: "ask" }, target: "popover" });
+    expect(PLUGIN_ACTION_NAVIGATION_TARGETS).toContain("popover");
+  });
+
+  it("refuses a popover with no panel id, like every other placement", () => {
+    // A placement is not an address. There is nothing for the popover to draw
+    // without a panel, so the whole navigation goes rather than opening an
+    // empty card at the button.
+    expect(readPluginActionNavigation({ navigate: { target: "popover" } })).toBeNull();
+    expect(readPluginActionNavigation({ navigate: { panelId: "", target: "popover" } })).toBeNull();
+    expect(readPluginActionNavigation({ navigate: { panelId: "Not A Panel", target: "popover" } }))
+      .toBeNull();
+  });
 });
 
 describe("action openSettings", () => {
   it("reads both shapes a plugin might write", () => {
     expect(readPluginActionOpenSettings({ openSettings: "agents.provider.cursor" }))
-      .toEqual({ entryId: "agents.provider.cursor" });
+      .toEqual({ kind: "entry", entryId: "agents.provider.cursor" });
     expect(readPluginActionOpenSettings({ openSettings: { entryId: "agents.provider.cursor" } }))
-      .toEqual({ entryId: "agents.provider.cursor" });
+      .toEqual({ kind: "entry", entryId: "agents.provider.cursor" });
     expect(readPluginActionOpenSettings({ openSettings: "secrets.secrets" }))
-      .toEqual({ entryId: "secrets.secrets" });
+      .toEqual({ kind: "entry", entryId: "secrets.secrets" });
   });
 
   it("drops an id this build has never heard of", () => {
@@ -390,6 +410,37 @@ describe("action openSettings", () => {
     expect(readPluginActionOpenSettings({ openSettings: 7 })).toBeNull();
     expect(hasPluginActionOpenSettingsRequest({ openSettings: "billing.plans" })).toBe(true);
     expect(hasPluginActionOpenSettingsRequest({ message: "done" })).toBe(false);
+  });
+
+  it("reads the plugin's own settings section by socket id", () => {
+    expect(readPluginActionOpenSettings({ openSettings: { socketId: "connection" } }))
+      .toEqual({ kind: "socket", socketId: "connection" });
+    expect(readPluginActionOpenSettings({ openSettings: { socketId: "team-defaults" } }))
+      .toEqual({ kind: "socket", socketId: "team-defaults" });
+  });
+
+  it("refuses a socket id no manifest could have declared", () => {
+    // The manifest's own identifier rule: no spaces, no `ade:` namespace, no
+    // more than 64 characters, and a string in the first place.
+    for (const socketId of ["not a socket id", "", "ade:connection", "x".repeat(65), 7, null, {}]) {
+      expect(readPluginActionOpenSettings({ openSettings: { socketId } })).toBeNull();
+    }
+    // Still an ASK, so the caller says so out loud rather than leaving a button
+    // that appears to do nothing.
+    expect(hasPluginActionOpenSettingsRequest({ openSettings: { socketId: "Nope!" } })).toBe(true);
+  });
+
+  it("prefers a known entry id when a payload carries both", () => {
+    // The closed half wins: it is the older shape and its answer cannot depend
+    // on what the plugin happens to have published.
+    expect(readPluginActionOpenSettings({
+      openSettings: { entryId: "secrets.secrets", socketId: "connection" },
+    })).toEqual({ kind: "entry", entryId: "secrets.secrets" });
+    // An entry id this build does not know falls through to the socket half
+    // rather than taking the whole request down.
+    expect(readPluginActionOpenSettings({
+      openSettings: { entryId: "billing.plans", socketId: "connection" },
+    })).toEqual({ kind: "socket", socketId: "connection" });
   });
 
   it("maps every allowed id to a settings tab and anchor", () => {

@@ -4,6 +4,7 @@ import { CaretDown } from "@phosphor-icons/react";
 
 import { COLORS, RADII, SANS_FONT } from "../../lanes/laneDesignTokens";
 import { pluginIcon } from "../pluginIcons";
+import type { PluginBrandGlyph } from "../../../../shared/plugins/vocabularyBrandIcons";
 import type { PluginActionButtonMenuItem, PluginBadgeTone } from "../../../../shared/plugins/sockets";
 
 /**
@@ -68,9 +69,23 @@ export function SocketSplitGroup({ children }: { children: React.ReactNode }) {
   );
 }
 
-/** A plugin's declared icon, or the puzzle-piece default. */
-export function SocketIcon({ name, size = 11, color }: { name?: string; size?: number; color?: string }) {
-  const Icon = pluginIcon(name);
+/**
+ * A plugin's declared icon, or the puzzle-piece default.
+ *
+ * `brandIcons` is the plugin's own shipped artwork, and it is optional for a
+ * reason worth stating: the five brand tokens ADE compiles in resolve without
+ * it, so most callers correctly pass nothing. A token a PLUGIN ships cannot
+ * ever be in a compiled list — the artwork arrives with the package — so a
+ * caller drawing an icon for one named plugin, with that plugin's record in
+ * hand, passes the rows and gets the mark instead of the puzzle piece.
+ */
+export function SocketIcon({ name, size = 11, color, brandIcons }: {
+  name?: string;
+  size?: number;
+  color?: string;
+  brandIcons?: Readonly<Record<string, PluginBrandGlyph>>;
+}) {
+  const Icon = pluginIcon(name, brandIcons);
   return <Icon size={size} weight="regular" color={color} />;
 }
 

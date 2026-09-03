@@ -1,11 +1,14 @@
 import React from "react";
 
 import { COLORS, RADII, SANS_FONT, SECTION_LABEL_STYLE } from "../../lanes/laneDesignTokens";
+import type { SettingsTabId } from "../../settings/settingsManifest";
+import { useRootAppStore } from "../../../state/appStore";
 import {
-  resolveSettingsHash,
-  resolveSettingsTab,
-  type SettingsTabId,
-} from "../../settings/settingsManifest";
+  PLUGIN_SETTINGS_FALLBACK_TAB,
+  PLUGIN_SETTINGS_SECTIONS_ANCHOR,
+  pluginSettingsSectionDomId,
+  resolvePluginSettingsTab,
+} from "./pluginSettingsTab";
 import type { PluginSurfaceOnlyContext } from "../../../../shared/plugins/context";
 import { PluginPanelHost } from "../PluginPanelHost";
 import { contributionKey } from "./contributionModel";
@@ -28,37 +31,19 @@ import { usePluginSurfaceContributions, useSurfaceContributions } from "./useSur
  */
 
 /**
- * Where a section lands when it names no page, or names one this build has
- * never heard of.
+ * The page a section lands on, and the fallback it lands on when it names none.
  *
- * General rather than a page of its own. A "Plugins" settings *tab* would be
- * empty on every install that has no plugin contributing to settings, which is
- * almost all of them, and an always-present tab that is usually blank teaches
- * the user to stop opening it. A group at the foot of the first page is present
- * exactly when something is in it.
+ * Re-exported rather than defined here: they moved to `pluginSettingsTab.ts` so
+ * the `{openSettings}` verb could reach them without importing this component,
+ * which mounts `PluginPanelHost`, which reaches the verb. Every existing caller
+ * keeps its import.
  */
-export const PLUGIN_SETTINGS_FALLBACK_TAB: SettingsTabId = "general";
-
-/**
- * Resolve a payload's `section` to a real settings page.
- *
- * Three passes, widest to narrowest, because a plugin author has three
- * plausible mental models of "which settings page" and all three should work:
- * the tab id (`integrations`), a tab id ADE has since renamed (`github`, which
- * the manifest's legacy aliases still resolve), and the anchor of a specific
- * card (`github-connection`) — the last being what `settingsRouteFor` produces,
- * so a plugin that copied a route out of a deeplink lands somewhere sensible.
- *
- * Anything else falls back rather than failing to parse, which is the promise
- * `PluginSettingsSectionPayload` makes: settings page ids are ADE's own
- * furniture and they move, and a plugin should not disappear when they do.
- */
-export function resolvePluginSettingsTab(section: string | undefined): SettingsTabId {
-  if (!section) return PLUGIN_SETTINGS_FALLBACK_TAB;
-  return resolveSettingsTab(section)
-    ?? resolveSettingsHash(section)?.tab
-    ?? PLUGIN_SETTINGS_FALLBACK_TAB;
-}
+export {
+  PLUGIN_SETTINGS_FALLBACK_TAB,
+  PLUGIN_SETTINGS_SECTIONS_ANCHOR,
+  pluginSettingsSectionDomId,
+  resolvePluginSettingsTab,
+};
 
 const SETTINGS_CONTEXT: PluginSurfaceOnlyContext = { kind: "surface", surface: "settings" };
 
@@ -82,6 +67,12 @@ export function PluginSettingsSections({
     context: SETTINGS_CONTEXT,
   });
   const { identities } = usePluginSurfaceContributions("settings", active);
+  // The plugin's OWN brand artwork, which the identity row cannot carry: a
+  // `brand:*` token a plugin ships arrives with the package, so the closed
+  // compiled catalogue has never heard of it. Without this the header drew the
+  // puzzle piece for exactly the plugins that took the trouble to ship a mark,
+  // while the tab rail beside it drew the mark — see `pluginIcons.tsx`.
+  const installedPlugins = useRootAppStore((state) => state.installedPlugins);
 
   const contributions = React.useMemo(
     () => all.filter((entry) => resolvePluginSettingsTab(entry.payload.section) === tab),
@@ -98,7 +89,7 @@ export function PluginSettingsSections({
       // "theme" should not turn up a plugin panel that merely happens to be on
       // the page. Without the attribute the filter would skip this block and
       // leave it standing alone under an otherwise-emptied page.
-      data-settings-anchor="plugin-sections"
+      data-settings-anchor={PLUGIN_SETTINGS_SECTIONS_ANCHOR}
       data-settings-group="plugins"
       data-tour="plugin:settings.settings-section"
       style={{ display: "flex", flexDirection: "column", gap: 12 }}
@@ -108,9 +99,12 @@ export function PluginSettingsSections({
         const identity = identities.get(contribution.pluginId);
         const name = identity?.displayName ?? contribution.pluginId;
         const title = contribution.payload.title ?? name;
+        const brandIcons = installedPlugins
+          .find((entry) => entry.pluginId === contribution.pluginId)?.brandIcons;
         return (
           <SocketBoundary key={contributionKey(contribution)}>
             <section
+              id={pluginSettingsSectionDomId(contribution.pluginId, contribution.id)}
               style={{
                 display: "flex",
                 flexDirection: "column",
@@ -131,7 +125,12 @@ export function PluginSettingsSections({
                   color: COLORS.textMuted,
                 }}
               >
-                <SocketIcon name={identity?.icon ?? undefined} size={12} color={COLORS.textMuted} />
+                <SocketIcon
+                  name={identity?.icon ?? undefined}
+                  {...(brandIcons ? { brandIcons } : {})}
+                  size={12}
+                  color={COLORS.textMuted}
+                />
                 <span style={{ fontWeight: 600, color: COLORS.textSecondary }}>{title}</span>
                 {title === name ? null : <span style={{ opacity: 0.7 }}>· {name}</span>}
               </header>

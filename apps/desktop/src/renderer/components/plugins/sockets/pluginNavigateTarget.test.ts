@@ -155,3 +155,60 @@ describe("a navigation that cannot land says so", () => {
     expect(result).toMatchObject({ kind: "tools-pane", slotId: "plugin:hn:live" });
   });
 });
+
+describe("the popover placement", () => {
+  it("resolves whatever socket the press came from", () => {
+    // Unlike `tools-pane`, this needs no container to exist: the host is
+    // mounted once for the whole app, so a top-bar button — the case the
+    // placement was added for — can have one with no chat in sight.
+    const fromToolbar = resolvePluginNavigateTarget(input({
+      socket: "toolbar-action",
+      navigation: { panelId: "stories", target: "popover" },
+      railPanelIds: [],
+    }));
+    expect(fromToolbar).toMatchObject({ kind: "popover", pluginId: "hn", panelId: "stories" });
+
+    const fromChat = resolvePluginNavigateTarget(input({
+      navigation: { panelId: "stories", target: "popover" },
+    }));
+    expect(fromChat.kind).toBe("popover");
+  });
+
+  it("carries the navigation's own context into the card", () => {
+    const result = resolvePluginNavigateTarget(input({
+      socket: "toolbar-action",
+      navigation: { panelId: "stories", target: "popover", context: { feed: "ask" } },
+    }));
+    expect(result).toMatchObject({ kind: "popover", context: { feed: "ask" } });
+  });
+
+  it("is never derived — a toolbar press with no target still opens the tab", () => {
+    const result = resolvePluginNavigateTarget(input({
+      socket: "toolbar-action",
+      railPanelIds: [],
+    }));
+    expect(result).toMatchObject({ kind: "tab" });
+  });
+
+  it("still refuses a panel the plugin does not have", () => {
+    // The placement is decided after the reachability checks, so asking for a
+    // popover cannot get a plugin past them.
+    const result = resolvePluginNavigateTarget(input({
+      socket: "toolbar-action",
+      navigation: { panelId: "ghost", target: "popover" },
+      railPanelIds: [],
+      declaredPanelIds: ["stories"],
+      plugin: { displayName: "Hacker News", enabled: true, surfacePanelIds: ["stories"] },
+    }));
+    expect(result).toMatchObject({ kind: "unreachable", panelId: "ghost" });
+  });
+
+  it("still refuses a plugin the reader switched off", () => {
+    const result = resolvePluginNavigateTarget(input({
+      socket: "toolbar-action",
+      navigation: { panelId: "stories", target: "popover" },
+      plugin: { displayName: "Hacker News", enabled: false, surfacePanelIds: ["stories"] },
+    }));
+    expect(result.kind).toBe("unreachable");
+  });
+});

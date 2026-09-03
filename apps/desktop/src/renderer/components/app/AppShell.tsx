@@ -47,6 +47,7 @@ import {
 import { runPluginSocketAction } from "../plugins/sockets/pluginActionDispatch";
 import { PluginWebviewOverlayHost } from "../plugins/sockets/PluginWebviewOverlayHost";
 import { PluginPromptHost } from "../plugins/sockets/PluginPromptHost";
+import { PluginPanelPopoverHost } from "../plugins/sockets/PluginPanelPopoverHost";
 import {
   dispatchPluginKeybindingEvent,
   usePluginKeybindings,
@@ -1719,6 +1720,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       <WorktreeOpenDialog />
       <PluginWebviewOverlayHost />
       <PluginPromptHost />
+      <PluginPanelPopoverHost />
     </div>
   );
 }

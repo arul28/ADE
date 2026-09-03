@@ -11,6 +11,8 @@ import {
   pluginInteractiveKey,
   pluginPaneBindingRows,
   pluginPaneClearSelection,
+  pluginPaneNavigationPlacement,
+  pluginPaneSettingsNotice,
   pluginPaneSelectionPayload,
   pluginPaneSelectionReset,
   pluginPaneShowMore,
@@ -44,6 +46,7 @@ import {
 import type { AdeCodeConnection } from "../types";
 import { PLUGIN_FIXTURES } from "../../../../desktop/src/renderer/components/plugins/pluginFixtures";
 import {
+  PLUGIN_ACTION_NAVIGATION_TARGETS,
   readPluginActionNavigation,
   readPluginActionOpenSettings,
   type PluginSummary,
@@ -1076,10 +1079,20 @@ describe("plugin pane navigation from an action", () => {
 describe("plugin pane openSettings from an action", () => {
   it("reads the Cursor provider page and drops anything else", () => {
     expect(readPluginActionOpenSettings({ openSettings: "agents.provider.cursor" }))
-      .toEqual({ entryId: "agents.provider.cursor" });
+      .toEqual({ kind: "entry", entryId: "agents.provider.cursor" });
     expect(readPluginActionOpenSettings({ openSettings: "secrets.secrets" }))
-      .toEqual({ entryId: "secrets.secrets" });
+      .toEqual({ kind: "entry", entryId: "secrets.secrets" });
     expect(readPluginActionOpenSettings({ openSettings: "billing.plans" })).toBeNull();
+  });
+
+  it("reads a plugin's own settings section, which the terminal only names", () => {
+    // The TUI draws no settings surface, so both halves of the verb end the
+    // same way: a notice saying where the thing is. What it must not do is
+    // fail to parse the newer shape and say nothing at all.
+    expect(readPluginActionOpenSettings({ openSettings: { socketId: "connection" } }))
+      .toEqual({ kind: "socket", socketId: "connection" });
+    expect(readPluginActionOpenSettings({ openSettings: { socketId: "not a socket id" } }))
+      .toBeNull();
   });
 });
 
@@ -2371,5 +2384,83 @@ describe("what the terminal used to drop", () => {
     const second = build(canvas, { collections, listPages });
     expect(second.rows.filter((row) => row.kind === "listItem")).toHaveLength(143);
     expect(second.rows.find((row) => row.kind === "listPage")).toBeUndefined();
+  });
+});
+
+/**
+ * Where a `{navigate}` lands in a terminal.
+ *
+ * The TUI has one place to draw a plugin panel, so every target answers the
+ * same. The value of these assertions is the SWITCH behind them: `popover`
+ * reached this client for free once — the SDK reader widened, nothing broke,
+ * and nobody decided anything — and the exhaustive switch is what makes the
+ * fourth target a compile error rather than a silent drop.
+ */
+describe("pluginPaneNavigationPlacement", () => {
+  it("puts every target in the right pane", () => {
+    expect(pluginPaneNavigationPlacement(undefined)).toBe("pane");
+    expect(pluginPaneNavigationPlacement("tab")).toBe("pane");
+    expect(pluginPaneNavigationPlacement("tools-pane")).toBe("pane");
+    expect(pluginPaneNavigationPlacement("popover")).toBe("pane");
+  });
+
+  it("answers for every target the SDK declares, with none left out", () => {
+    // The parity assertion: a target added to the shared list with no case here
+    // fails the typecheck, and this fails if the list itself grows unread.
+    for (const target of PLUGIN_ACTION_NAVIGATION_TARGETS) {
+      expect(pluginPaneNavigationPlacement(target)).toBe("pane");
+    }
+    expect(PLUGIN_ACTION_NAVIGATION_TARGETS).toContain("popover");
+  });
+});
+
+/**
+ * What the terminal says about an `{openSettings}`.
+ *
+ * The branch that matters is the suppression: a plugin with no client
+ * discriminator answers with `{openSettings}` for the clients that have a
+ * Settings page and `{navigate}` for the ones that do not, and the terminal is
+ * the second kind. Naming a page on the Mac and then opening a perfectly good
+ * pane contradicts what the reader just watched happen.
+ */
+describe("pluginPaneSettingsNotice", () => {
+  it("names ADE's own pages, which the terminal cannot open", () => {
+    expect(pluginPaneSettingsNotice({ openSettings: "agents.provider.cursor" }, "Connect"))
+      .toContain("Cursor API key");
+    expect(pluginPaneSettingsNotice({ openSettings: "secrets.secrets" }, "Connect"))
+      .toContain("Secrets");
+  });
+
+  it("names the plugin's own section for the newer shape", () => {
+    expect(pluginPaneSettingsNotice({ openSettings: { socketId: "connection" } }, "Linear"))
+      .toBe("Linear: open this plugin's section in ADE Settings on the Mac that holds it.");
+  });
+
+  it("says nothing when a navigation beside it answers better", () => {
+    expect(pluginPaneSettingsNotice({
+      openSettings: { socketId: "connection" },
+      navigate: { panelId: "settings" },
+    }, "Linear")).toBeNull();
+    // The same for ADE's own pages: the pair is one destination written twice,
+    // and this client takes the half it can honour.
+    expect(pluginPaneSettingsNotice({
+      openSettings: "secrets.secrets",
+      navigate: { panelId: "settings" },
+    }, "Connect")).toBeNull();
+  });
+
+  it("still reports a malformed request, navigation or not", () => {
+    // An authoring fault, which a fallback beside it does not fix.
+    expect(pluginPaneSettingsNotice({ openSettings: "billing.plans" }, "Connect"))
+      .toContain("does not open");
+    expect(pluginPaneSettingsNotice({
+      openSettings: "billing.plans",
+      navigate: { panelId: "settings" },
+    }, "Connect")).toContain("does not open");
+  });
+
+  it("says nothing at all for a result that asked for no settings page", () => {
+    expect(pluginPaneSettingsNotice({ navigate: { panelId: "settings" } }, "Linear")).toBeNull();
+    expect(pluginPaneSettingsNotice({ message: "Saved." }, "Linear")).toBeNull();
   });
 });

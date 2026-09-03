@@ -27,6 +27,7 @@ import { applyPluginActionOpenUrl } from "../pluginActionOpenUrl";
 export { showPluginActionMessage } from "../pluginActionToast";
 import { showPluginActionMessage } from "../pluginActionToast";
 import { applyPluginActionOpenSettings } from "../pluginActionOpenSettings";
+import { applyPluginActionAuthSession } from "../pluginActionAuthSession";
 import type { PluginSurfaceContext } from "../../../../shared/plugins/context";
 import {
   pluginSocketInvokeTimeoutMs,
@@ -44,6 +45,10 @@ import {
 } from "./pluginNavigateTarget";
 import { openPluginWebviewOverlay } from "./pluginWebviewOverlayStore";
 import { openPluginPrompt, readPluginPromptAnchor } from "./pluginPromptStore";
+import {
+  openPluginPanelPopover,
+  type PluginPanelPopoverAnchor,
+} from "./pluginPanelPopoverStore";
 
 /**
  * One invocation of a plugin action from a socket, response verbs included.
@@ -171,12 +176,36 @@ export function runPluginSocketAction(
       // navigation for the same reason the composer edit is: an action that
       // opens a link and then moves the panel should do both.
       applyPluginActionOpenUrl(result, { pluginId, actionId });
-      applyPluginActionOpenSettings(result, { pluginId, actionId });
+      // `{openSettings}` and `{navigate}` in one result are ONE destination
+      // written twice, not two things to do. An action cannot tell which client
+      // it is running for — there is no client discriminator on the context —
+      // so a plugin whose gear belongs on ADE's Settings page here and on its
+      // own panel on a phone has to answer with both, and each client takes the
+      // one it can honour. Honouring both would send the reader to Settings and
+      // move the tab underneath it, so they come back to a view they never
+      // chose. A REFUSED settings request returns false and the navigation runs,
+      // which is the same rule read from the other side: this client could not
+      // honour it, so the fallback is what it has.
+      const openedSettings = applyPluginActionOpenSettings(result, { pluginId, actionId });
+      // A sign-in the HOST stamped, opened in the browser. Beside the two verbs
+      // above because it is the same kind of thing — a press that sends the
+      // reader out of ADE — and after `{message}` so a Connect button that also
+      // said something still says it.
+      applyPluginActionAuthSession(result, { pluginId, actionId });
 
       // An action may ask to be followed: "I filed the issue, here it is."
-      const navigation = readPluginActionNavigation(result);
+      const navigation = openedSettings ? null : readPluginActionNavigation(result);
       if (navigation) {
-        applyPluginActionNavigation(navigation, { pluginId, context, socket: options?.socket });
+        applyPluginActionNavigation(navigation, {
+          pluginId,
+          context,
+          ...(options?.socket ? { socket: options.socket } : {}),
+          // The rect of the control that was pressed, sampled before the round
+          // trip for the same reason the prompt's is: an anchored quick view
+          // belongs to the button that opened it, and by the time the plugin
+          // answers the menu that button lived in may have closed.
+          anchor,
+        });
       }
 
       // An action may ask ONE question before it can finish. Last of the verbs,
@@ -244,6 +273,12 @@ export function applyPluginActionNavigation(
     /** The subject the button was pressed on — what selects per-chat rail rows. */
     context: PluginSurfaceContext | null;
     socket?: PluginSocketKind;
+    /**
+     * Where the pressed control sat, for a `popover` target. Absent centres the
+     * card, which is the honest rendering of a press that came from no place on
+     * screen — a keybinding, a chat-card bridge event, a menu already closed.
+     */
+    anchor?: PluginPanelPopoverAnchor | null;
   },
 ): PluginNavigateResolution {
   const resolution = resolvePluginNavigateTarget({
@@ -263,6 +298,19 @@ export function applyPluginActionNavigation(
       title: `${resolution.displayName} couldn’t open that panel`,
       message: resolution.reason,
       tone: "error",
+    });
+    return resolution;
+  }
+
+  if (resolution.kind === "popover") {
+    // Under the button, not instead of the window. One at a time, and a second
+    // press of the same button closes the one that is up — the store owns that
+    // rule so both the socket path and the panel path cannot disagree on it.
+    openPluginPanelPopover({
+      pluginId: resolution.pluginId,
+      panelId: resolution.panelId,
+      context: resolution.context,
+      anchor: press.anchor ?? null,
     });
     return resolution;
   }

@@ -1960,9 +1960,11 @@ export type PluginActionNavigation = {
    * cannot know whether the client it is talking to has such a place: the
    * desktop's Work tools rail is not a thing iOS or the terminal has. So the
    * client decides — a chat-scoped press opens the plugin's Work pane where the
-   * plugin declares one — and this field is the override for the two cases where
-   * the plugin genuinely knows better: `"tab"` for a panel too large to sit in a
-   * rail, `"tools-pane"` for one that must not take the whole window.
+   * plugin declares one — and this field is the override for the three cases
+   * where the plugin genuinely knows better: `"tab"` for a panel too large to
+   * sit in a rail, `"tools-pane"` for one that must not take the whole window,
+   * and `"popover"` for one that answers the button the reader just pressed and
+   * should close as soon as they have read it.
    *
    * A client with no such place ignores it and opens the panel the one way it
    * has, which is why an unknown value drops rather than refusing the
@@ -1972,14 +1974,24 @@ export type PluginActionNavigation = {
 };
 
 /**
- * The two places a client may be asked to put a navigated-to panel.
+ * The three places a client may be asked to put a navigated-to panel.
  *
  * Deliberately not a client-specific list. `tools-pane` names the idea of a
  * panel beside the thing you were doing — the desktop's Work rail today — and a
  * client that grows its own version of that renders it there without any plugin
  * changing a manifest.
+ *
+ * `popover` names the idea of a panel attached to the control that opened it:
+ * a quick view under the button, dismissed by looking away. It exists because
+ * a `toolbar-action` on surface `app` — the window's top bar — had only two
+ * answers, and both were wrong for a glance. Taking the whole tab away from
+ * what the reader was doing to show them four rows is too much, and the top
+ * bar belongs to no chat, so the Work rail is not reachable from it either.
+ * A client with no anchored container of its own puts the panel where it puts
+ * every other one: iOS opens its plugin sheet, the terminal its plugin pane.
+ * Neither is a lesser rendering — a sheet IS the phone's popover.
  */
-export const PLUGIN_ACTION_NAVIGATION_TARGETS = ["tab", "tools-pane"] as const;
+export const PLUGIN_ACTION_NAVIGATION_TARGETS = ["tab", "tools-pane", "popover"] as const;
 
 export type PluginActionNavigationTarget = (typeof PLUGIN_ACTION_NAVIGATION_TARGETS)[number];
 
@@ -2365,7 +2377,24 @@ export const PLUGIN_OPEN_SETTINGS_ENTRY_IDS = [
 
 export type PluginOpenSettingsEntryId = (typeof PLUGIN_OPEN_SETTINGS_ENTRY_IDS)[number];
 
-export type PluginActionOpenSettings = { entryId: PluginOpenSettingsEntryId };
+/**
+ * A settings destination an action asked for.
+ *
+ * Two shapes, and the discriminator is what keeps them from being confused for
+ * one another at four call sites. `entry` names one of ADE's OWN pages off the
+ * closed list above. `socket` names the plugin's own `settings-section`
+ * contribution, by the socket id its manifest gave it.
+ *
+ * The second is not a widening of the first, and that is the whole point of
+ * separating them. A plugin naming its own section can only reach a page it is
+ * already drawn on, so there is no list to close: the destination is decided by
+ * where the HOST put that section, not by a string the plugin chose. The closed
+ * list still governs everything that is ADE's furniture rather than the
+ * plugin's.
+ */
+export type PluginActionOpenSettings =
+  | { kind: "entry"; entryId: PluginOpenSettingsEntryId }
+  | { kind: "socket"; socketId: string };
 
 /**
  * Read a host-settings request out of whatever an action returned.
@@ -2374,8 +2403,13 @@ export type PluginActionOpenSettings = { entryId: PluginOpenSettingsEntryId };
  * carry no settings request, so anything unrecognizable is `null` rather than
  * an error. Unknown ids drop rather than opening a guessed page.
  *
- * Accepts both `{ openSettings: "agents.provider.cursor" }` and
- * `{ openSettings: { entryId: "agents.provider.cursor" } }`.
+ * Accepts `{ openSettings: "agents.provider.cursor" }`,
+ * `{ openSettings: { entryId: "agents.provider.cursor" } }` and
+ * `{ openSettings: { socketId: "connection" } }`.
+ *
+ * `entryId` is read first when a payload carries both. It is the older shape
+ * and the closed one, so a plugin that sends the pair gets the answer that
+ * cannot depend on what it has published.
  */
 export function readPluginActionOpenSettings(result: unknown): PluginActionOpenSettings | null {
   if (!isRecord(result)) return null;
@@ -2386,7 +2420,12 @@ export function readPluginActionOpenSettings(result: unknown): PluginActionOpenS
       ? request.entryId.trim()
       : "";
   const allowed = oneOf(entryId, PLUGIN_OPEN_SETTINGS_ENTRY_IDS);
-  return allowed ? { entryId: allowed } : null;
+  if (allowed) return { kind: "entry", entryId: allowed };
+  if (!isRecord(request)) return null;
+  // The same rule the manifest parser applies to the socket id it is naming, so
+  // a value this reader accepts is one a manifest could really have declared.
+  const socketId = request.socketId;
+  return isValidPluginManifestIdentifier(socketId) ? { kind: "socket", socketId } : null;
 }
 
 /**

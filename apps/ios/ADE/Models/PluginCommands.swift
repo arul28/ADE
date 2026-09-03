@@ -162,6 +162,17 @@ struct PluginInvokeResult: Decodable, Equatable {
   /// The phone has no host Settings surface (keys and secrets live on the Mac),
   /// so the pane store turns a recognised id into a sentence rather than a route.
   var openSettings: String?
+  /// The plugin's OWN `settings-section` socket id, when it named one instead
+  /// of a host page.
+  ///
+  /// A different question from ``openSettings`` and deliberately a different
+  /// field. That one names one of ADE's own pages off a closed list; this one
+  /// names a section the plugin itself put on a settings page, so there is no
+  /// list to close — but the phone draws no settings surface either way, so
+  /// both end as a sentence naming where the thing is. Mirrors the
+  /// `{ openSettings: { socketId } }` shape in
+  /// `apps/desktop/src/shared/plugins/sdk.ts`.
+  var openSettingsSectionId: String?
   /// Which `segmented` controls the action asked to put back on their defaults.
   ///
   /// The explicit reset in the panel-state lifecycle. A plugin that just
@@ -200,6 +211,7 @@ struct PluginInvokeResult: Decodable, Equatable {
     composer: PluginInvokeComposerEdit? = nil,
     openURL: URL? = nil,
     openSettings: String? = nil,
+    openSettingsSectionId: String? = nil,
     resetState: PluginInvokeStateReset? = nil,
     prompt: PluginActionPrompt? = nil,
     authSession: PluginInvokeAuthSession? = nil
@@ -211,6 +223,7 @@ struct PluginInvokeResult: Decodable, Equatable {
     self.composer = composer
     self.openURL = openURL
     self.openSettings = openSettings
+    self.openSettingsSectionId = openSettingsSectionId
     self.resetState = resetState
     self.prompt = prompt
   }
@@ -249,6 +262,28 @@ struct PluginInvokeResult: Decodable, Equatable {
 
   /// Closed list matching `PLUGIN_OPEN_SETTINGS_ENTRY_IDS`.
   static let allowedOpenSettingsEntryIds: Set<String> = ["agents.provider.cursor", "secrets.secrets"]
+
+  /// A plugin's own settings-section socket id, as the manifest parser bounds
+  /// one: lowercase letters, digits and dashes, starting with a letter.
+  ///
+  /// Validated rather than trusted for the same reason the panel id above is.
+  /// The value comes out of a plugin's handler, and this one is quoted back at
+  /// the reader in a sentence.
+  static func parseOpenSettingsSectionId(_ raw: String?) -> String? {
+    guard let trimmed = raw?.trimmingCharacters(in: .whitespacesAndNewlines),
+          ADEDeepLinkURLParsing.isValidPluginPanelId(trimmed) else {
+      return nil
+    }
+    return trimmed
+  }
+
+  /// What the phone says when a plugin asks to open its OWN settings section.
+  ///
+  /// The same shape as ``openSettingsNotice(for:)`` and for the same reason:
+  /// the phone draws no settings surface, so naming where the section is beats
+  /// inventing a route to somewhere that cannot hold it.
+  static let openSettingsOwnSectionNotice =
+    "Open this plugin's section in ADE Settings on the Mac that holds it."
 
   /// The `{openSettings}` verb. Unknown ids drop rather than opening a guessed page.
   static func parseOpenSettings(_ raw: Any?) -> String? {
@@ -310,6 +345,13 @@ struct PluginInvokeResult: Decodable, Equatable {
       }
       if let object = (try? handlerResult.decodeIfPresent(PluginOpenSettingsPayload.self, forKey: .openSettings)) ?? nil {
         openSettings = Self.parseOpenSettings(object.entryId)
+        // `entryId` first when a payload carries both, the same order the
+        // desktop reader uses: it is the older shape and the closed one, so a
+        // plugin sending the pair gets the answer that cannot depend on what it
+        // has published.
+        if openSettings == nil {
+          openSettingsSectionId = Self.parseOpenSettingsSectionId(object.socketId)
+        }
       } else if let bare = (try? handlerResult.decodeIfPresent(String.self, forKey: .openSettings)) ?? nil {
         openSettings = Self.parseOpenSettings(bare)
       }
@@ -456,7 +498,10 @@ private struct PluginOpenURLPayload: Decodable, Equatable {
 
 /// The object form of the `{openSettings}` verb.
 private struct PluginOpenSettingsPayload: Decodable, Equatable {
-  var entryId: String
+  /// One of ADE's own pages. Optional because the payload carries either half.
+  var entryId: String?
+  /// One of the plugin's own `settings-section` sockets.
+  var socketId: String?
 }
 
 /// One closed choice on a `{prompt}`. The answer's `text` is `value`.
@@ -709,14 +754,28 @@ enum PluginInvokeComposerEdit: Decodable, Equatable {
 struct PluginInvokeNavigation: Decodable, Equatable {
   var panelId: String
   var context: [String: RemoteJSONValue]?
+  /// Where the plugin asked the panel to open, when it named a place at all.
+  ///
+  /// Read and then honoured by having exactly one place, which is the phone's
+  /// honest answer: the sheet IS this device's popover, and it is also its tab
+  /// and its side pane. Decoded rather than ignored so a target this build has
+  /// never heard of is `nil` — the tolerant reading the desktop's `oneOf` gives
+  /// it — and so ``PluginPaneOpening/forTarget(_:)`` is the one switch that has
+  /// to be updated when a fourth place is invented.
+  var target: PluginInvokeNavigationTarget?
 
   private enum CodingKeys: String, CodingKey {
-    case panelId, context
+    case panelId, context, target
   }
 
-  init(panelId: String, context: [String: RemoteJSONValue]? = nil) {
+  init(
+    panelId: String,
+    context: [String: RemoteJSONValue]? = nil,
+    target: PluginInvokeNavigationTarget? = nil
+  ) {
     self.panelId = panelId
     self.context = context
+    self.target = target
   }
 
   /// Throws on a panel id no link could address either — the whole navigation
@@ -736,6 +795,46 @@ struct PluginInvokeNavigation: Decodable, Equatable {
     context = PluginPanelContext.read(
       value: (try? container.decodeIfPresent(RemoteJSONValue.self, forKey: .context)) ?? nil
     )
+    // Tolerant, like the context beside it and unlike the panel id above: a
+    // target is a preference, not an address, so one this build has never heard
+    // of drops and the reader still lands on the panel.
+    target = (try? container.decodeIfPresent(PluginInvokeNavigationTarget.self, forKey: .target))
+      ?? nil
+  }
+}
+
+/// The places a plugin may ask a client to put a navigated-to panel.
+///
+/// Mirrors `PLUGIN_ACTION_NAVIGATION_TARGETS` in
+/// `apps/desktop/src/shared/plugins/sdk.ts`. Not a client-specific list: each
+/// case names an IDEA of a place, and a client renders it with whatever it has.
+enum PluginInvokeNavigationTarget: String, Decodable, Equatable {
+  /// A whole surface of its own.
+  case tab
+  /// Beside the thing the reader was doing — the desktop's Work tools rail.
+  case toolsPane = "tools-pane"
+  /// Attached to the control that opened it, dismissed by looking away.
+  case popover
+}
+
+/// How the phone opens a navigated-to panel.
+///
+/// One case, and a switch rather than an ignore, because that is what makes the
+/// next target a compile error here instead of a silently dropped preference.
+/// The phone has one place to draw a plugin panel and it is the right answer to
+/// all three: a sheet takes the screen the way a tab does, sits over the thing
+/// the reader was doing the way a rail pane does, and is dismissed by a
+/// downward drag the way a popover is dismissed by a click away.
+enum PluginPaneOpening: Equatable {
+  case sheet
+
+  static func forTarget(_ target: PluginInvokeNavigationTarget?) -> PluginPaneOpening {
+    guard let target else { return .sheet }
+    switch target {
+    case .tab: return .sheet
+    case .toolsPane: return .sheet
+    case .popover: return .sheet
+    }
   }
 }
 
@@ -847,11 +946,21 @@ struct PluginLinkRefusal: Identifiable, Equatable {
 /// phone route would send the reader somewhere that cannot hold the value.
 struct PluginSettingsNotice: Identifiable, Equatable {
   let id = UUID()
-  /// An entry id from ``PluginInvokeResult/allowedOpenSettingsEntryIds``.
-  var entryId: String
+  /// An entry id from ``PluginInvokeResult/allowedOpenSettingsEntryIds``, or
+  /// nil when the plugin named one of its OWN settings sections instead.
+  var entryId: String?
   var pluginLabel: String
 
-  var message: String { PluginInvokeResult.openSettingsNotice(for: entryId) }
+  var message: String {
+    guard let entryId else { return PluginInvokeResult.openSettingsOwnSectionNotice }
+    return PluginInvokeResult.openSettingsNotice(for: entryId)
+  }
+
+  /// The plugin's own section, which the phone answers exactly as it answers a
+  /// host page: by naming where it is.
+  static func ownSection(pluginLabel: String) -> PluginSettingsNotice {
+    PluginSettingsNotice(entryId: nil, pluginLabel: pluginLabel)
+  }
 }
 
 /// Reply from `plugins.list` — the attached machine reporting its install

@@ -3318,29 +3318,103 @@ final class PluginActionResponseTests: XCTestCase {
     XCTAssertEqual(PluginInvokeResult.parseOpenSettings("secrets.secrets"), "secrets.secrets")
   }
 
-  /// A `navigate` carrying a placement this client has no places for.
+  /// The plugin's OWN settings section, which the phone names rather than opens.
   ///
-  /// `target` is desktop's field: it chooses between the plugin's tab and the
-  /// Work tools rail, and the phone has neither of those two things to choose
-  /// between — it presents the plugin pane sheet whatever the answer says. So
-  /// the contract is that the key is IGNORED and the navigation still lands.
+  /// The desktop navigates to the page the host drew the section on. The phone
+  /// has no settings surface at all, so it answers the same shape it answers a
+  /// host page with — a sentence naming where the thing is. What it must not do
+  /// is fail to parse the newer payload and say nothing.
+  func testOpenSettingsReadsThePluginsOwnSectionId() throws {
+    let parsed = try result(#"{"ok":true,"result":{"openSettings":{"socketId":"connection"}}}"#)
+    XCTAssertNil(parsed.openSettings)
+    XCTAssertEqual(parsed.openSettingsSectionId, "connection")
+    XCTAssertEqual(
+      PluginSettingsNotice.ownSection(pluginLabel: "Linear").message,
+      PluginInvokeResult.openSettingsOwnSectionNotice
+    )
+
+    // `entryId` wins when a payload carries both: it is the closed half, and
+    // its answer cannot depend on what the plugin happens to have published.
+    let both = try result(
+      #"{"ok":true,"result":{"openSettings":{"entryId":"secrets.secrets","socketId":"connection"}}}"#
+    )
+    XCTAssertEqual(both.openSettings, "secrets.secrets")
+    XCTAssertNil(both.openSettingsSectionId)
+
+    // A socket id no manifest could have declared is refused, not quoted.
+    for socketId in [#""not a socket id""#, #""""#, "7", "null"] {
+      let refused = try result(
+        #"{"ok":true,"result":{"openSettings":{"socketId":\#(socketId)}}}"#
+      )
+      XCTAssertNil(refused.openSettingsSectionId, "socketId \(socketId) was accepted")
+    }
+  }
+
+  /// A `navigate` carrying a placement this client has one place for.
   ///
-  /// That holds by construction here — the decoder reads a keyed container over
-  /// `panelId` and `context` only — and this pins it, because the failure mode
-  /// if it ever stopped holding is a phone that silently drops every navigation
-  /// from a plugin written for the desktop.
-  func testNavigateIgnoresAPlacementThePhoneHasNoPlacesFor() throws {
-    for target in [#""tools-pane""#, #""tab""#, #""a-place-invented-later""#, "7", "null"] {
+  /// `target` chooses between the plugin's tab, the desktop's Work tools rail
+  /// and an anchored popover. The phone has none of those three as separate
+  /// things — its sheet is all of them — so it presents the plugin pane
+  /// whatever the answer says, and the contract is that the navigation still
+  /// lands whatever the key holds.
+  ///
+  /// The key is READ rather than ignored, which is the change worth pinning:
+  /// ignoring it left `PluginPaneOpening` with nothing to be exhaustive about,
+  /// so a fourth placement would have reached the phone with nobody deciding
+  /// anything. An unrecognised value is `nil` — the tolerant reading the
+  /// desktop's own reader gives it — and never a dropped navigation.
+  func testNavigateReadsAPlacementAndLandsWhateverItSays() throws {
+    for target in [#""tools-pane""#, #""tab""#, #""popover""#, #""a-place-invented-later""#, "7", "null"] {
       let parsed = try result(
         #"{"ok":true,"result":{"navigate":{"panelId":"stories","target":\#(target)}}}"#
       )
       XCTAssertEqual(parsed.navigate?.panelId, "stories", "target \(target) took the navigation with it")
+      XCTAssertEqual(
+        PluginPaneOpening.forTarget(parsed.navigate?.target),
+        .sheet,
+        "target \(target) has to open the pane"
+      )
     }
+
+    XCTAssertEqual(
+      try result(#"{"ok":true,"result":{"navigate":{"panelId":"stories","target":"popover"}}}"#)
+        .navigate?.target,
+      .popover
+    )
+    XCTAssertEqual(
+      try result(#"{"ok":true,"result":{"navigate":{"panelId":"stories","target":"tools-pane"}}}"#)
+        .navigate?.target,
+      .toolsPane
+    )
+    XCTAssertEqual(
+      try result(#"{"ok":true,"result":{"navigate":{"panelId":"stories","target":"tab"}}}"#)
+        .navigate?.target,
+      .tab
+    )
+    // A placement this build has never heard of drops on its own and the
+    // navigation is kept: the reader pressed a button that named a panel.
+    XCTAssertNil(
+      try result(#"{"ok":true,"result":{"navigate":{"panelId":"stories","target":"drawer"}}}"#)
+        .navigate?.target
+    )
+
     let withContext = try result(
-      #"{"ok":true,"result":{"navigate":{"panelId":"stories","target":"tools-pane","context":{"feed":"ask"}}}}"#
+      #"{"ok":true,"result":{"navigate":{"panelId":"stories","target":"popover","context":{"feed":"ask"}}}}"#
     )
     XCTAssertEqual(withContext.navigate?.panelId, "stories")
     XCTAssertEqual(withContext.navigate?.context?["feed"], .string("ask"))
+  }
+
+  /// A popover that names no panel is not a placement, it is nothing.
+  ///
+  /// The same rule every other target follows: the panel id is the address and
+  /// the target is only a preference about where the address opens.
+  func testNavigateStillRefusesAPopoverWithNoPanel() throws {
+    XCTAssertNil(try result(#"{"ok":true,"result":{"navigate":{"target":"popover"}}}"#).navigate)
+    XCTAssertNil(
+      try result(#"{"ok":true,"result":{"navigate":{"panelId":"not a panel","target":"popover"}}}"#)
+        .navigate
+    )
   }
 
   /// The refresh action rides inside `schema_json` because `plugin_panels` is a
@@ -4919,6 +4993,53 @@ final class PluginPaneNavigationTests: XCTestCase {
 
     store.goBack()
     XCTAssertEqual(store.panelState["status"], "open")
+  }
+
+  /// `{openSettings}` beside a `{navigate}`: the phone takes the navigation and
+  /// says nothing about the page it did not open.
+  ///
+  /// The pair is ONE destination written twice. An action cannot tell which
+  /// client it is running for — nothing on the surface context says — so a
+  /// plugin whose gear belongs on ADE's Settings page on a Mac and on its own
+  /// panel here has to answer with both. Naming a page on the Mac and then
+  /// presenting a perfectly good panel contradicts what the reader just watched
+  /// happen, so the notice is for a result that offered this phone nothing else.
+  func testOpenSettingsSaysNothingWhenANavigationAnswersBetter() async {
+    let sync = FakeSync()
+    sync.localPanels = [
+      record(panelId: "stories", title: "Stories", schemaJSON: Self.listSchema),
+      record(panelId: "settings", title: "Settings", schemaJSON: Self.listSchema),
+    ]
+    sync.localEntries = entries(3)
+    let store = makeStore(sync)
+    store.load()
+
+    sync.invokeReplies = [PluginInvokeResult(
+      navigate: PluginInvokeNavigation(panelId: "settings"),
+      openSettingsSectionId: "connection"
+    )]
+    store.perform(PluginVocabAction(action: "openSettings"))
+    await settle(until: { store.selectedPanelId == "settings" })
+
+    XCTAssertEqual(store.selectedPanelId, "settings")
+    XCTAssertNil(store.actionMessage, "the panel it just opened is the answer")
+  }
+
+  /// The other half of the same rule: with nothing else on offer, the phone
+  /// names the page rather than leaving a dead gear.
+  func testOpenSettingsAloneNamesThePageOnTheMachine() async {
+    let sync = FakeSync()
+    sync.localPanels = [record(panelId: "stories", title: "Stories", schemaJSON: Self.listSchema)]
+    sync.localEntries = entries(3)
+    let store = makeStore(sync)
+    store.load()
+
+    sync.invokeReplies = [PluginInvokeResult(openSettingsSectionId: "connection")]
+    store.perform(PluginVocabAction(action: "openSettings"))
+    await settle(until: { store.actionMessage != nil })
+
+    XCTAssertEqual(store.actionMessage?.text, PluginInvokeResult.openSettingsOwnSectionNotice)
+    XCTAssertEqual(store.selectedPanelId, "stories", "nothing moved")
   }
 
   /// Let a dispatched action land. `perform` fires a detached task, so a test

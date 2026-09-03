@@ -90,13 +90,20 @@ import {
   type VocabTableColumn,
   type VocabTone,
 } from "../../../desktop/src/shared/plugins/vocabulary";
-import { readPluginPanelRefreshAction, readPluginPanelViewAction } from "../../../desktop/src/shared/plugins/sdk";
+import {
+  hasPluginActionOpenSettingsRequest,
+  readPluginActionNavigation,
+  readPluginActionOpenSettings,
+  readPluginPanelRefreshAction,
+  readPluginPanelViewAction,
+} from "../../../desktop/src/shared/plugins/sdk";
 import {
   parsePluginBrandGlyph,
   pluginBrandTokenKey,
   PLUGIN_BRAND_ICON_LIMITS,
 } from "../../../desktop/src/shared/plugins/vocabularyBrandIcons";
 import type {
+  PluginActionNavigationTarget,
   PluginCollectionRow,
   PluginPanelRecord as HostPluginPanelRecord,
 } from "../../../desktop/src/shared/plugins/sdk";
@@ -2271,3 +2278,83 @@ export function movePluginPaneSelection(model: PluginPaneModel, current: number,
 /** The one line a pane too narrow to open prints into the chat instead. */
 export const PLUGIN_PANE_TOO_NARROW =
   "This terminal is too narrow for plugin panels. Widen the window and run the command again.";
+
+/**
+ * Where the terminal puts a panel a `{navigate}` asked for.
+ *
+ * One answer, and a switch rather than an ignore. The TUI has exactly one place
+ * to draw a plugin panel — the right pane — so every target lands there, and
+ * saying so explicitly is what makes the next target a compile error here
+ * instead of a silently dropped preference. `popover` reached this file the
+ * cheap way once already: `readPluginActionNavigation` widened, the terminal
+ * kept working, and nobody had to decide anything. That is fine exactly once.
+ *
+ * `undefined` is the common case — most plugins name no target at all — and it
+ * means the same thing here as every named one.
+ */
+export function pluginPaneNavigationPlacement(
+  target: PluginActionNavigationTarget | undefined,
+): "pane" {
+  if (target === undefined) return "pane";
+  switch (target) {
+    // A tab is the terminal's right pane; there are no others to pick from.
+    case "tab":
+      return "pane";
+    // The TUI has no Work tools rail. The pane is beside the conversation
+    // already, which is what the target was asking for.
+    case "tools-pane":
+      return "pane";
+    // No anchored container, and no pointer to anchor one to. The pane is the
+    // terminal's quick view: it opens beside the chat and closes with Esc.
+    case "popover":
+      return "pane";
+    default: {
+      const _exhaustive: never = target;
+      return _exhaustive;
+    }
+  }
+}
+
+/**
+ * What the terminal says about an `{openSettings}` an action answered with.
+ *
+ * A pure function rather than four `addNotice` calls inside `app.tsx`, because
+ * the rule has three branches and one of them is easy to get wrong in a way
+ * nothing on screen explains.
+ *
+ * The TUI draws no settings surface at all, so the honest answer to a settings
+ * request is a sentence naming where the page is. The exception is the whole
+ * point of this function: **`{openSettings}` beside a `{navigate}` is ONE
+ * destination written twice**, not two things to do. An action cannot tell
+ * which client it is running for — nothing on the surface context says — so a
+ * plugin whose gear belongs on ADE's Settings page on a Mac and in its own pane
+ * here has to answer with both and let each client take the half it can
+ * honour. Naming a page on the Mac and then opening a perfectly good pane
+ * contradicts what just happened, so this answers null and the pane is the
+ * whole reply.
+ *
+ * A MALFORMED request is still said out loud whatever else the result carries:
+ * that is an authoring fault, and a navigation beside it does not fix it.
+ *
+ * Returns null when there is nothing to say — no request, or a request the
+ * navigation beside it answers better.
+ */
+export function pluginPaneSettingsNotice(result: unknown, label: string): string | null {
+  if (!hasPluginActionOpenSettingsRequest(result)) return null;
+  const request = readPluginActionOpenSettings(result);
+  if (!request) return `${label} asked to open a settings page this build does not open.`;
+  if (readPluginActionNavigation(result)) return null;
+  if (request.kind === "socket") {
+    return `${label}: open this plugin's section in ADE Settings on the Mac that holds it.`;
+  }
+  switch (request.entryId) {
+    case "agents.provider.cursor":
+      return `${label}: add a Cursor API key in ADE Settings → Agents → Cursor.`;
+    case "secrets.secrets":
+      return `${label}: manage project secrets in ADE Settings → Secrets.`;
+    default: {
+      const _exhaustive: never = request.entryId;
+      return _exhaustive;
+    }
+  }
+}

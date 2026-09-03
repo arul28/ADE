@@ -728,6 +728,13 @@ final class PluginPaneStore: ObservableObject {
   /// the reader is on, usually with a new context, and pushing would leave a
   /// back chevron that goes nowhere visible.
   func navigate(to navigation: PluginInvokeNavigation) {
+    // Every target lands in this pane. The switch is where a target this build
+    // has never heard of has to be decided rather than quietly dropped: the
+    // sheet is the phone's tab, its side pane and its popover at once.
+    switch PluginPaneOpening.forTarget(navigation.target) {
+    case .sheet:
+      break
+    }
     if navigation.panelId != selectedPanelId {
       pushCurrentPanel()
     }
@@ -1561,11 +1568,28 @@ final class PluginPaneStore: ObservableObject {
       if let url = result.openURL {
         openExternalURL(url)
       }
-      if let entryId = result.openSettings {
-        actionMessage = PluginActionMessage(
-          text: PluginInvokeResult.openSettingsNotice(for: entryId),
-          isFailure: false
-        )
+      // `{openSettings}` beside a `{navigate}` is ONE destination written
+      // twice, and the phone is the client that takes the second half. An
+      // action cannot tell which client it is running for, so a plugin whose
+      // gear belongs on ADE's Settings page on a Mac and on its own panel here
+      // answers with both. Saying "open it in ADE Settings on the Mac" and then
+      // opening a perfectly good panel contradicts what just happened, so the
+      // notice is for a result that offered this phone nothing else.
+      if result.navigate == nil {
+        if let entryId = result.openSettings {
+          actionMessage = PluginActionMessage(
+            text: PluginInvokeResult.openSettingsNotice(for: entryId),
+            isFailure: false
+          )
+        } else if result.openSettingsSectionId != nil {
+          // The plugin named its own settings section. The phone has no
+          // settings surface either way, so it answers the same shape it
+          // answers a host page with: where the thing is.
+          actionMessage = PluginActionMessage(
+            text: PluginInvokeResult.openSettingsOwnSectionNotice,
+            isFailure: false
+          )
+        }
       }
       // Before the navigation as well: a reset belongs to the panel the action
       // ran on, and a navigation replaces that panel's controls anyway.

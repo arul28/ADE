@@ -1635,6 +1635,24 @@ all four clients:
   place for it, so desktop and the hosted web client show it as a toast, toned
   as an error when `ok` is false; a panel still draws it inline.
 
+Three rules that arrived with the Linear acceptance walk:
+
+- `navigate.target` takes a third value, `popover`. Desktop and the web client
+  draw the panel in a card anchored under the control that was pressed, with
+  full panel behaviour inside; Escape or a click away closes it, one draws at a
+  time, and a second press of the same button closes it. It is never derived: a
+  press with no `target` still opens the tab. iOS opens its plugin sheet and the
+  TUI its plugin pane, which are those clients' one place for a panel.
+- `{openSettings: {socketId}}` names the caller's own published
+  `settings-section`. Desktop and the web client open the Settings page that
+  hosts it and scroll to the section; another plugin's socket, or one not yet
+  published, is refused out loud. The phone and the terminal name the page.
+- A result carrying both `openSettings` and `navigate` names one destination
+  twice. Desktop and the web client open the settings page and leave the panel
+  where it was; the phone and the terminal, which have no plugin Settings page,
+  take the navigation and say nothing about the page they did not open. A
+  refused settings request falls through to the navigation.
+
 ### The panel refresh contract
 
 A panel bound to the plugin's own `plugin_collections` is already live: the host
@@ -1732,6 +1750,8 @@ Eighteen kinds across eight surfaces (`PLUGIN_SOCKET_KINDS` and
 | Ambient placement | `command-palette-action`, `settings-section`, `work-rail-pane`, `drawer-tab`, `activity-entry` |
 | The canvas | `graph-node` |
 | Dialogs | `dialog-section` |
+
+A `settings-section` payload may name the Settings page it belongs on through `section` (a tab id such as `integrations`, or a card anchor); anything unrecognised lands on General. The section header draws the plugin's manifest icon, brand glyph included.
 
 The first six surfaces (`work`, `lanes`, `files`, `prs`, `automations`, `cto`)
 are ADE's list-shaped tabs, each with an entity kind behind it, which is what

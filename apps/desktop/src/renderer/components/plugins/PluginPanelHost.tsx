@@ -69,6 +69,7 @@ import {
 import { applyPluginDialogEdit } from "./sockets/dialogTarget";
 import { applyPluginActionOpenUrl } from "./pluginActionOpenUrl";
 import { applyPluginActionOpenSettings } from "./pluginActionOpenSettings";
+import { applyPluginActionAuthSession } from "./pluginActionAuthSession";
 import { openPluginPrompt, readPluginPromptAnchor } from "./sockets/pluginPromptStore";
 
 /**
@@ -584,8 +585,20 @@ export function PluginPanelHost({
       // footer link a panel cannot express as a node, because `text` is never
       // linkified on any client. `https:` only; the reader refuses the rest.
       applyPluginActionOpenUrl(result, { pluginId, actionId: action.action });
-      applyPluginActionOpenSettings(result, { pluginId, actionId: action.action });
-      const navigation = readPluginActionNavigation(result);
+      // One destination, written twice. See the same pair in
+      // `sockets/pluginActionDispatch.ts`: a plugin with no client
+      // discriminator answers with `{openSettings}` for the clients that have a
+      // Settings page and `{navigate}` for the ones that do not, and honouring
+      // both here opened Settings and moved the panel behind it.
+      const openedSettings = applyPluginActionOpenSettings(result, {
+        pluginId,
+        actionId: action.action,
+      });
+      // The panel half of the sign-in verb. A Connect button on a plugin's own
+      // panel is the commonest place this is pressed, and it discarded the
+      // host's stamped instruction exactly as the socket path did.
+      applyPluginActionAuthSession(result, { pluginId, actionId: action.action });
+      const navigation = openedSettings ? null : readPluginActionNavigation(result);
       if (navigation) onNavigate?.(navigation);
 
       // An action may ask ONE question before it can finish, and a panel button

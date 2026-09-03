@@ -78,6 +78,21 @@ export type PluginNavigateTab = {
   context: Record<string, unknown> | null;
 };
 
+/**
+ * Open the panel in a quick view anchored at the control that was pressed.
+ *
+ * Only ever explicit. There is no press this is derived for, and deliberately
+ * so: a popover is a promise that the reader can dismiss it and be exactly
+ * where they were, and only the plugin knows whether the panel it is sending
+ * keeps that promise. A four-row status list does; a page of forms does not.
+ */
+export type PluginNavigatePopover = {
+  kind: "popover";
+  pluginId: string;
+  panelId: string;
+  context: Record<string, unknown> | null;
+};
+
 /** Nothing can mount. `reason` is written for the person who pressed the button. */
 export type PluginNavigateUnreachable = {
   kind: "unreachable";
@@ -91,6 +106,7 @@ export type PluginNavigateUnreachable = {
 export type PluginNavigateResolution =
   | PluginNavigateToolsPane
   | PluginNavigateTab
+  | PluginNavigatePopover
   | PluginNavigateUnreachable;
 
 /** As much of an installed plugin as this decision needs. */
@@ -179,6 +195,12 @@ export function resolvePluginNavigateTarget(
   // an installed and enabled plugin.
   const wants = navigation.target
     ?? (isPluginChatScopedSocket(input.socket) && inRail ? "tools-pane" : "tab");
+  // Asked for, never derived, and never refused: unlike the rail there is no
+  // container to be missing. The popover is drawn by a host mounted once for
+  // the whole app, so any press that got this far can have one.
+  if (wants === "popover") {
+    return { kind: "popover", pluginId, panelId, context };
+  }
   if (wants === "tools-pane" && inRail) {
     return {
       kind: "tools-pane",

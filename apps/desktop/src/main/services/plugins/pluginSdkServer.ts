@@ -200,6 +200,26 @@ export function pluginAuthUnavailable(): PluginSdkError {
 }
 
 /**
+ * The refusal when this host has no way to hand a plugin a connection ADE
+ * already holds.
+ *
+ * `unsupported_method`, not `auth_unavailable`, and the difference is the
+ * remedy the plugin then shows its user. `auth_unavailable` means "nothing can
+ * put a sign-in in front of someone right now" — open ADE, or use a paired
+ * phone — and it is advice that comes true a second later. A host wired without
+ * the handoff seam has no credential store to inherit FROM, and no window
+ * anyone opens will grow it one, so a plugin repeating that advice sends its
+ * user to do something that cannot help. The right degradation is the plugin's
+ * own sign-in, which is what `unsupported_method` tells it to fall back to.
+ */
+export function pluginCredentialHandoffUnavailable(): PluginSdkError {
+  return new PluginSdkError(
+    "unsupported_method",
+    "This copy of ADE cannot hand a connection to a plugin.",
+  );
+}
+
+/**
  * The refusal when this host runs no scheduler.
  *
  * `unsupported_method` here, unlike the two above: a host without a scheduler
@@ -1027,7 +1047,7 @@ export function createPluginSdkServer(deps: {
         }
 
         case "auth.requestHandoff": {
-          if (!deps.requestCredentialHandoff) throw pluginAuthUnavailable();
+          if (!deps.requestCredentialHandoff) throw pluginCredentialHandoffUnavailable();
           return await deps.requestCredentialHandoff(requireString(params, "builtin"));
         }
 

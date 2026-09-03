@@ -107,7 +107,7 @@ import { createPluginInstallServiceAdapter, toPluginPresenceRow } from "./plugin
 import {
   createPluginSdkServer,
   pluginAudioCaptureUnavailable,
-  pluginAuthUnavailable,
+  pluginCredentialHandoffUnavailable,
   pluginAutomationsUnavailable,
   pluginChatUnavailable,
   pluginLanesUnavailable,
@@ -884,7 +884,9 @@ function createHost(args: PluginHostServiceArgs): PluginHostService {
       // desktop that attaches after the service was built can answer the card.
       requestConsent: async (consentArgs) => {
         const ask = machine.requestCredentialHandoffConsent;
-        if (!ask) throw pluginAuthUnavailable();
+        // Not `auth_unavailable`: a machine bag with no consent hook is a host
+        // wired without the handoff seam, not one that cannot show a window.
+        if (!ask) throw pluginCredentialHandoffUnavailable();
         return await ask(consentArgs);
       },
     });
@@ -1362,7 +1364,10 @@ function createHost(args: PluginHostServiceArgs): PluginHostService {
       cancelAuthSession: (sessionId) => authSessions.cancel(pluginId, sessionId),
       requestCredentialHandoff: async (builtin) => {
         const service = credentialHandoff();
-        if (!service) throw pluginAuthUnavailable();
+        // A host with no credential store has nothing to inherit from, and
+        // never will — so the plugin is told to use its own sign-in rather than
+        // to open ADE and try again. See `pluginCredentialHandoffUnavailable`.
+        if (!service) throw pluginCredentialHandoffUnavailable();
         // Narrowed here rather than in the SDK server, which validates argument
         // SHAPES and does not know ADE's built-in surfaces. An id that is not
         // one is `not_permitted` for the same reason an undeclared one is: the

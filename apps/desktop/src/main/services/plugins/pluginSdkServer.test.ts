@@ -102,6 +102,23 @@ function createServer(
   return { handle: server.handle, puts, lists, configWrites };
 }
 
+/**
+ * The whole refusal, not only its code.
+ *
+ * Two refusals can share a code and mean different things to the plugin author
+ * reading the sentence, which is the difference the credential-handoff test
+ * below is about.
+ */
+async function errorOf(run: () => Promise<unknown>): Promise<PluginSdkError> {
+  try {
+    await run();
+  } catch (error) {
+    if (error instanceof PluginSdkError) return error;
+    throw error;
+  }
+  throw new Error("Expected the SDK server to refuse this call.");
+}
+
 async function codeOf(run: () => Promise<unknown>): Promise<string> {
   try {
     await run();
@@ -370,6 +387,34 @@ describe("createPluginSdkServer host capabilities", () => {
     });
 
     expect(await codeOf(() => handle("auth.officialClient", {}))).toBe("invalid_args");
+  });
+
+  it("refuses auth.requestHandoff with unsupported_method on a host with no handoff", async () => {
+    const { handle } = createServer();
+
+    // NOT `auth_unavailable`, which was the old answer and the wrong remedy.
+    // That code means "nothing can show a sign-in right now" — open ADE, or use
+    // a paired phone — and it comes true a second later. A host wired without
+    // the handoff seam has no credential store to inherit FROM, and no window
+    // anyone opens grows it one, so the plugin was told to do something that
+    // could not help. `unsupported_method` tells it to use its own sign-in.
+    const error = await errorOf(() => handle("auth.requestHandoff", { builtin: "linear" }));
+    expect(error.code).toBe("unsupported_method");
+    expect(error.message).toBe("This copy of ADE cannot hand a connection to a plugin.");
+  });
+
+  it("still reaches the handoff on a host that has one", async () => {
+    const asked: string[] = [];
+    const { handle } = createServer({
+      requestCredentialHandoff: async (builtin: string) => {
+        asked.push(builtin);
+        return { granted: true } as never;
+      },
+    } as never);
+
+    expect(await handle("auth.requestHandoff", { builtin: "linear" }))
+      .toEqual({ granted: true });
+    expect(asked).toEqual(["linear"]);
   });
 
   it("refuses schedules with unsupported_method on a host that runs no scheduler", async () => {
