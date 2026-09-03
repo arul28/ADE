@@ -2,13 +2,16 @@ import { describe, expect, it } from "vitest";
 
 import type { PluginSessionContext } from "./context";
 import {
+  clampPluginWebviewHeight,
   decodePluginWebviewContext,
   encodePluginWebviewContext,
   isPluginWebviewMethod,
   PLUGIN_WEBVIEW_BRIDGE_VERSION,
   PLUGIN_WEBVIEW_CONTEXT_MAX_BYTES,
   PLUGIN_WEBVIEW_CONTEXT_QUERY_PARAM,
+  PLUGIN_WEBVIEW_MAX_HEIGHT_PX,
   PLUGIN_WEBVIEW_METHODS,
+  PLUGIN_WEBVIEW_RESIZE_CHANNEL,
   PLUGIN_WEBVIEW_UI_ASK_TIMEOUT_MS,
   PLUGIN_WEBVIEW_UI_TIMEOUT_MS,
   pluginWebviewGuestKey,
@@ -181,5 +184,25 @@ describe("sanitizePluginWebviewTheme", () => {
       tokens: { "--ade-bg": "#".repeat(1_000) },
     });
     expect(sanitized).toEqual({ scheme: "dark", tokens: {} });
+  });
+});
+
+describe("size-to-content", () => {
+  it("clamps a reported height to the ceiling and rounds up a fraction", () => {
+    expect(clampPluginWebviewHeight(240)).toBe(240);
+    expect(clampPluginWebviewHeight(240.2)).toBe(241);
+    expect(clampPluginWebviewHeight(99_999)).toBe(PLUGIN_WEBVIEW_MAX_HEIGHT_PX);
+  });
+
+  it("reads an unusable height as no answer rather than as zero", () => {
+    // "The page said nothing usable" and "the page wants to be invisible" are
+    // different instructions; collapsing them would hide a broken observer.
+    for (const value of [0, -10, Number.NaN, Number.POSITIVE_INFINITY, "240", null, undefined]) {
+      expect(clampPluginWebviewHeight(value)).toBeNull();
+    }
+  });
+
+  it("names one channel both halves agree on", () => {
+    expect(PLUGIN_WEBVIEW_RESIZE_CHANNEL).toBe("ade:plugin-webview:resize");
   });
 });

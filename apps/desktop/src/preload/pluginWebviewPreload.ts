@@ -43,9 +43,11 @@ import { stripElectronErrorWrapper } from "../shared/codedError";
 import { IPC } from "../shared/ipc";
 import type { PluginActionPrompt, PluginActionPromptAnswer } from "../shared/plugins/sdk";
 import {
+  clampPluginWebviewHeight,
   isPluginWebviewEventName,
   PLUGIN_WEBVIEW_BRIDGE_VERSION,
   PLUGIN_WEBVIEW_EVENTS,
+  PLUGIN_WEBVIEW_RESIZE_CHANNEL,
   type AdePluginWebviewBridge,
   type PluginWebviewComposerAttach,
   type PluginWebviewConfirm,
@@ -55,6 +57,7 @@ import {
   type PluginWebviewHostKind,
   type PluginWebviewListOptions,
   type PluginWebviewMethod,
+  type PluginWebviewResize,
   type PluginWebviewThemeSnapshot,
   type PluginWebviewToast,
 } from "../shared/plugins/webviewBridge";
@@ -245,6 +248,18 @@ const adePlugin: AdePluginWebviewBridge = {
     },
     confirm: async (request: PluginWebviewConfirm) => {
       return (await call("ui.confirm", { confirm: request })) === true;
+    },
+    // `sendToHost`, not `invoke`: this reaches the `<webview>` element that owns
+    // the frame, which is the only party that can grow it, and it authorizes
+    // nothing — a page reporting its own height cannot move or cover anything
+    // outside its own frame. See `PLUGIN_WEBVIEW_RESIZE_CHANNEL`. Clamped here
+    // as well as in the host so the page's own logging shows the number that
+    // will actually be applied, and an unusable value is dropped rather than
+    // sent as a zero the host would read as "collapse me".
+    resize: (size: PluginWebviewResize) => {
+      const height = clampPluginWebviewHeight(size?.height);
+      if (height === null) return;
+      ipcRenderer.sendToHost(PLUGIN_WEBVIEW_RESIZE_CHANNEL, { height });
     },
   },
 

@@ -6,6 +6,7 @@ import {
   setPluginAuthSessionCompleter,
   setPluginInstallService,
 } from "../../../../../ade-cli/src/services/plugins/pluginInstallServiceRef";
+import { setPluginPageHostService } from "../../../../../ade-cli/src/services/plugins/pluginPageHostRef";
 import { getPluginPresenceService } from "../../../../../ade-cli/src/services/plugins/pluginPresenceService";
 import type { PluginSyncMeter } from "../../../../../ade-cli/src/services/plugins/pluginSyncMeter";
 import {
@@ -724,6 +725,11 @@ function toSummary(
       // panel over every custom-UI plugin with no error anywhere, and the
       // author debugged their own HTML instead of this mapper.
       ...(surface.entryHtml ? { entryHtml: surface.entryHtml } : {}),
+      // The anchored-placement size hint, carried for the same reason: the
+      // popover host reads the LIST payload and has no manifest to fall back
+      // on, so dropping it here would silently give every plugin the default
+      // card size whatever its manifest asked for.
+      ...(surface.popover ? { popover: surface.popover } : {}),
       // Passed through, not interpreted: the extraction pilot gates a builtin
       // tab on this, and a summary that drops it makes the gate impossible.
       ...(surface.builtin ? { builtin: surface.builtin } : {}),
@@ -1168,6 +1174,20 @@ function createHost(args: PluginHostServiceArgs): PluginHostService {
   // call time and runs the same domain path the desktop's `plugin.invoke` does,
   // so a handler cannot behave differently depending on which device asked.
   setPluginActionInvoker(async (invokeArgs) => domainService(null).invoke(invokeArgs));
+  // The three host operations a plugin PAGE performs that its client cannot do
+  // for itself. The phone's page bridge reaches them over sync
+  // (`plugins.putCollection`, `plugins.getConfig`, `plugins.setConfig`) and gets
+  // the same functions the desktop webview bridge calls, so one page cannot be
+  // held to a different rule depending on the client drawing it.
+  // Called through arrows rather than passed by reference: the three writers
+  // are declared below this line, and a direct reference here would read them
+  // before they are initialized. A page cannot call any of them until the host
+  // is built, so resolving at call time costs nothing.
+  setPluginPageHostService({
+    writeCollection: (collectionArgs) => writeCollectionForPage(collectionArgs),
+    readConfig: async (configArgs) => readConfigForPage(configArgs),
+    writeConfig: (configArgs) => writeConfigForPage(configArgs),
+  });
   // The other half of a sign-in a phone presented: the browser handed the phone
   // a redirect, and `plugins.completeAuthSession` resolves this to hand it back.
   // Bound here rather than left to the caller to find, because the broker is the
@@ -1324,6 +1344,73 @@ function createHost(args: PluginHostServiceArgs): PluginHostService {
       refuseSecrets: true,
     });
     return configFor(pluginId, manifest);
+  };
+
+  /**
+   * Write one collection row for a plugin PAGE.
+   *
+   * A page is the plugin's own HTML in a guest whose plugin id the host derived
+   * from the frame origin — the desktop webview, and the phone's page bridge,
+   * which reaches this through the sync layer's `plugins.putCollection`. Both
+   * clients call THIS function rather than each writing the table, so the
+   * declared-collection rule and the store's budgets are one rule for a page
+   * wherever it is drawn.
+   *
+   * Named and defined here, beside {@link writeConfigFor}, rather than inline in
+   * the returned object: the page seam is bound below, before that object
+   * exists.
+   */
+  const writeCollectionForPage = (
+    { pluginId, collection, key, value }: {
+      pluginId: string;
+      collection: string;
+      key: string;
+      value: unknown;
+    },
+  ): void => {
+    const installed = requireInstalled(pluginId);
+    if (!installed.record.enabled) {
+      throw new PluginSdkError("plugin_disabled", `Plugin "${pluginId}" is disabled.`);
+    }
+    const declared = installed.manifest?.collections ?? {};
+    if (!Object.prototype.hasOwnProperty.call(declared, assertPluginCollectionName(collection))) {
+      throw new PluginSdkError(
+        "not_permitted",
+        `Collection "${collection}" is not declared in ${pluginId}'s manifest.`,
+      );
+    }
+    // The data store re-encodes and re-checks every budget inside its own
+    // transaction — that check is the guarantee, and this path deliberately
+    // adds none of its own so a page and a child cannot be held to different
+    // ceilings for the same row.
+    requireProject(pluginId).data.putCollection(
+      pluginId,
+      collection,
+      assertPluginCollectionKey(key),
+      value,
+    );
+  };
+
+  /** The settings half of {@link writeCollectionForPage}, same rule and same callers. */
+  const writeConfigForPage = (
+    { pluginId, values }: { pluginId: string; values: Record<string, unknown> },
+  ): Record<string, string | number | boolean | null> => {
+    const installed = requireInstalled(pluginId);
+    if (!installed.record.enabled) {
+      throw new PluginSdkError("plugin_disabled", `Plugin "${pluginId}" is disabled.`);
+    }
+    return writeConfigFor(pluginId, installed.manifest, values);
+  };
+
+  /** What a page reads back: manifest defaults with the stored values over them. */
+  const readConfigForPage = (
+    { pluginId }: { pluginId: string },
+  ): Record<string, string | number | boolean | null> => {
+    const installed = requireInstalled(pluginId);
+    if (!installed.record.enabled) {
+      throw new PluginSdkError("plugin_disabled", `Plugin "${pluginId}" is disabled.`);
+    }
+    return configFor(pluginId, installed.manifest);
   };
 
   const buildSupervisor = args.createSupervisor ?? createPluginChildSupervisor;
@@ -2991,36 +3078,8 @@ function createHost(args: PluginHostServiceArgs): PluginHostService {
       if (!installed || !installed.record.enabled) return null;
       return installed.root;
     },
-    writeCollection({ pluginId, collection, key, value }) {
-      const installed = requireInstalled(pluginId);
-      if (!installed.record.enabled) {
-        throw new PluginSdkError("plugin_disabled", `Plugin "${pluginId}" is disabled.`);
-      }
-      const declared = installed.manifest?.collections ?? {};
-      if (!Object.prototype.hasOwnProperty.call(declared, assertPluginCollectionName(collection))) {
-        throw new PluginSdkError(
-          "not_permitted",
-          `Collection "${collection}" is not declared in ${pluginId}'s manifest.`,
-        );
-      }
-      // The data store re-encodes and re-checks every budget inside its own
-      // transaction — that check is the guarantee, and this path deliberately
-      // adds none of its own so a page and a child cannot be held to different
-      // ceilings for the same row.
-      requireProject(pluginId).data.putCollection(
-        pluginId,
-        collection,
-        assertPluginCollectionKey(key),
-        value,
-      );
-    },
-    writeConfig({ pluginId, values }) {
-      const installed = requireInstalled(pluginId);
-      if (!installed.record.enabled) {
-        throw new PluginSdkError("plugin_disabled", `Plugin "${pluginId}" is disabled.`);
-      }
-      return writeConfigFor(pluginId, installed.manifest, values);
-    },
+    writeCollection: writeCollectionForPage,
+    writeConfig: writeConfigForPage,
     listChildPids() {
       return [...supervisors.values()]
         .map((supervisor) => supervisor.pid())
@@ -3057,6 +3116,7 @@ function createHost(args: PluginHostServiceArgs): PluginHostService {
       setPluginInstallService(null);
       setPluginActionInvoker(null);
       setPluginAuthSessionCompleter(null);
+      setPluginPageHostService(null);
       // Before the children go: a timer that fired during teardown would call
       // `invoke` on a supervisor map that is about to be cleared, and start a
       // child the host has no way left to stop.

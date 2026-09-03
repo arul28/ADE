@@ -191,6 +191,18 @@ export type PluginManifestSurface = {
    */
   entryHtml?: string;
   /**
+   * `webview` only: how big this page wants to be when a socket opens it as a
+   * popover or a composer picker.
+   *
+   * A HINT the host clamps, not a size the plugin sets. A tab, a pane and the
+   * overlay all fill a frame the host already owns, so only the two anchored
+   * placements have a size to ask about, and only the plugin knows whether its
+   * page is a two-line switcher or a full issue list. Absent means the host's
+   * own default, and anything larger than the window is clamped to it — the
+   * page is never given a card it can overflow off screen.
+   */
+  popover?: { width: number; height: number };
+  /**
    * Whether this surface appears on the phone.
    *
    * The parser always sets it, and sets the RESOLVED answer rather than the raw
@@ -306,6 +318,18 @@ export type PluginManifestSocket = {
   argumentHint?: string;
   /** `settings-section` only: which settings page hosts the section. */
   section?: string;
+  /**
+   * A `webview` surface of the same plugin this contribution draws instead of
+   * its `panelId`, on a client that can host a plugin page.
+   *
+   * Read on the kinds that have somewhere to put one — the settings section,
+   * the four action buttons, the row badge. `panelId` stays required wherever
+   * it was required, because it is what every other client draws; this is the
+   * upgrade, never the replacement. Unresolvable ids cost nothing: the drawing
+   * client looks the surface up in the plugin's own declarations and falls back
+   * to the panel, which is where it was going anyway.
+   */
+  webviewSurfaceId?: string;
 };
 
 export type PluginSettingKind = "text" | "secret" | "select" | "toggle" | "number";
@@ -1013,6 +1037,27 @@ function parseSurfaces(raw: unknown, ctx: ParseContext, official: boolean): Plug
     } else if (declaredEntryHtml !== undefined) {
       ctx.warnings.push(`${label}.entryHtml applies only to a "webview" surface — ignored`);
     }
+    // The anchored-placement size hint. Warned rather than dropped on every bad
+    // shape: a page that opens at the host's default size is a working page,
+    // and refusing the whole surface over a typo in a hint would take the
+    // plugin's front page away for a number.
+    let popover: { width: number; height: number } | null = null;
+    if (entry.popover !== undefined) {
+      const declared = entry.popover;
+      if (kind !== "webview") {
+        ctx.warnings.push(`${label}.popover applies only to a "webview" surface — ignored`);
+      } else if (!isRecord(declared)
+        || typeof declared.width !== "number" || !Number.isFinite(declared.width)
+        || typeof declared.height !== "number" || !Number.isFinite(declared.height)
+        || declared.width <= 0 || declared.height <= 0) {
+        ctx.warnings.push(`${label}.popover must be { width, height } in positive pixels — ignored`);
+      } else {
+        popover = {
+          width: Math.trunc(declared.width),
+          height: Math.trunc(declared.height),
+        };
+      }
+    }
     let builtin: PluginBuiltinSurfaceId | null = null;
     if (entry.builtin !== undefined) {
       const requested = trimmedString(entry.builtin);
@@ -1093,6 +1138,7 @@ function parseSurfaces(raw: unknown, ctx: ParseContext, official: boolean): Plug
       ...(typeof entry.order === "number" && Number.isFinite(entry.order) ? { order: entry.order } : {}),
       ...(builtin ? { builtin } : {}),
       ...(entryHtml ? { entryHtml } : {}),
+      ...(popover ? { popover } : {}),
       mobile: mobileCeiling && (declaredMobile ?? true),
     };
   });
@@ -1279,6 +1325,9 @@ function parseSockets(raw: unknown, ctx: ParseContext): PluginManifestSocket[] {
       ...(trimmedString(entry.description) ? { description: trimmedString(entry.description)! } : {}),
       ...(trimmedString(entry.argumentHint) ? { argumentHint: trimmedString(entry.argumentHint)! } : {}),
       ...(trimmedString(entry.section) ? { section: trimmedString(entry.section)! } : {}),
+      ...(parseIdentifier(entry.webviewSurfaceId)
+        ? { webviewSurfaceId: parseIdentifier(entry.webviewSurfaceId)! }
+        : {}),
     };
   });
 }

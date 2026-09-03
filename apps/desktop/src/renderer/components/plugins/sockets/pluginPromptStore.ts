@@ -132,6 +132,24 @@ export function submitPluginPrompt(text: string): void {
   request.onSubmit(text);
 }
 
+/**
+ * Watch the standing question from outside React.
+ *
+ * The webview relay needs it. `ui.prompt` has to answer the page EXACTLY once —
+ * with the text on submit, and with `null` when the reader walks away — and a
+ * dismissal is not an event this store has: it is the current request becoming
+ * something else. A subscriber can see that; `onSubmit` alone cannot, so a page
+ * that asked a question the reader ignored would hold its promise until main's
+ * ten-minute timeout.
+ *
+ * Exported rather than re-implemented because the alternative is a second
+ * prompt UI for pages only, which is the drift the socket path's own comment
+ * warns about.
+ */
+export function subscribePluginPrompt(listener: () => void): () => void {
+  return subscribe(listener);
+}
+
 /** The open question, for a caller that is not a component. */
 export function getPluginPrompt(): PluginPromptRequest | null {
   return current;

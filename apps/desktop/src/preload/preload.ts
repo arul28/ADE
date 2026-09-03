@@ -8381,6 +8381,12 @@ const adeBridge = {
         remotePluginChangeCallbacks.delete(cb);
       };
     },
+    onMain: (channel, cb) => {
+      const listener = (_event: unknown, payload: unknown) => cb(payload);
+      ipcRenderer.on(channel, listener);
+      return () => ipcRenderer.removeListener(channel, listener);
+    },
+    sendMain: (channel, payload) => ipcRenderer.send(channel, payload),
   }),
   pty: {
     create: async (args: PtyCreateArgs, pin?: OpenProjectBinding | null): Promise<PtyCreateResult> => {

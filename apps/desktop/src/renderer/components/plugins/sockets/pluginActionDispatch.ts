@@ -19,6 +19,7 @@ import {
   readPluginActionPrompt,
   readPluginActionWebview,
   type PluginActionNavigation,
+  type PluginActionWebviewPlacement,
 } from "../../../../shared/plugins/sdk";
 import { applyPluginActionOpenUrl } from "../pluginActionOpenUrl";
 // Re-exported so the socket dispatcher stays the one import site callers know,
@@ -44,6 +45,10 @@ import {
   type PluginNavigateResolution,
 } from "./pluginNavigateTarget";
 import { openPluginWebviewOverlay } from "./pluginWebviewOverlayStore";
+import {
+  openPluginWebviewPopover,
+  type PluginWebviewPopoverAnchor,
+} from "./pluginWebviewPopoverStore";
 import { openPluginPrompt, readPluginPromptAnchor } from "./pluginPromptStore";
 import {
   openPluginPanelPopover,
@@ -160,11 +165,13 @@ export function runPluginSocketAction(
         const surfaceExists = plugin?.enabled
           && plugin.tabs.some((tab) => tab.id === overlay.surfaceId);
         if (surfaceExists) {
-          openPluginWebviewOverlay({
+          openPluginActionWebview({
             pluginId,
             surfaceId: overlay.surfaceId,
+            ...(overlay.placement ? { placement: overlay.placement } : {}),
             subject: context,
             ...(overlay.context ? { pointer: overlay.context } : {}),
+            anchor,
           });
         } else {
           console.warn("[plugin webview] openWebview named an unknown surface", pluginId, overlay.surfaceId);
@@ -387,4 +394,77 @@ function readPluginNavigateEnvironment(
     : null;
 
   return { registryLoaded: registry.pluginsLoaded, plugin, railPanelIds, declaredPanelIds };
+}
+
+
+/**
+ * Where the composer's own page picker anchors.
+ *
+ * The plugin socket row inside the composer marks itself
+ * (`PluginComposerActions`), and a picker anchors to THAT rather than to the
+ * button inside it: a card that hangs off one accessory button drifts sideways
+ * as the row's contents change, while the row itself is the composer's own
+ * width and is where the reader is looking. Falls back to the pressed control
+ * when no composer is on screen, which is what a chat-header picker gets.
+ */
+const PLUGIN_COMPOSER_ANCHOR_SELECTOR = "[data-plugin-composer-anchor]";
+
+function readPluginComposerAnchor(): PluginWebviewPopoverAnchor | null {
+  if (typeof document === "undefined") return null;
+  const row = document.querySelector<HTMLElement>(PLUGIN_COMPOSER_ANCHOR_SELECTOR);
+  if (!row) return null;
+  const rect = row.getBoundingClientRect();
+  if (rect.width === 0 && rect.height === 0) return null;
+  return { x: rect.left, y: rect.top, width: rect.width, height: rect.height };
+}
+
+/**
+ * Open a plugin's own page where the action asked for it.
+ *
+ * The placement router, and the reason it is one function: an `openWebview`
+ * answer names a placement the plugin WANTS, and this is the single place that
+ * decides what this client can actually give it. A picker asked for from a
+ * screen with no composer becomes a popover under the control that was pressed,
+ * because the alternative — refusing — is a button that does nothing on a
+ * screen where the plugin's page would have been perfectly readable.
+ *
+ * Exported for the test that pins that rule; every caller in the app reaches it
+ * through {@link runPluginSocketAction}.
+ */
+export function openPluginActionWebview(request: {
+  pluginId: string;
+  surfaceId: string;
+  placement?: PluginActionWebviewPlacement;
+  subject: PluginSurfaceContext | null;
+  pointer?: Record<string, unknown>;
+  /** The rect of the pressed control, sampled before the round trip. */
+  anchor?: PluginPanelPopoverAnchor | null;
+}): "overlay" | "popover" | "composer-picker" {
+  const pointer = request.pointer ? { pointer: request.pointer } : {};
+  // Absent means `overlay`, which is what every `openWebview` meant before the
+  // page tier had more than one host — so an older plugin keeps its placement.
+  const placement = request.placement ?? "overlay";
+
+  if (placement === "popover" || placement === "picker") {
+    const anchor = placement === "picker"
+      ? readPluginComposerAnchor() ?? request.anchor ?? null
+      : request.anchor ?? null;
+    openPluginWebviewPopover({
+      pluginId: request.pluginId,
+      surfaceId: request.surfaceId,
+      kind: placement === "picker" ? "composer-picker" : "popover",
+      subject: request.subject,
+      anchor,
+      ...pointer,
+    });
+    return placement === "picker" ? "composer-picker" : "popover";
+  }
+
+  openPluginWebviewOverlay({
+    pluginId: request.pluginId,
+    surfaceId: request.surfaceId,
+    subject: request.subject,
+    ...pointer,
+  });
+  return "overlay";
 }

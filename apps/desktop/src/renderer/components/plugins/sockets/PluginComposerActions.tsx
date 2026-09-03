@@ -259,7 +259,16 @@ export function PluginComposerActions({
   const dataTour = `plugin:${surface}.composer-action`;
 
   return (
-    <span className="inline-flex shrink-0 items-center gap-0.5">
+    <span
+      className="inline-flex shrink-0 items-center gap-0.5"
+      // The anchor a composer PICKER hangs off. A page opened as a picker
+      // belongs over the composer it is about to write into, and this row is
+      // the only part of the composer the plugin layer can name: the picker is
+      // opened from `pluginActionDispatch`, which is a plain function with no
+      // ref to anything. Anchoring to the row rather than to the button inside
+      // it keeps the card still while the row's contents change.
+      data-plugin-composer-anchor={surface}
+    >
       {visible.map((contribution) => {
         const key = contributionKey(contribution);
         const busy = busyKeys.includes(key);

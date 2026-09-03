@@ -14,7 +14,7 @@ import { PluginWebviewHost, supportsPluginWebviews } from "./PluginWebviewHost";
 import { PluginFallbackCard } from "./VocabularyRenderer";
 import { pluginIcon } from "./pluginIcons";
 import { builtinRouteForPluginRoute } from "./builtinTabs";
-import { buildDeeplink, parseDeeplinkPluginContext } from "../../../shared/deeplinks";
+import { parseDeeplinkPluginContext } from "../../../shared/deeplinks";
 import { pluginRailTabSurface } from "../../../shared/plugins/manifest";
 
 /**
@@ -145,6 +145,9 @@ export function PluginTabPage({ active = true }: { active?: boolean }) {
     [panelId, plugin],
   );
   const entryHtml = surface?.kind === "webview" ? surface.entryHtml ?? null : null;
+  // The manifest surface behind this route, for `__adeCtx`. Null on an ordinary
+  // panel tab, which has no webview surface to name.
+  const surfaceId = surface?.kind === "webview" ? surface.id : null;
   // A page fills the frame; a panel sits in the page's padding. Decided here
   // rather than inside the guest so the header keeps its own spacing either way.
   const hostsWebview = Boolean(entryHtml) && supportsPluginWebviews();
@@ -308,6 +311,7 @@ export function PluginTabPage({ active = true }: { active?: boolean }) {
         panelId={panelId}
         active={active}
         entryHtml={entryHtml}
+        surfaceId={surfaceId}
         renderContext={renderContext}
         onNavigate={navigateToPanel}
         onBack={canGoBack ? goBack : null}
@@ -323,6 +327,7 @@ function PluginBody({
   panelId,
   active,
   entryHtml,
+  surfaceId,
   renderContext,
   onNavigate,
   onBack,
@@ -334,6 +339,8 @@ function PluginBody({
   active: boolean;
   /** Set when this surface is a webview and this client can host one. */
   entryHtml: string | null;
+  /** The manifest surface id behind that page, for the guest's `__adeCtx`. */
+  surfaceId: string | null;
   renderContext: Record<string, unknown> | null;
   onNavigate: (
     navigation: { panelId: string; context?: Record<string, unknown> },
@@ -374,7 +381,13 @@ function PluginBody({
           panelId={panelId}
           active={active}
         />
-        <PluginWebviewHost pluginId={plugin.pluginId} entryHtml={entryHtml} active={active} />
+        <PluginWebviewHost
+          pluginId={plugin.pluginId}
+          entryHtml={entryHtml}
+          active={active}
+          placement="tab"
+          surfaceId={surfaceId}
+        />
       </>
     );
   }
@@ -393,85 +406,18 @@ function PluginBody({
     />
   );
 
-  // A webview surface on a client that cannot host one. The panel below is
-  // still the contract and still renders; what this adds is the missing half
-  // of the story — that there IS a richer page, and where to see it — because
-  // silently showing the fallback makes a plugin look like it has less to offer
-  // than it does.
-  if (entryHtml) {
-    return (
-      <div style={{ display: "grid", gap: 14, minWidth: 0 }}>
-        <PluginWebviewElsewhereCard
-          plugin={plugin}
-          panelId={panelId}
-          renderContext={renderContext}
-        />
-        {panel}
-      </div>
-    );
-  }
-
+  // A webview surface on a client that cannot host one draws the PANEL, and
+  // says nothing about it.
+  //
+  // This used to add a card telling the reader the real page lives in the
+  // desktop app. The page tier retires that: `panelId` is the surface's own
+  // declared cross-client rendering, so the panel is the contract being kept
+  // rather than a consolation for one that was broken — and a card advertising
+  // another application, on a client where the plugin is working correctly, is
+  // an apology for nothing. The hosted web client grows its own page host in
+  // wave 2 (see the TODO in `PluginWebviewHost.tsx`), at which point this
+  // branch stops being reached there at all.
   return panel;
-}
-
-/**
- * The "this page lives on the desktop app" card.
- *
- * A `webview` surface is a plugin's own HTML served over the `ade-plugin://`
- * protocol, which is registered by the Electron main process — there is no
- * browser equivalent and there will not be one, so this is a permanent property
- * of the client rather than a feature that has not shipped yet. The card says
- * that in those terms and hands over the one thing that resolves it: the
- * `ade://` address of this exact panel, which the OS gives to the desktop app.
- *
- * A plain anchor, not a click handler. An unknown scheme is a navigation the
- * browser hands to the OS handler on its own, and an anchor is also the form a
- * reader can copy, middle-click or open however they prefer.
- */
-function PluginWebviewElsewhereCard({
-  plugin,
-  panelId,
-  renderContext,
-}: {
-  plugin: InstalledPlugin;
-  panelId: string;
-  renderContext: Record<string, unknown> | null;
-}) {
-  // The context rides along, so the link reopens the panel the reader is
-  // looking at rather than the plugin's front page.
-  const href = React.useMemo(
-    () => buildDeeplink(
-      {
-        kind: "plugin",
-        pluginId: plugin.pluginId,
-        panelId,
-        ...(renderContext ? { context: renderContext } : {}),
-      },
-      { form: "ade" },
-    ),
-    [panelId, plugin.pluginId, renderContext],
-  );
-  return (
-    <PluginFallbackCard
-      fallback={{
-        title: `${plugin.displayName} has a page that only the desktop app can show`,
-        text: "Its page runs inside ADE on your computer. What you see below is what the plugin publishes for every other client.",
-      }}
-      action={
-        <a
-          href={href}
-          style={{
-            ...outlineButton({ height: 28, padding: "0 10px", fontSize: 11 }),
-            display: "inline-flex",
-            alignItems: "center",
-            textDecoration: "none",
-          }}
-        >
-          Open on desktop
-        </a>
-      }
-    />
-  );
 }
 
 /**

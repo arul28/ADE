@@ -128,13 +128,21 @@ export function payloadFromManifestSocket(socket: PluginManifestSocket): unknown
         ...(socket.menu ? { menu: socket.menu } : {}),
         ...(socket.color ? { color: socket.color } : {}),
         ...(socket.ownsSend === true ? { ownsSend: true } : {}),
+        // The page a press may open instead of the panel. Passed through and
+        // re-validated by the parser, like every other field here.
+        ...(socket.webviewSurfaceId ? { webviewSurfaceId: socket.webviewSurfaceId } : {}),
       };
     case "row-badge":
       // A manifest badge has no value of its own — it is the declaration a
       // dynamic row later fills in, and {@link selectContributions} never draws
       // it. The payload is still built, because the declaration is what a
       // published row is matched against for override and ordering.
-      return { text: socket.label, tone: "neutral", icon: socket.icon };
+      return {
+        text: socket.label,
+        tone: "neutral",
+        icon: socket.icon,
+        ...(socket.webviewSurfaceId ? { webviewSurfaceId: socket.webviewSurfaceId } : {}),
+      };
     case "row-menu-item":
       return { label: socket.label, icon: socket.icon, actionId: socket.actionId };
     case "detail-section":
@@ -175,7 +183,12 @@ export function payloadFromManifestSocket(socket: PluginManifestSocket): unknown
     // plugin naming one this build has never heard of lands in the generic
     // Plugins area instead of failing to parse.
     case "settings-section":
-      return { panelId: socket.panelId, title: socket.label, section: socket.section };
+      return {
+        panelId: socket.panelId,
+        title: socket.label,
+        section: socket.section,
+        ...(socket.webviewSurfaceId ? { webviewSurfaceId: socket.webviewSurfaceId } : {}),
+      };
     // The rail and the drawer are the same contribution wearing different
     // chrome — see `PluginPanelHostPayload` — so moving between them is a
     // one-word manifest edit and nothing here has to change.

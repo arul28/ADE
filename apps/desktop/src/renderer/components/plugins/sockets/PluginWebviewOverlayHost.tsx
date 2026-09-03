@@ -170,6 +170,9 @@ export function PluginWebviewOverlayHost() {
                       pluginId={resolved.pluginId}
                       entryHtml={resolved.entryHtml}
                       active
+                      placement="overlay"
+                      surfaceId={request.surfaceId}
+                      onRequestClose={closePluginWebviewOverlay}
                       context={{
                         subject: request.subject,
                         ...(request.pointer ? { pointer: request.pointer } : {}),

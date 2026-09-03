@@ -544,6 +544,23 @@ export type PluginActionButtonPayload = {
    * of invoking, and Enter/Send invokes this action with `args.send === true`.
    */
   ownsSend?: boolean;
+  /**
+   * A `webview` surface of the same plugin this contribution draws INSTEAD of
+   * `panelId`, on a client that can host a plugin page.
+   *
+   * The one field the page tier adds to the declarative sockets, and it is
+   * deliberately a second name beside `panelId` rather than a replacement for it.
+   * `panelId` stays REQUIRED and stays the contract: the terminal, an older host
+   * and any client without a page host draw it, so a plugin that names a page
+   * still works everywhere it worked before. A host that can draw the page draws
+   * the page; a host that cannot draws the panel, and neither has to ask the
+   * plugin which it should do.
+   *
+   * Unresolvable ids cost nothing: the renderer looks the surface up in the
+   * plugin's OWN declared surfaces, so the worst a wrong value does is fall back
+   * to the panel that was always going to be the fallback.
+   */
+  webviewSurfaceId?: string;
 };
 
 /**
@@ -691,6 +708,8 @@ export type PluginRowBadgePayload = {
   tone: PluginBadgeTone;
   icon?: string;
   tooltip?: string;
+  /** See the note on {@link PluginActionButtonPayload.webviewSurfaceId}. */
+  webviewSurfaceId?: string;
 };
 
 export type PluginRowMenuItemPayload = {
@@ -813,6 +832,8 @@ export type PluginSettingsSectionPayload = {
   panelId: string;
   title?: string;
   section?: string;
+  /** See the note on {@link PluginActionButtonPayload.webviewSurfaceId}. */
+  webviewSurfaceId?: string;
 };
 
 /**
@@ -1162,6 +1183,11 @@ export function parsePluginContributionPayload<K extends PluginSocketKind>(
         // An illegible or malformed tint drops to `null` here and the field is
         // simply absent, so a renderer never has to decide whether to trust it.
         const color = sanitizePluginActionColor(raw.color);
+        // Bounded at the manifest identifier ceiling every other surface id
+        // uses. Never resolved here: this module runs in the daemon and on the
+        // phone, where there is no registry to look a surface up in, so the
+        // parser only proves the SHAPE and the drawing client proves the id.
+        const webviewSurfaceId = bounded(raw.webviewSurfaceId, 64);
         return {
           label,
           actionId,
@@ -1170,6 +1196,7 @@ export function parsePluginContributionPayload<K extends PluginSocketKind>(
           ...(menu.length > 0 ? { menu } : {}),
           ...(color ? { color } : {}),
           ...(raw.ownsSend === true ? { ownsSend: true } : {}),
+          ...(webviewSurfaceId ? { webviewSurfaceId } : {}),
         };
       }
       case "row-badge": {
@@ -1180,6 +1207,9 @@ export function parsePluginContributionPayload<K extends PluginSocketKind>(
           tone: normalizeVocabTone(raw.tone),
           ...(bounded(raw.icon, 40) ? { icon: bounded(raw.icon, 40)! } : {}),
           ...(bounded(raw.tooltip, 200) ? { tooltip: bounded(raw.tooltip, 200)! } : {}),
+          ...(bounded(raw.webviewSurfaceId, 64)
+            ? { webviewSurfaceId: bounded(raw.webviewSurfaceId, 64)! }
+            : {}),
         };
       }
       case "row-menu-item": {
@@ -1261,6 +1291,9 @@ export function parsePluginContributionPayload<K extends PluginSocketKind>(
           panelId,
           ...(bounded(raw.title, 60) ? { title: bounded(raw.title, 60)! } : {}),
           ...(bounded(raw.section, 64) ? { section: bounded(raw.section, 64)! } : {}),
+          ...(bounded(raw.webviewSurfaceId, 64)
+            ? { webviewSurfaceId: bounded(raw.webviewSurfaceId, 64)! }
+            : {}),
         };
       }
       case "work-rail-pane":

@@ -159,7 +159,7 @@ describe("plugin tab page", () => {
     expect(screen.queryByTestId("panel-host")).toBeNull();
   });
 
-  it("offers the desktop app for a webview surface a browser cannot host, and still draws the panel", () => {
+  it("draws the panel, and says nothing, for a webview surface this client cannot host", () => {
     webviewsSupported = false;
     registry.plugins = [installed({
       tabs: [{ id: "main", title: "Overview", kind: "webview", panelId: "overview", entryHtml: "ui/index.html" }],
@@ -171,11 +171,14 @@ describe("plugin tab page", () => {
     // client.
     expect(screen.getByTestId("panel-host").textContent).toBe("overview");
 
-    // …and the reader is told there is more, with the address of THIS panel,
-    // context included, rather than the plugin's front page.
-    const link = screen.getByRole("link", { name: "Open on desktop" }) as HTMLAnchorElement;
-    expect(link.getAttribute("href"))
-      .toBe("ade://plugin/acme-notes/overview?ctx=%7B%22issue%22%3A%22ISS-14%22%7D");
+    // And nothing more. The page tier retired the "Open on desktop" card
+    // (spec §3, the vocabulary fallback rule): `panelId` is the surface's own
+    // declared cross-client rendering, so drawing it is the contract being
+    // kept, not a consolation for one that was broken — and a card advertising
+    // another application, on a client where the plugin is working correctly,
+    // is an apology for nothing.
+    expect(screen.queryByRole("link", { name: "Open on desktop" })).toBeNull();
+    expect(document.body.textContent).not.toMatch(/desktop app/i);
   });
 
   it("says nothing about the desktop app for an ordinary panel surface", () => {

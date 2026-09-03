@@ -42,6 +42,11 @@ import type {
   PluginUsageSummary,
   PluginWebhookIngressStatus,
 } from "../shared/plugins/sdk";
+import type {
+  PluginWebviewSurfaceState,
+  PluginWebviewThemeSnapshot,
+  PluginWebviewUiResponse,
+} from "../shared/plugins/webviewBridge";
 
 /**
  * The host reports lifecycle detail the plugin surfaces do not draw: a plugin
@@ -109,6 +114,10 @@ export function toInstalledPlugin(summary: PluginSummary): PluginClientInstalled
         panelId: surface.panelId,
         icon: surface.icon ?? null,
         ...(surface.entryHtml ? { entryHtml: surface.entryHtml } : {}),
+        // The anchored-placement size hint rides with the page it belongs to.
+        // Absent from a manifest that declared none and from a host too old to
+        // parse it, so its absence means "use the default" and never "zero".
+        ...(surface.popover ? { popover: surface.popover } : {}),
         // Which core tab this plugin replaces, when it replaces one. Carried
         // explicitly rather than inferred: the extraction pilot gates a builtin
         // tab on it, and inferring the owner from a name would be a guess about
@@ -234,10 +243,22 @@ export type PluginBridgeDeps = {
    * unregister function.
    */
   subscribeChanges: (cb: (event: PluginClientChangeEvent) => void) => () => void;
+  /**
+   * Listen on a main → renderer channel; returns the unlisten function.
+   *
+   * The webview relay is the one part of this namespace that is not a call: main
+   * ASKS the window to move a piece of ADE's own UI and waits for the answer, so
+   * the renderer needs both directions of a plain channel rather than `invoke`.
+   * Injected rather than reached for so this module keeps importing nothing from
+   * Electron and stays testable with a fake pair.
+   */
+  onMain: (channel: string, cb: (payload: unknown) => void) => () => void;
+  /** Fire-and-forget renderer → main. The relay's three answers are `ipcMain.on`. */
+  sendMain: (channel: string, payload: unknown) => void;
 };
 
 export function createPluginBridge(deps: PluginBridgeDeps) {
-  const { callStrictOr, invoke, subscribeChanges } = deps;
+  const { callStrictOr, invoke, subscribeChanges, onMain, sendMain } = deps;
   return {
     list: async (): Promise<PluginClientInstalled[]> => {
       // Disabled plugins are part of the list the UI draws — it renders the
@@ -402,5 +423,34 @@ export function createPluginBridge(deps: PluginBridgeDeps) {
     },
     onChanged: (cb: (event: PluginClientChangeEvent) => void): (() => void) =>
       subscribeChanges(cb),
+    /**
+     * The plugin-page relay, as the renderer sees it.
+     *
+     * Five members and no policy. Which verbs exist, who may ask, what a guest
+     * is allowed to do while its surface is off screen — all of that is decided
+     * in main (`pluginWebviewBridgeServer.ts`), because a renderer that could
+     * decide any of it would be a renderer a compromised page could argue with.
+     * This is the wire and nothing else: two subscriptions main pushes on, and
+     * three answers the window sends back.
+     *
+     * Every payload crosses as `unknown`. The renderer validates each one
+     * against the shared types before it acts, for the same reason the guest's
+     * own calls are validated: a channel is not a type.
+     */
+    webview: {
+      onUiRequest: (cb: (request: unknown) => void): (() => void) =>
+        onMain(IPC.pluginWebviewUiRequest, cb),
+      respondUi: (response: PluginWebviewUiResponse): void => {
+        sendMain(IPC.pluginWebviewUiResponse, response);
+      },
+      publishTheme: (snapshot: PluginWebviewThemeSnapshot): void => {
+        sendMain(IPC.pluginWebviewThemePublish, snapshot);
+      },
+      setSurfaceState: (state: PluginWebviewSurfaceState): void => {
+        sendMain(IPC.pluginWebviewSurfaceState, state);
+      },
+      onReload: (cb: (event: unknown) => void): (() => void) =>
+        onMain(IPC.pluginWebviewReload, cb),
+    },
   } satisfies Window["ade"]["plugins"];
 }

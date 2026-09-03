@@ -10,6 +10,8 @@ import {
 } from "./pluginSettingsTab";
 import type { PluginSurfaceOnlyContext } from "../../../../shared/plugins/context";
 import { PluginPanelHost } from "../PluginPanelHost";
+import { PluginWebviewHost, supportsPluginWebviews } from "../PluginWebviewHost";
+import { useRootAppStore } from "../../../state/appStore";
 import { contributionKey } from "./contributionModel";
 import { SocketBoundary } from "./SocketBoundary";
 import { SocketIcon } from "./socketUi";
@@ -73,6 +75,9 @@ export function PluginSettingsSections({
   // puzzle piece for exactly the plugins that took the trouble to ship a mark,
   // while the tab rail beside it drew the mark — see `pluginIcons.tsx`.
   const brandIconsFor = usePluginBrandIcons();
+  // The registry, for resolving a section's `webviewSurfaceId` to a page. Read
+  // once here rather than per section.
+  const installedPlugins = useRootAppStore((state) => state.installedPlugins);
 
   const contributions = React.useMemo(
     () => all.filter((entry) => resolvePluginSettingsTab(entry.payload.section) === tab),
@@ -133,16 +138,103 @@ export function PluginSettingsSections({
                 <span style={{ fontWeight: 600, color: COLORS.textSecondary }}>{title}</span>
                 {title === name ? null : <span style={{ opacity: 0.7 }}>· {name}</span>}
               </header>
-              <PluginPanelHost
+              <PluginSettingsSectionBody
                 pluginId={contribution.pluginId}
                 panelId={contribution.payload.panelId}
+                webviewSurfaceId={contribution.payload.webviewSurfaceId ?? null}
+                installedPlugins={installedPlugins}
                 active={active}
-                surfaceContext={SETTINGS_CONTEXT}
               />
             </section>
           </SocketBoundary>
         );
       })}
+    </div>
+  );
+}
+
+
+/**
+ * The tallest a settings section's page is drawn before it scrolls inside.
+ *
+ * A page in a settings section is the one placement with no frame of its own:
+ * every other host gives the guest a box it fills, and this one sizes itself to
+ * what the page says it needs. `PluginWebviewHost` already caps the number the
+ * page reports; this is the floor-and-default half — a section that has not
+ * reported yet gets a readable box rather than a zero-height gap.
+ */
+export const PLUGIN_SETTINGS_SECTION_DEFAULT_HEIGHT = 240;
+export const PLUGIN_SETTINGS_SECTION_MIN_HEIGHT = 120;
+
+/**
+ * One section's body: the plugin's own page, or the panel it falls back to.
+ *
+ * The fallback is not a degradation and is not announced as one. A
+ * `settings-section` names a `panelId` and MAY name a `webviewSurfaceId`; the
+ * panel is what the manifest promised every client would draw, and a host that
+ * can draw the page draws the page. Nothing here tells the reader they are
+ * looking at the second-best rendering, because on a client without a page host
+ * they are looking at the only one.
+ *
+ * Split out of the mapped body so the height state belongs to ONE section. Held
+ * in the parent's map it would have been one number shared by every plugin's
+ * section on the page, and the tallest page would have set the height of them
+ * all.
+ */
+function PluginSettingsSectionBody({
+  pluginId,
+  panelId,
+  webviewSurfaceId,
+  installedPlugins,
+  active,
+}: {
+  pluginId: string;
+  panelId: string;
+  webviewSurfaceId: string | null;
+  installedPlugins: readonly { pluginId: string; enabled: boolean; tabs: readonly { id: string; kind?: string; entryHtml?: string | null }[] }[];
+  active: boolean;
+}) {
+  const [height, setHeight] = React.useState<number | null>(null);
+
+  const entryHtml = React.useMemo(() => {
+    if (!webviewSurfaceId || !supportsPluginWebviews()) return null;
+    const plugin = installedPlugins.find((entry) => entry.pluginId === pluginId);
+    if (!plugin?.enabled) return null;
+    const surface = plugin.tabs.find((tab) => tab.id === webviewSurfaceId);
+    return surface?.kind === "webview" ? surface.entryHtml ?? null : null;
+  }, [installedPlugins, pluginId, webviewSurfaceId]);
+
+  if (!entryHtml) {
+    return (
+      <PluginPanelHost
+        pluginId={pluginId}
+        panelId={panelId}
+        active={active}
+        surfaceContext={SETTINGS_CONTEXT}
+      />
+    );
+  }
+
+  return (
+    <div
+      style={{
+        display: "flex",
+        minHeight: 0,
+        height: Math.max(
+          PLUGIN_SETTINGS_SECTION_MIN_HEIGHT,
+          height ?? PLUGIN_SETTINGS_SECTION_DEFAULT_HEIGHT,
+        ),
+      }}
+    >
+      <PluginWebviewHost
+        pluginId={pluginId}
+        entryHtml={entryHtml}
+        active={active}
+        placement="settings-section"
+        surfaceId={webviewSurfaceId}
+        onContentHeight={setHeight}
+        context={{ subject: SETTINGS_CONTEXT }}
+      />
     </div>
   );
 }

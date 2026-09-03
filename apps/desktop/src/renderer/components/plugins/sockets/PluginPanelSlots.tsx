@@ -3,6 +3,7 @@ import React from "react";
 import { COLORS, RADII, SANS_FONT } from "../../lanes/laneDesignTokens";
 import type { PluginSurfaceContext } from "../../../../shared/plugins/context";
 import type { PluginSocketKind, PluginSurfaceId } from "../../../../shared/plugins/sockets";
+import type { PluginWebviewPlacement } from "../../../../shared/plugins/webviewBridge";
 import { useRootAppStore } from "../../../state/appStore";
 import { pluginIcon } from "../pluginIcons";
 import { PluginPanelHost } from "../PluginPanelHost";
@@ -57,6 +58,8 @@ export type PluginPanelSlot = {
    * the host's `active` exactly as the panel is: nothing loads until shown.
    */
   entryHtml?: string;
+  /** The webview surface `entryHtml` came from, for the guest's `__adeCtx`. */
+  webviewSurfaceId?: string;
 };
 
 /**
@@ -111,15 +114,14 @@ export function usePluginPanelSlots(
         // page. Resolved only where a guest can run; elsewhere `entryHtml` stays
         // absent and the panel is drawn.
         const installed = installedPlugins.find((plugin) => plugin.pluginId === contribution.pluginId);
-        const entryHtml = webviewSupported
-          ? installed
-            ?.tabs.find(
-              (tab) => tab.kind === "webview"
-                && tab.panelId === contribution.payload.panelId
-                && Boolean(tab.entryHtml),
-            )
-            ?.entryHtml ?? undefined
-          : undefined;
+        const surface = webviewSupported
+          ? installed?.tabs.find(
+            (tab) => tab.kind === "webview"
+              && tab.panelId === contribution.payload.panelId
+              && Boolean(tab.entryHtml),
+          ) ?? null
+          : null;
+        const entryHtml = surface?.entryHtml ?? undefined;
         slots.push({
           id,
           key: contributionKey(contribution),
@@ -129,6 +131,7 @@ export function usePluginPanelSlots(
           icon: pluginIcon(contribution.payload.icon, installed?.brandIcons),
           displayName: identity?.displayName ?? contribution.pluginId,
           ...(entryHtml ? { entryHtml } : {}),
+          ...(surface && entryHtml ? { webviewSurfaceId: surface.id } : {}),
         });
       }
       return slots;
@@ -150,12 +153,23 @@ export function PluginSlotPanel({
   slot,
   active = true,
   context,
+  placement = "pane",
 }: {
   slot: PluginPanelSlot;
   /** False while the host is mounted but not showing this slot. */
   active?: boolean;
   /** The subject this panel's actions receive. Omit where there is none. */
   context?: PluginSurfaceContext | null;
+  /**
+   * Which host is drawing this slot — the Work rail (`pane`) or the chat
+   * actions drawer (`drawer`).
+   *
+   * The two sockets share a payload and a mechanism, but a PAGE has to be told
+   * them apart: `__adeCtx.placement` is how a plugin lays its page out for the
+   * space it got, and a narrow rail pane and a wide drawer tab are not the same
+   * space. Defaults to `pane`, which is the older of the two callers.
+   */
+  placement?: Extract<PluginWebviewPlacement, "pane" | "drawer">;
 }) {
   const header = (
     <header
@@ -191,6 +205,8 @@ export function PluginSlotPanel({
             pluginId={slot.pluginId}
             entryHtml={slot.entryHtml}
             active={active}
+            placement={placement}
+            surfaceId={slot.webviewSurfaceId ?? null}
             context={{ subject: context ?? null }}
           />
         </div>

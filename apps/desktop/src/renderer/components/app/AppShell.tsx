@@ -48,6 +48,9 @@ import { runPluginSocketAction } from "../plugins/sockets/pluginActionDispatch";
 import { PluginWebviewOverlayHost } from "../plugins/sockets/PluginWebviewOverlayHost";
 import { PluginPromptHost } from "../plugins/sockets/PluginPromptHost";
 import { PluginPanelPopoverHost } from "../plugins/sockets/PluginPanelPopoverHost";
+import { PluginWebviewPopoverHost } from "../plugins/sockets/PluginWebviewPopoverHost";
+import { PluginWebviewConfirmHost } from "../plugins/sockets/PluginWebviewConfirmHost";
+import { PluginWebviewRelayHost } from "../plugins/sockets/PluginWebviewRelayHost";
 import {
   dispatchPluginKeybindingEvent,
   usePluginKeybindings,
@@ -1721,6 +1724,13 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       <PluginWebviewOverlayHost />
       <PluginPromptHost />
       <PluginPanelPopoverHost />
+      {/* The page tier's three window-level hosts. The popover draws an anchored
+          plugin page, the confirm draws the one dialog a page cannot draw for
+          itself, and the relay is the window's end of the bridge — it renders
+          nothing and owns the theme publish and the hot-reload subscription. */}
+      <PluginWebviewPopoverHost />
+      <PluginWebviewConfirmHost />
+      <PluginWebviewRelayHost />
     </div>
   );
 }

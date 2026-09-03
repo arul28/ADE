@@ -147,7 +147,7 @@ export function ChatActionsDrawerPanel({
   };
   const body = selectedSlot && activeTab === selectedSlot.id ? (
     <div className="h-full min-h-0 overflow-auto px-3 py-3">
-      <PluginSlotPanel slot={selectedSlot} active={active} context={sessionContext} />
+      <PluginSlotPanel slot={selectedSlot} active={active} context={sessionContext} placement="drawer" />
     </div>
   ) : bodyByTab[activeTab as Exclude<ChatActionsTab, `plugin:${string}`>];
 

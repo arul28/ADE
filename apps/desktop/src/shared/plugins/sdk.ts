@@ -2206,7 +2206,42 @@ export type PluginActionWebview = {
   surfaceId: string;
   /** An optional pointer handed to the page as its context `pointer`. */
   context?: Record<string, unknown>;
+  /**
+   * Where the client should draw the page. Absent means `overlay`, which is
+   * what every `openWebview` meant before the page tier had more than one
+   * host — so an older plugin keeps the placement it already had.
+   *
+   * A REQUEST, like `surfaceId` itself: a client that has no popover (the
+   * terminal) or no composer on screen falls back to the placement it can draw
+   * rather than refusing the open. See {@link PLUGIN_ACTION_WEBVIEW_PLACEMENTS}.
+   */
+  placement?: PluginActionWebviewPlacement;
 };
+
+/**
+ * The placements an `openWebview` answer may ask for.
+ *
+ * Deliberately a shorter list than `PLUGIN_WEBVIEW_PLACEMENTS`: a plugin ACTION
+ * can only ask for the three hosts a press can summon. `tab`, `pane`, `drawer`
+ * and `settings-section` are placements the host puts a page in because the
+ * manifest declared it there, and a button that could move itself into the Work
+ * rail would be a plugin rearranging ADE's furniture from a click handler.
+ *
+ * The names are the plugin's vocabulary, not the host's: `picker` is what an
+ * author calls the card over the composer, and the renderer maps it onto the
+ * host's own `composer-picker`. Kept as its own union rather than imported from
+ * `webviewBridge.ts` so this module stays free of a runtime cycle — that module
+ * already imports this one.
+ */
+export const PLUGIN_ACTION_WEBVIEW_PLACEMENTS = ["overlay", "popover", "picker"] as const;
+
+export type PluginActionWebviewPlacement = (typeof PLUGIN_ACTION_WEBVIEW_PLACEMENTS)[number];
+
+export function isPluginActionWebviewPlacement(
+  value: unknown,
+): value is PluginActionWebviewPlacement {
+  return PLUGIN_ACTION_WEBVIEW_PLACEMENTS.some((placement) => placement === value);
+}
 
 /**
  * Read an overlay request out of whatever an action returned.
@@ -2221,16 +2256,25 @@ export function readPluginActionWebview(result: unknown): PluginActionWebview | 
   if (!isRecord(request)) return null;
   const surfaceId = request.surfaceId;
   if (typeof surfaceId !== "string" || !isValidPluginManifestIdentifier(surfaceId)) return null;
+  // An unknown placement is DROPPED rather than refusing the open: the surface
+  // and the pointer are still exactly what the plugin asked for, and a page
+  // that opens in the overlay is a worse answer than the one the author wanted
+  // but a far better one than a button that does nothing.
+  const placement = isPluginActionWebviewPlacement(request.placement)
+    ? { placement: request.placement }
+    : {};
   const context = request.context;
-  if (!isRecord(context)) return { surfaceId };
+  if (!isRecord(context)) return { surfaceId, ...placement };
   let json: string;
   try {
     json = JSON.stringify(context) ?? "";
   } catch {
-    return { surfaceId };
+    return { surfaceId, ...placement };
   }
-  if (!json || pluginUtf8ByteLength(json) > PLUGIN_WEBVIEW_POINTER_MAX_BYTES) return { surfaceId };
-  return { surfaceId, context };
+  if (!json || pluginUtf8ByteLength(json) > PLUGIN_WEBVIEW_POINTER_MAX_BYTES) {
+    return { surfaceId, ...placement };
+  }
+  return { surfaceId, context, ...placement };
 }
 
 /**
@@ -3588,6 +3632,12 @@ export type PluginSummary = {
      * already correct on every surface that cannot host a webview.
      */
     entryHtml?: string;
+    /**
+     * `webview` surfaces only: the size the page asks for in an anchored
+     * placement. Absent means the host's default — see
+     * `PluginManifestSurface.popover`.
+     */
+    popover?: { width: number; height: number };
   }[];
   /** Present only for theme plugins; the renderer's theme engine consumes it. */
   theme: { displayName: string; tokens: { dark?: Record<string, string>; light?: Record<string, string> } } | null;
@@ -4305,6 +4355,12 @@ export type PluginClientTabDescriptor = {
   panelId: string;
   /** `webview` only: plugin-relative HTML served over `ade-plugin://`. */
   entryHtml?: string | null;
+  /**
+   * `webview` only: the size the page asks for in an anchored placement (a
+   * socket popover, a composer picker). A hint the host clamps to the window;
+   * absent means the host's default. See `PluginManifestSurface.popover`.
+   */
+  popover?: { width: number; height: number } | null;
   /** Phosphor icon name; resolved through `pluginIcons.ts`, never rendered raw. */
   icon?: string | null;
   /**

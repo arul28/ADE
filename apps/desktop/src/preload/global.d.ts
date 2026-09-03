@@ -773,6 +773,11 @@ import type {
   PluginClientUsageRow as PluginUsageRow,
   PluginWebhookIngressStatus,
 } from "../shared/plugins/sdk";
+import type {
+  PluginWebviewSurfaceState,
+  PluginWebviewThemeSnapshot,
+  PluginWebviewUiResponse,
+} from "../shared/plugins/webviewBridge";
 
 export {};
 
@@ -2546,6 +2551,21 @@ declare global {
          */
         remoteInstall: boolean;
         onChanged: (cb: (event: PluginChangeEvent) => void) => () => void;
+        /**
+         * The plugin-page relay. Absent on a host from before the page tier,
+         * which is what lets the renderer degrade honestly instead of drawing a
+         * page whose buttons can never reach ADE's own UI.
+         *
+         * Payloads arrive as `unknown` on purpose — see the note in
+         * `preload/pluginBridge.ts`.
+         */
+        webview: {
+          onUiRequest: (cb: (request: unknown) => void) => () => void;
+          respondUi: (response: PluginWebviewUiResponse) => void;
+          publishTheme: (snapshot: PluginWebviewThemeSnapshot) => void;
+          setSurfaceState: (state: PluginWebviewSurfaceState) => void;
+          onReload: (cb: (event: unknown) => void) => () => void;
+        };
       };
       pty: {
         create: (args: PtyCreateArgs, pin?: OpenProjectBinding | null) => Promise<PtyCreateResult>;

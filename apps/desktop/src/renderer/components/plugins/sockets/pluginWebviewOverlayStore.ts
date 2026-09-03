@@ -78,6 +78,11 @@ export function closePluginWebviewOverlay(): void {
   emit();
 }
 
+/** The open overlay, for a caller that is not a component. */
+export function getPluginWebviewOverlay(): PluginWebviewOverlayRequest | null {
+  return current;
+}
+
 /** Subscribe a component to the current overlay request. */
 export function usePluginWebviewOverlay(): PluginWebviewOverlayRequest | null {
   return useSyncExternalStore(subscribe, getSnapshot, getSnapshot);

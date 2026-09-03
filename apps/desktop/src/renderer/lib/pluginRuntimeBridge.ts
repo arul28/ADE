@@ -19,6 +19,11 @@
  */
 
 import { isPluginsUnavailable } from "../../shared/plugins/sdk";
+import type {
+  PluginWebviewSurfaceState,
+  PluginWebviewThemeSnapshot,
+  PluginWebviewUiResponse,
+} from "../../shared/plugins/webviewBridge";
 import type { PluginEntityKind, PluginSurfaceId } from "../../shared/plugins/sockets";
 
 /**
@@ -202,6 +207,39 @@ function bridge(): PluginBridge | null {
 export function pluginsAvailable(): boolean {
   return bridge() !== null && !hostReportedUnavailable;
 }
+
+/**
+ * The plugin-page relay, or null on a host that has none.
+ *
+ * Its own accessor rather than a member every caller reaches through `bridge()`
+ * because it fails differently from everything else in this module. The rest of
+ * the namespace is CALLS: absent means "this host cannot install plugins", and
+ * the UI degrades to a read-only Marketplace. The relay is a pair of channels
+ * main pushes on, and absent means only that no plugin page can move ADE's own
+ * UI — a working page that cannot open a toast. The page tier draws itself
+ * either way, so this returns null quietly and the two hosts that use it check.
+ *
+ * Optional-chained through the whole path, including the `webview` member
+ * itself: a packaged app from before the page tier publishes the namespace
+ * without it, and reading a missing member as a call site error would break
+ * every plugin surface on an older host.
+ */
+export function pluginWebviewRelayBridge(): PluginWebviewRelayMembers | null {
+  if (typeof window === "undefined") return null;
+  const namespace = (window as unknown as {
+    ade?: { plugins?: { webview?: PluginWebviewRelayMembers } };
+  }).ade?.plugins?.webview;
+  return namespace ?? null;
+}
+
+/** What {@link pluginWebviewRelayBridge} publishes. See `preload/pluginBridge.ts`. */
+export type PluginWebviewRelayMembers = {
+  onUiRequest: (cb: (request: unknown) => void) => () => void;
+  respondUi: (response: PluginWebviewUiResponse) => void;
+  publishTheme: (snapshot: PluginWebviewThemeSnapshot) => void;
+  setSurfaceState: (state: PluginWebviewSurfaceState) => void;
+  onReload: (cb: (event: unknown) => void) => () => void;
+};
 
 /**
  * Latched by the first typed `plugins_unavailable` any call answers with.

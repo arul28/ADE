@@ -742,6 +742,50 @@ export type PluginWebviewReloadEvent = {
   revision: number;
 };
 
+// ---------------------------------------------------------------------------
+// Size-to-content
+// ---------------------------------------------------------------------------
+
+/**
+ * The `sendToHost` channel a page reports its own height on.
+ *
+ * The ONE thing on this bridge that does not go through the main process, and
+ * the reason is the whole design: a settings section and a composer picker are
+ * sized to their content, so the page measures itself with a `ResizeObserver`
+ * and the element around it grows. Routing that through main would put an IPC
+ * round trip on every layout tick to authorize a number that authorizes
+ * nothing — a page cannot move, cover or resize anything but its own frame, and
+ * the host clamps what it is told. `sendToHost` reaches the embedder element
+ * directly, which is exactly the party that owns the frame.
+ */
+export const PLUGIN_WEBVIEW_RESIZE_CHANNEL = "ade:plugin-webview:resize";
+
+/**
+ * Tallest a page may ask its own frame to be.
+ *
+ * A ceiling rather than a promise: a settings section that reported 40,000
+ * pixels would push every control below it off the page, and a scroll bar
+ * inside the guest is the honest answer for content that long.
+ */
+export const PLUGIN_WEBVIEW_MAX_HEIGHT_PX = 2_000;
+
+/** What a page sends on {@link PLUGIN_WEBVIEW_RESIZE_CHANNEL}. */
+export type PluginWebviewResize = { height: number };
+
+/**
+ * The height a host should actually apply, or null when there is none.
+ *
+ * Clamped in the PAGE as well as in the host, so the two cannot disagree about
+ * the ceiling and a page's own logging shows the number that will be used. A
+ * value that is not a finite positive number is null rather than zero: "the
+ * page said nothing usable" and "the page wants to be invisible" are different
+ * instructions, and collapsing them would hide a broken observer.
+ */
+export function clampPluginWebviewHeight(value: unknown): number | null {
+  if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) return null;
+  return Math.min(Math.ceil(value), PLUGIN_WEBVIEW_MAX_HEIGHT_PX);
+}
+
 /**
  * The renderer → main, on `IPC.pluginWebviewSurfaceState`: this guest's surface
  * is (or is no longer) on screen.
@@ -884,6 +928,18 @@ export type AdePluginWebviewBridge = {
     prompt(prompt: PluginActionPrompt): Promise<PluginActionPromptAnswer | null>;
     /** Ask a yes/no. Resolves false when the reader dismissed it. */
     confirm(request: PluginWebviewConfirm): Promise<boolean>;
+    /**
+     * Report this page's own content height so a size-to-content placement can
+     * grow around it. Call it from a `ResizeObserver`.
+     *
+     * Synchronous and void, and the ONLY member here that is — see
+     * {@link PLUGIN_WEBVIEW_RESIZE_CHANNEL}. It is a report to the element
+     * hosting the frame, not a request the host answers, so there is nothing to
+     * await and a promise per layout tick would be pure cost. A placement that
+     * is not sized to content ignores it. Clamped to
+     * {@link PLUGIN_WEBVIEW_MAX_HEIGHT_PX}.
+     */
+    resize(size: PluginWebviewResize): void;
   };
 
   clipboard: {

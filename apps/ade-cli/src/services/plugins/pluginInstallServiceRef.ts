@@ -153,6 +153,16 @@ export type SyncPluginRecordSocket = {
   description?: string;
   argumentHint?: string;
   section?: string;
+  /**
+   * The `webview` surface a contribution draws instead of its `panelId`.
+   *
+   * ON the wire rather than withheld, even though today's remote readers cannot
+   * host a plugin page: the hosted web client and the phone both grow a page
+   * host in wave 2 of the page tier, and a field a peer never received is a
+   * field it cannot start honouring when it can. Withholding it would put the
+   * upgrade behind a sync change nobody would think to make.
+   */
+  webviewSurfaceId?: string;
 };
 
 /**
