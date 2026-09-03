@@ -46,8 +46,17 @@ function usage() {
     "  --skip-install       Do not run app-local npm install before building.",
     "  --skip-fetch         For beta, do not fetch origin/main before the fast-forward check.",
     "  --dry-run            Print the commands without running them.",
+    "  --sign <identity>    macOS: sign with this certificate name or SHA-1 hash instead of ad-hoc.",
+    "  --sign-auto          macOS: sign with the first valid Developer ID Application identity,",
+    "                       else the first valid Apple Development identity.",
     "  --repo <path>        Internal/debug: build the selected channel from an existing repo path.",
     "  --help               Show this help.",
+    "",
+    "Signing:",
+    "  ADE_CHANNEL_SIGN_IDENTITY sets the same identity as --sign; the flag wins.",
+    "  Without one of these the app is signed ad-hoc, so every rebuild produces a new",
+    "  code signature and macOS re-prompts for the keychain items the previous build",
+    "  created. A stable identity keeps those keychain ACLs valid across rebuilds.",
     "",
   ].join("\n"));
 }
@@ -57,12 +66,14 @@ function fail(message) {
   process.exit(1);
 }
 
-function parseArgs(argv) {
+export function parseArgs(argv) {
   const options = {
     channel: null,
     skipInstall: false,
     skipFetch: false,
     dryRun: false,
+    signIdentity: null,
+    signAuto: false,
     repo: null,
   };
   const args = [...argv];
@@ -85,6 +96,20 @@ function parseArgs(argv) {
       options.dryRun = true;
       continue;
     }
+    if (arg === "--sign") {
+      const value = args.shift();
+      if (!value) fail("--sign requires a certificate name or SHA-1 hash.");
+      options.signIdentity = value;
+      continue;
+    }
+    if (arg.startsWith("--sign=")) {
+      options.signIdentity = arg.slice("--sign=".length);
+      continue;
+    }
+    if (arg === "--sign-auto") {
+      options.signAuto = true;
+      continue;
+    }
     if (arg === "--repo") {
       const value = args.shift();
       if (!value) fail("--repo requires a path.");
@@ -102,6 +127,94 @@ function parseArgs(argv) {
   if (!options.channel) fail("Missing channel. Use alpha or beta.");
   if (!CHANNELS[options.channel]) fail(`Unknown channel: ${options.channel}`);
   return options;
+}
+
+/**
+ * macOS code signing for local channel builds.
+ *
+ * An ad-hoc signature's designated requirement is the bundle's own cdhash, so
+ * every rebuild is a different program to the keychain. Items the previous
+ * build created — the desktop API key store (`com.ade.desktop.api-keys.v1`),
+ * the runtime credential key (`com.ade.runtime.credentials.file-store-key.v1`)
+ * and Electron's `<productName> Safe Storage` item — keep their ACL bound to
+ * the old binary and prompt again. A real certificate gives the bundle a
+ * stable designated requirement, so those ACLs keep matching.
+ */
+const APPLE_CERTIFICATE_NAME_PREFIXES = [
+  "Developer ID Application:",
+  "Developer ID Installer:",
+  "3rd Party Mac Developer Application:",
+  "3rd Party Mac Developer Installer:",
+];
+
+const DEVELOPMENT_CERTIFICATE_NAME_PREFIXES = ["Apple Development", "Mac Developer"];
+
+/**
+ * electron-builder only looks for a `Developer ID Application` certificate
+ * unless `mac.type` is `development` (app-builder-lib `getCertificateTypes`),
+ * so a development certificate needs that flag to be selected deliberately
+ * rather than through the "non-Apple certificate" fallback.
+ */
+export function signingCertificateType(name) {
+  const value = (name ?? "").trim().toLowerCase();
+  const isDevelopment = DEVELOPMENT_CERTIFICATE_NAME_PREFIXES.some(
+    (prefix) => value.startsWith(prefix.toLowerCase()),
+  );
+  return isDevelopment ? "development" : "distribution";
+}
+
+/**
+ * `security find-identity` prints the certificate type as part of the name, and
+ * that is what a person copies. electron-builder rejects a qualifier that still
+ * carries the prefix (`checkPrefix` in app-builder-lib), so strip it for the
+ * qualifier and keep the original text for the printed line.
+ */
+export function normalizeSignIdentity(rawValue) {
+  const value = (rawValue ?? "").trim();
+  if (!value) return null;
+  let qualifier = value;
+  for (const prefix of APPLE_CERTIFICATE_NAME_PREFIXES) {
+    if (qualifier.toLowerCase().startsWith(prefix.toLowerCase())) {
+      qualifier = qualifier.slice(prefix.length).trim();
+      break;
+    }
+  }
+  if (!qualifier) return null;
+  return { qualifier, display: value, type: signingCertificateType(value) };
+}
+
+/** Parse the `1) <sha1> "<name>"` lines of `security find-identity -v -p codesigning`. */
+export function parseCodesigningIdentities(output) {
+  const identities = [];
+  for (const line of String(output ?? "").split(/\r?\n/)) {
+    if (line.includes("CSSMERR_TP_CERT_REVOKED")) continue;
+    const match = /^\s*\d+\)\s+([0-9A-Fa-f]{40})\s+"([^"]+)"/.exec(line);
+    if (!match) continue;
+    identities.push({ hash: match[1], name: match[2] });
+  }
+  return identities;
+}
+
+/** Prefer a Developer ID Application certificate, then an Apple Development one. */
+export function selectAutoSignIdentity(output) {
+  const identities = parseCodesigningIdentities(output);
+  const preferred = identities.find((identity) => identity.name.startsWith("Developer ID Application:"))
+    ?? identities.find((identity) => identity.name.startsWith("Apple Development"));
+  if (!preferred) return null;
+  return {
+    qualifier: preferred.hash,
+    display: `${preferred.name} (${preferred.hash})`,
+    type: signingCertificateType(preferred.name),
+  };
+}
+
+/** The flag wins over the environment variable. */
+export function resolveSignSelection(options, env = process.env) {
+  if (options.signIdentity) return { mode: "explicit", value: options.signIdentity, fromEnv: false };
+  if (options.signAuto) return { mode: "auto" };
+  const fromEnv = env.ADE_CHANNEL_SIGN_IDENTITY?.trim();
+  if (fromEnv) return { mode: "explicit", value: fromEnv, fromEnv: true };
+  return { mode: "adhoc" };
 }
 
 /**
@@ -325,15 +438,99 @@ function postprocessChannelApp(appPath, channel, config, options) {
   fs.writeFileSync(path.join(cliRoot, "channel"), `${channel}\n`);
 }
 
-function adHocSignLocalMacApp(appPath) {
+/**
+ * Seal the bundle after `postprocessChannelApp` added files under
+ * `Contents/Resources`, which invalidates whatever seal the packager wrote.
+ *
+ * With an identity electron-builder has already signed every nested binary, so
+ * only the outer bundle is re-sealed, and `--preserve-metadata` keeps the
+ * entitlements and the hardened-runtime flag it set. Without an identity this
+ * is the ad-hoc pass the script has always run.
+ */
+function signLocalMacApp(appPath, identity) {
   if (process.platform !== "darwin") return;
-  process.stdout.write(`[ade] Ad-hoc signing local app bundle: ${appPath}\n`);
-  run("codesign", ["--force", "--deep", "--sign", "-", "--timestamp=none", appPath], {
-    cwd: path.dirname(appPath),
+  const cwd = path.dirname(appPath);
+  if (identity) {
+    process.stdout.write(`[ade] Signing local app bundle with ${identity.display}: ${appPath}\n`);
+    run("codesign", [
+      "--force",
+      "--sign",
+      identity.qualifier,
+      "--timestamp=none",
+      "--preserve-metadata=entitlements,requirements,flags",
+      appPath,
+    ], { cwd });
+  } else {
+    process.stdout.write(`[ade] Ad-hoc signing local app bundle: ${appPath}\n`);
+    run("codesign", ["--force", "--deep", "--sign", "-", "--timestamp=none", appPath], { cwd });
+  }
+  run("codesign", ["--verify", "--deep", "--strict", "--verbose=2", appPath], { cwd });
+}
+
+/**
+ * Ask the keychain for a signing identity. Read-only, so it also runs under
+ * `--dry-run`: the printed electron-builder command has to name the identity
+ * the real build would use.
+ */
+function findAutoSignIdentity() {
+  const result = spawnSync("security", ["find-identity", "-v", "-p", "codesigning"], {
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
   });
-  run("codesign", ["--verify", "--deep", "--strict", "--verbose=2", appPath], {
-    cwd: path.dirname(appPath),
-  });
+  if (result.error || result.status !== 0) {
+    const detail = result.error?.message ?? `exited with ${result.status ?? "unknown status"}`;
+    process.stdout.write(`[ade] --sign-auto: security find-identity failed (${detail}); using an ad-hoc signature.\n`);
+    return null;
+  }
+  const identity = selectAutoSignIdentity(result.stdout);
+  if (!identity) {
+    process.stdout.write(
+      "[ade] --sign-auto: no valid Developer ID Application or Apple Development identity found; using an ad-hoc signature.\n",
+    );
+    return null;
+  }
+  return identity;
+}
+
+function resolveMacSignIdentity(selection) {
+  if (selection.mode === "adhoc") return null;
+  if (selection.mode === "auto") return findAutoSignIdentity();
+  const identity = normalizeSignIdentity(selection.value);
+  if (!identity) {
+    fail(selection.fromEnv
+      ? "ADE_CHANNEL_SIGN_IDENTITY is set but empty. Unset it, or give a certificate name or SHA-1 hash."
+      : "--sign requires a certificate name or SHA-1 hash.");
+  }
+  return identity;
+}
+
+/** The electron-builder invocation for a macOS channel build. */
+export function macBuilderArgs({ channel, config, outputRoot, identity }) {
+  const args = ["electron-builder", "--dir", "--mac", "--publish", "never"];
+  if (identity) {
+    args.push(`-c.mac.identity=${identity.qualifier}`);
+    if (identity.type === "development") args.push("-c.mac.type=development");
+    // The repo carries no build/ade-desktop.provisionprofile, and a local
+    // channel build does not need one. Left set, signing fails on the missing
+    // file instead of producing a signed app.
+    args.push("-c.mac.provisioningProfile=null");
+  } else {
+    args.push("-c.mac.identity=null");
+  }
+  args.push(
+    "-c.mac.notarize=false",
+    `-c.appId=${config.appId}`,
+    `-c.productName=${config.productName}`,
+    `-c.mac.icon=build/icon.${channel}.icns`,
+    `-c.directories.output=${outputRoot}`,
+    `-c.extraMetadata.adePackageChannel=${channel}`,
+    `-c.extraMetadata.adeCliName=${config.cliName}`,
+    `-c.mac.extendInfo.LSEnvironment.ADE_PACKAGE_CHANNEL=${channel}`,
+    `-c.mac.extendInfo.LSEnvironment.ADE_DESKTOP_APP_NAME=${config.productName}`,
+    `-c.mac.extendInfo.LSEnvironment.ADE_HOME=${config.adeHome}`,
+    `-c.mac.extendInfo.NSAppleEventsUsageDescription=${APPLE_EVENTS_USAGE_DESCRIPTION}`,
+  );
+  return args;
 }
 
 const AZURE_SIGNING_ENV = ["AZURE_TENANT_ID", "AZURE_CLIENT_ID", "AZURE_CLIENT_SECRET"];
@@ -414,61 +611,81 @@ function buildChannel(repoRoot, channel, options) {
     ADE_RUNTIME_RESOURCES_ALLOW_HOST_ONLY: "1",
   };
 
+  const signSelection = resolveSignSelection(options);
+
   removePath(outputRoot, options.dryRun);
   assertPackageChannelPrereqs(repoRoot, channel, options);
   installApps(repoRoot, options);
   run("npm", ["--prefix", "apps/ade-cli", "run", "build"], { cwd: repoRoot, env, dryRun: options.dryRun });
 
   if (process.platform === "win32") {
+    if (signSelection.mode !== "adhoc") {
+      process.stdout.write(
+        "[ade] --sign / --sign-auto / ADE_CHANNEL_SIGN_IDENTITY apply to macOS only. Windows signing uses the Azure environment.\n",
+      );
+    }
     buildWindowsChannel(repoRoot, channel, config, env, options);
     return;
   }
 
+  const signIdentity = resolveMacSignIdentity(signSelection);
+  if (signIdentity) {
+    process.stdout.write(`[ade] Signing identity: ${signIdentity.display} [${signIdentity.type}]\n`);
+  } else {
+    process.stdout.write(
+      "[ade] Signing identity: ad-hoc. Every rebuild changes the signature, so macOS re-prompts for this app's keychain items. Use --sign-auto or --sign <identity> for a stable one.\n",
+    );
+  }
+
   ensureHostRuntimeResources(repoRoot, options, env);
   run("npm", ["--prefix", "apps/desktop", "run", "build"], { cwd: repoRoot, env, dryRun: options.dryRun });
-  run("npx", [
-    "electron-builder",
-    "--dir",
-    "--mac",
-    "--publish",
-    "never",
-    "-c.mac.identity=null",
-    "-c.mac.notarize=false",
-    `-c.appId=${config.appId}`,
-    `-c.productName=${config.productName}`,
-    `-c.mac.icon=build/icon.${channel}.icns`,
-    `-c.directories.output=${outputRoot}`,
-    `-c.extraMetadata.adePackageChannel=${channel}`,
-    `-c.extraMetadata.adeCliName=${config.cliName}`,
-    `-c.mac.extendInfo.LSEnvironment.ADE_PACKAGE_CHANNEL=${channel}`,
-    `-c.mac.extendInfo.LSEnvironment.ADE_DESKTOP_APP_NAME=${config.productName}`,
-    `-c.mac.extendInfo.LSEnvironment.ADE_HOME=${config.adeHome}`,
-    `-c.mac.extendInfo.NSAppleEventsUsageDescription=${APPLE_EVENTS_USAGE_DESCRIPTION}`,
-  ], { cwd: desktopRoot, env, dryRun: options.dryRun });
+  run("npx", macBuilderArgs({ channel, config, outputRoot, identity: signIdentity }), {
+    cwd: desktopRoot,
+    env,
+    dryRun: options.dryRun,
+  });
 
   if (options.dryRun) return;
   const appPath = findBuiltApp(outputRoot, config.productName);
   if (!appPath) fail(`Build finished but no .app was found in ${outputRoot}.`);
   postprocessChannelApp(appPath, channel, config, options);
-  adHocSignLocalMacApp(appPath);
+  signLocalMacApp(appPath, signIdentity);
   const zipPath = zipApp(appPath, outputRoot, channel, options);
   process.stdout.write(`\n[ade] Built ${config.productName}: ${appPath}\n`);
   if (zipPath) process.stdout.write(`[ade] Zipped app: ${zipPath}\n`);
+  process.stdout.write(`[ade] Signed with: ${signIdentity ? signIdentity.display : "ad-hoc signature"}\n`);
   process.stdout.write(`[ade] Bundled CLI name: ${config.cliName}\n`);
   process.stdout.write(`[ade] Channel ADE_HOME: ${config.adeHome}\n`);
 }
 
-let parsedOptions = null;
-let selectedRepoRoot = null;
-
-try {
-  parsedOptions = parseArgs(process.argv.slice(2));
-  selectedRepoRoot = parsedOptions.repo
-    ? parsedOptions.repo
-    : parsedOptions.channel === "beta"
-      ? prepareBetaCheckout(parsedOptions)
-      : currentRepoRoot;
-  buildChannel(selectedRepoRoot, parsedOptions.channel, parsedOptions);
-} catch (error) {
-  fail(error instanceof Error ? error.message : String(error));
+function main() {
+  let parsedOptions = null;
+  let selectedRepoRoot = null;
+  try {
+    parsedOptions = parseArgs(process.argv.slice(2));
+    selectedRepoRoot = parsedOptions.repo
+      ? parsedOptions.repo
+      : parsedOptions.channel === "beta"
+        ? prepareBetaCheckout(parsedOptions)
+        : currentRepoRoot;
+    buildChannel(selectedRepoRoot, parsedOptions.channel, parsedOptions);
+  } catch (error) {
+    fail(error instanceof Error ? error.message : String(error));
+  }
 }
+
+/**
+ * Only build when run as a program. The test file imports the pure helpers
+ * above, and an import must not start a packaging run.
+ */
+function isMainModule() {
+  const entry = process.argv[1];
+  if (!entry) return false;
+  try {
+    return fs.realpathSync(entry) === fs.realpathSync(fileURLToPath(import.meta.url));
+  } catch {
+    return false;
+  }
+}
+
+if (isMainModule()) main();

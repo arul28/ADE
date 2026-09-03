@@ -217,6 +217,25 @@ the branch checkout explicitly:
 node scripts/package-channel.mjs beta --repo "$PWD" --skip-install
 ```
 
+### Keep the same code signature across rebuilds
+
+By default a local channel build is signed ad-hoc. An ad-hoc signature changes
+on every rebuild, so macOS treats each build as a different program and prompts
+again for the keychain items the previous build created (the desktop API key
+store, the runtime credential key, and Electron's Safe Storage item). Sign with
+a real certificate to keep those keychain ACLs valid:
+
+```bash
+npm run package:alpha -- --sign-auto
+```
+
+`--sign-auto` picks the first valid `Developer ID Application` identity, else
+the first valid `Apple Development` identity, from
+`security find-identity -v -p codesigning`. To name one yourself, pass
+`--sign "<certificate name or SHA-1 hash>"` or set `ADE_CHANNEL_SIGN_IDENTITY`.
+The flag wins over the environment variable. The build is still not notarized,
+which is expected for a local channel build.
+
 Local channel outputs:
 
 ```text
