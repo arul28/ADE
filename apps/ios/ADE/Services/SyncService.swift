@@ -23110,8 +23110,15 @@ extension SyncService: PluginPageHostWorldReading {
     case .lane:
       var fingerprints: PluginPageHostFingerprints = [:]
       for lane in database.fetchLanes(includeArchived: true) {
+        // `LaneStatus` is a STRUCT of git facts, not a case. Its five fields are
+        // exactly what a page draws about a lane's state, so the fingerprint
+        // names them rather than leaning on a `rawValue` the type never had.
         fingerprints[lane.id] = [
-          lane.status.rawValue,
+          lane.status.dirty ? "1" : "0",
+          String(lane.status.ahead),
+          String(lane.status.behind),
+          String(lane.status.remoteBehind),
+          lane.status.rebaseInProgress ? "1" : "0",
           lane.name,
           lane.branchRef,
           lane.archivedAt ?? "",
