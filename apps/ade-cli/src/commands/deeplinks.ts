@@ -20,8 +20,10 @@ import {
   isValidIssueProvider,
   isValidRepoRelativePath,
   parseDeeplink,
+  parseLaneDrawerParam,
   type DeeplinkEnvelope,
   type DeeplinkIssueTarget,
+  type DeeplinkLaneDrawer,
   type DeeplinkTarget,
 } from "../../../desktop/src/shared/deeplinks";
 import { isValidPluginId } from "../../../desktop/src/shared/plugins/manifest";
@@ -67,7 +69,8 @@ const HELP_OPEN = [
 
 const HELP_LINK = [
   "Usage:",
-  "  ade link lane <lane-uuid>",
+  "  ade link lane <lane-uuid> [--drawer stack]",
+  "  ade link welcome",
   "  ade link session <session-id> [--lane <lane-uuid>]",
   "  ade link file <path> [--line <number>] [--lane <lane-uuid>]",
   "  ade link commit <sha> [--lane <lane-uuid>]",
@@ -81,6 +84,7 @@ const HELP_LINK = [
   "",
   "Options:",
   "  --ade           Emit the custom `ade://` form (default: https)",
+  "  --drawer <name> Open a drawer with the lane (`stack`); lane links only",
   "  --no-envelope   Skip best-effort repo/branch/PR envelope lookup",
   "  --web           Emit the hosted web client form (app.ade-app.dev)",
   "  --no-clipboard  Print the URL but don't copy to clipboard",
@@ -312,7 +316,7 @@ function buildLinkPlan(args: string[]): LinkPlan {
   }
   const flags = extractFlags(args, {
     booleans: ["ade", "web", "no-envelope", "no-clipboard"],
-    valued: ["pr", "branch", "lane", "line", "ctx", "issue-provider", "issue-key", "plugin"],
+    valued: ["pr", "branch", "lane", "line", "ctx", "drawer", "issue-provider", "issue-key", "plugin"],
   });
   const positional = flags.positional;
   const wantsAde = flags.booleans.has("ade");
@@ -342,9 +346,18 @@ function buildLinkPlan(args: string[]): LinkPlan {
   if (verb === "lane") {
     const laneId = positional[1];
     if (!laneId) {
-      throw new CliDeeplinkUsageError("ade link lane <lane-uuid>");
+      throw new CliDeeplinkUsageError("ade link lane <lane-uuid> [--drawer stack]");
     }
-    return plan({ kind: "lane", laneId }, { targetKind: "lane", laneId });
+    const drawer = laneDrawerOrThrow(flags.valued.get("drawer"));
+    return plan(
+      { kind: "lane", laneId, ...(drawer ? { drawer } : {}) },
+      { targetKind: "lane", laneId },
+    );
+  }
+  if (verb === "welcome") {
+    // The one target with no id, so there is nothing to read off the command
+    // line and nothing to look up: the picker IS the destination.
+    return plan({ kind: "welcome" });
   }
   if (verb === "session") {
     const sessionId = positional[1];
@@ -507,6 +520,25 @@ function parseCtxFlag(raw: string | undefined): Record<string, unknown> | undefi
     throw new CliDeeplinkUsageError(`--ctx must be under ${PLUGIN_NAVIGATE_CONTEXT_MAX_BYTES} bytes`);
   }
   return decoded as Record<string, unknown>;
+}
+
+/**
+ * Read `--drawer <name>` for `ade link lane`.
+ *
+ * Validation runs through the parser's own closed list, so the CLI cannot
+ * accept a drawer the router has no case for. The `--ctx` rule decides what
+ * happens next: the PARSER drops an unknown drawer and still opens the lane,
+ * because a reader who was sent the link should reach the lane either way,
+ * while MINTING one refuses — a link quietly missing the drawer that was asked
+ * for is worse than an error that names the bad value.
+ */
+function laneDrawerOrThrow(raw: string | undefined): DeeplinkLaneDrawer | undefined {
+  if (raw == null) return undefined;
+  const drawer = parseLaneDrawerParam(raw);
+  if (!drawer) {
+    throw new CliDeeplinkUsageError(`--drawer must name a lane drawer (got ${raw})`);
+  }
+  return drawer;
 }
 
 /**

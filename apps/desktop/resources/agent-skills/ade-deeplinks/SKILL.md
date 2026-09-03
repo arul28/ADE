@@ -1,6 +1,6 @@
 ---
 name: ade-deeplinks
-description: Use this skill when an agent needs to mint, share, or open ADE deeplinks (lane, work session, file, commit, artifact, branch, PR, Linear issue, an issue on any other tracker, a plugin panel) so users — or the agent itself — can jump straight to a specific ADE surface from anywhere (GitHub PR description, Linear issue, Slack, email, terminal, mobile).
+description: Use this skill when an agent needs to mint, share, or open ADE deeplinks (lane, work session, file, commit, artifact, branch, PR, Linear issue, an issue on any other tracker, a plugin panel, the project picker) so users — or the agent itself — can jump straight to a specific ADE surface from anywhere (GitHub PR description, Linear issue, Slack, email, terminal, mobile).
 ---
 
 # ADE deeplinks
@@ -11,7 +11,8 @@ ADE deeplinks are URLs that route directly to a specific ADE entity. Two forms,
 identical semantics:
 
 ```
-ade://lane/<uuid>                                # local-only — focuses an existing lane
+ade://lane/<uuid>[?drawer=stack]                 # local-only — focuses an existing lane, optionally opening a drawer
+ade://welcome                                    # the project picker — the one target with no id
 ade://session/<id>[?lane=<lane-uuid>&event=<n>&offset=<bytes>]  # Work session + anchors
 ade://file/<repo-relative-path>[?line=<n>&lane=<lane-uuid>]      # Files tab
 ade://commit/<sha>[?lane=<lane-uuid>]            # Lanes git detail, or GitHub fallback with envelope
@@ -21,7 +22,8 @@ ade://pr/<owner>/<repo>/<number>                 # PR detail view
 ade://linear-issue/<ADE-123>[?branch=<branch>]   # Linear handoff — opens the Linear pane
 ade://issue/<provider>/<issue-key>[?branch=<branch>&plugin=<plugin-id>]  # any tracker
 
-https://ade-app.dev/open?type=lane&id=<uuid>
+https://ade-app.dev/open?type=lane&id=<uuid>[&drawer=stack]
+https://ade-app.dev/open?type=welcome
 https://ade-app.dev/open?type=session&id=<id>[&lane=<lane-uuid>]
 https://ade-app.dev/open?type=file&path=<path>[&line=<n>&lane=<lane-uuid>]
 https://ade-app.dev/open?type=commit&sha=<sha>[&lane=<lane-uuid>]
@@ -95,6 +97,8 @@ active project has not connected Linear.
 | Need                                                          | Use                                  |
 | ------------------------------------------------------------- | ------------------------------------ |
 | Jump back to MY lane from another terminal on the same Mac    | `ade://lane/<uuid>`                  |
+| Open a lane with its stack graph showing                      | `ade://lane/<uuid>?drawer=stack`     |
+| Send a reader with no project open to the picker              | `ade://welcome`                      |
 | Jump back to a Work session on this Mac                       | `ade://session/<id>`                 |
 | Jump to a chat event or terminal scrollback byte offset       | `ade://session/<id>?event=<n>` / `?offset=<bytes>` |
 | Open a file and reveal a line                                 | `ade://file/src/app.ts?line=42`      |
@@ -108,7 +112,8 @@ active project has not connected Linear.
 ## Minting a deeplink — `ade link`
 
 ```bash
-ade link lane <lane-uuid>                                  # local lane link
+ade link lane <lane-uuid> [--drawer stack]                 # local lane link, optionally opening a drawer
+ade link welcome                                           # the project picker
 ade link session <session-id> [--lane <lane-uuid>]          # local Work session link
 ade link file <path> [--line N] [--lane <lane-uuid>]        # file link
 ade link commit <sha> [--lane <lane-uuid>]                  # commit link
@@ -122,12 +127,18 @@ ade link <url>                                             # round-trip an exist
 
 # Flags
 --ade            # emit ade:// instead of https:// (default: https)
+--drawer <name>  # lane links only: open a drawer with the lane (`stack` today)
 --no-envelope    # skip best-effort repo/branch/PR envelope lookup
 --web            # emit the hosted web client URL (https://app.ade-app.dev/...)
 --no-clipboard   # print without copying
 ```
 
 Every form copies to the clipboard by default and prints the URL to stdout.
+`--drawer` takes a name from a closed list, `stack` today. A reader's parser
+drops a drawer it does not know and still opens the lane; `ade link` refuses
+one instead, so a minted link never quietly loses the drawer you asked for.
+`ade link welcome` mints the project picker, which takes no id, no drawer, and
+no envelope: it is the link to hand someone who has no project open.
 When a live ADE runtime is bound, `ade link lane`, `session --lane`, and
 `commit --lane` attach repo/branch/PR envelope params best-effort. Use
 `--no-envelope` to skip that lookup and `--no-clipboard` in scripts.

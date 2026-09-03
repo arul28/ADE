@@ -1808,6 +1808,7 @@ and the list IS the permission model — a page cannot widen it:
 | The plugin's own code | `invoke` |
 | Destinations | `openDeeplink`, `openSettings` |
 | The surface it lives in | `surface.close` |
+| The dialog it was drawn in | `dialog.submit` |
 | The composer | `composer.attach`, `composer.insert` |
 | ADE's own UI | `ui.toast`, `ui.dismissToast`, `ui.prompt`, `ui.confirm` |
 | The machine around it | `clipboard.read`, `clipboard.write` |
@@ -1822,15 +1823,44 @@ other surfaces is the child process's job), and `collections.delete`.
 that cannot save what it renders is the reason the verb was added; the host
 refuses a `secret`-kind setting on this path the same way it does on the child's.
 
+**`dialog.submit` answers the dialog a page was drawn in.** A `dialog-picker`
+guest hands its chosen issue to the ADE dialog around it — the Create-lane and
+Create-PR forms — and the host checks the PLACEMENT it drew that guest at before
+it reads the payload. A page in any other placement is refused, because a tab
+that could name the issue for a dialog nobody opened would be writing into a
+form the reader is not looking at. The answer lands in a store keyed per GUEST
+rather than per dialog kind: main derives the guest key from the `webContents`
+that called, so no page can forge another's, and a settings section and a dialog
+picker that are open at once cannot receive each other's answer. The page hears
+one of three outcomes, never a silent success: the dialog took it, the dialog's
+own validation turned it down, or no dialog is listening on that guest any more.
+
 Three events reach a page, on one channel with the name in the frame:
 `changed` (the plugin's own collections moved), `theme` (the host republished
-its scheme and its `--ade-*` tokens), and `host` (a lane, a session or a pull
-request moved). A `host` frame carries identity and nothing else — the kind, the
-ids, and an `overflow` flag when more moved than
+its scheme and its `--ade-*` tokens), and `host` (a lane, a session, a pull
+request or a chat turn moved). A `host` frame carries identity and nothing else
+— the kind, the ids, and an `overflow` flag when more moved than
 `PLUGIN_WEBVIEW_HOST_IDS_MAX` (200) — and the host coalesces for
 `PLUGIN_WEBVIEW_HOST_COALESCE_MS` (120 ms) first, because a rebase moves a dozen
 lanes in a few milliseconds and the page redraws once either way. A page follows
 a family by calling `host.subscribe`.
+
+`PLUGIN_WEBVIEW_HOST_KINDS` is `lane`, `session`, `pr` and `chat`. The fourth is
+not an entity family: it reports where a chat session's TURN is, so a page that
+launched an agent learns that the first turn died. Without it a launched issue
+sits on "Ready", which is the one state it is certainly not in. A `chat` frame
+is the single narrowing of the identity-only rule, and it is narrow on purpose.
+Alongside the session ids in `ids` it carries `turns`, and one turn carries a
+`sessionId`, a `state` of `started`, `completed` or `failed`, the host's own
+`turnId` when the producer knows it, and — on `failed` only — the `message` ADE
+would have shown the reader, capped at
+`PLUGIN_WEBVIEW_CHAT_MESSAGE_MAX_CHARS` (400). No prompt, no reply, no tool
+name, no token count. Three states rather than the five the app tracks
+internally: `interrupted` maps onto `failed`, so a page has one error path
+rather than two. One frame carries at most
+`PLUGIN_WEBVIEW_CHAT_TURNS_MAX` (100) turns, lower than the id ceiling because a
+turn is a record and an id is a string; past it the frame says `overflow` and
+the page refetches the sessions it is watching.
 
 **The plugin id is never on the wire.** Every call is answered against the id
 the host derives from the guest's own frame URL, cross-checked against the entry
@@ -1863,10 +1893,12 @@ of every request is a page holding a promise.
 
 #### Placements
 
-Seven, in `PLUGIN_WEBVIEW_PLACEMENTS`: `tab`, `pane`, `drawer`, `overlay`,
-`popover`, `settings-section`, `composer-picker`. It is a closed list because it
-is half of the relay's addressing — `surface.close` means "close the popover",
-"close the picker" or "do nothing" depending on this value alone.
+Eight, in `PLUGIN_WEBVIEW_PLACEMENTS`: `tab`, `pane`, `drawer`, `overlay`,
+`popover`, `settings-section`, `composer-picker`, `dialog-picker`. It is a
+closed list because it is half of the relay's addressing — `surface.close` means
+"close the popover", "close the picker" or "do nothing" depending on this value
+alone, and `dialog.submit` is refused anywhere but `dialog-picker` on this value
+alone as well.
 
 - **Tab, pane and drawer** come from the manifest: the plugin declared the
   surface there, and the page fills a frame the host already owns.
@@ -1883,6 +1915,11 @@ is half of the relay's addressing — `surface.close` means "close the popover",
 - **Settings section**: a `settings-section` socket may name a webview surface,
   and the section body is then the guest, sized from the page's own resize
   message and capped at `PLUGIN_WEBVIEW_MAX_HEIGHT_PX` (2,000).
+- **Dialog picker**: a `dialog-section` socket's page, drawn inside an ADE
+  dialog — the Create-lane and Create-PR forms. It sizes to its content the way
+  a settings section does, because it is the other placement that sits inside a
+  taller ADE surface rather than filling a frame the host already sized, and it
+  is the only placement `dialog.submit` is honoured from.
 
 **Every placement destroys its guest when it is hidden.** Not "keeps it alive
 and stops painting": one live guest per placement, and state lives in the
@@ -1907,6 +1944,25 @@ additions rather than replacements:
   back to the panel, which is where it was going anyway. The parser proves only
   the shape (64 characters), because it also runs on the phone and in the
   daemon, where there is no registry to resolve an id against.
+
+  **A press on a control that declared a page opens the page and does NOT
+  invoke the action.** The declaration replaces the invoke rather than joining
+  it, for three reasons. A plugin whose action still answers `{openWebview}` for
+  the same surface — which every plugin written before the declaration existed
+  does — would open the page twice, and the second open would CLOSE the card the
+  press just opened, because the anchored store toggles. Opening a page is the
+  one press that needs nothing from the plugin's process, so spawning a child to
+  be told what the manifest already said is a cold start the reader waits
+  through for no answer. And a page reads the plugin's collections and calls
+  `invoke` itself, so the action it replaced existed to return `{openWebview}`
+  and nothing else. A contribution that declares no surface — or one whose id
+  resolves to nothing, because the plugin is uninstalled, disabled or renamed,
+  or because this client hosts no pages — invokes exactly as it always did.
+  Where the page opens is a property of the SOCKET, in the closed
+  `PLUGIN_SOCKET_WEBVIEW_PLACEMENT` table: a toolbar, chat-header or row-badge
+  press draws a popover, a composer button draws a composer picker, a palette
+  command draws an overlay, and a settings or dialog section draws in the frame
+  it already owns.
 - **`openWebview.placement`** on an action's answer asks for `overlay`,
   `popover` or `picker`. `PLUGIN_ACTION_WEBVIEW_PLACEMENTS` is deliberately
   shorter than the host's own list: an action may ask only for the three hosts a
@@ -1914,6 +1970,40 @@ additions rather than replacements:
   be a plugin rearranging ADE's furniture from a click handler. Absent means
   `overlay`, which is what every `openWebview` meant before, and an unknown
   value is dropped rather than refusing the open.
+
+#### Two reads a page rebuilding an ADE form needs
+
+`ade.chat.capabilities()` answers what a launch form may offer: a list of
+providers carrying the permission vocabulary each one takes, and a list of
+models carrying `fastMode` and that model's OWN reasoning ladder, with
+`provider` on a model as the join between the two. Two lists rather than a
+nesting, because permission is a provider fact and the ladder is a per-model
+one, and a page picking a model needs both without a second call. An empty
+`reasoningEfforts` is a real answer and not a missing one — the page draws no
+picker rather than falling back to none/low/medium/high. This is the one READ in
+the `chat` namespace and it owns nothing: the answer does not depend on the
+project, the lane or the plugin, so it needs no gate beyond the one every SDK
+call has, and a page may read it once at mount rather than per launch. It exists
+because all three facts are REGISTRY facts that a page rebuilding ADE's launch
+form had no way to reach, so the ported Linear modal offered one free-text
+permission mode, no fast mode, and a hard-coded ladder. A chosen permission
+value goes in the provider's own launch field, not in the unified
+`permissionMode`. `chatCapabilities.test.ts` pins these lists against the
+renderer's own, so a mode added to the app's pill and not to the shared module
+fails a test rather than leaving plugin pages a version behind.
+
+`lanes.list()` answers `path`, the lane's worktree on this machine. It is the
+one field argued back onto `PluginLaneSummary`, whose projection is a fixed
+allowlist rather than a delete-list. The argument against it was that a plugin
+with the filesystem already knows where it put its own files, which is true and
+beside the point: a plugin does not know where ADE put the LANE, so a page that
+wants to show which checkout a lane lives in, or hand the path to a terminal,
+could not learn it and could not derive it. `attachedRootPath` and `devicesOpen`
+stay off — a second path no surface has asked for, and a roster of the user's
+machines. The value is null rather than absent when the host has no path, so a
+page can tell "no local checkout" from "an older host did not report one"; the
+Linear page's `PageLane.path` reads it through either name the host answers and
+hides the row when it is null rather than drawing an empty one.
 
 **Hot reload.** A guest is recreated — not reloaded — when the bytes under it
 change, keyed on `version:revision`. `reload()` would re-run whatever the guest

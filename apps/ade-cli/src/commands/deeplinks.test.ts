@@ -64,6 +64,36 @@ describe("ade link", () => {
     );
   });
 
+  it("carries a lane drawer in both forms", () => {
+    const https = runLinkCommand(["lane", UUID, "--drawer", "stack", "--no-clipboard"]);
+    expect(https.output).toContain(`https://ade-app.dev/open?type=lane&id=${UUID}&drawer=stack`);
+    const ade = runLinkCommand(["lane", UUID, "--drawer", "stack", "--ade", "--no-clipboard"]);
+    expect(ade.output).toContain(`ade://lane/${UUID}?drawer=stack`);
+  });
+
+  // The parser drops an unknown drawer and still opens the lane; minting one
+  // would hand back a link quietly missing what was asked for.
+  it("refuses a drawer name the shared parser does not know", () => {
+    expect(() => runLinkCommand(["lane", UUID, "--drawer", "graph", "--no-clipboard"]))
+      .toThrow(CliDeeplinkUsageError);
+  });
+
+  it("emits a welcome link in both forms", () => {
+    const https = runLinkCommand(["welcome", "--no-clipboard"]);
+    expect(https.output).toContain("https://ade-app.dev/open?type=welcome");
+    const ade = runLinkCommand(["welcome", "--ade", "--no-clipboard"]);
+    expect(ade.output).toContain("ade://welcome");
+    const web = runLinkCommand(["welcome", "--web", "--no-clipboard"]);
+    expect(web.output).toContain("https://app.ade-app.dev/open?type=welcome");
+  });
+
+  it("round-trips a welcome link and a lane drawer link", () => {
+    expect(runLinkCommand(["ade://welcome", "--no-clipboard"]).output)
+      .toContain("https://ade-app.dev/open?type=welcome");
+    expect(runLinkCommand([`ade://lane/${UUID}?drawer=stack`, "--ade", "--no-clipboard"]).output)
+      .toContain(`ade://lane/${UUID}?drawer=stack`);
+  });
+
   it("emits a session link with an optional lane hint", () => {
     const r = runLinkCommand(["session", "session-123", "--lane", UUID, "--no-clipboard"]);
     expect(r.exitCode).toBe(0);
@@ -369,6 +399,13 @@ describe("runDeeplinkCommand", () => {
 
   it("rejects unknown verbs", () => {
     expect(() => runDeeplinkCommand(["frobnicate"])).toThrow(CliDeeplinkUsageError);
+  });
+
+  it("documents the lane drawer and welcome forms in link help", () => {
+    const r = runDeeplinkCommand(["link", "--help"]);
+    expect(r.exitCode).toBe(0);
+    expect(r.output).toContain("--drawer stack");
+    expect(r.output).toContain("ade link welcome");
   });
 });
 

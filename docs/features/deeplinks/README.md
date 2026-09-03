@@ -6,7 +6,8 @@ PR descriptions, chat apps) — point at the same lane, work session, branch, PR
 issue. Two forms carry identical semantics:
 
 ```
-ade://lane/<uuid>
+ade://lane/<uuid>[?drawer=stack]
+ade://welcome
 ade://session/<id>[?lane=<lane-uuid>&event=<seq>&offset=<bytes>]
 ade://file/<repo-relative-path>[?line=<n>&lane=<lane-uuid>]
 ade://commit/<sha>[?lane=<lane-uuid>]
@@ -16,7 +17,8 @@ ade://pr/<owner>/<repo>/<number>
 ade://linear-issue/<ADE-123>[?branch=<branch>]
 ade://plugin/<plugin-id>/<panel-id>[?ctx=<json-object>]
 
-https://ade-app.dev/open?type=lane&id=<uuid>
+https://ade-app.dev/open?type=lane&id=<uuid>[&drawer=stack]
+https://ade-app.dev/open?type=welcome
 https://ade-app.dev/open?type=session&id=<id>[&lane=<lane-uuid>&event=<seq>&offset=<bytes>]
 https://ade-app.dev/open?type=file&path=<repo-relative-path>[&line=<n>&lane=<lane-uuid>]
 https://ade-app.dev/open?type=commit&sha=<sha>[&lane=<lane-uuid>]
@@ -200,7 +202,14 @@ ADE CLI — outbound + inbound:
     the Linear pane to that issue, or shows a setup state if the project has
     not connected Linear yet.
   - `ade link …` builds a deeplink for a lane / work session / branch / PR /
-    Linear issue / plugin panel and copies it to the clipboard.
+    Linear issue / plugin panel / project picker and copies it to the clipboard.
+    `ade link lane <lane-uuid> --drawer stack` mints the lane-plus-drawer form;
+    the flag is validated against the parser's own closed list, and an unknown
+    drawer is refused rather than dropped — the parser is lenient so a reader
+    still reaches the lane, but a minted link quietly missing the drawer that
+    was asked for is worse than an error naming the value.
+    `ade link welcome` mints the project picker, which takes no id and no
+    envelope lookup.
     `ade link plugin <plugin-id> <panel-id> [--ctx '<json-object>']` mints the
     plugin form; unlike the parser, which drops a bad context and keeps the
     link, `--ctx` refuses a value that is not a JSON object or is over the 2 KiB
@@ -300,7 +309,8 @@ Send-to-Mac:
 
 | Form | Target | Notes |
 |------|--------|-------|
-| `ade://lane/<uuid>` | `{ kind: "lane", laneId, envelope? }` | UUID v4 required. |
+| `ade://lane/<uuid>[?drawer=stack]` | `{ kind: "lane", laneId, drawer?, envelope? }` | UUID v4 required. `drawer` names a panel to open with the lane, from a closed list whose only member today is `stack` (the stack graph the lanes header reveals). It is parsed leniently, exactly like `?tab=` on a PR link: a drawer this build does not know is dropped and the lane still opens, so a link minted by a newer ADE never fails on an older one. |
+| `ade://welcome` | `{ kind: "welcome" }` | The project picker. The one target that names no entity, and it carries no envelope because there is nothing to fall back to — the picker IS the fallback. It exists so a plugin page whose reader has no project open can offer to pick one. |
 | `ade://session/<id>[?lane=<uuid>&event=<seq>&offset=<bytes>]` | `{ kind: "session", sessionId, laneId?, event?, offset?, envelope? }` | Local Work tab session link. Routes to `/work` with the selected session. `event` anchors the chat list to the message with that persisted envelope sequence (ordinal fallback when the full transcript is loaded); `offset` best-effort-positions a replayed terminal scrollback by byte fraction. |
 | `ade://file/<repo-relative-path>[?line=<n>&lane=<uuid>]` | `{ kind: "file", path, line?, laneId? }` | Opens the Files editor at the path — inside the lane worktree when `lane` is present, else the project root — and reveals `line`. Traversal-safe: WHATWG URL normalization collapses `..` in the ade:// path form and the validator rejects traversal/absolute paths in the https `path=` param. |
 | `ade://commit/<sha>[?lane=<uuid>]` | `{ kind: "commit", sha, laneId?, envelope? }` | Opens the owning lane's detail (`commitSha` param). Foreign fallback: the envelope's repo yields a GitHub commit URL. 7–40 hex chars. |

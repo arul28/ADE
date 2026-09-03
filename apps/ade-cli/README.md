@@ -679,6 +679,8 @@ ade actions run github.getStatus --input-json '{"forceRefresh":true}' --text # s
 ade open ade://lane/<lane-uuid>
 ade open --linear-issue ADE-123 --branch arul/ade-123-fix
 ade link lane <lane-uuid>
+ade link lane <lane-uuid> --drawer stack            # open the lane with its stack drawer; an unknown drawer name is refused
+ade link welcome                                    # the project picker — the one link that names no entity
 ade link file src/index.ts --line 42 --lane <lane-uuid>
 ade link commit abc1234 --lane <lane-uuid> --no-envelope
 ade link artifact proof-artifact-id
