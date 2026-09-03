@@ -52,6 +52,15 @@ enum PluginSocketContext: Equatable {
     }
   }
 
+  /// The host's own word about what was pressed, as a plugin PAGE reads it.
+  ///
+  /// The same object the invoke payload carries, which is the point: a page
+  /// opened from a row and an action invoked from that row must agree about what
+  /// the row is. Host-written, never anything the page or the plugin sent.
+  var pagePointer: [String: PluginPageJSON] {
+    contextObject.mapValues { PluginPageJSON.from($0) }
+  }
+
   private var contextObject: [String: Any] {
     switch self {
     case let .surface(surface):
@@ -471,7 +480,7 @@ extension SyncService {
     // verbs are one destination written twice, the phone takes the navigate,
     // and a notice about a page it did not open would contradict the sheet it
     // just presented.
-    if result?.navigate != nil {
+    if result?.navigate != nil || result?.openWebview != nil {
       // Nothing to say: the sheet below is the answer.
     } else if let entryId = result?.openSettings {
       pluginSettingsNotice = PluginSettingsNotice(
@@ -483,7 +492,24 @@ extension SyncService {
         pluginLabel: pluginPresenceCatalog().label(for: contribution.pluginId)
       )
     }
-    if let navigation = result?.navigate {
+    // A PAGE beats a panel when an action names both: the plugin shipped a page
+    // for a reason, and the panel is the fallback tier. The placement the answer
+    // asked for is a request — this phone narrows a popover to a sheet on a
+    // compact screen, where a popover is a sheet anyway.
+    if let page = result?.openWebview {
+      presentedPluginPage = PluginPageRequest(
+        pluginId: contribution.pluginId,
+        surfaceId: page.surfaceId,
+        title: pluginPresenceCatalog().label(for: contribution.pluginId),
+        placement: PluginPageRequest.placement(
+          requested: page.placement,
+          horizontalSizeClass: UITraitCollection.current.horizontalSizeClass == .regular ? .regular : .compact
+        ),
+        fallbackPanelId: nil,
+        subject: context.pagePointer,
+        pointer: page.pointer?.mapValues { PluginPageJSON.from($0.anyValue) }
+      )
+    } else if let navigation = result?.navigate {
       // Every target opens the same sheet. The switch inside `forTarget` is
       // where a target this build has never heard of has to be decided, rather
       // than silently dropped by a decoder that never read it.

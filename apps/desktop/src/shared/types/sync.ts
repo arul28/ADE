@@ -1555,7 +1555,43 @@ export type SyncFileRequest =
   | { action: "stopWatching"; args: { workspaceId: string; includeIgnored?: boolean } }
   | { action: "quickOpen"; args: { workspaceId: string; query: string; limit?: number; includeIgnored?: boolean; allowComposerPrefixFallback?: boolean } }
   | { action: "searchText"; args: { workspaceId: string; query: string; limit?: number; includeIgnored?: boolean } }
-  | { action: "readArtifact"; args: { artifactId?: string; uri?: string; path?: string } };
+  | { action: "readArtifact"; args: { artifactId?: string; uri?: string; path?: string } }
+  // The plugin page channel. Two actions rather than one because the phone
+  // caches by content hash: it lists first, downloads only the hashes it lacks,
+  // and a page that did not change costs one round trip. Both are gated on the
+  // peer advertising `pluginTables` — a client that cannot hold plugin rows has
+  // nothing to draw a page against.
+  | { action: "plugin.pageAssets.manifest"; args: { pluginId: string } }
+  | { action: "plugin.pageAssets.read"; args: { pluginId: string; path: string; sha256: string } };
+
+/** One file in a plugin page's asset tree. See `pluginPageAssets.ts`. */
+export type SyncPluginPageAssetEntry = {
+  path: string;
+  bytes: number;
+  sha256: string;
+};
+
+/**
+ * What `plugin.pageAssets.manifest` answers.
+ *
+ * `version` + `revision` together key the phone's cache entry, and `entry` names
+ * the HTML to load — the phone has no other copy of the manifest's `entryHtml`.
+ */
+export type SyncPluginPageAssetsManifest = {
+  pluginId: string;
+  version: string;
+  revision: number;
+  entry: string;
+  files: SyncPluginPageAssetEntry[];
+};
+
+/** What `plugin.pageAssets.read` answers. Always base64. */
+export type SyncPluginPageAssetBlob = {
+  path: string;
+  bytes: number;
+  sha256: string;
+  contentBase64: string;
+};
 
 export type SyncFileResponsePayload = {
   ok: boolean;

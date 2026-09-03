@@ -200,8 +200,19 @@ struct PluginInvokeResult: Decodable, Equatable {
   /// `apps/desktop/src/shared/plugins/sdk.ts`.
   var authSession: PluginInvokeAuthSession?
 
+  /// The plugin PAGE the action asked to open, when it asked at all.
+  ///
+  /// The page tier's answer to `navigate`. `navigate` names a vocabulary panel
+  /// the client draws from a schema; this names a `webview` surface the plugin
+  /// draws itself, so the two cannot be one field — a client that can render
+  /// one and not the other has to be able to tell them apart. Mirrors the
+  /// `{ openWebview: { surfaceId, placement } }` shape in
+  /// `apps/desktop/src/shared/plugins/sdk.ts`.
+  var openWebview: PluginInvokeOpenWebview?
+
   private enum CodingKeys: String, CodingKey {
     case ok, message, error, result, navigate, composer, openUrl, openSettings, resetState, prompt, authSession
+    case openWebview
   }
 
   init(
@@ -214,9 +225,11 @@ struct PluginInvokeResult: Decodable, Equatable {
     openSettingsSectionId: String? = nil,
     resetState: PluginInvokeStateReset? = nil,
     prompt: PluginActionPrompt? = nil,
-    authSession: PluginInvokeAuthSession? = nil
+    authSession: PluginInvokeAuthSession? = nil,
+    openWebview: PluginInvokeOpenWebview? = nil
   ) {
     self.authSession = authSession
+    self.openWebview = openWebview
     self.ok = ok
     self.message = message
     self.navigate = navigate
@@ -379,7 +392,51 @@ struct PluginInvokeResult: Decodable, Equatable {
       // caller says so out loud instead of leaving a Connect button that looks
       // broken.
       authSession = (try? handlerResult.decodeIfPresent(PluginInvokeAuthSession.self, forKey: .authSession)) ?? nil
+      // Same tolerance as every verb above: a page request this build cannot
+      // read drops to nil and the outcome the action reported still reaches the
+      // reader. A phone with no cached page for the plugin falls back to the
+      // vocabulary panel rather than refusing the press.
+      openWebview = (try? handlerResult.decodeIfPresent(PluginInvokeOpenWebview.self, forKey: .openWebview)) ?? nil
     }
+  }
+}
+
+/// The `{openWebview}` verb: draw this plugin's own page.
+///
+/// `surfaceId` names a `webview` surface in the plugin's manifest. `placement`
+/// is a REQUEST, not an instruction — the desktop honours `popover`, and a phone
+/// has no popover on a compact screen, so it reads the field and then decides
+/// for itself. A placement this build does not know reads as the default.
+struct PluginInvokeOpenWebview: Decodable, Equatable {
+  var surfaceId: String
+  var placement: String?
+  /// A plugin-authored hint the page reads as `context.pointer`. Labelled apart
+  /// from the host's own word about the subject precisely so a page never
+  /// mistakes one for the other.
+  var pointer: [String: RemoteJSONValue]?
+
+  private enum CodingKeys: String, CodingKey {
+    case surfaceId, placement, pointer
+  }
+
+  init(surfaceId: String, placement: String? = nil, pointer: [String: RemoteJSONValue]? = nil) {
+    self.surfaceId = surfaceId
+    self.placement = placement
+    self.pointer = pointer
+  }
+
+  init(from decoder: Decoder) throws {
+    let container = try decoder.container(keyedBy: CodingKeys.self)
+    let raw = try container.decode(String.self, forKey: .surfaceId).trimmingCharacters(in: .whitespacesAndNewlines)
+    // The same identifier rule a panel id passes. A surface id is quoted back
+    // into a URL host's path, so an unvalidated one is a page opening something
+    // the manifest never declared.
+    guard ADEDeepLinkURLParsing.isValidPluginPanelId(raw) else {
+      throw DecodingError.dataCorruptedError(forKey: .surfaceId, in: container, debugDescription: "invalid surfaceId")
+    }
+    surfaceId = raw
+    placement = (try? container.decodeIfPresent(String.self, forKey: .placement)) ?? nil
+    pointer = (try? container.decodeIfPresent([String: RemoteJSONValue].self, forKey: .pointer)) ?? nil
   }
 }
 

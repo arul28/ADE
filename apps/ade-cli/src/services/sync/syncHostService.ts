@@ -65,6 +65,8 @@ import type {
   SyncChatSubscribeSnapshotPayload,
   SyncChatUnsubscribePayload,
   SyncFileBlob,
+  SyncPluginPageAssetBlob,
+  SyncPluginPageAssetsManifest,
   SyncFileRequest,
   SyncFileResponsePayload,
   SyncHelloPayload,
@@ -167,6 +169,10 @@ import type { createSessionService } from "../../../../desktop/src/main/services
 import type { createComputerUseArtifactBrokerService } from "../../../../desktop/src/main/services/computerUse/computerUseArtifactBrokerService";
 import type { AdeDb } from "../../../../desktop/src/main/services/state/kvDb";
 import { hasNullByte, normalizeRelative, nowIso, resolvePathWithinRoot, safeJsonParse, toOptionalString, uniqueStrings, writeTextAtomic } from "../../../../desktop/src/main/services/shared/utils";
+import {
+  buildPluginPageAssetsManifest,
+  readPluginPageAsset,
+} from "./pluginPageAssets";
 import type { DeviceRegistryService } from "./deviceRegistryService";
 import { createSyncPairingStore, isValidDpopPublicKey, type SyncPairingRecord } from "./syncPairingStore";
 import {
@@ -875,6 +881,8 @@ export function syncFileRequestWorkspaceId(payload: SyncFileRequest): string | n
       return toOptionalString(payload.args.workspaceId);
     case "listWorkspaces":
     case "readArtifact":
+    case "plugin.pageAssets.manifest":
+    case "plugin.pageAssets.read":
       return null;
     default:
       return null;
@@ -924,6 +932,8 @@ const CONCURRENT_READ_FILE_ACTIONS: ReadonlySet<string> = new Set<SyncFileReques
   "quickOpen",
   "searchText",
   "readArtifact",
+  "plugin.pageAssets.manifest",
+  "plugin.pageAssets.read",
 ]);
 
 const CONCURRENT_READ_COMMAND_PREFIXES = ["get", "list", "read", "search"] as const;
@@ -6965,6 +6975,46 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     return createBlobFromBuffer(normalizeRelative(path.relative(args.projectRoot, artifactPath)), buffer);
   }
 
+  /**
+   * The plugin page channel, gated on the peer's declared `pluginTables`.
+   *
+   * A phone draws a plugin page against the replicated `plugin_*` tables, so a
+   * peer that never advertised the capability has nothing to draw and no
+   * business fetching a plugin's bytes. Gating here rather than inside
+   * `pluginPageAssets.ts` keeps that module a pure function of the filesystem:
+   * WHO may ask is a sync fact, WHAT may be served is a containment fact, and
+   * folding them together is how one of them ends up untested.
+   */
+  function assertPluginPageAssetsAllowed(peer: PeerState): void {
+    if (!peerTracksPluginTables(peer)) {
+      throw new Error("This client cannot receive plugin page assets.");
+    }
+  }
+
+  function readPluginPageAssetsManifest(
+    peer: PeerState,
+    request: Extract<SyncFileRequest, { action: "plugin.pageAssets.manifest" }>["args"],
+  ): SyncPluginPageAssetsManifest {
+    assertPluginPageAssetsAllowed(peer);
+    const pluginId = toOptionalString(request.pluginId);
+    if (!pluginId) throw new Error("Plugin page assets require a pluginId.");
+    return buildPluginPageAssetsManifest(pluginId);
+  }
+
+  function readPluginPageAssetBlob(
+    peer: PeerState,
+    request: Extract<SyncFileRequest, { action: "plugin.pageAssets.read" }>["args"],
+  ): SyncPluginPageAssetBlob {
+    assertPluginPageAssetsAllowed(peer);
+    const pluginId = toOptionalString(request.pluginId);
+    if (!pluginId) throw new Error("Plugin page assets require a pluginId.");
+    return readPluginPageAsset({
+      pluginId,
+      path: toOptionalString(request.path) ?? "",
+      sha256: toOptionalString(request.sha256) ?? "",
+    });
+  }
+
   function isMobilePeer(peer: PeerState): boolean {
     if (isRecordBackedSyncAuthKind(peer.authKind)) {
       return isMobilePairingRecord(peer.pairingRecord);
@@ -7008,6 +7058,8 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         | FilesQuickOpenItem[]
         | FilesSearchTextMatch[]
         | SyncFileBlob
+        | SyncPluginPageAssetsManifest
+        | SyncPluginPageAssetBlob
         | { ok: true } = { ok: true };
 
       switch (payload.action) {
@@ -7065,6 +7117,14 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
           break;
         case "readArtifact": {
           result = await readArtifactBlob(payload.args);
+          break;
+        }
+        case "plugin.pageAssets.manifest": {
+          result = readPluginPageAssetsManifest(peer, payload.args);
+          break;
+        }
+        case "plugin.pageAssets.read": {
+          result = readPluginPageAssetBlob(peer, payload.args);
           break;
         }
         default:

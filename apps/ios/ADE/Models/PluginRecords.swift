@@ -1119,6 +1119,16 @@ struct PluginContributionIndex: Equatable {
   /// filed under until a lookup names one.
   private var declarations: PluginSocketDeclarations = .none
 
+  /// The `webview` surface this plugin's tab draws, or nil when it draws a
+  /// vocabulary panel.
+  ///
+  /// Forwarded rather than exposing `declarations`: every other caller reads
+  /// this index through a question, and the one place that opens a tab should
+  /// not be the one place that reaches into the manifest half directly.
+  func railWebviewSurfaceId(for pluginId: String) -> String? {
+    declarations.railWebviewSurfaceId(for: pluginId)
+  }
+
   /// - Parameter installedPluginIds: plugins the attached machine reports as
   ///   installed and enabled, or `nil` for "not answered yet".
   ///
@@ -1499,6 +1509,22 @@ struct PluginSocketDeclarations: Equatable {
   /// from the panel rows.
   private(set) var railTabSurfaceByPlugin: [String: String] = [:]
 
+  /// Which plugins declare their rail tab as a `webview` surface — a page the
+  /// plugin draws itself — rather than a vocabulary panel.
+  ///
+  /// A separate map rather than a flag inside the one above, because the two
+  /// answers have different lifetimes: the surface id is what every badge and
+  /// contribution join keys on and must exist for every tab, and this is only
+  /// ever consulted at the moment a tab is opened. A plugin missing from here
+  /// simply opens the panel, which is also what a host too old to report `kind`
+  /// produces.
+  private(set) var railWebviewSurfaceByPlugin: [String: String] = [:]
+
+  /// The `webview` surface this plugin's tab draws, or nil when it draws a panel.
+  func railWebviewSurfaceId(for pluginId: String) -> String? {
+    railWebviewSurfaceByPlugin[pluginId]
+  }
+
   /// Which surface this plugin's tab, badge and default panel mean, or nil when
   /// this host could not say. See ``pluginRailTabSurface(_:)``.
   func railTabSurfaceId(for pluginId: String) -> String? {
@@ -1627,6 +1653,9 @@ struct PluginSocketDeclarations: Equatable {
       // `sockets`: a plugin can declare a tab and no sockets at all.
       if let rail = pluginRailTabSurface(record.tabs), !rail.id.isEmpty {
         railTabSurfaceByPlugin[record.pluginId] = rail.id
+        if rail.kind == "webview" {
+          railWebviewSurfaceByPlugin[record.pluginId] = rail.id
+        }
       }
       guard let wires = record.sockets else { continue }
       knownPlugins.insert(record.pluginId)

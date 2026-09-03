@@ -3342,6 +3342,16 @@ private struct WorkChatComposerDraftInput: View {
       sendOwner: pluginSendOwner,
       onSendOwnerChange: { pluginSendOwner = $0 }
     )
+    // A plugin PAGE has no composer of its own — it is drawn in a sheet, and
+    // the chat that owns the draft is behind it. So `composer.attach` and
+    // `composer.insert` land on `SyncService` and the composer picks them up
+    // here, which is also what clears them: leaving the value set would apply
+    // the same insert again the next time this row redrew.
+    .onChange(of: syncService.pluginPageComposerEdit) { _, edit in
+      guard let edit, canCompose, !settingsMutationInFlight else { return }
+      applyPluginComposerEdit(edit)
+      syncService.pluginPageComposerEdit = nil
+    }
   }
 
   /// Whether a plugin, rather than the local runtime, is where Send goes.

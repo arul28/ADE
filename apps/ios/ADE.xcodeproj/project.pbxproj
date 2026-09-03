@@ -332,6 +332,16 @@
 		C5B00000000000000000000C /* SSHPairingViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = C5A00000000000000000000C /* SSHPairingViewModel.swift */; };
 		C5B00000000000000000000D /* SSHPairingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C5A00000000000000000000D /* SSHPairingView.swift */; };
 		C5B00000000000000000000E /* SSHBootstrapTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C5A00000000000000000000E /* SSHBootstrapTests.swift */; };
+		PH0000000000000000000030 /* PluginPageBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = PG0000000000000000000030 /* PluginPageBridge.swift */; };
+		PH0000000000000000000031 /* PluginPageAssetStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = PG0000000000000000000031 /* PluginPageAssetStore.swift */; };
+		PH0000000000000000000032 /* PluginPageSchemeHandler.swift in Sources */ = {isa = PBXBuildFile; fileRef = PG0000000000000000000032 /* PluginPageSchemeHandler.swift */; };
+		PH0000000000000000000033 /* PluginPageBridgeHost.swift in Sources */ = {isa = PBXBuildFile; fileRef = PG0000000000000000000033 /* PluginPageBridgeHost.swift */; };
+		PH0000000000000000000034 /* PluginPageHostView.swift in Sources */ = {isa = PBXBuildFile; fileRef = PG0000000000000000000034 /* PluginPageHostView.swift */; };
+		PH0000000000000000000035 /* PluginPageSurface.swift in Sources */ = {isa = PBXBuildFile; fileRef = PG0000000000000000000035 /* PluginPageSurface.swift */; };
+		PH0000000000000000000036 /* PluginPageAssetStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = PG0000000000000000000036 /* PluginPageAssetStoreTests.swift */; };
+		PH0000000000000000000037 /* PluginPageSchemeHandlerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = PG0000000000000000000037 /* PluginPageSchemeHandlerTests.swift */; };
+		PH0000000000000000000038 /* PluginPageBridgeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = PG0000000000000000000038 /* PluginPageBridgeTests.swift */; };
+		PH0000000000000000000039 /* BundledPluginPages in Resources */ = {isa = PBXBuildFile; fileRef = PG0000000000000000000039 /* BundledPluginPages */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -679,6 +689,16 @@
 		FA000000000000000000C2C3 /* WorkAssistantRenderingTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkAssistantRenderingTests.swift; path = ADETests/WorkAssistantRenderingTests.swift; sourceTree = "<group>"; };
 		FA000000000000000000C2D0 /* WorkCardExpansionTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkCardExpansionTests.swift; path = ADETests/WorkCardExpansionTests.swift; sourceTree = "<group>"; };
 		FA000000000000000000C2C4 /* WorkLiveRosterHydrationTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkLiveRosterHydrationTests.swift; path = ADETests/WorkLiveRosterHydrationTests.swift; sourceTree = "<group>"; };
+		PG0000000000000000000030 /* PluginPageBridge.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PluginPageBridge.swift; path = ADE/Models/PluginPageBridge.swift; sourceTree = "<group>"; };
+		PG0000000000000000000031 /* PluginPageAssetStore.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PluginPageAssetStore.swift; path = ADE/Services/PluginPageAssetStore.swift; sourceTree = "<group>"; };
+		PG0000000000000000000032 /* PluginPageSchemeHandler.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PluginPageSchemeHandler.swift; path = ADE/Services/PluginPageSchemeHandler.swift; sourceTree = "<group>"; };
+		PG0000000000000000000033 /* PluginPageBridgeHost.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PluginPageBridgeHost.swift; path = ADE/Views/Plugins/PluginPageBridgeHost.swift; sourceTree = "<group>"; };
+		PG0000000000000000000034 /* PluginPageHostView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PluginPageHostView.swift; path = ADE/Views/Plugins/PluginPageHostView.swift; sourceTree = "<group>"; };
+		PG0000000000000000000035 /* PluginPageSurface.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PluginPageSurface.swift; path = ADE/Views/Plugins/PluginPageSurface.swift; sourceTree = "<group>"; };
+		PG0000000000000000000036 /* PluginPageAssetStoreTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PluginPageAssetStoreTests.swift; path = ADETests/PluginPageAssetStoreTests.swift; sourceTree = "<group>"; };
+		PG0000000000000000000037 /* PluginPageSchemeHandlerTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PluginPageSchemeHandlerTests.swift; path = ADETests/PluginPageSchemeHandlerTests.swift; sourceTree = "<group>"; };
+		PG0000000000000000000038 /* PluginPageBridgeTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PluginPageBridgeTests.swift; path = ADETests/PluginPageBridgeTests.swift; sourceTree = "<group>"; };
+		PG0000000000000000000039 /* BundledPluginPages */ = {isa = PBXFileReference; lastKnownFileType = folder; name = BundledPluginPages; path = ADE/Resources/BundledPluginPages; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -802,6 +822,9 @@
 		PJ0000000000000000000001 /* Plugins */ = {
 			isa = PBXGroup;
 			children = (
+				PG0000000000000000000033 /* PluginPageBridgeHost.swift */,
+				PG0000000000000000000034 /* PluginPageHostView.swift */,
+				PG0000000000000000000035 /* PluginPageSurface.swift */,
 				PG0000000000000000000005 /* PluginPaneStore.swift */,
 				PG0000000000000000000021 /* PluginAuthSessionRunner.swift */,
 				PG0000000000000000000006 /* PluginVocabularyView.swift */,
@@ -1045,6 +1068,8 @@
 		10899CEEC539910EA438B7D9 /* Services */ = {
 			isa = PBXGroup;
 			children = (
+				PG0000000000000000000031 /* PluginPageAssetStore.swift */,
+				PG0000000000000000000032 /* PluginPageSchemeHandler.swift */,
 				51942BAC0965C7D0CCE6E8B8 /* Database.swift */,
 				B5D5B5B87564C73F2FF34B0D /* KeychainService.swift */,
 				A90000000000000000000011 /* ProductAnalytics.swift */,
@@ -1204,6 +1229,7 @@
 		86112D8CA841F32E6F73CE9F /* Models */ = {
 			isa = PBXGroup;
 			children = (
+				PG0000000000000000000030 /* PluginPageBridge.swift */,
 				PG0000000000000000000001 /* PluginVocabulary.swift */,
 				PG0000000000000000000002 /* PluginVocabularyParsing.swift */,
 				PG0000000000000000000003 /* PluginRecords.swift */,
@@ -1220,6 +1246,7 @@
 		B6658D243715FBE2E04D6A2E /* Resources */ = {
 			isa = PBXGroup;
 			children = (
+				PG0000000000000000000039 /* BundledPluginPages */,
 				A90100000000000000000011 /* PrivacyInfo.xcprivacy */,
 				2856F8D2F2D630DD985B870A /* DatabaseBootstrap.sql */,
 				781DE0B3C61717AE3057B82D /* VoiceGlossary.json */,
@@ -1230,6 +1257,9 @@
 		C77DE76E58CC8D681F4D4619 /* ADETests */ = {
 			isa = PBXGroup;
 			children = (
+				PG0000000000000000000036 /* PluginPageAssetStoreTests.swift */,
+				PG0000000000000000000037 /* PluginPageSchemeHandlerTests.swift */,
+				PG0000000000000000000038 /* PluginPageBridgeTests.swift */,
 				14C0DF7FEB4C2EB854BAC888 /* ADETests.swift */,
 				AD0000000000000000000A06 /* AccountEmailAuthFlowTests.swift */,
 				B70000000000000000000003 /* SyncRecoveryPolicyTests.swift */,
@@ -1474,6 +1504,7 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				PH0000000000000000000039 /* BundledPluginPages in Resources */,
 				A90100000000000000000001 /* PrivacyInfo.xcprivacy in Resources */,
 				63A9C60B0E0F0E2707634B2E /* Assets.xcassets in Resources */,
 				6E32ED1BF961DFEFCA12EF52 /* DatabaseBootstrap.sql in Resources */,
@@ -1530,6 +1561,12 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				PH0000000000000000000030 /* PluginPageBridge.swift in Sources */,
+				PH0000000000000000000031 /* PluginPageAssetStore.swift in Sources */,
+				PH0000000000000000000032 /* PluginPageSchemeHandler.swift in Sources */,
+				PH0000000000000000000033 /* PluginPageBridgeHost.swift in Sources */,
+				PH0000000000000000000034 /* PluginPageHostView.swift in Sources */,
+				PH0000000000000000000035 /* PluginPageSurface.swift in Sources */,
 				E20000000000000000000091 /* LinearBrand.swift in Sources */,
 				E2A00000000000000000C1 /* CursorCloudModels.swift in Sources */,
 				E2A00000000000000000C2 /* CursorCloudPaneStore.swift in Sources */,
@@ -1790,6 +1827,9 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				PH0000000000000000000036 /* PluginPageAssetStoreTests.swift in Sources */,
+				PH0000000000000000000037 /* PluginPageSchemeHandlerTests.swift in Sources */,
+				PH0000000000000000000038 /* PluginPageBridgeTests.swift in Sources */,
 				7B70BE6839672E5D2D006B28 /* ADETests.swift in Sources */,
 				AD0000000000000000000B06 /* AccountEmailAuthFlowTests.swift in Sources */,
 				B70000000000000000000004 /* SyncRecoveryPolicyTests.swift in Sources */,

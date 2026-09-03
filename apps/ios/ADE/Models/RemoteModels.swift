@@ -850,6 +850,21 @@ enum RemoteJSONValue: Codable, Equatable, Hashable {
 }
 
 extension RemoteJSONValue {
+  /// The Foundation value this wraps, for the `[String: Any]` dictionaries the
+  /// sync socket and the plugin bridges both speak. `.null` becomes `NSNull` so
+  /// a key that was explicitly null stays a key — dropping it would turn "the
+  /// host has no answer" into "the host said nothing".
+  var anyValue: Any {
+    switch self {
+    case .string(let value): return value
+    case .number(let value): return value.rounded() == value && abs(value) < 9_007_199_254_740_992 ? Int(value) : value
+    case .bool(let value): return value
+    case .object(let value): return value.mapValues(\.anyValue)
+    case .array(let value): return value.map(\.anyValue)
+    case .null: return NSNull()
+    }
+  }
+
   var plainTextValue: String? {
     switch self {
     case .string(let value):

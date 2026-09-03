@@ -3928,6 +3928,20 @@ final class SyncService: ObservableObject {
   /// `RootTab` is wired into analytics, persistence and badges, and a plugin
   /// must not be able to add itself to that set.
   @Published var presentedPluginPane: PluginPaneRequest?
+  /// The plugin PAGE currently presented, or nil.
+  ///
+  /// Beside ``presentedPluginPane`` rather than replacing it: a page and a
+  /// vocabulary panel are two tiers of the same plugin, and a phone that has not
+  /// cached a page still draws the panel. Set by a socket press whose action
+  /// answered `{openWebview}`, by a plugin tab whose manifest declares a
+  /// `webview` surface, and by a page that navigated to another of its own.
+  @Published var presentedPluginPage: PluginPageRequest?
+  /// The composer edit a plugin page asked for, waiting for a composer to apply.
+  ///
+  /// Root-level for the reason ``pendingPluginPrompt`` is: a page drawn in a
+  /// sheet has no composer of its own, and the chat that does is behind it. The
+  /// composer clears this when it applies it.
+  @Published var pluginPageComposerEdit: PluginInvokeComposerEdit?
   /// A plugin link the attached machine cannot serve, waiting to be said out
   /// loud. Set by `DeepLinkRouter` and cleared by whoever shows it.
   @Published var pluginLinkRefusal: PluginLinkRefusal?
@@ -14402,6 +14416,49 @@ final class SyncService: ObservableObject {
     return try decode(try await performFileRequest(action: "readArtifact", args: args), as: SyncFileBlob.self)
   }
 
+  // MARK: - Plugin page assets
+
+  /// List a plugin page's files, with a hash for each.
+  ///
+  /// The phone caches page bytes by content hash, so the manifest is the whole
+  /// diff: it arrives, the store skips every hash it already holds, and a page
+  /// that did not change costs this one round trip and nothing else.
+  ///
+  /// Host side: `plugin.pageAssets.manifest` in
+  /// `apps/ade-cli/src/services/sync/pluginPageAssets.ts`, gated on this peer
+  /// having advertised the `pluginTables` capability — a client that cannot hold
+  /// plugin rows has nothing to draw a page against.
+  func fetchPluginPageAssetsManifest(pluginId: String) async throws -> PluginPageAssetsManifest {
+    try decode(
+      try await performFileRequest(action: "plugin.pageAssets.manifest", args: ["pluginId": pluginId]),
+      as: PluginPageAssetsManifest.self
+    )
+  }
+
+  /// One page file, refused by the host unless it still hashes to `sha256`.
+  ///
+  /// The hash is REQUIRED and is the point of the action: the phone files the
+  /// bytes under it, so a host that answered with different bytes would poison
+  /// the cache in a way no later fetch repairs. The check is made on both sides
+  /// — here because the wire is not the only thing between them.
+  func fetchPluginPageAsset(pluginId: String, path: String, sha256: String) async throws -> Data {
+    let blob = try decode(
+      try await performFileRequest(
+        action: "plugin.pageAssets.read",
+        args: ["pluginId": pluginId, "path": path, "sha256": sha256]
+      ),
+      as: PluginPageAssetBlob.self
+    )
+    guard let data = Data(base64Encoded: blob.contentBase64) else {
+      throw NSError(
+        domain: "ADE",
+        code: 18,
+        userInfo: [NSLocalizedDescriptionKey: "Plugin page asset \(path) was not readable."]
+      )
+    }
+    return data
+  }
+
   func createPullRequest(
     laneId: String,
     title: String,
@@ -22941,4 +22998,49 @@ func adeUsageStatsCommandArgs(preset: String, force: Bool) -> [String: Any] {
   var args: [String: Any] = ["preset": preset]
   if force { args["force"] = true }
   return args
+}
+
+// MARK: - Plugin page bridge conformances
+
+/// The sync socket, seen through the two narrow protocols a plugin page needs.
+///
+/// Declared here rather than in a file of its own because both protocols reach
+/// `SyncService`'s file-private command plumbing, and widening that plumbing to
+/// `internal` for one caller would open every action on the socket to anything
+/// in the app. The protocols themselves stay in `PluginPageAssetStore.swift` and
+/// `PluginPageBridgeHost.swift`, so both are still fakeable in a test.
+extension SyncService: PluginPageAssetFetching {}
+
+extension SyncService: PluginPageBridgeDataSource {
+  /// The LOCAL mirror, never a fetch.
+  ///
+  /// A page scrolling a list must not stall on a socket, and the mirror is
+  /// already the phone's primary read for every other plugin surface. A row the
+  /// mirror has not received yet simply is not there yet — the `changed` event
+  /// tells the page to ask again when it arrives.
+  func pluginPageCollectionEntries(
+    pluginId: String,
+    collection: String,
+    keyPrefix: String?,
+    limit: Int
+  ) -> [PluginCollectionEntry] {
+    database.fetchPluginCollectionEntries(
+      pluginId: pluginId,
+      collection: collection,
+      keyPrefix: keyPrefix,
+      limit: limit
+    )
+  }
+
+  func pluginPageInvoke(pluginId: String, actionId: String, args: [String: Any]) async throws -> PluginInvokeResult {
+    try await invokePluginAction(pluginId: pluginId, actionId: actionId, payload: args)
+  }
+
+  func pluginPageRemoteAction(_ action: String, args: [String: Any]) async throws -> Any {
+    try await sendCommand(action: action, args: args)
+  }
+
+  func pluginPageSupportsRemoteAction(_ action: String) -> Bool {
+    supportsViewerRemoteAction(action)
+  }
 }

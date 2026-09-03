@@ -166,6 +166,22 @@ struct ContentView: View {
           // request. `.id` is what retires that store.
           .id(request.id)
       }
+      // The plugin PAGE tier. Two presentations rather than one because the
+      // placement is part of the answer: a socket press that asked for a popover
+      // gets one on a regular-width screen, and `PluginPageRequest.placement`
+      // has already narrowed every compact-screen request to a sheet, so the two
+      // bindings are mutually exclusive by construction.
+      .sheet(item: pluginPageSheetBinding) { request in
+        PluginPageSurface(request: request, syncService: syncService, store: .shared)
+          .environmentObject(syncService)
+          .id(request.id)
+      }
+      .popover(item: pluginPagePopoverBinding) { request in
+        PluginPageSurface(request: request, syncService: syncService, store: .shared)
+          .environmentObject(syncService)
+          .id(request.id)
+          .frame(minWidth: 420, minHeight: 520)
+      }
       // A plugin link the attached machine cannot serve. Said plainly, in the
       // plugin's own name, because the link resolved to that machine and there
       // is no second computer to hand it to.
@@ -397,6 +413,28 @@ struct ContentView: View {
       // nowhere on the phone. A string badge renders as a dot-sized marker and
       // hides itself when nil.
       .badge(syncService.ctoAttention.isAwaitingInput ? "!" : nil)
+  }
+
+  /// The plugin page request when it wants a sheet, and nil when it wants a
+  /// popover. Splitting one published value into two bindings is what lets a
+  /// single request choose its own presentation without either modifier fighting
+  /// the other for it.
+  private var pluginPageSheetBinding: Binding<PluginPageRequest?> {
+    Binding(
+      get: { syncService.presentedPluginPage.flatMap { $0.placement == .popover ? nil : $0 } },
+      set: { if $0 == nil, syncService.presentedPluginPage?.placement != .popover {
+        syncService.presentedPluginPage = nil
+      } }
+    )
+  }
+
+  private var pluginPagePopoverBinding: Binding<PluginPageRequest?> {
+    Binding(
+      get: { syncService.presentedPluginPage.flatMap { $0.placement == .popover ? $0 : nil } },
+      set: { if $0 == nil, syncService.presentedPluginPage?.placement == .popover {
+        syncService.presentedPluginPage = nil
+      } }
+    )
   }
 }
 

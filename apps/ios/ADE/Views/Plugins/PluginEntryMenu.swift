@@ -196,7 +196,25 @@ struct PluginEntryMenuButton: View {
       .contentShape(Rectangle())
   }
 
+  /// Open the plugin's tab.
+  ///
+  /// A plugin that declares its tab as a `webview` surface gets its own PAGE;
+  /// everything else gets the vocabulary panel. The page surface falls back to
+  /// the panel on its own when nothing is cached yet, so this decides which
+  /// SURFACE to present and never whether the phone can draw one.
   private func open(_ entry: PluginEntry) {
+    if let surfaceId = pluginContributions.railWebviewSurfaceId(for: entry.pluginId) {
+      syncService.presentedPluginPage = PluginPageRequest(
+        pluginId: entry.pluginId,
+        surfaceId: surfaceId,
+        title: entry.label,
+        placement: .tab,
+        fallbackPanelId: nil,
+        subject: nil,
+        pointer: nil
+      )
+      return
+    }
     syncService.presentedPluginPane = PluginPaneRequest(pluginId: entry.pluginId, title: entry.label)
   }
 
