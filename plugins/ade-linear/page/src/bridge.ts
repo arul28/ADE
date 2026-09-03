@@ -1,0 +1,173 @@
+/**
+ * `window.adePlugin`, typed, plus the one fact the host puts on the URL.
+ *
+ * The page talks to ADE through exactly this module. Nothing else in `src/`
+ * touches `window.adePlugin`, for two reasons that are not style:
+ *
+ * 1. The seam test scripts a fake bridge and asserts every call and its
+ *    arguments. A component that reached for the global directly would be
+ *    outside what that test can see.
+ * 2. The bridge is versioned and additive. A v1 host answers `invoke` and
+ *    `collections` and nothing else, so every v2 verb is called through a
+ *    guard here rather than at two hundred call sites.
+ *
+ * See `apps/desktop/src/shared/plugins/webviewBridge.ts` for the contract.
+ */
+
+export type PluginWebviewPlacement =
+  | "tab"
+  | "pane"
+  | "drawer"
+  | "overlay"
+  | "popover"
+  | "settings-section"
+  | "composer-picker";
+
+export type PluginWebviewProjectContext = {
+  projectId: string | null;
+  root: string | null;
+  binding: "local" | "remote";
+};
+
+export type PluginWebviewContext = {
+  subject: { kind: string; [key: string]: unknown } | null;
+  pointer?: Record<string, unknown>;
+  surfaceId?: string;
+  placement?: PluginWebviewPlacement;
+  project?: PluginWebviewProjectContext | null;
+};
+
+export type PluginWebviewThemeSnapshot = {
+  scheme: "dark" | "light";
+  tokens: Record<string, string>;
+};
+
+export type PluginWebviewHostEvent = {
+  kind: "lane" | "session" | "pr";
+  ids: string[];
+  overflow: boolean;
+};
+
+export type PluginWebviewChangeEvent = {
+  kind: string;
+  panelId?: string;
+  collection?: string;
+};
+
+export type PluginWebviewToast = {
+  level: "info" | "success" | "warning" | "error";
+  message: string;
+  actionLabel?: string;
+  actionId?: string;
+};
+
+export type PluginWebviewConfirm = {
+  title: string;
+  body?: string;
+  confirmLabel?: string;
+  cancelLabel?: string;
+  destructive?: boolean;
+};
+
+export type PluginWebviewComposerAttach = {
+  provider: string;
+  issueId: string;
+  identifier: string;
+  title: string;
+  url?: string | null;
+};
+
+export type AdePluginBridge = {
+  readonly version: number;
+  readonly pluginId: string;
+  readonly context: PluginWebviewContext | null;
+  collections: {
+    get(collection: string, key: string): Promise<unknown>;
+    put(collection: string, key: string, value: unknown): Promise<void>;
+    list(
+      collection: string,
+      options?: { keyPrefix?: string; limit?: number; after?: string },
+    ): Promise<{ key: string; value: unknown }[]>;
+  };
+  invoke(action: string, args?: Record<string, unknown>): Promise<unknown>;
+  config: {
+    get(): Promise<Record<string, string | number | boolean | null>>;
+    set(
+      key: string | Record<string, string | number | boolean | null>,
+      value?: string | number | boolean | null,
+    ): Promise<Record<string, string | number | boolean | null>>;
+  };
+  events: {
+    on(event: "changed", listener: (payload: PluginWebviewChangeEvent) => void): () => void;
+    on(event: "theme", listener: (payload: PluginWebviewThemeSnapshot) => void): () => void;
+    on(event: "host", listener: (payload: PluginWebviewHostEvent) => void): () => void;
+  };
+  openDeeplink(url: string): Promise<void>;
+  openSettings?(target: { entryId: string } | { socketId: string }): Promise<void>;
+  surface?: { close(): Promise<void> };
+  composer?: {
+    attach(issue: PluginWebviewComposerAttach): Promise<void>;
+    insert(text: string): Promise<void>;
+  };
+  ui?: {
+    toast(toast: PluginWebviewToast): Promise<{ id: string }>;
+    dismissToast(id: string): Promise<void>;
+    prompt(prompt: unknown): Promise<unknown>;
+    confirm(request: PluginWebviewConfirm): Promise<boolean>;
+  };
+  clipboard?: { read(): Promise<string>; write(text: string): Promise<void> };
+  theme?: { get(): Promise<PluginWebviewThemeSnapshot> };
+  host?: {
+    subscribe(options: { kinds: ("lane" | "session" | "pr")[] }): Promise<() => void>;
+  };
+};
+
+declare global {
+  interface Window {
+    adePlugin?: AdePluginBridge;
+  }
+}
+
+/** The bridge, or null when the page is opened outside a guest. */
+export function bridge(): AdePluginBridge | null {
+  return typeof window === "undefined" ? null : window.adePlugin ?? null;
+}
+
+/**
+ * The bridge, or a throw.
+ *
+ * Used by the data verbs, where "there is no host" is a load failure the reader
+ * has to see rather than an empty list they will read as "no issues".
+ */
+export function requireBridge(): AdePluginBridge {
+  const api = bridge();
+  if (!api) throw new Error("This page is not running inside ADE.");
+  return api;
+}
+
+/** Whether the host is new enough to answer a v2 verb. */
+export function hasBridgeV2(): boolean {
+  return (bridge()?.version ?? 1) >= 2;
+}
+
+/**
+ * The host's injected context.
+ *
+ * `adePlugin.context` is the host's own word, captured at attach and
+ * unforgeable. The `__adeCtx` query parameter is the SAME envelope and is read
+ * only as a fallback, for a host that answered a bare handshake — the values it
+ * carries (surface id, placement) are the renderer's, not the page's.
+ */
+export function pageContext(): PluginWebviewContext {
+  const fromHost = bridge()?.context ?? null;
+  if (fromHost) return fromHost;
+  if (typeof window === "undefined") return { subject: null };
+  try {
+    const raw = new URL(window.location.href).searchParams.get("__adeCtx");
+    if (!raw) return { subject: null };
+    const parsed = JSON.parse(raw) as PluginWebviewContext;
+    return parsed && typeof parsed === "object" ? parsed : { subject: null };
+  } catch {
+    return { subject: null };
+  }
+}

@@ -214,7 +214,34 @@ function createOwnActions(deps) {
      */
     async openIssuesQuickView() {
       void ensureIssues();
-      return { navigate: { panelId: "issues", target: "popover" } };
+      // BOTH answers, and both are load-bearing.
+      //
+      // `openWebview` is what a client that can host a plugin page acts on: the
+      // quick view is the plugin's own page now, drawn as a popover under the
+      // button. `navigate` is the same instruction in the vocabulary, and it is
+      // what the phone and the terminal read — neither hosts a page today, and
+      // a button that did nothing there would be the "green while broken" state
+      // the fallback rules exist to prevent. A client that understands both
+      // reads `openWebview` first (`pluginActionDispatch.ts`).
+      return {
+        openWebview: { surfaceId: "quickview", placement: "popover" },
+        navigate: { panelId: "issues", target: "popover" },
+      };
+    },
+
+    /**
+     * The issue picker, over the composer or under the chat header.
+     *
+     * Its whole contract is `composer.attach` then `surface.close`, which only
+     * the page can perform — so the vocabulary answer beside it navigates to the
+     * list instead of pretending a panel can attach a chip.
+     */
+    async openIssuePicker() {
+      void ensureIssues();
+      return {
+        openWebview: { surfaceId: "picker", placement: "picker" },
+        navigate: { panelId: "issues" },
+      };
     },
 
     /**

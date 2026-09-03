@@ -28,7 +28,7 @@ const plugin = require("../index");
 const contract = require("../panels/contract");
 const { ACTIONS, PROMPT_LANE } = contract;
 const panelActions = require("../panelActions");
-const { createApi, createSdk, issueNode } = require("./support");
+const { createApi, createSdk, issueNode, response } = require("./support");
 
 const MANIFEST = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "plugin.json"), "utf8"));
 
@@ -122,17 +122,34 @@ describe("activate", () => {
     }
   });
 
-  it("lets no id be defined by BOTH halves, so no merge order decides anything", async () => {
+  it("lets no id be defined by TWO of the three tables, so no merge order decides anything", async () => {
     // A collision was resolved by `Object.assign(actions, panelHandlers,
     // ownActions)` — last one wins — and that is how three handlers in
     // `panelActions.js` came to be unreachable while reading as the live ones.
     // Disjoint tables mean the merge order cannot decide anything, so it cannot
-    // decide it wrongly.
+    // decide it wrongly. Three tables now: the page's is the third, and it is
+    // the one most likely to grow a duplicate, because most of its verbs have a
+    // panel-shaped sibling that answers a navigation rather than data.
     const { sdk } = await activated();
-    const panelOnly = Object.keys(panelActions.bind({ publish: async () => {}, model: () => ({}) }));
-    const ownOnly = Object.keys(require("../index").__internals.ownActions);
-    const shared = panelOnly.filter((id) => ownOnly.includes(id));
-    assert.deepEqual(shared, [], `both halves define ${shared.join(", ")}`);
+    const internals = require("../index").__internals;
+    const tables = {
+      panel: Object.keys(panelActions.bind({ publish: async () => {}, model: () => ({}) })),
+      own: Object.keys(internals.ownActions),
+      page: Object.keys(internals.pageActions),
+    };
+    const collisions = [];
+    for (const [left, right] of [["panel", "own"], ["panel", "page"], ["own", "page"]]) {
+      for (const id of tables[left]) {
+        if (tables[right].includes(id)) collisions.push(`${id} (${left} + ${right})`);
+      }
+    }
+    assert.deepEqual(collisions, [], `two tables define ${collisions.join(", ")}`);
+    // Every page id is reachable, and none of them leaked into another table.
+    assert.ok(tables.page.length > 0);
+    for (const id of tables.page) {
+      assert.ok(id.startsWith("page"), `${id} is in the page table without a page prefix`);
+      assert.equal(typeof plugin.actions[id], "function", `${id} is in the page table and undefined`);
+    }
     assert.ok(sdk);
   });
 
@@ -594,5 +611,154 @@ describe("the two navigations a client reads differently", () => {
     const result = await plugin.actions.openSettings();
     assert.deepEqual(result.openSettings, { socketId: contract.SETTINGS_SECTION_SOCKET_ID });
     assert.deepEqual(result.navigate, { panelId: "settings" });
+  });
+});
+/**
+ * What has to be true on screen the moment a sign-in comes back.
+ *
+ * The event is the end of a round trip through a browser, so it is the LAST
+ * thing that happens: no action is still running, nobody is waiting on a
+ * result, and whatever this handler writes is what the reader sees. Two
+ * failures lived here.
+ *
+ * The connected state used to land WITHOUT the list. The handler published only
+ * `settings`, and it published it after an unguarded refresh — so a reader who
+ * had just connected sat looking at the "Connect Linear" card until they left
+ * the tab and came back, at which point a fresh visit re-read a panel this
+ * handler never wrote.
+ *
+ * And the reader's own panel was forgotten. Which panel the flow started from
+ * is knowable only at the START — `auth.completed` names the flow and never the
+ * screen — so it is recorded there and read back here.
+ */
+describe("a completed sign-in", () => {
+  const TOKEN_URL = /oauth\/token$/;
+
+  /** Linear, over `globalThis.fetch`, which is what the real client uses. */
+  function stubLinear() {
+    const original = globalThis.fetch;
+    const urls = [];
+    globalThis.fetch = async (url) => {
+      urls.push(String(url));
+      if (TOKEN_URL.test(String(url))) {
+        return response(200, { access_token: "at", refresh_token: "rt", expires_in: 3600 });
+      }
+      // A workspace with nothing in it. Every reader in `linearApi.js` is
+      // null-safe, so this exercises the whole refresh without a fixture.
+      return response(200, { data: {} });
+    };
+    return { urls, restore: () => { globalThis.fetch = original; } };
+  }
+
+  /** Panels written since a mark in the call log, in the order they were written. */
+  function publishedSince(sdk, mark) {
+    return sdk.calls.slice(mark).filter(([name]) => name === "panels.update").map(([, id]) => id);
+  }
+
+  function completion(overrides = {}) {
+    return {
+      event: "auth.completed",
+      sessionId: "linear",
+      attempt: "attempt-1",
+      ok: true,
+      params: { code: "the-code" },
+      ...overrides,
+    };
+  }
+
+  /**
+   * Press Connect on one panel, then hand back the completion the host sends.
+   *
+   * The listener returns its own settle chain, so the test awaits the real
+   * handler rather than a timer — the rule this suite could not otherwise keep.
+   */
+  async function signIn(sdk, origin) {
+    await plugin.actions.connectOAuth(origin === undefined ? {} : { origin });
+    const listener = sdk.listeners["auth.completed"]?.[0];
+    assert.equal(typeof listener, "function", "nothing subscribed to auth.completed");
+    return async (payload) => {
+      const mark = sdk.calls.length;
+      await listener(payload);
+      return publishedSince(sdk, mark);
+    };
+  }
+
+  it("republishes the issue list AND the connection panel, so no second visit is needed", async () => {
+    const linear = stubLinear();
+    try {
+      const { sdk } = await activated();
+      const complete = await signIn(sdk, "issues");
+      const published = await complete(completion());
+
+      assert.ok(published.includes("issues"), "the list was never rewritten");
+      assert.ok(published.includes("settings"), "the connection panel was never rewritten");
+      // And the list it published is a FRESH one: the refresh ran between the
+      // exchange and the republish, rather than the panel being rebuilt from
+      // the rows the disconnected plugin already had.
+      assert.ok(TOKEN_URL.test(linear.urls[0]), "the code was never exchanged");
+      assert.ok(linear.urls.length > 1, "Linear was never re-read after the sign-in");
+      assert.equal(await sdk.secrets.get("LINEAR_ACCESS_TOKEN"), "at");
+    } finally {
+      linear.restore();
+    }
+  });
+
+  it("leaves the reader's own panel as the last thing written, for a sign-in begun on the list", async () => {
+    const linear = stubLinear();
+    try {
+      const { sdk } = await activated();
+      const complete = await signIn(sdk, "issues");
+      const published = await complete(completion());
+      assert.equal(published.at(-1), "issues");
+    } finally {
+      linear.restore();
+    }
+  });
+
+  it("and the connection panel for one begun there", async () => {
+    const linear = stubLinear();
+    try {
+      const { sdk } = await activated();
+      const complete = await signIn(sdk, "settings");
+      const published = await complete(completion());
+      assert.ok(published.includes("issues"), "the list was never rewritten");
+      assert.equal(published.at(-1), "settings");
+    } finally {
+      linear.restore();
+    }
+  });
+
+  it("treats a press that named no panel as the connection panel", async () => {
+    // A CLI word, an agent tool, or a client drawing a schema older than the
+    // origin. Nobody is moved anywhere they did not ask to be.
+    const linear = stubLinear();
+    try {
+      const { sdk } = await activated();
+      const complete = await signIn(sdk, undefined);
+      assert.equal((await complete(completion())).at(-1), "settings");
+    } finally {
+      linear.restore();
+    }
+  });
+
+  it("repaints both panels when the sign-in FAILED, where the error has to land", async () => {
+    // The old handler published `settings` on this path and nothing else, so a
+    // denied sign-in left the list's "Connect Linear" card claiming a flow was
+    // still running.
+    const { sdk } = await activated();
+    const complete = await signIn(sdk, "issues");
+    const published = await complete(completion({ ok: false, reason: "denied", params: undefined }));
+    assert.ok(published.includes("settings"));
+    assert.ok(published.includes("issues"));
+    assert.equal(published.at(-1), "issues");
+  });
+
+  it("writes nothing for a callback belonging to a flow it did not begin", async () => {
+    // A late callback from a cancelled attempt. Nobody is waiting on it, so
+    // moving a reader or repainting their screen on the strength of it would be
+    // worse than doing nothing.
+    const { sdk } = await activated();
+    const complete = await signIn(sdk, "issues");
+    assert.deepEqual(await complete(completion({ attempt: "attempt-0" })), []);
   });
 });

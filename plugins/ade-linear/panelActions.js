@@ -593,10 +593,17 @@ function bind(host) {
      * browser that never opened. `ade.auth.beginSession` already says which of
      * those it was; the reader is the person who has to act on it.
      */
-    async connectOAuth() {
+    async connectOAuth(args) {
+      // The panel that drew the button names itself in `args.origin`, and it is
+      // the only place that knows: `auth.completed` carries the flow and not
+      // the screen, so an origin worked out at completion time would be a
+      // guess. A press from a schema that predates this names none, and the
+      // data half falls back to the settings panel — see
+      // `connect.js:normalizeAuthOrigin`.
+      const origin = typeof args?.origin === "string" ? args.origin : null;
       const result = await invoke(
         host.flows?.connectOAuth,
-        [],
+        [origin],
         "Signing in needs the plugin's data layer.",
       );
       if (!result.ok) return { message: result.message, ok: false };

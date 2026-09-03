@@ -1,0 +1,259 @@
+/**
+ * The Linear shapes the page draws.
+ *
+ * A copy of the desktop's `shared/types` Linear declarations, cut down to what
+ * the ported components read. A copy rather than an import because a plugin page
+ * is built outside the app: it may be installed on an older ADE than the one it
+ * was compiled against, so its idea of an issue has to be its own.
+ *
+ * The plugin's page actions answer exactly these shapes — `pageActions.js` builds
+ * them from Linear's own GraphQL, and `test/pageActions.test.js` pins the fields.
+ */
+
+export type LinearPriorityLabel = "urgent" | "high" | "normal" | "low" | "none";
+
+export type NormalizedLinearIssue = {
+  id: string;
+  identifier: string;
+  title: string;
+  description: string;
+  url: string | null;
+  projectId: string;
+  projectSlug: string;
+  projectName?: string | null;
+  teamId: string;
+  teamKey: string;
+  teamName?: string | null;
+  stateId: string;
+  stateName: string;
+  stateType: string;
+  priority: number;
+  priorityLabel: LinearPriorityLabel;
+  labels: string[];
+  labelColors?: Array<{ name: string; color: string | null }>;
+  cycleId?: string | null;
+  cycleName?: string | null;
+  childIssues?: Array<{
+    id: string;
+    identifier: string;
+    title: string;
+    stateId: string;
+    stateName: string;
+    stateType: string;
+  }>;
+  assigneeId: string | null;
+  assigneeName: string | null;
+  ownerId: string | null;
+  creatorId?: string | null;
+  creatorName?: string | null;
+  blockerIssueIds: string[];
+  hasOpenBlockers: boolean;
+  dueDate?: string | null;
+  estimate?: number | null;
+  archivedAt?: string | null;
+  completedAt?: string | null;
+  canceledAt?: string | null;
+  startedAt?: string | null;
+  createdAt: string;
+  updatedAt: string;
+  raw?: Record<string, unknown>;
+};
+
+export type LaneLinearIssue = {
+  id: string;
+  identifier: string;
+  title: string;
+  description?: string | null;
+  url: string | null;
+  projectId: string;
+  projectSlug: string;
+  projectName?: string | null;
+  teamId: string;
+  teamKey: string;
+  teamName?: string | null;
+  stateId: string;
+  stateName: string;
+  stateType: string;
+  priority: number;
+  priorityLabel: LinearPriorityLabel;
+  labels: string[];
+  assigneeId: string | null;
+  assigneeName: string | null;
+  creatorId?: string | null;
+  creatorName?: string | null;
+  dueDate?: string | null;
+  estimate?: number | null;
+  branchName?: string | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type LinearConnectionStatus = {
+  tokenStored: boolean;
+  connected: boolean;
+  viewerId: string | null;
+  viewerName: string | null;
+  organizationId?: string | null;
+  organizationName?: string | null;
+  organizationUrlKey?: string | null;
+  organizationLogoUrl?: string | null;
+  projectCount?: number;
+  projectPreview?: string[];
+  checkedAt: string | null;
+  message: string | null;
+  authMode?: "manual" | "oauth" | null;
+  oauthAvailable?: boolean;
+  tokenExpiresAt?: string | null;
+};
+
+export type LinearCatalogUser = {
+  id: string;
+  name: string;
+  displayName: string | null;
+  email: string | null;
+  active: boolean;
+};
+
+export type LinearCatalogState = {
+  id: string;
+  name: string;
+  type: string;
+  teamId: string;
+  teamKey: string;
+};
+
+export type CtoLinearProject = {
+  id: string;
+  name: string;
+  slug: string;
+  teamName: string;
+  teamKey?: string | null;
+  icon?: string | null;
+  color?: string | null;
+};
+
+export type CtoLinearQuickViewProject = CtoLinearProject & {
+  url: string | null;
+  color: string | null;
+  icon: string | null;
+  description: string | null;
+  statusName: string | null;
+  statusType: string | null;
+  health: string | null;
+  progress: number | null;
+  scope: number | null;
+  priority: number | null;
+  priorityLabel: string | null;
+  issueCount: number | null;
+  completedIssueCount: number | null;
+  startDate: string | null;
+  targetDate: string | null;
+  leadName: string | null;
+  teamKeys: string[];
+};
+
+export type CtoLinearQuickViewTeam = {
+  id: string;
+  key: string;
+  name: string;
+  displayName: string;
+  color: string | null;
+  issueCount: number | null;
+  cyclesEnabled: boolean | null;
+  private: boolean | null;
+};
+
+export type CtoLinearQuickView = {
+  connection: LinearConnectionStatus;
+  organization: {
+    id: string;
+    name: string;
+    urlKey: string | null;
+    logoUrl: string | null;
+    gitBranchFormat: string | null;
+    createdIssueCount: number | null;
+  } | null;
+  viewer: {
+    id: string;
+    name: string;
+    displayName: string;
+    email: string | null;
+    avatarUrl: string | null;
+    admin: boolean | null;
+    guest: boolean | null;
+    url: string | null;
+  } | null;
+  projects: CtoLinearQuickViewProject[];
+  teams: CtoLinearQuickViewTeam[];
+  assignedIssues: NormalizedLinearIssue[];
+  recentIssues: NormalizedLinearIssue[];
+  fetchedAt: string;
+};
+
+export type CtoSearchLinearIssuesArgs = {
+  projectId?: string | null;
+  projectSlug?: string | null;
+  teamKey?: string | null;
+  stateTypes?: string[];
+  assigneeId?: string | null;
+  priority?: number | null;
+  query?: string | null;
+  first?: number;
+  after?: string | null;
+  includeArchived?: boolean;
+};
+
+export type CtoSearchLinearIssuesResult = {
+  issues: NormalizedLinearIssue[];
+  pageInfo: { hasNextPage: boolean; endCursor: string | null };
+};
+
+export type CtoLinearIssueComment = {
+  id: string;
+  body: string;
+  createdAt: string;
+  userName: string;
+  userDisplayName: string;
+};
+
+export type CtoGetLinearIssuePickerDataResult = {
+  projects: CtoLinearProject[];
+  users: LinearCatalogUser[];
+  states: LinearCatalogState[];
+};
+
+export type GitHubAutolink = {
+  id: number;
+  keyPrefix: string;
+  urlTemplate: string;
+  isAlphanumeric: boolean;
+};
+
+/**
+ * One lane, as the page needs it.
+ *
+ * `linearIssueLinks` and `laneType` are here because the launch flow needs both
+ * facts the compiled quick view read off the app store: whether a lane already
+ * has an AGENT on this issue (a different warning from "already has a lane"),
+ * and whether a lane is the project's primary one (which the lane picker hides).
+ */
+export type PageLane = {
+  id: string;
+  name: string;
+  branch: string | null;
+  path: string | null;
+  status?: string | null;
+  laneType?: "primary" | "worktree" | string | null;
+  /** The lane's own Linear issue, when one is linked to the lane itself. */
+  linearIssueId?: string | null;
+  linearIssueKey?: string | null;
+  /** Every Linear issue linked to a SESSION in this lane, with the session id. */
+  linearIssueLinks?: { issueId: string; issueKey?: string | null; sessionId?: string | null }[];
+};
+
+/** One chat model the launch form offers. */
+export type PageChatModel = {
+  id: string;
+  label: string;
+  provider: string;
+};

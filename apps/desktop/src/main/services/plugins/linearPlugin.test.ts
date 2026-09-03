@@ -389,7 +389,25 @@ describe("installing ade-linear from the bundled directory", () => {
     expect(installed.record.source.kind).toBe("builtin");
     expect(installed.record.enabled).toBe(true);
 
-    expect(installed.manifest?.surfaces.map((surface) => surface.id)).toEqual(["issues"]);
+    // Six surfaces, one page. Every placement Linear draws is a `webview`
+    // surface pointing at the same `dist/index.html`; the page reads the host's
+    // injected `surfaceId` to know which of the six it is. `issues` keeps its id
+    // from the tab it replaced, because a tab badge is addressed by
+    // `"<pluginId>/<surfaceId>"`.
+    expect(installed.manifest?.surfaces.map((surface) => surface.id)).toEqual([
+      "issues",
+      "quickview",
+      "settings",
+      "picker",
+      "badge-card",
+      "issue-context",
+    ]);
+    expect(installed.manifest?.surfaces.every((surface) => surface.kind === "webview")).toBe(true);
+    expect(installed.manifest?.surfaces.every((surface) => surface.entryHtml === "dist/index.html")).toBe(true);
+    // Every one still names a panel. That panel is what the phone, the terminal
+    // and an older desktop draw, which is the whole reason a page may be added
+    // without taking the plugin away from three clients.
+    expect(installed.manifest?.surfaces.every((surface) => Boolean(surface.panelId))).toBe(true);
     expect(installed.manifest?.sockets.map((socket) => socket.socket)).toEqual([
       "work-rail-pane",
       "composer-action",
@@ -401,7 +419,26 @@ describe("installing ade-linear from the bundled directory", () => {
       // A `toolbar-action` on the `app` surface: the top bar's trailing
       // cluster, whose context is the window rather than the open tab.
       "toolbar-action",
+      // The transcript's issue context.
+      "chat-card",
     ]);
+    // Six of the nine sockets name a page to draw instead of their panel, and
+    // each names one this manifest actually declares — an unresolvable id would
+    // silently fall back to the panel forever.
+    const surfaceIds = new Set(installed.manifest?.surfaces.map((surface) => surface.id) ?? []);
+    const upgraded = (installed.manifest?.sockets ?? []).filter((socket) => socket.webviewSurfaceId);
+    expect(upgraded.map((socket) => socket.id)).toEqual([
+      "issues-pane",
+      "attach-issue",
+      "chat-issue",
+      "lane-issue",
+      "connection",
+      "top-bar-issues",
+      "issue-context",
+    ]);
+    for (const socket of upgraded) {
+      expect(surfaceIds.has(socket.webviewSurfaceId!), socket.id).toBe(true);
+    }
 
     // No `builtin` anywhere, and there cannot be one: `linear` supersedes, so
     // the parser refuses the field on any surface that names it. The plugin

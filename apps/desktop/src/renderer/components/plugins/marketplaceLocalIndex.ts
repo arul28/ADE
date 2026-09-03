@@ -366,7 +366,7 @@ const HISTORY = manifest({
  */
 const LINEAR = manifest({
   name: "ade-linear",
-  version: "1.2.0",
+  version: "2.0.0",
   displayName: "Linear",
   description: "Browse Linear issues, start a lane and an agent on one, and keep the issue moving — from ADE, on every device.",
   icon: "brand:linear",
@@ -405,12 +405,26 @@ const LINEAR = manifest({
     chip: { label: "{key}", icon: "brand:linear" },
     panelId: "issue",
   }],
+  // Six webview surfaces, one page. Linear ships its own HTML now
+  // (`plugins/ade-linear/dist/`), and each placement is a `webview` surface
+  // pointing at the same `entryHtml`; the page reads the host's injected
+  // `surfaceId` to know which of the six it is drawing. Every one keeps a
+  // `panelId`, which is what the phone, the terminal and an older desktop
+  // render in its place.
   surfaces: [
-    { kind: "tab", id: "issues", title: "Linear", icon: "brand:linear", panelId: "issues", order: 55, mobile: true },
+    { kind: "webview", id: "issues", title: "Linear", icon: "brand:linear", entryHtml: "dist/index.html", panelId: "issues", order: 55, mobile: false },
+    { kind: "webview", id: "quickview", title: "Linear", icon: "brand:linear", entryHtml: "dist/index.html", panelId: "issues", popover: { width: 560, height: 640 }, mobile: false },
+    { kind: "webview", id: "settings", title: "Linear connection", icon: "brand:linear", entryHtml: "dist/index.html", panelId: "settings", mobile: false },
+    { kind: "webview", id: "picker", title: "Attach a Linear issue", icon: "brand:linear", entryHtml: "dist/index.html", panelId: "issues", popover: { width: 520, height: 560 }, mobile: false },
+    { kind: "webview", id: "badge-card", title: "Linear issue", icon: "brand:linear", entryHtml: "dist/index.html", panelId: "issue", popover: { width: 300, height: 280 }, mobile: false },
+    { kind: "webview", id: "issue-context", title: "Linear issue", icon: "brand:linear", entryHtml: "dist/index.html", panelId: "issue", mobile: false },
   ],
+  // `webviewSurfaceId` is the upgrade, never the replacement: a client that can
+  // host a plugin page draws the page, and every other client draws the
+  // `panelId` or invokes the `actionId` beside it, exactly as before.
   sockets: [
-    { socket: "work-rail-pane", surface: "work", id: "issues-pane", label: "Linear", icon: "brand:linear", panelId: "issues" },
-    { socket: "composer-action", surface: "work", id: "attach-issue", label: "Attach a Linear issue", icon: "brand:linear", actionId: "openIssues" },
+    { socket: "work-rail-pane", surface: "work", id: "issues-pane", label: "Linear", icon: "brand:linear", panelId: "issues", webviewSurfaceId: "issues" },
+    { socket: "composer-action", surface: "work", id: "attach-issue", label: "Attach a Linear issue", icon: "brand:linear", actionId: "openIssuePicker", webviewSurfaceId: "picker" },
     {
       socket: "chat-header-action",
       surface: "work",
@@ -422,16 +436,20 @@ const LINEAR = manifest({
         { label: "Open in Linear", actionId: "openInLinear", icon: "link" },
         { label: "Comment progress on the issue", actionId: "commentProgress", icon: "chat" },
       ],
+      webviewSurfaceId: "picker",
     },
-    { socket: "row-badge", surface: "lanes", id: "lane-issue", label: "Linear issue", icon: "brand:linear" },
+    { socket: "row-badge", surface: "lanes", id: "lane-issue", label: "Linear issue", icon: "brand:linear", webviewSurfaceId: "badge-card" },
     { socket: "graph-node", surface: "lanes", id: "graph-issue", label: "Linear issue", icon: "brand:linear" },
     // `section` puts the card on Settings > Integrations rather than on
     // General, which is where an unnamed section lands.
-    { socket: "settings-section", surface: "settings", id: "connection", label: "Linear", icon: "brand:linear", panelId: "settings", section: "integrations" },
+    { socket: "settings-section", surface: "settings", id: "connection", label: "Linear", icon: "brand:linear", panelId: "settings", section: "integrations", webviewSurfaceId: "settings" },
     { socket: "command-palette-action", surface: "app", id: "palette-issues", label: "Linear issues", icon: "brand:linear", actionId: "openIssues" },
-    // The top bar's trailing cluster. Its action navigates to the issue list as
-    // a quick view, which is what puts Linear back beside feedback and help.
-    { socket: "toolbar-action", surface: "app", id: "top-bar-issues", label: "Linear", icon: "brand:linear", actionId: "openIssuesQuickView" },
+    // The top bar's trailing cluster. Its action opens the plugin's own quick
+    // view as a popover under the button, and answers a `navigate` beside it for
+    // the clients that host no page.
+    { socket: "toolbar-action", surface: "app", id: "top-bar-issues", label: "Linear", icon: "brand:linear", actionId: "openIssuesQuickView", webviewSurfaceId: "quickview" },
+    // The transcript's issue context, as a card in the chat.
+    { socket: "chat-card", surface: "work", id: "issue-context", label: "Linear issue", icon: "brand:linear", panelId: "issue", webviewSurfaceId: "issue-context" },
   ],
   panels: [
     { id: "main", schemaFile: "panels/main.json", title: "Linear", icon: "brand:linear" },
@@ -452,6 +470,9 @@ const LINEAR = manifest({
     people: { sync: true },
     viewer: { sync: true },
     deliveries: { sync: false },
+    // The page's own filters and selection. Per-machine reading preferences, so
+    // syncing them would put one machine's sort order on another.
+    "ui-state": { sync: false },
   },
   settings: [
     {

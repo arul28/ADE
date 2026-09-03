@@ -54,6 +54,7 @@ const {
   STATE_SORT,
   STATE_TEAM,
   STATE_UPDATED,
+  PANEL_ISSUES,
   groupKeyPrefix,
 } = require("./contract");
 
@@ -516,7 +517,12 @@ function buildIssuesPanel(input = {}) {
           title: COPY.connectTitle,
           description: COPY.connectBody,
           icon: "plug",
-          action: { label: COPY.connectAction, onPress: { action: ACTIONS.connectOAuth } },
+          // The origin the sign-in returns to: a reader who connects from the
+          // list belongs back on the list, with the issues in it.
+          action: {
+            label: COPY.connectAction,
+            onPress: { action: ACTIONS.connectOAuth, args: { origin: PANEL_ISSUES } },
+          },
         },
         {
           component: "button",

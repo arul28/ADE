@@ -11,6 +11,7 @@ const {
   authorizeParams,
   createConnect,
   createPkcePair,
+  normalizeAuthOrigin,
 } = require("../connect");
 const { createData } = require("../data");
 const { createApi, createSdk, response } = require("./support");
@@ -499,5 +500,103 @@ describe("disconnecting", () => {
 
   it("cancelling is safe when nothing is running", async () => {
     await assert.doesNotReject(() => build().connect.cancel());
+  });
+});
+
+/**
+ * Where a completed sign-in puts the reader back.
+ *
+ * The flow crosses a browser and comes back as an EVENT, and the event names
+ * the flow and never the screen. So the panel that was pressed has to be
+ * recorded when the flow begins — anything worked out at completion time is a
+ * guess, and the guess this plugin used to make was "settings", which is how a
+ * reader who pressed Connect on the issue list ended up on the connection page
+ * with their list nowhere.
+ */
+describe("the panel a sign-in was started from", () => {
+  async function started(origin, overrides = {}) {
+    const built = build(overrides);
+    await built.sdk.secrets.set("LINEAR_OAUTH_CLIENT_ID", "client-1");
+    const begun = await built.connect.begin(origin === undefined ? undefined : { origin });
+    return { ...built, begun };
+  }
+
+  function completed(overrides = {}) {
+    return {
+      event: "auth.completed",
+      sessionId: AUTH_SESSION_ID,
+      attempt: "attempt-1",
+      ok: true,
+      params: { code: "the-code" },
+      ...overrides,
+    };
+  }
+
+  it("is one of the three panels that can draw a Connect button", () => {
+    assert.equal(normalizeAuthOrigin("issues"), "issues");
+    assert.equal(normalizeAuthOrigin("issue"), "issue");
+    assert.equal(normalizeAuthOrigin("settings"), "settings");
+  });
+
+  it("falls back to the connection panel for anything else", () => {
+    // A press from a schema older than this, an agent tool, a CLI word — and
+    // an id no panel declares, which arrives as data a client sent. The
+    // fallback is the panel the connection lives on, because it is the one
+    // place a reader is never moved away from by mistake.
+    for (const value of [undefined, null, "", "  ", "launch", "main", "../issues", 7, {}]) {
+      assert.equal(normalizeAuthOrigin(value), "settings");
+    }
+  });
+
+  it("is recorded when the flow begins and handed back when it completes", async () => {
+    const { connect } = await started("issues", {
+      fetches: [response(200, { access_token: "at", expires_in: 3600 })],
+    });
+    const result = await connect.complete(completed());
+    assert.equal(result.ok, true);
+    assert.equal(result.origin, "issues");
+  });
+
+  it("stays on the connection panel for a sign-in begun there", async () => {
+    const { connect } = await started("settings", {
+      fetches: [response(200, { access_token: "at", expires_in: 3600 })],
+    });
+    assert.equal((await connect.complete(completed())).origin, "settings");
+  });
+
+  it("is answered at begin too, so the caller never has to hold it itself", async () => {
+    const { begun } = await started("issue", { fetches: [] });
+    assert.equal(begun.ok, true);
+    assert.equal(begun.origin, "issue");
+  });
+
+  it("survives every failing outcome, because a failure leaves a reader somewhere too", async () => {
+    for (const payload of [
+      completed({ ok: false, reason: "canceled", params: undefined }),
+      completed({ ok: false, reason: "denied", params: undefined }),
+      completed({ params: {} }),
+    ]) {
+      const { connect } = await started("issues", { fetches: [] });
+      const result = await connect.complete(payload);
+      assert.equal(result.ok, false);
+      assert.equal(result.origin, "issues", `${payload.reason ?? "no code"} lost the origin`);
+    }
+  });
+
+  it("is lost with the attempt it belonged to, never carried into the next flow", async () => {
+    // A late callback from a cancelled flow is dropped whole. It names no
+    // origin because nobody is waiting on it — moving a reader on the strength
+    // of a flow they abandoned is worse than doing nothing.
+    const { connect } = await started("issues", { fetches: [] });
+    const late = await connect.complete(completed({ attempt: "attempt-0" }));
+    assert.equal(late.ignored, "attempt");
+    assert.equal(late.origin, undefined);
+  });
+
+  it("defaults to the connection panel when the press named nothing", async () => {
+    const { connect } = await started(undefined, {
+      fetches: [response(200, { access_token: "at", expires_in: 3600 })],
+    });
+    assert.equal((await connect.complete(completed())).origin, "settings");
   });
 });

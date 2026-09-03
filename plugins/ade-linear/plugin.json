@@ -1,6 +1,6 @@
 {
   "name": "ade-linear",
-  "version": "1.2.0",
+  "version": "2.0.0",
   "displayName": "Linear",
   "description": "Browse Linear issues, start a lane and an agent on one, and keep the issue moving \u2014 from ADE, on every device.",
   "icon": "brand:linear",
@@ -58,13 +58,71 @@
   ],
   "surfaces": [
     {
-      "kind": "tab",
+      "kind": "webview",
       "id": "issues",
       "title": "Linear",
       "icon": "brand:linear",
+      "entryHtml": "dist/index.html",
       "panelId": "issues",
       "order": 55,
-      "mobile": true
+      "mobile": false
+    },
+    {
+      "kind": "webview",
+      "id": "quickview",
+      "title": "Linear",
+      "icon": "brand:linear",
+      "entryHtml": "dist/index.html",
+      "panelId": "issues",
+      "popover": {
+        "width": 560,
+        "height": 640
+      },
+      "mobile": false
+    },
+    {
+      "kind": "webview",
+      "id": "settings",
+      "title": "Linear connection",
+      "icon": "brand:linear",
+      "entryHtml": "dist/index.html",
+      "panelId": "settings",
+      "mobile": false
+    },
+    {
+      "kind": "webview",
+      "id": "picker",
+      "title": "Attach a Linear issue",
+      "icon": "brand:linear",
+      "entryHtml": "dist/index.html",
+      "panelId": "issues",
+      "popover": {
+        "width": 520,
+        "height": 560
+      },
+      "mobile": false
+    },
+    {
+      "kind": "webview",
+      "id": "badge-card",
+      "title": "Linear issue",
+      "icon": "brand:linear",
+      "entryHtml": "dist/index.html",
+      "panelId": "issue",
+      "popover": {
+        "width": 300,
+        "height": 280
+      },
+      "mobile": false
+    },
+    {
+      "kind": "webview",
+      "id": "issue-context",
+      "title": "Linear issue",
+      "icon": "brand:linear",
+      "entryHtml": "dist/index.html",
+      "panelId": "issue",
+      "mobile": false
     }
   ],
   "panels": [
@@ -109,7 +167,8 @@
       "id": "issues-pane",
       "label": "Linear",
       "icon": "brand:linear",
-      "panelId": "issues"
+      "panelId": "issues",
+      "webviewSurfaceId": "issues"
     },
     {
       "socket": "composer-action",
@@ -117,7 +176,8 @@
       "id": "attach-issue",
       "label": "Attach a Linear issue",
       "icon": "brand:linear",
-      "actionId": "openIssues"
+      "actionId": "openIssuePicker",
+      "webviewSurfaceId": "picker"
     },
     {
       "socket": "chat-header-action",
@@ -137,14 +197,16 @@
           "actionId": "commentProgress",
           "icon": "chat"
         }
-      ]
+      ],
+      "webviewSurfaceId": "picker"
     },
     {
       "socket": "row-badge",
       "surface": "lanes",
       "id": "lane-issue",
       "label": "Linear issue",
-      "icon": "brand:linear"
+      "icon": "brand:linear",
+      "webviewSurfaceId": "badge-card"
     },
     {
       "socket": "graph-node",
@@ -160,7 +222,8 @@
       "label": "Linear",
       "icon": "brand:linear",
       "panelId": "settings",
-      "section": "integrations"
+      "section": "integrations",
+      "webviewSurfaceId": "settings"
     },
     {
       "socket": "command-palette-action",
@@ -176,7 +239,17 @@
       "id": "top-bar-issues",
       "label": "Linear",
       "icon": "brand:linear",
-      "actionId": "openIssuesQuickView"
+      "actionId": "openIssuesQuickView",
+      "webviewSurfaceId": "quickview"
+    },
+    {
+      "socket": "chat-card",
+      "surface": "work",
+      "id": "issue-context",
+      "label": "Linear issue",
+      "icon": "brand:linear",
+      "panelId": "issue",
+      "webviewSurfaceId": "issue-context"
     }
   ],
   "collections": {
@@ -202,6 +275,9 @@
       "sync": true
     },
     "deliveries": {
+      "sync": false
+    },
+    "ui-state": {
       "sync": false
     }
   },

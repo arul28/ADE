@@ -58,6 +58,40 @@ const {
 const AUTH_SESSION_ID = "linear";
 
 /**
+ * The panels a sign-in can be started from.
+ *
+ * A completed sign-in has to put the reader back where they pressed the button,
+ * and completion is the one moment that cannot work out where that was: the
+ * `auth.completed` event carries the flow, never the screen, and by then the
+ * action that was pressed has long since returned. So the ORIGIN is recorded
+ * when the flow BEGINS — the press site names its own panel — and carried on
+ * the pending attempt, exactly as the PKCE verifier is.
+ *
+ * Three panels can start one: the issue list's "Connect Linear" card, the issue
+ * detail's copy of it, and the settings panel's own button. Anything else — a
+ * CLI word, an agent tool, a press from a build whose schema predates this —
+ * names nothing and gets {@link DEFAULT_AUTH_ORIGIN}, which is the panel the
+ * connection lives on and therefore the one place a reader is never moved away
+ * from by mistake.
+ */
+const AUTH_ORIGINS = ["issues", "issue", "settings"];
+
+/** Where a sign-in that named no origin is treated as having started. */
+const DEFAULT_AUTH_ORIGIN = "settings";
+
+/**
+ * One of {@link AUTH_ORIGINS}, or the default.
+ *
+ * Deliberately total: an origin arrives from a panel press, which is data a
+ * client sent, so a value nobody declared must land on a panel that exists
+ * rather than on a `panelId` the host would refuse.
+ */
+function normalizeAuthOrigin(value) {
+  const text = typeof value === "string" ? value.trim() : "";
+  return AUTH_ORIGINS.includes(text) ? text : DEFAULT_AUTH_ORIGIN;
+}
+
+/**
  * The scopes, ported from `linearOAuthService.ts:260`.
  *
  * `admin` is not ambition. Linear only delivers data-change webhooks for a
@@ -240,7 +274,8 @@ function createConnect(options = {}) {
    * `openUrl` leaves the app with no way back, which is the gap this verb
    * exists to close.
    */
-  async function begin() {
+  async function begin(options = {}) {
+    const origin = normalizeAuthOrigin(options?.origin);
     const client = await resolveClient();
     if (!client) {
       const status = await connectStatus();
@@ -281,8 +316,12 @@ function createConnect(options = {}) {
       verifier: pkce.verifier,
       redirectUri: start.redirectUri,
       clientId: id,
+      // Held beside the verifier because it has the same lifetime and the same
+      // owner: it belongs to THIS attempt, and a late callback from a cancelled
+      // one must not carry it into the next flow's completion.
+      origin,
     };
-    return { ok: true, authSession: { sessionId: AUTH_SESSION_ID }, transport: start.transport };
+    return { ok: true, origin, authSession: { sessionId: AUTH_SESSION_ID }, transport: start.transport };
   }
 
   /** Give up on a running flow. Idempotent, and safe after it already finished. */
@@ -305,27 +344,35 @@ function createConnect(options = {}) {
     if (!live || payload.attempt !== live.attempt) return { ignored: "attempt" };
     pending = null;
 
+    // On EVERY outcome, not just the successful one. A sign-in that failed
+    // still leaves a reader looking at the screen they pressed the button on,
+    // and the caller decides what to put back on it from the same field either
+    // way. An ignored callback carries none: nothing began here, so there is
+    // no reader waiting on it and nothing to move.
+    const origin = live.origin ?? DEFAULT_AUTH_ORIGIN;
+
     if (payload.ok !== true) {
       // `canceled` is the user closing the window and needs no message: they
       // know they did it. Everything else is a state the panel must show.
-      if (payload.reason === "canceled") return { ok: false, silent: true, reason: payload.reason };
+      if (payload.reason === "canceled") return { ok: false, silent: true, origin, reason: payload.reason };
       return {
         ok: false,
+        origin,
         reason: payload.reason,
         message: payload.message ?? `Linear sign-in ${payload.reason}.`,
       };
     }
 
     const code = typeof payload.params?.code === "string" ? payload.params.code.trim() : "";
-    if (!code) return { ok: false, message: "Linear completed the sign-in without a code." };
+    if (!code) return { ok: false, origin, message: "Linear completed the sign-in without a code." };
 
     try {
       await exchange({ code, verifier: live.verifier, redirectUri: live.redirectUri, clientId: live.clientId });
     } catch (error) {
-      return { ok: false, message: error?.message ?? "Could not exchange the Linear code for a token." };
+      return { ok: false, origin, message: error?.message ?? "Could not exchange the Linear code for a token." };
     }
     await data?.refreshConnection().catch(() => {});
-    return { ok: true, message: "Connected to Linear." };
+    return { ok: true, origin, message: "Connected to Linear." };
   }
 
   /**
@@ -458,10 +505,13 @@ function createConnect(options = {}) {
 
 module.exports = {
   API_KEY_PATTERN,
+  AUTH_ORIGINS,
   AUTH_SESSION_ID,
+  DEFAULT_AUTH_ORIGIN,
   SCOPES_ADE_APP,
   SCOPES_CUSTOM,
   authorizeParams,
   createConnect,
   createPkcePair,
+  normalizeAuthOrigin,
 };

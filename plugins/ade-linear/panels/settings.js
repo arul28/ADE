@@ -28,7 +28,7 @@
 
 "use strict";
 
-const { ACTIONS } = require("./contract");
+const { ACTIONS, PANEL_SETTINGS } = require("./contract");
 
 const { COPY, DEEPLINK_SETTINGS, LIMITS, fallback, label, prose, value } = require("./common");
 
@@ -119,7 +119,9 @@ function connectedCard(connection = {}) {
       component: "button",
       label: COPY.reconnect,
       icon: "plug",
-      onPress: { action: ACTIONS.connectOAuth },
+      // The origin the sign-in returns to. Named by the panel that draws the
+      // button, because completion cannot work it out — `connect.js:begin`.
+      onPress: { action: ACTIONS.connectOAuth, args: { origin: PANEL_SETTINGS } },
     });
   }
   buttons.push({
@@ -166,7 +168,14 @@ function disconnectCard(input = {}) {
       title: COPY.connectTitle,
       description: COPY.connectBody,
       icon: "plug",
-      ...(blocked ? {} : { action: { label: COPY.connectAction, onPress: { action: ACTIONS.connectOAuth } } }),
+      ...(blocked
+        ? {}
+        : {
+          action: {
+            label: COPY.connectAction,
+            onPress: { action: ACTIONS.connectOAuth, args: { origin: PANEL_SETTINGS } },
+          },
+        }),
     },
   ];
 

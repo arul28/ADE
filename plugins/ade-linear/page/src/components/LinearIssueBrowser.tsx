@@ -1,0 +1,2184 @@
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  CaretDown,
+  CaretRight,
+  Check,
+  CircleNotch,
+  MagnifyingGlass,
+  Minus,
+  Plus,
+  Sparkle,
+  Warning,
+} from "@phosphor-icons/react";
+import {
+  Button,
+  LinearPriorityIcon,
+  LinearProjectIcon,
+  LinearStateIcon,
+  cn,
+  issueProjectLabel,
+  issueUpdatedLabel,
+  linearPriorityLabel,
+} from "@ade-dev/ui";
+// `BranchIcon` lives on its own entry point: the icon set has no `sideEffects`
+// declaration, so a bundler that meets it through the barrel keeps all of it.
+import { BranchIcon } from "@ade-dev/ui/icons";
+
+import { bridge } from "../bridge";
+import {
+  addComment,
+  assignIssue,
+  getCatalog,
+  getIssueComments,
+  getQuickView,
+  searchIssues as searchLinearIssues,
+  setIssuePriority,
+  setIssueState,
+} from "../host/actions";
+import { confirm as hostConfirm, openLink, prompt as hostPrompt, toast } from "../host/ui";
+import { clearSelection, loadFilters, loadSelection, saveFilters, saveSelection } from "../host/uiState";
+import type {
+  CtoGetLinearIssuePickerDataResult,
+  CtoLinearIssueComment,
+  CtoLinearProject,
+  CtoLinearQuickView,
+  CtoLinearQuickViewProject,
+  CtoSearchLinearIssuesArgs,
+  CtoSearchLinearIssuesResult,
+  LaneLinearIssue,
+  NormalizedLinearIssue,
+} from "../types";
+import { linearIssueBranchName } from "../lib/linearIssueBranch";
+import { LinearMarkdown } from "../lib/linearMarkdown";
+import { LinearIssueOpenLink } from "./LinearIssueResolveModals";
+
+export type BrowserIssue = NormalizedLinearIssue | LaneLinearIssue;
+type IssueSort = "updated_desc" | "created_desc" | "priority" | "due_soon" | "identifier_asc";
+
+/**
+ * Pre-launch conflict classification for the duplicate guard.
+ *
+ * Declared here rather than in the launch module: the app's copy lives in
+ * `renderer/lib/linearBatchLaunch.ts`, which a page cannot import, and the
+ * page's own `lib/linearBatchLaunch.ts` imports this type from the browser so
+ * there is exactly one declaration of it in the plugin.
+ */
+export type IssueConflict = {
+  /** A lane already attaches this exact issue (primary attachment or a chat/CLI session link). */
+  laneId: string | null;
+  laneName: string | null;
+  /** Whether the existing attachment is the lane's primary issue or a session attachment. */
+  reason: "lane" | "session";
+};
+
+/**
+ * Shape of the in-flight batch-launch progress the host passes down. Declared
+ * locally (and kept permissive) so the browser stays decoupled from the launch
+ * orchestration owned by the batch-launch surface; the host renders its own
+ * detailed status toast, the browser only needs the headline counts.
+ */
+export type BatchProgress = {
+  total: number;
+  completed: number;
+  failed?: number;
+  running?: boolean;
+};
+
+type LinearIssueBrowserFilters = {
+  projectId: string;
+  statePreset: "active" | "all" | string;
+  assigneeId: string;
+  priority: string;
+  query: string;
+  sort: IssueSort;
+};
+
+const STATE_TABS = [
+  { value: "all", label: "All issues" },
+  { value: "active", label: "Active" },
+  { value: "backlog", label: "Backlog" },
+] as const;
+
+const ACTIVE_LINEAR_STATE_TYPES = ["backlog", "unstarted", "started"];
+const STATE_GROUP_ORDER = ["started", "unstarted", "backlog", "triage", "completed", "canceled", "duplicate"] as const;
+const SELECTION_STORAGE_MAX = 100;
+const LINEAR_BROWSER_CACHE_STALE_MS = 90_000;
+const LINEAR_BROWSER_CACHE_MAX_SEARCHES = 16;
+// 100 is the Linear API ceiling (linearClient clamps `first` to 100), so it is
+// both the largest first page we can fetch and the chunk size each
+// infinite-scroll page pulls.
+const ISSUE_PAGE_SIZE = 100;
+// Stop auto-loading on scroll once this many issues are in memory; past this the
+// user opts into more via an explicit button, so huge workspaces don't silently
+// load thousands of un-virtualized rows.
+const AUTO_LOAD_MAX_ISSUES = 500;
+
+const DEFAULT_FILTERS: LinearIssueBrowserFilters = {
+  projectId: "",
+  statePreset: "all",
+  assigneeId: "",
+  priority: "",
+  query: "",
+  sort: "updated_desc",
+};
+
+const PRIORITY_OPTIONS = [
+  { value: "", label: "Any priority" },
+  { value: "1", label: "Urgent" },
+  { value: "2", label: "High" },
+  { value: "3", label: "Medium" },
+  { value: "4", label: "Low" },
+  { value: "0", label: "No priority" },
+] as const;
+
+const SORT_OPTIONS: ReadonlyArray<{ value: IssueSort; label: string }> = [
+  { value: "updated_desc", label: "Recently updated" },
+  { value: "created_desc", label: "Recently created" },
+  { value: "priority", label: "Priority" },
+  { value: "due_soon", label: "Due soon" },
+  { value: "identifier_asc", label: "Issue key" },
+];
+
+type LinearIssueSearchCacheEntry = {
+  result: CtoSearchLinearIssuesResult | null;
+  fetchedAt: number;
+  promise: Promise<CtoSearchLinearIssuesResult> | null;
+};
+
+type LinearIssueBrowserCacheEntry = {
+  quickView: CtoLinearQuickView | null;
+  quickViewFetchedAt: number;
+  quickViewPromise: Promise<CtoLinearQuickView> | null;
+  catalog: CtoGetLinearIssuePickerDataResult | null;
+  catalogFetchedAt: number;
+  catalogPromise: Promise<CtoGetLinearIssuePickerDataResult> | null;
+  searches: Map<string, LinearIssueSearchCacheEntry>;
+};
+
+const linearIssueBrowserCache = new Map<string, LinearIssueBrowserCacheEntry>();
+
+/**
+ * The cache key is the project root alone.
+ *
+ * The compiled browser mixed a second component in: an identity token minted
+ * per `window.ade.cto` object (`ctoCacheScopes` / `nextCtoCacheScope` /
+ * `getCtoCacheScope`), so that a renderer which swapped in a different `cto`
+ * bridge — a remote runtime taking over the surface — could not read the
+ * previous bridge's issues out of the module cache. A page has no `cto` object
+ * at all: every read goes through the one plugin bridge for the one host that
+ * loaded this guest, and a different host means a different guest with a fresh
+ * module registry. The scope token therefore had exactly one possible value
+ * here, so the three helpers are deleted rather than kept as a constant.
+ */
+function browserCacheKey(projectRoot: string | null | undefined): string {
+  return projectRoot?.trim() || "__project__";
+}
+
+function emptyCatalog(): CtoGetLinearIssuePickerDataResult {
+  return { projects: [], users: [], states: [] };
+}
+
+function emptyPageInfo(): CtoSearchLinearIssuesResult["pageInfo"] {
+  return { hasNextPage: false, endCursor: null };
+}
+
+function getBrowserCacheEntry(key: string): LinearIssueBrowserCacheEntry {
+  const existing = linearIssueBrowserCache.get(key);
+  if (existing) return existing;
+  const next: LinearIssueBrowserCacheEntry = {
+    quickView: null,
+    quickViewFetchedAt: 0,
+    quickViewPromise: null,
+    catalog: null,
+    catalogFetchedAt: 0,
+    catalogPromise: null,
+    searches: new Map(),
+  };
+  linearIssueBrowserCache.set(key, next);
+  return next;
+}
+
+function cacheIsFresh(fetchedAt: number): boolean {
+  return fetchedAt > 0 && Date.now() - fetchedAt < LINEAR_BROWSER_CACHE_STALE_MS;
+}
+
+function buildIssueSearchArgs(
+  filters: LinearIssueBrowserFilters,
+  after: string | null,
+): CtoSearchLinearIssuesArgs {
+  return {
+    projectId: filters.projectId || null,
+    stateTypes: stateTypesForPreset(filters.statePreset),
+    assigneeId: filters.assigneeId || null,
+    priority: filters.priority ? Number(filters.priority) : null,
+    query: filters.query.trim() || null,
+    first: ISSUE_PAGE_SIZE,
+    after,
+    includeArchived: false,
+  };
+}
+
+function searchCacheKey(args: CtoSearchLinearIssuesArgs): string {
+  return JSON.stringify({
+    projectId: args.projectId ?? null,
+    stateTypes: [...(args.stateTypes ?? [])].sort(),
+    assigneeId: args.assigneeId ?? null,
+    priority: args.priority ?? null,
+    query: args.query ?? null,
+    first: args.first ?? ISSUE_PAGE_SIZE,
+    after: args.after ?? null,
+    includeArchived: args.includeArchived ?? false,
+  });
+}
+
+function readCachedSearch(
+  key: string,
+  filters: LinearIssueBrowserFilters,
+): CtoSearchLinearIssuesResult | null {
+  return getBrowserCacheEntry(key).searches.get(searchCacheKey(buildIssueSearchArgs(filters, null)))?.result ?? null;
+}
+
+function rememberSearchResult(
+  entry: LinearIssueBrowserCacheEntry,
+  key: string,
+  result: CtoSearchLinearIssuesResult,
+): void {
+  entry.searches.set(key, { result, fetchedAt: Date.now(), promise: null });
+  while (entry.searches.size > LINEAR_BROWSER_CACHE_MAX_SEARCHES) {
+    const oldestKey = entry.searches.keys().next().value as string | undefined;
+    if (!oldestKey) break;
+    entry.searches.delete(oldestKey);
+  }
+}
+
+/**
+ * The field-by-field validation the compiled `safeLoadFilters` did inline.
+ *
+ * The compiled browser read `localStorage` synchronously and could therefore
+ * validate at the read site. The collection read is async, so the same checks
+ * are handed to `loadFilters` as its `normalize` callback: a malformed stored
+ * value still falls back to `DEFAULT_FILTERS`, field by field.
+ */
+function normalizeStoredFilters(parsed: Partial<LinearIssueBrowserFilters>): LinearIssueBrowserFilters {
+  return {
+    ...DEFAULT_FILTERS,
+    projectId: typeof parsed.projectId === "string" ? parsed.projectId : "",
+    statePreset: typeof parsed.statePreset === "string" ? parsed.statePreset : DEFAULT_FILTERS.statePreset,
+    assigneeId: typeof parsed.assigneeId === "string" ? parsed.assigneeId : "",
+    priority: typeof parsed.priority === "string" ? parsed.priority : "",
+    query: typeof parsed.query === "string" ? parsed.query : "",
+    sort: SORT_OPTIONS.some((option) => option.value === parsed.sort) ? (parsed.sort as IssueSort) : DEFAULT_FILTERS.sort,
+  };
+}
+
+function safeSaveFilters(projectRoot: string | null | undefined, filters: LinearIssueBrowserFilters): void {
+  // Best effort only; losing this preference should never block browsing
+  // issues, which is why the write is fire-and-forget and `saveFilters` itself
+  // swallows a collection failure.
+  void saveFilters(projectRoot, filters, !hasActiveFilters(filters));
+}
+
+export function clearLinearQuickViewSelection(projectRoot: string | null | undefined): void {
+  // Void-returning on purpose: the quick-view host calls this on real pane
+  // close and has nothing to await, exactly as it did when the store behind it
+  // was `localStorage`.
+  void clearSelection(projectRoot);
+}
+
+// Multi-select survives the temporary remount while the launch modal is open by
+// mirroring ids to the plugin's `ui-state` collection. The quick-view host
+// clears this key on real pane close, so a fresh open starts unchecked.
+function safeSaveSelection(projectRoot: string | null | undefined, ids: Set<string>): void {
+  if (ids.size === 0) {
+    clearLinearQuickViewSelection(projectRoot);
+    return;
+  }
+  void saveSelection(projectRoot, new Set([...ids].slice(0, SELECTION_STORAGE_MAX)));
+}
+
+function issueListKey(issue: BrowserIssue): string {
+  return `${issue.id}:${issue.updatedAt}`;
+}
+
+function mergeIssuePages(current: NormalizedLinearIssue[], next: NormalizedLinearIssue[]): NormalizedLinearIssue[] {
+  const map = new Map<string, NormalizedLinearIssue>();
+  for (const issue of [...current, ...next]) map.set(issue.id, issue);
+  return [...map.values()];
+}
+
+function toTimestamp(value: string | null | undefined): number {
+  if (!value) return 0;
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function sortedIssues(issues: NormalizedLinearIssue[], sort: IssueSort): NormalizedLinearIssue[] {
+  const out = [...issues];
+  out.sort((left, right) => {
+    if (sort === "created_desc") return toTimestamp(right.createdAt) - toTimestamp(left.createdAt);
+    if (sort === "priority") {
+      const leftRank = left.priority === 0 ? 99 : left.priority;
+      const rightRank = right.priority === 0 ? 99 : right.priority;
+      return leftRank - rightRank || toTimestamp(right.updatedAt) - toTimestamp(left.updatedAt);
+    }
+    if (sort === "due_soon") {
+      const leftDue = left.dueDate ? toTimestamp(left.dueDate) : Number.POSITIVE_INFINITY;
+      const rightDue = right.dueDate ? toTimestamp(right.dueDate) : Number.POSITIVE_INFINITY;
+      return leftDue - rightDue || toTimestamp(right.updatedAt) - toTimestamp(left.updatedAt);
+    }
+    if (sort === "identifier_asc") return left.identifier.localeCompare(right.identifier, undefined, { numeric: true });
+    return toTimestamp(right.updatedAt) - toTimestamp(left.updatedAt);
+  });
+  return out;
+}
+
+function formatDate(value: string | null | undefined): string {
+  if (!value) return "n/a";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric", year: "numeric" }).format(date);
+}
+
+function hasActiveFilters(filters: LinearIssueBrowserFilters): boolean {
+  return (
+    filters.projectId !== DEFAULT_FILTERS.projectId
+    || filters.statePreset !== DEFAULT_FILTERS.statePreset
+    || filters.assigneeId !== DEFAULT_FILTERS.assigneeId
+    || filters.priority !== DEFAULT_FILTERS.priority
+    || filters.query !== DEFAULT_FILTERS.query
+    || filters.sort !== DEFAULT_FILTERS.sort
+  );
+}
+
+function formatLinearListDate(value: string | null | undefined): string {
+  if (!value) return "";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  return new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric" }).format(date);
+}
+
+function stateGroupRank(stateType: string): number {
+  const index = STATE_GROUP_ORDER.indexOf(stateType as typeof STATE_GROUP_ORDER[number]);
+  return index === -1 ? 99 : index;
+}
+
+function groupIssuesByState(issues: BrowserIssue[]): Array<{
+  key: string;
+  stateName: string;
+  stateType: string;
+  issues: BrowserIssue[];
+}> {
+  const order: string[] = [];
+  const groups = new Map<string, { stateName: string; stateType: string; issues: BrowserIssue[] }>();
+  for (const issue of issues) {
+    const key = issue.stateId || `${issue.stateType}:${issue.stateName}`;
+    let group = groups.get(key);
+    if (!group) {
+      group = { stateName: issue.stateName, stateType: issue.stateType, issues: [] };
+      groups.set(key, group);
+      order.push(key);
+    }
+    group.issues.push(issue);
+  }
+  return order
+    .map((key) => ({ key, ...groups.get(key)! }))
+    .sort((left, right) => (
+      stateGroupRank(left.stateType) - stateGroupRank(right.stateType)
+      || left.stateName.localeCompare(right.stateName)
+    ));
+}
+
+function stateTypesForPreset(preset: string): string[] {
+  if (preset === "all") return [];
+  if (preset === "active") return ACTIVE_LINEAR_STATE_TYPES;
+  return preset ? [preset] : [];
+}
+
+/**
+ * The app's `toLaneLinearIssue`, inlined.
+ *
+ * `@ade-dev/ui` deliberately does not export it: in the desktop it is a thin
+ * wrapper over `shared/laneLinearIssue.normalizedLinearIssueToLaneIssue`, which
+ * drags the issue-ref module along with it. This is that function's body over
+ * the page's own copy of the two shapes, and nothing else.
+ */
+function toLaneLinearIssue(issue: NormalizedLinearIssue): LaneLinearIssue {
+  return {
+    id: issue.id,
+    identifier: issue.identifier,
+    title: issue.title,
+    description: issue.description,
+    url: issue.url,
+    projectId: issue.projectId,
+    projectSlug: issue.projectSlug,
+    projectName: issue.projectName ?? null,
+    teamId: issue.teamId,
+    teamKey: issue.teamKey,
+    teamName: issue.teamName ?? null,
+    stateId: issue.stateId,
+    stateName: issue.stateName,
+    stateType: issue.stateType,
+    priority: issue.priority,
+    priorityLabel: issue.priorityLabel,
+    labels: issue.labels,
+    assigneeId: issue.assigneeId,
+    assigneeName: issue.assigneeName,
+    creatorId: issue.creatorId ?? null,
+    creatorName: issue.creatorName ?? null,
+    dueDate: issue.dueDate ?? null,
+    estimate: issue.estimate ?? null,
+    branchName: linearIssueBranchName(issue),
+    createdAt: issue.createdAt,
+    updatedAt: issue.updatedAt,
+  };
+}
+
+export function linearBrowserIssueToLaneIssue(issue: BrowserIssue): LaneLinearIssue {
+  return "raw" in issue ? toLaneLinearIssue(issue) : issue;
+}
+
+function isConnectionError(message: string): boolean {
+  return /token|oauth|auth|connect|settings|linear/i.test(message);
+}
+
+export function LinearIssueBrowser({
+  projectRoot,
+  featuredIssue,
+  featuredIssueLabel = "Linked issue",
+  actionLabel,
+  actionBusyLabel,
+  actionIcon,
+  actionBusyIssueId,
+  actionDisabled = false,
+  showBranchPreview = true,
+  singleSelect = false,
+  refreshKey = 0,
+  requestedIssueIdentifier,
+  requestedIssueRequestKey,
+  onIssueAction,
+  onOpenLinearSettings,
+  onConnectionVisibilityChange,
+  onQuickViewChange,
+  onLoadingChange,
+  batchActions,
+}: {
+  projectRoot?: string | null;
+  featuredIssue?: LaneLinearIssue | null;
+  featuredIssueLabel?: string;
+  actionLabel: string;
+  actionBusyLabel?: string;
+  actionIcon?: React.ReactNode;
+  actionBusyIssueId?: string | null;
+  actionDisabled?: boolean;
+  showBranchPreview?: boolean;
+  singleSelect?: boolean;
+  refreshKey?: number;
+  requestedIssueIdentifier?: string | null;
+  requestedIssueRequestKey?: string | number | null;
+  onIssueAction: (issue: BrowserIssue) => void | Promise<void>;
+  onOpenLinearSettings?: () => void;
+  onConnectionVisibilityChange?: (visible: boolean) => void;
+  onQuickViewChange?: (quickView: CtoLinearQuickView | null) => void;
+  onLoadingChange?: (loading: boolean) => void;
+  batchActions?: {
+    /**
+     * Opens the unified launch config modal for 1..N issues. The single-issue
+     * row dock and the multi-select dock both route here so there is one launch
+     * path. `laneOnly` creates lanes without kicking off an agent.
+     */
+    onBatchLaunch: (issues: BrowserIssue[], options: { laneOnly?: boolean }) => void;
+    /** In-flight batch progress, if a launch is currently running. */
+    batchProgress?: BatchProgress | null;
+    /**
+     * Issues already attached to a lane/session, keyed by issue id. Drives the
+     * per-row "Has lane"/"Has agent" warning chip and the re-attach confirm.
+     */
+    conflicts?: Map<string, IssueConflict>;
+  };
+}) {
+  const cacheKey = browserCacheKey(projectRoot);
+  const [quickView, setQuickView] = useState<CtoLinearQuickView | null>(() => getBrowserCacheEntry(cacheKey).quickView);
+  const [catalog, setCatalog] = useState<CtoGetLinearIssuePickerDataResult>(() => getBrowserCacheEntry(cacheKey).catalog ?? emptyCatalog());
+  // Mount with the defaults and an empty selection — exactly what the compiled
+  // browser showed when nothing was stored. The stored values land in the
+  // hydration effect below, because the collection read is async.
+  const [filters, setFilters] = useState<LinearIssueBrowserFilters>(DEFAULT_FILTERS);
+  const [issues, setIssues] = useState<NormalizedLinearIssue[]>(() => readCachedSearch(cacheKey, DEFAULT_FILTERS)?.issues ?? []);
+  const [pageInfo, setPageInfo] = useState<{ hasNextPage: boolean; endCursor: string | null }>(() => readCachedSearch(cacheKey, DEFAULT_FILTERS)?.pageInfo ?? emptyPageInfo());
+  const pageInfoRef = useRef(pageInfo);
+  const issuesScrollRef = useRef<HTMLDivElement | null>(null);
+  const loadMoreSentinelRef = useRef<HTMLDivElement | null>(null);
+  // Holds the freshest auto-load closure so the IntersectionObserver (set up
+  // once per list mount) always reads current state without re-subscribing.
+  const autoLoadMoreRef = useRef<() => void>(() => {});
+  const [loadingQuickView, setLoadingQuickView] = useState(false);
+  const [loadingCatalog, setLoadingCatalog] = useState(false);
+  const [loadingIssues, setLoadingIssues] = useState(false);
+  // True only while an infinite-scroll "append" fetch is in flight, so the
+  // bottom-of-list spinner doesn't appear during a filter-change reload.
+  const [appendingMore, setAppendingMore] = useState(false);
+  const [localActionIssueId, setLocalActionIssueId] = useState<string | null>(null);
+  const [selectedIssueId, setSelectedIssueId] = useState<string | null>(featuredIssue?.id ?? null);
+  const [selectedIssueIds, setSelectedIssueIds] = useState<Set<string>>(() => new Set());
+  const [lastCheckedId, setLastCheckedId] = useState<string | null>(null);
+  const multiSelectEnabled = !singleSelect;
+  const anyChecked = multiSelectEnabled && selectedIssueIds.size > 0;
+  const [collapsedGroups, setCollapsedGroups] = useState<Record<string, boolean>>({});
+  const [error, setError] = useState<string | null>(null);
+  const quickViewRequestIdRef = useRef(0);
+  const catalogRequestIdRef = useRef(0);
+  const searchRequestIdRef = useRef(0);
+  const lastRequestedIssueKeyRef = useRef<string | null>(null);
+  // Skips the filter-clear effect on the first filters value (mount and on each
+  // project/scope switch) so a restored persisted selection is not wiped.
+  const filtersInitializedRef = useRef(false);
+  // Guards for the async rehydrate of filters and selection. `hydrationRequestRef`
+  // is bumped on every project/scope switch, so a slow read for the previous
+  // project cannot land on the new one. The two write counters are bumped by
+  // every reader-driven change, so an in-flight hydrate that resolves after the
+  // reader touched a filter (or a checkbox) is dropped rather than clobbering it.
+  const hydrationRequestRef = useRef(0);
+  const filterWriteRef = useRef(0);
+  const selectionWriteRef = useRef(0);
+  // The selection is only mirrored back to the collection once the stored value
+  // has been read, otherwise the empty mount state would erase it before the
+  // read landed. State rather than a ref so the mirror effect re-runs — and
+  // therefore saves — the moment hydration settles.
+  const [selectionHydrated, setSelectionHydrated] = useState(false);
+  // Accumulated data for every issue displayed this session, so a selection
+  // built across multiple searches stays resolvable when an earlier pick is no
+  // longer on the current page. seenVersion forces a re-render when it grows.
+  const seenIssuesRef = useRef<Map<string, BrowserIssue>>(new Map());
+  const [seenVersion, setSeenVersion] = useState(0);
+
+  useEffect(() => {
+    onQuickViewChange?.(quickView);
+  }, [onQuickViewChange, quickView]);
+
+  useEffect(() => {
+    pageInfoRef.current = pageInfo;
+  }, [pageInfo]);
+
+  // Persist the multi-select so it survives a remount/route change (proceed to
+  // the launch modal → back). Cleared automatically when the selection empties
+  // (safeSaveSelection clears the key) and when filters change (effect below).
+  useEffect(() => {
+    if (!multiSelectEnabled) return;
+    if (!selectionHydrated) return;
+    safeSaveSelection(projectRoot, selectedIssueIds);
+  }, [multiSelectEnabled, projectRoot, selectedIssueIds, selectionHydrated]);
+
+  useEffect(() => {
+    const requestId = hydrationRequestRef.current + 1;
+    hydrationRequestRef.current = requestId;
+    const filterWritesAtStart = filterWriteRef.current;
+    const selectionWritesAtStart = selectionWriteRef.current;
+
+    const entry = getBrowserCacheEntry(cacheKey);
+    const cachedSearch = readCachedSearch(cacheKey, DEFAULT_FILTERS);
+    setFilters(DEFAULT_FILTERS);
+    setQuickView(entry.quickView);
+    setCatalog(entry.catalog ?? emptyCatalog());
+    setIssues(cachedSearch?.issues ?? []);
+    setPageInfo(cachedSearch?.pageInfo ?? emptyPageInfo());
+    setSelectedIssueIds(new Set());
+    setSelectionHydrated(false);
+    // This is a project/scope switch, not a user filter change — treat the
+    // resulting setFilters as an "initial" pass so the filter-clear effect does
+    // not wipe the selection we just restored for the new project.
+    filtersInitializedRef.current = false;
+
+    void loadFilters(projectRoot, DEFAULT_FILTERS, normalizeStoredFilters).then((stored) => {
+      if (hydrationRequestRef.current !== requestId) return;
+      if (filterWriteRef.current !== filterWritesAtStart) return;
+      setFilters(stored);
+    });
+    void loadSelection(projectRoot).then((stored) => {
+      if (hydrationRequestRef.current !== requestId) return;
+      if (selectionWriteRef.current === selectionWritesAtStart) {
+        setSelectedIssueIds(new Set([...stored].slice(0, SELECTION_STORAGE_MAX)));
+      }
+      setSelectionHydrated(true);
+    });
+  }, [cacheKey, projectRoot]);
+
+  useEffect(() => {
+    if (featuredIssue && !selectedIssueId) {
+      setSelectedIssueId(featuredIssue.id);
+    }
+  }, [featuredIssue, selectedIssueId]);
+
+  const loading = loadingQuickView || loadingCatalog || loadingIssues || Boolean(actionBusyIssueId ?? localActionIssueId);
+  useEffect(() => {
+    onLoadingChange?.(loading);
+  }, [loading, onLoadingChange]);
+
+  const loadQuickView = useCallback((force = false) => {
+    const entry = getBrowserCacheEntry(cacheKey);
+    if (!bridge()) return;
+    if (!force && entry.quickView && cacheIsFresh(entry.quickViewFetchedAt)) {
+      setQuickView(entry.quickView);
+      onConnectionVisibilityChange?.(entry.quickView.connection.connected === true);
+      return;
+    }
+    if (entry.quickView) {
+      setQuickView(entry.quickView);
+      onConnectionVisibilityChange?.(entry.quickView.connection.connected === true);
+    }
+    const requestId = quickViewRequestIdRef.current + 1;
+    quickViewRequestIdRef.current = requestId;
+    setLoadingQuickView(force || !entry.quickView);
+    setError(null);
+    const promise = entry.quickViewPromise ?? getQuickView();
+    entry.quickViewPromise = promise;
+    void promise
+      .then((data) => {
+        entry.quickView = data;
+        entry.quickViewFetchedAt = Date.now();
+        entry.quickViewPromise = null;
+        if (quickViewRequestIdRef.current !== requestId) return;
+        setQuickView(data);
+        onConnectionVisibilityChange?.(data.connection.connected === true);
+      })
+      .catch((err) => {
+        entry.quickViewPromise = null;
+        if (quickViewRequestIdRef.current !== requestId) return;
+        if (!entry.quickView || force) {
+          setError(err instanceof Error ? err.message : "Unable to load Linear.");
+        }
+      })
+      .finally(() => {
+        if (quickViewRequestIdRef.current === requestId) setLoadingQuickView(false);
+      });
+  }, [cacheKey, onConnectionVisibilityChange]);
+
+  const loadCatalog = useCallback((force = false) => {
+    const entry = getBrowserCacheEntry(cacheKey);
+    if (!bridge()) {
+      setError("Linear controls are not available in this ADE surface.");
+      return;
+    }
+    if (!force && entry.catalog && cacheIsFresh(entry.catalogFetchedAt)) {
+      setCatalog(entry.catalog);
+      return;
+    }
+    if (entry.catalog) setCatalog(entry.catalog);
+    const requestId = catalogRequestIdRef.current + 1;
+    catalogRequestIdRef.current = requestId;
+    setLoadingCatalog(force || !entry.catalog);
+    setError(null);
+    const promise = entry.catalogPromise ?? getCatalog();
+    entry.catalogPromise = promise;
+    void promise
+      .then((data) => {
+        entry.catalog = data;
+        entry.catalogFetchedAt = Date.now();
+        entry.catalogPromise = null;
+        if (catalogRequestIdRef.current !== requestId) return;
+        setCatalog(data);
+      })
+      .catch((err) => {
+        entry.catalogPromise = null;
+        if (catalogRequestIdRef.current !== requestId) return;
+        if (!entry.catalog || force) {
+          setError(err instanceof Error ? err.message : "Unable to load Linear filters.");
+        }
+      })
+      .finally(() => {
+        if (catalogRequestIdRef.current === requestId) setLoadingCatalog(false);
+      });
+  }, [cacheKey]);
+
+  const searchIssues = useCallback((append: boolean, force = false) => {
+    if (!bridge()) {
+      setError("Linear issue search is not available in this ADE surface.");
+      return;
+    }
+    const requestId = searchRequestIdRef.current + 1;
+    searchRequestIdRef.current = requestId;
+    const entry = getBrowserCacheEntry(cacheKey);
+    const args = buildIssueSearchArgs(filters, append ? pageInfoRef.current.endCursor : null);
+    const key = searchCacheKey(args);
+    const cached = entry.searches.get(key);
+    const cachedResult = cached?.result ?? null;
+    if (cachedResult && !force && cacheIsFresh(cached?.fetchedAt ?? 0)) {
+      setIssues((current) => append ? mergeIssuePages(current, cachedResult.issues) : cachedResult.issues);
+      setPageInfo(cachedResult.pageInfo);
+      return;
+    }
+    if (cachedResult && !append) {
+      setIssues(cachedResult.issues);
+      setPageInfo(cachedResult.pageInfo);
+    }
+    setLoadingIssues(force || append || !cachedResult);
+    if (append) setAppendingMore(true);
+    else setAppendingMore(false);
+    setError(null);
+    const promise = cached?.promise ?? searchLinearIssues(args);
+    entry.searches.set(key, {
+      result: cachedResult,
+      fetchedAt: cached?.fetchedAt ?? 0,
+      promise,
+    });
+    void promise
+      .then((result) => {
+        rememberSearchResult(entry, key, result);
+        if (searchRequestIdRef.current !== requestId) return;
+        setIssues((current) => append ? mergeIssuePages(current, result.issues) : result.issues);
+        setPageInfo(result.pageInfo);
+      })
+      .catch((err) => {
+        entry.searches.set(key, { result: cachedResult, fetchedAt: cached?.fetchedAt ?? 0, promise: null });
+        if (searchRequestIdRef.current !== requestId) return;
+        if (!cachedResult || force) {
+          setError(err instanceof Error ? err.message : "Unable to search Linear issues.");
+        }
+      })
+      .finally(() => {
+        if (searchRequestIdRef.current === requestId) {
+          setLoadingIssues(false);
+          if (append) setAppendingMore(false);
+        }
+      });
+  }, [cacheKey, filters]);
+
+  useEffect(() => {
+    const force = refreshKey > 0;
+    loadQuickView(force);
+    loadCatalog(force);
+  }, [loadCatalog, loadQuickView, refreshKey]);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => searchIssues(false, false), 220);
+    return () => window.clearTimeout(timer);
+  }, [filters, searchIssues]);
+
+  useEffect(() => {
+    if (refreshKey === 0) return;
+    searchIssues(false, true);
+  }, [refreshKey, searchIssues]);
+
+  const updateFilters = useCallback((patch: Partial<LinearIssueBrowserFilters>) => {
+    filterWriteRef.current += 1;
+    const next = { ...filters, ...patch };
+    setFilters(next);
+    safeSaveFilters(projectRoot, next);
+  }, [filters, projectRoot]);
+
+  const resetFilters = useCallback(() => {
+    filterWriteRef.current += 1;
+    setFilters(DEFAULT_FILTERS);
+    safeSaveFilters(projectRoot, DEFAULT_FILTERS);
+    setIssues([]);
+    setPageInfo({ hasNextPage: false, endCursor: null });
+  }, [projectRoot]);
+
+  const sorted = useMemo(() => sortedIssues(issues, filters.sort), [filters.sort, issues]);
+  const displayIssues = useMemo<BrowserIssue[]>(() => {
+    if (!featuredIssue) return sorted;
+    return [
+      featuredIssue,
+      ...sorted.filter((issue) => issue.id !== featuredIssue.id),
+    ];
+  }, [featuredIssue, sorted]);
+  const hasIssues = displayIssues.length > 0;
+  const canAutoLoadIssues = typeof IntersectionObserver !== "undefined";
+
+  // Refreshed every render so the observer below always sees current state.
+  autoLoadMoreRef.current = () => {
+    if (loadingIssues) return;
+    if (!pageInfoRef.current.hasNextPage) return;
+    if (issues.length >= AUTO_LOAD_MAX_ISSUES) return;
+    searchIssues(true);
+  };
+
+  // Infinite scroll: auto-fetch the next page when the sentinel at the end of
+  // the list nears the viewport. Re-subscribes only when the list mounts/empties
+  // (the sentinel and scroll root are otherwise stable), so paging never tears
+  // down the observer.
+  useEffect(() => {
+    if (!canAutoLoadIssues) return;
+    const root = issuesScrollRef.current;
+    const sentinel = loadMoreSentinelRef.current;
+    if (!root || !sentinel) return;
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((entry) => entry.isIntersecting)) autoLoadMoreRef.current();
+      },
+      { root, rootMargin: "400px 0px" },
+    );
+    observer.observe(sentinel);
+    return () => observer.disconnect();
+  }, [canAutoLoadIssues, hasIssues]);
+
+  useEffect(() => {
+    const normalized = requestedIssueIdentifier?.trim().toUpperCase() ?? "";
+    const requestKey = `${normalized}:${requestedIssueRequestKey ?? ""}`;
+    if (!normalized || lastRequestedIssueKeyRef.current === requestKey) return;
+    lastRequestedIssueKeyRef.current = requestKey;
+    filterWriteRef.current += 1;
+    selectionWriteRef.current += 1;
+    const nextFilters: LinearIssueBrowserFilters = {
+      ...DEFAULT_FILTERS,
+      query: normalized,
+      statePreset: "all",
+    };
+    setFilters(nextFilters);
+    safeSaveFilters(projectRoot, nextFilters);
+    setIssues([]);
+    setPageInfo({ hasNextPage: false, endCursor: null });
+    setSelectedIssueId(null);
+    setSelectedIssueIds(new Set());
+    safeSaveSelection(projectRoot, new Set());
+    setCollapsedGroups({});
+  }, [projectRoot, requestedIssueIdentifier, requestedIssueRequestKey]);
+
+  useEffect(() => {
+    if (selectedIssueId && displayIssues.some((issue) => issue.id === selectedIssueId)) return;
+    setSelectedIssueId(displayIssues[0]?.id ?? null);
+  }, [displayIssues, selectedIssueId]);
+
+  useEffect(() => {
+    const normalized = requestedIssueIdentifier?.trim().toUpperCase() ?? "";
+    if (!normalized) return;
+    const match = displayIssues.find((issue) =>
+      issue.identifier.trim().toUpperCase() === normalized
+      || issue.id.trim() === requestedIssueIdentifier?.trim()
+    );
+    if (!match || selectedIssueId === match.id) return;
+    setSelectedIssueId(match.id);
+  }, [displayIssues, requestedIssueIdentifier, selectedIssueId]);
+
+  const selectedIssue = displayIssues.find((issue) => issue.id === selectedIssueId) ?? displayIssues[0] ?? null;
+
+  // The full data for the current selection, resolved from issues seen across
+  // any search/filter (not just the current page) so off-page picks still launch.
+  const resolvedSelectedIssues = useMemo(() => {
+    void seenVersion;
+    const out: BrowserIssue[] = [];
+    for (const id of selectedIssueIds) {
+      const issue = seenIssuesRef.current.get(id) ?? displayIssues.find((i) => i.id === id);
+      if (issue) out.push(issue);
+    }
+    return out;
+  }, [selectedIssueIds, displayIssues, seenVersion]);
+
+  const handleToggleCheck = useCallback((issueId: string, event: React.MouseEvent) => {
+    selectionWriteRef.current += 1;
+    setSelectedIssueIds((prev) => {
+      const next = new Set(prev);
+      if (event.shiftKey && lastCheckedId) {
+        const startIdx = displayIssues.findIndex((i) => i.id === lastCheckedId);
+        const endIdx = displayIssues.findIndex((i) => i.id === issueId);
+        if (startIdx !== -1 && endIdx !== -1) {
+          const [lo, hi] = startIdx < endIdx ? [startIdx, endIdx] : [endIdx, startIdx];
+          for (let i = lo; i <= hi; i++) next.add(displayIssues[i].id);
+        } else {
+          // Anchor is stale (no longer in display list) — fall back to toggling clicked row
+          if (next.has(issueId)) next.delete(issueId);
+          else next.add(issueId);
+        }
+      } else {
+        if (next.has(issueId)) next.delete(issueId);
+        else next.add(issueId);
+      }
+      return next;
+    });
+    setLastCheckedId(issueId);
+  }, [displayIssues, lastCheckedId]);
+
+  const handleSelectAll = useCallback(() => {
+    selectionWriteRef.current += 1;
+    setSelectedIssueIds((prev) => {
+      if (prev.size === displayIssues.length) return new Set();
+      return new Set(displayIssues.map((i) => i.id));
+    });
+  }, [displayIssues]);
+
+  const clearCheckedIssues = useCallback(() => {
+    selectionWriteRef.current += 1;
+    setSelectedIssueIds(new Set());
+  }, []);
+
+  // Accumulate the data of every issue we have displayed, so a selection built
+  // up across multiple searches/filters can still be resolved (and launched)
+  // even when an earlier pick is no longer on the current filtered page.
+  useEffect(() => {
+    if (displayIssues.length === 0) return;
+    const map = seenIssuesRef.current;
+    let changed = false;
+    for (const issue of displayIssues) {
+      if (!map.has(issue.id)) {
+        map.set(issue.id, issue);
+        changed = true;
+      }
+    }
+    if (changed) setSeenVersion((v) => v + 1);
+  }, [displayIssues]);
+
+  // NOTE: selection deliberately persists across search/filter changes — the
+  // user builds up a multi-issue selection by searching for each one. We only
+  // drop selections via the explicit Clear control, a project switch, or a
+  // deep-link request (handled above), never on a query change.
+
+  const assigneeOptions = useMemo(
+    () => [
+      { value: "", label: "Anyone" },
+      ...catalog.users.map((user) => ({ value: user.id, label: user.displayName ?? user.name })),
+    ],
+    [catalog.users],
+  );
+
+  const projectFilters = useMemo(() => {
+    const quickProjects = new Map<string, CtoLinearQuickViewProject>();
+    for (const projectEntry of quickView?.projects ?? []) quickProjects.set(projectEntry.id, projectEntry);
+    return catalog.projects.map((projectEntry) => ({
+      ...projectEntry,
+      quick: quickProjects.get(projectEntry.id) ?? null,
+    }));
+  }, [catalog.projects, quickView?.projects]);
+
+  const issueGroups = useMemo(() => groupIssuesByState(displayIssues), [displayIssues]);
+
+  const conflicts = batchActions?.conflicts;
+
+  // Unified launch entry point. When any target issue is already attached to a
+  // lane/session we surface a soft confirm first — re-attaching is allowed (the
+  // data model supports the same issue on multiple lanes), the user just gets a
+  // heads-up. Once confirmed (or when there is no conflict) we hand off to the
+  // host's onBatchLaunch.
+  const onBatchLaunch = batchActions?.onBatchLaunch;
+  const handleBatchLaunch = useCallback(async (issues: BrowserIssue[], options: { laneOnly?: boolean }) => {
+    if (!onBatchLaunch || issues.length === 0) return;
+    const conflicting = conflicts
+      ? issues.map((issue) => conflicts.get(issue.id)).filter((c): c is IssueConflict => Boolean(c))
+      : [];
+    if (conflicting.length > 0) {
+      const laneNames = [...new Set(conflicting.map((c) => c.laneName).filter((n): n is string => Boolean(n)))];
+      const target = laneNames.length === 1
+        ? `“${laneNames[0]}”`
+        : laneNames.length > 1
+          ? `${laneNames.length} lanes`
+          : "another lane";
+      const subject = conflicting.length === 1
+        ? "This issue is already attached to"
+        : `${conflicting.length} of these issues are already attached to`;
+      // `window.confirm` is the host's dialog, not the page's: a guest's own
+      // modal is trapped inside the webview's rect and would draw under ADE's
+      // chrome. The message is the compiled one, word for word. A host too old
+      // to ask keeps the compiled `: true` fallback — the browser never blocks a
+      // launch just because nobody could be asked.
+      const message = `${subject} ${target}. You can attach ${conflicting.length === 1 ? "it" : "them"} again — proceed?`;
+      const ok = bridge()?.ui ? await hostConfirm({ title: message }) : true;
+      if (!ok) return;
+    }
+    onBatchLaunch(issues, options);
+  }, [onBatchLaunch, conflicts]);
+
+  const handleIssueAction = useCallback(async (issue: BrowserIssue) => {
+    const busyIssueId = actionBusyIssueId ?? localActionIssueId;
+    if (busyIssueId || actionDisabled) return;
+    setLocalActionIssueId(issue.id);
+    setError(null);
+    try {
+      await onIssueAction(issue);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Unable to update Linear issue selection.");
+    } finally {
+      setLocalActionIssueId(null);
+    }
+  }, [actionBusyIssueId, actionDisabled, localActionIssueId, onIssueAction]);
+
+  const showSettingsAction = Boolean(error && onOpenLinearSettings && isConnectionError(error));
+  const busyIssueId = actionBusyIssueId ?? localActionIssueId;
+  const filtersActive = hasActiveFilters(filters);
+  const issueCountLabel = issues.length > 0 ? `${issues.length}${pageInfo.hasNextPage ? "+" : ""}` : null;
+
+  return (
+    <div className="flex h-full min-h-0 flex-col overflow-hidden">
+      {error ? (
+        <div className="mx-4 mt-3 flex shrink-0 flex-wrap items-center gap-2 rounded-lg border border-red-500/25 px-3 py-2 text-[12px] text-red-100" style={{ backgroundColor: "#321B20" }}>
+          <Warning size={14} className="shrink-0" />
+          <span className="min-w-0 flex-1">{error}</span>
+          {showSettingsAction ? (
+            <Button type="button" variant="danger" size="sm" onClick={onOpenLinearSettings}>
+              Open Linear settings
+            </Button>
+          ) : null}
+        </div>
+      ) : null}
+
+      <div className="grid min-h-0 flex-1 overflow-hidden md:grid-cols-[240px_minmax(0,1fr)_480px] lg:grid-cols-[280px_minmax(420px,1fr)_600px]">
+        <aside className="flex min-h-0 flex-col overflow-hidden border-r border-white/10 bg-black/10">
+          <div className="shrink-0 border-b border-white/[0.06] px-3 py-2">
+            <ScopeNavButton
+              active={!filters.projectId}
+              title="All issues"
+              subtitle="Across your workspace"
+              count={!filters.projectId ? issueCountLabel : null}
+              onClick={() => updateFilters({ projectId: "" })}
+            />
+          </div>
+
+          <div className="flex min-h-0 flex-1 flex-col overflow-hidden px-2 py-2">
+            <div className="mb-1.5 flex shrink-0 items-center justify-between gap-2 px-1">
+              <span className="text-[11px] text-muted-fg/50">By project</span>
+              {filtersActive ? (
+                <button
+                  type="button"
+                  className="text-[11px] text-muted-fg/55 transition-colors hover:text-fg"
+                  onClick={resetFilters}
+                >
+                  Reset filters
+                </button>
+              ) : null}
+            </div>
+
+            <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain" data-linear-pane="projects">
+              {loadingCatalog && projectFilters.length === 0 ? (
+                <div className="rounded-lg border border-white/[0.06] px-3 py-6 text-center text-[12px] text-muted-fg/50">
+                  Loading projects...
+                </div>
+              ) : projectFilters.length > 0 ? (
+                projectFilters.map((projectEntry) => (
+                  <ProjectFilterButton
+                    key={projectEntry.id}
+                    project={projectEntry}
+                    active={filters.projectId === projectEntry.id}
+                    count={filters.projectId === projectEntry.id ? issueCountLabel : null}
+                    onClick={() => updateFilters({ projectId: projectEntry.id })}
+                  />
+                ))
+              ) : (
+                <div className="rounded-lg border border-white/[0.06] px-3 py-6 text-center text-[12px] text-muted-fg/50">
+                  No visible projects.
+                </div>
+              )}
+            </div>
+          </div>
+        </aside>
+
+        <section className="flex min-h-0 flex-col overflow-hidden border-r border-white/10">
+          <div className="shrink-0 space-y-2 border-b border-white/[0.06] px-3 py-2.5">
+            <div className="relative">
+              <MagnifyingGlass size={13} className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-muted-fg/45" />
+              <input
+                value={filters.query}
+                onChange={(event) => updateFilters({ query: event.target.value })}
+                placeholder="Search issues…"
+                className="h-8 w-full rounded-md border border-white/[0.07] bg-black/20 pl-8 pr-3 text-[12px] text-fg outline-none transition-colors placeholder:text-muted-fg/40 focus:border-white/18"
+              />
+            </div>
+
+            <div className="flex items-center gap-1">
+              {STATE_TABS.map((tab) => (
+                <button
+                  key={tab.value}
+                  type="button"
+                  className={cn(
+                    "rounded-md px-2 py-1 text-[11px] transition-colors",
+                    filters.statePreset === tab.value
+                      ? "bg-white/[0.08] text-fg"
+                      : "text-muted-fg/60 hover:bg-white/[0.04] hover:text-fg/85",
+                  )}
+                  onClick={() => updateFilters({ statePreset: tab.value })}
+                >
+                  {tab.label}
+                </button>
+              ))}
+              {loadingIssues ? <CircleNotch size={11} className="ml-auto animate-spin text-muted-fg/50" /> : null}
+            </div>
+
+            <div className="grid grid-cols-3 gap-1.5">
+              <FilterSelect
+                label="Assignee"
+                value={filters.assigneeId}
+                options={assigneeOptions}
+                onChange={(value) => updateFilters({ assigneeId: value })}
+              />
+              <FilterSelect
+                label="Priority"
+                value={filters.priority}
+                options={PRIORITY_OPTIONS}
+                onChange={(value) => updateFilters({ priority: value })}
+              />
+              <FilterSelect
+                label="Sort"
+                value={filters.sort}
+                options={SORT_OPTIONS}
+                onChange={(value) => updateFilters({ sort: value as IssueSort })}
+              />
+            </div>
+          </div>
+
+          {multiSelectEnabled && displayIssues.length > 0 && (
+            <div className="flex shrink-0 items-center gap-2 border-b border-white/[0.05] px-3 py-1.5">
+              <span
+                role="checkbox"
+                tabIndex={0}
+                aria-checked={selectedIssueIds.size === 0 ? false : selectedIssueIds.size === displayIssues.length ? true : "mixed"}
+                aria-label="Select all issues"
+                onClick={handleSelectAll}
+                onKeyDown={(e) => { if (e.key === " " || e.key === "Enter") { e.preventDefault(); handleSelectAll(); } }}
+                className={cn(
+                  "flex h-[14px] w-[14px] shrink-0 cursor-pointer items-center justify-center rounded-[3px] border transition-all",
+                  selectedIssueIds.size === displayIssues.length
+                    ? "border-[color:var(--color-accent,#A78BFA)] bg-[color:var(--color-accent,#A78BFA)]"
+                    : selectedIssueIds.size > 0
+                      ? "border-[color:var(--color-accent,#A78BFA)] bg-[color:var(--color-accent,#A78BFA)]/50"
+                      : "border-white/[0.15] bg-transparent hover:border-white/30",
+                )}
+              >
+                {selectedIssueIds.size === displayIssues.length && displayIssues.length > 0 ? (
+                  <Check size={10} weight="bold" className="text-[#0F0D14]" />
+                ) : selectedIssueIds.size > 0 ? (
+                  <Minus size={10} weight="bold" className="text-[#0F0D14]" />
+                ) : null}
+              </span>
+              <span className="text-[11px] text-muted-fg/55">
+                {selectedIssueIds.size > 0 ? `${selectedIssueIds.size} selected` : `${displayIssues.length} issues`}
+              </span>
+              {selectedIssueIds.size > 0 && (
+                <button
+                  type="button"
+                  className="ml-auto text-[10px] text-muted-fg/50 hover:text-fg/80 transition-colors"
+                  onClick={clearCheckedIssues}
+                >
+                  Clear
+                </button>
+              )}
+            </div>
+          )}
+
+          <div
+            ref={issuesScrollRef}
+            className="min-h-0 flex-1 overflow-y-auto overscroll-contain"
+            data-linear-pane="issues"
+          >
+            {loadingQuickView && !quickView && displayIssues.length === 0 ? (
+              <div className="grid h-44 place-items-center text-[12px] text-muted-fg/55">
+                <CircleNotch size={16} className="animate-spin" />
+              </div>
+            ) : displayIssues.length > 0 ? (
+              <>
+                {issueGroups.map((group) => {
+                  const collapsed = collapsedGroups[group.key] === true;
+                  return (
+                    <div key={group.key}>
+                      <button
+                        type="button"
+                        className="sticky top-0 z-[1] flex h-8 w-full items-center gap-1.5 border-b border-white/[0.05] bg-[color:var(--shell-surface)] px-3 text-left text-[12px] text-muted-fg/70 transition-colors hover:text-fg/85"
+                        onClick={() => setCollapsedGroups((current) => ({ ...current, [group.key]: !collapsed }))}
+                      >
+                        {collapsed ? <CaretRight size={11} className="shrink-0" /> : <CaretDown size={11} className="shrink-0" />}
+                        <LinearStateIcon stateType={group.stateType} size={12} />
+                        <span className="font-medium text-fg/85">{group.stateName}</span>
+                        <span className="text-[11px] tabular-nums text-muted-fg/45">{group.issues.length}</span>
+                      </button>
+                      {!collapsed ? group.issues.map((issue) => (
+                        <LinearBrowserIssueRow
+                          key={issueListKey(issue)}
+                          issue={issue}
+                          active={selectedIssue?.id === issue.id}
+                          eyebrow={featuredIssue?.id === issue.id ? featuredIssueLabel : undefined}
+                          busy={busyIssueId === issue.id}
+                          checked={selectedIssueIds.has(issue.id)}
+                          anyChecked={anyChecked}
+                          showCheckbox={multiSelectEnabled}
+                          conflict={conflicts?.get(issue.id) ?? null}
+                          onToggleCheck={(e) => handleToggleCheck(issue.id, e)}
+                          onClick={() => setSelectedIssueId(issue.id)}
+                        />
+                      )) : null}
+                    </div>
+                  );
+                })}
+                <div ref={loadMoreSentinelRef} aria-hidden className="h-px w-full" />
+                {appendingMore ? (
+                  <div className="flex items-center justify-center gap-2 px-3 py-3 text-[12px] text-muted-fg/55">
+                    <CircleNotch size={13} className="animate-spin" />
+                    Loading more…
+                  </div>
+                ) : pageInfo.hasNextPage && (!canAutoLoadIssues || issues.length >= AUTO_LOAD_MAX_ISSUES) ? (
+                  <button
+                    type="button"
+                    disabled={loadingIssues}
+                    className="flex w-full items-center justify-center gap-2 px-3 py-2.5 text-[12px] text-muted-fg/70 transition-colors hover:bg-white/[0.04] hover:text-fg"
+                    onClick={() => searchIssues(true)}
+                  >
+                    Load more
+                  </button>
+                ) : null}
+              </>
+            ) : (
+              <div className="px-4 py-12 text-center text-[12px] text-muted-fg/55">
+                No issues match these filters.
+              </div>
+            )}
+          </div>
+        </section>
+
+        {multiSelectEnabled && selectedIssueIds.size > 1 && onBatchLaunch ? (
+          <BatchActionView
+            selectedIssues={resolvedSelectedIssues}
+            onClearSelection={clearCheckedIssues}
+            conflicts={conflicts}
+            onLaunch={handleBatchLaunch}
+          />
+        ) : (
+          <IssueDetails
+            issue={selectedIssue}
+            catalog={catalog}
+            viewer={quickView?.viewer ?? null}
+            actionLabel={actionLabel}
+            actionBusyLabel={actionBusyLabel}
+            actionIcon={actionIcon}
+            actionBusy={selectedIssue ? busyIssueId === selectedIssue.id : false}
+            actionDisabled={actionDisabled || Boolean(busyIssueId && busyIssueId !== selectedIssue?.id)}
+            showBranchPreview={showBranchPreview}
+            onIssueAction={handleIssueAction}
+            conflict={selectedIssue ? conflicts?.get(selectedIssue.id) ?? null : null}
+            onLaunch={onBatchLaunch ? handleBatchLaunch : undefined}
+          />
+        )}
+      </div>
+    </div>
+  );
+}
+
+function ScopeNavButton({
+  active,
+  title,
+  subtitle,
+  count,
+  onClick,
+}: {
+  active: boolean;
+  title: string;
+  subtitle: string;
+  count: string | null;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      className={cn(
+        "flex w-full items-center justify-between gap-2 rounded-md px-2 py-1.5 text-left transition-colors",
+        active
+          ? "bg-white/[0.06] text-fg"
+          : "text-muted-fg/75 hover:bg-white/[0.04]",
+      )}
+      onClick={onClick}
+    >
+      <span className="min-w-0 truncate text-[12px]">
+        <span className="font-medium">{title}</span>
+        <span className="text-muted-fg/45"> · </span>
+        <span className="text-muted-fg/55">{subtitle}</span>
+      </span>
+      {count ? <span className="shrink-0 text-[10px] tabular-nums text-muted-fg/50">{count}</span> : null}
+    </button>
+  );
+}
+
+function ProjectFilterButton({
+  project,
+  active,
+  count,
+  onClick,
+}: {
+  project: CtoLinearProject & { quick: CtoLinearQuickViewProject | null };
+  active: boolean;
+  count: string | null;
+  onClick: () => void;
+}) {
+  const quick = project.quick;
+
+  return (
+    <button
+      type="button"
+      className={cn(
+        "flex h-8 w-full items-center gap-2 rounded-md px-2 text-left transition-colors",
+        active ? "bg-white/[0.06] text-fg" : "text-muted-fg/80 hover:bg-white/[0.04] hover:text-fg",
+      )}
+      onClick={onClick}
+      title={project.name}
+    >
+      <LinearProjectIcon
+        icon={project.icon ?? quick?.icon}
+        color={project.color ?? quick?.color}
+        name={project.name}
+        size={15}
+      />
+      <span className="min-w-0 flex-1 truncate text-[12px]">{project.name}</span>
+      <span className="shrink-0 text-[11px] tabular-nums text-muted-fg/45">
+        {count ?? (quick?.issueCount != null ? String(quick.issueCount) : "0")}
+      </span>
+    </button>
+  );
+}
+
+function linearIssueListDate(issue: BrowserIssue): string {
+  return formatLinearListDate(issue.createdAt) || formatLinearListDate(issue.updatedAt);
+}
+
+function LinearBrowserIssueRow({
+  issue,
+  active,
+  eyebrow,
+  busy,
+  checked,
+  anyChecked: anyRowChecked,
+  showCheckbox,
+  conflict,
+  onToggleCheck,
+  onClick,
+}: {
+  issue: BrowserIssue;
+  active: boolean;
+  eyebrow?: string;
+  busy?: boolean;
+  checked: boolean;
+  anyChecked: boolean;
+  showCheckbox: boolean;
+  conflict?: IssueConflict | null;
+  onToggleCheck: (event: React.MouseEvent) => void;
+  onClick: () => void;
+}) {
+  const listDate = linearIssueListDate(issue);
+
+  // The row is a `div role="button"` rather than a real <button> so the
+  // checkbox can be a sibling interactive control. A <button> nested inside a
+  // <button> is invalid HTML and made checkbox clicks finnicky/missed (the row
+  // and checkbox handlers raced), which is what produced the "bounce" on click.
+  return (
+    <div
+      role="button"
+      tabIndex={busy ? -1 : 0}
+      aria-disabled={busy || undefined}
+      aria-pressed={active}
+      className={cn(
+        "group/row flex h-[34px] w-full items-center gap-3 border-b border-white/[0.04] px-3 text-left transition-colors outline-none focus-visible:bg-white/[0.06]",
+        busy && "pointer-events-none opacity-50",
+        active ? "bg-white/[0.06]" : "hover:bg-white/[0.03]",
+      )}
+      onClick={() => { if (!busy) onClick(); }}
+      onKeyDown={(e) => {
+        if (busy) return;
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          onClick();
+        }
+      }}
+    >
+      {/*
+        The checkbox is a ≥24px hit target (the inner box stays 14px) so the
+        click registers reliably across the whole left gutter — the old 14px
+        target was easy to miss. Unselected boxes stay visible (dimmed via
+        border/color, not an opacity-collapse) so there is no layout shift or
+        "bounce" when the row toggles. stopPropagation keeps the toggle from
+        also triggering the row's preview-select.
+      */}
+      {showCheckbox ? (
+        <button
+          type="button"
+          role="checkbox"
+          aria-checked={checked}
+          aria-label={checked ? `Deselect ${issue.identifier}` : `Select ${issue.identifier}`}
+          onClick={(e) => { e.stopPropagation(); onToggleCheck(e); }}
+          className="-ml-1 grid h-6 w-6 shrink-0 cursor-pointer place-items-center rounded-md outline-none focus-visible:bg-white/[0.06]"
+        >
+          <span
+            className={cn(
+              "flex h-[14px] w-[14px] items-center justify-center rounded-[3px] border transition-colors",
+              checked
+                ? "border-[color:var(--color-accent,#A78BFA)] bg-[color:var(--color-accent,#A78BFA)]"
+                : anyRowChecked
+                  ? "border-white/[0.18] bg-transparent group-hover/row:border-white/35"
+                  : "border-white/[0.12] bg-transparent group-hover/row:border-white/35",
+            )}
+          >
+            {checked ? <Check size={10} weight="bold" className="text-[#0F0D14]" /> : null}
+          </span>
+        </button>
+      ) : null}
+      <span className="w-[54px] shrink-0 truncate font-mono text-[11px] text-muted-fg/50">
+        {issue.identifier}
+      </span>
+      <span className="min-w-0 flex-1 truncate text-[13px] text-fg/90">
+        {eyebrow ? (
+          <span className="mr-1.5 text-[10px] uppercase tracking-wide text-muted-fg/45">{eyebrow}</span>
+        ) : null}
+        {issue.title}
+      </span>
+      {conflict ? <LinearConflictBadge conflict={conflict} /> : null}
+      {listDate ? (
+        <span className="shrink-0 text-[11px] tabular-nums text-muted-fg/45">
+          {listDate}
+        </span>
+      ) : null}
+    </div>
+  );
+}
+
+/**
+ * Subtle Linear-brand warning chip for an issue that is already attached to a
+ * lane or chat/CLI session. Intentionally low-key (accent-tinted, not red) — the
+ * issue can still be launched again, this is just a heads-up. The lane name
+ * rides in the tooltip so the row stays compact.
+ */
+function LinearConflictBadge({ conflict }: { conflict: IssueConflict }) {
+  const label = conflict.reason === "lane" ? "Has lane" : "Has agent";
+  const tooltip = conflict.laneName
+    ? `Already attached to “${conflict.laneName}”`
+    : "Already attached to another lane";
+  return (
+    <span
+      className="shrink-0 rounded-full border px-1.5 py-0.5 text-[9.5px] font-medium leading-none"
+      style={{
+        borderColor: "rgba(167, 139, 250, 0.28)",
+        backgroundColor: "rgba(167, 139, 250, 0.10)",
+        color: "rgba(196, 181, 253, 0.95)",
+      }}
+      title={tooltip}
+    >
+      {label}
+    </span>
+  );
+}
+
+function FilterSelect({
+  label,
+  value,
+  options,
+  onChange,
+}: {
+  label: string;
+  value: string;
+  options: ReadonlyArray<{ value: string; label: string }>;
+  onChange: (value: string) => void;
+}) {
+  return (
+    <label className="relative block">
+      <span className="sr-only">{label}</span>
+      <select
+        value={value}
+        onChange={(event) => onChange(event.target.value)}
+        className="h-8 w-full appearance-none rounded-lg border border-white/[0.07] bg-black/20 px-2.5 pr-7 text-[11px] text-fg outline-none transition-colors focus:border-white/18"
+        aria-label={label}
+      >
+        {options.map((option) => (
+          <option key={option.value} value={option.value}>
+            {option.label}
+          </option>
+        ))}
+      </select>
+      <CaretDown size={9} className="pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2 text-muted-fg/50" />
+    </label>
+  );
+}
+
+// The single-issue dock mirrors the multi-select dock: one unified launch path
+// (lane + agent, or lane only) that opens the same config modal via onLaunch.
+// This replaces the old three-way resolve-modal menu.
+const SINGLE_LAUNCH_ACTIONS: Array<{
+  laneOnly: boolean;
+  label: string;
+  description: string;
+  icon: React.ReactNode;
+}> = [
+  {
+    laneOnly: false,
+    label: "Launch lane + agent",
+    description: "New lane with this issue linked, plus an agent kicked off on it.",
+    icon: <Sparkle size={14} weight="fill" />,
+  },
+  {
+    laneOnly: true,
+    label: "Create lane only",
+    description: "New lane with this issue linked. Start an agent later.",
+    icon: <Plus size={14} weight="bold" />,
+  },
+];
+
+function IssueDetails({
+  issue,
+  catalog,
+  viewer,
+  actionLabel,
+  actionBusyLabel,
+  actionIcon,
+  actionBusy,
+  actionDisabled,
+  showBranchPreview,
+  onIssueAction,
+  conflict,
+  onLaunch,
+}: {
+  issue: BrowserIssue | null;
+  catalog: CtoGetLinearIssuePickerDataResult;
+  viewer: CtoLinearQuickView["viewer"];
+  actionLabel: string;
+  actionBusyLabel?: string;
+  actionIcon?: React.ReactNode;
+  actionBusy: boolean;
+  actionDisabled: boolean;
+  showBranchPreview: boolean;
+  onIssueAction: (issue: BrowserIssue) => void | Promise<void>;
+  conflict?: IssueConflict | null;
+  onLaunch?: (issues: BrowserIssue[], options: { laneOnly?: boolean }) => void;
+}) {
+  // Bumped when the verb strip posts a comment, so the Activity disclosure drops
+  // the thread it cached and re-reads it with the new comment in place. Declared
+  // above the empty-state return so the hook order never depends on a selection.
+  const [commentsToken, setCommentsToken] = useState(0);
+
+  if (!issue) {
+    return (
+      <aside className="grid min-h-0 place-items-center overflow-hidden px-4 py-8 text-center text-[12px] text-muted-fg/55">
+        Select an issue to preview it.
+      </aside>
+    );
+  }
+
+  const laneIssue = linearBrowserIssueToLaneIssue(issue);
+  const branchName = linearIssueBranchName(laneIssue);
+  const normalizedIssue = "raw" in issue ? issue : null;
+  const description = issue.description?.trim() ?? "";
+  return (
+    <aside className="flex min-h-0 flex-col overflow-hidden bg-black/[0.08]">
+      <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-5 py-5" data-linear-pane="issue-details">
+        {issue.url ? (
+          <a
+            href={issue.url}
+            onClick={(e) => { e.preventDefault(); void openLink(issue.url!); }}
+            className="cursor-pointer font-mono text-[11px] text-muted-fg/55 transition-colors hover:text-fg/85"
+            title="Open in Linear"
+          >
+            {issue.identifier}
+          </a>
+        ) : (
+          <span className="font-mono text-[11px] text-muted-fg/55">{issue.identifier}</span>
+        )}
+        <div className="mt-1.5 text-[19px] font-semibold leading-tight tracking-[-0.01em] text-fg/95">{issue.title}</div>
+
+        {description ? (
+          <div className="mt-4">
+            <LinearMarkdown>{description}</LinearMarkdown>
+          </div>
+        ) : (
+          <p className="mt-4 text-[12.5px] italic text-muted-fg/40">No description.</p>
+        )}
+
+        <IssueLabels issue={issue} normalizedIssue={normalizedIssue} />
+
+        <IssueProperties
+          issue={issue}
+          normalizedIssue={normalizedIssue}
+          branchName={showBranchPreview ? branchName : null}
+        />
+
+        <IssueVerbStrip
+          key={issue.id}
+          issue={issue}
+          catalog={catalog}
+          viewer={viewer}
+          onCommentPosted={() => setCommentsToken((token) => token + 1)}
+        />
+
+        {normalizedIssue?.childIssues && normalizedIssue.childIssues.length > 0 ? (
+          <SubIssuesList issues={normalizedIssue.childIssues} />
+        ) : null}
+
+        <ActivitySection issueId={issue.id} refreshToken={commentsToken} />
+      </div>
+
+      <div
+        className="shrink-0 max-h-[42%] overflow-y-auto overscroll-contain border-t border-white/10 bg-[color:color-mix(in_srgb,var(--shell-surface)_92%,black_8%)] px-4 py-3 shadow-[0_-18px_36px_rgba(0,0,0,0.22)] backdrop-blur-md"
+        data-linear-action-dock="true"
+      >
+        <div className="mb-2 flex min-w-0 items-center gap-2">
+          <span className="shrink-0 rounded bg-white/[0.07] px-1.5 py-0.5 font-mono text-[10px] text-fg/80">
+            {issue.identifier}
+          </span>
+          <span className="min-w-0 flex-1 truncate text-[11.5px] font-medium text-fg/82" title={issue.title}>
+            {issue.title}
+          </span>
+          {conflict ? <LinearConflictBadge conflict={conflict} /> : null}
+        </div>
+        {onLaunch ? (
+          <div className="space-y-2">
+            {conflict ? (
+              <div className="flex items-start gap-1.5 rounded-lg border border-[color:rgba(167,139,250,0.22)] bg-[color:rgba(167,139,250,0.08)] px-2.5 py-1.5 text-[10.5px] leading-relaxed text-[color:rgba(196,181,253,0.95)]">
+                <Warning size={12} className="mt-px shrink-0" />
+                <span>
+                  {conflict.reason === "lane" ? "Already has a lane" : "Already has an agent"}
+                  {conflict.laneName ? ` (“${conflict.laneName}”)` : ""}. You can attach it again.
+                </span>
+              </div>
+            ) : null}
+            <div className="grid gap-1.5">
+              {SINGLE_LAUNCH_ACTIONS.map((action) => (
+                <button
+                  key={action.label}
+                  type="button"
+                  className="grid w-full grid-cols-[28px_minmax(0,1fr)] items-start gap-2.5 rounded-lg border border-white/[0.075] bg-white/[0.025] px-2.5 py-2 text-left transition-colors hover:border-white/[0.16] hover:bg-white/[0.055]"
+                  onClick={() => onLaunch([issue], { laneOnly: action.laneOnly })}
+                >
+                  <span
+                    className="grid h-7 w-7 shrink-0 place-items-center rounded-md text-[color:var(--color-accent,#A78BFA)]"
+                    style={{ background: "rgba(167, 139, 250, 0.12)" }}
+                  >
+                    {action.icon}
+                  </span>
+                  <span className="min-w-0 flex-1">
+                    <span className="block text-[11.5px] font-medium leading-snug text-fg/90">{action.label}</span>
+                    <span className="mt-0.5 block text-[10.5px] leading-relaxed text-muted-fg/55">{action.description}</span>
+                  </span>
+                </button>
+              ))}
+            </div>
+            <LinearIssueOpenLink url={issue.url} />
+          </div>
+        ) : (
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <Button
+              variant="primary"
+              disabled={actionBusy || actionDisabled}
+              onClick={() => void onIssueAction(issue)}
+            >
+              {actionBusy ? <CircleNotch size={14} className="animate-spin" /> : actionIcon ?? <Plus size={14} />}
+              {actionBusy ? actionBusyLabel ?? actionLabel : actionLabel}
+            </Button>
+            <LinearIssueOpenLink url={issue.url} />
+          </div>
+        )}
+      </div>
+    </aside>
+  );
+}
+
+function IssueLabels({ issue, normalizedIssue }: { issue: BrowserIssue; normalizedIssue: NormalizedLinearIssue | null }) {
+  const labels = normalizedIssue?.labelColors ?? issue.labels.map((l) => ({ name: l, color: null as string | null }));
+  if (labels.length === 0) return null;
+  return (
+    <div className="mt-3 flex flex-wrap gap-1.5">
+      {labels.map((label) => (
+        <span
+          key={label.name}
+          className="rounded-full border px-2 py-0.5 text-[10px]"
+          style={{
+            borderColor: label.color ? `${label.color}44` : "rgba(255,255,255,0.07)",
+            backgroundColor: label.color ? `${label.color}18` : "rgba(255,255,255,0.035)",
+            color: label.color ?? "rgba(255,255,255,0.75)",
+          }}
+        >
+          {label.name}
+        </span>
+      ))}
+    </div>
+  );
+}
+
+function PropRow({ label, value, children }: { label: string; value?: string; children?: React.ReactNode }) {
+  return (
+    <div className="grid grid-cols-[92px_minmax(0,1fr)] items-center gap-3 py-[5px]">
+      <dt className="text-[11px] text-muted-fg/45">{label}</dt>
+      <dd className="min-w-0 text-[12px]">
+        {children ?? <span className="block truncate text-fg/85" title={value}>{value}</span>}
+      </dd>
+    </div>
+  );
+}
+
+function IssueProperties({
+  issue,
+  normalizedIssue,
+  branchName,
+}: {
+  issue: BrowserIssue;
+  normalizedIssue: NormalizedLinearIssue | null;
+  branchName: string | null;
+}) {
+  return (
+    <dl className="mt-5 border-t border-white/[0.06] pt-4">
+      <PropRow label="Status">
+        <span className="flex min-w-0 items-center gap-1.5">
+          <LinearStateIcon stateType={issue.stateType} size={12} />
+          <span className="truncate text-fg/85">{issue.stateName}</span>
+        </span>
+      </PropRow>
+      <PropRow label="Priority">
+        <span className="flex min-w-0 items-center gap-1.5">
+          <LinearPriorityIcon priority={issue.priority} size={12} />
+          <span className="truncate text-fg/85">{linearPriorityLabel(issue)}</span>
+        </span>
+      </PropRow>
+      <PropRow label="Assignee" value={issue.assigneeName ?? "Unassigned"} />
+      <PropRow label="Project" value={issueProjectLabel(issue)} />
+      <PropRow label="Team" value={issue.teamName ?? issue.teamKey} />
+      {normalizedIssue?.cycleName ? <PropRow label="Cycle" value={normalizedIssue.cycleName} /> : null}
+      <PropRow label="Creator" value={issue.creatorName ?? "Unknown"} />
+      {issue.estimate != null ? <PropRow label="Estimate" value={String(issue.estimate)} /> : null}
+      {issue.dueDate ? <PropRow label="Due" value={formatDate(issue.dueDate)} /> : null}
+      <PropRow label="Created" value={formatDate(issue.createdAt)} />
+      <PropRow label="Updated" value={issueUpdatedLabel(issue)} />
+      {normalizedIssue?.startedAt ? <PropRow label="Started" value={formatDate(normalizedIssue.startedAt)} /> : null}
+      {normalizedIssue?.completedAt ? <PropRow label="Completed" value={formatDate(normalizedIssue.completedAt)} /> : null}
+      {normalizedIssue?.canceledAt ? <PropRow label="Canceled" value={formatDate(normalizedIssue.canceledAt)} /> : null}
+      {normalizedIssue?.hasOpenBlockers ? (
+        <PropRow label="Blockers" value={String(normalizedIssue.blockerIssueIds.length)} />
+      ) : null}
+      {branchName ? (
+        <PropRow label="Branch">
+          <span className="flex min-w-0 items-center gap-1.5 font-mono text-[11px] text-fg/80">
+            <BranchIcon size={11} className="shrink-0" />
+            <span className="truncate" title={branchName}>{branchName}</span>
+          </span>
+        </PropRow>
+      ) : null}
+    </dl>
+  );
+}
+
+/**
+ * The four inline verbs `panels/issue.js` has and the compiled detail pane never
+ * did — state, priority, "Assign to me" and "Comment".
+ *
+ * The panel and this pane are two drawings of one product, so the copy, the
+ * options and the semantics are the panel's: `inlineEditors` for the two
+ * controls, `issueActions` for the two buttons, and `panelActions.js` for what
+ * each answer says. What differs is only the vocabulary each surface has — a
+ * `segmented` there, a `select` in the compiled pane's own idiom here.
+ *
+ * Mounted under `key={issue.id}`, so the optimistic values below belong to the
+ * issue that is on screen and cannot survive onto the next one. That is the same
+ * hazard `panels/issue.js` keys its `stateKey`s against, for the same reason.
+ */
+function IssueVerbStrip({
+  issue,
+  catalog,
+  viewer,
+  onCommentPosted,
+}: {
+  issue: BrowserIssue;
+  catalog: CtoGetLinearIssuePickerDataResult;
+  viewer: CtoLinearQuickView["viewer"];
+  onCommentPosted: () => void;
+}) {
+  // `null` means "no local answer yet, show the issue's own truth". A failed
+  // write puts the previous value back, so the control ends on the truth rather
+  // than on the reader's intention — `inlineEditors` republishes for the same
+  // reason.
+  const [stateOverride, setStateOverride] = useState<string | null>(null);
+  const [priorityOverride, setPriorityOverride] = useState<number | null>(null);
+  const [assignedToViewer, setAssignedToViewer] = useState(false);
+  const [statePending, setStatePending] = useState(false);
+  const [priorityPending, setPriorityPending] = useState(false);
+  const [assignPending, setAssignPending] = useState(false);
+  const [commentPending, setCommentPending] = useState(false);
+
+  // The issue's OWN team, exactly as the panel's `optionsFrom` keys on
+  // `statesKeyPrefix(issue.teamKey)`: a workflow state belongs to one team and
+  // moving an issue into another team's state is not a move Linear allows.
+  const teamStates = useMemo(
+    () => catalog.states.filter((state) => state.teamKey === issue.teamKey),
+    [catalog.states, issue.teamKey],
+  );
+
+  const currentStateId = stateOverride ?? issue.stateId;
+  const stateOptions = useMemo(() => {
+    const options = teamStates.map((state) => ({ value: state.id, label: state.name }));
+    // The literal current state first, and only when the team's rows do not
+    // already carry it — a control whose selected value is not among its options
+    // silently falls back to the first one, which would read as a state change
+    // nobody made.
+    if (currentStateId && !options.some((option) => option.value === currentStateId)) {
+      options.unshift({ value: currentStateId, label: issue.stateName });
+    }
+    return options;
+  }, [teamStates, currentStateId, issue.stateName]);
+
+  const currentPriority = priorityOverride ?? issue.priority;
+  // `PRIORITY_OPTIONS` minus the filter strip's "Any priority" entry, which is a
+  // query and not a priority an issue can be in.
+  const priorityOptions = useMemo(() => PRIORITY_OPTIONS.filter((option) => option.value !== ""), []);
+
+  const showStateControl = Boolean(issue.stateId) && teamStates.length > 0;
+  const showAssign = Boolean(viewer?.id) && !assignedToViewer && issue.assigneeId !== viewer?.id;
+
+  const handleStateChange = useCallback(async (nextStateId: string) => {
+    if (statePending || nextStateId === currentStateId) return;
+    const previous = stateOverride;
+    setStateOverride(nextStateId);
+    setStatePending(true);
+    try {
+      const result = await setIssueState(issue.id, nextStateId);
+      if (result?.ok) {
+        void toast({ level: "success", message: result.message ?? "State updated." });
+      } else {
+        setStateOverride(previous);
+        void toast({ level: "error", message: result?.message ?? "Changing state needs a connection." });
+      }
+    } catch {
+      setStateOverride(previous);
+      void toast({ level: "error", message: "Changing state needs a connection." });
+    } finally {
+      setStatePending(false);
+    }
+  }, [currentStateId, issue.id, statePending, stateOverride]);
+
+  const handlePriorityChange = useCallback(async (nextValue: string) => {
+    // `0` is "No priority" and a real value, so the guard is on the parse and
+    // never on falsiness — the same note `setIssuePriority` carries.
+    const next = Number(nextValue);
+    if (priorityPending || !Number.isFinite(next) || next === currentPriority) return;
+    const previous = priorityOverride;
+    setPriorityOverride(next);
+    setPriorityPending(true);
+    try {
+      const result = await setIssuePriority(issue.id, next);
+      if (result?.ok) {
+        void toast({ level: "success", message: result.message ?? "Priority updated." });
+      } else {
+        setPriorityOverride(previous);
+        void toast({ level: "error", message: result?.message ?? "Changing priority needs a connection." });
+      }
+    } catch {
+      setPriorityOverride(previous);
+      void toast({ level: "error", message: "Changing priority needs a connection." });
+    } finally {
+      setPriorityPending(false);
+    }
+  }, [currentPriority, issue.id, priorityOverride, priorityPending]);
+
+  const handleAssignToMe = useCallback(async () => {
+    const viewerId = viewer?.id;
+    if (assignPending || !viewerId) return;
+    setAssignPending(true);
+    try {
+      const result = await assignIssue(issue.id, viewerId);
+      if (result?.ok) {
+        setAssignedToViewer(true);
+        void toast({ level: "success", message: result.message ?? "Assigned 1 issue to you." });
+      } else {
+        void toast({ level: "error", message: result?.message ?? "Assigning needs a connection." });
+      }
+    } catch {
+      void toast({ level: "error", message: "Assigning needs a connection." });
+    } finally {
+      setAssignPending(false);
+    }
+  }, [assignPending, issue.id, viewer?.id]);
+
+  const handleComment = useCallback(async () => {
+    if (commentPending) return;
+    setCommentPending(true);
+    try {
+      // The panel's own question, id and all: one field, because `{prompt}` is
+      // one field on every client and a reader who wants a paragraph writes it
+      // in Linear.
+      const answer = await hostPrompt({
+        id: "comment",
+        title: "Add a comment",
+        placeholder: "One line",
+        submitLabel: "Comment",
+        context: { issueId: issue.id },
+      });
+      if (!answer || typeof answer !== "object") return;
+      const typed = (answer as { text?: unknown }).text;
+      const body = typeof typed === "string" ? typed.trim() : "";
+      if (!body) {
+        void toast({ level: "info", message: "Nothing to post." });
+        return;
+      }
+      const result = await addComment(issue.id, body);
+      if (result?.ok) {
+        // `commentOnIssue` reloads the thread before it republishes; the pane's
+        // equivalent is dropping the Activity disclosure's cached comments so
+        // the next draw re-reads them.
+        onCommentPosted();
+        void toast({ level: "success", message: result.message ?? "Comment posted." });
+      } else {
+        void toast({ level: "error", message: result?.message ?? "Commenting needs a connection." });
+      }
+    } catch {
+      void toast({ level: "error", message: "Commenting needs a connection." });
+    } finally {
+      setCommentPending(false);
+    }
+  }, [commentPending, issue.id, onCommentPosted]);
+
+  return (
+    <div className="mt-4 border-t border-white/[0.06] pt-3">
+      {showStateControl ? (
+        <VerbRow label="Status">
+          <VerbSelect
+            verb="state"
+            ariaLabel="Status"
+            value={currentStateId}
+            disabled={statePending}
+            options={stateOptions}
+            onChange={(next) => void handleStateChange(next)}
+          />
+        </VerbRow>
+      ) : null}
+      <VerbRow label="Priority">
+        <VerbSelect
+          verb="priority"
+          ariaLabel="Priority"
+          value={String(currentPriority)}
+          disabled={priorityPending}
+          options={priorityOptions.map((option) => ({ value: option.value, label: option.label }))}
+          onChange={(next) => void handlePriorityChange(next)}
+        />
+      </VerbRow>
+      <div className="mt-2 flex flex-wrap items-center gap-1.5">
+        {showAssign ? (
+          <button
+            type="button"
+            data-linear-verb="assign"
+            disabled={assignPending}
+            onClick={() => void handleAssignToMe()}
+            className="inline-flex items-center gap-1.5 rounded-lg border border-white/[0.075] bg-white/[0.025] px-2.5 py-1 text-[11.5px] font-medium text-fg/85 transition-colors hover:border-white/[0.16] hover:bg-white/[0.055] disabled:cursor-not-allowed disabled:opacity-45"
+          >
+            {assignPending ? <CircleNotch size={11} className="animate-spin" /> : null}
+            Assign to me
+          </button>
+        ) : null}
+        <button
+          type="button"
+          data-linear-verb="comment"
+          disabled={commentPending}
+          onClick={() => void handleComment()}
+          className="inline-flex items-center gap-1.5 rounded-lg border border-white/[0.075] bg-white/[0.025] px-2.5 py-1 text-[11.5px] font-medium text-fg/85 transition-colors hover:border-white/[0.16] hover:bg-white/[0.055] disabled:cursor-not-allowed disabled:opacity-45"
+        >
+          {commentPending ? <CircleNotch size={11} className="animate-spin" /> : null}
+          Comment
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/** `PropRow`'s grid, for a row whose value is a control rather than a string. */
+function VerbRow({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <div className="grid grid-cols-[92px_minmax(0,1fr)] items-center gap-3 py-[5px]">
+      <span className="text-[11px] text-muted-fg/45">{label}</span>
+      <div className="min-w-0">{children}</div>
+    </div>
+  );
+}
+
+/** `FilterSelect`'s control, sized for a property row rather than a filter bar. */
+function VerbSelect({
+  verb,
+  ariaLabel,
+  value,
+  options,
+  disabled,
+  onChange,
+}: {
+  verb: string;
+  ariaLabel: string;
+  value: string;
+  options: ReadonlyArray<{ value: string; label: string }>;
+  disabled: boolean;
+  onChange: (value: string) => void;
+}) {
+  return (
+    <span className="relative block">
+      <select
+        data-linear-verb={verb}
+        aria-label={ariaLabel}
+        value={value}
+        disabled={disabled}
+        onChange={(event) => onChange(event.target.value)}
+        className="h-7 w-full appearance-none rounded-md border border-white/[0.07] bg-black/20 px-2 pr-6 text-[12px] text-fg/85 outline-none transition-colors focus:border-white/18 disabled:cursor-not-allowed disabled:opacity-45"
+      >
+        {options.map((option) => (
+          <option key={option.value} value={option.value}>
+            {option.label}
+          </option>
+        ))}
+      </select>
+      <CaretDown size={9} className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 text-muted-fg/50" />
+    </span>
+  );
+}
+
+function SubIssuesList({ issues }: { issues: NonNullable<NormalizedLinearIssue["childIssues"]> }) {
+  const [expanded, setExpanded] = useState(false);
+  return (
+    <div className="mt-3">
+      <button
+        type="button"
+        className="flex items-center gap-1.5 text-[11px] font-medium text-muted-fg/65 hover:text-fg/80 transition-colors"
+        onClick={() => setExpanded(!expanded)}
+      >
+        {expanded ? <CaretDown size={10} /> : <CaretRight size={10} />}
+        Sub-issues ({issues.length})
+      </button>
+      {expanded && (
+        <div className="mt-1.5 space-y-1 pl-1">
+          {issues.map((child) => (
+            <div key={child.id} className="flex items-center gap-2 py-0.5">
+              <LinearStateIcon stateType={child.stateType} size={10} />
+              <span className="font-mono text-[10px] text-fg/60">{child.identifier}</span>
+              <span className="min-w-0 flex-1 truncate text-[11px] text-muted-fg/70">{child.title}</span>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ActivitySection({ issueId, refreshToken }: { issueId: string; refreshToken: number }) {
+  const [expanded, setExpanded] = useState(false);
+  const [comments, setComments] = useState<CtoLinearIssueComment[] | null>(null);
+  const [commentError, setCommentError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
+  const prevIssueIdRef = useRef(issueId);
+  const prevRefreshTokenRef = useRef(refreshToken);
+
+  if (prevIssueIdRef.current !== issueId) {
+    prevIssueIdRef.current = issueId;
+    setComments(null);
+    setCommentError(null);
+    setExpanded(false);
+  }
+
+  // A comment the reader just posted. The cached thread is dropped but the
+  // disclosure stays as they left it, so an open Activity re-reads in place and
+  // a closed one is not opened at them.
+  if (prevRefreshTokenRef.current !== refreshToken) {
+    prevRefreshTokenRef.current = refreshToken;
+    setComments(null);
+    setCommentError(null);
+  }
+
+  useEffect(() => {
+    if (!expanded || comments || commentError) return;
+    let cancelled = false;
+    setLoading(true);
+    if (!bridge()) { setLoading(false); setComments([]); return; }
+    void getIssueComments(issueId)
+      .then((result) => { if (!cancelled) setComments(result ?? []); })
+      .catch(() => { if (!cancelled) setCommentError("Failed to load comments"); })
+      .finally(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
+  }, [expanded, issueId, comments, commentError]);
+
+  return (
+    <div className="mt-3">
+      <button
+        type="button"
+        className="flex items-center gap-1.5 text-[11px] font-medium text-muted-fg/65 hover:text-fg/80 transition-colors"
+        onClick={() => setExpanded(!expanded)}
+      >
+        {expanded ? <CaretDown size={10} /> : <CaretRight size={10} />}
+        Activity
+      </button>
+      {expanded && (
+        <div className="mt-1.5 space-y-2 pl-1">
+          {loading ? (
+            <div className="text-[10px] text-muted-fg/40">Loading...</div>
+          ) : commentError ? (
+            <div className="text-[10px] text-red-400/70">{commentError}</div>
+          ) : comments && comments.length > 0 ? (
+            comments.map((comment) => (
+              <div key={comment.id} className="rounded-md border border-white/[0.05] bg-white/[0.02] px-2.5 py-2">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-[11px] font-medium text-fg/80">{comment.userDisplayName || comment.userName}</span>
+                  <span className="text-[10px] text-muted-fg/40">{formatDate(comment.createdAt)}</span>
+                </div>
+                <div className="mt-1 text-[11px] leading-relaxed text-muted-fg/70 whitespace-pre-wrap">
+                  {comment.body}
+                </div>
+              </div>
+            ))
+          ) : (
+            <div className="text-[10px] text-muted-fg/40">No comments</div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+const BATCH_ACTIONS_CONFIG = [
+  { key: "launch", icon: <Sparkle size={13} />, label: "Launch lanes + agents", sublabel: "A lane and an agent kicked off per issue" },
+  { key: "create", icon: <Plus size={13} />, label: "Create lanes only", sublabel: "A lane per issue, start agents later" },
+] as const;
+
+function BatchActionView({
+  selectedIssues,
+  onClearSelection,
+  conflicts,
+  onLaunch,
+}: {
+  selectedIssues: BrowserIssue[];
+  onClearSelection: () => void;
+  conflicts?: Map<string, IssueConflict>;
+  onLaunch: (issues: BrowserIssue[], options: { laneOnly?: boolean }) => void;
+}) {
+  const conflictCount = conflicts
+    ? selectedIssues.reduce((count, issue) => (conflicts.has(issue.id) ? count + 1 : count), 0)
+    : 0;
+
+  return (
+    <aside className="flex min-h-0 flex-col overflow-hidden">
+      <div className="min-h-0 flex-1 overflow-y-auto px-4 py-3" data-linear-pane="issue-details">
+        <div className="flex items-center justify-between">
+          <span className="text-[13px] font-semibold text-fg/90">{selectedIssues.length} issues selected</span>
+          <button type="button" className="text-[10px] text-muted-fg/50 hover:text-fg/80 transition-colors" onClick={onClearSelection}>
+            Clear
+          </button>
+        </div>
+        {conflictCount > 0 ? (
+          <div className="mt-2 flex items-start gap-1.5 rounded-lg border border-[color:rgba(167,139,250,0.22)] bg-[color:rgba(167,139,250,0.08)] px-2.5 py-1.5 text-[10.5px] leading-relaxed text-[color:rgba(196,181,253,0.95)]">
+            <Warning size={12} className="mt-px shrink-0" />
+            <span>
+              {conflictCount === 1 ? "1 issue is" : `${conflictCount} issues are`} already attached to a lane. You can attach again — we&apos;ll confirm first.
+            </span>
+          </div>
+        ) : null}
+        <div className="mt-2 space-y-1">
+          {selectedIssues.map((issue) => {
+            const issueConflict = conflicts?.get(issue.id) ?? null;
+            return (
+              <div key={issue.id} className="flex items-center gap-2 rounded-md bg-white/[0.03] px-2 py-1">
+                <span className="rounded bg-white/[0.06] px-1.5 py-0.5 font-mono text-[10px] text-fg/80">{issue.identifier}</span>
+                <span className="min-w-0 flex-1 truncate text-[11px] text-muted-fg/70">{issue.title}</span>
+                {issueConflict ? <LinearConflictBadge conflict={issueConflict} /> : null}
+              </div>
+            );
+          })}
+        </div>
+      </div>
+      <div className="shrink-0 border-t border-white/10 px-4 py-3" data-linear-action-dock="true">
+        <div className="space-y-1.5">
+          {BATCH_ACTIONS_CONFIG.map((action) => (
+            <button
+              key={action.key}
+              type="button"
+              className="flex w-full items-start gap-2.5 rounded-lg border border-white/[0.07] bg-white/[0.02] px-2.5 py-2 text-left transition-colors hover:border-white/[0.12] hover:bg-white/[0.05]"
+              onClick={() => onLaunch(selectedIssues, { laneOnly: action.key === "create" })}
+            >
+              <span className="mt-0.5 grid h-6 w-6 shrink-0 place-items-center rounded-md text-[color:var(--color-accent,#A78BFA)]" style={{ background: "rgba(167, 139, 250, 0.12)" }}>
+                {action.icon}
+              </span>
+              <span className="min-w-0 flex-1">
+                <span className="block text-[11.5px] font-medium leading-snug text-fg/90">
+                  {`${action.label} · ${selectedIssues.length} ${selectedIssues.length === 1 ? "issue" : "issues"}`}
+                </span>
+                <span className="mt-0.5 block text-[10.5px] leading-relaxed text-muted-fg/55">{action.sublabel}</span>
+              </span>
+            </button>
+          ))}
+        </div>
+      </div>
+    </aside>
+  );
+}

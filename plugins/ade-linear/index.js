@@ -49,13 +49,14 @@ const { createLinearApi } = require("./linearApi");
 const { createData } = require("./data");
 const { createFlows } = require("./flows");
 const { issueBranchName, issueLaneName } = require("./issueFormat");
-const { createConnect } = require("./connect");
+const { createConnect, normalizeAuthOrigin } = require("./connect");
 const { createAutomation } = require("./automation");
 const { createWebhookHandler } = require("./webhook");
 const panels = require("./panels");
 const panelActions = require("./panelActions");
 const { issueIdFromRowKey } = require("./panels/rows");
 const { createOwnActions } = require("./actions");
+const { createPageActions } = require("./pageActions");
 // The comment key space, from the file that BUILDS it. A second spelling here
 // renders as an empty comment list rather than as an error — which is the exact
 // bug class `panels/contract.js` opens by naming.
@@ -893,8 +894,12 @@ function buildPanelHost() {
         return { issueId, laneOnly };
       },
 
-      connectOAuth: async () => {
-        const result = await connect.begin();
+      connectOAuth: async (origin) => {
+        // The panel that was pressed names itself. It is the only half of this
+        // that knows — `auth.completed` carries the flow and never the screen —
+        // so the origin is recorded here, at the start, and read back at
+        // completion rather than guessed then. See `connect.js:AUTH_ORIGINS`.
+        const result = await connect.begin({ origin });
         if (!result.ok) throw new Error(result.message);
         // Returned verbatim so the host can fill in the live URL on the way to
         // whichever client the user is on.
@@ -959,18 +964,23 @@ exports.activate = async (ade) => {
   // adapter: the two halves are allowed to disagree about what a verb's
   // arguments look like, and are not allowed to disagree silently.
   panelHandlers = panelActions.bind(buildPanelHost());
-  Object.assign(exports.actions, panelHandlers, ownActions);
+  Object.assign(exports.actions, panelHandlers, ownActions, pageActions);
 
   // A sign-in the host completed. Subscribed BEFORE anything can begin one, as
   // the SDK requires — a `beginSession` whose listener is not yet attached
   // would lose its own result.
   subscriptions.push(sdk.events.on("auth.completed", (payload) => {
-    connect.complete(payload)
+    // RETURNED, though the host awaits nothing: the settle is the whole
+    // observable effect of a sign-in, and a test that could not await it would
+    // have to sleep on a chain that reaches Linear. The listener contract is
+    // `void`, so handing one back costs the host nothing.
+    return connect.complete(payload)
       .then(async (result) => {
-        if (result?.ok) {
-          await refreshCatalogAndIssues();
-        }
-        await publish("settings");
+        // A callback for another flow, or a late one from an attempt that was
+        // cancelled and restarted: nothing began here, nobody is waiting on it,
+        // and no panel changed.
+        if (result?.ignored) return;
+        await settleSignIn(result);
       })
       .catch((error) => log("warn", `Could not finish the Linear sign-in: ${error?.message ?? error}`));
   }));
@@ -1081,6 +1091,48 @@ async function refreshCatalogAndIssues() {
   return result;
 }
 
+/**
+ * Put the screens back after a sign-in ends, however it ended.
+ *
+ * Two things had to be true here and only one was.
+ *
+ * **The connected state and the list have to land TOGETHER.** This used to
+ * publish only `settings`, and to publish it AFTER an unguarded
+ * `refreshCatalogAndIssues`. That call rejects whenever a Linear read or a
+ * collection write throws, and it rejects before its own publishes — so a
+ * reader who had just signed in successfully was left looking at the "Connect
+ * Linear" card, with the connection working and nothing on screen saying so.
+ * The issues appeared only when they left the tab and came back, because a
+ * fresh visit re-reads a panel this handler never wrote. The refresh is now
+ * inside a `try` and the republish is its `finally`: both panels are written on
+ * every path out of a sign-in, successful or not.
+ *
+ * **The reader has to end up where they started.** The origin was recorded when
+ * the flow began (`connect.js:AUTH_ORIGINS`) rather than guessed now, and it
+ * decides which panel is written LAST — the one the reader is looking at is the
+ * freshest write, and on the `issue` origin the detail panel is republished too,
+ * which nothing else here would have redrawn.
+ *
+ * What this cannot do is MOVE them. A plugin's only navigation verb is
+ * `{navigate}` on an action result, and by the time a sign-in completes the
+ * action that started it has long since returned; the SDK has no push-navigation
+ * outside that result, so a reader whose client walked them to the settings
+ * panel is put back by the host or not at all. See the delivery note.
+ */
+async function settleSignIn(result) {
+  const origin = normalizeAuthOrigin(result?.origin);
+  try {
+    if (result?.ok) await refreshCatalogAndIssues();
+  } finally {
+    // `main` too: it is the panel a client that does not own this plugin draws,
+    // and a sign-in changes what it says. The origin goes last, on its own.
+    for (const panelId of ["settings", "issues", "main"]) {
+      if (panelId !== origin) await publish(panelId);
+    }
+    await publish(origin);
+  }
+}
+
 exports.deactivate = async () => {
   disposed = true;
   while (subscriptions.length) {
@@ -1124,21 +1176,57 @@ const ownActions = createOwnActions({
 });
 
 /**
+ * The handlers the plugin's own HTML PAGE invokes over the webview bridge.
+ *
+ * The third table, built at LOAD for the same reason as `ownActions` and with
+ * the same live-getter `deps`: a page is a webview the reader can open the
+ * instant the tab is drawn, which is well before `activate`'s first Linear read
+ * has settled. A page that got "no such action" there would draw its empty
+ * state and stay there.
+ *
+ * `api` is in this frame and not in `ownActions`'s, because the page reads four
+ * things no collection holds — the viewer's profile, the workspace's projects
+ * and members, and a page of search results that has nothing to do with the
+ * reader's stored filter. See `pageActions.js`.
+ */
+const pageActions = createPageActions({
+  get sdk() { return sdk; },
+  get api() { return api; },
+  get data() { return data; },
+  get flows() { return flows; },
+  get connect() { return connect; },
+  get automation() { return automation; },
+  publish,
+  refreshIssues,
+  refreshCatalogAndIssues,
+  ensureIssues,
+  webhooksReachable,
+  chosenReasoningEffort,
+  issueIdFromRowKey,
+});
+
+/**
  * The action table the host dispatches into.
  *
- * Seeded at LOAD with this half's own handlers, so every id the manifest
- * declares — the nine tools, the four steps, the search provider, the CLI word
- * — resolves before `activate` has run. The panel half's handlers need a bound
- * host and are merged in at activate.
+ * Seeded at LOAD with this half's own handlers and the page's, so every id the
+ * manifest declares — the nine tools, the four steps, the search provider, the
+ * CLI word — and every id the page can invoke resolves before `activate` has
+ * run. The panel half's handlers need a bound host and are merged in at
+ * activate.
  *
- * The two tables are DISJOINT: no id is defined by both halves, and
+ * The three tables are DISJOINT: no id is defined by two of them, and
  * `test/index.test.js` asserts it. That is the invariant, and it replaced a
  * merge order — `ownActions` re-applied last, so a collision silently resolved
  * this way — that hid three dead handlers behind live-looking code. `ownActions`
  * is still applied last, but now only as a belt on a table with no collisions
  * in it rather than as the thing that decides which copy runs.
+ *
+ * `saveWebhookSecret` is the one id the page shares with another half, and it
+ * shares it by INVOKING the existing one rather than by defining a second copy:
+ * `actions.js` owns it, the page's `saveWebhookSecret()` calls that id, and a
+ * `pageSaveWebhookSecret` beside it would be two ways to write one secret.
  */
-exports.actions = { ...ownActions };
+exports.actions = { ...ownActions, ...pageActions };
 
 // Exported for the host-level install test and for `test/`, which drive the
 // lifecycle without a running daemon.
@@ -1147,10 +1235,12 @@ exports.__internals = {
   chosenReasoningEffort,
   expiry,
   ownActions,
+  pageActions,
   webhooksReachable,
   publish,
   refreshCatalogAndIssues,
   refreshIssues,
+  settleSignIn,
   /** The first read `activate` started, for a test that must not race it. */
   firstRead: () => firstReadPromise,
 };

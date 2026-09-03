@@ -1105,3 +1105,63 @@ describe("which Linear app the connection is made with", () => {
     assert.match(JSON.stringify(rows.find((row) => row.key === "Drain")?.value), /relay timed out/);
   });
 });
+
+/**
+ * Every Connect button says which panel it is drawn on.
+ *
+ * The sign-in leaves the app and comes back as an event that names the flow and
+ * never the screen, so the only moment the origin is knowable is the press. A
+ * button that does not carry one is a reader the completion cannot put back —
+ * which is how a press on the issue list used to end on the connection page —
+ * and no test but this one is looking at the press site.
+ */
+describe("the panel a Connect button names as its origin", () => {
+  /** Every `onPress` in a panel that starts a sign-in, wherever it is drawn. */
+  function signIns(panel) {
+    return everyNode(panel)
+      .flatMap((node) => [node.onPress, node.action?.onPress, node.submit?.onPress])
+      .filter((press) => press?.action === contract.ACTIONS.connectOAuth);
+  }
+
+  it("is the issue list, for the card the list draws", () => {
+    const presses = signIns(panels.buildIssuesPanel({ state: "disconnected" }));
+    assert.equal(presses.length, 1);
+    assert.deepEqual(presses[0].args, { origin: contract.PANEL_ISSUES });
+  });
+
+  it("is the issue itself, for the copy on the detail panel", () => {
+    const presses = signIns(panels.buildIssuePanel({ state: "disconnected" }));
+    assert.equal(presses.length, 1);
+    assert.deepEqual(presses[0].args, { origin: contract.PANEL_ISSUE });
+  });
+
+  it("is the connection panel, for both of its own buttons", () => {
+    // The card a disconnected reader sees, and the Reconnect button a connected
+    // one does. Neither moves the reader anywhere: they are already here.
+    for (const view of [
+      { connection: { connected: false } },
+      { connection: { connected: true, authMode: "oauth" } },
+    ]) {
+      const presses = signIns(panels.buildSettingsPanel(view));
+      assert.ok(presses.length > 0, "the connection panel drew no sign-in at all");
+      for (const press of presses) {
+        assert.deepEqual(press.args, { origin: contract.PANEL_SETTINGS });
+      }
+    }
+  });
+
+  it("names a panel the manifest actually declares", () => {
+    // An origin is a `panelId` the completion publishes against, so one nobody
+    // declares is a write the host refuses.
+    const declared = new Set((manifest.panels ?? []).map((panel) => panel.id));
+    const presses = [
+      ...signIns(panels.buildIssuesPanel({ state: "disconnected" })),
+      ...signIns(panels.buildIssuePanel({ state: "disconnected" })),
+      ...signIns(panels.buildSettingsPanel({ connection: { connected: false } })),
+    ];
+    assert.ok(presses.length >= 3);
+    for (const press of presses) {
+      assert.ok(declared.has(press.args.origin), `${press.args.origin} is not a declared panel`);
+    }
+  });
+});

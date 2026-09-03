@@ -390,6 +390,30 @@ describe("the connection", () => {
     );
   });
 
+  it("hands the data half the panel the button was pressed on", async () => {
+    // The origin has to be recorded when the flow BEGINS: `auth.completed`
+    // names the flow and never the screen, so a completion that worked it out
+    // for itself would be guessing — and the guess it used to make left a
+    // reader who pressed Connect on the issue list sitting on the connection
+    // page instead. See `connect.js:AUTH_ORIGINS`.
+    const host = makeHost();
+    await bind(host).connectOAuth({ origin: contract.PANEL_ISSUES });
+    const call = host.calls.find((entry) => entry.path === "flows.connectOAuth");
+    assert.deepEqual(call.args, [contract.PANEL_ISSUES]);
+  });
+
+  it("passes on nothing at all for a press that named no panel", async () => {
+    // A schema older than the origin, or a press from somewhere that is not a
+    // panel. The data half decides the fallback; this half does not invent one.
+    const host = makeHost();
+    await bind(host).connectOAuth({});
+    await bind(host).connectOAuth();
+    await bind(host).connectOAuth({ origin: 7 });
+    for (const call of host.calls.filter((entry) => entry.path === "flows.connectOAuth")) {
+      assert.deepEqual(call.args, [null]);
+    }
+  });
+
   it("reports a sign-in that never began instead of claiming one did", async () => {
     // `beginSession` refuses for three ordinary reasons — no OAuth client on
     // this build, a flow already running, nothing that can show a window — and

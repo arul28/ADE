@@ -33,6 +33,7 @@
 const {
   ACTIONS,
   COLLECTION_STATES,
+  PANEL_ISSUE,
   issuePriorityKey,
   issueStateKey,
   statesKeyPrefix,
@@ -465,7 +466,11 @@ function buildIssuePanel(input = {}) {
           title: COPY.connectTitle,
           description: COPY.connectBody,
           icon: "plug",
-          action: { label: COPY.connectAction, onPress: { action: ACTIONS.connectOAuth } },
+          // The origin the sign-in returns to. See `panels/issues.js`.
+          action: {
+            label: COPY.connectAction,
+            onPress: { action: ACTIONS.connectOAuth, args: { origin: PANEL_ISSUE } },
+          },
         },
         {
           component: "button",
