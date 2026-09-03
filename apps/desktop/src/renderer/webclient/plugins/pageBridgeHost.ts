@@ -46,6 +46,8 @@ import {
   type PluginWebviewHostKind,
   type PluginWebviewThemeSnapshot,
   type PluginWebviewToast,
+  sanitizePluginWebviewPageError,
+  type PluginWebviewPageError,
 } from "../../../shared/plugins/webviewBridge";
 import type { PluginActionPrompt, PluginActionPromptAnswer } from "../../../shared/plugins/sdk";
 import type { PluginSurfaceContext } from "../../../shared/plugins/context";
@@ -58,6 +60,10 @@ import {
 } from "./pageProtocol";
 import type { PluginPageBundle } from "./pageAssets";
 import { applyPluginPageActionAnswers } from "./pageActionResult";
+import {
+  findPluginWebviewSocket,
+  listPluginWebviewSockets,
+} from "../../components/plugins/sockets/pluginWebviewSockets";
 
 /** The pieces of ADE's own UI a page may move. Supplied by the React host. */
 export type PluginPageUiHandlers = {
@@ -92,6 +98,27 @@ export type PluginPageUiHandlers = {
    * the host already sized, and the React host drops the report there.
    */
   resize?: (height: number) => void;
+  /**
+   * Open one of ADE's own pickers over the guest and answer with the choice.
+   *
+   * One handler for all five verbs rather than five, because a client either
+   * has ADE's picker stack or it does not: a hosted tab that grows the model
+   * picker grows the lane one in the same breath, and five optional members
+   * would be five ways to be half-implemented. The method name says which
+   * picker; `null` means the reader dismissed it.
+   *
+   * Absent means this client cannot ask, and the verb is REFUSED with a
+   * sentence rather than answered `null` — see the dispatch arm for why the
+   * difference is load-bearing.
+   */
+  pick?: (method: string, params: Record<string, unknown>) => Promise<unknown>;
+  /**
+   * A failure the page reported about itself, for the client's error card.
+   *
+   * Absent on a client that draws no card; the report is then dropped rather
+   * than refused, because the caller is the page's own error handler.
+   */
+  reportPageError?: (error: PluginWebviewPageError) => void;
 };
 
 /** The plugin data plane. Defaults ride `window.ade.plugin`; tests inject fakes. */
@@ -103,6 +130,19 @@ export type PluginPageDataHandlers = {
     options: { keyPrefix?: string; limit?: number; after?: string },
   ) => Promise<{ key: string; value: unknown }[]>;
   collectionsPut?: (collection: string, key: string, value: unknown) => Promise<void>;
+  /**
+   * Press ANOTHER plugin's published contribution, for `sockets.invoke`.
+   *
+   * Separate from `invoke` because the plugin id is not the caller's: the page
+   * named a row, the host resolved the row to its publisher, and the call goes
+   * out under that publisher. A client whose invoke path cannot address a
+   * second plugin omits this and the verb is refused.
+   */
+  invokeForPlugin?: (
+    pluginId: string,
+    action: string,
+    args: Record<string, unknown>,
+  ) => Promise<unknown>;
   configGet: () => Promise<Record<string, unknown>>;
   configSet: (values: Record<string, string | number | boolean | null>) => Promise<Record<string, unknown>>;
 };
@@ -327,6 +367,59 @@ export function createPluginPageHost(options: PluginPageHostOptions): PluginPage
         const clipboard = options.clipboard;
         if (!clipboard) throw new Error("The clipboard isn’t writable here.");
         await clipboard.writeText(stringArg(params.text));
+        return undefined;
+      }
+      // The five host pickers. Refused with a sentence rather than answered
+      // `null`, and the difference matters: `null` is the contract's word for
+      // "the reader dismissed it", so answering it here would tell a page the
+      // person said no when nobody was ever asked. A client that grows a picker
+      // fills in `options.ui.pick` and the refusal stops.
+      case "ui.pickModel":
+      case "ui.pickLane":
+      case "ui.pickPermissionMode":
+      case "ui.pickReasoningEffort":
+      case "ui.pickProvider": {
+        const pick = options.ui.pick;
+        if (!pick) throw new Error("This client can’t open that picker yet.");
+        return pick(method, params);
+      }
+      case "ui.openPathInEditor":
+        // No editor and no checkout: the hosted client is a browser looking at
+        // somebody else's machine, and a path on it is not something this tab
+        // can open. Stated rather than silently ignored, so a page can draw the
+        // button as unavailable instead of as broken.
+        throw new Error("A hosted ADE tab can’t open a path in an editor.");
+      case "sockets.list": {
+        const socket = stringArg(params.socket);
+        if (!socket) throw new Error("That socket kind was malformed.");
+        return listPluginWebviewSockets(socket);
+      }
+      case "sockets.invoke": {
+        const socketId = stringArg(params.socketId);
+        if (!socketId) throw new Error("That socket id was malformed.");
+        // Resolved by listing again, exactly as the desktop relay does: the
+        // plugin and the action come off the contribution, never off the page.
+        const row = await findPluginWebviewSocket(socketId);
+        if (!row) throw new Error("That contribution is no longer published.");
+        const actionId = typeof row.payload?.actionId === "string" ? row.payload.actionId : "";
+        if (!actionId) throw new Error("That contribution has no action to run.");
+        return options.data.invokeForPlugin
+          ? options.data.invokeForPlugin(row.pluginId, actionId, asRecord(params.args))
+          : Promise.reject(new Error("This client can’t press another plugin’s contribution yet."));
+      }
+      case "hostEngine.place":
+      case "hostEngine.release":
+        // The host engines are Electron constructs — a debugger-driven
+        // inspector and a simulator mirror — and a hosted tab has neither.
+        // Refused rather than accepted-and-ignored so a page draws its own
+        // fallback instead of leaving a hole nothing ever fills.
+        throw new Error("This client can’t draw ADE’s own tools inside a page.");
+      case "page.error": {
+        const error = sanitizePluginWebviewPageError(params.error ?? params);
+        // Answered `undefined` either way. The caller is a page's own error
+        // handler, and refusing it would raise a second failure inside the
+        // handler for the first.
+        if (error) options.ui.reportPageError?.(error);
         return undefined;
       }
       case "theme.get":

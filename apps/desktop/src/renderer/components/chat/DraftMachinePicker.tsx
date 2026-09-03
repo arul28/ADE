@@ -1,5 +1,5 @@
 import { CaretDown, Check, CloudArrowUp, DesktopTower } from "@phosphor-icons/react";
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 
 import { cn } from "../ui/cn";
@@ -16,16 +16,45 @@ export type DraftMachineOption = {
    * "cloud" entries are not computers ADE is paired with — they are hosted
    * runtimes (today: Cursor Cloud) that run the chat off-machine. They live in
    * this list because "where does this run" is one question, not two.
+   *
+   * "plugin" entries are the same idea contributed rather than compiled: a
+   * `machine-entry` socket naming a place to run that only the plugin knows
+   * about. They carry their own glyph, so this picker never has to learn what
+   * any particular plugin is.
    */
-  kind?: "machine" | "cloud";
+  kind?: "machine" | "cloud" | "plugin";
+  /**
+   * The row's glyph, when the caller draws it. Overrides the compiled pair.
+   *
+   * Passed as a node rather than an icon name so this component keeps knowing
+   * nothing about the plugin icon vocabulary: resolving a `brand:` token needs
+   * the declaring plugin's shipped artwork, which is a lookup the caller has
+   * already done.
+   */
+  icon?: ReactNode;
   /** Set to render the row disabled with this sentence as its tooltip. */
   unavailableReason?: string | null;
+  /**
+   * An inline affordance at the row's end — a contributed row's "Advanced…".
+   *
+   * Its own control, not a second meaning for the row: selecting a machine and
+   * configuring one are different gestures, and someone who wants to set up a
+   * run before committing to it should not have to enter the mode first. So it
+   * is reachable by keyboard alongside the rows and carries its own accessible
+   * name; pressing it never changes the selection.
+   */
+  advanced?: {
+    /** The accessible name. Include the machine — "Advanced" alone is ambiguous. */
+    label: string;
+    onSelect: () => void;
+  } | null;
 };
 
 const MENU_WIDTH = 220;
 const CLOUD_VIOLET = "#A78BFA";
 
 function machineIcon(option: DraftMachineOption) {
+  if (option.icon) return option.icon;
   return option.kind === "cloud" ? (
     <CloudArrowUp size={12} weight="fill" className="shrink-0" style={{ color: CLOUD_VIOLET }} aria-hidden />
   ) : (
@@ -134,9 +163,12 @@ export function DraftMachinePicker({
   }, [open]);
 
   const handleMenuKeyDown = useCallback((event: React.KeyboardEvent<HTMLDivElement>) => {
+    // Both roles, in DOM order: the Advanced affordance sits at the end of the
+    // row it belongs to, so arrowing through the menu reaches it right after
+    // the machine it configures rather than skipping it entirely.
     const items = Array.from(
       event.currentTarget.querySelectorAll<HTMLButtonElement>(
-        '[role="menuitemradio"]:not(:disabled)',
+        '[role="menuitemradio"]:not(:disabled), [role="menuitem"]:not(:disabled)',
       ),
     );
     if (event.key === "Escape") {
@@ -253,6 +285,7 @@ export function DraftMachinePicker({
                   {machines.map((machine) => {
                     const active = machine.id === selectedMachineId;
                     const reason = machine.unavailableReason?.trim() || null;
+                    const advanced = machine.advanced ?? null;
                     const row = (
                       <button
                         key={machine.id}
@@ -266,6 +299,7 @@ export function DraftMachinePicker({
                         }}
                         className={cn(
                           "flex items-center gap-2 rounded-md px-2 py-1.5 text-left font-sans text-[11px] transition-colors",
+                          advanced ? "min-w-0 flex-1" : "",
                           active ? "text-fg/90" : "text-fg/65 hover:bg-white/[0.06] hover:text-fg/90",
                           reason && "cursor-not-allowed opacity-40 hover:bg-transparent",
                         )}
@@ -275,15 +309,42 @@ export function DraftMachinePicker({
                         {active ? <Check size={11} weight="bold" className="ml-auto shrink-0" aria-hidden /> : null}
                       </button>
                     );
-                    if (!reason) return row;
+                    const withTooltip = reason
+                      ? (
+                        <SmartTooltip
+                          key={machine.id}
+                          forceEnabled
+                          content={{ label: machine.name, description: reason }}
+                        >
+                          {row}
+                        </SmartTooltip>
+                      )
+                      : row;
+                    if (!advanced) return withTooltip;
+                    // A button inside a button is invalid markup and swallows
+                    // the inner click, so the pair sits side by side in a row
+                    // wrapper rather than nested. The radio keeps its own role;
+                    // Advanced is a plain menu item beside it.
                     return (
-                      <SmartTooltip
-                        key={machine.id}
-                        forceEnabled
-                        content={{ label: machine.name, description: reason }}
-                      >
-                        {row}
-                      </SmartTooltip>
+                      <div key={machine.id} className="flex items-center gap-1">
+                        {withTooltip}
+                        <button
+                          type="button"
+                          role="menuitem"
+                          aria-label={advanced.label}
+                          data-draft-machine-advanced={machine.id}
+                          onClick={(event) => {
+                            // Never a selection. Advanced configures a run; it
+                            // does not commit the composer to one.
+                            event.stopPropagation();
+                            closeAndRestoreFocus();
+                            advanced.onSelect();
+                          }}
+                          className="shrink-0 rounded-md px-1.5 py-1 font-sans text-[10px] text-muted-fg/55 transition-colors hover:bg-white/[0.06] hover:text-fg/85"
+                        >
+                          Advanced…
+                        </button>
+                      </div>
                     );
                   })}
                 </div>

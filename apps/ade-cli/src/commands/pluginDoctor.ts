@@ -26,6 +26,9 @@
 // teaches iOS a new kind changes what this prints without touching this file.
 // ---------------------------------------------------------------------------
 
+import fs from "node:fs";
+import path from "node:path";
+
 import {
   PLUGIN_SKILL_NEXT_TURN_NOTE,
   describePluginClientRendering,
@@ -45,15 +48,18 @@ import {
 import { PLUGIN_NETWORK_REFUSAL_LOG_CODE } from "../../../desktop/src/shared/plugins/network";
 import { PLUGIN_WEBHOOK_DELIVERY_ATTEMPTS_MAX } from "../../../desktop/src/shared/plugins/sdk";
 import { PLUGIN_GRAPH_NODES_PER_PLUGIN_LIMIT } from "../../../desktop/src/shared/plugins/sockets";
+import { PLUGIN_WEBVIEW_CSP } from "../../../desktop/src/shared/plugins/webviewBridge";
 import type {
   PluginActionInvokeRecord,
   PluginContributionRecord,
   PluginDetail,
   PluginInstallRecord,
+  PluginLogEntry,
   PluginPresenceMachineRow,
   PluginUsageSummaryEntry,
   PluginWebhookIngressStatus,
 } from "../../../desktop/src/shared/plugins/sdk";
+import { resolveMachineAdeLayout } from "../services/projects/machineLayout";
 
 /**
  * What the live half of the check found.
@@ -106,6 +112,17 @@ export type PluginDoctorSnapshot = {
    * worth naming on the line that already names the folder.
    */
   sourcePresent?: boolean | null;
+  /**
+   * The folder the installed copy actually sits in — `~/.ade/plugins/<id>`.
+   *
+   * Optional, and it defaults to that same folder on this machine, so a caller
+   * that passes nothing reads the copy `ade plugin doctor` reads everything
+   * else from. The install record names where the plugin CAME from, which for a
+   * `local` install is the author's own folder and not the copy ADE loads: a
+   * page rung that measured the source would pass over a bundle that never got
+   * copied.
+   */
+  installedRoot?: string | null;
 };
 
 export type PluginDoctorLayerKey =
@@ -114,6 +131,7 @@ export type PluginDoctorLayerKey =
   | "running"
   | "places"
   | "customPage"
+  | "pageBundle"
   | "lastRun"
   | "shortcuts"
   | "ingress"
@@ -479,6 +497,243 @@ function customPageLayer(snapshot: PluginDoctorSnapshot): PluginDoctorLayer {
     state: "ok",
     detail: `${declared.map((surface) => `${surface.id} → ${surface.entryHtml}`).join(", ")}`
       + ` · ${fallbackNote}`,
+  };
+}
+
+/**
+ * A bundle bigger than this is a WARNING, never a ✗.
+ *
+ * The page still loads — the guest reads it off local disk with no network in
+ * the way — it just takes a visible moment to appear, on a tab the reader
+ * expects to be instant. So the rung stays ✓ and says the number, which is the
+ * difference between "your plugin is broken" and "your plugin is heavy".
+ */
+const PAGE_BUNDLE_WARN_BYTES = 2 * 1024 * 1024;
+
+/**
+ * The directives that decide whether an asset loads, read out of the header the
+ * host actually sends.
+ *
+ * Derived rather than restated, for the reason the file header gives about the
+ * per-client answer: a CSP pass that loosens `script-src` should change this
+ * sentence without anybody remembering that this file quotes it.
+ */
+const PAGE_SELF_DIRECTIVES = PLUGIN_WEBVIEW_CSP.split("; ")
+  .filter((directive) => directive.endsWith("'self'"))
+  .join("; ");
+
+/** `900 bytes`, `412 KiB`, `3.1 MiB` — one number to hold against the guidance. */
+function describeBundleSize(bytes: number): string {
+  if (bytes < 1024) return plural(bytes, "byte");
+  if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KiB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MiB`;
+}
+
+/**
+ * Is `candidate` really under `root`?
+ *
+ * Asked with `path.relative` rather than by comparing strings, because the two
+ * sides can spell the same folder differently — a trailing separator, a `..`
+ * that cancels out, `\` against `/` on Windows — and a prefix test on the raw
+ * text calls `.../plugins/tipsy-evil` a child of `.../plugins/tipsy`.
+ */
+function isInsideRoot(root: string, candidate: string): boolean {
+  const relative = path.relative(root, candidate);
+  return relative !== "" && !relative.startsWith("..") && !path.isAbsolute(relative);
+}
+
+function readPageFile(file: string): { text: string | null; problem: string | null } {
+  try {
+    return { text: fs.readFileSync(file, "utf8"), problem: null };
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === "ENOENT") return { text: null, problem: "there is no file there" };
+    if (code === "EISDIR") return { text: null, problem: "that is a folder, not a page" };
+    return { text: null, problem: `it could not be read (${code ?? "unknown error"})` };
+  }
+}
+
+/**
+ * Every byte the page's folder holds, images and fonts and stray archives too.
+ *
+ * A directory that will not open counts as nothing rather than throwing: this
+ * rung's job is to report what it found, and a doctor that dies on one
+ * unreadable subfolder tells the reader nothing about the other twelve rungs.
+ * Symlinks are stepped over rather than followed — a link back up the tree
+ * would otherwise walk forever, and it holds no bytes of its own anyway.
+ */
+function measureBundleBytes(directory: string): number {
+  let total = 0;
+  let entries: fs.Dirent[];
+  try {
+    entries = fs.readdirSync(directory, { withFileTypes: true });
+  } catch {
+    return total;
+  }
+  for (const entry of entries) {
+    const child = path.join(directory, entry.name);
+    if (entry.isDirectory()) {
+      total += measureBundleBytes(child);
+      continue;
+    }
+    if (!entry.isFile()) continue;
+    try {
+      total += fs.statSync(child).size;
+    } catch {
+      // A file that vanished between the listing and the stat. Counted as
+      // nothing, which is nearer the truth than refusing to answer at all.
+    }
+  }
+  return total;
+}
+
+const PAGE_ASSET_TAG = /<\s*(script|link|img|iframe)\b([^>]*)>/gi;
+const PAGE_ASSET_ATTR = /\b(?:src|href)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'>]+))/gi;
+const PAGE_ASSET_REL = /\brel\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'>]+))/i;
+
+/**
+ * Would the page's own content policy refuse this address?
+ *
+ * `self` for a plugin page means the plugin's install folder and nothing else,
+ * so anything carrying a scheme, a protocol-relative `//host`, or a leading `/`
+ * is a load that will not happen. `data:` is the one exception the header
+ * itself draws: an inline image or favicon is allowed, an inline script is not.
+ */
+function isBlockedPageAsset(value: string, tag: string, isIconLink: boolean): boolean {
+  if (value.startsWith("//")) return true;
+  const scheme = /^([a-z][a-z0-9+.-]*):/i.exec(value)?.[1]?.toLowerCase();
+  if (scheme === "data") return !(tag === "img" || isIconLink);
+  if (scheme) return true;
+  return value.startsWith("/");
+}
+
+/**
+ * The addresses in one page that the guest will refuse to load.
+ *
+ * A scan of the text rather than a parse, deliberately: this runs in a CLI that
+ * must answer with ADE closed, and adding an HTML parser to the dependency list
+ * to catch a `src=` would be a cost paid on every `ade` command. The scan can
+ * miss an address a script writes at runtime — which is why the rung also reads
+ * what the host actually blocked, below.
+ */
+function collectBlockedPageAssets(html: string): string[] {
+  const blocked: string[] = [];
+  for (const tag of html.matchAll(PAGE_ASSET_TAG)) {
+    const name = tag[1]!.toLowerCase();
+    const attributes = tag[2] ?? "";
+    const rel = PAGE_ASSET_REL.exec(attributes);
+    const relValue = (rel?.[1] ?? rel?.[2] ?? rel?.[3] ?? "").toLowerCase();
+    const isIconLink = name === "link" && relValue.split(/\s+/).includes("icon");
+    for (const attribute of attributes.matchAll(PAGE_ASSET_ATTR)) {
+      const value = (attribute[1] ?? attribute[2] ?? attribute[3] ?? "").trim();
+      if (!value) continue;
+      if (isBlockedPageAsset(value, name, isIconLink) && !blocked.includes(value)) {
+        blocked.push(value);
+      }
+    }
+  }
+  return blocked;
+}
+
+/** Where the installed copy sits, which is not where the install record points. */
+function resolvePageBundleRoot(snapshot: PluginDoctorSnapshot): string {
+  if (snapshot.installedRoot) return path.resolve(snapshot.installedRoot);
+  return path.join(resolveMachineAdeLayout().adeDir, "plugins", snapshot.pluginId);
+}
+
+/**
+ * Is the page a `webview` surface promises actually SHIPPABLE?
+ *
+ * "Custom page" answers whether the host will mount a guest at all. It says
+ * nothing about what the guest then finds, and that gap is its own class of
+ * silent failure: the file `entryHtml` names was never copied into the install,
+ * or the page loads its framework from a CDN. Both draw a blank white tab with
+ * no error anywhere an author can see — the guest refuses the load against its
+ * own content policy and the message lands in the guest's console, inside a
+ * process with no devtools open, which is the same shape of invisibility the
+ * refused-network rung was added for.
+ *
+ * So this rung reads the bundle from disk, with ADE closed if need be, and
+ * names the two things the page cannot tell you itself: what is missing, and
+ * what the policy will refuse. It also reads the refusals the host DID log, so
+ * an address a script builds at runtime — which no scan of the HTML can see —
+ * still has somewhere to show up.
+ *
+ * Size is the one thing here that is advice rather than a fault: an oversized
+ * bundle loads, slowly, so it stays ✓ with the number said out loud.
+ */
+function pageBundleLayer(snapshot: PluginDoctorSnapshot): PluginDoctorLayer {
+  const label = "Page bundle";
+  const declared = (snapshot.manifest?.surfaces ?? []).flatMap((surface) =>
+    surface.kind === "webview" && surface.entryHtml
+      ? [{ id: surface.id, entryHtml: surface.entryHtml }]
+      : []);
+  if (declared.length === 0) {
+    return { key: "pageBundle", label, state: "na", detail: "this plugin ships no page of its own" };
+  }
+
+  const root = resolvePageBundleRoot(snapshot);
+  const faults: string[] = [];
+  const pages: string[] = [];
+  const oversized: string[] = [];
+  for (const surface of declared) {
+    const entry = path.resolve(root, surface.entryHtml);
+    if (!isInsideRoot(root, entry)) {
+      faults.push(`"${surface.id}" names ${surface.entryHtml}, which lands outside the installed folder`
+        + " — ADE serves a page from inside the plugin and nowhere else");
+      continue;
+    }
+    const { text, problem } = readPageFile(entry);
+    if (text === null) {
+      faults.push(`"${surface.id}" names ${surface.entryHtml} and ${problem} at ${entry}`);
+      continue;
+    }
+    const blocked = collectBlockedPageAssets(text);
+    if (blocked.length > 0) {
+      const named = blocked.slice(0, 3).map((value) => `"${value}"`).join(", ");
+      const rest = blocked.length > 3 ? ` and ${plural(blocked.length - 3, "other address")}` : "";
+      faults.push(`"${surface.id}" loads ${named}${rest} from outside its own folder`
+        + `, and the page's content policy (${PAGE_SELF_DIRECTIVES}) blocks every one of them`
+        + " — copy them into the plugin and point at them with a relative path");
+    }
+    const bytes = measureBundleBytes(path.dirname(entry));
+    pages.push(`${surface.id} → ${surface.entryHtml}, ${describeBundleSize(bytes)}`);
+    if (bytes > PAGE_BUNDLE_WARN_BYTES) {
+      oversized.push(`${surface.id} is ${describeBundleSize(bytes)}, over the 2 MiB guidance`
+        + " — it still works, it just takes a visible moment to appear");
+    }
+  }
+
+  // What the guest actually refused while somebody was looking at it. The scan
+  // above reads the HTML as written; this reads what happened, which is the
+  // only half that can see an address a script assembled at runtime.
+  const violations = (snapshot.live?.detail?.logs ?? []).filter(
+    (entry) => entry.fields?.source === "page" && entry.fields?.kind === "csp",
+  );
+  const newest = violations.reduce<PluginLogEntry | null>(
+    (latest, entry) => (!latest || Date.parse(entry.at) > Date.parse(latest.at) ? entry : latest),
+    null,
+  );
+
+  const clauses: string[] = [];
+  if (faults.length > 0) {
+    clauses.push(`${faults[0]}${faults.length > 1 ? ` (+${faults.length - 1} more)` : ""}`);
+  }
+  if (pages.length > 0) clauses.push(pages.join(", "));
+  clauses.push(...oversized);
+  if (newest) {
+    clauses.push(`the running app refused ${plural(violations.length, "load")} on this page`
+      + ` — newest: ${newest.message}`);
+  } else if (!snapshot.live) {
+    // Only this half is unknown. The disk half above is already answered, and
+    // saying the whole rung could not be checked would throw that away.
+    clauses.push(`what the running app refused is unknown — ${UNREACHABLE}`);
+  }
+  return {
+    key: "pageBundle",
+    label,
+    state: faults.length > 0 || violations.length > 0 ? "no" : "ok",
+    detail: clauses.join(" · "),
   };
 }
 
@@ -1066,6 +1321,7 @@ export function buildPluginDoctorReport(
       runningLayer(snapshot),
       placesLayer(snapshot),
       customPageLayer(snapshot),
+      pageBundleLayer(snapshot),
       lastRunLayer(snapshot, actions, now),
       shortcutsLayer(snapshot),
       ingressLayer(snapshot, now),

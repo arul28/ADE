@@ -124,3 +124,63 @@ export {
   dispatchPluginKeybindingEvent,
   usePluginKeybindings,
 } from "./usePluginKeybindings";
+
+// --- wave 2: the composer's menus, the machine picker, and chat chrome ---
+export {
+  PLUGIN_COMPOSER_MENU_ITEM_ID_PREFIX,
+  usePluginComposerMenuItems,
+} from "./PluginComposerMenuItems";
+export {
+  PluginChatMenuRows,
+  usePluginChatMenuItems,
+  type PluginChatMenuRow,
+} from "./PluginChatMenuItems";
+export {
+  isPluginMachineOptionId,
+  parsePluginMachineOptionId,
+  pluginMachineOptionId,
+  readPluginMachineModelIds,
+  usePluginMachineAdvancedAvailable,
+  usePluginMachineAdvancedPress,
+  usePluginMachineEntries,
+  usePluginMachineModelIds,
+  PLUGIN_MACHINE_MODEL_IDS_MAX,
+  PLUGIN_MACHINE_OPTION_PREFIX,
+  type PluginMachineEntry,
+  type PluginMachineOptionRef,
+} from "./PluginMachineEntries";
+export {
+  parsePluginChatHeader,
+  PluginChatHeaderChips,
+  readPluginChatRuntimeCapabilities,
+  usePluginChatRuntimeCapabilities,
+  PLUGIN_CHAT_HEADER_CHIP_LABEL_MAX,
+  PLUGIN_CHAT_HEADER_CHIP_MAX,
+  type PluginChatHeader,
+  type PluginChatHeaderChip,
+  type PluginChatRuntimeCapabilities,
+  type PluginChatRuntimePointer,
+} from "./PluginChatRuntimeChrome";
+
+// --- wave 2: Automations ---
+export {
+  PluginAutomationRadioGroup,
+  PluginAutomationTriggerFields,
+  PluginAutomationTriggerTile,
+  PluginAutomationWebhookRow,
+  collectionRowLabel,
+  describeTileWebhook,
+  pluginTileTint,
+  tilePluginIds,
+  usePluginAutomationTriggerTiles,
+  type PluginAutomationTile,
+} from "./PluginAutomationTriggerTiles";
+export {
+  normalizePluginTemplateDraft,
+  usePluginAutomationTemplates,
+  type PluginAutomationTemplateCard,
+} from "./PluginAutomationTemplates";
+
+// --- wave 2: the header layout system ---
+
+// --- wave 2: host pickers and the page error card ---

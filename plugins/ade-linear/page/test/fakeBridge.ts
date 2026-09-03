@@ -42,6 +42,16 @@ export type FakeBridge = {
   lastCall: (method: string) => BridgeCall | undefined;
   /** Replace one action's answer mid-walk. */
   setAction: (action: string, handler: (args: Record<string, unknown>) => unknown) => void;
+  /**
+   * Replace one host picker's answer mid-walk.
+   *
+   * `null` is the reader DISMISSING the popover, which every caller reads as
+   * "leave the current value alone" — a different thing from choosing nothing.
+   */
+  setPicker: (
+    picker: "model" | "provider" | "lane" | "permissionMode" | "reasoningEffort",
+    answer: { id: string; label: string; provider?: string | null } | null,
+  ) => void;
   /** The connection the scripted child reports. Sign-in flips it. */
   connection: LinearConnectionStatus;
   /** Push a `changed`, `theme` or `host` event at the page. */
@@ -123,12 +133,17 @@ const CONNECTED: LinearConnectionStatus = {
  * starts DISCONNECTED, which is the state a fresh install is in and the first
  * step of the walk.
  */
+type PickerAnswer = { id: string; label: string; provider?: string | null };
+type PickerLaneAnswer = PickerAnswer & { branchRef?: string | null; path?: string | null };
+
 export function installFakeBridge(options: {
   issues?: NormalizedLinearIssue[];
   lanes?: PageLane[];
   context?: Partial<PluginWebviewContext>;
   /** Start signed in. The walk starts signed OUT, which is a fresh install. */
   connected?: boolean;
+  /** Override the plugin settings `config.get` answers. */
+  config?: Record<string, string | number | boolean | null>;
 } = {}): FakeBridge {
   const issues = options.issues ?? [fakeIssue()];
   const lanes = options.lanes ?? [];
@@ -143,6 +158,21 @@ export function installFakeBridge(options: {
   const state = {
     connection: options.connected ? { ...CONNECTED } : { ...DISCONNECTED },
     comments: [] as CtoLinearIssueComment[],
+  };
+
+  /**
+   * What each host picker answers, so a test can retarget one.
+   *
+   * Mutable rather than fixed at install: a walk that presses the model chip
+   * twice with two different answers is one test, and reinstalling the bridge
+   * between the presses would throw the page's state away with it.
+   */
+  const pickerAnswers = {
+    model: { id: "claude-opus-5", label: "Opus 5", provider: "claude" } as PickerAnswer | null,
+    provider: { id: "claude", label: "Claude" } as PickerAnswer | null,
+    lane: { id: "lane-1", label: "ADE-1", branchRef: "ade/ade-1" } as PickerLaneAnswer | null,
+    permissionMode: { id: "acceptEdits", label: "Accept edits" } as PickerAnswer | null,
+    reasoningEffort: { id: "high", label: "High" } as PickerAnswer | null,
   };
 
   const quickView = (): CtoLinearQuickView => ({
@@ -278,7 +308,27 @@ export function installFakeBridge(options: {
     pageOpenChat: () => ({ ok: true, message: "Opened a chat.", sessionId: "session-1" }),
     pageLinkIssue: () => ({ ok: true, message: "Linked." }),
     pageUnlinkIssue: () => ({ ok: true, message: "Unlinked." }),
-    saveWebhookSecret: () => ({ ok: true, message: "Saved the Linear webhook signing secret." }),
+    // The webhook trio and the chat's two verbs live in `actions.js` rather
+    // than in the page table, because the Automations tile and the chat menu
+    // press them by the same names. Scripted here all the same: the page's own
+    // settings line and issue-context card call them over this bridge.
+    webhookStatus: () => ({
+      ok: true,
+      registered: true,
+      canRegister: true,
+      status: "Registered",
+      url: "https://relay.example/linear",
+      secretStored: true,
+      connected: true,
+      webhooksPossible: true,
+      lastEvent: "2026-09-02 11:00 UTC",
+      pendingDeliveries: 0,
+      error: null,
+    }),
+    registerWebhook: () => ({ ok: true, message: "Linear now sends issue events to ADE.", registered: true }),
+    unregisterWebhook: () => ({ ok: true, message: "ADE no longer receives Linear events.", registered: false }),
+    openInLinear: () => ({ ok: true, openUrl: "https://linear.app/acme/issue/ADE-1" }),
+    commentProgress: () => ({ ok: true, message: "Commented on ADE-1." }),
   };
 
   const record = (method: string, args: Record<string, unknown>): void => {
@@ -323,11 +373,11 @@ export function installFakeBridge(options: {
     config: {
       async get() {
         record("config.get", {});
-        return { moveToDoneOnMerge: false, moveToStartedOnLaunch: false, defaultTeamKey: "" };
+        return { defaultTeamKey: "", launchPromptClipboard: true, ...options.config };
       },
       async set(key, value) {
         record("config.set", typeof key === "string" ? { key, value } : { values: key });
-        return { moveToDoneOnMerge: false, moveToStartedOnLaunch: false, defaultTeamKey: "" };
+        return { defaultTeamKey: "", launchPromptClipboard: true, ...options.config };
       },
     },
     events: {
@@ -388,6 +438,39 @@ export function installFakeBridge(options: {
       resize(size: { height: number }) {
         record("ui.resize", size as unknown as Record<string, unknown>);
       },
+      /*
+        The host's five pickers.
+
+        Scripted rather than stubbed away, because the launch form has no
+        controls of its own any more: it prints what these answer. Each records
+        its request so a test can assert the page asked with the right subject —
+        a permission popover opened for the wrong provider offers the wrong
+        words — and each answers the first row of the fixture below, which is
+        the reader choosing rather than dismissing.
+
+        A test that needs a dismissal overrides the verb; `null` is the
+        dismissal, and every caller leaves its value alone for it.
+      */
+      async pickModel(request?: { provider?: string | null; selected?: string | null }) {
+        record("ui.pickModel", (request ?? {}) as Record<string, unknown>);
+        return pickerAnswers.model;
+      },
+      async pickProvider(request?: { selected?: string | null }) {
+        record("ui.pickProvider", (request ?? {}) as Record<string, unknown>);
+        return pickerAnswers.provider;
+      },
+      async pickLane(request?: { selected?: string | null }) {
+        record("ui.pickLane", (request ?? {}) as Record<string, unknown>);
+        return pickerAnswers.lane;
+      },
+      async pickPermissionMode(request: { provider: string; selected?: string | null }) {
+        record("ui.pickPermissionMode", request as unknown as Record<string, unknown>);
+        return pickerAnswers.permissionMode;
+      },
+      async pickReasoningEffort(request: { provider: string; model: string; selected?: string | null }) {
+        record("ui.pickReasoningEffort", request as unknown as Record<string, unknown>);
+        return pickerAnswers.reasoningEffort;
+      },
     },
     clipboard: {
       async read() {
@@ -429,6 +512,9 @@ export function installFakeBridge(options: {
     lastCall: (method) => [...calls].reverse().find((call) => call.method === method),
     setAction: (action, handler) => {
       actions[action] = handler;
+    },
+    setPicker: (picker, answer) => {
+      pickerAnswers[picker] = answer;
     },
     get connection() {
       return state.connection;

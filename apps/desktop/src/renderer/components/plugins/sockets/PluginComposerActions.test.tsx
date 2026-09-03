@@ -5,6 +5,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 
 import {
+  parsePluginContributionPayload,
   PLUGIN_COMPOSER_ACTION_INVOKE_TIMEOUT_MS,
   PLUGIN_SOCKET_INVOKE_TIMEOUT_DEFAULT_MS,
 } from "../../../../shared/plugins/sockets";
@@ -480,5 +481,37 @@ describe("contributed composer buttons", () => {
     await waitFor(() => expect(screen.getByText("Bug report")).toBeTruthy());
     await act(async () => { await Promise.resolve(); });
     expect(changes).toHaveLength(0);
+  });
+});
+
+/**
+ * A contributed button is never an empty box.
+ *
+ * Two guards, and neither is in the component. The PAYLOAD parser refuses a
+ * declaration with no usable label, so a button with nothing to say never
+ * becomes a contribution at all; and `pluginIcon` degrades an absent or unknown
+ * name to the fallback glyph rather than to nothing, so a row that declared no
+ * icon still draws something pressable. The pair is what makes an "icon-only
+ * render path" with neither half unreachable — there is no such path to reach.
+ */
+describe("an icon-less, label-less contribution", () => {
+  it("is refused by the payload parser", () => {
+    expect(parsePluginContributionPayload("composer-action", { actionId: "x" })).toBeNull();
+    expect(parsePluginContributionPayload("composer-action", { label: "   ", actionId: "x" })).toBeNull();
+    expect(parsePluginContributionPayload("composer-action", {})).toBeNull();
+    // The same refusal for the menu rows that hang off one.
+    expect(parsePluginContributionPayload("composer-menu-item", { actionId: "x" })).toBeNull();
+    expect(parsePluginContributionPayload("chat-menu-item", { actionId: "x", submenu: "issue-context" })).toBeNull();
+    expect(parsePluginContributionPayload("machine-entry", { actionId: "x" })).toBeNull();
+  });
+
+  it("still draws a glyph and a label for a row that declared no icon", async () => {
+    renderRow(() => ({ draft: "", cursor: null }));
+
+    // `bug` declares no icon; the button has both a fallback glyph and its word.
+    await waitFor(() => expect(screen.getByText("Bug report")).toBeTruthy());
+    const button = screen.getByText("Bug report").closest("button")!;
+    expect(button.querySelector("svg")).toBeTruthy();
+    expect(button.textContent?.trim()).toBe("Bug report");
   });
 });

@@ -50,6 +50,17 @@ protocol PluginPageBridgeDataSource: AnyObject {
     /// that predates it, which is what turns "not supported here" into a
     /// sentence the page can feature-detect instead of a hang.
     func pluginPageSupportsRemoteAction(_ action: String) -> Bool
+
+    /// Socket contributions of one KIND, from the local mirror.
+    ///
+    /// A read, exactly like `pluginPageCollectionEntries`, and for the same
+    /// reason: a page drawing a rail of third-party buttons must not stall on a
+    /// socket, and the mirror is already what every other plugin surface on
+    /// this phone draws from. The rows come back joined against the manifest
+    /// declarations the attached machine reported, so a page sees the same set
+    /// a native ADE surface would draw — never a row from a plugin this machine
+    /// does not have.
+    func pluginPageSocketItems(socket: String) -> [PluginPageSocketItem]
 }
 
 /// ADE's own UI, as the bridge needs it.
@@ -84,6 +95,18 @@ protocol PluginPageBridgeHosting: AnyObject {
     /// This page's own content height, already clamped. A placement that is not
     /// sized to content ignores it.
     func pluginPageResize(height: Int)
+
+    /// Present one of ADE's own five pickers and answer with the choice.
+    ///
+    /// `nil` is the DISMISSAL — the reader closed the picker — and the page
+    /// hears it as a resolved promise carrying null. A throw is a REFUSAL: this
+    /// client cannot ask that question, and the page hears a rejection carrying
+    /// the sentence. The two must not be collapsed; see
+    /// ``PluginPagePickerAnswer``.
+    func pluginPagePick(_ request: PluginPagePickerRequest) async throws -> PluginPagePickerAnswer?
+
+    /// The guest's page broke. Draw the error card over it.
+    func pluginPageReportError(_ report: PluginPageErrorReport)
 }
 
 /// Defaults for the two verbs a surface may legitimately have no answer for.
@@ -96,6 +119,20 @@ protocol PluginPageBridgeHosting: AnyObject {
 extension PluginPageBridgeHosting {
     func pluginPageDialogSubmit(_ answer: PluginPageDialogSubmit) -> Bool { false }
     func pluginPageResize(height: Int) {}
+
+    /// A host with no picker to present REFUSES rather than answering nil.
+    ///
+    /// The default is the honest one for a surface that draws a guest without
+    /// any of ADE's own chrome around it: it has nowhere to put a sheet, so it
+    /// says so. Answering nil here would tell every page that the reader
+    /// dismissed a picker that was never shown.
+    func pluginPagePick(_ request: PluginPagePickerRequest) async throws -> PluginPagePickerAnswer? {
+        throw PluginPageBridgeError.notSupportedHere(
+            "This surface can\u{2019}t open ADE\u{2019}s picker here."
+        )
+    }
+
+    func pluginPageReportError(_ report: PluginPageErrorReport) {}
 }
 
 /// The answer a page drawn as a `dialog-picker` gives its dialog.
@@ -332,6 +369,17 @@ struct PluginPageBridgeError: Error, Equatable {
         PluginPageBridgeError(code: "failed", message: message)
     }
 
+    /// The verb exists, the page asked correctly, and this CLIENT cannot do it.
+    ///
+    /// Its own code, apart from ``unsupported``, because the two say different
+    /// things about the future. `unsupported` means the attached machine is too
+    /// old and a newer one would answer; this means no build of this app will
+    /// ever answer — there is no editor on a phone to open a checkout path in.
+    /// A page that told them apart would retry the first and never the second.
+    static func notSupportedHere(_ message: String) -> PluginPageBridgeError {
+        PluginPageBridgeError(code: "not_supported", message: message)
+    }
+
     /// The verb exists and this guest may not use it HERE.
     ///
     /// Its own code rather than a generic failure, and the same word the
@@ -378,6 +426,15 @@ final class PluginPageBridge {
     /// Handing over the set alone would leave the producer diffing the two
     /// itself, which is the same bookkeeping twice.
     var onHostSubscriptionChange: ((_ added: Set<PluginPageHostKind>, _ removed: Set<PluginPageHostKind>) -> Void)?
+
+    /// Sockets this page has actually been shown by `sockets.list`.
+    ///
+    /// The scope for `sockets.invoke`, and the reason that verb takes a socket
+    /// id rather than a plugin and an action: a page can press what it drew,
+    /// and nothing else. Rebuilt with the bridge, which is correct — a page
+    /// whose bridge was replaced has to list again before it can press, and
+    /// listing is what it does to draw the rail in the first place.
+    private var visibleSockets: [String: PluginPageSocketItem] = [:]
 
     /// Where the host drew this guest.
     ///
@@ -427,7 +484,143 @@ final class PluginPageBridge {
         case .hostUnsubscribe: return hostUnsubscribe(request)
         case .dialogSubmit: return try dialogSubmit(request, pluginId: pluginId)
         case .uiResize: return resize(request)
+        case .uiPickModel: return try await pick(.model, request)
+        case .uiPickLane: return try await pick(.lane, request)
+        case .uiPickPermissionMode: return try await pick(.permissionMode, request)
+        case .uiPickReasoningEffort: return try await pick(.reasoningEffort, request)
+        case .uiPickProvider: return try await pick(.provider, request)
+        case .uiOpenPathInEditor: throw PluginPageBridgeError.notSupportedHere(
+            "This phone can\u{2019}t open a checkout path in an editor \u{2014} the files are on the paired computer."
+        )
+        case .socketsList: return socketsList(request)
+        case .socketsInvoke: return try await socketsInvoke(request, pluginId: pluginId)
+        case .pageError: return reportPageError(request)
         }
+    }
+
+    // MARK: Host pickers
+
+    /// Ask ADE's own UI for one of the five choices a launch form needs.
+    ///
+    /// The args are read HERE rather than in the host so every picker's
+    /// argument shape is checked in one place, against the desktop's own five
+    /// signatures. Two of them have a REQUIRED argument and both are refused
+    /// without it rather than defaulted: the permission modes are a provider
+    /// fact and the reasoning ladder is a model fact, so a picker missing
+    /// either has no list to draw — and inventing one would offer the reader a
+    /// setting that belongs to some other runtime.
+    private func pick(
+        _ kind: PluginPagePickerKind,
+        _ request: PluginPageBridgeRequest
+    ) async throws -> Any? {
+        guard let host else {
+            throw PluginPageBridgeError.notSupportedHere(
+                "This page isn\u{2019}t attached to a surface that can open a picker."
+            )
+        }
+        let provider = request.params["provider"]?.stringValue
+        let model = request.params["model"]?.stringValue
+        if kind == .permissionMode, provider?.isEmpty != false {
+            throw PluginPageBridgeError.invalidParams("ui.pickPermissionMode requires \"provider\".")
+        }
+        if kind == .reasoningEffort, model?.isEmpty != false {
+            throw PluginPageBridgeError.invalidParams("ui.pickReasoningEffort requires \"model\".")
+        }
+        // `value` may legitimately arrive as an explicit null on
+        // `ui.pickReasoningEffort` — "the form currently has no reasoning" —
+        // which reads here as no preselection, exactly as an absent one does.
+        let picker = PluginPagePickerRequest(
+            kind: kind,
+            value: request.params["value"]?.stringValue,
+            availableModelIds: (request.params["availableModelIds"]?.arrayValue)?
+                .compactMap(\.stringValue),
+            provider: provider,
+            model: model
+        )
+        do {
+            guard let answer = try await host.pluginPagePick(picker) else { return nil }
+            return answer.jsonValue
+        } catch let error as PluginPageBridgeError {
+            throw error
+        } catch {
+            throw PluginPageBridgeError.failed(error.localizedDescription)
+        }
+    }
+
+    // MARK: Sockets
+
+    /// The third-party socket contributions of one kind, as a page draws them.
+    ///
+    /// Remembered, not just returned: `sockets.invoke` may only press something
+    /// this page has actually been SHOWN. Without that, `socketId` would be a
+    /// free-text handle into every plugin on the account, and a page could run
+    /// another plugin's action by guessing its socket id.
+    private func socketsList(_ request: PluginPageBridgeRequest) -> Any? {
+        let socket = request.params["socket"]?.stringValue ?? ""
+        guard !socket.isEmpty else { return ["items": []] }
+        let items = dataSource.pluginPageSocketItems(socket: socket)
+        for item in items { visibleSockets[item.socketId] = item }
+        return ["items": items.map(\.jsonValue)]
+    }
+
+    /// Press one of those sockets.
+    ///
+    /// Scoped twice over. The socket must be one this page was shown, and the
+    /// action that actually runs is the one the CONTRIBUTION named — never one
+    /// the page supplied — invoked against the contribution's OWN plugin. So a
+    /// page can run another plugin's button exactly as a reader pressing that
+    /// button would, and cannot run anything else in that plugin.
+    ///
+    /// The answer is applied by the host first, like `invoke`: a socket press
+    /// that returns `{navigate}` or `{composer}` moves ADE the same way whether
+    /// a page or a native row pressed it.
+    private func socketsInvoke(_ request: PluginPageBridgeRequest, pluginId: String) async throws -> Any? {
+        let socketId = try string(request, "socketId")
+        guard let item = visibleSockets[socketId] else {
+            throw PluginPageBridgeError.notPermitted(
+                "That socket isn\u{2019}t one this page has listed."
+            )
+        }
+        guard let actionId = item.actionId, !actionId.isEmpty else {
+            throw PluginPageBridgeError.invalidParams(
+                "That socket has no action to run."
+            )
+        }
+        var args = request.params["args"]?.foundationValue as? [String: Any] ?? [:]
+        // The socket's own id rides along under the name every plugin handler
+        // already reads it by, so a plugin publishing several rows of one kind
+        // can tell which was pressed — the same field a native row press sends.
+        args["socketId"] = item.socketId
+        let result: PluginInvokeResult
+        do {
+            result = try await dataSource.pluginPageInvoke(
+                pluginId: item.pluginId,
+                actionId: actionId,
+                args: args
+            )
+        } catch {
+            throw PluginPageBridgeError.failed(error.localizedDescription)
+        }
+        await host?.pluginPageApply(result, pluginId: item.pluginId)
+        var encoded: [String: Any] = ["ok": result.ok]
+        if let message = result.message { encoded["message"] = message }
+        return encoded
+    }
+
+    // MARK: The page's own failures
+
+    /// The guest saying its own script threw, or that its content policy
+    /// stopped something. Answers nothing, by contract.
+    private func reportPageError(_ request: PluginPageBridgeRequest) -> Any? {
+        let raw = request.params["source"]?.stringValue ?? ""
+        let source = PluginPageErrorReport.Source(rawValue: raw) ?? .script
+        host?.pluginPageReportError(
+            PluginPageErrorReport.fromPage(
+                message: request.params["message"]?.stringValue,
+                source: source
+            )
+        )
+        return nil
     }
 
     // MARK: Collections

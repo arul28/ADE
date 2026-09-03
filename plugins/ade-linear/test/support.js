@@ -18,7 +18,8 @@
  */
 function createCollections(declared) {
   const names = new Set(declared ?? [
-    "issues", "comments", "teams", "states", "projects", "people", "viewer", "deliveries",
+    "issues", "comments", "teams", "states", "projects", "people", "labels", "viewer",
+    "deliveries", "ui-state", "webhook",
   ]);
   const store = new Map();
   const calls = [];

@@ -239,6 +239,14 @@ export type PluginWebviewRelayMembers = {
   respondUi: (response: PluginWebviewUiResponse) => void;
   publishTheme: (snapshot: PluginWebviewThemeSnapshot) => void;
   publishChatTurn: (turn: PluginWebviewChatTurn) => void;
+  /**
+   * "An operation, conflict or review moved." Identity only — see the channel.
+   *
+   * Optional on the type because a packaged app from before these three kinds
+   * publishes no such member, and the window must then not open the
+   * subscriptions at all rather than throw on the first event of the session.
+   */
+  publishHostChange?: (change: { kind: string; ids: string[] }) => void;
   setSurfaceState: (state: PluginWebviewSurfaceState) => void;
   onReload: (cb: (event: unknown) => void) => () => void;
 };

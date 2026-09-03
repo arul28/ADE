@@ -611,6 +611,35 @@ export function triggerMatches(
     if (!expectedPlugin || !expectedTrigger) return false;
     if (expectedPlugin !== (trigger.plugin?.pluginId ?? "").trim()) return false;
     if (expectedTrigger !== (trigger.plugin?.triggerId ?? "").trim()) return false;
+    // Declarative tile filters are matched HERE, host-side, and there is no
+    // other place they could be. A plugin says only THAT something happened
+    // (`ade.automations.emitTrigger`) and has no way to read the user's rules,
+    // so "left to the plugin's own emission" would mean the filters the rule
+    // builder wrote down narrowed nothing at all.
+    //
+    // The comparison is against the payload the plugin sent with the event,
+    // under the same `key` the tile declared for the field — the plugin owns
+    // both ends of that name, so a tile that declares a `teamId` filter is the
+    // same plugin that puts `teamId` in its payload. Equality on the trimmed
+    // string, plus membership when the payload sent a list (a `labels` array is
+    // the one shape every ported plugin has), and NOTHING else: a filter key
+    // the payload does not carry fails closed, exactly like the identity check
+    // above, because the alternative is a rule that fires on events its own
+    // filter says it should ignore. A user can diagnose the closed case — the
+    // filter is on the rule in front of them; they cannot diagnose the open one.
+    const pluginFilters = ruleTrigger.pluginFilters;
+    if (pluginFilters) {
+      const payload = trigger.plugin?.payload ?? {};
+      for (const [key, expected] of Object.entries(pluginFilters)) {
+        const wanted = (expected ?? "").trim();
+        if (!wanted) continue;
+        const actual = payload[key];
+        const matched = Array.isArray(actual)
+          ? actual.some((entry) => String(entry).trim() === wanted)
+          : actual != null && String(actual).trim() === wanted;
+        if (!matched) return false;
+      }
+    }
   }
 
   const canonicalType = normalizeTriggerType(ruleTrigger.type);

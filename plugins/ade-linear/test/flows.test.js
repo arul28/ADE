@@ -42,8 +42,16 @@ function build(overrides = {}) {
   const sdk = createSdk({
     actions: {
       "lane.create": async (args) => ({ id: "lane-1", name: args.name, branchRef: args.branchName }),
-      "chat.createSession": async () => ({ sessionId: "chat-1" }),
+      // `launchHeadless`, not `createSession`. `createSession` takes no message
+      // field of any kind, so a plugin that used it created a silent chat and
+      // dropped the reader's kickoff; `launchHeadless` is the verb that creates
+      // the session AND runs the first turn.
+      "chat.launchHeadless": async () => ({ id: "chat-1" }),
       "chat.launchCli": async () => ({ sessionId: "cli-1" }),
+      // Declared and never expected to be called. A launch that reached for it
+      // again would silently stop saying the prompt, so the fake answers a
+      // session with no id and `spawnAgentOnIssue`'s own link assertion fails.
+      "chat.createSession": async () => ({}),
       "pr.getDetail": async ({ prId }) => ({ pr: { id: prId, state: "open", laneId: "lane-1" } }),
       "git.getOriginRemote": async () => "https://github.com/acme/app.git",
       "github.createRepoAutolink": async () => ({ ok: true }),
@@ -200,10 +208,10 @@ describe("starting an agent on an issue", () => {
   it("opens a chat by default, carrying the setup and the kickoff", async () => {
     const { sdk, flows } = build();
     const result = await flows.spawnAgentOnIssue({ issue: ROW, laneId: "lane-1" });
-    const call = sdk.calls.find(([name]) => name === "actions.chat.createSession")[1];
+    const call = sdk.calls.find(([name]) => name === "actions.chat.launchHeadless")[1];
     assert.equal(result.ok, true);
     assert.equal(call.laneId, "lane-1");
-    assert.equal(call.initialMessage, defaultKickoff(ROW));
+    assert.equal(call.kickoffText, defaultKickoff(ROW));
     assert.equal(call.sessionSetup.env.ADE_PLUGIN_LINEAR_ISSUE_IDS, "ENG-431");
   });
 
@@ -213,7 +221,7 @@ describe("starting an agent on an issue", () => {
     const call = sdk.calls.find(([name]) => name === "actions.chat.launchCli")[1];
     // Same setup either way — that is the whole point of the seam.
     assert.equal(call.sessionSetup.env.ADE_PLUGIN_LINEAR_ISSUE_IDS, "ENG-431");
-    assert.equal(call.initialInput, defaultKickoff(ROW));
+    assert.equal(call.kickoffPrompt, defaultKickoff(ROW));
   });
 
   it("keeps the phone's kickoff wording, so a launch behaves the same everywhere", () => {
@@ -226,7 +234,7 @@ describe("starting an agent on an issue", () => {
   it("uses the caller's prompt when they wrote one", async () => {
     const { sdk, flows } = build();
     await flows.spawnAgentOnIssue({ issue: ROW, laneId: "lane-1", prompt: "  Just read it.  " });
-    assert.equal(sdk.calls.find(([name]) => name === "actions.chat.createSession")[1].initialMessage, "Just read it.");
+    assert.equal(sdk.calls.find(([name]) => name === "actions.chat.launchHeadless")[1].kickoffText, "Just read it.");
   });
 
   it("passes the model configuration through, and omits what was not set", async () => {
@@ -234,7 +242,7 @@ describe("starting an agent on an issue", () => {
     await flows.spawnAgentOnIssue({
       issue: ROW, laneId: "lane-1", provider: "codex", model: "gpt", reasoningEffort: "xhigh", fastMode: false,
     });
-    const call = sdk.calls.find(([name]) => name === "actions.chat.createSession")[1];
+    const call = sdk.calls.find(([name]) => name === "actions.chat.launchHeadless")[1];
     assert.equal(call.provider, "codex");
     assert.equal(call.fastMode, false);
     assert.ok(!("permissionMode" in call));
@@ -261,14 +269,14 @@ describe("starting an agent on an issue", () => {
   });
 
   it("reports what ADE refused rather than a stack trace", async () => {
-    const { flows } = build({ actions: { "chat.createSession": async () => { throw new Error("no model"); } } });
+    const { flows } = build({ actions: { "chat.launchHeadless": async () => { throw new Error("no model"); } } });
     const result = await flows.spawnAgentOnIssue({ issue: ROW, laneId: "lane-1" });
     assert.equal(result.ok, false);
     assert.equal(result.message, "no model");
   });
 });
 
-describe("the In Progress transition on launch", () => {
+describe("the In Progress transition, which is an automation now", () => {
   const teams = [{
     id: "t1",
     key: "ENG",
@@ -281,18 +289,23 @@ describe("the In Progress transition on launch", () => {
     },
   }];
 
-  it("does nothing while the setting is off", async () => {
-    let moved = false;
-    const { flows } = build({ api: { updateIssueState: async () => { moved = true; } } });
-    const result = await flows.moveToStarted(ROW);
-    assert.equal(result.skipped, "setting");
-    assert.equal(moved, false);
-  });
-
-  it("moves the issue to the team's first started state when it is on", async () => {
+  // The `moveToStartedOnLaunch` toggle is gone, and so is the launch-time call
+  // behind it. A launch must no longer rewrite a ticket as a side effect of a
+  // button that said nothing about it; the manifest ships the transition as an
+  // `automation-template` on `lane.created` instead.
+  it("no longer fires from a launch at all", async () => {
     const moves = [];
     const { data, flows } = build({
-      sdk: { config: { moveToStartedOnLaunch: true } },
+      api: { listTeamsAndStates: async () => teams, updateIssueState: async (...args) => moves.push(args) },
+    });
+    await data.refreshCatalog();
+    await flows.spawnAgentOnIssue({ issue: { ...ROW, stateId: "s-todo" }, laneId: "lane-1" });
+    assert.deepEqual(moves, []);
+  });
+
+  it("moves the issue to the team's first started state when a rule asks", async () => {
+    const moves = [];
+    const { data, flows } = build({
       api: { listTeamsAndStates: async () => teams, updateIssueState: async (id, state) => moves.push([id, state]) },
     });
     await data.refreshCatalog();
@@ -303,12 +316,46 @@ describe("the In Progress transition on launch", () => {
   it("skips the call when the issue is already there", async () => {
     const moves = [];
     const { data, flows } = build({
-      sdk: { config: { moveToStartedOnLaunch: true } },
       api: { listTeamsAndStates: async () => teams, updateIssueState: async (...args) => moves.push(args) },
     });
     await data.refreshCatalog();
     await flows.moveToStarted({ ...ROW, stateId: "s-doing" });
     assert.deepEqual(moves, []);
+  });
+
+  it("moves every Linear issue a named lane is working on", async () => {
+    const moves = [];
+    const { data, flows } = build({
+      sdk: {
+        lanes: [{
+          id: "lane-1",
+          name: "Fix OAuth",
+          primaryIssue: { provider: "linear", issueId: "a", key: "ENG-431", container: { key: "ENG" } },
+          issueLinks: [],
+        }],
+      },
+      api: {
+        listTeamsAndStates: async () => teams,
+        searchAllIssues: async () => [{
+          id: "a",
+          identifier: "ENG-431",
+          title: "Fix OAuth",
+          team: { id: "t1", key: "ENG", name: "Eng" },
+          state: { id: "s-todo", name: "Todo", type: "unstarted" },
+        }],
+        updateIssueState: async (id, state) => moves.push([id, state]),
+      },
+    });
+    await data.refreshCatalog();
+    await data.refreshIssues();
+    const result = await flows.startIssueOnLane({ laneId: "lane-1" });
+    assert.equal(result.moved, 1);
+    assert.deepEqual(moves, [["a", "s-doing"]]);
+  });
+
+  it("answers a plain no-op for a rule that named no lane", async () => {
+    const { flows } = build();
+    assert.deepEqual(await flows.startIssueOnLane({}), { ok: true, moved: 0, skipped: "no-lanes" });
   });
 });
 
@@ -359,7 +406,7 @@ describe("a merged pull request moving its issues to Done", () => {
     const built = build({
       sdk: {
         lanes,
-        config: { moveToDoneOnMerge: true, ...(overrides.config ?? {}) },
+        config: { ...(overrides.config ?? {}) },
         ...(overrides.sdk ?? {}),
       },
       api: {
@@ -411,10 +458,13 @@ describe("a merged pull request moving its issues to Done", () => {
     assert.deepEqual(moves, [["a", "s-done"]]);
   });
 
-  it("does nothing at all while the setting is off", async () => {
-    const { flows, moves } = merged({ config: { moveToDoneOnMerge: false } });
-    const result = await flows.closeIssueOnMerge({ laneIds: ["lane-1"] });
-    assert.equal(result.skipped, "setting");
+  // The `moveToDoneOnMerge` toggle is gone and nothing gates this any more:
+  // nothing calls it on a merge event by itself either, so the gate moved from
+  // a checkbox to the existence of an automation rule.
+  it("does nothing when no lane was named", async () => {
+    const { flows, moves } = merged();
+    const result = await flows.closeIssueOnMerge({ laneIds: [] });
+    assert.equal(result.skipped, "no-lanes");
     assert.deepEqual(moves, []);
   });
 

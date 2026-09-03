@@ -105,45 +105,6 @@ function priorityLabel(priority) {
 }
 
 /**
- * The current value of one of Linear's count HISTORIES.
- *
- * `issueCountHistory` and `completedIssueCountHistory` are arrays of one entry
- * per day, oldest first, so "how many now" is the last entry. Anything that is
- * not a finite number — an empty history, a selection the workspace refused —
- * is `null`, because a project with no count and a project with zero issues are
- * different things and a card that drew "0" for the first would be wrong.
- */
-/**
- * When the webhook drain last received a delivery, as a line a row can print.
- *
- * The ledger stores ISO-8601. The settings panel's copy of this lives in
- * `index.js:formatWebhookLastEvent` and the two must agree — a page and a panel
- * that print the same timestamp two different ways is the drift this whole file
- * exists to avoid — so both are the same four lines and the same slice.
- */
-function webhookLastEvent(iso) {
-  if (typeof iso !== "string" || !iso.trim()) return null;
-  const at = Date.parse(iso);
-  if (Number.isNaN(at)) return iso.trim();
-  return new Date(at).toISOString().replace("T", " ").slice(0, 16) + " UTC";
-}
-
-/**
- * When the webhook drain last received a delivery, as a line a row can print.
- *
- * The ledger stores ISO-8601. The settings panel's copy of this lives in
- * `index.js:formatWebhookLastEvent` and the two must agree — a page and a panel
- * that print the same timestamp two different ways is the drift this whole file
- * exists to avoid — so both are the same four lines and the same slice.
- */
-function webhookLastEvent(iso) {
-  if (typeof iso !== "string" || !iso.trim()) return null;
-  const at = Date.parse(iso);
-  if (Number.isNaN(at)) return iso.trim();
-  return new Date(at).toISOString().replace("T", " ").slice(0, 16) + " UTC";
-}
-
-/**
  * One row of the launch form's model picker.
  *
  * `entry` is an `AgentChatModelInfo`, or a bare id string on a host whose
@@ -187,6 +148,15 @@ function pageModel(entry, provider) {
   };
 }
 
+/**
+ * The current value of one of Linear's count HISTORIES.
+ *
+ * `issueCountHistory` and `completedIssueCountHistory` are arrays of one entry
+ * per day, oldest first, so "how many now" is the last entry. Anything that is
+ * not a finite number — an empty history, a selection the workspace refused —
+ * is `null`, because a project with no count and a project with zero issues are
+ * different things and a card that drew "0" for the first would be wrong.
+ */
 function lastCount(history) {
   if (!Array.isArray(history) || history.length === 0) return null;
   const last = history[history.length - 1];
@@ -305,7 +275,7 @@ function laneIssue(lane) {
  * search results the reader's stored filter has nothing to do with.
  */
 function createPageActions(deps) {
-  const { publish, refreshIssues, refreshCatalogAndIssues, webhooksReachable, issueIdFromRowKey } = deps;
+  const { publish, refreshIssues, refreshCatalogAndIssues, issueIdFromRowKey } = deps;
 
   /** Are the lifecycle's bindings there yet? See the header. */
   function ready() {
@@ -975,18 +945,18 @@ function createPageActions(deps) {
      * because nothing there reads them back, and a page with room for a table
      * can say which ones exist. `teams` is what could be created, from
      * `data.buildAutolinks`.
+     *
+     * It carries no webhook facts any more. The webhook moved OUT of the
+     * settings section and into the Automations trigger tile, where the
+     * `automation-trigger-tile`'s own `statusAction` (`webhookStatus`) answers
+     * them — one owner for one subject, rather than a settings card and an
+     * automations tile reporting the same endpoint in two vocabularies.
      */
     async pageAutolinks() {
       const empty = {
         autolinks: [],
         repo: null,
         teams: [],
-        webhookUrl: null,
-        webhookSecretStored: false,
-        webhooksPossible: false,
-        lastEvent: null,
-        pendingDeliveries: 0,
-        drainError: null,
       };
       if (!ready()) return empty;
 
@@ -1029,31 +999,10 @@ function createPageActions(deps) {
           urlTemplate: entry.urlTemplate ?? null,
         }));
 
-      const status = await deps.connect.connectStatus().catch(() => ({}));
-
-      // The host's delivery ledger — the same three facts the settings PANEL
-      // draws as "Last event", "Waiting (n unacked)" and "Drain". Read only
-      // when an endpoint EXISTS: with no `webhookUrl` there is nothing for
-      // Linear to post to, and a ledger read there would answer zeros the card
-      // would draw as a healthy silence.
-      const ledger = connection?.webhookUrl
-        ? await deps.sdk.webhooks.status().catch(() => null)
-        : null;
-
       return {
         autolinks,
         repo: repo ? { owner: repo.owner, name: repo.name } : null,
         teams,
-        webhookUrl: connection?.webhookUrl ?? null,
-        // The BOOLEAN, never the secret. The page's job is to say whether the
-        // paste box still needs filling in.
-        webhookSecretStored: Boolean(await deps.sdk.secrets.get("LINEAR_WEBHOOK_SECRET").catch(() => null)),
-        webhooksPossible: webhooksReachable(status),
-        // Pre-formatted for the reason the panel's copy is: a page reads a
-        // sentence, not an ISO string it would have to format a second way.
-        lastEvent: webhookLastEvent(ledger?.lastReceivedAt),
-        pendingDeliveries: Number(ledger?.pendingDeliveries) || 0,
-        drainError: text(ledger?.lastError),
       };
     },
 

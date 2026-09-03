@@ -1,0 +1,112 @@
+/**
+ * The page's one stylesheet.
+ *
+ * `palette.css` is ADE's own `index.css` — the `@theme` block, the dark
+ * palette, the light palette and the base element styles, verbatim. That is
+ * what makes the ported utility class names (`text-muted-fg/68`, `bg-black/62`,
+ * `border-white/[0.08]`, every `amber-`/`emerald-`/`cyan-` tint the compiled
+ * pane draws its chips and toolbars with) resolve to exactly the colours the
+ * compiled simulator pane draws.
+ *
+ * Tailwind runs at BUILD time and emits this file as one same-origin
+ * stylesheet. The page's content policy is `style-src 'self' 'unsafe-inline'`
+ * and `script-src 'self'`, so a play-CDN Tailwind would be blocked; a build step
+ * is the only way to have the app's utilities inside a guest.
+ */
+
+@import "./palette.css";
+
+/**
+ * Tailwind scans the kit too.
+ *
+ * `@ade-dev/ui` components emit TWO class vocabularies on the same element: the
+ * app's Tailwind utilities and a stable `ade-*` class the kit's injected
+ * stylesheet implements. Inside the desktop renderer Tailwind is present and
+ * nothing is injected, so the utilities do the drawing — and this page is that
+ * case, because Tailwind runs here at build time.
+ *
+ * But Tailwind only generates a class it has SEEN, and it does not look inside
+ * `node_modules` on its own. Without this line every utility that appears only
+ * in the kit is absent from the built stylesheet, and `EmptyState` — the whole
+ * of the "no simulator running" state — draws as an unstyled box beside ported
+ * chrome that draws correctly.
+ *
+ * The path names a FILE, not the directory holding it: a directory source is
+ * filtered through `.gitignore`, and `node_modules` is ignored there. It points
+ * at the built output rather than the source because the build is what this
+ * page imports.
+ *
+ * Only the barrel, unlike Linear's four lines: this page draws `cn`,
+ * `EmptyState` and nothing from the lanes, dialog or attachment entry points,
+ * and naming a source a page never imports would put dead CSS in the bundle.
+ */
+@source "../../node_modules/@ade-dev/ui/dist/index.js";
+
+/* ═══════════════════════════════════════════════════════════
+   Vendored fonts — `font-src 'self'` only.
+   Copied from the Linear page, which copied them from
+   apps/desktop/node_modules. A CDN font is blocked by the
+   guest's content policy, so there is no other way to have
+   the app's typeface inside a page.
+   ═══════════════════════════════════════════════════════════ */
+
+@font-face {
+  font-family: "Geist";
+  src: url("/fonts/Geist-Variable.woff2") format("woff2");
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Geist Mono";
+  src: url("/fonts/GeistMono-Variable.woff2") format("woff2");
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "JetBrains Mono";
+  src: url("/fonts/jetbrains-mono-latin-wght-normal.woff2") format("woff2");
+  font-weight: 100 800;
+  font-style: normal;
+  font-display: swap;
+}
+
+/* ═══════════════════════════════════════════════════════════
+   Guest layout.
+
+   A guest has no app chrome around it, so the page IS the viewport. The pane
+   fills it and scrolls inside the stage, never on the body: the reserved rect
+   is measured against the guest viewport, and a body that scrolled would move
+   the rect out from under the host's painter every time a chip row wrapped.
+   ═══════════════════════════════════════════════════════════ */
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  overflow: hidden;
+  background: transparent;
+}
+
+body[data-ade-placement="tab"],
+body[data-ade-placement="pane"],
+body[data-ade-placement="drawer"],
+body[data-ade-placement="overlay"] {
+  background-color: var(--color-bg);
+}
+
+/*
+  The stage draws nothing of its own — the host paints into it — so it must not
+  carry a ground, a border or a shadow. Stated here rather than left to the
+  component so that a future className cannot quietly put one back.
+*/
+[data-sim-pane="stage"] {
+  background: transparent;
+}

@@ -138,13 +138,19 @@ import {
 } from "./pendingInputAsker";
 import { useAppStore, useRootAppStore, rootAppStoreApi } from "../../state/appStore";
 import {
+  PluginChatMenuRows,
   PluginComposerActions,
   registerPluginComposerTarget,
   runPluginSocketAction,
+  usePluginChatMenuItems,
+  usePluginChatRuntimeCapabilities,
+  usePluginComposerMenuItems,
+  type PluginChatRuntimePointer,
   type PluginComposerSendOwner,
   type PluginComposerTarget,
 } from "../plugins/sockets";
 import type { PluginComposerContext } from "../../../shared/plugins/context";
+import type { PluginSocketKind } from "../../../shared/plugins/sockets";
 import {
   ComposerPromptStash,
   type ComposerPromptStashHandle,
@@ -1771,6 +1777,8 @@ export function AgentChatComposer({
   showAppControlToggle = false,
   appControlOpen = false,
   onToggleAppControl,
+  chatRuntimeRef = null,
+  machineSendOwner = null,
 }: {
   surfaceMode?: ChatSurfaceMode;
   layoutVariant?: "standard" | "grid-tile";
@@ -2018,6 +2026,24 @@ export function AgentChatComposer({
   showAppControlToggle?: boolean;
   appControlOpen?: boolean;
   onToggleAppControl?: () => void;
+  /**
+   * The plugin runtime that owns this session's turns, when one does.
+   *
+   * Null for every session ADE's own runtimes own, which is what keeps the
+   * capability gating below invisible to Claude, Codex, Cursor and the rest:
+   * with no pointer there is nothing to resolve and every control is drawn.
+   */
+  chatRuntimeRef?: PluginChatRuntimePointer | null;
+  /**
+   * The contributed MACHINE row Enter currently launches through.
+   *
+   * Set by the pane when a `machine-entry` is selected in the machine picker.
+   * It joins the accessory row's own `ownsSend` arm at the same seam — one
+   * send path, two gestures that can arm it — so a machine row's Enter carries
+   * the issue-context join and the blocked-send messages a plugin launch
+   * already had.
+   */
+  machineSendOwner?: PluginComposerSendOwner;
 }) {
   const promptStashRef = useRef<ComposerPromptStashHandle>(null);
   const promptStashButtonEnabled = useRootAppStore((state) => state.promptStashButtonEnabled);
@@ -3786,6 +3812,69 @@ export function AgentChatComposer({
     ...readComposerState(),
   }), [composerPluginIdentity, readComposerDraft, readComposerState]);
 
+  /**
+   * Contributed rows for the three-dot menu and for the issue-context submenu.
+   *
+   * Both are EMPTY when no plugin declares one, which is what keeps the
+   * overflow control's own collapse rule intact: with one core entry left it
+   * still draws a bare inline button rather than a "⋯" over a single row.
+   */
+  const pluginComposerMenuItems = usePluginComposerMenuItems({
+    ...composerPluginIdentity,
+    readContext: readComposerPluginContext,
+    active: isActive,
+  });
+  const pluginIssueContextRows = usePluginChatMenuItems({
+    submenu: "issue-context",
+    ...composerPluginIdentity,
+    readContext: readComposerPluginContext,
+    active: isActive,
+  });
+
+  /**
+   * The issue-context entry and its submenu exist when ANY source does.
+   *
+   * The core gate is Linear-or-GitHub, and it gates the composer row AND the
+   * popover: with neither connected there is no "Attach issue context" entry at
+   * all. A plugin row nested under that submenu would then be a declaration
+   * with nowhere to land — installed, parsed, and unreachable. So a contributed
+   * row opens the list on its own, and the list is still absent when nothing
+   * at all contributes to it.
+   */
+  const canAttachPluginIssueContext = pluginIssueContextRows.length > 0;
+  const showIssueContextMenu = showIssueContextEntry || canAttachPluginIssueContext;
+  const canOpenIssueContextMenu = canAttachLinearIssueContext
+    || canAttachGitHubIssueContext
+    || canAttachPluginIssueContext;
+
+  /**
+   * Who owns Enter: a contributed machine row beats an armed accessory button.
+   *
+   * The machine row is a MODE the reader is looking at in the shelf, while the
+   * accessory arm is a toggle they may have forgotten. Both route through the
+   * one `ownsSend` branch in `submitComposerDraft`; only the socket name
+   * differs, and it only sets the round-trip budget.
+   */
+  const effectivePluginSendOwner = machineSendOwner ?? pluginSendOwner;
+  const effectivePluginSendSocket: PluginSocketKind = machineSendOwner
+    ? "machine-entry"
+    : "composer-action";
+
+  /**
+   * What this session's runtime can actually do, when a plugin owns it.
+   *
+   * Null for every ADE-owned session AND for a plugin runtime this machine
+   * cannot resolve, and the composer reads null as "draw everything" — the
+   * behaviour it had before plugin runtimes existed.
+   */
+  const pluginRuntimeCapabilities = usePluginChatRuntimeCapabilities(chatRuntimeRef);
+  /* A capability that is OFF removes the control rather than disabling it. A
+     greyed Stop on a runtime that can never be stopped is a promise the chat
+     cannot keep, and there is no sentence to put in its tooltip that makes it
+     true. */
+  const runtimeAllowsInterrupt = pluginRuntimeCapabilities?.interrupt !== false;
+  const runtimeAllowsFollowUp = pluginRuntimeCapabilities?.followUp !== false;
+
   const insertNodeAtTextOffset = useCallback((editor: HTMLElement, node: Node, offset: number) => {
     const walker = document.createTreeWalker(editor, NodeFilter.SHOW_TEXT);
     let current = walker.nextNode();
@@ -5170,7 +5259,7 @@ export function AgentChatComposer({
     // A plugin that claimed Send is the cloud-launch path once the compiled
     // machine-picker row is gone. Same early-outs as the built-in cloud branch:
     // empty draft is a blocked send, not a local runtime fallback.
-    if (pluginSendOwner) {
+    if (effectivePluginSendOwner) {
       if (busy || backgroundLaunchBusy || parallelLaunchBusy || composerInputLocked) return;
       const trimmed = draft.trim();
       if (trimmed.length === 0 && contextAttachmentCount === 0) {
@@ -5183,10 +5272,10 @@ export function AgentChatComposer({
         trimmed || (issueContextPrompt ? "Use the attached issue context." : null),
       ].filter((part): part is string => Boolean(part)).join("\n\n");
       void runPluginSocketAction(
-        pluginSendOwner.pluginId,
-        pluginSendOwner.actionId,
+        effectivePluginSendOwner.pluginId,
+        effectivePluginSendOwner.actionId,
         { ...readComposerPluginContext(), draft: cloudPrompt },
-        { socket: "composer-action", args: { send: true } },
+        { socket: effectivePluginSendSocket, args: { send: true } },
       );
       return;
     }
@@ -5224,7 +5313,7 @@ export function AgentChatComposer({
       return;
     }
     onSubmit();
-  }, [activeTurnHasContent, allowAttachmentOnlySubmit, appControlContextItems.length, attachments, attachments.length, backgroundLaunchBusy, busy, composerInputLocked, contextAttachmentCount, contextAttachments, cursorCloudCanLaunch, cursorCloudHasEligibleModels, cursorCloudModeActive, cursorCloudModelReady, draft, hasComposerContextContent, iosElementContextItems.length, onDraftChange, onSubmit, onSubmitBlocked, onSubmitToCloud, pendingImageAttachments.length, pendingInput, parallelChatMode, parallelLaunchBusy, parallelModelSlots.length, pluginSendOwner, readComposerPluginContext, runPluginSlashCommand, singleModelBlockedMessage, singleModelReady, typedPluginSlashCommand]);
+  }, [activeTurnHasContent, allowAttachmentOnlySubmit, appControlContextItems.length, attachments, attachments.length, backgroundLaunchBusy, busy, composerInputLocked, contextAttachmentCount, contextAttachments, cursorCloudCanLaunch, cursorCloudHasEligibleModels, cursorCloudModeActive, cursorCloudModelReady, draft, hasComposerContextContent, iosElementContextItems.length, onDraftChange, onSubmit, onSubmitBlocked, onSubmitToCloud, pendingImageAttachments.length, pendingInput, parallelChatMode, parallelLaunchBusy, parallelModelSlots.length, effectivePluginSendOwner, effectivePluginSendSocket, readComposerPluginContext, runPluginSlashCommand, singleModelBlockedMessage, singleModelReady, typedPluginSlashCommand]);
 
   const submitActiveTurnDraft = useCallback(() => {
     if (effectiveActiveTurnSendMode === "queue") {
@@ -5304,7 +5393,7 @@ export function AgentChatComposer({
     && parallelModelSlots.length >= 2
     && (draft.trim().length > 0 || attachments.length > 0 || contextAttachmentCount > 0);
   const singleReady = !parallelChatMode && singleModelReady && activeTurnHasContent;
-  const pluginSendArmed = Boolean(pluginSendOwner) && !parallelChatMode;
+  const pluginSendArmed = Boolean(effectivePluginSendOwner) && !parallelChatMode;
   const pluginSendReady = pluginSendArmed
     && (draft.trim().length > 0 || contextAttachmentCount > 0);
   const cloudModeActiveForSend = cursorCloudCanLaunch && cursorCloudModeActive && !parallelChatMode;
@@ -5347,8 +5436,8 @@ export function AgentChatComposer({
     }
     if (pluginSendArmed) {
       if (!pluginSendReady) return "Say what the agent should do.";
-      return pluginSendOwner
-        ? `Send to ${pluginSendOwner.label}`
+      return effectivePluginSendOwner
+        ? `Send to ${effectivePluginSendOwner.label}`
         : "Send";
     }
     if (cloudModeActiveForSend) {
@@ -5369,7 +5458,7 @@ export function AgentChatComposer({
     "m-3 mt-0 rounded-[var(--chat-radius-shell)]",
     layoutVariant === "grid-tile" ? "m-0" : "",
   );
-  const issueContextMenu = issueContextMenuOpen && showIssueContextEntry && issueContextButtonRef.current ? createPortal(
+  const issueContextMenu = issueContextMenuOpen && showIssueContextMenu && issueContextButtonRef.current ? createPortal(
     <div
       className="fixed z-[1000] overflow-hidden rounded-xl border border-white/10 bg-[#16121c] shadow-xl"
       data-issue-context-menu="true"
@@ -5432,6 +5521,10 @@ export function AgentChatComposer({
             </span>
           </button>
         ) : null}
+        {/* Contributed rows join the list AFTER ADE's own, per the placement
+            invariant in `shared/plugins/sockets.ts`. Nobody reaching for
+            "Linear issue" by muscle memory should hit a plugin's row. */}
+        <PluginChatMenuRows rows={pluginIssueContextRows} />
       </div>
     </div>,
     document.body,
@@ -6364,7 +6457,7 @@ export function AgentChatComposer({
             <ComposerOverflowMenu
               triggerRef={issueContextButtonRef}
               items={[
-                ...(showIssueContextEntry
+                ...(showIssueContextMenu
                   ? [{
                       id: "issue-context",
                       label: "Issue context",
@@ -6372,10 +6465,10 @@ export function AgentChatComposer({
                       // Reads as "on" while issues are attached, so the collapsed
                       // trigger's dot reports them without needing its own badge.
                       active: contextAttachmentCount > 0,
-                      disabled: !(canAttachLinearIssueContext || canAttachGitHubIssueContext),
+                      disabled: !canOpenIssueContextMenu,
                       badge: contextAttachmentCount || undefined,
                       onSelect: () => {
-                        if (!canAttachLinearIssueContext && !canAttachGitHubIssueContext) return;
+                        if (!canOpenIssueContextMenu) return;
                         setAttachmentPickerOpen(false);
                         setIssueContextMenuOpen((open) => !open);
                       },
@@ -6434,6 +6527,10 @@ export function AgentChatComposer({
                       onSelect: onToggleAppControl,
                     }]
                   : []),
+                // Contributed rows, after every entry ADE owns. Empty when no
+                // plugin declares one, so the menu's own collapse-to-a-button
+                // rule still sees exactly the core entries that survived.
+                ...pluginComposerMenuItems,
               ]}
             />
 
@@ -6465,7 +6562,10 @@ export function AgentChatComposer({
                     </button>
                   </SmartTooltip>
                 ) : null}
-                {!composerInputLocked ? (
+                {/* A plugin runtime that declares `followUp: false` takes no
+                    second turn, so the steer control is ABSENT rather than a
+                    disabled button with no sentence that could explain it. */}
+                {runtimeAllowsFollowUp && !composerInputLocked ? (
                   activeTurnSendMenuEnabled ? (
                     // Claude Code parity: the caret selects delivery behavior;
                     // the primary button and Enter execute that selection.
@@ -6499,13 +6599,18 @@ export function AgentChatComposer({
                     </SmartTooltip>
                   )
                 ) : null}
-                <ActiveTurnStopButton
-                  mode={activeTurnStopMode}
-                  allowQueueChoice={sessionProvider === "claude"}
-                  backgroundJobCount={backgroundJobCount}
-                  onModeChange={updateActiveTurnStopMode}
-                  onStop={() => onInterrupt(activeTurnStopMode)}
-                />
+                {/* Same rule for Stop: a runtime declaring `interrupt: false`
+                    will not act on one, and a Stop that visibly does nothing is
+                    the failure this gate exists to prevent. */}
+                {runtimeAllowsInterrupt ? (
+                  <ActiveTurnStopButton
+                    mode={activeTurnStopMode}
+                    allowQueueChoice={sessionProvider === "claude"}
+                    backgroundJobCount={backgroundJobCount}
+                    onModeChange={updateActiveTurnStopMode}
+                    onStop={() => onInterrupt(activeTurnStopMode)}
+                  />
+                ) : null}
               </>
             ) : (
               (() => {
@@ -6515,17 +6620,27 @@ export function AgentChatComposer({
                 // why, because a local Send affordance here would mean sending to the wrong runtime.
                 // Once turns exist the launch path is closed and the standard local Send returns.
                 const cloudMode = cloudModeActiveForSend;
+                /* A machine row selected in the picker names the send the same
+                   way the compiled cloud row does. "Send" on a composer that is
+                   about to launch somewhere else is the label lying about where
+                   the turn goes — and this is the accessible name, so it is the
+                   only thing a screen reader gets. */
                 const label = parallelChatMode
                   ? "Send to lanes"
-                  : cloudMode
-                    ? "Send to Cursor Cloud"
-                    : "Send";
+                  : machineSendOwner
+                    ? `Send to ${machineSendOwner.label}`
+                    : cloudMode
+                      ? "Send to Cursor Cloud"
+                      : "Send";
                 const description = parallelChatMode
                   ? "Create child lanes and send this prompt with its attachments to every configured model."
-                  : cloudMode
-                    ? "Launch a Cursor Cloud agent with this prompt and the panel's settings."
-                    : "Send this prompt to the selected model.";
-                const backgroundAvailable = Boolean(onSubmitInBackground) && !parallelChatMode && !cloudMode;
+                  : machineSendOwner
+                    ? `Launch this prompt on ${machineSendOwner.label}.`
+                    : cloudMode
+                      ? "Launch a Cursor Cloud agent with this prompt and the panel's settings."
+                      : "Send this prompt to the selected model.";
+                const backgroundAvailable = Boolean(onSubmitInBackground)
+                  && !parallelChatMode && !cloudMode && !machineSendOwner;
                 const sendIcon = cloudMode
                   ? <CloudArrowUp size={14} weight="bold" />
                   : <ArrowUp size={14} weight="bold" />;

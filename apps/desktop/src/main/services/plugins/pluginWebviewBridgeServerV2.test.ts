@@ -99,6 +99,7 @@ function harness(options: { rows?: { key: string; value: unknown }[] } = {}) {
   const clipboard = { text: "copied" };
   const reloads: { pluginId: string; version: string; revision: number }[] = [];
   const openExternalUrl = vi.fn(async () => {});
+  const openPathInEditor = vi.fn(async () => {});
 
   const server = createPluginWebviewBridgeServer({
     domainFor: () => domain as unknown as PluginWebviewDomain,
@@ -106,6 +107,7 @@ function harness(options: { rows?: { key: string; value: unknown }[] } = {}) {
     setConfig: async () => ({}),
     openDeeplink: async () => {},
     openExternalUrl,
+    openPathInEditor,
     sendUiRequest: ({ request }) => {
       requests.push(request);
       return true;

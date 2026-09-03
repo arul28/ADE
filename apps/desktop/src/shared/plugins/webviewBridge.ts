@@ -385,6 +385,32 @@ export const PLUGIN_WEBVIEW_METHODS = [
   "host.subscribe",
   "host.unsubscribe",
   "dialog.submit",
+  // Host pickers. Five names rather than one, for the reason above the answer
+  // types: the list IS the permission model, and each verb's arguments are what
+  // make its picker answerable at all.
+  "ui.pickModel",
+  "ui.pickLane",
+  "ui.pickPermissionMode",
+  "ui.pickReasoningEffort",
+  "ui.pickProvider",
+  // Open a checkout path in the reader's editor or file browser. Answered by
+  // MAIN through the same `app.openPathInEditor` every ADE surface uses, so a
+  // page reaches exactly the editors ADE reaches and gets the same containment
+  // check: a path that escapes the named root is refused there, not here.
+  "ui.openPathInEditor",
+  // Third-party socket contributions. A page that has replaced an ADE surface
+  // has also replaced the place other plugins were drawing into, so it needs to
+  // be able to ask what they published and to press one. Scoped by the socket
+  // KIND, never by plugin — a page lists what the host would have drawn.
+  "sockets.list",
+  "sockets.invoke",
+  // Host-engine placement. See {@link PluginWebviewEngineRect}.
+  "hostEngine.place",
+  "hostEngine.release",
+  // The page's own failure, reported by its preload rather than by the page:
+  // an uncaught error or a CSP violation is exactly what a broken page cannot
+  // be relied upon to tell anyone about itself.
+  "page.error",
 ] as const;
 
 export type PluginWebviewMethod = (typeof PLUGIN_WEBVIEW_METHODS)[number];
@@ -492,8 +518,28 @@ export function sanitizePluginWebviewTheme(value: unknown): PluginWebviewThemeSn
  * launched an agent has no other way to learn that the first turn died. A
  * launched issue would sit on "Ready" forever, which is the one state it is
  * certainly not in. See {@link PluginWebviewChatTurn}.
+ *
+ * `operation`, `conflict` and `review` are the three the ported pages need and
+ * the three ADE already publishes to itself. A History page draws the operation
+ * log, a Graph page draws the conflict assessment beside the DAG, and a Review
+ * page draws runs and findings; each of them was a compiled surface subscribing
+ * to a bus, and a page that could not subscribe to the same bus would have to
+ * poll — which is the difference between a live view and a stale one.
+ *
+ * They carry ids and nothing else, exactly like the entity families. A page
+ * that hears its family moved refetches through `invoke`, where the plugin's own
+ * handler decides what the page is allowed to see. The subscription is a
+ * WAKE-UP, never a data channel.
  */
-export const PLUGIN_WEBVIEW_HOST_KINDS = ["lane", "session", "pr", "chat"] as const;
+export const PLUGIN_WEBVIEW_HOST_KINDS = [
+  "lane",
+  "session",
+  "pr",
+  "chat",
+  "operation",
+  "conflict",
+  "review",
+] as const;
 
 export type PluginWebviewHostKind = (typeof PLUGIN_WEBVIEW_HOST_KINDS)[number];
 
@@ -654,6 +700,71 @@ export type PluginWebviewConfirm = {
   destructive?: boolean;
 };
 
+// ---------------------------------------------------------------------------
+// Host pickers.
+//
+// Five verbs that open ADE's OWN picker — the model list with its provider
+// rail, the lane combobox with its search, the permission pill, the reasoning
+// ladder, the provider rail — anchored to the guest that asked, and answer with
+// what the reader chose.
+//
+// They are separate verbs rather than one `ui.pick({ kind })` because their
+// ARGUMENTS differ and each argument is load-bearing: a reasoning ladder is a
+// property of a model, permission modes are a property of a provider, and a
+// generic verb would have to accept a bag and refuse half of it at runtime. Five
+// named verbs make each requirement a type error in the page's own editor.
+//
+// Every one of them answers `null` for "the reader dismissed it", which is the
+// convention `ui.prompt` already set. None of them answers a partial choice:
+// a picker that closed without a selection chose nothing.
+// ---------------------------------------------------------------------------
+
+/**
+ * What `ui.pickModel` answers.
+ *
+ * The id AND the fast-mode flag, because ADE's own picker sets both in one
+ * gesture — a model row with a fast tier is chosen fast or standard — and a
+ * page receiving only the id would silently drop half of what the reader did.
+ * `fastMode` is false for a model with no fast tier.
+ */
+export type PluginWebviewModelChoice = {
+  modelId: string;
+  fastMode: boolean;
+};
+
+/** What `ui.pickLane` answers. `laneId` is ADE's own lane id. */
+export type PluginWebviewLaneChoice = {
+  laneId: string;
+  /** The lane's display name, so a page need not read the collection back. */
+  name: string;
+};
+
+/**
+ * What `ui.pickPermissionMode` answers.
+ *
+ * `value` is the NATIVE mode — `acceptEdits`, `auto-high` — not the unified
+ * one, and `field` is the launch argument it belongs in. The pair travels
+ * together for the reason `chatCapabilities.ts` gives at length: a page holding
+ * its own provider→field table is holding the table that goes stale when a
+ * sixth provider arrives.
+ */
+export type PluginWebviewPermissionModeChoice = {
+  provider: string;
+  field: string;
+  value: string;
+};
+
+/** What `ui.pickReasoningEffort` answers. `effort` is null for "no reasoning". */
+export type PluginWebviewReasoningEffortChoice = {
+  modelId: string;
+  effort: string | null;
+};
+
+/** What `ui.pickProvider` answers. `provider` is a model registry family. */
+export type PluginWebviewProviderChoice = {
+  provider: string;
+};
+
 /**
  * An issue a page asked to attach to the composer.
  *
@@ -687,6 +798,220 @@ export type PluginWebviewComposerAttach = {
 export type PluginWebviewDialogSubmit = {
   issue: PluginWebviewComposerAttach | null;
 };
+
+// ---------------------------------------------------------------------------
+// Third-party sockets, seen from inside a page
+//
+// A page that replaced an ADE surface also replaced the place OTHER plugins
+// were drawing into. A Graph page is the case that forced this: `graph-node`
+// contributions were drawn by the compiled graph, and the moment the graph
+// became a plugin page those contributions had nowhere to land. So a page can
+// ask the host what was published for a socket kind, draw it in its own idiom,
+// and press it.
+//
+// It is a read of PUBLISHED contributions, never of another plugin's data: the
+// host answers with what it would itself have drawn, which the reader can
+// already see. `sockets.invoke` presses one BY ITS OWN ID — the page never
+// names a plugin or an action, so it cannot reach a handler that was not on a
+// button the host would have shown.
+// ---------------------------------------------------------------------------
+
+/**
+ * One socket contribution as a page draws it.
+ *
+ * Deliberately flat and deliberately small: a label, a mark, and the payload
+ * the publishing plugin attached. `socketId` is the host's own handle for the
+ * row and the ONLY thing `sockets.invoke` accepts, which is what keeps the
+ * press inside what was listed.
+ */
+export type PluginWebviewSocketItem = {
+  /** The host's handle for this contribution. Opaque; pass it back to invoke. */
+  socketId: string;
+  /** Who published it. For attribution in the page's own UI. */
+  pluginId: string;
+  /** That plugin's display name, so a page need not resolve one. */
+  pluginDisplayName?: string;
+  /** The socket kind this row was published for. Echoes the request. */
+  socket: string;
+  label: string;
+  /** Phosphor icon name, the same vocabulary every other surface draws. */
+  icon?: string;
+  /** The publisher's own payload for the row, as it published it. */
+  payload?: Record<string, unknown>;
+};
+
+/** Rows one `sockets.list` answers with. A drawn list, not a table. */
+export const PLUGIN_WEBVIEW_SOCKETS_MAX_ROWS = 200;
+
+// ---------------------------------------------------------------------------
+// Host-engine placement
+//
+// Two engines do not go in a page and are not going to: the Electron Control
+// inspector and the iOS simulator mirror both drive a real window through
+// APIs no guest can be handed, and the git DAG and graph canvases render
+// against renderer state a page cannot see. The spec's answer is neither "port
+// them" nor "keep them compiled": the PAGE owns the layout and the HOST owns
+// the engine, and the page tells the host where to paint it.
+//
+// The rules that make it safe are all here. A page may only place an engine on
+// its own OWNED builtin surface — `ade-app-control` cannot place the simulator
+// — the rect is clamped to the guest's own bounds, and every input verb stays
+// host-side: the page positions the engine, it never reaches into it. A page
+// that could place any engine anywhere would be a plugin drawing ADE's own
+// tools over ADE's own chrome.
+// ---------------------------------------------------------------------------
+
+/**
+ * A rectangle in the guest's own coordinate space, in CSS pixels.
+ *
+ * The page's coordinates, not the window's: the page measures with a
+ * `ResizeObserver` against its own layout and the host adds the guest's offset
+ * itself. A page that had to know where ADE drew it would be a page that breaks
+ * when a sidebar opens.
+ */
+export type PluginWebviewEngineRect = {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+};
+
+/**
+ * The engines a page may ask the host to paint, and who may ask.
+ *
+ * Keyed by engine id, valued by the plugin that owns the builtin surface it
+ * belongs to. A page's request is checked against ITS OWN plugin id — which the
+ * host derived from the guest's origin — so the table is the whole permission
+ * model and there is no second place to widen it.
+ *
+ * The two DAG engines are here until their ports land, exactly as the wave-2
+ * spec says: a Graph or History page that has not finished moving React Flow
+ * inside the guest still needs to draw, and a placement that works today is
+ * what makes that port incremental instead of a flag day.
+ */
+export const PLUGIN_WEBVIEW_HOST_ENGINE_OWNERS: Readonly<Record<string, string>> = {
+  "electron-control": "ade-app-control",
+  simulator: "ade-ios-sim",
+  "git-dag": "ade-history",
+  graph: "ade-graph",
+};
+
+export function pluginWebviewHostEngineOwner(engineId: unknown): string | null {
+  if (typeof engineId !== "string" || engineId.length === 0) return null;
+  if (!Object.hasOwn(PLUGIN_WEBVIEW_HOST_ENGINE_OWNERS, engineId)) return null;
+  return PLUGIN_WEBVIEW_HOST_ENGINE_OWNERS[engineId] ?? null;
+}
+
+/**
+ * Read a rect a page reported, or refuse.
+ *
+ * Every number is finite and non-negative, and the size is bounded — a page
+ * reporting a rect of ten million pixels is a broken observer, and a host that
+ * honoured it would allocate a layer the size of the number. Rounded here so
+ * the host and the page agree on the value that will be used, the same rule
+ * {@link clampPluginWebviewHeight} keeps.
+ */
+export const PLUGIN_WEBVIEW_ENGINE_MAX_PX = 20_000;
+
+export function sanitizePluginWebviewEngineRect(value: unknown): PluginWebviewEngineRect | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const record = value as Record<string, unknown>;
+  const read = (field: string): number | null => {
+    const raw = record[field];
+    if (typeof raw !== "number" || !Number.isFinite(raw)) return null;
+    return Math.round(Math.min(Math.max(raw, 0), PLUGIN_WEBVIEW_ENGINE_MAX_PX));
+  };
+  const x = read("x");
+  const y = read("y");
+  const width = read("width");
+  const height = read("height");
+  if (x === null || y === null || width === null || height === null) return null;
+  // A zero-sized rect is not a placement. It is what a page reports for an
+  // element that has not laid out yet, and painting an engine into it would
+  // show the reader a one-pixel sliver of the inspector.
+  if (width <= 0 || height <= 0) return null;
+  return { x, y, width, height };
+}
+
+/**
+ * Clamp a page's rect to the frame the host actually drew for it.
+ *
+ * The page reports in its own coordinates and cannot see the guest's box, so a
+ * page whose layout thinks it is 1,600 pixels wide inside a 900-pixel pane
+ * would place an engine over ADE's own chrome. The host owns the frame, so the
+ * host owns the clamp. Null when the intersection is empty — the element the
+ * page measured is scrolled out of the frame, and there is nothing to paint.
+ */
+export function clampPluginWebviewEngineRect(
+  rect: PluginWebviewEngineRect,
+  bounds: { width: number; height: number },
+): PluginWebviewEngineRect | null {
+  const maxWidth = Number.isFinite(bounds.width) ? Math.max(0, bounds.width) : 0;
+  const maxHeight = Number.isFinite(bounds.height) ? Math.max(0, bounds.height) : 0;
+  const x = Math.min(rect.x, maxWidth);
+  const y = Math.min(rect.y, maxHeight);
+  const width = Math.min(rect.width, maxWidth - x);
+  const height = Math.min(rect.height, maxHeight - y);
+  if (width <= 0 || height <= 0) return null;
+  return { x, y, width, height };
+}
+
+// ---------------------------------------------------------------------------
+// Page errors
+// ---------------------------------------------------------------------------
+
+/**
+ * Why a page is not drawing, as its own preload saw it.
+ *
+ * The host already notices a guest that FAILED TO LOAD — `did-fail-load` is a
+ * Chromium event and the card has drawn on it since the page tier shipped. What
+ * it cannot see is a page that loaded perfectly and then threw on its first
+ * render, or one whose bundle is silently blocked by the CSP: both leave a
+ * blank frame and a console line nobody is reading. So the preload listens for
+ * `error`, `unhandledrejection` and `securitypolicyviolation` and reports them.
+ *
+ * `kind` matters because the two have different fixes and the doctor counts one
+ * of them: a CSP violation is a build that reached outside the plugin's own
+ * directory, and it is the finding `ade plugin doctor` reports for the plugin.
+ */
+export const PLUGIN_WEBVIEW_PAGE_ERROR_KINDS = ["error", "csp"] as const;
+
+export type PluginWebviewPageErrorKind = (typeof PLUGIN_WEBVIEW_PAGE_ERROR_KINDS)[number];
+
+export function isPluginWebviewPageErrorKind(value: unknown): value is PluginWebviewPageErrorKind {
+  return PLUGIN_WEBVIEW_PAGE_ERROR_KINDS.some((kind) => kind === value);
+}
+
+export const PLUGIN_WEBVIEW_PAGE_ERROR_MESSAGE_MAX_CHARS = 240;
+export const PLUGIN_WEBVIEW_PAGE_ERROR_SOURCE_MAX_CHARS = 400;
+
+export type PluginWebviewPageError = {
+  kind: PluginWebviewPageErrorKind;
+  /** The sentence the card shows. Bounded; never a stack. */
+  message: string;
+  /** The file or blocked URI, when the browser named one. Bounded. */
+  source?: string;
+};
+
+/**
+ * Read a page's own error report, or refuse.
+ *
+ * Bounded here rather than in the card for the reason every other page-authored
+ * string is: this crosses into ADE's own chrome, and a page that could write a
+ * 50,000-character "error" would be drawing over the app through its own
+ * failure path.
+ */
+export function sanitizePluginWebviewPageError(value: unknown): PluginWebviewPageError | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const record = value as Record<string, unknown>;
+  const kind = isPluginWebviewPageErrorKind(record.kind) ? record.kind : "error";
+  const rawMessage = typeof record.message === "string" ? record.message.trim() : "";
+  if (!rawMessage) return null;
+  const message = rawMessage.slice(0, PLUGIN_WEBVIEW_PAGE_ERROR_MESSAGE_MAX_CHARS);
+  const rawSource = typeof record.source === "string" ? record.source.trim() : "";
+  const source = rawSource ? rawSource.slice(0, PLUGIN_WEBVIEW_PAGE_ERROR_SOURCE_MAX_CHARS) : "";
+  return { kind, message, ...(source ? { source } : {}) };
+}
 
 /**
  * The host's synchronous answer to the preload's attach-time handshake.
@@ -758,6 +1083,21 @@ export const PLUGIN_WEBVIEW_UI_VERBS = [
   "ui.confirm",
   "dialog.submit",
   "actionResult",
+  // The pickers are renderer-answered by definition: main has no model list, no
+  // lane combobox and no reader to show them to.
+  "ui.pickModel",
+  "ui.pickLane",
+  "ui.pickPermissionMode",
+  "ui.pickReasoningEffort",
+  "ui.pickProvider",
+  // The socket index and the host engines live in the renderer's own stores —
+  // main has neither — and a page's error card is drawn by the component that
+  // put the guest on screen.
+  "sockets.list",
+  "sockets.invoke",
+  "hostEngine.place",
+  "hostEngine.release",
+  "page.error",
 ] as const;
 
 export type PluginWebviewUiVerb = (typeof PLUGIN_WEBVIEW_UI_VERBS)[number];
@@ -820,10 +1160,29 @@ export const PLUGIN_WEBVIEW_UI_ASK_TIMEOUT_MS = 10 * 60_000;
 
 /** Which timeout a verb gets. See the two constants above. */
 export function pluginWebviewUiTimeoutMs(verb: PluginWebviewUiVerb): number {
-  return verb === "ui.prompt" || verb === "ui.confirm"
+  return PLUGIN_WEBVIEW_UI_ASK_VERBS.has(verb)
     ? PLUGIN_WEBVIEW_UI_ASK_TIMEOUT_MS
     : PLUGIN_WEBVIEW_UI_TIMEOUT_MS;
 }
+
+/**
+ * The verbs that wait on a PERSON rather than on the host.
+ *
+ * A set rather than a chain of `||` because it is now seven names long and the
+ * rule behind it is one rule: a picker the reader is scrolling through is a
+ * question, and a question gets the time a question needs. Getting one of these
+ * wrong shows up as a picker that rejects itself while the reader is still
+ * reading it.
+ */
+const PLUGIN_WEBVIEW_UI_ASK_VERBS: ReadonlySet<PluginWebviewUiVerb> = new Set([
+  "ui.prompt",
+  "ui.confirm",
+  "ui.pickModel",
+  "ui.pickLane",
+  "ui.pickPermissionMode",
+  "ui.pickReasoningEffort",
+  "ui.pickProvider",
+]);
 
 /**
  * The guest's key in the relay, from its `webContents` id.
@@ -1062,6 +1421,39 @@ export type AdePluginWebviewBridge = {
     /** Ask a yes/no. Resolves false when the reader dismissed it. */
     confirm(request: PluginWebviewConfirm): Promise<boolean>;
     /**
+     * Open ADE's own model picker over this page. Resolves to the chosen model
+     * and its fast-mode flag, or null when the reader dismissed it.
+     *
+     * `availableModelIds` narrows the list to the models this page can actually
+     * launch; omit it for ADE's whole catalogue. `value` preselects a row.
+     */
+    pickModel(
+      request?: { value?: string; availableModelIds?: string[] },
+    ): Promise<PluginWebviewModelChoice | null>;
+    /** Open ADE's own lane picker. Null when the reader dismissed it. */
+    pickLane(request?: { value?: string }): Promise<PluginWebviewLaneChoice | null>;
+    /**
+     * Open the permission control for one provider. Null when dismissed.
+     *
+     * `provider` is required: the modes are a provider fact, and a picker with
+     * no provider has no list. `chat.capabilities()` names the providers.
+     */
+    pickPermissionMode(
+      request: { provider: string; value?: string },
+    ): Promise<PluginWebviewPermissionModeChoice | null>;
+    /**
+     * Open the reasoning ladder for one model. Null when dismissed.
+     *
+     * `model` is required, because the ladder is per model — see
+     * `PluginChatModelCapability.reasoningEfforts`. A model with no ladder
+     * resolves null rather than drawing an empty control.
+     */
+    pickReasoningEffort(
+      request: { model: string; value?: string | null },
+    ): Promise<PluginWebviewReasoningEffortChoice | null>;
+    /** Open the provider rail. Null when the reader dismissed it. */
+    pickProvider(request?: { value?: string }): Promise<PluginWebviewProviderChoice | null>;
+    /**
      * Report this page's own content height so a size-to-content placement can
      * grow around it. Call it from a `ResizeObserver`.
      *
@@ -1080,6 +1472,27 @@ export type AdePluginWebviewBridge = {
      * {@link PLUGIN_WEBVIEW_MAX_HEIGHT_PX}.
      */
     resize(size: PluginWebviewResize): void;
+    /**
+     * Open a path from a checkout in the reader's editor, or reveal it in their
+     * file browser.
+     *
+     * `rootPath` is a workspace root ADE already knows — the one
+     * `context.project.root` reports is the ordinary answer — and `target` is
+     * an editor id, `"default"` for the system handler, or `"finder"` to reveal
+     * it. `relativePath` picks a file inside the root; omit it for the root
+     * itself.
+     *
+     * Answered by MAIN through the same path every ADE surface uses, so a page
+     * reaches exactly the editors ADE reaches and gets the same containment
+     * check: a root outside the allowed directories, or a relative path that
+     * escapes it, is refused there. This is not a file-read verb — nothing
+     * comes back but success or a refusal.
+     */
+    openPathInEditor(request: {
+      rootPath: string;
+      relativePath?: string;
+      target: string;
+    }): Promise<void>;
   };
 
   clipboard: {
@@ -1094,12 +1507,56 @@ export type AdePluginWebviewBridge = {
 
   host: {
     /**
-     * Follow lane, session and PR changes in this window's project.
+     * Follow lane, session, PR, chat, operation, conflict and review changes in
+     * this window's project.
      *
      * Frames arrive on `events.on("host", …)`, coalesced. The returned promise
      * resolves to the unsubscribe function; calling it stops the delivery for
      * every kind this call named.
      */
     subscribe(options: { kinds: PluginWebviewHostKind[] }): Promise<() => void>;
+  };
+
+  sockets: {
+    /**
+     * What other plugins published for one socket kind, as the host would have
+     * drawn it. See {@link PluginWebviewSocketItem}.
+     *
+     * A page asks this when it has REPLACED the surface those contributions
+     * were drawn into — a Graph page and its `graph-node` rows are the case
+     * that forced the verb. It answers the whole visible list, this plugin's
+     * own rows included, in the host's own order.
+     */
+    list(socket: string): Promise<PluginWebviewSocketItem[]>;
+    /**
+     * Press one listed contribution, by the `socketId` `list` gave you.
+     *
+     * The page names neither a plugin nor an action: the host resolves both
+     * from the row, so a page can only reach a handler that was already behind
+     * a button the host would have shown. The result carries the same
+     * control-flow answers `invoke` honours, applied by the host.
+     */
+    invoke(socketId: string, args?: Record<string, unknown>): Promise<unknown>;
+  };
+
+  hostEngine: {
+    /**
+     * Ask the host to paint one of its own engines over this page, at a rect in
+     * the page's own coordinates.
+     *
+     * For the two surfaces whose engine cannot live in a guest — the Electron
+     * Control inspector and the iOS simulator mirror — and for the DAG canvases
+     * until their ports land. The PAGE owns the layout: call this from a
+     * `ResizeObserver` on the element you want the engine to fill, and the host
+     * clamps what you ask for to the frame it drew you.
+     *
+     * Refused unless `engineId` belongs to this plugin's own builtin surface —
+     * see {@link PLUGIN_WEBVIEW_HOST_ENGINE_OWNERS} — and refused in a
+     * placement that has no frame to paint over. Every input the engine takes
+     * stays host-side: a page positions it, it never reaches into it.
+     */
+    place(request: { engineId: string; rect: PluginWebviewEngineRect }): Promise<void>;
+    /** Take the engine back down. A no-op when nothing was placed. */
+    release(): Promise<void>;
   };
 };

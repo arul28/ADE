@@ -4363,3 +4363,32 @@ describe("cursorCloudSendBlock", () => {
     })).toBeNull();
   });
 });
+
+/**
+ * The composer's plugin seams, negative half.
+ *
+ * Only the NO-plugin case lives here. The socket source cache is a module
+ * singleton whose first successful load settles it for the whole file, so a
+ * test that installs a plugin host would fix one manifest for every test after
+ * it — the positive cases are in `AgentChatComposer.plugins.test.tsx`, which
+ * owns its own module registry.
+ */
+describe("AgentChatComposer plugin sockets", () => {
+  it("keeps the issue-context entry away when neither core nor a plugin contributes", async () => {
+    // Installing the Linear owner supersedes ADE's compiled Linear surface, so
+    // the core half of the gate is off; no GitHub repo is bound either.
+    seedBuiltinSurfacePlugins(["linear"]);
+
+    render(<AgentChatComposer {...buildComposerProps({
+      sessionId: "chat-1",
+      isActive: true,
+      turnActive: false,
+      draft: "",
+      onAddContextAttachment: vi.fn(),
+    })} />);
+
+    await waitFor(() => expect(screen.getByRole("button", { name: "Send" })).toBeTruthy());
+    expect(screen.queryByRole("button", { name: "Issue context" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "More composer controls" })).toBeNull();
+  });
+});

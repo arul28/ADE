@@ -163,6 +163,37 @@ export type SyncPluginRecordSocket = {
    * upgrade behind a sync change nobody would think to make.
    */
   webviewSurfaceId?: string;
+  /**
+   * The wave-2 fields, on the wire for the reason `webviewSurfaceId` gives.
+   *
+   * `submenu`, `advancedSurfaceId`, `modelsAction` and `runtimeId` are what
+   * make a composer or machine-picker row renderable at all; `triggers`,
+   * `filters`, `webhook`, `template` and `name` are what make an Automations
+   * tile or gallery card renderable. A peer that received the socket kind
+   * without them would have the declaration and nothing to draw from it, which
+   * is the half-render the taxonomy promises never happens.
+   *
+   * Restated structurally rather than imported so this file stays the one
+   * statement of what crosses the wire. The guard below pins the field NAMES
+   * against `PluginManifestSocket`; the shapes are checked where they are
+   * parsed.
+   */
+  submenu?: string;
+  advancedSurfaceId?: string;
+  modelsAction?: string;
+  runtimeId?: string;
+  triggers?: { id: string; label: string; description?: string }[];
+  filters?: {
+    key: string;
+    label: string;
+    kind: string;
+    collection?: string;
+    placeholder?: string;
+    hint?: string;
+  }[];
+  webhook?: { statusAction: string; registerAction: string };
+  template?: Record<string, unknown>;
+  name?: string;
 };
 
 /**

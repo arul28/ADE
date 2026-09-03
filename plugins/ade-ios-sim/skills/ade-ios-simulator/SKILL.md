@@ -3,7 +3,7 @@ name: ade-ios-simulator
 description: Use this skill when you need to see an iOS or SwiftUI change actually running on a simulator — launching the app, tapping/dragging/typing in it, screenshotting or streaming the screen, inspecting on-screen elements, or rendering a SwiftUI preview through Preview Lab — via `ade ios-sim`.
 ---
 
-# ADE iOS Simulator and Preview Lab
+# ADE iOS Sim Control and Preview Lab
 
 ## Quick verify
 

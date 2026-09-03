@@ -127,8 +127,18 @@ export function useCursorCloudDraftState({
     };
   }, [cursorCloudAvailable, laneId]);
 
+  /**
+   * The lane branch's open PR — NOT gated on Cursor Cloud.
+   *
+   * It was, when the launch shelf was the only reader: the shelf offers "open a
+   * PR when the run finishes" and needed to know one already existed. But the
+   * fact itself has nothing to do with which runtime opened the chat — a
+   * branch has a PR or it does not — and the chat header draws the same value
+   * for every chat on a lane. Keeping the Cursor gate here meant the header
+   * chip appeared only on machines with Cursor connected.
+   */
   useEffect(() => {
-    if (!cursorCloudAvailable || !laneId || !laneGitBranch?.trim()) {
+    if (!laneId || !laneGitBranch?.trim()) {
       setExistingPr(null);
       return;
     }
@@ -156,7 +166,7 @@ export function useCursorCloudDraftState({
     return () => {
       cancelled = true;
     };
-  }, [cursorCloudAvailable, laneGitBranch, laneId]);
+  }, [laneGitBranch, laneId]);
 
   const cursorCloudRepoUrl = useMemo(() => {
     const target = repoMatchKey(laneGitRemote);

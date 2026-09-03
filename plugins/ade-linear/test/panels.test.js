@@ -831,18 +831,26 @@ describe("the ids the two halves share", () => {
     assert.notEqual(button.onPress.action, contract.ACTIONS.openInLinear);
   });
 
-  it("offers the signing secret the webhook channel cannot be verified without", () => {
+  it("registers the webhook in one press rather than asking for a pasted secret", () => {
     // A channel that declares `verify` and cannot find its secret FAILS CLOSED
-    // and drops every delivery, so the field must exist before the manifest can
-    // declare verification.
+    // and drops every delivery. The paste box that used to fill it is gone:
+    // `registerWebhook` generates the secret, creates the hook through the
+    // Linear API and stores it in the same act, which is the only order in
+    // which the secret is knowable — Linear shows it once, at creation.
     const panel = panels.buildSettingsPanel({
       connection: CONNECTION,
-      ingress: { status: "Connected", url: "https://relay.ade.dev/hook/abc", secretStored: false },
+      ingress: { status: "Not registered", url: "https://relay.ade.dev/hook/abc", secretStored: false },
     });
-    const form = nodesOf(panel, "form").find((node) => node.submit?.onPress.action === contract.ACTIONS.saveWebhookSecret);
-    assert.ok(form, "no signing-secret form");
-    assert.equal(form.fields[0].kind, "secret", "a credential must be masked");
-    assert.ok(!form.applyOnChange, "a half-typed secret must not commit on blur");
+    const register = nodesOf(panel, "button")
+      .find((node) => node.onPress.action === contract.ACTIONS.registerWebhook);
+    assert.ok(register, "no register button");
+    // And no secret field anywhere, because a page that still asked for one
+    // would be asking for a value the reader no longer has.
+    assert.equal(
+      nodesOf(panel, "form").some((node) => node.fields?.some((field) => field.id === "secret")),
+      false,
+      "the paste-the-secret form is back",
+    );
     // The unverified state says what is actually at risk rather than "not configured".
     const captions = nodesOf(panel, "text").map((node) => node.text).join(" ");
     assert.ok(captions.includes("drops every delivery"), captions);
@@ -1047,9 +1055,11 @@ describe("which Linear app the connection is made with", () => {
     const warnAt = body.findIndex(
       (node) => typeof node.text === "string" && node.text.includes("a personal API key carries none"),
     );
-    const secretAt = body.findIndex((node) => node.component === "form" && node.fields?.[0]?.id === "secret");
-    assert.ok(warnAt !== -1 && secretAt !== -1);
-    assert.ok(warnAt < secretAt, "the warning comes after the field it is about");
+    const registerAt = body.findIndex(
+      (node) => node.onPress?.action === contract.ACTIONS.registerWebhook,
+    );
+    assert.ok(warnAt !== -1 && registerAt !== -1);
+    assert.ok(warnAt < registerAt, "the warning comes after the button it is about");
   });
 
   it("says nothing before sign-in, whichever app this build signs in as", () => {

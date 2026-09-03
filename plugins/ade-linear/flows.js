@@ -174,11 +174,6 @@ function createFlows(options = {}) {
    */
   const movedDone = new Set();
 
-  /** This plugin's settings, defaults applied. */
-  async function config() {
-    return await sdk.config.get().catch(() => ({}));
-  }
-
   /**
    * Create a lane for one issue and link the issue to it.
    *
@@ -213,9 +208,9 @@ function createFlows(options = {}) {
         issue: issueRefFromRow(row),
         role: "primary",
         includeInPr: true,
-        // Closing on merge is what the `moveToDoneOnMerge` setting then acts
-        // on. Recorded on the LINK rather than read from the setting at merge
-        // time, so a link made while the setting was on stays honoured.
+        // What the Done-on-merge automation reads. Recorded on the LINK rather
+        // than decided at merge time, so a lane opened from an issue is one the
+        // rule can act on whether or not the rule existed when it was opened.
         closeOnMerge: true,
       });
       linked = true;
@@ -323,11 +318,27 @@ function createFlows(options = {}) {
       ...permissionFields(input),
     };
 
+    // The kickoff prompt, in the field each verb actually reads.
+    //
+    // This is the launch bug the page tier shipped with. `chat.createSession`
+    // takes `AgentChatCreateArgs`, which has no message field at all: an
+    // `initialMessage` beside it was dropped on the floor, so every Linear
+    // launch created a silent chat and the reader's prompt was never said.
+    // `chat.launchCli` is worse — its kickoff field is `kickoffPrompt` and it
+    // REFUSES a launch without one, so `initialInput` failed the whole call.
+    //
+    // `chat.launchHeadless` is the verb the compiled Linear used
+    // (`LinearQuickViewButton.tsx:412` → `window.ade.agentChat.launch` →
+    // `agentChatService.launchHeadless`), and it is the only chat verb that
+    // both creates the session and RUNS the first turn. An interactive
+    // `sendMessage` after a create only enqueues the turn until a chat pane
+    // mounts and pumps the queue, which for a batch launch of lanes nobody
+    // opens is a kickoff that never runs.
     let session;
     try {
       session = input.sessionType === "cli"
-        ? await sdk.actions.invoke("chat", "launchCli", { ...base, initialInput: prompt })
-        : await sdk.actions.invoke("chat", "createSession", { ...base, initialMessage: prompt });
+        ? await sdk.actions.invoke("chat", "launchCli", { ...base, kickoffPrompt: prompt })
+        : await sdk.actions.invoke("chat", "launchHeadless", { ...base, kickoffText: prompt });
     } catch (error) {
       return failure(error, `Could not start an agent on ${row.identifier}.`);
     }
@@ -352,10 +363,6 @@ function createFlows(options = {}) {
       }
     }
 
-    // The launch transition, ported from `linearLiveStatusService.onAgentLaunched`
-    // but gated on this plugin's own setting rather than an env flag.
-    await moveToStarted(row).catch(() => {});
-
     return {
       ok: true,
       sessionId,
@@ -364,15 +371,16 @@ function createFlows(options = {}) {
   }
 
   /**
-   * Move an issue to the team's first `started` state on launch.
+   * Move an issue to the team's first `started` state.
    *
-   * Only when the user asked for it. The built-in hides this behind an
-   * environment variable nobody sets (`linearLiveStatusService.ts:28`); the
-   * setting is the same behaviour with a switch a person can find.
+   * Was a launch-time side effect gated on a `moveToStartedOnLaunch` toggle in
+   * this plugin's settings. The toggle is gone and so is the side effect: the
+   * transition is an AUTOMATION now, shipped as the `automation-template` entry
+   * the manifest declares, so the user says on which lanes and under which
+   * conditions it happens instead of taking a blanket switch. `startIssueOnLane`
+   * below is the step that template places.
    */
   async function moveToStarted(row) {
-    const settings = await config();
-    if (settings.moveToStartedOnLaunch !== true) return { ok: true, skipped: "setting" };
     const states = await data.states(row.teamKey ?? null);
     const startedId = pickStartedStateId(states);
     if (!startedId || startedId === row.stateId) return { ok: true, skipped: "already" };
@@ -396,13 +404,13 @@ function createFlows(options = {}) {
    * `laneService.listLinearIssuesForLaneSessions`. An issue attached only to a
    * chat inside the lane is therefore moved here exactly as core moves it.
    *
-   * One difference remains, and it is the gate: core is gated on an env flag
-   * and this is gated on the `moveToDoneOnMerge` setting.
+   * One difference remains, and it is the gate: core is gated on an env flag,
+   * and nothing gates this. It is not a blanket behaviour any more — nothing
+   * calls it on a merge event by itself. A user who wants it places the
+   * `close_issue_on_merge` step in an automation, which the manifest also ships
+   * as a one-press `automation-template`, so the conditions are theirs.
    */
   async function closeIssueOnMerge(input = {}) {
-    const settings = await config();
-    if (settings.moveToDoneOnMerge !== true) return { ok: true, moved: 0, skipped: "setting" };
-
     const laneIds = Array.isArray(input.laneIds) ? input.laneIds.filter(Boolean) : [];
     if (laneIds.length === 0) return { ok: true, moved: 0, skipped: "no-lanes" };
 
@@ -475,6 +483,65 @@ function createFlows(options = {}) {
           movedDone.delete(issue.issueId);
           log("warn", `Could not move ${issue.key ?? issue.issueId} to Done: ${error?.message ?? error}`);
         }
+      }
+    }
+    return { ok: true, moved };
+  }
+
+  /**
+   * A lane's Linear issues move to the team's first `started` state.
+   *
+   * The lane-addressed twin of {@link closeIssueOnMerge}, and the replacement
+   * for the `moveToStartedOnLaunch` toggle that used to fire this from inside
+   * `spawnAgentOnIssue`. An automation names a lane — `lane.created` carries
+   * one — and this moves what that lane is working on.
+   *
+   * It reads the same three sources the merge transition reads, minus the
+   * `closeOnMerge` question: that flag says what happens when a PR MERGES, and
+   * a lane starting work has nothing to do with it. Every Linear issue attached
+   * to the lane or to a session inside it is what the lane is working on.
+   */
+  async function startIssueOnLane(input = {}) {
+    const laneIds = Array.isArray(input.laneIds)
+      ? input.laneIds.filter(Boolean)
+      : input.laneId
+        ? [input.laneId]
+        : [];
+    if (laneIds.length === 0) return { ok: true, moved: 0, skipped: "no-lanes" };
+
+    let moved = 0;
+    for (const laneId of laneIds) {
+      let lane;
+      try {
+        lane = await sdk.lanes.get(laneId);
+      } catch (error) {
+        log("warn", `Could not read lane ${laneId}: ${error?.message ?? error}`);
+        continue;
+      }
+      if (!lane) continue;
+
+      const wanted = new Map();
+      const add = (issue) => {
+        if (issue?.provider === "linear" && issue?.issueId) wanted.set(issue.issueId, issue);
+      };
+      add(lane.primaryIssue ?? null);
+      for (const link of Array.isArray(lane.issueLinks) ? lane.issueLinks : []) add(link?.issue);
+      const sessionGroups = await sessionIssues(laneId);
+      for (const group of Array.isArray(sessionGroups) ? sessionGroups : []) {
+        for (const link of Array.isArray(group?.issueLinks) ? group.issueLinks : []) add(link?.issue);
+      }
+      if (wanted.size === 0) continue;
+
+      for (const issue of wanted.values()) {
+        // The STORED row, because `moveToStarted` needs the team key and the
+        // current state id, and an `IssueRef` carries neither reliably.
+        const row = await data.issueRow(issue.issueId).catch(() => null);
+        if (!row) {
+          log("warn", `${issue.key ?? issue.issueId} is not in this project's Linear view; leaving it where it is.`);
+          continue;
+        }
+        const result = await moveToStarted(row).catch((error) => ({ ok: false, error: error?.message ?? String(error) }));
+        if (result?.ok && result.stateId) moved += 1;
       }
     }
     return { ok: true, moved };
@@ -636,6 +703,7 @@ function createFlows(options = {}) {
     linkIssueToLane,
     mergedLanesFromPrIds,
     moveToStarted,
+    startIssueOnLane,
     sessionIssues,
     sessionSetupFor,
     spawnAgentOnIssue,

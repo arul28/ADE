@@ -1,0 +1,111 @@
+/**
+ * The page's one stylesheet.
+ *
+ * `palette.css` is ADE's own `index.css` — the `@theme` block, the dark palette,
+ * the light palette and the base element styles, verbatim. That is what makes the
+ * chrome ported out of `ChatAppControlPanel.tsx` (`text-muted-fg/55`,
+ * `border-white/[0.08]`, `bg-black/20`) resolve to exactly the colours the
+ * compiled pane draws with.
+ *
+ * Tailwind runs at BUILD time and emits this file as one same-origin stylesheet.
+ * The page's content policy is `style-src 'self' 'unsafe-inline'` and
+ * `script-src 'self'`, so a play-CDN Tailwind would be blocked; a build step is
+ * the only way to have the app's utilities inside a guest.
+ */
+
+@import "./palette.css";
+
+/**
+ * Tailwind scans the kit too.
+ *
+ * `@ade-dev/ui` components emit TWO class vocabularies on the same element: the
+ * app's Tailwind utilities and a stable `ade-*` class the kit's injected
+ * stylesheet implements. Inside the desktop renderer Tailwind is present and
+ * nothing is injected, so the utilities do the drawing — and this page is that
+ * case, because Tailwind runs here at build time.
+ *
+ * But Tailwind only generates a class it has SEEN, and it does not look inside
+ * `node_modules` on its own. Without this line every class that appears only in
+ * the kit is absent from the built stylesheet — `Button`'s hover, active and
+ * disabled states, `EmptyState`'s whole layout — so a kit component draws as a
+ * plain box beside a ported control that draws correctly.
+ *
+ * The path names a FILE, not the directory holding it: a directory source is
+ * filtered through `.gitignore`, and `node_modules` is ignored there. It points
+ * at the built output rather than the source because the build is what this
+ * page imports. Only the barrel is named, because this page draws only what the
+ * barrel re-exports — no lane combobox, no dialog shell, no attachment chips.
+ */
+@source "../../node_modules/@ade-dev/ui/dist/index.js";
+
+/* ═══════════════════════════════════════════════════════════
+   Vendored fonts — `font-src 'self'` only.
+   Copied from `plugins/ade-linear/page/public/fonts`, which took them from
+   apps/desktop/node_modules. A CDN face would be blocked by the policy.
+   ═══════════════════════════════════════════════════════════ */
+
+@font-face {
+  font-family: "Geist";
+  src: url("/fonts/Geist-Variable.woff2") format("woff2");
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Geist Mono";
+  src: url("/fonts/GeistMono-Variable.woff2") format("woff2");
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "JetBrains Mono";
+  src: url("/fonts/jetbrains-mono-latin-wght-normal.woff2") format("woff2");
+  font-weight: 100 800;
+  font-style: normal;
+  font-display: swap;
+}
+
+/* ═══════════════════════════════════════════════════════════
+   Guest layout.
+
+   A guest has no app chrome around it, so the page IS the viewport. The pane
+   fills it and scrolls inside its own columns, never on the body — the reserved
+   rect is measured against the viewport, and a body that scrolled would report a
+   rect the host paints in the wrong place.
+   ═══════════════════════════════════════════════════════════ */
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  overflow: hidden;
+  background: transparent;
+}
+
+body[data-ade-placement="tab"],
+body[data-ade-placement="pane"],
+body[data-ade-placement="drawer"],
+body[data-ade-placement="overlay"] {
+  background-color: var(--color-bg);
+}
+
+/* ═══════════════════════════════════════════════════════════
+   The reserved rect.
+
+   The live view is NOT drawn by this page. The host engine paints
+   `electron-control` into the rect this element occupies, so the element itself
+   must stay empty of anything the host would cover and must never collapse to
+   zero — a zero rect is a placement the host cannot honour, and the page would
+   look like it had simply lost the stream.
+   ═══════════════════════════════════════════════════════════ */
+
+[data-ade-engine-rect] {
+  min-height: 240px;
+}

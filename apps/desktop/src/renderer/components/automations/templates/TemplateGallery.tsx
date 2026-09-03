@@ -1,5 +1,7 @@
 import React from "react";
 import type { AutomationRuleDraft } from "../../../../shared/types";
+import { usePluginAutomationTemplates } from "../../plugins/sockets/PluginAutomationTemplates";
+import { PluginTemplateCard } from "./PluginTemplateCard";
 import { TemplateCard } from "./TemplateCard";
 import { TEMPLATE_GROUPS } from "./templateData";
 import { useOfferedTemplateFilter } from "./useOfferedTemplates";
@@ -10,6 +12,17 @@ export function TemplateGallery({
   onUseTemplate: (draft: Omit<AutomationRuleDraft, "id">) => void;
 }) {
   const offered = useOfferedTemplateFilter();
+  /**
+   * Plugin templates, in one group AFTER every group ADE ships.
+   *
+   * One group rather than a group per plugin: most plugins ship one or two
+   * playbooks, and a column of single-card headings would turn the gallery into
+   * a table of contents. Attribution is on the card instead, where the reader is
+   * already looking. The group is absent when nothing survives normalization —
+   * see `normalizePluginTemplateDraft`, which drops a body ADE cannot make a
+   * rule out of rather than offering a card that seeds an empty one.
+   */
+  const pluginTemplates = usePluginAutomationTemplates();
   // A group whose every template was withheld drops out too, the same way
   // `templateData` already drops a group nothing is filed under. An empty
   // heading over an empty grid would read as a load failure.
@@ -42,6 +55,19 @@ export function TemplateGallery({
             </div>
           </div>
         ))}
+
+        {pluginTemplates.length > 0 ? (
+          <div>
+            <div className="mb-3 mt-7 text-[11px] font-semibold uppercase tracking-[0.12em] text-muted-fg/60">
+              From plugins
+            </div>
+            <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3">
+              {pluginTemplates.map((card) => (
+                <PluginTemplateCard key={card.id} card={card} onUse={() => onUseTemplate(card.draft)} />
+              ))}
+            </div>
+          </div>
+        ) : null}
       </div>
     </div>
   );

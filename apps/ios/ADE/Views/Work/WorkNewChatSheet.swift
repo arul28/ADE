@@ -50,80 +50,7 @@ struct WorkNewChatSheet: View {
     return nil
   }
 
-  var providerOptions: [WorkProviderOption] {
-    [
-      WorkProviderOption(
-        id: "claude",
-        title: "Claude",
-        subtitle: "Long-form reasoning and review",
-        icon: providerIcon("claude"),
-        tint: providerTint("claude")
-      ),
-      WorkProviderOption(
-        id: "codex",
-        title: "Codex",
-        subtitle: "Fast code execution and edits",
-        icon: providerIcon("codex"),
-        tint: providerTint("codex")
-      ),
-      WorkProviderOption(
-        id: "cursor",
-        title: "Cursor",
-        subtitle: "Cursor-native chat sessions",
-        icon: providerIcon("cursor"),
-        tint: providerTint("cursor")
-      ),
-      WorkProviderOption(
-        id: "opencode",
-        title: "OpenCode",
-        subtitle: "Open workflows and tools",
-        icon: providerIcon("opencode"),
-        tint: providerTint("opencode")
-      ),
-      WorkProviderOption(
-        id: "pi",
-        title: "Pi",
-        subtitle: "Pi-native models and sessions",
-        icon: providerIcon("pi"),
-        tint: providerTint("pi")
-      ),
-      WorkProviderOption(
-        id: "copilot",
-        title: "GitHub Copilot",
-        subtitle: "Copilot CLI on the paired Mac",
-        icon: providerIcon("copilot"),
-        tint: providerTint("copilot")
-      ),
-      WorkProviderOption(
-        id: "grok",
-        title: "Grok",
-        subtitle: "Grok CLI on the paired Mac",
-        icon: providerIcon("grok"),
-        tint: providerTint("grok")
-      ),
-      WorkProviderOption(
-        id: "droid",
-        title: "Droid",
-        subtitle: "Factory Droid sessions",
-        icon: providerIcon("droid"),
-        tint: providerTint("droid")
-      ),
-      WorkProviderOption(
-        id: "kimi",
-        title: "Kimi",
-        subtitle: "Kimi Code on the paired Mac",
-        icon: providerIcon("kimi"),
-        tint: providerTint("kimi")
-      ),
-      WorkProviderOption(
-        id: "qwen",
-        title: "Qwen",
-        subtitle: "Qwen Code on the paired Mac",
-        icon: providerIcon("qwen"),
-        tint: providerTint("qwen")
-      ),
-    ]
-  }
+  var providerOptions: [WorkProviderOption] { workProviderOptions() }
 
   var body: some View {
     NavigationStack {
@@ -523,6 +450,89 @@ struct WorkNewChatSheet: View {
     }
     busy = false
   }
+}
+
+/// The providers a new chat can be started with, in the order the sheet draws
+/// them.
+///
+/// A free function rather than a property on the sheet because it is now read
+/// from two places: this sheet, and the plugin page tier's `ui.pickProvider`,
+/// which presents the SAME list. Two copies would drift the moment a provider
+/// is added, and a plugin page offering a provider ADE no longer starts is a
+/// launch form that fails at Send.
+func workProviderOptions() -> [WorkProviderOption] {
+    [
+      WorkProviderOption(
+        id: "claude",
+        title: "Claude",
+        subtitle: "Long-form reasoning and review",
+        icon: providerIcon("claude"),
+        tint: providerTint("claude")
+      ),
+      WorkProviderOption(
+        id: "codex",
+        title: "Codex",
+        subtitle: "Fast code execution and edits",
+        icon: providerIcon("codex"),
+        tint: providerTint("codex")
+      ),
+      WorkProviderOption(
+        id: "cursor",
+        title: "Cursor",
+        subtitle: "Cursor-native chat sessions",
+        icon: providerIcon("cursor"),
+        tint: providerTint("cursor")
+      ),
+      WorkProviderOption(
+        id: "opencode",
+        title: "OpenCode",
+        subtitle: "Open workflows and tools",
+        icon: providerIcon("opencode"),
+        tint: providerTint("opencode")
+      ),
+      WorkProviderOption(
+        id: "pi",
+        title: "Pi",
+        subtitle: "Pi-native models and sessions",
+        icon: providerIcon("pi"),
+        tint: providerTint("pi")
+      ),
+      WorkProviderOption(
+        id: "copilot",
+        title: "GitHub Copilot",
+        subtitle: "Copilot CLI on the paired Mac",
+        icon: providerIcon("copilot"),
+        tint: providerTint("copilot")
+      ),
+      WorkProviderOption(
+        id: "grok",
+        title: "Grok",
+        subtitle: "Grok CLI on the paired Mac",
+        icon: providerIcon("grok"),
+        tint: providerTint("grok")
+      ),
+      WorkProviderOption(
+        id: "droid",
+        title: "Droid",
+        subtitle: "Factory Droid sessions",
+        icon: providerIcon("droid"),
+        tint: providerTint("droid")
+      ),
+      WorkProviderOption(
+        id: "kimi",
+        title: "Kimi",
+        subtitle: "Kimi Code on the paired Mac",
+        icon: providerIcon("kimi"),
+        tint: providerTint("kimi")
+      ),
+      WorkProviderOption(
+        id: "qwen",
+        title: "Qwen",
+        subtitle: "Qwen Code on the paired Mac",
+        icon: providerIcon("qwen"),
+        tint: providerTint("qwen")
+      ),
+  ]
 }
 
 struct WorkProviderOption: Identifiable {

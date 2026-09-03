@@ -1,6 +1,6 @@
 {
   "name": "ade-app-control",
-  "version": "1.1.0",
+  "version": "2.0.0",
   "displayName": "Electron Control",
   "description": "Drive and inspect Electron apps — the same Electron Control ADE already ships, as a plugin.",
   "icon": "desktop",
@@ -16,6 +16,17 @@
       "refreshAction": "refreshStatus"
     }
   ],
+  "surfaces": [
+    {
+      "kind": "webview",
+      "id": "control",
+      "title": "Electron Control",
+      "icon": "desktop",
+      "entryHtml": "dist/index.html",
+      "panelId": "main",
+      "mobile": false
+    }
+  ],
   "sockets": [
     {
       "socket": "work-rail-pane",
@@ -23,7 +34,8 @@
       "id": "control-pane",
       "label": "Electron Control",
       "icon": "desktop",
-      "panelId": "main"
+      "panelId": "main",
+      "webviewSurfaceId": "control"
     },
     {
       "socket": "command-palette-action",
@@ -31,11 +43,17 @@
       "id": "palette-control",
       "label": "Electron Control",
       "icon": "desktop",
-      "actionId": "openControl"
+      "actionId": "openControl",
+      "webviewSurfaceId": "control"
     }
   ],
   "collections": {
-    "status": { "sync": true }
+    "status": {
+      "sync": true
+    },
+    "ui-state": {
+      "sync": false
+    }
   },
   "tools": [
     {
@@ -50,6 +68,8 @@
     }
   ],
   "cli": [],
-  "skills": ["skills"],
+  "skills": [
+    "skills"
+  ],
   "official": true
 }

@@ -279,15 +279,25 @@ describe("the same verbs as automation steps", () => {
     assert.match((await automation.steps.assignIssue({ issueId: "ENG-1" })).message, /Cleared the assignee/);
   });
 
-  it("point at the setting when close-on-merge is off", async () => {
+  // No setting gates it any more. The two issue-transition toggles are gone
+  // and each is an automation the reader writes, so the step reports what it
+  // did rather than pointing at a checkbox that no longer exists.
+  it("report what they moved rather than naming a setting", async () => {
     const { automation } = await seeded();
     const result = await automation.steps.closeIssueOnMerge({ laneId: "lane-1" });
     assert.equal(result.ok, true);
-    assert.match(result.message, /Turn on/);
+    assert.match(result.message, /Moved \d+ issues? to Done\./);
+  });
+
+  it("move a lane's issues to In Progress on the launch template's step", async () => {
+    const { automation } = await seeded({ sdk: { lanes: [] } });
+    const result = await automation.steps.startIssueOnLane({ laneId: "lane-1" });
+    assert.equal(result.ok, true);
+    assert.match(result.message, /Moved 0 issues to In Progress\./);
   });
 
   it("take one lane id or a list of them", async () => {
-    const { automation } = await seeded({ sdk: { config: { moveToDoneOnMerge: true }, lanes: [] } });
+    const { automation } = await seeded({ sdk: { lanes: [] } });
     assert.match((await automation.steps.closeIssueOnMerge({ laneId: "lane-1" })).message, /Moved 0 issues/);
     assert.match((await automation.steps.closeIssueOnMerge({ laneIds: ["a", "b"] })).message, /Moved 0 issues/);
     assert.match((await automation.steps.closeIssueOnMerge({})).message, /Moved 0 issues/);

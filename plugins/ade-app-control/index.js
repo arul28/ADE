@@ -1,16 +1,23 @@
 // ade-app-control — ADE's Electron Control product as a plugin.
 //
-// The compiled pane is a desktop CDP/PTY inspector. This package is the same
-// product as a vocabulary panel every client draws:
+// The compiled pane was a desktop CDP/PTY inspector. This package is the same
+// product in two halves:
 //
-//   * desktop mounts that compiled pane through `canvas` / `electron-control`;
-//   * the Work rail contributes a `work-rail-pane` that the host wires to the
-//     same pane, so chat context insertion stays identical to compiled;
-//   * phone and terminal list the bound status row.
+//   * `page/` draws ALL the chrome — the launch and attach rows, the status
+//     pill, the window picker, the blockers card, the inspect list and the
+//     type-text field — and reserves a rect the HOST paints the live app view
+//     into. Both sockets name it through `webviewSurfaceId: "control"`.
+//   * this file is the child the page invokes. It holds the SDK binding, the
+//     status row every non-page client lists, and `pageActions.js`, which is the
+//     only thing that talks to the `app_control` action domain.
 //
-// The host brain stays. This child only shapes a status row and reads
-// `app_control.getStatus`. `official: true` marks the bundled package; it buys
-// no extra SDK.
+// The CDP engine stays in the host, and so does the screencast: a page that
+// relayed thirty base64 frames a second would pay a structured clone apiece for
+// a picture it cannot draw any faster than the host can.
+//
+// The `main` panel is the FALLBACK now, not the product — the phone and the
+// terminal draw it, because no phone is the computer the Electron app is running
+// on. `official: true` marks the bundled package; it buys no extra SDK.
 
 "use strict";
 
@@ -21,6 +28,7 @@ const {
   statusRow,
 } = require("./format");
 const { build } = require("./panels");
+const { createPageActions } = require("./pageActions");
 
 const PUBLISH_ATTEMPTS = 5;
 const PUBLISH_RETRY_MS = 3_000;
@@ -105,7 +113,31 @@ exports.deactivate = async () => {
   sdk = null;
 };
 
+/**
+ * The page's own action table, built at LOAD.
+ *
+ * A page is a webview the reader can open the instant the rail is drawn, which
+ * is well before `activate`'s first `getStatus` has settled. A table built at
+ * activate would answer "no such action" there and the page would draw its
+ * blockers card and stay in it — so this is built now and reads `sdk` through a
+ * getter, which is null until `activate` binds it and which every handler in
+ * `pageActions.js` checks.
+ */
+const pageActions = createPageActions({
+  get sdk() { return sdk; },
+});
+
+/**
+ * The action table the host dispatches into.
+ *
+ * The two halves are DISJOINT: no id is defined by both, and
+ * `test/pageActions.test.js` asserts it. The page's ids are all prefixed
+ * `page…` and this half's are not, which is what keeps them apart by
+ * construction rather than by merge order.
+ */
 exports.actions = {
+  ...pageActions,
+
   async refreshStatus() {
     const result = await refreshStatus();
     if (result.error) return { message: result.error, ok: false };
@@ -126,6 +158,7 @@ exports.actions = {
 };
 
 exports.__internals = {
+  pageActions,
   refreshStatus,
   cacheRef: () => cache,
   setCache(next) {

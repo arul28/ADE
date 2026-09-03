@@ -11,7 +11,7 @@
  * pane and the top-bar quick view both routed every 1..N issue launch through
  * the same `BatchLaunchModal`, so a reader configured the model, the kickoff
  * prompt, the branch and the lane target once, wherever they started from.
- * `useLinearBatchLaunch` is that flow, shared with `QuickViewEntry`; this entry
+ * `useLinearBatchLaunch` is that flow, now in `lib/linearLaunchFlow`; this entry
  * hands it to the browser and renders the two elements it returns. A tab-local
  * loop over `launchAgentOnIssue` would be a second implementation with its own
  * silent defaults for every one of those choices.
@@ -24,7 +24,7 @@ import {
   LinearIssueBrowser,
   type BrowserIssue,
 } from "../components/LinearIssueBrowser";
-import { useLinearBatchLaunch } from "../components/LinearQuickViewPanel";
+import { useLinearBatchLaunch } from "../lib/linearLaunchFlow";
 import { launchAgentOnIssue } from "../host/actions";
 import { openSettings, toast } from "../host/ui";
 import { useHostLanes } from "../host/useHostEntities";

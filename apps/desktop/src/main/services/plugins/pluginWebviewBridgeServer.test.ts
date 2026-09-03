@@ -75,12 +75,14 @@ function harness(): Harness {
   const setConfig = vi.fn(async () => ({ token: "written" }));
   const openDeeplink = vi.fn(async () => {});
   const openExternalUrl = vi.fn(async () => {});
+  const openPathInEditor = vi.fn(async () => {});
   const server = createPluginWebviewBridgeServer({
     domainFor: () => domain as unknown as PluginWebviewDomain,
     putCollection,
     setConfig,
     openDeeplink,
     openExternalUrl,
+    openPathInEditor,
     sendUiRequest: () => true,
     readClipboard: () => "",
     writeClipboard: () => {},

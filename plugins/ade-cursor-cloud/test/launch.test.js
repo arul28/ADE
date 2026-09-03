@@ -6,12 +6,17 @@ const { describe, it } = require("node:test");
 const {
   agentNameFromPrompt,
   buildCreateRequest,
+  clearIdempotencyKey,
   collectSecretValues,
+  ensureExistingLaneOriginReady,
   findConnectedRepo,
+  idempotencyKeyFor,
   isInjectableSecretName,
   laneSecretsKey,
+  launchUnavailableReason,
   readComposerLaunch,
   readLaunchForm,
+  resolvePrCreateFields,
 } = require("../launch");
 const { buildFleetPanel, buildLaunchPanel, fleetFilterRow, fleetWhere, unavailableReason } = require("../panels");
 
@@ -299,5 +304,211 @@ describe("the fleet panel's five states", () => {
       assert.ok(!list.bind.allowActions.includes("createRun"), "a row may not launch a new agent");
       assert.deepEqual(list.bind.where, fleetWhere());
     }
+  });
+});
+
+describe("the create-time fields the compiled composer always sent", () => {
+  it("sends startingRef, an attached PR, and the two branch flags", () => {
+    const request = buildCreateRequest({
+      prompt: "fix it",
+      repoUrl: "https://github.com/acme/app",
+      startingRef: "ade/fix",
+      prUrl: "https://github.com/acme/app/pull/7",
+      workOnCurrentBranch: true,
+      skipReviewerRequest: true,
+    });
+    assert.deepEqual(request, {
+      prompt: { text: "fix it" },
+      repos: [{ url: "https://github.com/acme/app", startingRef: "ade/fix" }],
+      prUrl: "https://github.com/acme/app/pull/7",
+      workOnCurrentBranch: true,
+      skipReviewerRequest: true,
+    });
+  });
+
+  it("keeps `branch` working as the older caller's word for startingRef", () => {
+    const request = buildCreateRequest({ prompt: "go", repoUrl: "u", branch: "ade/x" });
+    assert.equal(request.repos[0].startingRef, "ade/x");
+  });
+});
+
+describe("the PR fields, which are creation-time only", () => {
+  it("attaches to a PR the branch already has instead of asking for a second", () => {
+    assert.deepEqual(
+      resolvePrCreateFields({ existingPrUrl: " https://github.com/acme/app/pull/7 ", autoCreatePR: true }),
+      { autoCreatePR: false, prUrl: "https://github.com/acme/app/pull/7" },
+    );
+  });
+
+  it("omits prUrl entirely rather than sending it null", () => {
+    const fields = resolvePrCreateFields({ autoCreatePR: true });
+    assert.deepEqual(fields, { autoCreatePR: true });
+    assert.equal("prUrl" in fields, false);
+    assert.deepEqual(resolvePrCreateFields({}), { autoCreatePR: false });
+  });
+});
+
+describe("the launch ladder, in the composer's own order", () => {
+  const ready = {
+    repoProbe: "ready",
+    laneId: "lane-1",
+    remoteProbe: "ready",
+    laneRemote: "git@github.com:acme/app.git",
+    repoConnected: true,
+  };
+
+  it("names the thing that is actually true right now", () => {
+    assert.equal(launchUnavailableReason({ repoProbe: "loading" }), "Checking Cursor Cloud…");
+    assert.equal(
+      launchUnavailableReason({ repoProbe: "error", repoProbeMessage: "Cursor is rate limiting this key" }),
+      "Cursor is rate limiting this key",
+    );
+    assert.equal(
+      launchUnavailableReason({ ...ready, laneId: null }),
+      "Choose a lane before sending to Cursor Cloud.",
+    );
+    assert.equal(
+      launchUnavailableReason({ ...ready, remoteProbe: "loading" }),
+      "Checking this lane's git remote…",
+    );
+    assert.equal(
+      launchUnavailableReason({ ...ready, remoteProbe: "error", remoteError: "not a git repository" }),
+      "Could not read this lane's git remote: not a git repository",
+    );
+    assert.equal(
+      launchUnavailableReason({ ...ready, remoteProbe: "error" }),
+      "Could not read this lane's git remote: The git remote read failed.",
+    );
+    assert.equal(
+      launchUnavailableReason({ ...ready, laneRemote: null }),
+      "This lane has no GitHub remote, so there is nothing for Cursor Cloud to clone.",
+    );
+    assert.equal(
+      launchUnavailableReason({ ...ready, repoConnected: false }),
+      "This repo is not connected to Cursor. Connect it in Cursor, then try again.",
+    );
+    assert.equal(launchUnavailableReason(ready), null);
+  });
+
+  it("never blames a missing remote for a probe that is still in flight", () => {
+    // The whole reason the probes are tri-state: a pending read reported as
+    // "not connected" is a sentence the reader cannot act on.
+    assert.equal(launchUnavailableReason({ repoProbe: "loading", laneRemote: null }), "Checking Cursor Cloud…");
+    assert.equal(
+      launchUnavailableReason({ ...ready, remoteProbe: "loading", laneRemote: null }),
+      "Checking this lane's git remote…",
+    );
+  });
+
+  it("checks the model only for a caller that is about to send", () => {
+    assert.equal(launchUnavailableReason({ ...ready, catalogModelIds: ["composer-2"] }), null);
+    assert.equal(
+      launchUnavailableReason({ ...ready, checkModel: true, catalogModelIds: ["composer-2"], modelId: "gpt-9" }),
+      "Choose a Cursor Cloud model first",
+    );
+    assert.equal(
+      launchUnavailableReason({ ...ready, checkModel: true, catalogModelIds: [], modelId: "composer-2" }),
+      "Cursor's model list has not loaded yet. Open the model picker to load it, then try again.",
+    );
+    assert.equal(
+      launchUnavailableReason({ ...ready, checkModel: true, catalogModelIds: ["composer-2"], modelId: "composer-2" }),
+      null,
+    );
+  });
+});
+
+describe("preparing origin before Cursor clones it", () => {
+  function fakeGit(sync, options = {}) {
+    const pushes = [];
+    return {
+      pushes,
+      getSyncStatus: async () => {
+        if (options.syncThrows) throw options.syncThrows;
+        return sync;
+      },
+      push: async (args) => {
+        pushes.push(args);
+        if (options.pushThrows) throw options.pushThrows;
+      },
+    };
+  }
+
+  it("blocks a diverged branch rather than force-pushing over origin", async () => {
+    const git = fakeGit({ hasUpstream: true, diverged: true, ahead: 2, behind: 3, upstreamRef: "origin/ade/x" });
+    await assert.rejects(
+      ensureExistingLaneOriginReady({ laneId: "lane-1", git }),
+      /behind origin and also has local commits/,
+    );
+    assert.deepEqual(git.pushes, []);
+  });
+
+  it("blocks an ahead-and-behind branch even when git did not call it diverged", async () => {
+    const git = fakeGit({ hasUpstream: true, diverged: false, ahead: 1, behind: 1 });
+    await assert.rejects(ensureExistingLaneOriginReady({ laneId: "lane-1", git }), /Pull or rebase/);
+  });
+
+  it("skips the push when origin is simply newer", async () => {
+    // Origin is what the cloud clones, and it already has everything.
+    const git = fakeGit({ hasUpstream: true, diverged: false, ahead: 0, behind: 4 });
+    assert.deepEqual(await ensureExistingLaneOriginReady({ laneId: "lane-1", git }), { pushed: false });
+    assert.deepEqual(git.pushes, []);
+  });
+
+  it("pushes a branch with no upstream, and one with local commits", async () => {
+    const fresh = fakeGit({ hasUpstream: false, ahead: 0, behind: 0 });
+    assert.deepEqual(await ensureExistingLaneOriginReady({ laneId: "lane-1", git: fresh }), { pushed: true });
+    assert.deepEqual(fresh.pushes, [{ laneId: "lane-1" }]);
+
+    const ahead = fakeGit({ hasUpstream: true, diverged: false, ahead: 2, behind: 0 });
+    await ensureExistingLaneOriginReady({ laneId: "lane-1", git: ahead });
+    assert.deepEqual(ahead.pushes, [{ laneId: "lane-1" }]);
+  });
+
+  it("pushes rather than assuming the worst when the sync read fails", async () => {
+    const git = fakeGit(null, { syncThrows: new Error("no upstream configured") });
+    await ensureExistingLaneOriginReady({ laneId: "lane-1", git });
+    assert.deepEqual(git.pushes, [{ laneId: "lane-1" }]);
+  });
+
+  it("rewrites git's stderr into a sentence with an action in it", async () => {
+    const rejected = fakeGit({ hasUpstream: false }, {
+      pushThrows: new Error("! [rejected] ade/x -> ade/x (fetch first)\nhint: Updates were rejected"),
+    });
+    await assert.rejects(
+      ensureExistingLaneOriginReady({ laneId: "lane-1", branchHint: "ade/x", git: rejected }),
+      /^Error: Branch ade\/x is behind origin, so ADE could not push it\. Pull or rebase in the lane, then send again\.$/,
+    );
+
+    const denied = fakeGit({ hasUpstream: false }, { pushThrows: new Error("Permission denied (publickey).") });
+    await assert.rejects(
+      ensureExistingLaneOriginReady({ laneId: "lane-1", git: denied }),
+      /GitHub refused the push\. Check your access, then send again\.$/,
+    );
+
+    const other = fakeGit({ hasUpstream: false }, { pushThrows: new Error("\n  the remote hung up  \nsecond line") });
+    await assert.rejects(
+      ensureExistingLaneOriginReady({ laneId: "lane-1", git: other }),
+      /ADE could not push this lane's branch to origin: the remote hung up$/,
+    );
+  });
+});
+
+describe("the idempotency memo", () => {
+  it("gives one key per draft, so a retry adopts instead of duplicating", () => {
+    const first = idempotencyKeyFor("fix the sync test", "https://github.com/acme/app");
+    assert.equal(idempotencyKeyFor("fix the sync test", "https://github.com/acme/app"), first);
+    // A different prompt, or the same prompt against a different repo, is a
+    // different launch and must not adopt this agent.
+    assert.notEqual(idempotencyKeyFor("fix the lint", "https://github.com/acme/app"), first);
+    assert.notEqual(idempotencyKeyFor("fix the sync test", "https://github.com/acme/other"), first);
+  });
+
+  it("keeps the key after a failure and drops it after a success", () => {
+    const key = idempotencyKeyFor("ship it", "https://github.com/acme/app");
+    // A failure changes nothing: the next attempt reuses the key and Cursor
+    // answers with the agent it already made.
+    assert.equal(idempotencyKeyFor("ship it", "https://github.com/acme/app"), key);
+    clearIdempotencyKey("ship it", "https://github.com/acme/app");
+    assert.notEqual(idempotencyKeyFor("ship it", "https://github.com/acme/app"), key);
   });
 });

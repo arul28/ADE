@@ -35,13 +35,58 @@ const {
   statusFromStreamMessages,
   transcriptFromTurns,
 } = require("./conversation");
-const { normalizeRunStatus } = require("./format");
+const { fleetRunStatus, normalizeRunStatus, statusTone } = require("./format");
 
 /** One `chat.hydrate` call's ceiling, from `PLUGIN_CHAT_HYDRATE_MAX_ENTRIES`. */
 const HYDRATE_PAGE = 500;
 
 /** This plugin's one declared chat runtime, as the manifest spells it. */
 const RUNTIME_ID = "cloud-agent";
+
+/**
+ * How long Cursor's own name for an agent is believed.
+ *
+ * Verbatim from `cursorCloudConversation.ts:CURSOR_CLOUD_REMOTE_NAME_READ_TTL_MS`.
+ * A watched mirror ticks every three seconds during an active run, and a rename
+ * on cursor.com is not worth twenty extra API calls a minute per chat.
+ */
+const REMOTE_NAME_READ_TTL_MS = 60_000;
+
+/** The pull request one run pushed for this project, if it pushed one. */
+function prUrlFromRun(run) {
+  const branches = Array.isArray(run?.git?.branches) ? run.git.branches : [];
+  for (const entry of branches) {
+    const prUrl = typeof entry?.prUrl === "string" ? entry.prUrl.trim() : "";
+    if (prUrl) return prUrl;
+  }
+  const flat = typeof run?.git?.prUrl === "string" ? run.git.prUrl.trim() : "";
+  return flat || null;
+}
+
+/** The model id one run named, wherever Cursor put it. */
+function modelIdFromRun(run) {
+  const nested = typeof run?.model?.id === "string" ? run.model.id.trim() : "";
+  if (nested) return nested;
+  const flat = typeof run?.modelId === "string" ? run.modelId.trim() : "";
+  return flat || null;
+}
+
+/**
+ * The chat header's chips, in the tone words the fleet row already uses.
+ *
+ * `statusTone` is `format.js`'s, so a chip beside a chat and a badge on a fleet
+ * row can never disagree about what colour a run is. There is no red: a failure
+ * is `warning`, which is the house rule.
+ */
+function headerChips(state) {
+  const chips = [];
+  if (state.status) {
+    chips.push({ text: String(state.status).toUpperCase(), tone: statusTone(state.status) });
+  }
+  if (state.branch) chips.push({ text: state.branch, tone: "neutral" });
+  if (state.modelId) chips.push({ text: state.modelId, tone: "neutral" });
+  return chips;
+}
 
 /**
  * Cursor's run status as the four states ADE's settled lifecycle understands.
@@ -163,6 +208,128 @@ function createChatRuntime(deps) {
   const watching = new Map();
   /** Runs this plugin dispatched and has not seen finish, by session. */
   const openTurns = new Map();
+  /** What each session's header currently says, so an unchanged run is silent. */
+  const headerState = new Map();
+  /** When Cursor's own name for each session's agent was last read. */
+  const remoteNameReadAt = new Map();
+  /**
+   * Set once a host has told us it has no `chat.setHeader`.
+   *
+   * The verb is newer than this plugin's floor, and a host that lacks it
+   * rejects EVERY call — so one refusal stands the feature down for the life of
+   * the child rather than paying a rejected promise on every poll of every
+   * chat. A chat on such a host simply keeps the header ADE gave it.
+   */
+  let headerUnsupported = false;
+
+  /** True for the rejection a host raises when the method is not there at all. */
+  function isMissingMethod(error) {
+    const code = typeof error?.code === "string" ? error.code : "";
+    if (code === "unsupported_method" || code === "method_not_found") return true;
+    return /no such method|unsupported method|method not found|is not a function/i
+      .test(String(error?.message ?? ""));
+  }
+
+  /**
+   * Write the chat header, if this host has the verb.
+   *
+   * `chat.setHeader` is being added to the platform alongside this version. It
+   * is called through here and NOWHERE else, so a host that predates it degrades
+   * to the header it already draws instead of failing a poll — the whole reason
+   * this is a helper rather than four call sites.
+   */
+  async function writeHeader(sessionId, header) {
+    if (headerUnsupported) return false;
+    const setHeader = host.chat?.setHeader;
+    if (typeof setHeader !== "function") {
+      headerUnsupported = true;
+      return false;
+    }
+    try {
+      await setHeader.call(host.chat, sessionId, header);
+      return true;
+    } catch (error) {
+      if (isMissingMethod(error)) {
+        headerUnsupported = true;
+        return false;
+      }
+      log("debug", `Could not set the chat header: ${error?.message ?? error}`);
+      return false;
+    }
+  }
+
+  /**
+   * Merge what we just learned into the header and publish it if it moved.
+   *
+   * Accumulated rather than rebuilt: a poll knows the status, a settle knows the
+   * branch and the model, and a name read knows the label. Publishing only on a
+   * change is what keeps a three-second ladder from writing the same header
+   * twenty times a minute.
+   */
+  async function publishHeader(sessionId, patch) {
+    if (!sessionId) return;
+    const current = headerState.get(sessionId) ?? { label: null, status: null, branch: null, modelId: null };
+    const next = { ...current };
+    for (const key of ["label", "status", "branch", "modelId"]) {
+      const value = patch?.[key];
+      if (typeof value === "string" && value.trim()) next[key] = value.trim();
+    }
+    if (
+      next.label === current.label && next.status === current.status
+      && next.branch === current.branch && next.modelId === current.modelId
+    ) {
+      return;
+    }
+    headerState.set(sessionId, next);
+    const chips = headerChips(next);
+    if (!chips.length && !next.label) return;
+    await writeHeader(sessionId, { chips, ...(next.label ? { label: next.label } : {}) });
+  }
+
+  /**
+   * Attach a finished run's branch, and its pull request when it has one.
+   *
+   * `prUrl` is a newer field on `chat.attachBranch`. A host that refuses the
+   * extra key must still get the BRANCH — that is the thing that fetches the
+   * work into the lane worktree — so the refusal retries without it rather than
+   * dropping the attach.
+   */
+  async function attachBranch(sessionId, branch, prUrl) {
+    const withPr = prUrl ? { branch, prUrl } : { branch };
+    try {
+      await host.chat.attachBranch(sessionId, withPr);
+      return;
+    } catch (error) {
+      if (!prUrl) {
+        log("warn", `Could not attach ${branch}: ${error?.message ?? error}`);
+        return;
+      }
+      log("debug", `Retrying the branch attach without prUrl: ${error?.message ?? error}`);
+    }
+    await host.chat.attachBranch(sessionId, { branch }).catch((error) => {
+      log("warn", `Could not attach ${branch}: ${error?.message ?? error}`);
+    });
+  }
+
+  /**
+   * Cursor's own name for the agent, at most once a minute per session.
+   *
+   * Ported from `attachAndHydrateCursorCloudChat`'s `readRemoteName`. The stamp
+   * is written BEFORE the request so a failing read is rate-limited too — a
+   * revoked key must not turn every poll into a retry.
+   *
+   * This is the ONLY thing that names a session after `openAgent`, which is what
+   * `renameLock: true` in the manifest means: Cursor owns the name of a Cursor
+   * agent, and neither ADE's auto-titler nor this plugin overwrites it.
+   */
+  async function readRemoteName(sessionId, agentId, known) {
+    const last = remoteNameReadAt.get(sessionId);
+    if (last !== undefined && now() - last < REMOTE_NAME_READ_TTL_MS) return null;
+    remoteNameReadAt.set(sessionId, now());
+    const agent = known ?? await api.getAgent(agentId).catch(() => null);
+    const name = typeof agent?.name === "string" ? agent.name.trim() : "";
+    return name || null;
+  }
 
   /**
    * Bind an agent to a chat, and backfill everything it has already said.
@@ -171,11 +338,17 @@ function createChatRuntime(deps) {
    * agent that already has a session returns that session rather than a second.
    */
   async function openAgent({ agentId, laneId, title, sessionId }) {
+    // The rename lock, on this side of the seam. `createSession` is idempotent
+    // on `{runtimeId, externalId}`, so a second open of the SAME agent would
+    // otherwise re-send a title and rename a chat Cursor had already named. A
+    // title is offered only when this plugin has no session for the agent yet.
+    const existing = await links.get(agentId).catch(() => null);
+    const firstOpen = !existing?.sessionId;
     const ref = await host.chat.createSession({
       runtimeId: RUNTIME_ID,
       externalId: agentId,
       laneId,
-      ...(title ? { title } : {}),
+      ...(title && firstOpen ? { title } : {}),
       ...(sessionId ? { sessionId } : {}),
       modelLabel: "Cursor Cloud",
     });
@@ -193,6 +366,16 @@ function createChatRuntime(deps) {
   /** Read the agent's latest run and backfill it into the session. */
   async function hydrateAgent(sessionId, agentId) {
     const agent = await api.getAgent(agentId).catch(() => null);
+    const label = await readRemoteName(sessionId, agentId, agent).catch(() => null);
+    // One run read per hydrate — not per poll — for the two facts the header
+    // wants that the conversation stream does not carry. This is the same
+    // single-row read the fleet does for an active agent.
+    const page = await api.listRuns(agentId, { limit: 1 }).catch(() => null);
+    const latest = Array.isArray(page?.items) ? page.items[0] : null;
+    await publishHeader(sessionId, {
+      ...(label ? { label } : {}),
+      ...(latest ? { branch: branchFromRun(latest), modelId: modelIdFromRun(latest) } : {}),
+    });
     const runId = typeof agent?.latestRunId === "string" ? agent.latestRunId : null;
     if (!runId) return { accepted: 0, status: null };
     const read = await readRunConversation(api, agentId, runId).catch((error) => {
@@ -202,6 +385,7 @@ function createChatRuntime(deps) {
     if (!read) return { accepted: 0, status: null };
     const accepted = await hydrateTranscript(host, sessionId, read.transcript);
     const state = chatStateForRunStatus(read.status);
+    await publishHeader(sessionId, { status: normalizeRunStatus(read.status) ?? null });
     if (state) {
       await host.chat.emitStatus(sessionId, {
         state,
@@ -272,6 +456,7 @@ function createChatRuntime(deps) {
 
     const accepted = await hydrateTranscript(host, sessionId, read.transcript);
     const state = chatStateForRunStatus(read.status);
+    await publishHeader(sessionId, { status: normalizeRunStatus(read.status) ?? null });
     if (state) {
       const open = openTurns.get(sessionId);
       await host.chat.emitStatus(sessionId, {
@@ -302,11 +487,26 @@ function createChatRuntime(deps) {
     if (chatStateForRunStatus(status) !== "finished") return;
     const run = await api.getRun(agentId, runId).catch(() => null);
     const branch = branchFromRun(run);
-    if (branch) {
-      await host.chat.attachBranch(sessionId, { branch }).catch((error) => {
-        log("warn", `Could not attach ${branch}: ${error?.message ?? error}`);
-      });
-    }
+    const prUrl = prUrlFromRun(run);
+    await publishHeader(sessionId, {
+      status: "finished",
+      ...(branch ? { branch } : {}),
+      ...(modelIdFromRun(run) ? { modelId: modelIdFromRun(run) } : {}),
+    });
+    if (branch) await attachBranch(sessionId, branch, prUrl);
+    await listRunArtifacts(sessionId, agentId);
+  }
+
+  /**
+   * List what a finished run produced, on the chat.
+   *
+   * Split out of `settleFinishedRun` because a webhook `FINISHED` reaches this
+   * plugin without going through a poll's terminal branch, and
+   * `handleCursorCloudStatusChange` ran `materializeCloudArtifacts` there too.
+   * A run whose artifacts were listed by a poll and again by the relay lists
+   * the same files, which the host writes once.
+   */
+  async function listRunArtifacts(sessionId, agentId) {
     const listed = await api.listArtifacts(agentId).catch(() => null);
     const items = Array.isArray(listed?.items) ? listed.items : [];
     if (!items.length) return;
@@ -419,14 +619,37 @@ function createChatRuntime(deps) {
 
     const link = await links.get(agentId);
     const state = chatStateForRunStatus(status);
+    const normalized = normalizeRunStatus(status);
+    const bodyPrUrl = typeof parsed?.prUrl === "string" ? parsed.prUrl.trim() : "";
     if (link?.sessionId && state) {
       // The chat is asleep — nobody is watching it, so the ladder is off. One
-      // poll now is what turns a relay event into a transcript.
+      // poll now is what turns a relay event into a transcript. The poll also
+      // emits the run's status and, for a terminal run, attaches the branch and
+      // lists the artifacts — which is the whole of what the compiled
+      // `handleCursorCloudStatusChange` did on `FINISHED`.
       await poll(link.sessionId, agentId).catch(() => {});
-      await host.chat.emitStatus(link.sessionId, {
-        state,
-        ...(detailForRunStatus(status) ? { detail: detailForRunStatus(status) } : {}),
-      }).catch(() => {});
+      await publishHeader(link.sessionId, { status: normalized ?? null }).catch(() => {});
+      // The compiled dispatch emitted a `cloud_status` event only for a run
+      // that ENDED badly, or one that carried a pull request. A plain FINISHED
+      // with no PR emitted nothing and still hydrated: the poll above already
+      // said "finished", and a second identical status beside it was a
+      // duplicate the reader saw as a flicker.
+      const worthEmitting = normalized === "error"
+        || normalized === "cancelled"
+        || normalized === "expired"
+        || Boolean(bodyPrUrl);
+      if (worthEmitting) {
+        await host.chat.emitStatus(link.sessionId, {
+          state,
+          ...(detailForRunStatus(status) ? { detail: detailForRunStatus(status) } : {}),
+        }).catch(() => {});
+      }
+      if (normalized === "finished") {
+        // Belt for the poll's braces: a poll that could not read the stream
+        // returns "skipped" without reaching its terminal branch, and a relay
+        // FINISHED is the last chance this chat gets to list what ran.
+        await listRunArtifacts(link.sessionId, agentId).catch(() => {});
+      }
     }
 
     const triggerId = triggerForStatus(status);
@@ -517,13 +740,19 @@ function createChatRuntime(deps) {
     triggerForStatus,
     /** Test seam: which sessions have a live ladder right now. */
     watchedSessionIds: () => [...watching.keys()],
+    /** Test seam: the header this runtime believes each session is showing. */
+    headerFor: (sessionId) => headerState.get(sessionId) ?? null,
   };
 }
 
 module.exports = {
   HYDRATE_PAGE,
+  REMOTE_NAME_READ_TTL_MS,
   RUNTIME_ID,
   branchFromRun,
+  headerChips,
+  modelIdFromRun,
+  prUrlFromRun,
   chatStateForRunStatus,
   createChatRuntime,
   detailForRunStatus,

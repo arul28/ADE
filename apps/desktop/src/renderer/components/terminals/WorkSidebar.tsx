@@ -38,6 +38,7 @@ import { machineNameForBinding } from "../../../shared/machineIdentity";
 import { formatToolTypeLabel, isChatToolType, isPtyContextInsertableToolType } from "../../lib/sessions";
 import { isMacPlatform } from "../../lib/platform";
 import { ChatAppControlPanel } from "../chat/ChatAppControlPanel";
+import { registerHostEngineRenderer } from "../plugins/hostEngine/hostEngineStore";
 import { ChatBuiltInBrowserPanel } from "../chat/ChatBuiltInBrowserPanel";
 import { ChatIosSimulatorPanel } from "../chat/ChatIosSimulatorPanel";
 import { ChatTerminalDrawer } from "../chat/ChatTerminalDrawer";
@@ -805,6 +806,75 @@ export function WorkSidebar({
       insertIntoPty(target, text, "draft");
     });
   }, [insertIntoPty, withContextTarget]);
+
+  /**
+   * Offer Control and Simulator to a plugin PAGE that wants to draw around
+   * them.
+   *
+   * The rail already swaps a contributed pane for the compiled engine when the
+   * owning plugin ships no page of its own (`hostEngineForPluginPane`). A page
+   * is the other half: it draws its own toolbar and its own settings, leaves a
+   * hole, and asks the host to paint the engine into it. Both halves reach the
+   * SAME component with the same inputs, so a plugin does not get a different
+   * inspector depending on which way it drew.
+   *
+   * Registered from here because this is where those inputs live: the lane, the
+   * runtime pin, the project root and the session the panel writes context
+   * into. A store holding them would be a second copy of this component's
+   * state, and a page placing an engine against a stale lane is the bug that
+   * copy would produce.
+   *
+   * Nothing is registered while the rail is hidden, so a placement made against
+   * a rail nobody is looking at is refused with a sentence rather than painted
+   * off screen.
+   */
+  useEffect(() => {
+    if (!active) return undefined;
+    const stops = [
+      registerHostEngineRenderer("electron-control", () => (
+        <ChatAppControlPanel
+          key={`host-engine-appcontrol:${runtimePin?.key ?? "bound"}`}
+          sessionId={panelSessionId}
+          laneId={laneId}
+          runtimePin={runtimePin}
+          projectRoot={laneRoot}
+          controlDisabledReason={null}
+          onAddAttachment={shouldPersistPanelAttachment ? addAttachment : undefined}
+          onAddContext={canInsertContext ? addAppControlContext : undefined}
+          onInsertDraft={canInsertContext ? insertDraft : undefined}
+        />
+      )),
+      registerHostEngineRenderer("simulator", () => (
+        <ChatIosSimulatorPanel
+          key={`host-engine-ios:${runtimePin?.key ?? "bound"}`}
+          sessionId={panelSessionId}
+          laneId={laneId}
+          runtimePin={runtimePin}
+          projectRoot={laneRoot}
+          controlDisabledReason={null}
+          ignoreChatOwnership
+          onAddAttachment={shouldPersistPanelAttachment ? addAttachment : undefined}
+          onAddContext={canInsertContext ? addIosContext : undefined}
+          onInsertDraft={canInsertContext ? insertDraft : undefined}
+        />
+      )),
+    ];
+    return () => {
+      for (const stop of stops) stop();
+    };
+  }, [
+    active,
+    addAppControlContext,
+    addAttachment,
+    addIosContext,
+    canInsertContext,
+    insertDraft,
+    laneId,
+    laneRoot,
+    panelSessionId,
+    runtimePin,
+    shouldPersistPanelAttachment,
+  ]);
 
   const content = useMemo(() => {
     if (!active) return null;

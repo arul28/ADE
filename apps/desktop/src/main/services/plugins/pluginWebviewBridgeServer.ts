@@ -58,7 +58,13 @@ import {
   isPluginWebviewMethod,
   isPluginWebviewToastLevel,
   parsePluginWebviewUrl,
+  pluginWebviewHostEngineOwner,
   pluginWebviewUiTimeoutMs,
+  sanitizePluginWebviewEngineRect,
+  sanitizePluginWebviewPageError,
+  PLUGIN_WEBVIEW_SOCKETS_MAX_ROWS,
+  type PluginWebviewPageError,
+  type PluginWebviewSocketItem,
   PLUGIN_WEBVIEW_BRIDGE_VERSION,
   PLUGIN_WEBVIEW_CONFIRM_BODY_MAX_CHARS,
   PLUGIN_WEBVIEW_CONFIRM_TITLE_MAX_CHARS,
@@ -159,6 +165,32 @@ export type PluginWebviewBridgeDeps = {
   readClipboard: () => string | Promise<string>;
   writeClipboard: (text: string) => void | Promise<void>;
   /**
+   * Open a checkout path in the reader's editor, or reveal it.
+   *
+   * Main's, not the renderer's, because the machine is main's: the same
+   * function every ADE surface reaches, so a page gets the same editor list and
+   * the same containment check on `rootPath`. Rejecting is the refusal a page
+   * hears.
+   */
+  openPathInEditor: (args: {
+    guest: PluginWebviewGuest;
+    rootPath: string;
+    relativePath: string;
+    target: string;
+  }) => void | Promise<void>;
+  /**
+   * Record one page failure against the plugin, for `ade plugin doctor`.
+   *
+   * A CSP violation is a build that reached outside the plugin's own directory,
+   * and the author cannot see it: it is silent in the guest and invisible in
+   * ADE. Writing it into the plugin's own log ring is what makes the doctor able
+   * to count it later, on a machine where nobody had the console open.
+   */
+  recordPageError?: (args: {
+    guest: PluginWebviewGuest;
+    error: PluginWebviewPageError;
+  }) => void;
+  /**
    * The project the guest's window is bound to, or null.
    *
    * Read at handshake for `context.project` and again for the host-entity
@@ -218,8 +250,37 @@ export type PluginWebviewBridgeServer = {
    * so it is the publisher.
    */
   publishChatTurn(hostWindowId: number | null, payload: unknown): void;
+  /**
+   * One `operation`, `conflict` or `review` move, published by the renderer of
+   * the window it happened in.
+   *
+   * The same argument {@link publishChatTurn} makes, for three more families.
+   * `lane`, `pr` and `session` reach guests off `subscribeToPluginEntityChanges`
+   * because the daemon publishes them; these three have no such producer — the
+   * operation log is read on demand, and conflicts and review runs arrive as
+   * window IPC events. The renderer that already listens to all three is the
+   * one party in the process that hears them, so it is the publisher.
+   *
+   * Refused for the four kinds that have their own producer. Two publishers for
+   * one family would deliver every move twice, and a page counting ids would
+   * count them twice.
+   */
+  publishHostChange(hostWindowId: number | null, payload: unknown): void;
   dispose(): void;
 };
+
+/**
+ * The families the RENDERER publishes, as opposed to the ones the entity bus
+ * and the chat publisher own.
+ *
+ * Exported because it is the whole rule behind `publishHostChange`'s refusal,
+ * and a test that had to restate it would be restating the thing under test.
+ */
+export const PLUGIN_WEBVIEW_WINDOW_PUBLISHED_KINDS: readonly PluginWebviewHostKind[] = [
+  "operation",
+  "conflict",
+  "review",
+];
 
 function requireString(params: Record<string, unknown>, field: string): string {
   const value = params[field];
@@ -259,6 +320,84 @@ export function readPluginWebviewToast(params: Record<string, unknown>): PluginW
     ...(actionLabel && actionId ? { actionLabel, actionId } : {}),
   };
 }
+
+/**
+ * A window's picker answer, or null.
+ *
+ * `null` is the contract's own word for "the reader dismissed it", and a window
+ * that answered something else — an older build, a picker that resolved with a
+ * partial record — becomes the SAME null rather than a half-choice inside a
+ * page. Required fields are named by the caller because they differ per picker
+ * and because naming them is what makes a missing one a refusal instead of an
+ * `undefined` the page reads as a model id.
+ */
+export function readPluginWebviewChoice(
+  value: unknown,
+  required: readonly string[],
+): Record<string, unknown> | null {
+  if (!isRecord(value)) return null;
+  const answer: Record<string, unknown> = {};
+  for (const field of required) {
+    const raw = value[field];
+    if (typeof raw !== "string" || raw.trim().length === 0) return null;
+    answer[field] = raw.trim();
+  }
+  // Every field the window sent is carried, not only the required ones: a
+  // picker that also answers `fastMode` is answering something the page asked
+  // for, and dropping it here would silently lose half of one gesture.
+  for (const [field, raw] of Object.entries(value)) {
+    if (field in answer) continue;
+    if (typeof raw === "string" || typeof raw === "number" || typeof raw === "boolean" || raw === null) {
+      answer[field] = raw;
+    }
+  }
+  return answer;
+}
+
+const readChoice = readPluginWebviewChoice;
+
+/** Model ids a page narrowed its picker to. Bounded; unusable entries dropped. */
+export function readModelIdList(value: readonly unknown[]): string[] {
+  const ids: string[] = [];
+  for (const entry of value) {
+    if (ids.length >= 500) break;
+    if (typeof entry !== "string") continue;
+    const trimmed = entry.trim();
+    if (trimmed && trimmed.length <= 200) ids.push(trimmed);
+  }
+  return ids;
+}
+
+/**
+ * One socket row a window answered, or null.
+ *
+ * Bounded and re-shaped rather than passed through: the row crosses into an
+ * untrusted guest, and a contribution payload is plugin-authored text that has
+ * no business being unbounded on the way there. A row missing its handle or its
+ * label is dropped — a page cannot press the first or draw the second.
+ */
+export function readPluginWebviewSocketItem(value: unknown): PluginWebviewSocketItem | null {
+  if (!isRecord(value)) return null;
+  const socketId = boundedText(value.socketId, 256);
+  const pluginId = boundedText(value.pluginId, 128);
+  const socket = boundedText(value.socket, 64);
+  const label = boundedText(value.label, 200);
+  if (!socketId || !pluginId || !socket || !label) return null;
+  const pluginDisplayName = boundedText(value.pluginDisplayName, 200);
+  const icon = boundedText(value.icon, 64);
+  const payload = isRecord(value.payload) ? value.payload : undefined;
+  return {
+    socketId,
+    pluginId,
+    socket,
+    label,
+    ...(pluginDisplayName ? { pluginDisplayName } : {}),
+    ...(icon ? { icon } : {}),
+    ...(payload ? { payload } : {}),
+  };
+}
+
+const readSocketItem = readPluginWebviewSocketItem;
 
 /** Read a confirmation request, or refuse. Same bounding argument as the toast. */
 export function readPluginWebviewConfirm(params: Record<string, unknown>): PluginWebviewConfirm {
@@ -972,7 +1111,10 @@ export function createPluginWebviewBridgeServer(
         const kinds = new Set<PluginWebviewHostKind>();
         for (const kind of raw) if (isPluginWebviewHostKind(kind)) kinds.add(kind);
         if (kinds.size === 0) {
-          throw new PluginSdkError("invalid_args", '"kinds" must name lane, session, pr or chat.');
+          throw new PluginSdkError(
+            "invalid_args",
+            '"kinds" must name lane, session, pr, chat, operation, conflict or review.',
+          );
         }
         hostSubscriptionSeq += 1;
         const subscriptionId = `${guest.webContentsId}:${hostSubscriptionSeq}`;
@@ -983,6 +1125,158 @@ export function createPluginWebviewBridgeServer(
           cancelFlush: null,
         });
         return { subscriptionId };
+      }
+
+      // The five pickers. Every one of them is the same three lines, and that
+      // is the design rather than a missed abstraction: main HAS no model list,
+      // no lane index and no reader, so its whole job is to forward the page's
+      // own arguments and hand back what the window answered. The arguments are
+      // bounded here because they cross into ADE's own chrome; the ANSWER is
+      // shape-checked because a window that answered something else must not
+      // become a half-choice inside a plugin's page.
+      case "ui.pickModel": {
+        const answer = await relay(guest, "ui.pickModel", {
+          ...(boundedText(params.value, 200) ? { value: boundedText(params.value, 200) } : {}),
+          ...(Array.isArray(params.availableModelIds)
+            ? { availableModelIds: readModelIdList(params.availableModelIds) }
+            : {}),
+        });
+        return readChoice(answer, ["modelId"]);
+      }
+
+      case "ui.pickLane": {
+        const answer = await relay(guest, "ui.pickLane", {
+          ...(boundedText(params.value, 200) ? { value: boundedText(params.value, 200) } : {}),
+        });
+        return readChoice(answer, ["laneId", "name"]);
+      }
+
+      case "ui.pickPermissionMode": {
+        // `provider` is required and refused rather than defaulted: the modes
+        // ARE a provider fact, and a picker opened without one would draw
+        // somebody's list and call it the answer.
+        const provider = boundedText(params.provider, 64);
+        if (!provider) {
+          throw new PluginSdkError("invalid_args", '"provider" must be a non-empty string.');
+        }
+        const answer = await relay(guest, "ui.pickPermissionMode", {
+          provider,
+          ...(boundedText(params.value, 64) ? { value: boundedText(params.value, 64) } : {}),
+        });
+        return readChoice(answer, ["provider", "field", "value"]);
+      }
+
+      case "ui.pickReasoningEffort": {
+        const model = boundedText(params.model, 200);
+        if (!model) {
+          throw new PluginSdkError("invalid_args", '"model" must be a non-empty string.');
+        }
+        const answer = await relay(guest, "ui.pickReasoningEffort", {
+          model,
+          // `null` is a value here — "no reasoning" — so it is forwarded rather
+          // than folded into "absent", which means "nothing preselected".
+          ...(params.value === null
+            ? { value: null }
+            : boundedText(params.value, 64) ? { value: boundedText(params.value, 64) } : {}),
+        });
+        // `effort` may legitimately be null, so it cannot be required the way
+        // the other fields are: the check is on the record and on `modelId`.
+        const choice = readChoice(answer, ["modelId"]);
+        if (!choice) return null;
+        const effort = boundedText((choice as Record<string, unknown>).effort, 64);
+        return { modelId: (choice as { modelId: string }).modelId, effort: effort ?? null };
+      }
+
+      case "ui.pickProvider": {
+        const answer = await relay(guest, "ui.pickProvider", {
+          ...(boundedText(params.value, 64) ? { value: boundedText(params.value, 64) } : {}),
+        });
+        return readChoice(answer, ["provider"]);
+      }
+
+      case "ui.openPathInEditor": {
+        const rootPath = requireString(params, "rootPath");
+        const target = requireString(params, "target");
+        const relativePath = typeof params.relativePath === "string" ? params.relativePath : "";
+        // Containment is NOT re-derived here. `openPathInEditor` checks the
+        // root against the app's allowed directories and the relative path
+        // against the root, and a second, weaker copy of that rule in this file
+        // is how the two would come to disagree. What this layer does is refuse
+        // the shapes that are not a request at all.
+        await deps.openPathInEditor({ guest, rootPath, relativePath, target });
+        return null;
+      }
+
+      case "sockets.list": {
+        const socket = requireString(params, "socket");
+        const answer = await relay(guest, "sockets.list", { socket });
+        const rows = Array.isArray(answer) ? answer : [];
+        return rows
+          .slice(0, PLUGIN_WEBVIEW_SOCKETS_MAX_ROWS)
+          .map((row) => readSocketItem(row))
+          .filter((row): row is PluginWebviewSocketItem => row !== null);
+      }
+
+      case "sockets.invoke": {
+        // The page names a ROW, never a plugin and never an action. The window
+        // resolves both from the contribution it published, so a page cannot
+        // reach a handler that was not already behind a button the host would
+        // have drawn.
+        const socketId = requireString(params, "socketId");
+        const args = isRecord(params.args) ? params.args : {};
+        return await relay(guest, "sockets.invoke", { socketId, args });
+      }
+
+      case "hostEngine.place": {
+        // The owner check is HERE, in main, before the request reaches a
+        // window. `guest.pluginId` is main's own derivation from the guest's
+        // origin, so this is the one place the question can be asked against a
+        // fact rather than a claim — and a refused placement never becomes a
+        // renderer that has to remember to check.
+        const engineId = typeof params.engineId === "string" ? params.engineId : "";
+        const owner = pluginWebviewHostEngineOwner(engineId);
+        if (!owner || owner !== pluginId) {
+          throw new PluginSdkError(
+            "not_permitted",
+            `"${engineId}" is not an engine this plugin owns.`,
+          );
+        }
+        const rect = sanitizePluginWebviewEngineRect(params.rect);
+        if (!rect) {
+          throw new PluginSdkError("invalid_args", "That is not a rectangle this host can paint in.");
+        }
+        await relay(guest, "hostEngine.place", { engineId, rect });
+        return null;
+      }
+
+      case "hostEngine.release": {
+        await relay(guest, "hostEngine.release", {});
+        return null;
+      }
+
+      case "page.error": {
+        const error = sanitizePluginWebviewPageError(params);
+        // A malformed report is dropped rather than refused. The caller is a
+        // page's own error handler; rejecting its promise would raise a second
+        // failure inside the handler for the first one.
+        if (!error) return null;
+        log("plugin.webview_page_error", {
+          pluginId,
+          kind: error.kind,
+          message: error.message,
+          ...(error.source ? { source: error.source } : {}),
+        });
+        deps.recordPageError?.({ guest, error });
+        // Relayed as well as logged: the log is for `ade plugin doctor` on some
+        // later day, and the card is for the reader looking at a blank frame
+        // right now. A window that will not draw it is not a reason to fail the
+        // report, so the relay's refusal is swallowed.
+        try {
+          await relay(guest, "page.error", { error });
+        } catch {
+          // See above.
+        }
+        return null;
       }
 
       case "host.unsubscribe": {
@@ -1094,6 +1388,34 @@ export function createPluginWebviewBridgeServer(
         // from a checkout it was never opened in.
         if (subscription.guest.hostWindowId !== hostWindowId) continue;
         bufferChatTurn(subscription, subscriptionId, turn);
+      }
+    },
+
+    publishHostChange(hostWindowId, payload) {
+      if (!isRecord(payload)) return;
+      const kind = payload.kind;
+      if (!isPluginWebviewHostKind(kind)) return;
+      // The refusal that keeps one family to one producer. See the doc on the
+      // method: a kind the entity bus or the chat publisher already owns would
+      // reach a page twice from here.
+      if (!PLUGIN_WEBVIEW_WINDOW_PUBLISHED_KINDS.includes(kind)) return;
+      const rawIds = Array.isArray(payload.ids) ? payload.ids : [];
+      const ids: string[] = [];
+      for (const id of rawIds) {
+        if (typeof id === "string" && id.trim()) ids.push(id.trim());
+      }
+      for (const [subscriptionId, subscription] of [...hostSubscriptions]) {
+        if (getPluginWebviewGuest(subscription.guest.webContentsId) !== subscription.guest) {
+          subscription.cancelFlush?.();
+          hostSubscriptions.delete(subscriptionId);
+          continue;
+        }
+        if (!subscription.kinds.has(kind)) continue;
+        // A window publishes for its OWN guests, the same rule the theme and
+        // the chat turn keep: a page in another window is looking at another
+        // project's conflicts and has no business hearing these ids.
+        if (subscription.guest.hostWindowId !== hostWindowId) continue;
+        bufferHostChange(subscription, subscriptionId, kind, ids);
       }
     },
 

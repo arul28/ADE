@@ -125,11 +125,25 @@ struct PluginPageHostView: UIViewRepresentable {
         webView.isOpaque = false
         webView.backgroundColor = .clear
         webView.scrollView.backgroundColor = .clear
-        // A plugin page draws its own affordances; a rubber-band bounce past
-        // them reads as the sheet coming apart.
-        webView.scrollView.bounces = false
         webView.allowsBackForwardNavigationGestures = false
         webView.navigationDelegate = uiContext.coordinator
+        // Pull to refresh, which is the reason this scroll view bounces at all.
+        //
+        // It used to be pinned (`bounces = false`) so a plugin page could not
+        // rubber-band away from its own chrome. A refresh control cannot exist
+        // without the bounce — the gesture IS the overscroll — so the trade is
+        // made deliberately: the reader gets the one gesture every other list
+        // in this app answers, and pays a little give at the edges for it.
+        webView.scrollView.bounces = true
+        webView.scrollView.alwaysBounceVertical = true
+        let refreshControl = UIRefreshControl()
+        refreshControl.addTarget(
+            uiContext.coordinator,
+            action: #selector(Coordinator.handlePullToRefresh(_:)),
+            for: .valueChanged
+        )
+        webView.scrollView.refreshControl = refreshControl
+        uiContext.coordinator.refreshControl = refreshControl
         uiContext.coordinator.attach(webView)
         PluginPageGuestRegistry.shared.attach(webView)
 
@@ -171,7 +185,7 @@ struct PluginPageHostView: UIViewRepresentable {
           if (window.adePlugin) return;
           var VERSION = \(pluginPageBridgeVersion);
           var seq = 0;
-          var listeners = { changed: [], theme: [], host: [] };
+          var listeners = { changed: [], theme: [], host: [], refresh: [] };
           function call(method, params) {
             seq += 1;
             return window.webkit.messageHandlers.\(messageHandlerName).postMessage({
@@ -190,13 +204,60 @@ struct PluginPageHostView: UIViewRepresentable {
               if (at >= 0) { list.splice(at, 1); }
             };
           }
+          // Returns how many of the page's own handlers ran, which is the ONE
+          // acknowledgement the host can observe: `evaluateJavaScript` hands
+          // the count back, and the pull-to-refresh control ends on it. A page
+          // with no listener for an event answers 0, which is not a failure —
+          // it is "nothing here cares", and the host stops waiting.
           window.__adePluginEmit = function (name, payload) {
             var list = listeners[name];
-            if (!list) { return; }
+            if (!list) { return 0; }
+            var ran = 0;
             for (var i = 0; i < list.length; i += 1) {
-              try { list[i](payload); } catch (error) { /* a page's own handler */ }
+              try { list[i](payload); ran += 1; } catch (error) { /* a page's own handler */ }
             }
+            return ran;
           };
+          // The page's own failures, reported to the host so it can draw the
+          // error card. Deliberately NOT routed through `call`: a rejected
+          // report would itself be an unhandled rejection, and the listener
+          // below would report that, and so on.
+          var reporting = false;
+          function report(message, source) {
+            if (reporting) { return; }
+            reporting = true;
+            try {
+              var sent = window.webkit.messageHandlers.\(messageHandlerName).postMessage({
+                id: "e" + (seq += 1),
+                bridgeVersion: VERSION,
+                method: "page.error",
+                params: { message: String(message || ""), source: source }
+              });
+              // Swallowed rather than left to float: an unhandled rejection
+              // here would be caught by the listener above, which would report
+              // it, which would reject again.
+              if (sent && sent.then) { sent.then(null, function () {}); }
+            } catch (error) { /* the host is gone; nothing left to tell */ }
+            reporting = false;
+          }
+          window.addEventListener("error", function (event) {
+            report((event && (event.message || event.error)) || "", "script");
+          });
+          window.addEventListener("unhandledrejection", function (event) {
+            report((event && event.reason && (event.reason.message || event.reason)) || "", "script");
+          });
+          // The guest's own view of a CSP refusal. The host cannot see one —
+          // WebKit blocks the load inside the content process and the
+          // navigation delegate is never told — so the page is the only party
+          // that can say a script or a style was refused.
+          document.addEventListener("securitypolicyviolation", function (event) {
+            report(
+              "This page tried to load " +
+                ((event && event.blockedURI) || "something") +
+                ", which a plugin page is not allowed to load.",
+              "contentPolicy"
+            );
+          });
           window.adePlugin = Object.freeze({
             version: VERSION,
             pluginId: \(pluginJSON),
@@ -230,7 +291,24 @@ struct PluginPageHostView: UIViewRepresentable {
               dismissToast: function (id) { return call("ui.dismissToast", { id: id }); },
               prompt: function (prompt) { return call("ui.prompt", prompt || {}); },
               confirm: function (confirm) { return call("ui.confirm", confirm || {}); },
-              resize: function (height) { call("ui.resize", { height: height }); }
+              resize: function (height) { call("ui.resize", { height: height }); },
+              // The five host pickers. Each resolves to the choice, to null
+              // when the reader dismissed it, or REJECTS when this client
+              // cannot ask — a page must not read a rejection as a dismissal.
+              pickModel: function () { return call("ui.pickModel", {}); },
+              pickLane: function () { return call("ui.pickLane", {}); },
+              pickPermissionMode: function (options) { return call("ui.pickPermissionMode", options || {}); },
+              pickReasoningEffort: function (options) { return call("ui.pickReasoningEffort", options || {}); },
+              pickProvider: function () { return call("ui.pickProvider", {}); },
+              // Present so a page hears the phone's refusal by name rather than
+              // an "unknown method" it would treat as a version skew.
+              openPathInEditor: function (path) { return call("ui.openPathInEditor", { path: path }); }
+            }),
+            sockets: Object.freeze({
+              list: function (socket) { return call("sockets.list", { socket: socket }); },
+              invoke: function (socketId, args) {
+                return call("sockets.invoke", { socketId: socketId, args: args || {} });
+              }
             }),
             dialog: Object.freeze({
               submit: function (answer) { return call("dialog.submit", answer || {}); }
@@ -299,6 +377,9 @@ struct PluginPageHostView: UIViewRepresentable {
         /// torn down with the guest: a closed page keeps no observers and no
         /// entity snapshots.
         private var hostEvents: PluginPageHostEventSource?
+        /// The control the reader pulls. Held so the host can END it, which is
+        /// the only half of pull-to-refresh the page cannot do for itself.
+        weak var refreshControl: UIRefreshControl?
 
         init(pluginId: String, dataSource: PluginPageBridgeDataSource, host: PluginPageBridgeHosting?) {
             self.pluginId = pluginId
@@ -441,13 +522,55 @@ struct PluginPageHostView: UIViewRepresentable {
             emit(event: .host, payload: payload)
         }
 
-        private func emit(event: PluginPageBridgeEvent, payload: [String: Any]) {
-            guard let webView else { return }
+        private func emit(
+            event: PluginPageBridgeEvent,
+            payload: [String: Any],
+            completion: ((Int) -> Void)? = nil
+        ) {
+            guard let webView else {
+                completion?(0)
+                return
+            }
             guard let data = try? JSONSerialization.data(withJSONObject: payload, options: []),
                   let json = String(data: data, encoding: .utf8)
-            else { return }
+            else {
+                completion?(0)
+                return
+            }
             let script = "window.__adePluginEmit && window.__adePluginEmit(\(PluginPageHostView.jsonString(event.rawValue)), \(json));"
-            webView.evaluateJavaScript(script, completionHandler: nil)
+            guard let completion else {
+                webView.evaluateJavaScript(script, completionHandler: nil)
+                return
+            }
+            webView.evaluateJavaScript(script) { value, _ in
+                completion((value as? NSNumber)?.intValue ?? 0)
+            }
+        }
+
+        // MARK: Pull to refresh
+
+        /// The reader pulled the page down.
+        ///
+        /// Sent as an EVENT on the one channel the others use — name `refresh`,
+        /// empty payload — because it is the host telling the page something.
+        ///
+        /// The control ends when the page ACKNOWLEDGES: `__adePluginEmit`
+        /// answers with the number of the page's own refresh handlers that ran,
+        /// and `evaluateJavaScript` hands that number back. Zero is an
+        /// acknowledgement too — a page with no refresh listener has nothing to
+        /// wait for, and spinning against it forever would be the worse lie. It
+        /// also ends on the page's next load; see `didFinish`. There is no
+        /// timer: a spinner that stops because time passed says the page
+        /// finished when nobody knows whether it did.
+        @objc func handlePullToRefresh(_ control: UIRefreshControl) {
+            emit(event: .refresh, payload: [:]) { [weak self] _ in
+                self?.endRefreshing()
+            }
+        }
+
+        private func endRefreshing() {
+            guard let control = refreshControl, control.isRefreshing else { return }
+            control.endRefreshing()
         }
 
         // MARK: Navigation
@@ -478,6 +601,53 @@ struct PluginPageHostView: UIViewRepresentable {
                 host?.pluginPageOpenDeeplink(url)
             }
             decisionHandler(.cancel)
+        }
+
+        /// A load that finished is also the end of a pull.
+        ///
+        /// The second of the two things the host can actually observe: a page
+        /// that answered a refresh by navigating has finished refreshing, and
+        /// its own handler count would never have come back.
+        func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+            endRefreshing()
+        }
+
+        /// The page did not load. One sentence, never a WebKit code.
+        ///
+        /// `NSURLErrorCancelled` is skipped: it is what a guest being torn down
+        /// reports, and drawing "this page didn't open" over a sheet the reader
+        /// just dismissed would be the app blaming a plugin for the reader's
+        /// own tap.
+        func webView(
+            _ webView: WKWebView,
+            didFailProvisionalNavigation navigation: WKNavigation!,
+            withError error: Error
+        ) {
+            endRefreshing()
+            reportNavigationFailure(error)
+        }
+
+        func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
+            endRefreshing()
+            reportNavigationFailure(error)
+        }
+
+        /// The web content process went away — usually memory pressure.
+        func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
+            endRefreshing()
+            host?.pluginPageReportError(PluginPageErrorReport(
+                message: "This page stopped because the phone ran low on memory.",
+                source: .terminated
+            ))
+        }
+
+        private func reportNavigationFailure(_ error: Error) {
+            let nsError = error as NSError
+            if nsError.domain == NSURLErrorDomain, nsError.code == NSURLErrorCancelled { return }
+            host?.pluginPageReportError(PluginPageErrorReport(
+                message: "ADE couldn\u{2019}t load this plugin\u{2019}s page from its cached files.",
+                source: .navigation
+            ))
         }
     }
 }

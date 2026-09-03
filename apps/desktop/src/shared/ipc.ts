@@ -513,6 +513,16 @@ export const IPC = {
    * host kind, coalesced the way the entity families are.
    */
   pluginWebviewChatPublish: "ade.plugin.webview.chatPublish",
+  /**
+   * A window telling main that an operation, conflict or review moved, for the
+   * guests subscribed to those host kinds.
+   *
+   * A second publish channel beside the chat one rather than a widening of it:
+   * a chat frame carries a TURN with a lifecycle state, and these carry
+   * identity alone. Folding them together would make one payload two shapes and
+   * put a discriminator in front of both readers.
+   */
+  pluginWebviewHostPublish: "ade.plugin.webview.hostPublish",
   /** Renderer → main: a guest's surface came on or off screen. */
   pluginWebviewSurfaceState: "ade.plugin.webview.surfaceState",
   /**

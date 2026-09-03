@@ -1212,6 +1212,15 @@ struct AgentChatSessionSummary: Codable, Identifiable, Equatable {
   /// whose plugin was uninstalled keeps the last label rather than going
   /// nameless. Older hosts omit it.
   var runtimeLabel: AgentChatRuntimeLabel? = nil
+  /// The header a plugin wrote onto this chat with `chat.setHeader`.
+  ///
+  /// A child-SDK write, not a page bridge call: the plugin owning a chat's
+  /// turns says what the chat should be CALLED and what state it is in, and the
+  /// host stores it on the session record so every client draws the same thing.
+  /// Older hosts omit it, and a chat whose plugin has stopped writing one keeps
+  /// nothing — the field is the whole header, so an absent one means ADE's own
+  /// title stands alone.
+  var pluginHeader: PluginChatHeader? = nil
   var identityKey: String?
   var surface: String?
   var automationId: String?
@@ -1291,6 +1300,7 @@ struct AgentChatSessionSummary: Codable, Identifiable, Equatable {
       && lhs.computerUse == rhs.computerUse
       && lhs.completion == rhs.completion
       && lhs.claudeGoal == rhs.claudeGoal
+      && lhs.pluginHeader == rhs.pluginHeader
       && lhs.identityKey == rhs.identityKey
       && lhs.surface == rhs.surface
       && lhs.automationId == rhs.automationId

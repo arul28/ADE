@@ -15,6 +15,8 @@
  * | `…setLinearToken` / `clearLinearToken` | `invoke("pageSaveApiKey"/"pageDisconnect")` |
  * | `…startLinearOAuth` / `getLinearOAuthSession` | `invoke("pageConnectOAuth")` |
  * | `window.ade.github.*` autolinks        | `invoke("pageAutolinks"/"pageCreateAutolink")` |
+ * | `automations.linearIngressSetup`       | `invoke("registerWebhook")`      |
+ * | `automations.getLinearIngressStatus`   | `invoke("webhookStatus")`        |
  * | `window.ade.lanes.create` / `.delete`  | `invoke("pageCreateLane"/"pageDeleteLane")` |
  * | `…getLinearIssue` by id                | `invoke("pageIssueById")`        |
  * | `modelSupportsFastMode` / `ReasoningEffortPicker` tiers | `invoke("pageModels")` |
@@ -90,21 +92,6 @@ export type PageAutolinkState = {
   autolinks: GitHubAutolink[];
   repo: { owner: string; name: string } | null;
   teams: { teamKey: string; teamName: string; keyPrefix: string; urlTemplate: string | null }[];
-  webhookUrl: string | null;
-  webhookSecretStored: boolean;
-  webhooksPossible: boolean;
-  /**
-   * The host's delivery ledger, pre-formatted.
-   *
-   * Whether deliveries are actually ARRIVING, which is a different question
-   * from whether the endpoint exists (`webhookUrl`), whether Linear will ever
-   * post to it (`webhooksPossible`) or whether ADE will accept what it posts
-   * (`webhookSecretStored`). `lastEvent` is already a printable line —
-   * "2026-09-01 12:00 UTC" — because the settings panel prints the same one.
-   */
-  lastEvent: string | null;
-  pendingDeliveries: number;
-  drainError: string | null;
 };
 
 export const getAutolinks = (): Promise<PageAutolinkState> => call("pageAutolinks");
@@ -161,8 +148,68 @@ export const disconnect = (): Promise<PageActionResult> => call("pageDisconnect"
 export const createAutolink = (teamKey: string): Promise<PageActionResult> =>
   call("pageCreateAutolink", { teamKey });
 
-export const saveWebhookSecret = (secret: string): Promise<PageActionResult> =>
-  call("saveWebhookSecret", { secret });
+/* ── The webhook ────────────────────────────────────────────────────────── */
+
+export type PageWebhookStatus = {
+  ok: boolean;
+  registered: boolean;
+  canRegister: boolean;
+  /** A sentence the tile prints: "Registered", "Connect Linear first", … */
+  status: string;
+  url: string | null;
+  secretStored: boolean;
+  connected: boolean;
+  webhooksPossible: boolean;
+  /** Pre-formatted — "2026-09-01 12:00 UTC" — or null when nothing has arrived. */
+  lastEvent: string | null;
+  pendingDeliveries: number;
+  error: string | null;
+  webhookId?: string | null;
+  registeredAt?: string | null;
+  message?: string | null;
+};
+
+/**
+ * Registered, receiving, or broken.
+ *
+ * The `automation-trigger-tile`'s `statusAction`, called from here as well so
+ * the settings section's one-line pointer can say whether the reader still has
+ * something to do in Automations.
+ */
+export const getWebhookStatus = (): Promise<PageWebhookStatus> => call("webhookStatus");
+
+/**
+ * Create the webhook and store its signing secret, in one press.
+ *
+ * The tile's `registerAction`. There is no secret to paste: `webhookSetup.js`
+ * generates one, creates the hook through the Linear API on the authorization
+ * the reader already granted, and stores it in the same act.
+ */
+export const registerWebhook = (): Promise<PageWebhookStatus> => call("registerWebhook");
+
+export const unregisterWebhook = (): Promise<PageWebhookStatus> => call("unregisterWebhook");
+
+/* ── The chat's own issue ───────────────────────────────────────────────── */
+
+/**
+ * Open one issue on the open web.
+ *
+ * Answers `{openUrl}`, which the HOST acts on — the bridge honours the same
+ * control-flow answers a socket press does, so the page does not (and may not)
+ * navigate a window itself.
+ */
+export const openIssueInLinear = (issueId: string): Promise<PageActionResult> =>
+  call("openInLinear", { issueId });
+
+/**
+ * Post this chat's last assistant turn onto its issue.
+ *
+ * Reads the transcript through `chat.readTranscript` in the child rather than
+ * inventing a summary here: a plugin that made up a progress note would be
+ * posting words the agent never said onto a ticket other people read.
+ */
+export const commentProgress = (sessionId: string): Promise<PageActionResult> =>
+  call("commentProgress", { sessionId });
 
 /* ── Lanes, chats and launches ──────────────────────────────────────────── */
 

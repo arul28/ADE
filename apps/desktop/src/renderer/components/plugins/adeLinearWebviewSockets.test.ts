@@ -81,8 +81,13 @@ describe("ade-linear's declared pages", () => {
   });
 
   it("declares a page on every socket the page tier ports", () => {
-    // The nine placements the port carries. Named rather than counted, so a
+    // The eight placements the port carries. Named rather than counted, so a
     // socket that silently loses its page is a failure with a name in it.
+    //
+    // The ninth was `top-bar-issues`, and it is gone on purpose: the top bar's
+    // trailing cluster is a permanent slot in every window's chrome, and Linear
+    // no longer spends one. Attach is a row in the composer's three-dot menu
+    // and the chat's Linear verbs are a row in the chat's.
     expect(declaringSockets().map((entry) => entry.socketId).sort()).toEqual([
       "attach-issue",
       "chat-issue",
@@ -92,7 +97,6 @@ describe("ade-linear's declared pages", () => {
       "issue-context",
       "issues-pane",
       "lane-issue",
-      "top-bar-issues",
     ]);
   });
 
@@ -128,7 +132,6 @@ describe("ade-linear's declared pages", () => {
       "chat-issue": "popover",
       "lane-issue": "popover",
       connection: "settings-section",
-      "top-bar-issues": "popover",
       "issue-context": "pane",
       // G12: the Create-lane and Create-PR issue pickers, which the vocabulary
       // could not be — a search box over a live list.
@@ -151,7 +154,6 @@ describe("ade-linear's declared pages", () => {
       "attach-issue": "picker",
       "chat-issue": "popover",
       "lane-issue": "popover",
-      "top-bar-issues": "popover",
     });
   });
 
@@ -170,11 +172,11 @@ describe("ade-linear's declared pages", () => {
     const declared = resolvePluginSlotWebview({
       pluginId: "ade-linear",
       panelId: "issues",
-      payload: { label: "Linear", panelId: "issues", webviewSurfaceId: "quickview" },
+      payload: { label: "Linear", panelId: "issues", webviewSurfaceId: "picker" },
       installed,
       supported: true,
     });
-    expect(declared?.surfaceId).toBe("quickview");
+    expect(declared?.surfaceId).toBe("picker");
 
     const byPanel = resolvePluginSlotWebview({
       pluginId: "ade-linear",
@@ -199,11 +201,11 @@ describe("ade-linear's declared pages", () => {
   });
 
   it("resolves the rail pane by its declared id, not by declaration order", () => {
-    // Three surfaces share `panelId: "issues"` — `issues`, `quickview` and
-    // `picker` — so a host that matched on the panel alone would resolve the
-    // rail pane by whichever was declared FIRST. It happens to be the right one
-    // today, which is exactly why the ambiguity is worth a test: reordering the
-    // manifest would silently put the popover's page in the rail.
+    // Three surfaces share `panelId: "issues"` — `issues`, `picker` and
+    // `dialog-picker` — so a host that matched on the panel alone would resolve
+    // the rail pane by whichever was declared FIRST. It happens to be the right
+    // one today, which is exactly why the ambiguity is worth a test: reordering
+    // the manifest would silently put the picker's page in the rail.
     const manifest = parsed.manifest;
     if (!manifest) throw new Error("ade-linear's manifest did not parse");
     const sharingPanel = manifest.surfaces

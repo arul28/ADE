@@ -68,6 +68,7 @@ import {
   laneSetupScriptHasWork,
   type RebaseSuggestionDisplay,
 } from "../../../shared/types/config";
+import { PLUGIN_AUTOMATION_TILE_FILTER_LIMIT } from "../../../shared/plugins/sockets";
 import { mergeLaneEnvInitConfig } from "../lanes/laneEnvInitMerge";
 import type { Logger } from "../logging/logger";
 import type { AdeDb } from "../state/kvDb";
@@ -494,6 +495,7 @@ function coerceAutomationTrigger(value: unknown): AutomationTrigger | undefined 
   const pluginId = asString(value.pluginId)?.trim();
   const pluginTrigger = asString(value.pluginTrigger)?.trim();
   const draftStateRaw = asString(value.draftState)?.trim();
+  const pluginFilters = coercePluginTriggerFilters(value.pluginFilters);
   const activeHours = coerceAutomationActiveHours(value.activeHours);
   if (cron != null) out.cron = cron;
   if (branch != null) out.branch = branch;
@@ -520,6 +522,10 @@ function coerceAutomationTrigger(value: unknown): AutomationTrigger | undefined 
   // `plugin` trigger with no identity as if it were what they wrote.
   if (pluginId) out.pluginId = pluginId;
   if (pluginTrigger) out.pluginTrigger = pluginTrigger;
+  // Kept even when `pluginId`/`pluginTrigger` are missing, for the reason
+  // stated just above: the incomplete rule has to reach validation looking
+  // exactly like what the user wrote, filters included.
+  if (pluginFilters) out.pluginFilters = pluginFilters;
   if (draftStateRaw === "draft" || draftStateRaw === "ready" || draftStateRaw === "any") out.draftState = draftStateRaw;
   if (activeHours) out.activeHours = activeHours;
   return out;
@@ -535,6 +541,44 @@ function coerceAutomationTriggers(
   if (normalized.length > 0) return normalized;
   const legacy = coerceAutomationTrigger(legacyTrigger);
   return legacy ? [legacy] : [{ type: "manual" }];
+}
+
+/** One filter value's ceiling. A plugin collection key or a typed id, never prose. */
+const PLUGIN_TRIGGER_FILTER_VALUE_MAX = 200;
+
+/**
+ * The `pluginFilters` bag, bounded on the way in AND on the way out.
+ *
+ * Shared by the read and the write so a value that survives a load is exactly
+ * the value that gets written back — a config file is round-tripped on every
+ * save, and a pair of coercers that disagreed would rewrite the user's file
+ * with fields the reader had already dropped, or worse, keep growing it.
+ *
+ * Every bound here exists because the KEYS come from a plugin manifest and the
+ * VALUES from a text box: the entry cap is the same
+ * {@link PLUGIN_AUTOMATION_TILE_FILTER_LIMIT} the tile may draw, so a plugin
+ * cannot persist more filters than it can show; the key cap matches the
+ * manifest parser's own 64; and the value cap stops a paste of a whole document
+ * from landing in the project's shared YAML. Keys are sorted so an unchanged
+ * rule produces a byte-identical file across saves.
+ */
+function coercePluginTriggerFilters(value: unknown): Record<string, string> | undefined {
+  if (!isRecord(value)) return undefined;
+  const out: Record<string, string> = {};
+  for (const key of Object.keys(value).sort()) {
+    if (Object.keys(out).length >= PLUGIN_AUTOMATION_TILE_FILTER_LIMIT) break;
+    const trimmedKey = key.trim();
+    if (!trimmedKey || trimmedKey.length > 64) continue;
+    const raw = value[key];
+    if (typeof raw !== "string") continue;
+    const trimmedValue = raw.trim().slice(0, PLUGIN_TRIGGER_FILTER_VALUE_MAX);
+    // An empty filter is the absence of a filter. Persisting it would make a
+    // rule whose YAML claims a narrowing it does not have, and `triggerMatches`
+    // would then have to decide what an empty expectation means.
+    if (!trimmedValue) continue;
+    out[trimmedKey] = trimmedValue;
+  }
+  return Object.keys(out).length > 0 ? out : undefined;
 }
 
 function coerceAutomationActiveHours(value: unknown): AutomationActiveHours | undefined {
@@ -2457,6 +2501,10 @@ function resolveEffectiveConfig(shared: ProjectConfigFile, local: ProjectConfigF
         ...(trigger.repo ? { repo: trigger.repo.trim() } : {}),
         ...(trigger.pluginId ? { pluginId: trigger.pluginId.trim() } : {}),
         ...(trigger.pluginTrigger ? { pluginTrigger: trigger.pluginTrigger.trim() } : {}),
+        ...((): { pluginFilters?: Record<string, string> } => {
+          const filters = coercePluginTriggerFilters(trigger.pluginFilters);
+          return filters ? { pluginFilters: filters } : {};
+        })(),
         ...(trigger.activeHours ? { activeHours: trigger.activeHours } : {}),
       })),
       trigger: legacyTrigger ?? triggers[0] ?? { type: "manual" },

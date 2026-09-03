@@ -227,6 +227,59 @@ export function payloadFromManifestSocket(socket: PluginManifestSocket): unknown
         title: socket.label,
         ...(socket.webviewSurfaceId ? { webviewSurfaceId: socket.webviewSurfaceId } : {}),
       };
+    // The composer's two menu rows. `webviewSurfaceId` is passed through and
+    // re-validated by the parser, like every other field in this mapping.
+    case "composer-menu-item":
+      return {
+        label: socket.label,
+        icon: socket.icon,
+        actionId: socket.actionId,
+        ...(socket.webviewSurfaceId ? { webviewSurfaceId: socket.webviewSurfaceId } : {}),
+      };
+    // `submenu` rides the payload rather than being implied by the surface, for
+    // the reason `dialog` does: one surface holds more than one submenu, and a
+    // row that could not tell them apart would be under the wrong heading.
+    case "chat-menu-item":
+      return {
+        label: socket.label,
+        icon: socket.icon,
+        actionId: socket.actionId,
+        submenu: socket.submenu,
+        ...(socket.webviewSurfaceId ? { webviewSurfaceId: socket.webviewSurfaceId } : {}),
+      };
+    case "machine-entry":
+      return {
+        label: socket.label,
+        icon: socket.icon,
+        actionId: socket.actionId,
+        ...(socket.advancedSurfaceId ? { advancedSurfaceId: socket.advancedSurfaceId } : {}),
+        ...(socket.modelsAction ? { modelsAction: socket.modelsAction } : {}),
+        ...(socket.runtimeId ? { runtimeId: socket.runtimeId } : {}),
+      };
+    // Unlike a row badge, a trigger tile is fully described by its declaration:
+    // its radios are the plugin's declared triggers and its fields are static,
+    // so there is no per-entity value a published row would fill in. The
+    // manifest IS the tile.
+    case "automation-trigger-tile":
+      return {
+        label: socket.label,
+        icon: socket.icon,
+        triggers: socket.triggers,
+        filters: socket.filters ?? [],
+        ...(socket.webhook ? { webhook: socket.webhook } : {}),
+      };
+    // `name` falls back to `label` so a template declaring only the field every
+    // other kind requires still draws its card with a title. The same fallback
+    // `slash-command` makes for `description`, and for the same reason: an
+    // author writing their second socket should not have to learn a third
+    // spelling of "the words on it".
+    case "automation-template":
+      return {
+        name: socket.name ?? socket.label,
+        description: socket.description,
+        icon: socket.icon,
+        template: socket.template,
+      };
     default: {
       /**
        * Exhaustive on purpose.

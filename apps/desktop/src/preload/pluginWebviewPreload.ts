@@ -48,17 +48,27 @@ import {
   PLUGIN_WEBVIEW_BRIDGE_VERSION,
   PLUGIN_WEBVIEW_EVENTS,
   PLUGIN_WEBVIEW_RESIZE_CHANNEL,
+  PLUGIN_WEBVIEW_PAGE_ERROR_MESSAGE_MAX_CHARS,
+  PLUGIN_WEBVIEW_PAGE_ERROR_SOURCE_MAX_CHARS,
   type AdePluginWebviewBridge,
   type PluginWebviewComposerAttach,
   type PluginWebviewConfirm,
   type PluginWebviewContext,
   type PluginWebviewDialogSubmit,
+  type PluginWebviewEngineRect,
   type PluginWebviewEventName,
   type PluginWebviewHandshake,
   type PluginWebviewHostKind,
+  type PluginWebviewLaneChoice,
   type PluginWebviewListOptions,
   type PluginWebviewMethod,
+  type PluginWebviewModelChoice,
+  type PluginWebviewPageErrorKind,
+  type PluginWebviewPermissionModeChoice,
+  type PluginWebviewProviderChoice,
+  type PluginWebviewReasoningEffortChoice,
   type PluginWebviewResize,
+  type PluginWebviewSocketItem,
   type PluginWebviewThemeSnapshot,
   type PluginWebviewToast,
 } from "../shared/plugins/webviewBridge";
@@ -276,6 +286,39 @@ const adePlugin: AdePluginWebviewBridge = {
       if (height === null) return;
       ipcRenderer.sendToHost(PLUGIN_WEBVIEW_RESIZE_CHANNEL, { height });
     },
+    // The five pickers. Each one forwards its own arguments and nothing else:
+    // the host reads them, opens ADE's own control, and answers with the
+    // reader's choice or `null` for a dismissal. A shape the host does not
+    // recognize comes back as `null` rather than as a half-choice, which is why
+    // every one of these is cast rather than rebuilt here — the preload is not
+    // a second validator of an answer main already checked.
+    pickModel: async (request?: { value?: string; availableModelIds?: string[] }) => {
+      const answer = await call("ui.pickModel", { ...(request ?? {}) });
+      return (answer ?? null) as PluginWebviewModelChoice | null;
+    },
+    pickLane: async (request?: { value?: string }) => {
+      const answer = await call("ui.pickLane", { ...(request ?? {}) });
+      return (answer ?? null) as PluginWebviewLaneChoice | null;
+    },
+    pickPermissionMode: async (request: { provider: string; value?: string }) => {
+      const answer = await call("ui.pickPermissionMode", { ...(request ?? {}) });
+      return (answer ?? null) as PluginWebviewPermissionModeChoice | null;
+    },
+    pickReasoningEffort: async (request: { model: string; value?: string | null }) => {
+      const answer = await call("ui.pickReasoningEffort", { ...(request ?? {}) });
+      return (answer ?? null) as PluginWebviewReasoningEffortChoice | null;
+    },
+    pickProvider: async (request?: { value?: string }) => {
+      const answer = await call("ui.pickProvider", { ...(request ?? {}) });
+      return (answer ?? null) as PluginWebviewProviderChoice | null;
+    },
+    openPathInEditor: async (request: {
+      rootPath: string;
+      relativePath?: string;
+      target: string;
+    }) => {
+      await call("ui.openPathInEditor", { ...(request ?? {}) });
+    },
   },
 
   clipboard: {
@@ -285,6 +328,30 @@ const adePlugin: AdePluginWebviewBridge = {
     },
     write: async (text: string) => {
       await call("clipboard.write", { text });
+    },
+  },
+
+  sockets: {
+    list: async (socket: string) => {
+      const rows = await call("sockets.list", { socket });
+      return Array.isArray(rows) ? rows as PluginWebviewSocketItem[] : [];
+    },
+    invoke: (socketId: string, args?: Record<string, unknown>) =>
+      call("sockets.invoke", { socketId, ...(args ? { args } : {}) }),
+  },
+
+  hostEngine: {
+    // The rect is sent as the page measured it, in the page's own coordinates.
+    // Clamping belongs to the host, which is the only party that knows how big
+    // the frame it drew actually is — see `clampPluginWebviewEngineRect`.
+    place: async (request: { engineId: string; rect: PluginWebviewEngineRect }) => {
+      await call("hostEngine.place", {
+        engineId: request?.engineId,
+        rect: request?.rect,
+      });
+    },
+    release: async () => {
+      await call("hostEngine.release", {});
     },
   },
 
@@ -317,3 +384,72 @@ const adePlugin: AdePluginWebviewBridge = {
 };
 
 contextBridge.exposeInMainWorld("adePlugin", adePlugin);
+
+// ---------------------------------------------------------------------------
+// The page's own failures, reported by the preload
+// ---------------------------------------------------------------------------
+
+/**
+ * Tell the host why this page is not drawing.
+ *
+ * Reported from the PRELOAD rather than from the page, and that is the whole
+ * point: a page that threw on its first render is exactly the page that cannot
+ * be relied upon to raise its own toast. The host already sees a guest that
+ * failed to LOAD — `did-fail-load` is a Chromium event — but a page that loaded
+ * and then broke, or one whose bundle the CSP silently refused, leaves a blank
+ * frame and a console line nobody reads.
+ *
+ * Rate-limited to a handful of reports per guest. A render loop that throws on
+ * every frame is one broken page, not a thousand IPC messages, and the card the
+ * host draws says the same thing either way. Failures are swallowed: a report
+ * that cannot be delivered must never itself throw inside an error handler.
+ */
+const PAGE_ERROR_REPORT_MAX = 5;
+let pageErrorsReported = 0;
+
+function reportPageError(kind: PluginWebviewPageErrorKind, message: string, source?: string): void {
+  if (pageErrorsReported >= PAGE_ERROR_REPORT_MAX) return;
+  const trimmed = message.trim();
+  if (!trimmed) return;
+  pageErrorsReported += 1;
+  const trimmedSource = source?.trim() ?? "";
+  void call("page.error", {
+    kind,
+    message: trimmed.slice(0, PLUGIN_WEBVIEW_PAGE_ERROR_MESSAGE_MAX_CHARS),
+    ...(trimmedSource
+      ? { source: trimmedSource.slice(0, PLUGIN_WEBVIEW_PAGE_ERROR_SOURCE_MAX_CHARS) }
+      : {}),
+  }).catch(() => {
+    // A host that will not take the report is not a second failure to raise.
+  });
+}
+
+window.addEventListener("error", (event: ErrorEvent) => {
+  // `event.message` is the browser's own sentence; `event.error` is the page's
+  // own Error when it threw one, and its message is the more useful of the two.
+  const fromError = event.error instanceof Error ? event.error.message : "";
+  reportPageError("error", fromError || event.message || "The page threw an error.", event.filename);
+});
+
+window.addEventListener("unhandledrejection", (event: PromiseRejectionEvent) => {
+  const reason: unknown = event.reason;
+  const message = reason instanceof Error
+    ? reason.message
+    : typeof reason === "string"
+      ? reason
+      : "A promise in the page rejected and nothing caught it.";
+  reportPageError("error", message);
+});
+
+window.addEventListener("securitypolicyviolation", (event: SecurityPolicyViolationEvent) => {
+  // The blocked URI and the directive that blocked it, phrased as the fix: a
+  // plugin author reading "script-src blocked https://cdn…" knows to vendor it,
+  // and that is the finding `ade plugin doctor` reports for this plugin.
+  const directive = event.effectiveDirective || event.violatedDirective || "the page policy";
+  const blocked = event.blockedURI || "something outside this plugin's own files";
+  reportPageError(
+    "csp",
+    `${directive} blocked ${blocked}. A plugin page may only load what shipped in its own directory.`,
+    event.blockedURI,
+  );
+});

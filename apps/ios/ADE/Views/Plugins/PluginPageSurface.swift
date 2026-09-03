@@ -139,7 +139,22 @@ struct PluginPageSurface: View {
                     changeRevision: syncService.pluginsProjectionRevision,
                     colorScheme: colorScheme
                 )
+                // Reload RECREATES the guest rather than calling `reload()` on
+                // it: a page that threw on its first script has already left
+                // half-built state behind, and the point of Try again is a
+                // fresh origin load. Changing the identity is how SwiftUI is
+                // told to build a new web view.
+                .id(coordinator.reloadToken)
                 .ignoresSafeArea(.container, edges: .bottom)
+                .overlay {
+                    if let error = coordinator.pageError {
+                        PluginPageErrorCard(
+                            pluginName: request.title,
+                            report: error,
+                            onReload: { coordinator.reloadPage() }
+                        )
+                    }
+                }
             case .vocabulary:
                 PluginPaneSheet(
                     request: PluginPaneRequest(
@@ -192,6 +207,7 @@ private struct PluginPageSurfaceChrome: ViewModifier {
             .modifier(PluginPagePromptAlert(coordinator: coordinator))
             .modifier(PluginPagePromptChoices(coordinator: coordinator))
             .modifier(PluginPageConfirmAlert(coordinator: coordinator))
+            .modifier(PluginPagePickerPresentation(coordinator: coordinator))
             .modifier(PluginPageToastOverlay(coordinator: coordinator))
     }
 }
@@ -299,6 +315,94 @@ private struct PluginPageConfirmAlert: ViewModifier {
     }
 }
 
+/// One of ADE's own five pickers, opened by the page.
+///
+/// `sheet(item:)` rather than `sheet(isPresented:)`, so two asks for the same
+/// picker present twice instead of being folded into one by SwiftUI's identity
+/// rules — the request carries a fresh token for exactly that reason. A swipe
+/// down answers `nil`, which is the dismissal the contract promises.
+private struct PluginPagePickerPresentation: ViewModifier {
+    @ObservedObject var coordinator: PluginPageSurfaceCoordinator
+
+    func body(content: Content) -> some View {
+        content.sheet(
+            item: Binding(
+                get: { coordinator.pendingPicker },
+                set: { updated in if updated == nil { coordinator.answerPicker(nil) } }
+            )
+        ) { request in
+            if let syncService = coordinator.pickerSyncService {
+                PluginPagePickerSheet(
+                    request: request,
+                    lanes: coordinator.pickerLanes,
+                    syncService: syncService,
+                    onAnswer: { answer in coordinator.answerPicker(answer) }
+                )
+            }
+        }
+    }
+}
+
+/// A plugin page that did not open.
+///
+/// Drawn OVER the guest rather than instead of it, because the guest may still
+/// be there: a content-policy violation stops one script, not the page. The
+/// card names the plugin, says what happened in a sentence, and offers the one
+/// thing a reader can actually do about it.
+struct PluginPageErrorCard: View {
+    let pluginName: String
+    let report: PluginPageErrorReport
+    let onReload: () -> Void
+
+    var body: some View {
+        VStack(spacing: 14) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .font(.system(size: 28, weight: .semibold))
+                .foregroundStyle(ADEColor.warning)
+            VStack(spacing: 6) {
+                Text(PluginPageErrorReport.title)
+                    .font(.headline)
+                    .foregroundStyle(ADEColor.textPrimary)
+                if !pluginName.isEmpty {
+                    Text(pluginName)
+                        .font(.subheadline.weight(.medium))
+                        .foregroundStyle(ADEColor.textSecondary)
+                }
+                // The plugin's own sentence, never a WebKit error code: the
+                // reader is being told a plugin's page is broken, and
+                // `NSURLErrorDomain -1100` is not that sentence.
+                Text(report.message)
+                    .font(.footnote)
+                    .foregroundStyle(ADEColor.textSecondary)
+                    .multilineTextAlignment(.center)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Button(action: onReload) {
+                Text("Reload")
+                    .font(.subheadline.weight(.semibold))
+                    .padding(.horizontal, 20)
+                    .padding(.vertical, 9)
+                    .background(ADEColor.accent.opacity(0.16), in: Capsule(style: .continuous))
+                    .foregroundStyle(ADEColor.accent)
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(24)
+        .frame(maxWidth: 340)
+        .background(
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .fill(ADEColor.cardBackground)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 16, style: .continuous)
+                        .strokeBorder(ADEColor.border, lineWidth: 1)
+                )
+        )
+        .padding(24)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(ADEColor.pageBackground.opacity(0.94))
+    }
+}
+
 /// The toast a page raised, drawn at the bottom of the surface.
 private struct PluginPageToastOverlay: ViewModifier {
     @ObservedObject var coordinator: PluginPageSurfaceCoordinator
@@ -369,6 +473,16 @@ final class PluginPageSurfaceCoordinator: ObservableObject, PluginPageBridgeHost
     @Published private(set) var confirmation: PluginPageConfirm?
     @Published private(set) var pendingPrompt: PluginActionPrompt?
     @Published var promptDraft: String = ""
+    /// The picker a page asked for, or nil.
+    @Published private(set) var pendingPicker: PluginPagePickerRequest?
+    /// Why the guest's page is not on screen, or nil.
+    @Published private(set) var pageError: PluginPageErrorReport?
+    /// Bumped by Reload. The guest's SwiftUI identity, so a bump builds a new
+    /// web view rather than re-running the one that broke.
+    @Published private(set) var reloadToken = 0
+    /// Lanes read before `ui.pickLane` presents, so the sheet never waits on a
+    /// database call while it is being drawn.
+    private(set) var pickerLanes: [LaneSummary] = []
 
     private var request: PluginPageRequest?
     private weak var syncService: SyncService?
@@ -376,6 +490,7 @@ final class PluginPageSurfaceCoordinator: ObservableObject, PluginPageBridgeHost
     private var toastId: String?
     private var confirmContinuation: CheckedContinuation<Bool, Never>?
     private var promptContinuation: CheckedContinuation<String?, Never>?
+    private var pickerContinuation: CheckedContinuation<PluginPagePickerAnswer?, Never>?
     private var refreshTask: Task<Void, Never>?
     private var authRunner: PluginAuthSessionRunner?
     /// The size class the surface last drew at, so a `{openWebview}` answer can
@@ -585,6 +700,76 @@ final class PluginPageSurfaceCoordinator: ObservableObject, PluginPageBridgeHost
 
     func pluginPageTheme() -> PluginPageThemeSnapshot {
         PluginPageTheme.snapshot(scheme: currentScheme)
+    }
+
+    /// The sync service the picker sheet needs, exposed for the presentation.
+    var pickerSyncService: SyncService? { syncService }
+
+    /// Open one of ADE's own five pickers.
+    ///
+    /// Every arm here is either a real presentation or a REFUSAL with a
+    /// sentence — never a silent nil and never a made-up default. The refusals
+    /// are the honest ones: a surface with no project attached has nothing to
+    /// pick from, and a model with no reasoning knob has no efforts to choose
+    /// between. Both are permanent facts about this ask, not a dismissal the
+    /// reader made.
+    func pluginPagePick(_ request: PluginPagePickerRequest) async throws -> PluginPagePickerAnswer? {
+        guard let syncService else {
+            throw PluginPageBridgeError.notSupportedHere(
+                "This page isn\u{2019}t attached to a project, so ADE has nothing to pick from."
+            )
+        }
+        switch request.kind {
+        case .lane:
+            pickerLanes = (try? await syncService.fetchLanes(includeArchived: false)) ?? []
+            guard !pickerLanes.isEmpty else {
+                throw PluginPageBridgeError.notSupportedHere(
+                    "This phone has no lanes for this project yet."
+                )
+            }
+        case .reasoningEffort:
+            // A model with no ladder resolves NULL rather than drawing an empty
+            // control, which is what the desktop does and therefore what a page
+            // written against it expects. Not a refusal: the ask was valid and
+            // the honest answer is that there was nothing to choose.
+            guard !pluginPageReasoningEfforts(
+                provider: request.provider ?? "",
+                modelId: request.model ?? ""
+            ).isEmpty else { return nil }
+        case .model, .permissionMode, .provider:
+            break
+        }
+        // A second picker while one is open answers the first as dismissed: two
+        // stacked sheets is a phone the reader cannot get out of.
+        answerPicker(nil)
+        return await withCheckedContinuation { continuation in
+            pickerContinuation = continuation
+            pendingPicker = request
+        }
+    }
+
+    func answerPicker(_ answer: PluginPagePickerAnswer?) {
+        guard let continuation = pickerContinuation else { return }
+        pickerContinuation = nil
+        pendingPicker = nil
+        continuation.resume(returning: answer)
+    }
+
+    /// The guest's page broke.
+    ///
+    /// The FIRST report wins for as long as the card is up: a page whose script
+    /// throws usually throws again on the next tick, and rewriting the sentence
+    /// under the reader would make the card flicker between two symptoms of one
+    /// failure. Reload is what clears it.
+    func pluginPageReportError(_ report: PluginPageErrorReport) {
+        guard pageError == nil else { return }
+        pageError = report
+    }
+
+    /// Try again: drop the card and build a new guest.
+    func reloadPage() {
+        pageError = nil
+        reloadToken &+= 1
     }
 
     private var currentScheme: ColorScheme {

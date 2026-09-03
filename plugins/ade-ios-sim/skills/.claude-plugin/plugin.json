@@ -1,6 +1,6 @@
 {
   "name": "ade-ios-sim",
-  "description": "iOS Simulator capabilities contributed by the ADE ade-ios-sim plugin",
+  "description": "iOS Sim Control capabilities contributed by the ADE ade-ios-sim plugin",
   "version": "1.0.0",
   "author": {
     "name": "ADE"

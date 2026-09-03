@@ -1,8 +1,8 @@
 {
   "name": "ade-linear",
-  "version": "2.0.0",
+  "version": "2.1.0",
   "displayName": "Linear",
-  "description": "Browse Linear issues, start a lane and an agent on one, and keep the issue moving \u2014 from ADE, on every device.",
+  "description": "Browse Linear issues, start a lane and an agent on one, and keep the issue moving — from ADE, on every device.",
   "icon": "brand:linear",
   "accent": "#5E6AD2",
   "vocabVersion": 1,
@@ -34,7 +34,7 @@
     {
       "id": "linear",
       "label": "Linear issue events",
-      "description": "Paste this URL into Linear's webhook settings so an issue that changes wakes ADE.",
+      "description": "Where Linear posts an issue that changed. Automations → Linear registers it for you.",
       "verify": {
         "kind": "hmac-sha256",
         "secretRef": "LINEAR_WEBHOOK_SECRET",
@@ -65,19 +65,6 @@
       "entryHtml": "dist/index.html",
       "panelId": "issues",
       "order": 55,
-      "mobile": false
-    },
-    {
-      "kind": "webview",
-      "id": "quickview",
-      "title": "Linear",
-      "icon": "brand:linear",
-      "entryHtml": "dist/index.html",
-      "panelId": "issues",
-      "popover": {
-        "width": 560,
-        "height": 640
-      },
       "mobile": false
     },
     {
@@ -131,7 +118,11 @@
       "icon": "brand:linear",
       "entryHtml": "dist/index.html",
       "panelId": "issue",
-      "mobile": false
+      "mobile": false,
+      "popover": {
+        "width": 360,
+        "height": 420
+      }
     }
   ],
   "panels": [
@@ -180,7 +171,7 @@
       "webviewSurfaceId": "issues"
     },
     {
-      "socket": "composer-action",
+      "socket": "composer-menu-item",
       "surface": "work",
       "id": "attach-issue",
       "label": "Attach a Linear issue",
@@ -189,25 +180,14 @@
       "webviewSurfaceId": "picker"
     },
     {
-      "socket": "chat-header-action",
+      "socket": "chat-menu-item",
       "surface": "work",
       "id": "chat-issue",
-      "label": "Linear issue",
+      "label": "Linear",
       "icon": "brand:linear",
+      "submenu": "issue-context",
       "actionId": "openSessionIssue",
-      "menu": [
-        {
-          "label": "Open in Linear",
-          "actionId": "openInLinear",
-          "icon": "link"
-        },
-        {
-          "label": "Comment progress on the issue",
-          "actionId": "commentProgress",
-          "icon": "chat"
-        }
-      ],
-      "webviewSurfaceId": "picker"
+      "webviewSurfaceId": "issue-context"
     },
     {
       "socket": "row-badge",
@@ -263,15 +243,6 @@
       "actionId": "openIssues"
     },
     {
-      "socket": "toolbar-action",
-      "surface": "app",
-      "id": "top-bar-issues",
-      "label": "Linear",
-      "icon": "brand:linear",
-      "actionId": "openIssuesQuickView",
-      "webviewSurfaceId": "quickview"
-    },
-    {
       "socket": "chat-card",
       "surface": "work",
       "id": "issue-context",
@@ -279,6 +250,184 @@
       "icon": "brand:linear",
       "panelId": "issue",
       "webviewSurfaceId": "issue-context"
+    },
+    {
+      "socket": "automation-trigger-tile",
+      "surface": "automations",
+      "id": "linear-triggers",
+      "label": "Linear",
+      "icon": "brand:linear",
+      "triggers": [
+        {
+          "id": "issue_created",
+          "label": "A Linear issue is created"
+        },
+        {
+          "id": "issue_updated",
+          "label": "A Linear issue is updated"
+        },
+        {
+          "id": "issue_assigned",
+          "label": "A Linear issue is assigned"
+        },
+        {
+          "id": "issue_status_changed",
+          "label": "A Linear issue changes state"
+        },
+        {
+          "id": "issue_labeled",
+          "label": "A Linear issue is labeled"
+        }
+      ],
+      "filters": [
+        {
+          "key": "project",
+          "label": "Project",
+          "kind": "select",
+          "collection": "projects",
+          "hint": "Only issues in this Linear project."
+        },
+        {
+          "key": "team",
+          "label": "Team",
+          "kind": "select",
+          "collection": "teams",
+          "hint": "Only issues owned by this team."
+        },
+        {
+          "key": "assignee",
+          "label": "Assignee",
+          "kind": "select",
+          "collection": "people",
+          "hint": "Only issues assigned to this person."
+        },
+        {
+          "key": "label",
+          "label": "Label",
+          "kind": "select",
+          "collection": "labels",
+          "hint": "Only issues carrying this label."
+        },
+        {
+          "key": "state",
+          "label": "State",
+          "kind": "select",
+          "collection": "states",
+          "hint": "Only issues in this workflow state."
+        }
+      ],
+      "webhook": {
+        "statusAction": "webhookStatus",
+        "registerAction": "registerWebhook"
+      }
+    },
+    {
+      "socket": "automation-template",
+      "surface": "automations",
+      "id": "linear-start-on-lane",
+      "label": "Linear issue → In Progress when work starts",
+      "name": "Linear issue → In Progress when work starts",
+      "icon": "brand:linear",
+      "description": "Opening a lane on a Linear issue moves that issue to the team's first started state.",
+      "template": {
+        "enabled": true,
+        "mode": "monitor",
+        "executor": {
+          "mode": "automation-bot"
+        },
+        "reviewProfile": "quick",
+        "toolPalette": [
+          "linear"
+        ],
+        "contextSources": [],
+        "outputs": {
+          "disposition": "comment-only",
+          "createArtifact": false
+        },
+        "verification": {
+          "verifyBeforePublish": false,
+          "mode": "intervention"
+        },
+        "name": "Linear issue → In Progress when work starts",
+        "triggers": [
+          {
+            "type": "lane.created"
+          }
+        ],
+        "trigger": {
+          "type": "lane.created"
+        },
+        "guardrails": {
+          "maxDurationMin": 5
+        },
+        "billingCode": "auto:linear-start-on-lane",
+        "actions": [
+          {
+            "type": "plugin",
+            "pluginStep": {
+              "pluginId": "ade-linear",
+              "action": "stepStartIssueOnLane",
+              "args": {
+                "laneId": "{{trigger.laneId}}"
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "socket": "automation-template",
+      "surface": "automations",
+      "id": "linear-done-on-merge",
+      "label": "Linear issue → Done when its pull request merges",
+      "name": "Linear issue → Done when its pull request merges",
+      "icon": "brand:linear",
+      "description": "A merged pull request moves the issues its lane linked with “close on merge” to the team's first completed state.",
+      "template": {
+        "enabled": true,
+        "mode": "monitor",
+        "executor": {
+          "mode": "automation-bot"
+        },
+        "reviewProfile": "quick",
+        "toolPalette": [
+          "linear"
+        ],
+        "contextSources": [],
+        "outputs": {
+          "disposition": "comment-only",
+          "createArtifact": false
+        },
+        "verification": {
+          "verifyBeforePublish": false,
+          "mode": "intervention"
+        },
+        "name": "Linear issue → Done when its pull request merges",
+        "triggers": [
+          {
+            "type": "github.pr_merged"
+          }
+        ],
+        "trigger": {
+          "type": "github.pr_merged"
+        },
+        "guardrails": {
+          "maxDurationMin": 5
+        },
+        "billingCode": "auto:linear-done-on-merge",
+        "actions": [
+          {
+            "type": "plugin",
+            "pluginStep": {
+              "pluginId": "ade-linear",
+              "action": "stepCloseIssueOnMerge",
+              "args": {
+                "laneId": "{{trigger.laneId}}"
+              }
+            }
+          }
+        ]
+      }
     }
   ],
   "collections": {
@@ -300,6 +449,9 @@
     "people": {
       "sync": true
     },
+    "labels": {
+      "sync": true
+    },
     "viewer": {
       "sync": true
     },
@@ -308,23 +460,12 @@
     },
     "ui-state": {
       "sync": false
+    },
+    "webhook": {
+      "sync": false
     }
   },
   "settings": [
-    {
-      "key": "moveToDoneOnMerge",
-      "kind": "toggle",
-      "label": "Move the issue to Done when its pull request merges",
-      "description": "Only issues linked to the lane with \"close on merge\" are moved.",
-      "default": false
-    },
-    {
-      "key": "moveToStartedOnLaunch",
-      "kind": "toggle",
-      "label": "Move the issue to In Progress when an agent starts on it",
-      "description": "Uses the team's first started workflow state.",
-      "default": false
-    },
     {
       "key": "defaultTeamKey",
       "kind": "text",
@@ -335,7 +476,7 @@
       "key": "launchPromptClipboard",
       "kind": "toggle",
       "label": "Copy the launch prompt to the clipboard",
-      "description": "Saves the kickoff prompt before Linear starts an agent on the issue.",
+      "description": "Saves the kickoff prompt before Linear starts an agent on the issue. Its switch is in the launch form, beside the prompt it copies.",
       "default": true
     }
   ],
@@ -386,6 +527,11 @@
       "id": "close_issue_on_merge",
       "label": "Move a merged lane's Linear issue to Done",
       "action": "stepCloseIssueOnMerge"
+    },
+    {
+      "id": "start_issue_on_lane",
+      "label": "Move a lane's Linear issues to In Progress",
+      "action": "stepStartIssueOnLane"
     }
   ],
   "searchProviders": [

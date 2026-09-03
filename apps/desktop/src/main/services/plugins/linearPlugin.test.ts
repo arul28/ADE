@@ -389,14 +389,16 @@ describe("installing ade-linear from the bundled directory", () => {
     expect(installed.record.source.kind).toBe("builtin");
     expect(installed.record.enabled).toBe(true);
 
-    // Seven surfaces, one page. Every placement Linear draws is a `webview`
+    // Six surfaces, one page. Every placement Linear draws is a `webview`
     // surface pointing at the same `dist/index.html`; the page reads the host's
-    // injected `surfaceId` to know which of the seven it is. `issues` keeps its
+    // injected `surfaceId` to know which of the six it is. `issues` keeps its
     // id from the tab it replaced, because a tab badge is addressed by
     // `"<pluginId>/<surfaceId>"`.
+    //
+    // The seventh was `quickview`, the top bar's popover, and it went with the
+    // `toolbar-action` that opened it.
     expect(installed.manifest?.surfaces.map((surface) => surface.id)).toEqual([
       "issues",
-      "quickview",
       "settings",
       "picker",
       // The Create-lane and Create-PR picker, drawn inside ADE's own dialogs.
@@ -414,8 +416,11 @@ describe("installing ade-linear from the bundled directory", () => {
     expect(installed.manifest?.surfaces.every((surface) => Boolean(surface.panelId))).toBe(true);
     expect(installed.manifest?.sockets.map((socket) => socket.socket)).toEqual([
       "work-rail-pane",
-      "composer-action",
-      "chat-header-action",
+      // Menu rows, not chrome buttons. The composer's bar and the chat header
+      // are permanent slots shared by every plugin ever installed, and neither
+      // is one Linear spends now.
+      "composer-menu-item",
+      "chat-menu-item",
       "row-badge",
       // The two dialog pickers. Both name the same page and the same panel;
       // `dialog` is what tells them apart, and it is why the payload carries it.
@@ -424,13 +429,15 @@ describe("installing ade-linear from the bundled directory", () => {
       "graph-node",
       "settings-section",
       "command-palette-action",
-      // A `toolbar-action` on the `app` surface: the top bar's trailing
-      // cluster, whose context is the window rather than the open tab.
-      "toolbar-action",
       // The transcript's issue context.
       "chat-card",
+      // The Automations grid: one tile with the five triggers and the webhook
+      // block, then the two rules that used to be settings toggles.
+      "automation-trigger-tile",
+      "automation-template",
+      "automation-template",
     ]);
-    // Nine of the eleven sockets name a page to draw instead of their panel,
+    // Eight of the thirteen sockets name a page to draw instead of their panel,
     // and each names one this manifest actually declares — an unresolvable id
     // would silently fall back to the panel forever.
     const surfaceIds = new Set(installed.manifest?.surfaces.map((surface) => surface.id) ?? []);
@@ -443,7 +450,6 @@ describe("installing ade-linear from the bundled directory", () => {
       "create-lane-issue",
       "create-pr-issue",
       "connection",
-      "top-bar-issues",
       "issue-context",
     ]);
     for (const socket of upgraded) {

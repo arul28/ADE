@@ -1419,6 +1419,11 @@ struct WorkSessionDestinationView: View {
       .workSessionNavigationChrome(
         mode: isFullScreenTerminalSession ? .embedded : navigationChrome,
         title: sessionDestinationNavigationTitle,
+        // What the plugin owning this chat's turns says the header should say.
+        // Read off the same coalesced summary the composer's controls use, so a
+        // deeplink rebuild does not blank it. Absent for every chat ADE itself
+        // runs, which is most of them.
+        pluginHeader: composerChatSummary?.pluginHeader,
         trailingControls: { sessionHeaderTrailingControls }
       )
       .loadPluginContributions(.session, into: $pluginContributions)
@@ -3584,6 +3589,7 @@ private struct WorkSessionNavigationChromeModifier<TrailingControls: View>: View
 
   let mode: WorkSessionNavigationChrome
   let title: String
+  let pluginHeader: PluginChatHeader?
   let trailingControls: () -> TrailingControls
 
   @ViewBuilder
@@ -3604,31 +3610,49 @@ private struct WorkSessionNavigationChromeModifier<TrailingControls: View>: View
         // still reach the chat, while the helper only dismisses true edge swipes.
         .simultaneousGesture(edgeSwipeDismissGesture(containerWidth: contentWidth))
         .safeAreaInset(edge: .top, spacing: 0) {
-          ZStack {
-            Text(title)
-              .font(.headline.weight(.semibold))
-              .foregroundStyle(ADEColor.textPrimary)
-              .lineLimit(1)
-              .truncationMode(.tail)
+          VStack(spacing: 4) {
+            ZStack {
+              VStack(spacing: 1) {
+                Text(title)
+                  .font(.headline.weight(.semibold))
+                  .foregroundStyle(ADEColor.textPrimary)
+                  .lineLimit(1)
+                  .truncationMode(.tail)
+                // The plugin's own word for what this chat IS, under ADE's own
+                // title rather than instead of it: a chat keeps its name even
+                // when a plugin is driving it.
+                if let label = pluginHeader?.label, !label.isEmpty {
+                  Text(label)
+                    .font(.caption2.weight(.medium))
+                    .foregroundStyle(ADEColor.textSecondary)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                }
+              }
               .frame(maxWidth: .infinity)
               .padding(.horizontal, 64)
 
-            HStack(spacing: 10) {
-              Button {
-                dismiss()
-              } label: {
-                Image(systemName: "chevron.left")
-                  .font(.system(size: 15, weight: .semibold))
-                  .foregroundStyle(ADEColor.accent)
-                  .frame(width: 28, height: 28)
+              HStack(spacing: 10) {
+                Button {
+                  dismiss()
+                } label: {
+                  Image(systemName: "chevron.left")
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundStyle(ADEColor.accent)
+                    .frame(width: 28, height: 28)
+                }
+                .buttonStyle(.plain)
+                .contentShape(Rectangle())
+                .accessibilityLabel("Back to Work")
+
+                Spacer(minLength: 0)
+
+                trailingControls()
               }
-              .buttonStyle(.plain)
-              .contentShape(Rectangle())
-              .accessibilityLabel("Back to Work")
+            }
 
-              Spacer(minLength: 0)
-
-              trailingControls()
+            if let chips = pluginHeader?.chips, !chips.isEmpty {
+              WorkPluginHeaderChips(chips: chips)
             }
           }
           .padding(.horizontal, 16)
@@ -3664,6 +3688,46 @@ private struct WorkSessionNavigationChromeModifier<TrailingControls: View>: View
   }
 }
 
+/// The chips a plugin wrote onto this chat's header.
+///
+/// Scrolls horizontally rather than wrapping: the header is one line of chrome
+/// above a conversation, and a plugin that published six chips must not be able
+/// to push the transcript down the screen.
+private struct WorkPluginHeaderChips: View {
+  let chips: [PluginChatHeaderChip]
+
+  var body: some View {
+    ScrollView(.horizontal, showsIndicators: false) {
+      HStack(spacing: 6) {
+        ForEach(Array(chips.enumerated()), id: \.offset) { _, chip in
+          Text(chip.label)
+            .font(.caption2.weight(.medium))
+            .foregroundStyle(tint(chip.tone))
+            .lineLimit(1)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 3)
+            .background(tint(chip.tone).opacity(0.12), in: Capsule(style: .continuous))
+        }
+      }
+      .padding(.horizontal, 2)
+    }
+    .frame(maxWidth: .infinity)
+  }
+
+  /// A tone this build does not know is drawn NEUTRAL rather than dropped: the
+  /// desktop may add one, and a chip that vanished on the phone would read as
+  /// the plugin having stopped publishing it.
+  private func tint(_ tone: String?) -> Color {
+    switch PluginVocabTone.normalize(tone) {
+    case .neutral: return ADEColor.textSecondary
+    case .accent: return ADEColor.accent
+    case .success: return ADEColor.success
+    case .warning: return ADEColor.warning
+    case .destructive: return ADEColor.danger
+    }
+  }
+}
+
 private struct WorkSessionNavigationChromeWidthPreferenceKey: PreferenceKey {
   static var defaultValue: CGFloat = 0
 
@@ -3676,12 +3740,14 @@ private extension View {
   func workSessionNavigationChrome<TrailingControls: View>(
     mode: WorkSessionNavigationChrome,
     title: String,
+    pluginHeader: PluginChatHeader? = nil,
     @ViewBuilder trailingControls: @escaping () -> TrailingControls
   ) -> some View {
     modifier(
       WorkSessionNavigationChromeModifier(
         mode: mode,
         title: title,
+        pluginHeader: pluginHeader,
         trailingControls: trailingControls
       )
     )

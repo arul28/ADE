@@ -1,7 +1,7 @@
 {
   "name": "@ade-dev/ade-linear-page",
   "private": true,
-  "version": "2.0.0",
+  "version": "2.1.0",
   "description": "The ade-linear plugin's own page — the webview tier for every Linear placement.",
   "license": "AGPL-3.0-only",
   "type": "module",

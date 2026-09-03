@@ -145,7 +145,10 @@ function makeDeps(options = {}) {
         if (options.deleteLaneThrows) throw options.deleteLaneThrows;
         return null;
       },
-      "chat.createSession": async () => ({ sessionId: "session-1" }),
+      // `launchHeadless`, not `createSession`: `createSession` takes no message
+      // field at all, so a launch through it created a silent chat and dropped
+      // the reader's kickoff prompt on the floor.
+      "chat.launchHeadless": async () => ({ id: "session-1" }),
       "chat.launchCli": async () => ({ sessionId: "session-cli" }),
       ...(options.actions ?? {}),
     },
@@ -506,10 +509,11 @@ describe("the reads answer the shapes page/src/types.ts declares", () => {
   it("answers the autolink card with what GitHub already has", async () => {
     const { actions } = makeDeps();
     const state = await actions.pageAutolinks();
-    assert.deepEqual(Object.keys(state).sort(), [
-      "autolinks", "drainError", "lastEvent", "pendingDeliveries", "repo", "teams",
-      "webhookSecretStored", "webhookUrl", "webhooksPossible",
-    ]);
+    // Three keys, and no webhook among them. The endpoint, its signing secret
+    // and its delivery ledger moved to the Automations trigger tile, whose own
+    // `statusAction` answers them — a settings card and an automations tile
+    // reporting one endpoint in two vocabularies is the drift this removed.
+    assert.deepEqual(Object.keys(state).sort(), ["autolinks", "repo", "teams"]);
     assert.deepEqual(state.autolinks, [{
       id: 7,
       keyPrefix: "ENG-",
@@ -523,40 +527,6 @@ describe("the reads answer the shapes page/src/types.ts declares", () => {
       keyPrefix: "ENG-",
       urlTemplate: "https://linear.app/acme/issue/ENG-<num>",
     }]);
-    // The BOOLEAN. The secret itself never crosses the bridge.
-    assert.equal(state.webhookSecretStored, true);
-    assert.equal(typeof state.webhookUrl, "string");
-    // The same rule the settings panel prints, from the same function: whether
-    // an OAuth client exists at all to carry the `admin` grant Linear delivers
-    // webhooks to. A machine ADE lends nothing gets `false`.
-    assert.equal(state.webhooksPossible, true);
-    const alone = makeDeps({ officialClient: null });
-    assert.equal((await alone.actions.pageAutolinks()).webhooksPossible, false);
-  });
-
-  it("carries the delivery ledger's three rows, pre-formatted the way the panel prints them", async () => {
-    const { actions } = makeDeps({
-      webhookStatus: {
-        lastReceivedAt: "2026-09-01T12:00:34.000Z",
-        pendingDeliveries: 2,
-        lastError: "relay timed out",
-      },
-    });
-    const state = await actions.pageAutolinks();
-    assert.equal(state.lastEvent, "2026-09-01 12:00 UTC");
-    assert.equal(state.pendingDeliveries, 2);
-    assert.equal(state.drainError, "relay timed out");
-  });
-
-  it("says nothing about deliveries when there is no endpoint to deliver to", async () => {
-    // A ledger read with no `webhookUrl` would answer zeros, and a card drawing
-    // "0 unacked" beside "Not set up" reads as a healthy silence.
-    const { actions } = makeDeps({ webhookUrlThrows: true });
-    const state = await actions.pageAutolinks();
-    assert.equal(state.webhookUrl, null);
-    assert.equal(state.lastEvent, null);
-    assert.equal(state.pendingDeliveries, 0);
-    assert.equal(state.drainError, null);
   });
 
   it("reports the issues linked to the CHATS in a lane, not just the lane", async () => {
@@ -946,10 +916,10 @@ describe("lanes, chats and launches", () => {
     assert.equal(result.ok, true);
     assert.equal(result.laneId, "lane-new");
     assert.equal(result.sessionId, "session-1");
-    const session = invocations(sdk, "chat.createSession")[0];
+    const session = invocations(sdk, "chat.launchHeadless")[0];
     assert.equal(session.laneId, "lane-new");
     assert.equal(session.provider, "codex");
-    assert.equal(session.initialMessage, "Pick this up.");
+    assert.equal(session.kickoffText, "Pick this up.");
     assert.equal("reasoningEffort" in session, false);
     // Codex is the one provider whose permission field IS the unified name.
     assert.equal(session.permissionMode, "full-auto");
@@ -974,7 +944,7 @@ describe("lanes, chats and launches", () => {
       permissionMode: "acceptEdits",
       fastMode: true,
     });
-    const session = invocations(sdk, "chat.createSession")[0];
+    const session = invocations(sdk, "chat.launchHeadless")[0];
     assert.equal(session.claudePermissionMode, "acceptEdits");
     assert.equal("permissionMode" in session, false);
     assert.equal(session.fastMode, true);
@@ -989,7 +959,7 @@ describe("lanes, chats and launches", () => {
       model: "anthropic/opus-5",
       permissionMode: "plan",
     });
-    assert.equal(invocations(sdk, "chat.createSession")[0].claudePermissionMode, "plan");
+    assert.equal(invocations(sdk, "chat.launchHeadless")[0].claudePermissionMode, "plan");
   });
 
   it("falls back to the unified field for a provider the capabilities cannot name", async () => {
@@ -1001,13 +971,13 @@ describe("lanes, chats and launches", () => {
       provider: "claude",
       permissionMode: "acceptEdits",
     });
-    assert.equal(invocations(sdk, "chat.createSession")[0].permissionMode, "acceptEdits");
+    assert.equal(invocations(sdk, "chat.launchHeadless")[0].permissionMode, "acceptEdits");
   });
 
   it("sends no permission field at all when the reader chose none", async () => {
     const { actions, sdk } = makeDeps();
     await actions.pageLaunchAgent({ issueId: "issue-1", provider: "claude", model: "anthropic/opus-5" });
-    const session = invocations(sdk, "chat.createSession")[0];
+    const session = invocations(sdk, "chat.launchHeadless")[0];
     for (const field of ["permissionMode", "claudePermissionMode", "droidPermissionMode", "cursorModeId", "opencodePermissionMode"]) {
       assert.equal(field in session, false, `${field} was sent for an untouched pill`);
     }
@@ -1031,7 +1001,7 @@ describe("lanes, chats and launches", () => {
 
   it("says the lane exists when only the agent failed", async () => {
     const { actions } = makeDeps({
-      actions: { "chat.createSession": async () => { throw new Error("no provider configured"); } },
+      actions: { "chat.launchHeadless": async () => { throw new Error("no provider configured"); } },
     });
     const result = await actions.pageLaunchAgent({ issueId: "issue-1" });
     assert.equal(result.ok, false);
@@ -1044,8 +1014,8 @@ describe("lanes, chats and launches", () => {
     const { actions, sdk } = makeDeps();
     const result = await actions.pageOpenChat({ issueId: "issue-1", prompt: "What is left here?" });
     assert.equal(result.ok, true);
-    const session = invocations(sdk, "chat.createSession")[0];
-    assert.equal(session.initialMessage, "What is left here?");
+    const session = invocations(sdk, "chat.launchHeadless")[0];
+    assert.equal(session.kickoffText, "What is left here?");
     assert.equal("provider" in session, false);
     assert.equal("model" in session, false);
   });

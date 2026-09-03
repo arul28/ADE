@@ -1,5 +1,7 @@
 import {
   isPluginWebviewUiVerb,
+  sanitizePluginWebviewEngineRect,
+  sanitizePluginWebviewPageError,
   type PluginWebviewComposerAttach,
   type PluginWebviewConfirm,
   type PluginWebviewDialogSubmit,
@@ -7,6 +9,10 @@ import {
   type PluginWebviewUiRequest,
   type PluginWebviewUiResponse,
 } from "../../../../shared/plugins/webviewBridge";
+import { placeHostEngine, releaseHostEngine } from "../hostEngine/hostEngineStore";
+import { invokePluginSocketAction } from "./contributionBridge";
+import { recordPluginWebviewPageError } from "./pluginWebviewPageErrorStore";
+import { findPluginWebviewSocket, listPluginWebviewSockets } from "./pluginWebviewSockets";
 import type { PluginActionPrompt } from "../../../../shared/plugins/sdk";
 import {
   buildPluginActionPromptAnswer,
@@ -382,6 +388,79 @@ export async function handlePluginWebviewUiRequest(
         // thing to dismiss. A tab or pane guest has no `close` and is untouched.
         if (guest?.close) guest.close();
       }
+      return okAnswer;
+    }
+
+    case "sockets.list": {
+      const socket = typeof args.socket === "string" ? args.socket : "";
+      if (!socket) return { ok: false, message: "That socket kind was malformed." };
+      // An unknown kind answers an empty list rather than a refusal: "nobody
+      // published for that" and "this build has no such socket" are the same
+      // thing to a page drawing an overlay, and a rejection would make a page
+      // written against a newer host fail instead of drawing nothing.
+      return { ok: true, value: await listPluginWebviewSockets(socket) };
+    }
+
+    case "sockets.invoke": {
+      const socketId = typeof args.socketId === "string" ? args.socketId : "";
+      if (!socketId) return { ok: false, message: "That socket id was malformed." };
+      // Resolved by LISTING again, not from anything the page sent: the plugin
+      // and the action come off the contribution, so a page can only press a
+      // row the host would itself have drawn — and a row the publishing plugin
+      // has since withdrawn stops being pressable rather than firing anyway.
+      const row = await findPluginWebviewSocket(socketId);
+      if (!row) return { ok: false, message: "That contribution is no longer published." };
+      const actionId = typeof row.payload?.actionId === "string" ? row.payload.actionId : "";
+      if (!actionId) return { ok: false, message: "That contribution has no action to run." };
+      const invokeArgs = args.args && typeof args.args === "object" && !Array.isArray(args.args)
+        ? args.args as Record<string, unknown>
+        : {};
+      const result = await invokePluginSocketAction(row.pluginId, actionId, invokeArgs);
+      // The same control-flow reader the socket press itself gets, applied
+      // against the PUBLISHING plugin rather than the calling page: a
+      // `{navigate}` from someone else's handler goes where that plugin meant
+      // it to, and the page that pressed the row does not get to redirect it.
+      showPluginActionMessage(result, row.pluginId, actionId);
+      const edit = readPluginActionComposerEdit(result);
+      if (edit) applyPluginComposerEdit(edit, { pluginId: row.pluginId, actionId });
+      const openedSettings = applyPluginActionOpenSettings(result, { pluginId: row.pluginId, actionId });
+      const navigation = openedSettings ? null : readPluginActionNavigation(result);
+      if (navigation) {
+        applyPluginActionNavigation(navigation, {
+          pluginId: row.pluginId,
+          context: null,
+          anchor: null,
+        });
+      }
+      return { ok: true, value: result };
+    }
+
+    case "hostEngine.place": {
+      const engineId = typeof args.engineId === "string" ? args.engineId : "";
+      const rect = sanitizePluginWebviewEngineRect(args.rect);
+      // Main already refused an engine this plugin does not own and a rect that
+      // is not a rectangle. Both are re-read here because this function is the
+      // unit under test and a relay request is `unknown` by the time it lands —
+      // not because the window is a second authority on ownership.
+      if (!engineId || !rect) return { ok: false, message: "That placement was malformed." };
+      const outcome = placeHostEngine(request.guestKey, { engineId, rect });
+      return outcome === "placed"
+        ? okAnswer
+        : { ok: false, message: "That tool isn’t available on this screen." };
+    }
+
+    case "hostEngine.release": {
+      releaseHostEngine(request.guestKey);
+      return okAnswer;
+    }
+
+    case "page.error": {
+      const error = sanitizePluginWebviewPageError(args.error ?? args);
+      // A malformed report is answered `ok` and dropped. The caller is a page's
+      // own error handler, and refusing it would raise a second failure inside
+      // the handler for the first.
+      if (!error) return okAnswer;
+      recordPluginWebviewPageError(request.guestKey, error);
       return okAnswer;
     }
 

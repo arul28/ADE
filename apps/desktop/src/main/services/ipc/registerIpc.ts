@@ -3996,10 +3996,17 @@ export function registerIpc({
     clipboard.writeImage(image);
   });
 
-  ipcMain.handle(
-    IPC.appOpenPathInEditor,
-    async (
-      _event,
+  /**
+   * Open a workspace path in the reader's editor, or reveal it.
+   *
+   * Named rather than left inline because there are now TWO callers: the
+   * renderer's own `app.openPathInEditor`, and a plugin page's
+   * `ui.openPathInEditor` through the webview bridge. The containment rules —
+   * the root must be a known workspace root, and a relative path must not
+   * escape it — are the load-bearing part, and a second copy of them for the
+   * page tier is how the two would come to disagree about what a page may open.
+   */
+  const openWorkspacePathInEditor = async (
       arg: {
         rootPath: string;
         relativePath?: string;
@@ -4072,7 +4079,19 @@ export function registerIpc({
           shell.showItemInFolder(openPath);
         },
       });
-    }
+  };
+
+  ipcMain.handle(
+    IPC.appOpenPathInEditor,
+    async (
+      _event,
+      arg: {
+        rootPath: string;
+        relativePath?: string;
+        target: OpenPathTarget;
+        remote?: OpenPathInEditorRemote;
+      },
+    ): Promise<void> => openWorkspacePathInEditor(arg),
   );
 
   ipcMain.handle(IPC.appGetInfo, async (): Promise<AppInfo> => {
@@ -6743,6 +6762,30 @@ export function registerIpc({
       });
     },
     openExternalUrl: (url) => openExternalUrl(url),
+    openPathInEditor: async ({ rootPath, relativePath, target }) => {
+      // The SAME function the renderer's own `app.openPathInEditor` calls, so a
+      // page reaches exactly the editors ADE reaches and is held to the same
+      // containment check on the root. `remote` is deliberately not forwarded:
+      // a page names a path, and choosing to open a checkout on another machine
+      // over SSH is a decision ADE's own UI makes, not one a guest asks for.
+      await openWorkspacePathInEditor({
+        rootPath,
+        ...(relativePath ? { relativePath } : {}),
+        target: target as OpenPathTarget,
+      });
+    },
+    recordPageError: ({ guest, error }) => {
+      // Written into the plugin's own log ring so `ade plugin doctor` can count
+      // CSP violations on a machine where nobody had a console open. A host
+      // that is not running yet has no ring, and the report is then only the
+      // card the reader is already looking at.
+      getCtx().pluginHostService?.recordPageError?.({
+        pluginId: guest.pluginId,
+        kind: error.kind,
+        message: error.message,
+        ...(error.source ? { source: error.source } : {}),
+      });
+    },
   });
 
   ipcMain.handle(IPC.pluginWebviewBridge, async (event, arg: unknown): Promise<unknown> => {
@@ -6787,6 +6830,15 @@ export function registerIpc({
     const win = BrowserWindow.fromWebContents(event.sender);
     if (!win) return;
     pluginWebviewBridgeServer.publishChatTurn(win.id, arg);
+  });
+
+  ipcMain.on(IPC.pluginWebviewHostPublish, (event, arg: unknown) => {
+    // Same shape and same rule as the chat publish: only a real ADE window may
+    // speak for its own guests, and the window id comes off the sender rather
+    // than out of the payload.
+    const win = BrowserWindow.fromWebContents(event.sender);
+    if (!win) return;
+    pluginWebviewBridgeServer.publishHostChange(win.id, arg);
   });
 
   ipcMain.on(IPC.pluginWebviewSurfaceState, (event, arg: unknown) => {

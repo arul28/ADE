@@ -1198,6 +1198,11 @@ describe("payload arm coverage", () => {
     "activity-entry": { title: "2 checks failed" },
     "graph-node": { label: "ADE-142" },
     "dialog-section": { dialog: "create-lane", panelId: "issues" },
+    "composer-menu-item": { label: "Attach an issue", actionId: "attach" },
+    "chat-menu-item": { label: "Linear issue", actionId: "attach", submenu: "issue-context" },
+    "machine-entry": { label: "Cursor Cloud", actionId: "launch" },
+    "automation-trigger-tile": { label: "Linear", triggers: [{ id: "issue.created", label: "Issue created" }] },
+    "automation-template": { name: "Triage new issues", template: { trigger: { type: "plugin" } } },
   };
 
   it("parses a minimal valid payload for every kind in the taxonomy", () => {

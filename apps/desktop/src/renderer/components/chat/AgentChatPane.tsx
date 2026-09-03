@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { AnimatePresence, motion } from "motion/react";
-import { ArrowLeft, CaretRight, CircleNotch, CloudArrowUp, Cube, Desktop, DeviceMobile, ArrowBendUpRight, DownloadSimple, GitFork, Lightning, Plus, Terminal, TreeStructure, X, type Icon } from "@phosphor-icons/react";
+import { ArrowLeft, CaretRight, CircleNotch, CloudArrowUp, Cube, Desktop, DeviceMobile, ArrowBendUpRight, DownloadSimple, GitFork, GitPullRequest, Lightning, Plus, Terminal, TreeStructure, X, type Icon } from "@phosphor-icons/react";
 import {
   inferAttachmentType,
   mergeAttachments,
@@ -279,7 +279,19 @@ import {
   type WorkPtyLaunchResult,
 } from "../terminals/cliLaunch";
 import { WorkSurfaceHeader } from "../work/WorkSurfaceHeader";
-import { pluginSessionContext } from "../plugins/sockets";
+import {
+  isPluginMachineOptionId,
+  parsePluginChatHeader,
+  pluginSessionContext,
+  PluginChatHeaderChips,
+  usePluginMachineAdvancedAvailable,
+  usePluginMachineAdvancedPress,
+  usePluginMachineEntries,
+  usePluginMachineModelIds,
+  type PluginMachineEntry,
+} from "../plugins/sockets";
+import { SocketIcon } from "../plugins/sockets/socketUi";
+import type { PluginComposerContext } from "../../../shared/plugins/context";
 import { WorkActivityModule } from "../usage/ActivityModule";
 import { branchNameFromRef } from "../prs/shared/laneBranchTargets";
 import { cursorCloudAgentWebUrl, cursorCloudErrorMessage, resolveCursorCloudPrCreateFields, pushAutoCreatedLaneOriginForCursorCloud, ensureExistingLaneOriginReadyForCursorCloud } from "../../lib/cursorCloudUtils";
@@ -12029,6 +12041,68 @@ export function AgentChatPane({
    * appears whenever Cursor is connected and this draft could launch there; picking it is cloud
    * mode, and picking any real machine leaves it.
    */
+  /**
+   * Contributed rows in the machine picker, and the one that is selected.
+   *
+   * A `machine-entry` is a MODE the composer is in rather than a button, which
+   * is why the SELECTION is held here as the whole entry and not as an id: the
+   * composer needs the entry's `actionId` on Enter, and looking it up again in
+   * a list that a plugin may have republished mid-draft is how a reader ends up
+   * launching through a row that no longer says what it said when they picked
+   * it. Modelled on `cursorCloudMode`, generalised — the compiled cloud row is
+   * the same shape with the plugin hard-coded.
+   */
+  const pluginMachineEntries = usePluginMachineEntries({
+    sessionId: selectedSessionId,
+    projectKey: draftExecutionBinding?.key ?? null,
+    projectRoot: draftExecutionBinding?.rootPath ?? null,
+    laneId: laneId ?? null,
+  });
+  const [selectedPluginMachine, setSelectedPluginMachine] = useState<PluginMachineEntry | null>(null);
+  /** The models the selected row answered with. Null keeps ADE's own list. */
+  const [pluginMachineModelIds, setPluginMachineModelIds] = useState<string[] | null>(null);
+  /* Read from the models round trip, which resolves long after the click. */
+  const selectedPluginMachineRef = useRef<PluginMachineEntry | null>(null);
+  selectedPluginMachineRef.current = selectedPluginMachine;
+  const readPluginMachineModelIds = usePluginMachineModelIds();
+  const openPluginMachineAdvanced = usePluginMachineAdvancedPress();
+  const pluginMachineAdvancedAvailable = usePluginMachineAdvancedAvailable();
+  const pluginMachineContext = useCallback((): PluginComposerContext => ({
+    kind: "composer",
+    sessionId: selectedSessionId,
+    projectKey: draftExecutionBinding?.key ?? null,
+    projectRoot: draftExecutionBinding?.rootPath ?? null,
+    laneId: laneId ?? null,
+    draft: "",
+    cursor: null,
+  }), [draftExecutionBinding?.key, draftExecutionBinding?.rootPath, laneId, selectedSessionId]);
+  /**
+   * A new conversation always starts in ADE's own mode.
+   *
+   * The pane mounts one composer and swaps the session under it, so without
+   * this a machine row picked on a draft stayed selected after the reader
+   * opened an existing chat, and Enter launched a second run through the
+   * plugin instead of sending the turn. Same rule the accessory row's Send
+   * arm follows.
+   */
+  useEffect(() => {
+    setSelectedPluginMachine(null);
+    setPluginMachineModelIds(null);
+  }, [selectedSessionId]);
+  /**
+   * Leave the mode when its row leaves the picker.
+   *
+   * A plugin that was disabled, uninstalled, or stopped publishing the row is
+   * a mode the reader can no longer see and cannot get out of: the picker
+   * would show a machine that is not in its own list, and Enter would dispatch
+   * into a plugin that is gone.
+   */
+  useEffect(() => {
+    if (!selectedPluginMachine) return;
+    if (pluginMachineEntries.some((entry) => entry.key === selectedPluginMachine.key)) return;
+    setSelectedPluginMachine(null);
+    setPluginMachineModelIds(null);
+  }, [pluginMachineEntries, selectedPluginMachine]);
   const draftShelfMachineOptions = useMemo<DraftMachineOption[]>(() => {
     const unavailableMachine = draftMachineRecoveryAvailable
       && selectedDraftMachineId
@@ -12045,7 +12119,29 @@ export function AgentChatPane({
         name: option.name,
       })),
     ];
-    if (!cursorCloudCanLaunch) return machines;
+    /* Contributed rows come LAST — after the paired computers and after the
+       compiled cloud row — for the placement rule every socket follows: a
+       plugin joins the list ADE drew, it never reorders it. They are also the
+       only rows that can make this picker exist on their own; `machines` may
+       be a single local entry, and the picker hides itself below two. */
+    const pluginRows: DraftMachineOption[] = pluginMachineEntries.map((entry) => ({
+      id: entry.optionId,
+      name: entry.label,
+      kind: "plugin" as const,
+      icon: <SocketIcon name={entry.icon} size={12} />,
+      ...(parallelChatMode
+        ? { unavailableReason: "Parallel models runs locally." }
+        : {}),
+      ...(pluginMachineAdvancedAvailable(entry)
+        ? {
+          advanced: {
+            label: `Advanced options for ${entry.label}`,
+            onSelect: () => { openPluginMachineAdvanced(entry, pluginMachineContext()); },
+          },
+        }
+        : {}),
+    }));
+    if (!cursorCloudCanLaunch) return [...machines, ...pluginRows];
     const withLocal = machines.length
       ? machines
       : [{ id: boundLaneMachineId, name: THIS_MACHINE_NAME }];
@@ -12062,6 +12158,7 @@ export function AgentChatPane({
         kind: "cloud" as const,
         unavailableReason: cloudUnavailableReason,
       },
+      ...pluginRows,
     ];
   }, [
     boundLaneMachineId,
@@ -12069,13 +12166,48 @@ export function AgentChatPane({
     cursorCloudUnavailableReason,
     draftMachineRecoveryAvailable,
     laneMachineOptions,
+    openPluginMachineAdvanced,
     parallelChatMode,
+    pluginMachineAdvancedAvailable,
+    pluginMachineContext,
+    pluginMachineEntries,
     selectedDraftMachineId,
   ]);
-  const draftShelfMachineValue = cursorCloudMode
-    ? CURSOR_CLOUD_MACHINE_ID
-    : selectedDraftMachineId;
+  const draftShelfMachineValue = selectedPluginMachine
+    ? selectedPluginMachine.optionId
+    : cursorCloudMode
+      ? CURSOR_CLOUD_MACHINE_ID
+      : selectedDraftMachineId;
   const handleDraftShelfMachineChange = useCallback((nextMachineId: string) => {
+    // A contributed row is a mode, exactly like the cloud row above it: it
+    // invokes nothing on selection, it changes what Enter does. The one thing
+    // it does eagerly is ask which models it runs, because the model picker
+    // beside it has to narrow before the reader chooses one.
+    const pluginEntry = isPluginMachineOptionId(nextMachineId)
+      ? pluginMachineEntries.find((entry) => entry.optionId === nextMachineId) ?? null
+      : null;
+    if (pluginEntry) {
+      setError(null);
+      setCursorCloudMode(false);
+      setSelectedPluginMachine(pluginEntry);
+      setPluginMachineModelIds(null);
+      if (pluginEntry.modelsAction) {
+        void readPluginMachineModelIds(pluginEntry, pluginMachineContext()).then((modelIds) => {
+          // A refused, timed-out or malformed answer resolves to null and ADE
+          // keeps its own list. Narrowing to an empty one would leave the
+          // composer with no model to send with and no way back.
+          if (!modelIds) return;
+          // Dropped when the reader has already moved on: the answer is about
+          // one machine, and applying it to whatever is selected now would
+          // narrow the picker to a list the current row never claimed.
+          if (selectedPluginMachineRef.current?.key !== pluginEntry.key) return;
+          setPluginMachineModelIds(modelIds);
+        });
+      }
+      return;
+    }
+    setSelectedPluginMachine(null);
+    setPluginMachineModelIds(null);
     if (nextMachineId === CURSOR_CLOUD_MACHINE_ID) {
       setError(null);
       setCursorCloudMode(true);
@@ -12083,7 +12215,13 @@ export function AgentChatPane({
     }
     setCursorCloudMode(false);
     handleDraftMachineChange(nextMachineId);
-  }, [handleDraftMachineChange, setCursorCloudMode]);
+  }, [
+    handleDraftMachineChange,
+    pluginMachineContext,
+    pluginMachineEntries,
+    readPluginMachineModelIds,
+    setCursorCloudMode,
+  ]);
   const useThisComputerForDraft = useCallback(() => {
     setCursorCloudMode(false);
     handleDraftMachineChange(THIS_MACHINE_ID);
@@ -13076,6 +13214,27 @@ export function AgentChatPane({
           ) : null}
     </>
   );
+  /**
+   * The header a plugin runtime published for this chat.
+   *
+   * Read off the session as `unknown` and validated by the renderer, so this
+   * compiles and behaves correctly whether or not the field is on the summary
+   * type yet: an absent field, a null one, and a malformed one are all "no
+   * chips". See `parsePluginChatHeader` for the ceilings.
+   */
+  const pluginChatHeader = useMemo(
+    () => parsePluginChatHeader((selectedSession as { pluginHeader?: unknown } | null | undefined)?.pluginHeader),
+    [selectedSession],
+  );
+  /**
+   * The open PR on this chat's lane branch, when the git toolbar is not drawing
+   * one. Generalised from the Cursor Cloud launch shelf, which was the only
+   * reader of the same lookup — a chat's branch has a PR or it does not, and
+   * which runtime opened the chat has nothing to do with it.
+   */
+  const headerPrChip = !(showWorkspaceChrome && laneId) && existingPr?.prUrl
+    ? existingPr
+    : null;
   const shellHeader = (
     <div className={CHAT_SHELL_HEADER_CLASS}>
       <WorkSurfaceHeader
@@ -13084,22 +13243,49 @@ export function AgentChatPane({
         laneChipName={chatHeaderLaneName}
         laneChipColor={chatHeaderLaneColor}
         showLaneChip={showWorkspaceChrome}
-        titleAccessory={selectedSession?.cursorCloudAgentId && cursorCloudAgentWebUrl(selectedSession.cursorCloudAgentId) ? (
-          <button
-            type="button"
-            data-testid="cursor-cloud-header-link"
-            className="inline-flex shrink-0 items-center gap-1 rounded-md border border-violet-300/20 bg-violet-500/[0.08] px-1.5 py-0.5 font-sans text-[10px] font-medium text-violet-100/80 transition-colors hover:border-violet-300/35 hover:text-violet-50"
-            title="Open this Cursor Cloud agent in your browser"
-            aria-label="Open Cursor Cloud agent in browser"
-            onClick={() => {
-              const href = cursorCloudAgentWebUrl(selectedSession.cursorCloudAgentId);
-              if (href) openExternalUrl(href);
-            }}
-          >
-            <CloudArrowUp size={11} weight="fill" className="text-violet-200" />
-            <span>Cursor Cloud</span>
-          </button>
-        ) : null}
+        titleAccessory={(
+          <>
+            {selectedSession?.cursorCloudAgentId && cursorCloudAgentWebUrl(selectedSession.cursorCloudAgentId) ? (
+              <button
+                type="button"
+                data-testid="cursor-cloud-header-link"
+                className="inline-flex shrink-0 items-center gap-1 rounded-md border border-violet-300/20 bg-violet-500/[0.08] px-1.5 py-0.5 font-sans text-[10px] font-medium text-violet-100/80 transition-colors hover:border-violet-300/35 hover:text-violet-50"
+                title="Open this Cursor Cloud agent in your browser"
+                aria-label="Open Cursor Cloud agent in browser"
+                onClick={() => {
+                  const href = cursorCloudAgentWebUrl(selectedSession.cursorCloudAgentId);
+                  if (href) openExternalUrl(href);
+                }}
+              >
+                <CloudArrowUp size={11} weight="fill" className="text-violet-200" />
+                <span>Cursor Cloud</span>
+              </button>
+            ) : null}
+            {/* What the owning plugin said about this chat's header. Read
+                defensively — the value crosses the host, the database and the
+                sync wire before it reaches here, and a malformed one must draw
+                nothing rather than take the header down. */}
+            <PluginChatHeaderChips header={pluginChatHeader} />
+            {/* The lane's open PR, for a chat whose header has no git toolbar.
+                The TOOLBAR wins wherever it renders: its pill is the
+                interactive one — it opens the PR pane and carries the merge
+                menu — so a second, flatter copy beside the title would be two
+                controls for one PR with only one of them useful. */}
+            {headerPrChip ? (
+              <button
+                type="button"
+                data-testid="chat-header-pr-chip"
+                className="inline-flex shrink-0 items-center gap-1 rounded-md border border-white/[0.08] bg-white/[0.03] px-1.5 py-0.5 font-sans text-[10px] font-medium text-muted-fg/60 transition-colors hover:border-white/[0.14] hover:text-fg/80"
+                title={headerPrChip.title || `Open pull request #${headerPrChip.prNumber}`}
+                aria-label={`Open pull request #${headerPrChip.prNumber} in your browser`}
+                onClick={() => openExternalUrl(headerPrChip.prUrl)}
+              >
+                <GitPullRequest size={11} weight="bold" />
+                <span>{`PR #${headerPrChip.prNumber}`}</span>
+              </button>
+            ) : null}
+          </>
+        )}
         onLaneChipClick={laneId ? () => navigate(openLaneInLanesTabPath(laneId)) : undefined}
         showCacheBadge={showClaudeCacheTimer}
         cacheIdleSinceAt={selectedSession?.idleSinceAt ?? null}
@@ -13326,8 +13512,33 @@ export function AgentChatPane({
     : null;
 
   const composerMachineBinding = activeComposerRuntimeBinding;
-  const composerAvailableModelIds = cursorCloudMode ? cursorCloudModelIds : effectiveAvailableModelIds;
-  const composerConstrainModelSelection = modelSelectionConstrained || cursorCloudMode;
+  /* The same swap cloud mode makes, generalised to a contributed machine: a
+     row that answered with a model list narrows the picker to it, and a row
+     that declared no `modelsAction` — or whose answer was refused, timed out
+     or malformed — leaves ADE's own list exactly as it was. */
+  const pluginMachineModelsActive = Boolean(selectedPluginMachine) && pluginMachineModelIds != null;
+  const composerAvailableModelIds = pluginMachineModelsActive
+    ? pluginMachineModelIds!
+    : cursorCloudMode
+      ? cursorCloudModelIds
+      : effectiveAvailableModelIds;
+  const composerConstrainModelSelection = modelSelectionConstrained
+    || cursorCloudMode
+    || pluginMachineModelsActive;
+  /**
+   * Enter launches through the selected machine row.
+   *
+   * The composer's own `ownsSend` seam, reached by a different gesture: the
+   * pane hands it the owner and the composer runs the one send path it already
+   * had, issue-context join and blocked-send messages included.
+   */
+  const composerMachineSendOwner = selectedPluginMachine
+    ? {
+      pluginId: selectedPluginMachine.pluginId,
+      actionId: selectedPluginMachine.actionId,
+      label: selectedPluginMachine.label,
+    }
+    : null;
 
   const composerElement = (
       <AgentChatComposer
@@ -13343,6 +13554,10 @@ export function AgentChatPane({
             // Cloud mode narrows the picker to the models Cursor Cloud can actually run. Leaving
             // it (or picking a non-cursor model another way) restores the full list.
             availableModelIds={composerAvailableModelIds}
+            // Which plugin runtime owns this chat, if one does. Drives the
+            // capability gating on Stop and the follow-up control.
+            chatRuntimeRef={selectedSession?.runtimeRef ?? null}
+            machineSendOwner={composerMachineSendOwner}
             constrainModelSelection={composerConstrainModelSelection}
             modelUnavailableMessage={cursorCloudMode ? undefined : constrainedModelSelectionError ?? undefined}
             providerAuthStatus={modelPickerProviderAuthStatus}

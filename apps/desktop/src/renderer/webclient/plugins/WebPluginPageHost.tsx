@@ -574,6 +574,39 @@ function subscribeHostEntities(
     const stop = prs?.onEvent?.(report("pr"));
     if (stop) stops.push(stop);
   }
+  // The three families with no producer of their own on the entity bus. Each
+  // one is a live IPC event the app's own surfaces already redraw from — the
+  // conflict assessment, the review run stream, and the lane rebases that write
+  // operation rows — so a page subscribing here is reading exactly what a
+  // compiled History, Graph or Review surface would.
+  //
+  // An event whose ids this reader does not recognise is delivered as an
+  // overflow rather than dropped: "this family moved, refetch it" is the
+  // honest reading, and a page that heard nothing would draw a stale list.
+  if (kinds.includes("conflict")) {
+    const conflicts = ade?.conflicts as { onEvent?: (listener: (event: unknown) => void) => () => void } | undefined;
+    const stop = conflicts?.onEvent?.(report("conflict"));
+    if (stop) stops.push(stop);
+  }
+  if (kinds.includes("review")) {
+    const review = ade?.review as { onEvent?: (listener: (event: unknown) => void) => () => void } | undefined;
+    const stop = review?.onEvent?.(report("review"));
+    if (stop) stops.push(stop);
+  }
+  if (kinds.includes("operation")) {
+    // Operations have no event channel of their own: the History surface reads
+    // them on demand. What DOES announce one is a rebase, which is the write
+    // that creates the rows a History page draws. So the frame is honest and
+    // deliberately id-free — "the operation log moved" — and the page refetches
+    // rather than patching ids this event cannot name.
+    const lanes = ade?.lanes as
+      | { rebaseSubscribe?: (listener: (event: unknown) => void) => () => void }
+      | undefined;
+    const stop = lanes?.rebaseSubscribe?.(() => {
+      deliver({ kind: "operation", ids: [], overflow: true });
+    });
+    if (stop) stops.push(stop);
+  }
   if (kinds.includes("chat")) {
     // The one kind that is not an entity family, and the one that carries more
     // than identity: `turns` says where a session's turn ENDED up, because a

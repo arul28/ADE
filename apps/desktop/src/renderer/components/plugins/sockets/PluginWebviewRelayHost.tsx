@@ -112,6 +112,33 @@ export function createPluginWebviewChatTurnDedupe(
 }
 
 /**
+ * Identity, and nothing else, out of one host event.
+ *
+ * The same rule the entity bus keeps and the same reader the hosted web client
+ * uses: a frame carries ids so a page knows WHICH row moved, and carries no
+ * title, status or body — a page that wants detail asks its own plugin for it.
+ * An event naming nothing this reader recognises yields an empty list, which
+ * the contract already defines as "this family moved, refetch it".
+ */
+export function readHostChangeIds(payload: unknown): string[] {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) return [];
+  const record = payload as Record<string, unknown>;
+  const ids: string[] = [];
+  for (const key of ["runId", "laneId", "operationId", "id"]) {
+    const value = record[key];
+    if (typeof value === "string" && value) ids.push(value);
+  }
+  // A conflict prediction names the lanes it covered rather than one row.
+  const laneIds = record.laneIds;
+  if (Array.isArray(laneIds)) {
+    for (const laneId of laneIds) {
+      if (typeof laneId === "string" && laneId) ids.push(laneId);
+    }
+  }
+  return [...new Set(ids)];
+}
+
+/**
  * The window's end of the plugin-page relay, mounted once in `AppShell`.
  *
  * It draws nothing. Three long-lived subscriptions live here because all three
@@ -185,6 +212,49 @@ export function PluginWebviewRelayHost() {
       if (!turn || !isNewTurn(turn)) return;
       publishChatTurn.call(relay, turn);
     });
+  }, []);
+
+  // Operations, conflicts and review runs, for a History, Graph or Review page.
+  //
+  // The window publishes these for the same reason it publishes chat turns: the
+  // entity bus in main is fed by the daemon and knows nothing about any of the
+  // three, while this renderer already holds a live subscription to each. The
+  // frames carry identity only — a page that hears its family moved refetches
+  // through its own plugin's handler, under the ordinary gates.
+  //
+  // Operations are the one with no event channel of its own: the History
+  // surface reads them on demand, and what announces a NEW one is a rebase,
+  // which is the write that creates the row. So that frame names no ids and
+  // says so, which is the bus's own documented signal for "refetch the family".
+  React.useEffect(() => {
+    const relay = pluginWebviewRelayBridge();
+    const publishHostChange = relay?.publishHostChange;
+    if (!relay || typeof publishHostChange !== "function") return;
+    const publish = (kind: string, ids: string[]): void => {
+      publishHostChange.call(relay, { kind, ids });
+    };
+    const stops: Array<() => void> = [];
+    const conflicts = window.ade?.conflicts?.onEvent;
+    if (typeof conflicts === "function") {
+      stops.push(conflicts((event) => publish("conflict", readHostChangeIds(event))));
+    }
+    const review = window.ade?.review?.onEvent;
+    if (typeof review === "function") {
+      stops.push(review((event) => publish("review", readHostChangeIds(event))));
+    }
+    const rebase = window.ade?.lanes?.rebaseSubscribe;
+    if (typeof rebase === "function") {
+      stops.push(rebase(() => publish("operation", [])));
+    }
+    return () => {
+      for (const stop of stops) {
+        try {
+          stop();
+        } catch {
+          // One failed unsubscribe must not strand the others.
+        }
+      }
+    };
   }, []);
 
   // The last snapshot actually sent, so a re-render that changed nothing does

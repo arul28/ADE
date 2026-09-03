@@ -684,6 +684,7 @@ private final class FakePageDataSource: PluginPageBridgeDataSource {
     var invokeResult = PluginInvokeResult(ok: true)
     var supportedActions: Set<String> = []
     var remoteAnswer: Any = ["ok": true]
+    var socketItems: [PluginPageSocketItem] = []
 
     private(set) var readPluginIds: [String] = []
     private(set) var lastLimit: Int?
@@ -711,6 +712,10 @@ private final class FakePageDataSource: PluginPageBridgeDataSource {
 
     func pluginPageSupportsRemoteAction(_ action: String) -> Bool {
         supportedActions.contains(action)
+    }
+
+    func pluginPageSocketItems(socket: String) -> [PluginPageSocketItem] {
+        socketItems.filter { $0.socket == socket }
     }
 }
 

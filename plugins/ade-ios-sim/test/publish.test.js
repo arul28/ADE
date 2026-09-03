@@ -11,7 +11,7 @@ afterEach(async () => {
 });
 
 describe("the simulator publish seam", () => {
-  it("writes a status row from ios_simulator.getStatus and names the host canvas", async () => {
+  it("writes a status row from ios_simulator.getStatus and binds the fallback panel to it", async () => {
     const sdk = createSdk({
       actions: {
         invoke: async (domain, action) => {
@@ -27,8 +27,9 @@ describe("the simulator publish seam", () => {
     });
     await plugin.activate(sdk);
     const panel = sdk.panelsMap.get("main");
-    const canvas = panel.body.find((node) => node.component === "canvas");
-    assert.equal(canvas.engine, "simulator");
+    assert.equal(panel.title, "iOS Sim Control");
+    const list = panel.body.find((node) => node.component === "list");
+    assert.equal(list.bind.collection, "status");
     const stored = await sdk.collections.list("status");
     assert.equal(stored.length, 1);
     assert.equal(stored[0].value.live, "yes");

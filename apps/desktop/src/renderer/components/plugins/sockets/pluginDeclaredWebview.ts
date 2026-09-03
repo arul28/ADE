@@ -162,6 +162,18 @@ export const PLUGIN_SOCKET_WEBVIEW_PLACEMENT: Partial<Record<PluginSocketKind, P
   "chat-card": "pane",
   "work-rail-pane": "pane",
   "drawer-tab": "drawer",
+  // Over the composer, not under the row: a composer menu row unmounts with the
+  // menu that held it, so by the time the guest is ready there is no element
+  // left to anchor a popover to.
+  "composer-menu-item": "composer-picker",
+  // The submenu that holds this row stays open behind the page, so it is a real
+  // rect and the popover hangs off it — the same anchoring a top-bar button's
+  // page gets.
+  "chat-menu-item": "popover",
+  // A machine row's page is its LAUNCH form, so it opens over the composer it
+  // is about to launch from. The row itself is a mode rather than a press; this
+  // placement belongs to the "Advanced…" affordance on it.
+  "machine-entry": "composer-picker",
 };
 
 /**
@@ -179,4 +191,9 @@ export const PLUGIN_SOCKET_WEBVIEW_ACTION_PLACEMENT: Partial<Record<PluginSocket
   "row-badge": "popover",
   "composer-action": "picker",
   "command-palette-action": "overlay",
+  // The two menu rows answer an `openWebview` the same way their declared page
+  // opens, so a plugin gets one behaviour whichever way it names the surface.
+  "composer-menu-item": "picker",
+  "chat-menu-item": "popover",
+  "machine-entry": "picker",
 };

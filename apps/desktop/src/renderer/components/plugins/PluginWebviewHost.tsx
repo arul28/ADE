@@ -4,6 +4,12 @@ import { COLORS, RADII, SANS_FONT, outlineButton } from "../lanes/laneDesignToke
 import { PluginFallbackCard } from "./VocabularyRenderer";
 import { isWebClientMode } from "../../lib/webClientMode";
 import { supportsWebPluginPages } from "../../webclient/plugins/pageServiceWorkerClient";
+import { HostEngineOverlay } from "./hostEngine/HostEngineOverlay";
+import { releaseHostEngine, setHostEngineBounds } from "./hostEngine/hostEngineStore";
+import {
+  clearPluginWebviewPageError,
+  usePluginWebviewPageError,
+} from "./sockets/pluginWebviewPageErrorStore";
 import { registerPluginWebviewGuest } from "./sockets/pluginWebviewGuestRegistry";
 import { usePluginWebviewReloadKey } from "./sockets/pluginWebviewReloadStore";
 import { pluginWebviewRelayBridge } from "../../lib/pluginRuntimeBridge";
@@ -176,8 +182,15 @@ export function PluginWebviewHost({
   // a guest this component then refuses to paint.
   const webClient = isWebClientMode();
   const hostRef = React.useRef<HTMLDivElement | null>(null);
+  const frameRef = React.useRef<HTMLDivElement | null>(null);
   const guestRef = React.useRef<PluginWebviewElement | null>(null);
   const [state, setState] = React.useState<LoadState>({ status: "loading" });
+  // This guest's key, as state rather than a ref: the engine overlay and the
+  // error card are both keyed on it and both have to re-render when it lands.
+  const [liveGuestKey, setLiveGuestKey] = React.useState<string | null>(null);
+  // What this page last said about its own failure, or null. See
+  // `pluginWebviewPageErrorStore.ts` for why it arrives here through a store.
+  const pageError = usePluginWebviewPageError(liveGuestKey);
   // Bumped by the Reload button. A fresh guest rather than `reload()`: a page
   // that failed to load has no document to reload, and re-creating it is also
   // what recovers a guest whose process died.
@@ -284,6 +297,7 @@ export function PluginWebviewHost({
       // resolvable by it — a `surface.close` racing a `dialog.submit` finds
       // both halves or neither.
       guestKeyRef.current?.(guestKey);
+      setLiveGuestKey(guestKey);
     };
     const onFail = (event: Event) => {
       const detail = event as Event & { errorDescription?: string; isMainFrame?: boolean };
@@ -335,6 +349,16 @@ export function PluginWebviewHost({
       // dismissed while its page had a confirm pending must not be able to open
       // ADE's UI on the way down.
       if (guestKey) relay?.setSurfaceState({ guestKey, attached: false });
+      // The engine, the error card and the measured frame all belong to THIS
+      // guest. A recreated guest gets a new `webContents` id and therefore a
+      // new key, so leaving these behind would strand a painted engine over a
+      // page that no longer exists.
+      if (guestKey) {
+        releaseHostEngine(guestKey);
+        setHostEngineBounds(guestKey, null);
+        clearPluginWebviewPageError(guestKey);
+      }
+      setLiveGuestKey(null);
       // Told BEFORE the registry drops the guest and before the element goes,
       // so a host unregisters its own handler while the key it registered under
       // is still the live one. Unconditional: a guest that never reached
@@ -351,6 +375,26 @@ export function PluginWebviewHost({
       guestRef.current = null;
     };
   }, [webClient, pluginId, src, reloadToken, reloadKey, mounted, placement, surfaceId]);
+
+  // The frame the host actually drew, for the engine clamp. Measured with a
+  // `ResizeObserver` rather than read once, because a pane resize changes the
+  // frame without the page saying anything and a stale clamp would let an
+  // engine hang over ADE's own chrome after the window narrowed.
+  React.useEffect(() => {
+    const frame = frameRef.current;
+    if (!liveGuestKey || !frame) return;
+    const report = (): void => {
+      const box = frame.getBoundingClientRect();
+      setHostEngineBounds(liveGuestKey, { width: box.width, height: box.height });
+    };
+    report();
+    const observer = new ResizeObserver(report);
+    observer.observe(frame);
+    return () => {
+      observer.disconnect();
+      setHostEngineBounds(liveGuestKey, null);
+    };
+  }, [liveGuestKey]);
 
   // The hosted web client draws the same page in a sandboxed same-origin frame
   // behind a service worker. Delegated rather than reimplemented: every caller
@@ -376,19 +420,41 @@ export function PluginWebviewHost({
     );
   }
 
+  // A load failure the host saw, or a failure the page reported about itself.
+  // The host's own wins: `did-fail-load` means there is no document at all,
+  // and a page that both failed to load and reported an error is describing
+  // the same event twice.
+  const card = state.status === "failed"
+    ? { title: "This page didn’t open", text: state.message }
+    : pageError
+      ? {
+          title: "This page didn’t open",
+          // The plugin's own sentence, and for a CSP violation it is the one
+          // that names the fix. `source` is left off the card: a blocked URI is
+          // already inside the sentence, and a second line of it would be the
+          // console output this card exists to replace.
+          text: pageError.message,
+        }
+      : null;
+
   return (
     <div
+      ref={frameRef}
       data-tour={`plugin:${pluginId}.webview`}
       data-plugin-webview={pluginId}
       data-plugin-webview-placement={placement}
       style={{ position: "relative", display: "flex", flex: 1, minHeight: 0, minWidth: 0 }}
     >
       <div ref={hostRef} style={{ display: "flex", flex: 1, minHeight: 0, minWidth: 0 }} />
-      {state.status === "failed" ? (
+      {/* Above the guest, below the failure card: an engine painted over a
+          broken page would sit on top of the sentence explaining it. */}
+      <HostEngineOverlay guestKey={liveGuestKey} />
+      {card ? (
         <div
           style={{
             position: "absolute",
             inset: 0,
+            zIndex: 3,
             display: "flex",
             alignItems: "flex-start",
             padding: 20,
@@ -396,11 +462,17 @@ export function PluginWebviewHost({
           }}
         >
           <PluginFallbackCard
-            fallback={{ title: "This page didn’t open", text: state.message }}
+            fallback={card}
             action={
               <button
                 type="button"
-                onClick={() => setReloadToken((token) => token + 1)}
+                onClick={() => {
+                  // The report goes with the guest it described. Without this
+                  // the card would come straight back over a page that has
+                  // reloaded cleanly, and Try again would look broken.
+                  clearPluginWebviewPageError(liveGuestKey);
+                  setReloadToken((token) => token + 1);
+                }}
                 style={outlineButton({ height: 28, padding: "0 10px", fontSize: 11 })}
               >
                 Try again

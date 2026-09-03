@@ -270,6 +270,19 @@ function createAutomation(options = {}) {
     };
   }
 
+  /**
+   * The lanes a lane-addressed step was pointed at.
+   *
+   * Two spellings because two callers exist: a rule's args carry `laneId` from
+   * a `{{trigger.laneId}}` placeholder, and a caller with several carries
+   * `laneIds`. Read once here so the two steps below cannot drift.
+   */
+  function laneIdsFrom(args) {
+    if (Array.isArray(args?.laneIds)) return args.laneIds.filter(Boolean);
+    const single = text(args?.laneId);
+    return single ? [single] : [];
+  }
+
   const steps = {
     setIssueState: asStep(updateIssueState, (result) => `Moved ${result.issue?.identifier} to ${result.issue?.state}.`),
     commentOnIssue: asStep(addComment, (result) => `Commented on ${result.issue}.`),
@@ -288,15 +301,37 @@ function createAutomation(options = {}) {
      * blanket setting.
      */
     closeIssueOnMerge: async (args) => {
-      const laneIds = Array.isArray(args?.laneIds)
-        ? args.laneIds
-        : text(args?.laneId) ? [text(args.laneId)] : [];
+      // A lane if the rule named one, and otherwise the lanes behind the pull
+      // requests it named. `github.pr_merged` carries `laneId`, which is the
+      // template's own path; a rule built on a PR-shaped trigger that carries
+      // ids instead still resolves, through the same lookup the plugin used
+      // when it acted on `pr.changed` by itself.
+      let laneIds = laneIdsFrom(args);
+      if (laneIds.length === 0 && (Array.isArray(args?.prIds) || text(args?.prId))) {
+        const ids = Array.isArray(args.prIds) ? args.prIds.filter(Boolean) : [text(args.prId)];
+        laneIds = await flows.mergedLanesFromPrIds({ ids });
+      }
       const result = await flows.closeIssueOnMerge({ laneIds });
       return {
         ok: result.ok !== false,
-        message: result.skipped === "setting"
-          ? "Turn on \"Move the issue to Done when its pull request merges\" in the Linear settings first."
-          : `Moved ${result.moved ?? 0} ${result.moved === 1 ? "issue" : "issues"} to Done.`,
+        message: `Moved ${result.moved ?? 0} ${result.moved === 1 ? "issue" : "issues"} to Done.`,
+      };
+    },
+
+    /**
+     * The launch transition, as a step a rule can place.
+     *
+     * It was a `moveToStartedOnLaunch` toggle that fired from inside every
+     * launch. The toggle is gone: the manifest ships this as an
+     * `automation-template` on `lane.created`, so the reader decides which
+     * lanes move an issue and under which conditions, and the plugin no longer
+     * changes a ticket as a side effect of a button that said nothing about it.
+     */
+    startIssueOnLane: async (args) => {
+      const result = await flows.startIssueOnLane({ laneIds: laneIdsFrom(args) });
+      return {
+        ok: result.ok !== false,
+        message: `Moved ${result.moved ?? 0} ${result.moved === 1 ? "issue" : "issues"} to In Progress.`,
       };
     },
   };

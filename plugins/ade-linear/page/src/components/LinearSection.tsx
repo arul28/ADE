@@ -64,12 +64,13 @@ import {
   getAutolinks,
   getConnection,
   getProjects,
+  getWebhookStatus,
   saveApiKey,
-  saveWebhookSecret,
   type PageActionResult,
   type PageAutolinkState,
+  type PageWebhookStatus,
 } from "../host/actions";
-import { openLink, writeClipboard } from "../host/ui";
+import { openLink } from "../host/ui";
 import { useCollectionChanges } from "../host/useHostEntities";
 
 const LINEAR_BRAND = "#5E6AD2";
@@ -89,19 +90,15 @@ const AUTH_ORIGIN_SETTINGS = "settings";
 const OAUTH_WAIT_TIMEOUT_MS = 5 * 60 * 1000;
 
 /** The setting keys `plugin.json` declares. Spelled once, as `panels/settings.js` does. */
-const SETTING_MOVE_ON_MERGE = "moveToDoneOnMerge";
-const SETTING_MOVE_ON_LAUNCH = "moveToStartedOnLaunch";
 const SETTING_DEFAULT_TEAM = "defaultTeamKey";
+
 /**
- * The launch-prompt clipboard toggle.
+ * Where the Automations line sends the reader.
  *
- * It was an ADE preference (`launchPromptClipboardEnabled` on the app store)
- * that the compiled launch flow read and ADE's own "Copy prompts to clipboard"
- * settings card wrote. A guest can read neither, so the preference is the
- * plugin's own now and this section draws the toggle — which is also the right
- * home for it: the only prompt it copies is a Linear kickoff.
+ * A deeplink rather than a route: a page names a SUBJECT and the host decides
+ * which client draws what. `ade://automations` is the tab on every one of them.
  */
-const SETTING_LAUNCH_CLIPBOARD = "launchPromptClipboard";
+const AUTOMATIONS_DEEPLINK = "ade://automations";
 
 type PluginSettings = Record<string, string | number | boolean | null>;
 
@@ -203,22 +200,16 @@ export function LinearSection({
   const [githubRepo, setGithubRepo] = useState<{ owner: string; name: string } | null>(null);
   const [githubAutolinks, setGithubAutolinks] = useState<GitHubAutolink[]>([]);
   const [autolinkTeams, setAutolinkTeams] = useState<PageAutolinkState["teams"]>([]);
-  const [webhookUrl, setWebhookUrl] = useState<string | null>(null);
-  const [webhookSecretStored, setWebhookSecretStored] = useState(false);
-  const [webhooksPossible, setWebhooksPossible] = useState<boolean | undefined>(undefined);
   /**
-   * The host's delivery ledger, as the settings PANEL prints it.
+   * Whether the Automations webhook is registered, for the one line that says so.
    *
-   * "Last event", "Waiting (n unacked)" and "Drain" are the three rows the
-   * plugin's vocabulary panel draws under Automations and the compiled section
-   * had nowhere to put. They answer the one question the endpoint and the
-   * secret between them cannot: whether deliveries are actually ARRIVING.
+   * The whole webhook block moved to the Automations trigger tile. What is left
+   * here is the pointer, and a pointer that cannot say whether there is
+   * anything to do at the other end is a link the reader has to follow to find
+   * out. `null` means not read yet, which draws the invitation rather than a
+   * claim either way.
    */
-  const [webhookLedger, setWebhookLedger] = useState<{
-    lastEvent: string | null;
-    pendingDeliveries: number;
-    drainError: string | null;
-  }>({ lastEvent: null, pendingDeliveries: 0, drainError: null });
+  const [webhookStatus, setWebhookStatus] = useState<PageWebhookStatus | null>(null);
   const [autolinksLoading, setAutolinksLoading] = useState(false);
   const [autolinkError, setAutolinkError] = useState<string | null>(null);
   const [creatingAutolinkId, setCreatingAutolinkId] = useState<string | null>(null);
@@ -230,10 +221,6 @@ export function LinearSection({
   const [settingsError, setSettingsError] = useState<string | null>(null);
   const [savingSettingKey, setSavingSettingKey] = useState<string | null>(null);
   const [teamKeyDraft, setTeamKeyDraft] = useState<string | null>(null);
-  const [webhookSecretInput, setWebhookSecretInput] = useState("");
-  const [savingWebhookSecret, setSavingWebhookSecret] = useState(false);
-  const [webhookError, setWebhookError] = useState<string | null>(null);
-  const [webhookUrlCopied, setWebhookUrlCopied] = useState(false);
   const validatingRef = useRef(false);
   const oauthStartingRef = useRef(false);
   const requestEpochRef = useRef(0);
@@ -368,14 +355,6 @@ export function LinearSection({
       const repo = state?.repo ?? null;
       setGithubRepo(repo);
       setAutolinkTeams(Array.isArray(state?.teams) ? state.teams : []);
-      setWebhookUrl(state?.webhookUrl ?? null);
-      setWebhookSecretStored(state?.webhookSecretStored === true);
-      setWebhooksPossible(state?.webhooksPossible);
-      setWebhookLedger({
-        lastEvent: state?.lastEvent ?? null,
-        pendingDeliveries: Number(state?.pendingDeliveries) || 0,
-        drainError: state?.drainError ?? null,
-      });
       if (!repo) {
         setGithubAutolinks([]);
         setAutolinkError("No GitHub origin remote was detected for this project.");
@@ -458,6 +437,28 @@ export function LinearSection({
   useEffect(() => {
     void loadSettings();
   }, [loadSettings]);
+
+  /**
+   * The one fact the Automations line needs.
+   *
+   * A read, never a write: registering is the tile's own button, and a settings
+   * card that could also register would be the second place a reader has to
+   * check. A refusal leaves the line on its invitation rather than claiming
+   * either state.
+   */
+  useEffect(() => {
+    let cancelled = false;
+    void getWebhookStatus()
+      .then((status) => {
+        if (!cancelled) setWebhookStatus(status ?? null);
+      })
+      .catch(() => {
+        if (!cancelled) setWebhookStatus(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [projectRoot, connection?.connected]);
 
   /**
    * The replacement for the compiled section's OAuth POLLING LOOP.
@@ -608,46 +609,10 @@ export function LinearSection({
     }
   }, [githubRepo, loadGithubAutolinks]);
 
-  const handleCopyWebhookUrl = useCallback(async () => {
-    if (!webhookUrl) return;
-    const copied = await writeClipboard(webhookUrl);
-    setWebhookUrlCopied(copied);
-    if (!copied) setWebhookError("Unable to copy the webhook URL.");
-  }, [webhookUrl]);
-
-  const handleSaveWebhookSecret = useCallback(async () => {
-    const secret = webhookSecretInput.trim();
-    if (!secret || savingWebhookSecret) return;
-    setSavingWebhookSecret(true);
-    setWebhookError(null);
-    try {
-      const result = await saveWebhookSecret(secret);
-      if (result && result.ok === false) {
-        setWebhookError(result.message ?? "That signing secret wasn't saved.");
-        return;
-      }
-      setWebhookSecretInput("");
-      await loadGithubAutolinks();
-    } catch (err) {
-      setWebhookError(err instanceof Error ? err.message : "That signing secret wasn't saved.");
-    } finally {
-      setSavingWebhookSecret(false);
-    }
-  }, [loadGithubAutolinks, savingWebhookSecret, webhookSecretInput]);
-
-  const moveOnLaunch = settings?.[SETTING_MOVE_ON_LAUNCH] === true;
-  // Defaults ON, matching the manifest's `default: true` and the app preference
-  // it replaced — so an unset value is on, not off.
-  const launchClipboard = settings?.[SETTING_LAUNCH_CLIPBOARD] !== false;
-  const moveOnMerge = settings?.[SETTING_MOVE_ON_MERGE] === true;
   const storedTeamKey = typeof settings?.[SETTING_DEFAULT_TEAM] === "string"
     ? String(settings[SETTING_DEFAULT_TEAM])
     : "";
   const teamKeyValue = teamKeyDraft ?? storedTeamKey;
-  // The connection an API key made carries no webhook grant, so Linear delivers
-  // nothing to it — `webhooksPossible === false`. `undefined` is a data half
-  // that cannot answer, and a warning drawn on a guess is worse than silence.
-  const webhooksStarved = webhooksPossible === false;
 
   return (
     <div style={{ display: "flex", maxWidth: embedded ? undefined : 780, flexDirection: "column", gap: 20 }}>
@@ -1020,72 +985,6 @@ export function LinearSection({
               background: "rgba(255,255,255,0.025)",
             }}>
               <div style={{ minWidth: 0 }}>
-                <div style={{ fontSize: 12, fontWeight: 600, fontFamily: SANS_FONT, color: COLORS.textPrimary, marginBottom: 3 }}>
-                  Move the issue to In Progress when an agent starts on it
-                </div>
-                <div style={{ fontSize: 10, fontFamily: SANS_FONT, color: COLORS.textMuted, lineHeight: "15px" }}>
-                  Uses the team's first started workflow state.
-                </div>
-              </div>
-              <SettingsToggle
-                id="ade-linear-move-on-launch"
-                checked={moveOnLaunch}
-                disabled={settings === null || savingSettingKey === SETTING_MOVE_ON_LAUNCH}
-                onChange={(next) => void writeSetting(SETTING_MOVE_ON_LAUNCH, next)}
-              />
-            </div>
-
-            <div style={{
-              display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 16,
-              padding: "10px 12px", borderRadius: 10,
-              border: `1px solid ${COLORS.border}`,
-              background: "rgba(255,255,255,0.025)",
-            }}>
-              <div style={{ minWidth: 0 }}>
-                <div style={{ fontSize: 12, fontWeight: 600, fontFamily: SANS_FONT, color: COLORS.textPrimary, marginBottom: 3 }}>
-                  Move the issue to Done when its pull request merges
-                </div>
-                <div style={{ fontSize: 10, fontFamily: SANS_FONT, color: COLORS.textMuted, lineHeight: "15px" }}>
-                  Only issues linked to the lane with "close on merge" are moved.
-                </div>
-              </div>
-              <SettingsToggle
-                id="ade-linear-move-on-merge"
-                checked={moveOnMerge}
-                disabled={settings === null || savingSettingKey === SETTING_MOVE_ON_MERGE}
-                onChange={(next) => void writeSetting(SETTING_MOVE_ON_MERGE, next)}
-              />
-            </div>
-
-            <div style={{
-              display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 16,
-              padding: "10px 12px", borderRadius: 10,
-              border: `1px solid ${COLORS.border}`,
-              background: "rgba(255,255,255,0.025)",
-            }}>
-              <div style={{ minWidth: 0 }}>
-                <div style={{ fontSize: 12, fontWeight: 600, fontFamily: SANS_FONT, color: COLORS.textPrimary, marginBottom: 3 }}>
-                  Copy the launch prompt to the clipboard
-                </div>
-                <div style={{ fontSize: 10, fontFamily: SANS_FONT, color: COLORS.textMuted, lineHeight: "15px" }}>
-                  Saves the kickoff prompt before Linear starts an agent on the issue.
-                </div>
-              </div>
-              <SettingsToggle
-                id="ade-linear-launch-clipboard"
-                checked={launchClipboard}
-                disabled={settings === null || savingSettingKey === SETTING_LAUNCH_CLIPBOARD}
-                onChange={(next) => void writeSetting(SETTING_LAUNCH_CLIPBOARD, next)}
-              />
-            </div>
-
-            <div style={{
-              display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 16,
-              padding: "10px 12px", borderRadius: 10,
-              border: `1px solid ${COLORS.border}`,
-              background: "rgba(255,255,255,0.025)",
-            }}>
-              <div style={{ minWidth: 0 }}>
                 <label
                   htmlFor="ade-linear-default-team"
                   style={{ display: "block", fontSize: 12, fontWeight: 600, fontFamily: SANS_FONT, color: COLORS.textPrimary, marginBottom: 3 }}
@@ -1285,196 +1184,45 @@ export function LinearSection({
       </div>
 
       {/*
-        ── Automations: the webhook ingress ──
-        The plugin's, not the compiled section's. `webhookIngress` in
-        `plugin.json` gives this plugin a relay URL and an HMAC-SHA256
-        verification against `LINEAR_WEBHOOK_SECRET`, and the host FAILS CLOSED:
-        a channel whose secret it cannot find drops every delivery. So the strip
-        is three facts — whether Linear can deliver at all, the URL to paste,
-        and the signing secret — with `panels/settings.js`'s wording verbatim.
+        ── Automations ──
+        One line, and no webhook block. The endpoint, its signing secret and its
+        delivery ledger all moved to the Automations trigger tile the manifest
+        declares (`automation-trigger-tile`), where Register creates the webhook
+        through the Linear API and stores the secret itself. Two screens
+        reporting one endpoint in two vocabularies is the drift this removes;
+        what stays here is the pointer, and the one fact a reader needs before
+        they walk over — whether anything is registered yet.
       */}
-      {webhookUrl || webhooksStarved ? (
+      {isConnected ? (
         <div style={{
-          padding: 18,
+          display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12,
+          padding: "12px 16px",
           background: COLORS.cardBg,
           border: `1px solid ${COLORS.border}`,
           borderRadius: 14,
         }}>
-          <div style={{ ...LABEL_STYLE, fontSize: 10, marginBottom: 12, letterSpacing: "0.06em" }}>
-            AUTOMATIONS
-          </div>
-
-          <div style={{
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "space-between",
-            gap: 12,
-            padding: "9px 11px",
-            borderRadius: 8,
-            background: "rgba(255,255,255,0.03)",
-            border: `1px solid ${COLORS.border}`,
-            marginBottom: 10,
-          }}>
-            <div style={{ fontSize: 11, fontFamily: SANS_FONT, color: COLORS.textSecondary }}>
-              Verification
+          <div style={{ minWidth: 0 }}>
+            <div style={{ fontSize: 12, fontFamily: SANS_FONT, color: COLORS.textPrimary, lineHeight: "18px" }}>
+              Linear automations live in Automations → Linear.
             </div>
-            <div style={{
-              fontSize: 11,
-              fontFamily: SANS_FONT,
-              color: webhookSecretStored ? COLORS.success : COLORS.warning,
-              minWidth: 0,
-              overflowWrap: "anywhere",
-            }}>
-              {webhookSecretStored ? "Signed deliveries only" : "Deliveries dropped until the signing secret is saved"}
+            <div style={{ fontSize: 10, fontFamily: SANS_FONT, color: COLORS.textMuted, lineHeight: "15px", marginTop: 2 }}>
+              {webhookStatus === null
+                ? "Register the webhook there so an issue that changes wakes ADE."
+                : webhookStatus.registered
+                  ? `Registered${webhookStatus.lastEvent ? ` · last event ${webhookStatus.lastEvent}` : ""}.`
+                  : webhookStatus.status}
             </div>
           </div>
-
-          {/*
-            Whether deliveries are ARRIVING, which the endpoint row and the
-            verification row between them cannot say. The same three rows the
-            vocabulary panel draws, in the same words, using the row shape
-            "Verification" above already established: a label on the left, the
-            value on the right.
-
-            Each is drawn only when it has something to report. A "Waiting: 0
-            unacked" row beside a healthy endpoint is noise, and a "Drain" row
-            with no error in it reads as a category the reader has to think
-            about.
-          */}
-          {webhookLedger.lastEvent || webhookLedger.pendingDeliveries > 0 || webhookLedger.drainError ? (
-            <div style={{ marginBottom: 10, display: "flex", flexDirection: "column", gap: 6 }}>
-              {([
-                webhookLedger.lastEvent
-                  ? { key: "Last event", value: webhookLedger.lastEvent, tone: COLORS.textSecondary }
-                  : null,
-                webhookLedger.pendingDeliveries > 0
-                  ? {
-                    key: "Waiting",
-                    value: `${webhookLedger.pendingDeliveries} unacked`,
-                    tone: COLORS.warning,
-                  }
-                  : null,
-                webhookLedger.drainError
-                  ? { key: "Drain", value: webhookLedger.drainError, tone: COLORS.danger }
-                  : null,
-              ].filter(Boolean) as { key: string; value: string; tone: string }[]).map((row) => (
-                <div
-                  key={row.key}
-                  style={{
-                    display: "flex",
-                    alignItems: "center",
-                    justifyContent: "space-between",
-                    gap: 12,
-                    padding: "9px 11px",
-                    borderRadius: 8,
-                    background: "rgba(255,255,255,0.03)",
-                    border: `1px solid ${COLORS.border}`,
-                  }}
-                >
-                  <div style={{ fontSize: 11, fontFamily: SANS_FONT, color: COLORS.textSecondary }}>
-                    {row.key}
-                  </div>
-                  <div style={{
-                    fontSize: 11,
-                    fontFamily: SANS_FONT,
-                    color: row.tone,
-                    minWidth: 0,
-                    overflowWrap: "anywhere",
-                  }}>
-                    {row.value}
-                  </div>
-                </div>
-              ))}
-            </div>
-          ) : null}
-
-          {webhooksStarved ? (
-            <div style={{ fontSize: 10, fontFamily: SANS_FONT, color: COLORS.warning, lineHeight: "15px", marginBottom: 10 }}>
-              This connection has no webhook grant — a personal API key carries none. Setting up the URL and the signing secret below will not change that. Sign in with Linear to receive events.
-            </div>
-          ) : null}
-
-          {webhookUrl ? (
-            <>
-              <div style={{ fontSize: 10, fontFamily: SANS_FONT, color: COLORS.textMuted, lineHeight: "15px", marginBottom: 8 }}>
-                Paste this URL into Linear's webhook settings so an issue that changes wakes ADE.
-              </div>
-              <div style={{
-                fontSize: 10,
-                fontFamily: MONO_FONT,
-                color: COLORS.textDim,
-                lineHeight: "15px",
-                overflowWrap: "anywhere",
-                padding: "9px 11px",
-                borderRadius: 8,
-                background: "rgba(255,255,255,0.03)",
-                border: `1px solid ${COLORS.border}`,
-                marginBottom: 8,
-              }}>
-                {webhookUrl}
-              </div>
-              <Button
-                type="button"
-                variant="ghost"
-                size="sm"
-                onClick={() => void handleCopyWebhookUrl()}
-                style={{ whiteSpace: "nowrap", marginBottom: 12 }}
-              >
-                <LinkSimple size={12} />
-                {webhookUrlCopied ? "Copied" : "Copy the webhook URL"}
-              </Button>
-            </>
-          ) : null}
-
-          <div style={{ fontSize: 10, fontFamily: SANS_FONT, color: COLORS.textMuted, lineHeight: "15px", marginBottom: 8 }}>
-            {webhookSecretStored
-              ? "ADE checks every delivery against this secret. Paste a new one here if you re-create the webhook in Linear."
-              : "Until you paste the signing secret, ADE drops every delivery from this webhook, so no issue events reach your automations. Linear shows the secret once, when the webhook is created."}
-          </div>
-          <div style={{ display: "flex", gap: 8 }}>
-            <input
-              type="password"
-              aria-label="Webhook signing secret"
-              placeholder="lin_wh_..."
-              value={webhookSecretInput}
-              onChange={(e) => setWebhookSecretInput(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter" && !savingWebhookSecret && webhookSecretInput.trim()) {
-                  e.preventDefault();
-                  void handleSaveWebhookSecret();
-                }
-              }}
-              style={{
-                flex: 1, height: 36, borderRadius: 8,
-                background: "rgba(255,255,255,0.03)",
-                border: `1px solid ${COLORS.border}`,
-                padding: "0 12px", fontSize: 12, fontFamily: MONO_FONT,
-                color: COLORS.textPrimary, outline: "none",
-                transition: "border-color 0.15s",
-              }}
-              onFocus={(e) => { e.currentTarget.style.borderColor = `${LINEAR_BRAND}50`; }}
-              onBlur={(e) => { e.currentTarget.style.borderColor = COLORS.border; }}
-            />
-            <Button
-              size="md"
-              variant="outline"
-              onClick={() => void handleSaveWebhookSecret()}
-              disabled={savingWebhookSecret || !webhookSecretInput.trim()}
-              style={{ whiteSpace: "nowrap" }}
-            >
-              {savingWebhookSecret
-                ? <CircleNotch size={12} className="animate-spin" />
-                : webhookSecretStored ? "Replace the secret" : "Save the secret"}
-            </Button>
-          </div>
-          <div style={{ fontSize: 10, fontFamily: SANS_FONT, color: COLORS.textDim, lineHeight: "15px", marginTop: 8 }}>
-            Stored in this machine's keychain, namespaced to this plugin.
-          </div>
-          {webhookError ? (
-            <div style={{ fontSize: 10, fontFamily: SANS_FONT, color: COLORS.danger, lineHeight: "15px", marginTop: 10 }}>
-              {webhookError}
-            </div>
-          ) : null}
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={() => void openLink(AUTOMATIONS_DEEPLINK)}
+            style={{ whiteSpace: "nowrap" }}
+          >
+            Open Automations
+            <ArrowSquareOut size={12} />
+          </Button>
         </div>
       ) : null}
 

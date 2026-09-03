@@ -341,6 +341,9 @@
 		PH0000000000000000000036 /* PluginPageAssetStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = PG0000000000000000000036 /* PluginPageAssetStoreTests.swift */; };
 		PH0000000000000000000037 /* PluginPageSchemeHandlerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = PG0000000000000000000037 /* PluginPageSchemeHandlerTests.swift */; };
 		PH0000000000000000000038 /* PluginPageBridgeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = PG0000000000000000000038 /* PluginPageBridgeTests.swift */; };
+		PH0000000000000000000042 /* PluginPageWave2.swift in Sources */ = {isa = PBXBuildFile; fileRef = PG0000000000000000000042 /* PluginPageWave2.swift */; };
+		PH0000000000000000000043 /* PluginPagePickerSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = PG0000000000000000000043 /* PluginPagePickerSheet.swift */; };
+		PH0000000000000000000044 /* PluginPageWave2Tests.swift in Sources */ = {isa = PBXBuildFile; fileRef = PG0000000000000000000044 /* PluginPageWave2Tests.swift */; };
 		PH0000000000000000000039 /* BundledPluginPages in Resources */ = {isa = PBXBuildFile; fileRef = PG0000000000000000000039 /* BundledPluginPages */; };
 		PH0000000000000000000040 /* PluginPageHostEvents.swift in Sources */ = {isa = PBXBuildFile; fileRef = PG0000000000000000000040 /* PluginPageHostEvents.swift */; };
 		PH0000000000000000000041 /* PluginPageHostEventTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = PG0000000000000000000041 /* PluginPageHostEventTests.swift */; };
@@ -700,6 +703,9 @@
 		PG0000000000000000000036 /* PluginPageAssetStoreTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PluginPageAssetStoreTests.swift; path = ADETests/PluginPageAssetStoreTests.swift; sourceTree = "<group>"; };
 		PG0000000000000000000037 /* PluginPageSchemeHandlerTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PluginPageSchemeHandlerTests.swift; path = ADETests/PluginPageSchemeHandlerTests.swift; sourceTree = "<group>"; };
 		PG0000000000000000000038 /* PluginPageBridgeTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PluginPageBridgeTests.swift; path = ADETests/PluginPageBridgeTests.swift; sourceTree = "<group>"; };
+		PG0000000000000000000042 /* PluginPageWave2.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PluginPageWave2.swift; path = ADE/Models/PluginPageWave2.swift; sourceTree = "<group>"; };
+		PG0000000000000000000043 /* PluginPagePickerSheet.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PluginPagePickerSheet.swift; path = ADE/Views/Plugins/PluginPagePickerSheet.swift; sourceTree = "<group>"; };
+		PG0000000000000000000044 /* PluginPageWave2Tests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PluginPageWave2Tests.swift; path = ADETests/PluginPageWave2Tests.swift; sourceTree = "<group>"; };
 		PG0000000000000000000039 /* BundledPluginPages */ = {isa = PBXFileReference; lastKnownFileType = folder; name = BundledPluginPages; path = ADE/Resources/BundledPluginPages; sourceTree = "<group>"; };
 		PG0000000000000000000040 /* PluginPageHostEvents.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PluginPageHostEvents.swift; path = ADE/Views/Plugins/PluginPageHostEvents.swift; sourceTree = "<group>"; };
 		PG0000000000000000000041 /* PluginPageHostEventTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PluginPageHostEventTests.swift; path = ADETests/PluginPageHostEventTests.swift; sourceTree = "<group>"; };
@@ -830,6 +836,7 @@
 				PG0000000000000000000033 /* PluginPageBridgeHost.swift */,
 				PG0000000000000000000034 /* PluginPageHostView.swift */,
 				PG0000000000000000000035 /* PluginPageSurface.swift */,
+				PG0000000000000000000043 /* PluginPagePickerSheet.swift */,
 				PG0000000000000000000005 /* PluginPaneStore.swift */,
 				PG0000000000000000000021 /* PluginAuthSessionRunner.swift */,
 				PG0000000000000000000006 /* PluginVocabularyView.swift */,
@@ -1235,6 +1242,7 @@
 			isa = PBXGroup;
 			children = (
 				PG0000000000000000000030 /* PluginPageBridge.swift */,
+				PG0000000000000000000042 /* PluginPageWave2.swift */,
 				PG0000000000000000000001 /* PluginVocabulary.swift */,
 				PG0000000000000000000002 /* PluginVocabularyParsing.swift */,
 				PG0000000000000000000003 /* PluginRecords.swift */,
@@ -1266,6 +1274,7 @@
 				PG0000000000000000000036 /* PluginPageAssetStoreTests.swift */,
 				PG0000000000000000000037 /* PluginPageSchemeHandlerTests.swift */,
 				PG0000000000000000000038 /* PluginPageBridgeTests.swift */,
+				PG0000000000000000000044 /* PluginPageWave2Tests.swift */,
 				14C0DF7FEB4C2EB854BAC888 /* ADETests.swift */,
 				AD0000000000000000000A06 /* AccountEmailAuthFlowTests.swift */,
 				B70000000000000000000003 /* SyncRecoveryPolicyTests.swift */,
@@ -1569,11 +1578,13 @@
 			files = (
 				PH0000000000000000000040 /* PluginPageHostEvents.swift in Sources */,
 				PH0000000000000000000030 /* PluginPageBridge.swift in Sources */,
+				PH0000000000000000000042 /* PluginPageWave2.swift in Sources */,
 				PH0000000000000000000031 /* PluginPageAssetStore.swift in Sources */,
 				PH0000000000000000000032 /* PluginPageSchemeHandler.swift in Sources */,
 				PH0000000000000000000033 /* PluginPageBridgeHost.swift in Sources */,
 				PH0000000000000000000034 /* PluginPageHostView.swift in Sources */,
 				PH0000000000000000000035 /* PluginPageSurface.swift in Sources */,
+				PH0000000000000000000043 /* PluginPagePickerSheet.swift in Sources */,
 				E20000000000000000000091 /* LinearBrand.swift in Sources */,
 				E2A00000000000000000C1 /* CursorCloudModels.swift in Sources */,
 				E2A00000000000000000C2 /* CursorCloudPaneStore.swift in Sources */,
@@ -1838,6 +1849,7 @@
 				PH0000000000000000000036 /* PluginPageAssetStoreTests.swift in Sources */,
 				PH0000000000000000000037 /* PluginPageSchemeHandlerTests.swift in Sources */,
 				PH0000000000000000000038 /* PluginPageBridgeTests.swift in Sources */,
+				PH0000000000000000000044 /* PluginPageWave2Tests.swift in Sources */,
 				7B70BE6839672E5D2D006B28 /* ADETests.swift in Sources */,
 				AD0000000000000000000B06 /* AccountEmailAuthFlowTests.swift in Sources */,
 				B70000000000000000000004 /* SyncRecoveryPolicyTests.swift in Sources */,

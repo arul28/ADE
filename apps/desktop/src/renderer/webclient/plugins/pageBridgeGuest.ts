@@ -185,6 +185,43 @@ export function pluginPageGuestMain(config: PluginPageGuestConfig): void {
       confirm: function (request: Record<string, unknown>) {
         return call("ui.confirm", { confirm: request });
       },
+      // The five host pickers, each forwarding its own arguments. A client that
+      // cannot draw one refuses with a sentence; a reader who dismissed one
+      // answers null. Neither is invented here — the host decides which.
+      pickModel: function (request?: Record<string, unknown>) {
+        return call("ui.pickModel", request || {});
+      },
+      pickLane: function (request?: Record<string, unknown>) {
+        return call("ui.pickLane", request || {});
+      },
+      pickPermissionMode: function (request: Record<string, unknown>) {
+        return call("ui.pickPermissionMode", request || {});
+      },
+      pickReasoningEffort: function (request: Record<string, unknown>) {
+        return call("ui.pickReasoningEffort", request || {});
+      },
+      pickProvider: function (request?: Record<string, unknown>) {
+        return call("ui.pickProvider", request || {});
+      },
+      openPathInEditor: function (request: Record<string, unknown>) {
+        return call("ui.openPathInEditor", request || {}).then(noop);
+      },
+    },
+    sockets: {
+      list: function (socket: string) {
+        return call("sockets.list", { socket: socket });
+      },
+      invoke: function (socketId: string, args?: Record<string, unknown>) {
+        return call("sockets.invoke", { socketId: socketId, args: args || {} });
+      },
+    },
+    hostEngine: {
+      place: function (request: Record<string, unknown>) {
+        return call("hostEngine.place", request || {}).then(noop);
+      },
+      release: function () {
+        return call("hostEngine.release", {}).then(noop);
+      },
     },
     clipboard: {
       read: function () {
@@ -481,6 +518,59 @@ export function pluginPageGuestMain(config: PluginPageGuestConfig): void {
   function decodeText(bytes: ArrayBuffer): string {
     return new TextDecoder().decode(bytes);
   }
+
+  // -------------------------------------------------------------------------
+  // The page's own failures
+  // -------------------------------------------------------------------------
+
+  /**
+   * Tell the host why this page is not drawing.
+   *
+   * The web mirror of the desktop preload's reporter, and it exists for the
+   * same reason: a page that threw on its first render is exactly the page that
+   * cannot raise its own notice. Rate-limited to a handful, because a render
+   * loop that throws every frame is one broken page rather than a thousand
+   * messages, and swallowed on failure — a report that cannot be delivered must
+   * not become a second error inside the handler for the first.
+   */
+  var pageErrorsReported = 0;
+
+  function reportPageError(kind: string, message: string, source?: string): void {
+    if (pageErrorsReported >= 5) return;
+    var trimmed = (message || "").trim();
+    if (!trimmed) return;
+    pageErrorsReported += 1;
+    void call("page.error", {
+      kind: kind,
+      message: trimmed.slice(0, 240),
+      source: source ? String(source).slice(0, 400) : undefined,
+    }).catch(noop);
+  }
+
+  window.addEventListener("error", function (event: ErrorEvent) {
+    var fromError = event.error instanceof Error ? event.error.message : "";
+    reportPageError("error", fromError || event.message || "The page threw an error.", event.filename);
+  });
+
+  window.addEventListener("unhandledrejection", function (event: PromiseRejectionEvent) {
+    var reason: unknown = event.reason;
+    var message = reason instanceof Error
+      ? reason.message
+      : typeof reason === "string"
+        ? reason
+        : "A promise in the page rejected and nothing caught it.";
+    reportPageError("error", message);
+  });
+
+  window.addEventListener("securitypolicyviolation", function (event: SecurityPolicyViolationEvent) {
+    var directive = event.effectiveDirective || event.violatedDirective || "the page policy";
+    var blocked = event.blockedURI || "something outside this plugin's own files";
+    reportPageError(
+      "csp",
+      directive + " blocked " + blocked + ". A plugin page may only load what shipped in its own directory.",
+      event.blockedURI,
+    );
+  });
 
   /** The only thing the guest ever draws itself. Host words, no plugin content. */
   function showFailure(message: string): void {

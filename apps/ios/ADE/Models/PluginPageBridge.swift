@@ -104,6 +104,33 @@ enum PluginPageBridgeMethod: String, CaseIterable, Equatable {
     /// report rides it and is answered with nothing — the same fact reaching
     /// the same place, by the only road this client has.
     case uiResize = "ui.resize"
+    // Wave 2. The host pickers: a page asks ADE's own UI to make one of five
+    // choices and hears back the choice, `null` when the reader dismissed it,
+    // or a rejection when this client genuinely cannot ask.
+    case uiPickModel = "ui.pickModel"
+    case uiPickLane = "ui.pickLane"
+    case uiPickPermissionMode = "ui.pickPermissionMode"
+    case uiPickReasoningEffort = "ui.pickReasoningEffort"
+    case uiPickProvider = "ui.pickProvider"
+    /// Open a checkout path in the reader's editor.
+    ///
+    /// Named here rather than omitted so a page hears the phone's REFUSAL —
+    /// one sentence saying this device has no editor to open a path in —
+    /// instead of an "unknown bridge method" that reads as a version skew the
+    /// page could feature-detect its way around. There is nothing to detect:
+    /// no build of this app will ever open a Mac's checkout.
+    case uiOpenPathInEditor = "ui.openPathInEditor"
+    /// Third-party socket contributions a page may draw, and press.
+    case socketsList = "sockets.list"
+    case socketsInvoke = "sockets.invoke"
+    /// The guest reporting its own uncaught error or content-policy violation.
+    ///
+    /// On desktop the page's script reports this on its own channel. The phone
+    /// has exactly ONE channel to the host, so the report rides it and is
+    /// answered with nothing — the same fact reaching the same place, by the
+    /// only road this client has. See `ui.resize`, which is here for the same
+    /// reason.
+    case pageError = "page.error"
 }
 
 /// Tallest a page may ask its own frame to be. `PLUGIN_WEBVIEW_MAX_HEIGHT_PX`.
@@ -145,6 +172,14 @@ enum PluginPageBridgeEvent: String, Equatable {
     case changed
     case theme
     case host
+    /// The reader pulled the page down.
+    ///
+    /// An EVENT rather than a method, and it rides the one event channel the
+    /// others do, because it is the host telling the page something rather
+    /// than the page asking. The payload is empty: "refresh yourself" carries
+    /// no argument, and a page that needed one would be asking the host to
+    /// decide what it should redraw.
+    case refresh
 }
 
 /// The host-side entity kinds `host.subscribe` accepts.
@@ -157,6 +192,15 @@ enum PluginPageHostKind: String, Equatable, CaseIterable {
     /// an agent cannot re-derive "that turn failed" from the session's
     /// existence — the session exists either way. See `PluginPageChatTurn`.
     case chat
+    // Wave 2. Three more families a page may follow, accepted and forwarded on
+    // exactly the terms the four above are: a subscription is taken, a
+    // baseline is read without emitting, and a frame carries identity only.
+    /// A long-running host operation — a rebase, a clone, a push.
+    case operation
+    /// A merge or rebase conflict the reader has to resolve.
+    case conflict
+    /// A code review run.
+    case review
 }
 
 /// Where a chat session's current turn is, as a page hears it.

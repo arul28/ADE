@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { Warning } from "@phosphor-icons/react";
 import { useNavigate } from "react-router-dom";
 import type {
@@ -22,6 +22,13 @@ import {
   type TriggerSource,
 } from "../triggerCatalog";
 import { usePluginAutomationTriggers, type PluginAutomationOption } from "../../plugins/usePluginRegistry";
+import {
+  PluginAutomationTriggerFields,
+  PluginAutomationTriggerTile,
+  tilePluginIds,
+  usePluginAutomationTriggerTiles,
+  type PluginAutomationTile,
+} from "../../plugins/sockets/PluginAutomationTriggerTiles";
 import { useBuiltinGateInput, useBuiltinSurfaceVisible } from "../../plugins/useBuiltinTabs";
 import { isBuiltinSurfaceVisible } from "../../plugins/builtinTabs";
 import { GitHubTriggerFilters } from "../GitHubTriggerFilters";
@@ -142,10 +149,13 @@ function TriggerDeliveryCallout({
 function TriggerFilters({
   trigger,
   source,
+  pluginOptions,
   onPatch,
 }: {
   trigger: AutomationTrigger;
   source: TriggerSource;
+  /** Plugin events reachable through the GENERIC picker — see `TriggerCard`. */
+  pluginOptions: PluginAutomationOption[];
   onPatch: (patch: Partial<AutomationTrigger>) => void;
 }) {
   if (trigger.type === "schedule") return <ScheduleEditor trigger={trigger} onPatch={onPatch} />;
@@ -198,7 +208,7 @@ function TriggerFilters({
       </div>
     );
   }
-  if (source === "plugin") return <PluginTriggerPicker trigger={trigger} onPatch={onPatch} />;
+  if (source === "plugin") return <PluginTriggerPicker trigger={trigger} options={pluginOptions} onPatch={onPatch} />;
   if (source === "session") {
     return <p className="text-[11px] text-muted-fg/70">Runs after any agent session ends.</p>;
   }
@@ -230,12 +240,21 @@ function optionKey(pluginId: string, value: string): string {
  */
 function PluginTriggerPicker({
   trigger,
+  options,
   onPatch,
 }: {
   trigger: AutomationTrigger;
+  /**
+   * Already narrowed by the caller to the plugins with NO tile of their own.
+   *
+   * Passed in rather than read here, because the same subtraction decides
+   * whether the generic tile is drawn at all: a plugin that says how its own
+   * trigger should look must not also appear as a row in this select, and one
+   * component owning both halves is what keeps those two answers from drifting.
+   */
+  options: PluginAutomationOption[];
   onPatch: (patch: Partial<AutomationTrigger>) => void;
 }) {
-  const options = usePluginAutomationTriggers();
   const selectedPlugin = (trigger.pluginId ?? "").trim();
   const selectedTrigger = (trigger.pluginTrigger ?? "").trim();
   const known = options.some(
@@ -308,6 +327,39 @@ export function TriggerCard({
   const delivery = deliveryKey ? ingressStatus?.delivery?.[deliveryKey] : null;
 
   /**
+   * Plugin tiles, and what they take away from the generic Plugins tile.
+   *
+   * A plugin that declares an `automation-trigger-tile` gets a cell of its own
+   * in this grid and is SUBTRACTED from the generic picker's select. Drawing
+   * both would put the same five triggers on screen twice under two different
+   * names — once as "Linear · Issue moved" inside a dropdown, once as radios
+   * under Linear's own mark — and the reader would have no way to tell that
+   * they build the identical rule.
+   */
+  const tiles = usePluginAutomationTriggerTiles();
+  const declaringPlugins = useMemo(() => tilePluginIds(tiles), [tiles]);
+  const allPluginOptions = usePluginAutomationTriggers();
+  const genericPluginOptions = useMemo(
+    () => allPluginOptions.filter((option) => !declaringPlugins.has(option.pluginId)),
+    [allPluginOptions, declaringPlugins],
+  );
+  const selectedPluginId = (trigger.pluginId ?? "").trim();
+  const activeTile: PluginAutomationTile | null = trigger.type === "plugin"
+    ? tiles.find((tile) => tile.pluginId === selectedPluginId) ?? null
+    : null;
+  /**
+   * The generic tile leaves only when every plugin that declares a trigger also
+   * declares a tile — its whole reason to exist is being the door for the ones
+   * that do not. Two cases keep it regardless: a machine with no plugins at all,
+   * where it is the empty state that says where to get one; and a rule already
+   * pointing at a plugin with no tile (uninstalled, or simply tile-less), which
+   * would otherwise lose the editor for the trigger it already has.
+   */
+  const genericPluginTileHidden = tiles.length > 0
+    && genericPluginOptions.length === 0
+    && !(source === "plugin" && !activeTile);
+
+  /**
    * The sources this machine may start a NEW automation from.
    *
    * Cursor Cloud's two triggers are ADE's own, and `ade-cursor-cloud` publishes
@@ -326,6 +378,11 @@ export function TriggerCard({
    * source by adding `builtin` to its catalog entry.
    */
   const offeredTriggerSources = TRIGGER_SOURCES.filter((candidate) => {
+    // Checked BEFORE the already-selected escape hatch, because the case that
+    // must hide it is exactly the one where `plugin` IS the selected source:
+    // a rule on a plugin that declares a tile is drawn by that tile, and the
+    // generic cell beside it would be a second, worse door to the same place.
+    if (candidate.value === "plugin") return !genericPluginTileHidden;
     if (candidate.value === source) return true;
     if (!candidate.builtin) return true;
     return isBuiltinSurfaceVisible(candidate.builtin, builtinGate);
@@ -340,7 +397,9 @@ export function TriggerCard({
       <div className="grid grid-cols-3 gap-1.5 sm:grid-cols-5">
         {offeredTriggerSources.map((s) => {
           const Icon = s.icon;
-          const active = s.value === source;
+          // A plugin tile owning the selection means the generic cell is NOT
+          // the active one, even though both answer to `source === "plugin"`.
+          const active = s.value === source && !(s.value === "plugin" && activeTile !== null);
           const iconWeight = s.value === "github" || active ? "fill" : "regular";
           return (
             <button
@@ -363,10 +422,30 @@ export function TriggerCard({
             </button>
           );
         })}
+        {/* Plugin tiles come AFTER ADE's own sources and are never interleaved:
+            the grid reads as "what ADE fires, then what your plugins fire". */}
+        {tiles.map((tile) => (
+          <PluginAutomationTriggerTile
+            key={tile.pluginId}
+            tile={tile}
+            active={activeTile?.pluginId === tile.pluginId}
+            onSelect={() => onChange({
+              type: "plugin",
+              pluginId: tile.pluginId,
+              // Seeded with the tile's first radio rather than left blank. An
+              // empty pair fails save-time validation, so a tile that produced
+              // one on a single click would be a control whose only immediate
+              // effect is an error message.
+              pluginTrigger: tile.payload.triggers[0]?.id ?? "",
+            })}
+          />
+        ))}
       </div>
 
-      {/* Event selector */}
-      {events.length > 1 ? (
+      {/* Event selector. A tile draws its own radios in the filter box below,
+          which ARE the event choice — the "Plugin event" line over them would
+          be a label for a control that is not there. */}
+      {activeTile ? null : events.length > 1 ? (
         <label className="block space-y-1">
           <span className={labelCls}>Event</span>
           <select className={selectCls} value={trigger.type} onChange={(e) => setEvent(e.target.value)}>
@@ -389,7 +468,21 @@ export function TriggerCard({
 
       {/* Filters */}
       <div className={cn(recessedCls, "p-3")}>
-        <TriggerFilters trigger={trigger} source={source} onPatch={patch} />
+        {activeTile ? (
+          <PluginAutomationTriggerFields
+            tile={activeTile}
+            selectedTrigger={(trigger.pluginTrigger ?? "").trim()}
+            filterValues={trigger.pluginFilters ?? {}}
+            onPatch={patch}
+          />
+        ) : (
+          <TriggerFilters
+            trigger={trigger}
+            source={source}
+            pluginOptions={genericPluginOptions}
+            onPatch={patch}
+          />
+        )}
       </div>
     </div>
   );

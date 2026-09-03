@@ -25,6 +25,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testi
 import { BadgeCardEntry } from "../src/entries/BadgeCardEntry";
 import { BrowserEntry } from "../src/entries/BrowserEntry";
 import { DialogPickerEntry } from "../src/entries/DialogPickerEntry";
+import { IssueContextEntry } from "../src/entries/IssueContextEntry";
 import { PickerEntry } from "../src/entries/PickerEntry";
 import { SettingsEntry } from "../src/entries/SettingsEntry";
 import { installFakeBridge, uninstallFakeBridge, fakeIssue, type FakeBridge } from "./fakeBridge";
@@ -84,6 +85,24 @@ async function issueRow(identifier: string): Promise<HTMLElement> {
     if (!match) throw new Error(`No row for ${identifier} yet.`);
     return match;
   }, { timeout: 3_000 });
+}
+
+/**
+ * Choose a model in the open launch form, through the HOST's picker.
+ *
+ * The form seeds none. It used to seed the first Claude row of a catalog it
+ * fetched itself; the host's `ui.pickModel()` owns that default now, so a walk
+ * that wants to launch has to make the choice a reader makes — and the Launch
+ * button stays disabled until it does, which is the point.
+ */
+async function chooseModel(): Promise<void> {
+  const chip = await screen.findByRole("button", { name: "Model" }, { timeout: 3_000 });
+  await act(async () => {
+    fireEvent.click(chip);
+  });
+  await waitFor(() => {
+    expect(host.callsTo("ui.pickModel").length).toBeGreaterThan(0);
+  });
 }
 
 describe("the page and the plugin agree on every verb", () => {
@@ -193,6 +212,7 @@ describe("the page and the plugin agree on every verb", () => {
     // the quick view raises — so the reader confirms the model, prompt, branch
     // and lane target before anything is created. The call below is still the
     // contract; this is only the second half of the same gesture.
+    await chooseModel();
     const submitLaunch = await screen.findByRole(
       "button",
       { name: /Launch 1 lane/i },
@@ -256,6 +276,7 @@ describe("the page and the plugin agree on every verb", () => {
     await act(async () => {
       fireEvent.click(launch);
     });
+    await chooseModel();
     const submitLaunch = await screen.findByRole("button", { name: /Launch 1 lane/i }, { timeout: 3_000 });
     await act(async () => {
       fireEvent.click(submitLaunch);
@@ -300,6 +321,7 @@ describe("the page and the plugin agree on every verb", () => {
     await act(async () => {
       fireEvent.click(within(dock!).getByRole("button", { name: /Launch lane \+ agent/i }));
     });
+    await chooseModel();
     await act(async () => {
       fireEvent.click(await screen.findByRole("button", { name: /Launch 1 lane/i }, { timeout: 3_000 }));
     });
@@ -323,6 +345,7 @@ describe("the page and the plugin agree on every verb", () => {
     await act(async () => {
       fireEvent.click(within(dock!).getByRole("button", { name: /Launch lane \+ agent/i }));
     });
+    await chooseModel();
     await act(async () => {
       fireEvent.click(await screen.findByRole("button", { name: /Launch 1 lane/i }, { timeout: 3_000 }));
     });
@@ -338,9 +361,9 @@ describe("the page and the plugin agree on every verb", () => {
   it("copies the kickoff prompt only when the plugin's own setting says so", async () => {
     connected();
     // The toggle was an ADE preference the compiled flow read off the app
-    // store; it is the plugin's own setting now, and OFF means no clipboard
-    // write at all rather than a write the reader cannot see.
-    host.setAction("__config", () => ({}));
+    // store; it is the plugin's own setting now, its switch is in the launch
+    // form beside the prompt it copies, and OFF means no clipboard write at all
+    // rather than a write the reader cannot see.
     render(<BrowserEntry context={tabContext()} />);
     const row = await issueRow("ADE-1");
     await act(async () => {
@@ -350,18 +373,151 @@ describe("the page and the plugin agree on every verb", () => {
     await act(async () => {
       fireEvent.click(within(dock!).getByRole("button", { name: /Launch lane \+ agent/i }));
     });
+    await chooseModel();
     await act(async () => {
       fireEvent.click(await screen.findByRole("button", { name: /Launch 1 lane/i }, { timeout: 3_000 }));
     });
     await waitFor(() => {
       expect(host.callsTo("invoke:pageLaunchAgent").length).toBe(1);
     });
-    // The fake's config answers no `launchPromptClipboard` key at all, which is
-    // the manifest default — true — so the prompt is saved.
+    // The setting defaults on, matching the manifest's `default: true` and the
+    // app preference it replaced, so the prompt is saved.
     await waitFor(() => {
       expect(host.callsTo("clipboard.write").length).toBe(1);
     });
     expect(String(host.lastCall("clipboard.write")!.args.text)).toContain("Linear issue");
+  });
+
+  it("turns the clipboard copy off from the launch form, and then copies nothing", async () => {
+    // The toggle moved out of the settings section and into the form. It writes
+    // the same stored setting the launch flow reads — a per-launch checkbox that
+    // forgot itself would be a worse control than the preference it replaced —
+    // so the assertion is on the config write AND on the launch that follows it.
+    connected({ config: { launchPromptClipboard: false } });
+    render(<BrowserEntry context={tabContext()} />);
+    const row = await issueRow("ADE-1");
+    await act(async () => {
+      fireEvent.click(row);
+    });
+    const dock = document.querySelector('[data-linear-action-dock="true"]') as HTMLElement | null;
+    await act(async () => {
+      fireEvent.click(within(dock!).getByRole("button", { name: /Launch lane \+ agent/i }));
+    });
+    await chooseModel();
+
+    const toggle = await screen.findByRole(
+      "switch",
+      { name: /Copy the launch prompt to the clipboard/i },
+      { timeout: 3_000 },
+    );
+    await waitFor(() => {
+      expect(toggle.getAttribute("aria-checked")).toBe("false");
+    });
+    await act(async () => {
+      fireEvent.click(toggle);
+    });
+    await waitFor(() => {
+      expect(host.lastCall("config.set")!.args).toEqual({ key: "launchPromptClipboard", value: true });
+    });
+
+    // And with the STORED value still false — the fake answers what it was
+    // installed with — the launch copies nothing.
+    await act(async () => {
+      fireEvent.click(await screen.findByRole("button", { name: /Launch 1 lane/i }, { timeout: 3_000 }));
+    });
+    await waitFor(() => {
+      expect(host.callsTo("invoke:pageLaunchAgent").length).toBe(1);
+    });
+    expect(host.callsTo("clipboard.write").length).toBe(0);
+  });
+
+  it("gives the chat menu's Linear row every verb the chat header used to have", async () => {
+    // The chat-header button and its dropdown are gone. What replaced them is a
+    // row in the chat's three-dot menu under Issue context, opening this page
+    // as an anchored popover — so the four verbs the header offered have to be
+    // here, or the removal is a loss rather than a move.
+    //
+    // The `chat-card` placement of the SAME surface still draws only the chips
+    // (the transcript row the compiled `UserMessageIssueContext` drew), which is
+    // the case below this one.
+    connected({
+      lanes: [{
+        id: "lane-1",
+        name: "ADE-1",
+        branch: "ade/ade-1",
+        laneType: "worktree",
+        path: null,
+        linearIssueId: null,
+        linearIssueKey: null,
+        linearIssueLinks: [{ issueId: "issue-1", issueKey: "ADE-1", sessionId: "session-1" }],
+      }],
+    });
+    render(
+      <IssueContextEntry
+        context={tabContext({
+          surfaceId: "issue-context",
+          placement: "popover",
+          subject: { kind: "session", id: "session-1" },
+        })}
+      />,
+    );
+
+    const open = await screen.findByRole("button", { name: /Open in Linear/i }, { timeout: 3_000 });
+    await act(async () => {
+      fireEvent.click(open);
+    });
+    // `openInLinear` answers `{openUrl}` for the HOST to act on. A page that
+    // navigated a window itself would be reaching past its placement.
+    await waitFor(() => {
+      expect(host.lastCall("invoke:openInLinear")!.args).toEqual({ issueId: "issue-1" });
+    });
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /Comment progress/i }));
+    });
+    await waitFor(() => {
+      expect(host.lastCall("invoke:commentProgress")!.args).toEqual({ sessionId: "session-1" });
+    });
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /^Detach$/i }));
+    });
+    await waitFor(() => {
+      expect(host.lastCall("invoke:pageUnlinkIssue")!.args).toEqual({ issueId: "issue-1", laneId: "lane-1" });
+    });
+
+    // And attach, which was the composer's picker rather than the header's —
+    // carried here because a chat with no issue attached is exactly the chat a
+    // reader opens this card to fix.
+    expect(screen.getByRole("button", { name: /Attach a Linear issue/i })).toBeTruthy();
+  });
+
+  it("draws only the chips in the transcript, where a menu was never pressed", async () => {
+    connected({
+      lanes: [{
+        id: "lane-1",
+        name: "ADE-1",
+        branch: "ade/ade-1",
+        laneType: "worktree",
+        path: null,
+        linearIssueId: null,
+        linearIssueKey: null,
+        linearIssueLinks: [{ issueId: "issue-1", issueKey: "ADE-1", sessionId: "session-1" }],
+      }],
+    });
+    render(
+      <IssueContextEntry
+        context={tabContext({
+          surfaceId: "issue-context",
+          placement: "overlay",
+          subject: { kind: "session", id: "session-1" },
+        })}
+      />,
+    );
+    await waitFor(() => {
+      expect(document.querySelector("[data-chat-attachment-tray]")).toBeTruthy();
+    });
+    expect(screen.queryByRole("button", { name: /Comment progress/i })).toBeNull();
   });
 
   it("resolves a badge card from an issue id alone", async () => {
@@ -559,10 +715,19 @@ describe("the contract itself", () => {
     const defined = new Set(
       [...child.matchAll(/^\s{4}(?:async\s+)?([A-Za-z0-9_]+)\s*\(/gm)].map((match) => match[1]),
     );
-    // `saveWebhookSecret` is the one id the page shares with the manifest table
-    // in `actions.js`, deliberately: the webhook secret was already a plugin
-    // action and a second copy of it would be a second place to keep in step.
-    const elsewhere = new Set(["saveWebhookSecret"]);
+    // The five ids the page shares with the manifest table in `actions.js`,
+    // deliberately. Three are the webhook: the Automations trigger tile presses
+    // `webhookStatus` and `registerWebhook` by name, so a second copy in the
+    // page table would be a second place to keep in step. Two are the chat's
+    // own verbs, which the compiled chat-header menu pressed and the chat
+    // menu's issue-context card presses now.
+    const elsewhere = new Set([
+      "webhookStatus",
+      "registerWebhook",
+      "unregisterWebhook",
+      "openInLinear",
+      "commentProgress",
+    ]);
 
     const missing = [...called].filter((id) => !defined.has(id) && !elsewhere.has(id));
     expect(missing, "ids the page invokes that pageActions.js does not define").toEqual([]);

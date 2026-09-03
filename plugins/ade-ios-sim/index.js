@@ -1,16 +1,20 @@
-// ade-ios-sim — ADE's iOS Simulator product as a plugin.
+// ade-ios-sim — iOS Sim Control, ADE's simulator product as a plugin.
 //
-// The compiled pane is a Mac-only simctl/idb inspector. This package is the
-// same product as a vocabulary panel every client draws:
+// ADE's compiled simulator pane is a Mac-only simctl/idb inspector. This package
+// is the same product in three tiers:
 //
-//   * desktop mounts that compiled pane through `canvas` / `simulator`;
-//   * the Work rail contributes a `work-rail-pane` that the host wires to the
-//     same pane, so chat context insertion stays identical to compiled;
-//   * phone and terminal list the bound status row.
+//   * desktop and web draw the plugin's OWN page (`page/`, built into `dist/`),
+//     which carries all the chrome and reserves a rect the host engine paints
+//     the live screen into;
+//   * the Work rail contributes a `work-rail-pane` that names that page through
+//     `webviewSurfaceId`, so the rail and the palette open the same thing;
+//   * phone and terminal list the bound status row from the `main` panel, which
+//     is honest about needing a Mac rather than pretending to drive one.
 //
-// The host brain stays. This child only shapes a status row and reads
-// `ios_simulator.getStatus`. `official: true` marks the bundled package; it
-// buys no extra SDK.
+// The host keeps the simulator itself. This child shapes the status row, reads
+// `ios_simulator.getStatus`, and answers the page's twenty-five actions
+// (`pageActions.js`). `official: true` marks the bundled package; it buys no
+// extra SDK.
 
 "use strict";
 
@@ -21,6 +25,7 @@ const {
   statusRow,
 } = require("./format");
 const { build } = require("./panels");
+const { createPageActions } = require("./pageActions");
 
 const PUBLISH_ATTEMPTS = 5;
 const PUBLISH_RETRY_MS = 3_000;
@@ -91,6 +96,25 @@ async function refreshStatus() {
   }
 }
 
+/**
+ * The page's table, built at LOAD.
+ *
+ * A page is a webview the reader can open the instant the rail is drawn, which
+ * is well before `activate`'s first `getStatus` has settled. A page that got
+ * "no such action" there would draw its empty state and stay there — so `deps`
+ * is live getters onto the bindings above rather than their values.
+ *
+ * `invokeSim` is handed over rather than the SDK, because it is the one place
+ * the `ios_simulator` domain is named: the host scopes that call to the project
+ * this plugin is bound to, so no handler in `pageActions.js` names a build root
+ * and no page can send one.
+ */
+const pageActions = createPageActions({
+  get sdk() { return sdk; },
+  invokeSim,
+  refresh: () => refreshStatus(),
+});
+
 exports.activate = async (ade) => {
   sdk = ade;
   disposed = false;
@@ -105,7 +129,19 @@ exports.deactivate = async () => {
   sdk = null;
 };
 
+/**
+ * The action table the host dispatches into.
+ *
+ * Seeded at LOAD with this half's own handlers and the page's, so every id the
+ * manifest declares and every id the page can invoke resolves before `activate`
+ * has run. The two tables are DISJOINT — no id is defined by both, and
+ * `test/pageActions.test.js` asserts it — so the merge order below is a belt on
+ * a table with no collisions in it rather than the thing that decides which
+ * copy runs.
+ */
 exports.actions = {
+  ...pageActions,
+
   async refreshStatus() {
     const result = await refreshStatus();
     if (result.error) return { message: result.error, ok: false };
@@ -126,6 +162,7 @@ exports.actions = {
 };
 
 exports.__internals = {
+  pageActions,
   refreshStatus,
   cacheRef: () => cache,
   setCache(next) {

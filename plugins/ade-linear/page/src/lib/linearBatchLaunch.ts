@@ -36,6 +36,16 @@ export type BatchLaunchSessionType = "chat" | "cli";
 /** Per-issue launch configuration captured in the batch launch modal. */
 export type BatchLaunchIssueConfig = {
   modelId: string;
+  /**
+   * The provider the launch runs on, when the reader picked one.
+   *
+   * It used to be derived from the model id alone, through the catalog
+   * (`resolveLaunchProviderAndModel`). The launch form asks the HOST for its
+   * model now, and the host's answer names the provider it belongs to — so the
+   * derivation is the fallback rather than the source, for a host that answers
+   * no picker and a config restored from an older run.
+   */
+  provider?: string | null;
   reasoningEffort: string | null;
   fastMode: boolean;
   /** Editable kickoff prompt; when blank, a default issue-derived prompt is used. */
@@ -319,6 +329,27 @@ export function resolveCliLaunchProviderAndModel(
 }
 
 /**
+ * The provider and model one launch actually carries.
+ *
+ * The reader's own answer wins: `ui.pickModel()` names the provider its model
+ * belongs to, and a provider read off the host's own picker cannot be wrong.
+ * The catalog derivation stays as the fallback for a host that answers no
+ * picker verb, where the model id is all there is to go on.
+ *
+ * Both launch kinds resolve it the same way — the provider-group set
+ * (claude|codex|cursor|droid|opencode) is identical to the CLI launch provider
+ * set, so the group doubles as the CLI profile.
+ */
+export function launchTarget(
+  config: Pick<BatchLaunchIssueConfig, "modelId" | "provider">,
+  models: readonly PageChatModel[],
+): { provider: string; model: string } {
+  const chosen = config.provider?.trim();
+  if (chosen) return { provider: chosen, model: config.modelId };
+  return resolveLaunchProviderAndModel(config.modelId, models);
+}
+
+/**
  * Flags issues that are already being worked on, per the locked duplicate-guard
  * spec, and says WHICH of the two things is true.
  *
@@ -524,7 +555,7 @@ export async function runBatchLaunch(
         if (!deps.launchCli) {
           throw new Error("CLI session launch requested but no launchCli dependency was provided.");
         }
-        const { provider, model } = resolveCliLaunchProviderAndModel(config.modelId, models);
+        const { provider, model } = launchTarget(config, models);
         const session = await deps.launchCli({
           issueId: issue.id,
           laneId,
@@ -542,7 +573,7 @@ export async function runBatchLaunch(
         return;
       }
 
-      const { provider, model } = resolveLaunchProviderAndModel(config.modelId, models);
+      const { provider, model } = launchTarget(config, models);
       // Single headless launch: creates the session AND runs the kickoff turn
       // server-side (no mounted pane needed). The host persists the issue as
       // session context so the agent reads it and the session→issue link is

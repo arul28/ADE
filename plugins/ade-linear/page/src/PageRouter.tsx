@@ -15,12 +15,10 @@ import { DialogPickerEntry } from "./entries/DialogPickerEntry";
 import { BrowserEntry } from "./entries/BrowserEntry";
 import { IssueContextEntry } from "./entries/IssueContextEntry";
 import { PickerEntry } from "./entries/PickerEntry";
-import { QuickViewEntry } from "./entries/QuickViewEntry";
 import { SettingsEntry } from "./entries/SettingsEntry";
 
 export const PAGE_SURFACE_IDS = [
   "issues",
-  "quickview",
   "settings",
   "picker",
   "dialog-picker",
@@ -32,8 +30,6 @@ export type PageSurfaceId = (typeof PAGE_SURFACE_IDS)[number];
 
 export function PageRouter({ context }: { context: PluginWebviewContext }): React.ReactElement {
   switch (context.surfaceId) {
-    case "quickview":
-      return <QuickViewEntry context={context} />;
     case "settings":
       return <SettingsEntry context={context} />;
     case "picker":

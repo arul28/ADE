@@ -180,7 +180,13 @@ struct WorkLanePickerDropdown: View {
   }
 }
 
-private struct WorkLanePickerMenu: View {
+/// The lane list itself, without the pill that opens it.
+///
+/// Internal rather than private because the plugin page tier presents the same
+/// menu for `ui.pickLane`: a page asking ADE to pick a lane must get the
+/// phone's OWN lane picker — the same search, the same colours, the same rows —
+/// not a second list that drifts from it.
+struct WorkLanePickerMenu: View {
   let lanes: [LaneSummary]
   let allLanesEmpty: Bool
   let selectedLaneId: String

@@ -1,17 +1,28 @@
 {
   "name": "ade-ios-sim",
-  "version": "1.1.0",
-  "displayName": "iOS Simulator",
-  "description": "Drive an iOS Simulator from ADE — the same simulator pane ADE already ships, as a plugin.",
+  "version": "2.0.0",
+  "displayName": "iOS Sim Control",
+  "description": "iOS Sim Control — pick a simulator, build and launch your app on it, then tap, type and inspect the running screen without leaving ADE.",
   "icon": "device-mobile",
   "accent": "#8A8F98",
   "vocabVersion": 1,
   "entry": "index.js",
+  "surfaces": [
+    {
+      "kind": "webview",
+      "id": "sim",
+      "title": "iOS Sim Control",
+      "icon": "device-mobile",
+      "entryHtml": "dist/index.html",
+      "panelId": "main",
+      "mobile": false
+    }
+  ],
   "panels": [
     {
       "id": "main",
       "schemaFile": "panels/main.json",
-      "title": "iOS Simulator",
+      "title": "iOS Sim Control",
       "icon": "device-mobile",
       "refreshAction": "refreshStatus"
     }
@@ -23,24 +34,27 @@
       "id": "sim-pane",
       "label": "iOS Sim",
       "icon": "device-mobile",
-      "panelId": "main"
+      "panelId": "main",
+      "webviewSurfaceId": "sim"
     },
     {
       "socket": "command-palette-action",
       "surface": "app",
       "id": "palette-sim",
-      "label": "iOS Simulator",
+      "label": "iOS Sim Control",
       "icon": "device-mobile",
-      "actionId": "openSimulator"
+      "actionId": "openSimulator",
+      "webviewSurfaceId": "sim"
     }
   ],
   "collections": {
-    "status": { "sync": true }
+    "status": { "sync": true },
+    "ui-state": { "sync": false }
   },
   "tools": [
     {
       "name": "get_status",
-      "description": "Read iOS Simulator status on this machine — whether it is a Mac, the live device, and the attached chat.",
+      "description": "Read iOS Sim Control status on this machine — whether it is a Mac, the live device, and the attached chat.",
       "action": "getStatusTool",
       "input": {
         "type": "object",

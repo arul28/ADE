@@ -410,7 +410,7 @@ enum PluginSocketKind: Equatable {
 }
 
 /// The entity a dynamic contribution attaches to. Mirrors `PLUGIN_ENTITY_KINDS`.
-enum PluginEntityKind: String, Equatable {
+enum PluginEntityKind: String, Equatable, CaseIterable {
   case lane
   case pr
   case session
@@ -1356,6 +1356,42 @@ struct PluginContributionIndex: Equatable {
   /// Rows for the activity pane, in placement order.
   func activityEntries() -> [PluginContribution] {
     surfaceContributions(.app).filter { $0.activityEntry != nil }
+  }
+
+  /// Every contribution of one SOCKET KIND this index holds, deduped and in
+  /// placement order.
+  ///
+  /// The one accessor that asks across entities rather than about a row, and it
+  /// exists for the page tier: a plugin page drawing a rail of third-party
+  /// buttons needs the same set a native surface would draw, without knowing
+  /// which entity each was published against.
+  ///
+  /// Deduped on `pluginId + socketId` with the PUBLISHED row winning, which is
+  /// the same rule ``merge(_:)`` applies per entity — a wildcard declaration
+  /// lives outside `byEntity` until a lookup stamps it, so without this a
+  /// plugin's manifest button and the row filling it would both be listed.
+  func socketContributions(_ socket: String) -> [PluginContribution] {
+    var published: [String: PluginContribution] = [:]
+    var declared: [String: PluginContribution] = [:]
+    for rows in byEntity.values {
+      for row in rows where row.socketRaw == socket {
+        let key = "\(row.pluginId)\u{0}\(row.socketId)"
+        if row.isDeclaration {
+          if declared[key] == nil { declared[key] = row }
+        } else if published[key] == nil {
+          published[key] = row
+        }
+      }
+    }
+    for rows in declarations.wildcardByEntityKind.values {
+      for row in rows where row.socketRaw == socket {
+        let key = "\(row.pluginId)\u{0}\(row.socketId)"
+        if declared[key] == nil { declared[key] = row }
+      }
+    }
+    for key in published.keys { declared.removeValue(forKey: key) }
+    return (Array(published.values) + Array(declared.values))
+      .sorted(by: pluginContributionPrecedes)
   }
 
   func toolbarActions(_ surface: PluginSurfaceId) -> [PluginContribution] {

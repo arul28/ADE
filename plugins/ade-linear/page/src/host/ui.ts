@@ -7,7 +7,14 @@
  * that showed no toast.
  */
 
-import { bridge, type PluginWebviewComposerAttach, type PluginWebviewToast } from "../bridge";
+import {
+  bridge,
+  type PluginWebviewChoice,
+  type PluginWebviewComposerAttach,
+  type PluginWebviewLaneChoice,
+  type PluginWebviewModelPickRequest,
+  type PluginWebviewToast,
+} from "../bridge";
 
 /**
  * The tallest height this page will ever report.
@@ -210,4 +217,88 @@ export async function openLink(url: string): Promise<void> {
   } catch {
     // A URL the host refused. It says so itself.
   }
+}
+
+/* ── The host's pickers ─────────────────────────────────────────────────── */
+
+/**
+ * Whether this host answers a given picker verb.
+ *
+ * Asked before every chip is drawn rather than at the first press: a control
+ * that looks live and does nothing is worse than one that says it is not
+ * available here, and the answer cannot change while the page is open.
+ */
+export function hasPicker(
+  name: "pickModel" | "pickProvider" | "pickLane" | "pickPermissionMode" | "pickReasoningEffort",
+): boolean {
+  return typeof bridge()?.ui?.[name] === "function";
+}
+
+/**
+ * Open one of the host's pickers.
+ *
+ * `null` means the reader dismissed it, which leaves the current value alone —
+ * so every caller writes its state only for a non-null answer. A host that does
+ * not answer the verb, and a verb that throws, are both `null` for the same
+ * reason: nothing was chosen.
+ */
+async function pick<T>(open: (() => Promise<T | null>) | undefined): Promise<T | null> {
+  if (!open) return null;
+  try {
+    return (await open()) ?? null;
+  } catch {
+    return null;
+  }
+}
+
+export function pickModel(
+  request?: PluginWebviewModelPickRequest,
+): Promise<PluginWebviewChoice | null> {
+  const ui = bridge()?.ui;
+  return pick(ui?.pickModel ? () => ui.pickModel!(request) : undefined);
+}
+
+export function pickProvider(selected?: string | null): Promise<PluginWebviewChoice | null> {
+  const ui = bridge()?.ui;
+  return pick(ui?.pickProvider ? () => ui.pickProvider!({ selected: selected ?? null }) : undefined);
+}
+
+export function pickLane(selected?: string | null): Promise<PluginWebviewLaneChoice | null> {
+  const ui = bridge()?.ui;
+  return pick(ui?.pickLane ? () => ui.pickLane!({ selected: selected ?? null }) : undefined);
+}
+
+/**
+ * The provider's NATIVE permission vocabulary, from the provider's own picker.
+ *
+ * `provider` is required and is why this verb takes an argument at all: Claude
+ * asks in one set of words, Codex in another, Cursor names modes, Droid an
+ * autonomy ladder. The value that comes back is that provider's own, and the
+ * launch puts it in the field that provider names — see `permissionArgument` in
+ * `pageActions.js`, which is the half that knows which field that is.
+ */
+export function pickPermissionMode(
+  provider: string,
+  selected?: string | null,
+): Promise<PluginWebviewChoice | null> {
+  const ui = bridge()?.ui;
+  return pick(
+    ui?.pickPermissionMode
+      ? () => ui.pickPermissionMode!({ provider, selected: selected ?? null })
+      : undefined,
+  );
+}
+
+/** The model's own reasoning rungs. A model with none opens no picker. */
+export function pickReasoningEffort(
+  provider: string,
+  model: string,
+  selected?: string | null,
+): Promise<PluginWebviewChoice | null> {
+  const ui = bridge()?.ui;
+  return pick(
+    ui?.pickReasoningEffort
+      ? () => ui.pickReasoningEffort!({ provider, model, selected: selected ?? null })
+      : undefined,
+  );
 }

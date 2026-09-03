@@ -1,7 +1,14 @@
 // The Electron Control panel schema, built on this machine.
 //
-// Desktop mounts ADE's compiled Control pane through `canvas` / `electron-control`.
-// Phone and terminal list the same bound status row.
+// This panel is the FALLBACK now, not the product. Every client that can host a
+// plugin page draws `page/` instead — both sockets name `webviewSurfaceId:
+// "control"` — and this is what the rest get: the phone, the terminal, and any
+// host too old to know what a webview surface is.
+//
+// So it keeps the bound status row and adds the one honest line the phone owes
+// its reader: driving an Electron app over CDP happens on the computer the app
+// is running on, and no phone is that computer. Saying so is better than a
+// blank canvas the reader waits on.
 
 "use strict";
 
@@ -35,15 +42,23 @@ function buildMainPanel(input = {}) {
       "Open ADE on the attached computer to drive and inspect an Electron app.",
       DEEPLINK_CONTROL,
     ),
-    body: [{
-      component: "canvas",
-      engine: "electron-control",
-      bind: {
-        collection: COLLECTION_STATUS,
-        limit: 8,
+    body: [
+      {
+        component: "canvas",
+        engine: "electron-control",
+        bind: {
+          collection: COLLECTION_STATUS,
+          limit: 8,
+        },
+        emptyText: "Open ADE on the attached computer to drive an Electron app.",
       },
-      emptyText: "Open ADE on the attached computer to drive an Electron app.",
-    }],
+      {
+        component: "text",
+        variant: "caption",
+        tone: "muted",
+        text: "Driving an Electron app needs the desktop it is running on. On a phone this row is the status only.",
+      },
+    ],
   };
 }
 

@@ -1,16 +1,16 @@
 {
   "v": 1,
-  "title": "iOS Simulator",
+  "title": "iOS Sim Control",
   "fallback": {
-    "title": "iOS Simulator",
-    "text": "Open ADE on the attached Mac to drive a simulator.",
+    "title": "iOS Sim Control",
+    "text": "Driving a simulator needs a Mac. Open iOS Sim Control on the attached Mac.",
     "deeplink": "ade://plugin/ade-ios-sim/main"
   },
   "body": [
     {
       "component": "emptyState",
-      "title": "Loading iOS Simulator…",
-      "description": "Reading whether this Mac can drive a simulator.",
+      "title": "Loading iOS Sim Control…",
+      "description": "Reading whether this machine can drive a simulator.",
       "icon": "device-mobile"
     }
   ]

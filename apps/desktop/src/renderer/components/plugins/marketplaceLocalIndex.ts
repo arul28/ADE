@@ -135,19 +135,27 @@ const GRAPH = manifest({
  * Review, as the real product rather than a gate.
  *
  * The gate is gone. `review` is a SUPERSEDED surface now, so the plugin may not
- * name it with `builtin` at all — it draws its own panels and ADE's compiled
+ * name it with `builtin` at all — it draws its own page and ADE's compiled
  * Review tab steps aside. The engine stays in core; this package is the UI,
  * the PR toolbar, the agent tools and `ade review`.
+ *
+ * At 2.0.0 the UI is the plugin's own HTML page: `runs` draws the run list, the
+ * run detail and the learnings, and `launch` is the anchored popover the PR
+ * toolbar button opens. Both keep a `panelId`, which is what every non-desktop
+ * client renders in the page's place.
  */
 const REVIEW = manifest({
   name: "ade-review",
-  version: "1.1.0",
+  version: "2.0.0",
   displayName: "Review",
   description: "Run AI review passes over a lane, a commit range, uncommitted changes, or a pull request, and act on the findings.",
   icon: "git-pull-request",
   accent: "#22A06B",
   entry: "index.js",
-  surfaces: [{ kind: "tab", id: "runs", title: "Review", icon: "git-pull-request", panelId: "runs", order: 45, mobile: true }],
+  surfaces: [
+    { kind: "webview", id: "runs", title: "Review", icon: "git-pull-request", entryHtml: "dist/index.html", panelId: "runs", order: 45, mobile: false },
+    { kind: "webview", id: "launch", title: "Launch a review", icon: "play", entryHtml: "dist/index.html", panelId: "launch", popover: { width: 560, height: 640 }, mobile: false },
+  ],
   panels: [
     { id: "runs", schemaFile: "panels/runs.json", title: "Review", icon: "git-pull-request", refreshAction: "refreshRuns" },
     { id: "run", schemaFile: "panels/run.json", title: "Review run", icon: "git-pull-request", refreshAction: "refreshRun" },
@@ -155,16 +163,20 @@ const REVIEW = manifest({
     { id: "learnings", schemaFile: "panels/learnings.json", title: "Review learnings", icon: "sparkle", refreshAction: "refreshLearnings" },
   ],
   sockets: [
-    { socket: "work-rail-pane", surface: "work", id: "runs-pane", label: "Review", icon: "git-pull-request", panelId: "runs" },
-    { socket: "toolbar-action", surface: "prs", id: "request-review", label: "ADE review", icon: "sparkle", actionId: "openLaunchFromPr" },
+    { socket: "work-rail-pane", surface: "work", id: "runs-pane", label: "Review", icon: "git-pull-request", panelId: "runs", webviewSurfaceId: "runs" },
+    { socket: "toolbar-action", surface: "prs", id: "request-review", label: "ADE review", icon: "sparkle", actionId: "openLaunchFromPr", webviewSurfaceId: "launch" },
+    // No `webviewSurfaceId`: `sockets.ts` does not read one on a `row-menu-item`,
+    // and a field the parser ignores would fail the zero-warnings gate.
     { socket: "row-menu-item", surface: "prs", id: "request-review-row", label: "ADE review…", icon: "sparkle", actionId: "openLaunchFromPr" },
-    { socket: "command-palette-action", surface: "app", id: "palette-runs", label: "Review runs", icon: "git-pull-request", actionId: "openRuns" },
-    { socket: "command-palette-action", surface: "app", id: "palette-launch", label: "Launch a review", icon: "play", actionId: "openLaunch" },
+    { socket: "command-palette-action", surface: "app", id: "palette-runs", label: "Review runs", icon: "git-pull-request", actionId: "openRuns", webviewSurfaceId: "runs" },
+    { socket: "command-palette-action", surface: "app", id: "palette-launch", label: "Launch a review", icon: "play", actionId: "openLaunch", webviewSurfaceId: "launch" },
   ],
   collections: {
     runs: { sync: true },
     findings: { sync: true },
     suppressions: { sync: true },
+    // The page's own filters and route state. Per-machine, so never synced.
+    "ui-state": { sync: false },
   },
   tools: [
     {
@@ -366,7 +378,7 @@ const HISTORY = manifest({
  */
 const LINEAR = manifest({
   name: "ade-linear",
-  version: "2.0.0",
+  version: "2.1.0",
   displayName: "Linear",
   description: "Browse Linear issues, start a lane and an agent on one, and keep the issue moving — from ADE, on every device.",
   icon: "brand:linear",
@@ -389,7 +401,7 @@ const LINEAR = manifest({
   webhookIngress: [{
     id: "linear",
     label: "Linear issue events",
-    description: "Paste this URL into Linear's webhook settings so an issue that changes wakes ADE.",
+    description: "Where Linear posts an issue that changed. Automations → Linear registers it for you.",
     // Linear signs with its OWN secret, so the relay's per-plugin check is not
     // the only one that has to pass — the host verifies this signature itself,
     // constant-time, before a delivery goes anywhere near the plugin child.
@@ -405,40 +417,39 @@ const LINEAR = manifest({
     chip: { label: "{key}", icon: "brand:linear" },
     panelId: "issue",
   }],
-  // Seven webview surfaces, one page. Linear ships its own HTML now
+  // Six webview surfaces, one page. Linear ships its own HTML now
   // (`plugins/ade-linear/dist/`), and each placement is a `webview` surface
   // pointing at the same `entryHtml`; the page reads the host's injected
-  // `surfaceId` to know which of the seven it is drawing. Every one keeps a
+  // `surfaceId` to know which of the six it is drawing. Every one keeps a
   // `panelId`, which is what the phone, the terminal and an older desktop
   // render in its place.
+  //
+  // The seventh was `quickview`, the top bar's popover, and it went with the
+  // `toolbar-action` that opened it. `issue-context` gained a popover size in
+  // its place: it is drawn both as a card inside the transcript and as the
+  // anchored popover the chat menu's Issue context row opens.
   surfaces: [
     { kind: "webview", id: "issues", title: "Linear", icon: "brand:linear", entryHtml: "dist/index.html", panelId: "issues", order: 55, mobile: false },
-    { kind: "webview", id: "quickview", title: "Linear", icon: "brand:linear", entryHtml: "dist/index.html", panelId: "issues", popover: { width: 560, height: 640 }, mobile: false },
     { kind: "webview", id: "settings", title: "Linear connection", icon: "brand:linear", entryHtml: "dist/index.html", panelId: "settings", mobile: false },
     { kind: "webview", id: "picker", title: "Attach a Linear issue", icon: "brand:linear", entryHtml: "dist/index.html", panelId: "issues", popover: { width: 520, height: 560 }, mobile: false },
     { kind: "webview", id: "dialog-picker", title: "Link a Linear issue", icon: "brand:linear", entryHtml: "dist/index.html", panelId: "issues", mobile: false },
     { kind: "webview", id: "badge-card", title: "Linear issue", icon: "brand:linear", entryHtml: "dist/index.html", panelId: "issue", popover: { width: 300, height: 280 }, mobile: false },
-    { kind: "webview", id: "issue-context", title: "Linear issue", icon: "brand:linear", entryHtml: "dist/index.html", panelId: "issue", mobile: false },
+    { kind: "webview", id: "issue-context", title: "Linear issue", icon: "brand:linear", entryHtml: "dist/index.html", panelId: "issue", mobile: false, popover: { width: 360, height: 420 } },
   ],
   // `webviewSurfaceId` is the upgrade, never the replacement: a client that can
   // host a plugin page draws the page, and every other client draws the
   // `panelId` or invokes the `actionId` beside it, exactly as before.
   sockets: [
     { socket: "work-rail-pane", surface: "work", id: "issues-pane", label: "Linear", icon: "brand:linear", panelId: "issues", webviewSurfaceId: "issues" },
-    { socket: "composer-action", surface: "work", id: "attach-issue", label: "Attach a Linear issue", icon: "brand:linear", actionId: "openIssuePicker", webviewSurfaceId: "picker" },
-    {
-      socket: "chat-header-action",
-      surface: "work",
-      id: "chat-issue",
-      label: "Linear issue",
-      icon: "brand:linear",
-      actionId: "openSessionIssue",
-      menu: [
-        { label: "Open in Linear", actionId: "openInLinear", icon: "link" },
-        { label: "Comment progress on the issue", actionId: "commentProgress", icon: "chat" },
-      ],
-      webviewSurfaceId: "picker",
-    },
+    // A row in the composer's three-dot menu, not a button on its bar. The bar
+    // has room for a handful of affordances for every plugin ever installed,
+    // and attach is not the one this plugin gets to spend it on.
+    { socket: "composer-menu-item", surface: "work", id: "attach-issue", label: "Attach a Linear issue", icon: "brand:linear", actionId: "openIssuePicker", webviewSurfaceId: "picker" },
+    // The chat's own Linear row, nested under the menu's Issue context submenu.
+    // It replaces the chat-header button and its dropdown; the page it opens
+    // carries all four verbs the header offered — open, detach, attach and the
+    // progress comment.
+    { socket: "chat-menu-item", surface: "work", id: "chat-issue", label: "Linear", icon: "brand:linear", submenu: "issue-context", actionId: "openSessionIssue", webviewSurfaceId: "issue-context" },
     { socket: "row-badge", surface: "lanes", id: "lane-issue", label: "Linear issue", icon: "brand:linear", webviewSurfaceId: "badge-card" },
     // The Create-lane and Create-PR issue pickers, drawn as `dialog-picker`
     // guests inside ADE's own dialogs and answering them with `dialog.submit`.
@@ -449,12 +460,96 @@ const LINEAR = manifest({
     // General, which is where an unnamed section lands.
     { socket: "settings-section", surface: "settings", id: "connection", label: "Linear", icon: "brand:linear", panelId: "settings", section: "integrations", webviewSurfaceId: "settings" },
     { socket: "command-palette-action", surface: "app", id: "palette-issues", label: "Linear issues", icon: "brand:linear", actionId: "openIssues" },
-    // The top bar's trailing cluster. Its action opens the plugin's own quick
-    // view as a popover under the button, and answers a `navigate` beside it for
-    // the clients that host no page.
-    { socket: "toolbar-action", surface: "app", id: "top-bar-issues", label: "Linear", icon: "brand:linear", actionId: "openIssuesQuickView", webviewSurfaceId: "quickview" },
     // The transcript's issue context, as a card in the chat.
     { socket: "chat-card", surface: "work", id: "issue-context", label: "Linear issue", icon: "brand:linear", panelId: "issue", webviewSurfaceId: "issue-context" },
+    // The Automations trigger grid's Linear tile: the five triggers, the five
+    // filters bound to this plugin's own collections, and the webhook block
+    // whose two actions the tile presses by name. `registerWebhook` creates the
+    // hook through the Linear API and stores its signing secret itself, which
+    // is what removed the paste box.
+    {
+      socket: "automation-trigger-tile",
+      surface: "automations",
+      id: "linear-triggers",
+      label: "Linear",
+      icon: "brand:linear",
+      triggers: [
+        { id: "issue_created", label: "A Linear issue is created" },
+        { id: "issue_updated", label: "A Linear issue is updated" },
+        { id: "issue_assigned", label: "A Linear issue is assigned" },
+        { id: "issue_status_changed", label: "A Linear issue changes state" },
+        { id: "issue_labeled", label: "A Linear issue is labeled" },
+      ],
+      filters: [
+        { key: "project", label: "Project", kind: "select", collection: "projects", hint: "Only issues in this Linear project." },
+        { key: "team", label: "Team", kind: "select", collection: "teams", hint: "Only issues owned by this team." },
+        { key: "assignee", label: "Assignee", kind: "select", collection: "people", hint: "Only issues assigned to this person." },
+        { key: "label", label: "Label", kind: "select", collection: "labels", hint: "Only issues carrying this label." },
+        { key: "state", label: "State", kind: "select", collection: "states", hint: "Only issues in this workflow state." },
+      ],
+      webhook: { statusAction: "webhookStatus", registerAction: "registerWebhook" },
+    },
+    // The two settings toggles that used to do this, as rules the reader can
+    // see, name and switch off. A checkbox two screens away that rewrites
+    // tickets other people read is the shape this replaces.
+    {
+      socket: "automation-template",
+      surface: "automations",
+      id: "linear-start-on-lane",
+      // `label` is what the manifest requires of every socket; `name` is what
+      // the gallery card prints. Same words, two contracts.
+      label: "Linear issue → In Progress when work starts",
+      name: "Linear issue → In Progress when work starts",
+      icon: "brand:linear",
+      description: "Opening a lane on a Linear issue moves that issue to the team's first started state.",
+      template: {
+        enabled: true,
+        mode: "monitor",
+        executor: { mode: "automation-bot" },
+        reviewProfile: "quick",
+        toolPalette: ["linear"],
+        contextSources: [],
+        outputs: { disposition: "comment-only", createArtifact: false },
+        verification: { verifyBeforePublish: false, mode: "intervention" },
+        name: "Linear issue → In Progress when work starts",
+        triggers: [{ type: "lane.created" }],
+        trigger: { type: "lane.created" },
+        guardrails: { maxDurationMin: 5 },
+        billingCode: "auto:linear-start-on-lane",
+        actions: [{
+          type: "plugin",
+          pluginStep: { pluginId: "ade-linear", action: "stepStartIssueOnLane", args: { laneId: "{{trigger.laneId}}" } },
+        }],
+      },
+    },
+    {
+      socket: "automation-template",
+      surface: "automations",
+      id: "linear-done-on-merge",
+      label: "Linear issue → Done when its pull request merges",
+      name: "Linear issue → Done when its pull request merges",
+      icon: "brand:linear",
+      description: "A merged pull request moves the issues its lane linked with “close on merge” to the team's first completed state.",
+      template: {
+        enabled: true,
+        mode: "monitor",
+        executor: { mode: "automation-bot" },
+        reviewProfile: "quick",
+        toolPalette: ["linear"],
+        contextSources: [],
+        outputs: { disposition: "comment-only", createArtifact: false },
+        verification: { verifyBeforePublish: false, mode: "intervention" },
+        name: "Linear issue → Done when its pull request merges",
+        triggers: [{ type: "github.pr_merged" }],
+        trigger: { type: "github.pr_merged" },
+        guardrails: { maxDurationMin: 5 },
+        billingCode: "auto:linear-done-on-merge",
+        actions: [{
+          type: "plugin",
+          pluginStep: { pluginId: "ade-linear", action: "stepCloseIssueOnMerge", args: { laneId: "{{trigger.laneId}}" } },
+        }],
+      },
+    },
   ],
   panels: [
     { id: "main", schemaFile: "panels/main.json", title: "Linear", icon: "brand:linear" },
@@ -473,27 +568,23 @@ const LINEAR = manifest({
     states: { sync: true },
     projects: { sync: true },
     people: { sync: true },
+    // The workspace's issue labels, for the Automations tile's label filter.
+    // Same reason `projects` and `people` exist: a filter cannot be a picker
+    // over rows nothing stores.
+    labels: { sync: true },
     viewer: { sync: true },
     deliveries: { sync: false },
     // The page's own filters and selection. Per-machine reading preferences, so
     // syncing them would put one machine's sort order on another.
     "ui-state": { sync: false },
+    // Which webhook this machine registered. Per-machine for the same reason
+    // `deliveries` is: the endpoint belongs to the machine that hosts it.
+    webhook: { sync: false },
   },
+  // Two settings, down from four. The issue-transition toggles are automation
+  // templates now, so the rule that moves a ticket is one the reader can see
+  // and switch off rather than a checkbox on another screen.
   settings: [
-    {
-      key: "moveToDoneOnMerge",
-      kind: "toggle",
-      label: "Move the issue to Done when its pull request merges",
-      description: "Only issues linked to the lane with \"close on merge\" are moved.",
-      default: false,
-    },
-    {
-      key: "moveToStartedOnLaunch",
-      kind: "toggle",
-      label: "Move the issue to In Progress when an agent starts on it",
-      description: "Uses the team's first started workflow state.",
-      default: false,
-    },
     {
       key: "defaultTeamKey",
       kind: "text",
@@ -504,7 +595,7 @@ const LINEAR = manifest({
       key: "launchPromptClipboard",
       kind: "toggle",
       label: "Copy the launch prompt to the clipboard",
-      description: "Saves the kickoff prompt before Linear starts an agent on the issue.",
+      description: "Saves the kickoff prompt before Linear starts an agent on the issue. Its switch is in the launch form, beside the prompt it copies.",
       default: true,
     },
   ],
@@ -520,6 +611,7 @@ const LINEAR = manifest({
     { id: "comment_on_issue", label: "Comment on a Linear issue", action: "stepCommentOnIssue" },
     { id: "assign_issue", label: "Assign a Linear issue", action: "stepAssignIssue" },
     { id: "close_issue_on_merge", label: "Move a merged lane's Linear issue to Done", action: "stepCloseIssueOnMerge" },
+    { id: "start_issue_on_lane", label: "Move a lane's Linear issues to In Progress", action: "stepStartIssueOnLane" },
   ],
   searchProviders: [
     { id: "issues", label: "Linear", action: "searchIssuesProvider" },
@@ -663,32 +755,53 @@ const LINEAR = manifest({
   skills: ["skills"],
 });
 
+/**
+ * iOS Sim Control.
+ *
+ * At 2.0.0 the plugin draws its own page — the device picker, the launch-target
+ * picker, the Control/Inspect toolbar, Preview Lab, zoom and the ownership
+ * cards — and reserves a rect the host paints the `simulator` engine into.
+ * simctl and the stream stay in core. The `main` panel is what the phone and
+ * the TUI render in the page's place, and it says a Mac is required.
+ */
 const IOS_SIM = manifest({
   name: "ade-ios-sim",
-  version: "1.1.0",
-  displayName: "iOS Simulator",
-  description: "Drive an iOS Simulator from ADE — the same simulator pane ADE already ships, as a plugin.",
+  version: "2.0.0",
+  displayName: "iOS Sim Control",
+  description: "iOS Sim Control — pick a simulator, build and launch your app on it, then tap, type and inspect the running screen without leaving ADE.",
   icon: "device-mobile",
   accent: "#8A8F98",
   entry: "index.js",
+  surfaces: [{
+    kind: "webview",
+    id: "sim",
+    title: "iOS Sim Control",
+    icon: "device-mobile",
+    entryHtml: "dist/index.html",
+    panelId: "main",
+    mobile: false,
+  }],
   panels: [{
     id: "main",
     schemaFile: "panels/main.json",
-    title: "iOS Simulator",
+    title: "iOS Sim Control",
     icon: "device-mobile",
     refreshAction: "refreshStatus",
   }],
   sockets: [
-    { socket: "work-rail-pane", surface: "work", id: "sim-pane", label: "iOS Sim", icon: "device-mobile", panelId: "main" },
-    { socket: "command-palette-action", surface: "app", id: "palette-sim", label: "iOS Simulator", icon: "device-mobile", actionId: "openSimulator" },
+    // The rail label is capped at 24 characters by `sockets.ts`, and it sits
+    // beside ADE's own one-word entries, so the short form stays.
+    { socket: "work-rail-pane", surface: "work", id: "sim-pane", label: "iOS Sim", icon: "device-mobile", panelId: "main", webviewSurfaceId: "sim" },
+    { socket: "command-palette-action", surface: "app", id: "palette-sim", label: "iOS Sim Control", icon: "device-mobile", actionId: "openSimulator", webviewSurfaceId: "sim" },
   ],
   collections: {
     status: { sync: true },
+    "ui-state": { sync: false },
   },
   tools: [
     {
       name: "get_status",
-      description: "Read iOS Simulator status on this machine — whether it is a Mac, the live device, and the attached chat.",
+      description: "Read iOS Sim Control status on this machine — whether it is a Mac, the live device, and the attached chat.",
       action: "getStatusTool",
       input: {
         type: "object",
@@ -701,14 +814,32 @@ const IOS_SIM = manifest({
   skills: ["skills"],
 });
 
+/**
+ * Electron Control.
+ *
+ * At 2.0.0 the plugin draws its own page — the launch/connect toolbar, the
+ * target picker, the status line, the blockers card, the inspect list and the
+ * type-text field — and reserves a rect the host paints the `electron-control`
+ * engine into. CDP stays in core. The `main` panel is what the phone and the
+ * TUI render in the page's place, and it says a desktop is required.
+ */
 const APP_CONTROL = manifest({
   name: "ade-app-control",
-  version: "1.1.0",
+  version: "2.0.0",
   displayName: "Electron Control",
   description: "Drive and inspect Electron apps — the same Electron Control ADE already ships, as a plugin.",
   icon: "desktop",
   accent: "#47848F",
   entry: "index.js",
+  surfaces: [{
+    kind: "webview",
+    id: "control",
+    title: "Electron Control",
+    icon: "desktop",
+    entryHtml: "dist/index.html",
+    panelId: "main",
+    mobile: false,
+  }],
   panels: [{
     id: "main",
     schemaFile: "panels/main.json",
@@ -717,11 +848,12 @@ const APP_CONTROL = manifest({
     refreshAction: "refreshStatus",
   }],
   sockets: [
-    { socket: "work-rail-pane", surface: "work", id: "control-pane", label: "Electron Control", icon: "desktop", panelId: "main" },
-    { socket: "command-palette-action", surface: "app", id: "palette-control", label: "Electron Control", icon: "desktop", actionId: "openControl" },
+    { socket: "work-rail-pane", surface: "work", id: "control-pane", label: "Electron Control", icon: "desktop", panelId: "main", webviewSurfaceId: "control" },
+    { socket: "command-palette-action", surface: "app", id: "palette-control", label: "Electron Control", icon: "desktop", actionId: "openControl", webviewSurfaceId: "control" },
   ],
   collections: {
     status: { sync: true },
+    "ui-state": { sync: false },
   },
   tools: [
     {
@@ -1707,7 +1839,7 @@ export const MARKETPLACE_LOCAL_INDEX: readonly MarketplaceListing[] = [
   listing(IOS_SIM, {
     author: "ADE",
     readme: [
-      "## iOS Simulator",
+      "## iOS Sim Control",
       "",
       "Run an iOS Simulator beside your work: launch a build, tap and type in it,",
       "take screenshots, and hand what you see to a chat.",
@@ -1719,8 +1851,9 @@ export const MARKETPLACE_LOCAL_INDEX: readonly MarketplaceListing[] = [
       "",
       "- Macs only, and it needs Xcode. On anything else the compiled pane stays",
       "  hidden even with the plugin installed.",
-      "- The simctl/idb engine stays in ADE. Desktop mounts the host Simulator pane;",
-      "  phone and terminal list a status row pointing at the Mac.",
+      "- The plugin draws the chrome on its own page and reserves a rect. The",
+      "  simctl/idb engine and the live stream stay in ADE, which paints them into",
+      "  that rect; phone and terminal list a status row pointing at the Mac.",
       "- Agents keep using `ade ios-sim`. Those verbs stay on the host.",
     ].join("\n"),
   }),
@@ -1739,8 +1872,9 @@ export const MARKETPLACE_LOCAL_INDEX: readonly MarketplaceListing[] = [
       "",
       "- It drives over the Chrome DevTools Protocol, so the app has to be Electron or",
       "  Chromium — a native desktop app has nothing to attach to.",
-      "- The CDP engine stays in ADE. Desktop mounts the host Control pane; phone and",
-      "  terminal list a status row pointing at the attached computer.",
+      "- The plugin draws the chrome on its own page and reserves a rect. The CDP",
+      "  engine and the live view stay in ADE, which paints them into that rect;",
+      "  phone and terminal list a status row pointing at the attached computer.",
       "- Agents keep using `ade app-control`. Those verbs stay on the host.",
     ].join("\n"),
   }),

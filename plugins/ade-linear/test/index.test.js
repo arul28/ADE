@@ -101,10 +101,11 @@ describe("loading the package the way the child bootstrap does", () => {
     const ids = declaredActionIds();
     for (const id of [
       "refreshIssues", "refreshIssue", "refreshConnection",
-      "openIssues", "openSessionIssue", "openInLinear", "commentProgress",
+      "openIssues", "openSessionIssue",
       "getIssueTool", "searchIssuesTool", "addCommentTool", "updateIssueStateTool",
       "listStatesTool", "assignIssueTool", "addLabelTool", "createLaneForIssueTool", "graphqlTool",
       "stepSetIssueState", "stepCommentOnIssue", "stepAssignIssue", "stepCloseIssueOnMerge",
+      "stepStartIssueOnLane",
       "searchIssuesProvider", "linear",
     ]) {
       assert.ok(ids.includes(id), `${id} is no longer declared in plugin.json`);
@@ -189,10 +190,13 @@ describe("activate", () => {
     }
   });
 
-  it("subscribes to the four events it acts on", async () => {
+  it("subscribes to the three events it acts on", async () => {
+    // Three, not four. `pr.changed` is gone with the `moveToDoneOnMerge`
+    // toggle: the merged-PR transition is an automation the reader writes now,
+    // so this plugin no longer rewrites tickets on every merge in the project.
     const { sdk } = await activated();
     const events = sdk.calls.filter(([name]) => name === "events.on").map(([, event]) => event).sort();
-    assert.deepEqual(events, ["auth.completed", "lane.changed", "pr.changed", "webhook.received"]);
+    assert.deepEqual(events, ["auth.completed", "lane.changed", "webhook.received"]);
   });
 
   it("subscribes to auth.completed BEFORE anything can begin a sign-in", async () => {
@@ -372,19 +376,35 @@ describe("the webhook channel, which now fails closed", () => {
     });
   });
 
-  it("points verify at a secret this plugin can actually write", async () => {
+  it("points verify at a secret this plugin fills ITSELF", async () => {
     // A `secretRef` naming a secret nothing stores is a channel that fails
-    // closed forever. `saveWebhookSecret` is the action that fills it.
+    // closed forever. The paste box that used to fill it is gone:
+    // `registerWebhook` generates the secret, creates the hook through the
+    // Linear API and stores it in the same act, which is the only order in
+    // which the secret is knowable — Linear shows it once, at creation.
     await activated();
-    assert.equal(typeof plugin.actions.saveWebhookSecret, "function");
-    const result = await plugin.actions.saveWebhookSecret({ secret: "lin_wh_abc" });
-    assert.equal(result.ok, undefined);
-    assert.match(result.message, /Saved/);
+    assert.equal(typeof plugin.actions.registerWebhook, "function");
+    assert.equal(typeof plugin.actions.webhookStatus, "function");
+    assert.equal(typeof plugin.actions.unregisterWebhook, "function");
   });
 
-  it("refuses an empty secret rather than storing one that verifies nothing", async () => {
-    await activated();
-    assert.equal((await plugin.actions.saveWebhookSecret({ secret: "  " })).ok, false);
+  it("names those two actions on the Automations tile, so the tile presses what exists", () => {
+    // The tile's `webhook` block is how the Automations grid finds the verbs.
+    // A `registerAction` naming nothing is a button that throws on press.
+    const tile = MANIFEST.sockets.find((socket) => socket.socket === "automation-trigger-tile");
+    assert.ok(tile, "no automation trigger tile");
+    assert.equal(tile.webhook.registerAction, "registerWebhook");
+    assert.equal(tile.webhook.statusAction, "webhookStatus");
+  });
+
+  it("answers a status rather than throwing before the plugin has started", async () => {
+    // The tile draws on mount, which can be before `activate` resolves. A throw
+    // there is an error card for a plugin that is merely two seconds old.
+    await plugin.deactivate?.();
+    const status = await plugin.actions.webhookStatus();
+    assert.equal(status.ok, true);
+    assert.equal(status.registered, false);
+    assert.equal(status.canRegister, false);
   });
 });
 
@@ -564,16 +584,42 @@ describe("where the manifest puts this plugin, which only the manifest decides",
     assert.equal(section.section, "integrations");
   });
 
-  it("puts Linear back in the window's top bar", () => {
-    // A `toolbar-action` on the `app` surface draws in the top bar's trailing
-    // cluster, beside feedback and help, and its context is the window rather
-    // than whatever tab is open.
-    const toolbar = socketBy("top-bar-issues");
-    assert.ok(toolbar, "no top-bar socket");
-    assert.equal(toolbar.socket, "toolbar-action");
-    assert.equal(toolbar.surface, "app");
-    assert.equal(toolbar.actionId, "openIssuesQuickView");
-    assert.equal(toolbar.icon, "brand:linear");
+  it("claims none of the three chrome slots it used to", () => {
+    // The top-bar quick view, the chat-header action and the composer's bar
+    // button are gone. Each was a permanent slot in somebody's chrome, spent by
+    // one plugin; attach is a row in the composer's three-dot menu now and the
+    // chat's Linear verbs are a row in the chat's.
+    for (const kind of ["toolbar-action", "chat-header-action", "composer-action"]) {
+      assert.equal(
+        MANIFEST.sockets.filter((socket) => socket.socket === kind).length,
+        0,
+        `${kind} is back in the manifest`,
+      );
+    }
+    assert.equal(MANIFEST.surfaces.some((surface) => surface.id === "quickview"), false);
+  });
+
+  it("attaches an issue from the composer's three-dot menu", () => {
+    const attach = socketBy("attach-issue");
+    assert.ok(attach, "no composer menu item");
+    assert.equal(attach.socket, "composer-menu-item");
+    assert.equal(attach.surface, "work");
+    assert.equal(attach.actionId, "openIssuePicker");
+    assert.equal(attach.webviewSurfaceId, "picker");
+  });
+
+  it("nests the chat's Linear row under the issue-context submenu", () => {
+    // `submenu` is what puts the row inside the chat menu's Issue context
+    // group rather than at its top level, beside Rename and Archive.
+    const chat = socketBy("chat-issue");
+    assert.ok(chat, "no chat menu item");
+    assert.equal(chat.socket, "chat-menu-item");
+    assert.equal(chat.submenu, "issue-context");
+    assert.equal(chat.webviewSurfaceId, "issue-context");
+    // And the surface it opens is sized as a popover, because the menu anchors
+    // it to the row the reader pressed.
+    const surface = MANIFEST.surfaces.find((entry) => entry.id === "issue-context");
+    assert.ok(surface?.popover, "the issue-context surface has no popover size");
   });
 
   it("asks for no credential ADE already holds", () => {
@@ -588,10 +634,13 @@ describe("where the manifest puts this plugin, which only the manifest decides",
 });
 
 describe("the two navigations a client reads differently", () => {
-  it("opens the top bar's quick view beside the button, not as a whole tab", async () => {
+  it("sends a client with no page to the issue list rather than to nothing", async () => {
+    // The quick view is gone, so the popover navigation went with it. What is
+    // left is the picker's own fallback: a client that hosts no page cannot
+    // attach a chip, so it opens the list the reader can work from.
     await activated();
-    const result = await plugin.actions.openIssuesQuickView();
-    assert.deepEqual(result.navigate, { panelId: "issues", target: "popover" });
+    const result = await plugin.actions.openIssuePicker();
+    assert.deepEqual(result.navigate, { panelId: "issues" });
   });
 
   it("never answers openWebview from a socket that already declares its surface", async () => {

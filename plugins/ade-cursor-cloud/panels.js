@@ -9,6 +9,7 @@
 "use strict";
 
 const { ALL_AGENTS_URL } = require("./format");
+const { launchUnavailableReason } = require("./launch");
 
 /**
  * The three panel-state keys the fleet's filter row declares.
@@ -626,19 +627,24 @@ function buildLaunchPanel(input = {}) {
 }
 
 /**
- * The four sentences the built-in composer showed when Cursor Cloud could not
- * take the work. Ported verbatim so the reason reads the same as it always did.
+ * The panel's slice of the launch ladder.
+ *
+ * ONE copy of the sentences, in `launch.js`, because the form and Enter must
+ * never disagree about why Cursor Cloud cannot take this work — the whole point
+ * of `launchUnavailableReason`. This adapter is what the panel path passes in:
+ * it has already chosen a lane and already read the remote synchronously, so
+ * the lane and remote-probe rungs are satisfied rather than re-asked, and the
+ * model rungs are off because the panel draws its own model picker.
  */
 function unavailableReason(input = {}) {
-  if (input.probe === "loading") return "Checking Cursor Cloud…";
-  if (input.probe === "error") return input.message ?? "Cursor Cloud request failed.";
-  if (!input.laneRemote) {
-    return "This lane has no GitHub remote, so there is nothing for Cursor Cloud to clone.";
-  }
-  if (!input.repoConnected) {
-    return "This repo is not connected to Cursor. Connect it in Cursor, then try again.";
-  }
-  return null;
+  return launchUnavailableReason({
+    repoProbe: input.probe === "loading" ? "loading" : input.probe === "error" ? "error" : "ready",
+    repoProbeMessage: input.message,
+    laneId: input.laneId ?? "lane",
+    remoteProbe: "ready",
+    laneRemote: input.laneRemote,
+    repoConnected: input.repoConnected === true,
+  });
 }
 
 module.exports = {

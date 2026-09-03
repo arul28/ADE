@@ -108,6 +108,36 @@ export type PluginWebviewComposerAttach = {
   url?: string | null;
 };
 
+/**
+ * One answer from a host picker: the value a launch carries, and its own word
+ * for it.
+ *
+ * `id` is what goes in the launch argument and `label` is what the chip prints.
+ * They are separate because a launch argument is a provider's own spelling
+ * (`acceptEdits`, `gpt-5.6-sol`) and a chip that printed those would be reading
+ * the reader an identifier.
+ */
+export type PluginWebviewChoice = {
+  id: string;
+  label: string;
+  /** Present on a model or a permission answer: which provider it belongs to. */
+  provider?: string | null;
+};
+
+export type PluginWebviewLaneChoice = PluginWebviewChoice & {
+  /** The lane's branch, for the chip's second line. Null for a lane with none. */
+  branchRef?: string | null;
+  /** The lane's worktree on this machine, or null for a remote binding. */
+  path?: string | null;
+};
+
+export type PluginWebviewModelPickRequest = {
+  /** Narrow the list to one provider. Omitted means every provider ADE has. */
+  provider?: string | null;
+  /** The id to open on, so the popover starts at the reader's current choice. */
+  selected?: string | null;
+};
+
 export type AdePluginBridge = {
   readonly version: number;
   readonly pluginId: string;
@@ -142,6 +172,31 @@ export type AdePluginBridge = {
   };
   ui?: {
     toast(toast: PluginWebviewToast): Promise<{ id: string }>;
+    /**
+     * The host's own pickers, opened as a popover over the page.
+     *
+     * Five verbs, and the reason they are the host's rather than the page's is
+     * the reason the page tier exists at all: a model list, a lane list, a
+     * provider's permission vocabulary and a model's reasoning ladder are ADE's
+     * facts, and every plugin that redrew them drew a control that looked
+     * almost like the app's and drifted from it on the next release. The page
+     * asks for a choice and renders what comes back.
+     *
+     * `null` is the reader dismissing the popover, which is not the same as
+     * choosing nothing: a dismissal leaves the current value alone, and
+     * "whatever the provider defaults to" is an option inside the picker.
+     *
+     * Every one is optional, because a host older than this contract answers
+     * none of them — the page draws the chip disabled there rather than falling
+     * back to a control of its own.
+     */
+    pickModel?(request?: PluginWebviewModelPickRequest): Promise<PluginWebviewChoice | null>;
+    pickProvider?(request?: { selected?: string | null }): Promise<PluginWebviewChoice | null>;
+    pickLane?(request?: { selected?: string | null }): Promise<PluginWebviewLaneChoice | null>;
+    pickPermissionMode?(request: { provider: string; selected?: string | null }): Promise<PluginWebviewChoice | null>;
+    pickReasoningEffort?(
+      request: { provider: string; model: string; selected?: string | null },
+    ): Promise<PluginWebviewChoice | null>;
     dismissToast(id: string): Promise<void>;
     prompt(prompt: unknown): Promise<unknown>;
     confirm(request: PluginWebviewConfirm): Promise<boolean>;

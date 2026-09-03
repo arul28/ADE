@@ -39,6 +39,7 @@
 const {
   COLLECTION_COMMENTS,
   COLLECTION_ISSUES,
+  COLLECTION_LABELS,
   COLLECTION_PEOPLE,
   COLLECTION_PROJECTS,
   COLLECTION_STATES,
@@ -757,8 +758,62 @@ function createData(options = {}) {
 
     await replacePrefix(COLLECTION_TEAMS, "team:", teamRows);
     await replacePrefix(COLLECTION_STATES, "team:", stateRows);
+    // Only on the UNFILTERED read, for the reason the sweep above is scoped:
+    // labels are a workspace-wide list, and a one-team read has not seen them.
+    // Awaited but never fatal — the teams and states are the half a reader is
+    // blocked without.
+    await refreshLabels().catch(() => {});
     model = { ...model, counts: { ...model.counts, teams: teamRows.size } };
     return { ok: true, teams: teamRows.size, states: stateRows.size, scoped: false };
+  }
+
+  /**
+   * The workspace's issue labels, stored for the Automations label filter.
+   *
+   * Read with the catalog rather than lazily, and swept the same way: a filter
+   * whose options arrive a round trip after the picker opens is a picker that
+   * is empty every first time it is used. Sorted by name so the stored order is
+   * the order a picker draws, because `collections.list` orders by KEY and
+   * nothing else.
+   *
+   * A refusal leaves the stored rows alone. Labels change rarely and a
+   * rate-limited read is not evidence that the workspace has none — wiping them
+   * would empty a filter the reader had already set.
+   */
+  async function refreshLabels() {
+    let nodes;
+    try {
+      nodes = await api.listLabels(null);
+    } catch (error) {
+      log("warn", `Could not read the Linear labels: ${error?.message ?? error}`);
+      return { ok: false, error: error?.message ?? String(error) };
+    }
+    const rows = new Map();
+    const ordered = (Array.isArray(nodes) ? nodes : [])
+      .filter((node) => node && typeof node.id === "string" && typeof node.name === "string")
+      .sort((a, b) => a.name.localeCompare(b.name));
+    ordered.forEach((node, index) => {
+      const row = {
+        id: node.id,
+        name: node.name,
+        // `value` and `label` are the two field names every bound picker reads,
+        // here for the same reason `refreshCatalog` stamps them onto a state.
+        value: node.name,
+        label: node.name,
+        title: node.name,
+        color: typeof node.color === "string" ? node.color : null,
+        teamKey: typeof node?.team?.key === "string" ? node.team.key : null,
+      };
+      rows.set(`label:${rankSegment(index + 1)}:${node.id}`, row);
+    });
+    await replacePrefix(COLLECTION_LABELS, "label:", rows);
+    return { ok: true, labels: rows.size };
+  }
+
+  /** Every stored label. */
+  async function labels() {
+    const rows = await list(COLLECTION_LABELS, { keyPrefix: "label:", limit: 500 });
+    return rows.map((row) => row.value).filter(Boolean);
   }
 
   /** Every stored workflow state, optionally for one team. */
@@ -936,6 +991,7 @@ function createData(options = {}) {
     findIssueRow,
     issueRef: issueRefFromRow,
     issueRow,
+    labels,
     issueRows,
     laneIndex,
     normalizeFilters,
@@ -944,6 +1000,7 @@ function createData(options = {}) {
     refreshComments,
     refreshConnection,
     refreshIssue,
+    refreshLabels,
     refreshIssues,
     setModels,
     states,

@@ -1,0 +1,618 @@
+@import "tailwindcss";
+
+/* Font @font-face declarations are injected from main.tsx via Vite ?url imports
+   so the dev server resolves them correctly (CSS-relative ../../node_modules
+   paths fall outside Vite's served root and 403). */
+
+@theme {
+  --radius-xl: 16px;
+  --radius-lg: 12px;
+  --radius-md: 8px;
+  --radius-sm: 6px;
+  --radius-full: 9999px;
+
+  --pane-gap: 4px;
+  --pane-radius: 12px;
+  --pane-minimized-height: 28px;
+
+  /* Both Apple fallbacks are unresolvable off macOS, so a Windows box with no
+     Geist landed on Arial. `system-ui` and "Segoe UI" keep it on the platform
+     UI face instead — same stack webclient.html already ships. */
+  --font-sans: "Geist", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --font-mono: "JetBrains Mono", "Geist Mono", ui-monospace, monospace;
+  --animate-pulse: ade-duty-pulse 2s infinite;
+  --animate-ping: ade-duty-ping 2s infinite;
+
+  --shadow-card: 0 4px 16px -4px rgba(0, 0, 0, 0.6), 0 0 0 1px rgba(45, 40, 64, 0.25);
+  --shadow-card-hover: 0 8px 30px -6px rgba(0, 0, 0, 0.7), 0 0 0 1px rgba(167, 139, 250, 0.15);
+  --shadow-float: 0 20px 50px -16px rgba(0, 0, 0, 0.8), 0 0 0 1px rgba(167, 139, 250, 0.08);
+
+  --chat-radius-shell: 18px;
+  --chat-radius-card: 16px;
+  --chat-radius-pill: 9999px;
+}
+
+/* ═══════════════════════════════════════════════════════════
+   Dark Theme (DEFAULT)
+   ═══════════════════════════════════════════════════════════ */
+
+:root,
+[data-theme="dark"] {
+  --color-bg: #0C0B10;
+  /* Neutral codex-style canvas (shared by the chat surface + work-tab chrome so
+     there is no color split). rgb(15, 15, 17). */
+  --chat-canvas-bg: #0f0f11;
+  --color-fg: #F0F0F2;
+  --color-surface: #16141E;
+  --color-card: #1A1830;
+  --color-card-fg: #F0F0F2;
+  --color-card-rgb: 28, 25, 38;
+  /* Opaque twin of --color-card, for dialogs and menus that float over live
+     content. --color-card itself is allowed to be translucent per theme; this
+     one may not be, or the app shows through the modal behind the text. */
+  --color-card-solid: #181423;
+  --color-secondary: #252232;
+  --color-secondary-fg: #A8A8B4;
+  --color-muted: #1E1B28;
+  --color-muted-fg: #908FA0;
+  --color-border: #302C42;
+  --color-accent: #A78BFA;
+  --color-accent-fg: #0C0B10;
+  --color-accent-muted: rgba(167, 139, 250, 0.20);
+  --color-accent-bright: #C4B5FD;
+  --color-accent-deep: #7C3AED;
+  --color-accent-glow-strong: rgba(168, 130, 255, 0.22);
+  --color-surface-raised: #1E1B2E;
+  --color-surface-recessed: #0A090E;
+  --color-surface-overlay: #1E1B2E;
+  --color-popup-bg: #151325;
+  --color-modal-bg: #1A1830;
+  --color-composer-bg: #14121F;
+  --color-glass-card: #141220;
+  --gradient-popup-border: linear-gradient(180deg, rgba(167, 139, 250, 0.20), rgba(124, 58, 237, 0.10));
+  --gradient-accent: linear-gradient(135deg, #7C3AED, #A78BFA);
+  --gradient-accent-soft: linear-gradient(135deg, rgba(124, 58, 237, 0.20), rgba(167, 139, 250, 0.10));
+  --shadow-popup: 0 20px 50px -12px rgba(0, 0, 0, 0.55), 0 0 0 1px rgba(167, 139, 250, 0.12);
+  --shadow-modal: 0 28px 64px -16px rgba(0, 0, 0, 0.67), 0 0 0 1px rgba(167, 139, 250, 0.10);
+  --blur-popup: 40px;
+  --blur-modal: 60px;
+  --shadow-inset: inset 0 1px 2px rgba(0, 0, 0, 0.5);
+  --shadow-separator: inset 0 0 4px 0 rgba(0, 0, 0, 0.4);
+  --shadow-panel: 0 2px 12px -2px rgba(0, 0, 0, 0.6);
+  --color-separator: #302C42;
+  --color-separator-active: #A78BFA;
+  --border-separator: #38334E;
+  --gradient-surface: linear-gradient(180deg, #16141E 0%, #0C0B10 100%);
+  --gradient-panel: linear-gradient(180deg, #211E2E 0%, #16141E 100%);
+  --color-glow: rgba(167, 139, 250, 0.22);
+  --pane-bg: rgba(28, 25, 38, 0.94);
+  --pane-border: rgba(48, 44, 66, 0.6);
+  --chat-shell-shadow: 0 24px 64px -34px rgba(0, 0, 0, 0.85), 0 0 0 1px rgba(167, 139, 250, 0.12);
+  --chat-card-shadow: 0 16px 32px -24px rgba(0, 0, 0, 0.7);
+  --chat-composer-shadow: 0 -12px 30px -26px rgba(0, 0, 0, 0.7);
+  --chat-glass-bg: rgba(20, 18, 32, 0.75);
+  --chat-glass-border: rgba(255, 255, 255, 0.08);
+  --chat-glass-highlight: rgba(255, 255, 255, 0.10);
+  --chat-glass-lowlight: rgba(10, 8, 18, 0.34);
+  --chat-glass-sheen: rgba(167, 139, 250, 0.10);
+  --chat-panel-bg: rgba(20, 18, 32, 0.85);
+  --chat-panel-border: rgba(255, 255, 255, 0.10);
+  --chat-panel-bg-strong: rgba(28, 25, 38, 0.92);
+  --chat-streaming-shimmer: linear-gradient(90deg, transparent, rgba(255,255,255,0.07), transparent);
+  --chat-block-bg: rgba(0, 0, 0, 0.25);
+  --chat-block-border: rgba(255, 255, 255, 0.06);
+  --chat-inline-code-bg: rgba(0, 0, 0, 0.30);
+  --chat-table-border: rgba(255, 255, 255, 0.08);
+  --chat-copy-button-bg: rgba(255, 255, 255, 0.03);
+  --chat-copy-button-border: rgba(255, 255, 255, 0.08);
+  --chat-copy-button-fg: rgba(240, 240, 242, 0.45);
+  --chat-copy-button-hover-bg: rgba(255, 255, 255, 0.05);
+  --chat-copy-button-hover-border: rgba(255, 255, 255, 0.14);
+  --chat-copy-button-hover-fg: rgba(240, 240, 242, 0.72);
+  --color-success: #22c55e;
+  --color-warning: #f59e0b;
+  --color-error: #ef4444;
+  --color-info: #3b82f6;
+  --color-diff-add: #22c55e;
+  --color-diff-del: #ef4444;
+  --color-diff-hunk: #3b82f6;
+  /* Muted "passed/green" for PR checks — desaturated so green reads as a quiet
+     status, not a neon highlight. Resolves per-theme via var() at use time. */
+  --color-check-pass: color-mix(in srgb, var(--color-success) 60%, var(--color-muted-fg));
+
+  /* Plugin identity palette.
+
+     A plugin with no published icon still needs to be recognisable in a list,
+     so the Marketplace derives one of these from its id. They are IDENTITY
+     colours, not status colours: nothing about them means anything, and the
+     only requirement is that eight of them stay apart from each other and from
+     the accent. Declared per theme because the tile they sit on inverts —
+     these are the values that hold their contrast on a dark surface, and the
+     light block carries deeper ones that hold theirs on a pale one. */
+  --plugin-identity-0: #8B8CF5;
+  --plugin-identity-1: #5AA9F5;
+  --plugin-identity-2: #3FBFD0;
+  --plugin-identity-3: #4FC48A;
+  --plugin-identity-4: #E0A94A;
+  --plugin-identity-5: #EE8C5A;
+  --plugin-identity-6: #F0728F;
+  --plugin-identity-7: #C77BEA;
+
+  /* PRs tab surfaces (premium overhaul): neutral near-black tab + thread cards,
+     faintly-violet floating side panels. */
+  --pr-surface: rgb(15, 16, 16);
+  --pr-thread-card: rgb(23, 23, 24);
+  --pr-panel-card: rgb(24, 23, 43);
+
+  /* App shell primitives (shared contract for TopBar + sidebar) */
+  --shell-header-height: 32px;
+  --shell-header-padding-start: 14px;
+  --shell-header-padding-end: 14px;
+  --shell-header-bg: rgba(12, 11, 16, 0.82);
+  --shell-header-fg: var(--color-fg);
+  --shell-header-border: rgba(255, 255, 255, 0.04);
+  --shell-header-divider: rgba(255, 255, 255, 0.04);
+
+  --shell-sidebar-collapsed-width: 52px;
+  --shell-sidebar-expanded-width: 140px;
+  --shell-sidebar-bg: linear-gradient(180deg, rgba(22, 20, 30, 0.88) 0%, rgba(12, 11, 16, 0.92) 100%);
+  --shell-sidebar-border: rgba(255, 255, 255, 0.04);
+  --shell-sidebar-item-height: 36px;
+  --shell-sidebar-item-fg: rgba(255, 255, 255, 0.45);
+  --shell-sidebar-item-hover-fg: rgba(255, 255, 255, 0.85);
+  --shell-sidebar-item-hover-bg: rgba(255, 255, 255, 0.05);
+  --shell-sidebar-item-active-fg: var(--color-accent);
+  --shell-sidebar-item-active-bg: rgba(167, 139, 250, 0.1);
+
+  --shell-sidebar-item-active-rail: var(--color-accent);
+  --shell-sidebar-separator: rgba(255, 255, 255, 0.04);
+
+  --shell-project-tab-bg: transparent;
+  --shell-project-tab-fg: rgba(255, 255, 255, 0.45);
+  --shell-project-tab-hover-bg: rgba(255, 255, 255, 0.06);
+  --shell-project-tab-hover-fg: rgba(255, 255, 255, 0.85);
+  --shell-project-tab-hover-border: rgba(255, 255, 255, 0.08);
+  --shell-project-tab-active-bg: color-mix(in srgb, var(--project-tab-accent, var(--color-accent)) 22%, rgba(255, 255, 255, 0.03));
+  --shell-project-tab-active-fg: color-mix(in srgb, var(--project-tab-accent, var(--color-accent)) 24%, #ffffff);
+  --shell-project-tab-active-border: color-mix(in srgb, var(--project-tab-accent, var(--color-accent)) 44%, transparent);
+  --shell-project-tab-missing-bg: rgba(239, 68, 68, 0.08);
+  --shell-project-tab-missing-fg: color-mix(in srgb, var(--color-error) 82%, var(--color-fg) 18%);
+  --shell-project-tab-missing-border: rgba(239, 68, 68, 0.2);
+  --shell-project-tab-open-bg: color-mix(in srgb, var(--project-tab-accent, var(--color-accent)) 14%, transparent);
+  --shell-project-tab-open-fg: rgba(255, 255, 255, 0.85);
+  --shell-project-tab-open-border: color-mix(in srgb, var(--project-tab-accent, var(--color-accent)) 32%, transparent);
+  --shell-project-tab-focus-bg: color-mix(in srgb, var(--project-tab-accent, var(--color-accent)) 12%, transparent);
+  --shell-project-tab-focus-fg: rgba(255, 255, 255, 0.85);
+  --shell-project-tab-focus-border: color-mix(in srgb, var(--project-tab-accent, var(--color-accent)) 32%, transparent);
+  --shell-project-tab-focus-ring: color-mix(in srgb, var(--project-tab-accent, var(--color-accent)) 24%, transparent);
+  --shell-project-tab-font-family: var(--font-sans);
+  --shell-project-tab-font-size: 12px;
+  --shell-project-tab-letter-spacing: 0;
+  --shell-project-tab-height: 22px;
+
+  --shell-control-bg: rgba(255, 255, 255, 0.03);
+  --shell-control-fg: rgba(255, 255, 255, 0.5);
+  --shell-control-border: rgba(255, 255, 255, 0.06);
+  --shell-control-hover-bg: rgba(255, 255, 255, 0.06);
+  --shell-control-hover-fg: rgba(255, 255, 255, 0.85);
+  --shell-control-hover-border: rgba(255, 255, 255, 0.1);
+  --shell-control-open-bg: rgba(167, 139, 250, 0.1);
+  --shell-control-open-fg: rgba(255, 255, 255, 0.9);
+  --shell-control-open-border: rgba(167, 139, 250, 0.2);
+  --shell-control-focus-bg: rgba(255, 255, 255, 0.06);
+  --shell-control-focus-fg: rgba(255, 255, 255, 0.85);
+  --shell-control-focus-border: rgba(167, 139, 250, 0.2);
+  --shell-control-focus-ring: rgba(167, 139, 250, 0.12);
+  --shell-control-kbd-bg: rgba(255, 255, 255, 0.04);
+  --shell-control-kbd-fg: rgba(255, 255, 255, 0.4);
+
+  --shell-status-running: #34d399;
+  --shell-status-attention: #fbbf24;
+
+  /* The plate every header-spawned popover, sheet, dialog and toast is drawn
+     on. Opaque by construction — these float over live content, so a
+     translucent value lets the app read straight through the menu. */
+  --shell-surface: #121019;
+
+  /* Resource-pressure ramp, mild → severe. Its own four-step scale rather than
+     warning/error, which are two-state statuses and cannot express a gradient. */
+  --shell-pressure-1: #FBBF24;
+  --shell-pressure-2: #FB923C;
+  --shell-pressure-3: #FB7185;
+  --shell-pressure-4: #F87171;
+
+  /* "There is something here for you" highlight on a header control: the glyph
+     colour, and the warmer edge its border and glow are mixed from. */
+  --shell-attention-fg: #FBBF24;
+  --shell-attention-edge: #F59E0B;
+
+  /* Work tab (sessions + view panes) */
+  --work-chrome-surface: var(--chat-canvas-bg, var(--color-card));
+  --work-pane-border: rgba(255, 255, 255, 0.06);
+  --work-pane-header-bg: rgba(255, 255, 255, 0.03);
+  --work-sidebar-bg: #161618;
+  --work-session-sidebar-bg: rgb(11, 11, 16);
+
+  /* Work tool-rail identity colours — one per pane, so the selected tool is
+     legible from the rail alone. Identity, not status: nothing about the
+     particular hue means anything beyond "not the neighbouring one". */
+  --work-rail-terminal: #c4b5fd;
+  --work-rail-git: #34d399;
+  --work-rail-files: #fbbf24;
+  --work-rail-ios: #60a5fa;
+  --work-rail-app-control: #a78bfa;
+  --work-rail-browser: #22d3ee;
+  /* Contributed `work-rail-pane` entries. One shared muted token rather
+     than a per-plugin hue: the six above name ADE's own tools, and a
+     plugin wearing one would read as a seventh built-in. */
+  --work-rail-plugin: var(--color-muted-fg);
+
+  /* Work tab combobox / popover */
+  --work-popover-bg: rgba(22, 20, 30, 0.96);
+  --work-popover-border: rgba(255, 255, 255, 0.10);
+  --work-popover-shadow: 0 12px 40px -12px rgba(0, 0, 0, 0.5), 0 0 0 1px rgba(255, 255, 255, 0.06);
+  --work-popover-item-hover: rgba(255, 255, 255, 0.06);
+  --work-popover-item-active: rgba(255, 255, 255, 0.08);
+}
+
+/* ═══════════════════════════════════════════════════════════
+   Native title-bar insets (platform chrome clearance)
+   ═══════════════════════════════════════════════════════════
+
+   The OS draws its own window controls on top of the title bar: the traffic
+   lights at the start on macOS, the caption buttons at the end on Windows. The
+   shell header has to leave room for whichever applies.
+
+   These deliberately do NOT live in the theme token block above. `data-theme`
+   is set on <html>, <body>, AND the shell wrapper (see App.tsx), so every one
+   of those elements re-declares the `--shell-header-padding-*` defaults — which
+   would shadow a platform value inherited from <html> long before it reached
+   the header. Only <html> carries `data-ade-platform`, so a dedicated property
+   name declared here survives all the way down.
+
+   Both values are only the pre-paint fallback. `applyShellHeaderInset()`
+   (renderer/lib/zoom.ts) and `trackWindowsCaptionInset()`
+   (renderer/lib/windowControlsOverlay.ts) overwrite them with live geometry,
+   because the native controls are a fixed physical size that does not follow
+   the renderer's zoom factor. */
+
+:root[data-ade-platform="darwin"] {
+  --shell-header-inset-start: 80px;
+}
+
+:root[data-ade-platform="win32"] {
+  /* Three 46 DIP caption buttons plus an 8px gutter. */
+  --shell-header-inset-end: 146px;
+}
+
+/* ═══════════════════════════════════════════════════════════
+   Light Theme
+   ═══════════════════════════════════════════════════════════ */
+
+[data-theme="light"] {
+  --color-bg: #f5f3f0;
+  --chat-canvas-bg: #f5f3f0;
+  --color-fg: #1a1a1e;
+  --color-surface: #faf8f5;
+  --color-card: #ffffff;
+  --color-card-fg: #1a1a1e;
+  --color-card-rgb: 255, 255, 255;
+  --color-secondary: #e8e5e0;
+  --color-secondary-fg: #52525b;
+  --color-muted: #ece9e4;
+  --color-muted-fg: #636370;
+  --color-border: #d6d3ce;
+  --color-accent: #049068;
+  --color-accent-fg: #ffffff;
+  --color-accent-muted: rgba(4, 144, 104, 0.10);
+  --color-surface-raised: #ffffff;
+  --color-surface-recessed: #eae7e2;
+  --color-surface-overlay: rgba(255, 255, 255, 0.92);
+  --shadow-inset: inset 0 1px 3px rgba(0, 0, 0, 0.06);
+  --shadow-separator: inset 0 0 4px 0 rgba(0, 0, 0, 0.06);
+  --shadow-panel: 0 4px 16px -4px rgba(0, 0, 0, 0.08), 0 1px 3px -1px rgba(0, 0, 0, 0.05);
+  --color-separator: #e8e5e0;
+  --color-separator-active: #049068;
+  --border-separator: #d6d3ce;
+  --gradient-surface: linear-gradient(180deg, #faf8f5, #f5f3f0);
+  --gradient-panel: linear-gradient(180deg, #ffffff 0%, #faf8f5 100%);
+  --color-glow: rgba(4, 144, 104, 0.12);
+  --pane-bg: rgba(255, 255, 255, 0.88);
+  --pane-border: rgba(212, 209, 204, 0.5);
+  --chat-shell-shadow: 0 18px 42px -28px rgba(15, 23, 42, 0.18), 0 0 0 1px rgba(4, 144, 104, 0.1);
+  --chat-card-shadow: 0 14px 28px -24px rgba(15, 23, 42, 0.14);
+  --chat-composer-shadow: 0 -12px 22px -24px rgba(15, 23, 42, 0.12);
+  --chat-glass-bg: rgba(255, 255, 255, 0.76);
+  --chat-glass-border: rgba(26, 26, 30, 0.08);
+  --chat-glass-highlight: rgba(255, 255, 255, 0.65);
+  --chat-glass-lowlight: rgba(182, 190, 204, 0.14);
+  --chat-glass-sheen: rgba(4, 144, 104, 0.08);
+  --chat-panel-bg: rgba(255, 255, 255, 0.82);
+  --chat-panel-border: rgba(26, 26, 30, 0.10);
+  --chat-panel-bg-strong: rgba(255, 255, 255, 0.92);
+  --chat-streaming-shimmer: linear-gradient(90deg, transparent, rgba(26,26,30,0.08), transparent);
+  --chat-block-bg: rgba(15, 23, 42, 0.04);
+  --chat-block-border: rgba(15, 23, 42, 0.08);
+  --chat-inline-code-bg: rgba(15, 23, 42, 0.06);
+  --chat-table-border: rgba(15, 23, 42, 0.10);
+  --chat-copy-button-bg: rgba(15, 23, 42, 0.04);
+  --chat-copy-button-border: rgba(15, 23, 42, 0.10);
+  --chat-copy-button-fg: rgba(26, 26, 30, 0.55);
+  --chat-copy-button-hover-bg: rgba(15, 23, 42, 0.07);
+  --chat-copy-button-hover-border: rgba(15, 23, 42, 0.18);
+  --chat-copy-button-hover-fg: rgba(26, 26, 30, 0.80);
+  --color-success: #16a34a;
+  --color-warning: #d97706;
+  --color-error: #dc2626;
+  --color-info: #2563eb;
+  --color-diff-add: #16a34a;
+  --color-diff-del: #dc2626;
+  --color-diff-hunk: #2563eb;
+  /* Plugin identity palette — the dark block's note applies; these are the
+     deeper values, for a glyph drawn on a pale tile. */
+  --plugin-identity-0: #5B5BD6;
+  --plugin-identity-1: #1D74C7;
+  --plugin-identity-2: #10808F;
+  --plugin-identity-3: #1C8A5B;
+  --plugin-identity-4: #A9761A;
+  --plugin-identity-5: #C25C22;
+  --plugin-identity-6: #C93B62;
+  --plugin-identity-7: #8B44C0;
+  /* PRs tab surfaces — light-theme equivalents. */
+  --pr-surface: var(--color-bg);
+  --pr-thread-card: var(--color-card);
+  --pr-panel-card: color-mix(in srgb, var(--color-accent) 6%, var(--color-card));
+
+  --shell-header-bg: color-mix(in srgb, var(--color-surface-raised) 90%, var(--color-bg));
+  --shell-header-fg: var(--color-fg);
+  --shell-header-border: color-mix(in srgb, var(--color-border) 78%, transparent);
+  --shell-header-divider: color-mix(in srgb, var(--color-border) 60%, transparent);
+
+  --shell-sidebar-bg: linear-gradient(180deg, rgba(255, 255, 255, 0.95) 0%, rgba(245, 243, 240, 0.98) 100%);
+  --shell-sidebar-border: color-mix(in srgb, var(--color-border) 72%, transparent);
+  --shell-sidebar-item-fg: color-mix(in srgb, var(--color-muted-fg) 86%, var(--color-fg) 14%);
+  --shell-sidebar-item-hover-fg: var(--color-fg);
+  --shell-sidebar-item-hover-bg: color-mix(in srgb, var(--color-muted) 86%, transparent);
+  --shell-sidebar-item-active-fg: var(--color-accent);
+  --shell-sidebar-item-active-bg: color-mix(in srgb, var(--color-accent) 10%, transparent);
+  --shell-sidebar-item-active-rail: var(--color-accent);
+  --shell-sidebar-separator: color-mix(in srgb, var(--color-border) 62%, transparent);
+
+  --shell-project-tab-bg: transparent;
+  --shell-project-tab-fg: color-mix(in srgb, var(--color-muted-fg) 86%, var(--color-fg) 14%);
+  --shell-project-tab-hover-bg: color-mix(in srgb, var(--color-muted) 86%, transparent);
+  --shell-project-tab-hover-fg: var(--color-fg);
+  --shell-project-tab-hover-border: color-mix(in srgb, var(--color-accent) 24%, var(--color-border));
+  --shell-project-tab-active-bg: color-mix(in srgb, var(--project-tab-accent, var(--color-accent)) 18%, var(--color-surface-raised));
+  --shell-project-tab-active-fg: color-mix(in srgb, var(--project-tab-accent, var(--color-accent)) 34%, var(--color-fg));
+  --shell-project-tab-active-border: color-mix(in srgb, var(--project-tab-accent, var(--color-accent)) 48%, transparent);
+  --shell-project-tab-missing-bg: color-mix(in srgb, var(--color-error) 9%, transparent);
+  --shell-project-tab-missing-fg: color-mix(in srgb, var(--color-error) 86%, var(--color-fg) 14%);
+  --shell-project-tab-missing-border: color-mix(in srgb, var(--color-error) 38%, transparent);
+  --shell-project-tab-open-bg: color-mix(in srgb, var(--project-tab-accent, var(--color-accent)) 12%, transparent);
+  --shell-project-tab-open-fg: var(--color-fg);
+  --shell-project-tab-open-border: color-mix(in srgb, var(--project-tab-accent, var(--color-accent)) 42%, var(--color-border));
+  --shell-project-tab-focus-bg: color-mix(in srgb, var(--project-tab-accent, var(--color-accent)) 10%, transparent);
+  --shell-project-tab-focus-fg: var(--color-fg);
+  --shell-project-tab-focus-border: color-mix(in srgb, var(--project-tab-accent, var(--color-accent)) 36%, var(--color-border));
+  --shell-project-tab-focus-ring: color-mix(in srgb, var(--project-tab-accent, var(--color-accent)) 26%, transparent);
+
+  --shell-control-bg: var(--color-surface-recessed);
+  --shell-control-fg: color-mix(in srgb, var(--color-muted-fg) 86%, var(--color-fg) 14%);
+  --shell-control-border: color-mix(in srgb, var(--color-border) 84%, var(--color-muted-fg) 16%);
+  --shell-control-hover-bg: var(--color-surface-recessed);
+  --shell-control-hover-fg: var(--color-fg);
+  --shell-control-hover-border: color-mix(in srgb, var(--color-accent) 24%, var(--color-border));
+  --shell-control-open-bg: color-mix(in srgb, var(--color-accent) 10%, var(--shell-control-bg));
+  --shell-control-open-fg: var(--color-fg);
+  --shell-control-open-border: color-mix(in srgb, var(--color-accent) 40%, var(--shell-control-border));
+  --shell-control-focus-bg: var(--shell-control-hover-bg);
+  --shell-control-focus-fg: var(--shell-control-hover-fg);
+  --shell-control-focus-border: color-mix(in srgb, var(--color-accent) 32%, var(--shell-control-border));
+  --shell-control-focus-ring: color-mix(in srgb, var(--color-accent) 26%, transparent);
+  --shell-control-kbd-bg: color-mix(in srgb, var(--color-surface) 80%, var(--color-bg));
+  --shell-control-kbd-fg: color-mix(in srgb, var(--color-muted-fg) 84%, var(--color-fg) 16%);
+
+  --shell-status-running: #10b981;
+  --shell-status-attention: #d97706;
+
+  /* The tokens below are deliberately the same values as the dark block.
+     Every surface that reads them shipped a hardcoded dark literal that the
+     light theme never escaped, so a lighter value here would not be
+     "tokenising" the chrome, it would be redesigning it. Extracting the literal
+     and changing it are separate changes; this is the first. A theme plugin can
+     now set all of them per scheme, which is how the shipped themes give the
+     header and its menus a light-theme plate. */
+  --shell-surface: #121019;
+  --shell-pressure-1: #FBBF24;
+  --shell-pressure-2: #FB923C;
+  --shell-pressure-3: #FB7185;
+  --shell-pressure-4: #F87171;
+  --shell-attention-fg: #FBBF24;
+  --shell-attention-edge: #F59E0B;
+  --color-card-solid: #181423;
+
+  --work-rail-terminal: #c4b5fd;
+  --work-rail-git: #34d399;
+  --work-rail-files: #fbbf24;
+  --work-rail-ios: #60a5fa;
+  --work-rail-app-control: #a78bfa;
+  --work-rail-browser: #22d3ee;
+  /* Contributed `work-rail-pane` entries. One shared muted token rather
+     than a per-plugin hue: the six above name ADE's own tools, and a
+     plugin wearing one would read as a seventh built-in. */
+  --work-rail-plugin: var(--color-muted-fg);
+
+  --work-pane-border: color-mix(in srgb, var(--color-border) 70%, transparent);
+  --work-pane-header-bg: color-mix(in srgb, var(--color-card) 88%, transparent);
+  --work-sidebar-bg: color-mix(in srgb, var(--color-card) 60%, var(--color-bg));
+  --work-session-sidebar-bg: var(--work-sidebar-bg);
+
+  --work-popover-bg: color-mix(in srgb, var(--color-card) 96%, white);
+  --work-popover-border: color-mix(in srgb, var(--color-border) 90%, transparent);
+  --work-popover-shadow: 0 8px 24px -8px rgba(0, 0, 0, 0.15), 0 0 0 1px color-mix(in srgb, var(--color-border) 88%, transparent);
+  --work-popover-item-hover: color-mix(in srgb, var(--color-muted) 70%, transparent);
+  --work-popover-item-active: color-mix(in srgb, var(--color-fg) 8%, var(--color-card));
+}
+
+/* ═══════════════════════════════════════════════════════════
+   Per-Tab Tint System
+   ═══════════════════════════════════════════════════════════ */
+
+.tab-tint-project { --tab-tint-rgb: 167, 139, 250; }
+.tab-tint-lanes { --tab-tint-rgb: 245, 158, 11; }
+.tab-tint-files { --tab-tint-rgb: 113, 113, 122; }
+/* Neutral zinc — work surface matches rest of UI, not a second brand tint. */
+.tab-tint-work { --tab-tint-rgb: 113, 113, 122; }
+.tab-tint-conflicts { --tab-tint-rgb: 239, 68, 68; }
+.tab-tint-graph { --tab-tint-rgb: 99, 102, 241; }
+.tab-tint-prs { --tab-tint-rgb: 167, 139, 250; }
+.tab-tint-history { --tab-tint-rgb: 217, 119, 6; }
+.tab-tint-automations { --tab-tint-rgb: 249, 115, 22; }
+.tab-tint-cto { --tab-tint-rgb: 59, 130, 246; }
+.tab-tint-settings { --tab-tint-rgb: 113, 113, 122; }
+.tab-tint-review { --tab-tint-rgb: 56, 189, 248; }
+
+/* ═══════════════════════════════════════════════════════════
+   Base Styles
+   ═══════════════════════════════════════════════════════════ */
+
+html,
+body {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  color: var(--color-fg);
+  background-color: var(--color-bg);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  font-feature-settings: "ss01";
+  letter-spacing: 0;
+}
+
+button,
+input,
+textarea,
+select,
+option {
+  font-family: var(--font-sans);
+}
+
+code,
+pre,
+kbd,
+samp {
+  font-family: var(--font-mono);
+}
+
+
+/* ═══════════════════════════════════════════════════════════
+   The three app rules the ported Linear components name by class.
+   Copied verbatim from apps/desktop/src/renderer/index.css.
+   ═══════════════════════════════════════════════════════════ */
+.ade-shell-control {
+  color: var(--shell-control-fg);
+  background: var(--shell-control-bg);
+  border: 1px solid var(--shell-control-border);
+  border-radius: 8px;
+  outline: none;
+  transition: color 120ms ease, background 120ms ease, border-color 120ms ease;
+}
+
+.ade-shell-control:hover {
+  color: var(--shell-control-hover-fg);
+  background: var(--shell-control-hover-bg);
+  border-color: var(--shell-control-hover-border);
+}
+
+.ade-shell-control[data-state="open"] {
+  color: var(--shell-control-open-fg);
+  background: var(--shell-control-open-bg);
+  border-color: var(--shell-control-open-border);
+}
+
+.ade-shell-control:focus-visible {
+  color: var(--shell-control-focus-fg);
+  background: var(--shell-control-focus-bg);
+  border-color: var(--shell-control-focus-border);
+  box-shadow: inset 0 0 0 1px var(--shell-control-focus-ring);
+}
+
+.ade-shell-control[data-variant="ghost"] {
+  color: var(--shell-control-fg);
+  background: transparent;
+  border-color: transparent;
+}
+
+.ade-shell-control[data-variant="ghost"]:hover {
+  color: var(--shell-control-hover-fg);
+  background: color-mix(in srgb, var(--shell-control-hover-bg) 64%, transparent);
+  border-color: color-mix(in srgb, var(--shell-control-hover-border) 68%, transparent);
+}
+
+.ade-shell-control[data-variant="ghost"][data-state="open"] {
+  color: var(--shell-control-open-fg);
+  background: color-mix(in srgb, var(--shell-control-open-bg) 74%, transparent);
+  border-color: color-mix(in srgb, var(--shell-control-open-border) 72%, transparent);
+}
+
+.ade-shell-control[data-variant="ghost"]:focus-visible {
+  color: var(--shell-control-focus-fg);
+  background: color-mix(in srgb, var(--shell-control-focus-bg) 72%, transparent);
+  border-color: color-mix(in srgb, var(--shell-control-focus-border) 72%, transparent);
+  box-shadow: inset 0 0 0 1px var(--shell-control-focus-ring);
+}
+
+.ade-shell-control-kbd {
+  color: var(--shell-control-kbd-fg);
+  background: var(--shell-control-kbd-bg);
+  border: 1px solid var(--shell-control-border);
+}
+
+
+/* Utility: hide scrollbars (class was used in TSX but had no CSS — global ::-webkit-scrollbar was still showing). */
+.scrollbar-none {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+.scrollbar-none::-webkit-scrollbar {
+  display: none;
+  width: 0;
+  height: 0;
+  background: transparent;
+}
+
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background-color: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background-color: rgba(var(--tab-tint-rgb, 113, 113, 122), 0.18);
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background-color: rgba(var(--tab-tint-rgb, 113, 113, 122), 0.35);
+}
+
+/* The chat context chip's glass pill — index.css:2880. */
+.ade-liquid-glass-pill {
+  position: relative;
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, var(--chat-glass-border) 110%, transparent);
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--chat-glass-bg) 78%, transparent) 0%, color-mix(in srgb, var(--chat-panel-bg) 76%, transparent) 100%);
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, var(--chat-glass-highlight) 82%, transparent),
+    0 8px 22px -18px rgba(0, 0, 0, 0.48);
+  backdrop-filter: blur(20px) saturate(145%);
+  -webkit-backdrop-filter: blur(20px) saturate(145%);
+}
+

@@ -14,9 +14,11 @@ import { bridge } from "../bridge";
  *
  * The compiled flow read `useAppStore(s => s.launchPromptClipboardEnabled)`, an
  * ADE preference. A guest cannot see ADE's preferences and should not: the
- * setting belongs to whoever draws the toggle, and the toggle is the plugin's
- * settings section now. `plugin.json` declares `launchPromptClipboard` with
- * `default: true`, which is the same default the app preference had.
+ * setting belongs to whoever draws the toggle, and the toggle is in the LAUNCH
+ * FORM — beside the prompt it copies, rather than in a settings section two
+ * screens from the only act it affects. `plugin.json` declares
+ * `launchPromptClipboard` with `default: true`, which is the same default the
+ * app preference had.
  *
  * Defaults to true on a host that cannot answer. The failure mode of copying a
  * prompt nobody wanted is a clipboard entry; the failure mode of not copying
@@ -54,3 +56,22 @@ export function laneStackDeeplink(laneId: string): string {
  * page counterpart, so the button dismissed the popover and did nothing else.
  */
 export const WELCOME_DEEPLINK = "ade://welcome";
+
+/**
+ * Write the launch-prompt clipboard setting.
+ *
+ * The form's toggle writes through the same config the launch flow reads, so a
+ * reader who turns it off in one launch has it off in the next — a per-launch
+ * checkbox that forgot itself would be a worse control than the preference it
+ * replaced. Best effort: a host that refuses the write leaves the setting as it
+ * was, and the launch reads the stored value rather than the toggle's.
+ */
+export async function writeLaunchPromptClipboardSetting(enabled: boolean): Promise<void> {
+  const api = bridge();
+  if (!api) return;
+  try {
+    await api.config.set("launchPromptClipboard", enabled);
+  } catch {
+    // The launch still reads the stored value; nothing here is load-bearing.
+  }
+}

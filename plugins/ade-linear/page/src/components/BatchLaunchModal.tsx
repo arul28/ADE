@@ -1,7 +1,9 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
+  CaretDown,
   CaretRight,
   ChatCircleDots,
+  ClipboardText,
   GitBranch,
   Lightning,
   Rocket,
@@ -16,10 +18,16 @@ import {
   LINEAR_BRAND,
 } from "@ade-dev/ui";
 import { LaneDialogShell } from "@ade-dev/ui/dialog";
-import { LaneCombobox } from "@ade-dev/ui/lanes";
 
 import { bridge } from "../bridge";
-import { getCapabilities, getChatModels } from "../host/actions";
+import {
+  hasPicker,
+  pickLane,
+  pickModel,
+  pickPermissionMode,
+  pickProvider,
+  pickReasoningEffort,
+} from "../host/ui";
 import { linearIssueBranchName } from "../lib/linearIssueBranch";
 import {
   defaultKickoffPrompt,
@@ -27,13 +35,19 @@ import {
   type BatchLaunchIssueConfig,
   type BatchLaunchSessionType,
 } from "../lib/linearBatchLaunch";
-import type { LaneLinearIssue, PageCapabilities, PageChatModel, PageLane } from "../types";
+import {
+  readLaunchPromptClipboardSetting,
+  writeLaunchPromptClipboardSetting,
+} from "./launchPromptClipboard";
+import type { LaneLinearIssue, PageLane } from "../types";
 
-type PerIssueState = BatchLaunchIssueConfig & {
+type PerIssueState = BatchLaunchIssueConfig & SessionLaunchModelConfig & {
   /** When false the issue is excluded from the launch (skipped via the conflict guard). */
   include: boolean;
   /** "new" creates a lane per issue; "existing" launches into `existingLaneId`. */
   laneTarget: "new" | "existing";
+  /** The chosen lane's own name, for the chip. Null when none is chosen. */
+  existingLaneLabel: string | null;
 };
 
 /**
@@ -100,64 +114,109 @@ async function persistProjectDefaultPrompt(
   }
 }
 
-function makeInitialConfig(defaultModelId: string, kickoffPrompt: string): PerIssueState {
+function makeInitialConfig(kickoffPrompt: string): PerIssueState {
   return {
-    modelId: defaultModelId,
-    reasoningEffort: null,
-    fastMode: false,
+    ...EMPTY_MODEL_CONFIG,
     kickoffPrompt,
     branchOverride: "",
-    sessionType: "chat",
-    permissionMode: null,
     existingLaneId: null,
+    existingLaneLabel: null,
     include: true,
     laneTarget: "new",
   };
 }
 
+/**
+ * Nothing chosen yet.
+ *
+ * The form used to seed a MODEL — the first Claude row in the host catalog,
+ * else the first OpenCode one — because it drew the list itself and a select
+ * with no value is a select showing a blank row. The host's picker has its own
+ * default and its own recents, so seeding one here would be this plugin
+ * choosing for a reader ADE is about to ask.
+ */
+const EMPTY_MODEL_CONFIG = {
+  modelId: "",
+  modelLabel: null,
+  provider: null,
+  providerLabel: null,
+  reasoningEffort: null,
+  reasoningEffortLabel: null,
+  fastMode: false,
+  sessionType: "chat",
+  permissionMode: null,
+  permissionModeLabel: null,
+} satisfies SessionLaunchModelConfig;
+
+/**
+ * What the launch form holds, and what it prints.
+ *
+ * Every choice is a PAIR: the id the launch carries, and the host picker's own
+ * label for it. They are separate because a launch argument is a provider's own
+ * spelling (`acceptEdits`, `claude-opus-5`) and a chip that printed those would
+ * be reading the reader an identifier. Nothing here derives one from the other:
+ * the label is whatever the host said when the reader chose, so a model ADE
+ * renamed reads as ADE renamed it.
+ *
+ * A null label means nothing has been chosen, which the chip draws as its
+ * placeholder — for the permission and the reasoning rung that placeholder is
+ * "Default", because "whatever the provider starts on" is a real choice and the
+ * one an untouched pill has always made.
+ */
 export type SessionLaunchModelConfig = {
   modelId: string;
+  modelLabel: string | null;
+  /** The provider the model belongs to, as the host's picker named it. */
+  provider: string | null;
+  providerLabel: string | null;
   reasoningEffort: string | null;
+  reasoningEffortLabel: string | null;
   fastMode: boolean;
   sessionType: BatchLaunchSessionType;
   /**
-   * The permission the launch carries, as `AgentChatPermissionMode`.
+   * The permission the launch carries, in the provider's NATIVE vocabulary.
    *
    * One string, and deliberately so: the compiled control held a whole
    * `NativeControlState` — Claude's interaction mode, Codex's approval policy
    * and sandbox pair, Cursor's mode id, Droid's autonomy flag — and collapsed
    * it to this on the way out. The native fields behind each option are the
-   * renderer control's own internals and are not a page's to set, so the page
-   * offers the same CHOICES and sends the same value.
+   * renderer control's own internals and are not a page's to set.
    *
    * Null means "whatever the provider defaults to", which is what an untouched
    * pill has always meant.
    */
   permissionMode: string | null;
+  permissionModeLabel: string | null;
 };
 
 function toLaunchModelConfig(state: PerIssueState): SessionLaunchModelConfig {
   return {
     modelId: state.modelId,
+    modelLabel: state.modelLabel ?? null,
+    provider: state.provider ?? null,
+    providerLabel: state.providerLabel ?? null,
     reasoningEffort: state.reasoningEffort,
+    reasoningEffortLabel: state.reasoningEffortLabel ?? null,
     fastMode: state.fastMode,
     sessionType: state.sessionType ?? "chat",
     permissionMode: state.permissionMode ?? null,
+    permissionModeLabel: state.permissionModeLabel ?? null,
   };
 }
 
+/**
+ * Apply a model-row patch to one issue's state.
+ *
+ * Spread rather than field by field: every key of `SessionLaunchModelConfig` is
+ * also a key of `PerIssueState`, and a hand-written list of ten of them is a
+ * list that silently drops the eleventh — which is exactly how a chosen
+ * provider or a chip's label would go missing on the row the reader edited.
+ */
 function patchFromLaunchModelConfig(
   state: PerIssueState,
   patch: Partial<SessionLaunchModelConfig>,
 ): PerIssueState {
-  return {
-    ...state,
-    ...(patch.modelId !== undefined ? { modelId: patch.modelId } : {}),
-    ...(patch.reasoningEffort !== undefined ? { reasoningEffort: patch.reasoningEffort } : {}),
-    ...(patch.fastMode !== undefined ? { fastMode: patch.fastMode } : {}),
-    ...(patch.sessionType !== undefined ? { sessionType: patch.sessionType } : {}),
-    ...(patch.permissionMode !== undefined ? { permissionMode: patch.permissionMode } : {}),
-  };
+  return { ...state, ...patch };
 }
 
 function SessionTypeToggle({
@@ -204,65 +263,50 @@ function SessionTypeToggle({
 }
 
 /**
- * The provider-native permission pill.
+ * One picker chip.
  *
- * A port of `LaunchNativePermissionControls`. The compiled control drew a
- * different shape per provider — a popover menu for Claude and for Codex, a
- * labelled select for Cursor, Droid and OpenCode — over five literal option
- * lists in `renderer/lib/nativeLaunchControls.ts`, which a page cannot import.
+ * The page draws no list of its own any more. A chip prints the current choice
+ * and opens the HOST's picker, which is the app's own popover over the page —
+ * so the model list, the lane list, a provider's permission vocabulary and a
+ * model's reasoning ladder are ADE's own controls rather than five selects this
+ * plugin keeps in step by hand. The trigger chrome is the compiled composer's
+ * (`PERMISSION_TRIGGER_CLASS`), so the chips sit where the pills sat.
  *
- * The OPTIONS come from `pageCapabilities`, which is ADE's own answer rather
- * than a table this plugin keeps: `sdk.chat.capabilities()` restates those five
- * lists for exactly this, with a test on ADE's side pinning the two together.
- * The value the reader picks is the provider's NATIVE one and is stored as
- * such — the launch puts it in the field `permissionField` names, so nothing
- * here translates it into ADE's unified vocabulary and nothing can get that
- * translation wrong.
- *
- * What differs from the compiled control is the shape: one select for every
- * provider, wearing the compiled trigger chrome, rather than a menu for two of
- * them and a select for three. The menu carried per-option detail sentences,
- * which live on the option's `title` here.
- *
- * A provider the capabilities do not name draws nothing at all — which is what
- * the compiled control did for a model whose provider group it could not
- * resolve.
+ * A host that answers no picker verb draws the chip DISABLED with a sentence
+ * rather than falling back to a select: one control shape, and a reader who can
+ * see why it will not open.
  */
-function PermissionModePicker({
-  provider,
-  capabilities,
+function PickerChip({
+  label,
   value,
-  onChange,
+  placeholder,
+  onPress,
+  available,
   disabled = false,
+  widthClass = COMPOSER_TOOLBAR_PICKER_TRIGGER,
 }: {
-  provider: string;
-  capabilities: PageCapabilities | null;
+  label: string;
   value: string | null;
-  onChange: (permissionMode: string | null) => void;
+  placeholder: string;
+  onPress: () => void;
+  available: boolean;
   disabled?: boolean;
+  widthClass?: string;
 }) {
-  const entry = capabilities?.providers.find((row) => row.provider === provider) ?? null;
-  if (!entry || entry.permissionModes.length === 0) return null;
   return (
-    <label className={cn(PERMISSION_TRIGGER_CLASS, COMPOSER_TOOLBAR_PICKER_TRIGGER)} title="Permissions">
-      <select
-        value={value ?? ""}
-        disabled={disabled}
-        onChange={(event) => onChange(event.target.value || null)}
-        aria-label="Permissions"
-        className="min-w-0 flex-1 truncate bg-transparent font-medium outline-none disabled:opacity-45"
-      >
-        {/* "Whatever the provider starts on" is a real choice and the one an
-            untouched pill has always made, so it is an option rather than a
-            hole the reader cannot get back to. */}
-        <option value="">Default</option>
-        {entry.permissionModes.map((mode) => (
-          <option key={mode.value} value={mode.value} title={mode.detail ?? undefined}>
-            {mode.label}
-          </option>
-        ))}
-      </select>
-    </label>
+    <button
+      type="button"
+      aria-label={label}
+      disabled={disabled || !available}
+      title={available ? label : `${label} is not available in this window.`}
+      onClick={onPress}
+      className={cn(PERMISSION_TRIGGER_CLASS, widthClass, "gap-1")}
+    >
+      <span className={cn("min-w-0 flex-1 truncate text-left font-medium", value ? undefined : "text-muted-fg/60")}>
+        {value ?? placeholder}
+      </span>
+      <CaretDown size={9} weight="bold" className="shrink-0 opacity-60" />
+    </button>
   );
 }
 
@@ -270,37 +314,36 @@ function PermissionModePicker({
  * The launch pill row.
  *
  * A port of `components/shared/SessionLaunchModelControls`, with the session
- * toggle kept verbatim and the pickers rebuilt as native selects wearing the
- * compiled trigger chrome. Everything the compiled row could offer is offered:
+ * toggle kept verbatim and every other control now a chip over one of the
+ * host's own pickers:
  *
- *  - The MODEL list is `getChatModels()`, which now carries each model's
- *    provider group, its fast-tier support and its own reasoning ladder. What
- *    did not move is `ModelPicker` itself — a Radix popover with recents,
- *    grouping and per-provider icons — so this is a select over the same list.
- *  - FAST MODE is drawn only for a model that has a `fast` service tier, which
- *    is the same question `modelSupportsFastMode` asked of the registry.
- *  - REASONING EFFORT is the model's own tiers rather than a fixed
- *    none/low/medium/high ladder, and a model with no tiers draws no control —
- *    exactly as `ReasoningEffortPicker` behaved.
- *  - PERMISSIONS is `PermissionModePicker` above.
+ *  - PROVIDER and MODEL are `ui.pickProvider()` and `ui.pickModel()`. The page
+ *    used to draw a select over `getChatModels()`, which was the same list
+ *    without `ModelPicker`'s recents, grouping or per-provider icons — the one
+ *    remaining gap in the compiled launch form, and this closes it.
+ *  - REASONING EFFORT is `ui.pickReasoningEffort({provider, model})`, so the
+ *    rungs are the model's own and a model with none opens nothing.
+ *  - PERMISSIONS is `ui.pickPermissionMode({provider})`. The value that comes
+ *    back is the provider's NATIVE one and is stored as such: the launch puts
+ *    it in the field `permissionField` names, so nothing here translates it
+ *    into ADE's unified vocabulary and nothing can get that translation wrong.
+ *  - FAST MODE stays a toggle, because it is a boolean and not a list.
+ *
+ * Dismissing a picker leaves the value alone, which is why every handler writes
+ * state only for a non-null answer.
  */
 function SessionLaunchModelControls({
   config,
   onChange,
-  models,
-  capabilities,
   disabled = false,
   showSessionType = true,
 }: {
   config: SessionLaunchModelConfig;
   onChange: (patch: Partial<SessionLaunchModelConfig>) => void;
-  models: PageChatModel[];
-  capabilities: PageCapabilities | null;
   disabled?: boolean;
   showSessionType?: boolean;
 }) {
-  const model = models.find((row) => row.id === config.modelId) ?? null;
-  const efforts = model?.reasoningEfforts ?? [];
+  const provider = config.provider;
   return (
     <div className="flex flex-wrap items-center gap-1.5">
       {showSessionType ? (
@@ -310,83 +353,104 @@ function SessionLaunchModelControls({
           disabled={disabled}
         />
       ) : null}
-      <label className={cn(PERMISSION_TRIGGER_CLASS, COMPOSER_MODEL_TRIGGER)} title="Model">
-        <select
-          value={config.modelId}
-          disabled={disabled || models.length === 0}
-          onChange={(event) => {
-            const nextId = event.target.value;
-            const next = models.find((row) => row.id === nextId) ?? null;
-            onChange({
-              modelId: nextId,
-              // A model with no fast tier REFUSES `fastMode: true` rather than
-              // ignoring it, and a reasoning rung the new model does not offer
-              // would be sent and refused. Both are cleared with the model that
-              // carried them.
-              ...(next?.fastMode ? {} : { fastMode: false }),
-              ...(next?.reasoningEfforts.some((tier) => tier.effort === config.reasoningEffort)
-                ? {}
-                : { reasoningEffort: null }),
-              // The permission vocabularies are native and differ per provider,
-              // so a value chosen for a Claude model is not one a Droid model
-              // offers — and it would go in a different launch field besides.
-              ...(next?.provider === model?.provider ? {} : { permissionMode: null }),
-            });
-          }}
-          aria-label="Model"
-          className="min-w-0 flex-1 truncate bg-transparent font-medium outline-none disabled:opacity-45"
-        >
-          {config.modelId && !models.some((row) => row.id === config.modelId) ? (
-            <option value={config.modelId}>{config.modelId}</option>
-          ) : null}
-          {models.length === 0 ? <option value="">No models</option> : null}
-          {models.map((row) => (
-            <option key={row.id} value={row.id}>{row.label}</option>
-          ))}
-        </select>
-      </label>
-      {efforts.length > 0 ? (
-        <label className={cn(PERMISSION_TRIGGER_CLASS, COMPOSER_TOOLBAR_PICKER_TRIGGER)} title="Reasoning effort">
-          <select
-            value={config.reasoningEffort ?? ""}
-            disabled={disabled}
-            onChange={(event) => onChange({ reasoningEffort: event.target.value || null })}
-            aria-label="Reasoning effort"
-            className="min-w-0 flex-1 truncate bg-transparent font-medium capitalize outline-none disabled:opacity-45"
-          >
-            {/* The sentinel the child's `chosenReasoningEffort` reads as "send
-                nothing", so the model's own default stands. */}
-            <option value="">Default</option>
-            {efforts.map((tier) => (
-              <option key={tier.effort} value={tier.effort}>{tier.label}</option>
-            ))}
-          </select>
-        </label>
-      ) : null}
-      {model?.fastMode ? (
-        <button
-          type="button"
-          role="switch"
-          aria-checked={config.fastMode}
-          disabled={disabled}
-          title="Run this launch on the provider's fast service tier"
-          onClick={() => onChange({ fastMode: !config.fastMode })}
-          className={cn(
-            PERMISSION_TRIGGER_CLASS,
-            "shrink-0 gap-1",
-            config.fastMode && "border-violet-400/30 bg-violet-500/[0.08] text-fg",
-          )}
-        >
-          <Lightning size={10} weight={config.fastMode ? "fill" : "regular"} />
-          Fast
-        </button>
-      ) : null}
-      <PermissionModePicker
-        provider={model?.provider ?? ""}
-        capabilities={capabilities}
-        value={config.permissionMode}
-        onChange={(permissionMode) => onChange({ permissionMode })}
+      <PickerChip
+        label="Provider"
+        value={config.providerLabel}
+        placeholder="Provider"
+        available={hasPicker("pickProvider")}
         disabled={disabled}
+        onPress={() => void (async () => {
+          const chosen = await pickProvider(provider);
+          if (!chosen) return;
+          // A model belongs to a provider, and so do the permission words and
+          // the reasoning rungs behind it. Changing the provider clears all
+          // three rather than carrying a Claude mode into a Droid launch.
+          onChange({
+            provider: chosen.id,
+            providerLabel: chosen.label,
+            ...(chosen.id === provider
+              ? {}
+              : {
+                modelId: "",
+                modelLabel: null,
+                reasoningEffort: null,
+                reasoningEffortLabel: null,
+                permissionMode: null,
+                permissionModeLabel: null,
+                fastMode: false,
+              }),
+          });
+        })()}
+      />
+      <PickerChip
+        label="Model"
+        value={config.modelLabel}
+        placeholder="Model"
+        widthClass={COMPOSER_MODEL_TRIGGER}
+        available={hasPicker("pickModel")}
+        disabled={disabled}
+        onPress={() => void (async () => {
+          const chosen = await pickModel({ provider: provider ?? null, selected: config.modelId || null });
+          if (!chosen) return;
+          const nextProvider = chosen.provider ?? provider;
+          onChange({
+            modelId: chosen.id,
+            modelLabel: chosen.label,
+            ...(nextProvider ? { provider: nextProvider } : {}),
+            // A reasoning rung the new model does not offer would be sent and
+            // refused, and `fastMode: true` is refused outright by a model with
+            // no fast tier. Both are cleared with the model that carried them.
+            reasoningEffort: null,
+            reasoningEffortLabel: null,
+            fastMode: false,
+            // The permission vocabularies are native and differ per provider,
+            // so a value chosen for a Claude model is not one a Droid model
+            // offers — and it would go in a different launch field besides.
+            ...(nextProvider === provider
+              ? {}
+              : { permissionMode: null, permissionModeLabel: null }),
+          });
+        })()}
+      />
+      <PickerChip
+        label="Reasoning effort"
+        value={config.reasoningEffortLabel}
+        placeholder="Default"
+        available={hasPicker("pickReasoningEffort") && Boolean(provider) && Boolean(config.modelId)}
+        disabled={disabled}
+        onPress={() => void (async () => {
+          const chosen = await pickReasoningEffort(provider ?? "", config.modelId, config.reasoningEffort);
+          if (!chosen) return;
+          onChange({ reasoningEffort: chosen.id || null, reasoningEffortLabel: chosen.id ? chosen.label : null });
+        })()}
+      />
+      <button
+        type="button"
+        role="switch"
+        aria-checked={config.fastMode}
+        disabled={disabled || !config.modelId}
+        title="Run this launch on the provider's fast service tier"
+        onClick={() => onChange({ fastMode: !config.fastMode })}
+        className={cn(
+          PERMISSION_TRIGGER_CLASS,
+          "shrink-0 gap-1",
+          config.fastMode && "border-violet-400/30 bg-violet-500/[0.08] text-fg",
+        )}
+      >
+        <Lightning size={10} weight={config.fastMode ? "fill" : "regular"} />
+        Fast
+      </button>
+      <PickerChip
+        label="Permissions"
+        value={config.permissionModeLabel}
+        placeholder="Default"
+        available={hasPicker("pickPermissionMode") && Boolean(provider)}
+        disabled={disabled}
+        onPress={() => void (async () => {
+          const chosen = await pickPermissionMode(provider ?? "", config.permissionMode);
+          if (!chosen) return;
+          onChange({ permissionMode: chosen.id || null, permissionModeLabel: chosen.id ? chosen.label : null });
+        })()}
       />
     </div>
   );
@@ -416,29 +480,18 @@ export function BatchLaunchModal({
   /** Fires once, synchronously closing the modal; the orchestrator runs after. */
   onLaunch: (entries: BatchLaunchSubmit[]) => void;
 }) {
-  const [models, setModels] = useState<PageChatModel[]>([]);
-  const [capabilities, setCapabilities] = useState<PageCapabilities | null>(null);
-  // The compiled modal seeded from `useModelRecents()` and fell back to
-  // `getDefaultModelDescriptor("claude"|"opencode")`. Neither exists here, so
-  // the host catalog's own order decides, preferring a Claude row the way the
-  // registry default did.
-  const defaultModelId = useMemo(
-    () =>
-      models.find((model) => model.provider === "claude")?.id
-      ?? models.find((model) => model.provider === "opencode")?.id
-      ?? models[0]?.id
-      ?? "",
-    [models],
-  );
-
-  const [defaultConfig, setDefaultConfig] = useState<SessionLaunchModelConfig>(() => ({
-    modelId: "",
-    reasoningEffort: null,
-    fastMode: false,
-    sessionType: "chat",
-    permissionMode: null,
-  }));
+  const [defaultConfig, setDefaultConfig] = useState<SessionLaunchModelConfig>(() => ({ ...EMPTY_MODEL_CONFIG }));
   const [projectDefaultPrompt, setProjectDefaultPrompt] = useState<string | null>(null);
+  /**
+   * Whether the launch copies its kickoff prompt to the clipboard.
+   *
+   * The plugin's own `launchPromptClipboard` setting, drawn HERE rather than in
+   * the settings section: the only prompt it copies is the one in the box below
+   * it, and a switch two screens from the act it governs is a switch nobody
+   * finds. `null` while the read is in flight, so the toggle does not flip from
+   * off to on under the reader's cursor.
+   */
+  const [clipboardEnabled, setClipboardEnabled] = useState<boolean | null>(null);
   const [perIssue, setPerIssue] = useState<Record<string, PerIssueState>>({});
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
   const seedKeyRef = useRef<string | null>(null);
@@ -446,31 +499,25 @@ export function BatchLaunchModal({
   const multiIssue = issues.length > 1;
   const issueSeedKey = useMemo(() => issues.map((issue) => issue.id).join("\0"), [issues]);
   const conflicts = useMemo(() => findIssueConflicts(issues, lanes), [issues, lanes]);
-  const selectableLanes = useMemo(
-    () => lanes.filter((lane) => lane.laneType !== "primary"),
+  /**
+   * Whether "Existing lane" is a real option here.
+   *
+   * The primary lane is excluded, as the compiled picker excluded it: an agent
+   * launched onto the project's own trunk has no branch of its own to work on.
+   * `lanes` is still read for this and for the duplicate guard above, even
+   * though the picker itself is the host's now.
+   */
+  const hasSelectableLane = useMemo(
+    () => lanes.some((lane) => lane.laneType !== "primary"),
     [lanes],
   );
 
   useEffect(() => {
     if (!open) return;
     let cancelled = false;
-    void getChatModels()
-      .then((rows) => {
-        if (!cancelled) setModels(Array.isArray(rows) ? rows : []);
-      })
-      .catch(() => {
-        if (!cancelled) setModels([]);
-      });
-    // Null on a refusal, not an empty table: `PermissionModePicker` draws
-    // nothing for a provider it cannot name, and a form with no permission pill
-    // is better than one offering values the launch would be refused for.
-    void getCapabilities()
-      .then((answer) => {
-        if (!cancelled) setCapabilities(answer ?? null);
-      })
-      .catch(() => {
-        if (!cancelled) setCapabilities(null);
-      });
+    void readLaunchPromptClipboardSetting().then((enabled) => {
+      if (!cancelled) setClipboardEnabled(enabled);
+    });
     return () => {
       cancelled = true;
     };
@@ -484,14 +531,7 @@ export function BatchLaunchModal({
     seedKeyRef.current = seedKey;
 
     const kickoffPrompt = projectDefaultPrompt ?? defaultKickoffPrompt();
-    const seedModel = defaultModelId;
-    const seededConfig: SessionLaunchModelConfig = {
-      modelId: seedModel,
-      reasoningEffort: null,
-      fastMode: false,
-      sessionType: "chat",
-      permissionMode: null,
-    };
+    const seededConfig: SessionLaunchModelConfig = { ...EMPTY_MODEL_CONFIG };
     if (initialSeed) {
       setDefaultConfig(seededConfig);
     }
@@ -500,11 +540,8 @@ export function BatchLaunchModal({
       const next: Record<string, PerIssueState> = {};
       for (const issue of issues) {
         next[issue.id] = current[issue.id] ?? {
-          ...makeInitialConfig(rowConfig.modelId || seedModel, kickoffPrompt),
-          sessionType: rowConfig.sessionType,
-          reasoningEffort: rowConfig.reasoningEffort,
-          fastMode: rowConfig.fastMode,
-          permissionMode: rowConfig.permissionMode,
+          ...makeInitialConfig(kickoffPrompt),
+          ...rowConfig,
         };
       }
       return next;
@@ -512,27 +549,7 @@ export function BatchLaunchModal({
     if (initialSeed && issues.length === 1) {
       setExpanded({ [issues[0]!.id]: true });
     }
-  }, [open, projectRoot, issueSeedKey, issues, defaultModelId, defaultConfig, projectDefaultPrompt]);
-
-  // A model catalog that lands after the seed still fills an empty picker,
-  // exactly as the compiled recents did.
-  useEffect(() => {
-    if (!open || !defaultModelId) return;
-    setDefaultConfig((current) => (current.modelId ? current : { ...current, modelId: defaultModelId }));
-    setPerIssue((current) => {
-      let changed = false;
-      const next: Record<string, PerIssueState> = {};
-      for (const [id, state] of Object.entries(current)) {
-        if (!state.modelId) {
-          next[id] = { ...state, modelId: defaultModelId };
-          changed = true;
-        } else {
-          next[id] = state;
-        }
-      }
-      return changed ? next : current;
-    });
-  }, [defaultModelId, open]);
+  }, [open, projectRoot, issueSeedKey, issues, defaultConfig, projectDefaultPrompt]);
 
   useEffect(() => {
     if (!open) return;
@@ -577,25 +594,6 @@ export function BatchLaunchModal({
     }));
   }, []);
 
-  const applyDefaultField = useCallback(
-    <K extends keyof PerIssueState>(key: K, value: PerIssueState[K]) => {
-      setPerIssue((current) => {
-        let changed = false;
-        const next: Record<string, PerIssueState> = {};
-        for (const [id, state] of Object.entries(current)) {
-          if (state[key] !== value) {
-            next[id] = { ...state, [key]: value };
-            changed = true;
-          } else {
-            next[id] = state;
-          }
-        }
-        return changed ? next : current;
-      });
-    },
-    [],
-  );
-
   const applyDefaultConfigToAll = useCallback((config: SessionLaunchModelConfig) => {
     setPerIssue((current) => {
       const next: Record<string, PerIssueState> = {};
@@ -606,18 +604,17 @@ export function BatchLaunchModal({
     });
   }, []);
 
+  // One write, not one per field. `applyDefaultConfigToAll` spreads the whole
+  // config onto every row, so the five per-field calls that used to follow it
+  // were a second list of the same keys — the list that silently dropped the
+  // sixth the day a field was added.
   const handleDefaultConfigChange = useCallback((patch: Partial<SessionLaunchModelConfig>) => {
     setDefaultConfig((current) => {
       const next = { ...current, ...patch };
       applyDefaultConfigToAll(next);
-      if (patch.modelId !== undefined) applyDefaultField("modelId", patch.modelId);
-      if (patch.reasoningEffort !== undefined) applyDefaultField("reasoningEffort", patch.reasoningEffort);
-      if (patch.fastMode !== undefined) applyDefaultField("fastMode", patch.fastMode);
-      if (patch.sessionType !== undefined) applyDefaultField("sessionType", patch.sessionType);
-      if (patch.permissionMode !== undefined) applyDefaultField("permissionMode", patch.permissionMode);
       return next;
     });
-  }, [applyDefaultConfigToAll, applyDefaultField]);
+  }, [applyDefaultConfigToAll]);
 
   const applyPromptToAll = useCallback((sourcePrompt: string) => {
     setPerIssue((current) => {
@@ -649,7 +646,19 @@ export function BatchLaunchModal({
         ? state
         : patchFromLaunchModelConfig(state, defaultConfig);
       if (!laneOnly && !effectiveConfig.modelId.trim()) continue;
-      const { include: _include, laneTarget, ...config } = effectiveConfig;
+      // The chip LABELS stay in the form. They are what a picker said, for the
+      // reader to read; the launch carries ids, and passing a display string
+      // into a launch argument is how a label ends up in a provider's request.
+      const {
+        include: _include,
+        laneTarget,
+        existingLaneLabel: _laneLabel,
+        modelLabel: _modelLabel,
+        providerLabel: _providerLabel,
+        reasoningEffortLabel: _effortLabel,
+        permissionModeLabel: _permissionLabel,
+        ...config
+      } = effectiveConfig;
       const existingLaneId =
         !laneOnly && laneTarget === "existing" ? state.existingLaneId?.trim() || null : null;
       if (!laneOnly && laneTarget === "existing" && !existingLaneId) continue;
@@ -670,6 +679,22 @@ export function BatchLaunchModal({
 
   const conflictCount = includedIssues.filter((issue) => conflicts.has(issue.id)).length;
   const launchCount = includedIssues.length;
+  /**
+   * Every included issue has a model, and a lane to launch into.
+   *
+   * The form used to seed a model from the host catalog, so a launch could
+   * never be missing one. The host's picker owns that default now and the form
+   * starts empty, which means "press Launch and nothing happens" is a state
+   * that can exist — so the button says why instead of skipping the row in
+   * `handleLaunch` where nobody can see it.
+   */
+  const missingChoice = !laneOnly && includedIssues.some((issue) => {
+    const state = perIssue[issue.id];
+    if (!state) return true;
+    const effective = multiIssue ? state : patchFromLaunchModelConfig(state, defaultConfig);
+    if (!effective.modelId.trim()) return true;
+    return (state.laneTarget ?? "new") === "existing" && !state.existingLaneId?.trim();
+  });
 
   return (
     <LaneDialogShell
@@ -701,8 +726,6 @@ export function BatchLaunchModal({
           <SessionLaunchModelControls
             config={defaultConfig}
             onChange={handleDefaultConfigChange}
-            models={models}
-            capabilities={capabilities}
           />
           {multiIssue ? (
             <button
@@ -781,8 +804,6 @@ export function BatchLaunchModal({
                   <SessionLaunchModelControls
                     config={toLaunchModelConfig(state)}
                     onChange={(patch) => patchIssue(issue.id, patchFromLaunchModelConfig(state, patch))}
-                    models={models}
-                    capabilities={capabilities}
                   />
                 ) : null}
                 {conflict ? (
@@ -817,6 +838,29 @@ export function BatchLaunchModal({
                             }
                           >
                             {promptSavedAsDefault ? "Default saved" : "Save default"}
+                          </button>
+                          <button
+                            type="button"
+                            role="switch"
+                            aria-checked={clipboardEnabled === true}
+                            aria-label="Copy the launch prompt to the clipboard"
+                            disabled={clipboardEnabled === null}
+                            onClick={() => {
+                              const next = clipboardEnabled !== true;
+                              setClipboardEnabled(next);
+                              void writeLaunchPromptClipboardSetting(next);
+                            }}
+                            title="Copy this prompt to the clipboard when the launch starts"
+                            className={cn(
+                              "inline-flex h-5 items-center gap-1 rounded-md border px-2 text-[10px] font-medium transition-colors",
+                              clipboardEnabled
+                                ? "border-violet-400/30 bg-violet-500/[0.08] text-fg"
+                                : "border-white/[0.1] bg-white/[0.04] text-fg/70 hover:border-white/[0.18] hover:bg-white/[0.08] hover:text-fg",
+                              "disabled:cursor-not-allowed disabled:opacity-45",
+                            )}
+                          >
+                            <ClipboardText size={10} weight={clipboardEnabled ? "fill" : "regular"} />
+                            Copy on launch
                           </button>
                           {multiIssue ? (
                             <button
@@ -855,7 +899,7 @@ export function BatchLaunchModal({
                             { key: "existing", label: "Existing lane" },
                           ] as const).map(({ key, label }) => {
                             const active = (state.laneTarget ?? "new") === key;
-                            const disabled = key === "existing" && selectableLanes.length === 0;
+                            const disabled = key === "existing" && !hasSelectableLane;
                             return (
                               <button
                                 key={key}
@@ -876,39 +920,32 @@ export function BatchLaunchModal({
                           })}
                         </div>
                         {(state.laneTarget ?? "new") === "existing" ? (
-                          selectableLanes.length > 0 ? (
-                            <div className="min-w-[220px] flex-1">
-                              {/*
-                                The compiled row's own `LaneCombobox`, now in the
-                                kit — the same 671 lines, the same search box,
-                                the same keyboard model, the same lane marks and
-                                branch labels. It was a native select here for
-                                one build, because the page had no combobox
-                                primitive to reach for.
+                          /*
+                            The HOST's lane picker, not a copy of it.
 
-                                `fullWidth` because this cell is the field, and
-                                the free-standing form is the one caller the
-                                trigger's own max-width was written for.
-                              */}
-                              <LaneCombobox
-                                lanes={selectableLanes.map((lane) => ({
-                                  id: lane.id,
-                                  name: lane.name,
-                                  branchRef: lane.branch,
-                                }))}
-                                value={state.existingLaneId ?? ""}
-                                onChange={(laneId) => patchIssue(issue.id, { existingLaneId: laneId || null })}
-                                placeholder="Select a lane…"
-                                aria-label="Select lane"
-                                fullWidth
-                                compact
-                              />
-                            </div>
-                          ) : (
-                            <span className="text-[10.5px] text-amber-100/75">
-                              No lanes available — create a new one.
-                            </span>
-                          )
+                            The page drew the kit's `LaneCombobox` over
+                            `pageLanes` here, which was the app's own 671 lines
+                            of markup fed by a list this plugin fetched. The app
+                            opens that picker itself now, over its own lanes,
+                            and answers the choice — so the two can no longer
+                            disagree about which lanes exist or what a lane is
+                            called.
+                          */
+                          <PickerChip
+                            label="Lane"
+                            value={state.existingLaneLabel}
+                            placeholder="Select a lane…"
+                            widthClass="min-w-[220px] flex-1"
+                            available={hasPicker("pickLane")}
+                            onPress={() => void (async () => {
+                              const chosen = await pickLane(state.existingLaneId);
+                              if (!chosen) return;
+                              patchIssue(issue.id, {
+                                existingLaneId: chosen.id || null,
+                                existingLaneLabel: chosen.id ? chosen.label : null,
+                              });
+                            })()}
+                          />
                         ) : null}
                       </div>
                     </div>
@@ -948,7 +985,13 @@ export function BatchLaunchModal({
         <Button type="button" variant="ghost" onClick={() => onOpenChange(false)}>
           Cancel
         </Button>
-        <Button type="button" variant="primary" disabled={launchCount === 0} onClick={handleLaunch}>
+        <Button
+          type="button"
+          variant="primary"
+          disabled={launchCount === 0 || missingChoice}
+          title={missingChoice ? "Pick a model, and a lane for every issue set to an existing one." : undefined}
+          onClick={handleLaunch}
+        >
           <Rocket size={13} weight="fill" />
           {laneOnly ? "Create" : "Launch"} {launchCount} {launchCount === 1 ? "lane" : "lanes"}
         </Button>

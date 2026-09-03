@@ -1,17 +1,28 @@
 // ade-review — ADE's AI review product as a plugin, built out of public parts.
 //
 // The compiled Review tab is a desktop page over the `review.*` action domain.
-// This package is the same product as vocabulary panels every client draws:
+// From 2.0.0 this package IS that page: `page/` builds a React app the host
+// draws in a `webview` surface, and it draws the compiled runs browser, the
+// findings, the learnings and the launch form unchanged.
 //
-//   * the run list is a `tab` surface plus a `work-rail-pane`;
-//   * launch is a form that calls `review.startRun` with the same target/config
-//     the compiled dialog sent;
+// The vocabulary panels stay beside it, and they are not a leftover. A
+// `webview` surface is desktop-and-web only — `parseSurfaces` refuses
+// `mobile: true` on one — so the phone and the terminal render the `runs` and
+// `run` panels this file publishes, which is the only Review UI those clients
+// have ever had.
+//
+//   * the run list is a `webview` surface plus a `work-rail-pane`, both drawing
+//     the page, with the `runs` panel behind them for every other client;
+//   * launch is a second `webview` surface (an anchored popover) plus the
+//     `launch` panel, and both call `review.startRun` with the same
+//     target/config the compiled dialog sent;
 //   * findings and learnings are bound rows over this plugin's collections;
-//   * the PR "ADE review" button is a `toolbar-action` on `prs`.
+//   * the PR "ADE review" button is a `toolbar-action` on `prs` that opens the
+//     launch page.
 //
-// The host brain stays. This child only shapes rows and invokes verbs ADE
-// already answers. `official: true` marks the bundled package; it buys no
-// extra SDK.
+// The host brain stays. This child only shapes rows, answers the page's reads
+// and invokes verbs ADE already answers. `official: true` marks the bundled
+// package; it buys no extra SDK.
 
 "use strict";
 
@@ -33,6 +44,7 @@ const {
 } = require("./format");
 const { build } = require("./panels");
 const { buildTargetConfig, readLaunchForm, readRunId, validationMessage } = require("./launch");
+const { createPageActions } = require("./pageActions");
 
 const PUBLISH_ATTEMPTS = 5;
 const PUBLISH_RETRY_MS = 3_000;
@@ -297,7 +309,7 @@ exports.deactivate = async () => {
   sdk = null;
 };
 
-exports.actions = {
+const ownActions = {
   async refreshRuns() {
     const result = await refreshRuns({ force: true });
     if (result.error) return { message: result.error, ok: false };
@@ -514,6 +526,34 @@ exports.actions = {
   },
 };
 
+/**
+ * What the plugin's own HTML page invokes. See `pageActions.js`.
+ *
+ * `deps` is read through getters because this table is built at LOAD and `sdk`
+ * is null until `activate` runs: a page that opens before the first read
+ * resolves must still find a real handler. `readSuppression` is passed rather
+ * than reimplemented so the page, the panel button and the agent tool all
+ * refuse an unknown scope with the same sentence.
+ */
+const pageActions = createPageActions({
+  get sdk() { return sdk; },
+  refreshRuns,
+  refreshRun,
+  readSuppression,
+  currentRunId: () => currentRunId,
+  setCurrentRunId(next) { currentRunId = next; },
+});
+
+/**
+ * The action table the host dispatches into.
+ *
+ * Two DISJOINT halves: this file's own ids — the four tools, the three CLI
+ * words, and every press a vocabulary row can make — and the page's `page*`
+ * ids. No id is defined by both, and `test/pageActions.test.js` asserts it, so
+ * a collision cannot silently pick a winner.
+ */
+exports.actions = { ...ownActions, ...pageActions };
+
 /** The three scopes a suppression may claim. Anything else is a typo. */
 const SUPPRESSION_SCOPES = ["repo", "path", "global"];
 
@@ -568,6 +608,9 @@ exports.__internals = {
   viewFor,
   publish,
   refreshRuns,
+  ownActions,
+  pageActions,
+  readSuppression,
   cacheRef: () => cache,
   setCache(next) {
     cache = { ...cache, ...next };

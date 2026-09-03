@@ -727,6 +727,25 @@ export type AutomationTrigger = {
    */
   pluginId?: string;
   pluginTrigger?: string;
+  /**
+   * `type: "plugin"` only: the values a plugin's declared trigger-tile filters
+   * were set to, keyed by the field's own `key`.
+   *
+   * One bounded bag rather than a field per plugin concept, because the keys
+   * are the PLUGIN'S vocabulary — `teamId`, `projectId`, `label` — and ADE
+   * cannot grow a typed column for a name it learns at install time. Every
+   * other field on this type is one ADE itself matches on; these are the only
+   * ones whose meaning belongs to somebody else, which is exactly why they are
+   * quarantined in their own record instead of colonizing `team` / `project` /
+   * `assignee` (those are the compiled Linear trigger's, and a plugin writing
+   * into them would make two unrelated rules read as the same filter).
+   *
+   * Matched HOST-side, in `triggerMatches`, against `trigger.plugin.payload` —
+   * see the block there. Values are strings because the two declarable field
+   * kinds (`select`, `text`) both produce strings, and a filter that round-trips
+   * through the project config file must survive JSON without a schema.
+   */
+  pluginFilters?: Record<string, string>;
   activeHours?: AutomationActiveHours;
 };
 

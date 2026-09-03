@@ -1,0 +1,10 @@
+# Build dependencies only. The installer never copies this
+# (`PLUGIN_COPY_EXCLUDED_DIRS`), so nothing under it reaches a user's machine.
+node_modules/
+
+# The repo root ignores every `package-lock.json`, which is right for the npm
+# workspaces — they share one lock. This page is NOT in that workspace: it has
+# its own `package.json`, its own install and its own `node_modules`, and its
+# built `dist/` is committed. A build that cannot be reproduced byte-for-byte is
+# a `dist/` nobody can check, so this one lock is kept.
+!package-lock.json

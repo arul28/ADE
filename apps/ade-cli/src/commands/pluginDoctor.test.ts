@@ -1,4 +1,8 @@
-import { describe, expect, it } from "vitest";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import {
   buildPluginDoctorReport,
@@ -921,5 +925,179 @@ describe("buildPluginDoctorReport shortcuts rung", () => {
       manifest: manifest({ keybindings: [shortcut("Mod+K")] }),
     })));
     expect(text).toContain("✗ Shortcuts");
+  });
+});
+
+/**
+ * The page a `webview` surface actually ships.
+ *
+ * "Custom page" says the host will mount a guest. It cannot say whether the
+ * guest then finds anything: an `entryHtml` that was never copied into the
+ * install, or a page pulling its framework off a CDN the content policy
+ * refuses, both draw a blank white tab and log where nobody is looking. These
+ * cases are that gap, read off disk so they answer with ADE closed.
+ */
+describe("the page bundle rung", () => {
+  let root: string;
+
+  beforeEach(() => {
+    root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-page-bundle-"));
+  });
+
+  afterEach(() => {
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  const dashboard = {
+    kind: "webview" as const,
+    id: "dashboard",
+    title: "Dashboard",
+    panelId: "main",
+    entryHtml: "web/index.html",
+  };
+
+  /** A plugin whose page lives at `<root>/web/index.html` with the given HTML. */
+  function withBundle(html: string, extras: Record<string, Buffer | string> = {}): PluginDoctorSnapshot {
+    fs.mkdirSync(path.join(root, "web"), { recursive: true });
+    fs.writeFileSync(path.join(root, "web", "index.html"), html);
+    for (const [relative, contents] of Object.entries(extras)) {
+      const file = path.join(root, ...relative.split("/"));
+      fs.mkdirSync(path.dirname(file), { recursive: true });
+      fs.writeFileSync(file, contents);
+    }
+    return healthy({ manifest: manifest({ surfaces: [dashboard] }), installedRoot: root });
+  }
+
+  const PLAIN_PAGE = '<html><head><link rel="stylesheet" href="app.css"></head>'
+    + '<body><img src="./logo.png"><script src="app.js"></script></body></html>';
+
+  it("does not apply to a plugin that ships no page", () => {
+    expect(layer(healthy(), "pageBundle").state).toBe("na");
+  });
+
+  it("passes a page whose assets all sit beside it, and says how big the bundle is", () => {
+    const found = layer(withBundle(PLAIN_PAGE, { "web/app.js": "x".repeat(2048) }), "pageBundle");
+    expect(found.state).toBe("ok");
+    expect(found.detail).toContain("dashboard → web/index.html");
+    expect(found.detail).toContain("KiB");
+  });
+
+  it("FAILS when the file entryHtml names was never copied into the install", () => {
+    fs.mkdirSync(path.join(root, "web"), { recursive: true });
+    const snapshot = healthy({ manifest: manifest({ surfaces: [dashboard] }), installedRoot: root });
+    const found = layer(snapshot, "pageBundle");
+    expect(found.state).toBe("no");
+    expect(found.detail).toContain('"dashboard"');
+    expect(found.detail).toContain(path.join(root, "web", "index.html"));
+    expect(found.detail).toContain("there is no file there");
+  });
+
+  it("FAILS an entryHtml that climbs out of the installed folder", () => {
+    const snapshot = healthy({
+      manifest: manifest({ surfaces: [{ ...dashboard, entryHtml: "../../etc/passwd.html" }] }),
+      installedRoot: root,
+    });
+    const found = layer(snapshot, "pageBundle");
+    expect(found.state).toBe("no");
+    expect(found.detail).toContain("outside the installed folder");
+  });
+
+  /**
+   * The silent one. A page that loads React from a CDN parses, mounts, and
+   * renders nothing, because the guest refuses the script against its own
+   * policy and says so in a console no author has open.
+   */
+  it("FAILS a page loading a script or stylesheet from off the machine", () => {
+    const found = layer(withBundle(
+      '<html><head><link rel="stylesheet" href="https://cdn.example.com/app.css"></head>'
+      + '<body><script src="//cdn.example.com/react.js"></script>'
+      + '<script src="/absolute/app.js"></script></body></html>',
+    ), "pageBundle");
+    expect(found.state).toBe("no");
+    expect(found.detail).toContain('"https://cdn.example.com/app.css"');
+    expect(found.detail).toContain("content policy");
+    expect(found.detail).toContain("script-src 'self'");
+    // All three are named on the one line, because they are one page's problem
+    // and an author fixing it wants the whole list, not the first address.
+    expect(found.detail).toContain('"//cdn.example.com/react.js"');
+    expect(found.detail).toContain('"/absolute/app.js"');
+  });
+
+  it("refuses an inline data: script and allows a data: image or favicon", () => {
+    const blocked = layer(withBundle('<script src="data:text/javascript,alert(1)"></script>'), "pageBundle");
+    expect(blocked.state).toBe("no");
+    expect(blocked.detail).toContain("data:text/javascript");
+
+    const allowed = layer(withBundle(
+      '<html><head><link rel="icon" href="data:image/png;base64,AAAA"></head>'
+      + '<body><img src="data:image/png;base64,AAAA"></body></html>',
+    ), "pageBundle");
+    expect(allowed.state).toBe("ok");
+  });
+
+  /**
+   * Size is advice, not a fault: the bundle loads off local disk either way,
+   * so the rung stays ✓ and names the number rather than sending an author to
+   * fix a plugin that works.
+   */
+  it("WARNS without failing when the bundle is over the guidance", () => {
+    const found = layer(
+      withBundle(PLAIN_PAGE, { "web/vendor.js": Buffer.alloc(2 * 1024 * 1024 + 1, 0x61) }),
+      "pageBundle",
+    );
+    expect(found.state).toBe("ok");
+    expect(found.detail).toContain("over the 2 MiB guidance");
+    expect(found.detail).toContain("MiB");
+  });
+
+  it("FAILS when the running app has refused loads on this page", () => {
+    const snapshot = withBundle(PLAIN_PAGE);
+    snapshot.live!.detail = detail({
+      surfaces: [dashboard],
+      logs: [
+        {
+          at: "2026-08-25T11:00:00.000Z",
+          level: "warn",
+          message: "Refused to load the stylesheet",
+          fields: { source: "page", kind: "csp" },
+        },
+        {
+          at: "2026-08-25T11:59:00.000Z",
+          level: "warn",
+          message: "Refused to load the script https://cdn.example.com/react.js",
+          fields: { source: "page", kind: "csp" },
+        },
+        // Not a page refusal, and it must not be counted as one.
+        { at: "2026-08-25T11:59:30.000Z", level: "warn", message: "network refused", fields: { code: "plugin_network_refused" } },
+      ],
+    });
+    const found = layer(snapshot, "pageBundle");
+    expect(found.state).toBe("no");
+    expect(found.detail).toContain("refused 2 loads");
+    expect(found.detail).toContain("https://cdn.example.com/react.js");
+  });
+
+  /**
+   * Half an answer beats none: the files are on disk whether or not the app is
+   * up, and only the refusal count needs the app.
+   */
+  it("still reads the bundle from disk when ADE is not answering", () => {
+    const snapshot = healthy({
+      manifest: manifest({ surfaces: [dashboard] }),
+      installedRoot: root,
+      live: null,
+    });
+    fs.mkdirSync(path.join(root, "web"), { recursive: true });
+    fs.writeFileSync(path.join(root, "web", "index.html"), PLAIN_PAGE);
+    const found = layer(snapshot, "pageBundle");
+    expect(found.state).toBe("ok");
+    expect(found.detail).toContain("dashboard → web/index.html");
+    expect(found.detail).toContain("could not ask ADE");
+  });
+
+  it("sits on the ladder immediately after the page the host serves", () => {
+    const keys = buildPluginDoctorReport(healthy(), NOW).layers.map((entry) => entry.key);
+    expect(keys.indexOf("pageBundle")).toBe(keys.indexOf("customPage") + 1);
+    expect(keys.indexOf("lastRun")).toBe(keys.indexOf("pageBundle") + 1);
   });
 });

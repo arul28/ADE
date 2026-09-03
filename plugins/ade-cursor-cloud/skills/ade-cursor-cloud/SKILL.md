@@ -32,7 +32,13 @@ way to steer it mid-run except by stopping it. A prompt that would need a
 follow-up in an interactive chat needs to be a paragraph here.
 
 **`openPr` is creation-time only.** Cursor cannot add a pull request to a run
-that is already going. If the user wants one, pass it now.
+that is already going. If the user wants one, pass it now. If the lane's branch
+already HAS an open pull request, the agent attaches to that one and `openPr` is
+ignored — that is correct, not a bug to work around.
+
+**The launch pushes the lane's branch for you.** You do not need to push first.
+What you cannot fix from here is a branch that has *diverged* from origin: the
+launch refuses it and says to pull or rebase in the lane. Do that, then launch.
 
 ## What to do while it runs
 

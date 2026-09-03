@@ -4,10 +4,12 @@ const assert = require("node:assert/strict");
 const { describe, it } = require("node:test");
 
 const {
+  REMOTE_NAME_READ_TTL_MS,
   branchFromRun,
   chatStateForRunStatus,
   createChatRuntime,
   detailForRunStatus,
+  headerChips,
   hydrateTranscript,
   isLiveRunStatus,
 } = require("../runtime");
@@ -83,6 +85,9 @@ function fakeApi(overrides = {}) {
   return {
     getAgent: async () => ({ id: "a1", latestRunId: "r1" }),
     getRun: async () => ({ id: "r1", status: "FINISHED" }),
+    // One row, which is what `hydrateAgent` reads for the header's branch and
+    // model chips — the same single-row read the fleet does per active agent.
+    listRuns: async () => ({ items: [{ id: "r1", status: "RUNNING", model: { id: "composer-2" } }] }),
     createRun: async () => ({ run: { id: "r2", status: "CREATING" } }),
     cancelRun: async () => ({ id: "r1" }),
     listArtifacts: async () => ({ items: [] }),
@@ -494,5 +499,250 @@ describe("a Cursor status webhook", () => {
     assert.equal(result.sessionId, null);
     assert.equal(host.of("emitTrigger").length, 1);
     assert.equal(host.of("emitStatus").length, 0, "there is no session to report a status on");
+  });
+});
+
+/* ── The chat header ─────────────────────────────────────────────────────── */
+
+describe("the chat header chips", () => {
+  it("wears the fleet row's own tone words, and never red", () => {
+    assert.deepEqual(headerChips({ status: "running", branch: "cursor/fix", modelId: "composer-2" }), [
+      { text: "RUNNING", tone: "accent" },
+      { text: "cursor/fix", tone: "neutral" },
+      { text: "composer-2", tone: "neutral" },
+    ]);
+    // A failure is `warning`. There is no red in the vocabulary.
+    assert.deepEqual(headerChips({ status: "error" }), [{ text: "ERROR", tone: "warning" }]);
+    assert.deepEqual(headerChips({ status: "finished" }), [{ text: "FINISHED", tone: "success" }]);
+    assert.deepEqual(headerChips({}), []);
+  });
+
+  it("sets the header on hydrate, with Cursor's own name as the label", async () => {
+    const host = fakeHost();
+    const headers = [];
+    host.chat.setHeader = async (sessionId, header) => { headers.push({ sessionId, header }); };
+    const { runtime } = runtimeWith({
+      host,
+      api: fakeApi({
+        getAgent: async () => ({ id: "a1", name: "Fix the flaky sync test", latestRunId: "r1" }),
+        streamRun: async () => ({ text: async () => sseBody([{ type: "status", status: "RUNNING" }]) }),
+      }),
+    });
+
+    await runtime.openAgent({ agentId: "a1", laneId: "lane-1", title: "Fix the flaky sync test" });
+    const last = headers.at(-1);
+    assert.equal(last.header.label, "Fix the flaky sync test");
+    // No branch chip: the latest run has not pushed one yet.
+    assert.deepEqual(last.header.chips.map((chip) => chip.text), ["RUNNING", "composer-2"]);
+  });
+
+  it("writes nothing when the header did not move", async () => {
+    // The ladder ticks every three seconds. A header that republished on every
+    // tick would be twenty identical writes a minute per open chat.
+    const host = fakeHost();
+    const headers = [];
+    host.chat.setHeader = async (sessionId, header) => { headers.push(header); };
+    const { runtime } = runtimeWith({
+      host,
+      api: fakeApi({
+        streamRun: async () => ({ text: async () => sseBody([{ type: "status", status: "RUNNING" }]) }),
+      }),
+    });
+    await runtime.hydrateAgent("s-1", "a1");
+    const after = headers.length;
+    await runtime.poll("s-1", "a1");
+    assert.equal(headers.length, after, "an unchanged run publishes no header");
+  });
+
+  it("stands the feature down once, on a host that has no setHeader", async () => {
+    // `chat.setHeader` is newer than this plugin's floor. A host without it
+    // rejects every call, so one refusal has to be enough.
+    const host = fakeHost();
+    let calls = 0;
+    host.chat.setHeader = async () => {
+      calls += 1;
+      const error = new Error("no such method: chat.setHeader");
+      error.code = "unsupported_method";
+      throw error;
+    };
+    const { runtime } = runtimeWith({
+      host,
+      api: fakeApi({
+        streamRun: async () => ({ text: async () => sseBody([{ type: "status", status: "RUNNING" }]) }),
+      }),
+    });
+    await runtime.hydrateAgent("s-1", "a1");
+    await runtime.poll("s-1", "a1");
+    await runtime.hydrateAgent("s-2", "a1");
+    assert.equal(calls, 1, "one refusal stands the header down for the life of the child");
+  });
+
+  it("costs nothing at all on a host that never declared the verb", async () => {
+    const { runtime, host } = runtimeWith({
+      api: fakeApi({
+        streamRun: async () => ({ text: async () => sseBody([{ type: "status", status: "RUNNING" }]) }),
+      }),
+    });
+    await runtime.hydrateAgent("s-1", "a1");
+    assert.equal(host.of("setHeader").length, 0);
+    assert.equal(runtime.headerFor("s-1").status, "running");
+  });
+});
+
+/* ── The branch, and its pull request ────────────────────────────────────── */
+
+describe("attaching a finished run's branch", () => {
+  const finishedApi = (overrides = {}) => fakeApi({
+    getAgent: async () => ({ id: "a1", latestRunId: "r1" }),
+    getRun: async () => ({
+      id: "r1",
+      status: "FINISHED",
+      model: { id: "composer-2" },
+      git: { branches: [{ branch: "cursor/fix", prUrl: "https://github.com/acme/app/pull/7" }] },
+    }),
+    streamRun: async () => ({ text: async () => sseBody([{ type: "status", status: "FINISHED" }]) }),
+    ...overrides,
+  });
+
+  it("passes the pull request along with the branch", async () => {
+    const { runtime, host } = runtimeWith({ api: finishedApi() });
+    await runtime.poll("s-1", "a1");
+    assert.deepEqual(host.of("attachBranch").at(-1).args[1], {
+      branch: "cursor/fix",
+      prUrl: "https://github.com/acme/app/pull/7",
+    });
+  });
+
+  it("still attaches the branch on a host that refuses the extra field", async () => {
+    // The branch is the thing that fetches the work into the lane worktree. A
+    // host too old for `prUrl` must not lose it.
+    const host = fakeHost();
+    const seen = [];
+    host.chat.attachBranch = async (sessionId, input) => {
+      seen.push(input);
+      if ("prUrl" in input) throw new Error("invalid_args: prUrl");
+    };
+    const { runtime } = runtimeWith({ host, api: finishedApi() });
+    await runtime.poll("s-1", "a1");
+    assert.deepEqual(seen, [
+      { branch: "cursor/fix", prUrl: "https://github.com/acme/app/pull/7" },
+      { branch: "cursor/fix" },
+    ]);
+  });
+
+  it("puts the branch and the model on the header when the run settles", async () => {
+    const host = fakeHost();
+    const headers = [];
+    host.chat.setHeader = async (sessionId, header) => { headers.push(header); };
+    const { runtime } = runtimeWith({ host, api: finishedApi() });
+    await runtime.poll("s-1", "a1");
+    assert.deepEqual(headers.at(-1).chips, [
+      { text: "FINISHED", tone: "success" },
+      { text: "cursor/fix", tone: "neutral" },
+      { text: "composer-2", tone: "neutral" },
+    ]);
+  });
+});
+
+/* ── The relay ───────────────────────────────────────────────────────────── */
+
+describe("a webhook that ends a run", () => {
+  function finishedRuntime(options = {}) {
+    const links = fakeLinks({ a1: { agentId: "a1", sessionId: "s-1", laneId: "lane-1" } });
+    const api = fakeApi({
+      getAgent: async () => ({ id: "a1", name: "Fix it", latestRunId: "r1" }),
+      getRun: async () => ({ id: "r1", status: "FINISHED", git: { branches: [{ branch: "cursor/fix" }] } }),
+      listArtifacts: async () => ({ items: [{ path: "reports/coverage.json", sizeBytes: 4096 }] }),
+      getArtifactDownloadUrl: async () => ({ url: "https://files.cursor.com/a.json" }),
+      streamRun: async () => ({ text: async () => sseBody([{ type: "status", status: "FINISHED" }]) }),
+      ...options.api,
+    });
+    return runtimeWith({ links, api });
+  }
+
+  it("lists the artifacts a plain FINISHED produced", async () => {
+    const { runtime, host } = finishedRuntime();
+    await runtime.handleWebhook({ id: "d1", body: JSON.stringify({ id: "a1", status: "FINISHED" }) });
+    const listed = host.of("setArtifacts").at(-1).args[1];
+    assert.deepEqual(listed, [{
+      path: "reports/coverage.json",
+      bytes: 4096,
+      sourceUrl: "https://files.cursor.com/a.json",
+    }]);
+  });
+
+  it("emits no second status for a plain FINISHED with no pull request", async () => {
+    // The poll already said "finished". A duplicate beside it is a flicker,
+    // which is why the compiled dispatch emitted nothing here.
+    const { runtime, host } = finishedRuntime();
+    await runtime.handleWebhook({ id: "d1", body: JSON.stringify({ id: "a1", status: "FINISHED" }) });
+    const finished = host.of("emitStatus").filter((call) => call.args[1].state === "finished");
+    assert.equal(finished.length, 1, "the poll's own status, and no other");
+  });
+
+  it("emits for a FINISHED that carries a pull request, and for every bad ending", async () => {
+    for (const [body, state] of [
+      [{ id: "a1", status: "FINISHED", prUrl: "https://github.com/acme/app/pull/7" }, "finished"],
+      [{ id: "a1", status: "ERROR" }, "failed"],
+      [{ id: "a1", status: "CANCELLED" }, "idle"],
+      [{ id: "a1", status: "EXPIRED" }, "failed"],
+    ]) {
+      const { runtime, host } = finishedRuntime({
+        api: { streamRun: async () => ({ text: async () => sseBody([{ type: "status", status: body.status }]) }) },
+      });
+      await runtime.handleWebhook({ id: `d-${body.status}`, body: JSON.stringify(body) });
+      assert.ok(
+        host.of("emitStatus").filter((call) => call.args[1].state === state).length >= 2,
+        `${body.status} emits the relay's own status beside the poll's`,
+      );
+    }
+  });
+
+  it("still hydrates when the stream could not be read at all", async () => {
+    // A poll that cannot read the stream returns "skipped" without reaching its
+    // terminal branch. The relay FINISHED is the chat's last chance to list what
+    // ran, so the artifact pass runs whether or not the poll got there.
+    const { runtime, host } = finishedRuntime({
+      api: { streamRun: async () => { throw new Error("stream closed"); } },
+    });
+    await runtime.handleWebhook({ id: "d1", body: JSON.stringify({ id: "a1", status: "FINISHED" }) });
+    assert.equal(host.of("setArtifacts").length, 1);
+  });
+});
+
+/* ── The rename lock ─────────────────────────────────────────────────────── */
+
+describe("Cursor owns the name of a Cursor agent", () => {
+  it("offers a title on the first open and never again", async () => {
+    const host = fakeHost();
+    const links = fakeLinks();
+    const { runtime } = runtimeWith({ host, links });
+    await runtime.openAgent({ agentId: "a1", laneId: "lane-1", title: "Fix the flaky sync test" });
+    await runtime.openAgent({ agentId: "a1", laneId: "lane-1", title: "A title nobody asked for" });
+
+    const created = host.of("createSession").map((call) => call.args[0].title);
+    assert.deepEqual(created, ["Fix the flaky sync test", undefined]);
+  });
+
+  it("reads Cursor's name at most once a minute per session", async () => {
+    let reads = 0;
+    const host = fakeHost();
+    host.chat.setHeader = async () => {};
+    const { runtime } = runtimeWith({
+      host,
+      api: fakeApi({
+        getAgent: async () => {
+          reads += 1;
+          return { id: "a1", name: "Fix the flaky sync test", latestRunId: "r1" };
+        },
+      }),
+    });
+    await runtime.hydrateAgent("s-1", "a1");
+    await runtime.hydrateAgent("s-1", "a1");
+    await runtime.hydrateAgent("s-1", "a1");
+    // Three hydrates, three `getAgent` calls for the RUN, and exactly one of
+    // them also served the name read — the other two were inside the TTL.
+    assert.equal(reads, 3);
+    assert.equal(REMOTE_NAME_READ_TTL_MS, 60_000);
   });
 });

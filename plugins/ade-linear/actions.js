@@ -180,6 +180,7 @@ function createOwnActions(deps) {
     stepCommentOnIssue: (args) => deps.automation.steps.commentOnIssue(args),
     stepAssignIssue: (args) => deps.automation.steps.assignIssue(args),
     stepCloseIssueOnMerge: (args) => deps.automation.steps.closeIssueOnMerge(args),
+    stepStartIssueOnLane: (args) => deps.automation.steps.startIssueOnLane(args),
 
     /* ── Search ──────────────────────────────────────────────────────────── */
 
@@ -202,47 +203,25 @@ function createOwnActions(deps) {
     },
 
     /**
-     * The same list, as the top bar's quick view.
-     *
-     * A separate handler rather than an argument on {@link openIssues}, because
-     * the two answer different navigations and every other caller of
-     * `openIssues` — the palette, the keybinding, the composer button, the CLI
-     * — wants the full tab. `target: "popover"` is the host's word for "beside
-     * the button that opened it": desktop and the web client draw a popover
-     * under the top bar, the phone a sheet, the terminal a pane. A client that
-     * draws no popover still navigates, so this is never a dead button.
-     */
-    async openIssuesQuickView() {
-      void ensureIssues();
-      // `navigate`, and ONLY `navigate`.
-      //
-      // This used to answer `openWebview` beside it, so a client that hosts a
-      // plugin page opened the quick view and a client that does not navigated
-      // to the panel. The socket does the first half now: a `webviewSurfaceId`
-      // on the manifest entry opens the page BY ITSELF and never invokes the
-      // action, so this handler only ever runs on a client that hosts no page —
-      // and an `openWebview` answer here would be a second open of a surface
-      // that is already up, closing the first.
-      //
-      // One instruction per client, decided in one place: the manifest for a
-      // page host, this line for the phone and the terminal.
-      return { navigate: { panelId: "issues", target: "popover" } };
-    },
-
-    /**
-     * The issue picker, over the composer or under the chat header.
+     * The issue picker, from the composer's three-dot menu.
      *
      * Its whole contract is `composer.attach` then `surface.close`, which only
      * the page can perform — and the socket's own `webviewSurfaceId` is what
      * opens that page. This handler is the answer for a client that hosts none,
      * so it navigates to the list rather than pretending a panel can attach a
      * chip.
+     *
+     * It moved from a `composer-action` bar button to a `composer-menu-item`
+     * and the handler did not change: a menu row and a bar button press the
+     * same id, and which one the reader sees is the manifest's decision.
      */
     async openIssuePicker() {
       void ensureIssues();
-      // The socket's `webviewSurfaceId` opens the picker; see
-      // `openIssuesQuickView` for why this no longer answers `openWebview`
-      // beside the navigation.
+      // `navigate`, and ONLY `navigate`. A `webviewSurfaceId` on the manifest
+      // socket opens the page BY ITSELF and never invokes this action, so this
+      // handler runs only on a client that hosts no page — and an `openWebview`
+      // answer here would be a second open of a surface already up, closing the
+      // first. One instruction per client, decided in one place.
       return { navigate: { panelId: "issues" } };
     },
 
@@ -327,23 +306,61 @@ function createOwnActions(deps) {
       return { message: `Commented on ${link.issueKey ?? "the issue"}.` };
     },
 
+    /* ── The webhook ─────────────────────────────────────────────────────── */
+
     /**
-     * Store the signing secret Linear shows when the webhook is created.
+     * Create this workspace's Linear webhook and store its signing secret.
      *
-     * `plugin.json` declares `verify` with `secretRef: "LINEAR_WEBHOOK_SECRET"`,
-     * so every delivery is checked against an HMAC-SHA256 of the body — and the
-     * host FAILS CLOSED: a channel whose secret is missing drops every delivery
-     * rather than trusting it (`pluginWebhookIngressService.ts`). This action is
-     * therefore not a preparation for a future manifest change; it is the only
-     * way any Linear event reaches this plugin at all, which is why the settings
-     * panel says so rather than reporting a healthy endpoint.
+     * The `automation-trigger-tile`'s `registerAction`, and the whole of what
+     * used to be a paste box. `webhookSetup.js` says why the secret is
+     * generated here rather than copied out of Linear, and why a hook whose
+     * secret this plugin does not hold is rotated rather than adopted.
+     *
+     * A refusal is an ANSWER, not a throw: the tile draws the sentence beside
+     * the button, and a rejected promise there is a red toast with no fix in it.
      */
-    async saveWebhookSecret(args) {
-      const secret = typeof args?.secret === "string" ? args.secret.trim() : "";
-      if (!secret) return { message: "Paste the signing secret Linear showed you.", ok: false };
-      await deps.sdk.secrets.set("LINEAR_WEBHOOK_SECRET", secret);
+    async registerWebhook() {
+      const setup = deps.webhookSetup;
+      if (!setup) return { ok: false, message: "Linear is still starting up." };
+      const result = await setup.registerWebhook();
       await publish("settings");
-      return { message: "Saved the Linear webhook signing secret." };
+      return result;
+    },
+
+    /** Undo it: delete the hook and forget the secret. */
+    async unregisterWebhook() {
+      const setup = deps.webhookSetup;
+      if (!setup) return { ok: false, message: "Linear is still starting up." };
+      const result = await setup.unregisterWebhook();
+      await publish("settings");
+      return result;
+    },
+
+    /**
+     * The tile's status line: registered, last event, unacked, error.
+     *
+     * The `statusAction`. It reads rather than writes, so it answers a shape
+     * even while the plugin is still starting — a tile drawn against a throw
+     * would show an error for a plugin that is merely two seconds old.
+     */
+    async webhookStatus() {
+      const setup = deps.webhookSetup;
+      if (!setup) {
+        return {
+          ok: true,
+          registered: false,
+          canRegister: false,
+          status: "Starting up",
+          url: null,
+          secretStored: false,
+          connected: false,
+          webhooksPossible: false,
+          lastEvent: null,
+          pendingDeliveries: 0,
+          error: null,
+        };
+      }
+      return await setup.webhookStatus();
     },
 
     /* ── CLI ─────────────────────────────────────────────────────────────── */

@@ -12,8 +12,12 @@
 //     seam — the user's turns arrive as `chat.turn`, the replies stream back;
 //   * the webhook is a declared `webhookIngress` channel at ADE's relay, and
 //     the events arrive as `webhook.received` with an ack;
-//   * the launch path is a `composer-action` that claims Send (`ownsSend`) and
-//     still opens an Advanced form for secrets, model params, and the PR toggle.
+//   * the launch path is a `machine-entry` row in the composer's OWN machine
+//     picker that claims Send (`ownsSend`) and opens an Advanced page for
+//     secrets, model params, and the PR toggle — the same row the built-in
+//     composer drew, now a public socket;
+//   * the fleet, the agent and the launch form are also `webview` surfaces, and
+//     `pageActions.js` is what those pages read.
 //
 // Nothing here needs `official: true`. A community author could write every
 // line of it, which is the test the extraction was for.
@@ -47,19 +51,24 @@ const {
   buildLaunchPanel,
   fleetFooter,
   formatWebhookLastEvent,
-  unavailableReason,
 } = require("./panels");
 const {
   agentNameFromPrompt,
   buildCreateRequest,
+  clearIdempotencyKey,
   collectSecretValues,
+  ensureExistingLaneOriginReady,
   findConnectedRepo,
+  idempotencyKeyFor,
   isInjectableSecretName,
   laneSecretsKey,
+  launchUnavailableReason,
   MAX_ATTACHED_SECRETS,
   readComposerLaunch,
   readLaunchForm,
+  resolvePrCreateFields,
 } = require("./launch");
+const { createPageActions } = require("./pageActions");
 const { catalogControlOptions, readCatalog, verifyCreateModel } = require("./modelSelection");
 const { createChatRuntime } = require("./runtime");
 const { clampFleetBudget } = require("./repoMatch");
@@ -224,10 +233,35 @@ async function listLanes() {
   return Array.isArray(result) ? result : Array.isArray(result?.lanes) ? result.lanes : [];
 }
 
+/**
+ * One lane's `origin` URL and the branch Cursor would clone.
+ *
+ * `git.getOriginRemote` is lane-scoped — it reads `remote.origin.url` inside
+ * that lane's worktree, because `extensions.worktreeConfig` lets a lane
+ * override it — and answers `{remoteUrl, branch}`. Calling it with no `laneId`
+ * answers the empty fallback, which is why every caller here names a lane.
+ */
+async function readLaneRemote(laneId) {
+  const result = await sdk.actions.invoke("git", "getOriginRemote", { laneId });
+  if (typeof result === "string") return { remoteUrl: result, branch: null };
+  return {
+    remoteUrl: result?.remoteUrl ?? result?.url ?? result?.remote ?? result?.originRemote ?? null,
+    branch: result?.branch ?? null,
+  };
+}
+
+/**
+ * This project's `origin`, for the fleet's repo matching.
+ *
+ * Every lane of one project is a worktree of one repository, so the first lane
+ * answers for all of them. A project with no lane has no remote to match
+ * against, and the fleet then holds only the agents a chat here owns.
+ */
 async function getOriginRemote() {
-  const result = await sdk.actions.invoke("git", "getOriginRemote", {});
-  if (typeof result === "string") return result;
-  return result?.url ?? result?.remote ?? result?.originRemote ?? null;
+  const lanes = await listLanes().catch(() => []);
+  const laneId = lanes.find((lane) => typeof lane?.id === "string" && lane.id)?.id ?? null;
+  if (!laneId) return null;
+  return (await readLaneRemote(laneId)).remoteUrl;
 }
 
 /* ── Publishing ──────────────────────────────────────────────────────────── */
@@ -305,9 +339,10 @@ async function publishRows(grouped, now) {
  * to paste into Cursor.
  */
 async function readWebhookSnapshot() {
-  if (!sdk) return null;
-  const status = await sdk.webhooks.status().catch(() => null);
-  const url = await sdk.webhooks.url("cursor").catch(() => null);
+  const host = sdk;
+  if (!host) return null;
+  const status = await host.webhooks.status().catch(() => null);
+  const url = await host.webhooks.url("cursor").catch(() => null);
   cache.webhookUrl = typeof url === "string" && url.trim() ? url.trim() : null;
   if (!status && !cache.webhookUrl) return null;
   const state = status?.state;
@@ -328,6 +363,11 @@ async function readWebhookSnapshot() {
   return {
     status: caption,
     tone,
+    // The machine-readable half of the same fact. The panel draws `status`; a
+    // page branches on `state`, and `CloudWebhookState` declares all three of
+    // "ready" / "error" / "unconfigured" — so an `undeclared` host, which is a
+    // distinction only the host cares about, reads as unconfigured here.
+    state: state === "ready" ? "ready" : state === "error" ? "error" : "unconfigured",
     lastEvent: formatWebhookLastEvent(status?.lastReceivedAt),
     pendingDeliveries: Number(status?.pendingDeliveries) || 0,
     drainError,
@@ -343,11 +383,17 @@ async function readWebhookSnapshot() {
  * status, and the `activate` that has nothing on screen yet.
  */
 async function refreshFleet(options = {}) {
-  if (!sdk || disposed) return { state: "loading" };
+  // The client is captured, not re-read. Almost every caller is a
+  // fire-and-forget `void refreshFleet()`, so `deactivate` can land between two
+  // of the awaits below — and a `disposed` check alone would not stop the read
+  // already in flight from dereferencing a client that is now null.
+  const client = api;
+  if (!sdk || !client || disposed) return { state: "loading" };
   const now = Date.now();
   const webhook = await readWebhookSnapshot();
+  if (disposed) return { state: "loading" };
 
-  if (!(await api.hasKey())) {
+  if (!(await client.hasKey())) {
     cache = { at: now, grouped: null, items: [], archivedCount: 0, lanes: [], webhookUrl: cache.webhookUrl };
     await publish("fleet", buildFleetPanel({ state: "no-key", webhook }));
     return { state: "no-key" };
@@ -356,7 +402,7 @@ async function refreshFleet(options = {}) {
   let assembled;
   try {
     assembled = await assembleFleet(
-      { api, listLanes, originCache, listSessionLinks: links.list },
+      { api: client, listLanes, originCache, listSessionLinks: links.list },
       { includeArchived: true, limit: clampFleetBudget(options.limit), now },
     );
   } catch (error) {
@@ -373,6 +419,7 @@ async function refreshFleet(options = {}) {
     return { state: "error", error: error?.message ?? String(error) };
   }
 
+  if (disposed) return { state: "loading" };
   const grouped = groupFleet(assembled.items);
   cache = {
     at: now,
@@ -460,6 +507,257 @@ function failureMessage(error, fallback) {
 function launchedFrom(fromComposer, result) {
   if (!fromComposer) return result;
   return { ...result, composer: { replaceText: "" } };
+}
+
+
+/* ── The launch, once ────────────────────────────────────────────────────── */
+
+/**
+ * Cursor's repositories, this lane's remote, and whether they meet.
+ *
+ * The two probes the compiled composer ran on every keystroke, run once per
+ * launch here. Both are tri-state — loading, error, ready — because a probe in
+ * flight and a probe that failed are different facts, and reporting either as
+ * "this repo is not connected" is the bug `useCursorCloudDraftState` was
+ * written to stop.
+ */
+async function launchProbe(laneId) {
+  let repositories = [];
+  let repoProbe = "ready";
+  let repoProbeMessage = null;
+  try {
+    const listed = await api.listRepositories();
+    repositories = Array.isArray(listed?.items) ? listed.items : [];
+  } catch (error) {
+    repoProbe = "error";
+    repoProbeMessage = failureMessage(error, "Cursor Cloud request failed.");
+  }
+
+  let laneRemote = null;
+  let branch = null;
+  let remoteProbe = "ready";
+  let remoteError = null;
+  if (laneId) {
+    try {
+      const remote = await readLaneRemote(laneId);
+      laneRemote = remote.remoteUrl;
+      branch = remote.branch;
+    } catch (error) {
+      remoteProbe = "error";
+      remoteError = error?.message ?? "The git remote read failed.";
+    }
+  }
+
+  return {
+    repositories,
+    repoProbe,
+    repoProbeMessage,
+    laneRemote,
+    branch,
+    remoteProbe,
+    remoteError,
+    repoUrl: findConnectedRepo(repositories, laneRemote),
+  };
+}
+
+/** The pull request already open on a lane's branch, or null. */
+async function openPrFor(laneId, branch) {
+  if (!laneId || !branch) return null;
+  try {
+    const result = await sdk.actions.invoke("git", "getOpenPrForBranch", { laneId, branch });
+    const prUrl = typeof result?.prUrl === "string" ? result.prUrl.trim() : "";
+    if (!prUrl) return null;
+    return {
+      prUrl,
+      prNumber: Number.isFinite(result?.prNumber) ? result.prNumber : null,
+      title: typeof result?.title === "string" ? result.title : null,
+    };
+  } catch (error) {
+    // A repo whose PR host this machine has no credential for answers nothing.
+    // A launch that refused over it would be a launch blocked by a decoration.
+    log("debug", `Could not read the open PR: ${error?.message ?? error}`);
+    return null;
+  }
+}
+
+/** The PR toggle's stored position. The composer has no control for it. */
+async function autoOpenPrSetting() {
+  const config = await sdk.config.get().catch(() => ({}));
+  return config?.autoOpenPr === true;
+}
+
+/** The secret names this lane last chose to attach. Names only, never values. */
+async function rememberedSecretNames(laneId) {
+  if (!laneId) return [];
+  const remembered = await sdk.collections
+    .get("laneSecrets", laneSecretsKey(laneId))
+    .catch(() => null);
+  return (Array.isArray(remembered?.names) ? remembered.names : [])
+    .filter((name) => isInjectableSecretName(name))
+    .slice(0, MAX_ATTACHED_SECRETS);
+}
+
+/**
+ * The whole launch, for both gestures.
+ *
+ * The composer's Enter and the launch page's Submit are ONE act with two
+ * doorways, and this is the act. Written as a straight port of
+ * `AgentChatPane.tsx:launchCursorCloudRun` — the same order, the same probes,
+ * the same idempotency memo, the same PR rule — so the two gestures can never
+ * disagree about what a Cursor Cloud launch is.
+ *
+ * Answers `{ok, message, ...}` and never throws for anything Cursor, git or
+ * GitHub refused: both callers are surfaces that draw a sentence.
+ */
+async function runLaunch(form) {
+  const fromComposer = form.fromComposer === true;
+  const prompt = typeof form.prompt === "string" ? form.prompt.trim() : "";
+  if (!prompt) return { ok: false, message: "Say what the agent should do." };
+
+  const lanes = await listLanes().catch(() => []);
+  const lane = lanes.find((row) => row.id === form.laneId) ?? lanes[0] ?? null;
+
+  const probe = await launchProbe(lane?.id ?? null);
+  // The catalog is read before the ladder rather than after, because the
+  // composer's model rung branches on whether Cursor's model list has loaded at
+  // all — an empty catalog says "open the picker", a full one says "that model
+  // is not one of these".
+  let catalog = [];
+  let catalogError = null;
+  try {
+    const listed = await api.listModels();
+    catalog = readCatalog(listed?.items);
+  } catch (error) {
+    catalogError = error?.message ?? "Cursor's model catalog did not load";
+  }
+
+  const unavailable = launchUnavailableReason({
+    repoProbe: probe.repoProbe,
+    repoProbeMessage: probe.repoProbeMessage,
+    laneId: lane?.id ?? null,
+    remoteProbe: probe.remoteProbe,
+    remoteError: probe.remoteError,
+    laneRemote: probe.laneRemote,
+    repoConnected: Boolean(probe.repoUrl),
+    // Only Enter checks the model. The launch PAGE is where a model gets
+    // picked, and a form that refused to draw because no model was picked
+    // would be a form that could never be used.
+    checkModel: fromComposer,
+    modelId: form.model,
+    catalogModelIds: catalog.map((row) => row.id),
+  });
+  if (unavailable) return { ok: false, message: unavailable };
+
+  // Memoized per draft and kept across a failure, so a retry ADOPTS the agent
+  // Cursor already made rather than launching a second one on the same branch.
+  const idempotencyKey = idempotencyKeyFor(prompt, probe.repoUrl);
+
+  // Origin has to hold the branch before Cursor clones it: the cloud agent
+  // clones the remote, not this machine, so uncommitted or unpushed work is
+  // invisible to it.
+  try {
+    await ensureExistingLaneOriginReady({
+      laneId: lane.id,
+      branchHint: probe.branch,
+      git: {
+        getSyncStatus: (args) => sdk.actions.invoke("git", "getSyncStatus", args),
+        push: (args) => sdk.actions.invoke("git", "push", args),
+      },
+    });
+  } catch (error) {
+    // Already one plain sentence — `ensureExistingLaneOriginReady` rewrote
+    // git's stderr through `describePushFailure` before throwing.
+    return { ok: false, message: error?.message ?? "ADE could not push this lane's branch to origin." };
+  }
+
+  const startingRef = probe.branch;
+  if (!startingRef) {
+    return {
+      ok: false,
+      message: "Could not read this lane's branch, so there is nothing for the cloud agent to work on.",
+    };
+  }
+
+  // An existing PR WINS and forces `autoCreatePR: false`: asking Cursor to open
+  // a second pull request for one branch is how a lane ends up with two.
+  const existingPr = await openPrFor(lane.id, startingRef);
+  const prFields = resolvePrCreateFields({
+    existingPrUrl: existingPr?.prUrl,
+    autoCreatePR: form.openPr === true,
+  });
+
+  const secretNames = (Array.isArray(form.secretNames) ? form.secretNames : [])
+    .filter((name) => isInjectableSecretName(name))
+    .slice(0, MAX_ATTACHED_SECRETS);
+  const envVars = await collectSecretValues((name) => sdk.secrets.get(name), secretNames);
+
+  const verified = verifyCreateModel({
+    modelId: form.model,
+    reasoningEffort: form.reasoningEffort,
+    fastMode: form.fastMode,
+    catalog,
+    catalogError,
+  });
+  if (!verified.ok) return { ok: false, message: verified.message };
+
+  const request = buildCreateRequest({
+    prompt,
+    repoUrl: probe.repoUrl,
+    startingRef,
+    model: verified.model,
+    openPr: prFields.autoCreatePR,
+    ...(prFields.prUrl ? { prUrl: prFields.prUrl } : {}),
+    // Lane selection already decided the branch. Both were on every cloud
+    // launch the compiled composer made.
+    workOnCurrentBranch: true,
+    skipReviewerRequest: true,
+    envVars,
+    name: agentNameFromPrompt(prompt),
+  });
+
+  let created;
+  try {
+    created = await api.createAgent(request, { idempotencyKey });
+  } catch (error) {
+    // The key is KEPT. See `idempotencyKeyFor`.
+    return { ok: false, message: failureMessage(error, "Cursor refused the launch.") };
+  }
+
+  const agentId = created?.agent?.id ?? created?.id ?? null;
+  if (!agentId) return { ok: false, message: "Cursor accepted the launch but named no agent." };
+
+  if (form.rememberSecretNames === true && secretNames.length) {
+    await sdk.collections
+      .put("laneSecrets", laneSecretsKey(lane.id), { names: secretNames }, { ifFull: "evictOldest" })
+      .catch(() => {});
+  }
+
+  // The agent exists. From here nothing may answer `ok: false`, because the
+  // work IS under way and "it failed" would send the reader looking for it.
+  clearIdempotencyKey(prompt, probe.repoUrl);
+
+  let sessionId = null;
+  try {
+    const ref = await runtime.openAgent({
+      agentId,
+      laneId: lane.id,
+      title: agentNameFromPrompt(prompt),
+    });
+    sessionId = ref?.sessionId ?? null;
+  } catch (error) {
+    log("warn", `Launched ${agentId} but could not bind a chat: ${error?.message ?? error}`);
+    void refreshFleet();
+    return {
+      ok: true,
+      agentId,
+      sessionId: null,
+      laneId: lane.id,
+      message: "Launched on Cursor Cloud. Open it from the fleet to follow along.",
+    };
+  }
+
+  void refreshFleet();
+  return { ok: true, agentId, sessionId, laneId: lane.id, message: "Launched on Cursor Cloud." };
 }
 
 /* ── Lifecycle ───────────────────────────────────────────────────────────── */
@@ -761,18 +1059,72 @@ exports.actions = {
     return await exports.actions.stopRun({ ...args, agentId });
   },
 
+  /**
+   * The chat header's primary press: this agent's page on cursor.com.
+   *
+   * Built from the id rather than read from the fleet, because a chat's header
+   * must answer on a machine whose fleet read failed — and the URL is a pure
+   * function of the id (`cursorCloudAgentWebUrl`).
+   */
+  async openAgentWebFromChat(args) {
+    const agentId = await agentForSession(args);
+    if (!agentId) return { message: "This chat is not a Cursor Cloud agent.", ok: false };
+    const url = agentWebUrl(agentId);
+    if (!url) return { message: "That agent has no page to open.", ok: false };
+    return { openUrl: url };
+  },
+
+  /**
+   * The Automations tile's status line.
+   *
+   * The tile's other half is `copyWebhookUrl`, which is its `registerAction`:
+   * Cursor has no API for registering a webhook, so "register" here is putting
+   * the URL where the reader can paste it into Cursor's own settings.
+   */
+  async webhookStatus() {
+    const snapshot = await readWebhookSnapshot().catch(() => null);
+    if (!snapshot) {
+      return {
+        ok: true,
+        state: "unconfigured",
+        status: "Live updates not configured yet",
+        tone: "warning",
+        url: null,
+        lastEvent: null,
+        pendingDeliveries: 0,
+        error: null,
+        registered: false,
+        canRegister: false,
+      };
+    }
+    return {
+      ok: true,
+      state: snapshot.state,
+      status: snapshot.status,
+      tone: snapshot.tone,
+      url: snapshot.url,
+      lastEvent: snapshot.lastEvent,
+      pendingDeliveries: snapshot.pendingDeliveries,
+      error: snapshot.drainError,
+      // Cursor's channel has no `verify`, so "registered" is only ever "the
+      // relay is configured and has a URL to hand out".
+      registered: snapshot.state === "ready",
+      canRegister: Boolean(snapshot.url),
+    };
+  },
+
   /* ── Launch ────────────────────────────────────────────────────────── */
 
   /**
-   * The composer button: draw the launch form for this lane, or Send.
+   * Draw the launch FORM for this lane.
    *
-   * `args.send === true` is Enter after the button claimed Send. That path
-   * creates the agent from the live draft instead of opening the form — the
-   * same gesture the built-in machine-picker row used. The Advanced menu item
-   * still opens the form for secrets, model params, and the PR toggle.
+   * The vocabulary panel, for a client that cannot host a webview — the TUI,
+   * and any surface where the `launch` page's fallback is what renders.
+   * `launchFromComposer` is the machine-entry doorway; this is the panel one,
+   * and both end in `runLaunch`.
    */
   async openLaunch(args) {
-    if (args?.send === true) return await exports.actions.createRun(args);
+    if (args?.send === true) return await exports.actions.launchFromComposer(args);
 
     const context = args?.context ?? null;
     const laneId = context?.kind === "composer" ? context.laneId : (args?.laneId ?? null);
@@ -793,28 +1145,19 @@ exports.actions = {
     }
     const lane = lanes.find((row) => row.id === laneId) ?? lanes[0] ?? null;
 
-    let laneRemote = null;
-    try {
-      laneRemote = await getOriginRemote();
-    } catch {
-      laneRemote = null;
-    }
-
-    let repositories = [];
-    let probeError = null;
-    try {
-      const listed = await api.listRepositories();
-      repositories = Array.isArray(listed?.items) ? listed.items : [];
-    } catch (error) {
-      probeError = failureMessage(error, "Cursor Cloud request failed.");
-    }
-
-    const unavailable = probeError
-      ? unavailableReason({ probe: "error", message: probeError })
-      : unavailableReason({
-        laneRemote,
-        repoConnected: Boolean(findConnectedRepo(repositories, laneRemote)),
-      });
+    // The SELECTED lane's remote, not the project's: a lane can override
+    // `remote.origin.url` through `extensions.worktreeConfig`, and the form has
+    // to answer for the lane the agent will actually clone.
+    const probe = await launchProbe(lane?.id ?? null);
+    const unavailable = launchUnavailableReason({
+      repoProbe: probe.repoProbe,
+      repoProbeMessage: probe.repoProbeMessage,
+      laneId: lane?.id ?? null,
+      remoteProbe: probe.remoteProbe,
+      remoteError: probe.remoteError,
+      laneRemote: probe.laneRemote,
+      repoConnected: Boolean(probe.repoUrl),
+    });
     if (unavailable) {
       await publish("launch", buildLaunchPanel({ unavailable }));
       return { navigate: { panelId: "launch" } };
@@ -856,119 +1199,63 @@ exports.actions = {
   },
 
   /**
-   * The launch form's submit: create the agent, then adopt it as a chat.
+   * The launch form's submit, and the `launch_agent` tool.
    *
-   * The two halves are one act. An agent created without a session is a row in
-   * a list; an agent created WITH one is a conversation the user can answer,
-   * which is what the built-in composer produced and what this has to match.
+   * Both are the same act as Enter in the composer, so both run `runLaunch`.
+   * This adapter's whole job is reading the FORM's field names into it and
+   * turning its answer back into panel vocabulary.
    */
   async createRun(args) {
-    const fromComposer = args?.send === true;
-    const form = fromComposer ? readComposerLaunch(args) : readLaunchForm(args);
-    if (!form.prompt) return { message: "Say what the agent should do.", ok: false };
-
-    let lanes = [];
-    try {
-      lanes = await listLanes();
-    } catch {
-      lanes = [];
-    }
-    const lane = lanes.find((row) => row.id === form.laneId) ?? lanes[0] ?? null;
-    if (!lane) return { message: "Open a lane first — a cloud agent works on a lane's branch.", ok: false };
-
-    if (fromComposer) {
-      const remembered = await sdk.collections.get("laneSecrets", laneSecretsKey(lane.id)).catch(() => null);
-      const names = Array.isArray(remembered?.names) ? remembered.names : [];
-      form.secretNames = names
-        .filter((name) => isInjectableSecretName(name))
-        .slice(0, MAX_ATTACHED_SECRETS);
-      const config = await sdk.config.get().catch(() => ({}));
-      form.openPr = config?.autoOpenPr === true;
-    }
-
-    const laneRemote = await getOriginRemote().catch(() => null);
-    let repositories = [];
-    try {
-      const listed = await api.listRepositories();
-      repositories = Array.isArray(listed?.items) ? listed.items : [];
-    } catch (error) {
-      return { message: failureMessage(error, "Could not read your Cursor repositories."), ok: false };
-    }
-    const repoUrl = findConnectedRepo(repositories, laneRemote);
-    if (!repoUrl) {
-      return {
-        message: "This repo is not connected to Cursor. Connect it in Cursor, then try again.",
-        ok: false,
-      };
-    }
-
-    const envVars = await collectSecretValues((name) => sdk.secrets.get(name), form.secretNames);
-
-    let catalog = [];
-    let catalogError = null;
-    try {
-      const listed = await api.listModels();
-      catalog = readCatalog(listed?.items);
-    } catch (error) {
-      catalogError = error?.message ?? "Cursor's model catalog did not load";
-    }
-    const verified = verifyCreateModel({
-      modelId: form.model,
+    if (args?.send === true) return await exports.actions.launchFromComposer(args);
+    const form = readLaunchForm(args);
+    const result = await runLaunch({
+      prompt: form.prompt,
+      laneId: form.laneId,
+      model: form.model,
       reasoningEffort: form.reasoningEffort,
       fastMode: form.fastMode,
-      catalog,
-      catalogError,
-    });
-    if (!verified.ok) return { message: verified.message, ok: false };
-
-    const request = buildCreateRequest({
-      prompt: form.prompt,
-      repoUrl,
-      branch: lane.branchRef,
-      model: verified.model,
       openPr: form.openPr,
-      envVars,
-      name: agentNameFromPrompt(form.prompt),
+      secretNames: form.secretNames,
+      rememberSecretNames: form.rememberSecretNames,
     });
+    if (!result.ok) return { message: result.message, ok: false };
+    return { message: result.message, navigate: { panelId: "fleet" } };
+  },
 
-    let created;
-    try {
-      created = await api.createAgent(request);
-    } catch (error) {
-      return { message: failureMessage(error, "Cursor refused the launch."), ok: false };
+  /**
+   * The machine-entry row in the composer's own machine picker.
+   *
+   * Two gestures reach it. Selecting the row is a MODE and invokes nothing;
+   * pressing Enter invokes this with `args.send === true` and the live draft in
+   * `args.context`, which is the `ownsSend` contract. Anything else — the
+   * row's "Advanced…" affordance, a palette press, a client with no composer —
+   * opens the `launch` page as a picker over the composer it belongs to.
+   *
+   * On success it does NOT navigate: the compiled composer adopted the new
+   * chat session, and yanking the reader to a fleet list after they pressed
+   * Enter in a conversation would be the opposite of what they asked for. The
+   * draft is cleared, which is how they know it went.
+   */
+  async launchFromComposer(args) {
+    if (args?.send !== true) {
+      return { openWebview: { surfaceId: "launch", placement: "picker" } };
     }
-
-    const agentId = created?.agent?.id ?? created?.id ?? null;
-    if (!agentId) return { message: "Cursor accepted the launch but named no agent.", ok: false };
-
-    if (form.rememberSecretNames && form.secretNames.length) {
-      await sdk.collections
-        .put("laneSecrets", laneSecretsKey(lane.id), { names: form.secretNames }, { ifFull: "evictOldest" })
-        .catch(() => {});
-    }
-
-    try {
-      await runtime.openAgent({
-        agentId,
-        laneId: lane.id,
-        title: agentNameFromPrompt(form.prompt),
-      });
-    } catch (error) {
-      // The agent IS running; only the chat binding failed. Say both, because
-      // "it failed" would send the reader looking for work that is under way.
-      log("warn", `Launched ${agentId} but could not bind a chat: ${error?.message ?? error}`);
-      void refreshFleet();
-      return launchedFrom(fromComposer, {
-        message: "Launched on Cursor Cloud. Open it from the fleet to follow along.",
-        navigate: { panelId: "fleet" },
-      });
-    }
-
-    void refreshFleet();
-    return launchedFrom(fromComposer, {
-      message: "Launched on Cursor Cloud.",
-      navigate: { panelId: "fleet" },
+    const form = readComposerLaunch(args);
+    const result = await runLaunch({
+      fromComposer: true,
+      prompt: form.prompt,
+      laneId: form.laneId,
+      model: form.model,
+      reasoningEffort: form.reasoningEffort,
+      fastMode: form.fastMode,
+      // The composer has no PR toggle and no secret picker — that is what the
+      // Advanced page is for — so both come from what this lane last chose.
+      openPr: await autoOpenPrSetting(),
+      secretNames: await rememberedSecretNames(form.laneId),
+      rememberSecretNames: false,
     });
+    if (!result.ok) return { message: result.message, ok: false };
+    return launchedFrom(true, { message: result.message });
   },
 
   /* ── Automation steps and agent tools ──────────────────────────────── */
@@ -1077,4 +1364,63 @@ exports.actions = {
       }));
     return { results };
   },
+};
+
+
+/**
+ * The handlers the plugin's own HTML PAGES invoke over the webview bridge.
+ *
+ * Built at LOAD, with every collaborator behind a getter, for the reason
+ * `pageActions.js`'s header gives: a `webview` surface is a page the reader can
+ * open the instant its tab is drawn, which is well before `activate`'s first
+ * Cursor read has settled. A page that got "no such action" there would draw
+ * its empty state and stay there.
+ *
+ * The two tables are DISJOINT — every id here starts with `page`, and none of
+ * the manifest's own ids do — so the merge below cannot silently shadow a
+ * handler the manifest declared. `test/pageActions.test.js` asserts it.
+ */
+const pageActions = createPageActions({
+  get sdk() { return sdk; },
+  get api() { return api; },
+  get runtime() { return runtime; },
+  links,
+  log,
+  listLanes,
+  readLaneRemote,
+  findConnectedRepo,
+  readCatalog,
+  catalogControlOptions,
+  groupFleet,
+  fleetFooter,
+  refreshFleet,
+  readWebhookSnapshot,
+  findEntry,
+  runLaunch,
+  fleetSnapshot: () => cache,
+  ackTabBadge: (args) => exports.actions.ackTabBadge(args),
+  /**
+   * Dispatch into this plugin's OWN action table by id.
+   *
+   * The one implementation of stop, pull, archive, delete and copy lives there,
+   * where the panel rows and the agent tools already press it. `pageActions.js`
+   * narrows whatever comes back to the `{ok, message}` a page can draw — the
+   * file that made that promise is the file that keeps it.
+   */
+  invokeOwnAction: async (id, args) => {
+    const handler = exports.actions[id];
+    if (typeof handler !== "function") {
+      throw new Error("Cursor Cloud is still starting up on this machine.");
+    }
+    return await handler(args ?? {});
+  },
+});
+
+Object.assign(exports.actions, pageActions);
+
+// Exported for `test/`, which drives the tables without a running daemon.
+exports.__internals = {
+  FLEET_CACHE_MS,
+  pageActions,
+  runLaunch,
 };

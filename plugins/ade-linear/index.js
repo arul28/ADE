@@ -52,6 +52,7 @@ const { issueBranchName, issueLaneName } = require("./issueFormat");
 const { createConnect, normalizeAuthOrigin } = require("./connect");
 const { createAutomation } = require("./automation");
 const { createWebhookHandler } = require("./webhook");
+const { createWebhookSetup } = require("./webhookSetup");
 const panels = require("./panels");
 const panelActions = require("./panelActions");
 const { issueIdFromRowKey } = require("./panels/rows");
@@ -141,6 +142,7 @@ let flows = null;
 let connect = null;
 let automation = null;
 let webhook = null;
+let webhookSetup = null;
 let disposed = false;
 /** Unsubscribe functions for every event this plugin listens to. */
 const subscriptions = [];
@@ -504,6 +506,7 @@ async function viewFor(panelId, context) {
     const ledger = connection?.webhookUrl
       ? await sdk.webhooks.status().catch(() => null)
       : null;
+    const registration = await webhookSetup?.webhookStatus().catch(() => null) ?? null;
     return {
       // Three bodies, and the third is real: before the first `refreshConnection`
       // there is no connection ROW at all, which is a different thing from a
@@ -547,12 +550,14 @@ async function viewFor(panelId, context) {
       // that will never be posted to. Saying "ready" there would be the same
       // failure the fail-closed copy exists to prevent.
       //
-      // Nor may it say "ready" while the SECRET is missing. The manifest
+      // Nor may it say "ready" while the plugin holds no SECRET. The manifest
       // declares `verify`, and the host fails closed on a channel whose secret
       // it cannot find — so with nothing stored, every delivery Linear sends is
       // dropped before this plugin sees it. "Endpoint ready" there was the
       // most misleading sentence on the screen: the endpoint exists, the
-      // deliveries arrive, and none of them count.
+      // deliveries arrive, and none of them count. Registration is what makes
+      // both true at once now, which is why the row reports that and not the
+      // endpoint.
       //
       // Whether deliveries are actually ARRIVING is the host's delivery ledger.
       // `webhooks.status` is that row, scoped to this plugin.
@@ -560,10 +565,10 @@ async function viewFor(panelId, context) {
         ? {
           status: !webhooksPossible
             ? "Linear will not deliver to this connection"
-            : secretStored
-              ? "Endpoint ready"
-              : "Waiting for the signing secret",
-          tone: webhooksPossible && secretStored ? "neutral" : "warning",
+            : registration?.registered
+              ? "Registered"
+              : "Not registered",
+          tone: webhooksPossible && registration?.registered ? "neutral" : "warning",
           lastEvent: formatWebhookLastEvent(ledger?.lastReceivedAt),
           pendingDeliveries: Number(ledger?.pendingDeliveries) || 0,
           drainError: typeof ledger?.lastError === "string" && ledger.lastError.trim()
@@ -571,6 +576,11 @@ async function viewFor(panelId, context) {
             : null,
           url: connection.webhookUrl,
           secretStored,
+          // Whether ADE created the hook AND still holds its secret. Two
+          // separate facts on purpose: a stored secret with no registration is
+          // a secret for a hook that no longer exists, and the panel's button
+          // has to offer Register rather than claiming a working endpoint.
+          registered: registration?.registered === true,
           webhooksPossible,
         }
         : null,
@@ -917,7 +927,7 @@ function buildPanelHost() {
       applySettings: async (values) => {
         const writable = {};
         for (const [key, value] of Object.entries(values ?? {})) {
-          if (key === "moveToDoneOnMerge" || key === "moveToStartedOnLaunch") writable[key] = value === true;
+          if (key === "launchPromptClipboard") writable[key] = value === true;
           else if (key === "defaultTeamKey") writable[key] = typeof value === "string" ? value : null;
         }
         if (Object.keys(writable).length === 0) return {};
@@ -949,6 +959,7 @@ exports.activate = async (ade) => {
   connect = createConnect({ sdk, api, data, log: (level, message) => log(level, message) });
   automation = createAutomation({ api, data, flows, log: (level, message) => log(level, message) });
   webhook = createWebhookHandler({ sdk, data, log: (level, message) => log(level, message) });
+  webhookSetup = createWebhookSetup({ sdk, api, connect, log: (level, message) => log(level, message) });
 
   // The panel half is given everything it needs and nothing more. It reaches
   // this object by DOTTED PATH (`panelActions.HOST_CAPABILITIES`) and treats a
@@ -1003,23 +1014,16 @@ exports.activate = async (ade) => {
     void ensureIssues().then(() => publishLaneBadges()).catch(() => {});
   }));
 
-  // The merged-PR transition. The WHOLE payload goes through, not just `ids`:
-  // `pr.changed` now carries `transitions` when the host's producer knew where
-  // each PR moved from, which is the same previous state core's own merge
-  // handling reads. See `flows.mergedLanesFromPrIds` for the fallback when it
-  // does not.
-  subscriptions.push(sdk.events.on("pr.changed", (payload) => {
-    void (async () => {
-      try {
-        const laneIds = await flows.mergedLanesFromPrIds(payload ?? { ids: [] });
-        if (laneIds.length === 0) return;
-        const result = await flows.closeIssueOnMerge({ laneIds });
-        if (result.moved > 0) await refreshIssues();
-      } catch (error) {
-        log("warn", `Could not act on a merged pull request: ${error?.message ?? error}`);
-      }
-    })();
-  }));
+  // No `pr.changed` subscription any more, and its absence is the point.
+  //
+  // This plugin used to move a merged lane's issues to Done on every merge,
+  // gated on a `moveToDoneOnMerge` toggle in its settings. Both are gone. The
+  // transition is an AUTOMATION now — `close_issue_on_merge` as a step, shipped
+  // as a one-press `automation-template` on `github.pr_merged` — so a rule the
+  // reader can see, name and switch off decides it, instead of a checkbox two
+  // screens away silently rewriting tickets other people read. The same is true
+  // of the launch transition, which is why `spawnAgentOnIssue` no longer moves
+  // anything either.
 
   // STARTED, not awaited. The bootstrap sends `ready` only once `activate`
   // resolves, and the host gives it 20 s: the first read is up to three
@@ -1145,6 +1149,7 @@ exports.deactivate = async () => {
   connect = null;
   automation = null;
   webhook = null;
+  webhookSetup = null;
 };
 
 
@@ -1163,6 +1168,7 @@ const ownActions = createOwnActions({
   get flows() { return flows; },
   get connect() { return connect; },
   get automation() { return automation; },
+  get webhookSetup() { return webhookSetup; },
   publish,
   refreshIssues,
   ensureIssues,
@@ -1195,7 +1201,6 @@ const pageActions = createPageActions({
   refreshIssues,
   refreshCatalogAndIssues,
   ensureIssues,
-  webhooksReachable,
   chosenReasoningEffort,
   issueIdFromRowKey,
 });
@@ -1216,10 +1221,12 @@ const pageActions = createPageActions({
  * is still applied last, but now only as a belt on a table with no collisions
  * in it rather than as the thing that decides which copy runs.
  *
- * `saveWebhookSecret` is the one id the page shares with another half, and it
- * shares it by INVOKING the existing one rather than by defining a second copy:
- * `actions.js` owns it, the page's `saveWebhookSecret()` calls that id, and a
- * `pageSaveWebhookSecret` beside it would be two ways to write one secret.
+ * `registerWebhook`, `unregisterWebhook` and `webhookStatus` are the ids the
+ * page shares with another half, and it shares them by INVOKING the existing
+ * ones rather than by defining second copies: `actions.js` owns them because
+ * the Automations tile presses the same two by name (`registerAction` and
+ * `statusAction` on the `automation-trigger-tile`), and a `pageRegisterWebhook`
+ * beside them would be two ways to create one webhook.
  */
 exports.actions = { ...ownActions, ...pageActions };
 

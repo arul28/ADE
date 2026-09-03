@@ -65,6 +65,16 @@ const COLLECTION_PROJECTS = "projects";
 const COLLECTION_PEOPLE = "people";
 
 /**
+ * The workspace's issue labels.
+ *
+ * No panel binds it either. It exists so the Automations trigger tile's LABEL
+ * filter can be a picker over this workspace's own labels rather than a text
+ * box a reader has to spell a label into — the same reason `projects` and
+ * `people` exist for the two filters above.
+ */
+const COLLECTION_LABELS = "labels";
+
+/**
  * One issue is written under two key spaces.
  *
  * `collections.list` orders by key and nothing else, so the order a list draws
@@ -347,7 +357,8 @@ const ACTIONS = {
   applySettings: "applySettings",
   createAutolink: "createAutolink",
   copyWebhookUrl: "copyWebhookUrl",
-  saveWebhookSecret: "saveWebhookSecret",
+  registerWebhook: "registerWebhook",
+  unregisterWebhook: "unregisterWebhook",
 };
 
 /**
@@ -381,6 +392,7 @@ module.exports = {
   ACTIONS,
   COLLECTION_COMMENTS,
   COLLECTION_ISSUES,
+  COLLECTION_LABELS,
   COLLECTION_PEOPLE,
   COLLECTION_PROJECTS,
   COLLECTION_STATES,

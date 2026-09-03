@@ -1,9 +1,17 @@
 // Labels and collection keys for ade-ios-sim.
 //
-// Rows arrive in render shape. Phone and terminal list them; desktop mounts
-// ADE's compiled iOS Simulator pane through `canvas` / `simulator`.
+// Rows arrive in render shape. Phone and terminal list them; desktop and web
+// draw the plugin's own page (`page/`) and let the host engine paint the live
+// screen into the rect that page reserves.
+//
+// "iOS Sim Control" is ADE's pane. "iOS Simulator" below is Apple's product —
+// the runtime a device is booted on — and the two are deliberately not the same
+// word.
 
 "use strict";
+
+/** ADE's name for this pane, in one place so every string agrees. */
+const PRODUCT_NAME = "iOS Sim Control";
 
 const COLLECTION_STATUS = "status";
 const PANEL_MAIN = "main";
@@ -27,10 +35,10 @@ function statusRow(status) {
       ? (device ?? "Simulator running")
       : "Idle";
   const subtitle = !supported
-    ? "Simulator control runs on the attached Mac."
+    ? "Driving a simulator runs on the attached Mac."
     : live
       ? (device ? `Running on ${device}.` : "A simulator session is live.")
-      : "Boot a simulator from the desktop pane.";
+      : "Boot a simulator from iOS Sim Control on the Mac.";
   return {
     title,
     subtitle,
@@ -45,6 +53,7 @@ function statusRow(status) {
 
 module.exports = {
   COLLECTION_STATUS,
+  PRODUCT_NAME,
   DEEPLINK_SIM,
   PANEL_MAIN,
   STATUS_ROW_KEY,

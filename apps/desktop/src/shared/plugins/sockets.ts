@@ -4,11 +4,11 @@
  * Pure types and pure helpers, shared by the daemon, the desktop renderer, the
  * `ade code` TUI and (transcribed) iOS. No React, no Electron, no Node.
  *
- * The taxonomy is deliberately CLOSED and small. Eighteen kinds across eight
- * surfaces is the whole vocabulary, and a plugin author learns the shape once
- * while iOS implements it exhaustively at compile time. Adding a nineteenth
- * kind is a platform change with a parity cost on four clients — not something
- * a plugin can invent at runtime.
+ * The taxonomy is deliberately CLOSED and small. Twenty-three kinds across
+ * eight surfaces is the whole vocabulary, and a plugin author learns the shape
+ * once while iOS implements it exhaustively at compile time. Adding a
+ * twenty-fourth kind is a platform change with a parity cost on four clients —
+ * not something a plugin can invent at runtime.
  *
  * A kind does not have to reach every client on the day it lands. A client that
  * has not grown an arm for one drops it where it decodes (iOS maps an unknown
@@ -52,6 +52,20 @@ export const PLUGIN_SOCKET_KINDS = [
   "chat-header-action",
   "chat-card",
   "slash-command",
+  // A row in the composer's own three-dot menu. Distinct from
+  // `composer-action` because a menu row is not a control on the accessory
+  // row: it costs no horizontal space, it carries no busy state, and it is
+  // where a verb goes when it is used once a session rather than once a turn.
+  "composer-menu-item",
+  // A row nested under a NAMED submenu of the chat's menus — `issue-context`
+  // today. Its own kind rather than a `submenu` field on `composer-menu-item`
+  // because the submenu is core furniture with core rows already in it: the
+  // plugin joins a list ADE owns, and the payload has to say which list.
+  "chat-menu-item",
+  // A row in the composer's machine picker. The one kind whose selection
+  // changes what Enter DOES, which is why it is not an action button: the row
+  // is a mode, and the press that matters is the send that follows it.
+  "machine-entry",
   // Ambient placement: the seams that are not attached to a row.
   "command-palette-action",
   "settings-section",
@@ -64,6 +78,13 @@ export const PLUGIN_SOCKET_KINDS = [
   "graph-node",
   // Dialogs.
   "dialog-section",
+  // Automations. Two kinds rather than one because they answer two different
+  // questions the rule builder asks: `automation-trigger-tile` is "what starts
+  // this rule", drawn in the trigger grid beside GitHub and Linear, and
+  // `automation-template` is "here is a whole rule already written", drawn in
+  // the gallery. A plugin may declare either without the other.
+  "automation-trigger-tile",
+  "automation-template",
 ] as const;
 
 export type PluginSocketKind = (typeof PLUGIN_SOCKET_KINDS)[number];
@@ -146,7 +167,19 @@ export type PluginSocketRequirementField = "label" | "actionId" | "panelId" | "e
  * would make the parser drop a contribution that renders perfectly well
  * without it.
  */
-export type PluginSocketExtraField = "command" | "dialog";
+export type PluginSocketExtraField =
+  | "command"
+  | "dialog"
+  // `chat-menu-item` only: which core submenu the row joins. Required for the
+  // same reason `dialog` is — a row that names no list has no list to be in,
+  // and a host guessing one would put a plugin's issue picker under whatever
+  // submenu happened to be first.
+  | "submenu"
+  // `automation-trigger-tile` only: the events the tile offers as radios. A
+  // tile with no triggers is a tile that cannot start a rule.
+  | "triggers"
+  // `automation-template` only: the rule body the gallery entry creates.
+  | "template";
 
 export type PluginSocketRequirement = {
   manifest: readonly PluginSocketRequirementField[];
@@ -183,6 +216,29 @@ export const PLUGIN_SOCKET_REQUIREMENTS: Record<PluginSocketKind, PluginSocketRe
   // every purely informational one undeclarable.
   "graph-node": { manifest: ["label"], payload: ["label"] },
   "dialog-section": { manifest: ["panelId"], manifestExtra: ["dialog"], payload: ["dialog", "panelId"] },
+  // A menu row is a label and a press, exactly like `row-menu-item`. The page
+  // it may open rides `webviewSurfaceId`, which is optional everywhere.
+  "composer-menu-item": { manifest: ["label", "actionId"], payload: ["label", "actionId"] },
+  "chat-menu-item": {
+    manifest: ["label", "actionId"],
+    manifestExtra: ["submenu"],
+    payload: ["label", "actionId", "submenu"],
+  },
+  // `actionId` is REQUIRED even though selecting the row invokes nothing: the
+  // action is what Enter runs once the row is selected. A machine entry with
+  // no action is a mode the user can enter and never leave — the composer
+  // would take the draft and have nowhere to send it.
+  "machine-entry": { manifest: ["label", "actionId"], payload: ["label", "actionId"] },
+  "automation-trigger-tile": {
+    manifest: ["label"],
+    manifestExtra: ["triggers"],
+    payload: ["label", "triggers"],
+  },
+  "automation-template": {
+    manifest: ["label"],
+    manifestExtra: ["template"],
+    payload: ["name", "template"],
+  },
 };
 
 /**
@@ -336,6 +392,21 @@ export const PLUGIN_SOCKET_CLIENT_SUPPORT: Record<PluginSocketKind, PluginSocket
   // absent-not-half-drawn behaviour this table promises.
   "graph-node": { desktop: true, web: true, ios: false, tui: false },
   "dialog-section": { desktop: true, web: true, ios: false, tui: false },
+  // The wave-2 kinds. `web` tracks `desktop` by the rule at the top of this
+  // table — the hosted client builds the same renderer components — and the
+  // per-SURFACE residual still applies: the two automations kinds draw nowhere
+  // on web because that build does not mount the Automations tab at all, which
+  // is a fact about the tab and not about the kind.
+  //
+  // `ios` is false for all five for one round. The phone has no composer
+  // three-dot menu, no machine picker and no Automations tab, so growing an
+  // arm for any of them means growing the surface first — the same reason
+  // `graph-node` is false there.
+  "composer-menu-item": { desktop: true, web: true, ios: false, tui: false },
+  "chat-menu-item": { desktop: true, web: true, ios: false, tui: false },
+  "machine-entry": { desktop: true, web: true, ios: false, tui: false },
+  "automation-trigger-tile": { desktop: true, web: true, ios: false, tui: false },
+  "automation-template": { desktop: true, web: true, ios: false, tui: false },
 };
 
 /** Whether a client draws a kind at all. Unknown kinds are not drawn. */
@@ -415,6 +486,11 @@ const PLUGIN_LONG_RUNNING_SOCKETS: ReadonlySet<PluginSocketKind> = new Set([
   "composer-action",
   "chat-header-action",
   "slash-command",
+  // A machine entry's action IS the send: pressing Enter with the plugin's row
+  // selected launches through it, under the same caret and the same busy state
+  // an `ownsSend` composer button draws. Splitting the budget by which control
+  // claimed Send would time a launch out on one gesture and not the other.
+  "machine-entry",
 ]);
 
 /**
@@ -1047,6 +1123,216 @@ export type PluginDialogSectionPayload = {
   webviewSurfaceId?: string;
 };
 
+// ---------------------------------------------------------------------------
+// Wave-2 kinds: the composer's menus, the machine picker, and Automations.
+// ---------------------------------------------------------------------------
+
+/**
+ * A row in the composer's three-dot menu.
+ *
+ * The same three fields a `row-menu-item` carries, plus the page a press may
+ * open. Not folded into `row-menu-item` for the reason `composer-action` is not
+ * folded into `toolbar-action`: the CONTEXT differs. A row menu item receives
+ * the row it hangs off; this one receives the live composer — its session and
+ * its unsent draft — which is what makes "attach this to what I am writing" a
+ * thing a plugin can do from it at all.
+ */
+export type PluginComposerMenuItemPayload = {
+  label: string;
+  icon?: string;
+  actionId: string;
+  /**
+   * See the note on {@link PluginActionButtonPayload.webviewSurfaceId}.
+   *
+   * A composer menu row's page opens as a picker OVER the composer, not as a
+   * popover under the row: the row unmounts with the menu that held it, so
+   * there is nothing left to anchor to by the time the guest is ready.
+   */
+  webviewSurfaceId?: string;
+};
+
+/**
+ * The core submenus a plugin row may join.
+ *
+ * Closed, and one entry long today, because every member is a promise that ADE
+ * draws that submenu and will keep drawing it. A plugin naming a submenu this
+ * build has never heard of would declare a row with nowhere to go, and the
+ * honest answer is to refuse the declaration rather than install a row the user
+ * can never find.
+ *
+ * `issue-context` is the composer's "Attach issue context" list, which ships
+ * with ADE's own Linear and GitHub rows in it. A plugin row joins that list
+ * after them — the placement rule at the top of this file, unchanged.
+ */
+export const PLUGIN_CHAT_MENU_SUBMENUS = ["issue-context"] as const;
+
+export type PluginChatMenuSubmenu = (typeof PLUGIN_CHAT_MENU_SUBMENUS)[number];
+
+export function isPluginChatMenuSubmenu(value: unknown): value is PluginChatMenuSubmenu {
+  return oneOf(value, PLUGIN_CHAT_MENU_SUBMENUS) !== null;
+}
+
+/** A row nested under one of {@link PLUGIN_CHAT_MENU_SUBMENUS}. */
+export type PluginChatMenuItemPayload = {
+  label: string;
+  icon?: string;
+  actionId: string;
+  /** Which core submenu this row joins. See {@link PLUGIN_CHAT_MENU_SUBMENUS}. */
+  submenu: PluginChatMenuSubmenu;
+  /**
+   * See the note on {@link PluginActionButtonPayload.webviewSurfaceId}.
+   *
+   * Drawn as a popover anchored to the submenu the row was pressed in, which
+   * is a real element with a real rect for as long as the popover is open.
+   */
+  webviewSurfaceId?: string;
+};
+
+/**
+ * A row in the composer's machine picker: a place to run this chat that is not
+ * a computer ADE is paired with.
+ *
+ * The kind is a MODE rather than a button, and the payload shape follows from
+ * that. Selecting the row does not invoke anything — it puts the composer in
+ * the plugin's mode. What runs is `actionId`, when the user presses Enter, with
+ * `args.send === true` and the live draft in its context: the same contract an
+ * `ownsSend` composer button already has, reached by a different gesture.
+ */
+export type PluginMachineEntryPayload = {
+  label: string;
+  icon?: string;
+  /** Invoked on Enter with `args.send === true`. See the type doc. */
+  actionId: string;
+  /**
+   * A `webview` surface of the same plugin, opened by an "Advanced…"
+   * affordance on the row.
+   *
+   * The launch page: repo, model, secrets, whatever the plugin's own form
+   * needs. It opens as a composer picker, over the composer the row belongs
+   * to, because that is what it is about to launch from.
+   */
+  advancedSurfaceId?: string;
+  /**
+   * An action answering `{ modelIds: string[] }` — the models THIS machine can
+   * run.
+   *
+   * Read once when the row is selected, and used to narrow the composer's model
+   * picker, exactly as cloud mode narrows it today. Absent means the plugin
+   * does not constrain the list and the composer keeps ADE's own.
+   */
+  modelsAction?: string;
+  /**
+   * Which of the plugin's declared `chatRuntimes` owns the sessions this row
+   * launches. Absent means the plugin declares exactly one and the host uses
+   * it; a plugin with two runtimes and no `runtimeId` gets neither.
+   */
+  runtimeId?: string;
+};
+
+/** One radio in an {@link PluginAutomationTriggerTilePayload}'s trigger list. */
+export type PluginAutomationTriggerOption = {
+  /** The declared `automationTriggers[].id` a rule stores. */
+  id: string;
+  label: string;
+  /** The one line the radio shows under its label. */
+  description?: string;
+};
+
+/**
+ * The two declarative field shapes a trigger tile may ask for.
+ *
+ * Two rather than "whatever the plugin wants" for the reason the whole file
+ * gives: the rule builder draws these, on three clients eventually, and a field
+ * kind a client has not grown an arm for draws nothing. A `select` bound to one
+ * of the plugin's own collections and a free-text box cover every filter the
+ * ported plugins actually declare — project, team, assignee, label, state are
+ * all collections; a title pattern is text.
+ */
+export const PLUGIN_AUTOMATION_FILTER_KINDS = ["select", "text"] as const;
+
+export type PluginAutomationFilterKind = (typeof PLUGIN_AUTOMATION_FILTER_KINDS)[number];
+
+export type PluginAutomationFilterField = {
+  /** Where the chosen value is written on the rule's trigger. */
+  key: string;
+  label: string;
+  kind: PluginAutomationFilterKind;
+  /**
+   * `select` only: the plugin collection whose rows are the options.
+   *
+   * Rows are read through the same collection reads a page uses, so the list is
+   * whatever the plugin last synced — never a second copy the host maintains. A
+   * `select` naming no collection degrades to a text box rather than drawing an
+   * empty menu.
+   */
+  collection?: string;
+  placeholder?: string;
+  /** One line under the field. */
+  hint?: string;
+};
+
+/** The webhook block under a trigger tile: a status line and one button. */
+export type PluginAutomationWebhookBlock = {
+  /** Answers the status line. See `PluginWebhookIngressStatus`. */
+  statusAction: string;
+  /** Registers the webhook with the plugin's own service. */
+  registerAction: string;
+};
+
+/**
+ * One plugin's tile in the Automations trigger grid.
+ *
+ * It REPLACES the generic Plugins tile for the plugin that declares it. The
+ * generic tile exists because a plugin with declared triggers and no tile still
+ * has to be reachable; a plugin that says how its own trigger should look does
+ * not need a second, worse door to the same place, and drawing both would put
+ * the same five triggers on screen twice under two different names.
+ */
+export type PluginAutomationTriggerTilePayload = {
+  label: string;
+  icon?: string;
+  triggers: PluginAutomationTriggerOption[];
+  /** Declarative fields shown once a trigger is chosen. May be empty. */
+  filters: PluginAutomationFilterField[];
+  /** Absent for a plugin whose triggers need no inbound webhook. */
+  webhook?: PluginAutomationWebhookBlock;
+};
+
+/**
+ * How many radios and fields one tile may draw.
+ *
+ * The trigger cap matches `PLUGIN_AUTOMATION_TRIGGERS_PER_PLUGIN` in
+ * `manifest.ts` — a tile cannot offer more events than the plugin is allowed to
+ * declare, so a larger number here would be unreachable. Filters get one more
+ * than the five the ported plugins use, and no more: past that the tile is a
+ * form, and a form belongs on a page.
+ */
+export const PLUGIN_AUTOMATION_TILE_TRIGGER_LIMIT = 8;
+
+export const PLUGIN_AUTOMATION_TILE_FILTER_LIMIT = 6;
+
+/**
+ * The serialized ceiling on a template body.
+ *
+ * The body is opaque here on purpose. A rule draft's shape lives in
+ * `shared/types/automations.ts`, which this module may not import — it runs in
+ * the daemon, in the terminal and on the phone, none of which have an
+ * Automations tab to normalize a draft against. So the parser proves the SHAPE
+ * (a record, small enough to store) and the gallery that draws it proves the
+ * MEANING, dropping every field the draft normalizer does not know. Exactly the
+ * bargain `webviewSurfaceId` makes one field over.
+ */
+export const PLUGIN_AUTOMATION_TEMPLATE_MAX_BYTES = 8 * 1024;
+
+/** An entry in the Automations templates gallery. */
+export type PluginAutomationTemplatePayload = {
+  name: string;
+  description?: string;
+  icon?: string;
+  /** The rule draft the gallery seeds. See {@link PLUGIN_AUTOMATION_TEMPLATE_MAX_BYTES}. */
+  template: Record<string, unknown>;
+};
+
 /**
  * The one field every socket kind may carry, whatever its own shape.
  *
@@ -1136,6 +1422,11 @@ type PluginContributionPayloadByKindBase = {
   "activity-entry": PluginActivityEntryPayload;
   "graph-node": PluginGraphNodePayload;
   "dialog-section": PluginDialogSectionPayload;
+  "composer-menu-item": PluginComposerMenuItemPayload;
+  "chat-menu-item": PluginChatMenuItemPayload;
+  "machine-entry": PluginMachineEntryPayload;
+  "automation-trigger-tile": PluginAutomationTriggerTilePayload;
+  "automation-template": PluginAutomationTemplatePayload;
 };
 
 export type PluginContribution<K extends PluginSocketKind = PluginSocketKind> = {
@@ -1186,6 +1477,114 @@ export function readPluginContributionEntityTag(payload: unknown): PluginContrib
     ...(id ? { id } : {}),
     ...(order !== null ? { order } : {}),
   };
+}
+
+/**
+ * Narrow a trigger tile's radio list. Always an array — `[]` means "no usable
+ * trigger", which the requirement table then refuses.
+ *
+ * Tolerant per entry and strict per field, the bargain
+ * {@link parsePluginActionButtonMenu} makes: a radio missing its id or its
+ * label is dropped, because a blank radio is a plugin bug that rendering would
+ * hide, and the radios around it still start rules perfectly well.
+ *
+ * Exported because the manifest parser reads the same array off authored JSON
+ * and must apply the same cap and the same ceilings.
+ */
+export function parsePluginAutomationTriggerOptions(raw: unknown): PluginAutomationTriggerOption[] {
+  if (!Array.isArray(raw)) return [];
+  const options: PluginAutomationTriggerOption[] = [];
+  const seen = new Set<string>();
+  for (const entry of raw) {
+    if (options.length >= PLUGIN_AUTOMATION_TILE_TRIGGER_LIMIT) break;
+    if (!isRecord(entry)) continue;
+    // The same 64 every declared identifier takes — a rule stores this id, so
+    // it has to match `automationTriggers[].id` exactly.
+    const id = bounded(entry.id, 64);
+    // Longer than a button label: a radio owns a full row and the label is the
+    // whole sentence a reader chooses between.
+    const label = bounded(entry.label, 60);
+    if (!id || !label || seen.has(id)) continue;
+    seen.add(id);
+    const description = bounded(entry.description, 160);
+    options.push({ id, label, ...(description ? { description } : {}) });
+  }
+  return options;
+}
+
+/**
+ * Narrow a trigger tile's declarative filter fields. Always an array — `[]` is
+ * legitimate, since a plugin whose triggers need no narrowing declares none.
+ *
+ * A `select` that names no collection degrades to `text` rather than being
+ * dropped: the field still writes the same key onto the rule, and a free-text
+ * box the reader can type an id into is strictly better than a menu with
+ * nothing in it.
+ */
+export function parsePluginAutomationFilterFields(raw: unknown): PluginAutomationFilterField[] {
+  if (!Array.isArray(raw)) return [];
+  const fields: PluginAutomationFilterField[] = [];
+  const seen = new Set<string>();
+  for (const entry of raw) {
+    if (fields.length >= PLUGIN_AUTOMATION_TILE_FILTER_LIMIT) break;
+    if (!isRecord(entry)) continue;
+    const key = bounded(entry.key, 64);
+    const label = bounded(entry.label, 40);
+    if (!key || !label || seen.has(key)) continue;
+    seen.add(key);
+    const collection = bounded(entry.collection, 64);
+    // The degradation described in the doc above, decided HERE rather than in
+    // the renderer, so every client that draws this field agrees about which
+    // control it is.
+    const kind: PluginAutomationFilterKind =
+      oneOf(entry.kind, PLUGIN_AUTOMATION_FILTER_KINDS) === "select" && collection ? "select" : "text";
+    const placeholder = bounded(entry.placeholder, 60);
+    const hint = bounded(entry.hint, 160);
+    fields.push({
+      key,
+      label,
+      kind,
+      ...(kind === "select" && collection ? { collection } : {}),
+      ...(placeholder ? { placeholder } : {}),
+      ...(hint ? { hint } : {}),
+    });
+  }
+  return fields;
+}
+
+/** Narrow a tile's webhook block, or `null` for "this tile has none". */
+export function parsePluginAutomationWebhookBlock(raw: unknown): PluginAutomationWebhookBlock | null {
+  if (!isRecord(raw)) return null;
+  const statusAction = bounded(raw.statusAction, 64);
+  const registerAction = bounded(raw.registerAction, 64);
+  // Both or neither. A block with a status line and no button tells the reader
+  // their webhook is missing and gives them no way to fix it, and a button with
+  // no status leaves them pressing it to find out whether it worked.
+  if (!statusAction || !registerAction) return null;
+  return { statusAction, registerAction };
+}
+
+/**
+ * Narrow a template body, or `null` when it is absent, not a record, or larger
+ * than {@link PLUGIN_AUTOMATION_TEMPLATE_MAX_BYTES} serialized.
+ *
+ * The size is measured on the JSON rather than on a field count because the
+ * body is opaque here: nesting is what makes one of these expensive, and a
+ * count of top-level keys would pass a single key holding a megabyte.
+ */
+export function parsePluginAutomationTemplateBody(raw: unknown): Record<string, unknown> | null {
+  if (!isRecord(raw)) return null;
+  let serialized: string;
+  try {
+    serialized = JSON.stringify(raw);
+  } catch {
+    // A cycle or a BigInt. Neither survives the transports this payload
+    // crosses, so refusing here is refusing something that could never render.
+    return null;
+  }
+  if (!serialized || serialized.length > PLUGIN_AUTOMATION_TEMPLATE_MAX_BYTES) return null;
+  if (Object.keys(raw).length === 0) return null;
+  return raw;
 }
 
 export function parsePluginContributionPayload<K extends PluginSocketKind>(
@@ -1382,6 +1781,91 @@ export function parsePluginContributionPayload<K extends PluginSocketKind>(
           ...(bounded(raw.webviewSurfaceId, 64)
             ? { webviewSurfaceId: bounded(raw.webviewSurfaceId, 64)! }
             : {}),
+        };
+      }
+      // The composer's two menu rows share the `row-menu-item` ceilings, since
+      // they draw the same 60-character row in the same kind of popover. They
+      // do NOT share its arm, because each carries a field the other does not.
+      case "composer-menu-item": {
+        const label = bounded(raw.label, 60);
+        const actionId = bounded(raw.actionId, 64);
+        if (!label || !actionId) return null;
+        return {
+          label,
+          actionId,
+          ...(bounded(raw.icon, 40) ? { icon: bounded(raw.icon, 40)! } : {}),
+          ...(bounded(raw.webviewSurfaceId, 64)
+            ? { webviewSurfaceId: bounded(raw.webviewSurfaceId, 64)! }
+            : {}),
+        };
+      }
+      case "chat-menu-item": {
+        const label = bounded(raw.label, 60);
+        const actionId = bounded(raw.actionId, 64);
+        // Refused rather than defaulted. A row whose submenu this build does
+        // not draw has nowhere to be, and seating it in the first submenu that
+        // happens to exist would put a plugin's rows under a heading its author
+        // never chose.
+        const submenu = oneOf(raw.submenu, PLUGIN_CHAT_MENU_SUBMENUS);
+        if (!label || !actionId || !submenu) return null;
+        return {
+          label,
+          actionId,
+          submenu,
+          ...(bounded(raw.icon, 40) ? { icon: bounded(raw.icon, 40)! } : {}),
+          ...(bounded(raw.webviewSurfaceId, 64)
+            ? { webviewSurfaceId: bounded(raw.webviewSurfaceId, 64)! }
+            : {}),
+        };
+      }
+      case "machine-entry": {
+        // The 24 a rail label takes, not the 40 a button takes: this row sits
+        // in a narrow menu beside the machine names ADE already lists, and a
+        // longer one would widen the picker for every machine in it.
+        const label = bounded(raw.label, 24);
+        const actionId = bounded(raw.actionId, 64);
+        if (!label || !actionId) return null;
+        const advancedSurfaceId = bounded(raw.advancedSurfaceId, 64);
+        const modelsAction = bounded(raw.modelsAction, 64);
+        const runtimeId = bounded(raw.runtimeId, 64);
+        return {
+          label,
+          actionId,
+          ...(bounded(raw.icon, 40) ? { icon: bounded(raw.icon, 40)! } : {}),
+          ...(advancedSurfaceId ? { advancedSurfaceId } : {}),
+          ...(modelsAction ? { modelsAction } : {}),
+          ...(runtimeId ? { runtimeId } : {}),
+        };
+      }
+      case "automation-trigger-tile": {
+        // The tile label sits under an icon in a five-across grid beside
+        // "GitHub" and "Linear", so it takes the same 24 a rail label does.
+        const label = bounded(raw.label, 24);
+        const triggers = parsePluginAutomationTriggerOptions(raw.triggers);
+        // A tile with no usable trigger cannot start a rule, which is the one
+        // thing the trigger grid is for.
+        if (!label || triggers.length === 0) return null;
+        const webhook = parsePluginAutomationWebhookBlock(raw.webhook);
+        return {
+          label,
+          triggers,
+          filters: parsePluginAutomationFilterFields(raw.filters),
+          ...(bounded(raw.icon, 40) ? { icon: bounded(raw.icon, 40)! } : {}),
+          ...(webhook ? { webhook } : {}),
+        };
+      }
+      case "automation-template": {
+        // A gallery card's title, which is a phrase rather than a word.
+        const name = bounded(raw.name, 60);
+        const template = parsePluginAutomationTemplateBody(raw.template);
+        if (!name || !template) return null;
+        return {
+          name,
+          template,
+          // The gallery card prints this under the title; longer than a
+          // trigger radio's line because the card has the room for it.
+          ...(bounded(raw.description, 240) ? { description: bounded(raw.description, 240)! } : {}),
+          ...(bounded(raw.icon, 40) ? { icon: bounded(raw.icon, 40)! } : {}),
         };
       }
       default: {

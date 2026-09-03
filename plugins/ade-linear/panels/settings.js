@@ -51,8 +51,6 @@ const MAX_AUTOLINK_ROWS = 25;
  * The setting keys `plugin.json` declares. Spelled once, so a renamed key
  * breaks a test rather than a reader's toggle.
  */
-const SETTING_MOVE_ON_MERGE = "moveToDoneOnMerge";
-const SETTING_MOVE_ON_LAUNCH = "moveToStartedOnLaunch";
 const SETTING_DEFAULT_TEAM = "defaultTeamKey";
 
 /**
@@ -230,22 +228,11 @@ function preferencesForm(input = {}) {
   const settings = input.settings ?? {};
   const teams = Array.isArray(input.teams) ? input.teams : [];
 
-  const fields = [
-    {
-      kind: "toggle",
-      id: SETTING_MOVE_ON_LAUNCH,
-      label: "Move the issue to In Progress when an agent starts on it",
-      help: "Uses the team's first started workflow state.",
-      value: settings[SETTING_MOVE_ON_LAUNCH] === true,
-    },
-    {
-      kind: "toggle",
-      id: SETTING_MOVE_ON_MERGE,
-      label: "Move the issue to Done when its pull request merges",
-      help: 'Only issues linked to the lane with "close on merge" are moved.',
-      value: settings[SETTING_MOVE_ON_MERGE] === true,
-    },
-  ];
+  // The two issue-transition toggles are gone from here and from the manifest.
+  // Each is an automation now, offered as a one-press template in
+  // Automations → Linear, so the reader sees a rule they can name and switch
+  // off rather than a checkbox that rewrites tickets from two screens away.
+  const fields = [];
 
   // A select when the plugin knows the teams, a text field when it does not.
   // The manifest declares the key as text either way; a select is the same
@@ -399,7 +386,7 @@ function ingressBlock(input = {}) {
       variant: "caption",
       tone: "warning",
       text: prose(
-        "This connection has no webhook grant — a personal API key carries none. Setting up the URL and the signing secret below will not change that. Sign in with Linear to receive events.",
+        "This connection has no webhook grant — a personal API key carries none. Registering the webhook below will not change that. Sign in with Linear to receive events.",
       ),
     });
   }
@@ -408,10 +395,10 @@ function ingressBlock(input = {}) {
     block.push({
       component: "text",
       variant: "caption",
-      text: "Paste this URL into Linear's webhook settings so an issue that changes wakes ADE.",
+      text: "Where Linear posts an issue that changed. ADE registers this endpoint for you.",
     });
     // `code`, because this is the one value on the screen a reader compares
-    // character by character before pasting it into another product.
+    // character by character before reading it out to somebody.
     block.push({ component: "text", variant: "code", text: value(ingress.url) });
     block.push({
       component: "button",
@@ -422,41 +409,40 @@ function ingressBlock(input = {}) {
     });
   }
 
-  block.push(...signingSecretBlock(ingress));
+  block.push(...registrationBlock(ingress));
 
   return block;
 }
 
 /**
- * The signing secret, which is what turns the webhook from open to verified.
+ * One button where four manual steps used to be.
  *
- * The manifest DECLARES `verify` with `secretRef: "LINEAR_WEBHOOK_SECRET"`, so
- * every delivery is checked against an HMAC-SHA256 of its body — and the host
- * fails closed: a channel whose secret it cannot find drops every delivery
- * rather than trusting it (`pluginWebhookIngressService.ts`).
+ * The paste box is gone. A reader used to open Linear's settings, create a
+ * webhook against the URL above, copy the signing secret Linear shows exactly
+ * once, and paste it back here — and a missed copy meant a webhook that
+ * delivered bodies ADE dropped, which looks healthy in Linear's own log and
+ * silent in ADE.
  *
- * So this field is not a preparation for a future manifest change. Until the
- * reader pastes the secret, nothing Linear sends reaches this plugin at all,
- * which is why the row above says "Waiting for the signing secret" rather than
- * reporting a healthy endpoint. The alternative — verification off — is worse:
- * a delivery would be authenticated only by the relay's own per-plugin secret,
- * so anyone who learned the URL could post a fake issue event and fire the
- * user's automation rules.
+ * Register does all four: `registerWebhook` generates the secret, creates the
+ * hook through the Linear API on the authorization the reader already granted,
+ * and stores the secret in the same act. See `webhookSetup.js` for why the
+ * secret cannot be read back, and why a hook whose secret this plugin does not
+ * hold is rotated rather than adopted.
  *
- * A `secret` field, masked on every client, because this is a credential. And a
- * `submit` rather than `applyOnChange`, because a half-typed secret committed on
- * blur would be stored as the secret and every delivery would then fail
- * verification until somebody noticed.
+ * The Verification row stays, because it is still the fact that decides whether
+ * anything arrives: the manifest declares `verify`, and the host fails closed
+ * on a channel whose secret it cannot find.
  */
-function signingSecretBlock(ingress = {}) {
+function registrationBlock(ingress = {}) {
   const stored = ingress.secretStored === true;
+  const registered = ingress.registered === true && stored;
   return [
     {
       component: "keyValue",
       rows: [
         {
           key: "Verification",
-          value: stored ? "Signed deliveries only" : "Deliveries dropped until the signing secret is saved",
+          value: stored ? "Signed deliveries only" : "Deliveries dropped until the webhook is registered",
           tone: stored ? "success" : "warning",
         },
       ],
@@ -465,27 +451,27 @@ function signingSecretBlock(ingress = {}) {
       component: "text",
       variant: "caption",
       text: prose(
-        stored
-          ? "ADE checks every delivery against this secret. Paste a new one here if you re-create the webhook in Linear."
-          : "Until you paste the signing secret, ADE drops every delivery from this webhook, so no issue events reach your automations. Linear shows the secret once, when the webhook is created.",
+        registered
+          ? "ADE created this webhook in Linear and holds its signing secret. Register again to replace it."
+          : "Registering creates the webhook in Linear and stores its signing secret here. Until then ADE drops every delivery, so no issue events reach your automations.",
       ),
     },
     {
-      component: "form",
-      fields: [
-        {
-          kind: "secret",
-          id: "secret",
-          label: "Webhook signing secret",
-          placeholder: "lin_wh_...",
-          help: "Stored in this machine's keychain, namespaced to this plugin.",
-        },
-      ],
-      submit: {
-        label: stored ? "Replace the secret" : "Save the secret",
-        onPress: { action: ACTIONS.saveWebhookSecret },
-      },
+      component: "button",
+      label: registered ? "Re-register the webhook" : "Register the webhook",
+      kind: registered ? "quiet" : "primary",
+      icon: "link",
+      onPress: { action: ACTIONS.registerWebhook },
     },
+    ...(registered
+      ? [{
+        component: "button",
+        label: "Stop receiving Linear events",
+        kind: "quiet",
+        icon: "trash",
+        onPress: { action: ACTIONS.unregisterWebhook },
+      }]
+      : []),
   ];
 }
 
@@ -546,13 +532,11 @@ function buildSettingsPanel(input = {}) {
 module.exports = {
   LINEAR_API_SETTINGS_URL,
   SETTING_DEFAULT_TEAM,
-  SETTING_MOVE_ON_LAUNCH,
-  SETTING_MOVE_ON_MERGE,
   autolinksBlock,
   buildSettingsPanel,
   connectedCard,
   disconnectCard,
   ingressBlock,
   preferencesForm,
-  signingSecretBlock,
+  registrationBlock,
 };

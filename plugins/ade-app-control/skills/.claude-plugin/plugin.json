@@ -1,6 +1,6 @@
 {
   "name": "ade-app-control",
-  "description": "App Control capabilities contributed by the ADE ade-app-control plugin",
+  "description": "Electron Control capabilities contributed by the ADE ade-app-control plugin",
   "version": "1.0.0",
   "author": {
     "name": "ADE"

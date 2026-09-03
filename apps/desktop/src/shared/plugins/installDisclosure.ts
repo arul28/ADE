@@ -81,6 +81,17 @@ export const PLUGIN_SOCKET_KIND_LABELS: Record<PluginSocketKind, string> = {
   // who has opened that tab already has the word.
   "graph-node": "Graph node",
   "dialog-section": "Dialog section",
+  // Nouns for the thing on screen, as the rule above says. "Composer menu row"
+  // rather than "Composer menu item": the reader is being told a row appears in
+  // a menu they already open, and "item" is the taxonomy's word, not theirs.
+  "composer-menu-item": "Composer menu row",
+  "chat-menu-item": "Chat menu row",
+  // "Machine picker row", not "Machine entry": the picker is what the reader
+  // opens to choose where a chat runs, and the sentence has to say that a new
+  // place to run things is being added.
+  "machine-entry": "Machine picker row",
+  "automation-trigger-tile": "Automation trigger",
+  "automation-template": "Automation template",
 };
 
 /**
@@ -98,6 +109,13 @@ export function describePluginContributionPlacement(
   // sheet and the per-contribution switch do not read as "Row badge in App".
   if (socket === "row-badge" && surface === "app") {
     return "Notification badge on its tab";
+  }
+  // Three kinds whose own label already names the place. "Automation trigger in
+  // Automations" says the word twice and the second one carries nothing, and a
+  // machine picker row is not "in Work" in any sense a reader would recognize —
+  // the picker is a control inside the composer, not a region of the tab.
+  if (socket === "automation-trigger-tile" || socket === "automation-template" || socket === "machine-entry") {
+    return PLUGIN_SOCKET_KIND_LABELS[socket];
   }
   return `${PLUGIN_SOCKET_KIND_LABELS[socket]} in ${PLUGIN_SURFACE_LABELS[surface]}`;
 }

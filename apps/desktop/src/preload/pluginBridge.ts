@@ -450,6 +450,9 @@ export function createPluginBridge(deps: PluginBridgeDeps) {
       publishChatTurn: (turn: PluginWebviewChatTurn): void => {
         sendMain(IPC.pluginWebviewChatPublish, turn);
       },
+      publishHostChange: (change: { kind: string; ids: string[] }): void => {
+        sendMain(IPC.pluginWebviewHostPublish, change);
+      },
       setSurfaceState: (state: PluginWebviewSurfaceState): void => {
         sendMain(IPC.pluginWebviewSurfaceState, state);
       },

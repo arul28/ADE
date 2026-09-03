@@ -414,6 +414,26 @@ export type PluginMachineContext = {
   }) => Promise<boolean>;
 };
 
+/** Page failures kept per plugin. See {@link PluginHostService.recordPageError}. */
+export const PLUGIN_PAGE_ERROR_RING_MAX = 50;
+
+/**
+ * Two log rings as one list, oldest first.
+ *
+ * Merged rather than concatenated because the reader is scanning for a cause
+ * and a page error that arrived between two child lines belongs between them.
+ * `at` is an ISO string on both sides, so a lexical compare is a time compare;
+ * an unparseable timestamp sorts last rather than throwing, because a log with
+ * one odd line is still the log.
+ */
+export function mergePluginLogs(
+  childLogs: readonly PluginLogEntry[],
+  pageLogs: readonly PluginLogEntry[],
+): PluginLogEntry[] {
+  if (pageLogs.length === 0) return [...childLogs];
+  return [...childLogs, ...pageLogs].sort((left, right) => (left.at < right.at ? -1 : left.at > right.at ? 1 : 0));
+}
+
 export type PluginHostService = {
   attachProject(binding: PluginProjectBinding): { detach(): void };
   /**
@@ -494,6 +514,25 @@ export type PluginHostService = {
     pluginId: string;
     values: Record<string, unknown>;
   }): Record<string, string | number | boolean | null>;
+  /**
+   * Record that one of this plugin's PAGES failed, so the doctor can say so.
+   *
+   * A CSP violation is the case that forces it: a page whose bundle reaches
+   * outside the plugin's own directory is refused silently by the browser, and
+   * the author sees a blank frame with nothing anywhere naming the cause. The
+   * line lands in the same ring `ade plugin logs` prints and `ade plugin
+   * doctor` counts, so the finding survives the guest that produced it.
+   *
+   * Kept per plugin and independent of the child: a page can fail on a machine
+   * where the plugin's child has never started, and a report that needed a
+   * supervisor would be dropped exactly then.
+   */
+  recordPageError(args: {
+    pluginId: string;
+    kind: string;
+    message: string;
+    source?: string;
+  }): void;
   /** Child pids for the resource sampler's "plugin-host" role. */
   listChildPids(): number[];
   skillRoots(): string[];
@@ -1942,6 +1981,43 @@ function createHost(args: PluginHostServiceArgs): PluginHostService {
     return installed;
   };
 
+  /**
+   * Page failures, per plugin, newest last. See `recordPageError` on the
+   * service type for why they are kept apart from the child's own ring.
+   *
+   * Bounded per plugin: a page in a render loop reports the first handful and
+   * then stops (the guest preload rate-limits itself), and this cap is the
+   * second line of defence for a plugin drawn in six placements at once.
+   */
+  const pageErrors = new Map<string, PluginLogEntry[]>();
+
+  const recordPageErrorForPlugin = (args: {
+    pluginId: string;
+    kind: string;
+    message: string;
+    source?: string;
+  }): void => {
+    const pluginId = typeof args?.pluginId === "string" ? args.pluginId.trim() : "";
+    const message = typeof args?.message === "string" ? args.message.trim() : "";
+    if (!pluginId || !message) return;
+    const ring = pageErrors.get(pluginId) ?? [];
+    ring.push({
+      at: new Date().toISOString(),
+      level: "error",
+      message,
+      // `source: "page"` is what tells `ade plugin doctor` this line came from
+      // a guest rather than from the child, and `kind` is what lets it count
+      // CSP violations apart from ordinary throws.
+      fields: {
+        source: "page",
+        kind: args.kind === "csp" ? "csp" : "error",
+        ...(args.source ? { blocked: args.source } : {}),
+      },
+    });
+    while (ring.length > PLUGIN_PAGE_ERROR_RING_MAX) ring.shift();
+    pageErrors.set(pluginId, ring);
+  };
+
   const detailFor = (installed: PluginInstalledPlugin): PluginDetail => {
     const supervisor = supervisors.get(installed.record.pluginId);
     return {
@@ -1950,7 +2026,14 @@ function createHost(args: PluginHostServiceArgs): PluginHostService {
       settings: installed.manifest?.settings ?? [],
       config: configFor(installed.record.pluginId, installed.manifest),
       root: installed.root,
-      logs: supervisor ? supervisor.logs() : ([] as PluginLogEntry[]),
+      // The child's lines and the pages' merged into one log, in time order.
+      // One list because the reader has one question — "what went wrong with
+      // this plugin" — and a page that failed while the child was healthy is
+      // exactly the case a second list would hide.
+      logs: mergePluginLogs(
+        supervisor ? supervisor.logs() : ([] as PluginLogEntry[]),
+        pageErrors.get(installed.record.pluginId) ?? [],
+      ),
       lastInvokes: lastInvokesFor(installed.record.pluginId),
       // Presence, never the value. The doctor needs to answer "is the key this
       // plugin declared actually connected", and that question is answerable
@@ -2286,9 +2369,14 @@ function createHost(args: PluginHostServiceArgs): PluginHostService {
         const pluginId = requireId(logArgs?.pluginId, "pluginId");
         requireInstalled(pluginId);
         // The ring buffer lives on the supervisor, so a plugin that has never
-        // started has no lines rather than an error — "nothing logged yet" is
-        // the honest answer for an idle plugin.
-        return supervisors.get(pluginId)?.logs() ?? [];
+        // started has no CHILD lines rather than an error — "nothing logged
+        // yet" is the honest answer for an idle plugin. Its pages can still
+        // have failed, and those lines are kept here rather than on the
+        // supervisor precisely so they survive a plugin that never started.
+        return mergePluginLogs(
+          supervisors.get(pluginId)?.logs() ?? [],
+          pageErrors.get(pluginId) ?? [],
+        );
       },
 
       async getReadme(readmeArgs): Promise<string | null> {
@@ -3080,6 +3168,7 @@ function createHost(args: PluginHostServiceArgs): PluginHostService {
     },
     writeCollection: writeCollectionForPage,
     writeConfig: writeConfigForPage,
+    recordPageError: recordPageErrorForPlugin,
     listChildPids() {
       return [...supervisors.values()]
         .map((supervisor) => supervisor.pid())

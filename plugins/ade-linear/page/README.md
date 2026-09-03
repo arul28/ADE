@@ -1,6 +1,6 @@
 # The Linear page
 
-The `ade-linear` plugin's own HTML page — one build, seven placements.
+The `ade-linear` plugin's own HTML page — one build, six placements.
 
 ADE's compiled Linear moved here. Not rewritten: the issue browser, the quick
 view, the settings section, the pickers and the badge card are the same
@@ -47,12 +47,13 @@ page/
   index.html            the one document; no inline script (script-src 'self')
   src/
     main.tsx            paints the theme, then mounts
-    PageRouter.tsx      surfaceId → one of the seven entries
+    PageRouter.tsx      surfaceId → one of the six entries
     bridge.ts           window.adePlugin, typed. Nothing else touches the global
     types.ts            the Linear shapes, copied down from the app's own
     host/
       actions.ts        THE HOST-CALL MAP — one function per plugin action id
-      ui.ts             toasts, prompts, confirms, clipboard, composer, links
+      ui.ts             toasts, prompts, confirms, clipboard, composer, links,
+                        and the five host pickers the launch form draws
       uiState.ts        filters and selection, in the ui-state collection
       theme.ts          the host's palette, onto --ade-* and --color-* together
       useHostEntities.ts  lanes, followed live over host.subscribe

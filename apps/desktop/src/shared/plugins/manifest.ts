@@ -30,11 +30,21 @@ import {
   PLUGIN_SOCKET_KINDS,
   PLUGIN_SOCKET_REQUIREMENTS,
   PLUGIN_SURFACE_IDS,
+  PLUGIN_AUTOMATION_TEMPLATE_MAX_BYTES,
+  isPluginChatMenuSubmenu,
   isPluginDialogKind,
   normalizePluginSlashCommand,
   parsePluginActionButtonMenu,
+  parsePluginAutomationFilterFields,
+  parsePluginAutomationTemplateBody,
+  parsePluginAutomationTriggerOptions,
+  parsePluginAutomationWebhookBlock,
   sanitizePluginActionColor,
   type PluginActionButtonMenuItem,
+  type PluginAutomationFilterField,
+  type PluginAutomationTriggerOption,
+  type PluginAutomationWebhookBlock,
+  type PluginChatMenuSubmenu,
   type PluginDialogKind,
   type PluginSocketExtraField,
   type PluginSocketKind,
@@ -331,6 +341,50 @@ export type PluginManifestSocket = {
    * to the panel, which is where it was going anyway.
    */
   webviewSurfaceId?: string;
+  /**
+   * `chat-menu-item` only: the core submenu this row joins.
+   *
+   * One of the {@link PluginSocketExtraField}s — required for that kind and
+   * meaningless to every other, exactly like `command` and `dialog`.
+   */
+  submenu?: PluginChatMenuSubmenu;
+  /**
+   * `machine-entry` only: the page an "Advanced…" press opens over the
+   * composer. Not a `manifestExtra` — a machine row with no launch page still
+   * launches from the draft, which is the row's whole job.
+   */
+  advancedSurfaceId?: string;
+  /** `machine-entry` only: the action answering `{ modelIds }` for this row. */
+  modelsAction?: string;
+  /** `machine-entry` only: which declared `chatRuntimes` entry owns its sessions. */
+  runtimeId?: string;
+  /**
+   * `automation-trigger-tile` only: the events the tile offers as radios.
+   *
+   * A {@link PluginSocketExtraField}: a tile with no trigger cannot start a
+   * rule, so the entry is refused with the kind named rather than installed as
+   * a tile that does nothing when pressed.
+   */
+  triggers?: PluginAutomationTriggerOption[];
+  /** `automation-trigger-tile` only: declarative narrowing fields. May be empty. */
+  filters?: PluginAutomationFilterField[];
+  /** `automation-trigger-tile` only: the status line and Register button. */
+  webhook?: PluginAutomationWebhookBlock;
+  /**
+   * `automation-template` only: the rule draft this gallery entry creates.
+   *
+   * A {@link PluginSocketExtraField}, and opaque here — see
+   * {@link PLUGIN_AUTOMATION_TEMPLATE_MAX_BYTES} for why a shared module
+   * refuses to know a draft's shape.
+   */
+  template?: Record<string, unknown>;
+  /**
+   * `automation-template` only: the card's title, when it differs from `label`.
+   *
+   * Not a `manifestExtra`. `label` is required for this kind and is the title
+   * unless this field overrides it, so a template that omits it still draws.
+   */
+  name?: string;
 };
 
 export type PluginSettingKind = "text" | "secret" | "select" | "toggle" | "number";
@@ -1283,6 +1337,56 @@ function parseSockets(raw: unknown, ctx: ParseContext): PluginManifestSocket[] {
     }
     const dialog = entry.dialog === undefined ? null : isPluginDialogKind(entry.dialog) ? entry.dialog : null;
     if (entry.dialog !== undefined && !dialog) return ctx.drop(`${label}.dialog is not a known dialog`);
+    // Read for every entry, meaningful to one kind each — the same treatment
+    // `command` and `dialog` get above, and dropped by the same requirement
+    // loop below rather than by a second gate here.
+    const submenu: PluginChatMenuSubmenu | null = entry.submenu === undefined
+      ? null
+      : isPluginChatMenuSubmenu(entry.submenu) ? entry.submenu : null;
+    if (entry.submenu !== undefined && !submenu) {
+      return ctx.drop(`${label}.submenu is not a core submenu a plugin row may join`);
+    }
+    // Through the shared parsers rather than local reads, so a declared tile
+    // and a published one are capped and bounded identically. A malformed
+    // radio is dropped and its siblings survive; an empty result is refused
+    // below with the kind named.
+    const triggers: PluginAutomationTriggerOption[] = entry.triggers === undefined
+      ? []
+      : parsePluginAutomationTriggerOptions(entry.triggers);
+    if (entry.triggers !== undefined && triggers.length === 0) {
+      return ctx.drop(`${label}.triggers must be an array of { id, label } entries`);
+    }
+    const filters: PluginAutomationFilterField[] = parsePluginAutomationFilterFields(entry.filters);
+    const webhook: PluginAutomationWebhookBlock | null = parsePluginAutomationWebhookBlock(entry.webhook);
+    // Warned rather than dropped, like a refused button tint: the tile is still
+    // a perfectly good tile without its Register button, and the author needs
+    // to be told which half they left out.
+    if (entry.webhook !== undefined && !webhook) {
+      ctx.warnings.push(
+        `${label}.webhook needs both statusAction and registerAction —`
+        + " the tile is drawn without its webhook block",
+      );
+    }
+    const template = entry.template === undefined ? null : parsePluginAutomationTemplateBody(entry.template);
+    if (entry.template !== undefined && !template) {
+      return ctx.drop(
+        `${label}.template must be a non-empty object under ${PLUGIN_AUTOMATION_TEMPLATE_MAX_BYTES} bytes of JSON`,
+      );
+    }
+    const advancedSurfaceId = entry.advancedSurfaceId === undefined
+      ? null
+      : parseIdentifier(entry.advancedSurfaceId);
+    if (entry.advancedSurfaceId !== undefined && !advancedSurfaceId) {
+      return ctx.drop(`${label}.advancedSurfaceId is not an identifier`);
+    }
+    const modelsAction = entry.modelsAction === undefined ? null : parseIdentifier(entry.modelsAction);
+    if (entry.modelsAction !== undefined && !modelsAction) {
+      return ctx.drop(`${label}.modelsAction is not an identifier`);
+    }
+    const runtimeId = entry.runtimeId === undefined ? null : parseIdentifier(entry.runtimeId);
+    if (entry.runtimeId !== undefined && !runtimeId) {
+      return ctx.drop(`${label}.runtimeId is not an identifier`);
+    }
     // A socket that renders nothing and invokes nothing is a manifest typo, not
     // a contribution. Refusing it here is what keeps empty rows off the surface.
     // The requirement table is shared with the payload validator and the
@@ -1300,6 +1404,9 @@ function parseSockets(raw: unknown, ctx: ParseContext): PluginManifestSocket[] {
     const presentExtra: Record<PluginSocketExtraField, boolean> = {
       command: command !== null,
       dialog: dialog !== null,
+      submenu: submenu !== null,
+      triggers: triggers.length > 0,
+      template: template !== null,
     };
     for (const field of PLUGIN_SOCKET_REQUIREMENTS[socket].manifest) {
       if (!present[field]) return ctx.drop(`${label} requires ${field} for socket "${socket}"`);
@@ -1329,6 +1436,15 @@ function parseSockets(raw: unknown, ctx: ParseContext): PluginManifestSocket[] {
       ...(parseIdentifier(entry.webviewSurfaceId)
         ? { webviewSurfaceId: parseIdentifier(entry.webviewSurfaceId)! }
         : {}),
+      ...(submenu ? { submenu } : {}),
+      ...(advancedSurfaceId ? { advancedSurfaceId } : {}),
+      ...(modelsAction ? { modelsAction } : {}),
+      ...(runtimeId ? { runtimeId } : {}),
+      ...(triggers.length > 0 ? { triggers } : {}),
+      ...(filters.length > 0 ? { filters } : {}),
+      ...(webhook ? { webhook } : {}),
+      ...(template ? { template } : {}),
+      ...(trimmedString(entry.name) ? { name: trimmedString(entry.name)! } : {}),
     };
   });
 }

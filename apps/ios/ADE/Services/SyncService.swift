@@ -23107,6 +23107,49 @@ extension SyncService: PluginPageBridgeDataSource {
   func pluginPageSupportsRemoteAction(_ action: String) -> Bool {
     supportsViewerRemoteAction(action)
   }
+
+  /// Socket contributions of one kind, from the LOCAL mirror.
+  ///
+  /// Built the same way every native surface builds its own: the mirrored rows
+  /// for each entity kind, joined against the manifest declarations the
+  /// attached machine reported and scoped to the plugins that machine actually
+  /// has installed. So a page draws the set a reader would see on a native rail
+  /// — never a ghost row from a plugin uninstalled on another computer.
+  ///
+  /// The declarations are read from the CACHE rather than awaited, because this
+  /// is a read and a page scrolling a rail must not stall on a socket. Before
+  /// the first declarations answer the published rows stand alone, which is
+  /// exactly what every other surface on this phone draws in that window; the
+  /// `changed` event brings the page back once they land.
+  func pluginPageSocketItems(socket: String) -> [PluginPageSocketItem] {
+    let trimmed = socket.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmed.isEmpty else { return [] }
+    let declarations = cachedPluginSocketDeclarations()
+    var items: [PluginPageSocketItem] = []
+    var seen = Set<String>()
+    for kind in PluginEntityKind.allCases {
+      let index = pluginContributionIndex(entityKind: kind, declarations: declarations)
+      for contribution in index.socketContributions(trimmed) {
+        // One entity kind at a time means a wildcard declaration is offered
+        // once per kind it applies to; the page wants it once.
+        guard seen.insert(contribution.id).inserted else { continue }
+        items.append(PluginPageSocketItem(contribution: contribution))
+      }
+    }
+    return items
+  }
+
+  /// Declarations for the current scope IF they have already been read.
+  ///
+  /// Deliberately never triggers the round trip: the async
+  /// ``pluginSocketDeclarations()`` is what surfaces call when they can wait,
+  /// and a mirror read cannot.
+  private func cachedPluginSocketDeclarations() -> PluginSocketDeclarations {
+    guard let cached = pluginSocketDeclarationsCache, cached.scope == pluginPresenceTrigger else {
+      return .none
+    }
+    return cached.declarations
+  }
 }
 
 extension SyncService: PluginPageHostWorldReading {
@@ -23169,6 +23212,20 @@ extension SyncService: PluginPageHostWorldReading {
         }
       }
       return fingerprints
+    case .operation, .conflict, .review:
+      // Accepted, subscribed and forwarded exactly like the four above — and
+      // this phone has no local picture of any of them to diff. Operations,
+      // conflict predictions and review runs are all read on demand from the
+      // paired machine; none of them lands in the mirror or in the roster, so
+      // there is no snapshot here that could change.
+      //
+      // Empty is the honest answer and it is also the cheap one: the differ
+      // sees nothing move, the coalescer is never woken, and a page that
+      // subscribed simply never hears a frame of these kinds on a phone. A
+      // fabricated fingerprint — a lane's rebase flag standing in for a
+      // conflict, say — would tell a page a conflict appeared when a rebase
+      // started, which is a different fact.
+      return [:]
     }
   }
 
