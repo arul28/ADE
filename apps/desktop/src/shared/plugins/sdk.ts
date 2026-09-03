@@ -1831,7 +1831,10 @@ export type AdePluginSdk = {
     /**
      * Declare the files this run produced, as a proof-artifact card.
      *
-     * The plugin child has no lane worktree path (`lanes.list()` withholds it).
+     * `lanes.list()` answers the lane's worktree as {@link PluginLaneSummary}
+     * `path`, but that is null whenever there is no local checkout — a remote
+     * binding, or a lane whose worktree has not been created — so a plugin
+     * cannot count on having anywhere of ADE's to write.
      * Pass `contents` (base64) or `sourceUrl` (https) and the host writes the
      * file into `.ade/cache/plugin-artifacts/…` then points the card at it.
      * A path alone still draws the card, for a plugin that already wrote the
