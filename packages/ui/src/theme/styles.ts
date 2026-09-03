@@ -256,6 +256,193 @@ body.ade-root {
 }
 .ade-markdown-th { font-weight: 600; }
 .ade-markdown-td { vertical-align: top; }
+
+/* Lane combobox popover ---------------------------------------------------
+
+   .ade-lane-trigger needs nothing here: it is Tailwind-only in the app and
+   carries no ade-* appearance of its own.
+
+   Geometry is byte-for-byte what index.css has (radii, padding, heights,
+   durations, easings). Only the colour sources move: the app's work-surface
+   variables have no meaning in a page, so each maps onto its nearest --ade-*
+   token — --work-popover-bg → the solid card, --work-popover-border and
+   --work-pane-border → the border token, --work-popover-shadow → the panel
+   shadow, --work-popover-item-active → a mix of the accent, --color-fg and
+   --color-muted-fg → their --ade-* twins. */
+
+@keyframes ade-popover-in {
+  from { opacity: 0; transform: scaleY(0.96); }
+  to { opacity: 1; transform: scaleY(1); }
+}
+
+.ade-lane-popover {
+  position: relative;
+  z-index: 9999;
+  min-width: 200px;
+  max-width: 280px;
+  max-height: 320px;
+  background: var(--ade-card-solid);
+  border: 1px solid var(--ade-border);
+  border-radius: 10px;
+  box-shadow: var(--ade-shadow-panel);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  animation: ade-popover-in 120ms cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+.ade-lane-popover-search-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 10px;
+  flex-shrink: 0;
+  border-bottom: 1px solid var(--ade-border);
+}
+
+.ade-lane-popover-search {
+  height: 32px;
+  border: none;
+  background: transparent;
+  padding: 0;
+  font-size: 11px;
+  color: var(--ade-fg);
+  outline: none;
+  box-shadow: none;
+  width: 100%;
+  min-width: 0;
+  appearance: none;
+  -webkit-appearance: none;
+}
+
+.ade-lane-popover-search:focus,
+.ade-lane-popover-search:focus-visible {
+  outline: none;
+  box-shadow: none;
+  border: none;
+  background: transparent;
+}
+
+.ade-lane-popover-search::placeholder {
+  color: var(--ade-muted-fg);
+  opacity: 0.6;
+}
+
+.ade-lane-popover-list {
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 4px;
+  flex: 1;
+  min-height: 0;
+}
+
+.ade-lane-popover-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border-radius: 6px;
+  font-size: 11px;
+  font-weight: 400;
+  color: var(--ade-fg);
+  cursor: pointer;
+  border: none;
+  background: transparent;
+  width: 100%;
+  text-align: left;
+  transition: box-shadow 120ms ease, background 120ms ease;
+}
+
+.ade-lane-popover-item:hover {
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.05),
+    0 4px 14px -6px rgba(0, 0, 0, 0.55);
+}
+
+.ade-lane-popover-item[data-selected="true"] {
+  background: color-mix(in srgb, var(--ade-accent) 16%, transparent);
+  font-weight: 500;
+}
+
+.ade-lane-popover-item[data-selected="true"]:hover {
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.07),
+    0 6px 16px -6px rgba(0, 0, 0, 0.62);
+}
+
+.ade-lane-popover-item-featured {
+  justify-content: center;
+  gap: 6px;
+  padding-top: 8px;
+  padding-bottom: 8px;
+}
+
+.ade-orchestrator-rainbow-text {
+  background: linear-gradient(
+    90deg,
+    #ff5f5f 0%,
+    #ff9b3f 16%,
+    #f7d05c 33%,
+    #59d97f 50%,
+    #4f93ff 66%,
+    #a566ff 83%,
+    #ff5f5f 100%
+  );
+  background-size: 200% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  font-weight: 500;
+  background-position: 0 0;
+}
+
+/* The component drops framer's entrance spring, so the keyframe above is the
+   only entrance there is — which is why the reduced-motion opt-out lives here
+   rather than in a hook. */
+@media (prefers-reduced-motion: reduce) {
+  .ade-lane-popover { animation: none; }
+}
+
+/* Liquid glass ------------------------------------------------------------
+
+   The app draws these off its chat-surface variables (--chat-panel-border,
+   --chat-glass-*). A page has none, so the sheens become literals over the
+   card and border tokens; every radius, blur, saturation and shadow offset is
+   the one index.css ships. */
+
+.ade-liquid-glass-menu {
+  border-radius: 16px;
+  border: 1px solid var(--ade-border);
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--ade-card) 94%, var(--ade-bg) 6%) 0%,
+    var(--ade-card) 100%
+  );
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.055),
+    0 24px 56px -20px rgba(0, 0, 0, 0.58),
+    0 0 0 1px rgba(255, 255, 255, 0.012);
+}
+
+.ade-liquid-glass-pill {
+  position: relative;
+  overflow: hidden;
+  border: 1px solid var(--ade-border);
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--ade-card) 78%, transparent) 0%,
+    color-mix(in srgb, var(--ade-surface) 76%, transparent) 100%
+  );
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.082),
+    0 8px 22px -18px rgba(0, 0, 0, 0.48);
+  backdrop-filter: blur(20px) saturate(145%);
+  -webkit-backdrop-filter: blur(20px) saturate(145%);
+}
 `;
 
 /**

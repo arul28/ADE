@@ -296,6 +296,9 @@ function issueNode(overrides = {}) {
     creator: overrides.creator ?? { id: "user-2", name: "Grace", displayName: "Grace H" },
     labels: overrides.labels ?? { nodes: [{ id: "label-1", name: "bug", color: "#f00" }] },
     children: overrides.children ?? { nodes: [] },
+    // Linear's inverse relations: the ones where THIS issue is the blocked
+    // side, so `issue` on a `blocks` relation is the thing in the way.
+    inverseRelations: overrides.inverseRelations ?? { nodes: [] },
   };
 }
 

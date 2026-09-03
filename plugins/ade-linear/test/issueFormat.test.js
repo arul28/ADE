@@ -272,7 +272,45 @@ describe("comments, teams and states", () => {
   it("shapes a team as a row with its key as the subtitle", () => {
     assert.deepEqual(
       normalizeTeam({ id: "t1", key: "ENG", name: "Engineering" }),
-      { id: "t1", key: "ENG", name: "Engineering", title: "Engineering", subtitle: "ENG" },
+      {
+        id: "t1",
+        key: "ENG",
+        name: "Engineering",
+        title: "Engineering",
+        subtitle: "ENG",
+        // The page's team card draws these four; a workspace whose schema
+        // refused the wide selection answers none of them, and `null` is that
+        // answer rather than a default the card would print as fact.
+        color: null,
+        issueCount: null,
+        cyclesEnabled: null,
+        private: null,
+      },
+    );
+  });
+
+  it("carries the four cosmetic team fields when the wide selection answered them", () => {
+    assert.deepEqual(
+      normalizeTeam({
+        id: "t1",
+        key: "ENG",
+        name: "Engineering",
+        color: "#5E6AD2",
+        issueCount: 42,
+        cyclesEnabled: true,
+        private: false,
+      }),
+      {
+        id: "t1",
+        key: "ENG",
+        name: "Engineering",
+        title: "Engineering",
+        subtitle: "ENG",
+        color: "#5E6AD2",
+        issueCount: 42,
+        cyclesEnabled: true,
+        private: false,
+      },
     );
   });
 

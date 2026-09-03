@@ -405,10 +405,10 @@ const LINEAR = manifest({
     chip: { label: "{key}", icon: "brand:linear" },
     panelId: "issue",
   }],
-  // Six webview surfaces, one page. Linear ships its own HTML now
+  // Seven webview surfaces, one page. Linear ships its own HTML now
   // (`plugins/ade-linear/dist/`), and each placement is a `webview` surface
   // pointing at the same `entryHtml`; the page reads the host's injected
-  // `surfaceId` to know which of the six it is drawing. Every one keeps a
+  // `surfaceId` to know which of the seven it is drawing. Every one keeps a
   // `panelId`, which is what the phone, the terminal and an older desktop
   // render in its place.
   surfaces: [
@@ -416,6 +416,7 @@ const LINEAR = manifest({
     { kind: "webview", id: "quickview", title: "Linear", icon: "brand:linear", entryHtml: "dist/index.html", panelId: "issues", popover: { width: 560, height: 640 }, mobile: false },
     { kind: "webview", id: "settings", title: "Linear connection", icon: "brand:linear", entryHtml: "dist/index.html", panelId: "settings", mobile: false },
     { kind: "webview", id: "picker", title: "Attach a Linear issue", icon: "brand:linear", entryHtml: "dist/index.html", panelId: "issues", popover: { width: 520, height: 560 }, mobile: false },
+    { kind: "webview", id: "dialog-picker", title: "Link a Linear issue", icon: "brand:linear", entryHtml: "dist/index.html", panelId: "issues", mobile: false },
     { kind: "webview", id: "badge-card", title: "Linear issue", icon: "brand:linear", entryHtml: "dist/index.html", panelId: "issue", popover: { width: 300, height: 280 }, mobile: false },
     { kind: "webview", id: "issue-context", title: "Linear issue", icon: "brand:linear", entryHtml: "dist/index.html", panelId: "issue", mobile: false },
   ],
@@ -439,6 +440,10 @@ const LINEAR = manifest({
       webviewSurfaceId: "picker",
     },
     { socket: "row-badge", surface: "lanes", id: "lane-issue", label: "Linear issue", icon: "brand:linear", webviewSurfaceId: "badge-card" },
+    // The Create-lane and Create-PR issue pickers, drawn as `dialog-picker`
+    // guests inside ADE's own dialogs and answering them with `dialog.submit`.
+    { socket: "dialog-section", surface: "lanes", id: "create-lane-issue", label: "Linear issue", icon: "brand:linear", panelId: "issues", dialog: "create-lane", webviewSurfaceId: "dialog-picker" },
+    { socket: "dialog-section", surface: "prs", id: "create-pr-issue", label: "Linear issue", icon: "brand:linear", panelId: "issues", dialog: "create-pr", webviewSurfaceId: "dialog-picker" },
     { socket: "graph-node", surface: "lanes", id: "graph-issue", label: "Linear issue", icon: "brand:linear" },
     // `section` puts the card on Settings > Integrations rather than on
     // General, which is where an unnamed section lands.
@@ -494,6 +499,13 @@ const LINEAR = manifest({
       kind: "text",
       label: "Default team key",
       description: "Used when a command does not name a team, e.g. ENG.",
+    },
+    {
+      key: "launchPromptClipboard",
+      kind: "toggle",
+      label: "Copy the launch prompt to the clipboard",
+      description: "Saves the kickoff prompt before Linear starts an agent on the issue.",
+      default: true,
     },
   ],
   automationTriggers: [

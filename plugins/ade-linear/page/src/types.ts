@@ -104,6 +104,14 @@ export type LinearConnectionStatus = {
   authMode?: "manual" | "oauth" | null;
   oauthAvailable?: boolean;
   tokenExpiresAt?: string | null;
+  /**
+   * The token's remaining life as a sentence — "expires in 6 days", "expired" —
+   * pre-formatted by the child from `tokenExpiresAt`, which is the same string
+   * the settings PANEL prints. Null for an API key and for a token with no
+   * expiry, which says nothing rather than "never".
+   */
+  expiresIn?: string | null;
+  expired?: boolean;
 };
 
 export type LinearCatalogUser = {
@@ -241,6 +249,11 @@ export type PageLane = {
   id: string;
   name: string;
   branch: string | null;
+  /**
+   * The lane's worktree on disk, when the host's lane summary answers one.
+   * Still null on a host that withholds it, and the page hides the row rather
+   * than drawing an empty one.
+   */
   path: string | null;
   status?: string | null;
   laneType?: "primary" | "worktree" | string | null;
@@ -255,5 +268,40 @@ export type PageLane = {
 export type PageChatModel = {
   id: string;
   label: string;
+  /**
+   * The provider GROUP the model belongs to — `claude`, `codex`, `cursor`,
+   * `droid`, `opencode` and the rest — as reported by the read that fetched it,
+   * never guessed from the id's prefix. It is what selects the permission
+   * vocabulary the launch form draws.
+   */
   provider: string;
+  /** Whether this model has a `fast` service tier for the launch form's toggle. */
+  fastModeSupported: boolean;
+  /**
+   * The model's OWN reasoning ladder. An empty list means the model has none
+   * and the form draws no reasoning control at all, which is what the compiled
+   * picker did — rather than offering four tiers the provider would ignore.
+   */
+  reasoningEfforts: { value: string; label: string; detail: string | null }[];
+  defaultReasoningEffort: string | null;
+};
+
+/** One permission choice a provider offers, and what ADE receives for it. */
+export type PageProviderPermissionMode = {
+  /** The provider's own value, e.g. Claude's `acceptEdits`, Droid's `auto-low`. */
+  value: string;
+  /**
+   * What actually crosses the wire: `AgentChatPermissionMode`. `chat.createSession`
+   * validates this and nothing else.
+   */
+  unified: string;
+  /** The provider's own word for it, which is what the pill shows. */
+  label: string;
+  detail: string | null;
+};
+
+/** What the launch form may offer, per provider. */
+export type PageCapabilities = {
+  providers: Record<string, { label: string; modes: PageProviderPermissionMode[] }>;
+  defaultProvider: string | null;
 };

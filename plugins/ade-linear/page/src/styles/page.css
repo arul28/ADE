@@ -34,8 +34,17 @@
  * filtered through `.gitignore`, and `node_modules` is ignored there. It points
  * at the built output rather than the source because the build is what this
  * page imports.
+ *
+ * One line per ENTRY POINT, and that is not redundancy. The kit is split so a
+ * page pays only for what it draws — the barrel does not re-export the lane
+ * combobox, the dialog shell or the attachment chips — so a scan of the barrel
+ * alone sees none of their classes, and every one of the three would draw as an
+ * unstyled box.
  */
 @source "../../node_modules/@ade-dev/ui/dist/index.js";
+@source "../../node_modules/@ade-dev/ui/dist/lanes.js";
+@source "../../node_modules/@ade-dev/ui/dist/dialog.js";
+@source "../../node_modules/@ade-dev/ui/dist/attachments.js";
 
 /**
  * Tailwind also scans the kit.

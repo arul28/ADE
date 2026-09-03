@@ -67,6 +67,15 @@ export type IssueConflict = {
   /** A lane already attaches this exact issue (primary attachment or a chat/CLI session link). */
   laneId: string | null;
   laneName: string | null;
+  /**
+   * Where that lane lives on disk, when the host's lane summary answers it.
+   *
+   * The one thing a reader looking at "Has agent" actually wants next: which
+   * worktree the work is already happening in. Null on a host that withholds
+   * the path, and every reader of this field hides the line rather than drawing
+   * an empty one — "somewhere" is not an answer worth a row.
+   */
+  lanePath: string | null;
   /** Whether the existing attachment is the lane's primary issue or a session attachment. */
   reason: "lane" | "session";
 };

@@ -30,6 +30,9 @@ narrowest path that covers what you need.
 | `@ade-dev/ui/tokens` | `COLORS`, spacing/size/radius scales, the style builders, `INPUT_CLS` | nothing — not even React |
 | `@ade-dev/ui/theme` | `applyAdeTheme`, the palettes, `injectAdeStyles`, `<AdeStyles/>` | react |
 | `@ade-dev/ui` | `Button`, `Chip`, `EmptyState`, `PaneHeader`, `cn`, the settings shell, the Linear brand and issue helpers, plus everything above | react, clsx, tailwind-merge |
+| `@ade-dev/ui/lanes` | `LaneCombobox`, the lane option-id helpers, `computeLanePopoverPlacement`, `LaneLogoMark`, `branchNameFromLaneRef` | react, react-dom (body portal), clsx, tailwind-merge, `@phosphor-icons/react` |
+| `@ade-dev/ui/dialog` | `LaneDialogShell` | react, `@radix-ui/react-dialog`, `border-beam` |
+| `@ade-dev/ui/attachments` | `AttachmentTray` and the attachment chips, `attachmentChipTone`, the image-attachment keyboard helpers | react, clsx, tailwind-merge, `@phosphor-icons/react` |
 | `@ade-dev/ui/icons` | `LaneIcon`, `BranchIcon` | `@phosphor-icons/react` |
 | `@ade-dev/ui/markdown` | `Markdown`, `SAFE_PREVIEW_SCHEMA`, `markdownUrlTransform` | react-markdown, remark-gfm, rehype-raw, rehype-sanitize |
 
@@ -121,6 +124,15 @@ blocked and the page silently falls back to the system stack.
   stable `ade-*` class names; inside the app Tailwind draws them, inside a page
   the injected stylesheet does.
 - `SmartTooltip` and the vocabulary canvas are deliberately excluded.
+- The attachment chips are the generic half of the app's chat tray. The preview
+  modal is not here — it pulls the whole Files viewer platform, so chips take an
+  `onOpen` callback instead. Neither is the machine pin (an Electron-side
+  binding whose only job was routing that preview) nor the file-icon resolver
+  (`getFileIcon` is a renderer module); `FileAttachmentChip` takes the icon as a
+  prop and falls back to a generic file glyph. Likewise `LaneCombobox` carries
+  no `motion/react`: its entrance is the stylesheet's `ade-popover-in` keyframe
+  rather than the app's framer spring, and `prefers-reduced-motion` turns it off
+  in CSS.
 
 ## License
 

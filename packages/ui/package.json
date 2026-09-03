@@ -24,6 +24,21 @@
       "import": "./dist/theme.js",
       "require": "./dist/theme.cjs"
     },
+    "./lanes": {
+      "types": "./dist/lanes.d.ts",
+      "import": "./dist/lanes.js",
+      "require": "./dist/lanes.cjs"
+    },
+    "./dialog": {
+      "types": "./dist/dialog.d.ts",
+      "import": "./dist/dialog.js",
+      "require": "./dist/dialog.cjs"
+    },
+    "./attachments": {
+      "types": "./dist/attachments.d.ts",
+      "import": "./dist/attachments.js",
+      "require": "./dist/attachments.cjs"
+    },
     "./icons": {
       "types": "./dist/icons.d.ts",
       "import": "./dist/icons.js",
@@ -74,6 +89,8 @@
   },
   "dependencies": {
     "@phosphor-icons/react": "^2.1.10",
+    "@radix-ui/react-dialog": "^1.1.15",
+    "border-beam": "^1.0.1",
     "clsx": "^2.1.1",
     "react-markdown": "^10.1.0",
     "rehype-raw": "^7.0.0",

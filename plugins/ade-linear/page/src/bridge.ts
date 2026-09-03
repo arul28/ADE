@@ -21,7 +21,8 @@ export type PluginWebviewPlacement =
   | "overlay"
   | "popover"
   | "settings-section"
-  | "composer-picker";
+  | "composer-picker"
+  | "dialog-picker";
 
 export type PluginWebviewProjectContext = {
   projectId: string | null;
@@ -42,10 +43,40 @@ export type PluginWebviewThemeSnapshot = {
   tokens: Record<string, string>;
 };
 
+export type PluginWebviewHostKind = "lane" | "session" | "pr" | "chat";
+
+/**
+ * One turn's move, on a `chat` frame.
+ *
+ * `state` is where the turn is — `interrupted` is mapped onto `failed` by the
+ * host, so a page has one error path rather than two — and `message` is the
+ * host's own failure sentence, present only on `failed`.
+ */
+export type PluginWebviewChatTurn = {
+  sessionId: string;
+  state: "started" | "completed" | "failed";
+  /** The host's turn id, when the producer knows it. Opaque to the page. */
+  turnId?: string;
+  message?: string;
+};
+
 export type PluginWebviewHostEvent = {
-  kind: "lane" | "session" | "pr";
+  kind: PluginWebviewHostKind;
   ids: string[];
   overflow: boolean;
+  /**
+   * Present only on a `chat` frame, and the whole reason that kind exists.
+   *
+   * A lane or a PR frame says "these ids moved, read them again". A chat frame
+   * carries the turns themselves, because there is nothing for a page to
+   * re-read: a kickoff that failed leaves a session whose only record of the
+   * failure is the event, and the session exists either way.
+   *
+   * An ARRAY because the frame is coalesced like every other: a batch launch of
+   * fifty issues settles fifty turns, and `ids` carries the same session ids
+   * for a page that only wants "this session moved".
+   */
+  turns?: PluginWebviewChatTurn[];
 };
 
 export type PluginWebviewChangeEvent = {
@@ -114,11 +145,38 @@ export type AdePluginBridge = {
     dismissToast(id: string): Promise<void>;
     prompt(prompt: unknown): Promise<unknown>;
     confirm(request: PluginWebviewConfirm): Promise<boolean>;
+    /**
+     * Report this page's own content height, so a placement sized to its
+     * content can grow around it.
+     *
+     * Synchronous and void, and the only member here that is: it reaches the
+     * element hosting the frame directly rather than going through main, so
+     * there is nothing to await and a promise per layout tick would be pure
+     * cost. The host clamps what it is told. See
+     * `PLUGIN_WEBVIEW_RESIZE_CHANNEL` in `shared/plugins/webviewBridge.ts`.
+     */
+    resize(size: { height: number }): void;
   };
   clipboard?: { read(): Promise<string>; write(text: string): Promise<void> };
   theme?: { get(): Promise<PluginWebviewThemeSnapshot> };
   host?: {
-    subscribe(options: { kinds: ("lane" | "session" | "pr")[] }): Promise<() => void>;
+    subscribe(options: { kinds: PluginWebviewHostKind[] }): Promise<() => void>;
+  };
+  /**
+   * Present only in the `dialog-picker` placement.
+   *
+   * The page is drawn INSIDE one of ADE's own dialogs — Create lane, Create PR —
+   * and the dialog is waiting on an answer. `submit` gives it one and the
+   * dialog writes the issue into its own fields.
+   *
+   * There is no `cancel`: the dialog around the page has its own, and a page
+   * that could dismiss a dialog it merely occupies a band of would be reaching
+   * past its placement. Absent in every other placement, so it is called
+   * through the guard in `host/ui.ts` rather than reached for directly.
+   */
+  dialog?: {
+    /** `{ issue: null }` clears a previous choice, which a dialog must be able to hear. */
+    submit(answer: { issue: PluginWebviewComposerAttach | null }): Promise<void>;
   };
 };
 

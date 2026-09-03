@@ -45,7 +45,7 @@
 
 "use strict";
 
-const { createLinearApi } = require("./linearApi");
+const { createLinearApi, expiry } = require("./linearApi");
 const { createData } = require("./data");
 const { createFlows } = require("./flows");
 const { issueBranchName, issueLaneName } = require("./issueFormat");
@@ -85,10 +85,23 @@ const ISSUE_CACHE_MS = 30_000;
  * A value ADE later stops accepting is refused at launch with ADE's own
  * message, which is a better failure than a picker that silently offers
  * nothing.
+ *
+ * The values are `AgentChatPermissionMode` — `default | auto | plan | edit |
+ * full-auto | config-toml` — and nothing else. This list previously offered
+ * `accept-edits`, which is not in that union and appears nowhere in ADE: every
+ * launch that chose it was refused. The word the reader sees is still "Accept
+ * edits", because that is the sentence; the value under it is `edit`.
+ *
+ * `config-toml` is left out on purpose. It means "read the permissions out of
+ * the Codex config file", which is a Codex-only answer, and this panel cannot
+ * know the provider — a phone reader picking it against a Claude model would be
+ * choosing nothing. The PAGE, which does know the provider, offers it.
  */
 const PERMISSION_MODES = [
   { value: "default", label: "Ask before acting" },
-  { value: "accept-edits", label: "Accept edits" },
+  { value: "auto", label: "Auto" },
+  { value: "plan", label: "Plan" },
+  { value: "edit", label: "Accept edits" },
   { value: "full-auto", label: "Full auto" },
 ];
 
@@ -581,24 +594,6 @@ function formatWebhookLastEvent(iso) {
   return new Date(at).toISOString().replace("T", " ").slice(0, 16) + " UTC";
 }
 
-/**
- * The token's remaining life, pre-formatted.
- *
- * A schema has no date arithmetic, so "expires in 6 days" has to be a string by
- * the time it reaches a builder. An absent expiry is an API key or a token that
- * does not expire, and says nothing rather than "never".
- */
-function expiry(tokenExpiresAt) {
-  if (!tokenExpiresAt) return { expiresIn: null, expired: false };
-  const at = Date.parse(String(tokenExpiresAt));
-  if (Number.isNaN(at)) return { expiresIn: null, expired: false };
-  const ms = at - Date.now();
-  if (ms <= 0) return { expiresIn: "expired", expired: true };
-  const days = Math.round(ms / 86_400_000);
-  if (days >= 1) return { expiresIn: `expires in ${days} ${days === 1 ? "day" : "days"}`, expired: false };
-  const hours = Math.max(1, Math.round(ms / 3_600_000));
-  return { expiresIn: `expires in ${hours} ${hours === 1 ? "hour" : "hours"}`, expired: false };
-}
 
 /**
  * Can a Linear webhook ever reach this connection?

@@ -45,13 +45,15 @@ export type BatchLaunchIssueConfig = {
   /** Chat (in-process SDK) vs CLI (tracked terminal agent). Defaults to "chat". */
   sessionType?: BatchLaunchSessionType;
   /**
-   * Unified permission mode for CLI launches; chat launches default the mode
-   * server-side and ignore this. When null the CLI launch uses its default.
+   * The unified permission the launch carries — `AgentChatPermissionMode`. When
+   * null the provider's own default stands.
    *
-   * The compiled config also carried `nativeControls` (the provider-native
-   * Claude/Codex/Cursor/Droid/OpenCode permission shape). The page bridge's
-   * launch verbs accept a single `permissionMode` string and nothing else, so
-   * the native block has no counterpart here and is dropped.
+   * The compiled config also carried `nativeControls`, the provider-native
+   * Claude/Codex/Cursor/Droid/OpenCode permission shape, and collapsed it to
+   * this on the way out. The launch verbs accept the collapsed value and
+   * nothing else, so the launch form offers the same per-provider CHOICES
+   * (`pageCapabilities`) and stores the value each one maps to. The native
+   * block itself is the renderer control's internals and has no counterpart.
    */
   permissionMode?: string | null;
   /** When launching into an existing lane (skips lane creation). */
@@ -108,40 +110,121 @@ export type BatchLaunchAgentOutcome =
  * `AgentChatEventEnvelope`s off `window.ade.agentChat.onEvent` and classified
  * them: `user_message` and `status:started` meant the agent was alive (a
  * non-terminal "done"); `error`, `status:failed` and `done:failed` meant
- * `agent-error` with the runtime's own message. There is no agent-chat event
- * stream in the page bridge. The only live signal a guest gets is
- * `host.subscribe({kinds:["session"]})`, whose frames carry ids and nothing
- * else — no turn status, no message. So this tracker resolves a registered
- * session to "done" the moment the host reports that session exists, and can
- * NEVER report `agent-error`: a kickoff turn that fails server-side shows as
- * Ready here. `agent-error` remains in the status union because the toast and
- * the progress accounting still render it, and a future bridge verb carrying
- * turn status would light it up unchanged.
+ * `agent-error` with the runtime's own message.
+ *
+ * The page tier has both signals now, and they are not equivalent:
+ *
+ * - `host.subscribe({kinds:["lane","session"]})` frames carry ids and nothing
+ *   else. `observeSessions` reads them, and can only ever answer "done" — that
+ *   a session EXISTS says nothing about how its kickoff turn went, and a turn
+ *   that failed server-side leaves a session that exists.
+ * - `host.subscribe({kinds:["chat"]})` frames carry the turn itself.
+ *   `observeChatTurn` reads them and is the only path that can answer
+ *   `agent-error`, with the host's own message.
+ *
+ * Both are wired, because a host that reports no chat frames must still promote
+ * a launched row out of "starting" rather than leaving it spinning forever. The
+ * chat frame WINS when it arrives: it is the specific answer, and the inference
+ * is the fallback.
  */
 export class BatchLaunchAgentReadinessTracker {
   private bufferingUnknownSessions = false;
   private readonly issueIdBySessionId = new Map<string, string>();
   private readonly earlySessionIds = new Set<string>();
+  /**
+   * Turn outcomes that arrived before their launch call returned a session id.
+   *
+   * Held apart from `earlySessionIds`, which records only that a session was
+   * SEEN. A turn that failed before its own launch resolved would otherwise be
+   * flattened into "seen, therefore done" — reporting Ready for the one case
+   * the chat frames exist to catch.
+   */
+  private readonly earlyOutcomeBySessionId = new Map<string, BatchLaunchAgentOutcome>();
+  /**
+   * Sessions the INFERENCE path has already reported ready.
+   *
+   * The mapping itself is not consumed when it does, and that is the whole
+   * point: a kickoff turn can fail seconds after its session appears, and a
+   * tracker that forgot the session on the first lane refresh would have
+   * nothing left to attach the failure to. So the inference path remembers what
+   * it has said instead of erasing what it knows, and a chat frame can still
+   * correct it.
+   */
+  private readonly inferredSessionIds = new Set<string>();
+  /** Sessions a chat frame has settled. A turn ends once. */
+  private readonly settledSessionIds = new Set<string>();
 
   beginBatch(): void {
     this.bufferingUnknownSessions = true;
     this.issueIdBySessionId.clear();
     this.earlySessionIds.clear();
+    this.earlyOutcomeBySessionId.clear();
+    this.inferredSessionIds.clear();
+    this.settledSessionIds.clear();
   }
 
   finishRegistration(): void {
     this.bufferingUnknownSessions = false;
     this.earlySessionIds.clear();
+    this.earlyOutcomeBySessionId.clear();
   }
 
   registerSession(issueId: string, sessionId: string): BatchLaunchAgentOutcome | null {
+    // The specific answer first: a buffered turn outcome knows whether the
+    // kickoff worked, where a buffered sighting only knows the session is there.
+    const earlyOutcome = this.earlyOutcomeBySessionId.get(sessionId);
+    this.earlyOutcomeBySessionId.delete(sessionId);
     const early = this.earlySessionIds.has(sessionId);
     this.earlySessionIds.delete(sessionId);
+    if (earlyOutcome) return earlyOutcome;
     if (early) {
       return { status: "done", error: null };
     }
     this.issueIdBySessionId.set(sessionId, issueId);
     return null;
+  }
+
+  /**
+   * Observe one chat turn the host reported for a session.
+   *
+   * The precise signal, and the reason `chat` is a `host.subscribe` kind at all.
+   * `observeSessions` below can only ever answer "done": it infers readiness
+   * from a lane or session list having moved, which says a session exists and
+   * nothing about how its kickoff turn went. A turn that FAILED server-side
+   * leaves a session that exists — so inference alone reports Ready for a batch
+   * that produced nothing, which is the worst thing this toast can say.
+   *
+   * Answers null for a session this batch is not waiting on, and for a
+   * `started` turn: a turn that has begun is still initializing, which is the
+   * state the row is already in. `interrupted` never arrives — the host maps it
+   * onto `failed`, so a page has one error path rather than two.
+   */
+  observeChatTurn(turn: {
+    sessionId: string;
+    state: "started" | "completed" | "failed";
+    message?: string | null;
+  }): { issueId: string; outcome: BatchLaunchAgentOutcome } | null {
+    if (turn.state === "started") return null;
+    const outcome: BatchLaunchAgentOutcome = turn.state === "completed"
+      ? { status: "done", error: null }
+      : {
+        status: "agent-error",
+        // The host's own sentence when it sent one. The fallback names what
+        // happened and nothing else: the row must say the agent is not working
+        // rather than invent a reason it is not.
+        error: turn.message?.trim() || "The kickoff turn failed.",
+      };
+    const issueId = this.issueIdBySessionId.get(turn.sessionId);
+    if (!issueId) {
+      // A turn for a session whose launch call has not returned its id yet.
+      if (this.bufferingUnknownSessions) {
+        this.earlyOutcomeBySessionId.set(turn.sessionId, outcome);
+      }
+      return null;
+    }
+    if (this.settledSessionIds.has(turn.sessionId)) return null;
+    this.settledSessionIds.add(turn.sessionId);
+    return { issueId, outcome };
   }
 
   /**
@@ -156,7 +239,10 @@ export class BatchLaunchAgentReadinessTracker {
     for (const sessionId of sessionIds) {
       const issueId = this.issueIdBySessionId.get(sessionId);
       if (issueId) {
-        this.issueIdBySessionId.delete(sessionId);
+        // Reported once, but the mapping is KEPT: a chat frame arriving later
+        // is the specific answer and must still find its issue.
+        if (this.inferredSessionIds.has(sessionId) || this.settledSessionIds.has(sessionId)) continue;
+        this.inferredSessionIds.add(sessionId);
         transitions.push({ issueId, outcome: { status: "done", error: null } });
         continue;
       }
@@ -287,14 +373,24 @@ export function findIssueConflicts(
       sessionLaneByIssueId.get(issue.id)
       ?? (issueKey ? sessionLaneByIssueKey.get(issueKey) : undefined);
     if (sessionLane) {
-      conflicts.set(issue.id, { laneId: sessionLane.id, laneName: sessionLane.name, reason: "session" });
+      conflicts.set(issue.id, {
+        laneId: sessionLane.id,
+        laneName: sessionLane.name,
+        lanePath: sessionLane.path,
+        reason: "session",
+      });
       continue;
     }
     const primaryLane =
       primaryLaneByIssueId.get(issue.id)
       ?? (issueKey ? primaryLaneByIssueKey.get(issueKey) : undefined);
     if (primaryLane) {
-      conflicts.set(issue.id, { laneId: primaryLane.id, laneName: primaryLane.name, reason: "lane" });
+      conflicts.set(issue.id, {
+        laneId: primaryLane.id,
+        laneName: primaryLane.name,
+        lanePath: primaryLane.path,
+        reason: "lane",
+      });
     }
   }
   return conflicts;
@@ -328,6 +424,8 @@ export type BatchLaunchDeps = {
     model: string;
     reasoningEffort: string | null;
     permissionMode?: string | null;
+    /** The provider's fast service tier, when the form offered and the reader chose. */
+    fastMode?: boolean;
     prompt: string;
   }) => Promise<{ id: string }>;
   /**
@@ -344,6 +442,7 @@ export type BatchLaunchDeps = {
     model: string;
     reasoningEffort: string | null;
     permissionMode?: string | null;
+    fastMode?: boolean;
     prompt: string;
   }) => Promise<{ sessionId: string }>;
   /** Roll back a lane created in this run when the agent launch fails. */
@@ -433,6 +532,9 @@ export async function runBatchLaunch(
           model,
           reasoningEffort: config.reasoningEffort,
           ...(config.permissionMode != null ? { permissionMode: config.permissionMode } : {}),
+          // Only when the form drew the toggle. `false` for a model with no
+          // fast tier would be a choice the reader never made.
+          ...(config.fastMode ? { fastMode: true } : {}),
           prompt: config.kickoffPrompt.trim() || defaultKickoffIntro(),
         });
         result.createdSessionIds.push(session.sessionId);
@@ -452,6 +554,7 @@ export async function runBatchLaunch(
         model,
         reasoningEffort: config.reasoningEffort,
         ...(config.permissionMode != null ? { permissionMode: config.permissionMode } : {}),
+        ...(config.fastMode ? { fastMode: true } : {}),
         prompt: kickoffText,
       });
       result.createdSessionIds.push(session.id);

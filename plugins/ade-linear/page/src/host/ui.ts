@@ -9,6 +9,16 @@
 
 import { bridge, type PluginWebviewComposerAttach, type PluginWebviewToast } from "../bridge";
 
+/**
+ * The tallest height this page will ever report.
+ *
+ * The host clamps too, at 2,000px. This one is a guard against a runaway
+ * MEASUREMENT rather than against a tall page: a mid-layout read, a font swap
+ * or a `ResizeObserver` loop can produce a number no content ever had, and
+ * asking the host for it once is enough to make a settings section jump.
+ */
+const MAX_REPORTED_HEIGHT = 4000;
+
 /** Raise a toast in ADE's own stack. Answers the toast id, or null. */
 export async function toast(next: PluginWebviewToast): Promise<string | null> {
   const api = bridge();
@@ -120,6 +130,56 @@ export async function closeSurface(): Promise<void> {
     await api.surface.close();
   } catch {
     // Already closed.
+  }
+}
+
+/**
+ * Tell the host how tall this page's content is.
+ *
+ * The ONE height channel. Before the bridge grew `ui.resize` the page reported
+ * its height two other ways — writing `documentElement.style.height` for a host
+ * that measured the guest document, and posting an `ade:plugin-webview-height`
+ * frame to the parent for a host that listened — and neither was a bridge verb,
+ * so neither was something a host was obliged to honour or a page could rely
+ * on. Both are gone. A host too old to answer `ui.resize` draws the placement
+ * at the size `page.css` gives it, which is correct if not content-sized.
+ *
+ * Returns the height actually reported, or null when nothing was, so a caller
+ * can skip a repeat report without measuring the clamp itself.
+ */
+export function reportHeight(height: number): number | null {
+  const api = bridge();
+  if (!api?.ui?.resize) return null;
+  if (!Number.isFinite(height) || height <= 0) return null;
+  const clamped = Math.min(Math.ceil(height), MAX_REPORTED_HEIGHT);
+  try {
+    api.ui.resize({ height: clamped });
+    return clamped;
+  } catch {
+    // A host whose element has already gone. Nothing to size.
+    return null;
+  }
+}
+
+/**
+ * Answer the ADE dialog this page is drawn inside.
+ *
+ * Only the `dialog-picker` placement has it — every other placement refuses it
+ * `not_permitted`, and a host that has no dialog verb at all gets `false` here
+ * without a throw, which is what makes the picker entry safe to render
+ * anywhere. `true` means the host took the answer.
+ *
+ * `null` is a real answer: it clears a previous choice, which a dialog must be
+ * able to hear or a chosen issue could never be undone from inside the page.
+ */
+export async function submitDialog(issue: PluginWebviewComposerAttach | null): Promise<boolean> {
+  const api = bridge();
+  if (!api?.dialog) return false;
+  try {
+    await api.dialog.submit({ issue });
+    return true;
+  } catch {
+    return false;
   }
 }
 

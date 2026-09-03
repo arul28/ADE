@@ -52,7 +52,7 @@
 "use strict";
 
 const { issueBranchName, issueLaneName, normalizeIssue } = require("./issueFormat");
-const { isMissingTokenError } = require("./linearApi");
+const { expiry, isMissingTokenError } = require("./linearApi");
 
 /**
  * Linear's priority scale, in the page's own vocabulary.
@@ -76,6 +76,95 @@ const QUICK_VIEW_ISSUES = 50;
 const MAX_PROJECTS = 100;
 const MAX_USERS = 250;
 const MAX_MODELS = 100;
+
+/**
+ * The provider groups the model read asks for, in ADE's own listing order.
+ *
+ * `MODEL_PROVIDER_GROUPS` in `shared/modelRegistry.ts` is the same list. It is
+ * repeated rather than imported because a plugin child is a separate process
+ * with no access to the app's modules — and repeated in the same ORDER, because
+ * the order is what decides which provider tags a model two runtimes both
+ * offer.
+ */
+const MODEL_PROVIDER_GROUPS = Object.freeze([
+  "claude",
+  "codex",
+  "cursor",
+  "opencode",
+  "pi",
+  "copilot",
+  "grok",
+  "droid",
+  "kimi",
+  "qwen",
+]);
+
+/**
+ * The permission vocabulary each provider offers, and what each option MEANS to
+ * `chat.createSession`.
+ *
+ * Every label, every detail sentence and every mapping below is the renderer's
+ * own — `renderer/lib/nativeLaunchControls.ts` holds `CLAUDE_PERMISSION_OPTIONS`,
+ * `CODEX_PERMISSION_PRESETS`, `cursorModeChoices`, `DROID_PERMISSION_OPTIONS`
+ * and `OPENCODE_PERMISSION_OPTIONS`, and `summarizeNativeControls` holds the
+ * mapping to the unified `AgentChatPermissionMode`. A page cannot import any of
+ * it, so the table is written out here.
+ *
+ * `unified` is the string the launch carries: `default | auto | plan | edit |
+ * full-auto | config-toml`. Nothing else is accepted, which is why the plugin's
+ * own three-value list ("accept-edits") could never have worked.
+ *
+ * `label` is what the pill shows and is deliberately the PROVIDER's word, not
+ * the unified one — a Droid reader picks "Auto medium", not "Default".
+ */
+const PROVIDER_PERMISSIONS = Object.freeze({
+  claude: Object.freeze({
+    label: "Permissions",
+    modes: Object.freeze([
+      { value: "default", unified: "default", label: "Manual", detail: "Claude asks before edits, Bash, and other sensitive tools." },
+      { value: "auto", unified: "auto", label: "Auto", detail: "Claude judges each tool call." },
+      { value: "acceptEdits", unified: "edit", label: "Accept edits", detail: "File edits are auto-approved; higher-risk actions still prompt." },
+      { value: "plan", unified: "plan", label: "Plan mode", detail: "Read-only Claude turns for analysis and implementation planning." },
+      { value: "bypassPermissions", unified: "full-auto", label: "Bypass", detail: "Skip every Claude permission prompt for this chat." },
+    ]),
+  }),
+  codex: Object.freeze({
+    label: "Permissions",
+    modes: Object.freeze([
+      { value: "default", unified: "default", label: "Default", detail: "Ask on request with workspace write sandbox." },
+      { value: "edit", unified: "edit", label: "Edit", detail: "Untrusted approval with workspace write sandbox." },
+      { value: "plan", unified: "plan", label: "Plan", detail: "Read-only sandbox for planning." },
+      { value: "full-auto", unified: "full-auto", label: "Full auto", detail: "No approval prompts with full sandbox access." },
+    ]),
+  }),
+  cursor: Object.freeze({
+    label: "Mode",
+    modes: Object.freeze([
+      { value: "agent", unified: "default", label: "Agent", detail: null },
+      { value: "ask", unified: "edit", label: "Ask", detail: null },
+      { value: "plan", unified: "plan", label: "Plan", detail: null },
+      { value: "full-auto", unified: "full-auto", label: "Full auto", detail: null },
+    ]),
+  }),
+  droid: Object.freeze({
+    label: "Autonomy",
+    modes: Object.freeze([
+      { value: "read-only", unified: "plan", label: "Read-only", detail: "No auto flag. Droid stays in read-only mode." },
+      { value: "auto-low", unified: "edit", label: "Auto low", detail: "Passes --auto low for safe file edits." },
+      { value: "auto-medium", unified: "default", label: "Auto medium", detail: "Passes --auto medium for local development operations." },
+      { value: "auto-high", unified: "full-auto", label: "Auto high", detail: "Passes --auto high for broader automation." },
+    ]),
+  }),
+  opencode: Object.freeze({
+    label: "Permissions",
+    modes: Object.freeze([
+      { value: "plan", unified: "plan", label: "Plan", detail: null },
+      { value: "edit", unified: "edit", label: "Edit", detail: null },
+      { value: "full-auto", unified: "full-auto", label: "Full auto", detail: null },
+      { value: "config-toml", unified: "config-toml", label: "Config", detail: null },
+    ]),
+  }),
+});
 
 /** The one sentence for a call that arrived before `activate` finished. */
 const STARTING_UP = "Linear is still starting up on this machine.";
@@ -102,6 +191,80 @@ function integer(value) {
 function priorityLabel(priority) {
   const index = Number.isInteger(priority) ? priority : 0;
   return PAGE_PRIORITY_LABELS[index] ?? PAGE_PRIORITY_LABELS[0];
+}
+
+/**
+ * The current value of one of Linear's count HISTORIES.
+ *
+ * `issueCountHistory` and `completedIssueCountHistory` are arrays of one entry
+ * per day, oldest first, so "how many now" is the last entry. Anything that is
+ * not a finite number — an empty history, a selection the workspace refused —
+ * is `null`, because a project with no count and a project with zero issues are
+ * different things and a card that drew "0" for the first would be wrong.
+ */
+/**
+ * When the webhook drain last received a delivery, as a line a row can print.
+ *
+ * The ledger stores ISO-8601. The settings panel's copy of this lives in
+ * `index.js:formatWebhookLastEvent` and the two must agree — a page and a panel
+ * that print the same timestamp two different ways is the drift this whole file
+ * exists to avoid — so both are the same four lines and the same slice.
+ */
+function webhookLastEvent(iso) {
+  if (typeof iso !== "string" || !iso.trim()) return null;
+  const at = Date.parse(iso);
+  if (Number.isNaN(at)) return iso.trim();
+  return new Date(at).toISOString().replace("T", " ").slice(0, 16) + " UTC";
+}
+
+/**
+ * One row of the launch form's model picker.
+ *
+ * `entry` is an `AgentChatModelInfo`, or a bare id string on a host whose
+ * action answers a list of names. `provider` is the group the read ASKED for —
+ * the row itself carries no provider field, and guessing one from the id's
+ * prefix is exactly the mistake this replaced.
+ */
+function pageModel(entry, provider) {
+  if (typeof entry === "string") {
+    const id = entry.trim();
+    return id
+      ? { id, label: id, provider, fastModeSupported: false, reasoningEfforts: [], defaultReasoningEffort: null }
+      : null;
+  }
+  const id = firstString(entry?.id, entry?.modelId, entry?.value);
+  if (!id) return null;
+  const tiers = Array.isArray(entry?.serviceTiers) ? entry.serviceTiers : [];
+  const efforts = Array.isArray(entry?.reasoningEfforts) ? entry.reasoningEfforts : [];
+  return {
+    id,
+    label: firstString(entry?.displayName, entry?.label, entry?.name) ?? id,
+    provider,
+    // The FAST service tier is what the compiled picker's fast-mode toggle
+    // asked about. A model whose descriptor names no tiers has no fast tier.
+    fastModeSupported: tiers.includes("fast"),
+    // The model's OWN ladder. An empty list draws no reasoning control at all,
+    // which is what the compiled picker did for a model with no tiers — rather
+    // than offering four choices the provider would ignore.
+    reasoningEfforts: efforts
+      .map((tier) => {
+        const value = firstString(typeof tier === "string" ? tier : tier?.effort, tier?.value);
+        if (!value) return null;
+        return {
+          value,
+          label: firstString(tier?.label) ?? value,
+          detail: text(typeof tier === "object" ? tier?.description : null),
+        };
+      })
+      .filter(Boolean),
+    defaultReasoningEffort: text(entry?.defaultReasoningEffort),
+  };
+}
+
+function lastCount(history) {
+  if (!Array.isArray(history) || history.length === 0) return null;
+  const last = history[history.length - 1];
+  return typeof last === "number" && Number.isFinite(last) ? Math.round(last) : null;
 }
 
 /**
@@ -149,7 +312,10 @@ function pageIssue(row) {
     description: row.description ?? "",
     url: row.url ?? null,
     projectId: row.projectId ?? "",
-    projectSlug: row.projectName ? slugify(row.projectName) : "",
+    // Linear's own slug when the selection answered one, and only then the
+    // name-derived fallback. Both are stable and both compare against a slug
+    // built the same way; the real one is also the slug Linear puts in a URL.
+    projectSlug: row.projectSlug ?? (row.projectName ? slugify(row.projectName) : ""),
     projectName: row.projectName ?? null,
     teamId: row.teamId ?? "",
     teamKey: row.teamKey ?? "",
@@ -163,7 +329,7 @@ function pageIssue(row) {
     labelColors: labels
       .filter((label) => label && typeof label === "object")
       .map((label) => ({ name: label.name ?? "", color: label.color ?? null })),
-    cycleId: null,
+    cycleId: row.cycleId ?? null,
     cycleName: row.cycleName ?? null,
     childIssues: (Array.isArray(row.subIssues) ? row.subIssues : []).map((child) => ({
       id: child?.id ?? "",
@@ -181,8 +347,8 @@ function pageIssue(row) {
     ownerId: row.assigneeId ?? null,
     creatorId: row.creatorId ?? null,
     creatorName: row.creatorName ?? null,
-    blockerIssueIds: [],
-    hasOpenBlockers: false,
+    blockerIssueIds: Array.isArray(row.blockerIssueIds) ? row.blockerIssueIds : [],
+    hasOpenBlockers: row.hasOpenBlockers === true,
     dueDate: row.dueDate ?? null,
     estimate: typeof row.estimate === "number" ? row.estimate : null,
     archivedAt: row.archivedAt ?? null,
@@ -306,26 +472,45 @@ function createPageActions(deps) {
    * back null rather than being bought at the price of the other fifteen.
    */
   async function fetchProjectNodes() {
-    try {
+    const COMMON = `
+      id name slugId icon color description url progress scope startDate targetDate health
+      status { name type }
+      lead { id name displayName }
+      teams(first: 10) { nodes { id key name } }
+    `;
+    // `priority` and the two count histories are the three fields the page's
+    // project card draws and the panel half has no room for. They are asked for
+    // in a wide selection with the original as the fallback, for the reason
+    // `linearApi.js:listTeamsAndStates` gives: a workspace whose schema refuses
+    // one of them must still get its projects, because the project filter is
+    // half of the browser.
+    const WIDE = `${COMMON} priority issueCountHistory completedIssueCountHistory`;
+
+    async function read(fields) {
       const result = await deps.api.request(
         `query PageProjects($first: Int!) {
-          projects(first: $first) {
-            nodes {
-              id name slugId icon color description url progress scope startDate targetDate health
-              status { name type }
-              lead { id name displayName }
-              teams(first: 10) { nodes { id key name } }
-            }
-          }
+          projects(first: $first) { nodes { ${fields} } }
         }`,
         { first: MAX_PROJECTS },
         { maxRetries: 1, operationName: "PageProjects" },
       );
       const nodes = result?.projects?.nodes;
       return Array.isArray(nodes) ? nodes : [];
+    }
+
+    try {
+      return await read(WIDE);
     } catch (error) {
-      log("debug", `Could not read the Linear projects: ${error?.message ?? error}`);
-      return [];
+      if (isMissingTokenError(error)) {
+        log("debug", "Could not read the Linear projects: no credential is stored.");
+        return [];
+      }
+      try {
+        return await read(COMMON);
+      } catch (narrowError) {
+        log("debug", `Could not read the Linear projects: ${narrowError?.message ?? narrowError}`);
+        return [];
+      }
     }
   }
 
@@ -370,10 +555,13 @@ function createPageActions(deps) {
       health: text(node?.health),
       progress: typeof node?.progress === "number" ? node.progress : null,
       scope: typeof node?.scope === "number" ? node.scope : null,
-      priority: null,
-      priorityLabel: null,
-      issueCount: null,
-      completedIssueCount: null,
+      priority: integer(node?.priority),
+      priorityLabel: Number.isInteger(node?.priority) ? priorityLabel(node.priority) : null,
+      // Linear reports these as HISTORIES — one entry per day, oldest first —
+      // and the current count is the last entry. `null` when the wide selection
+      // was refused, which the page draws as "no count" rather than as zero.
+      issueCount: lastCount(node?.issueCountHistory),
+      completedIssueCount: lastCount(node?.completedIssueCountHistory),
       startDate: text(node?.startDate),
       targetDate: text(node?.targetDate),
       leadName: text(node?.lead?.displayName) ?? text(node?.lead?.name),
@@ -487,6 +675,11 @@ function createPageActions(deps) {
       authMode: row?.authMode ?? status.authMode ?? null,
       oauthAvailable: status.canOAuth === true,
       tokenExpiresAt: row?.tokenExpiresAt ?? null,
+      // Pre-formatted here for the same reason the settings PANEL gets it
+      // pre-formatted: "expires in 6 days" is a sentence, and the page must not
+      // grow a second copy of the date arithmetic behind it. `expired` is what
+      // decides the row's warning tone.
+      ...expiry(row?.tokenExpiresAt ?? null),
     };
   }
 
@@ -508,6 +701,8 @@ function createPageActions(deps) {
       authMode: null,
       oauthAvailable: false,
       tokenExpiresAt: null,
+      expiresIn: null,
+      expired: false,
     };
   }
 
@@ -606,12 +801,13 @@ function createPageActions(deps) {
         key: team.key ?? "",
         name: team.name ?? "",
         displayName: team.name ?? team.key ?? "",
-        // `listTeamsAndStates` selects `id key name states` and nothing else, so
-        // the three cosmetic fields are absent rather than invented.
-        color: null,
-        issueCount: null,
-        cyclesEnabled: null,
-        private: null,
+        // Real values now: `listTeamsAndStates` asks for them in its wide
+        // selection. Still `null` on a workspace whose schema refused that
+        // selection, which is the honest answer rather than a default.
+        color: team.color ?? null,
+        issueCount: Number.isInteger(team.issueCount) ? team.issueCount : null,
+        cyclesEnabled: typeof team.cyclesEnabled === "boolean" ? team.cyclesEnabled : null,
+        private: typeof team.private === "boolean" ? team.private : null,
       }));
 
       return {
@@ -733,6 +929,29 @@ function createPageActions(deps) {
       };
     },
 
+    /**
+     * One issue, by its id ALONE.
+     *
+     * The gap this closes: every other read the page has finds an issue by its
+     * KEY, because `pageSearchIssues` is Linear's own search and Linear's search
+     * does not match a raw uuid. A lane row badge carries an id and, when the
+     * lane's own link is a session link rather than a lane link, no key anywhere
+     * — so the card that opened over it could only say "No Linear issue on this
+     * lane" about an issue that plainly exists.
+     *
+     * `resolveRow` is the answer and was already here: the stored row first,
+     * then a single-issue fetch from Linear when nothing is stored. An id that
+     * resolves to nothing answers `null` rather than throwing, because "that
+     * issue is not in this workspace" is a sentence the card draws.
+     */
+    async pageIssueById(args = {}) {
+      if (!ready()) throw new Error(STARTING_UP);
+      const issueId = readIssueId(args);
+      if (!issueId) return null;
+      const row = await resolveRow(issueId);
+      return row ? pageIssue(row) : null;
+    },
+
     /** One issue's thread. Rejects on a refusal, for the search's reason. */
     async pageIssueComments(args = {}) {
       if (!ready()) throw new Error(STARTING_UP);
@@ -778,6 +997,9 @@ function createPageActions(deps) {
         webhookUrl: null,
         webhookSecretStored: false,
         webhooksPossible: false,
+        lastEvent: null,
+        pendingDeliveries: 0,
+        drainError: null,
       };
       if (!ready()) return empty;
 
@@ -821,6 +1043,16 @@ function createPageActions(deps) {
         }));
 
       const status = await deps.connect.connectStatus().catch(() => ({}));
+
+      // The host's delivery ledger — the same three facts the settings PANEL
+      // draws as "Last event", "Waiting (n unacked)" and "Drain". Read only
+      // when an endpoint EXISTS: with no `webhookUrl` there is nothing for
+      // Linear to post to, and a ledger read there would answer zeros the card
+      // would draw as a healthy silence.
+      const ledger = connection?.webhookUrl
+        ? await deps.sdk.webhooks.status().catch(() => null)
+        : null;
+
       return {
         autolinks,
         repo: repo ? { owner: repo.owner, name: repo.name } : null,
@@ -830,6 +1062,11 @@ function createPageActions(deps) {
         // paste box still needs filling in.
         webhookSecretStored: Boolean(await deps.sdk.secrets.get("LINEAR_WEBHOOK_SECRET").catch(() => null)),
         webhooksPossible: webhooksReachable(status),
+        // Pre-formatted for the reason the panel's copy is: a page reads a
+        // sentence, not an ISO string it would have to format a second way.
+        lastEvent: webhookLastEvent(ledger?.lastReceivedAt),
+        pendingDeliveries: Number(ledger?.pendingDeliveries) || 0,
+        drainError: text(ledger?.lastError),
       };
     },
 
@@ -843,9 +1080,11 @@ function createPageActions(deps) {
      * `flows.sessionIssues` is that table, and it already answers `[]` on a host
      * whose SDK predates the verb.
      *
-     * `path` is always null and cannot be otherwise: `PluginLaneSummary` is a
-     * fixed allowlist that deliberately excludes `worktreePath`, so no plugin
-     * can be handed one.
+     * `path` is the lane's worktree on disk, when the host answers one.
+     * `PluginLaneSummary` was a fixed allowlist that excluded it; the field is
+     * read through whichever of the two names the host uses and stays `null` on
+     * a host that still withholds it, which the page draws by hiding the row
+     * rather than by printing an empty one.
      */
     async pageLanes() {
       if (!ready()) return [];
@@ -877,7 +1116,7 @@ function createPageActions(deps) {
           id: lane.id,
           name: lane.name ?? "",
           branch: lane.branchRef ?? null,
-          path: null,
+          path: text(lane.path) ?? text(lane.worktreePath),
           status: lane.status ?? null,
           laneType: lane.laneType ?? null,
           linearIssueId: own?.issueId ?? null,
@@ -888,32 +1127,72 @@ function createPageActions(deps) {
       return rows;
     },
 
-    /** The launch form's model picker, from the read `index.js` already makes. */
+    /**
+     * The launch form's model picker, one read per PROVIDER.
+     *
+     * It used to be one aggregate call whose rows carried no provider at all,
+     * so the provider was guessed from the model id's prefix. That guess is
+     * what made the whole per-provider permission control impossible: the form
+     * could not know whether the model it was about to launch was a Claude, a
+     * Codex or a Droid, and those three offer genuinely different permission
+     * vocabularies.
+     *
+     * Asking once per provider group costs the same WORK — the aggregate branch
+     * inside `chat.getAvailableModels` fans out to exactly these per-provider
+     * reads and de-duplicates them — and buys the tag. A provider that refuses
+     * or is switched off answers an empty list rather than failing the read, so
+     * a workspace with one signed-in provider still gets a full picker.
+     *
+     * The three fields beyond the tag come off `AgentChatModelInfo` itself:
+     * `serviceTiers` says whether the model has a FAST tier, and
+     * `reasoningEfforts` is the model's own ladder rather than the fixed
+     * none/low/medium/high one the page used to offer every model alike.
+     */
     async pageModels() {
       if (!ready()) return [];
-      let listed;
-      try {
-        listed = await deps.sdk.actions.invoke("chat", "getAvailableModels", {});
-      } catch (error) {
-        log("debug", `Could not read the chat models: ${error?.message ?? error}`);
-        return [];
+
+      const perProvider = await Promise.all(MODEL_PROVIDER_GROUPS.map(async (provider) => {
+        let listed;
+        try {
+          listed = await deps.sdk.actions.invoke("chat", "getAvailableModels", { provider });
+        } catch (error) {
+          log("debug", `Could not read the ${provider} chat models: ${error?.message ?? error}`);
+          return [];
+        }
+        const rows = Array.isArray(listed) ? listed : Array.isArray(listed?.models) ? listed.models : [];
+        return rows.map((entry) => pageModel(entry, provider)).filter(Boolean);
+      }));
+
+      // De-duplicated by id, first provider winning: `MODEL_PROVIDER_GROUPS` is
+      // in the order ADE's own pickers list them, so a model two runtimes both
+      // offer is tagged with the one the reader sees it under.
+      const byId = new Map();
+      for (const model of perProvider.flat()) {
+        if (!byId.has(model.id)) byId.set(model.id, model);
       }
-      const rows = Array.isArray(listed) ? listed : Array.isArray(listed?.models) ? listed.models : [];
-      return rows
-        .map((entry) => {
-          if (typeof entry === "string") {
-            return { id: entry, label: entry, provider: entry.includes("/") ? entry.split("/")[0] : "" };
-          }
-          const id = firstString(entry?.id, entry?.value);
-          if (!id) return null;
-          return {
-            id,
-            label: firstString(entry?.label, entry?.name) ?? id,
-            provider: firstString(entry?.provider, entry?.providerId) ?? (id.includes("/") ? id.split("/")[0] : ""),
-          };
-        })
-        .filter(Boolean)
-        .slice(0, MAX_MODELS);
+      return [...byId.values()].slice(0, MAX_MODELS);
+    },
+
+    /**
+     * What the launch form may OFFER, per provider.
+     *
+     * The compiled launch modal drew a provider-native permission pill — Claude
+     * one vocabulary, Codex another, Cursor a mode list, Droid an autonomy
+     * ladder, OpenCode a fourth set — and every one of those lists is a literal
+     * in the renderer, not something read from a service. It is a literal here
+     * too, for the same reason and with the same words: `chat.createSession`
+     * validates the UNIFIED value each option maps to, and a picker that
+     * offered a value ADE would refuse is worse than one that offers four.
+     *
+     * `unified` is what actually crosses the wire. The native fields behind it
+     * (Claude's `interactionMode`, Codex's approval policy and sandbox pair) are
+     * the renderer control's own internals and are not a page's to set.
+     */
+    async pageCapabilities() {
+      return {
+        providers: PROVIDER_PERMISSIONS,
+        defaultProvider: null,
+      };
     },
 
     /* ── Issue mutations ────────────────────────────────────────────────── */
@@ -1328,6 +1607,10 @@ function createPageActions(deps) {
       ...(text(args?.provider) ? { provider: text(args.provider) } : {}),
       ...(text(args?.model) ? { model: text(args.model) } : {}),
       ...(text(args?.permissionMode) ? { permissionMode: text(args.permissionMode) } : {}),
+      // Only when the form actually asked. `fastMode` is a service tier the
+      // provider defaults on its own, so passing `false` for a reader who never
+      // saw the toggle would be a choice they did not make.
+      ...(typeof args?.fastMode === "boolean" ? { fastMode: args.fastMode } : {}),
       ...(reasoningEffort ? { reasoningEffort } : {}),
       ...(text(args?.prompt) ? { prompt: text(args.prompt) } : {}),
     });

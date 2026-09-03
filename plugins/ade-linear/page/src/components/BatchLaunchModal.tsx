@@ -1,9 +1,9 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { createPortal } from "react-dom";
 import {
   CaretRight,
   ChatCircleDots,
   GitBranch,
+  Lightning,
   Rocket,
   Terminal,
   WarningCircle,
@@ -15,9 +15,11 @@ import {
   LinearStateIcon,
   LINEAR_BRAND,
 } from "@ade-dev/ui";
+import { LaneDialogShell } from "@ade-dev/ui/dialog";
+import { LaneCombobox } from "@ade-dev/ui/lanes";
 
 import { bridge } from "../bridge";
-import { getChatModels } from "../host/actions";
+import { getCapabilities, getChatModels } from "../host/actions";
 import { linearIssueBranchName } from "../lib/linearIssueBranch";
 import {
   defaultKickoffPrompt,
@@ -25,7 +27,7 @@ import {
   type BatchLaunchIssueConfig,
   type BatchLaunchSessionType,
 } from "../lib/linearBatchLaunch";
-import type { LaneLinearIssue, PageChatModel, PageLane } from "../types";
+import type { LaneLinearIssue, PageCapabilities, PageChatModel, PageLane } from "../types";
 
 type PerIssueState = BatchLaunchIssueConfig & {
   /** When false the issue is excluded from the launch (skipped via the conflict guard). */
@@ -64,17 +66,6 @@ const PERMISSION_TRIGGER_CLASS = cn(
 
 const COMPOSER_TOOLBAR_PICKER_TRIGGER = "max-w-[min(9.5rem,34vw)] shrink min-w-0";
 const COMPOSER_MODEL_TRIGGER = "max-w-[min(9.5rem,34vw)] shrink min-w-[4.5rem]";
-
-/**
- * Reasoning tiers offered by the page's effort picker.
- *
- * The compiled `ReasoningEffortPicker` read the tier list off the model's
- * registry descriptor, so a model with no reasoning support showed no control
- * at all and a Codex model showed its own labels. The host's catalog answers
- * `{id,label,provider}` and nothing about reasoning, so the page offers one
- * fixed ladder for every model.
- */
-const REASONING_EFFORT_TIERS = ["none", "low", "medium", "high"] as const;
 
 function defaultPromptStorageKey(projectRoot: string | null | undefined): string | null {
   const root = projectRoot?.trim();
@@ -129,6 +120,20 @@ export type SessionLaunchModelConfig = {
   reasoningEffort: string | null;
   fastMode: boolean;
   sessionType: BatchLaunchSessionType;
+  /**
+   * The permission the launch carries, as `AgentChatPermissionMode`.
+   *
+   * One string, and deliberately so: the compiled control held a whole
+   * `NativeControlState` — Claude's interaction mode, Codex's approval policy
+   * and sandbox pair, Cursor's mode id, Droid's autonomy flag — and collapsed
+   * it to this on the way out. The native fields behind each option are the
+   * renderer control's own internals and are not a page's to set, so the page
+   * offers the same CHOICES and sends the same value.
+   *
+   * Null means "whatever the provider defaults to", which is what an untouched
+   * pill has always meant.
+   */
+  permissionMode: string | null;
 };
 
 function toLaunchModelConfig(state: PerIssueState): SessionLaunchModelConfig {
@@ -137,6 +142,7 @@ function toLaunchModelConfig(state: PerIssueState): SessionLaunchModelConfig {
     reasoningEffort: state.reasoningEffort,
     fastMode: state.fastMode,
     sessionType: state.sessionType ?? "chat",
+    permissionMode: state.permissionMode ?? null,
   };
 }
 
@@ -150,6 +156,7 @@ function patchFromLaunchModelConfig(
     ...(patch.reasoningEffort !== undefined ? { reasoningEffort: patch.reasoningEffort } : {}),
     ...(patch.fastMode !== undefined ? { fastMode: patch.fastMode } : {}),
     ...(patch.sessionType !== undefined ? { sessionType: patch.sessionType } : {}),
+    ...(patch.permissionMode !== undefined ? { permissionMode: patch.permissionMode } : {}),
   };
 }
 
@@ -197,35 +204,104 @@ function SessionTypeToggle({
 }
 
 /**
+ * The provider-native permission pill.
+ *
+ * A port of `LaunchNativePermissionControls`. The compiled control drew a
+ * different shape per provider — a popover menu for Claude and for Codex, a
+ * labelled select for Cursor, Droid and OpenCode — over five literal option
+ * lists in `renderer/lib/nativeLaunchControls.ts`.
+ *
+ * Two things are the same and one is not. The OPTIONS are the same, word for
+ * word, and they come from `pageCapabilities`: the child holds the table
+ * because it is the half that knows which unified value
+ * `chat.createSession` accepts. The VALUE sent is the same single
+ * `permissionMode` string the compiled control produced. What differs is the
+ * shape: one control for every provider, wearing the compiled trigger chrome,
+ * rather than a menu for two of them and a select for three. The menu carried
+ * per-option detail sentences, which live on the option's `title` here.
+ *
+ * A provider the table does not name draws nothing at all — which is what the
+ * compiled control did for a model whose provider group it could not resolve.
+ */
+function PermissionModePicker({
+  provider,
+  capabilities,
+  value,
+  onChange,
+  disabled = false,
+}: {
+  provider: string;
+  capabilities: PageCapabilities | null;
+  value: string | null;
+  onChange: (permissionMode: string | null) => void;
+  disabled?: boolean;
+}) {
+  const entry = capabilities?.providers?.[provider] ?? null;
+  if (!entry || entry.modes.length === 0) return null;
+  // The reader's choice is stored as the UNIFIED value, because that is what
+  // the launch carries; the pill shows the provider's own word for it.
+  const selected = entry.modes.find((mode) => mode.unified === value) ?? null;
+  return (
+    <label className={cn(PERMISSION_TRIGGER_CLASS, COMPOSER_TOOLBAR_PICKER_TRIGGER)} title={entry.label}>
+      <select
+        value={selected?.value ?? ""}
+        disabled={disabled}
+        onChange={(event) => {
+          const picked = entry.modes.find((mode) => mode.value === event.target.value);
+          onChange(picked?.unified ?? null);
+        }}
+        aria-label={entry.label}
+        className="min-w-0 flex-1 truncate bg-transparent font-medium outline-none disabled:opacity-45"
+      >
+        {/* "Whatever the provider defaults to" is a real choice and the one an
+            untouched pill has always made, so it is an option rather than a
+            hole the reader cannot get back to. */}
+        <option value="">Default</option>
+        {entry.modes.map((mode) => (
+          <option key={mode.value} value={mode.value} title={mode.detail ?? undefined}>
+            {mode.label}
+          </option>
+        ))}
+      </select>
+    </label>
+  );
+}
+
+/**
  * The launch pill row.
  *
  * A port of `components/shared/SessionLaunchModelControls`, with the session
- * toggle kept verbatim and the two pickers rebuilt as native selects wearing
- * the compiled trigger chrome. What could not move:
+ * toggle kept verbatim and the pickers rebuilt as native selects wearing the
+ * compiled trigger chrome. Everything the compiled row could offer is offered:
  *
- *  - `ModelPicker` is a Radix popover over the model REGISTRY, with recents,
- *    grouping, fast-mode toggles and per-provider icons. The page's model list
- *    is `getChatModels()` — `{id,label,provider}` — so the picker is a select
- *    over that list. Fast mode goes with it: `modelSupportsFastMode` is a
- *    registry fact and the launch verbs take no `fastMode` argument.
- *  - `LaunchNativePermissionControls` (the Claude/Codex/Cursor/Droid/OpenCode
- *    provider-native permission pill) is gone entirely: `pageLaunchAgent` and
- *    `pageLaunchCli` accept one `permissionMode` string and none of the native
- *    fields the compiled control writes.
+ *  - The MODEL list is `getChatModels()`, which now carries each model's
+ *    provider group, its fast-tier support and its own reasoning ladder. What
+ *    did not move is `ModelPicker` itself — a Radix popover with recents,
+ *    grouping and per-provider icons — so this is a select over the same list.
+ *  - FAST MODE is drawn only for a model that has a `fast` service tier, which
+ *    is the same question `modelSupportsFastMode` asked of the registry.
+ *  - REASONING EFFORT is the model's own tiers rather than a fixed
+ *    none/low/medium/high ladder, and a model with no tiers draws no control —
+ *    exactly as `ReasoningEffortPicker` behaved.
+ *  - PERMISSIONS is `PermissionModePicker` above.
  */
 function SessionLaunchModelControls({
   config,
   onChange,
   models,
+  capabilities,
   disabled = false,
   showSessionType = true,
 }: {
   config: SessionLaunchModelConfig;
   onChange: (patch: Partial<SessionLaunchModelConfig>) => void;
   models: PageChatModel[];
+  capabilities: PageCapabilities | null;
   disabled?: boolean;
   showSessionType?: boolean;
 }) {
+  const model = models.find((row) => row.id === config.modelId) ?? null;
+  const efforts = model?.reasoningEfforts ?? [];
   return (
     <div className="flex flex-wrap items-center gap-1.5">
       {showSessionType ? (
@@ -239,141 +315,81 @@ function SessionLaunchModelControls({
         <select
           value={config.modelId}
           disabled={disabled || models.length === 0}
-          onChange={(event) => onChange({ modelId: event.target.value })}
+          onChange={(event) => {
+            const nextId = event.target.value;
+            const next = models.find((row) => row.id === nextId) ?? null;
+            onChange({
+              modelId: nextId,
+              // A model with no fast tier cannot be in fast mode, and a
+              // reasoning effort the new model does not offer would be sent and
+              // refused. Both are cleared with the model that carried them.
+              ...(next?.fastModeSupported ? {} : { fastMode: false }),
+              ...(next?.reasoningEfforts.some((tier) => tier.value === config.reasoningEffort)
+                ? {}
+                : { reasoningEffort: null }),
+              // The permission vocabularies differ per provider, so a value
+              // chosen for a Claude model is not a value a Droid model offers.
+              ...(next?.provider === model?.provider ? {} : { permissionMode: null }),
+            });
+          }}
           aria-label="Model"
           className="min-w-0 flex-1 truncate bg-transparent font-medium outline-none disabled:opacity-45"
         >
-          {config.modelId && !models.some((model) => model.id === config.modelId) ? (
+          {config.modelId && !models.some((row) => row.id === config.modelId) ? (
             <option value={config.modelId}>{config.modelId}</option>
           ) : null}
           {models.length === 0 ? <option value="">No models</option> : null}
-          {models.map((model) => (
-            <option key={model.id} value={model.id}>{model.label}</option>
+          {models.map((row) => (
+            <option key={row.id} value={row.id}>{row.label}</option>
           ))}
         </select>
       </label>
-      <label className={cn(PERMISSION_TRIGGER_CLASS, COMPOSER_TOOLBAR_PICKER_TRIGGER)} title="Reasoning effort">
-        <select
-          value={config.reasoningEffort ?? "none"}
+      {efforts.length > 0 ? (
+        <label className={cn(PERMISSION_TRIGGER_CLASS, COMPOSER_TOOLBAR_PICKER_TRIGGER)} title="Reasoning effort">
+          <select
+            value={config.reasoningEffort ?? ""}
+            disabled={disabled}
+            onChange={(event) => onChange({ reasoningEffort: event.target.value || null })}
+            aria-label="Reasoning effort"
+            className="min-w-0 flex-1 truncate bg-transparent font-medium capitalize outline-none disabled:opacity-45"
+          >
+            {/* The sentinel the child's `chosenReasoningEffort` reads as "send
+                nothing", so the model's own default stands. */}
+            <option value="">Default</option>
+            {efforts.map((tier) => (
+              <option key={tier.value} value={tier.value} title={tier.detail ?? undefined}>
+                {tier.label}
+              </option>
+            ))}
+          </select>
+        </label>
+      ) : null}
+      {model?.fastModeSupported ? (
+        <button
+          type="button"
+          role="switch"
+          aria-checked={config.fastMode}
           disabled={disabled}
-          onChange={(event) => onChange({
-            reasoningEffort: event.target.value === "none" ? null : event.target.value,
-          })}
-          aria-label="Reasoning effort"
-          className="min-w-0 flex-1 truncate bg-transparent font-medium capitalize outline-none disabled:opacity-45"
+          title="Run this launch on the provider's fast service tier"
+          onClick={() => onChange({ fastMode: !config.fastMode })}
+          className={cn(
+            PERMISSION_TRIGGER_CLASS,
+            "shrink-0 gap-1",
+            config.fastMode && "border-violet-400/30 bg-violet-500/[0.08] text-fg",
+          )}
         >
-          {REASONING_EFFORT_TIERS.map((tier) => (
-            <option key={tier} value={tier}>{tier === "none" ? "Default" : tier}</option>
-          ))}
-        </select>
-      </label>
-    </div>
-  );
-}
-
-/**
- * The dialog shell.
- *
- * A port of `components/lanes/LaneDialogShell`, keeping every class name,
- * every size and the header/body/footer structure. Two dependencies could not
- * come: `@radix-ui/react-dialog` (replaced by a portal, a backdrop button and
- * an Escape handler that reproduce its behaviour) and `border-beam` (the
- * animated border ring, which has no page counterpart and is simply absent).
- */
-function LaneDialogShell({
-  open,
-  onOpenChange,
-  title,
-  description,
-  icon: Icon,
-  widthClassName,
-  children,
-}: {
-  open: boolean;
-  onOpenChange: (open: boolean) => void;
-  title: string;
-  description?: string;
-  icon?: React.ComponentType<{ size?: number | string; className?: string }>;
-  widthClassName?: string;
-  children: React.ReactNode;
-}) {
-  useEffect(() => {
-    if (!open) return;
-    const onKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        event.preventDefault();
-        onOpenChange(false);
-      }
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [onOpenChange, open]);
-
-  if (!open) return null;
-
-  const width = widthClassName ?? "w-[min(720px,calc(100vw-1rem))]";
-  const maxHeight = "max-h-[min(92dvh,calc(100vh-1rem))]";
-
-  return createPortal(
-    <>
-      <button
-        type="button"
-        aria-label="Close dialog backdrop"
-        tabIndex={-1}
-        onClick={() => onOpenChange(false)}
-        className="fixed inset-0 z-50 cursor-default bg-black/60 backdrop-blur-sm"
+          <Lightning size={10} weight={config.fastMode ? "fill" : "regular"} />
+          Fast
+        </button>
+      ) : null}
+      <PermissionModePicker
+        provider={model?.provider ?? ""}
+        capabilities={capabilities}
+        value={config.permissionMode}
+        onChange={(permissionMode) => onChange({ permissionMode })}
+        disabled={disabled}
       />
-      <div
-        role="dialog"
-        aria-modal="true"
-        aria-label={title}
-        className={`fixed left-1/2 top-1/2 z-50 flex ${maxHeight} ${width} -translate-x-1/2 -translate-y-1/2 overflow-hidden focus:outline-none`}
-      >
-        <div
-          className={`relative flex w-full ${maxHeight} min-h-0 flex-col overflow-hidden rounded-xl border border-white/[0.1] shadow-float`}
-          style={{ backgroundColor: "var(--color-modal-bg, var(--color-card, #1A1830))" }}
-        >
-          <div className="pointer-events-none absolute inset-x-6 top-0 h-px bg-gradient-to-r from-transparent via-accent/45 to-transparent" />
-          <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
-            <div className="shrink-0 border-b border-white/[0.06] bg-white/[0.02] px-4 pb-3 pt-4 sm:px-5 sm:pt-5">
-              <div className="flex items-start justify-between gap-3">
-                <div className="min-w-0 flex-1">
-                  <div className="flex items-center gap-2 text-base font-semibold text-fg sm:text-lg">
-                    {Icon ? (
-                      <span className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-white/[0.08] bg-accent/[0.12] text-accent">
-                        <Icon size={16} />
-                      </span>
-                    ) : null}
-                    <span className="truncate">{title}</span>
-                  </div>
-                  {description ? (
-                    <p className="mt-2 text-sm leading-relaxed text-muted-fg sm:max-w-2xl">
-                      {description}
-                    </p>
-                  ) : null}
-                </div>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  className="shrink-0"
-                  onClick={() => onOpenChange(false)}
-                >
-                  Esc
-                </Button>
-              </div>
-            </div>
-            <div
-              className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden overscroll-contain px-4 py-3 sm:px-5 sm:py-4"
-              data-scroll-lock-scrollable=""
-              onWheel={(event) => event.stopPropagation()}
-            >
-              {children}
-            </div>
-          </div>
-        </div>
-      </div>
-    </>,
-    document.body,
+    </div>
   );
 }
 
@@ -402,6 +418,7 @@ export function BatchLaunchModal({
   onLaunch: (entries: BatchLaunchSubmit[]) => void;
 }) {
   const [models, setModels] = useState<PageChatModel[]>([]);
+  const [capabilities, setCapabilities] = useState<PageCapabilities | null>(null);
   // The compiled modal seeded from `useModelRecents()` and fell back to
   // `getDefaultModelDescriptor("claude"|"opencode")`. Neither exists here, so
   // the host catalog's own order decides, preferring a Claude row the way the
@@ -420,6 +437,7 @@ export function BatchLaunchModal({
     reasoningEffort: null,
     fastMode: false,
     sessionType: "chat",
+    permissionMode: null,
   }));
   const [projectDefaultPrompt, setProjectDefaultPrompt] = useState<string | null>(null);
   const [perIssue, setPerIssue] = useState<Record<string, PerIssueState>>({});
@@ -444,6 +462,16 @@ export function BatchLaunchModal({
       .catch(() => {
         if (!cancelled) setModels([]);
       });
+    // Null on a refusal, not an empty table: `PermissionModePicker` draws
+    // nothing for a provider it cannot name, and a form with no permission pill
+    // is better than one offering values the launch would be refused for.
+    void getCapabilities()
+      .then((answer) => {
+        if (!cancelled) setCapabilities(answer ?? null);
+      })
+      .catch(() => {
+        if (!cancelled) setCapabilities(null);
+      });
     return () => {
       cancelled = true;
     };
@@ -463,6 +491,7 @@ export function BatchLaunchModal({
       reasoningEffort: null,
       fastMode: false,
       sessionType: "chat",
+      permissionMode: null,
     };
     if (initialSeed) {
       setDefaultConfig(seededConfig);
@@ -476,6 +505,7 @@ export function BatchLaunchModal({
           sessionType: rowConfig.sessionType,
           reasoningEffort: rowConfig.reasoningEffort,
           fastMode: rowConfig.fastMode,
+          permissionMode: rowConfig.permissionMode,
         };
       }
       return next;
@@ -585,6 +615,7 @@ export function BatchLaunchModal({
       if (patch.reasoningEffort !== undefined) applyDefaultField("reasoningEffort", patch.reasoningEffort);
       if (patch.fastMode !== undefined) applyDefaultField("fastMode", patch.fastMode);
       if (patch.sessionType !== undefined) applyDefaultField("sessionType", patch.sessionType);
+      if (patch.permissionMode !== undefined) applyDefaultField("permissionMode", patch.permissionMode);
       return next;
     });
   }, [applyDefaultConfigToAll, applyDefaultField]);
@@ -672,6 +703,7 @@ export function BatchLaunchModal({
             config={defaultConfig}
             onChange={handleDefaultConfigChange}
             models={models}
+            capabilities={capabilities}
           />
           {multiIssue ? (
             <button
@@ -730,11 +762,16 @@ export function BatchLaunchModal({
                   {conflict ? (
                     <span
                       className="inline-flex shrink-0 items-center gap-1 rounded-md border border-amber-400/25 bg-amber-400/[0.08] px-1.5 py-0.5 text-[9.5px] font-medium text-amber-100/90"
-                      title={
+                      title={[
                         conflict.reason === "session"
                           ? `A session in lane "${conflict.laneName}" already attaches this issue`
-                          : `Lane "${conflict.laneName}" already attaches this issue`
-                      }
+                          : `Lane "${conflict.laneName}" already attaches this issue`,
+                        // Where, when the host says. The reader's next question
+                        // after "already being worked on" is which worktree, and
+                        // a lane summary that withholds the path leaves the
+                        // sentence as it was rather than trailing an em dash.
+                        conflict.lanePath,
+                      ].filter(Boolean).join(" — ")}
                     >
                       <WarningCircle size={11} weight="fill" />
                       {conflict.reason === "session" ? "Has agent" : "Has lane"}
@@ -746,6 +783,7 @@ export function BatchLaunchModal({
                     config={toLaunchModelConfig(state)}
                     onChange={(patch) => patchIssue(issue.id, patchFromLaunchModelConfig(state, patch))}
                     models={models}
+                    capabilities={capabilities}
                   />
                 ) : null}
                 {conflict ? (
@@ -842,26 +880,30 @@ export function BatchLaunchModal({
                           selectableLanes.length > 0 ? (
                             <div className="min-w-[220px] flex-1">
                               {/*
-                                The compiled row rendered `LaneCombobox`: a
-                                671-line searchable combobox over `LaneSummary`
-                                with per-lane status, branch and dirty badges.
-                                `PageLane` carries id/name/branch and the page
-                                has no combobox primitive, so this is a native
-                                select wearing the combobox's own field chrome.
+                                The compiled row's own `LaneCombobox`, now in the
+                                kit — the same 671 lines, the same search box,
+                                the same keyboard model, the same lane marks and
+                                branch labels. It was a native select here for
+                                one build, because the page had no combobox
+                                primitive to reach for.
+
+                                `fullWidth` because this cell is the field, and
+                                the free-standing form is the one caller the
+                                trigger's own max-width was written for.
                               */}
-                              <select
+                              <LaneCombobox
+                                lanes={selectableLanes.map((lane) => ({
+                                  id: lane.id,
+                                  name: lane.name,
+                                  branchRef: lane.branch,
+                                }))}
                                 value={state.existingLaneId ?? ""}
+                                onChange={(laneId) => patchIssue(issue.id, { existingLaneId: laneId || null })}
+                                placeholder="Select a lane…"
                                 aria-label="Select lane"
-                                onChange={(event) => patchIssue(issue.id, { existingLaneId: event.target.value || null })}
-                                className="h-7 w-full rounded-md border border-white/[0.08] bg-black/25 px-2 text-[11.5px] text-fg/85 outline-none focus:border-white/[0.18]"
-                              >
-                                <option value="">Select a lane…</option>
-                                {selectableLanes.map((lane) => (
-                                  <option key={lane.id} value={lane.id}>
-                                    {lane.branch ? `${lane.name} · ${lane.branch}` : lane.name}
-                                  </option>
-                                ))}
-                              </select>
+                                fullWidth
+                                compact
+                              />
                             </div>
                           ) : (
                             <span className="text-[10.5px] text-amber-100/75">

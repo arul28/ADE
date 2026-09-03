@@ -185,6 +185,9 @@ export function installFakeBridge(options: {
     pageCatalog: () => catalog(),
     pageSearchIssues: () => search(),
     pageIssueComments: () => state.comments,
+    // By ID, which no search can answer: the lane row badge is handed a uuid
+    // and Linear's search does not match one.
+    pageIssueById: (args) => issues.find((issue) => issue.id === args.issueId) ?? null,
     pageConnection: () => state.connection,
     pageProjects: () => [],
     pageAutolinks: () => ({
@@ -194,9 +197,33 @@ export function installFakeBridge(options: {
       webhookUrl: null,
       webhookSecretStored: false,
       webhooksPossible: false,
+      lastEvent: null,
+      pendingDeliveries: 0,
+      drainError: null,
     }),
     pageLanes: () => lanes,
-    pageModels: () => [{ id: "claude", label: "Claude", provider: "anthropic" }],
+    pageModels: () => [{
+      id: "claude",
+      label: "Claude",
+      // The provider GROUP the read asked for, which is what selects the
+      // permission vocabulary — never the id's prefix.
+      provider: "claude",
+      fastModeSupported: true,
+      reasoningEfforts: [{ value: "high", label: "High", detail: null }],
+      defaultReasoningEffort: null,
+    }],
+    pageCapabilities: () => ({
+      providers: {
+        claude: {
+          label: "Permissions",
+          modes: [
+            { value: "default", unified: "default", label: "Manual", detail: null },
+            { value: "acceptEdits", unified: "edit", label: "Accept edits", detail: null },
+          ],
+        },
+      },
+      defaultProvider: null,
+    }),
     // The sign-in. A real child answers `{authSession}`, the host opens it, and
     // the child settles it on its own `auth.completed`. The fake settles here,
     // which is what lets the walk carry on into a connected list.
@@ -353,6 +380,13 @@ export function installFakeBridge(options: {
         record("ui.confirm", request as unknown as Record<string, unknown>);
         return true;
       },
+      // Synchronous and void, exactly as the bridge declares it: the page
+      // reports its height to the element hosting the frame rather than asking
+      // the host a question. A test asserting a repeat report was suppressed
+      // reads the recorded calls.
+      resize(size: { height: number }) {
+        record("ui.resize", size as unknown as Record<string, unknown>);
+      },
     },
     clipboard: {
       async read() {
@@ -373,6 +407,14 @@ export function installFakeBridge(options: {
       async subscribe(subscribeOptions) {
         record("host.subscribe", subscribeOptions as unknown as Record<string, unknown>);
         return () => {};
+      },
+    },
+    // The `dialog-picker` placement's one verb. Present on the fake in every
+    // placement, because a test drives the entry directly and the guard in
+    // `host/ui.ts` is what a real non-dialog placement exercises.
+    dialog: {
+      async submit(answer) {
+        record("dialog.submit", answer as unknown as Record<string, unknown>);
       },
     },
   };

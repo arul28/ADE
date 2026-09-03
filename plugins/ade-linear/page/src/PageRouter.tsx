@@ -11,6 +11,7 @@ import React from "react";
 
 import type { PluginWebviewContext } from "./bridge";
 import { BadgeCardEntry } from "./entries/BadgeCardEntry";
+import { DialogPickerEntry } from "./entries/DialogPickerEntry";
 import { BrowserEntry } from "./entries/BrowserEntry";
 import { IssueContextEntry } from "./entries/IssueContextEntry";
 import { PickerEntry } from "./entries/PickerEntry";
@@ -22,6 +23,7 @@ export const PAGE_SURFACE_IDS = [
   "quickview",
   "settings",
   "picker",
+  "dialog-picker",
   "badge-card",
   "issue-context",
 ] as const;
@@ -36,6 +38,11 @@ export function PageRouter({ context }: { context: PluginWebviewContext }): Reac
       return <SettingsEntry context={context} />;
     case "picker":
       return <PickerEntry context={context} />;
+    // A band inside one of ADE's own dialogs. Separate from `picker` because
+    // the dialog is WAITING on the answer: it goes back through
+    // `dialog.submit`, not to a composer that never asked.
+    case "dialog-picker":
+      return <DialogPickerEntry context={context} />;
     case "badge-card":
       return <BadgeCardEntry context={context} />;
     case "issue-context":

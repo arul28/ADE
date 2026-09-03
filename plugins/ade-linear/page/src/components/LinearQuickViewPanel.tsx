@@ -3,7 +3,7 @@ import { createPortal } from "react-dom";
 import { CircleNotch, Warning, X } from "@phosphor-icons/react";
 import { LinearMark, LINEAR_BRAND } from "@ade-dev/ui";
 
-import type { PluginWebviewContext } from "../bridge";
+import { bridge, type PluginWebviewContext } from "../bridge";
 import {
   createLaneForIssue,
   deleteLane,
@@ -12,7 +12,7 @@ import {
   launchAgentOnIssue,
   launchCliOnIssue,
 } from "../host/actions";
-import { closeSurface, openLink, openSettings, toast } from "../host/ui";
+import { closeSurface, openLink, openSettings, toast, writeClipboard } from "../host/ui";
 import { useHostLanes } from "../host/useHostEntities";
 import type {
   CtoLinearQuickView,
@@ -32,13 +32,17 @@ import {
 import { BatchLaunchModal, type BatchLaunchSubmit } from "./BatchLaunchModal";
 import { BatchLaunchStatusToast } from "./BatchLaunchStatusToast";
 import {
+  defaultKickoffIntro,
+  defaultKickoffPrompt,
   findIssueConflicts,
   isBatchLaunchInFlight,
   runBatchLaunch,
   BatchLaunchAgentReadinessTracker,
+  type BatchLaunchAgentOutcome,
   type BatchLaunchIssueConfig,
   type BatchLaunchItemState,
 } from "../lib/linearBatchLaunch";
+import { laneStackDeeplink, readLaunchPromptClipboardSetting, WELCOME_DEEPLINK } from "./launchPromptClipboard";
 
 /**
  * The Linear quick view, as the plugin's own popover — and the launch flow both
@@ -74,8 +78,10 @@ import {
  *    a plugin that is not installed does not draw one.
  *  - **The browser-view occlusion events.** A guest cannot occlude ADE's native
  *    BrowserView and nothing in this document listens for those events.
- *  - **The renderer buses** (`launchedLanesHighlight`, `chatSessionEvents`,
- *    `launchPromptClipboard`). See the launch flow below.
+ *  - **The renderer buses** (`launchedLanesHighlight`, `chatSessionEvents`).
+ *    See the launch flow below. `launchPromptClipboard` is no longer among
+ *    them: it was an APP preference the compiled panel read off the store, and
+ *    it is now the plugin's own `launchPromptClipboard` setting.
  */
 
 const HEADER_STATUS_MENU_ROW_CLASS =
@@ -226,9 +232,21 @@ export function useLinearBatchLaunch({
   const launchBatch = useCallback(async (entries: BatchLaunchSubmit[]) => {
     if (!entries.length) return;
     batchAgentReadinessRef.current.beginBatch();
-    // The compiled flow copied the last kickoff prompt to the clipboard when
-    // `launchPromptClipboardEnabled` was on. The plugin declares no such
-    // setting and the page cannot read ADE's, so the feature is dropped.
+    // The kickoff prompt, saved before the launch sends it.
+    //
+    // The compiled flow read `launchPromptClipboardEnabled` off the app store —
+    // an ADE preference a guest cannot see. The toggle is the plugin's own
+    // setting now, read through `config.get()`, and it defaults ON exactly as
+    // the app preference did. The prompt copied is the LAST launching entry's,
+    // skipping lane-only rows, which is the compiled rule unchanged.
+    if (await readLaunchPromptClipboardSetting()) {
+      const lastLaunchEntry = [...entries].reverse().find(({ config }) => !config.laneOnly);
+      const lastPrompt = lastLaunchEntry
+        ? lastLaunchEntry.config.kickoffPrompt.trim()
+          || (lastLaunchEntry.config.sessionType === "cli" ? defaultKickoffIntro() : defaultKickoffPrompt())
+        : "";
+      if (lastPrompt) void writeClipboard(lastPrompt);
+    }
     //
     // It also recorded optimistic "creating lane" placeholders through
     // `launchedLanesHighlight` so the Lanes tab could draw spinner tabs the
@@ -278,6 +296,7 @@ export function useLinearBatchLaunch({
             model: args.model,
             reasoningEffort: args.reasoningEffort,
             ...(args.permissionMode != null ? { permissionMode: args.permissionMode } : {}),
+            ...(args.fastMode !== undefined ? { fastMode: args.fastMode } : {}),
             prompt: args.prompt,
           }).then((launched) => {
             if (!launched.ok) {
@@ -296,6 +315,7 @@ export function useLinearBatchLaunch({
             model: args.model,
             reasoningEffort: args.reasoningEffort,
             ...(args.permissionMode != null ? { permissionMode: args.permissionMode } : {}),
+            ...(args.fastMode !== undefined ? { fastMode: args.fastMode } : {}),
             prompt: args.prompt,
           }).then((launched) => {
             if (!launched.ok) {
@@ -342,14 +362,26 @@ export function useLinearBatchLaunch({
     if (entries.length === 1 && result.failedIssueIds.length === 0) {
       onSingleLaunchSuccessRef.current?.();
     }
-  }, [refreshLanes]);
+
+    // Then send the reader where the work now is.
+    //
+    // The compiled panel navigated to `#/lanes?drawer=stack` — the Lanes tab
+    // with the launch stack open — and a page had no deeplink that could name a
+    // tab AND a drawer, so the reroute was simply missing. `ade://lane/<id>?drawer=stack`
+    // is that deeplink. The lane opened is the FIRST one created, which is the
+    // stack's own first row; the drawer shows the rest.
+    const firstLaneId = result.createdLaneIds[0]
+      ?? [...batchLaunchStates.values()].map((state) => state.laneId).find(Boolean)
+      ?? null;
+    if (firstLaneId) void openLink(laneStackDeeplink(firstLaneId));
+  }, [refreshLanes, batchLaunchStates]);
 
   const handleBatchLaunch = useCallback((entries: BatchLaunchSubmit[]) => {
     // Close the modal synchronously; the orchestrator runs detached so the
-    // reader is not held on a progress view. The compiled flow additionally
-    // rerouted the app to `#/lanes?drawer=stack`; there is no deeplink for "the
-    // Lanes tab with its stack drawer open" (`ade://lane/<uuid>` needs a lane
-    // that does not exist yet), so the reroute has no page counterpart.
+    // reader is not held on a progress view. The reroute to the lane stack
+    // happens at the END of `launchBatch`, once a lane exists to name — the
+    // compiled flow could route to `#/lanes?drawer=stack` before the lanes were
+    // made because that URL names a TAB, and a deeplink names a lane.
     setBatchModalOpen(false);
     void launchBatch(entries).catch((err) => {
       console.error("[Linear] Batch launch failed:", err);
@@ -387,17 +419,89 @@ export function useLinearBatchLaunch({
   }, []);
 
   /**
-   * Promote a launched session from "starting" to "ready".
+   * Read the kickoff turn itself.
    *
    * The compiled panel subscribed to `window.ade.agentChat.onEvent` and read
-   * the kickoff turn's own lifecycle out of the envelope. There is no
-   * agent-chat event stream in the bridge; the only live signal is
-   * `host.subscribe({kinds:["lane","session"]})`, which `useHostLanes` follows
-   * and which reports that something moved without saying what. So a host
-   * refresh is treated as "the sessions this batch is waiting on now exist".
-   * The cost is precise: a kickoff turn that FAILS server-side used to flip the
-   * row to "Needs attention" with the runtime's message, and here shows as
-   * Ready instead.
+   * the turn's lifecycle out of the envelope: an `error`, a `status: failed` or
+   * a `done: failed` moved the row to "Needs attention" with the runtime's own
+   * message. `host.subscribe({kinds:["chat"]})` is that stream, and this is
+   * where it lands — narrowed to the three states a page can draw, with the
+   * host's own failure sentence and nothing else of the turn.
+   *
+   * The effect below is the FALLBACK and stays: it infers readiness from the
+   * lane and session lists moving, which is all a host that reports no chat
+   * frames can offer, and it can only ever answer "done". This one is the
+   * specific answer and is the only path that can draw the error state.
+   *
+   * Subscribed for the whole life of the flow rather than per batch. A kickoff
+   * turn can fail in the seconds after the launch call returns, and a
+   * subscription torn down with the modal would miss exactly that.
+   */
+  useEffect(() => {
+    const api = bridge();
+    if (!api?.host) return;
+    let stopped = false;
+    let unsubscribeEvent: (() => void) | null = null;
+    let unsubscribeHost: (() => void) | null = null;
+
+    const applyTransition = (transition: { issueId: string; outcome: BatchLaunchAgentOutcome }) => {
+      setBatchLaunchStates((current) => {
+        const state = current.get(transition.issueId);
+        if (!state) return current;
+        // A row the reader has already been told about stays told. The only
+        // move allowed out of `done` is into the error state, because a turn
+        // that failed after the session appeared is news.
+        if (state.status !== "initializing-agent" && state.status !== "done") return current;
+        if (state.status === "done" && transition.outcome.status === "done") return current;
+        const next = new Map(current);
+        next.set(transition.issueId, { ...state, ...transition.outcome });
+        return next;
+      });
+    };
+
+    try {
+      unsubscribeEvent = api.events.on("host", (frame) => {
+        if (frame.kind !== "chat") return;
+        // The frame is coalesced like every other, so one arrival can settle a
+        // whole batch: fifty issues launched together settle fifty turns.
+        for (const turn of frame.turns ?? []) {
+          if (!turn?.sessionId) continue;
+          const transition = batchAgentReadinessRef.current.observeChatTurn(turn);
+          if (transition) applyTransition(transition);
+        }
+      });
+    } catch {
+      unsubscribeEvent = null;
+    }
+
+    void api.host
+      .subscribe({ kinds: ["chat"] })
+      .then((stop) => {
+        if (stopped) {
+          stop();
+          return;
+        }
+        unsubscribeHost = stop;
+      })
+      .catch(() => {
+        // A host with no chat stream. The inference effect below still promotes
+        // a launched row out of "starting"; it just cannot say it failed.
+      });
+
+    return () => {
+      stopped = true;
+      unsubscribeEvent?.();
+      unsubscribeHost?.();
+    };
+  }, []);
+
+  /**
+   * Promote a launched session from "starting" to "ready", by inference.
+   *
+   * `host.subscribe({kinds:["lane","session"]})` frames say that something
+   * moved without saying what, so a host refresh is treated as "the sessions
+   * this batch is waiting on now exist". That is the whole of what this can
+   * know — see the chat subscription above for the turn's actual outcome.
    */
   useEffect(() => {
     const pendingSessionIds = [...batchLaunchStates.values()]
@@ -675,18 +779,21 @@ export function LinearQuickViewPanel({ context }: { context: PluginWebviewContex
           ) : (
             /*
              * The compiled button called `setShowWelcome(true)` and rerouted to
-             * `#/work` to raise ADE's project picker. There is no deeplink for
-             * the project picker (`shared/deeplinks.ts` addresses lanes,
-             * sessions, files, commits, artifacts, branches, PRs, issues and
-             * plugin panels — no app-chrome target), so rather than guess a URL
-             * the control is inert: it dismisses the prompt and says why.
+             * `#/work`, which is ADE's project picker — two renderer calls, and
+             * for a while there was no deeplink that meant either, so this
+             * control dismissed the prompt and did nothing else.
+             * `ade://welcome` is that deeplink. The prompt is dismissed first
+             * because the reader is leaving this popover either way.
              */
             <button
               type="button"
               className="ade-shell-control inline-flex h-8 items-center rounded-md px-3 text-[12px]"
               data-variant="primary"
-              title="Open the project from ADE's own window"
-              onClick={() => setConnectionPrompt(null)}
+              onClick={() => {
+                setConnectionPrompt(null);
+                void openLink(WELCOME_DEEPLINK);
+                void closeSurface();
+              }}
             >
               Open project picker
             </button>

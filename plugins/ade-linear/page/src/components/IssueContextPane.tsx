@@ -2,29 +2,38 @@
  * The compiled `UserMessageIssueContext`, Linear half, moved.
  *
  * Source: `apps/desktop/src/renderer/components/chat/UserMessageIssueContext.tsx`
- * for the pane's own logic, and the `LinearIssueContextChip` half of
- * `apps/desktop/src/renderer/components/chat/ChatAttachmentTray.tsx` for the
- * rows it drew — the chip is self-contained, so it is moved verbatim rather than
- * approximated.
+ * for the pane's own logic, and `ChatAttachmentTray` for the rows it drew.
  *
- * What did NOT come across, and is reported as a gap rather than faked:
+ * The tray is no longer approximated. `AttachmentTray` and
+ * `IssueAttachmentChip` are the compiled markup, ported into `@ade-dev/ui/attachments`
+ * — the same container, the same `data-chat-attachment-tray` attribute, the
+ * same chip classes, styles, `title` and `data-testid` — so this pane and the
+ * app's own composer draw one implementation rather than two copies that agree
+ * today. The kit carries the rest of the set beside it: the file chip, the
+ * image thumbnail and its copy affordance, the pending-image preview, the
+ * image-URL chip, the orchestration-annotation chip and the GitHub brand of
+ * this very chip.
  *
- * - `ChatAttachmentTray` itself. It draws file refs, pending image previews,
- *   image-URL chips, orchestration-annotation chips and the GitHub chip beside
- *   the Linear one, and reads previews off a machine pin through
- *   `useChatRuntimeScope()`. None of that is this plugin's, and a guest has no
- *   runtime scope. Its Linear-only layout — `flex flex-wrap items-center gap-2`
- *   with the caller's `mt-1 px-0 py-0` — is what this pane keeps.
- * - The GitHub half (`GitHubIssueSelectModal`, `detachGitHubIssueFromSession`).
+ * What this PANE draws is still only the Linear chips, and the reason is data
+ * rather than markup: a transcript's file refs, staged images and annotations
+ * are the renderer's own state, and the only fact a guest can read about a past
+ * turn is which Linear issues were linked to its session (`pageLanes`). The
+ * GitHub chips are another plugin's to draw. When either grows a source, the
+ * chip it needs is already in the kit.
+ *
+ * Two smaller things did not come across:
+ *
  * - `chatContextAttachmentKey`. It is a renderer module; the hidden set is keyed
  *   by issue id here, which is the same identity for a Linear attachment.
  * - `useChatRuntimeScope()` and `useBuiltinSurfaceVisible("linear")`. The first
- *   has no guest counterpart; the second gated ADE's own pane behind this very
- *   plugin, and the page IS that plugin.
+ *   pinned the machine an attachment's bytes are read from, which this pane
+ *   reads none of; the second gated ADE's own pane behind this very plugin, and
+ *   the page IS that plugin.
  */
 
 import React, { useMemo, useState } from "react";
 import { cn, LinearMark, LINEAR_BRAND } from "@ade-dev/ui";
+import { AttachmentTray, IssueAttachmentChip } from "@ade-dev/ui/attachments";
 
 import type { LaneLinearIssue } from "../types";
 import { unlinkIssueFromLane } from "../host/actions";
@@ -60,10 +69,10 @@ export function IssueContextPane({
 
   return (
     <>
-      <div
-        className={cn("flex flex-wrap items-center gap-2 px-4 py-3", "mt-1 px-0 py-0", className)}
-        data-chat-attachment-tray="true"
-      >
+      {/* `mt-1 px-0 py-0` is the caller's own override in the compiled
+          transcript: the tray's default padding belongs to the composer, and
+          under a user message the row sits flush. */}
+      <AttachmentTray className={cn("mt-1 px-0 py-0", className)}>
         {visibleContextAttachments.map((issue) => (
           <LinearIssueContextChip
             key={issue.id}
@@ -71,7 +80,7 @@ export function IssueContextPane({
             onOpen={() => setLinearDetailsIssueId(issue.id)}
           />
         ))}
-      </div>
+      </AttachmentTray>
       <LinearIssueSelectModal
         open={linearIssue != null}
         ariaLabel="Linear issue"
@@ -95,14 +104,13 @@ export function IssueContextPane({
 }
 
 /**
- * `ChatAttachmentTray`'s `LinearIssueContextChip`, moved.
+ * One Linear issue, as the compiled tray's chip.
  *
- * The compiled chip took an `AgentChatContextAttachment` and read
- * `attachment.issue`; a page has the issue itself, so the prop is the issue and
- * every class name, style, `title` and `data-testid` below is the compiled one.
- * The compiled `onRemove` removed the attachment from a COMPOSER draft, which a
- * transcript pane never passed, so the chip's remove button is not drawn here —
- * removal is the details modal's "Remove", exactly as it was.
+ * The markup is `IssueAttachmentChip` in the kit; this wrapper is the Linear
+ * BRAND applied to it, and the one place the pane knows what a Linear issue
+ * looks like. The compiled `onRemove` removed the attachment from a COMPOSER
+ * draft, which a transcript pane never passed, so no remove button is drawn
+ * here — removal is the details modal's "Remove", exactly as it was.
  */
 function LinearIssueContextChip({
   issue,
@@ -112,51 +120,18 @@ function LinearIssueContextChip({
   onOpen?: () => void;
 }) {
   const projectLabel = issue.projectName?.trim() || issue.projectSlug || issue.teamKey || null;
-  const title = [
-    issue.identifier,
-    issue.title,
-    projectLabel,
-    issue.stateName,
-  ].filter(Boolean).join(" - ");
-
   return (
-    <span
-      className={cn(
-        "ade-liquid-glass-pill group inline-flex max-w-full items-center gap-2 rounded-[var(--chat-radius-pill)] border px-2.5 py-1.5 text-[10px] transition-colors",
-        onOpen ? "cursor-pointer" : "",
-      )}
-      style={{
-        borderColor: LINEAR_BRAND.borderSubtle,
-        background: LINEAR_BRAND.surface,
-        color: LINEAR_BRAND.text,
-      }}
-      title={title}
-      data-testid="linear-issue-context-chip"
-      onClick={onOpen ? () => onOpen() : undefined}
-    >
-      <span
-        className="flex h-4 w-4 shrink-0 items-center justify-center rounded"
-        style={{ background: LINEAR_BRAND.surfaceHover, color: LINEAR_BRAND.primaryBright }}
-      >
-        <LinearMark size={9} />
-      </span>
-      <span
-        className="shrink-0 rounded font-mono text-[10px] font-semibold"
-        style={{ background: "rgba(255,255,255,0.08)", color: LINEAR_BRAND.text, padding: "1px 4px" }}
-      >
-        {issue.identifier}
-      </span>
-      <span className="min-w-0 max-w-[240px] truncate font-sans text-[11px] font-medium text-fg/90">
-        {issue.title}
-      </span>
-      {projectLabel ? (
-        <span
-          className="hidden shrink-0 rounded font-mono text-[9px] sm:inline"
-          style={{ background: "rgba(255,255,255,0.05)", color: LINEAR_BRAND.textMuted, padding: "1px 4px" }}
-        >
-          {projectLabel}
-        </span>
-      ) : null}
-    </span>
+    <IssueAttachmentChip
+      identifier={issue.identifier}
+      title={issue.title}
+      secondaryLabel={projectLabel}
+      brand={LINEAR_BRAND}
+      glyph={<LinearMark size={9} />}
+      tooltip={[issue.identifier, issue.title, projectLabel, issue.stateName]
+        .filter(Boolean)
+        .join(" - ")}
+      testId="linear-issue-context-chip"
+      {...(onOpen ? { onOpen } : {})}
+    />
   );
 }

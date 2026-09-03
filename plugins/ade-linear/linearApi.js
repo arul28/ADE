@@ -43,6 +43,30 @@ const BACKOFF_CAP_MS = 15_000;
  */
 const REFRESH_BUFFER_MS = 2 * 60_000;
 
+/**
+ * The token's remaining life, pre-formatted.
+ *
+ * Here rather than beside its readers because it has two of them and they are
+ * in different halves: the settings PANEL prints it as a row because a schema
+ * has no date arithmetic, and the settings PAGE prints the same sentence in the
+ * connected card. Two copies would drift the day one of them rounded
+ * differently, and the token is this module's fact.
+ *
+ * An absent expiry is an API key, or an OAuth token that does not expire, and
+ * says nothing rather than "never".
+ */
+function expiry(tokenExpiresAt) {
+  if (!tokenExpiresAt) return { expiresIn: null, expired: false };
+  const at = Date.parse(String(tokenExpiresAt));
+  if (Number.isNaN(at)) return { expiresIn: null, expired: false };
+  const ms = at - Date.now();
+  if (ms <= 0) return { expiresIn: "expired", expired: true };
+  const days = Math.round(ms / 86_400_000);
+  if (days >= 1) return { expiresIn: `expires in ${days} ${days === 1 ? "day" : "days"}`, expired: false };
+  const hours = Math.max(1, Math.round(ms / 3_600_000));
+  return { expiresIn: `expires in ${hours} ${hours === 1 ? "hour" : "hours"}`, expired: false };
+}
+
 /** Secret names, in this plugin's own namespace. */
 const SECRET_ACCESS_TOKEN = "LINEAR_ACCESS_TOKEN";
 const SECRET_REFRESH_TOKEN = "LINEAR_REFRESH_TOKEN";
@@ -50,7 +74,22 @@ const SECRET_EXPIRES_AT = "LINEAR_TOKEN_EXPIRES_AT";
 const SECRET_AUTH_MODE = "LINEAR_AUTH_MODE";
 const SECRET_CLIENT_ID = "LINEAR_OAUTH_CLIENT_ID";
 
-/** Fields every issue query selects. Kept as one string so two queries cannot drift. */
+/**
+ * Fields every issue query selects. Kept as one string so two queries cannot drift.
+ *
+ * Two of them are here for the PAGE rather than for a panel, and both close a
+ * field the page could otherwise only guess at:
+ *
+ * - `project { slugId }` is Linear's own project slug. Without it a page had to
+ *   derive one from the project NAME, which is stable and comparable but is not
+ *   the slug Linear puts in a URL.
+ * - `inverseRelations` is where an issue's BLOCKERS live. A relation of type
+ *   `blocks` reads "`issue` blocks `relatedIssue`", so the relations in which
+ *   this issue is the blocked side are the inverse ones, and `issue` on each is
+ *   the thing standing in the way. `first: 25` because the list is a badge, not
+ *   a report: an issue with more blockers than that is already telling the
+ *   reader everything the badge can say.
+ */
 const ISSUE_FIELDS = `
   id
   identifier
@@ -67,13 +106,16 @@ const ISSUE_FIELDS = `
   completedAt
   canceledAt
   cycle { id name number }
-  project { id name }
+  project { id name slugId }
   team { id key name }
   state { id name type }
   assignee { id name displayName }
   creator { id name displayName }
   labels { nodes { id name color } }
   children { nodes { id identifier title state { id name type } } }
+  inverseRelations(first: 25) {
+    nodes { id type issue { id identifier state { id name type } } }
+  }
 `;
 
 /**
@@ -521,20 +563,44 @@ function createLinearApi(options = {}) {
    * query saves a request against a budget the reader can see running down.
    */
   async function listTeamsAndStates(teamKey = null) {
-    const data = teamKey
-      ? await request(
-        `query TeamStates($teamKey: String!) {
-          teams(filter: { key: { eq: $teamKey } }) { nodes { id key name states { nodes { id name type } } } }
-        }`,
-        { teamKey },
-        { maxRetries: 2, operationName: "TeamStates" },
-      )
-      : await request(
-        `query AllTeamStates { teams(first: 100) { nodes { id key name states { nodes { id name type } } } } }`,
-        null,
-        { maxRetries: 2, operationName: "AllTeamStates" },
-      );
-    return data?.teams?.nodes ?? [];
+    // `color`, `issueCount`, `cyclesEnabled` and `private` are the four fields
+    // the page's quick view draws on a team card and a panel has no room for.
+    // They are asked for in a WIDE selection with the original as the fallback:
+    // a workspace whose schema refuses one of them must still get its teams and
+    // its workflow states, because those two drive the merge and launch
+    // transitions. A refused wide read costs one extra round trip on that
+    // workspace and nothing anywhere else.
+    const WIDE = "id key name color issueCount cyclesEnabled private states { nodes { id name type } }";
+    const NARROW = "id key name states { nodes { id name type } }";
+
+    async function read(fields) {
+      const data = teamKey
+        ? await request(
+          `query TeamStates($teamKey: String!) {
+            teams(filter: { key: { eq: $teamKey } }) { nodes { ${fields} } }
+          }`,
+          { teamKey },
+          { maxRetries: 2, operationName: "TeamStates" },
+        )
+        : await request(
+          `query AllTeamStates { teams(first: 100) { nodes { ${fields} } } }`,
+          null,
+          { maxRetries: 2, operationName: "AllTeamStates" },
+        );
+      return data?.teams?.nodes ?? [];
+    }
+
+    try {
+      return await read(WIDE);
+    } catch (error) {
+      // Only a SELECTION refusal falls back. A missing credential, a rate
+      // limit or a network failure means the narrow read would fail the same
+      // way, and retrying it would double the wait before the caller is told.
+      if (error?.code === "no_token" || error?.code === "unauthorized" || error?.code === "rate_limited") {
+        throw error;
+      }
+      return await read(NARROW);
+    }
   }
 
   // No `listProjects` and no `listUsers`. The project and assignee filters are
@@ -687,6 +753,7 @@ module.exports = {
   TOKEN_URL,
   authorizationHeader,
   createLinearApi,
+  expiry,
   isMissingTokenError,
   tokenNeedsRefresh,
 };

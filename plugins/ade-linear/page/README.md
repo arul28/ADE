@@ -1,6 +1,6 @@
 # The Linear page
 
-The `ade-linear` plugin's own HTML page — one build, six placements.
+The `ade-linear` plugin's own HTML page — one build, seven placements.
 
 ADE's compiled Linear moved here. Not rewritten: the issue browser, the quick
 view, the settings section, the pickers and the badge card are the same
@@ -15,7 +15,12 @@ components the app shipped, with three things changed and nothing else.
    non-persistent — it dies when the placement hides — so a preference written
    there is always gone before anybody reads it back.
 3. **Imports.** The app's design primitives come from `@ade-dev/ui`, which is
-   the same modules the desktop consumes through `file:../../packages/ui`.
+   the same modules the desktop consumes through `file:../../packages/ui`. Three
+   of the compiled components live there rather than here, because they are not
+   Linear's: the lane combobox (`@ade-dev/ui/lanes`), the dialog shell with its
+   border beam (`@ade-dev/ui/dialog`) and the composer's attachment chips
+   (`@ade-dev/ui/attachments`). A page that had copied them would have been a
+   second implementation of markup the app also draws.
 
 ## Build
 
@@ -42,7 +47,7 @@ page/
   index.html            the one document; no inline script (script-src 'self')
   src/
     main.tsx            paints the theme, then mounts
-    PageRouter.tsx      surfaceId → one of the six entries
+    PageRouter.tsx      surfaceId → one of the seven entries
     bridge.ts           window.adePlugin, typed. Nothing else touches the global
     types.ts            the Linear shapes, copied down from the app's own
     host/
@@ -72,6 +77,12 @@ same-origin stylesheet in which every one of those classes resolves to the exact
 colour the app draws with. The page's content policy allows `style-src 'self'`,
 so a stylesheet is fine; it forbids the play-CDN script, so a runtime Tailwind
 is not.
+
+`page.css` names each kit ENTRY POINT as a Tailwind source, one line apiece.
+The kit is split so a page pays only for what it draws, so the barrel re-exports
+neither the combobox nor the dialog shell nor the attachment chips — and Tailwind
+generates only the classes it has seen. A scan of the barrel alone would leave
+all three drawing as unstyled boxes beside components that draw correctly.
 
 The kit's own components read `--ade-*` instead, and `host/theme.ts` writes the
 host's published palette to both names at once. A host that publishes nothing

@@ -10,7 +10,10 @@ Compiled sources this was measured against, all still in the binary:
 `LinearSection.tsx` (905), `BatchLaunchModal.tsx` (647), `linearBatchLaunch.ts`
 (565), `LinearIssueBadge.tsx` (280), `LinearPaneModal.tsx` (172),
 `LinearIssueSelectModal.tsx` (164), `BatchLaunchStatusToast.tsx` (164),
-`UserMessageIssueContext.tsx` (125), `LinearIssueResolveModals.tsx` (25).
+`UserMessageIssueContext.tsx` (125), `LinearIssueResolveModals.tsx` (25). Three
+more are now shared rather than approximated: `LaneCombobox.tsx` (671),
+`LaneDialogShell.tsx` (129) and `ChatAttachmentTray.tsx` (825) were ported into
+`@ade-dev/ui` and the page draws the kit's copy.
 
 ## Placements
 
@@ -23,8 +26,12 @@ Compiled sources this was measured against, all still in the binary:
 | Composer issue picker | `picker` | `composer-picker` | Carried |
 | Chat-header issue picker | `picker` | `composer-picker` | Carried |
 | Lane row-badge hover card | `badge-card` | `popover` | Carried |
-| Transcript issue context | `issue-context` | chat card | Carried, reduced (see G6) |
-| Create-lane / Create-PR pickers | — | — | **Not carried (G12)** |
+| Transcript issue context | `issue-context` | chat card | Carried |
+| Create-lane / Create-PR pickers | `dialog-picker` | `dialog-picker` | Carried |
+
+Every `webviewSurfaceId` a socket names resolves to a declared surface, and the
+manifest parses with no errors and no warnings — checked against
+`shared/plugins/manifest.ts` and `shared/plugins/sockets.ts` as shipped.
 
 ## One launch flow
 
@@ -38,7 +45,7 @@ the tab and renders inline in the popover, which is the only difference.
 The duplicate guard keeps its two sentences apart. `findIssueConflicts` reads a
 lane's own Linear attachment *and* the issues linked to sessions inside it, so
 "Has lane" and "Has agent" mean what they say, and a session link wins when both
-hold.
+hold. Each now names the lane's worktree in its tooltip when the host reports one.
 
 ## The browser (`LinearIssueBrowser`)
 
@@ -77,13 +84,15 @@ against 1.2.0: the detail pane's **state**, **priority**, **Assign to me** and
 
 Carried: the panel header, search, nav verbs, the resize handle, the list, the
 launch flow, the batch-launch modal, the status toast, the launched-lane
-treatment, and closing itself after a single successful launch.
+treatment, closing itself after a single successful launch, the reroute to the
+lane stack after a launch, and the project-picker button.
 
 ## The settings section
 
-Carried: the connection card, the identity card, the projects list, the API-key
-form, the GitHub autolinks block, the three preference toggles (through
-`config.get`/`config.set`), and the webhook block with the plugin's own wording.
+Carried: the connection card and its expiry, last-read and last-error rows, the
+identity card, the projects list, the API-key form, the GitHub autolinks block,
+the four preference toggles (through `config.get`/`config.set`), and the webhook
+block with the plugin's own wording and its three delivery-ledger rows.
 
 Changed on purpose: **OAuth does not poll.** The compiled section started a
 session and polled `getLinearOAuthSession` every 1.5 s. The plugin's sign-in is
@@ -94,83 +103,110 @@ timeout rather than a poll.
 
 ## The gaps
 
-Each of these is a real difference the owner can see. None is papered over.
+**G1 — a failed kickoff turn shows "Ready".** Carried. `host.subscribe` takes a
+`chat` kind whose coalesced frames carry `turns[]` of `{sessionId, state,
+message}`, and `BatchLaunchAgentReadinessTracker.observeChatTurn` reads them: a
+`failed` state moves the row to `agent-error` with the host's own sentence. The lane/session
+inference stays as the fallback for a host that reports no chat frames, and the
+chat frame outranks it — the tracker keeps its session→issue mapping after an
+inferred "Ready" precisely so a failure arriving seconds later can correct it.
 
-**G1 — a failed kickoff turn shows "Ready".** The compiled quick view followed
-`window.ade.agentChat.onEvent` and moved a launched issue to `agent-error` on an
-`error`, a `status: failed` or a `done: failed`. The bridge has no agent-chat
-event stream, so the page moves `initializing-agent` → `done` on a host lane or
-session change and can never draw the error state. *Needs: a `chat` or `session`
-kind on `host.subscribe`, or an agent-chat event on the bridge.*
+**G2 — no reroute to the lane stack after a launch.** Carried, through
+`ade://lane/<id>?drawer=stack`. The compiled panel routed to `#/lanes?drawer=stack`,
+a renderer route that names a TAB; a deeplink names a lane, so the reroute fires
+at the end of the launch once a lane exists, on the first one created.
 
-**G2 — no reroute to the lane stack after a launch.** The compiled panel sent the
-reader to `#/lanes?drawer=stack`. There is no deeplink for a tab plus a drawer,
-so a single launch closes the popover and a batch keeps it open behind the toast.
-*Needs: a lanes deeplink that can name a drawer.*
+**G3 — the project-picker button is inert.** Carried, through `ade://welcome`.
 
-**G3 — the project-picker button is inert.** It called `setShowWelcome(true)` and
-navigated to `#/work`; neither has a deeplink. It dismisses and does nothing
-else. *Needs: a deeplink for the project picker.*
+**G4 — no per-provider permission control on the launch form.** Carried.
+`pageModels` reads once per provider GROUP rather than one aggregate call, so
+every row carries the group it belongs to instead of a guess at its id's prefix,
+plus its `fast` service tier and its own reasoning ladder. The form draws the
+provider's permission list from `pageCapabilities` — the same five literal option
+sets `renderer/lib/nativeLaunchControls.ts` holds, mapped to the unified
+`AgentChatPermissionMode` the launch carries — a fast-mode toggle for a model
+that has the tier, and the model's own reasoning tiers rather than a fixed
+none/low/medium/high ladder. `fastMode` and `permissionMode` both reach
+`chat.createSession`.
 
-**G4 — no per-provider permission control on the launch form.** The compiled
-`BatchLaunchModal` drew the native Claude / Codex / Cursor / Droid / OpenCode
-permission pill. `pageLaunchAgent` accepts one `permissionMode` string, so the
-whole control is gone, and **fast mode is gone with it** — it is a model-registry
-fact the page cannot read. Reasoning effort is offered as a fixed
-none/low/medium/high ladder rather than the registry's per-model list.
+Remaining, and small: the control is ONE shape for every provider (a select
+wearing the compiled trigger chrome) rather than a popover menu for Claude and
+Codex and a select for the other three, and the per-option detail sentences are
+`title` text rather than menu subtitles. The compiled `ModelPicker`'s recents,
+grouping and per-provider icons did not move either — the model control is a
+select over the same list.
 
-**G5 — the lane picker is a native `<select>`.** `LaneCombobox` is 671 lines of
-renderer component with its own search and keyboard model; the page offers a
-plain select over the same lanes. It does filter out the project's primary lane,
-as the compiled picker did.
+**G5 — the lane picker is a native `<select>`.** Carried. `LaneCombobox` is in
+`@ade-dev/ui/lanes`, markup for markup, and the launch form draws it. It still
+filters out the project's primary lane, as the compiled picker did. One
+difference: the popover's entrance is the stylesheet's own `ade-popover-in`
+keyframe rather than the framer-motion spring, because the kit takes no motion
+dependency; `PageLane` also carries no lane colour, so a row's mark is the
+default rather than the lane's.
 
-**G6 — the transcript pane draws only the Linear chip.** `ChatAttachmentTray`
-carries file refs, pending images, image-URL chips and orchestration
-annotations, and `useChatRuntimeScope` pins the machine. All of that is renderer
-state a guest cannot see. The GitHub half is another plugin's.
+**G6 — the transcript pane draws only the Linear chip.** The tray itself is
+carried: `AttachmentTray` and `IssueAttachmentChip` are the compiled markup in
+`@ade-dev/ui/attachments`, and the pane draws the kit's copy, so the app's
+composer and this pane can no longer drift. The kit carries the rest of the set
+beside them — the file chip, the image thumbnail and its copy affordance, the
+pending-image preview, the image-URL chip, the orchestration-annotation chip and
+the GitHub brand of the issue chip.
 
-**G7 — the launch-prompt clipboard toggle is gone.** It read
-`useAppStore(s => s.launchPromptClipboardEnabled)`, an app preference; the
-plugin declares no matching setting.
+What the PANE still draws is only the Linear chips, and the reason is data rather
+than markup: a transcript's file refs, staged images and annotations are the
+renderer's own state, and the only fact a guest can read about a past turn is
+which Linear issues were linked to its session. The GitHub chips are another
+plugin's to draw. *Needs: a bridge read of a turn's own attachments.*
 
-**G8 — the launch dialog has no border beam.** `LaneDialogShell` is built on
-`@radix-ui/react-dialog`; the page rebuilds it as a portal with a backdrop and
-Esc, with identical classes, minus the animation.
+**G7 — the launch-prompt clipboard toggle is gone.** Carried. It is the plugin's
+own `launchPromptClipboard` setting now, defaulting on as the app preference did,
+with its toggle in the settings section and its read in the launch flow.
 
-**G9 — three connected-card rows the compiled design has no slot for.**
-`expiresIn` / `expired`, `lastSyncAt` and `lastError`, plus the webhook panel's
-"Last event", "Waiting (unacked)" and "Drain" rows, are in the plugin's
-vocabulary panel and not in the page. *Needs: `pageAutolinks` and
-`pageConnection` to carry them, and a place in the compiled design to put them.*
+**G8 — the launch dialog has no border beam.** Carried. `LaneDialogShell` is in
+`@ade-dev/ui/dialog` with its Radix dialog and its `BorderBeam` at the same size,
+variant, duration, strength and radius, and the launch modal draws it.
 
-**G10 — `PageLane.path` is always null.** `PluginLaneSummary` is a fixed
-allowlist that excludes the worktree path, so nothing in the page can show where
-a lane lives on disk.
+**G9 — three connected-card rows the compiled design has no slot for.** Carried.
+`pageConnection` answers `expiresIn`/`expired` (from the same `expiry` the
+settings panel prints) and already carried `checkedAt` and `message`;
+`pageAutolinks` answers `lastEvent`, `pendingDeliveries` and `drainError` from
+the host's delivery ledger. The connected card draws the first three in the
+bordered row the workspace row established, and the webhook block draws the
+other three beside its Verification row.
 
-**G11 — some issue fields are thinner than the compiled ones.**
-`projectSlug` is derived from the project name (the shared GraphQL selection
-takes `project { id name }`); `blockerIssueIds` and `hasOpenBlockers` are always
-empty and false; `cycleId` is null; and a quick-view project's
-`priority`/`issueCount`/`completedIssueCount` and a team's
-`color`/`issueCount`/`cyclesEnabled`/`private` are null. *Needs: a wider
-selection in `linearApi.js`.*
+**G10 — `PageLane.path` is always null.** Carried. `pageLanes` reads the lane
+summary's worktree under either name the host may use, and the launch modal's
+conflict tooltip names it. Still null on a host that withholds it, and every
+reader hides the line rather than drawing an empty one.
 
-**G12 — the Create-lane and Create-PR dialog pickers are not carried.** They are
-`dialog-section` sockets over ADE's own dialogs, and the page tier has no dialog
-placement. They stay on the vocabulary panel.
+**G11 — some issue fields are thinner than the compiled ones.** Carried.
+`ISSUE_FIELDS` takes `project { slugId }` and `inverseRelations`, so `projectSlug`
+is Linear's own slug (falling back to the name-derived one only when a workspace
+answers none), and `blockerIssueIds` / `hasOpenBlockers` are real —
+`inverseRelations` of type `blocks` are the issues standing in the way, and open
+means neither completed nor canceled. `cycleId` is carried. The projects and
+teams queries ask for `priority`, the two count histories, `color`, `issueCount`,
+`cyclesEnabled` and `private` in a WIDE selection with the original as a
+fallback, so a workspace whose schema refuses one still gets its projects, its
+teams and its workflow states.
 
-**G13 — a badge card opened with only an issue id cannot resolve.** The card
-looks the issue up by KEY (`searchIssues({query})`). A row-badge pointer that
-carries an id and no key anywhere on the lane row draws "No Linear issue on this
-lane."
+**G12 — the Create-lane and Create-PR dialog pickers are not carried.** Carried.
+Two `dialog-section` sockets point at a `dialog-picker` surface; the entry draws
+the browser inline and answers `dialog.submit({ issue })`. It draws no Cancel:
+the dialog around it has one.
+
+**G13 — a badge card opened with only an issue id cannot resolve.** Carried.
+`pageIssueById` reads the stored row and then fetches the single issue from
+Linear, neither of which needs a key, and the card asks it first.
 
 **G14 — the settings section reports its height two ways, and neither is a
-bridge verb.** It writes the measured height onto `documentElement.style.height`
-and posts an `ade:plugin-webview-height` message. *Needs: a height verb on the
-bridge, or a host that measures the document.*
+bridge verb.** Carried. `ui.resize` is the only height channel; the document
+write and the `ade:plugin-webview-height` frame are both gone, and
+`host/ui.ts:reportHeight` clamps and delivers for all four content-sized
+surfaces.
 
 **G15 — the manifest's `webviewSurfaceId` and `openWebview.placement` are inert
-until the desktop placements land.** The manifest and the actions declare both;
-the renderer that draws a popover, a settings-section guest and a composer picker
-is Wave 1 work in flight. Until it lands, every socket falls back to its
-`panelId` and the page is reachable only as the rail tab.
+until the desktop placements land.** The manifest half is verified against the
+shipped contract: it parses with no errors or warnings, all eleven sockets
+survive, and every `webviewSurfaceId` resolves. Whether each placement actually
+DRAWS is the renderer's half and is checked there.

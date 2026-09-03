@@ -22,7 +22,9 @@ import React from "react";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 
+import { BadgeCardEntry } from "../src/entries/BadgeCardEntry";
 import { BrowserEntry } from "../src/entries/BrowserEntry";
+import { DialogPickerEntry } from "../src/entries/DialogPickerEntry";
 import { PickerEntry } from "../src/entries/PickerEntry";
 import { SettingsEntry } from "../src/entries/SettingsEntry";
 import { installFakeBridge, uninstallFakeBridge, fakeIssue, type FakeBridge } from "./fakeBridge";
@@ -238,6 +240,172 @@ describe("the page and the plugin agree on every verb", () => {
     expect(closeAt).toBeGreaterThan(attachAt);
   });
 
+  it("moves a launched issue to the error state when the kickoff turn fails", async () => {
+    // The gap this closes. Entity frames say a SESSION exists, which a failed
+    // kickoff leaves behind just as a successful one does — so inference alone
+    // reported "Ready" for a batch that produced nothing. The chat frame
+    // carries the turn, and it is the only thing that can say otherwise.
+    connected();
+    render(<BrowserEntry context={tabContext()} />);
+    const row = await issueRow("ADE-1");
+    await act(async () => {
+      fireEvent.click(row);
+    });
+    const dock = document.querySelector('[data-linear-action-dock="true"]') as HTMLElement | null;
+    const launch = within(dock!).getByRole("button", { name: /Launch lane \+ agent/i });
+    await act(async () => {
+      fireEvent.click(launch);
+    });
+    const submitLaunch = await screen.findByRole("button", { name: /Launch 1 lane/i }, { timeout: 3_000 });
+    await act(async () => {
+      fireEvent.click(submitLaunch);
+    });
+    await waitFor(() => {
+      expect(host.callsTo("invoke:pageLaunchAgent").length).toBe(1);
+    });
+
+    await act(async () => {
+      host.emit("host", {
+        kind: "chat",
+        ids: ["session-1"],
+        overflow: false,
+        turns: [{ sessionId: "session-1", state: "failed", message: "The runtime refused the model." }],
+      });
+    });
+    // "Needs attention", not "Ready" — and carrying the runtime's own sentence,
+    // because the reader needs to know WHY before they retry.
+    expect(await screen.findByText("Needs attention", {}, { timeout: 3_000 })).toBeTruthy();
+    await waitFor(() => {
+      const carried = [...document.querySelectorAll("[title]")].some(
+        (node) => node.getAttribute("title") === "The runtime refused the model.",
+      );
+      expect(carried).toBe(true);
+    });
+    expect(screen.queryByText("Ready")).toBeNull();
+  });
+
+  it("sends the reader to the lane stack after a launch, and to the project picker with no project", async () => {
+    connected();
+    render(<BrowserEntry context={tabContext()} />);
+    const row = await issueRow("ADE-1");
+    await act(async () => {
+      fireEvent.click(row);
+    });
+    const dock = document.querySelector('[data-linear-action-dock="true"]') as HTMLElement | null;
+    await act(async () => {
+      fireEvent.click(within(dock!).getByRole("button", { name: /Launch lane \+ agent/i }));
+    });
+    await act(async () => {
+      fireEvent.click(await screen.findByRole("button", { name: /Launch 1 lane/i }, { timeout: 3_000 }));
+    });
+    await waitFor(() => {
+      const deeplinks = host.callsTo("openDeeplink").map((call) => call.args.url);
+      // The compiled panel rerouted to `#/lanes?drawer=stack`, a renderer route
+      // no deeplink could name. This one names the lane the launch created and
+      // asks for the stack drawer beside it.
+      expect(deeplinks.some((url) => String(url).startsWith("ade://lane/") && String(url).includes("drawer=stack"))).toBe(true);
+    });
+  });
+
+  it("copies the kickoff prompt only when the plugin's own setting says so", async () => {
+    connected();
+    // The toggle was an ADE preference the compiled flow read off the app
+    // store; it is the plugin's own setting now, and OFF means no clipboard
+    // write at all rather than a write the reader cannot see.
+    host.setAction("__config", () => ({}));
+    render(<BrowserEntry context={tabContext()} />);
+    const row = await issueRow("ADE-1");
+    await act(async () => {
+      fireEvent.click(row);
+    });
+    const dock = document.querySelector('[data-linear-action-dock="true"]') as HTMLElement | null;
+    await act(async () => {
+      fireEvent.click(within(dock!).getByRole("button", { name: /Launch lane \+ agent/i }));
+    });
+    await act(async () => {
+      fireEvent.click(await screen.findByRole("button", { name: /Launch 1 lane/i }, { timeout: 3_000 }));
+    });
+    await waitFor(() => {
+      expect(host.callsTo("invoke:pageLaunchAgent").length).toBe(1);
+    });
+    // The fake's config answers no `launchPromptClipboard` key at all, which is
+    // the manifest default — true — so the prompt is saved.
+    await waitFor(() => {
+      expect(host.callsTo("clipboard.write").length).toBe(1);
+    });
+    expect(String(host.lastCall("clipboard.write")!.args.text)).toContain("Linear issue");
+  });
+
+  it("resolves a badge card from an issue id alone", async () => {
+    // Linear's search does not match a raw uuid, so a lane row badge carrying
+    // an id and no key anywhere used to draw "No Linear issue on this lane"
+    // over an issue that plainly exists. `pageIssueById` is the read that can
+    // answer it, and the card asks it FIRST.
+    connected();
+    render(
+      <BadgeCardEntry
+        context={tabContext({
+          surfaceId: "badge-card",
+          placement: "popover",
+          subject: { kind: "lane", id: "lane-9" },
+          pointer: { issueId: "issue-1" },
+        })}
+      />,
+    );
+    await waitFor(() => {
+      expect(host.callsTo("invoke:pageIssueById").length).toBe(1);
+    });
+    expect(host.lastCall("invoke:pageIssueById")!.args).toEqual({ issueId: "issue-1" });
+    expect(await screen.findByText("ADE-1", {}, { timeout: 3_000 })).toBeTruthy();
+    // And it never fell through to the key path, which is what could not answer.
+    expect(host.callsTo("invoke:pageSearchIssues").length).toBe(0);
+  });
+
+  it("answers the dialog it is drawn inside rather than the composer", async () => {
+    // A composer picker attaches a chip and closes itself. A dialog section is a
+    // field in a form ADE owns, and the dialog is waiting on the answer.
+    connected();
+    render(
+      <DialogPickerEntry
+        context={tabContext({
+          surfaceId: "dialog-picker",
+          placement: "dialog-picker",
+          subject: { kind: "dialog", dialog: "create-lane" },
+        })}
+      />,
+    );
+    const row = await issueRow("ADE-1");
+    await act(async () => {
+      fireEvent.click(row);
+    });
+    const use = await screen.findByRole("button", { name: "Use for this lane" }, { timeout: 3_000 });
+    await act(async () => {
+      fireEvent.click(use);
+    });
+    await waitFor(() => {
+      expect(host.callsTo("dialog.submit").length).toBe(1);
+    });
+    expect(host.lastCall("dialog.submit")!.args).toMatchObject({
+      issue: { provider: "linear", issueId: "issue-1", identifier: "ADE-1" },
+    });
+    // The dialog around the page owns closing. A section that also closed the
+    // surface would take the dialog down before it could use the answer.
+    expect(host.callsTo("composer.attach").length).toBe(0);
+    expect(host.callsTo("surface.close").length).toBe(0);
+  });
+
+  it("reports its height through the bridge verb and nowhere else", async () => {
+    connected();
+    render(<SettingsEntry context={tabContext({ surfaceId: "settings", placement: "settings-section" })} />);
+    await waitFor(() => {
+      expect(host.callsTo("invoke:pageConnection").length).toBeGreaterThan(0);
+    });
+    // The two unofficial channels are gone: the page no longer writes its
+    // height onto the document, and no longer posts a frame to the parent.
+    expect(document.documentElement.style.height).toBe("");
+    expect(document.body.style.height).toBe("");
+  });
+
   it("invokes no action the plugin does not answer", async () => {
     connected();
     // The fake THROWS on an unknown id, so the assertion is that the walk above
@@ -265,13 +433,18 @@ describe("the page and the plugin agree on every verb", () => {
     expect(window.localStorage.length).toBe(0);
   });
 
-  it("follows lane and session changes rather than polling for them", async () => {
+  it("follows lane, session and chat changes rather than polling for them", async () => {
     connected();
     render(<BrowserEntry context={tabContext()} />);
     await waitFor(() => {
-      expect(host.callsTo("host.subscribe").length).toBeGreaterThan(0);
+      // Two subscriptions, and they answer different questions. The entity
+      // frames say a lane or a session moved; the chat frames carry the kickoff
+      // turn, which is the only thing that can report a launch that FAILED.
+      expect(host.callsTo("host.subscribe").length).toBeGreaterThan(1);
     });
-    expect(host.lastCall("host.subscribe")!.args).toMatchObject({ kinds: ["lane", "session"] });
+    const kinds = host.callsTo("host.subscribe").map((call) => call.args.kinds);
+    expect(kinds).toContainEqual(["lane", "session"]);
+    expect(kinds).toContainEqual(["chat"]);
 
     const before = host.callsTo("invoke:pageLanes").length;
     await act(async () => {

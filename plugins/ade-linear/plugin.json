@@ -104,6 +104,15 @@
     },
     {
       "kind": "webview",
+      "id": "dialog-picker",
+      "title": "Link a Linear issue",
+      "icon": "brand:linear",
+      "entryHtml": "dist/index.html",
+      "panelId": "issues",
+      "mobile": false
+    },
+    {
+      "kind": "webview",
       "id": "badge-card",
       "title": "Linear issue",
       "icon": "brand:linear",
@@ -209,6 +218,26 @@
       "webviewSurfaceId": "badge-card"
     },
     {
+      "socket": "dialog-section",
+      "surface": "lanes",
+      "id": "create-lane-issue",
+      "label": "Linear issue",
+      "icon": "brand:linear",
+      "panelId": "issues",
+      "dialog": "create-lane",
+      "webviewSurfaceId": "dialog-picker"
+    },
+    {
+      "socket": "dialog-section",
+      "surface": "prs",
+      "id": "create-pr-issue",
+      "label": "Linear issue",
+      "icon": "brand:linear",
+      "panelId": "issues",
+      "dialog": "create-pr",
+      "webviewSurfaceId": "dialog-picker"
+    },
+    {
       "socket": "graph-node",
       "surface": "lanes",
       "id": "graph-issue",
@@ -301,6 +330,13 @@
       "kind": "text",
       "label": "Default team key",
       "description": "Used when a command does not name a team, e.g. ENG."
+    },
+    {
+      "key": "launchPromptClipboard",
+      "kind": "toggle",
+      "label": "Copy the launch prompt to the clipboard",
+      "description": "Saves the kickoff prompt before Linear starts an agent on the issue.",
+      "default": true
     }
   ],
   "automationTriggers": [

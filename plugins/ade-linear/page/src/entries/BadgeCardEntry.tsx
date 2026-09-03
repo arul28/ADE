@@ -7,8 +7,14 @@
  * compiled hover card drew.
  *
  * The compiled badge already HAD the issue: it was a prop off the lane summary.
- * A guest gets an id or a key instead, so the issue is fetched through the
- * plugin's own `pageSearchIssues`, which is the same search the browser uses.
+ * A guest gets an id or a key instead, so the issue is fetched — by ID when the
+ * pointer carries one, through `pageIssueById`, and by KEY otherwise, through
+ * the same `pageSearchIssues` the browser uses.
+ *
+ * The id read is the one that closes the old failure. Linear's search does not
+ * match a raw uuid, so a pointer carrying an id and no key anywhere on the lane
+ * row used to draw "No Linear issue on this lane" over an issue that plainly
+ * existed. Nothing about the card changes; it is simply given the issue.
  */
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -16,8 +22,8 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import type { PluginWebviewContext } from "../bridge";
 import { LinearIssueBadgeCard } from "../components/LinearIssueBadgeCard";
 import { linearBrowserIssueToLaneIssue } from "../components/LinearIssueBrowser";
-import { getLanes, openChatOnIssue, searchIssues } from "../host/actions";
-import { closeSurface, toast } from "../host/ui";
+import { getIssueById, getLanes, openChatOnIssue, searchIssues } from "../host/actions";
+import { closeSurface, reportHeight, toast } from "../host/ui";
 import type { LaneLinearIssue } from "../types";
 
 function pointerString(pointer: Record<string, unknown> | undefined, key: string): string | null {
@@ -26,17 +32,21 @@ function pointerString(pointer: Record<string, unknown> | undefined, key: string
 }
 
 /**
- * Report the card's own height to the host.
+ * Report this surface's own content height to the host.
  *
- * The bridge has no height verb yet — `AdePluginBridge` carries `surface.close`
- * and nothing that says "I am this tall" — so the only channel a guest has for
- * its measured size is the document itself: the host sizes the popover frame to
- * the guest document, and `documentElement.style.height` is what it reads. The
- * cap is a guard, not a layout: a runaway measurement would otherwise ask the
- * host for an unbounded frame.
+ * `ui.resize` is the ONE height channel. The page used to report the same
+ * number two other ways — writing it onto `documentElement.style.height` for a
+ * host that measured the guest document, and posting an
+ * `ade:plugin-webview-height` frame to the parent for a host that listened —
+ * and neither was a bridge verb, so neither was something a host was obliged to
+ * honour. Both are gone; `host/ui.ts:reportHeight` clamps and delivers.
+ *
+ * The last reported height is remembered so a `ResizeObserver` firing on every
+ * layout tick sends one frame per real change rather than one per tick.
  */
 function useContentHeight(): (node: HTMLDivElement | null) => void {
   const observerRef = useRef<ResizeObserver | null>(null);
+  const lastRef = useRef<number | null>(null);
 
   useEffect(() => () => {
     observerRef.current?.disconnect();
@@ -46,10 +56,15 @@ function useContentHeight(): (node: HTMLDivElement | null) => void {
   return useCallback((node: HTMLDivElement | null) => {
     observerRef.current?.disconnect();
     observerRef.current = null;
+    lastRef.current = null;
     if (!node || typeof ResizeObserver === "undefined") return;
     const apply = () => {
-      const height = Math.min(4000, Math.ceil(node.getBoundingClientRect().height));
-      if (height > 0) document.documentElement.style.height = `${height}px`;
+      // `getBoundingClientRect` rather than `offsetHeight`: the cards use
+      // fractional padding, and a rounded-down height clips the last border.
+      const measured = node.getBoundingClientRect().height;
+      if (measured === lastRef.current) return;
+      const reported = reportHeight(measured);
+      if (reported !== null) lastRef.current = measured;
     };
     const observer = new ResizeObserver(apply);
     observer.observe(node);
@@ -76,11 +91,24 @@ export function BadgeCardEntry({ context }: { context: PluginWebviewContext }): 
     let cancelled = false;
     void (async () => {
       try {
+        // An id is the direct answer and is tried first: `pageIssueById` reads
+        // the stored row, then fetches the single issue from Linear, and
+        // neither step needs a key. Only when it answers nothing — an id from a
+        // workspace this machine cannot read — does the key path run.
+        if (pointerIssueId) {
+          const byId = await getIssueById(pointerIssueId);
+          if (cancelled) return;
+          if (byId) {
+            setIssue(linearBrowserIssueToLaneIssue(byId));
+            setError(null);
+            return;
+          }
+        }
+
         let key = pointerIssueKey;
         if (!key && laneId) {
-          // The pointer carried only an id. The lane row knows the key it drew
-          // on the chip, so read it back rather than searching for a raw id
-          // Linear's own search does not match on.
+          // No id, or an id nothing could name. The lane row knows the key it
+          // drew on the chip, so read it back.
           const lanes = await getLanes();
           const lane = lanes.find((row) => row.id === laneId);
           key = lane?.linearIssueKey?.trim()

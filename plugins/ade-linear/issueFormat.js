@@ -143,6 +143,21 @@ function normalizeIssue(node) {
     }))
     : [];
 
+  // The issues standing in this one's way.
+  //
+  // A Linear relation of type `blocks` reads "`issue` blocks `relatedIssue`",
+  // so the ones where THIS issue is blocked are its INVERSE relations, and
+  // `issue` on each of those is the blocker. A blocker still open is one whose
+  // state is neither `completed` nor `canceled` — the same two terminal types
+  // every other reading of "done" in this plugin uses.
+  const blockers = (Array.isArray(node?.inverseRelations?.nodes) ? node.inverseRelations.nodes : [])
+    .filter((relation) => text(relation?.type) === "blocks" && text(relation?.issue?.id))
+    .map((relation) => ({
+      id: text(relation.issue.id) ?? "",
+      identifier: text(relation.issue?.identifier),
+      stateType: text(relation.issue?.state?.type),
+    }));
+
   return {
     id: text(node?.id) ?? "",
     identifier,
@@ -159,6 +174,9 @@ function normalizeIssue(node) {
     teamName: text(node?.team?.name),
     projectId: text(node?.project?.id),
     projectName: text(node?.project?.name),
+    // Linear's own slug, not one derived from the name. Null when the workspace
+    // schema answered no `slugId`, which the page reads as "derive it".
+    projectSlug: text(node?.project?.slugId),
     assigneeId: text(node?.assignee?.id),
     assigneeName: personName(node?.assignee),
     creatorName: personName(node?.creator),
@@ -172,12 +190,18 @@ function normalizeIssue(node) {
     canceledAt: text(node?.canceledAt),
     // A cycle that Linear left unnamed is still a cycle the reader knows by
     // its number, and "Cycle 14" is the words their Linear shows them.
+    cycleId: text(node?.cycle?.id),
     cycleName: text(node?.cycle?.name)
       ?? (Number.isInteger(node?.cycle?.number) ? `Cycle ${node.cycle.number}` : null),
     createdAt: text(node?.createdAt),
     updatedAt: text(node?.updatedAt),
     branchName: issueBranchName({ identifier, title }),
     subIssues,
+    blockers,
+    blockerIssueIds: blockers.map((blocker) => blocker.id).filter(Boolean),
+    hasOpenBlockers: blockers.some(
+      (blocker) => blocker.stateType !== "completed" && blocker.stateType !== "canceled",
+    ),
     // Filled in by `data.js` from `ade.lanes.list()`; never from Linear.
     hasLane: false,
     laneId: null,
@@ -217,7 +241,21 @@ function normalizeComment(issueId, node) {
 function normalizeTeam(node) {
   const key = text(node?.key) ?? "";
   const name = text(node?.name) ?? key;
-  return { id: text(node?.id) ?? "", key, name, title: name, subtitle: key };
+  return {
+    id: text(node?.id) ?? "",
+    key,
+    name,
+    title: name,
+    subtitle: key,
+    // Four cosmetic fields the page's team card draws and no panel has room
+    // for. Null rather than a default when the wide selection was refused:
+    // "this workspace did not answer" and "this team has no colour" are
+    // different facts, and a card that invented one would be lying quietly.
+    color: text(node?.color),
+    issueCount: Number.isInteger(node?.issueCount) ? node.issueCount : null,
+    cyclesEnabled: typeof node?.cyclesEnabled === "boolean" ? node.cyclesEnabled : null,
+    private: typeof node?.private === "boolean" ? node.private : null,
+  };
 }
 
 /** A workflow state row, carrying its team so a per-team lookup needs no join. */

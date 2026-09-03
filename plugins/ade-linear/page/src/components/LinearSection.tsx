@@ -14,7 +14,8 @@
  *     `@ade-dev/ui`; `../../../shared/types` became `../types`.
  *
  * Two blocks are additions rather than ports, because the compiled section has
- * no equivalent: the PREFERENCES form (the plugin's own `settings` keys) and
+ * no equivalent: the PREFERENCES form (the plugin's own `settings` keys, one of
+ * which — the launch-prompt clipboard toggle — used to be an ADE preference) and
  * the AUTOMATIONS/webhook strip (the plugin's `webhookIngress`). Both are drawn
  * in the compiled section's visual vocabulary — its card, its label, its type
  * scale — and both say exactly what `panels/settings.js` already says, word for
@@ -50,7 +51,7 @@ import {
   Plugs,
   XCircle,
 } from "@phosphor-icons/react";
-import { COLORS, SANS_FONT, MONO_FONT, LABEL_STYLE, SettingsToggle } from "@ade-dev/ui";
+import { COLORS, SANS_FONT, MONO_FONT, LABEL_STYLE, SettingsToggle, formatTimestamp } from "@ade-dev/ui";
 import { Button } from "@ade-dev/ui";
 
 import type { CtoLinearProject, GitHubAutolink, LinearConnectionStatus } from "../types";
@@ -91,6 +92,16 @@ const OAUTH_WAIT_TIMEOUT_MS = 5 * 60 * 1000;
 const SETTING_MOVE_ON_MERGE = "moveToDoneOnMerge";
 const SETTING_MOVE_ON_LAUNCH = "moveToStartedOnLaunch";
 const SETTING_DEFAULT_TEAM = "defaultTeamKey";
+/**
+ * The launch-prompt clipboard toggle.
+ *
+ * It was an ADE preference (`launchPromptClipboardEnabled` on the app store)
+ * that the compiled launch flow read and ADE's own "Copy prompts to clipboard"
+ * settings card wrote. A guest can read neither, so the preference is the
+ * plugin's own now and this section draws the toggle — which is also the right
+ * home for it: the only prompt it copies is a Linear kickoff.
+ */
+const SETTING_LAUNCH_CLIPBOARD = "launchPromptClipboard";
 
 type PluginSettings = Record<string, string | number | boolean | null>;
 
@@ -195,6 +206,19 @@ export function LinearSection({
   const [webhookUrl, setWebhookUrl] = useState<string | null>(null);
   const [webhookSecretStored, setWebhookSecretStored] = useState(false);
   const [webhooksPossible, setWebhooksPossible] = useState<boolean | undefined>(undefined);
+  /**
+   * The host's delivery ledger, as the settings PANEL prints it.
+   *
+   * "Last event", "Waiting (n unacked)" and "Drain" are the three rows the
+   * plugin's vocabulary panel draws under Automations and the compiled section
+   * had nowhere to put. They answer the one question the endpoint and the
+   * secret between them cannot: whether deliveries are actually ARRIVING.
+   */
+  const [webhookLedger, setWebhookLedger] = useState<{
+    lastEvent: string | null;
+    pendingDeliveries: number;
+    drainError: string | null;
+  }>({ lastEvent: null, pendingDeliveries: 0, drainError: null });
   const [autolinksLoading, setAutolinksLoading] = useState(false);
   const [autolinkError, setAutolinkError] = useState<string | null>(null);
   const [creatingAutolinkId, setCreatingAutolinkId] = useState<string | null>(null);
@@ -347,6 +371,11 @@ export function LinearSection({
       setWebhookUrl(state?.webhookUrl ?? null);
       setWebhookSecretStored(state?.webhookSecretStored === true);
       setWebhooksPossible(state?.webhooksPossible);
+      setWebhookLedger({
+        lastEvent: state?.lastEvent ?? null,
+        pendingDeliveries: Number(state?.pendingDeliveries) || 0,
+        drainError: state?.drainError ?? null,
+      });
       if (!repo) {
         setGithubAutolinks([]);
         setAutolinkError("No GitHub origin remote was detected for this project.");
@@ -607,6 +636,9 @@ export function LinearSection({
   }, [loadGithubAutolinks, savingWebhookSecret, webhookSecretInput]);
 
   const moveOnLaunch = settings?.[SETTING_MOVE_ON_LAUNCH] === true;
+  // Defaults ON, matching the manifest's `default: true` and the app preference
+  // it replaced — so an unset value is on, not off.
+  const launchClipboard = settings?.[SETTING_LAUNCH_CLIPBOARD] !== false;
   const moveOnMerge = settings?.[SETTING_MOVE_ON_MERGE] === true;
   const storedTeamKey = typeof settings?.[SETTING_DEFAULT_TEAM] === "string"
     ? String(settings[SETTING_DEFAULT_TEAM])
@@ -716,6 +748,74 @@ export function LinearSection({
               <div style={{ flexBasis: "100%", fontSize: 11, fontFamily: SANS_FONT, color: COLORS.textMuted }}>
                 To connect a different workspace, switch workspaces in Linear first, then reconnect here.
               </div>
+            </div>
+          ) : null}
+
+          {/*
+            The three facts the vocabulary PANEL prints and the compiled design
+            had no slot for: how long the credential has left, when this machine
+            last read Linear, and what went wrong if anything did.
+
+            The compiled connected card is a header, one bordered row and a chip
+            list, and none of the three fit in the header sentence — a token
+            three days from expiry is not a footnote to "Signed in as". So they
+            get the SAME bordered row the workspace uses: the 10px dim label
+            over the 13px value, laid side by side. The design was not extended,
+            it was reused.
+
+            `expiresIn` is pre-formatted by the child ("expires in 6 days"), and
+            `expired` is what makes it amber. `lastError` is the loudest thing
+            here and is drawn full-width beneath, because a sentence from Linear
+            does not fit in a value cell.
+          */}
+          {connection?.expiresIn || connection?.checkedAt || connection?.message ? (
+            <div style={{
+              display: "flex",
+              alignItems: "flex-start",
+              flexWrap: "wrap",
+              gap: 12,
+              padding: "10px 12px",
+              marginBottom: 14,
+              borderRadius: 8,
+              background: "color-mix(in srgb, var(--color-fg) 4%, transparent)",
+              border: `1px solid ${COLORS.border}`,
+            }}>
+              {connection?.expiresIn ? (
+                <div>
+                  <div style={{ fontSize: 10, fontFamily: SANS_FONT, color: COLORS.textDim, marginBottom: 2 }}>
+                    Token
+                  </div>
+                  <div style={{
+                    fontSize: 13,
+                    fontWeight: 600,
+                    fontFamily: SANS_FONT,
+                    color: connection.expired ? COLORS.warning : COLORS.textPrimary,
+                  }}>
+                    {connection.expiresIn}
+                  </div>
+                </div>
+              ) : null}
+              {connection?.checkedAt ? (
+                <div>
+                  <div style={{ fontSize: 10, fontFamily: SANS_FONT, color: COLORS.textDim, marginBottom: 2 }}>
+                    Last read
+                  </div>
+                  <div style={{ fontSize: 13, fontWeight: 600, fontFamily: SANS_FONT, color: COLORS.textPrimary }}>
+                    {formatTimestamp(connection.checkedAt)}
+                  </div>
+                </div>
+              ) : null}
+              {connection?.message ? (
+                <div style={{
+                  flexBasis: "100%",
+                  fontSize: 11,
+                  fontFamily: SANS_FONT,
+                  color: COLORS.warning,
+                  lineHeight: 1.6,
+                }}>
+                  {connection.message}
+                </div>
+              ) : null}
             </div>
           ) : null}
 
@@ -954,6 +1054,28 @@ export function LinearSection({
                 checked={moveOnMerge}
                 disabled={settings === null || savingSettingKey === SETTING_MOVE_ON_MERGE}
                 onChange={(next) => void writeSetting(SETTING_MOVE_ON_MERGE, next)}
+              />
+            </div>
+
+            <div style={{
+              display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 16,
+              padding: "10px 12px", borderRadius: 10,
+              border: `1px solid ${COLORS.border}`,
+              background: "rgba(255,255,255,0.025)",
+            }}>
+              <div style={{ minWidth: 0 }}>
+                <div style={{ fontSize: 12, fontWeight: 600, fontFamily: SANS_FONT, color: COLORS.textPrimary, marginBottom: 3 }}>
+                  Copy the launch prompt to the clipboard
+                </div>
+                <div style={{ fontSize: 10, fontFamily: SANS_FONT, color: COLORS.textMuted, lineHeight: "15px" }}>
+                  Saves the kickoff prompt before Linear starts an agent on the issue.
+                </div>
+              </div>
+              <SettingsToggle
+                id="ade-linear-launch-clipboard"
+                checked={launchClipboard}
+                disabled={settings === null || savingSettingKey === SETTING_LAUNCH_CLIPBOARD}
+                onChange={(next) => void writeSetting(SETTING_LAUNCH_CLIPBOARD, next)}
               />
             </div>
 
@@ -1206,6 +1328,65 @@ export function LinearSection({
               {webhookSecretStored ? "Signed deliveries only" : "Deliveries dropped until the signing secret is saved"}
             </div>
           </div>
+
+          {/*
+            Whether deliveries are ARRIVING, which the endpoint row and the
+            verification row between them cannot say. The same three rows the
+            vocabulary panel draws, in the same words, using the row shape
+            "Verification" above already established: a label on the left, the
+            value on the right.
+
+            Each is drawn only when it has something to report. A "Waiting: 0
+            unacked" row beside a healthy endpoint is noise, and a "Drain" row
+            with no error in it reads as a category the reader has to think
+            about.
+          */}
+          {webhookLedger.lastEvent || webhookLedger.pendingDeliveries > 0 || webhookLedger.drainError ? (
+            <div style={{ marginBottom: 10, display: "flex", flexDirection: "column", gap: 6 }}>
+              {([
+                webhookLedger.lastEvent
+                  ? { key: "Last event", value: webhookLedger.lastEvent, tone: COLORS.textSecondary }
+                  : null,
+                webhookLedger.pendingDeliveries > 0
+                  ? {
+                    key: "Waiting",
+                    value: `${webhookLedger.pendingDeliveries} unacked`,
+                    tone: COLORS.warning,
+                  }
+                  : null,
+                webhookLedger.drainError
+                  ? { key: "Drain", value: webhookLedger.drainError, tone: COLORS.danger }
+                  : null,
+              ].filter(Boolean) as { key: string; value: string; tone: string }[]).map((row) => (
+                <div
+                  key={row.key}
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "space-between",
+                    gap: 12,
+                    padding: "9px 11px",
+                    borderRadius: 8,
+                    background: "rgba(255,255,255,0.03)",
+                    border: `1px solid ${COLORS.border}`,
+                  }}
+                >
+                  <div style={{ fontSize: 11, fontFamily: SANS_FONT, color: COLORS.textSecondary }}>
+                    {row.key}
+                  </div>
+                  <div style={{
+                    fontSize: 11,
+                    fontFamily: SANS_FONT,
+                    color: row.tone,
+                    minWidth: 0,
+                    overflowWrap: "anywhere",
+                  }}>
+                    {row.value}
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : null}
 
           {webhooksStarved ? (
             <div style={{ fontSize: 10, fontFamily: SANS_FONT, color: COLORS.warning, lineHeight: "15px", marginBottom: 10 }}>

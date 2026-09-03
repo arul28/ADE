@@ -15,19 +15,26 @@ import type { PluginWebviewContext } from "../bridge";
 import { IssueContextPane } from "../components/IssueContextPane";
 import { linearBrowserIssueToLaneIssue } from "../components/LinearIssueBrowser";
 import { getLanes, searchIssues } from "../host/actions";
+import { reportHeight } from "../host/ui";
 import { useCollectionChanges } from "../host/useHostEntities";
 import type { LaneLinearIssue } from "../types";
 
 /**
- * Report the pane's own height to the host.
+ * Report this surface's own content height to the host.
  *
- * Same reason as the badge card: the bridge has no height verb yet, so the
- * document's own height is the only channel a guest has for its measured size,
- * and the host sizes the pane's frame to it. The 4000px cap is a guard against a
- * runaway measurement asking for an unbounded frame.
+ * `ui.resize` is the ONE height channel. The page used to report the same
+ * number two other ways — writing it onto `documentElement.style.height` for a
+ * host that measured the guest document, and posting an
+ * `ade:plugin-webview-height` frame to the parent for a host that listened —
+ * and neither was a bridge verb, so neither was something a host was obliged to
+ * honour. Both are gone; `host/ui.ts:reportHeight` clamps and delivers.
+ *
+ * The last reported height is remembered so a `ResizeObserver` firing on every
+ * layout tick sends one frame per real change rather than one per tick.
  */
 function useContentHeight(): (node: HTMLDivElement | null) => void {
   const observerRef = useRef<ResizeObserver | null>(null);
+  const lastRef = useRef<number | null>(null);
 
   useEffect(() => () => {
     observerRef.current?.disconnect();
@@ -37,10 +44,15 @@ function useContentHeight(): (node: HTMLDivElement | null) => void {
   return useCallback((node: HTMLDivElement | null) => {
     observerRef.current?.disconnect();
     observerRef.current = null;
+    lastRef.current = null;
     if (!node || typeof ResizeObserver === "undefined") return;
     const apply = () => {
-      const height = Math.min(4000, Math.ceil(node.getBoundingClientRect().height));
-      if (height > 0) document.documentElement.style.height = `${height}px`;
+      // `getBoundingClientRect` rather than `offsetHeight`: the cards use
+      // fractional padding, and a rounded-down height clips the last border.
+      const measured = node.getBoundingClientRect().height;
+      if (measured === lastRef.current) return;
+      const reported = reportHeight(measured);
+      if (reported !== null) lastRef.current = measured;
     };
     const observer = new ResizeObserver(apply);
     observer.observe(node);

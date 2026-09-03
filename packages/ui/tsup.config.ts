@@ -10,6 +10,9 @@ export default defineConfig({
     index: "src/index.ts",
     tokens: "src/tokens.ts",
     theme: "src/theme/index.ts",
+    lanes: "src/lanes/index.ts",
+    dialog: "src/dialog/index.ts",
+    attachments: "src/attachments/index.ts",
     icons: "src/icons.ts",
     markdown: "src/markdown.ts",
   },
@@ -36,4 +39,20 @@ export default defineConfig({
     "clsx",
     "tailwind-merge",
   ],
+  /**
+   * The dialog's two dependencies are BUNDLED, and that is not a preference.
+   *
+   * Every other external is resolved by the consumer, from the consumer's own
+   * `node_modules`, so there is one copy of it in the graph. These two are not:
+   * they are declared by the kit alone, so a consumer resolves them from
+   * `packages/ui/node_modules` — and `@radix-ui/react-dialog` then resolves its
+   * own `react` from the copy sitting beside it, which is the kit's
+   * devDependency and NOT the consumer's React.
+   *
+   * The result is a second dispatcher inside one tree: every hook Radix calls
+   * throws "Cannot read properties of null (reading 'useRef')". Bundling them
+   * leaves `react` as the only bare import in `dist/dialog.js`, which the
+   * consumer resolves and de-duplicates like every other kit module.
+   */
+  noExternal: ["@radix-ui/react-dialog", "border-beam"],
 });

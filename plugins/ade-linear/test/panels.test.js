@@ -860,7 +860,7 @@ describe("the launch panel", () => {
       { id: "claude-opus-5", label: "Opus 5" },
       { id: "gpt-5", label: "GPT-5" },
     ],
-    permissionModes: ["default", "accept-edits", "full-auto"],
+    permissionModes: ["default", "edit", "full-auto"],
     // As `index.js:REASONING_EFFORTS` sends them. "Default" rides a SENTINEL
     // and not an empty string: an empty option value fails the whole select.
     reasoningEfforts: [
@@ -893,7 +893,7 @@ describe("the launch panel", () => {
     // useless.
     const form = formOf(panels.build("launch", LAUNCH_VIEW));
     const permissions = form.fields.find((field) => field.id === "permissionMode");
-    assert.deepEqual(permissions.options.map((option) => option.value), ["default", "accept-edits", "full-auto"]);
+    assert.deepEqual(permissions.options.map((option) => option.value), ["default", "edit", "full-auto"]);
   });
 
   it("carries the default reasoning effort on a value the parser will keep", () => {

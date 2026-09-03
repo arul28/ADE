@@ -16,6 +16,9 @@
  * | `…startLinearOAuth` / `getLinearOAuthSession` | `invoke("pageConnectOAuth")` |
  * | `window.ade.github.*` autolinks        | `invoke("pageAutolinks"/"pageCreateAutolink")` |
  * | `window.ade.lanes.create` / `.delete`  | `invoke("pageCreateLane"/"pageDeleteLane")` |
+ * | `…getLinearIssue` by id                | `invoke("pageIssueById")`        |
+ * | `modelSupportsFastMode` / `ReasoningEffortPicker` tiers | `invoke("pageModels")` |
+ * | `CLAUDE_PERMISSION_OPTIONS` and its four siblings | `invoke("pageCapabilities")` |
  * | `window.ade.agentChat.launch`          | `invoke("pageLaunchAgent")`      |
  * | `window.ade.agentChat.launchCli`       | `invoke("pageLaunchCli")`        |
  * | `window.ade.lanes.attach/detachLinearIssue…` | `invoke("pageLinkIssue"/"pageUnlinkIssue")` |
@@ -38,6 +41,8 @@ import type {
   CtoSearchLinearIssuesResult,
   GitHubAutolink,
   LinearConnectionStatus,
+  NormalizedLinearIssue,
+  PageCapabilities,
   PageChatModel,
   PageLane,
 } from "../types";
@@ -66,6 +71,17 @@ export const searchIssues = (
 export const getIssueComments = (issueId: string): Promise<CtoLinearIssueComment[]> =>
   call("pageIssueComments", { issueId });
 
+/**
+ * One issue, by its id ALONE.
+ *
+ * Every other read here finds an issue by its KEY, because `pageSearchIssues`
+ * is Linear's own search and Linear's search does not match a raw uuid. A lane
+ * row badge is handed an id and sometimes no key anywhere, and this is the only
+ * read that can answer it. `null` means no such issue in this workspace.
+ */
+export const getIssueById = (issueId: string): Promise<NormalizedLinearIssue | null> =>
+  call("pageIssueById", { issueId });
+
 export const getConnection = (): Promise<LinearConnectionStatus> => call("pageConnection");
 
 export const getProjects = (): Promise<CtoLinearProject[]> => call("pageProjects");
@@ -77,6 +93,18 @@ export type PageAutolinkState = {
   webhookUrl: string | null;
   webhookSecretStored: boolean;
   webhooksPossible: boolean;
+  /**
+   * The host's delivery ledger, pre-formatted.
+   *
+   * Whether deliveries are actually ARRIVING, which is a different question
+   * from whether the endpoint exists (`webhookUrl`), whether Linear will ever
+   * post to it (`webhooksPossible`) or whether ADE will accept what it posts
+   * (`webhookSecretStored`). `lastEvent` is already a printable line —
+   * "2026-09-01 12:00 UTC" — because the settings panel prints the same one.
+   */
+  lastEvent: string | null;
+  pendingDeliveries: number;
+  drainError: string | null;
 };
 
 export const getAutolinks = (): Promise<PageAutolinkState> => call("pageAutolinks");
@@ -84,6 +112,17 @@ export const getAutolinks = (): Promise<PageAutolinkState> => call("pageAutolink
 export const getLanes = (): Promise<PageLane[]> => call("pageLanes");
 
 export const getChatModels = (): Promise<PageChatModel[]> => call("pageModels");
+
+/**
+ * What the launch form may OFFER, per provider.
+ *
+ * The permission vocabulary is not one list. Claude asks in one set of words,
+ * Codex in another, Cursor names modes, Droid an autonomy ladder — and each of
+ * those maps onto the single `permissionMode` string a launch carries. The
+ * child holds the table, because it is the half that knows what
+ * `chat.createSession` accepts.
+ */
+export const getCapabilities = (): Promise<PageCapabilities> => call("pageCapabilities");
 
 /* ── Issue mutations ────────────────────────────────────────────────────── */
 
@@ -154,6 +193,12 @@ export type PageLaunchArgs = {
   model?: string | null;
   permissionMode?: string | null;
   reasoningEffort?: string | null;
+  /**
+   * The provider's FAST service tier. Sent only when the form asked — a model
+   * with no fast tier draws no toggle, and `false` for a reader who never saw
+   * one would be a choice they did not make.
+   */
+  fastMode?: boolean;
   prompt?: string | null;
   cli?: boolean;
 };

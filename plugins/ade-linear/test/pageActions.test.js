@@ -130,11 +130,32 @@ function makeDeps(options = {}) {
     lanes: options.lanes ?? [],
     sessionIssues: options.sessionIssues ?? {},
     ...(options.officialClient !== undefined ? { officialClient: options.officialClient } : {}),
+    ...(options.webhookStatus !== undefined ? { webhookStatus: options.webhookStatus } : {}),
+    ...(options.webhookUrlThrows === true ? { webhookUrlThrows: true } : {}),
     actions: {
-      "chat.getAvailableModels": async () => options.models ?? [
-        { id: "codex/gpt-5.6", label: "GPT 5.6" },
-        "anthropic/opus-5",
-      ],
+      // Provider-aware, because `pageModels` now asks once per provider group
+      // and the group it asked for is what tags the row. A fixture that
+      // answered the same list to every group would hide exactly the bug the
+      // per-provider read exists to fix.
+      "chat.getAvailableModels": async (args) => {
+        if (options.models) return options.models;
+        const byProvider = {
+          claude: [
+            {
+              id: "anthropic/opus-5",
+              displayName: "Opus 5",
+              serviceTiers: ["standard", "fast"],
+              reasoningEfforts: [
+                { effort: "low", description: "Quick" },
+                { effort: "high", description: "Careful" },
+              ],
+              defaultReasoningEffort: "low",
+            },
+          ],
+          codex: [{ id: "codex/gpt-5.6", displayName: "GPT 5.6" }, "codex/gpt-5.6-mini"],
+        };
+        return byProvider[args?.provider] ?? [];
+      },
       "git.getOriginRemote": async () => "https://github.com/acme/app.git",
       "github.listRepoAutolinks": async () => options.autolinks ?? [
         { id: 7, keyPrefix: "ENG-", urlTemplate: "https://linear.app/acme/issue/ENG-<num>", isAlphanumeric: false },
@@ -163,7 +184,7 @@ function makeDeps(options = {}) {
       return {
         token,
         authMode: await secrets.get("LINEAR_AUTH_MODE"),
-        expiresAt: null,
+        expiresAt: options.expiresAt ?? null,
         refreshToken: null,
         clientId: null,
       };
@@ -295,6 +316,73 @@ describe("the reads answer the shapes page/src/types.ts declares", () => {
     }
   });
 
+  it("carries Linear's own project slug, cycle id and blockers rather than deriving or dropping them", async () => {
+    // The three fields the page could previously only guess at or show empty.
+    // `projectSlug` was derived from the project NAME because the selection
+    // took `project { id name }`; `cycleId` was hard-coded null beside a
+    // `cycleName` that was real; and the blocker badge could never light.
+    const blocked = issueNode({
+      project: { id: "proj-1", name: "Platform", slugId: "platform-a1b2" },
+      cycle: { id: "cycle-9", name: "Sprint 14", number: 14 },
+      inverseRelations: {
+        nodes: [
+          { id: "rel-1", type: "blocks", issue: { id: "issue-9", identifier: "ENG-9", state: { id: "s", name: "Todo", type: "unstarted" } } },
+          { id: "rel-2", type: "blocks", issue: { id: "issue-8", identifier: "ENG-8", state: { id: "s2", name: "Done", type: "completed" } } },
+          // Not a blocker: `related` says nothing about order of work.
+          { id: "rel-3", type: "related", issue: { id: "issue-7", identifier: "ENG-7", state: { id: "s3", name: "Todo", type: "unstarted" } } },
+        ],
+      },
+    });
+    const { actions } = makeDeps({ issues: [blocked] });
+    const issue = (await actions.pageQuickView()).recentIssues[0];
+
+    assert.equal(issue.projectSlug, "platform-a1b2");
+    assert.equal(issue.cycleId, "cycle-9");
+    assert.equal(issue.cycleName, "Sprint 14");
+    assert.deepEqual(issue.blockerIssueIds, ["issue-9", "issue-8"]);
+    // One of the two is still open, which is what the badge asks about.
+    assert.equal(issue.hasOpenBlockers, true);
+  });
+
+  it("reads a finished blocker as no longer blocking", async () => {
+    const done = issueNode({
+      inverseRelations: {
+        nodes: [
+          { id: "rel-1", type: "blocks", issue: { id: "issue-8", identifier: "ENG-8", state: { id: "s", name: "Done", type: "completed" } } },
+          { id: "rel-2", type: "blocks", issue: { id: "issue-7", identifier: "ENG-7", state: { id: "s2", name: "Cancelled", type: "canceled" } } },
+        ],
+      },
+    });
+    const { actions } = makeDeps({ issues: [done] });
+    const issue = (await actions.pageQuickView()).recentIssues[0];
+    assert.deepEqual(issue.blockerIssueIds, ["issue-8", "issue-7"]);
+    assert.equal(issue.hasOpenBlockers, false);
+  });
+
+  it("falls back to a slug derived from the name when the workspace answered none", async () => {
+    const { actions } = makeDeps();
+    const issue = (await actions.pageQuickView()).recentIssues[0];
+    assert.equal(issue.projectSlug, "platform");
+  });
+
+  it("resolves an issue from its id alone, which no search can do", async () => {
+    // The lane row badge's whole failure mode: a pointer carrying a uuid and no
+    // key anywhere on the row. Linear's search does not match a raw id, so the
+    // card used to say "No Linear issue on this lane" about an issue that
+    // plainly exists.
+    const { actions, data } = makeDeps();
+    await data.refreshIssues();
+    const issue = await actions.pageIssueById({ issueId: "issue-1" });
+    assert.equal(issue.id, "issue-1");
+    assert.equal(issue.identifier, "ENG-1");
+  });
+
+  it("answers null for an id no workspace can name, rather than throwing at the card", async () => {
+    const { actions } = makeDeps({ issue: null });
+    assert.equal(await actions.pageIssueById({ issueId: "issue-nope" }), null);
+    assert.equal(await actions.pageIssueById({}), null);
+  });
+
   it("answers a quick view with no Linear behind it rather than throwing", async () => {
     const { actions } = makeDeps({ noToken: true });
     const view = await actions.pageQuickView();
@@ -398,14 +486,33 @@ describe("the reads answer the shapes page/src/types.ts declares", () => {
     const { actions } = makeDeps();
     const connection = await actions.pageConnection();
     assert.deepEqual(Object.keys(connection).sort(), [
-      "authMode", "checkedAt", "connected", "message", "oauthAvailable", "organizationId",
-      "organizationLogoUrl", "organizationName", "organizationUrlKey", "projectCount",
-      "projectPreview", "tokenExpiresAt", "tokenStored", "viewerId", "viewerName",
+      "authMode", "checkedAt", "connected", "expired", "expiresIn", "message", "oauthAvailable",
+      "organizationId", "organizationLogoUrl", "organizationName", "organizationUrlKey",
+      "projectCount", "projectPreview", "tokenExpiresAt", "tokenStored", "viewerId", "viewerName",
     ]);
     assert.equal(connection.tokenStored, true);
     assert.equal(connection.connected, true);
     assert.equal(connection.authMode, "manual");
     assert.equal(connection.oauthAvailable, true);
+    // An API-key connection has no expiry, and the card says nothing rather
+    // than "never".
+    assert.equal(connection.expiresIn, null);
+    assert.equal(connection.expired, false);
+  });
+
+  it("pre-formats the token's remaining life, and says so when it has run out", async () => {
+    // The settings PAGE draws this in the connected card and the settings PANEL
+    // draws it as a row. One function behind both, so the two cannot round the
+    // same instant differently.
+    const soon = new Date(Date.now() + 6 * 86_400_000).toISOString();
+    const live = await makeDeps({ expiresAt: soon }).actions.pageConnection();
+    assert.equal(live.expiresIn, "expires in 6 days");
+    assert.equal(live.expired, false);
+
+    const past = new Date(Date.now() - 60_000).toISOString();
+    const dead = await makeDeps({ expiresAt: past }).actions.pageConnection();
+    assert.equal(dead.expiresIn, "expired");
+    assert.equal(dead.expired, true);
   });
 
   it("answers the projects list", async () => {
@@ -421,7 +528,8 @@ describe("the reads answer the shapes page/src/types.ts declares", () => {
     const { actions } = makeDeps();
     const state = await actions.pageAutolinks();
     assert.deepEqual(Object.keys(state).sort(), [
-      "autolinks", "repo", "teams", "webhookSecretStored", "webhookUrl", "webhooksPossible",
+      "autolinks", "drainError", "lastEvent", "pendingDeliveries", "repo", "teams",
+      "webhookSecretStored", "webhookUrl", "webhooksPossible",
     ]);
     assert.deepEqual(state.autolinks, [{
       id: 7,
@@ -445,6 +553,31 @@ describe("the reads answer the shapes page/src/types.ts declares", () => {
     assert.equal(state.webhooksPossible, true);
     const alone = makeDeps({ officialClient: null });
     assert.equal((await alone.actions.pageAutolinks()).webhooksPossible, false);
+  });
+
+  it("carries the delivery ledger's three rows, pre-formatted the way the panel prints them", async () => {
+    const { actions } = makeDeps({
+      webhookStatus: {
+        lastReceivedAt: "2026-09-01T12:00:34.000Z",
+        pendingDeliveries: 2,
+        lastError: "relay timed out",
+      },
+    });
+    const state = await actions.pageAutolinks();
+    assert.equal(state.lastEvent, "2026-09-01 12:00 UTC");
+    assert.equal(state.pendingDeliveries, 2);
+    assert.equal(state.drainError, "relay timed out");
+  });
+
+  it("says nothing about deliveries when there is no endpoint to deliver to", async () => {
+    // A ledger read with no `webhookUrl` would answer zeros, and a card drawing
+    // "0 unacked" beside "Not set up" reads as a healthy silence.
+    const { actions } = makeDeps({ webhookUrlThrows: true });
+    const state = await actions.pageAutolinks();
+    assert.equal(state.webhookUrl, null);
+    assert.equal(state.lastEvent, null);
+    assert.equal(state.pendingDeliveries, 0);
+    assert.equal(state.drainError, null);
   });
 
   it("reports the issues linked to the CHATS in a lane, not just the lane", async () => {
@@ -482,17 +615,82 @@ describe("the reads answer the shapes page/src/types.ts declares", () => {
     assert.deepEqual(lanes[0].linearIssueLinks, [
       { issueId: "issue-2", issueKey: "ENG-2", sessionId: "session-9" },
     ]);
-    // `PluginLaneSummary` is an allowlist that excludes `worktreePath`, so this
-    // is null by construction rather than by omission.
+    // Null on a host whose lane summary still withholds the worktree. The page
+    // hides the row rather than drawing an empty one.
     assert.equal(lanes[0].path, null);
   });
 
-  it("answers the launch form's models with a provider on every row", async () => {
+  it("carries the lane's worktree path under either name the host may use", async () => {
+    const withPath = await makeDeps({
+      lanes: [
+        { id: "lane-a", name: "A", branchRef: "refs/heads/a", path: "/w/a" },
+        { id: "lane-b", name: "B", branchRef: "refs/heads/b", worktreePath: "/w/b" },
+      ],
+    }).actions.pageLanes();
+    assert.deepEqual(withPath.map((lane) => lane.path), ["/w/a", "/w/b"]);
+  });
+
+  it("tags every model with the provider the read asked for, never with its id prefix", async () => {
+    // The whole reason the read is per-provider: the row itself carries no
+    // provider, and the launch form's permission control is a different
+    // vocabulary for each one. `codex/gpt-5.6-mini` is the case a prefix guess
+    // gets right by accident and `anthropic/opus-5` is the one it gets wrong —
+    // that model is a CLAUDE model whichever way its id reads.
     const { actions } = makeDeps();
     assert.deepEqual(await actions.pageModels(), [
-      { id: "codex/gpt-5.6", label: "GPT 5.6", provider: "codex" },
-      { id: "anthropic/opus-5", label: "anthropic/opus-5", provider: "anthropic" },
+      {
+        id: "anthropic/opus-5",
+        label: "Opus 5",
+        provider: "claude",
+        fastModeSupported: true,
+        reasoningEfforts: [
+          { value: "low", label: "low", detail: "Quick" },
+          { value: "high", label: "high", detail: "Careful" },
+        ],
+        defaultReasoningEffort: "low",
+      },
+      {
+        id: "codex/gpt-5.6",
+        label: "GPT 5.6",
+        provider: "codex",
+        fastModeSupported: false,
+        reasoningEfforts: [],
+        defaultReasoningEffort: null,
+      },
+      {
+        id: "codex/gpt-5.6-mini",
+        label: "codex/gpt-5.6-mini",
+        provider: "codex",
+        fastModeSupported: false,
+        reasoningEfforts: [],
+        defaultReasoningEffort: null,
+      },
     ]);
+  });
+
+  it("offers a permission vocabulary per provider, every option mapping to a value ADE accepts", async () => {
+    // `chat.createSession` validates `AgentChatPermissionMode` and nothing
+    // else. A picker offering a seventh value would be refused at launch, which
+    // is the failure this table exists to prevent.
+    const ACCEPTED = new Set(["default", "auto", "plan", "edit", "full-auto", "config-toml"]);
+    const { actions } = makeDeps();
+    const { providers } = await actions.pageCapabilities();
+    assert.deepEqual(
+      Object.keys(providers).sort(),
+      ["claude", "codex", "cursor", "droid", "opencode"],
+    );
+    for (const [provider, entry] of Object.entries(providers)) {
+      assert.ok(entry.modes.length > 0, `${provider} offers no permission modes`);
+      for (const mode of entry.modes) {
+        assert.ok(ACCEPTED.has(mode.unified), `${provider}.${mode.value} maps to ${mode.unified}`);
+        assert.equal(typeof mode.label, "string");
+      }
+    }
+    // The provider's OWN word, not the unified one: a Droid reader picks
+    // "Auto medium", which ADE receives as "default".
+    const droid = providers.droid.modes.find((mode) => mode.value === "auto-medium");
+    assert.equal(droid.label, "Auto medium");
+    assert.equal(droid.unified, "default");
   });
 
   it("answers empty shapes rather than throwing before activate has run", async () => {
@@ -877,11 +1075,13 @@ describe("nothing a page handler answers carries a credential", () => {
       ["pageCatalog", {}],
       ["pageSearchIssues", { query: "oauth" }],
       ["pageIssueComments", { issueId: "issue-1" }],
+      ["pageIssueById", { issueId: "issue-1" }],
       ["pageConnection", {}],
       ["pageProjects", {}],
       ["pageAutolinks", {}],
       ["pageLanes", {}],
       ["pageModels", {}],
+      ["pageCapabilities", {}],
       ["pageSetIssueState", { issueId: "issue-1", stateId: "state-done" }],
       ["pageSetIssuePriority", { issueId: "issue-1", priority: 1 }],
       ["pageAssignIssue", { issueId: "issue-1", assigneeId: null }],

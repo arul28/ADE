@@ -13,25 +13,19 @@
  * ## 1. The guest is sized to its CONTENT
  *
  * A settings section is not a viewport. It is a band in a scrolling column that
- * the host owns, so the host has to be told how tall this one is — and the
- * bridge has no height verb yet. Until it grows one, the height is reported
- * BOTH ways, because the two live hosts measure differently and neither is
- * wrong:
+ * the host owns, so the host has to be told how tall this one is — and
+ * `ui.resize` is the verb that tells it. One channel, and only one.
  *
- *  - `document.documentElement.style.height` / `document.body.style.height` are
- *    set to the measured pixel height, which a host that measures the guest's
- *    DOCUMENT (an iframe auto-sizer reading `scrollHeight`) picks up with no
- *    cooperation at all.
- *  - `postMessage({type: "ade:plugin-webview-height", height})` is sent to the
- *    parent, for a host that listens for a frame instead of measuring.
+ * It used to be two, and neither was a bridge verb: the measured height was
+ * written onto `document.documentElement.style.height` and `document.body`
+ * for a host that measured the guest DOCUMENT, and posted to the parent as an
+ * `ade:plugin-webview-height` frame for a host that listened for one. A page
+ * cannot rely on a channel the host never promised to read, and a host cannot
+ * be asked to honour two. Both are gone.
  *
- * A host that does neither is unharmed: `page.css` already gives the
+ * A host too old to answer `ui.resize` is unharmed: `page.css` gives the
  * `settings-section` placement `height: auto`, so an unmeasured guest still
  * lays out correctly; it just does not resize its own frame.
- *
- * The report is capped at 4000px. A runaway measurement — a mid-layout read, a
- * font swap, a `ResizeObserver` loop — must not hand the host a section taller
- * than the settings page itself.
  *
  * ## 2. No page-sized ground
  *
@@ -44,51 +38,29 @@ import React, { useEffect, useRef } from "react";
 
 import type { PluginWebviewContext } from "../bridge";
 import { LinearSection } from "../components/LinearSection";
-
-/** The tallest height this page will ever report. */
-const MAX_REPORTED_HEIGHT = 4000;
-
-/** The frame a listening host reads. Named once, here and in the host. */
-const HEIGHT_MESSAGE_TYPE = "ade:plugin-webview-height";
+import { reportHeight } from "../host/ui";
 
 export function SettingsEntry({ context }: { context: PluginWebviewContext }): React.ReactElement {
   const rootRef = useRef<HTMLDivElement | null>(null);
-  const lastReportedRef = useRef<number>(0);
+  const lastReportedRef = useRef<number | null>(null);
 
   useEffect(() => {
     const node = rootRef.current;
-    if (!node || typeof window === "undefined") return;
+    if (!node || typeof ResizeObserver === "undefined") return;
 
     const report = () => {
       // `getBoundingClientRect` rather than `offsetHeight`: the section's cards
       // use fractional padding, and a rounded-down height clips the last border.
-      const measured = Math.ceil(node.getBoundingClientRect().height);
-      if (!Number.isFinite(measured) || measured <= 0) return;
-      const height = Math.min(measured, MAX_REPORTED_HEIGHT);
-      if (height === lastReportedRef.current) return;
-      lastReportedRef.current = height;
-
-      const px = `${height}px`;
-      document.documentElement.style.height = px;
-      document.body.style.height = px;
-
-      try {
-        window.parent?.postMessage({ type: HEIGHT_MESSAGE_TYPE, height }, "*");
-      } catch {
-        // A host that refuses the frame still has the document height above.
-      }
+      const measured = node.getBoundingClientRect().height;
+      // One frame per real change, not one per layout tick.
+      if (measured === lastReportedRef.current) return;
+      if (reportHeight(measured) !== null) lastReportedRef.current = measured;
     };
 
     report();
-    const observer = new ResizeObserver(() => report());
+    const observer = new ResizeObserver(report);
     observer.observe(node);
-    return () => {
-      observer.disconnect();
-      // Hand the document back the way `page.css` left it, so a placement that
-      // reuses this frame is not stuck at the settings section's height.
-      document.documentElement.style.removeProperty("height");
-      document.body.style.removeProperty("height");
-    };
+    return () => observer.disconnect();
   }, []);
 
   return (
