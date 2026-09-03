@@ -28,6 +28,27 @@
 const { issueBranchName, issueLaneName, issueRefFromRow } = require("./issueFormat");
 
 /**
+ * Every launch argument that can carry a permission choice, in the order a
+ * caller's own value wins.
+ *
+ * The unified `permissionMode` is FIRST because it is the one field every
+ * launch accepts and the one a caller that could not name a provider falls back
+ * to. The four native fields follow: `chat.createSession` and `chat.launchCli`
+ * read whichever is present, so exactly one is ever sent.
+ *
+ * Named here rather than derived, because this list is a fact about the LAUNCH
+ * ACTION's arguments, not about which providers exist — which is the thing the
+ * capabilities read owns and this file deliberately does not.
+ */
+const PERMISSION_FIELDS = Object.freeze([
+  "permissionMode",
+  "claudePermissionMode",
+  "droidPermissionMode",
+  "opencodePermissionMode",
+  "cursorModeId",
+]);
+
+/**
  * The kickoff prompt, ported from `LinearLaunchModel.swift:223`.
  *
  * Kept identical rather than improved. A user who has launched agents from
@@ -255,6 +276,21 @@ function createFlows(options = {}) {
    * branch to work on, and a flow that quietly created one would make "start an
    * agent" a two-lane gesture the second time somebody pressed it.
    */
+  /**
+   * The permission field this launch carries, or nothing.
+   *
+   * A caller passes exactly one — `permissionMode` for Codex and for anything
+   * the capabilities read could not name, or the provider's own field. Copied
+   * through by name so this flow never has to know which providers exist.
+   */
+  function permissionFields(input) {
+    for (const field of PERMISSION_FIELDS) {
+      const value = typeof input[field] === "string" ? input[field].trim() : "";
+      if (value) return { [field]: value };
+    }
+    return {};
+  }
+
   async function spawnAgentOnIssue(input = {}) {
     const row = input.issue ?? (await data.findIssueRow(input.issueId));
     if (!row) return { ok: false, message: "That issue is not in this project's Linear view.", code: "not_found" };
@@ -273,8 +309,18 @@ function createFlows(options = {}) {
       ...(input.provider ? { provider: input.provider } : {}),
       ...(input.model ? { model: input.model } : {}),
       ...(input.reasoningEffort ? { reasoningEffort: input.reasoningEffort } : {}),
-      ...(input.permissionMode ? { permissionMode: input.permissionMode } : {}),
       ...(typeof input.fastMode === "boolean" ? { fastMode: input.fastMode } : {}),
+      // The permission argument, whichever one it is.
+      //
+      // `permissionMode` is ADE's UNIFIED vocabulary and a provider's own
+      // choices are its NATIVE one, so which FIELD carries the reader's answer
+      // depends on the provider: `claudePermissionMode`, `droidPermissionMode`,
+      // `cursorModeId`, `opencodePermissionMode`, or the unified name for
+      // Codex. `pageActions.js:permissionArgument` reads the field off ADE's
+      // own capabilities answer and hands it over already named, so this flow
+      // copies it rather than keeping a provider table of its own — the table
+      // that goes stale the day a sixth provider ships.
+      ...permissionFields(input),
     };
 
     let session;

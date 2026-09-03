@@ -141,6 +141,78 @@ function createSdk(overrides = {}) {
         return [];
       },
     },
+    /**
+     * The launch form's capabilities read.
+     *
+     * ADE's own answer in the real SDK — the permission vocabulary per provider
+     * with the launch FIELD each one's value belongs in, and fast mode plus the
+     * reasoning ladder per model. The fake carries a Claude and a Codex entry
+     * because those two differ in exactly the way that matters: Claude's values
+     * are native and ride `claudePermissionMode`, Codex's are presets that ride
+     * the unified `permissionMode`.
+     */
+    chat: {
+      async capabilities() {
+        calls.push(["chat.capabilities"]);
+        if (overrides.capabilitiesThrows) throw overrides.capabilitiesThrows;
+        return overrides.capabilities ?? {
+          providers: [
+            {
+              provider: "claude",
+              permissionField: "claudePermissionMode",
+              defaultPermissionMode: "default",
+              permissionModes: [
+                { value: "default", label: "Manual", detail: "Claude asks before edits." },
+                { value: "acceptEdits", label: "Accept edits", detail: "File edits are auto-approved." },
+              ],
+            },
+            {
+              provider: "codex",
+              permissionField: "permissionMode",
+              defaultPermissionMode: "default",
+              permissionModes: [
+                { value: "default", label: "Default", detail: "Ask on request." },
+                { value: "full-auto", label: "Full auto", detail: "No approval prompts." },
+              ],
+            },
+          ],
+          models: [
+            {
+              id: "anthropic/opus-5",
+              label: "Opus 5",
+              provider: "claude",
+              fastMode: true,
+              reasoningEfforts: [
+                { effort: "low", label: "Low" },
+                { effort: "high", label: "High" },
+              ],
+              defaultReasoningEffort: "low",
+              deprecated: false,
+            },
+            {
+              id: "codex/gpt-5.6",
+              label: "GPT 5.6",
+              provider: "codex",
+              fastMode: false,
+              reasoningEfforts: [],
+              defaultReasoningEffort: null,
+              deprecated: false,
+            },
+            // Retired: a picker that offers it points the reader at something
+            // ADE is taking away.
+            {
+              id: "codex/gpt-4",
+              label: "GPT-4",
+              provider: "codex",
+              fastMode: false,
+              reasoningEfforts: [],
+              defaultReasoningEffort: null,
+              deprecated: true,
+            },
+          ],
+        };
+      },
+    },
     actions: {
       async invoke(domain, action, args) {
         calls.push([`actions.${domain}.${action}`, args]);

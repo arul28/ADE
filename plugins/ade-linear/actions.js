@@ -214,34 +214,36 @@ function createOwnActions(deps) {
      */
     async openIssuesQuickView() {
       void ensureIssues();
-      // BOTH answers, and both are load-bearing.
+      // `navigate`, and ONLY `navigate`.
       //
-      // `openWebview` is what a client that can host a plugin page acts on: the
-      // quick view is the plugin's own page now, drawn as a popover under the
-      // button. `navigate` is the same instruction in the vocabulary, and it is
-      // what the phone and the terminal read — neither hosts a page today, and
-      // a button that did nothing there would be the "green while broken" state
-      // the fallback rules exist to prevent. A client that understands both
-      // reads `openWebview` first (`pluginActionDispatch.ts`).
-      return {
-        openWebview: { surfaceId: "quickview", placement: "popover" },
-        navigate: { panelId: "issues", target: "popover" },
-      };
+      // This used to answer `openWebview` beside it, so a client that hosts a
+      // plugin page opened the quick view and a client that does not navigated
+      // to the panel. The socket does the first half now: a `webviewSurfaceId`
+      // on the manifest entry opens the page BY ITSELF and never invokes the
+      // action, so this handler only ever runs on a client that hosts no page —
+      // and an `openWebview` answer here would be a second open of a surface
+      // that is already up, closing the first.
+      //
+      // One instruction per client, decided in one place: the manifest for a
+      // page host, this line for the phone and the terminal.
+      return { navigate: { panelId: "issues", target: "popover" } };
     },
 
     /**
      * The issue picker, over the composer or under the chat header.
      *
      * Its whole contract is `composer.attach` then `surface.close`, which only
-     * the page can perform — so the vocabulary answer beside it navigates to the
-     * list instead of pretending a panel can attach a chip.
+     * the page can perform — and the socket's own `webviewSurfaceId` is what
+     * opens that page. This handler is the answer for a client that hosts none,
+     * so it navigates to the list rather than pretending a panel can attach a
+     * chip.
      */
     async openIssuePicker() {
       void ensureIssues();
-      return {
-        openWebview: { surfaceId: "picker", placement: "picker" },
-        navigate: { panelId: "issues" },
-      };
+      // The socket's `webviewSurfaceId` opens the picker; see
+      // `openIssuesQuickView` for why this no longer answers `openWebview`
+      // beside the navigation.
+      return { navigate: { panelId: "issues" } };
     },
 
     /**

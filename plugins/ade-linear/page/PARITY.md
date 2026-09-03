@@ -110,6 +110,9 @@ message}`, and `BatchLaunchAgentReadinessTracker.observeChatTurn` reads them: a
 inference stays as the fallback for a host that reports no chat frames, and the
 chat frame outranks it — the tracker keeps its session→issue mapping after an
 inferred "Ready" precisely so a failure arriving seconds later can correct it.
+An `overflow` frame carries no turns at all and is ignored: a batch big enough
+to overflow cannot say which of its kickoffs failed, and a row left where the
+inference put it beats one told a state no frame reported.
 
 **G2 — no reroute to the lane stack after a launch.** Carried, through
 `ade://lane/<id>?drawer=stack`. The compiled panel routed to `#/lanes?drawer=stack`,
@@ -119,15 +122,21 @@ at the end of the launch once a lane exists, on the first one created.
 **G3 — the project-picker button is inert.** Carried, through `ade://welcome`.
 
 **G4 — no per-provider permission control on the launch form.** Carried.
-`pageModels` reads once per provider GROUP rather than one aggregate call, so
-every row carries the group it belongs to instead of a guess at its id's prefix,
-plus its `fast` service tier and its own reasoning ladder. The form draws the
-provider's permission list from `pageCapabilities` — the same five literal option
-sets `renderer/lib/nativeLaunchControls.ts` holds, mapped to the unified
-`AgentChatPermissionMode` the launch carries — a fast-mode toggle for a model
-that has the tier, and the model's own reasoning tiers rather than a fixed
-none/low/medium/high ladder. `fastMode` and `permissionMode` both reach
-`chat.createSession`.
+`sdk.chat.capabilities()` is the whole source: it answers the permission
+vocabulary per provider and fast mode plus the reasoning ladder per model, so
+`pageModels` no longer guesses a provider from a model id's prefix and
+`pageCapabilities` keeps no option table of its own. The form draws the
+provider's own list, a fast toggle only for a model that has the tier, and the
+model's own reasoning rungs — an empty ladder draws no picker rather than
+falling back to none/low/medium/high. Deprecated models are dropped, and the
+read is cached because it is static for the life of an app version.
+
+The value a reader picks is the provider's NATIVE one and goes in the launch
+argument that provider's `permissionField` names — `claudePermissionMode`,
+`droidPermissionMode`, `cursorModeId`, `opencodePermissionMode`, and the unified
+`permissionMode` only for Codex, whose options are presets. Sending Claude's
+`acceptEdits` as `permissionMode` would be refused, which is why the field is
+copied from the capability rather than kept as a table here.
 
 Remaining, and small: the control is ONE shape for every provider (a select
 wearing the compiled trigger chrome) rather than a popover menu for Claude and
@@ -174,10 +183,10 @@ the host's delivery ledger. The connected card draws the first three in the
 bordered row the workspace row established, and the webhook block draws the
 other three beside its Verification row.
 
-**G10 — `PageLane.path` is always null.** Carried. `pageLanes` reads the lane
-summary's worktree under either name the host may use, and the launch modal's
-conflict tooltip names it. Still null on a host that withholds it, and every
-reader hides the line rather than drawing an empty one.
+**G10 — `PageLane.path` is always null.** Carried. `PluginLaneSummary` carries
+`path`, and the launch modal's conflict tooltip names it. Null means the host
+has no local worktree for the lane — a remote binding, or one not created yet —
+and every reader hides the line rather than drawing an empty one.
 
 **G11 — some issue fields are thinner than the compiled ones.** Carried.
 `ISSUE_FIELDS` takes `project { slugId }` and `inverseRelations`, so `projectSlug`
@@ -191,9 +200,11 @@ fallback, so a workspace whose schema refuses one still gets its projects, its
 teams and its workflow states.
 
 **G12 — the Create-lane and Create-PR dialog pickers are not carried.** Carried.
-Two `dialog-section` sockets point at a `dialog-picker` surface; the entry draws
-the browser inline and answers `dialog.submit({ issue })`. It draws no Cancel:
-the dialog around it has one.
+Two `dialog-section` sockets point at a `dialog-picker` surface, discriminated by
+the `dialog` field; the entry draws the browser inline and answers
+`dialog.submit({ issue })`, reading which dialog it is in from
+`context.subject.dialog`. It draws no Cancel: the dialog around it has one, and
+`dialog.cancel` does not exist — clearing is `submit({ issue: null })`.
 
 **G13 — a badge card opened with only an issue id cannot resolve.** Carried.
 `pageIssueById` reads the stored row and then fetches the single issue from
@@ -206,7 +217,15 @@ write and the `ade:plugin-webview-height` frame are both gone, and
 surfaces.
 
 **G15 — the manifest's `webviewSurfaceId` and `openWebview.placement` are inert
-until the desktop placements land.** The manifest half is verified against the
-shipped contract: it parses with no errors or warnings, all eleven sockets
-survive, and every `webviewSurfaceId` resolves. Whether each placement actually
-DRAWS is the renderer's half and is checked there.
+until the desktop placements land.** Carried. The manifest parses with no errors
+or warnings, all eleven sockets survive, and every `webviewSurfaceId` resolves to
+a declared surface — checked against `shared/plugins/manifest.ts` and
+`shared/plugins/sockets.ts` as shipped.
+
+`openWebview` is gone from the actions, and its absence is the point. A socket
+that declares `webviewSurfaceId` now opens the page BY ITSELF and never invokes
+its action, so `openIssuesQuickView` and `openIssuePicker` run only on a client
+that hosts no page — and an `openWebview` answer there would be a second open of
+a surface already up, closing the first. Each answers `navigate` alone now, and
+`test/index.test.js` walks every action a page-declaring socket names so an
+`openWebview` that grows back fails there.

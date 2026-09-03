@@ -205,24 +205,25 @@ export function installFakeBridge(options: {
     pageModels: () => [{
       id: "claude",
       label: "Claude",
-      // The provider GROUP the read asked for, which is what selects the
-      // permission vocabulary — never the id's prefix.
+      // The provider GROUP, from ADE's own capabilities read — never the id's
+      // prefix. It is what joins a model to its permission vocabulary.
       provider: "claude",
-      fastModeSupported: true,
-      reasoningEfforts: [{ value: "high", label: "High", detail: null }],
+      fastMode: true,
+      reasoningEfforts: [{ effort: "high", label: "High" }],
       defaultReasoningEffort: null,
     }],
     pageCapabilities: () => ({
-      providers: {
-        claude: {
-          label: "Permissions",
-          modes: [
-            { value: "default", unified: "default", label: "Manual", detail: null },
-            { value: "acceptEdits", unified: "edit", label: "Accept edits", detail: null },
-          ],
-        },
-      },
-      defaultProvider: null,
+      providers: [{
+        provider: "claude",
+        // The launch FIELD the chosen value belongs in. Claude's values are
+        // native, so they never ride the unified `permissionMode`.
+        permissionField: "claudePermissionMode",
+        defaultPermissionMode: "default",
+        permissionModes: [
+          { value: "default", label: "Manual", detail: "Claude asks before edits." },
+          { value: "acceptEdits", label: "Accept edits", detail: "File edits are auto-approved." },
+        ],
+      }],
     }),
     // The sign-in. A real child answers `{authSession}`, the host opens it, and
     // the child settles it on its own `auth.completed`. The fake settles here,

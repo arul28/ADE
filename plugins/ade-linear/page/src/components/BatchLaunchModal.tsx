@@ -209,19 +209,24 @@ function SessionTypeToggle({
  * A port of `LaunchNativePermissionControls`. The compiled control drew a
  * different shape per provider — a popover menu for Claude and for Codex, a
  * labelled select for Cursor, Droid and OpenCode — over five literal option
- * lists in `renderer/lib/nativeLaunchControls.ts`.
+ * lists in `renderer/lib/nativeLaunchControls.ts`, which a page cannot import.
  *
- * Two things are the same and one is not. The OPTIONS are the same, word for
- * word, and they come from `pageCapabilities`: the child holds the table
- * because it is the half that knows which unified value
- * `chat.createSession` accepts. The VALUE sent is the same single
- * `permissionMode` string the compiled control produced. What differs is the
- * shape: one control for every provider, wearing the compiled trigger chrome,
- * rather than a menu for two of them and a select for three. The menu carried
- * per-option detail sentences, which live on the option's `title` here.
+ * The OPTIONS come from `pageCapabilities`, which is ADE's own answer rather
+ * than a table this plugin keeps: `sdk.chat.capabilities()` restates those five
+ * lists for exactly this, with a test on ADE's side pinning the two together.
+ * The value the reader picks is the provider's NATIVE one and is stored as
+ * such — the launch puts it in the field `permissionField` names, so nothing
+ * here translates it into ADE's unified vocabulary and nothing can get that
+ * translation wrong.
  *
- * A provider the table does not name draws nothing at all — which is what the
- * compiled control did for a model whose provider group it could not resolve.
+ * What differs from the compiled control is the shape: one select for every
+ * provider, wearing the compiled trigger chrome, rather than a menu for two of
+ * them and a select for three. The menu carried per-option detail sentences,
+ * which live on the option's `title` here.
+ *
+ * A provider the capabilities do not name draws nothing at all — which is what
+ * the compiled control did for a model whose provider group it could not
+ * resolve.
  */
 function PermissionModePicker({
   provider,
@@ -236,28 +241,22 @@ function PermissionModePicker({
   onChange: (permissionMode: string | null) => void;
   disabled?: boolean;
 }) {
-  const entry = capabilities?.providers?.[provider] ?? null;
-  if (!entry || entry.modes.length === 0) return null;
-  // The reader's choice is stored as the UNIFIED value, because that is what
-  // the launch carries; the pill shows the provider's own word for it.
-  const selected = entry.modes.find((mode) => mode.unified === value) ?? null;
+  const entry = capabilities?.providers.find((row) => row.provider === provider) ?? null;
+  if (!entry || entry.permissionModes.length === 0) return null;
   return (
-    <label className={cn(PERMISSION_TRIGGER_CLASS, COMPOSER_TOOLBAR_PICKER_TRIGGER)} title={entry.label}>
+    <label className={cn(PERMISSION_TRIGGER_CLASS, COMPOSER_TOOLBAR_PICKER_TRIGGER)} title="Permissions">
       <select
-        value={selected?.value ?? ""}
+        value={value ?? ""}
         disabled={disabled}
-        onChange={(event) => {
-          const picked = entry.modes.find((mode) => mode.value === event.target.value);
-          onChange(picked?.unified ?? null);
-        }}
-        aria-label={entry.label}
+        onChange={(event) => onChange(event.target.value || null)}
+        aria-label="Permissions"
         className="min-w-0 flex-1 truncate bg-transparent font-medium outline-none disabled:opacity-45"
       >
-        {/* "Whatever the provider defaults to" is a real choice and the one an
+        {/* "Whatever the provider starts on" is a real choice and the one an
             untouched pill has always made, so it is an option rather than a
             hole the reader cannot get back to. */}
         <option value="">Default</option>
-        {entry.modes.map((mode) => (
+        {entry.permissionModes.map((mode) => (
           <option key={mode.value} value={mode.value} title={mode.detail ?? undefined}>
             {mode.label}
           </option>
@@ -320,15 +319,17 @@ function SessionLaunchModelControls({
             const next = models.find((row) => row.id === nextId) ?? null;
             onChange({
               modelId: nextId,
-              // A model with no fast tier cannot be in fast mode, and a
-              // reasoning effort the new model does not offer would be sent and
-              // refused. Both are cleared with the model that carried them.
-              ...(next?.fastModeSupported ? {} : { fastMode: false }),
-              ...(next?.reasoningEfforts.some((tier) => tier.value === config.reasoningEffort)
+              // A model with no fast tier REFUSES `fastMode: true` rather than
+              // ignoring it, and a reasoning rung the new model does not offer
+              // would be sent and refused. Both are cleared with the model that
+              // carried them.
+              ...(next?.fastMode ? {} : { fastMode: false }),
+              ...(next?.reasoningEfforts.some((tier) => tier.effort === config.reasoningEffort)
                 ? {}
                 : { reasoningEffort: null }),
-              // The permission vocabularies differ per provider, so a value
-              // chosen for a Claude model is not a value a Droid model offers.
+              // The permission vocabularies are native and differ per provider,
+              // so a value chosen for a Claude model is not one a Droid model
+              // offers — and it would go in a different launch field besides.
               ...(next?.provider === model?.provider ? {} : { permissionMode: null }),
             });
           }}
@@ -357,14 +358,12 @@ function SessionLaunchModelControls({
                 nothing", so the model's own default stands. */}
             <option value="">Default</option>
             {efforts.map((tier) => (
-              <option key={tier.value} value={tier.value} title={tier.detail ?? undefined}>
-                {tier.label}
-              </option>
+              <option key={tier.effort} value={tier.effort}>{tier.label}</option>
             ))}
           </select>
         </label>
       ) : null}
-      {model?.fastModeSupported ? (
+      {model?.fastMode ? (
         <button
           type="button"
           role="switch"

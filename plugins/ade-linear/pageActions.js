@@ -77,95 +77,6 @@ const MAX_PROJECTS = 100;
 const MAX_USERS = 250;
 const MAX_MODELS = 100;
 
-/**
- * The provider groups the model read asks for, in ADE's own listing order.
- *
- * `MODEL_PROVIDER_GROUPS` in `shared/modelRegistry.ts` is the same list. It is
- * repeated rather than imported because a plugin child is a separate process
- * with no access to the app's modules — and repeated in the same ORDER, because
- * the order is what decides which provider tags a model two runtimes both
- * offer.
- */
-const MODEL_PROVIDER_GROUPS = Object.freeze([
-  "claude",
-  "codex",
-  "cursor",
-  "opencode",
-  "pi",
-  "copilot",
-  "grok",
-  "droid",
-  "kimi",
-  "qwen",
-]);
-
-/**
- * The permission vocabulary each provider offers, and what each option MEANS to
- * `chat.createSession`.
- *
- * Every label, every detail sentence and every mapping below is the renderer's
- * own — `renderer/lib/nativeLaunchControls.ts` holds `CLAUDE_PERMISSION_OPTIONS`,
- * `CODEX_PERMISSION_PRESETS`, `cursorModeChoices`, `DROID_PERMISSION_OPTIONS`
- * and `OPENCODE_PERMISSION_OPTIONS`, and `summarizeNativeControls` holds the
- * mapping to the unified `AgentChatPermissionMode`. A page cannot import any of
- * it, so the table is written out here.
- *
- * `unified` is the string the launch carries: `default | auto | plan | edit |
- * full-auto | config-toml`. Nothing else is accepted, which is why the plugin's
- * own three-value list ("accept-edits") could never have worked.
- *
- * `label` is what the pill shows and is deliberately the PROVIDER's word, not
- * the unified one — a Droid reader picks "Auto medium", not "Default".
- */
-const PROVIDER_PERMISSIONS = Object.freeze({
-  claude: Object.freeze({
-    label: "Permissions",
-    modes: Object.freeze([
-      { value: "default", unified: "default", label: "Manual", detail: "Claude asks before edits, Bash, and other sensitive tools." },
-      { value: "auto", unified: "auto", label: "Auto", detail: "Claude judges each tool call." },
-      { value: "acceptEdits", unified: "edit", label: "Accept edits", detail: "File edits are auto-approved; higher-risk actions still prompt." },
-      { value: "plan", unified: "plan", label: "Plan mode", detail: "Read-only Claude turns for analysis and implementation planning." },
-      { value: "bypassPermissions", unified: "full-auto", label: "Bypass", detail: "Skip every Claude permission prompt for this chat." },
-    ]),
-  }),
-  codex: Object.freeze({
-    label: "Permissions",
-    modes: Object.freeze([
-      { value: "default", unified: "default", label: "Default", detail: "Ask on request with workspace write sandbox." },
-      { value: "edit", unified: "edit", label: "Edit", detail: "Untrusted approval with workspace write sandbox." },
-      { value: "plan", unified: "plan", label: "Plan", detail: "Read-only sandbox for planning." },
-      { value: "full-auto", unified: "full-auto", label: "Full auto", detail: "No approval prompts with full sandbox access." },
-    ]),
-  }),
-  cursor: Object.freeze({
-    label: "Mode",
-    modes: Object.freeze([
-      { value: "agent", unified: "default", label: "Agent", detail: null },
-      { value: "ask", unified: "edit", label: "Ask", detail: null },
-      { value: "plan", unified: "plan", label: "Plan", detail: null },
-      { value: "full-auto", unified: "full-auto", label: "Full auto", detail: null },
-    ]),
-  }),
-  droid: Object.freeze({
-    label: "Autonomy",
-    modes: Object.freeze([
-      { value: "read-only", unified: "plan", label: "Read-only", detail: "No auto flag. Droid stays in read-only mode." },
-      { value: "auto-low", unified: "edit", label: "Auto low", detail: "Passes --auto low for safe file edits." },
-      { value: "auto-medium", unified: "default", label: "Auto medium", detail: "Passes --auto medium for local development operations." },
-      { value: "auto-high", unified: "full-auto", label: "Auto high", detail: "Passes --auto high for broader automation." },
-    ]),
-  }),
-  opencode: Object.freeze({
-    label: "Permissions",
-    modes: Object.freeze([
-      { value: "plan", unified: "plan", label: "Plan", detail: null },
-      { value: "edit", unified: "edit", label: "Edit", detail: null },
-      { value: "full-auto", unified: "full-auto", label: "Full auto", detail: null },
-      { value: "config-toml", unified: "config-toml", label: "Config", detail: null },
-    ]),
-  }),
-});
-
 /** The one sentence for a call that arrived before `activate` finished. */
 const STARTING_UP = "Linear is still starting up on this machine.";
 
@@ -202,6 +113,21 @@ function priorityLabel(priority) {
  * is `null`, because a project with no count and a project with zero issues are
  * different things and a card that drew "0" for the first would be wrong.
  */
+/**
+ * When the webhook drain last received a delivery, as a line a row can print.
+ *
+ * The ledger stores ISO-8601. The settings panel's copy of this lives in
+ * `index.js:formatWebhookLastEvent` and the two must agree — a page and a panel
+ * that print the same timestamp two different ways is the drift this whole file
+ * exists to avoid — so both are the same four lines and the same slice.
+ */
+function webhookLastEvent(iso) {
+  if (typeof iso !== "string" || !iso.trim()) return null;
+  const at = Date.parse(iso);
+  if (Number.isNaN(at)) return iso.trim();
+  return new Date(at).toISOString().replace("T", " ").slice(0, 16) + " UTC";
+}
+
 /**
  * When the webhook drain last received a delivery, as a line a row can print.
  *
@@ -414,6 +340,67 @@ function createPageActions(deps) {
    * page act on an issue outside the stored filter — a deeplink, a search
    * result, an issue somebody else's filter excluded.
    */
+  /**
+   * ADE's launch-form capabilities, read once.
+   *
+   * `sdk.chat.capabilities()` is documented static for the life of an app
+   * version — a new model or a new provider is a new build — so the launch
+   * modal, which asks for the models and the providers a beat apart, should not
+   * pay for two reads. The promise is cached rather than the value so two
+   * callers that arrive together share one call.
+   *
+   * A refusal answers empty lists rather than throwing: a launch form with no
+   * models still draws, and the reader gets the provider's own defaults. The
+   * cache is dropped on failure so a later open tries again.
+   */
+  let capabilitiesPromise = null;
+  function chatCapabilities() {
+    if (capabilitiesPromise) return capabilitiesPromise;
+    capabilitiesPromise = (async () => {
+      if (!ready()) return { providers: [], models: [] };
+      let answer;
+      try {
+        answer = await deps.sdk.chat.capabilities();
+      } catch (error) {
+        log("debug", `Could not read the chat capabilities: ${error?.message ?? error}`);
+        capabilitiesPromise = null;
+        return { providers: [], models: [] };
+      }
+      return {
+        providers: (Array.isArray(answer?.providers) ? answer.providers : [])
+          .filter((entry) => text(entry?.provider) && text(entry?.permissionField))
+          .map((entry) => ({
+            provider: entry.provider,
+            permissionField: entry.permissionField,
+            defaultPermissionMode: text(entry.defaultPermissionMode),
+            permissionModes: (Array.isArray(entry.permissionModes) ? entry.permissionModes : [])
+              .filter((mode) => text(mode?.value))
+              .map((mode) => ({
+                value: mode.value,
+                label: text(mode.label) ?? mode.value,
+                detail: text(mode.detail),
+              })),
+          })),
+        models: (Array.isArray(answer?.models) ? answer.models : [])
+          // A deprecated model still launches, but a picker that offers it is
+          // pointing the reader at something ADE is retiring.
+          .filter((model) => text(model?.id) && model.deprecated !== true)
+          .map((model) => ({
+            id: model.id,
+            label: text(model.label) ?? model.id,
+            provider: text(model.provider) ?? "",
+            fastMode: model.fastMode === true,
+            reasoningEfforts: (Array.isArray(model.reasoningEfforts) ? model.reasoningEfforts : [])
+              .filter((tier) => text(tier?.effort))
+              .map((tier) => ({ effort: tier.effort, label: text(tier.label) ?? tier.effort })),
+            defaultReasoningEffort: text(model.defaultReasoningEffort),
+          }))
+          .slice(0, MAX_MODELS),
+      };
+    })();
+    return capabilitiesPromise;
+  }
+
   async function resolveRow(value) {
     const id = issueIdFromRowKey(firstString(value));
     if (!id) return null;
@@ -1080,11 +1067,10 @@ function createPageActions(deps) {
      * `flows.sessionIssues` is that table, and it already answers `[]` on a host
      * whose SDK predates the verb.
      *
-     * `path` is the lane's worktree on disk, when the host answers one.
-     * `PluginLaneSummary` was a fixed allowlist that excluded it; the field is
-     * read through whichever of the two names the host uses and stays `null` on
-     * a host that still withholds it, which the page draws by hiding the row
-     * rather than by printing an empty one.
+     * `path` is the lane's worktree on disk. `PluginLaneSummary` was a fixed
+     * allowlist that excluded it and now carries it. Null means the host has no
+     * local worktree for the lane — a remote binding, or one not created yet —
+     * which the page draws by hiding the row rather than printing an empty one.
      */
     async pageLanes() {
       if (!ready()) return [];
@@ -1116,7 +1102,7 @@ function createPageActions(deps) {
           id: lane.id,
           name: lane.name ?? "",
           branch: lane.branchRef ?? null,
-          path: text(lane.path) ?? text(lane.worktreePath),
+          path: text(lane.path),
           status: lane.status ?? null,
           laneType: lane.laneType ?? null,
           linearIssueId: own?.issueId ?? null,
@@ -1128,71 +1114,41 @@ function createPageActions(deps) {
     },
 
     /**
-     * The launch form's model picker, one read per PROVIDER.
+     * The launch form's model picker.
      *
-     * It used to be one aggregate call whose rows carried no provider at all,
-     * so the provider was guessed from the model id's prefix. That guess is
-     * what made the whole per-provider permission control impossible: the form
-     * could not know whether the model it was about to launch was a Claude, a
-     * Codex or a Droid, and those three offer genuinely different permission
-     * vocabularies.
-     *
-     * Asking once per provider group costs the same WORK — the aggregate branch
-     * inside `chat.getAvailableModels` fans out to exactly these per-provider
-     * reads and de-duplicates them — and buys the tag. A provider that refuses
-     * or is switched off answers an empty list rather than failing the read, so
-     * a workspace with one signed-in provider still gets a full picker.
-     *
-     * The three fields beyond the tag come off `AgentChatModelInfo` itself:
-     * `serviceTiers` says whether the model has a FAST tier, and
-     * `reasoningEfforts` is the model's own ladder rather than the fixed
-     * none/low/medium/high one the page used to offer every model alike.
+     * `sdk.chat.capabilities()` and nothing else. It used to be
+     * `chat.getAvailableModels`, whose rows carry no provider at all — so the
+     * provider was guessed from the model id's prefix, and that guess is what
+     * made a per-provider permission control impossible. The capabilities read
+     * answers the tag, the fast tier and the model's own reasoning ladder in
+     * one call.
      */
     async pageModels() {
-      if (!ready()) return [];
-
-      const perProvider = await Promise.all(MODEL_PROVIDER_GROUPS.map(async (provider) => {
-        let listed;
-        try {
-          listed = await deps.sdk.actions.invoke("chat", "getAvailableModels", { provider });
-        } catch (error) {
-          log("debug", `Could not read the ${provider} chat models: ${error?.message ?? error}`);
-          return [];
-        }
-        const rows = Array.isArray(listed) ? listed : Array.isArray(listed?.models) ? listed.models : [];
-        return rows.map((entry) => pageModel(entry, provider)).filter(Boolean);
-      }));
-
-      // De-duplicated by id, first provider winning: `MODEL_PROVIDER_GROUPS` is
-      // in the order ADE's own pickers list them, so a model two runtimes both
-      // offer is tagged with the one the reader sees it under.
-      const byId = new Map();
-      for (const model of perProvider.flat()) {
-        if (!byId.has(model.id)) byId.set(model.id, model);
-      }
-      return [...byId.values()].slice(0, MAX_MODELS);
+      return (await chatCapabilities()).models;
     },
 
     /**
      * What the launch form may OFFER, per provider.
      *
-     * The compiled launch modal drew a provider-native permission pill — Claude
-     * one vocabulary, Codex another, Cursor a mode list, Droid an autonomy
-     * ladder, OpenCode a fourth set — and every one of those lists is a literal
-     * in the renderer, not something read from a service. It is a literal here
-     * too, for the same reason and with the same words: `chat.createSession`
-     * validates the UNIFIED value each option maps to, and a picker that
-     * offered a value ADE would refuse is worse than one that offers four.
+     * ADE's own answer, not a table this plugin keeps. The compiled launch
+     * modal drew a provider-native permission pill — Claude one vocabulary,
+     * Codex another, Cursor a mode list, Droid an autonomy ladder, OpenCode a
+     * fourth set — and every one of those lists is a literal in the RENDERER,
+     * which a plugin child cannot import. `sdk.chat.capabilities()` restates
+     * them for exactly this, with a test on ADE's side pinning the two together
+     * so a mode added to the app's pill cannot leave this page a version
+     * behind.
      *
-     * `unified` is what actually crosses the wire. The native fields behind it
-     * (Claude's `interactionMode`, Codex's approval policy and sandbox pair) are
-     * the renderer control's own internals and are not a page's to set.
+     * `permissionField` is the load-bearing field and the reason this is not a
+     * table here: a chosen value is the provider's NATIVE one, and it belongs
+     * in the provider's own launch argument — `claudePermissionMode`,
+     * `droidPermissionMode`, `cursorModeId`, `opencodePermissionMode`, and the
+     * unified `permissionMode` only for Codex, whose four options are presets.
+     * A page that kept its own provider→field map is the map that goes stale
+     * when a sixth provider arrives.
      */
     async pageCapabilities() {
-      return {
-        providers: PROVIDER_PERMISSIONS,
-        defaultProvider: null,
-      };
+      return { providers: (await chatCapabilities()).providers };
     },
 
     /* ── Issue mutations ────────────────────────────────────────────────── */
@@ -1571,6 +1527,36 @@ function createPageActions(deps) {
    * chat header and the PR body read — and it is composed with rather than
    * copied, so a change to how a launch works reaches every surface at once.
    */
+  /**
+   * The reader's permission choice, in the argument it actually belongs in.
+   *
+   * The trap this exists to avoid: `permissionMode` is ADE's UNIFIED
+   * vocabulary, and a value taken from a provider's `permissionModes` is that
+   * provider's NATIVE one. Sending Claude's `acceptEdits` as `permissionMode`
+   * is refused; sending the unified `edit` to Claude names a mode Claude does
+   * not have. So the value goes in the field the CAPABILITY names —
+   * `claudePermissionMode`, `droidPermissionMode`, `cursorModeId`,
+   * `opencodePermissionMode`, and the unified `permissionMode` only for Codex,
+   * whose four options are presets that happen to share the unified spelling.
+   *
+   * The field is looked up by the model's provider, so the page sends the value
+   * and the model and never a field name of its own. A model the capabilities
+   * read cannot name, or a provider it does not cover, falls back to
+   * `permissionMode`: that is the one field every launch accepts, and a refusal
+   * from ADE with ADE's own message beats a launch that silently drops the
+   * reader's choice.
+   */
+  async function permissionArgument(args) {
+    const chosen = text(args?.permissionMode);
+    if (!chosen) return {};
+    const { providers, models } = await chatCapabilities();
+    const provider = text(args?.provider)
+      ?? models.find((model) => model.id === text(args?.model))?.provider
+      ?? null;
+    const field = providers.find((entry) => entry.provider === provider)?.permissionField;
+    return { [field || "permissionMode"]: chosen };
+  }
+
   async function runLaunch(args, sessionType) {
     if (!ready()) return { ok: false, message: STARTING_UP };
     const row = await resolveRow(readIssueId(args));
@@ -1606,7 +1592,7 @@ function createPageActions(deps) {
       ...(sessionType === "cli" ? { sessionType: "cli" } : {}),
       ...(text(args?.provider) ? { provider: text(args.provider) } : {}),
       ...(text(args?.model) ? { model: text(args.model) } : {}),
-      ...(text(args?.permissionMode) ? { permissionMode: text(args.permissionMode) } : {}),
+      ...(await permissionArgument(args)),
       // Only when the form actually asked. `fastMode` is a service tier the
       // provider defaults on its own, so passing `false` for a reader who never
       // saw the toggle would be a choice they did not make.

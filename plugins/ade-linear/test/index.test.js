@@ -594,6 +594,31 @@ describe("the two navigations a client reads differently", () => {
     assert.deepEqual(result.navigate, { panelId: "issues", target: "popover" });
   });
 
+  it("never answers openWebview from a socket that already declares its surface", async () => {
+    // A `webviewSurfaceId` on a manifest socket opens the page BY ITSELF and
+    // does not invoke the action, so these handlers only ever run on a client
+    // that hosts no page. An `openWebview` answer here would be a second open
+    // of a surface already up, and the second open closes the first.
+    //
+    // Asserted on every action a page-declaring socket names, so a handler that
+    // grows the answer back fails here rather than in a reader's window.
+    await activated();
+    const declaring = new Set(
+      MANIFEST.sockets
+        .filter((socket) => socket.webviewSurfaceId && socket.actionId)
+        .map((socket) => socket.actionId),
+    );
+    assert.ok(declaring.size >= 2, "no page-declaring socket names an action");
+    for (const actionId of declaring) {
+      const result = await plugin.actions[actionId]({});
+      assert.equal(
+        result?.openWebview,
+        undefined,
+        `${actionId} answers openWebview beside a socket that declares its surface`,
+      );
+    }
+  });
+
   it("keeps the ordinary openIssues a full-tab navigation", async () => {
     // The palette, the keybinding, the composer button and the CLI all press
     // this one, and none of them wants a popover.

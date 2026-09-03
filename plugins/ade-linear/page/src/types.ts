@@ -275,33 +275,54 @@ export type PageChatModel = {
    * vocabulary the launch form draws.
    */
   provider: string;
-  /** Whether this model has a `fast` service tier for the launch form's toggle. */
-  fastModeSupported: boolean;
   /**
-   * The model's OWN reasoning ladder. An empty list means the model has none
-   * and the form draws no reasoning control at all, which is what the compiled
-   * picker did — rather than offering four tiers the provider would ignore.
+   * Whether this model has a `fast` service tier.
+   *
+   * A model without one REFUSES `fastMode: true` rather than ignoring it, so
+   * the form must not draw the toggle at all.
    */
-  reasoningEfforts: { value: string; label: string; detail: string | null }[];
+  fastMode: boolean;
+  /**
+   * The model's OWN reasoning ladder. An empty list is a real answer — the
+   * model has no reasoning control — and the form draws no picker rather than
+   * falling back to a none/low/medium/high ladder the provider would ignore.
+   */
+  reasoningEfforts: { effort: string; label: string }[];
   defaultReasoningEffort: string | null;
 };
 
-/** One permission choice a provider offers, and what ADE receives for it. */
+/** One choice on a provider's permission control. */
 export type PageProviderPermissionMode = {
-  /** The provider's own value, e.g. Claude's `acceptEdits`, Droid's `auto-low`. */
-  value: string;
   /**
-   * What actually crosses the wire: `AgentChatPermissionMode`. `chat.createSession`
-   * validates this and nothing else.
+   * The provider's NATIVE value — Claude's `acceptEdits`, Droid's `auto-low`,
+   * Cursor's `plan`. It is not ADE's unified `AgentChatPermissionMode`, and
+   * sending it as one would be refused; it belongs in the field its provider's
+   * `permissionField` names.
    */
-  unified: string;
-  /** The provider's own word for it, which is what the pill shows. */
+  value: string;
   label: string;
+  /** One sentence, the same one ADE's own control shows. */
   detail: string | null;
 };
 
-/** What the launch form may offer, per provider. */
+/** What one provider group lets the launch form offer. */
+export type PageProviderCapability = {
+  provider: string;
+  /**
+   * The launch argument a chosen `value` belongs in —
+   * `claudePermissionMode`, `droidPermissionMode`, `cursorModeId`,
+   * `opencodePermissionMode`, or the unified `permissionMode` for Codex, whose
+   * options are presets. The page copies it rather than keeping its own
+   * provider→field table, which is the table that goes stale when a sixth
+   * provider arrives.
+   */
+  permissionField: string;
+  permissionModes: PageProviderPermissionMode[];
+  /** The mode ADE itself starts on. Always one of `permissionModes`. */
+  defaultPermissionMode: string | null;
+};
+
+/** What the launch form may offer, per provider. Joined to a model on `provider`. */
 export type PageCapabilities = {
-  providers: Record<string, { label: string; modes: PageProviderPermissionMode[] }>;
-  defaultProvider: string | null;
+  providers: PageProviderCapability[];
 };

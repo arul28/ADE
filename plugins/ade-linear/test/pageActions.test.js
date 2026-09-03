@@ -132,30 +132,9 @@ function makeDeps(options = {}) {
     ...(options.officialClient !== undefined ? { officialClient: options.officialClient } : {}),
     ...(options.webhookStatus !== undefined ? { webhookStatus: options.webhookStatus } : {}),
     ...(options.webhookUrlThrows === true ? { webhookUrlThrows: true } : {}),
+    ...(options.capabilities !== undefined ? { capabilities: options.capabilities } : {}),
+    ...(options.capabilitiesThrows ? { capabilitiesThrows: options.capabilitiesThrows } : {}),
     actions: {
-      // Provider-aware, because `pageModels` now asks once per provider group
-      // and the group it asked for is what tags the row. A fixture that
-      // answered the same list to every group would hide exactly the bug the
-      // per-provider read exists to fix.
-      "chat.getAvailableModels": async (args) => {
-        if (options.models) return options.models;
-        const byProvider = {
-          claude: [
-            {
-              id: "anthropic/opus-5",
-              displayName: "Opus 5",
-              serviceTiers: ["standard", "fast"],
-              reasoningEfforts: [
-                { effort: "low", description: "Quick" },
-                { effort: "high", description: "Careful" },
-              ],
-              defaultReasoningEffort: "low",
-            },
-          ],
-          codex: [{ id: "codex/gpt-5.6", displayName: "GPT 5.6" }, "codex/gpt-5.6-mini"],
-        };
-        return byProvider[args?.provider] ?? [];
-      },
       "git.getOriginRemote": async () => "https://github.com/acme/app.git",
       "github.listRepoAutolinks": async () => options.autolinks ?? [
         { id: 7, keyPrefix: "ENG-", urlTemplate: "https://linear.app/acme/issue/ENG-<num>", isAlphanumeric: false },
@@ -620,32 +599,34 @@ describe("the reads answer the shapes page/src/types.ts declares", () => {
     assert.equal(lanes[0].path, null);
   });
 
-  it("carries the lane's worktree path under either name the host may use", async () => {
-    const withPath = await makeDeps({
+  it("carries the lane's worktree path when the host has one", async () => {
+    const lanes = await makeDeps({
       lanes: [
         { id: "lane-a", name: "A", branchRef: "refs/heads/a", path: "/w/a" },
-        { id: "lane-b", name: "B", branchRef: "refs/heads/b", worktreePath: "/w/b" },
+        // Null is a real answer: a remote binding, or a lane whose worktree is
+        // not created yet.
+        { id: "lane-b", name: "B", branchRef: "refs/heads/b" },
       ],
     }).actions.pageLanes();
-    assert.deepEqual(withPath.map((lane) => lane.path), ["/w/a", "/w/b"]);
+    assert.deepEqual(lanes.map((lane) => lane.path), ["/w/a", null]);
   });
 
-  it("tags every model with the provider the read asked for, never with its id prefix", async () => {
-    // The whole reason the read is per-provider: the row itself carries no
-    // provider, and the launch form's permission control is a different
-    // vocabulary for each one. `codex/gpt-5.6-mini` is the case a prefix guess
-    // gets right by accident and `anthropic/opus-5` is the one it gets wrong —
-    // that model is a CLAUDE model whichever way its id reads.
+  it("answers the models ADE itself offers, tagged with their provider and their own tiers", async () => {
+    // Straight from `sdk.chat.capabilities()`. It used to be
+    // `chat.getAvailableModels`, whose rows carry no provider at all — so the
+    // provider was guessed from the id's prefix, and `anthropic/opus-5` is
+    // exactly the model that guess gets wrong: it is a CLAUDE model whichever
+    // way its id reads, and the permission vocabulary turns on that.
     const { actions } = makeDeps();
     assert.deepEqual(await actions.pageModels(), [
       {
         id: "anthropic/opus-5",
         label: "Opus 5",
         provider: "claude",
-        fastModeSupported: true,
+        fastMode: true,
         reasoningEfforts: [
-          { value: "low", label: "low", detail: "Quick" },
-          { value: "high", label: "high", detail: "Careful" },
+          { effort: "low", label: "Low" },
+          { effort: "high", label: "High" },
         ],
         defaultReasoningEffort: "low",
       },
@@ -653,44 +634,47 @@ describe("the reads answer the shapes page/src/types.ts declares", () => {
         id: "codex/gpt-5.6",
         label: "GPT 5.6",
         provider: "codex",
-        fastModeSupported: false,
-        reasoningEfforts: [],
-        defaultReasoningEffort: null,
-      },
-      {
-        id: "codex/gpt-5.6-mini",
-        label: "codex/gpt-5.6-mini",
-        provider: "codex",
-        fastModeSupported: false,
+        fastMode: false,
         reasoningEfforts: [],
         defaultReasoningEffort: null,
       },
     ]);
   });
 
-  it("offers a permission vocabulary per provider, every option mapping to a value ADE accepts", async () => {
-    // `chat.createSession` validates `AgentChatPermissionMode` and nothing
-    // else. A picker offering a seventh value would be refused at launch, which
-    // is the failure this table exists to prevent.
-    const ACCEPTED = new Set(["default", "auto", "plan", "edit", "full-auto", "config-toml"]);
+  it("reads the capabilities once, however many times the form asks", async () => {
+    // Documented static for the life of an app version, and the launch modal
+    // asks for the models and the providers a beat apart.
+    const { actions, sdk } = makeDeps();
+    await Promise.all([actions.pageModels(), actions.pageCapabilities(), actions.pageModels()]);
+    assert.equal(sdk.calls.filter((entry) => entry[0] === "chat.capabilities").length, 1);
+  });
+
+  it("carries the launch FIELD each provider's permission value belongs in", async () => {
+    // The trap the field exists to close: `permissionMode` is ADE's unified
+    // vocabulary and these values are the provider's native one. Claude's
+    // `acceptEdits` sent as `permissionMode` is refused.
     const { actions } = makeDeps();
     const { providers } = await actions.pageCapabilities();
-    assert.deepEqual(
-      Object.keys(providers).sort(),
-      ["claude", "codex", "cursor", "droid", "opencode"],
-    );
-    for (const [provider, entry] of Object.entries(providers)) {
-      assert.ok(entry.modes.length > 0, `${provider} offers no permission modes`);
-      for (const mode of entry.modes) {
-        assert.ok(ACCEPTED.has(mode.unified), `${provider}.${mode.value} maps to ${mode.unified}`);
-        assert.equal(typeof mode.label, "string");
-      }
-    }
-    // The provider's OWN word, not the unified one: a Droid reader picks
-    // "Auto medium", which ADE receives as "default".
-    const droid = providers.droid.modes.find((mode) => mode.value === "auto-medium");
-    assert.equal(droid.label, "Auto medium");
-    assert.equal(droid.unified, "default");
+    const claude = providers.find((entry) => entry.provider === "claude");
+    assert.equal(claude.permissionField, "claudePermissionMode");
+    assert.deepEqual(claude.permissionModes.map((mode) => mode.value), ["default", "acceptEdits"]);
+    // Codex is the one provider whose field IS the unified name, because its
+    // four options are presets rather than a native vocabulary.
+    assert.equal(providers.find((entry) => entry.provider === "codex").permissionField, "permissionMode");
+  });
+
+  it("draws no picker for a model ADE is retiring", async () => {
+    const { actions } = makeDeps();
+    const ids = (await actions.pageModels()).map((model) => model.id);
+    assert.ok(!ids.includes("codex/gpt-4"), "a deprecated model is still offered");
+  });
+
+  it("answers empty lists when the host cannot report its capabilities", async () => {
+    // A launch form with no models still draws, and the reader gets the
+    // provider's own defaults.
+    const { actions } = makeDeps({ capabilitiesThrows: new Error("no runtime") });
+    assert.deepEqual(await actions.pageModels(), []);
+    assert.deepEqual((await actions.pageCapabilities()).providers, []);
   });
 
   it("answers empty shapes rather than throwing before activate has run", async () => {
@@ -967,11 +951,68 @@ describe("lanes, chats and launches", () => {
     assert.equal(session.provider, "codex");
     assert.equal(session.initialMessage, "Pick this up.");
     assert.equal("reasoningEffort" in session, false);
+    // Codex is the one provider whose permission field IS the unified name.
+    assert.equal(session.permissionMode, "full-auto");
     // The lane link AND the session link — the second is what the chat header
     // and the PR body read.
     const links = sdk.calls.filter((entry) => entry[0] === "lanes.linkIssue").map((entry) => entry[1]);
     assert.equal(links.length, 2);
     assert.equal(links[1].sessionId, "session-1");
+  });
+
+  it("sends a permission choice in the launch field its provider names", async () => {
+    // The trap this closes. `permissionMode` is ADE's UNIFIED vocabulary and
+    // `acceptEdits` is Claude's NATIVE one — sent as `permissionMode` it is
+    // refused, and the reader's choice would be silently dropped. The field
+    // comes off ADE's own capabilities answer, so the plugin keeps no
+    // provider→field table to go stale.
+    const { actions, sdk } = makeDeps();
+    await actions.pageLaunchAgent({
+      issueId: "issue-1",
+      provider: "claude",
+      model: "anthropic/opus-5",
+      permissionMode: "acceptEdits",
+      fastMode: true,
+    });
+    const session = invocations(sdk, "chat.createSession")[0];
+    assert.equal(session.claudePermissionMode, "acceptEdits");
+    assert.equal("permissionMode" in session, false);
+    assert.equal(session.fastMode, true);
+  });
+
+  it("resolves the provider from the model when the launch names none", async () => {
+    // A form that picked a model and left the provider to ADE still has to put
+    // its permission value in the right field.
+    const { actions, sdk } = makeDeps();
+    await actions.pageLaunchAgent({
+      issueId: "issue-1",
+      model: "anthropic/opus-5",
+      permissionMode: "plan",
+    });
+    assert.equal(invocations(sdk, "chat.createSession")[0].claudePermissionMode, "plan");
+  });
+
+  it("falls back to the unified field for a provider the capabilities cannot name", async () => {
+    // The one field every launch accepts. A refusal from ADE with ADE's own
+    // message beats a launch that silently drops the reader's choice.
+    const { actions, sdk } = makeDeps({ capabilitiesThrows: new Error("no runtime") });
+    await actions.pageLaunchAgent({
+      issueId: "issue-1",
+      provider: "claude",
+      permissionMode: "acceptEdits",
+    });
+    assert.equal(invocations(sdk, "chat.createSession")[0].permissionMode, "acceptEdits");
+  });
+
+  it("sends no permission field at all when the reader chose none", async () => {
+    const { actions, sdk } = makeDeps();
+    await actions.pageLaunchAgent({ issueId: "issue-1", provider: "claude", model: "anthropic/opus-5" });
+    const session = invocations(sdk, "chat.createSession")[0];
+    for (const field of ["permissionMode", "claudePermissionMode", "droidPermissionMode", "cursorModeId", "opencodePermissionMode"]) {
+      assert.equal(field in session, false, `${field} was sent for an untouched pill`);
+    }
+    // And no fast mode either: a toggle the reader never saw is not a `false`.
+    assert.equal("fastMode" in session, false);
   });
 
   it("attaches the issue to a lane the page named, and launches into it", async () => {

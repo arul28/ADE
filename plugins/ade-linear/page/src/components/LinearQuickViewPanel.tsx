@@ -462,8 +462,16 @@ export function useLinearBatchLaunch({
     try {
       unsubscribeEvent = api.events.on("host", (frame) => {
         if (frame.kind !== "chat") return;
-        // The frame is coalesced like every other, so one arrival can settle a
-        // whole batch: fifty issues launched together settle fifty turns.
+        // An overflowed frame carries NO turns — more settled inside the 120 ms
+        // window than it can name — so there is nothing to read and the inference
+        // effect below promotes the rows out of "starting" on the same lane and
+        // session traffic. A batch big enough to overflow cannot report which of
+        // its kickoffs failed, and saying nothing is the honest answer: the row
+        // stays as it is rather than being told a state no frame reported.
+        if (frame.overflow) return;
+        // Coalesced like every other frame, so one arrival can settle a whole
+        // batch: fifty issues launched together settle fifty turns, last state
+        // per session winning inside the window.
         for (const turn of frame.turns ?? []) {
           if (!turn?.sessionId) continue;
           const transition = batchAgentReadinessRef.current.observeChatTurn(turn);

@@ -284,6 +284,34 @@ describe("the page and the plugin agree on every verb", () => {
     expect(screen.queryByText("Ready")).toBeNull();
   });
 
+  it("ignores an overflowed chat frame rather than guessing at the turns it dropped", async () => {
+    // Past its ceiling the frame carries NO turns — more settled inside the
+    // 120 ms window than it could name. A batch that big cannot report which of
+    // its kickoffs failed, and saying nothing is the honest answer: the row
+    // stays where the inference put it rather than being told a state no frame
+    // reported.
+    connected();
+    render(<BrowserEntry context={tabContext()} />);
+    const row = await issueRow("ADE-1");
+    await act(async () => {
+      fireEvent.click(row);
+    });
+    const dock = document.querySelector('[data-linear-action-dock="true"]') as HTMLElement | null;
+    await act(async () => {
+      fireEvent.click(within(dock!).getByRole("button", { name: /Launch lane \+ agent/i }));
+    });
+    await act(async () => {
+      fireEvent.click(await screen.findByRole("button", { name: /Launch 1 lane/i }, { timeout: 3_000 }));
+    });
+    await waitFor(() => {
+      expect(host.callsTo("invoke:pageLaunchAgent").length).toBe(1);
+    });
+    await act(async () => {
+      host.emit("host", { kind: "chat", ids: ["session-1"], overflow: true });
+    });
+    expect(screen.queryByText("Needs attention")).toBeNull();
+  });
+
   it("sends the reader to the lane stack after a launch, and to the project picker with no project", async () => {
     connected();
     render(<BrowserEntry context={tabContext()} />);
