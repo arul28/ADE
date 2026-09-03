@@ -164,7 +164,7 @@ export type PluginPageSyncStats = {
 
 export type PluginPageAssetSource = {
   manifest: (input: { pluginId: string }) => Promise<WebPluginPageManifest | null>;
-  read: (input: { pluginId: string; path: string }) => Promise<{ base64: string } | null>;
+  read: (input: { pluginId: string; path: string }) => Promise<{ contentBase64: string } | null>;
 };
 
 /**
@@ -215,9 +215,10 @@ export function planPluginPageFetch(
 /**
  * The entry html a page is drawn from.
  *
- * `index.html` at the root by convention, and the FIRST html file otherwise, so
- * a plugin whose Vite build emits `page.html` still opens. A tree with no html
- * at all has no page and is refused by the caller.
+ * The MANIFEST's `entry` first: it is the host's reading of the surface's
+ * `entryHtml`, and a browser peer has no other copy of it — a plugin that ships
+ * two pages would otherwise open whichever one sorted first. `index.html` and
+ * then the first html file are the fallbacks for a host that sent no entry.
  */
 export function resolvePluginPageEntry(paths: readonly string[], preferred?: string | null): string | null {
   const normalizedPreferred = preferred ? normalizePluginPagePath(preferred) : null;
@@ -261,7 +262,7 @@ export async function loadPluginPageBundle(input: {
   for (const entry of plan.fetch) {
     const file = await source.read({ pluginId, path: entry.path });
     if (!file) throw new Error("This computer couldn’t read that plugin’s page.");
-    const bytes = decodeBase64(file.base64);
+    const bytes = decodeBase64(file.contentBase64);
     // The host said how big the file is and then sent it. A disagreement is not
     // something to paper over with the larger of the two numbers: it means the
     // manifest this client planned against is not the tree it received.
@@ -292,7 +293,10 @@ export async function loadPluginPageBundle(input: {
     files.push({ path: entry.path, mime, bytes: new Uint8Array(await response.arrayBuffer()) });
   }
 
-  const entry = resolvePluginPageEntry(files.map((file) => file.path), input.entryHtml ?? null);
+  const entry = resolvePluginPageEntry(
+    files.map((file) => file.path),
+    manifest.entry || input.entryHtml || null,
+  );
   if (!entry) throw new Error("That plugin’s page has no entry file.");
 
   // Last, and only now. See the doc comment.

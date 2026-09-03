@@ -102,6 +102,7 @@ describe("planPluginPageFetch", () => {
   const manifest: WebPluginPageManifest = {
     version: "1.0.0",
     revision: 1,
+    entry: "index.html",
     files: [
       { path: "index.html", bytes: 100, sha256: "aaa" },
       { path: "assets/app.js", bytes: 200, sha256: "bbb" },
@@ -121,6 +122,7 @@ describe("planPluginPageFetch", () => {
       {
         version: "1.0.0",
         revision: 1,
+        entry: "index.html",
         files: [
           { path: "huge.js", bytes: PLUGIN_PAGE_MAX_FILE_BYTES + 1, sha256: "a" },
           { path: "run.sh", bytes: 10, sha256: "b" },
@@ -139,6 +141,7 @@ describe("loadPluginPageBundle", () => {
   const manifest: WebPluginPageManifest = {
     version: "2.0.0",
     revision: 4,
+    entry: "index.html",
     files: [
       { path: "index.html", bytes: 5, sha256: "h-index" },
       { path: "app.js", bytes: 5, sha256: "h-app" },
@@ -154,7 +157,7 @@ describe("loadPluginPageBundle", () => {
         manifest: async () => manifest,
         read: async ({ path }) => {
           reads.push(path);
-          return { base64: base64(path === "index.html" ? "<html></html>" : "export{}") };
+          return { contentBase64: base64(path === "index.html" ? "<html></html>" : "export{}") };
         },
       },
       caches,
@@ -174,7 +177,7 @@ describe("loadPluginPageBundle", () => {
     const caches = fakeCaches();
     const source = {
       manifest: async () => manifest,
-      read: async () => ({ base64: base64("x") }),
+      read: async () => ({ contentBase64: base64("x") }),
     };
     await loadPluginPageBundle({ pluginId: "p", source, caches, base: BASE });
 
@@ -185,7 +188,7 @@ describe("loadPluginPageBundle", () => {
         manifest: async () => manifest,
         read: async () => {
           reads += 1;
-          return { base64: base64("x") };
+          return { contentBase64: base64("x") };
         },
       },
       caches,
@@ -198,11 +201,34 @@ describe("loadPluginPageBundle", () => {
     // deleted only once the new page is complete.
     await loadPluginPageBundle({
       pluginId: "p",
-      source: { manifest: async () => ({ ...manifest, revision: 5 }), read: async () => ({ base64: base64("x") }) },
+      source: { manifest: async () => ({ ...manifest, revision: 5 }), read: async () => ({ contentBase64: base64("x") }) },
       caches,
       base: BASE,
     });
     expect([...caches.store.keys()]).toEqual([pluginPageCacheName("p", "2.0.0-5")]);
+  });
+
+  it("loads the entry the HOST named, not the first html in the tree", async () => {
+    const { bundle } = await loadPluginPageBundle({
+      pluginId: "p",
+      source: {
+        manifest: async () => ({
+          version: "1",
+          revision: 0,
+          entry: "settings.html",
+          files: [
+            { path: "index.html", bytes: 2, sha256: "a" },
+            { path: "settings.html", bytes: 2, sha256: "b" },
+          ],
+        }),
+        read: async () => ({ contentBase64: base64("<html></html>") }),
+      },
+      caches: fakeCaches(),
+      base: BASE,
+    });
+    // A browser peer holds no copy of the surface's `entryHtml`, so the
+    // manifest's `entry` is the only thing that can name the right page.
+    expect(bundle.entry).toBe("settings.html");
   });
 
   it("refuses a page whose tree has no html", async () => {
@@ -210,8 +236,8 @@ describe("loadPluginPageBundle", () => {
       loadPluginPageBundle({
         pluginId: "p",
         source: {
-          manifest: async () => ({ version: "1", revision: 0, files: [{ path: "app.js", bytes: 2, sha256: "s" }] }),
-          read: async () => ({ base64: base64("x") }),
+          manifest: async () => ({ version: "1", revision: 0, entry: "index.html", files: [{ path: "app.js", bytes: 2, sha256: "s" }] }),
+          read: async () => ({ contentBase64: base64("x") }),
         },
         caches: fakeCaches(),
         base: BASE,

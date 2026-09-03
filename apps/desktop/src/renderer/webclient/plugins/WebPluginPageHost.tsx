@@ -218,6 +218,7 @@ export function WebPluginPageHost({
               value: row.value,
             }));
           },
+          collectionsPut: collectionWriter(pluginId),
           configGet: () => readPluginConfig(pluginId),
           configSet: async (values) => {
             for (const [key, value] of Object.entries(values)) await writePluginConfig(pluginId, key, value);
@@ -349,6 +350,25 @@ export function WebPluginPageHost({
       <ConfirmDialog state={confirm.state} onClose={confirm.close} />
     </div>
   );
+}
+
+/**
+ * The plugin-collection writer this host serves, or undefined.
+ *
+ * Undefined is a real answer and the bridge turns it into the honest refusal:
+ * a host from before `plugins.putCollection` cannot store a page's row, and a
+ * save that resolves quietly there is worse than one that says so. Resolved per
+ * guest rather than once, because a project handoff changes the connected host
+ * while the page is open.
+ */
+function collectionWriter(pluginId: string): ((collection: string, key: string, value: unknown) => Promise<void>) | undefined {
+  const ade = (window as unknown as { ade?: Record<string, unknown> }).ade;
+  const bridge = (ade?.plugin ?? ade?.plugins) as
+    | { putCollection?: (input: { pluginId: string; collection: string; key: string; value: unknown }) => Promise<void> }
+    | undefined;
+  const put = bridge?.putCollection;
+  if (typeof put !== "function") return undefined;
+  return (collection, key, value) => put({ pluginId, collection, key, value });
 }
 
 /** The cache one bundle's files and bootstrap document live in. */

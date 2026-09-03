@@ -63,6 +63,19 @@ import { unavailableOnHost } from "./misc";
 const PAGE_ASSETS_MANIFEST_ACTION = "plugin.pageAssets.manifest";
 const PAGE_ASSETS_READ_ACTION = "plugin.pageAssets.read";
 
+/**
+ * The three writes a plugin PAGE makes, which no other web surface has.
+ *
+ * A panel reads rows out of a snapshot it already subscribed to; a page writes
+ * them. These are the host commands that serve that, and they are gated one by
+ * one below rather than as a group: a host can serve the config pair without
+ * the collection write, and a settings page that can save is worth having even
+ * where a list page cannot.
+ */
+const PUT_COLLECTION_ACTION = "plugins.putCollection";
+const GET_CONFIG_ACTION = "plugins.getConfig";
+const SET_CONFIG_ACTION = "plugins.setConfig";
+
 /** How long a one-shot panel read waits for its snapshot before giving up. */
 const PANEL_READ_TIMEOUT_MS = 8_000;
 
@@ -200,6 +213,45 @@ export type WebPluginBridge = {
    */
   readonly pageAssetsManifest?: (input: { pluginId: string }) => Promise<WebPluginPageManifest | null>;
   readonly pageAssetsRead?: (input: { pluginId: string; path: string }) => Promise<WebPluginPageFile | null>;
+  /**
+   * One row written into one of the plugin's own collections.
+   *
+   * MUTATING, so it never degrades to a fallback: a page whose save resolves
+   * quietly on a host that cannot store it is the exact failure the honest
+   * refusal exists to prevent.
+   */
+  readonly putCollection?: (input: {
+    pluginId: string;
+    collection: string;
+    key: string;
+    value: unknown;
+  }) => Promise<void>;
+  /**
+   * Write this plugin's declared settings.
+   *
+   * The BRIDGE's shape — `{pluginId, values}` — not the host command's. The
+   * command writes one key; `pluginRuntimeBridge` calls this member with a
+   * record, and publishing the command's per-key shape under this name would
+   * bind `{pluginId, values}` to it and write a setting called `undefined`. So
+   * the record is unrolled here, one command per key.
+   *
+   * There is deliberately no `getConfig` beside it: that member's contract is a
+   * WHOLE-record read, and the host serves only a per-key one. Publishing a
+   * per-key read under that name would answer every settings form with one
+   * field. Reads keep the existing fallback chain (`invoke("config.get")`).
+   */
+  readonly setConfig?: (input: {
+    pluginId: string;
+    values: Record<string, string | number | boolean | null>;
+  }) => Promise<void>;
+  /**
+   * One declared setting, read back, for a plugin PAGE.
+   *
+   * Named apart from `getConfig` for the reason above: it is a different
+   * question with a different answer shape, and the two must not be confused at
+   * a call site.
+   */
+  readonly pageConfigGet?: (input: { pluginId: string; key: string }) => Promise<unknown>;
 };
 
 /** One file of a plugin's built page, as the manifest lists it. */
@@ -216,11 +268,19 @@ export type WebPluginPageManifestEntry = { path: string; bytes: number; sha256: 
 export type WebPluginPageManifest = {
   version: string;
   revision: number;
+  /**
+   * The HTML to load, as the host read it off the manifest surface.
+   *
+   * The host's word rather than the client's guess: a browser peer has no copy
+   * of the plugin's `entryHtml`, and picking the first `.html` in the tree would
+   * open the wrong page for a plugin that ships more than one.
+   */
+  entry: string;
   files: WebPluginPageManifestEntry[];
 };
 
-/** One file's bytes, base64 on the wire. */
-export type WebPluginPageFile = { path: string; sha256: string; base64: string };
+/** One file's bytes. `contentBase64` is the field `SyncPluginPageAssetBlob` sends. */
+export type WebPluginPageFile = { path: string; bytes: number; sha256: string; contentBase64: string };
 
 /** What `plugins.list` returns over the wire. Wave A's record, not the UI's. */
 type RemotePluginRecord = {
@@ -606,6 +666,7 @@ export function createPluginsNamespace(infra: AdapterInfra): WebPluginBridge {
   const pageAssetsAvailable = (): boolean =>
     commands.hasAction(PAGE_ASSETS_MANIFEST_ACTION) && commands.hasAction(PAGE_ASSETS_READ_ACTION);
 
+
   /**
    * The page manifest, shape-checked before a byte of it is believed.
    *
@@ -627,6 +688,7 @@ export function createPluginsNamespace(infra: AdapterInfra): WebPluginBridge {
     const revision = typeof record.revision === "number" && Number.isFinite(record.revision)
       ? Math.trunc(record.revision)
       : 0;
+    const entry = typeof record.entry === "string" ? record.entry : "";
     const rawFiles = Array.isArray(record.files) ? record.files : [];
     const files: WebPluginPageManifestEntry[] = [];
     for (const entry of rawFiles) {
@@ -638,7 +700,7 @@ export function createPluginsNamespace(infra: AdapterInfra): WebPluginBridge {
       if (!path || !sha256 || bytes < 0) continue;
       files.push({ path, bytes, sha256 });
     }
-    return { version, revision, files };
+    return { version, revision, entry, files };
   };
 
   const pageAssetsRead = async (input: { pluginId: string; path: string }): Promise<WebPluginPageFile | null> => {
@@ -649,21 +711,59 @@ export function createPluginsNamespace(infra: AdapterInfra): WebPluginBridge {
     );
     if (!result || typeof result !== "object" || Array.isArray(result)) return null;
     const record = result as Record<string, unknown>;
-    // The host names the payload field; a sibling of `readArtifact` on the file
-    // channel has historically spelled it more than one way, and a page that
-    // refuses to load because the bytes arrived under `contentBase64` rather
-    // than `base64` would be a naming disagreement presented to the reader as a
-    // broken plugin. The ALTERNATIVES ARE READ, never invented: an answer with
-    // none of them is null, which draws the honest "couldn't load" card.
-    const base64 = ["base64", "contentBase64", "dataBase64", "content"]
-      .map((key) => record[key])
-      .find((value): value is string => typeof value === "string" && value.length > 0);
-    if (base64 === undefined) return null;
+    // `contentBase64`, the one field `SyncPluginPageAssetBlob` sends. Read
+    // rather than assumed: an answer without it is null, which draws the honest
+    // "couldn't load" card instead of decoding an empty string into a blank page.
+    const contentBase64 = record.contentBase64;
+    if (typeof contentBase64 !== "string" || contentBase64.length === 0) return null;
     return {
       path: typeof record.path === "string" ? record.path : input.path,
+      bytes: typeof record.bytes === "number" ? record.bytes : 0,
       sha256: typeof record.sha256 === "string" ? record.sha256 : "",
-      base64,
+      contentBase64,
     };
+  };
+
+  const putCollection = async (input: {
+    pluginId: string;
+    collection: string;
+    key: string;
+    value: unknown;
+  }): Promise<void> => {
+    await commands.call<unknown>(
+      PUT_COLLECTION_ACTION,
+      { pluginId: input.pluginId, collection: input.collection, key: input.key, value: input.value },
+      { fallback: unavailableOnHost("Saving plugin data isn’t available on this computer."), idempotent: false },
+    );
+  };
+
+  const pageConfigGet = async (input: { pluginId: string; key: string }): Promise<unknown> => {
+    // `{value}` rather than the bare value, because `null` is a legitimate
+    // setting and a bare `null` would be indistinguishable from "the command
+    // answered nothing". Unwrapped here so the caller sees what a page asked for.
+    const result = await commands.call<{ value?: unknown }>(
+      GET_CONFIG_ACTION,
+      { pluginId: input.pluginId, key: input.key },
+      { fallback: () => ({ value: null }), idempotent: true },
+    );
+    return result?.value ?? null;
+  };
+
+  const setConfig = async (input: {
+    pluginId: string;
+    values: Record<string, string | number | boolean | null>;
+  }): Promise<void> => {
+    // One command per key, in the order the caller wrote them. Sequential
+    // rather than parallel: each write answers the whole effective config, and
+    // two in flight against the same plugin would race for which answer the
+    // host built last.
+    for (const [key, value] of Object.entries(input.values)) {
+      await commands.call<{ config?: Record<string, unknown> }>(
+        SET_CONFIG_ACTION,
+        { pluginId: input.pluginId, key, value },
+        { fallback: unavailableOnHost("Saving plugin settings isn’t available on this computer."), idempotent: false },
+      );
+    }
   };
 
   // Mutations pass `idempotent: false`, which is what makes an unserved action
@@ -849,6 +949,15 @@ export function createPluginsNamespace(infra: AdapterInfra): WebPluginBridge {
     },
     get pageAssetsRead() {
       return pageAssetsAvailable() ? pageAssetsRead : undefined;
+    },
+    get putCollection() {
+      return commands.hasAction(PUT_COLLECTION_ACTION) ? putCollection : undefined;
+    },
+    get setConfig() {
+      return commands.hasAction(SET_CONFIG_ACTION) ? setConfig : undefined;
+    },
+    get pageConfigGet() {
+      return commands.hasAction(GET_CONFIG_ACTION) ? pageConfigGet : undefined;
     },
   });
 }
