@@ -2,7 +2,7 @@
 // `ade plugin` — the operator-facing half of the ADE plugin platform.
 //
 //   ade plugin list [--text|--json]
-//   ade plugin create <name> [--dir <path>]
+//   ade plugin create <name> [--dir <path>] [--webview]
 //   ade plugin install <source> [--ref <ref>] [--no-enable]
 //   ade plugin remove|uninstall <id>
 //   ade plugin enable <id> | disable <id> | reload <id>
@@ -78,7 +78,8 @@ export type PluginCommandDeps = {
 const HELP_PLUGIN = [
   "Usage:",
   "  ade plugin list [--text|--json]           List plugins installed on this machine",
-  "  ade plugin create <name> [--dir <path>]   Scaffold a new plugin directory",
+  "  ade plugin create <name> [--dir <path>] [--webview]",
+  "                                            Scaffold a new plugin directory",
   "  ade plugin install <source> [--ref <r>]   Install from a git URL or local path",
   "  ade plugin remove <id>                    Uninstall a plugin",
   "  ade plugin enable <id> | disable <id>     Turn a plugin on or off",
@@ -91,6 +92,7 @@ const HELP_PLUGIN = [
   "  it. JSON output is the default; pass --text for human-readable output.",
   "",
   "Flags:",
+  "  --webview     Scaffold a plugin whose surface is its own HTML page.",
   "  --no-enable   Install without enabling the plugin.",
   "  --limit <n>   Log lines to show (default 50).",
 ].join("\n");
@@ -344,7 +346,7 @@ function displayNameFromId(pluginId: string): string {
     .join(" ");
 }
 
-function scaffoldManifest(pluginId: string, displayName: string): string {
+function scaffoldManifest(pluginId: string, displayName: string, webview: boolean): string {
   return `${JSON.stringify(
     {
       name: pluginId,
@@ -353,7 +355,20 @@ function scaffoldManifest(pluginId: string, displayName: string): string {
       description: `${displayName} — an ADE plugin.`,
       vocabVersion: 1,
       entry: "index.js",
-      surfaces: [{ kind: "tab", id: pluginId, title: displayName, panelId: "main" }],
+      // A `webview` surface still names a `panelId`. The page is what desktop
+      // and hosted web draw; the panel is what the terminal and the phone draw,
+      // and a surface without one would simply be missing on two clients.
+      surfaces: [
+        webview
+          ? {
+            kind: "webview",
+            id: pluginId,
+            title: displayName,
+            panelId: "main",
+            entryHtml: "page/index.html",
+          }
+          : { kind: "tab", id: pluginId, title: displayName, panelId: "main" },
+      ],
       panels: [{ id: "main", schemaFile: "panels/main.json", title: displayName }],
       // A socket, so the scaffold has one action a person can actually PRESS
       // and one handler that reads a real context object. Both shapes — the
@@ -451,7 +466,152 @@ function scaffoldPanel(displayName: string): string {
   )}\n`;
 }
 
-function scaffoldReadme(pluginId: string, displayName: string): string {
+/**
+ * The page a `--webview` scaffold ships.
+ *
+ * Framework-free on purpose, and it is not laziness: the CSP the host serves is
+ * `script-src 'self'`, so there is no inline `<script>` and no CDN. Everything
+ * the page runs is a relative file inside the plugin's own directory, which is
+ * exactly the shape a real build (Vite into `dist/`) has to produce as well —
+ * an author who starts here does not discover the rule after writing a page
+ * that cannot load.
+ */
+function scaffoldPageHtml(displayName: string): string {
+  return [
+    "<!doctype html>",
+    '<html lang="en">',
+    "  <head>",
+    '    <meta charset="utf-8" />',
+    '    <meta name="viewport" content="width=device-width, initial-scale=1" />',
+    `    <title>${displayName}</title>`,
+    // A relative href, like every asset here: the page's origin is
+    // `ade-plugin://<id>`, and nothing outside it loads.
+    '    <link rel="stylesheet" href="./page.css" />',
+    "  </head>",
+    "  <body>",
+    '    <main id="app">',
+    `      <h1>${displayName}</h1>`,
+    '      <p id="status">Talking to ADE…</p>',
+    '      <button id="save" type="button">Save a note</button>',
+    "    </main>",
+    // Deferred and external. An inline script is refused by the CSP the host
+    // serves with this file, so this is the only shape that runs.
+    '    <script src="./page.js" defer></script>',
+    "  </body>",
+    "</html>",
+    "",
+  ].join("\n");
+}
+
+function scaffoldPageCss(): string {
+  return [
+    "/* The host publishes its palette as --ade-* custom properties through",
+    "   adePlugin.theme.get(). Read them rather than hard-coding a colour, so the",
+    "   page follows the reader's theme instead of fighting it. */",
+    "body {",
+    "  margin: 0;",
+    "  font: 13px/1.5 system-ui, -apple-system, sans-serif;",
+    "  color: var(--ade-text, #e8e6ef);",
+    "  background: var(--ade-bg, #0f0d14);",
+    "}",
+    "",
+    "#app {",
+    "  padding: 16px;",
+    "}",
+    "",
+    "button {",
+    "  font: inherit;",
+    "  padding: 6px 12px;",
+    "  border-radius: 6px;",
+    "  border: 1px solid var(--ade-border, #35323f);",
+    "  background: var(--ade-surface, #1a1822);",
+    "  color: inherit;",
+    "  cursor: pointer;",
+    "}",
+    "",
+  ].join("\n");
+}
+
+function scaffoldPageJs(pluginId: string): string {
+  return [
+    "// The page half of this plugin. Everything ADE offers a page is on",
+    "// `window.adePlugin` — a closed list, scoped to this plugin, with no plugin",
+    "// id on the wire: the host answers every call against this page's own origin.",
+    "//",
+    "// Check `adePlugin.version` before calling something an older ADE lacks.",
+    "",
+    "const bridge = window.adePlugin;",
+    'const status = document.getElementById("status");',
+    'const save = document.getElementById("save");',
+    "",
+    "function paintTheme(theme) {",
+    "  // The host hands over the same --ade-* tokens ADE paints itself with.",
+    "  for (const [name, value] of Object.entries(theme.tokens || {})) {",
+    "    document.documentElement.style.setProperty(name, value);",
+    "  }",
+    "}",
+    "",
+    "async function main() {",
+    "  if (!bridge) {",
+    '    status.textContent = "This page is not running inside ADE.";',
+    "    return;",
+    "  }",
+    "",
+    "  paintTheme(await bridge.theme.get());",
+    '  bridge.events.on("theme", paintTheme);',
+    "",
+    "  // `context.subject` is what the host attached this page to (a chat, a lane,",
+    "  // a PR) and is null on a full tab. `context.project` is the project the",
+    "  // window is bound to. Neither can be forged by the page.",
+    "  const subject = bridge.context && bridge.context.subject;",
+    "  const project = bridge.context && bridge.context.project;",
+    "  status.textContent = subject",
+    '    ? "Attached to a " + subject.kind + "."',
+    '    : "Project: " + ((project && project.root) || "none") + ".";',
+    "",
+    "  // Collections are this plugin's own storage. Declare one in plugin.json",
+    "  // before you write to it — an undeclared collection is refused, not created.",
+    '  bridge.events.on("changed", (change) => {',
+    '    if (change.collection === "notes") void render();',
+    "  });",
+    "",
+    "  save.addEventListener(\"click\", async () => {",
+    "    const answer = await bridge.ui.prompt({",
+    `      id: "note",`,
+    `      title: "What are you working on?",`,
+    "    });",
+    "    if (!answer) return;",
+    `    await bridge.collections.put("notes", String(Date.now()), { text: answer.text });`,
+    `    await bridge.ui.toast({ level: "success", message: "Saved." });`,
+    "  });",
+    "",
+    "  await render();",
+    "}",
+    "",
+    "async function render() {",
+    "  // `list` returns at most 500 rows. A full page means there may be more:",
+    "  // ask again with `after` set to the last key you got.",
+    `  const rows = await bridge.collections.list("notes", { limit: 50 });`,
+    `  const existing = document.getElementById("notes");`,
+    "  if (existing) existing.remove();",
+    '  const list = document.createElement("ul");',
+    '  list.id = "notes";',
+    "  for (const row of rows) {",
+    '    const item = document.createElement("li");',
+    '    item.textContent = String((row.value && row.value.text) || "");',
+    "    list.append(item);",
+    "  }",
+    `  document.getElementById("app").append(list);`,
+    "}",
+    "",
+    `void main().catch((error) => {`,
+    `  status.textContent = "${pluginId} failed: " + error.message;`,
+    "});",
+    "",
+  ].join("\n");
+}
+
+function scaffoldReadme(pluginId: string, displayName: string, webview: boolean): string {
   return [
     `# ${displayName}`,
     "",
@@ -462,6 +622,23 @@ function scaffoldReadme(pluginId: string, displayName: string): string {
     "- `plugin.json` — manifest: identity, surfaces, panels, sockets, CLI words.",
     "- `index.js` — plugin code, run on the owning machine in a supervised child process.",
     "- `panels/main.json` — the panel's declarative vocabulary schema.",
+    ...(webview
+      ? [
+        "- `page/index.html`, `page/page.js`, `page/page.css` — the plugin's own page.",
+        "",
+        "## The page",
+        "",
+        "This plugin's surface is a `webview`: ADE draws `page/index.html` in a",
+        "sandboxed guest with its own origin, `ade-plugin://" + pluginId + "`. The page",
+        "talks to ADE through `window.adePlugin` and reaches nothing else — no Node,",
+        "no `window.ade`, no raw IPC. The Content-Security-Policy the host serves is",
+        "`script-src 'self'`, so every script is a separate file inside this",
+        "directory and loads by a relative path; an inline `<script>` will not run,",
+        "and neither will a CDN. Build with anything you like as long as it emits",
+        "plain files here and you commit them. The panel in `panels/main.json` is",
+        "what the terminal and the phone draw, so keep it working.",
+      ]
+      : []),
     "",
     "## Develop",
     "",
@@ -491,8 +668,9 @@ function scaffoldReadme(pluginId: string, displayName: string): string {
 
 export function runPluginCreate(args: string[]): PluginCliResult {
   const { format, rest: formatRest } = extractFormat(args);
-  const { value: dirOption, rest } = readOption(formatRest, "--dir");
-  const pluginId = requirePluginId(rest[0], "ade plugin create <name> [--dir <path>]");
+  const { value: dirOption, rest: afterDir } = readOption(formatRest, "--dir");
+  const { present: webview, rest } = readFlag(afterDir, "--webview");
+  const pluginId = requirePluginId(rest[0], "ade plugin create <name> [--dir <path>] [--webview]");
   const parent = path.resolve(dirOption ?? process.cwd());
   const root = path.join(parent, pluginId);
   if (fs.existsSync(root)) {
@@ -501,12 +679,20 @@ export function runPluginCreate(args: string[]): PluginCliResult {
 
   const displayName = displayNameFromId(pluginId);
   const files: Record<string, string> = {
-    [PLUGIN_MANIFEST_FILE]: scaffoldManifest(pluginId, displayName),
+    [PLUGIN_MANIFEST_FILE]: scaffoldManifest(pluginId, displayName, webview),
     "index.js": scaffoldEntry(pluginId, displayName),
     [path.join("panels", "main.json")]: scaffoldPanel(displayName),
-    "README.md": scaffoldReadme(pluginId, displayName),
+    "README.md": scaffoldReadme(pluginId, displayName, webview),
+    ...(webview
+      ? {
+        [path.join("page", "index.html")]: scaffoldPageHtml(displayName),
+        [path.join("page", "page.js")]: scaffoldPageJs(pluginId),
+        [path.join("page", "page.css")]: scaffoldPageCss(),
+      }
+      : {}),
   };
   fs.mkdirSync(path.join(root, "panels"), { recursive: true });
+  if (webview) fs.mkdirSync(path.join(root, "page"), { recursive: true });
   for (const [relative, contents] of Object.entries(files)) {
     fs.writeFileSync(path.join(root, relative), contents, "utf8");
   }
@@ -524,7 +710,7 @@ export function runPluginCreate(args: string[]): PluginCliResult {
       exitCode: 0,
     };
   }
-  return jsonOutput({ pluginId, displayName, root, files: written });
+  return jsonOutput({ pluginId, displayName, root, webview, files: written });
 }
 
 // ---------------------------------------------------------------------------
@@ -912,8 +1098,14 @@ async function runPluginDev(
     // Platforms without recursive fs.watch still need the two directories that
     // actually change during development.
     watch(target.root, false);
-    const panelsDir = path.join(target.root, "panels");
-    if (fs.existsSync(panelsDir)) watch(panelsDir, false);
+    // The directories a plugin actually changes during development. `page` is
+    // here for the same reason `panels` is: on a platform without recursive
+    // `fs.watch` (a network volume, some Linux setups), a saved page file would
+    // otherwise never reload the plugin.
+    for (const child of ["panels", "page"]) {
+      const directory = path.join(target.root, child);
+      if (fs.existsSync(directory)) watch(directory, false);
+    }
   }
 
   await new Promise<void>((resolve) => {

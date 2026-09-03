@@ -10,7 +10,7 @@
  *
  * ## The stability promise
  *
- * BRIDGE_VERSION is 1, and it moves the way `PLUGIN_SDK_VERSION` moves: methods
+ * BRIDGE_VERSION is 2, and it moves the way `PLUGIN_SDK_VERSION` moves: methods
  * are added, never removed or re-shaped. `window.adePlugin.version` is what a
  * page checks before calling something a v1 host would not have. Every call
  * carries the version it was written against, so the host can refuse a page
@@ -41,15 +41,22 @@ import { contextBridge, ipcRenderer } from "electron";
 
 import { stripElectronErrorWrapper } from "../shared/codedError";
 import { IPC } from "../shared/ipc";
+import type { PluginActionPrompt, PluginActionPromptAnswer } from "../shared/plugins/sdk";
 import {
+  isPluginWebviewEventName,
   PLUGIN_WEBVIEW_BRIDGE_VERSION,
   PLUGIN_WEBVIEW_EVENTS,
   type AdePluginWebviewBridge,
-  type PluginWebviewChangeEvent,
+  type PluginWebviewComposerAttach,
+  type PluginWebviewConfirm,
   type PluginWebviewContext,
   type PluginWebviewEventName,
   type PluginWebviewHandshake,
+  type PluginWebviewHostKind,
+  type PluginWebviewListOptions,
   type PluginWebviewMethod,
+  type PluginWebviewThemeSnapshot,
+  type PluginWebviewToast,
 } from "../shared/plugins/webviewBridge";
 
 /**
@@ -102,6 +109,51 @@ function readHandshake(): PluginWebviewHandshake {
 
 const handshake = readHandshake();
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === "object" && !Array.isArray(value);
+}
+
+/**
+ * One IPC listener, fanned out to the page's own listeners by event name.
+ *
+ * The host sends every push on a single channel with the name inside the frame
+ * (`PluginWebviewEventFrame`), so this file subscribes once and routes. A
+ * channel per name would mean the preload guessing at names a future host might
+ * add, and a page hearing nothing when it guessed wrong.
+ */
+const eventListeners = new Map<PluginWebviewEventName, Set<(payload: unknown) => void>>();
+let eventChannelAttached = false;
+
+function subscribeToEvent(
+  event: PluginWebviewEventName,
+  listener: (payload: unknown) => void,
+): () => void {
+  if (!eventChannelAttached) {
+    eventChannelAttached = true;
+    ipcRenderer.on(IPC.pluginWebviewEvent, (_ipcEvent: unknown, frame: unknown) => {
+      // A frame that names no event is read as `changed`: that is what the v1
+      // host sent bare on this channel, and a page written against v1 must keep
+      // hearing its collection changes from a host that has not been restarted.
+      const named = isRecord(frame) && isPluginWebviewEventName(frame.event) ? frame.event : null;
+      const name: PluginWebviewEventName = named ?? "changed";
+      const payload = named ? (frame as Record<string, unknown>).payload : frame;
+      for (const registered of [...(eventListeners.get(name) ?? [])]) {
+        try {
+          registered(payload ?? {});
+        } catch {
+          // One page listener throwing must not stop the others hearing it.
+        }
+      }
+    });
+  }
+  const set = eventListeners.get(event) ?? new Set<(payload: unknown) => void>();
+  set.add(listener);
+  eventListeners.set(event, set);
+  return () => {
+    eventListeners.get(event)?.delete(listener);
+  };
+}
+
 const adePlugin: AdePluginWebviewBridge = {
   version: PLUGIN_WEBVIEW_BRIDGE_VERSION,
   pluginId: handshake.pluginId,
@@ -112,7 +164,7 @@ const adePlugin: AdePluginWebviewBridge = {
     put: async (collection: string, key: string, value: unknown) => {
       await call("collections.put", { collection, key, value });
     },
-    list: async (collection: string, options?: { keyPrefix?: string; limit?: number }) => {
+    list: async (collection: string, options?: PluginWebviewListOptions) => {
       const rows = await call("collections.list", { collection, ...(options ? { options } : {}) });
       return Array.isArray(rows) ? rows as { key: string; value: unknown }[] : [];
     },
@@ -144,25 +196,93 @@ const adePlugin: AdePluginWebviewBridge = {
   },
 
   events: {
-    on: (event: PluginWebviewEventName, listener: (payload: PluginWebviewChangeEvent) => void) => {
+    on: ((event: PluginWebviewEventName, listener: (payload: never) => void) => {
       // Checked against the closed list rather than ignored: a page that
       // subscribed to a name this host does not send would sit waiting forever
       // for an event, which is indistinguishable from a broken plugin.
       if (!PLUGIN_WEBVIEW_EVENTS.some((name) => name === event)) {
         throw new Error(`Unknown plugin event: ${String(event)}`);
       }
-      const forward = (_event: unknown, payload: unknown): void => {
-        listener((payload ?? {}) as PluginWebviewChangeEvent);
-      };
-      ipcRenderer.on(IPC.pluginWebviewEvent, forward);
-      return () => {
-        ipcRenderer.removeListener(IPC.pluginWebviewEvent, forward);
-      };
-    },
+      return subscribeToEvent(event, listener as (payload: unknown) => void);
+    }) as AdePluginWebviewBridge["events"]["on"],
   },
 
   openDeeplink: async (url: string) => {
     await call("openDeeplink", { url });
+  },
+
+  openSettings: async (target: { entryId: string } | { socketId: string }) => {
+    await call("openSettings", { ...target });
+  },
+
+  surface: {
+    close: async () => {
+      await call("surface.close", {});
+    },
+  },
+
+  composer: {
+    attach: async (issue: PluginWebviewComposerAttach) => {
+      await call("composer.attach", { issue });
+    },
+    insert: async (text: string) => {
+      await call("composer.insert", { text });
+    },
+  },
+
+  ui: {
+    toast: async (toast: PluginWebviewToast) => {
+      const answer = await call("ui.toast", { toast });
+      const id = isRecord(answer) && typeof answer.id === "string" ? answer.id : "";
+      return { id };
+    },
+    dismissToast: async (id: string) => {
+      await call("ui.dismissToast", { id });
+    },
+    prompt: async (prompt: PluginActionPrompt) => {
+      const answer = await call("ui.prompt", { prompt });
+      return (answer ?? null) as PluginActionPromptAnswer | null;
+    },
+    confirm: async (request: PluginWebviewConfirm) => {
+      return (await call("ui.confirm", { confirm: request })) === true;
+    },
+  },
+
+  clipboard: {
+    read: async () => {
+      const text = await call("clipboard.read", {});
+      return typeof text === "string" ? text : "";
+    },
+    write: async (text: string) => {
+      await call("clipboard.write", { text });
+    },
+  },
+
+  theme: {
+    get: async () => {
+      const theme = await call("theme.get", {});
+      return (theme ?? { scheme: "dark", tokens: {} }) as PluginWebviewThemeSnapshot;
+    },
+  },
+
+  host: {
+    // The unsubscribe function is handed back rather than a handle the page has
+    // to keep: a page that loses the id has no way to stop a subscription, and
+    // the closure cannot be forged into someone else's.
+    subscribe: async (options: { kinds: PluginWebviewHostKind[] }) => {
+      const answer = await call("host.subscribe", { kinds: options.kinds });
+      const subscriptionId = isRecord(answer) && typeof answer.subscriptionId === "string"
+        ? answer.subscriptionId
+        : "";
+      let stopped = false;
+      return () => {
+        if (stopped || !subscriptionId) return;
+        stopped = true;
+        void call("host.unsubscribe", { subscriptionId }).catch(() => {
+          // A guest that is already gone has nothing to unsubscribe from.
+        });
+      };
+    },
   },
 };
 

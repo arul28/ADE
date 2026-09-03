@@ -38,9 +38,17 @@
 
 import type { PluginSurfaceContext } from "./context";
 import { isValidPluginId } from "./manifest";
+import type { PluginActionPrompt, PluginActionPromptAnswer } from "./sdk";
 
-/** Bumped only for an additive change. See the module header. */
-export const PLUGIN_WEBVIEW_BRIDGE_VERSION = 1;
+/**
+ * Bumped only for an additive change. See the module header.
+ *
+ * v2 adds the host verbs a compiled page needs to behave like ADE's own UI —
+ * settings, the composer, toasts, prompts, confirmations, the clipboard, the
+ * theme, live host entities and the project the window is bound to — plus the
+ * `theme` and `host` events. Nothing from v1 moved.
+ */
+export const PLUGIN_WEBVIEW_BRIDGE_VERSION = 2;
 
 /**
  * The host-injected subject a plugin page is attached to.
@@ -66,7 +74,70 @@ export type PluginWebviewContext = {
   subject: PluginSurfaceContext | null;
   /** A plugin-authored hint, e.g. from an `openWebview` action. */
   pointer?: Record<string, unknown>;
+  /**
+   * The manifest surface this guest draws, as the renderer named it when it
+   * built the source URL. Read at attach, exactly like `subject`.
+   *
+   * The host needs it to say WHICH surface a relayed request came from — a
+   * popover asking to close itself is a different instruction from a tab asking
+   * the same thing — and a page may read it to lay itself out for the placement
+   * it actually got.
+   */
+  surfaceId?: string;
+  /** Where the host put this guest. See {@link PLUGIN_WEBVIEW_PLACEMENTS}. */
+  placement?: PluginWebviewPlacement;
+  /**
+   * The project the hosting window is bound to. HOST-WRITTEN, never decoded
+   * from the source URL.
+   *
+   * `context.project` sits beside `context.subject` because a page asks the
+   * same question about both — "what am I looking at?" — and both answers are
+   * the host's own word. The difference is where they are captured: a subject
+   * is fixed at attach from the URL the renderer chose, and the project is
+   * read at handshake from the window's own binding, so a page cannot name a
+   * project it was not opened in. Null when the window is bound to nothing.
+   */
+  project?: PluginWebviewProjectContext | null;
 };
+
+/**
+ * The project a plugin page is running against.
+ *
+ * `binding` is the fact a page cannot derive: `remote` means the checkout lives
+ * on another machine and `root` is that machine's path, so a page must not
+ * present it as something the user can open here. `projectId` is null when the
+ * window has no project open at all, which is an ordinary state (the welcome
+ * screen), not an error.
+ */
+export type PluginWebviewProjectContext = {
+  projectId: string | null;
+  root: string | null;
+  binding: "local" | "remote";
+};
+
+/**
+ * Where the host drew a guest.
+ *
+ * A closed list because it is half of the relay's addressing: `surface.close`
+ * means "close the popover", "close the picker" or "do nothing" depending on
+ * this value alone, and a placement the renderer does not know would be a
+ * request it silently drops.
+ */
+export const PLUGIN_WEBVIEW_PLACEMENTS = [
+  "tab",
+  "pane",
+  "drawer",
+  "overlay",
+  "popover",
+  "settings-section",
+  "composer-picker",
+] as const;
+
+export type PluginWebviewPlacement = (typeof PLUGIN_WEBVIEW_PLACEMENTS)[number];
+
+export function isPluginWebviewPlacement(value: unknown): value is PluginWebviewPlacement {
+  return PLUGIN_WEBVIEW_PLACEMENTS.some((placement) => placement === value);
+}
 
 /**
  * The whole context envelope, as bytes on the source URL, is capped here.
@@ -167,7 +238,23 @@ export function decodePluginWebviewContext(raw: string | null | undefined): Plug
   const pointerValue = pointer && typeof pointer === "object" && !Array.isArray(pointer)
     ? (pointer as Record<string, unknown>)
     : undefined;
-  return { subject: subjectValue, ...(pointerValue ? { pointer: pointerValue } : {}) };
+  // `surfaceId` and `placement` come off the URL because the RENDERER wrote it,
+  // and the renderer is the only party that knows where it put the guest. They
+  // are still shape-checked: a placement outside the closed list would make the
+  // relay address a host the app does not draw.
+  const surfaceId = typeof record.surfaceId === "string" && record.surfaceId.length > 0
+    ? record.surfaceId
+    : undefined;
+  const placement = isPluginWebviewPlacement(record.placement) ? record.placement : undefined;
+  // `project` is deliberately NOT read here. It is the host's own word about the
+  // window's binding, stamped at handshake; accepting one off the URL would let
+  // a recycled or hand-typed address name a project the window is not bound to.
+  return {
+    subject: subjectValue,
+    ...(pointerValue ? { pointer: pointerValue } : {}),
+    ...(surfaceId ? { surfaceId } : {}),
+    ...(placement ? { placement } : {}),
+  };
 }
 
 /**
@@ -280,6 +367,22 @@ export const PLUGIN_WEBVIEW_METHODS = [
   "config.get",
   "config.set",
   "openDeeplink",
+  // v2. Everything below reaches ADE's own UI or the machine around it, which
+  // is why each one is named here rather than folded into a generic "ask the
+  // host" verb: the list IS the permission model, and a page cannot widen it.
+  "openSettings",
+  "surface.close",
+  "composer.attach",
+  "composer.insert",
+  "ui.toast",
+  "ui.dismissToast",
+  "ui.prompt",
+  "ui.confirm",
+  "clipboard.read",
+  "clipboard.write",
+  "theme.get",
+  "host.subscribe",
+  "host.unsubscribe",
 ] as const;
 
 export type PluginWebviewMethod = (typeof PLUGIN_WEBVIEW_METHODS)[number];
@@ -309,9 +412,165 @@ export type PluginWebviewChangeEvent = {
 };
 
 /** The event names {@link AdePluginWebviewBridge.events.on} accepts. */
-export const PLUGIN_WEBVIEW_EVENTS = ["changed"] as const;
+export const PLUGIN_WEBVIEW_EVENTS = ["changed", "theme", "host"] as const;
 
 export type PluginWebviewEventName = (typeof PLUGIN_WEBVIEW_EVENTS)[number];
+
+export function isPluginWebviewEventName(value: unknown): value is PluginWebviewEventName {
+  return PLUGIN_WEBVIEW_EVENTS.some((name) => name === value);
+}
+
+/**
+ * One push to a guest, on the single event channel.
+ *
+ * The name rides IN the frame rather than in the channel because a guest gets
+ * exactly one `ipcRenderer.on` in its preload: a channel per event name would
+ * mean the preload subscribing to every name a future host might send, and a
+ * page that heard nothing when the host added a fourth. The preload fans one
+ * channel out to the page's own listeners by reading `event`.
+ */
+export type PluginWebviewEventFrame = {
+  event: PluginWebviewEventName;
+  payload: unknown;
+};
+
+/**
+ * The theme a page paints itself with.
+ *
+ * `scheme` is what the app calls dark or light; `tokens` are the `--ade-*`
+ * custom properties with their leading dashes intact, so a page can write them
+ * straight onto its own `:root` and match ADE without knowing the palette. It
+ * is a SNAPSHOT: the renderer republishes on every theme change, and the guest
+ * hears the new one as the `theme` event.
+ */
+export type PluginWebviewThemeSnapshot = {
+  scheme: "dark" | "light";
+  tokens: Record<string, string>;
+};
+
+/** Ceilings on a published theme, so one window cannot push a payload at guests. */
+export const PLUGIN_WEBVIEW_THEME_MAX_TOKENS = 400;
+export const PLUGIN_WEBVIEW_THEME_TOKEN_MAX_CHARS = 240;
+
+/**
+ * Trim a published theme to what a guest may be handed.
+ *
+ * Shape-checked rather than trusted even though the publisher is ADE's own
+ * renderer: this value crosses into an untrusted guest, and a token map that
+ * grew without a bound would be a per-frame cost paid by every plugin page.
+ */
+export function sanitizePluginWebviewTheme(value: unknown): PluginWebviewThemeSnapshot | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const record = value as Record<string, unknown>;
+  const scheme = record.scheme === "light" ? "light" : record.scheme === "dark" ? "dark" : null;
+  if (!scheme) return null;
+  const rawTokens = record.tokens;
+  const tokens: Record<string, string> = {};
+  if (rawTokens && typeof rawTokens === "object" && !Array.isArray(rawTokens)) {
+    for (const [name, tokenValue] of Object.entries(rawTokens as Record<string, unknown>)) {
+      if (Object.keys(tokens).length >= PLUGIN_WEBVIEW_THEME_MAX_TOKENS) break;
+      if (typeof tokenValue !== "string") continue;
+      if (tokenValue.length > PLUGIN_WEBVIEW_THEME_TOKEN_MAX_CHARS) continue;
+      if (!name.startsWith("--")) continue;
+      tokens[name] = tokenValue;
+    }
+  }
+  return { scheme, tokens };
+}
+
+/**
+ * The host entity families a page may follow live.
+ *
+ * The same three the SDK's change events name, and for the same reason a page
+ * needs them: a Linear browser that does not hear about a new lane draws a
+ * stale list until the reader reloads it.
+ */
+export const PLUGIN_WEBVIEW_HOST_KINDS = ["lane", "session", "pr"] as const;
+
+export type PluginWebviewHostKind = (typeof PLUGIN_WEBVIEW_HOST_KINDS)[number];
+
+export function isPluginWebviewHostKind(value: unknown): value is PluginWebviewHostKind {
+  return PLUGIN_WEBVIEW_HOST_KINDS.some((kind) => kind === value);
+}
+
+/**
+ * How long the host gathers entity changes before it tells a guest.
+ *
+ * A rebase moves a dozen lanes in a few milliseconds and a PR poll finishes a
+ * whole page of them at once. Delivered raw that is a dozen wake-ups of a
+ * webview that will redraw once either way, so the host batches and sends the
+ * union.
+ */
+export const PLUGIN_WEBVIEW_HOST_COALESCE_MS = 120;
+
+/** Ids one coalesced frame carries before it says `overflow` instead. */
+export const PLUGIN_WEBVIEW_HOST_IDS_MAX = 200;
+
+/**
+ * "Something in this family moved."
+ *
+ * Identity and nothing else, the same rule the entity bus itself keeps: no
+ * titles, no branch names, no diff. `overflow` means more ids moved than the
+ * frame carries, so the page must refetch the family rather than patch the ids
+ * it was given.
+ */
+export type PluginWebviewHostEvent = {
+  kind: PluginWebviewHostKind;
+  ids: string[];
+  overflow: boolean;
+};
+
+/**
+ * A toast a page asked ADE to show. Same levels ADE's own toasts use.
+ *
+ * `actionId` is the plugin's own action name: pressing the toast's button
+ * invokes it, which is how a page raises a notice it can still act on after the
+ * page itself is gone.
+ */
+export const PLUGIN_WEBVIEW_TOAST_LEVELS = ["info", "success", "warning", "error"] as const;
+
+export type PluginWebviewToastLevel = (typeof PLUGIN_WEBVIEW_TOAST_LEVELS)[number];
+
+export function isPluginWebviewToastLevel(value: unknown): value is PluginWebviewToastLevel {
+  return PLUGIN_WEBVIEW_TOAST_LEVELS.some((level) => level === value);
+}
+
+export const PLUGIN_WEBVIEW_TOAST_MESSAGE_MAX_CHARS = 240;
+export const PLUGIN_WEBVIEW_TOAST_LABEL_MAX_CHARS = 32;
+
+export type PluginWebviewToast = {
+  level: PluginWebviewToastLevel;
+  message: string;
+  actionLabel?: string;
+  actionId?: string;
+};
+
+export const PLUGIN_WEBVIEW_CONFIRM_TITLE_MAX_CHARS = 120;
+export const PLUGIN_WEBVIEW_CONFIRM_BODY_MAX_CHARS = 600;
+
+/** A yes/no the page cannot draw itself, because it must sit above the guest. */
+export type PluginWebviewConfirm = {
+  title: string;
+  body?: string;
+  confirmLabel?: string;
+  cancelLabel?: string;
+  destructive?: boolean;
+};
+
+/**
+ * An issue a page asked to attach to the composer.
+ *
+ * The same five facts the socket `{composer}` answer carries for an issue chip.
+ * `identifier` is the human key (`ADE-123`), which is what the chip draws;
+ * `issueId` is the tracker's own id, which is what a later action resolves.
+ */
+export type PluginWebviewComposerAttach = {
+  provider: string;
+  issueId: string;
+  identifier: string;
+  title: string;
+  url?: string | null;
+};
 
 /**
  * The host's synchronous answer to the preload's attach-time handshake.
@@ -328,6 +587,174 @@ export type PluginWebviewEventName = (typeof PLUGIN_WEBVIEW_EVENTS)[number];
 export type PluginWebviewHandshake = {
   pluginId: string;
   context: PluginWebviewContext | null;
+};
+
+/**
+ * Rows one `collections.list` page returns, and the ceiling on what a page may
+ * ask for.
+ *
+ * A page draws a list, not a table — but a Linear browser genuinely has more
+ * than 500 issues cached, so the cap is a PAGE size rather than a wall: a
+ * result of exactly this many rows means "ask again with `after` set to the
+ * last key you got".
+ */
+export const PLUGIN_WEBVIEW_LIST_MAX_ROWS = 500;
+
+/** What `collections.list` accepts. `after` is the exclusive cursor. */
+export type PluginWebviewListOptions = {
+  keyPrefix?: string;
+  limit?: number;
+  /** The last key of the previous page. Rows at or before it are skipped. */
+  after?: string;
+};
+
+// ---------------------------------------------------------------------------
+// The host-window relay
+// ---------------------------------------------------------------------------
+
+/**
+ * The verbs the MAIN process cannot answer on its own.
+ *
+ * The split is not arbitrary. Main owns the machine — the clipboard, the
+ * browser, the plugin registry — so it answers `clipboard.*`, `theme.get`,
+ * `host.subscribe` and `context.project` directly. Everything here is a piece
+ * of ADE's OWN UI: the settings page, the composer, the toast stack, the prompt
+ * sheet, the popover that is drawing the guest. Only the renderer of the window
+ * that owns the guest can do any of it, so main forwards the request and waits
+ * for that window's answer.
+ *
+ * `actionResult` is the odd one out and the reason item 3 of the spec exists: a
+ * page's `invoke` may come back carrying the same control-flow answers a socket
+ * press honours (`navigate`, `openSettings`, `composer`, `dialog`, `message`),
+ * and the renderer already knows how to apply all of them. Rather than teach
+ * main to decompose the result into four more verbs, main hands the renderer the
+ * raw result under this verb and the renderer runs its existing reader — so a
+ * page gets the socket-path behaviour without a second implementation of it.
+ */
+export const PLUGIN_WEBVIEW_UI_VERBS = [
+  "openSettings",
+  "surface.close",
+  "composer.attach",
+  "composer.insert",
+  "ui.toast",
+  "ui.dismissToast",
+  "ui.prompt",
+  "ui.confirm",
+  "actionResult",
+] as const;
+
+export type PluginWebviewUiVerb = (typeof PLUGIN_WEBVIEW_UI_VERBS)[number];
+
+export function isPluginWebviewUiVerb(value: unknown): value is PluginWebviewUiVerb {
+  return PLUGIN_WEBVIEW_UI_VERBS.some((verb) => verb === value);
+}
+
+/**
+ * Main → the owning window, on `IPC.pluginWebviewUiRequest`.
+ *
+ * Everything the renderer needs to act without trusting the guest: WHO asked
+ * (`pluginId`, and it is the host's own derivation, never the page's claim),
+ * WHERE it is drawn (`surfaceId` + `placement`, captured at attach), WHICH
+ * guest (`guestKey`, the guest's `webContents` id as a string — the renderer
+ * reads the same number off its own element with `getWebContentsId()`), and
+ * WHAT was asked. The renderer must answer EVERY request exactly once on
+ * `IPC.pluginWebviewUiResponse` with the same `requestId`; a request it does not
+ * recognize is answered `{ ok: false }`, never dropped, or the page's promise
+ * hangs until the timeout.
+ */
+export type PluginWebviewUiRequest = {
+  requestId: string;
+  guestKey: string;
+  pluginId: string;
+  surfaceId: string | null;
+  placement: PluginWebviewPlacement | null;
+  verb: PluginWebviewUiVerb;
+  args: Record<string, unknown>;
+};
+
+/**
+ * The owning window → main, on `IPC.pluginWebviewUiResponse`.
+ *
+ * `ok: false` with a `message` is a refusal the page sees as a rejected promise
+ * carrying that sentence. `value` is the verb's answer: `{ id }` for a toast,
+ * the answer or null for `ui.prompt`, a boolean for `ui.confirm`, and undefined
+ * for the verbs that only do something.
+ */
+export type PluginWebviewUiResponse = {
+  requestId: string;
+  ok: boolean;
+  value?: unknown;
+  message?: string;
+};
+
+/**
+ * How long main waits for the window before it gives the page an answer.
+ *
+ * Two numbers because two different things are being waited on. The short one
+ * is a renderer round trip — a toast, a composer edit, a settings navigation —
+ * and a window that has not answered in ten seconds is wedged, not slow. The
+ * long one covers `ui.prompt` and `ui.confirm`, where the wait is a PERSON
+ * reading a question; ten minutes is long enough that nobody is timed out
+ * mid-thought and short enough that a forgotten sheet does not pin a promise
+ * for the life of the app.
+ */
+export const PLUGIN_WEBVIEW_UI_TIMEOUT_MS = 10_000;
+export const PLUGIN_WEBVIEW_UI_ASK_TIMEOUT_MS = 10 * 60_000;
+
+/** Which timeout a verb gets. See the two constants above. */
+export function pluginWebviewUiTimeoutMs(verb: PluginWebviewUiVerb): number {
+  return verb === "ui.prompt" || verb === "ui.confirm"
+    ? PLUGIN_WEBVIEW_UI_ASK_TIMEOUT_MS
+    : PLUGIN_WEBVIEW_UI_TIMEOUT_MS;
+}
+
+/**
+ * The guest's key in the relay, from its `webContents` id.
+ *
+ * A string rather than the bare number so it cannot be confused with a window
+ * id or a surface index at a call site, and prefixed so a logged key says what
+ * it is.
+ */
+export function pluginWebviewGuestKey(webContentsId: number): string {
+  return `guest-${webContentsId}`;
+}
+
+// ---------------------------------------------------------------------------
+// Hot reload
+// ---------------------------------------------------------------------------
+
+/**
+ * Main → the renderer, on `IPC.pluginWebviewReload`: this plugin's bytes moved.
+ *
+ * The renderer recreates every guest of `pluginId` — a new element, not a
+ * `reload()` on the old one, because the point is a fresh origin load with the
+ * new files rather than a re-run of the ones the guest already fetched. Keying
+ * the element on `${version}:${revision}` is enough to do that.
+ *
+ * `revision` counts installs within this app run. It exists because
+ * `ade plugin dev` re-copies a source tree over the installed one without
+ * changing `version`, and a dev loop that does not repaint the page is the
+ * whole reason a plugin author reaches for Try again.
+ */
+export type PluginWebviewReloadEvent = {
+  pluginId: string;
+  version: string;
+  revision: number;
+};
+
+/**
+ * The renderer → main, on `IPC.pluginWebviewSurfaceState`: this guest's surface
+ * is (or is no longer) on screen.
+ *
+ * A relayed request from a guest whose surface is detached is refused
+ * `not_permitted`. A popover that was dismissed while its page had a confirm in
+ * flight must not be able to re-open ADE's UI on the way out, and "the element
+ * is gone" is not something main can see on its own — a guest survives its own
+ * detach for as long as the renderer keeps the element alive.
+ */
+export type PluginWebviewSurfaceState = {
+  guestKey: string;
+  attached: boolean;
 };
 
 /**
@@ -357,13 +784,30 @@ export type AdePluginWebviewBridge = {
   collections: {
     get(collection: string, key: string): Promise<unknown>;
     put(collection: string, key: string, value: unknown): Promise<void>;
+    /**
+     * One page of rows, newest ceiling {@link PLUGIN_WEBVIEW_LIST_MAX_ROWS}.
+     *
+     * A full page means there may be more: ask again with `after` set to the
+     * last key you received. Rows come back in the host's own key order, so
+     * paging this way cannot skip or repeat a row.
+     */
     list(
       collection: string,
-      options?: { keyPrefix?: string; limit?: number },
+      options?: PluginWebviewListOptions,
     ): Promise<{ key: string; value: unknown }[]>;
   };
 
-  /** Call one of the plugin's own named action handlers. */
+  /**
+   * Call one of the plugin's own named action handlers.
+   *
+   * The result is handed back raw — AND its control-flow answers are applied
+   * first. A handler that returns `{navigate}`, `{openSettings}`, `{composer}`,
+   * `{dialog}`, `{message}`, `{openUrl}` or `{authSession}` moves ADE exactly
+   * as it would from a socket press, so a page does not reimplement seven verbs
+   * to get the behaviour its own plugin already returns. `{prompt}` is asked
+   * and the action is re-invoked once with the answer, the same single hop
+   * every other client makes.
+   */
   invoke(action: string, args?: Record<string, unknown>): Promise<unknown>;
 
   config: {
@@ -387,7 +831,9 @@ export type AdePluginWebviewBridge = {
 
   events: {
     /** Returns an unsubscribe function. */
-    on(event: PluginWebviewEventName, listener: (payload: PluginWebviewChangeEvent) => void): () => void;
+    on(event: "changed", listener: (payload: PluginWebviewChangeEvent) => void): () => void;
+    on(event: "theme", listener: (payload: PluginWebviewThemeSnapshot) => void): () => void;
+    on(event: "host", listener: (payload: PluginWebviewHostEvent) => void): () => void;
   };
 
   /**
@@ -397,4 +843,67 @@ export type AdePluginWebviewBridge = {
    * reach `file:`, `javascript:` or its own origin out of band.
    */
   openDeeplink(url: string): Promise<void>;
+
+  // -------------------------------------------------------------------------
+  // v2
+  // -------------------------------------------------------------------------
+
+  /**
+   * Send the reader to a settings page — one of ADE's own, by `entryId`, or
+   * this plugin's own `settings-section`, by `socketId`.
+   *
+   * The same resolution the `{openSettings}` action answer gets, and the same
+   * closed list of host entries. A socket id is scoped to the caller: a page
+   * cannot open another plugin's section.
+   */
+  openSettings(target: { entryId: string } | { socketId: string }): Promise<void>;
+
+  surface: {
+    /**
+     * Close the popover, overlay or picker this page is drawn in. A no-op in a
+     * tab or a pane, where there is nothing to close and the page IS the view.
+     */
+    close(): Promise<void>;
+  };
+
+  composer: {
+    /** Attach an issue chip to the chat composer. */
+    attach(issue: PluginWebviewComposerAttach): Promise<void>;
+    /** Insert text at the composer's caret. Never sends the message. */
+    insert(text: string): Promise<void>;
+  };
+
+  ui: {
+    /** Raise a toast. The returned id is what {@link dismissToast} takes. */
+    toast(toast: PluginWebviewToast): Promise<{ id: string }>;
+    dismissToast(id: string): Promise<void>;
+    /**
+     * Ask the one-field question ADE's own prompt UI draws. Resolves to the
+     * answer, or null when the reader dismissed it.
+     */
+    prompt(prompt: PluginActionPrompt): Promise<PluginActionPromptAnswer | null>;
+    /** Ask a yes/no. Resolves false when the reader dismissed it. */
+    confirm(request: PluginWebviewConfirm): Promise<boolean>;
+  };
+
+  clipboard: {
+    read(): Promise<string>;
+    write(text: string): Promise<void>;
+  };
+
+  theme: {
+    /** The theme as of now. Follow changes with `events.on("theme", …)`. */
+    get(): Promise<PluginWebviewThemeSnapshot>;
+  };
+
+  host: {
+    /**
+     * Follow lane, session and PR changes in this window's project.
+     *
+     * Frames arrive on `events.on("host", …)`, coalesced. The returned promise
+     * resolves to the unsubscribe function; calling it stops the delivery for
+     * every kind this call named.
+     */
+    subscribe(options: { kinds: PluginWebviewHostKind[] }): Promise<() => void>;
+  };
 };

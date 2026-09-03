@@ -492,6 +492,27 @@ export const IPC = {
   pluginWebviewBridge: "ade.plugin.webview.bridge",
   pluginWebviewHandshake: "ade.plugin.webview.handshake",
   pluginWebviewEvent: "ade.plugin.webview.event",
+  /**
+   * Main → the owning window: a guest asked for something only ADE's own UI can
+   * do. Payload {@link PluginWebviewUiRequest}. See the block below the table.
+   */
+  pluginWebviewUiRequest: "ade.plugin.webview.uiRequest",
+  /** The window's answer. Payload {@link PluginWebviewUiResponse}. */
+  pluginWebviewUiResponse: "ade.plugin.webview.uiResponse",
+  /**
+   * Renderer → main: the current theme, as a plugin page should paint it.
+   * Payload {@link PluginWebviewThemeSnapshot}. The renderer publishes on mount
+   * and on every theme change; main caches it per window, answers `theme.get`
+   * from the cache and pushes the `theme` event to that window's guests.
+   */
+  pluginWebviewThemePublish: "ade.plugin.webview.themePublish",
+  /** Renderer → main: a guest's surface came on or off screen. */
+  pluginWebviewSurfaceState: "ade.plugin.webview.surfaceState",
+  /**
+   * Main → the renderer: this plugin's installed bytes moved, so recreate its
+   * guests. Payload {@link PluginWebviewReloadEvent}.
+   */
+  pluginWebviewReload: "ade.plugin.webview.reload",
   externalSessionsGetDetail: "ade.externalSessions.getDetail",
   externalSessionsWatchDetail: "ade.externalSessions.watchDetail",
   externalSessionsUnwatchDetail: "ade.externalSessions.unwatchDetail",
@@ -972,3 +993,76 @@ export const IPC = {
 } as const;
 
 export type IpcChannel = (typeof IPC)[keyof typeof IPC];
+
+// ---------------------------------------------------------------------------
+// The plugin webview relay — the main/renderer contract
+// ---------------------------------------------------------------------------
+
+/**
+ * How a plugin page reaches ADE's own UI.
+ *
+ * A guest calls `window.adePlugin.<verb>`. The MAIN process answers everything
+ * it owns on its own — the clipboard, the theme snapshot, the live host
+ * entities, the project the window is bound to, and `openDeeplink`/`openUrl`.
+ * The rest are pieces of ADE's UI that only the renderer of the window drawing
+ * the guest can move, so main relays them:
+ *
+ * 1. Main sends {@link PluginWebviewUiRequest} on {@link IPC.pluginWebviewUiRequest}
+ *    to the guest's owning window, and starts a timer:
+ *    `PLUGIN_WEBVIEW_UI_ASK_TIMEOUT_MS` (10 minutes) for `ui.prompt` and
+ *    `ui.confirm`, which wait on a person, and `PLUGIN_WEBVIEW_UI_TIMEOUT_MS`
+ *    (10 seconds) for every other verb.
+ * 2. The renderer does the thing and replies EXACTLY ONCE with
+ *    {@link PluginWebviewUiResponse} on {@link IPC.pluginWebviewUiResponse},
+ *    echoing `requestId`. A verb it does not implement is answered
+ *    `{ ok: false, message }` — never dropped, or the page's promise hangs
+ *    until the timeout and the reader sees a button that does nothing.
+ * 3. Main resolves the page's promise with `value`, or rejects it with
+ *    `message`.
+ *
+ * What the renderer must NOT re-derive: `pluginId` is the host's own derivation
+ * from the guest's origin, and `surfaceId`/`placement` were captured from the
+ * source URL at attach. Trust them and act; do not read anything back out of
+ * the guest.
+ *
+ * `guestKey` addresses one guest: it is `pluginWebviewGuestKey(webContentsId)`,
+ * and the renderer gets the same number off its own element with
+ * `webview.getWebContentsId()`. Send {@link PluginWebviewSurfaceState} on
+ * {@link IPC.pluginWebviewSurfaceState} when a guest's surface goes off screen
+ * without the element being destroyed; main refuses that guest's relayed
+ * requests with `not_permitted` until it comes back.
+ *
+ * The verbs, and what `value` must be:
+ *
+ * | verb | args | value |
+ * |---|---|---|
+ * | `openSettings` | `{ target: { entryId } \| { socketId } }` | — |
+ * | `surface.close` | `{}` | — |
+ * | `composer.attach` | `{ issue: PluginWebviewComposerAttach }` | — |
+ * | `composer.insert` | `{ text }` | — |
+ * | `ui.toast` | `{ toast: PluginWebviewToast }` | `{ id }` |
+ * | `ui.dismissToast` | `{ id }` | — |
+ * | `ui.prompt` | `{ prompt: PluginActionPrompt }` | `PluginActionPromptAnswer` or `null` |
+ * | `ui.confirm` | `{ confirm: PluginWebviewConfirm }` | `boolean` |
+ * | `actionResult` | `{ action, result }` | — |
+ *
+ * `actionResult` is the invoke path: a page's `invoke` came back carrying the
+ * control-flow answers a socket press honours, and the renderer applies its
+ * EXISTING reader to `result` (`navigate`, `openSettings`, `composer`, `dialog`,
+ * `message`). Main has already handled `openUrl`, `authSession` and `prompt`
+ * before it sends this, so the renderer must not act on those three again.
+ */
+export type {
+  PluginWebviewComposerAttach,
+  PluginWebviewConfirm,
+  PluginWebviewHostEvent,
+  PluginWebviewPlacement,
+  PluginWebviewProjectContext,
+  PluginWebviewReloadEvent,
+  PluginWebviewSurfaceState,
+  PluginWebviewThemeSnapshot,
+  PluginWebviewToast,
+  PluginWebviewUiRequest,
+  PluginWebviewUiResponse,
+  PluginWebviewUiVerb,
+} from "./plugins/webviewBridge";

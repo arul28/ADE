@@ -4,7 +4,11 @@ import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { PLUGIN_WEBVIEW_CSP } from "../../../shared/plugins/webviewBridge";
-import { createPluginWebviewProtocolHandler, resolvePluginWebviewRequestPath } from "./pluginWebviewProtocol";
+import {
+  createPluginWebviewProtocolHandler,
+  PLUGIN_WEBVIEW_FILE_MAX_BYTES,
+  resolvePluginWebviewRequestPath,
+} from "./pluginWebviewProtocol";
 
 const tempRoots: string[] = [];
 
@@ -143,6 +147,36 @@ describe("createPluginWebviewProtocolHandler", () => {
  * the resolver Windows-safe would be entirely unexecuted on a macOS CI, and
  * deleting them would still go green.
  */
+describe("the per-file size cap", () => {
+  it("serves a file at the ceiling and refuses one past it with a 413", async () => {
+    const { handler, pluginRoot } = fixture();
+    // Written as a sparse file: the assertion is about the size the handler
+    // stats, and allocating 16 MiB of real bytes in a unit test buys nothing.
+    const atCap = fs.openSync(path.join(pluginRoot, "big.js"), "w");
+    fs.ftruncateSync(atCap, PLUGIN_WEBVIEW_FILE_MAX_BYTES);
+    fs.closeSync(atCap);
+    const overCap = fs.openSync(path.join(pluginRoot, "huge.js"), "w");
+    fs.ftruncateSync(overCap, PLUGIN_WEBVIEW_FILE_MAX_BYTES + 1);
+    fs.closeSync(overCap);
+
+    expect(handler({ url: "ade-plugin://demo-plugin/big.js" }).status).toBe(200);
+    const refused = handler({ url: "ade-plugin://demo-plugin/huge.js" });
+    expect(refused.status).toBe(413);
+    // A refusal is still a document the renderer parses, so it still carries
+    // the policy — and it carries no bytes of the file.
+    expect(refused.headers.get("Content-Security-Policy")).toBe(PLUGIN_WEBVIEW_CSP);
+    expect(await refused.text()).toBe("Payload Too Large");
+  });
+
+  it("keeps .map in the closed MIME map, so a source map loads in dev", () => {
+    const { handler, pluginRoot } = fixture();
+    fs.writeFileSync(path.join(pluginRoot, "app.js.map"), "{}", "utf8");
+    const response = handler({ url: "ade-plugin://demo-plugin/app.js.map" });
+    expect(response.status).toBe(200);
+    expect(response.headers.get("Content-Type")).toBe("application/json; charset=utf-8");
+  });
+});
+
 describe("resolvePluginWebviewRequestPath on Windows spellings", () => {
   it("refuses a backslash-rooted path", () => {
     expect(resolvePluginWebviewRequestPath("/%5Csecrets.txt")).toBeNull();

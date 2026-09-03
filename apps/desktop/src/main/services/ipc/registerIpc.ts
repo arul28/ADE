@@ -789,7 +789,15 @@ import {
   createPluginWebviewBridgeServer,
   type PluginWebviewDomain,
 } from "../plugins/pluginWebviewBridgeServer";
-import type { PluginWebviewGuest } from "../plugins/pluginWebviewGuests";
+import {
+  setPluginWebviewGuestAttached,
+  type PluginWebviewGuest,
+} from "../plugins/pluginWebviewGuests";
+import type {
+  PluginWebviewProjectContext,
+  PluginWebviewReloadEvent,
+  PluginWebviewUiRequest,
+} from "../../../shared/plugins/webviewBridge";
 import {
   clampPluginInvokeTimeoutMs,
   PLUGIN_ENTITY_KINDS,
@@ -6646,8 +6654,52 @@ export function registerIpc({
     };
   };
 
+  /**
+   * The project the guest's own window is bound to.
+   *
+   * Read from the WINDOW's session rather than from `getCtx()`: a second window
+   * on another project would otherwise be told it is looking at the main
+   * process's active project, and `context.project` is the one thing a page
+   * cannot check for itself.
+   */
+  const pluginWebviewProjectFor = (guest: PluginWebviewGuest): PluginWebviewProjectContext | null => {
+    const session = getWindowSession?.(guest.hostWindowId) ?? null;
+    const binding = session?.binding ?? null;
+    if (binding?.kind === "remote") {
+      return { projectId: binding.projectId, root: binding.rootPath, binding: "remote" };
+    }
+    const root = binding?.kind === "local" ? binding.rootPath : session?.project?.rootPath ?? null;
+    if (!root) return null;
+    return { projectId: binding?.kind === "local" ? binding.key : null, root, binding: "local" };
+  };
+
+  const pluginWebviewWindowFor = (guest: PluginWebviewGuest): BrowserWindow | null => {
+    if (guest.hostWindowId == null) return null;
+    const win = BrowserWindow.fromId(guest.hostWindowId);
+    return win && !win.isDestroyed() ? win : null;
+  };
+
   const pluginWebviewBridgeServer = createPluginWebviewBridgeServer({
     domainFor: pluginWebviewDomainFor,
+    projectFor: pluginWebviewProjectFor,
+    sendUiRequest: ({ guest, request }: { guest: PluginWebviewGuest; request: PluginWebviewUiRequest }) => {
+      const win = pluginWebviewWindowFor(guest);
+      if (!win) return false;
+      win.webContents.send(IPC.pluginWebviewUiRequest, request);
+      return true;
+    },
+    readClipboard: () => clipboard.readText(),
+    writeClipboard: (text: string) => {
+      clipboard.writeText(text);
+    },
+    sendReload: (event: PluginWebviewReloadEvent) => {
+      // Every window, not just the one that noticed: an install is machine-wide,
+      // and a second window drawing the same plugin is drawing the old bytes.
+      for (const win of BrowserWindow.getAllWindows()) {
+        if (win.isDestroyed()) continue;
+        win.webContents.send(IPC.pluginWebviewReload, event);
+      }
+    },
     putCollection: ({ guest, collection, key, value }) => {
       // No routed fallback on purpose: writing a collection is not a `plugin`
       // action, and inventing one for the daemon route would put a write to any
@@ -6709,6 +6761,28 @@ export function registerIpc({
       }
       throw error;
     }
+  });
+
+  ipcMain.on(IPC.pluginWebviewUiResponse, (event, arg: unknown) => {
+    // Only a real ADE window answers the relay. A guest posting on this channel
+    // would be answering its own request, which is how a page would make ADE
+    // believe a reader pressed Confirm.
+    if (!BrowserWindow.fromWebContents(event.sender)) return;
+    pluginWebviewBridgeServer.handleUiResponse(arg);
+  });
+
+  ipcMain.on(IPC.pluginWebviewThemePublish, (event, arg: unknown) => {
+    const win = BrowserWindow.fromWebContents(event.sender);
+    if (!win) return;
+    pluginWebviewBridgeServer.publishTheme(win.id, arg);
+  });
+
+  ipcMain.on(IPC.pluginWebviewSurfaceState, (event, arg: unknown) => {
+    if (!BrowserWindow.fromWebContents(event.sender)) return;
+    if (!isRecord(arg)) return;
+    const guestKey = typeof arg.guestKey === "string" ? arg.guestKey : "";
+    if (!guestKey) return;
+    setPluginWebviewGuestAttached(guestKey, arg.attached === true);
   });
 
   ipcMain.on(IPC.pluginWebviewHandshake, (event) => {

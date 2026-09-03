@@ -4,9 +4,17 @@ import type { PluginSessionContext } from "./context";
 import {
   decodePluginWebviewContext,
   encodePluginWebviewContext,
+  isPluginWebviewMethod,
+  PLUGIN_WEBVIEW_BRIDGE_VERSION,
   PLUGIN_WEBVIEW_CONTEXT_MAX_BYTES,
   PLUGIN_WEBVIEW_CONTEXT_QUERY_PARAM,
+  PLUGIN_WEBVIEW_METHODS,
+  PLUGIN_WEBVIEW_UI_ASK_TIMEOUT_MS,
+  PLUGIN_WEBVIEW_UI_TIMEOUT_MS,
+  pluginWebviewGuestKey,
+  pluginWebviewUiTimeoutMs,
   pluginWebviewUrl,
+  sanitizePluginWebviewTheme,
   type PluginWebviewContext,
 } from "./webviewBridge";
 
@@ -68,5 +76,110 @@ describe("plugin webview context on the source URL", () => {
     };
     expect(encodePluginWebviewContext(huge)).toBeNull();
     expect(pluginWebviewUrl("demo", "web/index.html", huge)).toBe("ade-plugin://demo/web/index.html");
+  });
+});
+
+describe("bridge v2 shape", () => {
+  it("keeps every v1 method and adds the v2 verbs, and stays a closed list", () => {
+    // v1 pages keep working: the promise the version number makes is that a
+    // method is added, never removed or renamed.
+    for (const method of [
+      "collections.get",
+      "collections.put",
+      "collections.list",
+      "invoke",
+      "config.get",
+      "config.set",
+      "openDeeplink",
+    ]) {
+      expect(isPluginWebviewMethod(method)).toBe(true);
+    }
+    for (const method of [
+      "openSettings",
+      "surface.close",
+      "composer.attach",
+      "composer.insert",
+      "ui.toast",
+      "ui.dismissToast",
+      "ui.prompt",
+      "ui.confirm",
+      "clipboard.read",
+      "clipboard.write",
+      "theme.get",
+      "host.subscribe",
+      "host.unsubscribe",
+    ]) {
+      expect(isPluginWebviewMethod(method)).toBe(true);
+    }
+    // The absences are the policy, not an oversight. See the module header.
+    for (const method of ["secrets.get", "collections.delete", "panels.update", "contributions.publish"]) {
+      expect(isPluginWebviewMethod(method)).toBe(false);
+    }
+    expect(new Set(PLUGIN_WEBVIEW_METHODS).size).toBe(PLUGIN_WEBVIEW_METHODS.length);
+    expect(PLUGIN_WEBVIEW_BRIDGE_VERSION).toBe(2);
+  });
+
+  it("waits on a person longer than on a renderer", () => {
+    expect(pluginWebviewUiTimeoutMs("ui.prompt")).toBe(PLUGIN_WEBVIEW_UI_ASK_TIMEOUT_MS);
+    expect(pluginWebviewUiTimeoutMs("ui.confirm")).toBe(PLUGIN_WEBVIEW_UI_ASK_TIMEOUT_MS);
+    expect(pluginWebviewUiTimeoutMs("ui.toast")).toBe(PLUGIN_WEBVIEW_UI_TIMEOUT_MS);
+    expect(pluginWebviewUiTimeoutMs("actionResult")).toBe(PLUGIN_WEBVIEW_UI_TIMEOUT_MS);
+    expect(PLUGIN_WEBVIEW_UI_ASK_TIMEOUT_MS).toBeGreaterThan(PLUGIN_WEBVIEW_UI_TIMEOUT_MS);
+  });
+
+  it("names a guest by its webContents id", () => {
+    expect(pluginWebviewGuestKey(42)).toBe("guest-42");
+  });
+});
+
+describe("the surface a guest was drawn in", () => {
+  it("round-trips a surface id and a placement the renderer named", () => {
+    const context: PluginWebviewContext = {
+      subject: null,
+      surfaceId: "browser",
+      placement: "popover",
+    };
+    expect(decodePluginWebviewContext(encodePluginWebviewContext(context))).toEqual(context);
+  });
+
+  it("drops a placement this host does not draw", () => {
+    const encoded = encodeURIComponent(JSON.stringify({ subject: null, placement: "kiosk" }));
+    expect(decodePluginWebviewContext(encoded)).toEqual({ subject: null });
+  });
+
+  it("never reads a project off the URL", () => {
+    // `project` is the host's own word about the window's binding. A page that
+    // could name one could claim to be open in a project it is not.
+    const encoded = encodeURIComponent(JSON.stringify({
+      subject: null,
+      project: { projectId: "someone-elses", root: "/elsewhere", binding: "local" },
+    }));
+    expect(decodePluginWebviewContext(encoded)).toEqual({ subject: null });
+  });
+});
+
+describe("sanitizePluginWebviewTheme", () => {
+  it("keeps --ade-* tokens and drops everything else", () => {
+    expect(sanitizePluginWebviewTheme({
+      scheme: "light",
+      tokens: { "--ade-bg": "#fff", "background": "#000", "--ade-fg": 12 },
+    })).toEqual({ scheme: "light", tokens: { "--ade-bg": "#fff" } });
+  });
+
+  it("refuses a payload with no scheme, and bounds the token map", () => {
+    expect(sanitizePluginWebviewTheme({ tokens: {} })).toBeNull();
+    expect(sanitizePluginWebviewTheme("dark")).toBeNull();
+    const tokens: Record<string, string> = {};
+    for (let index = 0; index < 500; index += 1) tokens[`--ade-t${index}`] = "#fff";
+    const sanitized = sanitizePluginWebviewTheme({ scheme: "dark", tokens });
+    expect(Object.keys(sanitized?.tokens ?? {})).toHaveLength(400);
+  });
+
+  it("drops a value longer than the ceiling rather than truncating it", () => {
+    const sanitized = sanitizePluginWebviewTheme({
+      scheme: "dark",
+      tokens: { "--ade-bg": "#".repeat(1_000) },
+    });
+    expect(sanitized).toEqual({ scheme: "dark", tokens: {} });
   });
 });

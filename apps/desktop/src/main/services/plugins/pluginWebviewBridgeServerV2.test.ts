@@ -1,0 +1,523 @@
+/**
+ * Bridge v2 — the verbs a page reaches ADE's own UI with.
+ *
+ * Kept apart from `pluginWebviewBridgeServer.test.ts`, which pins the v1
+ * contract and the plugin-id derivation that every version rests on. What is
+ * proved here is the half that did not exist before: the relay to the owning
+ * window, the control flow an `invoke` result carries, the coalesced host
+ * subscription, the theme the renderer publishes, and the cursor on
+ * `collections.list`.
+ *
+ * No timers and no sleeps. The relay's timeout and the host coalescing window
+ * are driven by an injected `setTimer` the tests fire by hand, so a change in
+ * either constant cannot make a test flaky or slow.
+ */
+
+import { afterEach, describe, expect, it, vi } from "vitest";
+
+import type { PluginManifest } from "../../../shared/plugins/manifest";
+import { PLUGIN_CLIPBOARD_TEXT_MAX_BYTES, type PluginDetail } from "../../../shared/plugins/sdk";
+import {
+  PLUGIN_WEBVIEW_BRIDGE_VERSION,
+  PLUGIN_WEBVIEW_LIST_MAX_ROWS,
+  type PluginWebviewEventFrame,
+  type PluginWebviewUiRequest,
+} from "../../../shared/plugins/webviewBridge";
+import { emitPluginEntityChange, resetPluginEntityChangeListenersForTests } from "./pluginEntityChanges";
+import { emitPluginChange } from "./pluginEvents";
+import {
+  createPluginWebviewBridgeServer,
+  type PluginWebviewBridgeServer,
+  type PluginWebviewDomain,
+} from "./pluginWebviewBridgeServer";
+import { registerPluginWebviewGuest, resetPluginWebviewGuestsForTests } from "./pluginWebviewGuests";
+
+const GUEST_ID = 77;
+const SENDER = { webContentsId: GUEST_ID, frameUrl: "ade-plugin://demo-plugin/page/index.html" };
+
+function manifestFor(pluginId: string): PluginManifest {
+  return {
+    name: pluginId,
+    version: "2.3.0",
+    displayName: pluginId,
+    description: "",
+    vocabVersion: 1,
+    surfaces: [],
+    panels: [],
+    sockets: [],
+    collections: { notes: { sync: false } },
+    settings: [],
+    cli: [],
+    skills: [],
+    tools: [],
+    automationTriggers: [],
+    automationSteps: [],
+    searchProviders: [],
+    keybindings: [],
+    chatRuntimes: [],
+    webhookIngress: [],
+    official: false,
+  };
+}
+
+type Timer = { run: () => void; ms: number; cancelled: boolean };
+
+function harness(options: { rows?: { key: string; value: unknown }[] } = {}) {
+  const sent: PluginWebviewEventFrame[] = [];
+  registerPluginWebviewGuest({
+    webContentsId: GUEST_ID,
+    pluginId: "demo-plugin",
+    hostWindowId: 5,
+    context: { subject: null, surfaceId: "browser", placement: "popover" },
+    send: (_channel, payload) => {
+      sent.push(payload as PluginWebviewEventFrame);
+    },
+  });
+
+  const allRows = options.rows
+    ?? [{ key: "a", value: 1 }, { key: "b", value: 2 }, { key: "c", value: 3 }];
+  const domain = {
+    get: vi.fn(async (): Promise<PluginDetail | null> => ({ config: {} } as unknown as PluginDetail)),
+    getCollection: vi.fn(async (args: { limit?: number }) => (
+      allRows.slice(0, args.limit ?? allRows.length).map((row) => ({
+        collection: "notes",
+        key: row.key,
+        value: row.value,
+        updatedAt: "",
+      }))
+    )),
+    getManifest: vi.fn(async (args: { pluginId: string }) => manifestFor(args.pluginId)),
+    invoke: vi.fn(async (_args: { pluginId: string; action: string; args: Record<string, unknown> }) => (
+      { ok: true }
+    )),
+  };
+
+  const requests: PluginWebviewUiRequest[] = [];
+  const timers: Timer[] = [];
+  const clipboard = { text: "copied" };
+  const reloads: { pluginId: string; version: string; revision: number }[] = [];
+  const openExternalUrl = vi.fn(async () => {});
+
+  const server = createPluginWebviewBridgeServer({
+    domainFor: () => domain as unknown as PluginWebviewDomain,
+    putCollection: async () => {},
+    setConfig: async () => ({}),
+    openDeeplink: async () => {},
+    openExternalUrl,
+    sendUiRequest: ({ request }) => {
+      requests.push(request);
+      return true;
+    },
+    readClipboard: () => clipboard.text,
+    writeClipboard: (text) => {
+      clipboard.text = text;
+    },
+    projectFor: () => ({ projectId: "proj-1", root: "/repo", binding: "local" }),
+    sendReload: (event) => {
+      reloads.push(event);
+    },
+    setTimer: (run, ms) => {
+      const timer: Timer = { run, ms, cancelled: false };
+      timers.push(timer);
+      return () => {
+        timer.cancelled = true;
+      };
+    },
+  });
+  servers.push(server);
+
+  /** Fire every live timer, the way a real clock eventually would. */
+  const fireTimers = (): void => {
+    for (const timer of [...timers]) {
+      if (timer.cancelled) continue;
+      timer.cancelled = true;
+      timer.run();
+    }
+  };
+
+  /**
+   * Wait for the relayed request at `index` to arrive.
+   *
+   * `handle` is async — it resolves the guest's domain before it relays — so a
+   * synchronous read of `requests` races the call it is inspecting. Waiting on
+   * the array is the event this test is actually waiting for; there is no sleep.
+   */
+  const waitForRequest = async (index: number): Promise<PluginWebviewUiRequest> => {
+    await vi.waitFor(() => expect(requests.length).toBeGreaterThan(index));
+    return requests[index]!;
+  };
+
+  /** Answer the relay request at `index` as the owning window would. */
+  const answer = async (index: number, value: unknown, ok = true): Promise<void> => {
+    const relayed = await waitForRequest(index);
+    server.handleUiResponse({
+      requestId: relayed.requestId,
+      ok,
+      value,
+      ...(ok ? {} : { message: String(value) }),
+    });
+  };
+
+  return {
+    server,
+    domain,
+    requests,
+    sent,
+    timers,
+    fireTimers,
+    answer,
+    waitForRequest,
+    clipboard,
+    reloads,
+    openExternalUrl,
+  };
+}
+
+const servers: PluginWebviewBridgeServer[] = [];
+
+function request(method: string, params: Record<string, unknown> = {}): Record<string, unknown> {
+  return { bridgeVersion: PLUGIN_WEBVIEW_BRIDGE_VERSION, method, params };
+}
+
+afterEach(() => {
+  while (servers.length > 0) servers.pop()?.dispose();
+  resetPluginWebviewGuestsForTests();
+  resetPluginEntityChangeListenersForTests();
+});
+
+describe("bridge v2 method surface", () => {
+  it("answers every v2 method and still refuses one outside the closed list", async () => {
+    const h = harness();
+    // A method that merely LOOKS like a v2 verb is still not one.
+    await expect(h.server.handle(SENDER, request("ui.alert", { message: "hi" })))
+      .rejects.toMatchObject({ code: "unsupported_method" });
+    await expect(h.server.handle(SENDER, request("secrets.get", { name: "TOKEN" })))
+      .rejects.toMatchObject({ code: "unsupported_method" });
+  });
+
+  it("derives the plugin id from the frame for a v2 verb, not from the payload", async () => {
+    const h = harness();
+    const pending = h.server.handle(SENDER, request("ui.toast", {
+      toast: { level: "info", message: "Saved" },
+      pluginId: "other-plugin",
+    }));
+    await h.answer(0, { id: "toast-1" });
+    await expect(pending).resolves.toEqual({ id: "toast-1" });
+    expect(h.requests[0]).toMatchObject({
+      pluginId: "demo-plugin",
+      surfaceId: "browser",
+      placement: "popover",
+      verb: "ui.toast",
+    });
+  });
+
+  it("stamps the window's project onto the handshake context", () => {
+    const h = harness();
+    expect(h.server.resolveHandshake(SENDER)).toEqual({
+      pluginId: "demo-plugin",
+      context: {
+        subject: null,
+        surfaceId: "browser",
+        placement: "popover",
+        project: { projectId: "proj-1", root: "/repo", binding: "local" },
+      },
+    });
+  });
+});
+
+describe("the relay to the owning window", () => {
+  it("carries the guest key, resolves on the window's answer and rejects on its refusal", async () => {
+    const h = harness();
+    const confirmed = h.server.handle(SENDER, request("ui.confirm", { confirm: { title: "Delete?" } }));
+    expect((await h.waitForRequest(0)).guestKey).toBe(`guest-${GUEST_ID}`);
+    await h.answer(0, true);
+    await expect(confirmed).resolves.toBe(true);
+
+    const refused = h.server.handle(SENDER, request("surface.close"));
+    await h.answer(1, "Nothing to close.", false);
+    await expect(refused).rejects.toMatchObject({ code: "not_permitted" });
+  });
+
+  it("gives a prompt ten minutes and everything else ten seconds", async () => {
+    const h = harness();
+    void h.server.handle(SENDER, request("ui.prompt", { prompt: { id: "note", title: "What?" } }));
+    await h.waitForRequest(0);
+    void h.server.handle(SENDER, request("composer.insert", { text: "hello" }));
+    await h.waitForRequest(1);
+    expect(h.timers.map((timer) => timer.ms)).toEqual([600_000, 10_000]);
+    // Both are settled here so the pending promises do not outlive the test.
+    await h.answer(0, null);
+    await h.answer(1, undefined);
+  });
+
+  it("gives the page a refusal when its surface is not attached", async () => {
+    const h = harness();
+    registerPluginWebviewGuest({
+      webContentsId: GUEST_ID,
+      pluginId: "demo-plugin",
+      hostWindowId: 5,
+      context: { subject: null, surfaceId: "browser", placement: "popover" },
+      send: () => {},
+      attached: false,
+    });
+    await expect(h.server.handle(SENDER, request("surface.close")))
+      .rejects.toMatchObject({ code: "not_permitted" });
+    expect(h.requests).toHaveLength(0);
+  });
+
+  it("times out rather than leaving the page waiting on a wedged window", async () => {
+    const h = harness();
+    const pending = h.server.handle(SENDER, request("ui.toast", { toast: { level: "info", message: "hi" } }));
+    await h.waitForRequest(0);
+    h.fireTimers();
+    await expect(pending).rejects.toMatchObject({ code: "internal_error" });
+  });
+
+  it("ignores a second answer to a request that is already settled", async () => {
+    const h = harness();
+    const pending = h.server.handle(SENDER, request("ui.confirm", { confirm: { title: "Delete?" } }));
+    await h.answer(0, true);
+    await h.answer(0, false);
+    await expect(pending).resolves.toBe(true);
+  });
+
+  it("refuses a settings target outside the closed entry list", async () => {
+    const h = harness();
+    await expect(h.server.handle(SENDER, request("openSettings", { entryId: "billing" })))
+      .rejects.toMatchObject({ code: "invalid_args" });
+    const pending = h.server.handle(SENDER, request("openSettings", { entryId: "secrets.secrets" }));
+    await h.answer(0, undefined);
+    await expect(pending).resolves.toBeNull();
+    expect(h.requests[0]?.args).toEqual({ target: { kind: "entry", entryId: "secrets.secrets" } });
+  });
+
+  it("drops an issue link that is not http(s) and keeps the rest of the chip", async () => {
+    const h = harness();
+    const pending = h.server.handle(SENDER, request("composer.attach", {
+      issue: {
+        provider: "linear",
+        issueId: "iss-1",
+        identifier: "ADE-148",
+        title: "Page tier",
+        url: "javascript:alert(1)",
+      },
+    }));
+    await h.answer(0, undefined);
+    await pending;
+    expect(h.requests[0]?.args.issue).toEqual({
+      provider: "linear",
+      issueId: "iss-1",
+      identifier: "ADE-148",
+      title: "Page tier",
+    });
+  });
+});
+
+describe("invoke honours the control-flow answers", () => {
+  it("opens an openUrl in the real browser without a renderer hop", async () => {
+    const h = harness();
+    h.domain.invoke.mockResolvedValueOnce({ openUrl: "https://linear.app/x" } as never);
+    await h.server.handle(SENDER, request("invoke", { action: "open" }));
+    expect(h.openExternalUrl).toHaveBeenCalledWith("https://linear.app/x");
+    expect(h.requests).toHaveLength(0);
+  });
+
+  it("forwards navigate, composer and message to the window as one actionResult", async () => {
+    const h = harness();
+    const result = { navigate: { panelId: "main" }, message: "Done" };
+    h.domain.invoke.mockResolvedValueOnce(result as never);
+    const pending = h.server.handle(SENDER, request("invoke", { action: "go" }));
+    await h.answer(0, undefined);
+    // The RAW result still reaches the page: the control flow is applied as
+    // well as returned, never instead of it.
+    await expect(pending).resolves.toEqual(result);
+    expect(h.requests[0]).toMatchObject({ verb: "actionResult", args: { action: "go", result } });
+  });
+
+  it("asks a prompt and re-invokes the action exactly once with the answer", async () => {
+    const h = harness();
+    h.domain.invoke
+      .mockResolvedValueOnce({ prompt: { id: "note", title: "What?" } } as never)
+      // The second result carries its own prompt, which must be ignored: one hop.
+      .mockResolvedValueOnce({ ok: true, prompt: { id: "again", title: "And?" } } as never);
+    const pending = h.server.handle(SENDER, request("invoke", { action: "log", args: { lane: "l1" } }));
+    await h.answer(0, { id: "note", text: "shipping" });
+    await expect(pending).resolves.toMatchObject({ ok: true });
+    expect(h.domain.invoke).toHaveBeenCalledTimes(2);
+    expect(h.domain.invoke.mock.calls[1]?.[0]).toEqual({
+      pluginId: "demo-plugin",
+      action: "log",
+      args: { lane: "l1", prompt: { id: "note", text: "shipping" } },
+    });
+    // Only the first prompt was ever asked.
+    expect(h.requests.filter((entry) => entry.verb === "ui.prompt")).toHaveLength(1);
+  });
+
+  it("keeps the first result when the reader dismisses the prompt", async () => {
+    const h = harness();
+    h.domain.invoke.mockResolvedValueOnce({ prompt: { id: "note" } } as never);
+    const pending = h.server.handle(SENDER, request("invoke", { action: "log" }));
+    await h.answer(0, null);
+    await expect(pending).resolves.toEqual({ prompt: { id: "note" } });
+    expect(h.domain.invoke).toHaveBeenCalledTimes(1);
+  });
+
+  it("still returns the result when the window refuses to draw it", async () => {
+    const h = harness();
+    h.domain.invoke.mockResolvedValueOnce({ navigate: { panelId: "main" } } as never);
+    const pending = h.server.handle(SENDER, request("invoke", { action: "go" }));
+    await h.answer(0, "No.", false);
+    await expect(pending).resolves.toEqual({ navigate: { panelId: "main" } });
+  });
+});
+
+describe("clipboard and theme", () => {
+  it("reads and writes the machine clipboard, and refuses an oversize write", async () => {
+    const h = harness();
+    await expect(h.server.handle(SENDER, request("clipboard.read"))).resolves.toBe("copied");
+    await h.server.handle(SENDER, request("clipboard.write", { text: "typed" }));
+    expect(h.clipboard.text).toBe("typed");
+    await expect(
+      h.server.handle(SENDER, request("clipboard.write", { text: "x".repeat(PLUGIN_CLIPBOARD_TEXT_MAX_BYTES + 1) })),
+    ).rejects.toMatchObject({ code: "plugin_budget_exceeded" });
+  });
+
+  it("answers theme.get from what the renderer published and pushes the change", async () => {
+    const h = harness();
+    await expect(h.server.handle(SENDER, request("theme.get")))
+      .resolves.toEqual({ scheme: "dark", tokens: {} });
+
+    h.server.publishTheme(5, { scheme: "light", tokens: { "--ade-bg": "#fff", bad: "#000" } });
+
+    await expect(h.server.handle(SENDER, request("theme.get")))
+      .resolves.toEqual({ scheme: "light", tokens: { "--ade-bg": "#fff" } });
+    expect(h.sent).toEqual([
+      { event: "theme", payload: { scheme: "light", tokens: { "--ade-bg": "#fff" } } },
+    ]);
+  });
+
+  it("does not paint a guest with another window's theme", () => {
+    const h = harness();
+    h.server.publishTheme(9, { scheme: "light", tokens: {} });
+    expect(h.sent).toHaveLength(0);
+  });
+});
+
+describe("host.subscribe", () => {
+  it("coalesces a burst into one frame per family", async () => {
+    const h = harness();
+    const answer = await h.server.handle(SENDER, request("host.subscribe", { kinds: ["lane", "pr"] }));
+    expect(answer).toMatchObject({ subscriptionId: expect.any(String) });
+
+    emitPluginEntityChange({ family: "lane", ids: ["l1"], projectRoot: "/repo" });
+    emitPluginEntityChange({ family: "lane", ids: ["l2", "l1"], projectRoot: "/repo" });
+    emitPluginEntityChange({ family: "pr", ids: ["p1"], projectRoot: "/repo" });
+    // Nothing has been delivered yet — the whole point of the window.
+    expect(h.sent).toHaveLength(0);
+
+    h.fireTimers();
+
+    expect(h.sent).toEqual([
+      { event: "host", payload: { kind: "lane", ids: ["l1", "l2"], overflow: false } },
+      { event: "host", payload: { kind: "pr", ids: ["p1"], overflow: false } },
+    ]);
+  });
+
+  it("delivers nothing for a family it did not subscribe to, or another project", async () => {
+    const h = harness();
+    await h.server.handle(SENDER, request("host.subscribe", { kinds: ["lane"] }));
+    emitPluginEntityChange({ family: "session", ids: ["s1"], projectRoot: "/repo" });
+    emitPluginEntityChange({ family: "lane", ids: ["l9"], projectRoot: "/other-repo" });
+    h.fireTimers();
+    expect(h.sent).toHaveLength(0);
+  });
+
+  it("says overflow rather than naming more ids than the cap", async () => {
+    const h = harness();
+    await h.server.handle(SENDER, request("host.subscribe", { kinds: ["lane"] }));
+    emitPluginEntityChange({
+      family: "lane",
+      ids: Array.from({ length: 250 }, (_unused, index) => `l${index}`),
+      projectRoot: "/repo",
+    });
+    h.fireTimers();
+    const payload = h.sent[0]?.payload as { ids: string[]; overflow: boolean };
+    expect(payload.ids).toHaveLength(200);
+    expect(payload.overflow).toBe(true);
+  });
+
+  it("stops delivering after unsubscribe, and refuses a subscription with no known kind", async () => {
+    const h = harness();
+    const answer = await h.server.handle(SENDER, request("host.subscribe", { kinds: ["lane"] })) as {
+      subscriptionId: string;
+    };
+    await h.server.handle(SENDER, request("host.unsubscribe", { subscriptionId: answer.subscriptionId }));
+    emitPluginEntityChange({ family: "lane", ids: ["l1"], projectRoot: "/repo" });
+    h.fireTimers();
+    expect(h.sent).toHaveLength(0);
+
+    await expect(h.server.handle(SENDER, request("host.subscribe", { kinds: ["repo"] })))
+      .rejects.toMatchObject({ code: "invalid_args" });
+  });
+});
+
+describe("collections.list paging", () => {
+  it("caps a page at 500 rows however many the page asks for", async () => {
+    const h = harness();
+    await h.server.handle(SENDER, request("collections.list", {
+      collection: "notes",
+      options: { limit: 5_000 },
+    }));
+    expect(h.domain.getCollection).toHaveBeenCalledWith(
+      expect.objectContaining({ limit: PLUGIN_WEBVIEW_LIST_MAX_ROWS }),
+    );
+  });
+
+  it("skips everything at or before the cursor", async () => {
+    const h = harness();
+    const rows = await h.server.handle(SENDER, request("collections.list", {
+      collection: "notes",
+      options: { after: "a", limit: 2 },
+    }));
+    expect(rows).toEqual([{ key: "b", value: 2 }, { key: "c", value: 3 }]);
+  });
+
+  it("widens the read until a full page is past the cursor", async () => {
+    const rows = Array.from({ length: 40 }, (_unused, index) => ({
+      key: `k${String(index).padStart(3, "0")}`,
+      value: index,
+    }));
+    const h = harness({ rows });
+    const page = await h.server.handle(SENDER, request("collections.list", {
+      collection: "notes",
+      options: { after: "k019", limit: 5 },
+    })) as { key: string }[];
+    expect(page.map((row) => row.key)).toEqual(["k020", "k021", "k022", "k023", "k024"]);
+    // The first read could not have contained a full page past the cursor, so
+    // the window had to widen rather than answer short.
+    expect(h.domain.getCollection.mock.calls.length).toBeGreaterThan(1);
+  });
+});
+
+describe("hot reload", () => {
+  it("tells the renderer to recreate a guest when the plugin is reinstalled", async () => {
+    const h = harness();
+    emitPluginChange({ kind: "installs", pluginId: "demo-plugin" });
+    await vi.waitFor(() => expect(h.reloads).toHaveLength(1));
+    expect(h.reloads[0]).toEqual({ pluginId: "demo-plugin", version: "2.3.0", revision: 1 });
+
+    emitPluginChange({ kind: "installs", pluginId: "demo-plugin" });
+    // The revision moves even though the version did not, which is what makes
+    // `ade plugin dev` repaint a page after it re-copies the same version.
+    await vi.waitFor(() => expect(h.reloads).toHaveLength(2));
+    expect(h.reloads[1]?.revision).toBe(2);
+  });
+
+  it("says nothing for a plugin no guest is drawing", async () => {
+    const h = harness();
+    emitPluginChange({ kind: "installs", pluginId: "other-plugin" });
+    emitPluginChange({ kind: "collections", pluginId: "demo-plugin", collection: "notes" });
+    await vi.waitFor(() => expect(h.sent.length).toBeGreaterThan(0));
+    expect(h.reloads).toHaveLength(0);
+  });
+});

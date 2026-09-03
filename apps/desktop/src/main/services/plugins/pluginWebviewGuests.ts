@@ -17,7 +17,11 @@
  * and both halves are testable without a browser.
  */
 
-import type { PluginWebviewContext } from "../../../shared/plugins/webviewBridge";
+import {
+  pluginWebviewGuestKey,
+  type PluginWebviewContext,
+  type PluginWebviewPlacement,
+} from "../../../shared/plugins/webviewBridge";
 
 export type PluginWebviewGuest = {
   /** `webContents.id` of the guest itself. The IPC sender identity. */
@@ -35,18 +39,67 @@ export type PluginWebviewGuest = {
   context: PluginWebviewContext | null;
   /** Push one frame to the guest. A destroyed guest must make this a no-op. */
   send: (channel: string, payload: unknown) => void;
+  /**
+   * Whether the guest's surface is on screen.
+   *
+   * True at attach and set false by the renderer when it hides a surface it is
+   * keeping alive. The relay refuses a hidden guest: a dismissed popover whose
+   * page still holds a confirm must not be able to reopen ADE's UI on its way
+   * out, and "the element is off screen" is not a fact main can see for itself.
+   */
+  attached: boolean;
 };
+
+/** The guest a relayed request names. See `pluginWebviewGuestKey`. */
+export function guestKeyOf(guest: PluginWebviewGuest): string {
+  return pluginWebviewGuestKey(guest.webContentsId);
+}
+
+/** The surface a guest draws, as the renderer named it at attach. */
+export function guestSurfaceId(guest: PluginWebviewGuest): string | null {
+  return guest.context?.surfaceId ?? null;
+}
+
+/** Where the host drew a guest, as the renderer named it at attach. */
+export function guestPlacement(guest: PluginWebviewGuest): PluginWebviewPlacement | null {
+  return guest.context?.placement ?? null;
+}
 
 const guests = new Map<number, PluginWebviewGuest>();
 
 /** Record a guest. Returns the function that forgets it. */
-export function registerPluginWebviewGuest(guest: PluginWebviewGuest): () => void {
-  guests.set(guest.webContentsId, guest);
+export function registerPluginWebviewGuest(
+  guest: Omit<PluginWebviewGuest, "attached"> & { attached?: boolean },
+): () => void {
+  const record: PluginWebviewGuest = { ...guest, attached: guest.attached ?? true };
+  guests.set(record.webContentsId, record);
   return () => {
     // Compared by identity: a webContents id is reused after the original is
     // destroyed, and a late teardown must not evict the guest that took it.
-    if (guests.get(guest.webContentsId) === guest) guests.delete(guest.webContentsId);
+    if (guests.get(record.webContentsId) === record) guests.delete(record.webContentsId);
   };
+}
+
+/**
+ * Mark a guest's surface on or off screen, by the key the relay uses.
+ *
+ * Keyed by `guestKey` rather than by the raw id because that is what the
+ * renderer holds — it reads `webview.getWebContentsId()` and never sees the
+ * registry. Returns false for a key nothing is registered under, which is the
+ * ordinary race of a guest destroyed a frame before its own hide arrives.
+ */
+export function setPluginWebviewGuestAttached(guestKey: string, attached: boolean): boolean {
+  for (const guest of guests.values()) {
+    if (guestKeyOf(guest) !== guestKey) continue;
+    guest.attached = attached;
+    return true;
+  }
+  return false;
+}
+
+/** Every live guest, whatever plugin it belongs to. */
+export function listAllPluginWebviewGuests(): PluginWebviewGuest[] {
+  return [...guests.values()];
 }
 
 export function getPluginWebviewGuest(webContentsId: number): PluginWebviewGuest | null {

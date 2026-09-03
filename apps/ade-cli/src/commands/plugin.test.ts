@@ -155,6 +155,71 @@ describe("ade plugin create", () => {
     expect(panel.ok).toBe(true);
   });
 
+  it("scaffolds a page and a webview surface with --webview, and leaves the default alone", () => {
+    const created = JSON.parse(
+      runPluginCreate(["page-plugin", "--dir", adeHome, "--webview", "--json"]).output,
+    ) as { root: string; files: string[]; webview: boolean };
+    expect(created.webview).toBe(true);
+    expect(created.files).toEqual([
+      "README.md",
+      "index.js",
+      path.join("page", "index.html"),
+      path.join("page", "page.css"),
+      path.join("page", "page.js"),
+      path.join("panels", "main.json"),
+      "plugin.json",
+    ].sort());
+
+    const parsed = parsePluginManifestJson(
+      fs.readFileSync(path.join(created.root, "plugin.json"), "utf8"),
+    );
+    expect(parsed.errors).toEqual([]);
+    expect(parsed.warnings).toEqual([]);
+    // A webview surface still names a panel: that panel is what the terminal
+    // and the phone draw, and a surface without one is missing on two clients.
+    expect(parsed.manifest!.surfaces[0]).toMatchObject({
+      kind: "webview",
+      panelId: "main",
+      entryHtml: "page/index.html",
+    });
+    expect(parsed.manifest!.panels).toHaveLength(1);
+    expect(fs.existsSync(path.join(created.root, parsed.manifest!.surfaces[0]!.entryHtml!))).toBe(true);
+  });
+
+  it("scaffolds a page with no inline script, because the host's CSP is script-src 'self'", () => {
+    const created = JSON.parse(
+      runPluginCreate(["page-plugin", "--dir", adeHome, "--webview"]).output,
+    ) as { root: string };
+    const html = fs.readFileSync(path.join(created.root, "page", "index.html"), "utf8");
+    // An inline `<script>` would be refused by the policy the protocol serves,
+    // so the scaffold must not teach one.
+    expect(html).not.toMatch(/<script(?![^>]*\ssrc=)/);
+    // Relative, because the page's origin is the plugin's own directory.
+    expect(html).toContain('src="./page.js"');
+    expect(html).toContain('href="./page.css"');
+
+    const page = fs.readFileSync(path.join(created.root, "page", "page.js"), "utf8");
+    expect(page).toContain("window.adePlugin");
+    expect(page).toContain("bridge.theme.get()");
+    expect(page).toContain("bridge.collections.list");
+
+    const readme = fs.readFileSync(path.join(created.root, "README.md"), "utf8");
+    expect(readme).toContain("script-src 'self'");
+  });
+
+  it("leaves the scaffold unchanged without the flag", () => {
+    const created = JSON.parse(
+      runPluginCreate(["plain-plugin", "--dir", adeHome, "--json"]).output,
+    ) as { root: string; files: string[]; webview: boolean };
+    expect(created.webview).toBe(false);
+    expect(created.files).not.toContain(path.join("page", "index.html"));
+    expect(fs.existsSync(path.join(created.root, "page"))).toBe(false);
+    const parsed = parsePluginManifestJson(
+      fs.readFileSync(path.join(created.root, "plugin.json"), "utf8"),
+    );
+    expect(parsed.manifest!.surfaces[0]).toMatchObject({ kind: "tab" });
+  });
+
   it("refuses to overwrite an existing directory", () => {
     runPluginCreate(["my-plugin", "--dir", adeHome]);
     expect(() => runPluginCreate(["my-plugin", "--dir", adeHome])).toThrowError(CliPluginUsageError);

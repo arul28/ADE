@@ -91,6 +91,18 @@ const PLUGIN_WEBVIEW_CONTENT_TYPES: Readonly<Record<string, string>> = {
 
 const PLUGIN_WEBVIEW_FALLBACK_CONTENT_TYPE = "application/octet-stream";
 
+/**
+ * Largest single file this origin serves.
+ *
+ * The install cap already bounds a plugin's whole tree (5,000 files / 64 MiB),
+ * so this is not about disk — it is about the read: `readFileSync` here blocks
+ * the MAIN process, and a plugin that ships one enormous asset would freeze
+ * every window while a guest fetched it. A refusal is a 413 rather than a
+ * truncated body, because half a script is a syntax error the author cannot
+ * explain.
+ */
+export const PLUGIN_WEBVIEW_FILE_MAX_BYTES = 16 * 1024 * 1024;
+
 /** A directory request resolves to this, and to nothing else. */
 const PLUGIN_WEBVIEW_DIRECTORY_INDEX = "index.html";
 
@@ -232,6 +244,14 @@ export function createPluginWebviewProtocolHandler(
     // A directory is a 404, never a listing: a listing of an install directory
     // is a map of the plugin, and of anything the user happened to leave in it.
     if (!stats.isFile()) return refusal(404, "Not found");
+    if (stats.size > PLUGIN_WEBVIEW_FILE_MAX_BYTES) {
+      log("plugin.webview_protocol_too_large", {
+        pluginId: parsed.pluginId,
+        path: parsed.path,
+        bytes: stats.size,
+      });
+      return refusal(413, "Payload Too Large");
+    }
 
     let body: Buffer;
     try {

@@ -81,6 +81,11 @@ function harness(): Harness {
     setConfig,
     openDeeplink,
     openExternalUrl,
+    sendUiRequest: () => true,
+    readClipboard: () => "",
+    writeClipboard: () => {},
+    projectFor: () => null,
+    sendReload: () => {},
   });
   servers.push(server);
   return { server, domain, putCollection, setConfig, openDeeplink, openExternalUrl };
@@ -150,7 +155,11 @@ describe("createPluginWebviewBridgeServer", () => {
     });
     expect(server.resolveHandshake(SENDER)).toEqual({
       pluginId: "demo-plugin",
-      context: { subject: { kind: "session", id: "sess-1", title: "Fix", provider: null, status: null } },
+      context: {
+        subject: { kind: "session", id: "sess-1", title: "Fix", provider: null, status: null },
+        // Stamped by the host at handshake, never read off the guest's URL.
+        project: null,
+      },
     });
     // A stranger gets nothing to vouch for — the same grounds every call is
     // refused on.
