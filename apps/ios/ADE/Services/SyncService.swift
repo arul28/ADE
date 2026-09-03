@@ -23091,3 +23091,83 @@ extension SyncService: PluginPageBridgeDataSource {
     supportsViewerRemoteAction(action)
   }
 }
+
+extension SyncService: PluginPageHostWorldReading {
+  /// One entity, reduced to the fields whose movement a page would notice.
+  ///
+  /// Not the whole row: a fingerprint that included every column would report a
+  /// lane as changed when a field no page can draw was rewritten, and the point
+  /// of the diff is to wake a guest only when it has something to redraw.
+  ///
+  /// Sessions and chats read the ROSTER rather than the mirror, because the
+  /// roster is the phone's live session picture — status, attention and settled
+  /// state all land there first. A phone with no roster yet reports nothing for
+  /// those two kinds, which is honest: it has no session picture to report, and
+  /// inventing one from stale `terminal_sessions` rows would tell a page that
+  /// turns finished while it was not looking.
+  func pluginPageHostFingerprints(kind: PluginPageHostKind) -> PluginPageHostFingerprints {
+    switch kind {
+    case .lane:
+      var fingerprints: PluginPageHostFingerprints = [:]
+      for lane in database.fetchLanes(includeArchived: true) {
+        fingerprints[lane.id] = [
+          lane.status.rawValue,
+          lane.name,
+          lane.branchRef,
+          lane.archivedAt ?? "",
+          lane.linearIssue?.identifier ?? "",
+        ].joined(separator: "\u{1F}")
+      }
+      return fingerprints
+    case .pr:
+      var fingerprints: PluginPageHostFingerprints = [:]
+      for pr in database.fetchPullRequests() {
+        fingerprints[pr.id] = [
+          pr.state,
+          pr.checksStatus,
+          pr.reviewStatus,
+          pr.updatedAt,
+          pr.mergedAt ?? "",
+        ].joined(separator: "\u{1F}")
+      }
+      return fingerprints
+    case .session, .chat:
+      var fingerprints: PluginPageHostFingerprints = [:]
+      for project in rosterProjects {
+        for chat in project.chats {
+          fingerprints[chat.id] = [
+            chat.status.rawValue,
+            chat.awaitingInput == true ? "1" : "0",
+            chat.lastActivityAt ?? "",
+            chat.settledAt ?? "",
+            chat.archived == true ? "1" : "0",
+          ].joined(separator: "\u{1F}")
+        }
+      }
+      return fingerprints
+    }
+  }
+
+  /// The turn each chat session is currently in, as the roster reports it.
+  ///
+  /// `awaitingInput` is folded into the status because a turn holding for the
+  /// reader is still a live turn: without it a chat that asked a question would
+  /// read as finished, and a page would stop drawing its spinner while the
+  /// agent is still mid-turn.
+  func pluginPageChatObservations() -> [String: PluginPageChatObservation] {
+    var observations: [String: PluginPageChatObservation] = [:]
+    for project in rosterProjects {
+      for chat in project.chats {
+        let status = chat.awaitingInput == true && chat.status == .running
+          ? RemoteRosterChatStatus.awaiting.rawValue
+          : chat.status.rawValue
+        observations[chat.id] = PluginPageChatObservation(
+          status: status,
+          statusNote: chat.statusNote,
+          turnId: chat.chatSessionId
+        )
+      }
+    }
+    return observations
+  }
+}

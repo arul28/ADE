@@ -276,8 +276,15 @@ struct PluginPageHostView: UIViewRepresentable {
         }
         var host: PluginPageBridgeHosting? {
             didSet {
+                // The subscribed kinds move with the bridge. A page that
+                // subscribed before its surface handed over a new host must not
+                // stop hearing from the host because SwiftUI rebuilt a struct
+                // behind it.
+                let carried = bridge.subscribedHostKinds
                 bridge = PluginPageBridge(dataSource: dataSource, host: host)
                 bridge.placement = placement
+                bridge.restoreHostSubscriptions(carried)
+                wireHostEvents()
             }
         }
 
@@ -286,6 +293,12 @@ struct PluginPageHostView: UIViewRepresentable {
         private weak var webView: WKWebView?
         private var deliveredChangeRevision: Int?
         private var deliveredScheme: ColorScheme?
+        /// Watches the phone's change streams while this guest is alive.
+        ///
+        /// Built only when the data source can also answer for the world, and
+        /// torn down with the guest: a closed page keeps no observers and no
+        /// entity snapshots.
+        private var hostEvents: PluginPageHostEventSource?
 
         init(pluginId: String, dataSource: PluginPageBridgeDataSource, host: PluginPageBridgeHosting?) {
             self.pluginId = pluginId
@@ -293,6 +306,32 @@ struct PluginPageHostView: UIViewRepresentable {
             self.host = host
             self.bridge = PluginPageBridge(dataSource: dataSource, host: host)
             super.init()
+            wireHostEvents()
+        }
+
+        /// Connect `host.subscribe` to the producer.
+        ///
+        /// The subscription callback carries what was ADDED and what was
+        /// DROPPED, and the added half is what takes a baseline WITHOUT
+        /// emitting: a page that has only just subscribed already read the world
+        /// on its first render, so telling it every lane changed would make that
+        /// render happen twice.
+        private func wireHostEvents() {
+            guard let world = dataSource as? PluginPageHostWorldReading else { return }
+            let source = PluginPageHostEventSource(world: world) { [weak self] frame in
+                self?.deliverHostEvent(
+                    kind: frame.kind,
+                    ids: frame.ids,
+                    overflow: frame.overflow,
+                    turns: frame.turns
+                )
+            }
+            if let sync = dataSource as? SyncService { source.observe(sync) }
+            hostEvents = source
+            bridge.onHostSubscriptionChange = { [weak source] added, removed in
+                if !added.isEmpty { source?.subscribe(to: added) }
+                if !removed.isEmpty { source?.unsubscribe(from: removed) }
+            }
         }
 
         func attach(_ webView: WKWebView) {
@@ -301,6 +340,8 @@ struct PluginPageHostView: UIViewRepresentable {
 
         func detach() {
             webView = nil
+            hostEvents?.cancel()
+            hostEvents = nil
         }
 
         // MARK: Messages

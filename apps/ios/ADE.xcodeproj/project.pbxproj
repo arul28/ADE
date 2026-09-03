@@ -342,6 +342,8 @@
 		PH0000000000000000000037 /* PluginPageSchemeHandlerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = PG0000000000000000000037 /* PluginPageSchemeHandlerTests.swift */; };
 		PH0000000000000000000038 /* PluginPageBridgeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = PG0000000000000000000038 /* PluginPageBridgeTests.swift */; };
 		PH0000000000000000000039 /* BundledPluginPages in Resources */ = {isa = PBXBuildFile; fileRef = PG0000000000000000000039 /* BundledPluginPages */; };
+		PH0000000000000000000040 /* PluginPageHostEvents.swift in Sources */ = {isa = PBXBuildFile; fileRef = PG0000000000000000000040 /* PluginPageHostEvents.swift */; };
+		PH0000000000000000000041 /* PluginPageHostEventTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = PG0000000000000000000041 /* PluginPageHostEventTests.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -699,6 +701,8 @@
 		PG0000000000000000000037 /* PluginPageSchemeHandlerTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PluginPageSchemeHandlerTests.swift; path = ADETests/PluginPageSchemeHandlerTests.swift; sourceTree = "<group>"; };
 		PG0000000000000000000038 /* PluginPageBridgeTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PluginPageBridgeTests.swift; path = ADETests/PluginPageBridgeTests.swift; sourceTree = "<group>"; };
 		PG0000000000000000000039 /* BundledPluginPages */ = {isa = PBXFileReference; lastKnownFileType = folder; name = BundledPluginPages; path = ADE/Resources/BundledPluginPages; sourceTree = "<group>"; };
+		PG0000000000000000000040 /* PluginPageHostEvents.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PluginPageHostEvents.swift; path = ADE/Views/Plugins/PluginPageHostEvents.swift; sourceTree = "<group>"; };
+		PG0000000000000000000041 /* PluginPageHostEventTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PluginPageHostEventTests.swift; path = ADETests/PluginPageHostEventTests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -822,6 +826,7 @@
 		PJ0000000000000000000001 /* Plugins */ = {
 			isa = PBXGroup;
 			children = (
+				PG0000000000000000000040 /* PluginPageHostEvents.swift */,
 				PG0000000000000000000033 /* PluginPageBridgeHost.swift */,
 				PG0000000000000000000034 /* PluginPageHostView.swift */,
 				PG0000000000000000000035 /* PluginPageSurface.swift */,
@@ -1257,6 +1262,7 @@
 		C77DE76E58CC8D681F4D4619 /* ADETests */ = {
 			isa = PBXGroup;
 			children = (
+				PG0000000000000000000041 /* PluginPageHostEventTests.swift */,
 				PG0000000000000000000036 /* PluginPageAssetStoreTests.swift */,
 				PG0000000000000000000037 /* PluginPageSchemeHandlerTests.swift */,
 				PG0000000000000000000038 /* PluginPageBridgeTests.swift */,
@@ -1561,6 +1567,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				PH0000000000000000000040 /* PluginPageHostEvents.swift in Sources */,
 				PH0000000000000000000030 /* PluginPageBridge.swift in Sources */,
 				PH0000000000000000000031 /* PluginPageAssetStore.swift in Sources */,
 				PH0000000000000000000032 /* PluginPageSchemeHandler.swift in Sources */,
@@ -1827,6 +1834,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				PH0000000000000000000041 /* PluginPageHostEventTests.swift in Sources */,
 				PH0000000000000000000036 /* PluginPageAssetStoreTests.swift in Sources */,
 				PH0000000000000000000037 /* PluginPageSchemeHandlerTests.swift in Sources */,
 				PH0000000000000000000038 /* PluginPageBridgeTests.swift in Sources */,

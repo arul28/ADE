@@ -368,6 +368,17 @@ final class PluginPageBridge {
     /// so a page that never subscribes is never woken.
     private(set) var subscribedHostKinds: Set<PluginPageHostKind> = []
 
+    /// Told whenever the subscribed set changes, with what was added and what
+    /// was dropped.
+    ///
+    /// The producer needs BOTH halves, not the resulting set: a kind that was
+    /// just added has to have its baseline taken without emitting — a page that
+    /// has only just subscribed must not immediately hear that every lane
+    /// changed — and a kind that was dropped has to have its snapshot released.
+    /// Handing over the set alone would leave the producer diffing the two
+    /// itself, which is the same bookkeeping twice.
+    var onHostSubscriptionChange: ((_ added: Set<PluginPageHostKind>, _ removed: Set<PluginPageHostKind>) -> Void)?
+
     /// Where the host drew this guest.
     ///
     /// The HOST's own word, captured from the context it encoded into the
@@ -727,11 +738,22 @@ final class PluginPageBridge {
 
     // MARK: Host events
 
+    /// Carry a page's existing subscriptions onto a rebuilt bridge.
+    ///
+    /// Silent on purpose — it does NOT fire `onHostSubscriptionChange`, because
+    /// nothing about what the page asked for has changed. Firing it would make
+    /// the producer re-baseline and drop a window of real events on the floor.
+    func restoreHostSubscriptions(_ kinds: Set<PluginPageHostKind>) {
+        subscribedHostKinds.formUnion(kinds)
+    }
+
     private func hostSubscribe(_ request: PluginPageBridgeRequest) -> Any? {
         let kinds = (request.params["kinds"]?.arrayValue ?? [])
             .compactMap { $0.stringValue }
             .compactMap { PluginPageHostKind(rawValue: $0) }
+        let added = Set(kinds).subtracting(subscribedHostKinds)
         subscribedHostKinds.formUnion(kinds)
+        if !added.isEmpty { onHostSubscriptionChange?(added, []) }
         return ["kinds": subscribedHostKinds.map(\.rawValue).sorted()]
     }
 
@@ -741,11 +763,13 @@ final class PluginPageBridge {
             .compactMap { PluginPageHostKind(rawValue: $0) }
         // No kinds named means "everything", which is what an unsubscribe with
         // no arguments has to mean for a page tearing itself down.
+        let removed = kinds.isEmpty ? subscribedHostKinds : subscribedHostKinds.intersection(kinds)
         if kinds.isEmpty {
             subscribedHostKinds.removeAll()
         } else {
             subscribedHostKinds.subtract(kinds)
         }
+        if !removed.isEmpty { onHostSubscriptionChange?([], removed) }
         return ["kinds": subscribedHostKinds.map(\.rawValue).sorted()]
     }
 
