@@ -2,7 +2,6 @@ import React from "react";
 
 import { COLORS, RADII, SANS_FONT, SECTION_LABEL_STYLE } from "../../lanes/laneDesignTokens";
 import type { SettingsTabId } from "../../settings/settingsManifest";
-import { useRootAppStore } from "../../../state/appStore";
 import {
   PLUGIN_SETTINGS_FALLBACK_TAB,
   PLUGIN_SETTINGS_SECTIONS_ANCHOR,
@@ -14,6 +13,7 @@ import { PluginPanelHost } from "../PluginPanelHost";
 import { contributionKey } from "./contributionModel";
 import { SocketBoundary } from "./SocketBoundary";
 import { SocketIcon } from "./socketUi";
+import { brandIconsProp, usePluginBrandIcons } from "./usePluginBrandIcons";
 import { usePluginSurfaceContributions, useSurfaceContributions } from "./useSurfaceContributions";
 
 /**
@@ -72,7 +72,7 @@ export function PluginSettingsSections({
   // compiled catalogue has never heard of it. Without this the header drew the
   // puzzle piece for exactly the plugins that took the trouble to ship a mark,
   // while the tab rail beside it drew the mark — see `pluginIcons.tsx`.
-  const installedPlugins = useRootAppStore((state) => state.installedPlugins);
+  const brandIconsFor = usePluginBrandIcons();
 
   const contributions = React.useMemo(
     () => all.filter((entry) => resolvePluginSettingsTab(entry.payload.section) === tab),
@@ -99,8 +99,7 @@ export function PluginSettingsSections({
         const identity = identities.get(contribution.pluginId);
         const name = identity?.displayName ?? contribution.pluginId;
         const title = contribution.payload.title ?? name;
-        const brandIcons = installedPlugins
-          .find((entry) => entry.pluginId === contribution.pluginId)?.brandIcons;
+        const brandIcons = brandIconsFor(contribution.pluginId);
         return (
           <SocketBoundary key={contributionKey(contribution)}>
             <section
@@ -127,7 +126,7 @@ export function PluginSettingsSections({
               >
                 <SocketIcon
                   name={identity?.icon ?? undefined}
-                  {...(brandIcons ? { brandIcons } : {})}
+                  {...brandIconsProp(brandIcons)}
                   size={12}
                   color={COLORS.textMuted}
                 />

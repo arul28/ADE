@@ -1,7 +1,7 @@
 /* @vitest-environment jsdom */
 
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import React from "react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 
@@ -44,8 +44,60 @@ vi.mock("../../lib/pluginRuntimeBridge", () => ({
 }));
 
 vi.mock("./PluginPanelHost", () => ({
-  PluginPanelHost: ({ panelId }: { panelId: string }) => (
-    <div data-testid="panel-host">{panelId}</div>
+  /**
+   * Stubbed down to the props the page owns.
+   *
+   * `panel-host` stays exactly the panel id — the resolution tests below assert
+   * it verbatim — so everything the back-stack tests need rides on siblings:
+   * the button that stands in for a `{navigate}` verb, the Back the page hands
+   * down, and markers for the two values that only travel between these two
+   * files (the context the address carries, and the snapshot a pop returns).
+   */
+  PluginPanelHost: ({
+    panelId,
+    renderContext,
+    onNavigate,
+    onBack,
+    backLabel,
+    restoreState,
+  }: {
+    panelId: string;
+    renderContext: Record<string, unknown> | null;
+    onNavigate?: (
+      navigation: { panelId: string; context?: Record<string, unknown> },
+      snapshot: unknown,
+    ) => void;
+    onBack?: (() => void) | null;
+    backLabel?: string | null;
+    restoreState?: { panelState: { values: Record<string, string> } } | null;
+  }) => (
+    <>
+      <div data-testid="panel-host">{panelId}</div>
+      <div data-testid="render-context">{JSON.stringify(renderContext)}</div>
+      <div data-testid="restore-state">
+        {restoreState ? JSON.stringify(restoreState.panelState.values) : "none"}
+      </div>
+      <button
+        type="button"
+        onClick={() =>
+          onNavigate?.(
+            { panelId: "detail", context: { issue: "ISS-9" } },
+            {
+              panelState: { signature: "status", values: { status: "all" } },
+              panelSelection: { signature: "", values: {}, anchor: {} },
+              groupOverrides: {},
+              listPages: {},
+            },
+          )}
+      >
+        navigate
+      </button>
+      {onBack ? (
+        <button type="button" onClick={onBack}>
+          {backLabel ? `Back to ${backLabel}` : "Back"}
+        </button>
+      ) : null}
+    </>
   ),
   // Renders nothing in the app; stubbed as a marker so the webview branch can
   // be asserted to carry the viewed lifecycle the panel host would have owned.
@@ -240,5 +292,166 @@ describe("plugin tab page panel resolution", () => {
     mount("?panel=overview");
 
     expect(screen.getByTestId("panel-host").textContent).toBe("overview");
+  });
+});
+
+/**
+ * Getting back out of a panel a plugin navigated the reader into.
+ *
+ * `{navigate}` used to replace the panel with nothing behind it. The desktop
+ * app has no browser Back, so a plugin that sent a reader from a list into a
+ * detail screen stranded them there — the reduction iOS closed with
+ * `PluginPanelStackEntry`, mirrored here with the same semantics: the address
+ * comes back verbatim, context included, and the reader's own state comes back
+ * with it.
+ */
+describe("plugin tab page back stack", () => {
+  const LISTED: InstalledPlugin["tabs"] = [
+    { id: "overview", title: "Overview", kind: "tab", panelId: "overview" },
+    { id: "detail", title: "Detail", kind: "tab", panelId: "detail" },
+  ];
+
+  const panelText = () => screen.getByTestId("panel-host").textContent ?? "";
+  const back = () => screen.queryByRole("button", { name: /^Back/ });
+
+  function navigate() {
+    fireEvent.click(screen.getByRole("button", { name: "navigate" }));
+  }
+
+  it("draws no Back control until a plugin has navigated", () => {
+    registry.plugins = [installed({ tabs: LISTED })];
+    mount();
+
+    expect(back()).toBeNull();
+  });
+
+  it("pushes the panel it is leaving and offers the way back to it", () => {
+    registry.plugins = [installed({ tabs: LISTED })];
+    mount("?panel=overview&ctx=%7B%22a%22%3A1%7D");
+
+    navigate();
+
+    expect(panelText()).toContain("detail");
+    // The control names where it is going, which is the panel's declared title.
+    expect(back()?.textContent).toBe("Back to Overview");
+  });
+
+  it("pops back to the address the reader left, context included", () => {
+    registry.plugins = [installed({ tabs: LISTED })];
+    mount("?panel=overview&ctx=%7B%22a%22%3A1%7D");
+
+    navigate();
+    expect(screen.getByTestId("render-context").textContent).toBe('{"issue":"ISS-9"}');
+
+    fireEvent.click(back() as HTMLElement);
+
+    expect(panelText()).toContain("overview");
+    // Not the plugin's front door and not a context-less reload: the same
+    // address, which is what makes a pop a return.
+    expect(screen.getByTestId("render-context").textContent).toBe('{"a":1}');
+    // And the way back is gone, because there is nothing left to pop.
+    expect(back()).toBeNull();
+  });
+
+  it("hands the popped entry's snapshot back to the panel host", () => {
+    registry.plugins = [installed({ tabs: LISTED })];
+    mount();
+
+    navigate();
+    expect(screen.getByTestId("restore-state").textContent).toBe("none");
+
+    fireEvent.click(back() as HTMLElement);
+
+    // What the reader had on the panel they are returning to — the host is what
+    // adopts it, and this is the wire it arrives on.
+    expect(screen.getByTestId("restore-state").textContent).toBe('{"status":"all"}');
+  });
+
+  it("pops on Escape", () => {
+    registry.plugins = [installed({ tabs: LISTED })];
+    mount();
+
+    navigate();
+    fireEvent.keyDown(window, { key: "Escape" });
+
+    expect(panelText()).toContain("overview");
+  });
+
+  it("leaves Escape to a dialog drawn above the panel", () => {
+    registry.plugins = [installed({ tabs: LISTED })];
+    mount();
+    navigate();
+
+    // A plugin prompt card, a `navigate:popover` panel and a row's overflow menu
+    // all close on Escape and all sit above the panel. Popping out from under
+    // one of them would answer a key the reader meant for it.
+    const dialog = document.createElement("div");
+    dialog.setAttribute("role", "dialog");
+    document.body.appendChild(dialog);
+    try {
+      fireEvent.keyDown(window, { key: "Escape" });
+      expect(panelText()).toContain("detail");
+    } finally {
+      dialog.remove();
+    }
+  });
+
+  it("pops on Ctrl+[ where the platform is not a Mac", () => {
+    // Windows and Linux parity is the whole point of resolving the modifier
+    // through the renderer's own binding parser rather than testing the
+    // platform here: `Mod` is Ctrl everywhere Cmd is not offered.
+    registry.plugins = [installed({ tabs: LISTED })];
+    mount();
+
+    navigate();
+    fireEvent.keyDown(window, { key: "[", ctrlKey: true });
+
+    expect(panelText()).toContain("overview");
+  });
+
+  it("pops on Cmd+[ on a Mac", () => {
+    const platform = Object.getOwnPropertyDescriptor(window.navigator, "platform");
+    Object.defineProperty(window.navigator, "platform", {
+      value: "MacIntel",
+      configurable: true,
+    });
+    try {
+      registry.plugins = [installed({ tabs: LISTED })];
+      mount();
+
+      navigate();
+      fireEvent.keyDown(window, { key: "[", metaKey: true });
+
+      expect(panelText()).toContain("overview");
+    } finally {
+      if (platform) Object.defineProperty(window.navigator, "platform", platform);
+    }
+  });
+
+  it("claims neither key at depth zero", () => {
+    registry.plugins = [installed({ tabs: LISTED })];
+    mount();
+
+    const escape = new KeyboardEvent("keydown", { key: "Escape", cancelable: true });
+    window.dispatchEvent(escape);
+
+    // Nothing to pop, so nothing is consumed — the key still belongs to whatever
+    // else in the app wants it.
+    expect(escape.defaultPrevented).toBe(false);
+    expect(panelText()).toContain("overview");
+  });
+
+  it("keeps the stack bounded when a plugin navigates in a loop", () => {
+    registry.plugins = [installed({ tabs: LISTED })];
+    mount();
+
+    for (let index = 0; index < 12; index += 1) navigate();
+    // Eight, the depth iOS keeps. The oldest entries are dropped rather than the
+    // newest refused, so the reader always keeps the screens they just walked.
+    for (let index = 0; index < 8; index += 1) {
+      expect(back()).not.toBeNull();
+      fireEvent.click(back() as HTMLElement);
+    }
+    expect(back()).toBeNull();
   });
 });

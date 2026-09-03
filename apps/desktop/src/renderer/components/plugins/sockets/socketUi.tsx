@@ -100,12 +100,15 @@ export function SocketBadge({
   text,
   tone,
   icon,
+  brandIcons,
   tooltip,
   dataTour,
 }: {
   text: string;
   tone: PluginBadgeTone;
   icon?: string;
+  /** The declaring plugin's shipped glyph rows — see `usePluginBrandIcons`. */
+  brandIcons?: Readonly<Record<string, PluginBrandGlyph>>;
   tooltip?: string;
   dataTour?: string;
 }) {
@@ -133,7 +136,7 @@ export function SocketBadge({
         textOverflow: "ellipsis",
       }}
     >
-      {icon ? <SocketIcon name={icon} color={color} /> : null}
+      {icon ? <SocketIcon name={icon} color={color} {...(brandIcons ? { brandIcons } : {})} /> : null}
       {text}
     </span>
   );
@@ -213,23 +216,68 @@ export function SocketOverflow({
   );
 }
 
+/**
+ * The window top bar's own button chrome, borrowed rather than imitated.
+ *
+ * `ade-shell-control` is the class every fixed control in the header already
+ * wears — the new-window button, the update pill, `LinearQuickViewButton` — and
+ * it carries the colour, the 8px radius, the border and the hover/open/focus
+ * states as CSS custom properties that follow the theme. A plugin button in
+ * that row has to be that control, not a lookalike: the generic socket box is a
+ * 28px pill with its own hairline, so beside 20px shell buttons it read as a
+ * second, taller control with a doubled edge.
+ *
+ * Nothing here sets a border, a background or a radius. That is the whole point
+ * — the inline box is what produced the double edge, so `chrome: "shell"` drops
+ * it and lets the class own the chrome, exactly as the neighbours do.
+ */
+export const SOCKET_SHELL_BUTTON_CLASS =
+  "ade-shell-control inline-flex h-[20px] shrink-0 items-center justify-center gap-1"
+  + " transition-[background-color,color,border-color,box-shadow] duration-150";
+
+/** The chevron half in shell chrome. Butted against the button, same height. */
+export const SOCKET_SHELL_CHEVRON_CLASS =
+  "ade-shell-control inline-flex h-[20px] w-[14px] shrink-0 items-center justify-center"
+  + " transition-[background-color,color,border-color,box-shadow] duration-150";
+
+/** The chrome a socket button wears. `shell` is the window header's. */
+export type SocketButtonChrome = "default" | "shell";
+
 /** A contributed toolbar/menu button, sized to sit beside the surface's own. */
 export function SocketButton({
   label,
   icon,
+  brandIcons,
   disabled,
   onClick,
   dataTour,
   style,
+  chrome = "default",
 }: {
   label: string;
   icon?: string;
+  /**
+   * The declaring plugin's own shipped glyph rows.
+   *
+   * Passed by every socket renderer, because `brand:*` tokens a plugin ships
+   * are not in ADE's compiled catalogue and resolved to the puzzle piece
+   * without them — see {@link SocketIcon} and `usePluginBrandIcons`.
+   */
+  brandIcons?: Readonly<Record<string, PluginBrandGlyph>>;
   disabled?: boolean;
   onClick: () => void;
   dataTour?: string;
   /** Overrides: the split-button joint, and a plugin's own sanitized tint. */
   style?: React.CSSProperties;
+  chrome?: SocketButtonChrome;
 }) {
+  const shell = chrome === "shell";
+  // Icon-only in the header, and only when there IS an icon: the controls it
+  // sits between are all 20px glyphs, and a labelled pill among them is the
+  // plugin taking the row over. The label is still the accessible name and the
+  // tooltip, so nothing about it is lost. A contribution that declares no icon
+  // keeps its text rather than drawing an anonymous puzzle piece.
+  const iconOnly = shell && Boolean(icon);
   return (
     <button
       type="button"
@@ -237,27 +285,42 @@ export function SocketButton({
       disabled={disabled}
       onClick={onClick}
       title={label}
+      aria-label={iconOnly ? label : undefined}
+      className={shell ? SOCKET_SHELL_BUTTON_CLASS : undefined}
       style={{
-        display: "inline-flex",
-        alignItems: "center",
-        gap: 6,
-        height: 28,
-        padding: "0 10px",
-        fontSize: 11,
-        fontWeight: 500,
-        fontFamily: SANS_FONT,
-        color: disabled ? COLORS.textDim : COLORS.textSecondary,
-        background: "color-mix(in srgb, var(--color-fg) 4%, transparent)",
-        border: `1px solid ${COLORS.borderMuted}`,
-        borderRadius: RADII.sm,
-        cursor: disabled ? "default" : "pointer",
-        opacity: disabled ? 0.6 : 1,
-        whiteSpace: "nowrap",
+        ...(shell
+          ? {
+            padding: iconOnly ? 0 : "0 6px",
+            width: iconOnly ? 20 : undefined,
+            fontSize: 11,
+            fontWeight: 500,
+            fontFamily: SANS_FONT,
+            cursor: disabled ? "default" : "pointer",
+            opacity: disabled ? 0.6 : 1,
+            whiteSpace: "nowrap",
+          }
+          : {
+            display: "inline-flex",
+            alignItems: "center",
+            gap: 6,
+            height: 28,
+            padding: "0 10px",
+            fontSize: 11,
+            fontWeight: 500,
+            fontFamily: SANS_FONT,
+            color: disabled ? COLORS.textDim : COLORS.textSecondary,
+            background: "color-mix(in srgb, var(--color-fg) 4%, transparent)",
+            border: `1px solid ${COLORS.borderMuted}`,
+            borderRadius: RADII.sm,
+            cursor: disabled ? "default" : "pointer",
+            opacity: disabled ? 0.6 : 1,
+            whiteSpace: "nowrap",
+          }),
         ...style,
       }}
     >
-      <SocketIcon name={icon} size={12} />
-      {label}
+      <SocketIcon name={icon} size={shell ? 13 : 12} {...(brandIcons ? { brandIcons } : {})} />
+      {iconOnly ? null : label}
     </button>
   );
 }
@@ -279,6 +342,7 @@ export function SocketSplitMenu({
   items,
   onSelect,
   label,
+  brandIcons,
   dataTour,
   style,
   className,
@@ -288,6 +352,8 @@ export function SocketSplitMenu({
   onSelect: (item: PluginActionButtonMenuItem) => void;
   /** Accessible name — the primary button's label is the useful half of it. */
   label: string;
+  /** The declaring plugin's shipped glyph rows — see `usePluginBrandIcons`. */
+  brandIcons?: Readonly<Record<string, PluginBrandGlyph>>;
   dataTour?: string;
   style?: React.CSSProperties;
   className?: string;
@@ -334,6 +400,7 @@ export function SocketSplitMenu({
                 <SocketMenuRow
                   label={item.label}
                   {...(item.icon ? { icon: item.icon } : {})}
+                  {...(brandIcons ? { brandIcons } : {})}
                   {...(item.danger ? { danger: true } : {})}
                   onClick={() => onSelect(item)}
                 />
@@ -357,9 +424,12 @@ export function SocketSplitMenu({
 export function SocketMenuSubRows({
   items,
   onSelect,
+  brandIcons,
 }: {
   items: readonly PluginActionButtonMenuItem[];
   onSelect: (item: PluginActionButtonMenuItem) => void;
+  /** The declaring plugin's shipped glyph rows — see `usePluginBrandIcons`. */
+  brandIcons?: Readonly<Record<string, PluginBrandGlyph>>;
 }) {
   if (items.length === 0) return null;
   return (
@@ -369,6 +439,7 @@ export function SocketMenuSubRows({
           key={`${item.actionId} ${item.label}`}
           label={item.label}
           {...(item.icon ? { icon: item.icon } : {})}
+          {...(brandIcons ? { brandIcons } : {})}
           {...(item.danger ? { danger: true } : {})}
           onClick={() => onSelect(item)}
         />
@@ -381,11 +452,14 @@ export function SocketMenuSubRows({
 export function SocketMenuRow({
   label,
   icon,
+  brandIcons,
   danger,
   onClick,
 }: {
   label: string;
   icon?: string;
+  /** The declaring plugin's shipped glyph rows — see `usePluginBrandIcons`. */
+  brandIcons?: Readonly<Record<string, PluginBrandGlyph>>;
   danger?: boolean;
   onClick: () => void;
 }) {
@@ -414,7 +488,7 @@ export function SocketMenuRow({
         cursor: "pointer",
       }}
     >
-      <SocketIcon name={icon} size={12} />
+      <SocketIcon name={icon} size={12} {...(brandIcons ? { brandIcons } : {})} />
       {label}
     </button>
   );

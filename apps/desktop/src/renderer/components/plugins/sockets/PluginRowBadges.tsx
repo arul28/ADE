@@ -3,6 +3,7 @@ import React from "react";
 import { splitPluginRowBadges, type PluginSurfaceId } from "../../../../shared/plugins/sockets";
 import type { PluginSurfaceContext } from "../../../../shared/plugins/context";
 import { contributionKey } from "./contributionModel";
+import { brandIconsProp, usePluginBrandIcons } from "./usePluginBrandIcons";
 import { useSurfaceContributions } from "./useSurfaceContributions";
 import { SocketBoundary } from "./SocketBoundary";
 import { SocketBadge, SocketOverflow } from "./socketUi";
@@ -34,6 +35,7 @@ export function PluginRowBadges({
   style?: React.CSSProperties;
 }) {
   const contributions = useSurfaceContributions(surface, "row-badge", { active, context });
+  const brandIconsFor = usePluginBrandIcons();
   if (contributions.length === 0) return null;
 
   const { visible, overflowCount } = splitPluginRowBadges(contributions);
@@ -54,6 +56,7 @@ export function PluginRowBadges({
             text={contribution.payload.text}
             tone={contribution.payload.tone}
             {...(contribution.payload.icon ? { icon: contribution.payload.icon } : {})}
+            {...brandIconsProp(brandIconsFor(contribution.pluginId))}
             {...(contribution.payload.tooltip ? { tooltip: contribution.payload.tooltip } : {})}
           />
         </SocketBoundary>
@@ -70,6 +73,7 @@ export function PluginRowBadges({
                 text={contribution.payload.text}
                 tone={contribution.payload.tone}
                 {...(contribution.payload.icon ? { icon: contribution.payload.icon } : {})}
+                {...brandIconsProp(brandIconsFor(contribution.pluginId))}
                 {...(contribution.payload.tooltip ? { tooltip: contribution.payload.tooltip } : {})}
               />
             </SocketBoundary>

@@ -2861,7 +2861,18 @@ export function TopBar({
 
               Context is `{kind: "surface", surface: "app"}`: this cluster
               belongs to the window, not to whatever tab is open under it. */}
-          <PluginToolbarActions surface="app" />
+          <PluginToolbarActions
+            surface="app"
+            // The header is a DRAG region, and a child that does not opt out of
+            // it is not clickable: pressing the plugin button moved the window
+            // instead of invoking the action. Every other control in this bar
+            // carries the same opt-out — see the utility cluster below.
+            style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
+            // And it wears the header's own chrome rather than the generic
+            // socket pill, so it is the same height and radius as the shell
+            // buttons it sits between instead of a taller, double-edged box.
+            chrome="shell"
+          />
         </div>
 
         <div

@@ -3443,6 +3443,233 @@ final class PluginActionResponseTests: XCTestCase {
     XCTAssertNil(PluginPanelRecord.viewAction(inSchemaJSON: "not json"))
     XCTAssertNil(PluginPanelRecord.viewAction(inSchemaJSON: "[1,2]"))
   }
+
+  /// The seeded stamp rides in `schema_json` beside the other two, and for the
+  /// same reason. A row written before the key existed answers `false`, which
+  /// is the pane this build has always drawn.
+  func testSeededStampIsReadOffTheStoredSchema() {
+    XCTAssertTrue(PluginPanelRecord.seeded(inSchemaJSON: #"{"v":1,"body":[],"seeded":true}"#))
+    XCTAssertFalse(PluginPanelRecord.seeded(inSchemaJSON: #"{"v":1,"body":[]}"#))
+    XCTAssertFalse(PluginPanelRecord.seeded(inSchemaJSON: #"{"v":1,"seeded":false}"#))
+    // Only a real boolean counts: a plugin that republished a string here has
+    // not made its own row the manifest's default again.
+    XCTAssertFalse(PluginPanelRecord.seeded(inSchemaJSON: #"{"v":1,"seeded":"true"}"#))
+    XCTAssertFalse(PluginPanelRecord.seeded(inSchemaJSON: "not json"))
+    XCTAssertFalse(PluginPanelRecord.seeded(inSchemaJSON: "[1,2]"))
+  }
+}
+
+/// The seeded first refresh, on the phone.
+///
+/// The defect: every plugin tab drew the manifest's seeded panel — a "Loading…"
+/// card — and sat on it, because the only thing that ran the panel's own
+/// `refreshAction` was the reader pulling down. These are written against the
+/// store's behaviour, so a rewrite still has to keep the promise.
+@MainActor
+final class PluginSeededPanelRefreshTests: XCTestCase {
+
+  /// Stands in for `SyncService`, recording every action the pane dispatched.
+  @MainActor
+  private final class FakeSeededSync: PluginPaneSyncing {
+    var canInvokePluginActions = true
+    var canFetchPluginPanelsRemotely = false
+    var pluginFallbackScope = "machine-a"
+    var supportsPluginAuthSessions = false
+
+    var localPanels: [PluginPanelRecord] = []
+    private(set) var invokedActionIds: [String] = []
+
+    func pluginPresenceCatalog() -> PluginPresenceCatalog { PluginPresenceCatalog() }
+
+    func pluginPanels(pluginId: String?) -> [PluginPanelRecord] { localPanels }
+
+    func pluginCollectionEntries(
+      binding: PluginVocabBinding,
+      pluginId: String,
+      limit: Int
+    ) -> [PluginCollectionEntry] { [] }
+
+    func invokePluginAction(
+      pluginId: String,
+      actionId: String,
+      payload: [String: Any]
+    ) async throws -> PluginInvokeResult {
+      invokedActionIds.append(actionId)
+      return PluginInvokeResult()
+    }
+
+    func fetchPluginPanel(pluginId: String, panelId: String) async throws -> PluginPanelRecord? { nil }
+
+    func fetchPluginCollectionEntries(
+      pluginId: String,
+      collection: String,
+      keyPrefix: String?,
+      limit: Int
+    ) async throws -> [PluginCollectionEntry] { [] }
+
+    func completePluginAuthSession(params: [String: String]) async throws {}
+  }
+
+  private static func schema(seeded: Bool, refreshAction: String?) -> String {
+    let seededKey = seeded ? #""seeded": true,"# : ""
+    let refreshKey = refreshAction.map { #""refreshAction": "\#($0)","# } ?? ""
+    return """
+    {
+      "v": 1,
+      "title": "Fleet",
+      \(seededKey)
+      \(refreshKey)
+      "fallback": { "title": "Fleet", "text": "Open on the machine." },
+      "body": [{ "component": "text", "text": "Loading…" }]
+    }
+    """
+  }
+
+  private func panel(
+    seeded: Bool,
+    refreshAction: String?,
+    updatedAt: String = "2026-09-03T10:00:00Z"
+  ) -> PluginPanelRecord {
+    let schemaJSON = Self.schema(seeded: seeded, refreshAction: refreshAction)
+    return PluginPanelRecord(
+      pluginId: "cloud",
+      panelId: "fleet",
+      title: "Fleet",
+      icon: "",
+      surface: "work",
+      schemaJSON: schemaJSON,
+      vocabVersion: 1,
+      updatedAt: updatedAt,
+      mobile: true,
+      refreshAction: PluginPanelRecord.refreshAction(inSchemaJSON: schemaJSON),
+      viewAction: nil
+    )
+  }
+
+  private func store(
+    _ sync: FakeSeededSync,
+    ledger: PluginSeededRefreshLedger
+  ) -> PluginPaneStore {
+    PluginPaneStore(
+      pluginId: "cloud",
+      panelId: "fleet",
+      sync: sync,
+      fetchesMissingRows: false,
+      fallbackCache: PluginPanelFallbackCache(),
+      seededRefreshLedger: ledger,
+      openExternalURL: { _ in }
+    )
+  }
+
+  /// Every dispatch is a detached task. Bounded, never slept on.
+  private func settle() async {
+    for _ in 0..<50 { await Task.yield() }
+  }
+
+  /// The whole defect, in one case: opening the pane on the seeded row runs the
+  /// plugin's own refresh, once, without the reader pulling anything.
+  func testOpeningASeededPanelRunsItsDeclaredRefreshOnce() async {
+    let sync = FakeSeededSync()
+    sync.localPanels = [panel(seeded: true, refreshAction: "refreshFleet")]
+    let pane = store(sync, ledger: PluginSeededRefreshLedger())
+
+    pane.load()
+    await settle()
+
+    XCTAssertEqual(sync.invokedActionIds, ["refreshFleet"])
+
+    // A redraw on the same row — the load the refresh itself triggers, a panel
+    // fetch landing, anything — must not turn a fetch into a loop.
+    pane.load()
+    await settle()
+    XCTAssertEqual(sync.invokedActionIds, ["refreshFleet"])
+  }
+
+  /// A row the plugin has already published over is not seeded, so an open owes
+  /// it nothing: the panel is showing real content.
+  func testAPublishedPanelRunsNothingOnOpen() async {
+    let sync = FakeSeededSync()
+    sync.localPanels = [panel(seeded: false, refreshAction: "refreshFleet")]
+    let pane = store(sync, ledger: PluginSeededRefreshLedger())
+
+    pane.load()
+    await settle()
+
+    XCTAssertEqual(sync.invokedActionIds, [])
+  }
+
+  /// A seeded row whose panel declared no refresh has nothing to run — the
+  /// gesture the reader would have pressed does not exist either.
+  func testASeededPanelWithNoDeclarationRunsNothing() async {
+    let sync = FakeSeededSync()
+    sync.localPanels = [panel(seeded: true, refreshAction: nil)]
+    let pane = store(sync, ledger: PluginSeededRefreshLedger())
+
+    pane.load()
+    await settle()
+
+    XCTAssertEqual(sync.invokedActionIds, [])
+  }
+
+  /// Once per ROW, not once per open: the ledger outlives the store, so closing
+  /// the sheet and re-opening it on the same still-seeded row asks the plugin
+  /// nothing a second time.
+  func testReopeningTheSamePanelDoesNotAskAgain() async {
+    let sync = FakeSeededSync()
+    sync.localPanels = [panel(seeded: true, refreshAction: "refreshFleet")]
+    let ledger = PluginSeededRefreshLedger()
+
+    let first = store(sync, ledger: ledger)
+    first.load()
+    await settle()
+
+    let reopened = store(sync, ledger: ledger)
+    reopened.load()
+    await settle()
+
+    XCTAssertEqual(sync.invokedActionIds, ["refreshFleet"])
+  }
+
+  /// A row that actually changed is a new key. A plugin whose fetch failed and
+  /// left the host to re-seed the panel is allowed to be asked again.
+  func testAChangedSeededRowMayAskAgain() async {
+    let sync = FakeSeededSync()
+    sync.localPanels = [panel(seeded: true, refreshAction: "refreshFleet")]
+    let ledger = PluginSeededRefreshLedger()
+
+    let first = store(sync, ledger: ledger)
+    first.load()
+    await settle()
+
+    sync.localPanels = [
+      panel(seeded: true, refreshAction: "refreshFleet", updatedAt: "2026-09-03T10:05:00Z"),
+    ]
+    let later = store(sync, ledger: ledger)
+    later.load()
+    await settle()
+
+    XCTAssertEqual(sync.invokedActionIds, ["refreshFleet", "refreshFleet"])
+  }
+
+  /// A phone that cannot reach the machine records nothing, so the refresh is
+  /// still owed once the socket is back rather than spent on a call that never
+  /// left.
+  func testAPaneThatCannotInvokeAsksNothingAndStaysOwed() async {
+    let sync = FakeSeededSync()
+    sync.canInvokePluginActions = false
+    sync.localPanels = [panel(seeded: true, refreshAction: "refreshFleet")]
+    let ledger = PluginSeededRefreshLedger()
+
+    let offline = store(sync, ledger: ledger)
+    offline.load()
+    await settle()
+    XCTAssertEqual(sync.invokedActionIds, [])
+
+    sync.canInvokePluginActions = true
+    offline.load()
+    await settle()
+    XCTAssertEqual(sync.invokedActionIds, ["refreshFleet"])
+  }
 }
 
 /// The pane's answer when the mirror does not have the panel.

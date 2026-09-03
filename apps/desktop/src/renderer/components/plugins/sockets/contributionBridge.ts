@@ -112,7 +112,25 @@ const manifestCache = new Map<string, Promise<unknown>>();
 function cachedManifest(pluginId: string): Promise<unknown> {
   const cached = manifestCache.get(pluginId);
   if (cached) return cached;
-  const pending = readPluginManifest(pluginId);
+  // A FAILED read is never cached. The cache exists so a burst of surface
+  // reveals costs one read per plugin, and it keyed on the install set — which
+  // does not change when the daemon's plugin host is merely not bound yet. So a
+  // cold-launch refusal used to be latched for the whole session, and the
+  // static sockets it fed drew empty until relaunch. Dropping the entry the
+  // moment the read answers null (or rejects) makes the next reveal ask again.
+  const pending = readPluginManifest(pluginId).then(
+    (manifest) => {
+      if (manifest == null) manifestCache.delete(pluginId);
+      return manifest;
+    },
+    (error) => {
+      manifestCache.delete(pluginId);
+      throw error;
+    },
+  );
+  // A rejection nobody awaits is an unhandled rejection; the map holds the
+  // settled shape and `sourcesFromInstalled` catches it back to null.
+  pending.catch(() => {});
   manifestCache.set(pluginId, pending);
   return pending;
 }
@@ -150,7 +168,16 @@ export async function loadPluginSocketSources(): Promise<
 > {
   const load = await loadInstalledPlugins();
   if (!load.ok) return { ok: false };
-  return { ok: true, sources: await sourcesFromInstalled(load.plugins) };
+  const sources = await sourcesFromInstalled(load.plugins);
+  // The list is only half the answer. Every STATIC socket — the top-bar button,
+  // the row menu entry, the palette command — is declared in a manifest, so a
+  // list that arrived with unreadable manifests is a load that cannot draw
+  // them. Reporting it as a success settled the store, and the sockets stayed
+  // empty until an unrelated plugin event happened along. A partial load is a
+  // failed load: the store keeps whatever it had, stays stale, and retries on
+  // its existing schedule.
+  if (sources.some((entry) => entry.manifest == null)) return { ok: false };
+  return { ok: true, sources };
 }
 
 export async function readPluginSocketSources(): Promise<PluginSocketSource[]> {
@@ -173,7 +200,9 @@ async function sourcesFromInstalled(installed: readonly unknown[]): Promise<Plug
     });
   }
   if (sources.length === 0) return [];
-  const manifests = await Promise.all(sources.map((entry) => cachedManifest(entry.pluginId)));
+  const manifests = await Promise.all(
+    sources.map((entry) => cachedManifest(entry.pluginId).catch(() => null)),
+  );
   return sources.map((entry, index) => ({ ...entry, manifest: manifests[index] ?? null }));
 }
 

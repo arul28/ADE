@@ -481,6 +481,7 @@ import {
   pluginInteractiveKey,
   pluginPaneBindingRows,
   pluginPaneClearSelection,
+  pluginPaneSeededRefresh,
   pluginPaneSelectionPayload,
   pluginPaneSelectionReset,
   pluginPaneStateChange,
@@ -3588,6 +3589,11 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
   // selection index: the pane repolls every ten seconds, and an index armed
   // against "Delete lane" would fire whatever the refresh moved into that slot.
   const pluginConfirmArmedRef = useRef<string | null>(null);
+  // Panel rows whose seeded first refresh has already been dispatched, keyed on
+  // plugin + panel + row identity. Held on the client rather than in the pane
+  // state so closing and re-opening the pane on the same still-seeded row does
+  // not ask the plugin to fetch a second time.
+  const pluginSeededRefreshedRef = useRef<Set<string>>(new Set());
   // Plugin socket contributions for the two surfaces the drawer lists. Empty on
   // a host without plugin support and on a machine with none installed, which
   // is the same drawer either way: core rows and nothing added to them.
@@ -10882,6 +10888,53 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       void invokePluginAction(conn, pluginId, viewAction, { panelId, viewed: false }).catch(() => {});
     };
   }, [connection, pluginPaneView?.panelId, pluginPaneView?.pluginId, pluginPaneView?.viewAction]);
+
+  const pluginPaneFirstRefresh = rightPane.kind === "plugin-panel" && rightOpen
+    ? pluginPaneSeededRefresh(rightPane.model, pluginSeededRefreshedRef.current)
+    : null;
+
+  /**
+   * Run a seeded panel's own refresh once, when the pane opens.
+   *
+   * A plugin that fetches its rows ships a "Loading…" card as its manifest
+   * schema, and nothing used to run the fetch: the pane drew that card and sat
+   * on it until the reader pressed `r`. So an open on a row that is still the
+   * seeded one dispatches the declared refresh, on the same silent invoke path
+   * the view ack uses — no notice, no prompt, no announce.
+   *
+   * Once per ROW: the ref remembers the key, so re-opening the pane on the same
+   * still-seeded row asks nothing again, and the 10s poll cannot turn a fetch
+   * into a timer either. The refetch below is what puts the plugin's answer on
+   * screen without waiting for that poll.
+   */
+  useEffect(() => {
+    if (!pluginPaneFirstRefresh || !connection) return;
+    const { key, action } = pluginPaneFirstRefresh;
+    if (pluginSeededRefreshedRef.current.has(key)) return;
+    pluginSeededRefreshedRef.current.add(key);
+    const current = rightPaneRef.current;
+    if (current.kind !== "plugin-panel") return;
+    const conn = connection;
+    const target = {
+      pluginId: current.state.pluginId,
+      displayName: current.state.displayName,
+      panelId: current.state.panelId,
+      context: current.state.context ?? null,
+    };
+    void (async () => {
+      try {
+        await invokePluginAction(conn, target.pluginId, action, {
+          ...(target.context ? { context: target.context } : {}),
+        });
+      } catch {
+        // Silent by design: the reader did not ask for this refresh, so a
+        // plugin whose fetch failed leaves the seeded card up and says nothing.
+        // Their own `r` still reports the failure the way it always has.
+        return;
+      }
+      await loadPluginPane(target);
+    })();
+  }, [connection, loadPluginPane, pluginPaneFirstRefresh?.action, pluginPaneFirstRefresh?.key]);
 
   // A refresh that dropped the armed action disarms it: the sentence the user
   // was asked to confirm described a row that is no longer in the panel. An

@@ -4,7 +4,12 @@ import { Navigate, useParams, useSearchParams } from "react-router-dom";
 import { COLORS, RADII, SANS_FONT, outlineButton } from "../lanes/laneDesignTokens";
 import { useRootAppStore } from "../../state/appStore";
 import { openPluginLogs, restartPlugin, type InstalledPlugin } from "../../lib/pluginRuntimeBridge";
-import { PluginPanelHost, PluginSurfaceViewedLifecycle } from "./PluginPanelHost";
+import {
+  PluginPanelHost,
+  PluginSurfaceViewedLifecycle,
+  type PluginPanelSnapshot,
+} from "./PluginPanelHost";
+import { eventMatchesBinding } from "../../lib/keybindings";
 import { PluginWebviewHost, supportsPluginWebviews } from "./PluginWebviewHost";
 import { PluginFallbackCard } from "./VocabularyRenderer";
 import { pluginIcon } from "./pluginIcons";
@@ -25,6 +30,50 @@ import { pluginRailTabSurface } from "../../../shared/plugins/manifest";
  * come with the two things they can actually do about it — restart, and read
  * the logs — rather than a spinner that never resolves.
  */
+
+/**
+ * One panel the reader has walked away from, and everything they left on it.
+ *
+ * The desktop shape of iOS's `PluginPanelStackEntry` (`PluginPaneStore.swift`).
+ * It splits where the two clients differ and nowhere else: the phone holds the
+ * panel id and the context in the store, desktop holds them in the URL, so an
+ * entry here carries the ADDRESS it is returning to and the host's snapshot of
+ * everything client-local that lives below it.
+ */
+type PluginPanelBackEntry = {
+  panelId: string;
+  /** The query string this entry was showing — panel plus context, verbatim. */
+  search: string;
+  /** The panel's declared title, for the Back control's label. */
+  title: string | null;
+  snapshot: PluginPanelSnapshot;
+};
+
+/**
+ * How deep the stack goes.
+ *
+ * Eight, the number iOS uses, and for the same reason: a bound on a plugin's
+ * ability to grow it by navigating in a loop, not a design target. The oldest
+ * entry is dropped rather than the newest refused, so the reader always keeps
+ * the screens they can plausibly remember walking through.
+ */
+const PLUGIN_PANEL_BACK_STACK_MAX = 8;
+
+/**
+ * Layers that own Escape while they are up.
+ *
+ * A plugin's own prompt card and a `navigate:popover` panel both close on
+ * Escape, as does a row's overflow menu, and all three sit ABOVE the panel.
+ * Popping the panel out from under one of them would answer a key the reader
+ * meant for the thing in front of them. Checked against the document rather
+ * than by listener order, because both handlers live on `window` and which one
+ * React mounted first is not a contract.
+ */
+const PLUGIN_PANEL_OVERLAY_SELECTOR =
+  '[role="dialog"], [role="alertdialog"], [role="menu"], [aria-modal="true"], dialog[open]';
+
+/** The accelerator that pops, resolved to Cmd on macOS and Ctrl everywhere else. */
+const PLUGIN_PANEL_BACK_BINDING = "Mod+[";
 
 export function PluginTabPage({ active = true }: { active?: boolean }) {
   const params = useParams<{ pluginId: string }>();
@@ -106,6 +155,25 @@ export function PluginTabPage({ active = true }: { active?: boolean }) {
   }, [panelId, plugin, setLastPluginPanel]);
 
   /**
+   * The panels the reader has walked away from, oldest first.
+   *
+   * A `navigate` used to REPLACE the panel with nothing behind it: a plugin that
+   * sent a reader from a list into a detail screen gave them no way back, and
+   * the browser Back the URL implies is not available inside the desktop app at
+   * all. iOS grew a stack for exactly this (M1 in the parity map); this is the
+   * same stack with the same semantics.
+   */
+  const [backStack, setBackStack] = React.useState<readonly PluginPanelBackEntry[]>([]);
+  // The snapshot a pop is handing back to the panel host. Held rather than
+  // passed through the URL because it is the READER's state — ticks, filters,
+  // folds — and none of that belongs in a shareable address.
+  const [restoreState, setRestoreState] = React.useState<PluginPanelSnapshot | null>(null);
+  // Read by the pop, which must stay referentially stable so the key listener is
+  // not torn down and rebuilt on every push.
+  const backStackRef = React.useRef(backStack);
+  backStackRef.current = backStack;
+
+  /**
    * Honour an action's `{navigate:{panelId, context}}`.
    *
    * Written to the URL rather than to component state, so the destination is
@@ -113,7 +181,10 @@ export function PluginTabPage({ active = true }: { active?: boolean }) {
    * with the same context, shareable, restorable, and reachable by Back.
    */
   const navigateToPanel = React.useCallback(
-    (navigation: { panelId: string; context?: Record<string, unknown> }) => {
+    (
+      navigation: { panelId: string; context?: Record<string, unknown> },
+      snapshot: PluginPanelSnapshot,
+    ) => {
       const next = new URLSearchParams();
       next.set("panel", navigation.panelId);
       if (navigation.context) {
@@ -124,10 +195,86 @@ export function PluginTabPage({ active = true }: { active?: boolean }) {
           // on the panel the plugin sent them to.
         }
       }
+      // What is being left, with what the reader had on it. Built explicitly
+      // rather than copied off the live query string, because the panel showing
+      // now may have been resolved from the remembered id or the manifest's own
+      // rail surface and carry no `?panel=` at all.
+      const leaving = new URLSearchParams();
+      leaving.set("panel", panelId);
+      if (rawContext) leaving.set("ctx", rawContext);
+      setBackStack((stack) => {
+        const grown = [
+          ...stack,
+          {
+            panelId,
+            search: leaving.toString(),
+            title: plugin?.tabs.find((tab) => tab.panelId === panelId)?.title ?? null,
+            snapshot,
+          },
+        ];
+        return grown.length > PLUGIN_PANEL_BACK_STACK_MAX
+          ? grown.slice(grown.length - PLUGIN_PANEL_BACK_STACK_MAX)
+          : grown;
+      });
+      // A push is not a restore. Cleared so a snapshot from an earlier pop
+      // cannot be adopted by the panel the reader is walking INTO.
+      setRestoreState(null);
       setSearchParams(next, { replace: false });
     },
-    [setSearchParams],
+    [panelId, plugin, rawContext, setSearchParams],
   );
+
+  /**
+   * Return to the panel beneath this one, with what the reader left on it.
+   *
+   * Everything client-local comes back together — the filters, the ticks, the
+   * folded sections and how far down each list they had read — because
+   * restoring half of them is what makes a back gesture feel like a reload
+   * rather than a return. The address goes back verbatim, context included.
+   */
+  const goBack = React.useCallback(() => {
+    const stack = backStackRef.current;
+    const entry = stack[stack.length - 1];
+    if (!entry) return;
+    setBackStack(stack.slice(0, -1));
+    setRestoreState(entry.snapshot);
+    setSearchParams(new URLSearchParams(entry.search), { replace: false });
+  }, [setSearchParams]);
+
+  const canGoBack = backStack.length > 0;
+
+  /**
+   * Escape and the platform accelerator pop.
+   *
+   * Bound only while there is something to pop, so a plugin tab at depth zero
+   * claims neither key from anything else in the app. Escape defers to whatever
+   * is drawn above the panel; the accelerator resolves through the renderer's
+   * own binding parser, which is what makes `Ctrl+[` on Windows and Linux the
+   * same gesture as `Cmd+[` on macOS rather than a second implementation of the
+   * platform test.
+   */
+  React.useEffect(() => {
+    if (!active || !canGoBack) return;
+    const onKey = (event: KeyboardEvent) => {
+      if (event.defaultPrevented) return;
+      const escape = event.key === "Escape" && !event.metaKey && !event.ctrlKey && !event.altKey;
+      if (!escape && !eventMatchesBinding(event, PLUGIN_PANEL_BACK_BINDING)) return;
+      if (document.querySelector(PLUGIN_PANEL_OVERLAY_SELECTOR)) return;
+      event.preventDefault();
+      goBack();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [active, canGoBack, goBack]);
+
+  // A route the reader steered themselves — a rail click, a deeplink, the
+  // remembered panel on reopen — is not a step in the plugin's own walk. The
+  // stack belongs to one plugin's navigation and is dropped when the plugin
+  // changes underneath it.
+  React.useEffect(() => {
+    setBackStack([]);
+    setRestoreState(null);
+  }, [pluginId]);
 
   if (builtinRoute) return <Navigate to={builtinRoute} replace />;
 
@@ -163,6 +310,9 @@ export function PluginTabPage({ active = true }: { active?: boolean }) {
         entryHtml={entryHtml}
         renderContext={renderContext}
         onNavigate={navigateToPanel}
+        onBack={canGoBack ? goBack : null}
+        backLabel={backStack[backStack.length - 1]?.title ?? null}
+        restoreState={restoreState}
       />
     </PluginPageShell>
   );
@@ -175,6 +325,9 @@ function PluginBody({
   entryHtml,
   renderContext,
   onNavigate,
+  onBack,
+  backLabel,
+  restoreState,
 }: {
   plugin: InstalledPlugin;
   panelId: string;
@@ -182,7 +335,13 @@ function PluginBody({
   /** Set when this surface is a webview and this client can host one. */
   entryHtml: string | null;
   renderContext: Record<string, unknown> | null;
-  onNavigate: (navigation: { panelId: string; context?: Record<string, unknown> }) => void;
+  onNavigate: (
+    navigation: { panelId: string; context?: Record<string, unknown> },
+    snapshot: PluginPanelSnapshot,
+  ) => void;
+  onBack: (() => void) | null;
+  backLabel: string | null;
+  restoreState: PluginPanelSnapshot | null;
 }) {
   if (!plugin.enabled) {
     return (
@@ -227,6 +386,9 @@ function PluginBody({
       active={active}
       renderContext={renderContext}
       onNavigate={onNavigate}
+      onBack={onBack}
+      backLabel={backLabel}
+      restoreState={restoreState}
       recoveryAction={plugin.status === "none" ? undefined : <RestartButton pluginId={plugin.pluginId} />}
     />
   );

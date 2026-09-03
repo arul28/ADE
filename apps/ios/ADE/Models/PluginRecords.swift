@@ -177,6 +177,36 @@ struct PluginPanelRecord: Equatable, Identifiable {
     }
     return PluginPanelParser.cleanString(object["viewAction"], max: PluginVocabLimits.maxIdChars)
   }
+
+  /// Read the host's seeded stamp out of `schema_json`.
+  ///
+  /// Same shape and same fast path as ``refreshAction(inSchemaJSON:)``, and it
+  /// answers the one question the pane needs on open: is this row still the
+  /// manifest's SHIPPED default? The host stamps it only where it materializes
+  /// a declared schema, and the plugin's own `panels.update` clears it — so
+  /// `true` means nobody has published real content here yet, which is the
+  /// "Loading…" card a reader would otherwise sit on until they pulled.
+  ///
+  /// A row written before the key existed answers `false`, which is the pane
+  /// this build has always drawn: no first refresh, exactly as before.
+  static func seeded(inSchemaJSON schemaJSON: String) -> Bool {
+    guard schemaJSON.contains("\"seeded\"") else { return false }
+    guard let data = schemaJSON.data(using: .utf8),
+          let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+          let flag = PluginPanelParser.boolValue(object["seeded"]) else {
+      return false
+    }
+    return flag
+  }
+
+  /// Whether this row is still the seeded one — see ``seeded(inSchemaJSON:)``.
+  ///
+  /// Computed rather than stored beside ``mobile`` and ``refreshAction`` on
+  /// purpose: every construction site already carries `schemaJSON`, so there is
+  /// no path — the SQL mirror, a live `plugin.getPanel`, a test fixture — that
+  /// can be built without it or forget to fill it in. It costs a parse, and the
+  /// pane asks once when it opens rather than once per row of the roster.
+  var isSeeded: Bool { PluginPanelRecord.seeded(inSchemaJSON: schemaJSON) }
 }
 
 extension PluginPanelRecord {

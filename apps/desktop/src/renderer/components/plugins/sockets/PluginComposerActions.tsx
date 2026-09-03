@@ -4,6 +4,7 @@ import type { PluginComposerContext } from "../../../../shared/plugins/context";
 import type { PluginSurfaceId } from "../../../../shared/plugins/sockets";
 import { contributionKey } from "./contributionModel";
 import { usePluginSocketInvoke, useSurfaceContributions } from "./useSurfaceContributions";
+import { brandIconsProp, usePluginBrandIcons } from "./usePluginBrandIcons";
 import { SocketBoundary } from "./SocketBoundary";
 import {
   SocketIcon,
@@ -156,6 +157,7 @@ export function PluginComposerActions({
     context: identity,
   });
   const invoke = usePluginSocketInvoke();
+  const brandIconsFor = usePluginBrandIcons();
   const [busyKeys, setBusyKeys] = React.useState<readonly string[]>([]);
 
   /**
@@ -296,7 +298,11 @@ export function PluginComposerActions({
                 disabled={contribution.payload.disabled === true}
                 onClick={() => press(contribution, key)}
               >
-                <SocketIcon name={contribution.payload.icon} size={12} />
+                <SocketIcon
+                  name={contribution.payload.icon}
+                  size={12}
+                  {...brandIconsProp(brandIconsFor(contribution.pluginId))}
+                />
                 <span className="truncate">{contribution.payload.label}</span>
               </button>
               {/* Menu actions share the BUTTON's busy key on purpose: the two
@@ -307,6 +313,7 @@ export function PluginComposerActions({
               <SocketSplitMenu
                 items={menu}
                 label={contribution.payload.label}
+                {...brandIconsProp(brandIconsFor(contribution.pluginId))}
                 dataTour={`${dataTour}-menu`}
                 className={lit ? `${CHEVRON_CLASS} ${BUTTON_BUSY_CLASS}` : CHEVRON_CLASS}
                 style={tint}
@@ -329,10 +336,12 @@ export function PluginComposerActions({
                 <SocketMenuRow
                   label={contribution.payload.label}
                   {...(contribution.payload.icon ? { icon: contribution.payload.icon } : {})}
+                  {...brandIconsProp(brandIconsFor(contribution.pluginId))}
                   onClick={() => press(contribution, key)}
                 />
                 <SocketMenuSubRows
                   items={contribution.payload.menu ?? []}
+                  {...brandIconsProp(brandIconsFor(contribution.pluginId))}
                   onSelect={(item) => run(contribution.pluginId, item.actionId, key)}
                 />
               </SocketBoundary>

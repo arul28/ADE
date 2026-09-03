@@ -1708,6 +1708,12 @@ function createHost(args: PluginHostServiceArgs): PluginHostService {
             const stored = isRecord(existing.schema) ? existing.schema : null;
             const storedRefresh = typeof stored?.refreshAction === "string" ? stored.refreshAction : null;
             const storedView = typeof stored?.viewAction === "string" ? stored.viewAction : null;
+            // Whether the row is still the shipped default is the ROW's fact,
+            // not the manifest's, so a convergence pass carries it across
+            // rather than re-asserting it: the plugin may have published real
+            // content since the seed, and re-stamping `seeded` would send every
+            // client back to running the first refresh again.
+            const storedSeeded = stored?.seeded === true;
             if (!stored || (
               stored.mobile === mobile
               && storedRefresh === (panel.refreshAction ?? null)
@@ -1715,15 +1721,19 @@ function createHost(args: PluginHostServiceArgs): PluginHostService {
             )) continue;
             attached.data.updatePanel(pluginId, panel.id, {
               ...declared,
+              seeded: storedSeeded,
               schema: existing.schema,
               vocabVersion: existing.vocabVersion,
             });
             continue;
           }
           // Through the store, so the budget writer sees this row exactly as it
-          // sees a `panels.update` from the plugin itself.
+          // sees a `panels.update` from the plugin itself — except for `seeded`,
+          // which only this path may set: it is the host saying the row is the
+          // manifest's shipped default and nothing has published over it yet.
           attached.data.updatePanel(pluginId, panel.id, {
             ...declared,
+            seeded: true,
             schema,
             vocabVersion: manifest.vocabVersion,
           });

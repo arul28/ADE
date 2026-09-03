@@ -510,6 +510,41 @@ describe("plugin table writers", () => {
     expect(schema("forged")).toEqual({ v: 1, body: [], mobile: true, viewAction: "ack-tab-badge" });
   });
 
+  it("stamps `seeded` for the host's own seed, and drops it on the plugin's update", () => {
+    // The flag is what lets a client run a manifest panel's first refresh
+    // itself instead of leaving the reader on the "Loading…" card. It is the
+    // HOST's answer, so it is spelled the same way `refreshAction` is: only
+    // this argument can set it, a republish that forges the key loses it, and
+    // the plugin's own `panels.update` — which passes nothing — clears it.
+    const schema = (panelId: string) => JSON.parse(db.get<{ schema_json: string }>(
+      "select schema_json from plugin_panels where plugin_id = ? and panel_id = ?",
+      ["graph", panelId],
+    )?.schema_json ?? "null") as Record<string, unknown>;
+    const put = (panelId: string, args: { schemaJson?: string; seeded?: boolean }) =>
+      putPluginPanel(db, {
+        pluginId: "graph",
+        panelId,
+        title: "Panel",
+        icon: "graph",
+        surface: "work",
+        schemaJson: args.schemaJson ?? '{"v":1,"body":[]}',
+        vocabVersion: 1,
+        ...(args.seeded === undefined ? {} : { seeded: args.seeded }),
+        nowIso: NOW,
+      });
+
+    put("graph", { seeded: true });
+    expect(schema("graph")).toEqual({ v: 1, body: [], mobile: true, seeded: true });
+
+    // The plugin publishes real content over the seed. Absent, not false: the
+    // key has to LEAVE the row, or an old client would keep re-refreshing.
+    put("graph", {});
+    expect(schema("graph")).toEqual({ v: 1, body: [], mobile: true });
+
+    put("forged", { schemaJson: '{"v":1,"body":[],"seeded":true}' });
+    expect(schema("forged")).toEqual({ v: 1, body: [], mobile: true });
+  });
+
   it("keeps a schema it cannot stamp byte-identical", () => {
     // Not an object: there is nowhere to put the key, and inventing a wrapper
     // would turn an unrenderable panel into a differently unrenderable one.

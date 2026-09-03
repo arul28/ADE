@@ -400,3 +400,206 @@ describe("the webview surface's viewed lifecycle", () => {
     expect(viewedCalls()).toEqual([]);
   });
 });
+
+/**
+ * The first refresh, which nothing used to run.
+ *
+ * A manifest-declared panel is materialized as a placeholder — the seeded
+ * "Loading…" card — and the thing that fills it is the panel's own
+ * `refreshAction`. Nothing ran that until the reader found the Refresh control,
+ * so Graph and Review opened on the loading card and stayed there. The host
+ * stamps `seeded` while the row is still that shipped default and the plugin's
+ * own `panels.update` clears it, so it is the one signal that says "nobody has
+ * filled this yet".
+ */
+describe("the seeded panel's first refresh", () => {
+  const refreshCalls = () =>
+    bridge.invoke.mock.calls
+      .map(([args]) => args as { action: string })
+      .filter((call) => call.action === "refresh-fleet");
+
+  it("runs the declared refresh once, for the reader rather than after them", async () => {
+    bridge.panel = panelWith(RUN_BUTTON, { refreshAction: "refresh-fleet", seeded: true });
+    render(<PluginPanelHost pluginId="ade-cursor-cloud" panelId="seeded-first" active />);
+
+    await waitFor(() => expect(refreshCalls()).toHaveLength(1));
+
+    // Silent: the host's own bookkeeping owns no spinner on the reader's
+    // control and reports no success.
+    const refresh = await screen.findByRole("button", { name: "Refresh this panel" });
+    expect((refresh as HTMLButtonElement).disabled).toBe(false);
+    expect(screen.queryByRole("status")).toBeNull();
+  });
+
+  it("invokes nothing for a seeded row that declares no refresh action", async () => {
+    bridge.panel = panelWith(RUN_BUTTON, { seeded: true });
+    render(<PluginPanelHost pluginId="ade-cursor-cloud" panelId="seeded-none" active />);
+
+    await screen.findByRole("button", { name: "Run" });
+    expect(bridge.invoke).not.toHaveBeenCalled();
+  });
+
+  it("invokes nothing once the plugin has published real content", async () => {
+    // The same panel with the same refresh action, no longer seeded. Priming it
+    // on every reveal would poll the plugin's API for a row that is already the
+    // plugin's own.
+    bridge.panel = panelWith(RUN_BUTTON, { refreshAction: "refresh-fleet" });
+    render(<PluginPanelHost pluginId="ade-cursor-cloud" panelId="published" active />);
+
+    await screen.findByRole("button", { name: "Refresh this panel" });
+    expect(refreshCalls()).toHaveLength(0);
+  });
+
+  it("does not spend a second refresh when the same seeded row is mounted again", async () => {
+    bridge.panel = panelWith(RUN_BUTTON, { refreshAction: "refresh-fleet", seeded: true });
+    const first = render(
+      <PluginPanelHost pluginId="ade-cursor-cloud" panelId="seeded-remount" active />,
+    );
+    await waitFor(() => expect(refreshCalls()).toHaveLength(1));
+    first.unmount();
+
+    render(<PluginPanelHost pluginId="ade-cursor-cloud" panelId="seeded-remount" active />);
+    await screen.findByRole("button", { name: "Refresh this panel" });
+    expect(refreshCalls()).toHaveLength(1);
+  });
+
+  it("leaves the card and the reader's own control alone when the first refresh fails", async () => {
+    bridge.invoke.mockRejectedValue(new Error("Cursor is unreachable."));
+    bridge.panel = panelWith(RUN_BUTTON, { refreshAction: "refresh-fleet", seeded: true });
+    render(<PluginPanelHost pluginId="ade-cursor-cloud" panelId="seeded-failing" active />);
+
+    await waitFor(() => expect(refreshCalls()).toHaveLength(1));
+    // No banner for a press nobody made, and the panel still draws.
+    expect(screen.queryByRole("status")).toBeNull();
+    expect(screen.getByRole("button", { name: "Run" })).toBeTruthy();
+    expect(
+      (screen.getByRole("button", { name: "Refresh this panel" }) as HTMLButtonElement).disabled,
+    ).toBe(false);
+  });
+});
+
+/**
+ * The half of the back stack that lives in the panel.
+ *
+ * The page owns the addresses; this owns what the reader had ON one — the
+ * filters, the ticks, the folds and the pages. A Back that restored the address
+ * alone would feel like a reload rather than a return, which is the reduction
+ * iOS closed with `PluginPanelStackEntry`.
+ */
+describe("the panel's back-stack half", () => {
+  const SEGMENTED = [
+    {
+      component: "segmented",
+      stateKey: "status",
+      label: "Status",
+      options: [{ value: "open", label: "Open" }, { value: "all", label: "All" }],
+    },
+    { component: "button", label: "Open detail", onPress: { action: "open" } },
+  ];
+
+  it("hands the reader's own state to the navigation that leaves the panel", async () => {
+    const onNavigate = vi.fn();
+    bridge.invoke.mockResolvedValue({ navigate: { panelId: "detail" } });
+    bridge.panel = panelWith(SEGMENTED);
+    render(
+      <PluginPanelHost
+        pluginId="ade-cursor-cloud"
+        panelId="fleet"
+        active
+        onNavigate={onNavigate}
+      />,
+    );
+
+    fireEvent.click(await screen.findByRole("radio", { name: "All" }));
+    fireEvent.click(screen.getByRole("button", { name: "Open detail" }));
+
+    await waitFor(() => expect(onNavigate).toHaveBeenCalled());
+    const [navigation, snapshot] = onNavigate.mock.calls[0] as [
+      { panelId: string },
+      { panelState: { signature: string; values: Record<string, string> } },
+    ];
+    expect(navigation.panelId).toBe("detail");
+    expect(snapshot.panelState.values).toEqual({ status: "all" });
+    // The signature rides along, because that is what makes the restore stick.
+    expect(snapshot.panelState.signature).not.toBe("");
+  });
+
+  it("adopts a popped snapshot instead of rebuilding the panel from its defaults", async () => {
+    const onNavigate = vi.fn();
+    bridge.invoke.mockResolvedValue({ navigate: { panelId: "detail" } });
+    bridge.panel = panelWith(SEGMENTED);
+    const view = render(
+      <PluginPanelHost
+        pluginId="ade-cursor-cloud"
+        panelId="fleet"
+        active
+        onNavigate={onNavigate}
+      />,
+    );
+
+    // Take a real snapshot the way a `{navigate}` does, so the signature under
+    // test is the host's own rather than one the test invented.
+    fireEvent.click(await screen.findByRole("radio", { name: "All" }));
+    fireEvent.click(screen.getByRole("button", { name: "Open detail" }));
+    await waitFor(() => expect(onNavigate).toHaveBeenCalled());
+    const snapshot = onNavigate.mock.calls[0]?.[1] as unknown;
+
+    // Walk away, which clears everything the reader had on the panel…
+    view.rerender(<PluginPanelHost pluginId="ade-cursor-cloud" panelId="detail" active />);
+    await waitFor(() =>
+      expect(screen.queryByRole("radio", { name: "All" })?.getAttribute("aria-checked"))
+        .not.toBe("true"));
+
+    // …and come back with what a pop hands over.
+    view.rerender(
+      <PluginPanelHost
+        pluginId="ade-cursor-cloud"
+        panelId="fleet"
+        active
+        restoreState={snapshot as never}
+      />,
+    );
+
+    await waitFor(() =>
+      expect(screen.getByRole("radio", { name: "All" }).getAttribute("aria-checked")).toBe("true"));
+  });
+
+  it("draws no Back control for a host that has no stack", async () => {
+    await mountPanel();
+    expect(screen.queryByRole("button", { name: /^Back/ })).toBeNull();
+  });
+
+  it("draws Back in the panel chrome when the host offers a pop", async () => {
+    const onBack = vi.fn();
+    bridge.panel = panelWith(RUN_BUTTON);
+    render(
+      <PluginPanelHost
+        pluginId="ade-cursor-cloud"
+        panelId="detail"
+        active
+        onBack={onBack}
+        backLabel="Fleet"
+      />,
+    );
+
+    fireEvent.click(await screen.findByRole("button", { name: "Back to Fleet" }));
+    expect(onBack).toHaveBeenCalledTimes(1);
+  });
+
+  it("still offers the way out when the panel a plugin navigated to is missing", async () => {
+    const onBack = vi.fn();
+    bridge.panel = null;
+    render(
+      <PluginPanelHost
+        pluginId="ade-cursor-cloud"
+        panelId="gone"
+        active
+        onBack={onBack}
+        backLabel="Fleet"
+      />,
+    );
+
+    fireEvent.click(await screen.findByRole("button", { name: "Back to Fleet" }));
+    expect(onBack).toHaveBeenCalledTimes(1);
+  });
+});

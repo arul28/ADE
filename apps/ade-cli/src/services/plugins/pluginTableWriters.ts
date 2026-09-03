@@ -314,6 +314,18 @@ export type PutPluginPanelArgs = {
    * so a plugin cannot publish a view ack for an action it never declared.
    */
   viewAction?: string | null;
+  /**
+   * True when this row is the manifest's SHIPPED default rather than content
+   * the plugin published.
+   *
+   * A codeless seed and a real publish were indistinguishable in the row, and
+   * every client drew the seeded card — "Loading…" — and then waited for a
+   * refresh nobody had asked for. A client that knows the row is still the
+   * shipped default can run the panel's own `refreshAction` once and get real
+   * content without a press. Cleared by the plugin's first `panels.update`,
+   * because that write is by definition not a seed.
+   */
+  seeded?: boolean;
   nowIso: string;
 };
 
@@ -336,7 +348,12 @@ export type PutPluginPanelArgs = {
  */
 function withPanelHostKeys(
   schemaJson: string,
-  host: { mobile: boolean; refreshAction: string | null; viewAction: string | null },
+  host: {
+    mobile: boolean;
+    refreshAction: string | null;
+    viewAction: string | null;
+    seeded: boolean;
+  },
 ): string {
   let parsed: unknown;
   try {
@@ -351,6 +368,7 @@ function withPanelHostKeys(
   const {
     refreshAction: _droppedRefresh,
     viewAction: _droppedView,
+    seeded: _droppedSeeded,
     ...rest
   } = parsed as Record<string, unknown>;
   return JSON.stringify({
@@ -358,6 +376,7 @@ function withPanelHostKeys(
     mobile: host.mobile,
     ...(host.refreshAction ? { refreshAction: host.refreshAction } : {}),
     ...(host.viewAction ? { viewAction: host.viewAction } : {}),
+    ...(host.seeded ? { seeded: true } : {}),
   });
 }
 
@@ -410,6 +429,7 @@ export function putPluginPanel(db: PluginWriterDb, args: PutPluginPanelArgs): vo
     mobile: args.mobile ?? true,
     refreshAction: args.refreshAction ?? null,
     viewAction: args.viewAction ?? null,
+    seeded: args.seeded === true,
   });
   // Measured after stamping: the cap is a promise about the bytes that land in
   // the row, and the clients check it against exactly those bytes.

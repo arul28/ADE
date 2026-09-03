@@ -65,6 +65,7 @@ export { usePluginMenuEntries, type PluginMenuEntry } from "./usePluginMenuEntri
 export { pluginContextMenuItems, PLUGIN_MENU_SECTION_LABEL } from "./pluginContextMenuItems";
 export { useExtendSurfaceEntry, extendSurfaceRoute } from "./useExtendSurfaceEntry";
 export { SocketBoundary } from "./SocketBoundary";
+export { brandIconsProp, usePluginBrandIcons } from "./usePluginBrandIcons";
 export {
   usePluginFileViewers,
   usePluginSocketInvoke,

@@ -4,6 +4,7 @@ import type { PluginSessionContext } from "../../../../shared/plugins/context";
 import type { PluginSurfaceId } from "../../../../shared/plugins/sockets";
 import { contributionKey } from "./contributionModel";
 import { usePluginSocketInvoke, useSurfaceContributions } from "./useSurfaceContributions";
+import { brandIconsProp, usePluginBrandIcons } from "./usePluginBrandIcons";
 import { SocketBoundary } from "./SocketBoundary";
 import {
   SocketIcon,
@@ -129,6 +130,7 @@ export function PluginChatHeaderActions({
     context: session,
   });
   const invoke = usePluginSocketInvoke();
+  const brandIconsFor = usePluginBrandIcons();
   const [busyKeys, setBusyKeys] = React.useState<readonly string[]>([]);
 
   /**
@@ -176,6 +178,7 @@ export function PluginChatHeaderActions({
            than painting over the one signal that says it is working. */
         const tint = busy ? {} : socketTintStyle(contribution.payload.color);
         const base = split ? BUTTON_SPLIT_CLASS : BUTTON_CLASS;
+        const brandIcons = brandIconsFor(contribution.pluginId);
         return (
           <SocketBoundary key={key}>
             <SocketSplitGroup>
@@ -190,13 +193,18 @@ export function PluginChatHeaderActions({
                 disabled={contribution.payload.disabled === true}
                 onClick={() => run(contribution.pluginId, contribution.payload.actionId, key)}
               >
-                <SocketIcon name={contribution.payload.icon} size={11} />
+                <SocketIcon
+                  name={contribution.payload.icon}
+                  size={11}
+                  {...brandIconsProp(brandIcons)}
+                />
                 <span className="truncate">{contribution.payload.label}</span>
               </button>
               {/* Menu actions share the button's busy key: two halves, one control. */}
               <SocketSplitMenu
                 items={menu}
                 label={contribution.payload.label}
+                {...brandIconsProp(brandIcons)}
                 dataTour={`${dataTour}-menu`}
                 className={busy ? `${CHEVRON_CLASS} ${BUTTON_BUSY_CLASS}` : CHEVRON_CLASS}
                 style={tint}
@@ -219,10 +227,12 @@ export function PluginChatHeaderActions({
                 <SocketMenuRow
                   label={contribution.payload.label}
                   {...(contribution.payload.icon ? { icon: contribution.payload.icon } : {})}
+                  {...brandIconsProp(brandIconsFor(contribution.pluginId))}
                   onClick={() => run(contribution.pluginId, contribution.payload.actionId, key)}
                 />
                 <SocketMenuSubRows
                   items={contribution.payload.menu ?? []}
+                  {...brandIconsProp(brandIconsFor(contribution.pluginId))}
                   onSelect={(item) => run(contribution.pluginId, item.actionId, key)}
                 />
               </SocketBoundary>

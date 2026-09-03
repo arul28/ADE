@@ -3748,6 +3748,21 @@ export function readPluginPanelViewAction(schema: unknown): string | null {
   return readPluginPanelStampedIdentifier(schema, "viewAction");
 }
 
+/**
+ * True while a stored panel row is still the manifest's SHIPPED default.
+ *
+ * Every plugin tab first drew the seeded card — a "Loading…" placeholder — and
+ * then sat on it, because nothing ran the panel's own `refreshAction` until the
+ * user found the Refresh control. The flag is the host's, stamped only where a
+ * declared schema is materialized, and it is gone from the row the moment the
+ * plugin publishes real content. A client that predates the key reads `false`
+ * and behaves exactly as it did before, which is the same degradation rule the
+ * other two stamped keys follow.
+ */
+export function readPluginPanelSeeded(schema: unknown): boolean {
+  return isRecord(schema) && schema.seeded === true;
+}
+
 function readPluginPanelStampedIdentifier(
   schema: unknown,
   key: "refreshAction" | "viewAction",

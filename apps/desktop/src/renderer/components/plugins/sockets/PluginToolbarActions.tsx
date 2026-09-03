@@ -4,8 +4,10 @@ import type { PluginSurfaceId } from "../../../../shared/plugins/sockets";
 import type { PluginSurfaceContext } from "../../../../shared/plugins/context";
 import { contributionKey } from "./contributionModel";
 import { usePluginSocketInvoke, useSurfaceContributions } from "./useSurfaceContributions";
+import { brandIconsProp, usePluginBrandIcons } from "./usePluginBrandIcons";
 import { SocketBoundary } from "./SocketBoundary";
 import {
+  SOCKET_SHELL_CHEVRON_CLASS,
   SocketButton,
   SocketMenuRow,
   SocketMenuSubRows,
@@ -13,6 +15,7 @@ import {
   SocketSplitGroup,
   SocketSplitMenu,
   socketTintStyle,
+  type SocketButtonChrome,
 } from "./socketUi";
 import { COLORS, RADII } from "../../lanes/laneDesignTokens";
 
@@ -46,6 +49,19 @@ const SPLIT_BUTTON_STYLE: React.CSSProperties = {
 };
 
 /**
+ * The same joint in the window header's chrome.
+ *
+ * `ade-shell-control` owns the radius and the border there, so the seam is made
+ * by removing the chevron's left edge rather than by drawing a second box —
+ * which is the whole reason the cluster gets a chrome of its own.
+ */
+const SHELL_SPLIT_CHEVRON_STYLE: React.CSSProperties = {
+  borderLeft: "none",
+  borderTopLeftRadius: 0,
+  borderBottomLeftRadius: 0,
+};
+
+/**
  * Contributed toolbar actions, grouped after the surface's own.
  *
  * Two visible, the rest in an overflow menu — the same restraint as row badges
@@ -61,12 +77,19 @@ export function PluginToolbarActions({
   context,
   active = true,
   style,
+  chrome = "default",
 }: {
   surface: PluginSurfaceId;
   /** Defaults to the surface-only context. */
   context?: PluginSurfaceContext;
   active?: boolean;
   style?: React.CSSProperties;
+  /**
+   * The button chrome for this host. `shell` is the window top bar's, where the
+   * generic socket pill read as a taller control with a doubled edge beside the
+   * 20px shell buttons it sits between — see {@link SOCKET_SHELL_BUTTON_CLASS}.
+   */
+  chrome?: SocketButtonChrome;
 }) {
   const resolvedContext = React.useMemo<PluginSurfaceContext>(
     () => context ?? { kind: "surface", surface },
@@ -83,6 +106,9 @@ export function PluginToolbarActions({
     context: resolvedContext,
   });
   const invoke = usePluginSocketInvoke();
+  // The declaring plugin's own artwork. Without it `brand:linear` resolved to
+  // the puzzle piece here while the tab rail beside it drew Linear's mark.
+  const brandIconsFor = usePluginBrandIcons();
 
   if (contributions.length === 0) return null;
 
@@ -98,13 +124,16 @@ export function PluginToolbarActions({
         // unconditional here — unlike the composer and chat-header buttons,
         // where the platform's running chrome takes the control back.
         const tint = socketTintStyle(contribution.payload.color);
+        const brandIcons = brandIconsFor(contribution.pluginId);
         const button = (
           <SocketButton
             dataTour={dataTour}
             label={contribution.payload.label}
             {...(contribution.payload.icon ? { icon: contribution.payload.icon } : {})}
+            {...brandIconsProp(brandIcons)}
             {...(contribution.payload.disabled ? { disabled: true } : {})}
-            style={{ ...(menu.length > 0 ? SPLIT_BUTTON_STYLE : {}), ...tint }}
+            {...(chrome === "shell" ? { chrome } : {})}
+            style={{ ...(menu.length > 0 && chrome !== "shell" ? SPLIT_BUTTON_STYLE : {}), ...tint }}
             onClick={() => invoke(contribution.pluginId, contribution.payload.actionId, resolvedContext)}
           />
         );
@@ -118,8 +147,11 @@ export function PluginToolbarActions({
                 <SocketSplitMenu
                   items={menu}
                   label={contribution.payload.label}
+                  {...brandIconsProp(brandIcons)}
                   dataTour={`${dataTour}-menu`}
-                  style={{ ...SPLIT_CHEVRON_STYLE, ...tint }}
+                  {...(chrome === "shell"
+                    ? { className: SOCKET_SHELL_CHEVRON_CLASS, style: { ...SHELL_SPLIT_CHEVRON_STYLE, ...tint } }
+                    : { style: { ...SPLIT_CHEVRON_STYLE, ...tint } })}
                   onSelect={(item) => invoke(contribution.pluginId, item.actionId, resolvedContext)}
                 />
               </SocketSplitGroup>
@@ -138,10 +170,12 @@ export function PluginToolbarActions({
               <SocketMenuRow
                 label={contribution.payload.label}
                 {...(contribution.payload.icon ? { icon: contribution.payload.icon } : {})}
+                {...brandIconsProp(brandIconsFor(contribution.pluginId))}
                 onClick={() => invoke(contribution.pluginId, contribution.payload.actionId, resolvedContext)}
               />
               <SocketMenuSubRows
                 items={contribution.payload.menu ?? []}
+                {...brandIconsProp(brandIconsFor(contribution.pluginId))}
                 onSelect={(item) => invoke(contribution.pluginId, item.actionId, resolvedContext)}
               />
             </SocketBoundary>

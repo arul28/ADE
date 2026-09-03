@@ -1,7 +1,7 @@
 import React from "react";
 import { useRootAppStore } from "../../state/appStore";
 
-import { ArrowsClockwise } from "@phosphor-icons/react";
+import { ArrowsClockwise, CaretLeft } from "@phosphor-icons/react";
 
 import { COLORS, RADII, SANS_FONT } from "../lanes/laneDesignTokens";
 import { PluginFallbackCard, PluginPanelView } from "./VocabularyRenderer";
@@ -63,6 +63,7 @@ import {
   readPluginActionNavigation,
   readPluginActionPrompt,
   readPluginPanelRefreshAction,
+  readPluginPanelSeeded,
   readPluginPanelViewAction,
   type PluginActionMessage,
 } from "../../../shared/plugins/sdk";
@@ -122,7 +123,7 @@ const PLUGIN_ACTION_BANNER_MS = 6_000;
  * that changed its controls gets a new signature and starts over, because an
  * option that no longer exists cannot stay selected.
  */
-type PanelStateHolder = { signature: string; values: VocabPanelState };
+export type PanelStateHolder = { signature: string; values: VocabPanelState };
 
 const EMPTY_STATE_HOLDER: PanelStateHolder = { signature: "", values: {} };
 
@@ -138,11 +139,48 @@ const EMPTY_STATE_HOLDER: PanelStateHolder = { signature: "", values: {} };
  * rather than of the shared contract: it is a pointer gesture's private state,
  * no other client has it, and nothing outside this file may read it.
  */
-type PanelSelectionHolder = {
+export type PanelSelectionHolder = {
   signature: string;
   values: VocabPanelSelection;
   anchor: Readonly<Record<string, string>>;
 };
+
+/**
+ * Everything client-local one panel is holding, for the back stack.
+ *
+ * The desktop half of iOS's `PluginPanelStackEntry`. It carries the SIGNATURES
+ * beside the values for the same reason the phone does: restoring the values
+ * alone would meet the reconciliation effects below with an empty signature,
+ * which reads as a fresh open and rebuilds them from the schema's defaults —
+ * the restore would silently undo itself.
+ *
+ * The panel id and the context are deliberately NOT here. On desktop they live
+ * in the URL, which is what makes a plugin panel addressable, so the page owns
+ * that half of an entry and the host owns this one.
+ */
+export type PluginPanelSnapshot = {
+  panelState: PanelStateHolder;
+  panelSelection: PanelSelectionHolder;
+  groupOverrides: Readonly<Record<string, boolean>>;
+  listPages: Readonly<Record<string, number>>;
+};
+
+/**
+ * Panels this renderer has already primed with their declared `refreshAction`.
+ *
+ * Module-level rather than a ref because the rule is per PANEL, not per mount:
+ * a reader who leaves a plugin tab and comes back remounts the host, and a
+ * second silent invocation for the same untouched row would be the host
+ * spending the plugin's rate limit on nothing. An entry is dropped the moment a
+ * non-seeded row for that panel is seen, so a plugin reinstalled back down to
+ * its shipped default earns its one refresh again.
+ */
+const primedSeededPanels = new Set<string>();
+
+/** One panel's identity, for {@link primedSeededPanels}. */
+function seededPanelKey(pluginId: string, panelId: string): string {
+  return `${pluginId}\u0000${panelId}`;
+}
 
 const EMPTY_SELECTION_HOLDER: PanelSelectionHolder = { signature: "", values: {}, anchor: {} };
 
@@ -167,6 +205,9 @@ export function PluginPanelHost({
   surfaceContext,
   renderContext,
   onNavigate,
+  onBack,
+  backLabel,
+  restoreState,
 }: {
   pluginId: string;
   panelId: string;
@@ -186,7 +227,32 @@ export function PluginPanelHost({
    * cannot navigate — a socket's detail section is already where it is going —
    * and the request is then dropped rather than half-honoured.
    */
-  onNavigate?: (navigation: { panelId: string; context?: Record<string, unknown> }) => void;
+  onNavigate?: (
+    navigation: { panelId: string; context?: Record<string, unknown> },
+    /**
+     * What the reader was leaving behind, so the host that owns the back stack
+     * can hand it back on the way in. Ignored by every caller that has no stack
+     * — a socket's detail section never navigates anywhere to return from.
+     */
+    snapshot: PluginPanelSnapshot,
+  ) => void;
+  /**
+   * Pop the panel beneath this one. Absent means this host has no stack — the
+   * Back control is not drawn and no key is claimed, which is every mount
+   * except a plugin tab that has actually been navigated.
+   */
+  onBack?: (() => void) | null;
+  /** The title of the panel Back returns to, for the control's label. */
+  backLabel?: string | null;
+  /**
+   * The snapshot to adopt, handed over by a pop.
+   *
+   * Applied once the popped panel's own schema is back on screen rather than on
+   * arrival, because the reconciliation effects below decide what survives by
+   * comparing SIGNATURES, and the schema they would compare against for one
+   * commit is still the panel the reader is leaving.
+   */
+  restoreState?: PluginPanelSnapshot | null;
   /**
    * The typed surface context, when this panel is mounted at a socket rather
    * than as a tab. It rides along on every action the panel dispatches, so a
@@ -216,6 +282,8 @@ export function PluginPanelHost({
   // How far down each list the reader has walked. Beside the folds because it is
   // the same kind of thing: client-local, per panel, and never the plugin's.
   const [listPages, setListPages] = React.useState<Readonly<Record<string, number>>>(NO_LIST_PAGES);
+  // A pop's snapshot, waiting for the panel it belongs to. See `restoreState`.
+  const [pendingRestore, setPendingRestore] = React.useState<PluginPanelSnapshot | null>(null);
   const brandIcons = useRootAppStore(
     (state) => state.installedPlugins.find((plugin) => plugin.pluginId === pluginId)?.brandIcons,
   );
@@ -237,7 +305,37 @@ export function PluginPanelHost({
     // And the pages, for the same reason: a reader who walked one panel's list
     // down to 250 rows has not asked anything of the next panel's list.
     setListPages(NO_LIST_PAGES);
+    // A snapshot that never found its panel is dropped rather than applied to
+    // whatever the reader opened next.
+    setPendingRestore(null);
   }, [pluginId, panelId]);
+
+  // Take delivery of a pop's snapshot. Declared AFTER the reset above so a pop
+  // that changes the panel id — which is every ordinary pop — leaves the
+  // snapshot standing rather than having the reset clear it in the same commit.
+  React.useEffect(() => {
+    if (!restoreState) return;
+    setPendingRestore(restoreState);
+  }, [restoreState]);
+
+  /**
+   * Put back what the reader left on this panel.
+   *
+   * Held until the record is `ready`, because the effects below reconcile the
+   * restored values against the declarations of whatever schema is loaded, and
+   * for one commit after a pop that is still the panel being left. Declared
+   * BEFORE those effects so the reconciliation runs against the restored
+   * signature in the same commit rather than a frame later, which is the
+   * difference between a filter that comes back and one that blinks away.
+   */
+  React.useEffect(() => {
+    if (!pendingRestore || state.status !== "ready") return;
+    setPanelState(pendingRestore.panelState);
+    setPanelSelection(pendingRestore.panelSelection);
+    setGroupOverrides(pendingRestore.groupOverrides);
+    setListPages(pendingRestore.listPages);
+    setPendingRestore(null);
+  }, [pendingRestore, state.status]);
 
   /**
    * The parsed panel, or `null`.
@@ -335,6 +433,19 @@ export function PluginPanelHost({
   declarationsRef.current = declarations;
   const selectionDeclarationsRef = React.useRef(selectionDeclarations);
   selectionDeclarationsRef.current = selectionDeclarations;
+
+  // Everything client-local, sampled every render so a `{navigate}` can hand it
+  // to the back stack at press time. A ref rather than a dependency of
+  // `dispatch`, which must stay referentially stable: rebuilding it whenever the
+  // reader ticks a row would re-render the whole panel for a value the
+  // dispatcher only reads once, at the moment it navigates.
+  const snapshotRef = React.useRef<PluginPanelSnapshot>({
+    panelState,
+    panelSelection,
+    groupOverrides,
+    listPages,
+  });
+  snapshotRef.current = { panelState, panelSelection, groupOverrides, listPages };
 
   const setStateValue = React.useCallback((stateKey: string, value: string) => {
     const declaration = declarations.find((entry) => entry.stateKey === stateKey);
@@ -599,7 +710,11 @@ export function PluginPanelHost({
       // host's stamped instruction exactly as the socket path did.
       applyPluginActionAuthSession(result, { pluginId, actionId: action.action });
       const navigation = openedSettings ? null : readPluginActionNavigation(result);
-      if (navigation) onNavigate?.(navigation);
+      // The snapshot rides with the destination, not after it: a host with a
+      // back stack pushes the panel being left WITH what the reader had on it,
+      // which is the difference between a Back that returns and one that
+      // reloads. Hosts without a stack ignore the second argument.
+      if (navigation) onNavigate?.(navigation, snapshotRef.current);
 
       // An action may ask ONE question before it can finish, and a panel button
       // asks it exactly as a socket button does — the same store, the same card,
@@ -711,8 +826,63 @@ export function PluginPanelHost({
   // so a plugin cannot mint the gesture for an action it never declared.
   const refreshAction = readPluginPanelRefreshAction(state.record?.schema);
   const viewAction = readPluginPanelViewAction(state.record?.schema);
+  // True while the row on screen is still the manifest's shipped default — the
+  // "Loading…" card the host materializes at install and the plugin's own
+  // `panels.update` clears.
+  const seeded = readPluginPanelSeeded(state.record?.schema);
 
   usePluginPanelViewed({ pluginId, panelId, active, viewAction });
+
+  /**
+   * The first refresh, run for the reader rather than waited for from them.
+   *
+   * Every plugin tab drew the seeded card and then sat on it: the panel a
+   * manifest ships is a placeholder, the thing that fills it is the panel's own
+   * `refreshAction`, and nothing ran that until someone found the Refresh
+   * control. Graph and Review both opened on "Loading…" forever.
+   *
+   * Silent, on the same invoke path as the viewed acknowledgement above and for
+   * the same reason: this is the host's own bookkeeping, so it owns no spinner
+   * on the reader's Refresh button and reports no success. A failure is
+   * swallowed too — a first refresh that could not reach its API must leave the
+   * seeded card and the working Refresh control exactly where they were, not
+   * blank the panel or toast about a press nobody made.
+   *
+   * Once per panel per seeding, across mounts: leaving the tab and coming back
+   * is not a second reason to spend the plugin's rate limit on an untouched row.
+   */
+  React.useEffect(() => {
+    if (!active || !state.record) return;
+    const key = seededPanelKey(pluginId, panelId);
+    if (!seeded) {
+      // Real content has landed. Forgetting the priming here — rather than
+      // never — is what lets a reinstall that seeds the row again earn its one
+      // silent refresh, and it is why the memory can never re-fire in a loop:
+      // a row that stays seeded stays primed.
+      primedSeededPanels.delete(key);
+      return;
+    }
+    if (!refreshAction) return;
+    if (primedSeededPanels.has(key)) return;
+    primedSeededPanels.add(key);
+
+    let cancelled = false;
+    const context = surfaceContext ?? contextRef.current ?? null;
+    const statePayload = vocabStatePayload(panelStateRef.current.values);
+    void invokePluginAction(pluginId, refreshAction, {
+      ...(context ? { context } : {}),
+      ...(statePayload ? { state: statePayload } : {}),
+    })
+      .catch(() => {})
+      .finally(() => {
+        // Refetch either way, exactly as the reader's own gesture does: a
+        // refresh that failed still owes them whatever the panel holds now.
+        if (!cancelled) setRefreshToken((token) => token + 1);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [active, panelId, pluginId, refreshAction, seeded, state.record, surfaceContext]);
 
   /**
    * Run the declared refresh action, then refetch.
@@ -740,6 +910,18 @@ export function PluginPanelHost({
     }
   }, [dispatch, refreshAction]);
 
+  // Drawn only where there is somewhere to go back TO. A host with no stack —
+  // every socket, and a tab nobody has navigated — passes no `onBack` and gets
+  // the chrome it has always had.
+  const backControl = onBack
+    ? <PanelBackButton label={backLabel ?? null} onBack={onBack} />
+    : null;
+  // A panel reached by `{navigate}` can land on a missing or broken record, and
+  // that is exactly where the reader most needs the way out.
+  const fallbackAction = backControl
+    ? <>{backControl}{recoveryAction}</>
+    : recoveryAction;
+
   if (state.status === "idle" || (state.status === "loading" && !state.record)) {
     return <PanelSkeleton />;
   }
@@ -751,7 +933,7 @@ export function PluginPanelHost({
           title: "Panel not available",
           text: "This plugin hasn’t published this view yet. It appears once the plugin runs on this machine.",
         }}
-        action={recoveryAction}
+        action={fallbackAction}
       />
     );
   }
@@ -760,7 +942,7 @@ export function PluginPanelHost({
     return (
       <PluginFallbackCard
         fallback={{ title: "Couldn’t load this panel", text: state.error ?? "Something went wrong." }}
-        action={recoveryAction}
+        action={fallbackAction}
       />
     );
   }
@@ -771,12 +953,21 @@ export function PluginPanelHost({
         schema={state.record.schema}
         context={context}
         recoveryAction={recoveryAction}
-        headerAccessory={refreshAction
+        headerAccessory={backControl || refreshAction
           ? (
-            <PanelRefreshButton
-              pending={refreshing}
-              onRefresh={() => void refresh()}
-            />
+            // The chrome bar's accessory slot is a bare flex row, so the gap
+            // between two controls belongs to whoever puts two there.
+            <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+              {backControl}
+              {refreshAction
+                ? (
+                  <PanelRefreshButton
+                    pending={refreshing}
+                    onRefresh={() => void refresh()}
+                  />
+                )
+                : null}
+            </span>
           )
           : null}
       />
@@ -786,6 +977,49 @@ export function PluginPanelHost({
         ? <PluginActionBanner text={actionMessage.text} ok={actionMessage.ok} />
         : null}
     </div>
+  );
+}
+
+/**
+ * The way out of a panel a plugin navigated the reader into.
+ *
+ * The desktop and web half of the phone's chevron. It names its destination in
+ * the label rather than only in the icon, because a panel reached by
+ * `{navigate}` is often two words deep in a plugin nobody has a mental map of,
+ * and "Back" alone leaves the reader guessing which of the last two screens
+ * they are about to land on.
+ */
+function PanelBackButton({
+  label,
+  onBack,
+}: {
+  label: string | null;
+  onBack: () => void;
+}) {
+  const description = label ? `Back to ${label}` : "Back";
+  return (
+    <button
+      type="button"
+      onClick={onBack}
+      aria-label={description}
+      title={description}
+      style={{
+        display: "inline-flex",
+        alignItems: "center",
+        gap: 5,
+        padding: "3px 8px",
+        fontFamily: SANS_FONT,
+        fontSize: 11,
+        color: COLORS.textMuted,
+        background: "transparent",
+        border: `1px solid ${COLORS.borderMuted}`,
+        borderRadius: RADII.sm,
+        cursor: "pointer",
+      }}
+    >
+      <CaretLeft size={12} weight="regular" aria-hidden />
+      Back
+    </button>
   );
 }
 

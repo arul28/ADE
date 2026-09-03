@@ -87,6 +87,13 @@ export type PluginDataStore = {
        * not tell the plugin when this panel is on screen.
        */
       viewAction?: string | null;
+      /**
+       * True only for the host's own seed of a manifest-declared schema. A
+       * plugin's `panels.update` never sets it, so the flag answers "is this
+       * row still the shipped default?" — which is what lets a client run the
+       * panel's first refresh on its own.
+       */
+      seeded?: boolean;
     },
   ): void;
   /** The materialized panel row, which is what every client actually renders. */
@@ -306,6 +313,7 @@ export function createPluginDataStore(deps: {
           ...(args.mobile === undefined ? {} : { mobile: args.mobile }),
           ...(args.refreshAction === undefined ? {} : { refreshAction: args.refreshAction }),
           ...(args.viewAction === undefined ? {} : { viewAction: args.viewAction }),
+          ...(args.seeded === undefined ? {} : { seeded: args.seeded }),
           nowIso: nowIso(),
         });
       });

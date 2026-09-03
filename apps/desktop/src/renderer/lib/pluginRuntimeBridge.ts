@@ -594,19 +594,39 @@ export async function readPluginContributionRows(input: {
   }
 }
 
-/** The installed manifest, still unparsed. Null when absent or unreadable. */
+/**
+ * The installed manifest, still unparsed. Null when absent or unreadable.
+ *
+ * A THROW from `getManifest` is not the same fact as an absent manifest, and
+ * this used to answer null for both. On a cold launch the plugin host lives in
+ * the daemon and has not bound yet, so the first read refuses with a typed
+ * `plugins_unavailable` — and the socket layer banked that null as "this plugin
+ * declares nothing", which drew an empty top bar until the next relaunch. So a
+ * refusal falls through to `plugins.get`, whose detail record carries the same
+ * manifest by another route, and only a host that answers nothing at all
+ * yields null.
+ */
 export async function readPluginManifest(pluginId: string): Promise<unknown | null> {
   const plugins = bridge();
-  try {
-    if (plugins?.getManifest) return (await plugins.getManifest({ pluginId })) ?? null;
-    if (plugins?.get) {
+  let refused = false;
+  if (plugins?.getManifest) {
+    try {
+      return (await plugins.getManifest({ pluginId })) ?? null;
+    } catch (error) {
+      noteUnavailable(error);
+      refused = true;
+    }
+  }
+  if (plugins?.get && (refused || !plugins.getManifest)) {
+    try {
       const detail = await plugins.get({ pluginId });
       if (detail && typeof detail === "object") {
         return (detail as { manifest?: unknown }).manifest ?? null;
       }
+    } catch (error) {
+      noteUnavailable(error);
+      return null;
     }
-  } catch {
-    return null;
   }
   return null;
 }

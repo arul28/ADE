@@ -43,8 +43,11 @@ vi.mock("../../../state/appStore", () => ({
   // The workbench reads pinned-machine liveness from the root store, which is
   // where the cross-machine slices live. Nothing here pins a machine, so the
   // empty slice map is the honest fixture.
-  useRootAppStore: (selector: (state: { crossMachineLanesByMachineId: Record<string, unknown> }) => unknown) =>
-    selector({ crossMachineLanesByMachineId: {} }),
+  useRootAppStore: (selector: (state: {
+    crossMachineLanesByMachineId: Record<string, unknown>;
+    installedPlugins: unknown[];
+  }) => unknown) =>
+    selector({ crossMachineLanesByMachineId: {}, installedPlugins: [] }),
 }));
 
 vi.mock("../FilesExplorer", () => ({

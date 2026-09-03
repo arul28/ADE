@@ -43,6 +43,13 @@ vi.mock("../../state/appStore", () => ({
       projectBinding: null,
       refreshLanes: vi.fn(async () => undefined),
     }),
+  // The ROOT store, which the plugin row-menu socket reads for a plugin's own
+  // brand glyphs. A partial mock of this module is a standing hazard: the page
+  // reaches the socket layer through its context menu, and every reader the
+  // socket layer gains has to be answered here or the page fails to mount for
+  // a reason that has nothing to do with PRs.
+  useRootAppStore: (selector: (state: any) => unknown) =>
+    selector({ installedPlugins: [] }),
   selectActiveProjectRoot: () => null,
 }));
 vi.mock("../../lib/useDialogBus", () => ({

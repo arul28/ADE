@@ -9,6 +9,7 @@ import {
 } from "./contributionModel";
 import { useExtendSurfaceEntry } from "./useExtendSurfaceEntry";
 import { usePluginSurfaceContributions, usePluginSocketInvoke } from "./useSurfaceContributions";
+import { usePluginBrandIcons } from "./usePluginBrandIcons";
 
 /**
  * Contributed context-menu rows for one entity.
@@ -35,13 +36,14 @@ export function usePluginMenuEntries(
   const active = options.active ?? true;
   const set = usePluginSurfaceContributions(surface, active);
   const invoke = usePluginSocketInvoke();
+  const brandIconsFor = usePluginBrandIcons();
   const onClose = options.onClose;
   const includeExtend = options.includeExtend ?? false;
   const extendEntry = useExtendSurfaceEntry(surface, onClose ? { onClose } : {});
   const contextKey = pluginContextMemoKey(context);
 
   return React.useMemo(() => {
-    const entries = context
+    const entries = (context
       ? buildPluginMenuEntries({
         set,
         surface,
@@ -49,10 +51,18 @@ export function usePluginMenuEntries(
         invoke,
         ...(onClose ? { onClose } : {}),
       })
-      : [];
+      : [])
+      // The plugin's own artwork, attached here rather than inside the builder:
+      // the builder is a pure function the tests run without a host, and the
+      // glyph rows come off the installed registry. A row whose plugin ships no
+      // mark is untouched and resolves through the compiled catalogue.
+      .map((entry) => {
+        const brandIcons = entry.pluginId ? brandIconsFor(entry.pluginId) : undefined;
+        return brandIcons ? { ...entry, brandIcons } : entry;
+      });
     return includeExtend ? [...entries, extendEntry] : entries;
     // eslint-disable-next-line react-hooks/exhaustive-deps -- contextKey stands in for `context`
-  }, [set, surface, invoke, onClose, contextKey, includeExtend, extendEntry]);
+  }, [set, surface, invoke, onClose, contextKey, includeExtend, extendEntry, brandIconsFor]);
 }
 
 export type { PluginMenuEntry } from "./contributionModel";

@@ -148,6 +148,36 @@ final class PluginPanelFallbackCache {
   }
 }
 
+/// Panel rows whose seeded first refresh has already been asked for.
+///
+/// Process-lifetime and MainActor-isolated for the same reason
+/// ``PluginPanelFallbackCache`` is: the sheet's store is recreated on every
+/// present, so a set held on the store would forget between opens and ask the
+/// plugin to fetch again every time the reader came back to a panel that had
+/// not published yet. "Once per row" has to outlive the store to mean anything.
+///
+/// Keyed on the machine scope beside the plugin, panel and row identity, so
+/// attaching to another machine — whose `plugin_panels` rows are its own — is
+/// not silently treated as a panel this phone has already refreshed.
+@MainActor
+final class PluginSeededRefreshLedger {
+  static let shared = PluginSeededRefreshLedger()
+
+  private var requested: Set<String> = []
+
+  init() {}
+
+  static func key(scope: String, pluginId: String, panelId: String, rowIdentity: String) -> String {
+    "\(scope)|\(pluginId)|\(panelId)|\(rowIdentity)"
+  }
+
+  /// True the FIRST time a key is offered, false forever after — the claim and
+  /// the record are one call so two loads in the same turn cannot both win it.
+  func claim(_ key: String) -> Bool {
+    requested.insert(key).inserted
+  }
+}
+
 /// One panel the reader has walked away from, and everything they left on it.
 ///
 /// The reduction this closes is M1 in the parity map. `navigate` used to REPLACE
@@ -317,6 +347,11 @@ final class PluginPaneStore: ObservableObject {
   /// keep drawing nothing.
   private let fetchesMissingRows: Bool
   private let fallbackCache: PluginPanelFallbackCache
+  /// Which seeded rows this phone has already asked to refresh — see
+  /// ``PluginSeededRefreshLedger``. Injected for the same reason the cache is:
+  /// a test needs a ledger of its own, and every real caller takes the shared
+  /// one so re-opening a pane cannot ask twice.
+  private let seededRefreshLedger: PluginSeededRefreshLedger
   /// The panel this pane was ASKED for, as opposed to the one it settled on.
   ///
   /// Kept apart from ``selectedPanelId`` because the mirror can be missing the
@@ -373,6 +408,9 @@ final class PluginPaneStore: ObservableObject {
     // evaluated in a NONISOLATED context, and `shared` is main-actor state, so
     // spelling it here warns today and is an error in the Swift 6 language mode.
     fallbackCache: PluginPanelFallbackCache? = nil,
+    // Nil-defaulted and resolved in the body, like `fallbackCache` and for the
+    // same isolation reason.
+    seededRefreshLedger: PluginSeededRefreshLedger? = nil,
     openExternalURL: @escaping (URL) -> Void = { UIApplication.shared.open($0) },
     // Nil-defaulted and built in the body, like `fallbackCache` and for the same
     // isolation reason.
@@ -385,6 +423,7 @@ final class PluginPaneStore: ObservableObject {
     self.sync = sync
     self.fetchesMissingRows = fetchesMissingRows
     self.fallbackCache = fallbackCache ?? .shared
+    self.seededRefreshLedger = seededRefreshLedger ?? .shared
     self.openExternalURL = openExternalURL
     // One runner per pane, captured rather than made per call: its `isRunning`
     // flag is what stops a second tap on Connect from stacking a second sign-in
@@ -445,6 +484,7 @@ final class PluginPaneStore: ObservableObject {
     // Last, so the reconcile reads the selection this pass settled on rather
     // than the one it started with.
     reconcileViewAcknowledgement()
+    reconcileSeededRefresh()
   }
 
   /// Ask again for everything this pane could not get. The gesture behind the
@@ -657,6 +697,77 @@ final class PluginPaneStore: ObservableObject {
         // A view ack that fails is not a control the reader pressed.
       }
     }
+  }
+
+  /// The first refresh a seeded panel owes its reader, or nil.
+  ///
+  /// A panel whose rows come from an API the plugin polls ships the manifest's
+  /// "Loading…" card as its first row, and until this existed nothing ran the
+  /// fetch: the pane drew that card and sat on it until someone pulled down.
+  /// Read off the SELECTED panel, like ``refreshAction`` and ``viewAction``,
+  /// and independent of ``canInvoke`` for the same reason — whether the panel
+  /// is still seeded is the row's answer, not the socket's.
+  var seededRefreshAction: String? {
+    guard let panel = selectedPanel, panel.isSeeded else { return nil }
+    return panel.refreshAction
+  }
+
+  /// Run that refresh once, silently, when the pane opens on a seeded row.
+  ///
+  /// Called from ``load()`` beside ``reconcileViewAcknowledgement()``, so every
+  /// path that settles a selection reaches it. Once per ROW rather than once
+  /// per open: the ledger outlives this store, so re-opening the pane on the
+  /// same still-seeded row asks the plugin nothing again, while a row that
+  /// changed — the plugin published, or the host re-seeded it — is a new key
+  /// and may ask again. The row the plugin publishes in answer is no longer
+  /// seeded, so the fetch cannot become a loop.
+  ///
+  /// Silent, like the view ack and for the same reason: the reader did not
+  /// press anything, so a plugin whose fetch failed leaves the seeded card up
+  /// and says nothing. Their own pull still reports the failure it always did.
+  private func reconcileSeededRefresh() {
+    guard canInvoke, let panelId = selectedPanelId, !panelId.isEmpty else { return }
+    guard let panel = selectedPanel, panel.panelId == panelId, let actionId = seededRefreshAction else { return }
+    let key = PluginSeededRefreshLedger.key(
+      scope: sync.pluginFallbackScope,
+      pluginId: pluginId,
+      panelId: panelId,
+      rowIdentity: Self.rowIdentity(of: panel)
+    )
+    guard seededRefreshLedger.claim(key) else { return }
+    let pluginId = self.pluginId
+    let payload: [String: Any] = context.isEmpty
+      ? [:]
+      : ["context": PluginPanelContext.payload(context)]
+    Task { [weak self] in
+      guard let self else { return }
+      do {
+        _ = try await self.sync.invokePluginAction(
+          pluginId: pluginId,
+          actionId: actionId,
+          payload: payload
+        )
+      } catch {
+        // Nothing to say: the card the reader is looking at is the answer.
+        return
+      }
+      // The plugin has written on its machine. The mirror carries that when
+      // replication catches up; a pane that may read live asks again now
+      // rather than answering from the copy it fetched before the refresh.
+      self.invalidateFetchedCollections()
+      self.load()
+    }
+  }
+
+  /// Identity of one stored panel row, for the once-per-row rule above.
+  ///
+  /// `updatedAt` is the identity every client already tracks. A row that
+  /// arrived without one — a host that sent no timestamp — still needs a key
+  /// that is stable across the opens of one app run, and the schema itself is
+  /// all that is left; the hash only ever has to hold within this process,
+  /// which is exactly as long as the ledger does.
+  private static func rowIdentity(of panel: PluginPanelRecord) -> String {
+    panel.updatedAt.isEmpty ? "schema:\(panel.schemaJSON.hashValue)" : panel.updatedAt
   }
 
   /// Whether a pull gesture has anything to do.

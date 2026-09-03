@@ -18,6 +18,7 @@
  */
 
 import type { PluginManifestSocket } from "../../../../shared/plugins/manifest";
+import type { PluginBrandGlyph } from "../../../../shared/plugins/vocabularyBrandIcons";
 import {
   PLUGIN_CONTRIBUTIONS_PER_SLOT_LIMIT,
   comparePluginContributions,
@@ -605,6 +606,17 @@ export type PluginMenuEntry = {
   onSelect: () => void;
   dataTour?: string;
   icon?: string;
+  /**
+   * The plugin that declared this row.
+   *
+   * Carried so a menu can resolve the plugin's OWN shipped brand glyph for
+   * `icon` — a `brand:*` token that arrived with the package is not in ADE's
+   * compiled catalogue, and a row without this drew the puzzle piece. Absent on
+   * the synthetic "Extend this tab…" row, which belongs to no plugin.
+   */
+  pluginId?: string;
+  /** Those glyph rows, attached by `usePluginMenuEntries`. */
+  brandIcons?: Readonly<Record<string, PluginBrandGlyph>>;
   danger?: boolean;
 };
 
@@ -633,6 +645,7 @@ export function buildPluginMenuEntries(options: {
     key: contributionKey(contribution),
     label: contribution.payload.label,
     dataTour: `plugin:${surface}.row-menu-item`,
+    pluginId: contribution.pluginId,
     ...(contribution.payload.icon ? { icon: contribution.payload.icon } : {}),
     ...(contribution.payload.danger ? { danger: true } : {}),
     onSelect: () => {

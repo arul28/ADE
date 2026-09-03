@@ -12,6 +12,7 @@ import { contributionKey } from "./contributionModel";
 import { registerPluginDialogTarget, type PluginDialogTarget } from "./dialogTarget";
 import { SocketBoundary } from "./SocketBoundary";
 import { SocketIcon } from "./socketUi";
+import { brandIconsProp, usePluginBrandIcons } from "./usePluginBrandIcons";
 import { pluginDialogContext } from "./surfaceContexts";
 import { usePluginSurfaceContributions, useSurfaceContributions } from "./useSurfaceContributions";
 
@@ -99,6 +100,7 @@ export function PluginDialogSections<K extends PluginDialogKind>({
     [all, dialog],
   );
   const { identities } = usePluginSurfaceContributions(surface, active);
+  const brandIconsFor = usePluginBrandIcons();
 
   const [refused, setRefused] = React.useState(false);
   React.useEffect(() => {
@@ -164,7 +166,12 @@ export function PluginDialogSections<K extends PluginDialogKind>({
                   color: COLORS.textMuted,
                 }}
               >
-                <SocketIcon name={identity?.icon ?? undefined} size={12} color={COLORS.textMuted} />
+                <SocketIcon
+                  name={identity?.icon ?? undefined}
+                  {...brandIconsProp(brandIconsFor(contribution.pluginId))}
+                  size={12}
+                  color={COLORS.textMuted}
+                />
                 <span style={{ fontWeight: 600, color: COLORS.textSecondary }}>{title}</span>
                 {title === name ? null : <span style={{ opacity: 0.7 }}>· {name}</span>}
               </header>

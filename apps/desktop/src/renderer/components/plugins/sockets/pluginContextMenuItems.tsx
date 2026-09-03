@@ -31,7 +31,14 @@ export function pluginContextMenuItems(entries: readonly PluginMenuEntry[]): Con
     items.push({
       type: "item",
       label: entry.label,
-      icon: <SocketIcon name={entry.icon} size={14} />,
+      // The plugin's own glyph rows ride on the entry (see `PluginMenuEntry`),
+      // so a `brand:*` token the package shipped draws its mark here instead of
+      // the puzzle piece every row-menu used to show.
+      icon: <SocketIcon
+        name={entry.icon}
+        size={14}
+        {...(entry.brandIcons ? { brandIcons: entry.brandIcons } : {})}
+      />,
       onClick: entry.onSelect,
       ...(entry.danger ? { danger: true } : {}),
     });
