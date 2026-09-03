@@ -1,16 +1,14 @@
 /** Shared utilities for the automations UI. */
 
-import type React from "react";
-import { inputCls } from "./designTokens";
-
 /**
- * Legacy aliases. Existing automation call sites use these names; they now
- * resolve to the shared CTO design tokens so chrome, focus rings, and accent
- * colors match the rest of the app. Prefer `./designTokens` in new code.
+ * The input chrome moved to `@ade-dev/ui`, because a plugin page's settings
+ * section needs the same box. `INPUT_STYLE` and `CARD_STYLE` stay empty
+ * objects, as they were: call sites spread them, and removing them would touch
+ * every one.
+ *
+ * `extractError` and `parseList` are not UI and stay here.
  */
-export const INPUT_CLS = inputCls;
-export const INPUT_STYLE: React.CSSProperties = {};
-export const CARD_STYLE: React.CSSProperties = {};
+export { CARD_STYLE, INPUT_CLS, INPUT_STYLE } from "@ade-dev/ui";
 
 /** Extract a human-readable error message from an unknown thrown value. */
 export function extractError(err: unknown): string {

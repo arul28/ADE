@@ -1,14 +1,12 @@
 import { type ReactNode } from "react";
-import ReactMarkdown, { defaultUrlTransform, type Components } from "react-markdown";
+import ReactMarkdown, { type Components } from "react-markdown";
 import { HighlightedCode } from "./CodeHighlighter";
 import rehypeRaw from "rehype-raw";
-import rehypeSanitize, { defaultSchema } from "rehype-sanitize";
+import rehypeSanitize from "rehype-sanitize";
+import { SAFE_PREVIEW_SCHEMA, markdownUrlTransform } from "@ade-dev/ui";
 import remarkGfm from "remark-gfm";
 import { openUrlInAdeBrowser } from "../../lib/openExternal";
 import { cn } from "../ui/cn";
-import {
-  isWindowsAbsolutePath,
-} from "../../lib/pathUtils";
 import {
   isExternalHref,
   resolveWorkspacePathFromHref,
@@ -16,76 +14,18 @@ import {
 } from "./chatWorkspacePaths";
 
 /**
- * A Windows absolute path (`C:\repo\x.ts`) is indistinguishable from a URL
- * scheme to the sanitizer, which sees `C:`. Allow the single-letter "schemes"
- * so drive paths survive to `ChatMarkdownAnchor`, which decides what they
- * actually are. Both cases are listed because the sanitizer compares protocols
- * case-sensitively. A single letter cannot collide with a real dangerous scheme
- * (`javascript:`, `data:`, `vbscript:` all stay blocked — covered by a test).
+ * The sanitize schema and the URL transform moved to `@ade-dev/ui`.
+ *
+ * They decide what markup and which hrefs survive, and a plugin page rendering
+ * agent text has to make exactly the same decision as the app does. One copy,
+ * published, is the only way that stays true. The component map below stays
+ * here: its links route into the Files tab and its code blocks go through the
+ * renderer's highlighter, neither of which exists in a webview.
  */
-const WINDOWS_DRIVE_LETTER_SCHEMES = Array.from({ length: 26 }, (_unused, index) => [
-  String.fromCharCode(97 + index),
-  String.fromCharCode(65 + index),
-]).flat();
-
-export const SAFE_PREVIEW_SCHEMA = {
-  ...defaultSchema,
-  // `rehypeSanitize` runs BEFORE `urlTransform`, and the default href allowlist
-  // is http/https/irc/ircs/mailto/xmpp — so a `file:` href, and a Windows
-  // `C:\repo\x.ts` (whose "scheme" parses as `c:`), had their href stripped
-  // before anything could linkify them. That made absolute paths dead on
-  // Windows while the same path worked on macOS/Linux, which arrive as `/…`
-  // and are kept as relative. Allowing these two is safe here because
-  // `ChatMarkdownAnchor` never renders a live href for a resolved workspace
-  // path — it renders a button that routes through the Files tab.
-  protocols: {
-    ...defaultSchema.protocols,
-    href: [...(defaultSchema.protocols?.href ?? []), "file", ...WINDOWS_DRIVE_LETTER_SCHEMES],
-  },
-  tagNames: [
-    "p",
-    "ul",
-    "ol",
-    "li",
-    "strong",
-    "em",
-    "code",
-    "pre",
-    "blockquote",
-    "table",
-    "thead",
-    "tbody",
-    "tr",
-    "th",
-    "td",
-    "br",
-    "hr",
-    "h1",
-    "h2",
-    "h3",
-    "h4",
-    "h5",
-    "h6",
-    "a",
-  ],
-};
-
-export function chatMarkdownUrlTransform(value: string): string {
-  // The markdown pipeline percent-encodes link destinations, so a Windows path
-  // reaches here as `C:%5Crepo%5Cx.ts`. Test the decoded form or the drive
-  // check misses and `defaultUrlTransform` blanks the href for an unknown `C:`
-  // scheme — the exact dead-click this transform exists to prevent.
-  let decoded = value;
-  try {
-    decoded = decodeURIComponent(value);
-  } catch {
-    // Partially-encoded href — fall back to the raw value.
-  }
-  if (/^file:/i.test(value) || isWindowsAbsolutePath(value) || isWindowsAbsolutePath(decoded)) {
-    return value;
-  }
-  return defaultUrlTransform(value);
-}
+export {
+  SAFE_PREVIEW_SCHEMA,
+  markdownUrlTransform as chatMarkdownUrlTransform,
+} from "@ade-dev/ui";
 
 type Tone = "sky" | "amber" | "neutral";
 
@@ -305,7 +245,7 @@ export function ChatMarkdown({ children, tone = "sky", componentOverrides }: Cha
       rehypePlugins={[rehypeRaw, [rehypeSanitize, SAFE_PREVIEW_SCHEMA]]}
       // Keep `file:` and Windows drive hrefs intact — the default transform
       // drops them, which would hide exactly the paths we want to linkify.
-      urlTransform={chatMarkdownUrlTransform}
+      urlTransform={markdownUrlTransform}
       components={buildChatMarkdownComponents(tone, componentOverrides)}
     >
       {children}

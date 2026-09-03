@@ -1,4 +1,4 @@
-# Publish `@ade-dev/sdk` then `@ade-dev/chat-ui`.
+# Publish `@ade-dev/sdk`, then `@ade-dev/chat-ui`, then `@ade-dev/ui`.
 #
 # Desktop/runtime releases stay on `v*` (see release.yml). These packages use
 # `ade-sdk-v*` so a desktop tag cannot publish an npm version by accident.
@@ -8,7 +8,8 @@
 #   that is not on the registry yet. A version that already exists is skipped,
 #   so merges that touch package code WITHOUT bumping versions are a no-op
 #   here. The /test skill's SDK-parity pass owns the bump decision.
-# - Manual: an `ade-sdk-vX.Y.Z` tag (must match both package.json versions)
+# - Manual: an `ade-sdk-vX.Y.Z` tag (must match the sdk/chat-ui package.json
+#   versions; `@ade-dev/ui` carries its own version and is not tagged)
 #   or workflow_dispatch with confirm=publish. On these routes an
 #   already-published version is an error, not a skip.
 #
@@ -42,6 +43,7 @@ on:
     paths:
       - "packages/sdk/**"
       - "packages/chat-ui/**"
+      - "packages/ui/**"
       - ".github/workflows/publish-sdk-packages.yml"
     tags:
       - "ade-sdk-v*"
@@ -109,6 +111,13 @@ jobs:
             echo "package versions differ: sdk=$SDK_VER chat-ui=$UI_VER"
             exit 1
           fi
+          # `@ade-dev/ui` is the design-system kit that plugin pages import and
+          # the desktop app consumes through `file:../../packages/ui`. It is
+          # versioned on its own: it moves when a component changes, which has
+          # nothing to do with an SDK release, so it is deliberately NOT part of
+          # the sdk/chat-ui lockstep above.
+          KIT_VER=$(node -p "require('./packages/ui/package.json').version")
+          echo "kit_version=$KIT_VER" >> "$GITHUB_OUTPUT"
           if [ "${{ github.ref_type }}" = "tag" ]; then
             TAG="${GITHUB_REF_NAME#ade-sdk-v}"
             if [ "$TAG" != "$SDK_VER" ]; then
@@ -123,16 +132,21 @@ jobs:
         id: plan
         run: |
           VER="${{ steps.versions.outputs.version }}"
+          KIT_VER="${{ steps.versions.outputs.kit_version }}"
           AUTO="false"
           if [ "${{ github.ref_type }}" = "branch" ]; then AUTO="true"; fi
-          for PKG in "@ade-dev/sdk" "@ade-dev/chat-ui"; do
-            KEY=$( [ "$PKG" = "@ade-dev/sdk" ] && echo sdk || echo ui )
-            if npm view "$PKG@$VER" version >/dev/null 2>&1; then
+          for PKG in "@ade-dev/sdk" "@ade-dev/chat-ui" "@ade-dev/ui"; do
+            case "$PKG" in
+              "@ade-dev/sdk") KEY=sdk; PKG_VER="$VER" ;;
+              "@ade-dev/chat-ui") KEY=ui; PKG_VER="$VER" ;;
+              *) KEY=kit; PKG_VER="$KIT_VER" ;;
+            esac
+            if npm view "$PKG@$PKG_VER" version >/dev/null 2>&1; then
               if [ "$AUTO" = "true" ]; then
-                echo "$PKG@$VER already published; skipping." >> "$GITHUB_STEP_SUMMARY"
+                echo "$PKG@$PKG_VER already published; skipping." >> "$GITHUB_STEP_SUMMARY"
                 echo "$KEY=skip" >> "$GITHUB_OUTPUT"
               else
-                echo "$PKG@$VER already exists on the registry; a tag/dispatch publish must use a new version."
+                echo "$PKG@$PKG_VER already exists on the registry; a tag/dispatch publish must use a new version."
                 exit 1
               fi
             else
@@ -171,6 +185,22 @@ jobs:
       - name: Publish @ade-dev/chat-ui
         if: steps.plan.outputs.ui == 'publish'
         working-directory: packages/chat-ui
+        run: npm publish --access public --provenance
+        env:
+          NODE_AUTH_TOKEN: ${{ steps.token.outputs.mode == 'token' && secrets.NPM_TOKEN || '' }}
+
+      - name: Install and build @ade-dev/ui
+        if: steps.plan.outputs.kit == 'publish'
+        run: |
+          cd packages/ui
+          npm ci
+          npm run typecheck
+          npm test
+          npm run build
+
+      - name: Publish @ade-dev/ui
+        if: steps.plan.outputs.kit == 'publish'
+        working-directory: packages/ui
         run: npm publish --access public --provenance
         env:
           NODE_AUTH_TOKEN: ${{ steps.token.outputs.mode == 'token' && secrets.NPM_TOKEN || '' }}

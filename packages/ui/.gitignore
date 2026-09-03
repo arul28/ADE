@@ -1,0 +1,6 @@
+dist/
+node_modules/
+
+# The repo root ignores every package-lock.json, but the publish workflow runs
+# `npm ci` here, which needs one. Un-ignore it for this package only.
+!package-lock.json

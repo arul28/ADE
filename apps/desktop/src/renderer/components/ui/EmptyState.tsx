@@ -1,47 +1,13 @@
-import React from "react";
-import { motion } from "motion/react";
-import { cn } from "./cn";
+/**
+ * Moved to `@ade-dev/ui`.
+ *
+ * One behavioural note: the enter transition now runs through the Web
+ * Animations API instead of `motion/react`, so a plugin page does not have to
+ * bundle an animation runtime for a single 300 ms fade-and-rise. The keyframes,
+ * duration and easing are the same.
+ */
+export { EmptyState } from "@ade-dev/ui";
 
-export function EmptyState({
-  title,
-  description,
-  icon: Icon,
-  iconSize = 48,
-  className,
-  children
-}: {
-  title: string;
-  description?: string;
-  icon?: React.ElementType;
-  iconSize?: number;
-  className?: string;
-  children?: React.ReactNode;
-}) {
-  return (
-    <motion.div
-      initial={{ opacity: 0, y: 8 }}
-      animate={{ opacity: 1, y: 0 }}
-      transition={{ duration: 0.3, ease: "easeOut" }}
-      className={cn("flex flex-col items-center justify-center p-10 text-center", className)}
-      style={{ background: "#13101A", border: "1px solid #1E1B26" }}
-    >
-      {Icon ? (
-        <div className="mb-4 inline-flex items-center justify-center">
-          <Icon size={iconSize} weight="regular" className="text-[#52525B]" />
-        </div>
-      ) : null}
-      <div
-        className="text-[14px] font-bold tracking-[-0.3px] text-[#FAFAFA]"
-        style={{ fontFamily: "var(--font-sans)" }}
-      >
-        {title}
-      </div>
-      {description ? (
-        <div className="mt-2 font-mono text-[11px] text-[#71717A] max-w-[45ch] mx-auto leading-relaxed">
-          {description}
-        </div>
-      ) : null}
-      {children}
-    </motion.div>
-  );
-}
+/** See `BUTTON_TAILWIND_ANCHOR` in `./Button` for why this string exists. */
+export const EMPTY_STATE_TAILWIND_ANCHOR =
+  "flex flex-col items-center justify-center p-10 text-center mb-4 inline-flex items-center justify-center text-[#52525B] text-[14px] font-bold tracking-[-0.3px] text-[#FAFAFA] mt-2 font-mono text-[11px] text-[#71717A] max-w-[45ch] mx-auto leading-relaxed";
