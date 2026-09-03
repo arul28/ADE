@@ -3,7 +3,6 @@ import React from "react";
 import { COLORS, RADII, SANS_FONT, outlineButton } from "../lanes/laneDesignTokens";
 import { PluginFallbackCard } from "./VocabularyRenderer";
 import { isWebClientMode } from "../../lib/webClientMode";
-import { WebPluginPageHost } from "../../webclient/plugins/WebPluginPageHost";
 import { supportsWebPluginPages } from "../../webclient/plugins/pageServiceWorkerClient";
 import { registerPluginWebviewGuest } from "./sockets/pluginWebviewGuestRegistry";
 import { usePluginWebviewReloadKey } from "./sockets/pluginWebviewReloadStore";
@@ -50,6 +49,25 @@ import {
  * destroyed the moment it is hidden or unmounted. One live guest per placement
  * falls out of that, because a placement draws one host at a time.
  */
+
+/**
+ * The web client's page host, loaded only when a web client actually draws one.
+ *
+ * `React.lazy` rather than a plain import because this module is the desktop's
+ * page host and it is on the entry graph of BOTH clients. A static import would
+ * pull the whole browser page stack — the asset loader, the document builder,
+ * the postMessage bridge host, the service-worker registration — into the
+ * desktop bundle, which can never execute a line of it, and into the web
+ * client's own entry chunk, whose budget is already over.
+ *
+ * The predicate beside it is deliberately NOT lazy. `supportsPluginWebviews()`
+ * is a synchronous render-path question — a caller is deciding between a page
+ * and the surface's fallback panel — and an answer that arrived a tick later
+ * would draw the panel and then replace it.
+ */
+const WebPluginPageHost = React.lazy(async () => ({
+  default: (await import("../../webclient/plugins/WebPluginPageHost")).WebPluginPageHost,
+}));
 
 type PluginWebviewElement = HTMLElement & {
   reload?: () => void;
@@ -313,12 +331,14 @@ export function PluginWebviewHost({
   // `placement` reach that host the way they reach a guest's `__adeCtx`.
   if (webClient) {
     return (
-      <WebPluginPageHost
-        pluginId={pluginId}
-        entryHtml={entryHtml}
-        active={active}
-        context={envelope}
-      />
+      <React.Suspense fallback={<PluginWebviewLoadingChip />}>
+        <WebPluginPageHost
+          pluginId={pluginId}
+          entryHtml={entryHtml}
+          active={active}
+          context={envelope}
+        />
+      </React.Suspense>
     );
   }
 
@@ -355,26 +375,36 @@ export function PluginWebviewHost({
           />
         </div>
       ) : null}
-      {state.status === "loading" ? (
-        <span
-          role="status"
-          style={{
-            position: "absolute",
-            left: 20,
-            top: 20,
-            fontFamily: SANS_FONT,
-            fontSize: 11,
-            color: COLORS.textDim,
-            background: COLORS.recessedBg,
-            border: `1px solid ${COLORS.borderMuted}`,
-            borderRadius: RADII.sm,
-            padding: "3px 8px",
-          }}
-        >
-          Loading…
-        </span>
-      ) : null}
+      {state.status === "loading" ? <PluginWebviewLoadingChip absolute /> : null}
     </div>
+  );
+}
+
+/**
+ * The one "this is coming" mark a page host shows.
+ *
+ * Shared by the Electron guest's own loading state and by the Suspense boundary
+ * around the web host's chunk, because a reader cannot tell those two waits
+ * apart and should not be shown two different things for them.
+ */
+function PluginWebviewLoadingChip({ absolute = false }: { absolute?: boolean }) {
+  return (
+    <span
+      role="status"
+      style={{
+        ...(absolute ? { position: "absolute" as const, left: 20, top: 20 } : { margin: 20 }),
+        alignSelf: "flex-start",
+        fontFamily: SANS_FONT,
+        fontSize: 11,
+        color: COLORS.textDim,
+        background: COLORS.recessedBg,
+        border: `1px solid ${COLORS.borderMuted}`,
+        borderRadius: RADII.sm,
+        padding: "3px 8px",
+      }}
+    >
+      Loading…
+    </span>
   );
 }
 
@@ -400,7 +430,7 @@ export function PluginWebviewHost({
  * is the cross-client rendering the manifest already promised.
  */
 export function supportsPluginWebviews(): boolean {
-  return isWebClientMode() ? supportsWebPluginPages() : true;
+  return !isWebClientMode() || supportsWebPluginPages();
 }
 
 export { PLUGIN_WEBVIEW_PROTOCOL };

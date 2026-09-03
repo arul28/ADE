@@ -1,7 +1,7 @@
 /* @vitest-environment jsdom */
 
 import React from "react";
-import { render, act } from "@testing-library/react";
+import { cleanup, render, act, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
@@ -81,6 +81,9 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  // Unmounted between cases: several render the same component, and a leaked
+  // tree makes a document-wide query ambiguous rather than wrong-looking.
+  cleanup();
   vi.useRealTimers();
 });
 
@@ -281,7 +284,7 @@ describe("ui.resize", () => {
 });
 
 describe("the hosted web client", () => {
-  it("draws the web page host, never an Electron guest", () => {
+  it("draws the web page host, never an Electron guest", async () => {
     client.web = true;
     const view = render(
       <PluginWebviewHost
@@ -293,7 +296,11 @@ describe("the hosted web client", () => {
       />,
     );
     expect(view.container.querySelectorAll("webview")).toHaveLength(0);
-    const host = view.getByTestId("web-page-host");
+    // The host is behind `React.lazy`, so the first paint is the Suspense
+    // fallback and the chunk resolves a microtask later. Scoped to this
+    // render's own container rather than the document.
+    await waitFor(() => expect(view.container.querySelector("[data-testid='web-page-host']")).toBeTruthy());
+    const host = view.container.querySelector("[data-testid='web-page-host']") as HTMLElement;
     expect(host.getAttribute("data-plugin")).toBe("acme");
     // The envelope is handed over whole, so a page in the browser reads the
     // same `surfaceId` and `placement` a desktop guest reads off `__adeCtx`.
