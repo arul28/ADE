@@ -21,6 +21,10 @@ import type { MarketplaceListing } from "./marketplaceModel";
 
 const calls: string[] = [];
 let activeThemeId: string | null = null;
+/** What the store hands the page back as its remembered view and filters. */
+let storedQuery: unknown = undefined;
+/** Every query the page asked the store to remember, in order. */
+const storedWrites: unknown[] = [];
 /** What `uninstallPlugin` does. The gate's refusal is the interesting case. */
 let uninstallOutcome: () => Promise<void> = async () => {};
 
@@ -34,6 +38,11 @@ vi.mock("../../state/appStore", () => ({
       pluginsLoadFailure: null,
       projectBinding: null,
       pluginThemeId: activeThemeId,
+      theme: "dark",
+      pluginViewState: { marketplaceQuery: storedQuery },
+      setMarketplaceQuery: (query: unknown) => {
+        storedWrites.push(query);
+      },
       setPluginThemeId: (pluginId: string | null) => {
         activeThemeId = pluginId;
         calls.push(`setPluginThemeId:${pluginId ?? "none"}`);
@@ -75,6 +84,7 @@ function listing(overrides: Partial<MarketplaceListing> = {}): MarketplaceListin
     official: false,
     featured: false,
     isTheme: false,
+    kind: "view",
     installs: null,
     stars: null,
     publishedAt: null,
@@ -134,6 +144,8 @@ const { MarketplacePage } = await import("./MarketplacePage");
 
 beforeEach(() => {
   calls.length = 0;
+  storedWrites.length = 0;
+  storedQuery = undefined;
   activeThemeId = null;
   CATALOGUE.listings = [listing()];
   registry.plugins = [installedPlugin()];
@@ -316,5 +328,197 @@ describe("a candidate handed over in the URL", () => {
     await waitFor(() => {
       expect(document.querySelector("#plugin-install-source")).toBeNull();
     });
+  });
+});
+
+/**
+ * The gallery's two views and its filter bar.
+ *
+ * What is asserted here is not the bar's shape — `marketplaceModel.test.ts`
+ * says why rendering is generally not tested — but the four things a filter bar
+ * can get WRONG: showing a reader the wrong list under a control they chose,
+ * treating a multi-select as single, hiding a filter that is narrowing the
+ * list, and forgetting all of it by the next visit.
+ */
+describe("the Marketplace's views and filters", () => {
+  const CATALOGUE_FIXTURE: MarketplaceListing[] = [
+    listing({ pluginId: "tipsy", displayName: "Tipsy", kind: "view", surfaces: ["work"] }),
+    listing({ pluginId: "acme", displayName: "Acme", kind: "integration", official: true }),
+    listing({ pluginId: "count", displayName: "Count", kind: "tool" }),
+    listing({
+      pluginId: "slate",
+      displayName: "Slate",
+      kind: "theme",
+      isTheme: true,
+      themeTokens: { dark: { "--color-accent": "#8899ff" } },
+    }),
+  ];
+
+  beforeEach(() => {
+    CATALOGUE.listings = CATALOGUE_FIXTURE;
+    registry.plugins = [];
+  });
+
+  const chip = (label: string) => screen.getByRole("button", { name: new RegExp(`^${label}`) });
+
+  it("opens on Plugins and keeps themes out of it", async () => {
+    renderGallery();
+    await waitFor(() => expect(screen.getByText("Tipsy")).toBeTruthy());
+
+    expect(screen.getByRole("radio", { name: "Plugins" }).getAttribute("aria-checked")).toBe("true");
+    // The whole point of the split: a reader who came for an integration never
+    // scrolls past a wall of colour packages.
+    expect(screen.queryByText("Slate")).toBeNull();
+    expect(screen.getByText("Acme")).toBeTruthy();
+  });
+
+  it("switches to a theme grid with the detail page's own verbs", async () => {
+    renderGallery();
+    await waitFor(() => expect(screen.getByText("Tipsy")).toBeTruthy());
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("radio", { name: "Themes" }));
+    });
+
+    expect(screen.getByText("Slate")).toBeTruthy();
+    expect(screen.queryByText("Acme")).toBeNull();
+    // The same three words the detail rail uses, so the two screens teach one
+    // vocabulary rather than two.
+    expect(screen.getByText("Preview theme")).toBeTruthy();
+    // The type and state axes belong to Plugins; a theme has no "Adds to".
+    expect(screen.queryByRole("group", { name: "Filter by type" })).toBeNull();
+  });
+
+  it("ORs the type chips instead of replacing the selection", async () => {
+    renderGallery();
+    await waitFor(() => expect(screen.getByText("Tipsy")).toBeTruthy());
+
+    await act(async () => {
+      fireEvent.click(chip("Integrations"));
+    });
+    expect(screen.getByText("Acme")).toBeTruthy();
+    expect(screen.queryByText("Count")).toBeNull();
+
+    // A second type WIDENS. This is the difference from the old single-select
+    // chip row, where pressing Tools would have thrown Integrations away.
+    await act(async () => {
+      fireEvent.click(chip("Tools"));
+    });
+    expect(screen.getByText("Acme")).toBeTruthy();
+    expect(screen.getByText("Count")).toBeTruthy();
+    expect(screen.queryByText("Tipsy")).toBeNull();
+
+    await act(async () => {
+      fireEvent.click(chip("Integrations"));
+    });
+    expect(screen.queryByText("Acme")).toBeNull();
+    expect(screen.getByText("Count")).toBeTruthy();
+  });
+
+  it("keeps the state filter to one at a time, and lets the chosen one clear itself", async () => {
+    renderGallery();
+    await waitFor(() => expect(screen.getByText("Tipsy")).toBeTruthy());
+
+    await act(async () => {
+      fireEvent.click(chip("Official"));
+    });
+    expect(screen.getByText("Acme")).toBeTruthy();
+    expect(screen.queryByText("Count")).toBeNull();
+
+    // Community REPLACES Official rather than adding to it: "Official and
+    // Community" is everything, so a multi-select here would mean nothing.
+    await act(async () => {
+      fireEvent.click(chip("Community"));
+    });
+    expect(screen.queryByText("Acme")).toBeNull();
+    expect(screen.getByText("Count")).toBeTruthy();
+
+    await act(async () => {
+      fireEvent.click(chip("Community"));
+    });
+    expect(screen.getByText("Acme")).toBeTruthy();
+    expect(screen.getByText("Count")).toBeTruthy();
+  });
+
+  it("hides the surface facets behind a disclosure and filters on them", async () => {
+    renderGallery();
+    await waitFor(() => expect(screen.getByText("Tipsy")).toBeTruthy());
+
+    const toggle = screen.getByRole("button", { name: /Adds to/ });
+    expect(toggle.getAttribute("aria-expanded")).toBe("false");
+    expect(screen.queryByRole("group", { name: "Filter by what a plugin adds to" })).toBeNull();
+
+    await act(async () => {
+      fireEvent.click(toggle);
+    });
+    expect(toggle.getAttribute("aria-expanded")).toBe("true");
+
+    await act(async () => {
+      fireEvent.click(chip("Work"));
+    });
+    expect(screen.getByText("Tipsy")).toBeTruthy();
+    expect(screen.queryByText("Acme")).toBeNull();
+  });
+
+  it("opens the facets already expanded when a remembered filter is narrowing the list", async () => {
+    // A filter narrowing the list from inside a closed section is the one state
+    // this must never be in.
+    storedQuery = { view: "plugins", types: [], state: "all", surfaces: ["work"], sort: "installs", sortDir: "desc" };
+    renderGallery();
+    await waitFor(() => expect(screen.getByText("Tipsy")).toBeTruthy());
+
+    expect(screen.getByRole("button", { name: /Adds to/ }).getAttribute("aria-expanded")).toBe("true");
+    expect(screen.queryByText("Acme")).toBeNull();
+  });
+
+  it("restores the remembered view and writes every change back", async () => {
+    storedQuery = { view: "themes", types: [], state: "all", surfaces: [], sort: "new", sortDir: "asc" };
+    renderGallery();
+    await waitFor(() => expect(screen.getByText("Slate")).toBeTruthy());
+    expect(screen.getByRole("radio", { name: "Themes" }).getAttribute("aria-checked")).toBe("true");
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("radio", { name: "Plugins" }));
+    });
+
+    const last = storedWrites.at(-1) as { view: string; sort: string } | undefined;
+    expect(last?.view).toBe("plugins");
+    // The rest of the remembered query rides along: switching views is not a
+    // reset.
+    expect(last?.sort).toBe("new");
+  });
+
+  it("does not carry the search box across visits", async () => {
+    renderGallery();
+    await waitFor(() => expect(screen.getByText("Tipsy")).toBeTruthy());
+
+    await act(async () => {
+      fireEvent.change(screen.getByLabelText("Search plugins"), { target: { value: "acme" } });
+    });
+    expect(screen.queryByText("Tipsy")).toBeNull();
+
+    // The store is told about the filters, never about the word. A Marketplace
+    // that opens with last week's search looks like one with three plugins in
+    // it.
+    for (const write of storedWrites) {
+      expect((write as { search: string }).search).toBe("");
+    }
+  });
+
+  it("clears the filters without leaving the view someone chose", async () => {
+    renderGallery();
+    await waitFor(() => expect(screen.getByText("Tipsy")).toBeTruthy());
+    await act(async () => {
+      fireEvent.click(screen.getByRole("radio", { name: "Themes" }));
+    });
+    await act(async () => {
+      fireEvent.change(screen.getByLabelText("Search plugins"), { target: { value: "nothing here" } });
+    });
+
+    await act(async () => {
+      fireEvent.click(screen.getByText("Clear filters"));
+    });
+    expect(screen.getByRole("radio", { name: "Themes" }).getAttribute("aria-checked")).toBe("true");
+    expect(screen.getByText("Slate")).toBeTruthy();
   });
 });

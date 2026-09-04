@@ -34,6 +34,7 @@ import {
   comparePluginVersions,
   isValidPluginId,
   isValidPluginVersion,
+  pluginRailTabSurface,
   type PluginManifest,
 } from "../../../shared/plugins/manifest";
 import {
@@ -78,8 +79,15 @@ export type MarketplaceListing = {
   links: PluginRegistryLinks | null;
   official: boolean;
   featured: boolean;
-  /** Themes get their own chip and their own detail rail. */
+  /** Themes get their own view and their own detail rail. */
   isTheme: boolean;
+  /**
+   * What KIND of thing this is, for the gallery's two views and its type chips.
+   *
+   * Derived — never published. See {@link derivePluginKind} for the rule and
+   * for why a catalogue entry is not allowed to name its own kind.
+   */
+  kind: MarketplacePluginKind;
   installs: number | null;
   stars: number | null;
   /**
@@ -135,6 +143,98 @@ export function surfacesFromManifest(manifest: PluginManifest | null): PluginSur
   return PLUGIN_SURFACE_IDS.filter((surface) => present.has(surface));
 }
 
+/* ── Kind ───────────────────────────────────────────────────────────────── */
+
+/**
+ * What a plugin IS, in the four words the gallery sorts people by.
+ *
+ * A single flat list of plugins asks the reader to work out, one card at a
+ * time, whether a package is a colour theme, a service they must sign in to, a
+ * verb their agent gains, or a screen. Those four are not variations of one
+ * thing — they are answered before anyone reads a description — so the gallery
+ * splits on them.
+ */
+export type MarketplacePluginKind = "theme" | "integration" | "tool" | "view";
+
+/** The kinds the Plugins view can be filtered by. Themes are their own view. */
+export type MarketplaceTypeFilter = Exclude<MarketplacePluginKind, "theme">;
+
+export const MARKETPLACE_TYPE_FILTERS: readonly MarketplaceTypeFilter[] = [
+  "integration",
+  "tool",
+  "view",
+];
+
+export const MARKETPLACE_TYPE_LABELS: Record<MarketplaceTypeFilter, string> = {
+  integration: "Integrations",
+  tool: "Tools",
+  view: "Views",
+};
+
+/**
+ * Which of the four a listing is.
+ *
+ * Read off the MANIFEST rather than off a field the catalogue publishes, for
+ * the same reason `official` is set from the registry's own curated file and
+ * never from a manifest's self-description: a kind chip is a filing decision
+ * ADE makes, and a package that could file itself would file itself wherever
+ * traffic is. What the manifest declares is not a claim — it is the list of
+ * things the host will actually let the plugin do.
+ *
+ * The rule, first match wins:
+ *
+ * 1. **theme** — it declares a palette. A theme adds nothing else, and lives in
+ *    the other view.
+ * 2. **integration** — it reaches outside this machine: a sign-in flow, an
+ *    allowed host, a webhook channel, or a URL shape it claims. That is the
+ *    fact a reader wants first, because it is the one with an account and a
+ *    credential behind it.
+ * 3. **tool** — it gives the agent verbs (`tools`), the CLI words, or
+ *    automation steps, and it opens NO rail tab. The "no tab" half is what
+ *    keeps the chip honest: nearly every plugin with a page also ships a couple
+ *    of tools, and filing those under Tools would leave the chip meaning
+ *    nothing.
+ * 4. **view** — everything else: a page, a panel, a socket into a core surface.
+ *
+ * A directory entry carries no manifest (the crawler publishes a summary, not
+ * the package), so it can only be split into theme and view. That is the
+ * honest answer rather than a guess: it becomes exact the moment the entry's
+ * manifest is read, which is at install.
+ */
+export function derivePluginKind(
+  listing: Pick<MarketplaceListing, "manifest" | "isTheme">,
+): MarketplacePluginKind {
+  const manifest = listing.manifest;
+  if (manifest ? manifest.theme !== undefined : listing.isTheme) return "theme";
+  if (!manifest) return "view";
+
+  const reachesOutside = (manifest.authSessions ?? []).length > 0
+    || manifest.network !== undefined
+    || manifest.webhookIngress.length > 0
+    || (manifest.urlMatchers ?? []).length > 0;
+  if (reachesOutside) return "integration";
+
+  const carriesVerbs = manifest.tools.length > 0
+    || manifest.cli.length > 0
+    || manifest.automationSteps.length > 0;
+  if (carriesVerbs && pluginRailTabSurface(manifest.surfaces) === null) return "tool";
+
+  return "view";
+}
+
+/**
+ * Re-derive `kind` after something changed the manifest under a listing.
+ *
+ * The merge is the one place that happens: a live entry that inherits the
+ * bundled manifest goes from knowing nothing about itself to knowing
+ * everything, and a listing carrying the kind it had BEFORE that would file a
+ * sign-in flow under Views.
+ */
+export function withDerivedKind(listing: MarketplaceListing): MarketplaceListing {
+  const kind = derivePluginKind(listing);
+  return kind === listing.kind ? listing : { ...listing, kind };
+}
+
 /**
  * Turn a validated directory entry into a listing.
  *
@@ -165,6 +265,9 @@ export function listingFromRegistryEntry(entry: PluginRegistryEntry): Marketplac
     official: entry.official,
     featured: entry.featured,
     isTheme: entry.isTheme,
+    // A directory entry publishes no manifest, so this is theme-or-view. See
+    // {@link derivePluginKind}.
+    kind: entry.isTheme ? "theme" : "view",
     installs: entry.installs,
     stars: entry.stars,
     sizeBytes: entry.sizeBytes,
@@ -338,7 +441,12 @@ export function mergeMarketplaceCatalogue(input: {
   for (const listing of input.bundled) byId.set(listing.pluginId, { ...listing, origin: "bundled" });
   for (const listing of input.live ?? []) {
     const bundled = byId.get(listing.pluginId);
-    byId.set(listing.pluginId, bundled ? chooseCatalogueListing(bundled, listing) : listing);
+    // `withDerivedKind` because the choice can hand a live entry the bundled
+    // manifest, which changes the answer to "what is this".
+    byId.set(
+      listing.pluginId,
+      bundled ? withDerivedKind(chooseCatalogueListing(bundled, listing)) : listing,
+    );
   }
 
   for (const plugin of input.installed) {
@@ -382,6 +490,7 @@ export function listingFromInstalled(plugin: InstalledPlugin): MarketplaceListin
     official: false,
     featured: false,
     isTheme: plugin.theme !== null,
+    kind: plugin.theme !== null ? "theme" : "view",
     installs: null,
     stars: null,
     // Already on this machine, and nothing here knows what it weighed on the
@@ -423,6 +532,7 @@ export function listingFromManifest(manifest: PluginManifest, source: string): M
     official: false,
     featured: false,
     isTheme: manifest.theme !== undefined,
+    kind: derivePluginKind({ manifest, isTheme: manifest.theme !== undefined }),
     installs: null,
     stars: null,
     // A manifest read off a source says what the plugin does, not what it
@@ -497,12 +607,51 @@ export function describePluginAdds(listing: MarketplaceListing): string[] {
 
 /* ── Filter, sort, search ───────────────────────────────────────────────── */
 
-export type MarketplaceChip = "all" | "installed" | "official" | "themes";
+/**
+ * The gallery's two views.
+ *
+ * Not a chip among chips. A theme and a plugin are shopped for differently — a
+ * theme is judged by looking at it, a plugin by reading what it adds — so one
+ * list that mixes them serves neither. Plugins is the default and EXCLUDES
+ * themes, which is the change from the old "All" chip: ten colour packages sat
+ * in front of every reader who had come to find an integration.
+ */
+export type MarketplaceView = "plugins" | "themes";
+
+/**
+ * The state filter. One at a time, because these overlap in ways that make a
+ * multi-select meaningless: "Installed and Updates" is Updates, and "Official
+ * and Community" is everything.
+ */
+export type MarketplaceState = "all" | "installed" | "updates" | "official" | "community";
+
 export type MarketplaceSort = "installs" | "stars" | "new";
 export type MarketplaceSortDir = "asc" | "desc";
 
+export const MARKETPLACE_VIEWS: readonly MarketplaceView[] = ["plugins", "themes"];
+
+export const MARKETPLACE_VIEW_LABELS: Record<MarketplaceView, string> = {
+  plugins: "Plugins",
+  themes: "Themes",
+};
+
+/** Every state except the "no filter" one, in the order the bar draws them. */
+export const MARKETPLACE_STATES: readonly Exclude<MarketplaceState, "all">[] = [
+  "installed",
+  "updates",
+  "official",
+  "community",
+];
+
+export const MARKETPLACE_STATE_LABELS: Record<Exclude<MarketplaceState, "all">, string> = {
+  installed: "Installed",
+  updates: "Updates",
+  official: "Official",
+  community: "Community",
+};
+
 /**
- * Plugin ids present on this machine, in the shape the chip filter wants.
+ * Plugin ids present on this machine, in the shape the filters want.
  *
  * The installed set is not part of {@link MarketplaceQuery} because it is not
  * something the reader chose — it changes under them as installs land, and a
@@ -512,11 +661,50 @@ export function installedPluginIds(installed: readonly InstalledPlugin[]): Reado
   return new Set(installed.map((plugin) => plugin.pluginId));
 }
 
-const NO_INSTALLS: ReadonlySet<string> = new Set<string>();
+/**
+ * What this machine has, in the two shapes the state filter asks about.
+ *
+ * "Updates" cannot be answered from ids alone — it is a version comparison
+ * against the catalogue — so it is computed once here rather than per listing
+ * per keystroke, and it is computed against the SAME `installStateFor` the row
+ * badge uses, so the chip and the badge can never disagree.
+ */
+export type MarketplaceInstallIndex = {
+  installed: ReadonlySet<string>;
+  /** Installed here, and the catalogue offers something newer. */
+  updatable: ReadonlySet<string>;
+};
+
+/**
+ * The empty index.
+ *
+ * The default for every filter entry point, and deliberately empty rather than
+ * permissive: a caller that forgets to pass what is installed must show an
+ * empty Installed list, never the whole catalogue marked as installed.
+ */
+export const NO_MARKETPLACE_INSTALLS: MarketplaceInstallIndex = {
+  installed: new Set<string>(),
+  updatable: new Set<string>(),
+};
+
+export function marketplaceInstallIndex(
+  listings: readonly MarketplaceListing[],
+  installed: readonly InstalledPlugin[],
+): MarketplaceInstallIndex {
+  const updatable = new Set<string>();
+  for (const listing of listings) {
+    if (installStateFor(listing, installed).kind === "update") updatable.add(listing.pluginId);
+  }
+  return { installed: installedPluginIds(installed), updatable };
+}
 
 export type MarketplaceQuery = {
   search: string;
-  chip: MarketplaceChip;
+  /** Plugins or Themes. The one filter that changes what the page draws. */
+  view: MarketplaceView;
+  /** Type chips, multi-select: OR within the axis. Empty means every type. */
+  types: readonly MarketplaceTypeFilter[];
+  state: MarketplaceState;
   /** Facet: keep only listings that extend every selected surface. */
   surfaces: readonly PluginSurfaceId[];
   sort: MarketplaceSort;
@@ -525,11 +713,76 @@ export type MarketplaceQuery = {
 
 export const DEFAULT_MARKETPLACE_QUERY: MarketplaceQuery = {
   search: "",
-  chip: "all",
+  view: "plugins",
+  types: [],
+  state: "all",
   surfaces: [],
   sort: "installs",
   sortDir: "desc",
 };
+
+/**
+ * Whether anything is narrowing the list beyond the view's own definition.
+ *
+ * Drives the "Clear filters" affordance and the featured row, which is a
+ * curated set and therefore wrong to show above a filtered list — it would read
+ * as three results that ignored the filter.
+ */
+export function marketplaceFiltersActive(query: MarketplaceQuery): boolean {
+  return query.types.length > 0
+    || query.state !== "all"
+    || query.surfaces.length > 0
+    || query.search.trim().length > 0;
+}
+
+/**
+ * Read a persisted query back.
+ *
+ * Tolerant in the same way every persisted blob in this app is: an unknown
+ * value falls back to the default rather than being kept, because the shape
+ * outlives the build that wrote it. `search` is deliberately NOT restored — a
+ * search box that comes back full of last week's word looks like a Marketplace
+ * with three plugins in it.
+ */
+export function normalizeMarketplaceQuery(value: unknown): MarketplaceQuery {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    return { ...DEFAULT_MARKETPLACE_QUERY };
+  }
+  const record = value as Partial<MarketplaceQuery>;
+  const types = Array.isArray(record.types)
+    ? MARKETPLACE_TYPE_FILTERS.filter((type) => record.types!.includes(type))
+    : [];
+  const surfaces = Array.isArray(record.surfaces)
+    ? PLUGIN_SURFACE_IDS.filter((surface) => record.surfaces!.includes(surface))
+    : [];
+  return {
+    search: "",
+    view: MARKETPLACE_VIEWS.includes(record.view as MarketplaceView)
+      ? record.view as MarketplaceView
+      : DEFAULT_MARKETPLACE_QUERY.view,
+    types,
+    state: record.state === "all" || MARKETPLACE_STATES.includes(record.state as never)
+      ? record.state as MarketplaceState
+      : DEFAULT_MARKETPLACE_QUERY.state,
+    surfaces,
+    sort: record.sort === "installs" || record.sort === "stars" || record.sort === "new"
+      ? record.sort
+      : DEFAULT_MARKETPLACE_QUERY.sort,
+    sortDir: record.sortDir === "asc" ? "asc" : "desc",
+  };
+}
+
+/** True when two queries would persist identically — search excluded. */
+export function sameMarketplaceFilters(a: MarketplaceQuery, b: MarketplaceQuery): boolean {
+  return a.view === b.view
+    && a.state === b.state
+    && a.sort === b.sort
+    && a.sortDir === b.sortDir
+    && a.types.length === b.types.length
+    && a.types.every((type) => b.types.includes(type))
+    && a.surfaces.length === b.surfaces.length
+    && a.surfaces.every((surface) => b.surfaces.includes(surface));
+}
 
 function matchesSearch(listing: MarketplaceListing, search: string): boolean {
   const needle = search.trim().toLowerCase();
@@ -545,18 +798,34 @@ function matchesSearch(listing: MarketplaceListing, search: string): boolean {
   return needle.split(/\s+/).every((word) => haystack.includes(word));
 }
 
-function matchesChip(
+/** The view split. Exactly one of the two claims every listing. */
+export function matchesView(listing: MarketplaceListing, view: MarketplaceView): boolean {
+  return view === "themes" ? listing.kind === "theme" : listing.kind !== "theme";
+}
+
+/** Type chips: OR within the axis, and an empty selection keeps everything. */
+export function matchesTypes(
   listing: MarketplaceListing,
-  chip: MarketplaceChip,
-  installed: ReadonlySet<string>,
+  types: readonly MarketplaceTypeFilter[],
 ): boolean {
-  switch (chip) {
+  if (types.length === 0) return true;
+  return types.some((type) => type === listing.kind);
+}
+
+export function matchesState(
+  listing: MarketplaceListing,
+  state: MarketplaceState,
+  index: MarketplaceInstallIndex = NO_MARKETPLACE_INSTALLS,
+): boolean {
+  switch (state) {
     case "installed":
-      return installed.has(listing.pluginId);
+      return index.installed.has(listing.pluginId);
+    case "updates":
+      return index.updatable.has(listing.pluginId);
     case "official":
       return listing.official;
-    case "themes":
-      return listing.isTheme;
+    case "community":
+      return !listing.official;
     case "all":
     default:
       return true;
@@ -597,12 +866,14 @@ function compareListings(
 export function queryMarketplace(
   listings: readonly MarketplaceListing[],
   query: MarketplaceQuery,
-  /** From {@link installedPluginIds}. Only the "installed" chip reads it. */
-  installed: ReadonlySet<string> = NO_INSTALLS,
+  /** From {@link marketplaceInstallIndex}. Only the state filter reads it. */
+  index: MarketplaceInstallIndex = NO_MARKETPLACE_INSTALLS,
 ): MarketplaceListing[] {
   const surfaces = query.surfaces;
   return listings
-    .filter((listing) => matchesChip(listing, query.chip, installed))
+    .filter((listing) => matchesView(listing, query.view))
+    .filter((listing) => matchesTypes(listing, query.types))
+    .filter((listing) => matchesState(listing, query.state, index))
     .filter((listing) => surfaces.every((surface) => listing.surfaces.includes(surface)))
     .filter((listing) => matchesSearch(listing, query.search))
     .sort((a, b) => compareListings(a, b, query.sort, query.sortDir));
@@ -613,17 +884,19 @@ export type SurfaceFacet = { surface: PluginSurfaceId; label: string; total: num
 /**
  * Facet chips for the surfaces present in a catalogue.
  *
- * Counted against the chip/search-filtered set but NOT against the facet
- * selection itself, so selecting a facet cannot make the other facets vanish —
- * the classic dead-end where a filter bar can only ever be narrowed.
+ * Counted against every axis EXCEPT the facet selection itself, so selecting a
+ * facet cannot make the other facets vanish — the classic dead-end where a
+ * filter bar can only ever be narrowed.
  */
 export function deriveSurfaceFacets(
   listings: readonly MarketplaceListing[],
   query: MarketplaceQuery,
-  installed: ReadonlySet<string> = NO_INSTALLS,
+  index: MarketplaceInstallIndex = NO_MARKETPLACE_INSTALLS,
 ): SurfaceFacet[] {
   const scoped = listings
-    .filter((listing) => matchesChip(listing, query.chip, installed))
+    .filter((listing) => matchesView(listing, query.view))
+    .filter((listing) => matchesTypes(listing, query.types))
+    .filter((listing) => matchesState(listing, query.state, index))
     .filter((listing) => matchesSearch(listing, query.search));
   return PLUGIN_SURFACE_IDS
     .map((surface) => ({
@@ -632,6 +905,35 @@ export function deriveSurfaceFacets(
       total: scoped.filter((listing) => listing.surfaces.includes(surface)).length,
     }))
     .filter((facet) => facet.total > 0);
+}
+
+export type TypeFacet = { type: MarketplaceTypeFilter; label: string; total: number };
+
+/**
+ * Counts for the type chips.
+ *
+ * Every chip is drawn whatever its count, unlike the surface facets: the three
+ * types are the page's own vocabulary and a chip that disappears when it hits
+ * zero teaches nobody what the axis is. A zero count is the answer, and it is
+ * counted against the other axes but NOT against the type selection, so
+ * selecting Integrations still shows how many Tools are one click away.
+ */
+export function deriveTypeFacets(
+  listings: readonly MarketplaceListing[],
+  query: MarketplaceQuery,
+  index: MarketplaceInstallIndex = NO_MARKETPLACE_INSTALLS,
+): TypeFacet[] {
+  const surfaces = query.surfaces;
+  const scoped = listings
+    .filter((listing) => matchesView(listing, query.view))
+    .filter((listing) => matchesState(listing, query.state, index))
+    .filter((listing) => surfaces.every((surface) => listing.surfaces.includes(surface)))
+    .filter((listing) => matchesSearch(listing, query.search));
+  return MARKETPLACE_TYPE_FILTERS.map((type) => ({
+    type,
+    label: MARKETPLACE_TYPE_LABELS[type],
+    total: scoped.filter((listing) => listing.kind === type).length,
+  }));
 }
 
 export function featuredListings(listings: readonly MarketplaceListing[]): MarketplaceListing[] {

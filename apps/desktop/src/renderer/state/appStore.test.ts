@@ -2206,8 +2206,34 @@ describe("normalizePluginViewState", () => {
 
   it("drops anything the shape does not name", async () => {
     const { normalizePluginViewState } = await import("./appStore");
-    expect(normalizePluginViewState(null)).toEqual({ version: 1, lastPanelByPlugin: {} });
+    const { DEFAULT_MARKETPLACE_QUERY } = await import("../components/plugins/marketplaceModel");
+    expect(normalizePluginViewState(null))
+      .toEqual({ version: 1, lastPanelByPlugin: {}, marketplaceQuery: DEFAULT_MARKETPLACE_QUERY });
     expect(normalizePluginViewState({ lastPanelByPlugin: { a: 7, "": "x", b: "panel" } }))
-      .toEqual({ version: 1, lastPanelByPlugin: { b: "panel" } });
+      .toEqual({
+        version: 1,
+        lastPanelByPlugin: { b: "panel" },
+        marketplaceQuery: DEFAULT_MARKETPLACE_QUERY,
+      });
+  });
+
+  it("reads a Marketplace query written before this field existed as the default", async () => {
+    const { normalizePluginViewState } = await import("./appStore");
+    const { DEFAULT_MARKETPLACE_QUERY } = await import("../components/plugins/marketplaceModel");
+    // No version bump for the new field: an older blob has to keep working, and
+    // "no remembered filters" is exactly what a first visit shows anyway.
+    expect(normalizePluginViewState({ version: 1, lastPanelByPlugin: {} }).marketplaceQuery)
+      .toEqual(DEFAULT_MARKETPLACE_QUERY);
+    expect(normalizePluginViewState({
+      marketplaceQuery: { view: "themes", state: "installed", sort: "new", sortDir: "asc" },
+    }).marketplaceQuery).toEqual({
+      search: "",
+      view: "themes",
+      types: [],
+      state: "installed",
+      surfaces: [],
+      sort: "new",
+      sortDir: "asc",
+    });
   });
 });

@@ -3,8 +3,10 @@ import { describe, expect, it } from "vitest";
 import {
   DEFAULT_MARKETPLACE_QUERY,
   coverageSummary,
+  derivePluginKind,
   deriveMachineCoverage,
   deriveSurfaceFacets,
+  deriveTypeFacets,
   describePluginAdds,
   describePluginDownload,
   describePluginResources,
@@ -15,10 +17,14 @@ import {
   installStateFor,
   installedPluginIds,
   listingFromInstalled,
+  marketplaceFiltersActive,
+  marketplaceInstallIndex,
   marketplaceRouteFromPath,
   mergeMarketplaceCatalogue,
+  normalizeMarketplaceQuery,
   parseMarketplaceEntry,
   queryMarketplace,
+  sameMarketplaceFilters,
   type MarketplaceListing,
 } from "./marketplaceModel";
 import { MARKETPLACE_LOCAL_INDEX } from "./marketplaceLocalIndex";
@@ -48,6 +54,7 @@ function listing(overrides: Partial<MarketplaceListing> = {}): MarketplaceListin
     official: false,
     featured: false,
     isTheme: false,
+    kind: "view",
     installs: null,
     stars: null,
     publishedAt: null,
@@ -336,13 +343,146 @@ describe("installStateFor", () => {
   });
 });
 
+describe("derivePluginKind", () => {
+  const manifestOf = (partial: Record<string, unknown>) => {
+    const { manifest } = parsePluginManifest({
+      name: "probe",
+      version: "1.0.0",
+      displayName: "Probe",
+      description: "",
+      ...partial,
+    });
+    if (!manifest) throw new Error("fixture manifest did not parse");
+    return manifest;
+  };
+
+  it("files a palette as a theme whatever else it declares", () => {
+    const manifest = manifestOf({
+      theme: { displayName: "Ember", tokens: { dark: { "--color-accent": "#f00" } } },
+      cli: ["ember"],
+      network: { hosts: ["example.test"] },
+    });
+    expect(derivePluginKind({ manifest, isTheme: true })).toBe("theme");
+  });
+
+  it("files anything that reaches outside this machine as an integration", () => {
+    // Each of the four on its own is enough: a sign-in flow, an allowed host, a
+    // webhook channel, or a URL shape it claims.
+    expect(derivePluginKind({
+      manifest: manifestOf({
+        authSessions: [{
+          id: "login",
+          provider: "acme",
+          authorizeUrl: "https://acme.test/oauth/authorize",
+          callbacks: ["app"],
+        }],
+      }),
+      isTheme: false,
+    })).toBe("integration");
+    expect(derivePluginKind({
+      manifest: manifestOf({ network: { hosts: ["acme.test"] } }),
+      isTheme: false,
+    })).toBe("integration");
+    expect(derivePluginKind({
+      manifest: manifestOf({ webhookIngress: [{ id: "acme", label: "Acme events" }] }),
+      isTheme: false,
+    })).toBe("integration");
+    expect(derivePluginKind({
+      manifest: manifestOf({
+        panels: [{ id: "issue" }],
+        urlMatchers: [{
+          id: "issue",
+          hosts: ["acme.test"],
+          pathPattern: "/issue/{key}",
+          chip: { label: "{key}" },
+          panelId: "issue",
+        }],
+      }),
+      isTheme: false,
+    })).toBe("integration");
+  });
+
+  it("files verbs without a tab as a tool, and verbs WITH a tab as a view", () => {
+    const verbs = {
+      tools: [{
+        name: "count",
+        description: "Counts.",
+        input: { type: "object", properties: {} },
+        action: "count",
+      }],
+    };
+    expect(derivePluginKind({ manifest: manifestOf(verbs), isTheme: false })).toBe("tool");
+
+    // The "no tab" half is what keeps the chip honest: nearly every plugin with
+    // a page also ships a couple of tools, and filing those under Tools would
+    // leave the chip meaning nothing.
+    expect(derivePluginKind({
+      manifest: manifestOf({
+        ...verbs,
+        surfaces: [{ kind: "tab", id: "main", title: "Probe", panelId: "main" }],
+      }),
+      isTheme: false,
+    })).toBe("view");
+    // A webview IS the rail tab — see `pluginRailTabSurface`. Splitting on
+    // `kind === "tab"` alone would file every page plugin as a tool.
+    expect(derivePluginKind({
+      manifest: manifestOf({
+        ...verbs,
+        surfaces: [{ kind: "webview", id: "main", title: "Probe", panelId: "main", entryHtml: "dist/index.html" }],
+      }),
+      isTheme: false,
+    })).toBe("view");
+  });
+
+  it("counts CLI words and automation steps as verbs too", () => {
+    expect(derivePluginKind({ manifest: manifestOf({ cli: ["probe"] }), isTheme: false })).toBe("tool");
+    expect(derivePluginKind({
+      manifest: manifestOf({ automationSteps: [{ id: "ping", label: "Ping", action: "ping" }] }),
+      isTheme: false,
+    })).toBe("tool");
+  });
+
+  it("falls back to view for a package that declares nothing notable", () => {
+    expect(derivePluginKind({ manifest: manifestOf({}), isTheme: false })).toBe("view");
+  });
+
+  it("can only tell theme from view without a manifest", () => {
+    // A directory entry carries a summary, not the package. Guessing further
+    // would file a sign-in flow under Views on the strength of nothing.
+    expect(derivePluginKind({ manifest: null, isTheme: true })).toBe("theme");
+    expect(derivePluginKind({ manifest: null, isTheme: false })).toBe("view");
+  });
+
+  it("re-derives after the merge hands a live entry the bundled manifest", () => {
+    const manifest = manifestOf({ network: { hosts: ["acme.test"] } });
+    const merged = mergeMarketplaceCatalogue({
+      bundled: [listing({ pluginId: "probe", version: "1.0.0", manifest, kind: "integration", origin: "bundled" })],
+      live: [listing({ pluginId: "probe", version: "1.0.0", manifest: null, kind: "view" })],
+      installed: [],
+    });
+    // The live entry won on the tie and inherited the manifest, so what it IS
+    // changed with it.
+    expect(merged.listings[0]?.kind).toBe("integration");
+  });
+
+  it("gives every bundled official plugin a kind the type chips can find", () => {
+    for (const entry of MARKETPLACE_LOCAL_INDEX) {
+      expect(entry.kind).toBe(derivePluginKind(entry));
+      expect(entry.isTheme).toBe(entry.kind === "theme");
+    }
+  });
+});
+
 describe("queryMarketplace", () => {
   const catalogue = [
     listing({ pluginId: "graph", displayName: "Graph", official: true, installs: 40, stars: 2, surfaces: ["lanes"] }),
     listing({ pluginId: "history", displayName: "History", featured: true, installs: 900, stars: null, surfaces: ["work"] }),
-    listing({ pluginId: "slate-theme", displayName: "Slate", isTheme: true, installs: null, publishedAt: "2026-08-01T00:00:00Z" }),
+    listing({ pluginId: "slate-theme", displayName: "Slate", isTheme: true, kind: "theme", installs: null, publishedAt: "2026-08-01T00:00:00Z" }),
     listing({ pluginId: "beacon", displayName: "Beacon", author: "Ann", installs: 5, publishedAt: "2026-01-01T00:00:00Z" }),
   ];
+
+  const index = (installed: readonly InstalledPlugin[]) =>
+    marketplaceInstallIndex(catalogue, installed);
 
   it("requires every search word to match, across name, id, author and description", () => {
     const found = queryMarketplace(catalogue, { ...DEFAULT_MARKETPLACE_QUERY, search: "beacon ann" });
@@ -350,35 +490,70 @@ describe("queryMarketplace", () => {
     expect(queryMarketplace(catalogue, { ...DEFAULT_MARKETPLACE_QUERY, search: "beacon zed" })).toEqual([]);
   });
 
-  it("filters by chip", () => {
-    expect(queryMarketplace(catalogue, { ...DEFAULT_MARKETPLACE_QUERY, chip: "official" })
-      .map((entry) => entry.pluginId)).toEqual(["graph"]);
-    expect(queryMarketplace(catalogue, { ...DEFAULT_MARKETPLACE_QUERY, chip: "themes" })
+  it("keeps themes out of the Plugins view and everything else out of Themes", () => {
+    // The whole point of the split: the default view is not "all", and a reader
+    // who came for an integration never scrolls past ten colour packages.
+    expect(queryMarketplace(catalogue, DEFAULT_MARKETPLACE_QUERY).map((entry) => entry.pluginId))
+      .toEqual(["history", "graph", "beacon"]);
+    expect(queryMarketplace(catalogue, { ...DEFAULT_MARKETPLACE_QUERY, view: "themes" })
       .map((entry) => entry.pluginId)).toEqual(["slate-theme"]);
   });
 
-  it("keeps only what is installed on this machine under the installed chip", () => {
-    const installed = installedPluginIds([
+  it("ORs the type chips within their own axis", () => {
+    const typed = [
+      listing({ pluginId: "acme", displayName: "Acme", kind: "integration" }),
+      listing({ pluginId: "count", displayName: "Count", kind: "tool" }),
+      listing({ pluginId: "board", displayName: "Board", kind: "view" }),
+    ];
+    expect(queryMarketplace(typed, { ...DEFAULT_MARKETPLACE_QUERY, types: [] })
+      .map((entry) => entry.pluginId)).toEqual(["acme", "board", "count"]);
+    expect(queryMarketplace(typed, { ...DEFAULT_MARKETPLACE_QUERY, types: ["tool"] })
+      .map((entry) => entry.pluginId)).toEqual(["count"]);
+    expect(queryMarketplace(typed, { ...DEFAULT_MARKETPLACE_QUERY, types: ["tool", "integration"] })
+      .map((entry) => entry.pluginId)).toEqual(["acme", "count"]);
+  });
+
+  it("splits official from community under the state filter", () => {
+    expect(queryMarketplace(catalogue, { ...DEFAULT_MARKETPLACE_QUERY, state: "official" })
+      .map((entry) => entry.pluginId)).toEqual(["graph"]);
+    expect(queryMarketplace(catalogue, { ...DEFAULT_MARKETPLACE_QUERY, state: "community" })
+      .map((entry) => entry.pluginId)).toEqual(["history", "beacon"]);
+  });
+
+  it("keeps only what is installed on this machine under the installed state", () => {
+    const installed = index([
       installedPlugin({ pluginId: "history" }),
-      // Turned off still counts as installed: the chip answers "do I have it",
-      // not "is it running".
-      installedPlugin({ pluginId: "slate-theme", enabled: false }),
+      // Turned off still counts as installed: the filter answers "do I have
+      // it", not "is it running".
+      installedPlugin({ pluginId: "beacon", enabled: false }),
     ]);
-    const found = queryMarketplace(catalogue, { ...DEFAULT_MARKETPLACE_QUERY, chip: "installed" }, installed);
-    expect(found.map((entry) => entry.pluginId)).toEqual(["history", "slate-theme"]);
+    const found = queryMarketplace(catalogue, { ...DEFAULT_MARKETPLACE_QUERY, state: "installed" }, installed);
+    expect(found.map((entry) => entry.pluginId)).toEqual(["history", "beacon"]);
   });
 
-  it("keeps nothing under the installed chip when no set is supplied", () => {
-    // The default matters: a caller that forgets the set must show an empty
+  it("keeps only what the catalogue has a newer version of under the updates state", () => {
+    // The comparison is `installStateFor`'s, so the chip and the row badge can
+    // never disagree about what has an update waiting.
+    const installed = index([
+      installedPlugin({ pluginId: "history", version: "0.9.0" }),
+      installedPlugin({ pluginId: "graph", version: "1.0.0" }),
+    ]);
+    expect(queryMarketplace(catalogue, { ...DEFAULT_MARKETPLACE_QUERY, state: "updates" }, installed)
+      .map((entry) => entry.pluginId)).toEqual(["history"]);
+  });
+
+  it("keeps nothing under the installed or updates states when no index is supplied", () => {
+    // The default matters: a caller that forgets the index must show an empty
     // list rather than silently showing the whole catalogue as installed.
-    expect(queryMarketplace(catalogue, { ...DEFAULT_MARKETPLACE_QUERY, chip: "installed" })).toEqual([]);
+    expect(queryMarketplace(catalogue, { ...DEFAULT_MARKETPLACE_QUERY, state: "installed" })).toEqual([]);
+    expect(queryMarketplace(catalogue, { ...DEFAULT_MARKETPLACE_QUERY, state: "updates" })).toEqual([]);
   });
 
-  it("scopes the surface facets to the installed chip", () => {
+  it("scopes the surface facets to the state filter", () => {
     const facets = deriveSurfaceFacets(
       catalogue,
-      { ...DEFAULT_MARKETPLACE_QUERY, chip: "installed" },
-      installedPluginIds([installedPlugin({ pluginId: "graph" })]),
+      { ...DEFAULT_MARKETPLACE_QUERY, state: "installed" },
+      index([installedPlugin({ pluginId: "graph" })]),
     );
     expect(facets).toEqual([{ surface: "lanes", label: "Lanes", total: 1 }]);
   });
@@ -391,29 +566,132 @@ describe("queryMarketplace", () => {
 
   it("sorts unknown counts last rather than as zero", () => {
     const byInstalls = queryMarketplace(catalogue, { ...DEFAULT_MARKETPLACE_QUERY, sort: "installs" });
-    expect(byInstalls.map((entry) => entry.pluginId)).toEqual(["history", "graph", "beacon", "slate-theme"]);
+    expect(byInstalls.map((entry) => entry.pluginId)).toEqual(["history", "graph", "beacon"]);
 
     const byStars = queryMarketplace(catalogue, { ...DEFAULT_MARKETPLACE_QUERY, sort: "stars" });
     expect(byStars[0]?.pluginId).toBe("graph");
-    expect(byStars.slice(1).map((entry) => entry.displayName)).toEqual(["Beacon", "History", "Slate"]);
+    expect(byStars.slice(1).map((entry) => entry.displayName)).toEqual(["Beacon", "History"]);
   });
 
   it("sorts newest first and puts undated entries last", () => {
     const byNew = queryMarketplace(catalogue, { ...DEFAULT_MARKETPLACE_QUERY, sort: "new" });
-    expect(byNew.map((entry) => entry.pluginId).slice(0, 2)).toEqual(["slate-theme", "beacon"]);
+    expect(byNew.map((entry) => entry.pluginId)[0]).toBe("beacon");
   });
 
   it("reverses ranked counts when sortDir is asc, and still puts unknown last", () => {
     const asc = queryMarketplace(catalogue, { ...DEFAULT_MARKETPLACE_QUERY, sort: "installs", sortDir: "asc" });
-    expect(asc.map((entry) => entry.pluginId)).toEqual(["beacon", "graph", "history", "slate-theme"]);
+    expect(asc.map((entry) => entry.pluginId)).toEqual(["beacon", "graph", "history"]);
   });
 
-  it("counts facets against the chip and search but not the facet selection", () => {
+  it("counts facets against the other axes but not the facet selection", () => {
     const facets = deriveSurfaceFacets(catalogue, { ...DEFAULT_MARKETPLACE_QUERY, surfaces: ["lanes"] });
     expect(facets).toEqual([
       { surface: "work", label: "Work", total: 1 },
       { surface: "lanes", label: "Lanes", total: 1 },
     ]);
+  });
+
+  it("counts every type chip, including the ones at zero, and not against itself", () => {
+    const typed = [
+      listing({ pluginId: "acme", displayName: "Acme", kind: "integration" }),
+      listing({ pluginId: "board", displayName: "Board", kind: "view" }),
+      listing({ pluginId: "slate", displayName: "Slate", isTheme: true, kind: "theme" }),
+    ];
+    // Themes are excluded by the view, Tools is zero and still drawn, and
+    // selecting Integrations does not zero the others.
+    expect(deriveTypeFacets(typed, { ...DEFAULT_MARKETPLACE_QUERY, types: ["integration"] })).toEqual([
+      { type: "integration", label: "Integrations", total: 1 },
+      { type: "tool", label: "Tools", total: 0 },
+      { type: "view", label: "Views", total: 1 },
+    ]);
+  });
+});
+
+describe("marketplaceFiltersActive", () => {
+  it("does not count the view itself as a filter", () => {
+    // The featured row hides behind this. Switching to Themes is not narrowing
+    // a list; it is choosing which list.
+    expect(marketplaceFiltersActive(DEFAULT_MARKETPLACE_QUERY)).toBe(false);
+    expect(marketplaceFiltersActive({ ...DEFAULT_MARKETPLACE_QUERY, view: "themes" })).toBe(false);
+    expect(marketplaceFiltersActive({ ...DEFAULT_MARKETPLACE_QUERY, types: ["tool"] })).toBe(true);
+    expect(marketplaceFiltersActive({ ...DEFAULT_MARKETPLACE_QUERY, state: "installed" })).toBe(true);
+    expect(marketplaceFiltersActive({ ...DEFAULT_MARKETPLACE_QUERY, surfaces: ["work"] })).toBe(true);
+    expect(marketplaceFiltersActive({ ...DEFAULT_MARKETPLACE_QUERY, search: "  " })).toBe(false);
+    expect(marketplaceFiltersActive({ ...DEFAULT_MARKETPLACE_QUERY, search: "graph" })).toBe(true);
+  });
+});
+
+describe("normalizeMarketplaceQuery", () => {
+  it("never restores the search box", () => {
+    // A Marketplace that opens with last week's word in the box looks like a
+    // Marketplace with three plugins in it.
+    expect(normalizeMarketplaceQuery({ ...DEFAULT_MARKETPLACE_QUERY, search: "linear" }).search).toBe("");
+  });
+
+  it("drops values it does not recognise rather than keeping them", () => {
+    expect(normalizeMarketplaceQuery({
+      view: "everything",
+      types: ["tool", "wat"],
+      state: "starred",
+      surfaces: ["work", "nowhere"],
+      sort: "alphabetical",
+      sortDir: "sideways",
+    })).toEqual({
+      search: "",
+      view: "plugins",
+      types: ["tool"],
+      state: "all",
+      surfaces: ["work"],
+      sort: "installs",
+      sortDir: "desc",
+    });
+  });
+
+  it("reads a whole persisted query back", () => {
+    const stored = {
+      search: "ignored",
+      view: "themes",
+      types: ["integration", "view"],
+      state: "updates",
+      surfaces: ["lanes", "work"],
+      sort: "new",
+      sortDir: "asc",
+    };
+    expect(normalizeMarketplaceQuery(stored)).toEqual({
+      search: "",
+      view: "themes",
+      types: ["integration", "view"],
+      state: "updates",
+      // Canonical surface order, not the stored order, so two saved queries
+      // that mean the same thing compare equal.
+      surfaces: ["work", "lanes"],
+      sort: "new",
+      sortDir: "asc",
+    });
+  });
+
+  it("falls back to the whole default for anything that is not an object", () => {
+    for (const value of [null, undefined, 7, "plugins", []]) {
+      expect(normalizeMarketplaceQuery(value)).toEqual(DEFAULT_MARKETPLACE_QUERY);
+    }
+  });
+});
+
+describe("sameMarketplaceFilters", () => {
+  it("ignores the search box and the order of a multi-select", () => {
+    // This is the guard that keeps a re-render from writing to storage.
+    expect(sameMarketplaceFilters(
+      { ...DEFAULT_MARKETPLACE_QUERY, search: "a", types: ["tool", "view"], surfaces: ["work", "lanes"] },
+      { ...DEFAULT_MARKETPLACE_QUERY, search: "b", types: ["view", "tool"], surfaces: ["lanes", "work"] },
+    )).toBe(true);
+    expect(sameMarketplaceFilters(
+      DEFAULT_MARKETPLACE_QUERY,
+      { ...DEFAULT_MARKETPLACE_QUERY, view: "themes" },
+    )).toBe(false);
+    expect(sameMarketplaceFilters(
+      DEFAULT_MARKETPLACE_QUERY,
+      { ...DEFAULT_MARKETPLACE_QUERY, types: ["tool"] },
+    )).toBe(false);
   });
 });
 
@@ -686,7 +964,7 @@ describe("the bundled index", () => {
       installed: [],
     });
     expect(merged.listings).toHaveLength(MARKETPLACE_LOCAL_INDEX.length);
-    expect(queryMarketplace(merged.listings, { ...DEFAULT_MARKETPLACE_QUERY, chip: "themes" }).length)
+    expect(queryMarketplace(merged.listings, { ...DEFAULT_MARKETPLACE_QUERY, view: "themes" }).length)
       .toBe(MARKETPLACE_LOCAL_INDEX.filter((entry) => entry.isTheme).length);
   });
 });

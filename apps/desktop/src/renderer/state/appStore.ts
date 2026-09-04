@@ -28,6 +28,12 @@ import {
   normalizeWorkSessionFilters,
   type WorkSessionFilters,
 } from "../components/terminals/workSessionFilters";
+import {
+  DEFAULT_MARKETPLACE_QUERY,
+  normalizeMarketplaceQuery,
+  sameMarketplaceFilters,
+  type MarketplaceQuery,
+} from "../components/plugins/marketplaceModel";
 
 export type ThemeId = "dark" | "light";
 export const THEME_IDS: ThemeId[] = ["dark", "light"];
@@ -832,6 +838,16 @@ export type PluginViewState = {
   version: number;
   /** Last panel opened per plugin, so returning to a plugin tab restores the view. */
   lastPanelByPlugin: Record<string, string>;
+  /**
+   * The Marketplace gallery's view and filters, minus the search box.
+   *
+   * Per user rather than per project, because the Marketplace is a
+   * machine-level page: which of Plugins and Themes someone browses, and how
+   * they narrow it, is a habit rather than a property of the project that
+   * happens to be open. The search text is deliberately not here — see
+   * {@link normalizeMarketplaceQuery}.
+   */
+  marketplaceQuery: MarketplaceQuery;
 };
 
 export const PLUGIN_VIEW_STATE_VERSION = 1;
@@ -839,6 +855,7 @@ export const PLUGIN_VIEW_STATE_VERSION = 1;
 const DEFAULT_PLUGIN_VIEW_STATE: PluginViewState = {
   version: PLUGIN_VIEW_STATE_VERSION,
   lastPanelByPlugin: {},
+  marketplaceQuery: DEFAULT_MARKETPLACE_QUERY,
 };
 
 /** Cap so an uninstalled plugin's entry cannot accumulate forever. */
@@ -862,7 +879,13 @@ export function normalizePluginViewState(value: unknown): PluginViewState {
       }
     }
   }
-  return { version: PLUGIN_VIEW_STATE_VERSION, lastPanelByPlugin };
+  return {
+    version: PLUGIN_VIEW_STATE_VERSION,
+    lastPanelByPlugin,
+    // No version bump: a blob written before this field existed reads back as
+    // the default query, which is exactly what a first visit shows.
+    marketplaceQuery: normalizeMarketplaceQuery(record.marketplaceQuery),
+  };
 }
 
 function normalizePluginThemeId(value: unknown): string | null {
@@ -1396,6 +1419,8 @@ export type AppState = {
   setPluginThemeId: (pluginId: string | null) => void;
   /** Remember which panel a plugin tab was last showing. */
   setLastPluginPanel: (pluginId: string, panelId: string) => void;
+  /** Remember the Marketplace's view and filters. Search is not persisted. */
+  setMarketplaceQuery: (query: MarketplaceQuery) => void;
   // ── Audio-capture session setters (ephemeral; never persisted) ──
   setAudioCapturePhase: (phase: AudioCapturePhase) => void;
   setAudioCaptureElapsed: (seconds: number) => void;
@@ -2242,6 +2267,19 @@ const createAppState: StateCreator<AppState> = (set, get) => {
       const pluginViewState = normalizePluginViewState({
         ...prev.pluginViewState,
         lastPanelByPlugin: { ...prev.pluginViewState.lastPanelByPlugin, [pluginId]: panelId },
+      });
+      persistUserPreferencesFrom({ ...prev, pluginViewState });
+      return { pluginViewState };
+    }),
+  setMarketplaceQuery: (query) =>
+    set((prev) => {
+      // The page writes on every change, so the no-op guard is what keeps a
+      // re-render from touching localStorage. Search is dropped rather than
+      // compared: it is never persisted.
+      if (sameMarketplaceFilters(prev.pluginViewState.marketplaceQuery, query)) return {};
+      const pluginViewState = normalizePluginViewState({
+        ...prev.pluginViewState,
+        marketplaceQuery: query,
       });
       persistUserPreferencesFrom({ ...prev, pluginViewState });
       return { pluginViewState };
@@ -3134,6 +3172,7 @@ export function createProjectAppStore(
     pluginViewState: rootState.pluginViewState,
     setPluginThemeId: rootState.setPluginThemeId,
     setLastPluginPanel: rootState.setLastPluginPanel,
+    setMarketplaceQuery: rootState.setMarketplaceQuery,
     setInstalledPlugins: rootState.setInstalledPlugins,
     refreshInstalledPlugins: rootState.refreshInstalledPlugins,
     workViewByProject: hydratedWorkViewByProject,

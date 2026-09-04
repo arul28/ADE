@@ -97,6 +97,7 @@ const LISTING: MarketplaceListing = {
   official: false,
   featured: false,
   isTheme: false,
+  kind: "view",
   installs: null,
   stars: null,
   publishedAt: null,
