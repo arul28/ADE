@@ -1447,7 +1447,7 @@ struct WorkChatSessionView: View {
       .font(.footnote.weight(.semibold))
     }
 
-    if timeline.isEmpty {
+    if timelinePresentation.timelineCount == 0 {
       transcriptEmptyStateSection
     } else {
       let streamingMessageId = streamingAssistantMessageId
@@ -2024,15 +2024,16 @@ struct WorkChatSessionView: View {
   /// Timeline/scroll change handlers, split from `body` for type-checker budget.
   private func timelineScrollHandlers<V: View>(_ content: V, proxy: ScrollViewProxy) -> some View {
     content
-        .onChange(of: timeline.count) { oldCount, newCount in
+        .onChange(of: timelinePresentation.timelineCount) { oldCount, newCount in
           let previousTailId = lastTimelineTailId
-          lastTimelineTailId = timeline.last?.id
+          let nextTailId = timelinePresentation.timelineLastId
+          lastTimelineTailId = nextTailId
           let delta = newCount - oldCount
           guard delta > 0 else { return }
           // Older-page prepends grow the timeline above the viewport — the
           // newest entry stays put. Don't autoscroll to the bottom or flag
           // the prepended entries as "new messages below".
-          if let previousTailId, previousTailId == timeline.last?.id {
+          if let previousTailId, previousTailId == nextTailId {
             return
           }
           if isNearBottom {
@@ -2048,7 +2049,7 @@ struct WorkChatSessionView: View {
             }
           }
         }
-        .onChange(of: timeline.last?.id) { oldTailId, newTailId in
+        .onChange(of: timelinePresentation.timelineLastId) { oldTailId, newTailId in
           guard oldTailId != newTailId else { return }
           lastTimelineTailId = newTailId
           guard oldTailId != nil, newTailId != nil, isNearBottom else { return }
