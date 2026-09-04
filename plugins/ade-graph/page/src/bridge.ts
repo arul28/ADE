@@ -149,6 +149,7 @@ export type AdePluginBridge = {
     on(event: "changed", listener: (payload: PluginWebviewChangeEvent) => void): () => void;
     on(event: "theme", listener: (payload: PluginWebviewThemeSnapshot) => void): () => void;
     on(event: "host", listener: (payload: PluginWebviewHostEvent) => void): () => void;
+    on(event: "refresh", listener: () => void): () => void;
   };
   /**
    * Third-party contributions on one socket, and pressing one.
@@ -191,7 +192,7 @@ export type AdePluginBridge = {
      */
     openPathInEditor?(target: PluginWebviewEditorTarget): Promise<void>;
     /** Host picker popovers. Resolve to `null` when the reader dismissed one. */
-    pickLane?(options?: { title?: string; excludeLaneIds?: string[] }): Promise<{ laneId: string } | null>;
+    pickLane?(request?: { value?: string }): Promise<{ laneId: string; name: string } | null>;
   };
   clipboard?: { read(): Promise<string>; write(text: string): Promise<void> };
   theme?: { get(): Promise<PluginWebviewThemeSnapshot> };

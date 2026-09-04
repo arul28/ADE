@@ -6,11 +6,11 @@
  * toast and the page carries on. A page that crashed on a missing toast would
  * be worse than a page that showed none.
  *
- * Two verbs in this file are NEW in this wave and are not on any shipped host
- * yet — `ui.openPathInEditor` and `ui.pickLane`. Both are guarded here, and the
- * guard is what the fallbacks below are for: `openPath` falls back to the
- * `ade://file` deeplink, and `pickLane` answers `null`, which every caller
- * already treats as "the reader dismissed the picker".
+ * Two verbs in this file are NEW in this wave — `ui.openPathInEditor` and
+ * `ui.pickLane`. Both are guarded here. `openPath` falls back to the
+ * `ade://file` deeplink. `pickLane` is absent on an older host; callers that
+ * need a fallback check {@link hasLanePicker} rather than treating dismiss as
+ * "type an id".
  */
 
 import { bridge, type PluginWebviewEditorTarget, type PluginWebviewToast } from "../bridge";
@@ -188,10 +188,14 @@ export async function openPath(target: PluginWebviewEditorTarget): Promise<void>
 /**
  * ADE's own lane picker, as a popover over the guest.
  *
- * MISSING contract: `ui.pickLane` is added by the platform batch of this wave.
- * `null` on an older host, which is the same answer a dismissed picker gives,
- * so every caller already handles it.
+ * `null` is only a dismissal (or an excluded lane the host cannot filter). An
+ * older host has no verb — {@link hasLanePicker} is false there, which is how
+ * callers tell "type an id" from "the reader walked away".
  */
+export function hasLanePicker(): boolean {
+  return typeof bridge()?.ui?.pickLane === "function";
+}
+
 export async function pickLane(options?: {
   title?: string;
   excludeLaneIds?: string[];
@@ -199,8 +203,10 @@ export async function pickLane(options?: {
   const api = bridge();
   if (!api?.ui?.pickLane) return null;
   try {
-    const chosen = await api.ui.pickLane(options);
-    return chosen?.laneId ?? null;
+    const chosen = await api.ui.pickLane();
+    const laneId = typeof chosen?.laneId === "string" && chosen.laneId.length > 0 ? chosen.laneId : null;
+    if (laneId && options?.excludeLaneIds?.includes(laneId)) return null;
+    return laneId;
   } catch {
     return null;
   }

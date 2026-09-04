@@ -242,6 +242,7 @@ export function installFakeBridge(options: FakeBridgeOptions = {}): FakeBridge {
     changed: new Set(),
     theme: new Set(),
     host: new Set(),
+    refresh: new Set(),
   };
 
   let nextRunId = 100;

@@ -1291,8 +1291,10 @@ export function createPluginWebviewBridgeServer(
         return null;
       }
 
-      default:
-        throw new PluginSdkError("unsupported_method", `Unsupported bridge method: ${String(method)}`);
+      default: {
+        const unknown: never = method;
+        throw new PluginSdkError("unsupported_method", `Unsupported bridge method: ${String(unknown)}`);
+      }
     }
   };
 

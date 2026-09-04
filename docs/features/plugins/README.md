@@ -1820,8 +1820,11 @@ and the list IS the permission model — a page cannot widen it:
 The five `ui.pick*` verbs open ADE's own pickers over the page — the same
 model list, lane combobox, permission modes, reasoning ladder and provider
 rail the rest of the app uses — and return the choice. Dismissing the picker
-returns null. A missing provider or model is refused before the picker mounts.
-Mirrored on hosted web and iOS.
+returns null. A missing provider or model is refused before the picker mounts,
+and a known permission family with no modes is refused rather than answered as
+a walk-away. Unknown models still open the reasoning control; a catalogued
+model with an empty ladder answers null without drawing. Mirrored on hosted
+web and iOS.
 
 `collections.list` returns at most 500 rows, and every collection named must be
 declared in the manifest. Absent on purpose, and not stubbed: `secrets` (a page
@@ -1847,10 +1850,14 @@ own validation turned it down, or no dialog is listening on that guest any more.
 Three events reach a page, on one channel with the name in the frame:
 `changed` (the plugin's own collections moved), `theme` (the host republished
 its scheme and its `--ade-*` tokens), and `host` (a lane, a session, a pull
-request or a chat turn moved). A fourth, `refresh`, is phone-only: pull to
-refresh on a plugin page sends it, and the page answers with how many of its
-own handlers ran. `PLUGIN_WEBVIEW_EVENTS` is the three that every guest
-allowlists; iOS adds `refresh` in the WKWebView boot script. A `host` frame carries identity and nothing else
+request or a chat turn moved). A fourth, `refresh`, is the reader's pull-down:
+iOS sends it from the WKWebView refresh control, and the page re-reads whatever
+that surface reads. `PLUGIN_WEBVIEW_EVENTS` is the closed allowlist every guest
+uses — `changed`, `theme`, `host`, `refresh` — so a page that subscribes to
+`refresh` on desktop or hosted web is not thrown for an unknown name. Desktop
+and hosted web do not currently emit `refresh` (there is no pull-to-refresh
+gesture there); they still allowlist it so the same page binary can listen.
+A `host` frame carries identity and nothing else
 — the kind, the ids, and an `overflow` flag when more moved than
 `PLUGIN_WEBVIEW_HOST_IDS_MAX` (200) — and the host coalesces for
 `PLUGIN_WEBVIEW_HOST_COALESCE_MS` (120 ms) first, because a rebase moves a dozen

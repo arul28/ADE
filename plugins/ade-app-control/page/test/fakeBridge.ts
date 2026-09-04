@@ -156,6 +156,7 @@ export function installFakeBridge(options: {
   const listeners: Record<string, Set<(payload: unknown) => void>> = {
     changed: new Set(),
     theme: new Set(),
+    refresh: new Set(),
   };
 
   const state = {
@@ -284,7 +285,7 @@ export function installFakeBridge(options: {
       },
     },
     events: {
-      on(event: "changed" | "theme", listener: (payload: never) => void) {
+      on(event: "changed" | "theme" | "refresh", listener: (payload: never) => void) {
         record("events.on", { event });
         listeners[event]?.add(listener as (payload: unknown) => void);
         return () => listeners[event]?.delete(listener as (payload: unknown) => void);

@@ -117,6 +117,7 @@ export type AdePluginBridge = {
     on(event: "changed", listener: (payload: PluginWebviewChangeEvent) => void): () => void;
     on(event: "theme", listener: (payload: PluginWebviewThemeSnapshot) => void): () => void;
     on(event: "host", listener: (payload: PluginWebviewHostEvent) => void): () => void;
+    on(event: "refresh", listener: () => void): () => void;
   };
   openDeeplink(url: string): Promise<void>;
   openSettings?(target: { entryId: string } | { socketId: string }): Promise<void>;

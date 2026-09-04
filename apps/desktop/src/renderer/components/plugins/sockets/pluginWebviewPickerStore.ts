@@ -1,6 +1,5 @@
 import { useSyncExternalStore } from "react";
 
-import type { PluginWebviewUiVerb } from "../../../../shared/plugins/webviewBridge";
 import {
   isPluginWebviewPickerVerb,
   pluginWebviewPickerImmediateNull,
@@ -156,9 +155,4 @@ export function resetPluginWebviewPicker(): void {
   nextToken = 1;
   emit();
   request?.settle(null);
-}
-
-/** Type-narrow a relay verb the switch already matched. */
-export function asPluginWebviewPickerVerb(verb: PluginWebviewUiVerb): PluginWebviewPickerVerb | null {
-  return isPluginWebviewPickerVerb(verb) ? verb : null;
 }

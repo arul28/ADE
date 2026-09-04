@@ -239,33 +239,69 @@ export function hasPicker(
  *
  * `null` means the reader dismissed it, which leaves the current value alone —
  * so every caller writes its state only for a non-null answer. A host that does
- * not answer the verb, and a verb that throws, are both `null` for the same
- * reason: nothing was chosen.
+ * not answer the verb is also `null`, and `hasPicker` already hid the chip.
+ * A refusal (missing provider, etc.) is toasted rather than treated as dismiss.
  */
 async function pick<T>(open: (() => Promise<T | null>) | undefined): Promise<T | null> {
   if (!open) return null;
   try {
     return (await open()) ?? null;
-  } catch {
+  } catch (cause) {
+    const message = cause instanceof Error ? cause.message : "ADE couldn’t do that.";
+    void toast({ level: "error", message });
     return null;
   }
 }
 
-export function pickModel(
+function asId(value: unknown): string | null {
+  return typeof value === "string" && value.length > 0 ? value : null;
+}
+
+export async function pickModel(
   request?: PluginWebviewModelPickRequest,
-): Promise<PluginWebviewChoice | null> {
+): Promise<(PluginWebviewChoice & { fastMode?: boolean }) | null> {
   const ui = bridge()?.ui;
-  return pick(ui?.pickModel ? () => ui.pickModel!(request) : undefined);
+  const raw = await pick(
+    ui?.pickModel
+      ? () => ui.pickModel!({
+        ...(request?.value ? { value: request.value } : {}),
+        ...(request?.availableModelIds ? { availableModelIds: request.availableModelIds } : {}),
+      })
+      : undefined,
+  );
+  const modelId = asId(raw?.modelId);
+  if (!modelId) return null;
+  return {
+    id: modelId,
+    label: modelId,
+    ...(typeof raw?.provider === "string" ? { provider: raw.provider } : {}),
+    fastMode: raw?.fastMode === true,
+  };
 }
 
-export function pickProvider(selected?: string | null): Promise<PluginWebviewChoice | null> {
+export async function pickProvider(selected?: string | null): Promise<PluginWebviewChoice | null> {
   const ui = bridge()?.ui;
-  return pick(ui?.pickProvider ? () => ui.pickProvider!({ selected: selected ?? null }) : undefined);
+  const raw = await pick(
+    ui?.pickProvider
+      ? () => ui.pickProvider!({ ...(selected ? { value: selected } : {}) })
+      : undefined,
+  );
+  const provider = asId(raw?.provider);
+  if (!provider) return null;
+  return { id: provider, label: provider };
 }
 
-export function pickLane(selected?: string | null): Promise<PluginWebviewLaneChoice | null> {
+export async function pickLane(selected?: string | null): Promise<PluginWebviewLaneChoice | null> {
   const ui = bridge()?.ui;
-  return pick(ui?.pickLane ? () => ui.pickLane!({ selected: selected ?? null }) : undefined);
+  const raw = await pick(
+    ui?.pickLane
+      ? () => ui.pickLane!({ ...(selected ? { value: selected } : {}) })
+      : undefined,
+  );
+  const laneId = asId(raw?.laneId);
+  if (!laneId) return null;
+  const name = typeof raw?.name === "string" && raw.name.length > 0 ? raw.name : laneId;
+  return { id: laneId, label: name };
 }
 
 /**
@@ -277,28 +313,45 @@ export function pickLane(selected?: string | null): Promise<PluginWebviewLaneCho
  * launch puts it in the field that provider names — see `permissionArgument` in
  * `pageActions.js`, which is the half that knows which field that is.
  */
-export function pickPermissionMode(
+export async function pickPermissionMode(
   provider: string,
   selected?: string | null,
 ): Promise<PluginWebviewChoice | null> {
   const ui = bridge()?.ui;
-  return pick(
+  const raw = await pick(
     ui?.pickPermissionMode
-      ? () => ui.pickPermissionMode!({ provider, selected: selected ?? null })
+      ? () => ui.pickPermissionMode!({
+        provider,
+        ...(selected ? { value: selected } : {}),
+      })
       : undefined,
   );
+  const value = asId(raw?.value);
+  if (!value) return null;
+  return {
+    id: value,
+    label: value,
+    ...(typeof raw?.provider === "string" ? { provider: raw.provider } : {}),
+  };
 }
 
 /** The model's own reasoning rungs. A model with none opens no picker. */
-export function pickReasoningEffort(
-  provider: string,
+export async function pickReasoningEffort(
+  _provider: string,
   model: string,
   selected?: string | null,
 ): Promise<PluginWebviewChoice | null> {
   const ui = bridge()?.ui;
-  return pick(
+  const raw = await pick(
     ui?.pickReasoningEffort
-      ? () => ui.pickReasoningEffort!({ provider, model, selected: selected ?? null })
+      ? () => ui.pickReasoningEffort!({
+        model,
+        ...(selected ? { value: selected } : {}),
+      })
       : undefined,
   );
+  if (!raw) return null;
+  // `effort: null` is "no reasoning", a real choice — not a dismissal.
+  const effort = typeof raw.effort === "string" ? raw.effort : "";
+  return { id: effort, label: effort || "No reasoning" };
 }

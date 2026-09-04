@@ -12,6 +12,7 @@ import { Check } from "@phosphor-icons/react";
 import { LinearMark, LINEAR_BRAND } from "@ade-dev/ui";
 
 import type { CtoLinearQuickView, LaneLinearIssue } from "../types";
+import { useHostRefresh } from "../host/refresh";
 import { openLink } from "../host/ui";
 import { LinearIssueBrowser, linearBrowserIssueToLaneIssue } from "./LinearIssueBrowser";
 import { LinearPaneModal } from "./LinearPaneModal";
@@ -53,6 +54,7 @@ export function LinearIssueSelectModal({
   const [quickView, setQuickView] = useState<CtoLinearQuickView | null>(null);
   const [browserLoading, setBrowserLoading] = useState(false);
   const [refreshKey, setRefreshKey] = useState(0);
+  useHostRefresh(() => setRefreshKey((key) => key + 1));
 
   const close = useCallback(() => onOpenChange(false), [onOpenChange]);
   const openLinearSettings = useCallback(() => {

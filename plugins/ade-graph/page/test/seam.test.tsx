@@ -163,4 +163,37 @@ describe("the page and the plugin agree on every verb", () => {
     });
     expect(host.lastCall("openDeeplink")!.args).toEqual({ url: "ade://lane/lane-feature" });
   });
+
+  it("aborts reparent when the host picker is dismissed rather than asking for a typed id", async () => {
+    render(<WorkspaceGraph context={tabContext()} />);
+    await canvas();
+
+    const node = await waitFor(() => {
+      const match = document.querySelector('.react-flow__node[data-id="lane-feature"]');
+      if (!match) throw new Error("The child lane node has not rendered yet.");
+      return match as HTMLElement;
+    });
+    await act(async () => {
+      fireEvent.contextMenu(node, { clientX: 80, clientY: 80 });
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Change Parent" }));
+    });
+    await waitFor(() => {
+      expect(host.callsTo("ui.pickLane").length).toBe(1);
+    });
+    expect(screen.queryByText("Enter target lane id")).toBeNull();
+  });
+
+  it("re-reads lanes when the host asks for a refresh", async () => {
+    render(<WorkspaceGraph context={tabContext()} />);
+    await canvas();
+    const before = host.callsTo("invoke:pageLanes").length;
+    await act(async () => {
+      host.emit("refresh", {});
+    });
+    await waitFor(() => {
+      expect(host.callsTo("invoke:pageLanes").length).toBeGreaterThan(before);
+    });
+  });
 });

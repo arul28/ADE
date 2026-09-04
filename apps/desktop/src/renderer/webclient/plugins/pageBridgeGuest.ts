@@ -58,7 +58,7 @@ export function pluginPageGuestMain(config: PluginPageGuestConfig): void {
   var parentOrigin = config.parentOrigin;
   var nextRequestId = 1;
   var pending: Record<string, { resolve: (value: unknown) => void; reject: (error: Error) => void }> = {};
-  var listeners: Record<string, Array<(payload: unknown) => void>> = { changed: [], theme: [], host: [] };
+  var listeners: Record<string, Array<(payload: unknown) => void>> = { changed: [], theme: [], host: [], refresh: [] };
   var booted = false;
 
   function post(body: Record<string, unknown>): void {

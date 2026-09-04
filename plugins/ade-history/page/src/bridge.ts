@@ -149,6 +149,7 @@ export type AdePluginBridge = {
     on(event: "changed", listener: (payload: PluginWebviewChangeEvent) => void): () => void;
     on(event: "theme", listener: (payload: PluginWebviewThemeSnapshot) => void): () => void;
     on(event: "host", listener: (payload: PluginWebviewHostEvent) => void): () => void;
+    on(event: "refresh", listener: () => void): () => void;
   };
   /**
    * Third-party contributions on one socket, and pressing one.

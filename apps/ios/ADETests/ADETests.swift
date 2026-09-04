@@ -1375,7 +1375,9 @@ final class ADETests: XCTestCase {
 
   func testMobileRuntimeModeOptionsMirrorDesktopAndTuiProviders() {
     XCTAssertEqual(workRuntimeModeOptions(provider: "claude").map(\.id), ["default", "auto", "edit", "plan", "full-auto"])
+    XCTAssertEqual(workRuntimeModeOptions(provider: "anthropic").map(\.id), workRuntimeModeOptions(provider: "claude").map(\.id))
     XCTAssertEqual(workRuntimeModeOptions(provider: "codex").map(\.id), ["default", "edit", "plan", "full-auto", "config-toml"])
+    XCTAssertEqual(workRuntimeModeOptions(provider: "openai").map(\.id), workRuntimeModeOptions(provider: "codex").map(\.id))
     XCTAssertEqual(workRuntimeModeOptions(provider: "opencode").map(\.id), ["plan", "edit", "full-auto", "config-toml"])
     XCTAssertEqual(workRuntimeModeOptions(provider: "cursor").map(\.id), ["default", "plan", "edit", "full-auto"])
     XCTAssertEqual(workRuntimeModeOptions(provider: "cursor").map(\.title), ["Agent", "Plan", "Ask", "Full auto"])

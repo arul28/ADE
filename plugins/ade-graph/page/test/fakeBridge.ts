@@ -47,7 +47,7 @@ export type FakeBridge = {
   /** Replace one action's answer mid-walk. */
   setAction: (action: string, handler: (args: Record<string, unknown>) => unknown) => void;
   /** Push a `changed`, `theme` or `host` frame at the page. */
-  emit: (event: "changed" | "theme" | "host", payload: unknown) => void;
+  emit: (event: "changed" | "theme" | "host" | "refresh", payload: unknown) => void;
   /** The lanes the scripted child answers `pageLanes` with. Mutable per test. */
   lanes: LaneSummary[];
   /** Whether `ui.pickLane` answers, and with what. Null = the reader dismissed. */
@@ -168,10 +168,12 @@ export function installFakeBridge(options: {
   context?: Partial<PluginWebviewContext>;
   /** Omit `sockets` entirely, to exercise the older-host path. */
   withoutSockets?: boolean;
+  /** Omit `ui.pickLane`, to exercise the older-host typed-id fallback. */
+  withoutPickLane?: boolean;
 } = {}): FakeBridge {
   const state = {
     lanes: options.lanes ?? [PRIMARY_LANE, CHILD_LANE, GRANDCHILD_LANE],
-    pickLaneAnswer: null as { laneId: string } | null,
+    pickLaneAnswer: null as { laneId: string; name?: string } | null,
   };
   const prs = options.prs ?? [];
   const proposals = options.proposals ?? [];
@@ -184,6 +186,7 @@ export function installFakeBridge(options: {
     changed: new Set(),
     theme: new Set(),
     host: new Set(),
+    refresh: new Set(),
   };
 
   const syncByLaneId: Record<string, GitUpstreamSyncStatus | null> = {};
@@ -406,12 +409,20 @@ export function installFakeBridge(options: {
       async openPathInEditor(target: PluginWebviewEditorTarget) {
         record("ui.openPathInEditor", target as unknown as Record<string, unknown>);
       },
-      // MISSING platform contract: `ui.pickLane`. Null is a dismissed picker,
-      // which every caller already handles by falling back.
-      async pickLane(pickOptions) {
-        record("ui.pickLane", (pickOptions ?? {}) as Record<string, unknown>);
-        return state.pickLaneAnswer;
-      },
+      // MISSING platform contract: `ui.pickLane`. Absent on an older host.
+      // Null from a present picker is a dismissal, not a cue to type an id.
+      ...(options.withoutPickLane
+        ? {}
+        : {
+          async pickLane(pickOptions?: { value?: string }) {
+            record("ui.pickLane", (pickOptions ?? {}) as Record<string, unknown>);
+            if (!state.pickLaneAnswer) return null;
+            return {
+              laneId: state.pickLaneAnswer.laneId,
+              name: state.pickLaneAnswer.name ?? state.pickLaneAnswer.laneId,
+            };
+          },
+        }),
     },
     clipboard: {
       async read() {

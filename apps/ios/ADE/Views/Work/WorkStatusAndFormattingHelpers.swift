@@ -888,7 +888,7 @@ struct WorkRuntimeModeOption: Identifiable, Hashable {
 
 func workRuntimeModeOptions(provider: String) -> [WorkRuntimeModeOption] {
   switch provider.lowercased() {
-  case "claude":
+  case "claude", "anthropic":
     return [
       WorkRuntimeModeOption(id: "default", title: "Default"),
       WorkRuntimeModeOption(id: "auto", title: "Auto"),
@@ -896,7 +896,7 @@ func workRuntimeModeOptions(provider: String) -> [WorkRuntimeModeOption] {
       WorkRuntimeModeOption(id: "plan", title: "Plan"),
       WorkRuntimeModeOption(id: "full-auto", title: "Bypass"),
     ]
-  case "codex":
+  case "codex", "openai":
     return [
       WorkRuntimeModeOption(id: "default", title: "Default permissions"),
       WorkRuntimeModeOption(id: "edit", title: "Edit mode"),
@@ -945,7 +945,7 @@ func workRuntimeModeOptions(provider: String) -> [WorkRuntimeModeOption] {
 
 func workRuntimeModeLabel(provider: String, mode: String) -> String {
   switch provider.lowercased() {
-  case "claude":
+  case "claude", "anthropic":
     switch mode {
     case "auto": return "Auto"
     case "plan": return "Plan"
@@ -953,7 +953,7 @@ func workRuntimeModeLabel(provider: String, mode: String) -> String {
     case "full-auto": return "Bypass"
     default: return "Default"
     }
-  case "codex":
+  case "codex", "openai":
     switch mode {
     case "edit": return "Edit mode"
     case "plan": return "Plan mode"

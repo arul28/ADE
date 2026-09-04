@@ -165,17 +165,25 @@ func pluginPagePermissionModeChoice(
 /// Empty means this model has no reasoning knob, which the coordinator turns
 /// into a REFUSAL rather than an empty sheet: "there is nothing to choose" and
 /// "the reader chose nothing" are different answers.
-func pluginPageReasoningEfforts(provider: String, modelId: String) -> [AgentChatModelReasoningEffort] {
+func pluginPageCatalogModel(provider: String, modelId: String) -> WorkModelOption? {
     let trimmed = modelId.trimmingCharacters(in: .whitespacesAndNewlines)
-    guard !trimmed.isEmpty else { return [] }
+    guard !trimmed.isEmpty else { return nil }
     for group in workModelCatalogGroups(currentModelId: trimmed, currentProvider: provider) {
         for providerGroup in group.providers {
             for model in providerGroup.models where workModelIdsEquivalent(model.id, trimmed) {
-                return model.reasoningEfforts
+                return model
             }
         }
     }
-    return []
+    return nil
+}
+
+func pluginPageModelIsInCatalog(provider: String, modelId: String) -> Bool {
+    pluginPageCatalogModel(provider: provider, modelId: modelId) != nil
+}
+
+func pluginPageReasoningEfforts(provider: String, modelId: String) -> [AgentChatModelReasoningEffort] {
+    pluginPageCatalogModel(provider: provider, modelId: modelId)?.reasoningEfforts ?? []
 }
 
 // MARK: - Lane

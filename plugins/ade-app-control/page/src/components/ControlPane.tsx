@@ -49,6 +49,7 @@ import { cn } from "@ade-dev/ui";
 import type { PluginWebviewContext } from "../bridge";
 import * as actions from "../host/actions";
 import { ENGINE_ID, NO_ENGINE_MESSAGE, hasHostEngine, placeEngineOn } from "../host/engine";
+import { useHostRefresh } from "../host/refresh";
 import { canOpenPathInEditor, onHostChanged, openPathInEditor } from "../host/ui";
 import { DEFAULT_UI_STATE, loadUiState, saveUiState } from "../host/uiState";
 import type {
@@ -263,6 +264,11 @@ export function ControlPane({ context }: { context: PluginWebviewContext }): Rea
       void refreshStatus();
     });
   }, [refreshStatus]);
+
+  useHostRefresh(() => {
+    void refreshStatus();
+    void refreshTargets();
+  });
 
   useEffect(() => {
     if (!sessionConnected) {

@@ -28,6 +28,7 @@ import { cn, EmptyState } from "@ade-dev/ui";
 import type { HostEngineRect, PluginWebviewContext } from "../bridge";
 import * as actions from "../host/actions";
 import { NO_ENGINE_MESSAGE, hasHostEngine } from "../host/engine";
+import { useHostRefresh } from "../host/refresh";
 import * as ui from "../host/ui";
 import {
   DEFAULT_UI_STATE,
@@ -182,6 +183,12 @@ export function SimEntry({ context }: { context: PluginWebviewContext }): React.
       cancelled = true;
     };
   }, [projectRoot, refreshStatus, refreshTargets]);
+
+  useHostRefresh(() => {
+    void refreshStatus().then((next) => {
+      void refreshTargets(next?.activeDevice?.udid ?? null);
+    });
+  });
 
   /**
    * The child's own publish is the page's event feed.

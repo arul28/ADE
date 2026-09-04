@@ -181,12 +181,7 @@ function PermissionPick({ request }: { request: PluginWebviewPickerRequest }) {
     ? request.args.value
     : (capability?.defaultPermissionMode ?? options[0]?.value ?? "");
 
-  useEffect(() => {
-    if (!family || !capability || options.length === 0) {
-      settlePluginWebviewPicker(null, request.token);
-    }
-  }, [capability, family, options.length, request.token]);
-
+  // Empty lists are refused before this mounts — see `refusePluginWebviewPicker`.
   if (!family || !capability || options.length === 0) return null;
 
   return (

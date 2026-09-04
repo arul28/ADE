@@ -109,19 +109,20 @@ export type PluginWebviewComposerAttach = {
 };
 
 /**
- * One answer from a host picker: the value a launch carries, and its own word
- * for it.
+ * What a chip stores after ADE's picker returns.
  *
- * `id` is what goes in the launch argument and `label` is what the chip prints.
- * They are separate because a launch argument is a provider's own spelling
- * (`acceptEdits`, `gpt-5.6-sol`) and a chip that printed those would be reading
- * the reader an identifier.
+ * The host answers `{modelId}`, `{provider}`, `{laneId,name}`, `{value}`,
+ * `{effort}` — see `webviewBridge.ts`. `host/ui.ts` maps those onto this
+ * shape so every chip reads `id` / `label` the same way. Do not type the
+ * bridge verbs as this; they return the host's own records.
  */
 export type PluginWebviewChoice = {
   id: string;
   label: string;
   /** Present on a model or a permission answer: which provider it belongs to. */
   provider?: string | null;
+  /** Present on a model answer: ADE's picker sets model and fast in one gesture. */
+  fastMode?: boolean;
 };
 
 export type PluginWebviewLaneChoice = PluginWebviewChoice & {
@@ -131,12 +132,19 @@ export type PluginWebviewLaneChoice = PluginWebviewChoice & {
   path?: string | null;
 };
 
+/** Host `ui.pickModel` request. `value` is the id to open on. */
 export type PluginWebviewModelPickRequest = {
-  /** Narrow the list to one provider. Omitted means every provider ADE has. */
   provider?: string | null;
-  /** The id to open on, so the popover starts at the reader's current choice. */
-  selected?: string | null;
+  value?: string | null;
+  availableModelIds?: string[];
 };
+
+/** Host answers. The page never invents a second shape for these. */
+export type PluginWebviewModelHostChoice = { modelId: string; fastMode: boolean; provider?: string | null };
+export type PluginWebviewLaneHostChoice = { laneId: string; name: string };
+export type PluginWebviewProviderHostChoice = { provider: string };
+export type PluginWebviewPermissionHostChoice = { provider: string; field: string; value: string };
+export type PluginWebviewReasoningHostChoice = { modelId: string; effort: string | null };
 
 export type AdePluginBridge = {
   readonly version: number;
@@ -162,6 +170,7 @@ export type AdePluginBridge = {
     on(event: "changed", listener: (payload: PluginWebviewChangeEvent) => void): () => void;
     on(event: "theme", listener: (payload: PluginWebviewThemeSnapshot) => void): () => void;
     on(event: "host", listener: (payload: PluginWebviewHostEvent) => void): () => void;
+    on(event: "refresh", listener: (payload: Record<string, never>) => void): () => void;
   };
   openDeeplink(url: string): Promise<void>;
   openSettings?(target: { entryId: string } | { socketId: string }): Promise<void>;
@@ -190,13 +199,13 @@ export type AdePluginBridge = {
      * none of them — the page draws the chip disabled there rather than falling
      * back to a control of its own.
      */
-    pickModel?(request?: PluginWebviewModelPickRequest): Promise<PluginWebviewChoice | null>;
-    pickProvider?(request?: { selected?: string | null }): Promise<PluginWebviewChoice | null>;
-    pickLane?(request?: { selected?: string | null }): Promise<PluginWebviewLaneChoice | null>;
-    pickPermissionMode?(request: { provider: string; selected?: string | null }): Promise<PluginWebviewChoice | null>;
+    pickModel?(request?: PluginWebviewModelPickRequest): Promise<PluginWebviewModelHostChoice | null>;
+    pickProvider?(request?: { value?: string | null }): Promise<PluginWebviewProviderHostChoice | null>;
+    pickLane?(request?: { value?: string | null }): Promise<PluginWebviewLaneHostChoice | null>;
+    pickPermissionMode?(request: { provider: string; value?: string | null }): Promise<PluginWebviewPermissionHostChoice | null>;
     pickReasoningEffort?(
-      request: { provider: string; model: string; selected?: string | null },
-    ): Promise<PluginWebviewChoice | null>;
+      request: { model: string; value?: string | null },
+    ): Promise<PluginWebviewReasoningHostChoice | null>;
     dismissToast(id: string): Promise<void>;
     prompt(prompt: unknown): Promise<unknown>;
     confirm(request: PluginWebviewConfirm): Promise<boolean>;

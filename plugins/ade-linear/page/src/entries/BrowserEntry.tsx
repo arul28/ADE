@@ -26,6 +26,7 @@ import {
 } from "../components/LinearIssueBrowser";
 import { useLinearBatchLaunch } from "../lib/linearLaunchFlow";
 import { launchAgentOnIssue } from "../host/actions";
+import { useHostRefresh } from "../host/refresh";
 import { openSettings, toast } from "../host/ui";
 import { useHostLanes } from "../host/useHostEntities";
 
@@ -33,6 +34,8 @@ export function BrowserEntry({ context }: { context: PluginWebviewContext }): Re
   const projectRoot = context.project?.root ?? null;
   const { lanes, refresh: refreshLanes } = useHostLanes();
   const [actionBusyIssueId, setActionBusyIssueId] = useState<string | null>(null);
+  const [refreshKey, setRefreshKey] = useState(0);
+  useHostRefresh(() => setRefreshKey((key) => key + 1));
 
   /**
    * The launch flow, and the duplicate guard that goes with it.
@@ -84,6 +87,7 @@ export function BrowserEntry({ context }: { context: PluginWebviewContext }): Re
     <div className="relative h-full min-h-0 flex flex-col">
       <LinearIssueBrowser
         projectRoot={projectRoot}
+        refreshKey={refreshKey}
         actionLabel="Start a lane"
         actionBusyIssueId={actionBusyIssueId}
         onIssueAction={handleIssueAction}

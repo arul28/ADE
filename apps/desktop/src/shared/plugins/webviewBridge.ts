@@ -440,7 +440,7 @@ export type PluginWebviewChangeEvent = {
 };
 
 /** The event names {@link AdePluginWebviewBridge.events.on} accepts. */
-export const PLUGIN_WEBVIEW_EVENTS = ["changed", "theme", "host"] as const;
+export const PLUGIN_WEBVIEW_EVENTS = ["changed", "theme", "host", "refresh"] as const;
 
 export type PluginWebviewEventName = (typeof PLUGIN_WEBVIEW_EVENTS)[number];
 
@@ -1354,6 +1354,11 @@ export type AdePluginWebviewBridge = {
     on(event: "changed", listener: (payload: PluginWebviewChangeEvent) => void): () => void;
     on(event: "theme", listener: (payload: PluginWebviewThemeSnapshot) => void): () => void;
     on(event: "host", listener: (payload: PluginWebviewHostEvent) => void): () => void;
+    /**
+     * The reader pulled the page down. A gesture, not a data frame: it carries
+     * nothing, and the page re-reads whatever this surface reads.
+     */
+    on(event: "refresh", listener: () => void): () => void;
   };
 
   /**

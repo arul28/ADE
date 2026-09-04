@@ -471,10 +471,11 @@ describe("the page and the plugin agree on every verb", () => {
     });
     await waitFor(() => {
       expect(host.lastCall("ui.pickReasoningEffort")!.args).toMatchObject({
-        provider: "claude",
         model: "claude-opus-5",
       });
     });
+    expect(host.lastCall("ui.pickReasoningEffort")!.args).not.toHaveProperty("provider");
+    expect(host.lastCall("ui.pickModel")!.args).not.toHaveProperty("selected");
 
     await act(async () => {
       fireEvent.click(screen.getByRole("button", { name: "Permissions" }));
@@ -830,5 +831,19 @@ describe("the contract itself", () => {
     for (const action of new Set(called)) {
       await expect(host.bridge.invoke(action, {}), action).resolves.toBeDefined();
     }
+  });
+
+  it("re-reads issues when the host asks for a refresh", async () => {
+    render(<BrowserEntry context={tabContext()} />);
+    await waitFor(() => {
+      expect(host.callsTo("invoke:pageSearchIssues").length).toBeGreaterThan(0);
+    });
+    const before = host.callsTo("invoke:pageSearchIssues").length;
+    await act(async () => {
+      host.emit("refresh", {});
+    });
+    await waitFor(() => {
+      expect(host.callsTo("invoke:pageSearchIssues").length).toBeGreaterThan(before);
+    });
   });
 });

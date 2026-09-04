@@ -102,6 +102,19 @@ final class PluginPageWave2Tests: XCTestCase {
         XCTAssertEqual(unknown.value, "plan")
     }
 
+    func testAnthropicPermissionFamilyHasTheSameModesAsClaude() {
+        XCTAssertFalse(workRuntimeModeOptions(provider: "anthropic").isEmpty)
+        XCTAssertEqual(
+            workRuntimeModeOptions(provider: "anthropic").map(\.id),
+            workRuntimeModeOptions(provider: "claude").map(\.id)
+        )
+    }
+
+    func testUnknownModelsAreNotTreatedAsAnEmptyReasoningLadder() {
+        XCTAssertFalse(pluginPageModelIsInCatalog(provider: "", modelId: "definitely-not-a-catalog-model-zzz"))
+        XCTAssertTrue(pluginPageReasoningEfforts(provider: "", modelId: "definitely-not-a-catalog-model-zzz").isEmpty)
+    }
+
     func testPickReasoningEffortAnswersTheModelAndTheEffort() throws {
         let encoded = try serialized(
             PluginPagePickerAnswer.reasoningEffort(modelId: "openai/gpt-5.6-sol", effort: "xhigh").jsonValue

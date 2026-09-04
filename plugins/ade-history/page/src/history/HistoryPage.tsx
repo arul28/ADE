@@ -6,6 +6,7 @@ import { EmptyState } from "@ade-dev/ui";
 import type { PluginWebviewContext } from "../bridge";
 import { HistorySplit } from "../components/HistorySplit";
 import { getLanes, lookupCommit } from "../host/actions";
+import { useHostRefresh } from "../host/refresh";
 import { useHostSubscription } from "../host/useHostSubscription";
 import {
   DETAIL_DEFAULT_PX,
@@ -152,6 +153,12 @@ function HistoryPageContent({
   useHostSubscription([...HISTORY_HOST_KINDS], (frame) => {
     if (frame.kind === "lane") void reloadLanes();
     if (frame.kind === "operation") void fetchEvents({ silent: true });
+  });
+
+  useHostRefresh(() => {
+    void reloadLanes();
+    void fetchEvents({ silent: true });
+    setCommitRefreshToken((token) => token + 1);
   });
 
   useEffect(() => {

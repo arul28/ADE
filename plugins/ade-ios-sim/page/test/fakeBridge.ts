@@ -220,6 +220,7 @@ export function installFakeBridge(options: FakeBridgeOptions = {}): FakeBridge {
   const listeners: Record<string, Set<(payload: unknown) => void>> = {
     changed: new Set(),
     theme: new Set(),
+    refresh: new Set(),
   };
 
   const state: {

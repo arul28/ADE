@@ -29,11 +29,7 @@ import { submitPluginWebviewDialogAnswer } from "./pluginWebviewDialogStore";
 import { applyPluginActionNavigation } from "./pluginActionDispatch";
 import { closePluginWebviewGuest, getPluginWebviewGuest } from "./pluginWebviewGuestRegistry";
 import { openPluginWebviewConfirm } from "./pluginWebviewConfirmStore";
-import { openPluginWebviewPicker } from "./pluginWebviewPickerStore";
-import {
-  pluginWebviewPickerImmediateNull,
-  refusePluginWebviewPicker,
-} from "./pluginWebviewPickerPolicy";
+import { pickPluginWebviewUi } from "./pluginWebviewPickerStore";
 import {
   closePluginPrompt,
   getPluginPrompt,
@@ -474,20 +470,20 @@ export async function handlePluginWebviewUiRequest(
     case "ui.pickPermissionMode":
     case "ui.pickReasoningEffort":
     case "ui.pickProvider": {
-      // ADE's own picker, over the guest. Null is dismissal; a client that
-      // cannot ask refuses with a sentence instead — see picker policy.
-      const refusal = refusePluginWebviewPicker(request.verb, args);
-      if (refusal) return { ok: false, message: refusal };
-      if (pluginWebviewPickerImmediateNull(request.verb, args)) {
-        return { ok: true, value: null };
+      // Same sequence the hosted web client uses: refuse with a sentence,
+      // immediate-null for a known empty ladder, otherwise ADE's own picker.
+      try {
+        const value = await pickPluginWebviewUi(request.verb, args, {
+          pluginId,
+          guestKey: request.guestKey,
+        });
+        return { ok: true, value };
+      } catch (cause) {
+        const message = cause instanceof Error && cause.message
+          ? cause.message
+          : "ADE could not do that.";
+        return { ok: false, message };
       }
-      const value = await openPluginWebviewPicker({
-        pluginId,
-        guestKey: request.guestKey,
-        verb: request.verb,
-        args,
-      });
-      return { ok: true, value };
     }
 
     default: {

@@ -53,7 +53,7 @@ import type { PluginWebviewContext } from "../bridge";
 import * as actions from "../host/actions";
 import type { PagePrDetail } from "../host/actions";
 import { invokeSocketEntry } from "../host/sockets";
-import { confirm as hostConfirm, openLink, openPath, pickLane, toast, writeClipboard } from "../host/ui";
+import { confirm as hostConfirm, hasLanePicker, openLink, openPath, pickLane, toast, writeClipboard } from "../host/ui";
 import type {
   GitSyncMode,
   GraphFilterState,
@@ -1430,12 +1430,14 @@ function GraphInner({ context }: { context: PluginWebviewContext }): React.React
         return;
       }
       if (action === "reparent") {
-        // ADE's own lane picker, over the guest. `ui.pickLane` is new in this
-        // wave; on a host without it the compiled page's text prompt stands in,
-        // which is exactly what that page did.
-        const picked = await pickLane({ title: "Change parent", excludeLaneIds: [lane.id] });
-        let targetId = picked;
-        if (!targetId) {
+        // ADE's own lane picker, over the guest. Dismiss is abort — not a
+        // typed-id prompt. The prompt is only the older-host path, when the
+        // verb is missing entirely.
+        let targetId: string | null = null;
+        if (hasLanePicker()) {
+          targetId = await pickLane({ title: "Change parent", excludeLaneIds: [lane.id] });
+          if (!targetId) return;
+        } else {
           const options = lanes
             .filter((entry) => entry.id !== lane.id)
             .map((entry) => `${entry.id}:${entry.name}`)

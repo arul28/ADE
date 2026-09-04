@@ -390,19 +390,21 @@ function SessionLaunchModelControls({
         available={hasPicker("pickModel")}
         disabled={disabled}
         onPress={() => void (async () => {
-          const chosen = await pickModel({ provider: provider ?? null, selected: config.modelId || null });
+          const chosen = await pickModel({ provider: provider ?? null, value: config.modelId || null });
           if (!chosen) return;
           const nextProvider = chosen.provider ?? provider;
           onChange({
             modelId: chosen.id,
             modelLabel: chosen.label,
             ...(nextProvider ? { provider: nextProvider } : {}),
+            // ADE's picker sets the model and the fast tier in one gesture.
+            // Dropping that flag would silently run standard after the reader
+            // chose Fast inside the same popover.
+            fastMode: chosen.fastMode === true,
             // A reasoning rung the new model does not offer would be sent and
-            // refused, and `fastMode: true` is refused outright by a model with
-            // no fast tier. Both are cleared with the model that carried them.
+            // refused. Cleared with the model that carried it.
             reasoningEffort: null,
             reasoningEffortLabel: null,
-            fastMode: false,
             // The permission vocabularies are native and differ per provider,
             // so a value chosen for a Claude model is not one a Droid model
             // offers — and it would go in a different launch field besides.

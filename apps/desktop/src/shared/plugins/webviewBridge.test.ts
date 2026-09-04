@@ -6,9 +6,11 @@ import {
   decodePluginWebviewContext,
   encodePluginWebviewContext,
   isPluginWebviewMethod,
+  isPluginWebviewEventName,
   PLUGIN_WEBVIEW_BRIDGE_VERSION,
   PLUGIN_WEBVIEW_CONTEXT_MAX_BYTES,
   PLUGIN_WEBVIEW_CONTEXT_QUERY_PARAM,
+  PLUGIN_WEBVIEW_EVENTS,
   PLUGIN_WEBVIEW_MAX_HEIGHT_PX,
   PLUGIN_WEBVIEW_METHODS,
   PLUGIN_WEBVIEW_RESIZE_CHANNEL,
@@ -204,5 +206,13 @@ describe("size-to-content", () => {
 
   it("names one channel both halves agree on", () => {
     expect(PLUGIN_WEBVIEW_RESIZE_CHANNEL).toBe("ade:plugin-webview:resize");
+  });
+});
+
+describe("plugin webview events", () => {
+  it("accepts refresh alongside changed, theme and host", () => {
+    expect(PLUGIN_WEBVIEW_EVENTS).toEqual(["changed", "theme", "host", "refresh"]);
+    expect(isPluginWebviewEventName("refresh")).toBe(true);
+    expect(isPluginWebviewEventName("unknown")).toBe(false);
   });
 });

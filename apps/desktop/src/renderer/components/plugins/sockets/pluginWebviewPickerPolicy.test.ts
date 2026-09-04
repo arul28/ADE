@@ -22,6 +22,7 @@ describe("plugin webview picker policy", () => {
       "ADE doesn’t have a permission control for that provider.",
     );
     expect(refusePluginWebviewPicker("ui.pickPermissionMode", { provider: "claude" })).toBeNull();
+    expect(refusePluginWebviewPicker("ui.pickPermissionMode", { provider: "anthropic" })).toBeNull();
   });
 
   it("refuses a reasoning pick with no model rather than answering null", () => {

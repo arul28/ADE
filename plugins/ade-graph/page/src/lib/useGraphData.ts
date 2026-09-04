@@ -15,6 +15,7 @@
 import React from "react";
 
 import * as actions from "../host/actions";
+import { useHostRefresh } from "../host/refresh";
 import { useHostSubscription } from "../host/useHostSubscription";
 import type { PluginWebviewHostKind } from "../bridge";
 import { listSocketEntries, GRAPH_NODE_SOCKET } from "../host/sockets";
@@ -230,6 +231,18 @@ export function useGraphData(active: boolean): GraphDataApi {
       void refreshOperations();
       void refreshSync();
     }
+  });
+
+  useHostRefresh(() => {
+    if (!active) return;
+    void Promise.allSettled([
+      refreshLanes(),
+      refreshPrs(),
+      refreshProposals(),
+      refreshRiskBatch(),
+      refreshSync(),
+      refreshOperations(),
+    ]);
   });
 
   return {

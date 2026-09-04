@@ -49,6 +49,7 @@ import {
   rerun as rerunAction,
 } from "../host/actions";
 import { useReviewLive } from "../host/liveRuns";
+import { useHostRefresh } from "../host/refresh";
 import { openLink, openPathInEditor, writeClipboard } from "../host/ui";
 import {
   SIDEBAR_DEFAULT_PX,
@@ -222,6 +223,11 @@ export function ReviewRunsBrowser({ context }: { context: PluginWebviewContext }
   React.useEffect(() => {
     void refreshRuns();
   }, [refreshRuns]);
+
+  useHostRefresh(() => {
+    void refreshLaunchContext();
+    void refreshRuns();
+  });
 
   React.useEffect(() => {
     void loadDetail(selectedRunId);

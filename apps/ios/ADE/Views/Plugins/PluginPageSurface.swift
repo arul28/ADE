@@ -727,16 +727,26 @@ final class PluginPageSurfaceCoordinator: ObservableObject, PluginPageBridgeHost
                     "This phone has no lanes for this project yet."
                 )
             }
+        case .permissionMode:
+            // An unknown family has no modes. Opening an empty sheet would make
+            // Cancel look like a dismissal; refuse with a sentence instead.
+            guard !workRuntimeModeOptions(provider: request.provider ?? "").isEmpty else {
+                throw PluginPageBridgeError.notSupportedHere(
+                    "ADE doesn’t have a permission control for that provider."
+                )
+            }
         case .reasoningEffort:
-            // A model with no ladder resolves NULL rather than drawing an empty
-            // control, which is what the desktop does and therefore what a page
-            // written against it expects. Not a refusal: the ask was valid and
-            // the honest answer is that there was nothing to choose.
-            guard !pluginPageReasoningEfforts(
-                provider: request.provider ?? "",
-                modelId: request.model ?? ""
-            ).isEmpty else { return nil }
-        case .model, .permissionMode, .provider:
+            // A KNOWN model with no ladder resolves NULL rather than drawing an
+            // empty control, which is what the desktop does. Unknown models still
+            // open: the catalog on this phone may not know a ladder the runtime
+            // does, and the sheet always has "No reasoning".
+            let provider = request.provider ?? ""
+            let modelId = request.model ?? ""
+            if pluginPageModelIsInCatalog(provider: provider, modelId: modelId),
+               pluginPageReasoningEfforts(provider: provider, modelId: modelId).isEmpty {
+                return nil
+            }
+        case .model, .provider:
             break
         }
         // A second picker while one is open answers the first as dismissed: two

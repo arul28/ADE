@@ -54,8 +54,8 @@ export type FakeBridge = {
   ) => void;
   /** The connection the scripted child reports. Sign-in flips it. */
   connection: LinearConnectionStatus;
-  /** Push a `changed`, `theme` or `host` event at the page. */
-  emit: (event: "changed" | "theme" | "host", payload: unknown) => void;
+  /** Push a `changed`, `theme`, `host` or `refresh` event at the page. */
+  emit: (event: "changed" | "theme" | "host" | "refresh", payload: unknown) => void;
   /** Every collection write, as `collection/key`. */
   collections: Map<string, unknown>;
 };
@@ -133,7 +133,7 @@ const CONNECTED: LinearConnectionStatus = {
  * starts DISCONNECTED, which is the state a fresh install is in and the first
  * step of the walk.
  */
-type PickerAnswer = { id: string; label: string; provider?: string | null };
+type PickerAnswer = { id: string; label: string; provider?: string | null; fastMode?: boolean };
 type PickerLaneAnswer = PickerAnswer & { branchRef?: string | null; path?: string | null };
 
 export function installFakeBridge(options: {
@@ -153,6 +153,7 @@ export function installFakeBridge(options: {
     changed: new Set(),
     theme: new Set(),
     host: new Set(),
+    refresh: new Set(),
   };
 
   const state = {
@@ -451,25 +452,39 @@ export function installFakeBridge(options: {
         A test that needs a dismissal overrides the verb; `null` is the
         dismissal, and every caller leaves its value alone for it.
       */
-      async pickModel(request?: { provider?: string | null; selected?: string | null }) {
+      async pickModel(request?: { value?: string | null; availableModelIds?: string[] }) {
         record("ui.pickModel", (request ?? {}) as Record<string, unknown>);
-        return pickerAnswers.model;
+        const answer = pickerAnswers.model;
+        if (!answer) return null;
+        return { modelId: answer.id, fastMode: answer.fastMode === true };
       },
-      async pickProvider(request?: { selected?: string | null }) {
+      async pickProvider(request?: { value?: string | null }) {
         record("ui.pickProvider", (request ?? {}) as Record<string, unknown>);
-        return pickerAnswers.provider;
+        const answer = pickerAnswers.provider;
+        if (!answer) return null;
+        return { provider: answer.id };
       },
-      async pickLane(request?: { selected?: string | null }) {
+      async pickLane(request?: { value?: string | null }) {
         record("ui.pickLane", (request ?? {}) as Record<string, unknown>);
-        return pickerAnswers.lane;
+        const answer = pickerAnswers.lane;
+        if (!answer) return null;
+        return { laneId: answer.id, name: answer.label };
       },
-      async pickPermissionMode(request: { provider: string; selected?: string | null }) {
+      async pickPermissionMode(request: { provider: string; value?: string | null }) {
         record("ui.pickPermissionMode", request as unknown as Record<string, unknown>);
-        return pickerAnswers.permissionMode;
+        const answer = pickerAnswers.permissionMode;
+        if (!answer) return null;
+        return {
+          provider: answer.provider ?? request.provider,
+          field: "permissionMode",
+          value: answer.id,
+        };
       },
-      async pickReasoningEffort(request: { provider: string; model: string; selected?: string | null }) {
+      async pickReasoningEffort(request: { model: string; value?: string | null }) {
         record("ui.pickReasoningEffort", request as unknown as Record<string, unknown>);
-        return pickerAnswers.reasoningEffort;
+        const answer = pickerAnswers.reasoningEffort;
+        if (!answer) return null;
+        return { modelId: request.model, effort: answer.id.length > 0 ? answer.id : null };
       },
     },
     clipboard: {

@@ -26,6 +26,7 @@ import {
   unlinkIssueFromLane,
 } from "../host/actions";
 import { closeSurface, openSettings, reportHeight, toast } from "../host/ui";
+import { useHostRefresh } from "../host/refresh";
 import { useCollectionChanges } from "../host/useHostEntities";
 import type { LaneLinearIssue } from "../types";
 
@@ -128,6 +129,7 @@ export function IssueContextEntry({ context }: { context: PluginWebviewContext }
     load();
   }, [load]);
   useCollectionChanges(load);
+  useHostRefresh(load);
 
   // Two placements, one surface, two bodies.
   //

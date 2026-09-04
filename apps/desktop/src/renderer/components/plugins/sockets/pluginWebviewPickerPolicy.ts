@@ -49,10 +49,15 @@ export function refusePluginWebviewPicker(
   args: Record<string, unknown>,
 ): string | null {
   switch (verb) {
-    case "ui.pickPermissionMode":
-      return resolvePluginWebviewPermissionFamily(args.provider)
-        ? null
-        : "ADE doesn’t have a permission control for that provider.";
+    case "ui.pickPermissionMode": {
+      const family = resolvePluginWebviewPermissionFamily(args.provider);
+      if (!family) return "ADE doesn’t have a permission control for that provider.";
+      const capability = pluginChatProviderCapabilities().find((entry) => entry.provider === family);
+      if (!capability || capability.permissionModes.length === 0) {
+        return "ADE doesn’t have a permission control for that provider.";
+      }
+      return null;
+    }
     case "ui.pickReasoningEffort":
       return typeof args.model === "string" && args.model.trim().length > 0
         ? null
