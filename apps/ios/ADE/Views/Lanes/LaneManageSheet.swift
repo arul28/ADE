@@ -257,7 +257,8 @@ struct LaneManageSheet: View {
         value: branchLabel,
         monospaced: true,
         accessibilityNoun: "Branch",
-        lineLimit: 1
+        lineLimit: 1,
+        dirty: snapshot.lane.status.dirty
       ) {
         if snapshot.lane.status.dirty {
           Text("DIRTY")
@@ -287,14 +288,16 @@ struct LaneManageSheet: View {
     value: String,
     monospaced: Bool,
     accessibilityNoun: String,
-    lineLimit: Int
+    lineLimit: Int,
+    dirty: Bool = false
   ) -> some View {
     metadataRow(
       symbol: symbol,
       value: value,
       monospaced: monospaced,
       accessibilityNoun: accessibilityNoun,
-      lineLimit: lineLimit
+      lineLimit: lineLimit,
+      dirty: dirty
     ) {
       EmptyView()
     }
@@ -306,6 +309,7 @@ struct LaneManageSheet: View {
     monospaced: Bool,
     accessibilityNoun: String,
     lineLimit: Int,
+    dirty: Bool = false,
     @ViewBuilder trailing: () -> Trailing
   ) -> some View {
     HStack(alignment: .top, spacing: 10) {
@@ -325,7 +329,13 @@ struct LaneManageSheet: View {
       trailing()
     }
     .accessibilityElement(children: .combine)
-    .accessibilityLabel("\(accessibilityNoun), \(value)")
+    .accessibilityLabel(
+      LaneManageRename.metadataAccessibilityLabel(
+        noun: accessibilityNoun,
+        value: value,
+        dirty: dirty
+      )
+    )
   }
 
   private var manageTabBar: some View {
@@ -864,5 +874,9 @@ enum LaneManageRename {
     let trimmed = trimmedName(draft)
     guard !trimmed.isEmpty else { return false }
     return trimmed != currentName.trimmingCharacters(in: .whitespacesAndNewlines)
+  }
+
+  static func metadataAccessibilityLabel(noun: String, value: String, dirty: Bool) -> String {
+    dirty ? "\(noun), \(value), dirty" : "\(noun), \(value)"
   }
 }

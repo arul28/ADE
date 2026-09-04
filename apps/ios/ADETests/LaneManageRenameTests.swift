@@ -48,6 +48,33 @@ final class LaneManageRenameTests: XCTestCase {
     )
   }
 
+  func testMetadataAccessibilityLabelIncludesDirtyStatus() {
+    XCTAssertEqual(
+      LaneManageRename.metadataAccessibilityLabel(
+        noun: "Branch",
+        value: "ade/auth",
+        dirty: false
+      ),
+      "Branch, ade/auth"
+    )
+    XCTAssertEqual(
+      LaneManageRename.metadataAccessibilityLabel(
+        noun: "Branch",
+        value: "ade/auth",
+        dirty: true
+      ),
+      "Branch, ade/auth, dirty"
+    )
+    XCTAssertEqual(
+      LaneManageRename.metadataAccessibilityLabel(
+        noun: "Path",
+        value: "/tmp/lane",
+        dirty: false
+      ),
+      "Path, /tmp/lane"
+    )
+  }
+
   private func makeLane(id: String, name: String, archivedAt: String? = nil) -> LaneSummary {
     LaneSummary(
       id: id,
