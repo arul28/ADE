@@ -712,6 +712,20 @@ describe("wave 2 verbs answered in main", () => {
     await expect(chosen).resolves.toEqual({ laneId: "lane-1", name: "Wave 2" });
   });
 
+  it("forwards the chip rect a page measured so the host can anchor the picker", async () => {
+    const h = harness();
+    const pending = h.server.handle(SENDER, request("ui.pickModel", {
+      value: "gpt",
+      rect: { top: 40, left: 80, width: 96, height: 24 },
+    }));
+    expect((await h.waitForRequest(0)).args).toEqual({
+      value: "gpt",
+      rect: { top: 40, left: 80, width: 96, height: 24 },
+    });
+    await h.answer(0, null);
+    await expect(pending).resolves.toBeNull();
+  });
+
   it("refuses pickPermissionMode without a provider and pickReasoningEffort without a model", async () => {
     const h = harness();
     await expect(h.server.handle(SENDER, request("ui.pickPermissionMode", {})))

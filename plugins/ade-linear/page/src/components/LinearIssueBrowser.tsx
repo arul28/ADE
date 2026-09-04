@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
+  ArrowsClockwise,
   CaretDown,
   CaretRight,
   Check,
@@ -12,6 +13,7 @@ import {
 } from "@phosphor-icons/react";
 import {
   Button,
+  LinearMark,
   LinearPriorityIcon,
   LinearProjectIcon,
   LinearStateIcon,
@@ -37,6 +39,7 @@ import {
 } from "../host/actions";
 import { confirm as hostConfirm, openLink, prompt as hostPrompt, toast } from "../host/ui";
 import { clearSelection, loadFilters, loadSelection, saveFilters, saveSelection } from "../host/uiState";
+import { useCollectionChanges } from "../host/useHostEntities";
 import type {
   CtoGetLinearIssuePickerDataResult,
   CtoLinearIssueComment,
@@ -450,6 +453,22 @@ function isConnectionError(message: string): boolean {
   return /token|oauth|auth|connect|settings|linear/i.test(message);
 }
 
+function isCredentialError(message: string | null | undefined): boolean {
+  if (!message) return false;
+  return /no linear credential|connect linear in settings/i.test(message);
+}
+
+function invalidateBrowserCache(key: string): void {
+  const entry = getBrowserCacheEntry(key);
+  entry.quickView = null;
+  entry.quickViewFetchedAt = 0;
+  entry.quickViewPromise = null;
+  entry.catalog = null;
+  entry.catalogFetchedAt = 0;
+  entry.catalogPromise = null;
+  entry.searches.clear();
+}
+
 export function LinearIssueBrowser({
   projectRoot,
   featuredIssue,
@@ -667,7 +686,7 @@ export function LinearIssueBrowser({
       setError("Linear controls are not available in this ADE surface.");
       return;
     }
-    if (!force && entry.catalog && cacheIsFresh(entry.catalogFetchedAt)) {
+    if (!force && entry.catalog && cacheIsFresh(entry.catalogFetchedAt) && entry.catalog.projects.length > 0) {
       setCatalog(entry.catalog);
       return;
     }
@@ -766,6 +785,17 @@ export function LinearIssueBrowser({
     if (refreshKey === 0) return;
     searchIssues(false, true);
   }, [refreshKey, searchIssues]);
+
+  const reloadLinear = useCallback((force = true) => {
+    invalidateBrowserCache(cacheKey);
+    loadQuickView(force);
+    loadCatalog(force);
+    searchIssues(false, force);
+  }, [cacheKey, loadCatalog, loadQuickView, searchIssues]);
+
+  useCollectionChanges(useCallback(() => {
+    reloadLinear(true);
+  }, [reloadLinear]));
 
   const updateFilters = useCallback((patch: Partial<LinearIssueBrowserFilters>) => {
     filterWriteRef.current += 1;
@@ -941,10 +971,18 @@ export function LinearIssueBrowser({
   const projectFilters = useMemo(() => {
     const quickProjects = new Map<string, CtoLinearQuickViewProject>();
     for (const projectEntry of quickView?.projects ?? []) quickProjects.set(projectEntry.id, projectEntry);
-    return catalog.projects.map((projectEntry) => ({
-      ...projectEntry,
-      quick: quickProjects.get(projectEntry.id) ?? null,
-    }));
+    const byId = new Map<string, CtoLinearProject & { quick: CtoLinearQuickViewProject | null }>();
+    for (const projectEntry of catalog.projects) {
+      byId.set(projectEntry.id, {
+        ...projectEntry,
+        quick: quickProjects.get(projectEntry.id) ?? null,
+      });
+    }
+    for (const projectEntry of quickProjects.values()) {
+      if (byId.has(projectEntry.id)) continue;
+      byId.set(projectEntry.id, { ...projectEntry, quick: projectEntry });
+    }
+    return [...byId.values()];
   }, [catalog.projects, quickView?.projects]);
 
   const issueGroups = useMemo(() => groupIssuesByState(displayIssues), [displayIssues]);
@@ -999,9 +1037,30 @@ export function LinearIssueBrowser({
   }, [actionBusyIssueId, actionDisabled, localActionIssueId, onIssueAction]);
 
   const showSettingsAction = Boolean(error && onOpenLinearSettings && isConnectionError(error));
+  const signedOut = isCredentialError(error)
+    || Boolean(quickView && !quickView.connection.tokenStored && !quickView.connection.connected);
   const busyIssueId = actionBusyIssueId ?? localActionIssueId;
   const filtersActive = hasActiveFilters(filters);
   const issueCountLabel = issues.length > 0 ? `${issues.length}${pageInfo.hasNextPage ? "+" : ""}` : null;
+
+  if (signedOut) {
+    return (
+      <div className="flex h-full min-h-0 flex-col items-center justify-center gap-5 px-8 text-center">
+        <LinearMark size={56} />
+        <div className="space-y-1.5">
+          <h2 className="text-[18px] font-semibold text-fg">Sign in to Linear</h2>
+          <p className="max-w-[28rem] text-[13px] leading-relaxed text-muted-fg/70">
+            Connect a workspace to browse issues and launch lanes from here.
+          </p>
+        </div>
+        {onOpenLinearSettings ? (
+          <Button type="button" variant="primary" onClick={onOpenLinearSettings}>
+            Sign in
+          </Button>
+        ) : null}
+      </div>
+    );
+  }
 
   return (
     <div className="flex h-full min-h-0 flex-col overflow-hidden">
@@ -1032,15 +1091,29 @@ export function LinearIssueBrowser({
           <div className="flex min-h-0 flex-1 flex-col overflow-hidden px-2 py-2">
             <div className="mb-1.5 flex shrink-0 items-center justify-between gap-2 px-1">
               <span className="text-[11px] text-muted-fg/50">By project</span>
-              {filtersActive ? (
+              <div className="flex items-center gap-2">
                 <button
                   type="button"
-                  className="text-[11px] text-muted-fg/55 transition-colors hover:text-fg"
-                  onClick={resetFilters}
+                  className="grid h-5 w-5 place-items-center rounded text-muted-fg/55 transition-colors hover:bg-white/[0.06] hover:text-fg/80"
+                  title="Refresh projects"
+                  onClick={() => {
+                    invalidateBrowserCache(cacheKey);
+                    loadCatalog(true);
+                    loadQuickView(true);
+                  }}
                 >
-                  Reset filters
+                  <ArrowsClockwise size={12} className={loadingCatalog ? "animate-spin" : undefined} />
                 </button>
-              ) : null}
+                {filtersActive ? (
+                  <button
+                    type="button"
+                    className="text-[11px] text-muted-fg/55 transition-colors hover:text-fg"
+                    onClick={resetFilters}
+                  >
+                    Reset filters
+                  </button>
+                ) : null}
+              </div>
             </div>
 
             <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain" data-linear-pane="projects">

@@ -696,7 +696,9 @@ describe("the page and the plugin agree on every verb", () => {
     }
     // A guest's storage partition dies with the placement, so a page that wrote
     // a preference there would be writing to a value nobody can read back.
-    expect(window.localStorage.length).toBe(0);
+    // Node 22 withholds `localStorage` unless `--localstorage-file` is set;
+    // jsdom still provides it. Either way, nothing was written here.
+    expect(window.localStorage?.length ?? 0).toBe(0);
   });
 
   it("follows lane, session and chat changes rather than polling for them", async () => {

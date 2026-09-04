@@ -51,7 +51,7 @@
 
 "use strict";
 
-const { issueBranchName, issueLaneName, normalizeIssue } = require("./issueFormat");
+const { normalizeIssue } = require("./issueFormat");
 const { expiry, isMissingTokenError } = require("./linearApi");
 
 /**
@@ -781,7 +781,7 @@ function createPageActions(deps) {
 
     /** The issue picker's three lists. */
     async pageCatalog() {
-      if (!ready()) return { projects: [], users: [], states: [] };
+      if (!ready()) throw new Error(STARTING_UP);
       const projects = (await projectRows()).map(baseProject);
 
       const users = new Map();
@@ -1286,12 +1286,9 @@ function createPageActions(deps) {
     /**
      * A lane for one issue.
      *
-     * Through `flows.createLaneFromIssue` unless the page overrode a name.
-     * That flow derives BOTH names from the issue on purpose — Linear matches a
-     * branch to an issue by name, so the derived one is the contract — and it
-     * therefore takes no override. The page's create form has a branch field,
-     * so the override path is written out here rather than pushed into a flow
-     * whose whole job is to be the thing that never varies.
+     * Through `flows.createLaneFromIssue`. The page may override the name or
+     * branch; uniqueness suffixes stay in that flow so a branch that already
+     * exists still opens a lane.
      */
     async pageCreateLane(args = {}) {
       if (!ready()) return { ok: false, message: STARTING_UP };
@@ -1300,66 +1297,21 @@ function createPageActions(deps) {
       const baseRef = text(args?.baseRef);
       const name = text(args?.name);
       const branchName = text(args?.branchName);
-
-      if (!name && !branchName) {
-        const result = await deps.flows.createLaneFromIssue({
-          issue: row,
-          ...(baseRef ? { baseRef } : {}),
-        });
-        if (!result.ok) return { ok: false, message: result.message };
-        await refreshIssues().catch(() => {});
-        return {
-          ok: true,
-          message: result.message,
-          laneId: result.laneId,
-          laneName: result.laneName,
-          branch: result.branchName,
-          linked: result.linked === true,
-        };
-      }
-
-      const laneName = name ?? issueLaneName(row);
-      const branch = branchName ?? issueBranchName(row);
-      let lane;
-      try {
-        lane = await deps.sdk.actions.invoke("lane", "create", {
-          name: laneName,
-          branchName: branch,
-          ...(baseRef ? { baseBranch: baseRef } : {}),
-        });
-      } catch (error) {
-        return failure(error, `Could not create a lane for ${row.identifier}.`);
-      }
-      const laneId = lane?.id ?? lane?.laneId ?? null;
-      if (!laneId) return { ok: false, message: "ADE created the lane but named no id." };
-
-      let linked = false;
-      try {
-        await deps.sdk.lanes.linkIssue({
-          laneId,
-          // The ref's `branchName` is the branch that actually exists, not the
-          // one the issue would have named. Linear reads it back, and a ref
-          // pointing at a branch nobody cut is a link that never resolves.
-          issue: { ...deps.data.issueRef(row), branchName: branch },
-          role: "primary",
-          includeInPr: true,
-          closeOnMerge: true,
-        });
-        linked = true;
-      } catch (error) {
-        log("warn", `Created lane ${laneId} but could not link ${row.identifier}: ${error?.message ?? error}`);
-      }
-      await deps.data.refreshIssue(row.id, { comments: false }).catch(() => {});
+      const result = await deps.flows.createLaneFromIssue({
+        issue: row,
+        ...(baseRef ? { baseRef } : {}),
+        ...(name ? { name } : {}),
+        ...(branchName ? { branchName } : {}),
+      });
+      if (!result.ok) return { ok: false, message: result.message };
       await refreshIssues().catch(() => {});
       return {
         ok: true,
-        message: linked
-          ? `Opened a lane on ${row.identifier}.`
-          : `Opened a lane on ${row.identifier}, but could not link the issue to it.`,
-        laneId,
-        laneName: lane?.name ?? laneName,
-        branch: lane?.branchRef ?? branch,
-        linked,
+        message: result.message,
+        laneId: result.laneId,
+        laneName: result.laneName,
+        branch: result.branchName,
+        linked: result.linked === true,
       };
     },
 

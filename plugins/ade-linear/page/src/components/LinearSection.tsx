@@ -52,8 +52,7 @@ import {
   Plugs,
   XCircle,
 } from "@phosphor-icons/react";
-import { COLORS, SANS_FONT, MONO_FONT, LABEL_STYLE, formatTimestamp } from "@ade-dev/ui";
-import { Button } from "@ade-dev/ui";
+import { Button, COLORS, LinearProjectIcon, SANS_FONT, MONO_FONT, LABEL_STYLE, formatTimestamp } from "@ade-dev/ui";
 
 import type { CtoLinearProject, GitHubAutolink, LinearConnectionStatus } from "../types";
 import type { PluginWebviewContext } from "../bridge";
@@ -749,7 +748,7 @@ export function LinearSection({
               {connection?.expiresIn ? (
                 <div>
                   <div style={{ fontSize: 10, fontFamily: SANS_FONT, color: COLORS.textDim, marginBottom: 2 }}>
-                    Token
+                    {connection.authMode === "oauth" && !connection.expired ? "Session" : "Token"}
                   </div>
                   <div style={{
                     fontSize: 13,
@@ -757,7 +756,9 @@ export function LinearSection({
                     fontFamily: SANS_FONT,
                     color: connection.expired ? COLORS.warning : COLORS.textPrimary,
                   }}>
-                    {connection.expiresIn}
+                    {connection.authMode === "oauth" && !connection.expired
+                      ? "Refreshes automatically"
+                      : connection.expiresIn}
                   </div>
                 </div>
               ) : null}
@@ -794,13 +795,16 @@ export function LinearSection({
               <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
                 {projects.map((p) => (
                   <span key={p.id} style={{
-                    display: "inline-flex", alignItems: "center", gap: 4,
-                    padding: "3px 10px", borderRadius: 6,
+                    display: "inline-flex", alignItems: "center", gap: 6,
+                    padding: "4px 10px", borderRadius: 6,
                     background: "rgba(255,255,255,0.04)", border: `1px solid ${COLORS.border}`,
                     fontSize: 11, fontFamily: SANS_FONT, color: COLORS.textSecondary,
                   }}>
+                    <LinearProjectIcon icon={p.icon} color={p.color} name={p.name} size={14} />
                     {p.name}
-                    <span style={{ fontSize: 10, color: COLORS.textDim }}>{p.teamName}</span>
+                    {p.teamName ? (
+                      <span style={{ fontSize: 10, color: COLORS.textDim }}>{p.teamName}</span>
+                    ) : null}
                   </span>
                 ))}
               </div>

@@ -361,11 +361,14 @@ function SessionLaunchModelControls({
             modelLabel: chosen.label,
             ...(nextProvider ? { provider: nextProvider, providerLabel: nextProvider } : {}),
             fastMode: chosen.fastMode === true,
-            reasoningEffort: null,
-            reasoningEffortLabel: null,
-            ...(nextProvider === provider
-              ? {}
-              : { permissionMode: null, permissionModeLabel: null }),
+            reasoningEffort: chosen.defaultReasoningEffort ?? null,
+            reasoningEffortLabel: chosen.defaultReasoningEffortLabel ?? null,
+            permissionMode: nextProvider === provider
+              ? config.permissionMode
+              : chosen.defaultPermissionMode ?? null,
+            permissionModeLabel: nextProvider === provider
+              ? config.permissionModeLabel
+              : chosen.defaultPermissionLabel ?? null,
           });
         })()}
       />

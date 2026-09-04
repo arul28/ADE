@@ -180,6 +180,54 @@ function pairedSurfaceHalves(manifest: PluginManifest): Map<string, string> {
 }
 
 /**
+ * Webviews that are not rail tabs: popovers, settings hosts, dialogs, cards.
+ *
+ * Listing each as "X tab — desktop only, custom UI" is how Linear's install
+ * card printed six tabs including two identical "Linear issue" lines. Those
+ * pages are already counted as sockets ("One addition to Settings"). The
+ * remaining popovers/dialogs collapse to one sentence.
+ */
+const EMBEDDED_WEBVIEW_SOCKETS = new Set<PluginSocketKind>([
+  "settings-section",
+  "dialog-section",
+  "chat-card",
+]);
+
+function webviewIsEmbeddedChrome(manifest: PluginManifest, webviewId: string): boolean {
+  const surface = manifest.surfaces.find((entry) => entry.kind === "webview" && entry.id === webviewId);
+  if (surface?.kind === "webview" && surface.popover) return true;
+  return manifest.sockets.some((socket) =>
+    socket.webviewSurfaceId === webviewId && EMBEDDED_WEBVIEW_SOCKETS.has(socket.socket),
+  );
+}
+
+function unpairedTabWebviews(manifest: PluginManifest): {
+  tabs: Array<{ id: string; title: string }>;
+  extraPickers: boolean;
+} {
+  const pairs = pairedSurfaceHalves(manifest);
+  const pairedWebviewIds = new Set(pairs.values());
+  const tabs: Array<{ id: string; title: string }> = [];
+  const seenTitles = new Set<string>();
+  let extraPickers = false;
+  for (const surface of manifest.surfaces) {
+    if (surface.kind !== "webview") continue;
+    if (pairedWebviewIds.has(surface.id)) continue;
+    if (webviewIsEmbeddedChrome(manifest, surface.id)) {
+      extraPickers = extraPickers
+        || Boolean(surface.popover)
+        || manifest.sockets.some((socket) =>
+          socket.webviewSurfaceId === surface.id && socket.socket !== "settings-section");
+      continue;
+    }
+    if (seenTitles.has(surface.title)) continue;
+    seenTitles.add(surface.title);
+    tabs.push({ id: surface.id, title: surface.title });
+  }
+  return { tabs, extraPickers };
+}
+
+/**
  * The "Adds:" lines for a manifest — what the plugin itself declared.
  *
  * Counts declarations rather than repeating a summary, so the list cannot
@@ -190,9 +238,7 @@ export function describeManifestAdds(manifest: PluginManifest): string[] {
   const lines: string[] = [];
   const tabs = manifest.surfaces.filter((surface) => surface.kind === "tab");
   const panes = manifest.surfaces.filter((surface) => surface.kind === "pane");
-  const webviews = manifest.surfaces.filter((surface) => surface.kind === "webview");
   const pairs = pairedSurfaceHalves(manifest);
-  const pairedWebviewIds = new Set(pairs.values());
   for (const tab of tabs) {
     lines.push(pairs.has(tab.id)
       // One rail item, two renderers. Said in one line because two lines read as
@@ -206,13 +252,12 @@ export function describeManifestAdds(manifest: PluginManifest): string[] {
   // installing it. Before that refusal this line promised a surface no client
   // had ever drawn.
   for (const pane of panes) lines.push(`${pane.title} pane`);
-  // Said on the line itself rather than as a chip somewhere else on the page:
-  // this is the reader's one preview of what installing changes, and "this tab
-  // only works on my computer" is exactly the kind of thing they should not
-  // have to go looking for.
-  for (const webview of webviews) {
-    if (pairedWebviewIds.has(webview.id)) continue;
+  const unpaired = unpairedTabWebviews(manifest);
+  for (const webview of unpaired.tabs) {
     lines.push(`${webview.title} tab — desktop only, custom UI`);
+  }
+  if (unpaired.extraPickers) {
+    lines.push("Issue pickers and cards on desktop");
   }
 
   const bySurface = new Map<PluginSurfaceId, number>();
@@ -496,14 +541,21 @@ export function describeManifestRemoves(manifest: PluginManifest): string[] {
   // twice — the very duplication this pairing exists to remove. The removal card
   // is read beside the install card it undoes, so it counts surfaces the same
   // way or the two cannot be compared.
-  const pairedWebviewIds = new Set(pairedSurfaceHalves(manifest).values());
   for (const surface of manifest.surfaces) {
     if (surface.kind === "pane") {
       lines.push(`${surface.title} pane`);
       continue;
     }
-    if (surface.kind === "webview" && pairedWebviewIds.has(surface.id)) continue;
-    lines.push(`${surface.title} tab`);
+    if (surface.kind === "tab") {
+      lines.push(`${surface.title} tab`);
+    }
+  }
+  const unpaired = unpairedTabWebviews(manifest);
+  for (const webview of unpaired.tabs) {
+    lines.push(`${webview.title} tab`);
+  }
+  if (unpaired.extraPickers) {
+    lines.push("Issue pickers and cards on desktop");
   }
 
   const bySurface = new Map<PluginSurfaceId, number>();

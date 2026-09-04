@@ -129,6 +129,32 @@ describe("surface disclosure", () => {
     expect(describeManifestAdds(manifest)).toEqual(["Focus tab — desktop only, custom UI"]);
   });
 
+  it("collapses popover pages instead of listing each as a tab", () => {
+    const manifest = manifestWithSurfaces([
+      { kind: "webview", id: "issues", title: "Linear", panelId: "issues", entryHtml: "ui/index.html" },
+      {
+        kind: "webview",
+        id: "badge",
+        title: "Linear issue",
+        panelId: "issue",
+        entryHtml: "ui/index.html",
+        popover: { width: 300, height: 280 },
+      },
+      {
+        kind: "webview",
+        id: "card",
+        title: "Linear issue",
+        panelId: "issue",
+        entryHtml: "ui/index.html",
+        popover: { width: 360, height: 420 },
+      },
+    ]);
+    expect(describeManifestAdds(manifest)).toEqual([
+      "Linear tab — desktop only, custom UI",
+      "Issue pickers and cards on desktop",
+    ]);
+  });
+
   it("leaves an unrelated tab and webview as two lines", () => {
     const manifest = manifestWithSurfaces([
       { kind: "tab", id: "focus-tab", title: "Focus", panelId: "focus" },

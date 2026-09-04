@@ -123,6 +123,10 @@ export type PluginWebviewChoice = {
   provider?: string | null;
   /** Present on a model answer: ADE's picker sets model and fast in one gesture. */
   fastMode?: boolean;
+  defaultPermissionMode?: string | null;
+  defaultPermissionLabel?: string | null;
+  defaultReasoningEffort?: string | null;
+  defaultReasoningEffortLabel?: string | null;
 };
 
 export type PluginWebviewLaneChoice = PluginWebviewChoice & {
@@ -148,11 +152,25 @@ export type PluginWebviewModelPickRequest = {
 };
 
 /** Host answers. The page never invents a second shape for these. */
-export type PluginWebviewModelHostChoice = { modelId: string; fastMode: boolean; provider?: string | null };
+export type PluginWebviewModelHostChoice = {
+  modelId: string;
+  fastMode: boolean;
+  provider?: string | null;
+  label?: string;
+  defaultPermissionMode?: string | null;
+  defaultPermissionLabel?: string | null;
+  defaultReasoningEffort?: string | null;
+  defaultReasoningEffortLabel?: string | null;
+};
 export type PluginWebviewLaneHostChoice = { laneId: string; name: string };
 export type PluginWebviewProviderHostChoice = { provider: string };
-export type PluginWebviewPermissionHostChoice = { provider: string; field: string; value: string };
-export type PluginWebviewReasoningHostChoice = { modelId: string; effort: string | null };
+export type PluginWebviewPermissionHostChoice = {
+  provider: string;
+  field: string;
+  value: string;
+  label?: string;
+};
+export type PluginWebviewReasoningHostChoice = { modelId: string; effort: string | null; label?: string };
 
 export type AdePluginBridge = {
   readonly version: number;

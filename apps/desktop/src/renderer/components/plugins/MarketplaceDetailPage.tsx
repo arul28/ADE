@@ -283,7 +283,20 @@ export function MarketplaceDetailPage({ pluginId }: { pluginId: string }) {
           <Readme text={readme ?? listing.readme} description={listing.description} />
         </div>
 
-        <aside style={{ display: "grid", gap: 22, minWidth: 0 }} data-tour="plugin:marketplace.rail">
+        <aside
+          style={{
+            display: "grid",
+            gap: 22,
+            minWidth: 0,
+            position: "sticky",
+            top: 0,
+            maxHeight: "calc(100vh - 140px)",
+            overflowY: "auto",
+            alignSelf: "start",
+            paddingBottom: 8,
+          }}
+          data-tour="plugin:marketplace.rail"
+        >
           <MachineRail
             rows={coverage}
             listing={listing}
@@ -467,8 +480,18 @@ export function MarketplaceDetailPage({ pluginId }: { pluginId: string }) {
 
 function DetailShell({ onBack, children }: { onBack: () => void; children: React.ReactNode }) {
   return (
-    <div style={{ height: "100%", minHeight: 0, overflow: "auto" }} data-tour="plugin:marketplace.detail">
-      <div style={{ maxWidth: 980, margin: "0 auto", padding: "20px 24px 48px", display: "grid", gap: 20 }}>
+    <div style={{ height: "100%", minHeight: 0, overflow: "hidden", display: "flex", flexDirection: "column" }} data-tour="plugin:marketplace.detail">
+      <div style={{
+        maxWidth: 980,
+        margin: "0 auto",
+        padding: "20px 24px 24px",
+        display: "grid",
+        gap: 20,
+        flex: 1,
+        minHeight: 0,
+        width: "100%",
+        gridTemplateRows: "auto minmax(0, 1fr)",
+      }}>
         <button
           type="button"
           onClick={onBack}
@@ -489,7 +512,9 @@ function DetailShell({ onBack, children }: { onBack: () => void; children: React
           <ArrowLeft size={13} weight="regular" aria-hidden />
           Marketplace
         </button>
-        {children}
+        <div style={{ minHeight: 0, overflow: "auto", display: "grid", gap: 20, paddingBottom: 24 }}>
+          {children}
+        </div>
       </div>
     </div>
   );

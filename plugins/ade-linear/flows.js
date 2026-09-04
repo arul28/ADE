@@ -134,6 +134,35 @@ function failure(error, fallback) {
   return { ok: false, message: error?.message ?? fallback, code: error?.code ?? null };
 }
 
+const BRANCH_EXISTS = /already exists locally or on the remote/i;
+const MAX_BRANCH_ATTEMPTS = 20;
+
+function errorMessage(error) {
+  return error && typeof error.message === "string" ? error.message : String(error ?? "");
+}
+
+/**
+ * Create a lane, suffixing the branch when ADE already has that name.
+ *
+ * Linear matches a branch to an issue by the identifier in the name, so
+ * `eng-431-fix-oauth-refresh-2` still links. A launch that stopped at
+ * "already exists" created no lane and left the reader hunting for one.
+ */
+async function createLaneWithUniqueBranch(sdk, args) {
+  const base = args.branchName;
+  let lastError = null;
+  for (let attempt = 1; attempt <= MAX_BRANCH_ATTEMPTS; attempt += 1) {
+    const branchName = attempt === 1 ? base : `${base}-${attempt}`;
+    try {
+      return await sdk.actions.invoke("lane", "create", { ...args, branchName });
+    } catch (error) {
+      lastError = error;
+      if (!BRANCH_EXISTS.test(errorMessage(error))) throw error;
+    }
+  }
+  throw lastError;
+}
+
 /**
  * `{owner, name}` out of a git remote, for the two forms git actually stores.
  *
@@ -187,10 +216,16 @@ function createFlows(options = {}) {
     if (!row) return { ok: false, message: "That issue is not in this project's Linear view.", code: "not_found" };
 
     let lane;
+    const laneName = typeof input.name === "string" && input.name.trim()
+      ? input.name.trim()
+      : issueLaneName(row);
+    const branchName = typeof input.branchName === "string" && input.branchName.trim()
+      ? input.branchName.trim()
+      : issueBranchName(row);
     try {
-      lane = await sdk.actions.invoke("lane", "create", {
-        name: issueLaneName(row),
-        branchName: issueBranchName(row),
+      lane = await createLaneWithUniqueBranch(sdk, {
+        name: laneName,
+        branchName,
         ...(input.baseRef ? { baseBranch: input.baseRef } : {}),
         ...(input.description ? { description: input.description } : {}),
       });
@@ -205,7 +240,7 @@ function createFlows(options = {}) {
     try {
       await sdk.lanes.linkIssue({
         laneId,
-        issue: issueRefFromRow(row),
+        issue: { ...issueRefFromRow(row), branchName: lane?.branchRef ?? branchName },
         role: "primary",
         includeInPr: true,
         // What the Done-on-merge automation reads. Recorded on the LINK rather
@@ -225,7 +260,7 @@ function createFlows(options = {}) {
       ok: true,
       laneId,
       laneName: lane?.name ?? issueLaneName(row),
-      branchName: lane?.branchRef ?? issueBranchName(row),
+      branchName: lane?.branchRef ?? branchName,
       linked,
       message: linked
         ? `Opened a lane on ${row.identifier}.`
@@ -685,8 +720,14 @@ function createFlows(options = {}) {
   async function githubRepo() {
     let remote = null;
     try {
-      const result = await sdk.actions.invoke("git", "getOriginRemote", {});
-      remote = typeof result === "string" ? result : result?.url ?? result?.remote ?? result?.originRemote ?? null;
+      const lanes = await sdk.lanes.list().catch(() => []);
+      const lane = lanes.find((entry) => entry?.laneType === "primary") ?? lanes[0] ?? null;
+      const laneId = typeof lane?.id === "string" && lane.id.trim() ? lane.id : null;
+      if (!laneId) return null;
+      const result = await sdk.actions.invoke("git", "getOriginRemote", { laneId });
+      remote = typeof result === "string"
+        ? result
+        : result?.remoteUrl ?? result?.url ?? result?.remote ?? result?.originRemote ?? null;
     } catch {
       return null;
     }

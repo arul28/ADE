@@ -75,11 +75,11 @@ describe("PluginWebviewPickerHost", () => {
     await act(async () => {
       fireEvent.click(screen.getByText("pick-model"));
     });
-    await expect(pending).resolves.toEqual({
+    await expect(pending).resolves.toEqual(expect.objectContaining({
       modelId: "anthropic/claude-sonnet-5",
       fastMode: true,
       provider: "claude",
-    });
+    }));
   });
 
   it("answers a lane choice with the id and the display name", async () => {
@@ -105,6 +105,7 @@ describe("PluginWebviewPickerHost", () => {
       provider: "claude",
       field: "claudePermissionMode",
       value: "acceptEdits",
+      label: "Accept edits",
     });
   });
 
@@ -120,12 +121,14 @@ describe("PluginWebviewPickerHost", () => {
         pluginId: "acme",
         guestKey: "guest-1",
         verb: "ui.pickProvider",
-        args: { rect: { top: 40, left: 80 } },
+        args: { rect: { top: 40, left: 80, width: 96, height: 24 } },
       });
       render(<PluginWebviewPickerHost />);
       const holder = document.querySelector("[data-plugin-webview-picker='ui.pickProvider'] > div") as HTMLElement;
       expect(holder.style.top).toBe("140px");
       expect(holder.style.left).toBe("280px");
+      expect(holder.style.width).toBe("96px");
+      expect(holder.style.minHeight).toBe("24px");
     } finally {
       guest.remove();
     }

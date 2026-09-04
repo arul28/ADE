@@ -194,6 +194,7 @@ import type { BuiltInBrowserDesktopBridgeClient } from "./services/builtInBrowse
 import { createDesktopAudioCaptureBridge } from "./services/audio/desktopAudioBridgeClient";
 import { createDesktopHostBridge } from "./services/desktopHost/desktopHostBridgeClient";
 import { resolveMachineAdeLayout } from "./services/projects/machineLayout";
+import { ProjectRegistry } from "./services/projects/projectRegistry";
 import { createPushRegistrationStore } from "./services/push/pushRegistrationStore";
 import { createPushRelayClient } from "./services/push/pushRelayClient";
 import { getSharedPushPublisherService, resolvePushRelayStateFile, type PushPrNotification, type PushPublisherDeps, type PushPublisherService } from "./services/push/pushPublisherService";
@@ -2368,6 +2369,24 @@ export async function createAdeRuntime(args: {
         }
         if (delivered.length === 0) throw pluginNotificationUnavailable();
         return { delivered };
+      },
+      // Plugin installs are machine-scoped. Uninstall has to visit every
+      // project this machine has registered, not only the one currently
+      // attached — otherwise Marketplace Remove while one project is open
+      // leaves plugin panels sitting in a closed project's database.
+      listRegisteredProjects: () =>
+        new ProjectRegistry().list().map((project) => ({
+          projectId: project.projectId,
+          projectRoot: project.rootPath,
+        })),
+      openRegisteredProjectDb: async ({ projectRoot }) => {
+        const dbPath = path.join(projectRoot, ".ade", "ade.db");
+        try {
+          if (!fs.existsSync(dbPath)) return null;
+        } catch {
+          return null;
+        }
+        return await openKvDb(dbPath, logger);
       },
     });
     const syncDeviceIdPath = path.join(

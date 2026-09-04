@@ -127,7 +127,7 @@ function makeDeps(options = {}) {
   });
   const sdk = createSdk({
     secrets,
-    lanes: options.lanes ?? [],
+    lanes: options.lanes ?? [{ id: "lane-primary", name: "main", laneType: "primary" }],
     sessionIssues: options.sessionIssues ?? {},
     ...(options.officialClient !== undefined ? { officialClient: options.officialClient } : {}),
     ...(options.webhookStatus !== undefined ? { webhookStatus: options.webhookStatus } : {}),
@@ -660,6 +660,7 @@ describe("the reads answer the shapes page/src/types.ts declares", () => {
     });
     assert.deepEqual(await cold.pageLanes(), []);
     assert.deepEqual(await cold.pageProjects(), []);
+    await assert.rejects(() => cold.pageCatalog(), /still starting up/);
     assert.deepEqual(await cold.pageModels(), []);
     assert.equal((await cold.pageConnection()).connected, false);
     assert.equal((await cold.pageQuickView()).viewer, null);

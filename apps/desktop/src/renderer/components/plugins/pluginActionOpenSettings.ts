@@ -26,7 +26,7 @@ const SETTINGS_CONTEXT: PluginSurfaceOnlyContext = { kind: "surface", surface: "
  * ten tabs' worth of controls; a poll for a short window is, and it costs
  * nothing when the element is there on the first look.
  */
-const SECTION_SCROLL_WINDOW_MS = 1_500;
+const SECTION_SCROLL_WINDOW_MS = 8_000;
 const SECTION_SCROLL_INTERVAL_MS = 60;
 
 /**
@@ -57,16 +57,27 @@ function ownSettingsSections(pluginId: string) {
 function scrollToSectionWhenDrawn(domId: string): void {
   if (typeof document === "undefined" || typeof window === "undefined") return;
   const deadline = Date.now() + SECTION_SCROLL_WINDOW_MS;
-  const look = (): void => {
+  const look = (): boolean => {
     const element = document.getElementById(domId);
-    if (element) {
-      element.scrollIntoView({ block: "start", behavior: "smooth" });
+    if (!element) return false;
+    element.scrollIntoView({ block: "start", behavior: "smooth" });
+    return true;
+  };
+  if (look()) return;
+  const observer = typeof MutationObserver === "function"
+    ? new MutationObserver(() => {
+      if (look() || Date.now() >= deadline) observer.disconnect();
+    })
+    : null;
+  observer?.observe(document.documentElement, { childList: true, subtree: true });
+  const tick = (): void => {
+    if (look() || Date.now() >= deadline) {
+      observer?.disconnect();
       return;
     }
-    if (Date.now() >= deadline) return;
-    window.setTimeout(look, SECTION_SCROLL_INTERVAL_MS);
+    window.setTimeout(tick, SECTION_SCROLL_INTERVAL_MS);
   };
-  look();
+  tick();
 }
 
 /**

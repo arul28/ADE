@@ -57,6 +57,7 @@ function build(overrides = {}) {
       "github.createRepoAutolink": async () => ({ ok: true }),
       ...(overrides.actions ?? {}),
     },
+    ...(overrides.lanes !== undefined ? { lanes: overrides.lanes } : {}),
     ...(overrides.sdk ?? {}),
   });
   const api = createApi(overrides.api ?? {});
@@ -113,6 +114,29 @@ describe("opening a lane on an issue", () => {
   it("fails when ADE made something with no id rather than reporting success", async () => {
     const { flows } = build({ actions: { "lane.create": async () => ({}) } });
     assert.equal((await flows.createLaneFromIssue({ issue: ROW })).ok, false);
+  });
+
+  it("retries with a unique suffix when that branch already exists", async () => {
+    let attempts = 0;
+    const { sdk, flows } = build({
+      actions: {
+        "lane.create": async (args) => {
+          attempts += 1;
+          if (attempts === 1) {
+            throw new Error(
+              `Branch "${args.branchName}" already exists locally or on the remote. Choose a different branch name.`,
+            );
+          }
+          return { id: "lane-2", name: args.name, branchRef: args.branchName };
+        },
+      },
+    });
+    const result = await flows.createLaneFromIssue({ issue: ROW });
+    assert.equal(result.ok, true);
+    assert.equal(result.branchName, "eng-431-fix-oauth-refresh-2");
+    const create = sdk.calls.filter(([name]) => name === "actions.lane.create");
+    assert.equal(create.length, 2);
+    assert.equal(create[1][1].branchName, "eng-431-fix-oauth-refresh-2");
   });
 
   it("passes a base ref through when the caller named one", async () => {
@@ -791,8 +815,10 @@ describe("reading the GitHub repo out of a git remote", () => {
 
 describe("creating a GitHub autolink", () => {
   function withConnection(overrides = {}) {
-    const built = build(overrides);
-    return built;
+    return build({
+      ...overrides,
+      lanes: overrides.lanes ?? [{ id: "lane-primary", name: "main", laneType: "primary" }],
+    });
   }
 
   it("sends the owner, the repo, the key prefix and the workspace URL", async () => {
@@ -822,6 +848,21 @@ describe("creating a GitHub autolink", () => {
     });
     await data.refreshConnection();
     assert.equal((await flows.createAutolink({ teamKey: "ENG" })).code, "no_repo");
+  });
+
+  it("reads origin from the primary lane, because git.getOriginRemote is lane-scoped", async () => {
+    const { sdk, data, flows } = withConnection();
+    await data.refreshConnection();
+    assert.deepEqual(await flows.githubRepo(), { owner: "acme", name: "app" });
+    const call = sdk.calls.find(([name]) => name === "actions.git.getOriginRemote");
+    assert.deepEqual(call[1], { laneId: "lane-primary" });
+  });
+
+  it("answers no repo when this project has no lane to read origin from", async () => {
+    const { sdk, data, flows } = withConnection({ lanes: [] });
+    await data.refreshConnection();
+    assert.equal(await flows.githubRepo(), null);
+    assert.equal(sdk.calls.some(([name]) => name === "actions.git.getOriginRemote"), false);
   });
 
   it("refuses an empty team key before spending anything", async () => {

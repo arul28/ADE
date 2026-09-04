@@ -60,6 +60,7 @@ import {
   parsePluginWebviewUrl,
   pluginWebviewHostEngineOwner,
   pluginWebviewUiTimeoutMs,
+  readPluginWebviewPickerRect,
   sanitizePluginWebviewEngineRect,
   sanitizePluginWebviewPageError,
   PLUGIN_WEBVIEW_SOCKETS_MAX_ROWS,
@@ -296,6 +297,20 @@ function boundedText(value: unknown, maxChars: number): string | undefined {
   const trimmed = value.trim();
   if (!trimmed) return undefined;
   return trimmed.length > maxChars ? trimmed.slice(0, maxChars) : trimmed;
+}
+
+/**
+ * The chip box a page measured, if it sent one.
+ *
+ * Picker verbs used to rebuild their argument bags by hand and drop `rect`,
+ * which is why ADE's own pickers opened in the middle of the plugin page
+ * instead of on the chip that asked. Forwarded through the same reader the
+ * renderer uses, so a malformed box is absent rather than a NaN the overlay
+ * would treat as a position.
+ */
+function pickerRectBag(params: Record<string, unknown>): { rect: ReturnType<typeof readPluginWebviewPickerRect> } | Record<string, never> {
+  const rect = readPluginWebviewPickerRect(params.rect);
+  return rect ? { rect } : {};
 }
 
 /**
@@ -1140,6 +1155,7 @@ export function createPluginWebviewBridgeServer(
           ...(Array.isArray(params.availableModelIds)
             ? { availableModelIds: readModelIdList(params.availableModelIds) }
             : {}),
+          ...pickerRectBag(params),
         });
         return readChoice(answer, ["modelId"]);
       }
@@ -1147,6 +1163,7 @@ export function createPluginWebviewBridgeServer(
       case "ui.pickLane": {
         const answer = await relay(guest, "ui.pickLane", {
           ...(boundedText(params.value, 200) ? { value: boundedText(params.value, 200) } : {}),
+          ...pickerRectBag(params),
         });
         return readChoice(answer, ["laneId", "name"]);
       }
@@ -1162,6 +1179,7 @@ export function createPluginWebviewBridgeServer(
         const answer = await relay(guest, "ui.pickPermissionMode", {
           provider,
           ...(boundedText(params.value, 64) ? { value: boundedText(params.value, 64) } : {}),
+          ...pickerRectBag(params),
         });
         return readChoice(answer, ["provider", "field", "value"]);
       }
@@ -1178,18 +1196,26 @@ export function createPluginWebviewBridgeServer(
           ...(params.value === null
             ? { value: null }
             : boundedText(params.value, 64) ? { value: boundedText(params.value, 64) } : {}),
+          ...pickerRectBag(params),
         });
         // `effort` may legitimately be null, so it cannot be required the way
         // the other fields are: the check is on the record and on `modelId`.
         const choice = readChoice(answer, ["modelId"]);
         if (!choice) return null;
         const effort = boundedText((choice as Record<string, unknown>).effort, 64);
-        return { modelId: (choice as { modelId: string }).modelId, effort: effort ?? null };
+        return {
+          modelId: (choice as { modelId: string }).modelId,
+          effort: effort ?? null,
+          ...(typeof (choice as { label?: unknown }).label === "string"
+            ? { label: (choice as { label: string }).label }
+            : {}),
+        };
       }
 
       case "ui.pickProvider": {
         const answer = await relay(guest, "ui.pickProvider", {
           ...(boundedText(params.value, 64) ? { value: boundedText(params.value, 64) } : {}),
+          ...pickerRectBag(params),
         });
         return readChoice(answer, ["provider"]);
       }

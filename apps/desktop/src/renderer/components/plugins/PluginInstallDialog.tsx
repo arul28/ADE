@@ -1,5 +1,5 @@
 import React from "react";
-import { ArrowSquareOut, FolderOpen, Package } from "@phosphor-icons/react";
+import { ArrowSquareOut, Cpu, Database, FolderOpen, Globe, LinkSimple, Package, Plugs, Plus, Sparkle, SquaresFour, Terminal, User } from "@phosphor-icons/react";
 
 import { COLORS, RADII, SANS_FONT, outlineButton, primaryButton } from "../lanes/laneDesignTokens";
 import { LaneDialogShell } from "../lanes/LaneDialogShell";
@@ -106,6 +106,21 @@ function nativeFolderPicker():
   if (typeof window === "undefined" || isWebClientMode()) return null;
   const choose = window.ade?.project?.chooseDirectory;
   return typeof choose === "function" ? choose : null;
+}
+
+function addLineIcon(line: string) {
+  if (line.includes(" tab") || line.includes(" pane")) return SquaresFour;
+  if (line.includes("addition")) return Plus;
+  if (line.startsWith("Terminal commands")) return Terminal;
+  if (/agent skill/i.test(line)) return Sparkle;
+  if (line.startsWith("Turns ") && line.includes("chips")) return LinkSimple;
+  if (line.startsWith("Stores data")) return Database;
+  if (line.startsWith("Runs code")) return Cpu;
+  if (line.startsWith("Talks to")) return Globe;
+  if (line.startsWith("Signs you in") || line.startsWith("Asks to use")) return User;
+  if (line.includes("listens on port")) return Plugs;
+  if (line.startsWith("Issue pickers")) return SquaresFour;
+  return Package;
 }
 
 export function PluginInstallDialog({
@@ -392,23 +407,35 @@ export function PluginInstallDialog({
             Adds
           </span>
           {adds.length > 0 ? (
-            <ul style={{ margin: 0, padding: 0, listStyle: "none", display: "grid", gap: 5 }}>
-              {adds.map((line) => (
-                <li
-                  key={line}
-                  style={{
-                    display: "flex",
-                    gap: 8,
-                    fontFamily: SANS_FONT,
-                    fontSize: 11.5,
-                    color: COLORS.textSecondary,
-                    lineHeight: 1.5,
-                  }}
-                >
-                  <span aria-hidden style={{ color: COLORS.textDim }}>—</span>
-                  <span>{line}</span>
-                </li>
-              ))}
+            <ul style={{
+              margin: 0,
+              padding: 0,
+              listStyle: "none",
+              display: "grid",
+              gap: 8,
+              maxHeight: "min(36vh, 280px)",
+              overflowY: "auto",
+            }}>
+              {adds.map((line) => {
+                const Icon = addLineIcon(line);
+                return (
+                  <li
+                    key={line}
+                    style={{
+                      display: "flex",
+                      gap: 10,
+                      alignItems: "flex-start",
+                      fontFamily: SANS_FONT,
+                      fontSize: 11.5,
+                      color: COLORS.textSecondary,
+                      lineHeight: 1.5,
+                    }}
+                  >
+                    <Icon size={14} weight="duotone" style={{ flexShrink: 0, marginTop: 1, color: COLORS.textMuted }} />
+                    <span>{line}</span>
+                  </li>
+                );
+              })}
             </ul>
           ) : (
             <p style={{ margin: 0, fontFamily: SANS_FONT, fontSize: 11.5, color: COLORS.textMuted, lineHeight: 1.5 }}>

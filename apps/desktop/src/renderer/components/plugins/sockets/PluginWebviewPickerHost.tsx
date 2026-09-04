@@ -2,8 +2,14 @@ import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from "re
 
 import { MODEL_PICKER_PROVIDER_ORDER, providerLabel } from "../../../../shared/modelCatalog";
 import { getModelById, resolveProviderGroupForModel, type ProviderFamily } from "../../../../shared/modelRegistry";
-import { pluginChatProviderCapabilities } from "../../../../shared/plugins/chatCapabilities";
-import { readPluginWebviewPickerRect } from "../../../../shared/plugins/webviewBridge";
+import {
+  pluginChatModelCapabilities,
+  pluginChatProviderCapabilities,
+} from "../../../../shared/plugins/chatCapabilities";
+import {
+  readPluginWebviewPickerRect,
+  type PluginWebviewPickerAnchorRect,
+} from "../../../../shared/plugins/webviewBridge";
 import { useAppStore } from "../../../state/appStore";
 import { ModelPicker } from "../../shared/ModelPicker/ModelPicker";
 import { ModelPickerRail, type RailEntry, type RailSelection } from "../../shared/ModelPicker/ModelPickerRail";
@@ -56,10 +62,16 @@ const PICKER_FAMILY_BY_GROUP: Record<(typeof MODEL_PICKER_PROVIDER_ORDER)[number
   lmstudio: "lmstudio",
 };
 
-function clampPickerAnchor(top: number, left: number): { top: number; left: number } {
+function clampPickerAnchor(
+  top: number,
+  left: number,
+  size?: { width?: number; height?: number },
+): { top: number; left: number; width?: number; height?: number } {
   return {
     top: Math.min(Math.max(12, top), Math.max(12, window.innerHeight - 72)),
     left: Math.min(Math.max(12, left), Math.max(12, window.innerWidth - 280)),
+    ...(size?.width && size.width > 0 ? { width: size.width } : {}),
+    ...(size?.height && size.height > 0 ? { height: size.height } : {}),
   };
 }
 
@@ -71,11 +83,19 @@ function guestBox(guestKey: string): DOMRect | null {
   return rect;
 }
 
-function pickerAnchor(request: PluginWebviewPickerRequest): { top: number; left: number } {
+function pickerAnchor(request: PluginWebviewPickerRequest): {
+  top: number;
+  left: number;
+  width?: number;
+  height?: number;
+} {
   const guest = guestBox(request.guestKey);
   const local = readPluginWebviewPickerRect(request.args.rect);
+  const size: Pick<PluginWebviewPickerAnchorRect, "width" | "height"> | undefined = local
+    ? { width: local.width, height: local.height }
+    : undefined;
   if (guest && local) {
-    return clampPickerAnchor(guest.top + local.top, guest.left + local.left);
+    return clampPickerAnchor(guest.top + local.top, guest.left + local.left, size);
   }
   if (!guest) {
     return clampPickerAnchor(
@@ -89,6 +109,38 @@ function pickerAnchor(request: PluginWebviewPickerRequest): { top: number; left:
     guest.top + guest.height / 2 - 24,
     guest.left + guest.width / 2 - 140,
   );
+}
+
+function modelPickAnswer(modelId: string, fastMode: boolean): Record<string, unknown> {
+  const descriptor = getModelById(modelId);
+  const provider = descriptor ? resolveProviderGroupForModel(descriptor) : undefined;
+  const modelCap = pluginChatModelCapabilities().find((entry) => entry.id === modelId);
+  const family = resolvePluginWebviewPermissionFamily(provider ?? modelCap?.provider);
+  const providerCap = family
+    ? pluginChatProviderCapabilities().find((entry) => entry.provider === family)
+    : undefined;
+  const defaultPermissionMode = providerCap?.defaultPermissionMode;
+  const defaultPermissionLabel = providerCap?.permissionModes
+    .find((mode) => mode.value === defaultPermissionMode)?.label;
+  const defaultReasoningEffort = modelCap?.defaultReasoningEffort ?? null;
+  const defaultReasoningEffortLabel = defaultReasoningEffort
+    ? modelCap?.reasoningEfforts.find((entry) => entry.effort === defaultReasoningEffort)?.label
+      ?? defaultReasoningEffort
+    : null;
+  return {
+    modelId,
+    fastMode,
+    ...(provider ? { provider } : {}),
+    label: descriptor?.displayName ?? modelCap?.label ?? modelId,
+    ...(defaultPermissionMode
+      ? {
+        defaultPermissionMode,
+        defaultPermissionLabel: defaultPermissionLabel ?? defaultPermissionMode,
+      }
+      : {}),
+    defaultReasoningEffort,
+    ...(defaultReasoningEffortLabel ? { defaultReasoningEffortLabel } : {}),
+  };
 }
 
 function AutoOpen({ children }: { children: React.ReactNode }) {
@@ -152,14 +204,8 @@ function ModelPick({ request }: { request: PluginWebviewPickerRequest }) {
       onFastModeChange={setFastMode}
       openRequestKey={request.token}
       onChange={(modelId, options) => {
-        const descriptor = getModelById(modelId);
-        const provider = descriptor ? resolveProviderGroupForModel(descriptor) : undefined;
         settlePluginWebviewPicker(
-          {
-            modelId,
-            fastMode: options?.fastMode === true || fastMode,
-            ...(provider ? { provider } : {}),
-          },
+          modelPickAnswer(modelId, options?.fastMode === true || fastMode),
           request.token,
         );
       }}
@@ -218,8 +264,14 @@ function PermissionPick({ request }: { request: PluginWebviewPickerRequest }) {
         options={options}
         menuLayerClassName="z-[1500]"
         onSelect={(value) => {
+          const option = options.find((entry) => entry.value === value);
           settlePluginWebviewPicker(
-            { provider: family, field: pluginWebviewPermissionField(family), value },
+            {
+              provider: family,
+              field: pluginWebviewPermissionField(family),
+              value,
+              label: option?.label ?? value,
+            },
             request.token,
           );
         }}
@@ -250,7 +302,11 @@ function ReasoningPick({ request }: { request: PluginWebviewPickerRequest }) {
         modelId={modelId}
         reasoningEffort={value}
         onChange={(effort) => {
-          settlePluginWebviewPicker({ modelId, effort }, request.token);
+          const modelCap = pluginChatModelCapabilities().find((entry) => entry.id === modelId);
+          const label = effort
+            ? modelCap?.reasoningEfforts.find((entry) => entry.effort === effort)?.label ?? effort
+            : "No reasoning";
+          settlePluginWebviewPicker({ modelId, effort, label }, request.token);
         }}
       />
     </div>
@@ -314,7 +370,12 @@ function PickerBody({ request }: { request: PluginWebviewPickerRequest }) {
 export function PluginWebviewPickerHost() {
   const request = usePluginWebviewPicker();
   const token = request?.token ?? null;
-  const [anchor, setAnchor] = useState<{ top: number; left: number }>({ top: 24, left: 24 });
+  const [anchor, setAnchor] = useState<{
+    top: number;
+    left: number;
+    width?: number;
+    height?: number;
+  }>({ top: 24, left: 24 });
 
   useLayoutEffect(() => {
     if (!request) return;
@@ -350,6 +411,8 @@ export function PluginWebviewPickerHost() {
           position: "absolute",
           top: anchor.top,
           left: anchor.left,
+          ...(anchor.width ? { width: anchor.width } : {}),
+          ...(anchor.height ? { minHeight: anchor.height } : {}),
         }}
         onMouseDown={(event) => event.stopPropagation()}
       >

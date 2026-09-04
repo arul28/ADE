@@ -2099,6 +2099,117 @@ describe("uninstall sweeps a plugin's schedules", () => {
   });
 });
 
+describe("uninstall drops stored config", () => {
+  afterEach(closeScratch);
+
+  it("removes the plugin's settings so a reinstall starts from defaults", async () => {
+    const { plugins, pluginsRoot } = await hostWithFixture();
+    await plugins.setConfig({ pluginId: "hello-plugin", values: { greeting: "Hei" } });
+    expect(storedConfig(pluginsRoot)).toEqual({ "hello-plugin": { greeting: "Hei" } });
+
+    await plugins.uninstall({ pluginId: "hello-plugin" });
+
+    expect(fs.existsSync(path.join(pluginsRoot, "config.json"))).toBe(false);
+    await plugins.install({ source: fixtureRoot });
+    expect((await plugins.get({ pluginId: "hello-plugin" }))?.config.greeting).toBe("Hello");
+  });
+
+  it("also drops leftover keys for plugins that are no longer installed", async () => {
+    const { plugins, pluginsRoot } = await hostWithFixture();
+    await plugins.setConfig({ pluginId: "hello-plugin", values: { greeting: "Hei" } });
+    fs.writeFileSync(
+      path.join(pluginsRoot, "config.json"),
+      `${JSON.stringify({
+        version: 1,
+        config: {
+          "hello-plugin": { greeting: "Hei" },
+          "decision-log": { digestEnabled: false },
+        },
+      }, null, 2)}\n`,
+      "utf8",
+    );
+
+    await plugins.uninstall({ pluginId: "hello-plugin" });
+
+    expect(fs.existsSync(path.join(pluginsRoot, "config.json"))).toBe(false);
+  });
+});
+
+describe("uninstall sweeps registered projects that are not attached", () => {
+  afterEach(closeScratch);
+
+  it("removes plugin rows from a closed project's database", async () => {
+    const { host, plugins } = await hostWithFixture();
+    const closedRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-plugin-closed-"));
+    scratchDirs.push(closedRoot);
+    const closedDbPath = path.join(closedRoot, ".ade", "ade.db");
+    const seed = await openKvDb(closedDbPath, silentLogger());
+    createPluginDataStore({ db: seed }).updatePanel("hello-plugin", "main", {
+      schema: { v: 1, title: "Stale" },
+      vocabVersion: 1,
+    });
+    seed.close();
+
+    host.setMachineContext({
+      listRegisteredProjects: () => [{ projectId: "project-closed", projectRoot: closedRoot }],
+      openRegisteredProjectDb: async ({ projectRoot }) => {
+        const dbPath = path.join(projectRoot, ".ade", "ade.db");
+        if (!fs.existsSync(dbPath)) return null;
+        return await openKvDb(dbPath, silentLogger());
+      },
+    });
+
+    await plugins.uninstall({ pluginId: "hello-plugin" });
+
+    const check = await openKvDb(closedDbPath, silentLogger());
+    openDatabases.push(check);
+    expect(createPluginDataStore({ db: check }).readPanel("hello-plugin", "main")).toBeNull();
+  });
+
+  it("does not create a database for a registered project that has never had one", async () => {
+    const { host, plugins } = await hostWithFixture();
+    const emptyRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-plugin-empty-"));
+    scratchDirs.push(emptyRoot);
+    host.setMachineContext({
+      listRegisteredProjects: () => [{ projectId: "project-empty", projectRoot: emptyRoot }],
+      openRegisteredProjectDb: async ({ projectRoot }) => {
+        const dbPath = path.join(projectRoot, ".ade", "ade.db");
+        if (!fs.existsSync(dbPath)) return null;
+        return await openKvDb(dbPath, silentLogger());
+      },
+    });
+
+    await plugins.uninstall({ pluginId: "hello-plugin" });
+
+    expect(fs.existsSync(path.join(emptyRoot, ".ade", "ade.db"))).toBe(false);
+  });
+});
+
+describe("attach prunes plugin rows whose plugin is gone", () => {
+  afterEach(closeScratch);
+
+  it("drops an uninstalled plugin's panel and keeps an installed plugin's", async () => {
+    const { host } = await hostWithFixture();
+    const extraRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-plugin-orphan-"));
+    scratchDirs.push(extraRoot);
+    const extraDb = await openKvDb(path.join(extraRoot, ".ade", "ade.db"), silentLogger());
+    openDatabases.push(extraDb);
+    const extraStore = createPluginDataStore({ db: extraDb });
+    extraStore.updatePanel("ghost-plugin", "main", { schema: { v: 1, title: "Ghost" }, vocabVersion: 1 });
+    extraStore.updatePanel("hello-plugin", "main", { schema: { v: 1, title: "Keep" }, vocabVersion: 1 });
+
+    host.attachProject({
+      projectId: "project-orphan",
+      projectRoot: extraRoot,
+      db: extraDb,
+      invokeAdeAction: async () => null,
+    });
+
+    expect(extraStore.readPanel("ghost-plugin", "main")).toBeNull();
+    expect(extraStore.readPanel("hello-plugin", "main")).not.toBeNull();
+  });
+});
+
 /**
  * Presence is the one leftover another COMPUTER can see.
  *

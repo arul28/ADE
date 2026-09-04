@@ -792,6 +792,12 @@ export type PluginWebviewModelChoice = {
   modelId: string;
   fastMode: boolean;
   provider?: string;
+  /** ADE's display name for the model. Pages print this on the chip. */
+  label?: string;
+  defaultPermissionMode?: string;
+  defaultPermissionLabel?: string;
+  defaultReasoningEffort?: string | null;
+  defaultReasoningEffortLabel?: string;
 };
 
 /** What `ui.pickLane` answers. `laneId` is ADE's own lane id. */
@@ -814,12 +820,16 @@ export type PluginWebviewPermissionModeChoice = {
   provider: string;
   field: string;
   value: string;
+  /** The control's own label for `value`, so a chip does not print `acceptEdits`. */
+  label?: string;
 };
 
 /** What `ui.pickReasoningEffort` answers. `effort` is null for "no reasoning". */
 export type PluginWebviewReasoningEffortChoice = {
   modelId: string;
   effort: string | null;
+  /** The control's own label for `effort`. */
+  label?: string;
 };
 
 /** What `ui.pickProvider` answers. `provider` is a model registry family. */

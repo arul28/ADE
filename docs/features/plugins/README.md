@@ -253,7 +253,10 @@ holds the plugin's secrets.
 - The install disclosure prints "Talks to api.cursor.com" in the same "Adds:"
   list as everything else — the Marketplace modal, the Marketplace detail page
   and the in-chat approval card all read `describeManifestAdds`, so there is one
-  copy of the sentence.
+  copy of the sentence. Popover, settings-section, dialog, and chat-card
+  webviews are not listed as extra tabs; those pages collapse to "Issue pickers
+  and cards on desktop" when a plugin ships them. The Adds list itself scrolls
+  when it is longer than the dialog.
 - `pluginChildNetworkGuard.ts` patches `fetch`, `WebSocket`, `http`/`https`
   `request`/`get` and `net`/`tls` `connect` **before the plugin entry is
   required**, because a dependency that dials at import time is exactly what a
@@ -1826,6 +1829,11 @@ a walk-away. Unknown models still open the reasoning control; a catalogued
 model with an empty ladder answers null without drawing. Mirrored on hosted
 web and iOS.
 
+A page that measured the chip that asked (`rect`) gets the picker on that box,
+not in the middle of the guest. A model choice answers ADE's display name and
+that model's default permission and reasoning labels, so the chips print the
+same words the rest of ADE uses.
+
 `collections.list` returns at most 500 rows, and every collection named must be
 declared in the manifest. Absent on purpose, and not stubbed: `secrets` (a page
 is the one place a plugin's credentials should never be readable),
@@ -2544,6 +2552,19 @@ necessary: [`credentialHandoff`](#inheriting-a-connection-ade-already-holds) on 
 machine that is already connected, and
 [`auth.officialClient`](#borrowing-ades-own-oauth-client) on one that is not.
 
+Signed out, the Linear page is a Sign in empty state. That button opens this
+plugin's connection settings section, not the compiled GitHub integrations
+card. Completing OAuth reloads the issue list and the project nav from the
+plugin's collections rather than waiting for a tab remount.
+
+GitHub autolinks read `git.getOriginRemote` against the project's primary lane.
+Calling it with no `laneId` is the empty fallback, which is why a project with
+a GitHub origin used to draw "No GitHub origin remote was detected".
+
+Creating a lane from an issue retries with `-2`, `-3`, … when that branch
+already exists locally or on the remote. A launch that stopped at "already
+exists" created no lane.
+
 The compiled Linear code is NOT deleted by any of this. It is still there, still
 compiled, and still what the product runs on a machine without the plugin.
 Deletion is a later step — see [Program status](#program-status).
@@ -2681,6 +2702,33 @@ the run row, so a rule that breaks on an uninstall says why.
 None of this fences off the underlying capability. An agent still has `xcrun
 simctl`, the Linear REST API and AppleScript; what a plugin carries is ADE's
 premium layer over them — typed actions, proof capture, lane and chat context.
+
+### Uninstall drops the plugin's machine state and every project it wrote into
+
+Plugins are machine-scoped. Removing one deletes the install directory and
+registry row, then `cleanupUninstalledPluginData` frees everything that row
+did not reach:
+
+- that plugin's key in `config.json` (and any other config keys whose plugin
+  is no longer installed). Settings survive an *upgrade* because the install
+  directory is replaced wholesale; they do not survive Remove. A reinstall
+  starts from the manifest defaults.
+- its schedules, notification counters, SDK secrets, and credential-handoff
+  answer
+- `plugin_collections`, `plugin_panels`, `plugin_contributions`, this
+  machine's `plugin_presence` row, its automation ingress log, and its local
+  wire-meter rows in **every project this machine has registered**, not only
+  the project that is currently open. Closed projects are opened long enough
+  to sweep, then closed. A folder that has never grown an `.ade/ade.db` is
+  skipped rather than created.
+- Opening a project also prunes rows whose plugin is no longer installed, so
+  leftovers from before this sweep existed (or from a database uninstall
+  failed to open) do not sit until the next Remove of the same id.
+
+Still not swept: automation rules in `ade.yaml` (authored content). A custom
+OAuth app the user configured. The Linear *connection token* is still cleared
+only for project scopes currently running — that store is per-project
+`.ade/secrets`, not the plugin tables.
 
 ### Connections leave with the plugin
 

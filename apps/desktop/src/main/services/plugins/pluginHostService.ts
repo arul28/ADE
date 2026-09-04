@@ -130,7 +130,7 @@ import {
   type PluginCredentialHandoffService,
 } from "./pluginCredentialHandoff";
 import { officialOAuthClientForPlugin } from "./pluginOfficialClients";
-import { resolvePluginsRoot } from "./pluginRegistryFile";
+import { readPluginRegistryFile, resolvePluginsRoot } from "./pluginRegistryFile";
 import type { SyncCredentialStore } from "../../../../../ade-cli/src/services/credentials/credentialStore";
 
 /**
@@ -152,6 +152,8 @@ const PLUGIN_CREDENTIAL_HANDOFF_STATE_FILE = "credential-handoff.json";
  * upgrade, and settings the user typed must survive that. `plugin.setConfig`
  * writes it; `sdk.config.get()` and the settings UI read it back through
  * {@link effectiveConfig}, which layers stored values over manifest defaults.
+ * Uninstall is the opposite of upgrade: the gone plugin's settings are
+ * dropped so a reinstall starts from the manifest defaults.
  */
 const PLUGIN_CONFIG_FILE = "config.json";
 
@@ -337,6 +339,30 @@ export type PluginMachineContext = {
    * are built well after the host.
    */
   disconnectAccountsForPlugin?: (pluginId: string) => void | Promise<void>;
+  /**
+   * Every project this machine has registered, including ones that are not
+   * currently attached.
+   *
+   * Plugin installs are machine-scoped. Rows they wrote live in each project's
+   * database, so uninstall has to visit the closed ones too — otherwise a
+   * Marketplace Remove while one project is open leaves panels sitting in
+   * every other project's database. Absent means "sweep only the projects
+   * this process currently has attached", which is what unit tests want and
+   * what a host that never learned the catalog used to do for real.
+   */
+  listRegisteredProjects?: () => readonly { projectId: string; projectRoot: string }[];
+  /**
+   * Open a registered project's database that is not currently attached, so
+   * uninstall can sweep it.
+   *
+   * Return null when there is no database yet. Uninstall must not create one
+   * for a folder that has never been an ADE project on disk. The host closes
+   * whatever this returns.
+   */
+  openRegisteredProjectDb?: (project: {
+    projectId: string;
+    projectRoot: string;
+  }) => Promise<AdeDb | null>;
   /**
    * Record a clip through ADE's microphone, for `ade.audio.captureClip`.
    *
@@ -581,6 +607,85 @@ function writeStoredConfig(
 ): void {
   fs.mkdirSync(pluginsRoot, { recursive: true });
   writeTextAtomic(path.join(pluginsRoot, PLUGIN_CONFIG_FILE), `${JSON.stringify({ version: 1, config }, null, 2)}\n`);
+}
+
+/**
+ * Drop settings whose plugin is no longer installed.
+ *
+ * Settings survive an UPGRADE because the install directory is replaced
+ * wholesale; they must not survive REMOVE. `installedIds` is the registry
+ * AFTER the uninstall row was deleted, so the plugin that just left is
+ * already absent, and a leftover key from an older uninstall (a plugin that
+ * is not in the registry at all) goes with it.
+ */
+function forgetStoredConfig(pluginsRoot: string, installedIds: ReadonlySet<string>): void {
+  const stored = readStoredConfig(pluginsRoot);
+  let changed = false;
+  for (const pluginId of Object.keys(stored)) {
+    if (installedIds.has(pluginId)) continue;
+    delete stored[pluginId];
+    changed = true;
+  }
+  if (!changed) return;
+  const filePath = path.join(pluginsRoot, PLUGIN_CONFIG_FILE);
+  if (Object.keys(stored).length === 0) {
+    try {
+      fs.unlinkSync(filePath);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") writeStoredConfig(pluginsRoot, stored);
+    }
+    return;
+  }
+  writeStoredConfig(pluginsRoot, stored);
+}
+
+/**
+ * One project's share of an uninstall: collections, panels, contributions,
+ * this machine's presence row, ingress log, local wire meter.
+ *
+ * Presence is keyed by machine: deleting by plugin id alone would drop peers'
+ * rows and tell the coverage matrix those computers uninstalled something
+ * they did not. Collections are the plugin's data in this project and go
+ * with the package, same as they already did for the attached project.
+ */
+function sweepUninstalledPluginFromDb(args: {
+  db: AdeDb;
+  pluginId: string;
+  localMachineKey: string | null;
+  data?: PluginDataStore;
+}): void {
+  if (args.data) args.data.removePluginData(args.pluginId);
+  else createPluginDataStore({ db: args.db }).removePluginData(args.pluginId);
+  if (args.localMachineKey) {
+    deletePluginPresenceForPlugin(args.db, args.localMachineKey, args.pluginId);
+  }
+  try {
+    args.db.run(
+      `delete from automation_ingress_events where source = 'plugin' and event_key like ?`,
+      [`${args.pluginId}:%`],
+    );
+  } catch {
+    // Table absent on a database that predates automation ingress.
+  }
+  try {
+    args.db.run(`delete from plugin_wire_meter_daily where plugin_id = ?`, [args.pluginId]);
+  } catch {
+    // Local-only meter; older databases may not have it.
+  }
+}
+
+function pluginIdsPresentInProjectDb(db: AdeDb): string[] {
+  const ids = new Set<string>();
+  for (const table of ["plugin_collections", "plugin_contributions", "plugin_panels", "plugin_presence"] as const) {
+    try {
+      for (const row of db.all<{ plugin_id: string }>(`select distinct plugin_id from ${table}`)) {
+        if (row.plugin_id) ids.add(row.plugin_id);
+      }
+    } catch {
+      // Table not created yet on this database.
+    }
+  }
+  return [...ids];
 }
 
 /**
@@ -835,6 +940,8 @@ function createHost(args: PluginHostServiceArgs): PluginHostService {
     ...(args.localMachineKey ? { localMachineKey: args.localMachineKey } : {}),
     ...(args.listAccountMachines ? { listAccountMachines: args.listAccountMachines } : {}),
     ...(args.reportInstall ? { reportInstall: args.reportInstall } : {}),
+    ...(args.listRegisteredProjects ? { listRegisteredProjects: args.listRegisteredProjects } : {}),
+    ...(args.openRegisteredProjectDb ? { openRegisteredProjectDb: args.openRegisteredProjectDb } : {}),
   };
   /**
    * The directory client, built on first use.
@@ -1025,21 +1132,46 @@ function createHost(args: PluginHostServiceArgs): PluginHostService {
   };
   /**
    * Free everything an uninstalled plugin left behind that the registry
-   * delete alone does not reach: its rows in every attached project, and its
-   * machine-scoped secrets. Shared by the local `uninstall` action and the
-   * remote-command adapter's `afterChange`, so a peer's uninstall cleans up
-   * exactly as thoroughly as one run from this desktop's own UI.
+   * delete alone does not reach: its rows in every registered project (open
+   * or not), its settings, and its machine-scoped secrets. Shared by the
+   * local `uninstall` action and the remote-command adapter's `afterChange`,
+   * so a peer's uninstall cleans up exactly as thoroughly as one run from
+   * this desktop's own UI.
+   *
+   * What is deliberately NOT swept here: the user's automation RULES. A rule
+   * is authored content that lives in `ade.yaml`, not host state — deleting
+   * one on uninstall would destroy work the user can no longer see to
+   * recover, and a reinstall would not bring it back. The rule survives; its
+   * step refuses with the catalog sentence naming the missing plugin, and the
+   * builder renders it attributed and unavailable.
    */
   const cleanupUninstalledPluginData = async (pluginId: string): Promise<void> => {
     // The invoke history goes with the install. A reinstall that inherited the
     // old plugin's last-run line would answer "yes, it ran" about code that is
     // no longer on the machine.
     lastInvokes.delete(pluginId);
-    // Rows outlive the install otherwise: `plugin_collections` is keyed by
-    // plugin id and nothing else would ever collect them.
-    for (const attached of projects.values()) {
+    try {
+      forgetStoredConfig(
+        installs.root,
+        new Set(installs.list().map((plugin) => plugin.pluginId)),
+      );
+    } catch (error) {
+      logger.warn("plugin.config_cleanup_failed", {
+        pluginId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+    const localMachineKey = machine.localMachineKey?.() ?? null;
+    const sweptProjectIds = new Set<string>();
+    const sweepAttached = (attached: AttachedProject): void => {
       try {
-        attached.data.removePluginData(pluginId);
+        sweepUninstalledPluginFromDb({
+          db: attached.binding.db,
+          pluginId,
+          localMachineKey,
+          data: attached.data,
+        });
+        sweptProjectIds.add(attached.binding.projectId);
       } catch (error) {
         logger.warn("plugin.data_cleanup_failed", {
           pluginId,
@@ -1047,59 +1179,43 @@ function createHost(args: PluginHostServiceArgs): PluginHostService {
           error: error instanceof Error ? error.message : String(error),
         });
       }
-    }
-    // This machine's presence row for the plugin, in every attached project.
-    //
-    // Not covered by the republish `uninstall` already runs: that publishes
-    // through the presence service, which holds ONE project's database — the
-    // scope that happened to bind it last — while presence rows exist in every
-    // project database this machine has attached. Rows left behind are the one
-    // kind of leftover another COMPUTER can see: the coverage matrix reads them
-    // and reports this machine as still having the plugin, enabled, forever.
-    //
-    // Keyed by this machine's own key. An uninstall here is a statement about
-    // this computer only, and a sweep by plugin id alone would delete peers'
-    // rows — asserting something about machines that never uninstalled.
-    const localMachineKey = machine.localMachineKey?.() ?? null;
-    if (localMachineKey) {
-      for (const attached of projects.values()) {
+    };
+    for (const attached of projects.values()) sweepAttached(attached);
+    // Closed projects are not in `projects`. An install is machine-scoped;
+    // leaving their plugin rows behind is how Marketplace Remove while one
+    // project is open left panels in every other registered project. Open
+    // each registered database that is not already attached, sweep, close.
+    // Do not create a database for a folder that has never had one.
+    const listed = machine.listRegisteredProjects?.() ?? [];
+    const openRegistered = machine.openRegisteredProjectDb;
+    if (openRegistered) {
+      for (const project of listed) {
+        if (sweptProjectIds.has(project.projectId)) continue;
+        if ([...projects.values()].some((attached) => attached.binding.projectRoot === project.projectRoot)) {
+          continue;
+        }
+        let db: AdeDb | null = null;
         try {
-          deletePluginPresenceForPlugin(attached.binding.db, localMachineKey, pluginId);
+          db = await openRegistered(project);
+          if (!db) continue;
+          sweepUninstalledPluginFromDb({ db, pluginId, localMachineKey });
+          sweptProjectIds.add(project.projectId);
         } catch (error) {
-          logger.warn("plugin.presence_cleanup_failed", {
+          logger.warn("plugin.data_cleanup_failed", {
             pluginId,
-            projectId: attached.binding.projectId,
+            projectId: project.projectId,
             error: error instanceof Error ? error.message : String(error),
           });
+        } finally {
+          const attachedHandle = [...projects.values()].some((attached) => attached.binding.db === db);
+          if (db && !attachedHandle) {
+            try {
+              db.close();
+            } catch {
+              // Already closed, or never a real handle.
+            }
+          }
         }
-      }
-    }
-    // The automation ingress log this plugin's firings wrote. Same reasoning
-    // as `plugin_collections` above — rows keyed by a plugin nothing else
-    // collects — and the key is the event key's `<pluginId>:` prefix, which is
-    // how `dispatchIngressTrigger` stamps ownership onto a row whose `source`
-    // column says only "plugin".
-    //
-    // What is deliberately NOT swept here: the user's automation RULES. A rule
-    // is authored content that lives in `ade.yaml`, not host state — deleting
-    // one on uninstall would destroy work the user can no longer see to
-    // recover, and a reinstall would not bring it back. The rule survives; its
-    // step refuses with the catalog sentence naming the missing plugin, and the
-    // builder renders it attributed and unavailable.
-    for (const attached of projects.values()) {
-      try {
-        // No LIKE escaping: a plugin id is `[a-z][a-z0-9-]*` by manifest
-        // pattern, so it can hold none of `%`, `_` or `\`.
-        attached.binding.db.run(
-          `delete from automation_ingress_events where source = 'plugin' and event_key like ?`,
-          [`${pluginId}:%`],
-        );
-      } catch (error) {
-        logger.warn("plugin.ingress_cleanup_failed", {
-          pluginId,
-          projectId: attached.binding.projectId,
-          error: error instanceof Error ? error.message : String(error),
-        });
       }
     }
     // Secrets are machine-scoped, so no project cleanup would ever reach
@@ -1235,6 +1351,40 @@ function createHost(args: PluginHostServiceArgs): PluginHostService {
   // waiting on a callback that had already arrived.
   setPluginAuthSessionCompleter((params) => authSessions.completeAppCallback({ params }));
   const projects = new Map<string, AttachedProject>();
+  /**
+   * Drop plugin rows whose plugin is not in the install registry.
+   *
+   * Uninstall already sweeps registered projects, but a leftover from before
+   * that sweep existed (or from a database we failed to open at Remove time)
+   * would sit until the next uninstall of the same id. Opening the project is
+   * the other chance. `unreadable` skips: an empty answer would delete every
+   * plugin row, which is the storage-doctor trap.
+   */
+  const pruneOrphanPluginData = (attached: AttachedProject): void => {
+    const registry = readPluginRegistryFile(installs.root);
+    if (registry.kind === "unreadable") return;
+    const installed = new Set(
+      registry.kind === "absent" ? [] : Object.keys(registry.contents.plugins),
+    );
+    const localMachineKey = machine.localMachineKey?.() ?? null;
+    for (const pluginId of pluginIdsPresentInProjectDb(attached.binding.db)) {
+      if (installed.has(pluginId)) continue;
+      try {
+        sweepUninstalledPluginFromDb({
+          db: attached.binding.db,
+          pluginId,
+          localMachineKey,
+          data: attached.data,
+        });
+      } catch (error) {
+        logger.warn("plugin.orphan_data_cleanup_failed", {
+          pluginId,
+          projectId: attached.binding.projectId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+  };
   const supervisors = new Map<string, PluginChildSupervisor>();
   /**
    * Which project a plugin's SDK calls resolve against.
@@ -3152,6 +3302,8 @@ function createHost(args: PluginHostServiceArgs): PluginHostService {
           attachCount: 1,
         });
       }
+      const attached = projects.get(binding.projectId);
+      if (attached) pruneOrphanPluginData(attached);
       // The first project to bind is what makes plugin data writable at all, so
       // this is where enabled plugins start and declared panels materialize.
       // Both are idempotent, so a second project binding costs a no-op pass.

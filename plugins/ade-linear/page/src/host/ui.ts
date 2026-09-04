@@ -287,9 +287,15 @@ export async function pickModel(
   if (!modelId) return null;
   return {
     id: modelId,
-    label: modelId,
+    label: asId(raw?.label) ?? modelId,
     ...(typeof raw?.provider === "string" ? { provider: raw.provider } : {}),
     fastMode: raw?.fastMode === true,
+    defaultPermissionMode: asId(raw?.defaultPermissionMode),
+    defaultPermissionLabel: asId(raw?.defaultPermissionLabel),
+    defaultReasoningEffort: raw?.defaultReasoningEffort === null
+      ? null
+      : asId(raw?.defaultReasoningEffort),
+    defaultReasoningEffortLabel: asId(raw?.defaultReasoningEffortLabel),
   };
 }
 
@@ -352,7 +358,7 @@ export async function pickPermissionMode(
   if (!value) return null;
   return {
     id: value,
-    label: value,
+    label: asId(raw?.label) ?? value,
     ...(typeof raw?.provider === "string" ? { provider: raw.provider } : {}),
   };
 }
@@ -377,5 +383,8 @@ export async function pickReasoningEffort(
   if (!raw) return null;
   // `effort: null` is "no reasoning", a real choice — not a dismissal.
   const effort = typeof raw.effort === "string" ? raw.effort : "";
-  return { id: effort, label: effort || "No reasoning" };
+  return {
+    id: effort,
+    label: asId(raw?.label) ?? (effort || "No reasoning"),
+  };
 }
