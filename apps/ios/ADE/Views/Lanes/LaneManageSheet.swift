@@ -7,10 +7,13 @@ struct LaneManageSheet: View {
   let snapshot: LaneListSnapshot
   let allLaneSnapshots: [LaneListSnapshot]
   let onDeleted: (@MainActor () async -> Void)?
+  let onRenamed: (@MainActor () async -> Void)?
   let onComplete: @MainActor () async -> Void
 
   @State private var activeTab: ManageLaneTab = .delete
+  @State private var displayedName: String
   @State private var renameText: String
+  @State private var renamePresented = false
   @State private var selectedParentLaneId: String
   @State private var baseBranchOverride: String = ""
   @State private var colorText: String
@@ -25,13 +28,16 @@ struct LaneManageSheet: View {
     snapshot: LaneListSnapshot,
     allLaneSnapshots: [LaneListSnapshot],
     onDeleted: (@MainActor () async -> Void)? = nil,
+    onRenamed: (@MainActor () async -> Void)? = nil,
     onComplete: @escaping @MainActor () async -> Void
   ) {
     self.snapshot = snapshot
     self.allLaneSnapshots = allLaneSnapshots
     self.onDeleted = onDeleted
+    self.onRenamed = onRenamed
     self.onComplete = onComplete
     let primaryLaneId = allLaneSnapshots.first(where: { $0.lane.laneType == "primary" })?.lane.id ?? ""
+    _displayedName = State(initialValue: snapshot.lane.name)
     _renameText = State(initialValue: snapshot.lane.name)
     _selectedParentLaneId = State(initialValue: snapshot.lane.parentLaneId ?? primaryLaneId)
     _colorText = State(initialValue: snapshot.lane.color ?? "")
@@ -128,6 +134,13 @@ struct LaneManageSheet: View {
     laneAllowsLiveActions(connectionState: syncService.connectionState, laneStatus: syncService.status(for: .lanes))
   }
 
+  private var showsRenameControl: Bool {
+    LaneManageRename.showsRenameControl(
+      laneType: snapshot.lane.laneType,
+      hostSupportsRename: syncService.canInvokeRemoteAction("lanes.rename")
+    )
+  }
+
   private var liveActionNoticePresentation: LaneEmptyStatePresentation? {
     laneLiveActionNotice(
       connectionState: syncService.connectionState,
@@ -163,8 +176,6 @@ struct LaneManageSheet: View {
             manageErrorBanner(errorMessage)
           }
 
-          laneNameTitle
-
           laneInfoHeader
 
           if isPrimary {
@@ -186,13 +197,36 @@ struct LaneManageSheet: View {
       .adeScreenBackground()
       .overlay { busyOverlay }
       .adeNavigationGlass()
-      .navigationTitle(snapshot.lane.name)
+      .navigationTitle(displayedName)
       .navigationBarTitleDisplayMode(.inline)
       .toolbar {
         ToolbarItem(placement: .cancellationAction) {
           Button("Close") { dismiss() }
             .disabled(busyAction != nil)
         }
+        if showsRenameControl {
+          ToolbarItem(placement: .confirmationAction) {
+            Button {
+              renameText = displayedName
+              renamePresented = true
+            } label: {
+              Image(systemName: "pencil")
+            }
+            .accessibilityLabel("Rename lane")
+            .disabled(busyAction != nil || !canRunLiveActions)
+          }
+        }
+      }
+      .alert("Rename lane", isPresented: $renamePresented) {
+        TextField("Lane name", text: $renameText)
+          .textInputAutocapitalization(.words)
+        Button("Cancel", role: .cancel) {}
+        Button("Save") {
+          let draft = renameText
+          Task { await performRename(draft: draft) }
+        }
+      } message: {
+        Text("Changes the display name. The git branch stays the same.")
       }
       .onAppear {
         if !availableTabs.contains(activeTab) {
@@ -216,49 +250,92 @@ struct LaneManageSheet: View {
     }
   }
 
-  private var laneTint: Color {
-    laneSurfaceTint(forHex: snapshot.lane.color).text ?? ADEColor.accent
-  }
-
-  private var laneNameTitle: some View {
-    HStack(alignment: .firstTextBaseline, spacing: 8) {
-      Text(snapshot.lane.name)
-        .font(.largeTitle.weight(.bold))
-        .foregroundStyle(laneTint)
-        .lineLimit(2)
-        .minimumScaleFactor(0.7)
-      if snapshot.lane.status.dirty {
-        Text("DIRTY")
-          .font(.caption2.weight(.bold))
-          .foregroundStyle(ADEColor.warning)
-          .padding(.horizontal, 6)
-          .padding(.vertical, 2)
-          .background(ADEColor.warning.opacity(0.14), in: Capsule())
-      }
-      Spacer(minLength: 0)
-    }
-    .accessibilityAddTraits(.isHeader)
-  }
-
   private var laneInfoHeader: some View {
-    VStack(alignment: .leading, spacing: 8) {
-      LabeledContent("Branch") {
-        Text(branchLabel)
-          .font(.system(.caption, design: .monospaced))
-          .foregroundStyle(ADEColor.textSecondary)
-          .lineLimit(1)
+    VStack(alignment: .leading, spacing: 10) {
+      metadataRow(
+        symbol: "arrow.triangle.branch",
+        value: branchLabel,
+        monospaced: true,
+        accessibilityNoun: "Branch",
+        lineLimit: 1,
+        dirty: snapshot.lane.status.dirty
+      ) {
+        if snapshot.lane.status.dirty {
+          Text("DIRTY")
+            .font(.caption2.weight(.bold))
+            .foregroundStyle(ADEColor.warning)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 2)
+            .background(ADEColor.warning.opacity(0.14), in: Capsule())
+        }
       }
-      .font(.caption)
-      LabeledContent("Path") {
-        Text(snapshot.lane.worktreePath)
-          .font(.caption)
-          .foregroundStyle(ADEColor.textSecondary)
-          .multilineTextAlignment(.trailing)
-      }
+      metadataRow(
+        symbol: "folder",
+        value: snapshot.lane.worktreePath,
+        monospaced: false,
+        accessibilityNoun: "Path",
+        lineLimit: 2
+      )
     }
     .frame(maxWidth: .infinity, alignment: .leading)
-    .padding(12)
+    .padding(.horizontal, 12)
+    .padding(.vertical, 10)
     .background(ADEColor.surfaceBackground.opacity(0.35), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+  }
+
+  private func metadataRow(
+    symbol: String,
+    value: String,
+    monospaced: Bool,
+    accessibilityNoun: String,
+    lineLimit: Int,
+    dirty: Bool = false
+  ) -> some View {
+    metadataRow(
+      symbol: symbol,
+      value: value,
+      monospaced: monospaced,
+      accessibilityNoun: accessibilityNoun,
+      lineLimit: lineLimit,
+      dirty: dirty
+    ) {
+      EmptyView()
+    }
+  }
+
+  private func metadataRow<Trailing: View>(
+    symbol: String,
+    value: String,
+    monospaced: Bool,
+    accessibilityNoun: String,
+    lineLimit: Int,
+    dirty: Bool = false,
+    @ViewBuilder trailing: () -> Trailing
+  ) -> some View {
+    HStack(alignment: .top, spacing: 10) {
+      Image(systemName: symbol)
+        .font(.system(size: 13, weight: .semibold))
+        .foregroundStyle(ADEColor.textMuted)
+        .frame(width: 18)
+        .padding(.top, 1)
+        .accessibilityHidden(true)
+      Text(value)
+        .font(monospaced ? .system(.caption, design: .monospaced) : .caption)
+        .foregroundStyle(ADEColor.textSecondary)
+        .lineLimit(lineLimit)
+        .truncationMode(.middle)
+        .textSelection(.enabled)
+        .frame(maxWidth: .infinity, alignment: .leading)
+      trailing()
+    }
+    .accessibilityElement(children: .combine)
+    .accessibilityLabel(
+      LaneManageRename.metadataAccessibilityLabel(
+        noun: accessibilityNoun,
+        value: value,
+        dirty: dirty
+      )
+    )
   }
 
   private var manageTabBar: some View {
@@ -475,12 +552,6 @@ struct LaneManageSheet: View {
       Text("Lane color in tabs and stack. No git changes.")
         .font(.caption)
         .foregroundStyle(ADEColor.textSecondary)
-
-      LaneTextField("Lane name", text: $renameText)
-      LaneActionButton(title: "Save name", symbol: "checkmark.circle.fill", tint: ADEColor.accent) {
-        Task { await performAction("rename lane") { try await syncService.renameLane(snapshot.lane.id, name: renameText) } }
-      }
-      .disabled(!canRunLiveActions || renameText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || renameText == snapshot.lane.name)
 
       VStack(alignment: .leading, spacing: 6) {
         Text("Color")
@@ -707,23 +778,61 @@ struct LaneManageSheet: View {
   }
 
   @MainActor
+  private func performRename(draft: String) async {
+    let trimmed = LaneManageRename.trimmedName(draft)
+    if trimmed.isEmpty {
+      ADEHaptics.warning()
+      errorMessage = "Lane name cannot be empty."
+      return
+    }
+    if let duplicate = LaneManageRename.duplicateName(
+      draft: trimmed,
+      laneId: snapshot.lane.id,
+      among: allLaneSnapshots.map(\.lane)
+    ) {
+      ADEHaptics.warning()
+      errorMessage = "A lane named \"\(duplicate)\" already exists."
+      return
+    }
+    guard LaneManageRename.canSave(draft: trimmed, currentName: displayedName) else { return }
+    let renamed = await runLiveAction("rename lane") {
+      try await syncService.renameLane(snapshot.lane.id, name: trimmed)
+    }
+    guard renamed else { return }
+    displayedName = trimmed
+    renameText = trimmed
+    ADEHaptics.success()
+    if let onRenamed {
+      await onRenamed()
+    }
+  }
+
+  @MainActor
   private func performAction(_ label: String, operation: () async throws -> Void) async {
+    guard await runLiveAction(label, operation: operation) else { return }
+    dismiss()
+    await onComplete()
+  }
+
+  @MainActor
+  private func runLiveAction(_ label: String, operation: () async throws -> Void) async -> Bool {
     guard canRunLiveActions else {
       ADEHaptics.warning()
       errorMessage = "Reconnect to machine before you \(label)."
-      return
+      return false
     }
     do {
       busyAction = label
       errorMessage = nil
       try await operation()
-      dismiss()
-      await onComplete()
+      busyAction = nil
+      return true
     } catch {
       ADEHaptics.error()
       errorMessage = error.localizedDescription
+      busyAction = nil
+      return false
     }
-    busyAction = nil
   }
 
   @MainActor
@@ -734,5 +843,40 @@ struct LaneManageSheet: View {
     case .reconnect, .retry:
       Task { await syncService.reconnectIfPossible(userInitiated: true) }
     }
+  }
+}
+
+enum LaneManageRename {
+  static func trimmedName(_ raw: String) -> String {
+    raw.trimmingCharacters(in: .whitespacesAndNewlines)
+  }
+
+  static func canRename(laneType: String) -> Bool {
+    laneType != "primary"
+  }
+
+  static func showsRenameControl(laneType: String, hostSupportsRename: Bool) -> Bool {
+    canRename(laneType: laneType) && hostSupportsRename
+  }
+
+  static func duplicateName(draft: String, laneId: String, among: [LaneSummary]) -> String? {
+    let trimmed = trimmedName(draft)
+    guard !trimmed.isEmpty else { return nil }
+    return among.first { candidate in
+      candidate.id != laneId
+        && candidate.archivedAt == nil
+        && candidate.name.trimmingCharacters(in: .whitespacesAndNewlines)
+          .localizedCaseInsensitiveCompare(trimmed) == .orderedSame
+    }?.name
+  }
+
+  static func canSave(draft: String, currentName: String) -> Bool {
+    let trimmed = trimmedName(draft)
+    guard !trimmed.isEmpty else { return false }
+    return trimmed != currentName.trimmingCharacters(in: .whitespacesAndNewlines)
+  }
+
+  static func metadataAccessibilityLabel(noun: String, value: String, dirty: Bool) -> String {
+    dirty ? "\(noun), \(value), dirty" : "\(noun), \(value)"
   }
 }

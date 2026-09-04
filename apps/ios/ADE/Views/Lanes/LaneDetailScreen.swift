@@ -168,6 +168,10 @@ struct LaneDetailScreen: View {
           dismiss()
           // SyncService refreshes once its retained host cleanup finishes;
           // starting another snapshot request here would duplicate that work.
+        },
+        onRenamed: {
+          await loadDetail(refreshRemote: true)
+          await onRefreshRoot()
         }
       ) {
         await loadDetail(refreshRemote: true)

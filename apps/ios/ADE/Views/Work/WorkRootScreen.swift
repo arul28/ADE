@@ -739,6 +739,9 @@ struct WorkRootScreen: View {
             manageLaneTarget = nil
             await reload(refreshRemote: true)
           },
+          onRenamed: {
+            await reload(refreshRemote: true)
+          },
           onComplete: {
             manageLaneTarget = nil
             await reload(refreshRemote: true)
