@@ -181,7 +181,7 @@ describe("bundled manifests mirror the plugins that ship on disk", () => {
     expect(onDisk.size).toBeGreaterThanOrEqual(12);
   });
 
-  it("ships ten official themes", () => {
+  it("ships twelve official themes", () => {
     const themeIds = Object.values(BUNDLED_MANIFESTS_BY_ID)
       .filter((manifest) => manifest.theme !== undefined)
       .map((manifest) => manifest.name)
@@ -189,15 +189,17 @@ describe("bundled manifests mirror the plugins that ship on disk", () => {
 
     expect(themeIds).toEqual([
       "ade-theme-contrast",
-      "ade-theme-ember",
-      "ade-theme-grove",
+      "ade-theme-frost",
       "ade-theme-ink",
-      "ade-theme-iris",
-      "ade-theme-ocean",
+      "ade-theme-kiln",
+      "ade-theme-latte",
+      "ade-theme-midnight",
+      "ade-theme-mocha",
       "ade-theme-paper",
       "ade-theme-phosphor",
-      "ade-theme-sakura",
-      "ade-theme-synthwave",
+      "ade-theme-rose-ash",
+      "ade-theme-solar-dusk",
+      "ade-theme-spectre",
     ]);
   });
 

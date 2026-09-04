@@ -74,18 +74,18 @@
         "1.0.0": "9ee7d9e5a7e9a05046f25d31d1b663778c745eb5c963d80e1d40f10875be295b"
       }
     },
-    "ade-theme-paper": {
-      "repo": "https://github.com/arul28/ade-theme-paper",
-      "checksums": {
-        "1.0.0": "3368d735b474c3df2679d9b6eb4ac0539135c25104f1163e748f8a9c8956dca4",
-        "1.0.1": "ecb5b091950a61e4c982f7dafcf611effc0f4112f546c1d6ed07bc2d21084e10"
-      }
-    },
     "ade-theme-ink": {
       "repo": "https://github.com/arul28/ade-theme-ink",
       "checksums": {
         "1.0.0": "f3629aff74df060b3b8d1dcb09acf56b1062039303c24a0066c97f283d83fcfe",
         "1.0.1": "2e5694af20e48dc1d214aae1320ca4490e87c750e7d568839e851626c1ef8d90"
+      }
+    },
+    "ade-theme-paper": {
+      "repo": "https://github.com/arul28/ade-theme-paper",
+      "checksums": {
+        "1.0.0": "3368d735b474c3df2679d9b6eb4ac0539135c25104f1163e748f8a9c8956dca4",
+        "1.0.1": "ecb5b091950a61e4c982f7dafcf611effc0f4112f546c1d6ed07bc2d21084e10"
       }
     },
     "ade-theme-contrast": {
@@ -95,32 +95,40 @@
         "1.0.1": "8c834fe8b511e3c3111ac4969050de0a0aed0da73e5ad406064b32c62f69876b"
       }
     },
-    "ade-theme-grove": {
-      "repo": "https://github.com/arul28/ade-theme-grove",
-      "checksums": {}
-    },
-    "ade-theme-ocean": {
-      "repo": "https://github.com/arul28/ade-theme-ocean",
-      "checksums": {}
-    },
-    "ade-theme-ember": {
-      "repo": "https://github.com/arul28/ade-theme-ember",
-      "checksums": {}
-    },
-    "ade-theme-iris": {
-      "repo": "https://github.com/arul28/ade-theme-iris",
-      "checksums": {}
-    },
-    "ade-theme-sakura": {
-      "repo": "https://github.com/arul28/ade-theme-sakura",
-      "checksums": {}
-    },
-    "ade-theme-synthwave": {
-      "repo": "https://github.com/arul28/ade-theme-synthwave",
-      "checksums": {}
-    },
     "ade-theme-phosphor": {
       "repo": "https://github.com/arul28/ade-theme-phosphor",
+      "checksums": {}
+    },
+    "ade-theme-frost": {
+      "repo": "https://github.com/arul28/ade-theme-frost",
+      "checksums": {}
+    },
+    "ade-theme-kiln": {
+      "repo": "https://github.com/arul28/ade-theme-kiln",
+      "checksums": {}
+    },
+    "ade-theme-mocha": {
+      "repo": "https://github.com/arul28/ade-theme-mocha",
+      "checksums": {}
+    },
+    "ade-theme-latte": {
+      "repo": "https://github.com/arul28/ade-theme-latte",
+      "checksums": {}
+    },
+    "ade-theme-spectre": {
+      "repo": "https://github.com/arul28/ade-theme-spectre",
+      "checksums": {}
+    },
+    "ade-theme-midnight": {
+      "repo": "https://github.com/arul28/ade-theme-midnight",
+      "checksums": {}
+    },
+    "ade-theme-rose-ash": {
+      "repo": "https://github.com/arul28/ade-theme-rose-ash",
+      "checksums": {}
+    },
+    "ade-theme-solar-dusk": {
+      "repo": "https://github.com/arul28/ade-theme-solar-dusk",
       "checksums": {}
     },
     "ade-cursor-cloud": {
