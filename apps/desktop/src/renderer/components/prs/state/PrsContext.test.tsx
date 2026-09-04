@@ -7,7 +7,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type {
   AutoRebaseLaneStatus,
   GitHubRequestBudget,
-  PrAiSummary,
   PrConflictAnalysis,
   PrDeployment,
   PrEventPayload,
@@ -109,7 +108,6 @@ function DetailHarness() {
     detailReviews,
     detailComments,
     detailDeployments,
-    detailAiSummary,
     detailLiveDataPrId,
     detailStatus,
     loading,
@@ -133,7 +131,6 @@ function DetailHarness() {
       <div data-testid="reviews-count">{detailReviews.length}</div>
       <div data-testid="comments-count">{detailComments.length}</div>
       <div data-testid="deployments-count">{detailDeployments.length}</div>
-      <div data-testid="ai-summary">{detailAiSummary?.summary ?? ""}</div>
     </div>
   );
 }
@@ -999,7 +996,7 @@ describe("PrsContext refresh", () => {
     });
   });
 
-  it("hydrates deployments and AI summary after snapshot prefill while live detail is pending", async () => {
+  it("hydrates deployments after snapshot prefill while live detail is pending", async () => {
     const user = userEvent.setup();
     vi.mocked(window.ade.prs.listWithConflicts).mockResolvedValue([makeFakePr("pr-1")]);
     const liveStatus = createDeferred<any>();
@@ -1038,15 +1035,6 @@ describe("PrsContext refresh", () => {
       createdAt: "2026-03-24T12:00:00.000Z",
       updatedAt: "2026-03-24T12:05:00.000Z",
     };
-    const aiSummary: PrAiSummary = {
-      prId: "pr-1",
-      summary: "Cached overview is available.",
-      riskAreas: [],
-      reviewerHotspots: [],
-      unresolvedConcerns: [],
-      generatedAt: "2026-03-24T12:06:00.000Z",
-      headSha: "abc123",
-    };
     Object.assign(window.ade.prs, {
       listSnapshots: vi.fn(async (args?: { prId?: string }) => (args?.prId === "pr-1" ? [snapshot] : [])),
       getStatus: vi.fn(async (_prId: string) => liveStatus.promise),
@@ -1054,7 +1042,7 @@ describe("PrsContext refresh", () => {
       getReviews: vi.fn(async (_prId: string) => liveReviews.promise),
       getComments: vi.fn(async (_prId: string) => liveComments.promise),
       getDeployments: vi.fn(async (_prId: string) => [deployment]),
-      getAiSummary: vi.fn(async (_prId: string) => aiSummary),
+      getAiSummary: vi.fn(),
     });
 
     render(
@@ -1075,9 +1063,8 @@ describe("PrsContext refresh", () => {
 
     await waitFor(() => {
       expect(window.ade.prs.getDeployments).toHaveBeenCalledWith("pr-1");
-      expect(window.ade.prs.getAiSummary).toHaveBeenCalledWith("pr-1");
+      expect(window.ade.prs.getAiSummary).not.toHaveBeenCalled();
       expect(screen.getByTestId("deployments-count").textContent).toBe("1");
-      expect(screen.getByTestId("ai-summary").textContent).toBe("Cached overview is available.");
     });
     expect(screen.getByTestId("live-detail-pr-id").textContent).toBe("");
   });
@@ -1098,15 +1085,6 @@ describe("PrsContext refresh", () => {
       createdAt: "2026-03-24T12:00:00.000Z",
       updatedAt: "2026-03-24T12:05:00.000Z",
     };
-    const aiSummary: PrAiSummary = {
-      prId: "pr-1",
-      summary: "Fresh summary is available.",
-      riskAreas: [],
-      reviewerHotspots: [],
-      unresolvedConcerns: [],
-      generatedAt: "2026-03-24T12:06:00.000Z",
-      headSha: "abc123",
-    };
     Object.assign(window.ade.prs, {
       getStatus: vi.fn(async (_prId: string) => ({
         prId: "pr-1",
@@ -1121,7 +1099,7 @@ describe("PrsContext refresh", () => {
       getReviews: vi.fn(async (_prId: string) => []),
       getComments: vi.fn(async (_prId: string) => []),
       getDeployments: vi.fn(async (_prId: string) => [deployment]),
-      getAiSummary: vi.fn(async (_prId: string) => aiSummary),
+      getAiSummary: vi.fn(),
     });
 
     render(<ActiveToggleDetailHarness />);
@@ -1133,7 +1111,7 @@ describe("PrsContext refresh", () => {
     await waitFor(() => {
       expect(screen.getByTestId("live-detail-pr-id").textContent).toBe("pr-1");
       expect(window.ade.prs.getDeployments).toHaveBeenCalledTimes(1);
-      expect(window.ade.prs.getAiSummary).toHaveBeenCalledTimes(1);
+      expect(window.ade.prs.getAiSummary).not.toHaveBeenCalled();
     });
 
     await user.click(screen.getByRole("button", { name: "deactivate" }));
@@ -1141,7 +1119,7 @@ describe("PrsContext refresh", () => {
 
     await waitFor(() => {
       expect(window.ade.prs.getDeployments).toHaveBeenCalledTimes(2);
-      expect(window.ade.prs.getAiSummary).toHaveBeenCalledTimes(2);
+      expect(window.ade.prs.getAiSummary).not.toHaveBeenCalled();
     });
   });
 

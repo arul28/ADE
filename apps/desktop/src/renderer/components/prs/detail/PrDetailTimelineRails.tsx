@@ -8,7 +8,6 @@ import type {
   MergeMethod,
   PrActionRun,
   PrActivityEvent,
-  PrAiSummary,
   PrCheck,
   PrCommit,
   PrComment,
@@ -189,10 +188,6 @@ type Props = {
   writeViewerLogin?: string | null;
   filters: PrTimelineFilters;
   onFiltersChange: (next: PrTimelineFilters) => void;
-  aiSummary: PrAiSummary | null;
-  aiSummaryDismissed: boolean;
-  onDismissAiSummary: () => void;
-  onRegenerateAiSummary: () => void;
   commentDraft: string;
   setCommentDraft: (value: string) => void;
   actionBusy: boolean;
@@ -750,10 +745,6 @@ export const PrDetailTimelineRails = forwardRef<PrDetailTimelineRailsRef, Props>
       writeViewerLogin,
       filters,
       onFiltersChange,
-      aiSummary,
-      aiSummaryDismissed,
-      onDismissAiSummary,
-      onRegenerateAiSummary,
       commentDraft,
       setCommentDraft,
       actionBusy,
@@ -943,8 +934,6 @@ export const PrDetailTimelineRails = forwardRef<PrDetailTimelineRailsRef, Props>
       [navigate, pr.githubPrNumber, pr.id, pr.repoName, pr.repoOwner],
     );
 
-    const summaryForTimeline = aiSummaryDismissed ? null : aiSummary ?? null;
-
     // The tick pill sizes itself from the commit count alone, so the thread no
     // longer needs a ResizeObserver to hand it a measured column height.
 
@@ -992,9 +981,6 @@ export const PrDetailTimelineRails = forwardRef<PrDetailTimelineRailsRef, Props>
             writeViewerLogin={writeViewerLogin}
             filters={filters}
             onFiltersChange={onFiltersChange}
-            summary={summaryForTimeline}
-            onRegenerateSummary={onRegenerateAiSummary}
-            onDismissSummary={onDismissAiSummary}
             onVisibleEventChange={handleVisibleEventChange}
             footer={
               <PrCommentComposer

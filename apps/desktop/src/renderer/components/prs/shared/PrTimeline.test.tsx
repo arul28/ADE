@@ -28,13 +28,6 @@ vi.mock("./PrBotReviewCard", () => ({
   detectBotProvider: (login: string) => (login.endsWith("[bot]") ? "coderabbit" : null),
 }));
 
-vi.mock("./PrAiSummaryCard", () => ({
-  PrAiSummaryCard: ({ prId }: { prId: string }) => (
-    <div data-testid="ai-summary-card" data-pr-id={prId} />
-  ),
-  isAiSummaryDismissed: () => false,
-}));
-
 vi.mock("./PrMarkdown", () => ({
   PrMarkdown: ({ children }: { children: string }) => (
     <div data-testid="pr-markdown">{children}</div>
@@ -66,7 +59,6 @@ vi.mock("@tanstack/react-virtual", () => ({
 
 import type {
   PrTimelineEvent,
-  PrAiSummary,
 } from "../../../../shared/types/prs";
 import {
   PrTimeline,
@@ -689,16 +681,7 @@ describe("PrTimeline", () => {
     expect(screen.getByText("No events match the current filters.")).toBeTruthy();
   });
 
-  it("renders the AI summary card when a summary is provided", () => {
-    const summary: PrAiSummary = {
-      prId: "pr-1",
-      summary: "LGTM",
-      riskAreas: [],
-      reviewerHotspots: [],
-      unresolvedConcerns: [],
-      generatedAt: new Date().toISOString(),
-      headSha: "a".repeat(40),
-    };
+  it("does not render an AI summary card above the timeline", () => {
     render(
       <PrTimeline
         events={[]}
@@ -709,10 +692,10 @@ describe("PrTimeline", () => {
         viewerLogin="alice"
         filters={DEFAULT_PR_TIMELINE_FILTERS}
         onFiltersChange={() => {}}
-        summary={summary}
       />,
     );
-    expect(screen.getByTestId("ai-summary-card")).toBeTruthy();
+    expect(screen.queryByTestId("ai-summary-card")).toBeNull();
+    expect(screen.queryByTestId("pr-timeline-summary")).toBeNull();
   });
 
   it("renders the PR opened banner with title, branches, and stats", () => {

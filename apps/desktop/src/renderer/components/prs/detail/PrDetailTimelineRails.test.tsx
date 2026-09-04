@@ -251,10 +251,6 @@ function renderRails(
       viewerLogin="alice"
       filters={{} as never}
       onFiltersChange={() => {}}
-      aiSummary={null}
-      aiSummaryDismissed={false}
-      onDismissAiSummary={() => {}}
-      onRegenerateAiSummary={() => {}}
       commentDraft=""
       setCommentDraft={() => {}}
       actionBusy={false}

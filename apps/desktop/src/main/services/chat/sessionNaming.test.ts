@@ -1,5 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
 
+import {
+  BACKGROUND_UTILITY_CLAUDE_MODEL_ID,
+  BACKGROUND_UTILITY_CODEX_MODEL_ID,
+  BACKGROUND_UTILITY_CURSOR_MODEL_ID,
+} from "../../../shared/backgroundUtilityModel";
 import { getAvailableModels, type ModelDescriptor } from "../../../shared/modelRegistry";
 import {
   buildNamingModelCandidates,
@@ -96,12 +101,33 @@ describe("buildNamingModelCandidates", () => {
 });
 
 describe("buildSessionIntelligenceModelCandidates", () => {
-  it("uses the setting first and the session model second", () => {
+  it("uses the cheap ADE-provider helper first and the session model second", () => {
     expect(buildSessionIntelligenceModelCandidates({
       availableModels: ALL_MODELS,
-      settingModelId: ANTHROPIC_MODELS[0]?.id,
+      provider: "claude",
       sessionModelId: OPENAI_MODELS[0]?.id,
-    })).toEqual([ANTHROPIC_MODELS[0]?.id, OPENAI_MODELS[0]?.id]);
+    })).toEqual([BACKGROUND_UTILITY_CLAUDE_MODEL_ID, OPENAI_MODELS[0]?.id]);
+    expect(buildSessionIntelligenceModelCandidates({
+      availableModels: ALL_MODELS,
+      provider: "codex",
+      sessionModelId: ANTHROPIC_MODELS[0]?.id,
+    })).toEqual([BACKGROUND_UTILITY_CODEX_MODEL_ID, ANTHROPIC_MODELS[0]?.id]);
+  });
+
+  it("does not spawn a Claude helper for OpenCode-wrapped Anthropic", () => {
+    expect(buildSessionIntelligenceModelCandidates({
+      availableModels: ALL_MODELS,
+      provider: "opencode",
+      sessionModelId: ANTHROPIC_MODELS[0]?.id,
+    })).toEqual([ANTHROPIC_MODELS[0]?.id]);
+  });
+
+  it("injects Composer 2.5 for Cursor even when the auth snapshot has no Cursor inventory", () => {
+    expect(buildSessionIntelligenceModelCandidates({
+      availableModels: [],
+      provider: "cursor",
+      sessionModelId: "cursor/grok-4-5",
+    })).toEqual([BACKGROUND_UTILITY_CURSOR_MODEL_ID, "cursor/grok-4-5"]);
   });
 
   it("keeps the session model even when the auth snapshot is empty", () => {
@@ -125,9 +151,9 @@ describe("buildSessionIntelligenceModelCandidates", () => {
     })).toEqual(["anthropic/claude-sonnet-5"]);
     expect(buildSessionIntelligenceModelCandidates({
       availableModels: ALL_MODELS,
-      settingModelId: "anthropic/claude-sonnet-5",
+      provider: "claude",
       sessionModel: "sonnet",
-    })).toEqual(["anthropic/claude-sonnet-5"]);
+    })).toEqual([BACKGROUND_UTILITY_CLAUDE_MODEL_ID, "anthropic/claude-sonnet-5"]);
   });
 });
 

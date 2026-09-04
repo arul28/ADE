@@ -465,6 +465,16 @@ struct WorkRootScreen: View {
     Set(pinnedLaneIdsStorage.split(separator: ",").map(String.init).filter { !$0.isEmpty })
   }
 
+  func toggleWorkPin(_ lane: LaneSummary) {
+    var next = workPinnedLaneIds
+    if next.contains(lane.id) {
+      next.remove(lane.id)
+    } else {
+      next.insert(lane.id)
+    }
+    pinnedLaneIdsStorage = next.sorted().joined(separator: ",")
+  }
+
   /// Machines that own work in this project and are no longer reachable. The
   /// connected host is online by definition, so anything here is a second Mac
   /// whose lanes reached this list through the account feed.
@@ -981,6 +991,9 @@ struct WorkRootScreen: View {
       colorAvailable: syncService.canInvokeRemoteAction("lanes.updateAppearance"),
       manageAvailable: syncService.canInvokeRemoteAction("lanes.rename"),
       onStartChat: startChatInLane,
+      onToggleWorkPin: toggleWorkPin,
+      isWorkPinned: { workPinnedLaneIds.contains($0.id) },
+      onOpenInWeb: openLaneInWeb,
       onCopyLaneLink: copyLaneLink,
       onCopyBranchLink: copyLaneBranchLink,
       onCopyLinearLink: copyLaneLinearLink,
@@ -1080,7 +1093,9 @@ struct WorkRootScreen: View {
         // Lane-scoped git state belongs to the lane, so it is stated once here
         // rather than repeated on every row beneath. Orphaned sections have no
         // lane record to read it from.
-        laneStatus: group.isOrphaned ? nil : group.laneId.flatMap { laneById[$0]?.status }
+        laneStatus: group.isOrphaned ? nil : group.laneId.flatMap { laneById[$0]?.status },
+        lane: group.isOrphaned ? nil : group.laneId.flatMap { laneById[$0] },
+        laneMenu: workLaneMenuActions
       )
       .disabled(isLaneDeleting)
       .redacted(reason: isLaneDeleting ? .placeholder : [])
@@ -1219,7 +1234,9 @@ struct WorkRootScreen: View {
       deleteSessionAvailable: syncService.supportsWorkSessionDeletion,
       onDeleteSession: deleteWorkSession,
       onOpenInWeb: openSessionInWeb,
-      laneMenu: workLaneMenuActions
+      laneMenu: workLaneMenuActions,
+      generateNamesAvailable: syncService.canInvokeRemoteAction("chat.regenerateSessionMetadata"),
+      onGenerateNames: generateSessionNames
     )
   }
 

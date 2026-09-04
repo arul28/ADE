@@ -671,31 +671,21 @@ command argument whenever structured resume metadata is available.
 
 ### AI-driven titles
 
-Three paths, all gated by `sessionIntelligence.titles.enabled` and the
-presence of an AI integration service in non-guest mode (except the
-Claude runtime-title capture, which is free).
+CLI sessions are always ADE-named. The cheap helper for the ADE
+provider (Haiku 4.5 / GPT-5.6 Luna / Composer 2.5) runs first, then
+`resumeMetadata.launch.model`, then the deterministic title already on
+the row. ADE does not prefer Claude JSONL `ai-title` or Codex thread
+names over that chain.
 
-CLI AI titles and terminal summaries try models in this order: the
-Settings title/summary model, then `resumeMetadata.launch.model`.
-`tryCliAiModels` walks that list and continues on failure. If both
-are missing, ADE skips the AI call and keeps the deterministic
-title/summary already on the row — it does not throw, pick Haiku, or
-use the first available provider.
-
-- **Output snippet title** (shell, cursor, aider, continue):
+- **Output snippet title** (shell and other non-chat CLIs):
   `aiTitleTimer` fires after 6 s, sends up to 800 chars of
   ANSI-stripped early output to `aiIntegrationService.summarizeTerminal`
   with a "max 80 chars, plain text" prompt.
-- **Claude runtime-storage title** (claude, claude-orchestrated):
-  `scheduleClaudeRuntimeTitleCaptureBestEffort` polls Claude's local
-  JSONL at `~/.claude/projects/<escaped-cwd>/<session>.jsonl` for an
-  `ai-title` or `custom-title` record using
-  `CLAUDE_TITLE_POLL_DELAYS_MS = [1s, 2.5s, 5s, 12s, 30s, 60s]`. The
-  ADE prompt summarizer is intentionally skipped for Claude so that
-  Claude Code's own generated title wins when it arrives, with
-  `adoptClaudeRuntimeTitle` honouring the `manuallyNamed` flag and
-  refusing to overwrite a user rename.
-- **CLI user title** (codex, cursor-cli, droid, opencode):
+- **Claude / Codex native titles**:
+  `scheduleClaudeRuntimeTitleCaptureBestEffort` and
+  `scheduleCodexRuntimeTitleCaptureBestEffort` are no-ops. ADE names
+  the row; JSONL `ai-title` and Codex thread names do not win.
+- **CLI user title** (claude, claude-orchestrated, codex, cursor-cli, droid, opencode):
   `tryCliUserTitleFromWrite` listens to PTY *writes* (keyboard input)
   and commits the first submitted prompt line (3 to 180 chars). This
   avoids the alt-screen noise that every interactive agent TUI hides
@@ -721,9 +711,9 @@ use the first available provider.
 
 At session close, when `refreshOnComplete` is enabled, the transcript
 tail (last 2000 chars) is re-summarized into a final title through the
-same setting-then-launch-model walk. Failure logs a warn and moves on —
-the title contract never fails the session. End-of-session summaries
-use the same walk against `sessionIntelligence.summaries.modelId`.
+same cheap-helper-then-launch-model walk. Failure logs a warn and moves on —
+the title contract never fails the session. End-of-session AI summaries
+are not generated; the row keeps its deterministic `summary` fallback.
 
 ### Continuation metadata backfill
 

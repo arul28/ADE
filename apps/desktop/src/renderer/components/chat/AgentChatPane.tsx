@@ -9232,6 +9232,7 @@ export function AgentChatPane({
     modelId: string;
     /** Model the chat itself launched with; the backend's cross-provider naming fallback needs it even when a naming model is configured. */
     chatModelId?: string;
+    provider?: string;
     fallbackName: string;
     temporaryBranch?: string;
     attachments?: AgentChatFileRef[];
@@ -9248,6 +9249,7 @@ export function AgentChatPane({
         modelId: args.modelId,
         fallbackName: args.fallbackName,
         ...(args.chatModelId ? { chatModelId: args.chatModelId } : {}),
+        ...(args.provider ? { provider: args.provider } : {}),
         ...(args.temporaryBranch ? { temporaryBranch: args.temporaryBranch } : {}),
         ...(args.attachments?.length ? { attachments: args.attachments.slice(0, 8) } : {}),
       };
@@ -9302,6 +9304,7 @@ export function AgentChatPane({
     prompt: string;
     modelId: string;
     chatModelId?: string;
+    provider?: string;
     fallbackName: string;
     temporaryBranch?: string;
     attachments?: AgentChatFileRef[];
@@ -9322,6 +9325,7 @@ export function AgentChatPane({
     prompt: string;
     modelId: string;
     chatModelId?: string;
+    provider?: string;
     fallbackBase: string;
     children: Array<{ laneId: string; suffix: string }>;
     pin?: OpenProjectBinding | null;
@@ -9331,6 +9335,7 @@ export function AgentChatPane({
       prompt: args.prompt,
       modelId: args.modelId,
       ...(args.chatModelId ? { chatModelId: args.chatModelId } : {}),
+      ...(args.provider ? { provider: args.provider } : {}),
       fallbackName: args.fallbackBase,
       flagLaneIds: args.children.map((child) => child.laneId),
       pin: args.pin,
@@ -9369,9 +9374,7 @@ export function AgentChatPane({
       if (!primaryLane) throw new Error("Auto-create requires a primary lane.");
       const namingSeed = buildDraftLaunchNamingSeed(snapshot);
       const projectConfigSnapshot = await getProjectConfigCached({ projectRoot, pin, force: true }).catch(() => null);
-      const titleSettings = projectConfigSnapshot?.effective?.ai?.sessionIntelligence?.titles;
-      const titleModelId = typeof titleSettings?.modelId === "string" ? titleSettings.modelId.trim() : "";
-      const namingModelId = titleModelId || snapshot.modelId;
+      const namingModelId = snapshot.modelId;
       onAutoCreateNameModelResolved?.(namingModelId);
       const genericSuffix = autoLaneGenericSuffix();
       // Instant: name the lane deterministically now. If AI titles are enabled,
@@ -9422,18 +9425,17 @@ export function AgentChatPane({
         }
         throw abortError;
       }
-      if (titleSettings?.enabled !== false) {
-        startBackgroundLaneNaming({
-          laneId: createdLane.id,
-          prompt: namingSeed,
-          modelId: namingModelId,
-          chatModelId: snapshot.modelId,
-          fallbackName: laneName,
-          temporaryBranch: createdLane.branchRef,
-          attachments: snapshot.attachments,
-          pin,
-        });
-      }
+      startBackgroundLaneNaming({
+        laneId: createdLane.id,
+        prompt: namingSeed,
+        modelId: namingModelId,
+        chatModelId: snapshot.modelId,
+        provider: sessionProvider,
+        fallbackName: laneName,
+        temporaryBranch: createdLane.branchRef,
+        attachments: snapshot.attachments,
+        pin,
+      });
       if (canRefreshPinnedProject(pin)) {
         await refreshLanesStore().catch((refreshError: unknown) => {
           console.warn("draft launch lane refresh failed", refreshError);
@@ -10643,9 +10645,7 @@ export function AgentChatPane({
           pin: launchBinding,
           force: false,
         }).catch(() => null);
-        const titleSettings = projectConfigSnapshot?.effective?.ai?.sessionIntelligence?.titles;
-        const titleModelId = typeof titleSettings?.modelId === "string" ? titleSettings.modelId.trim() : "";
-        const namingModelId = titleModelId || parallelModelSlots[0]!.modelId;
+        const namingModelId = parallelModelSlots[0]!.modelId;
         const genericSuffix = autoLaneGenericSuffix();
         // Instant: name child lanes deterministically now. If AI titles are
         // enabled, the real base name is generated in the background after the
@@ -10689,17 +10689,16 @@ export function AgentChatPane({
           await refreshLanesStore();
         }
 
-        if (titleSettings?.enabled !== false) {
-          startBackgroundParallelLaneNaming({
-            laneId,
-            prompt: namingSeed,
-            modelId: namingModelId,
-            chatModelId: parallelModelSlots[0]!.modelId,
-            fallbackBase: baseName,
-            children: childLaneNamings,
-            pin: launchBinding,
-          });
-        }
+        startBackgroundParallelLaneNaming({
+          laneId,
+          prompt: namingSeed,
+          modelId: namingModelId,
+          chatModelId: parallelModelSlots[0]!.modelId,
+          provider: sessionProvider,
+          fallbackBase: baseName,
+          children: childLaneNamings,
+          pin: launchBinding,
+        });
 
         const { sendText, displayText: displayForSend } = buildParallelLaunchPrompt({
           text,

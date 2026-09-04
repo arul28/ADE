@@ -37,7 +37,6 @@ import {
 } from "@phosphor-icons/react";
 
 import type {
-  PrAiSummary,
   PrCheck,
   PrTimelineEvent,
   PrDeploymentState,
@@ -51,7 +50,6 @@ import { PrReviewThreadCard } from "./PrReviewThreadCard";
 import { DescriptionContent, IssueCommentContent } from "./PrTimelineCommentCards";
 import { PrBotReviewCard, detectBotProvider } from "./PrBotReviewCard";
 import { PrUserAvatar } from "./PrUserAvatar";
-import { PrAiSummaryCard } from "./PrAiSummaryCard";
 
 /* ══════════════════ Types ══════════════════ */
 
@@ -79,9 +77,6 @@ export type PrTimelineProps = {
   writeViewerLogin?: string | null;
   filters: PrTimelineFilters;
   onFiltersChange: (next: PrTimelineFilters) => void;
-  summary?: PrAiSummary | null;
-  onRegenerateSummary?: () => void;
-  onDismissSummary?: () => void;
   /** Fired (debounced) with the id of the top-most visible event as the user scrolls. */
   onVisibleEventChange?: (eventId: string | null) => void;
   /** Rendered at the very bottom of the scrollable thread (e.g. the comment composer). */
@@ -327,9 +322,6 @@ export const PrTimeline = forwardRef<PrTimelineRef, PrTimelineProps>(function Pr
     writeViewerLogin,
     filters,
     onFiltersChange: _onFiltersChange,
-    summary,
-    onRegenerateSummary: _onRegenerateSummary,
-    onDismissSummary,
     onVisibleEventChange,
     footer,
   },
@@ -497,19 +489,6 @@ export const PrTimeline = forwardRef<PrTimelineRef, PrTimelineProps>(function Pr
       className="flex h-full w-full min-h-0 flex-col"
       style={{ background: COLORS.prSurface }}
     >
-      {summary ? (
-        <div
-          className="shrink-0 px-3 pt-3"
-          data-testid="pr-timeline-summary"
-        >
-          <PrAiSummaryCard
-            prId={prId}
-            summary={summary}
-            onDismiss={onDismissSummary ? () => onDismissSummary() : undefined}
-          />
-        </div>
-      ) : null}
-
       <div
         ref={parentRef}
         data-testid="pr-timeline-viewport"

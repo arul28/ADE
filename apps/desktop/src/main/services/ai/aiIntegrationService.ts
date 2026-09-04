@@ -263,6 +263,7 @@ const SESSION_INTELLIGENCE_TASK_TYPES: ReadonlySet<AiTaskType> = new Set([
 const EXPLICIT_MODEL_ONLY_TASK_TYPES: ReadonlySet<AiTaskType> = new Set([
   ...SESSION_INTELLIGENCE_TASK_TYPES,
   "context_compaction",
+  "commit_message",
 ]);
 
 export function readConfiguredFeatureModel(aiConfig: unknown, feature: AiFeatureKey): string | null {
@@ -1706,7 +1707,7 @@ export function createAiIntegrationService(args: {
       throw new Error("No AI provider is available. Install and authenticate Claude Code and/or Codex CLI.");
     }
 
-    if (args.taskType !== "session_title" && !getFeatureFlag(args.feature)) {
+    if (args.taskType !== "session_title" && args.taskType !== "commit_message" && !getFeatureFlag(args.feature)) {
       logger.warn("ai.task.skipped_feature_disabled", {
         requestId,
         taskType: args.taskType,

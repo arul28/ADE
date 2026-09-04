@@ -222,6 +222,17 @@ sessions. Running a removed command fails with that explanation.
 What to do instead when you finish: say so in your final message, and use
 `ade chat note "<one-line status>"` to leave a durable status line on the Work
 row. If you are blocked, `ade chat ask "<question>"` raises the row's hand.
+Update the note along the way as the state changes; do not wait until the end.
+
+If you realize the lane, branch, or chat name is wrong, rename it rather than
+living with a bad label:
+
+```bash
+ade chat generate-names                      # title, lane name, and status line
+ade chat generate-names --title --status     # subset of fields
+ade chat update --title "Better chat title"  # defaults to $ADE_CHAT_SESSION_ID
+ade lanes rename <lane> --name "Better name"
+```
 
 #### What `note` and `ask` do to the Work row
 

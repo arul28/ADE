@@ -2124,6 +2124,9 @@ const HELP_BY_COMMAND: Record<string, string> = {
                                                     'note' and 'ask' default to the caller and accept --session <id>.
                                                     'chat settle' / 'chat unsettle' were removed: only the user (or a
                                                     merged PR) settles a session — report your outcome with 'chat note'.
+    $ ade chat generate-names                       Regenerate chat title, lane name, and status line
+    $ ade chat generate-names --title --status      Limit to those fields; omit flags for all three
+                                                    Also: ade chat update --title, ade lanes rename.
     $ ade chat steer <session> --personal --text "focus on the tradeoffs"
     $ ade chat models --personal --provider codex
     $ ade chat update <session> --personal --title "Trip planning"
@@ -7575,7 +7578,8 @@ function buildChatPlan(args: string[]): CliPlan {
     : null;
   // `ask` / `note` take free text, not a session positional — they default to
   // the caller's own $ADE_CHAT_SESSION_ID and accept --session <id>.
-  const selfLifecycleSub = sub === "ask" || sub === "note";
+  const selfLifecycleSub = sub === "ask" || sub === "note"
+    || sub === "generate-names" || sub === "generate_names" || sub === "names";
   const explicitSessionId = readValue(args, ["--session", "--session-id"]);
   const sessionId =
     explicitSessionId ??
@@ -7617,6 +7621,24 @@ function buildChatPlan(args: string[]): CliPlan {
           "session",
           "setSessionStatusNote",
           withSession({ note }),
+        ),
+      ],
+    };
+  }
+  if (sub === "generate-names" || sub === "generate_names" || sub === "names") {
+    const fields: string[] = [];
+    if (readFlag(args, ["--title"])) fields.push("title");
+    if (readFlag(args, ["--lane", "--lane-name"])) fields.push("laneName");
+    if (readFlag(args, ["--status", "--status-line"])) fields.push("statusLine");
+    return {
+      kind: "execute",
+      label: "chat generate-names",
+      steps: [
+        actionStep(
+          "result",
+          "chat",
+          "regenerateSessionMetadata",
+          withSession(fields.length ? { fields } : {}),
         ),
       ],
     };

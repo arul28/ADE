@@ -654,22 +654,12 @@ Renderer — settings:
   get the bundled CLI automatically; this surface is what makes
   `ade` available to the user's own terminals.
 - `apps/desktop/src/renderer/components/settings/AiFeaturesSection.tsx`
-  — Background Jobs settings for AI-powered helpers: auto-naming chats,
-  CLI sessions, and lanes; summarizing completed chats and terminals;
-  PR description drafting; commit message drafting; and conflict
-  proposals. One-shot helpers (commit messages, PR descriptions,
-  conflict proposals, terminal summaries) require that row's Settings
-  model: an empty picker skips AI or throws a Settings prompt instead of
-  silently picking Haiku or the first available model. Commit messages
-  and conflict proposals refuse with a Settings prompt; PR drafts and
-  summaries use the deterministic template. Auto-naming is session
-  intelligence, not a one-shot: the title setting, then this session's
-  model, then deterministic — an empty title picker still names the
-  chat. CLI titles/summaries try the setting, then the stored launch
-  model, and skip the AI call when both are missing. Live chat
-  compaction stays on the chat's own provider. Reasoning-effort
-  pickers use `useFamilyDefaults={false}` so each row keeps an
-  independent effort override. The section also owns **Pause all scheduled
+  — Pause all scheduled work and the active durable-job list. Naming,
+  commit suggestions, idle status lines, and similar background helpers
+  pick a cheap model from the ADE provider that owns the session
+  (Haiku 4.5 for Claude, GPT-5.6 Luna for Codex, Composer 2.5 for
+  Cursor; other providers reuse the session model). There is no
+  Settings picker for those helpers. The section owns **Pause all scheduled
   work**, persisted as `ai.chat.scheduledWorkPaused`. This pauses Claude
   wakeups, cron tasks, and `/loop` schedules across the project runtime
   without disarming them; overdue work catches up once after resume. Its
@@ -1444,7 +1434,7 @@ changing rather than which service backs it:
 |---|---|---|
 | General | `ProjectSection.tsx`, `AdeCliSection.tsx`, `AutoUpdatesSection.tsx`, `KeepAwakeSection.tsx`, `ProductAnalyticsSection.tsx`, `DiagnosticsSharingSection.tsx`, `AboutSection.tsx` | The top ADE card shows running/installed/downloaded versions, the runtime service, and update controls; below it are project health, the `ade` command line (`#ade-cli`), **Sleep** (`#keep-awake`, hidden on hosted web — a browser holds no power lock), and the two Privacy consents — anonymous analytics and diagnostics sharing (`#diagnostics-sharing`, hidden on hosted web). Legacy `?tab=workspace`, `?tab=project`, `?tab=context`, `?tab=onboarding`, `?tab=help`, and `?tab=tours` land here. |
 | Appearance | `AppearanceSection.tsx`, `LaunchPromptSection.tsx` (renders `ChatAppearancePreview`) | Theme, chat typography and density, chat surface (tint, corners), chat details (copy-button position, message minimap, prompt-stash bookmark, launch-prompt clipboard, live preview), and terminal text. Rebuilt on the primitives — the old version used `font-mono` for every prose line and four different control idioms. Persisted to `localStorage` under `ade.userPreferences.v1`. |
-| Agents & Models | `ProvidersSection.tsx`, `OAuthConnectModal.tsx`, `AiFeaturesSection.tsx`, `BudgetCapEditor.tsx`, `DictationSection.tsx` | Provider connections, model routing, background helpers, spend cap, and voice input — merged because provider auth and per-task model routing are one mental model. **Coding Agents** cards (Claude Code, Codex CLI, Cursor, Droid, Pi — Pi's card also carries in-app provider sign-in) and **OpenCode — Universal Model Access**. Background helpers cover summaries, PR descriptions, commit messages, conflict proposals, auto-naming, and scheduled-work recovery. Legacy `?tab=ai`, `?tab=providers`, `?tab=background-jobs`, and `?tab=automations` land here. |
+| Agents & Models | `ProvidersSection.tsx`, `OAuthConnectModal.tsx`, `AiFeaturesSection.tsx`, `BudgetCapEditor.tsx`, `DictationSection.tsx` | Provider connections, model routing, spend cap, and voice input — merged because provider auth and per-task model routing are one mental model. **Coding Agents** cards (Claude Code, Codex CLI, Cursor, Droid, Pi — Pi's card also carries in-app provider sign-in) and **OpenCode — Universal Model Access**. Background helpers on this tab are scheduled-work pause/recovery only; naming and commit suggestions use the session's ADE provider. Legacy `?tab=ai`, `?tab=providers`, `?tab=background-jobs`, and `?tab=automations` land here. |
 | Lanes | `LaneBehaviorSection.tsx`, `LaneTemplatesSection.tsx`, `PrChatTranscriptsSection.tsx` | How lanes start (`new lane base`), stay current (`auto-rebase`), and tell you they fell behind (`rebase suggestions` off/badge/banner + min-behind threshold), plus lane init recipes and PR transcript gists. Legacy `?tab=lane-templates` lands here. |
 | Integrations | `GitHubIntegrationSection.tsx`, `LinearIntegrationSection.tsx` | GitHub and Linear — reinstated as its own tab. Legacy `?tab=integrations`, `?tab=github`, and `?tab=linear` land here; `?integration=github|linear` too, while `?integration=cli` follows the `ade-cli` anchor to General. |
 | Notifications | `NotificationsSection.tsx`, `AgentCompletionSoundSection.tsx` | Delivery for `AttentionPreferences`: per-event policy (off / ambient / notify) for agent and PR events, quiet hours, focus suppression, phone delivery and escalation, the agent completion sound, and the Lanes banner budget. The per-event matrix and quiet hours were fully modelled with balanced defaults but had **no UI at all** before this tab. |

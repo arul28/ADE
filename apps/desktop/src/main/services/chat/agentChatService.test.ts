@@ -1541,6 +1541,7 @@ function createMockSessionService() {
       if (row) row.statusNote = note;
       return Boolean(row);
     }),
+    getStatusNoteUpdatedAt: vi.fn(() => null),
     setHeadShaStart: vi.fn(),
     setHeadShaEnd: vi.fn(),
     setLastOutputPreview: vi.fn(),
@@ -1784,6 +1785,7 @@ function createService(overrides: Record<string, unknown> = {}) {
     aiIntegrationService: aiIntegrationService as any,
     logger: logger as any,
     appVersion: "0.0.1-test",
+    nativeTitleWaitMs: 0,
     getDirtyFileTextForPath: () => undefined,
     ...overrides,
   });
@@ -47149,21 +47151,27 @@ describe("suggestLaneNameFromPrompt", () => {
     );
   });
 
-  it("uses the deterministic prompt fallback when title generation is disabled", async () => {
+  it("still names with AI when title generation is disabled in Settings", async () => {
     vi.mocked(detectAllAuth).mockResolvedValue([
       { type: "cli-subscription" as any, cli: "claude", authenticated: true, path: "/usr/bin/claude", verified: true },
     ]);
 
     const { service, aiIntegrationService } = createSuggestService({ titleGenerationEnabled: false });
+    vi.mocked(aiIntegrationService.summarizeTerminal).mockResolvedValue({
+      text: "Login Bug Fix",
+      inputTokens: 10,
+      outputTokens: 5,
+    } as any);
     const result = await service.suggestLaneNameFromPrompt({
       prompt: "Fix the authentication login failure in the dashboard",
       modelId: "anthropic/claude-haiku-4-5",
+      provider: "claude",
       laneId: "lane-1",
       fallbackName: "chat-20260514-010203",
     });
 
-    expect(result).toBe("fix-authentication-login-failure-dashboard");
-    expect(aiIntegrationService.summarizeTerminal).not.toHaveBeenCalled();
+    expect(result).toBe("login-bug-fix");
+    expect(aiIntegrationService.summarizeTerminal).toHaveBeenCalled();
   });
 
   it("preserves the generated suffix when the prompt fallback is generic", async () => {
@@ -47198,7 +47206,7 @@ describe("suggestLaneNameFromPrompt", () => {
     expect(result).toBe("login-bug-fix");
   });
 
-  it("prefers the configured title model over the requested composer model", async () => {
+  it("prefers the cheap helper for the ADE provider over the requested session model", async () => {
     vi.mocked(detectAllAuth).mockResolvedValue([
       { type: "cli-subscription" as any, cli: "codex", authenticated: true, path: "/usr/bin/codex", verified: true },
     ]);
@@ -47212,13 +47220,14 @@ describe("suggestLaneNameFromPrompt", () => {
     const result = await service.suggestLaneNameFromPrompt({
       prompt: "Fix auto create lane routing and naming",
       modelId: "openai/gpt-5.5",
+      provider: "codex",
       laneId: "lane-1",
       fallbackName: "chat-20260514-010203",
     });
 
     expect(result).toBe("auto-create-lane-fix");
     expect(aiIntegrationService.summarizeTerminal).toHaveBeenNthCalledWith(1, expect.objectContaining({
-      model: "openai/gpt-5.4-mini",
+      model: "openai/gpt-5.6-luna",
       taskType: "session_title",
     }));
     expect(aiIntegrationService.summarizeTerminal).toHaveBeenCalledTimes(1);
@@ -47480,7 +47489,7 @@ describe("suggestLaneNameFromPrompt", () => {
     expect(aiIntegrationService.summarizeTerminal).toHaveBeenCalledTimes(1);
   });
 
-  it("uses the launched chat model when the title setting answers unusably", async () => {
+  it("uses the launched chat model when the cheap helper answers unusably", async () => {
     vi.mocked(detectAllAuth).mockResolvedValue([
       { type: "cli-subscription" as any, cli: "codex", authenticated: true, path: "/usr/bin/codex", verified: true },
     ]);
@@ -47496,6 +47505,7 @@ describe("suggestLaneNameFromPrompt", () => {
     const result = await service.generateAutoLaneIdentity({
       prompt: "The Claude auth login button hangs after OAuth redirects.",
       modelId: "openai/gpt-5.4",
+      provider: "codex",
       laneId: "lane-1",
       temporaryBranch: "ade/1a2b3c4d",
     });
@@ -47506,7 +47516,7 @@ describe("suggestLaneNameFromPrompt", () => {
       source: "ai",
     });
     expect(aiIntegrationService.summarizeTerminal).toHaveBeenNthCalledWith(1, expect.objectContaining({
-      model: "openai/gpt-5.4-mini",
+      model: "openai/gpt-5.6-luna",
     }));
     expect(aiIntegrationService.summarizeTerminal).toHaveBeenNthCalledWith(2, expect.objectContaining({
       model: "openai/gpt-5.4",
@@ -47514,7 +47524,7 @@ describe("suggestLaneNameFromPrompt", () => {
     expect(aiIntegrationService.summarizeTerminal).toHaveBeenCalledTimes(2);
   });
 
-  it("uses the configured naming model before the launched model", async () => {
+  it("uses the cheap helper before the launched model", async () => {
     vi.mocked(detectAllAuth).mockResolvedValue([
       { type: "cli-subscription" as any, cli: "codex", authenticated: true, path: "/usr/bin/codex", verified: true },
     ]);
@@ -47526,12 +47536,13 @@ describe("suggestLaneNameFromPrompt", () => {
     await service.generateAutoLaneIdentity({
       prompt: "Rename automatic lanes",
       modelId: "openai/gpt-5.4",
+      provider: "codex",
       laneId: "lane-1",
       temporaryBranch: "ade/1a2b3c4d",
     });
 
     expect(aiIntegrationService.summarizeTerminal).toHaveBeenNthCalledWith(1, expect.objectContaining({
-      model: "openai/gpt-5.4-mini",
+      model: "openai/gpt-5.6-luna",
     }));
   });
 

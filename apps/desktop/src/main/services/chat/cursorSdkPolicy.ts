@@ -114,8 +114,10 @@ export function buildCursorSdkLocalRunOptions(
         : "inherit";
   return {
     mode: cursorSdkLocalAgentMode(policy),
-    ...(policy.tools?.length ? { tools: [...policy.tools] } : {}),
-    ...(policy.disallowedTools?.length ? { disallowedTools: [...policy.disallowedTools] } : {}),
+    // `[]` is a real allowlist (no tools). Omitting the key is the SDK default
+    // toolset, so empty must not collapse to "unset".
+    ...(policy.tools !== undefined ? { tools: [...policy.tools] } : {}),
+    ...(policy.disallowedTools !== undefined ? { disallowedTools: [...policy.disallowedTools] } : {}),
     autoReview: policy.autoReview,
     sandboxDirective,
   };
@@ -196,18 +198,24 @@ export function resolveCursorSdkPolicy(session: CursorSessionModeInput): CursorS
  * The one policy every ADE one-shot Cursor prompt runs under.
  *
  * A one-shot is a tool-less text task — a title, a lane name, a status line, a
- * summary, a commit message, a pull request description — and
- * `runCursorSdkLocalPrompt` denies every tool call it makes. Deriving a policy
- * from the caller's permission mode therefore decided nothing except the SDK
- * chat mode, and it told a `full-auto` caller's model it had tools that the
- * bridge then refused. One fixed read-only policy states what actually happens.
+ * commit message. Ask-mode used to advertise the read-only tool allowlist, then
+ * `runCursorSdkLocalPrompt` denied every call, so Composer looped until the
+ * 120s timeout and naming fell through to a slug. An empty `tools` array is
+ * the actual allowlist: the SDK must not see its default toolset.
  *
  * It is constant on purpose: the warm one-shot worker is shared across
  * features, and a pooled worker keeps the policy it was created with.
  */
-export const CURSOR_SDK_ONESHOT_POLICY: CursorSdkPermissionPolicy = Object.freeze(
-  resolveCursorSdkPolicy({ cursorModeId: "ask" }),
-);
+export const CURSOR_SDK_ONESHOT_POLICY: CursorSdkPermissionPolicy = Object.freeze({
+  chatMode: "ask",
+  approvalPolicy: "read-only",
+  sandbox: "off",
+  fullAuto: false,
+  hardGuards: true,
+  orchestrationLead: false,
+  autoReview: false,
+  tools: [],
+});
 
 /**
  * Ambient Cursor setting layers an agent may load (`local.settingSources`).

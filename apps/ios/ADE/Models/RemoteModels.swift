@@ -3679,6 +3679,11 @@ struct AgentChatSessionIdRequest: Codable, Equatable {
   var sessionId: String
 }
 
+struct AgentChatRegenerateSessionMetadataRequest: Codable, Equatable {
+  var sessionId: String
+  var fields: [String]?
+}
+
 struct AgentChatApproveRequest: Codable, Equatable {
   var sessionId: String
   var itemId: String

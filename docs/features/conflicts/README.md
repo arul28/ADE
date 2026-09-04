@@ -10,7 +10,7 @@ is projected into the surfaces where it matters:
 - **Lanes**: status badges and overlap chips on lane rows, inline
   merge simulation, rebase banner.
 - **Graph**: project-wide `RiskMatrix`, pairwise overlap tooltips,
-  inline `ConflictPanel` for AI resolution.
+  edge-click merge simulation.
 - **PRs**: blocked/manual rebase UIs, integration (merge-plan)
   pairwise simulation, issue resolution.
 
@@ -29,9 +29,8 @@ desktop's in-process IPC handlers when no runtime is bound. Remote-
 bound windows therefore predict conflicts, run merge simulations,
 and execute external CLI resolvers on the remote machine — the
 worktrees and pack artifacts they read are on the remote host. The
-`ConflictPanel` and `RiskMatrix` renderer components only hold view
-state; they call out to the runtime for every prediction or
-proposal action.
+`RiskMatrix` renderer components only hold view
+state; they call out to the runtime for every prediction.
 
 ## Source file map
 
@@ -53,7 +52,6 @@ Renderer:
 |------|---------------|
 | `renderer/components/graph/shared/RiskMatrix.tsx` | Animated pairwise risk grid |
 | `renderer/components/graph/shared/RiskTooltip.tsx` | Hover detail for a matrix cell |
-| `renderer/components/graph/graphDialogs/ConflictPanel.tsx` | AI proposal apply flow, overlapping file list |
 | `renderer/components/lanes/mergeSimulation/*` | Conflict file diff, merge simulation panel, language detection |
 | `renderer/components/shared/conflictResolver/ResolverTerminalModal.tsx` | External CLI resolver terminal modal |
 | `renderer/components/prs/ConflictFilePreview.tsx` | Conflict marker preview (re-used from PR flows) |
@@ -263,8 +261,7 @@ Conflict intelligence lives where it's useful:
 
 - **Lanes**: status badges, overlap counts, "Open in Graph" jump.
 - **Graph**: `RiskMatrix` with animated transitions, cell tooltips
-  with overlap file lists, `ConflictPanel` for AI proposal apply,
-  merge simulation entry from edge clicks.
+  with overlap file lists, merge simulation from edge clicks.
 - **PRs > Rebase**: rebase continue/abort, manual attention surface
   for failed auto-rebases, upstream rebase chain view.
 - **PRs > Integration**: pairwise matrix for merge-plan proposals.

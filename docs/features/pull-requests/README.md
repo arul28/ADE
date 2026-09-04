@@ -30,7 +30,7 @@ tab reads on the remote runtime through `callPrReadRuntimeActionOr`
 (`domain: "pr"`). Local-bound windows call the in-process PR IPC
 handlers directly for high-volume reads such as `listWithConflicts`,
 `getDetail`, `getStatus`, `getChecks`, `getReviews`, `getComments`,
-`getFiles`, `getCommits`, `getDeployments`, `getAiSummary`, and
+`getFiles`, `getCommits`, `getDeployments`, and
 `getGitHubSnapshot`, so opening the PR tab does not wait on local
 daemon startup. Mutations and long-running workflows still use the
 project runtime route where that route owns the behavior.
@@ -168,7 +168,7 @@ Service files (`apps/desktop/src/main/services/prs/`):
 | `prPollingService.ts` | Webhook-first PR freshness plus the direct-GitHub safety net. `reconcilePrs(prIds)` coalesces webhook-linked ids and refreshes only those rows immediately. A healthy relay suppresses hot polling and reduces broad refreshes to a 15-minute safety sweep; an unhealthy relay uses the configurable 60 s fallback (clamped to 5 s–5 min) and user-driven hot windows of 15 s for the first minute, then 30 s until the three-minute cap. Empty-cache discovery runs at most every 30 minutes with a healthy relay or 10 minutes without one. Before every network refresh, the poller honors credential cooldown/reset state and preserves the final 500 core/GraphQL requests for foreground actions. It writes `last_polled_at` per PR for delta polling. The ADE daemon owns an instance (created + started + disposed in `apps/ade-cli/src/bootstrap.ts`) for runtime-bound windows; the desktop main process owns the local-bound instance. |
 | `prMergeAutoSettlementService.ts` | Applies the enabled lane-PR merge settlement policy after each polling snapshot. It files chat and tracked-agent-CLI sessions for a newly discovered merged PR even when the session has pending input or background work: the merge is the explicit override. The single exception is a chat turn that is running *right now* — see [Active-turn deferral](#active-turn-deferral). **Which** sessions it may file is an explicit `MergeSettlementScope` union rather than an implicit fallthrough — see [Merge settlement scope](#merge-settlement-scope). Each PR is handled once — including when the scope resolves to `ambiguous` and nothing is filed at all, because this merge looked and decided — so user reactivation is not re-filed by that old merge, while another linked PR can file a later lifecycle. It emits `pr-sessions-auto-settled` only when the preceding in-memory snapshot contained that PR as open or draft. A first-sight merge — including backfilled history from another machine or the first snapshot after restart — is filed silently, so an imported history cannot generate merge toasts or push notifications. |
 | `prChatCards.ts` | Converts bounded PR polling transitions into durable `ade_card` episodes for linked Work chats: CI completion/failure, review received, merge ready, conflicts, and merged. CI jobs are failure-first, capped at three visible rows with `rowsTruncated`, and report an honest `degradedReason` + Retry action when both job/check detail sources fail instead of rendering an empty success state. Desktop-main and daemon-owned pollers call the same emitter, and failures are isolated per PR/session so one cold or malformed chat cannot stop the poll loop. |
-| `prSummaryService.ts` | AI PR summary generator; uses the PR Descriptions model from Settings, otherwise a deterministic template (`This PR modifies N file(s).`). Caches `PrAiSummary` per `(prId, headSha)` in `pull_request_ai_summaries` so pushes invalidate the cache |
+| `prSummaryService.ts` | Unused by current PR UI. Cached `PrAiSummary` generator remains in-process for the old IPC; desktop and iOS no longer fetch or show it. |
 | `workflowGraph.ts` | `createWorkflowGraph` — reconstructs the CI pipeline DAG (`PrWorkflowGraph`) behind a swappable `WorkflowGraph` interface. GitHub's jobs API does not return `needs:`, so the graph is built by parsing the workflow YAML that actually ran and joining it to live run state. Parses **only** `jobs.<id>.needs` and `jobs.<id>.strategy.matrix`, with the existing `yaml` dep. Source order: lane worktree `git show <headSha>:.github/workflows/<file>` → GitHub Contents API `?ref=<headSha>` (fork PRs / non-local repos) → `source: "none"` with an `unavailableReason`; it never guesses an edge. A single WORKFLOW degrades to flat swimlanes (not the whole graph) when a job uses a reusable workflow (`uses:`), has a `${{ }}` `name:`, or the YAML will not parse. Matrix legs collapse into one node whose state is the worst leg (failed > running > queued > passed > skipped); `tier` is a cycle-safe longest-path rank over `needs`; `criticalPath` is the longest-duration chain. Running nodes report live elapsed. Parsed YAML is cached per `(repo, headSha)` behind a TTL; the graph itself is always recomputed from live run state. |
 | `checkLogParser.ts` | Pure parsing for `prService.getCheckLog`: strips the per-line ISO timestamp, splits a job log on top-level `##[group]` / `##[endgroup]` markers into step sections, selects the failing step's section, and lifts a framework summary headline (vitest/jest/pytest/go) — falling through to `null` rather than guessing. `selectStepSection` returns the section **and** how it chose it (`named-step` / `errored-step` / `whole-log`); when neither a step name nor an `##[error]` identifies one it returns no section, because the previous "last section" fallback resolved to the `Post Run …` cleanup group on any job that passed. `prService` owns the bounded streaming download (the logs endpoint 302s to a pre-signed blob; the redirect is followed without the API token and reading stops past a few MB, setting `truncated`). |
 | `githubPrStackService.ts` | Native GitHub stack decoding, persistence, and repository reconciliation |
@@ -262,7 +262,6 @@ Renderer components (`apps/desktop/src/renderer/components/prs/`):
 | `shared/GitHubPrSearchInput.tsx`, `shared/GitHubRepoSyncBar.tsx` | Repo-PR header chrome shared by the GitHub tab and detail views: the magnifying-glass search input and the "syncing…" toolbar that drives manual snapshot refreshes. |
 | `shared/PrUserAvatar.tsx` | Shared GitHub user avatar with a fallback `UserCircle` glyph for users that don't have a cached avatar URL. Commit rows without a linked GitHub account use the Gravatar identicon URL the service derives from the commit-author email (see `prService.getCommits`), so the CSP allowlist includes `gravatar.com`. |
 | `shared/PrCommandPalettes.tsx` | `g c` (commits) / `g t` (threads) / `g f` (files) palettes opened by the keyboard chord and by the timeline toolbar |
-| `shared/PrAiSummaryCard.tsx` | AI summary card above the timeline; dismissible per PR (state in `PrsContext.dismissedAiSummaries`), with a "Regenerate" action wired to `prSummaryService.regenerateSummary` |
 | `shared/PrReviewThreadCard.tsx`, `shared/PrBotReviewCard.tsx` | Rich thread cards for the timeline (bot-review collapse, reply box, resolve, `PrReactionBar`, and per-comment Edit via `usePrCommentEdit`) |
 | `shared/PrDeploymentCard.tsx` | Deployment row used in the status rail and on the timeline |
 | `shared/PrAiResolverPanel.tsx` | AI resolver launch controls in Rebase/Integration flows, including additional-instructions passthrough |
@@ -1964,15 +1963,10 @@ Overview tab is selected):
 
 ## AI summary cache
 
-`prSummaryService` generates a `PrAiSummary` (summary text, risk
-areas, reviewer hotspots, unresolved concerns) via the AI integration
-service when the PR Descriptions model is set in Settings, and caches
-it in `pull_request_ai_summaries` keyed by `(pr_id, head_sha)`. An
-empty picker returns a deterministic template instead of silently
-picking Haiku. Pushing new commits advances `head_sha`
-(maintained by `prService.upsertFromGithub`) so the next read misses
-and the summary regenerates. `regenerateSummary` forces a rebuild
-regardless of cache state.
+PR detail no longer shows an AI summary card and `PrsContext` does
+not fetch `getAiSummary`. `prSummaryService` and the
+`ade.prs.getAiSummary` / `ade.prs.regenerateAiSummary` IPC remain
+as unused in-process compatibility until they are deleted.
 
 ## Delta polling cursor
 
@@ -1991,12 +1985,11 @@ best-effort — failures log a warning and do not abort the tick.
 - Workflow surfaces batch PR merge context through `prs.getMergeContexts(prIds)` instead of fanning out one `getMergeContext(prId)` call per card. The service builds the batch from metadata-only lane rows so integration/rebase views do not pay full git status cost on render.
 - `PrsContext` owns PR list, GitHub stack state, rebase needs, proposals,
   and the Timeline+Rails UI state
-  (`timelineFiltersByPrId`, `dismissedAiSummaries`, `viewerLogin`,
+  (`timelineFiltersByPrId`, `viewerLogin`,
   `writeViewerLogin`, `detailReviewThreads`,
-  `detailDeployments`, `detailAiSummary`). It exposes
-  `setTimelineFilters`, `setAiSummaryDismissed`,
-  `setViewerLogin` / `setWriteViewerLogin`, and
-  `regeneratePrAiSummary`.
+  `detailDeployments`). It exposes
+  `setTimelineFilters` and
+  `setViewerLogin` / `setWriteViewerLogin`.
 - Chat-side PR surfaces (`ChatGitToolbar`, `ChatPrPane`) first scope the cached
   lane PR set to the selected chat's explicit edges, so one chat can show more
   than one PR without leaking another chat's PR. Rows with no edge retain the
@@ -2095,15 +2088,10 @@ Builder responsibilities:
 
 The snapshot is read-only; create/merge/close/comment actions go
 through the existing command surface (`prs.createFromLane`,
-`prs.land`, `prs.close`, `prs.addComment`, `prs.rerunChecks`,
-`prs.draftDescription`). The mobile create wizard now creates normal
-PRs with `source lane -> target lane` titles and no AI-generated
-title/body step; the explicit `prs.draftDescription` action remains
-available to callers that request PR-description drafting directly.
-AI drafts use the PR Descriptions model from Settings when one is set;
-if that picker is empty, ADE returns the deterministic template
-instead of silently picking Haiku. `requireAi` callers get a Settings
-prompt rather than a stub.
+`prs.land`, `prs.close`, `prs.addComment`, `prs.rerunChecks`).
+The mobile create wizard creates normal PRs with title prefilled
+from the lane name and an optional empty body. There is no
+AI-generated title/body step.
 The mobile client calls `getMobileSnapshot` on open and re-fetches on focus or
 after a successful mutation. Unmapped GitHub projections are local-only on the
 host, so webhook changes also emit a tiny `prs_updated` sync invalidation.

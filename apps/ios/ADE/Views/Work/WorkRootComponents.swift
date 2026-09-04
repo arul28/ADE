@@ -323,6 +323,10 @@ struct WorkSidebarSectionHeader: View {
   /// stated once, here. Nil for status and time sections, which span lanes and
   /// therefore have no single true answer.
   var laneStatus: LaneStatus? = nil
+  /// Lane record for the Work-tab divider long-press menu. Nil on status/time
+  /// headers and orphaned sections.
+  var lane: LaneSummary? = nil
+  var laneMenu: WorkSessionLaneMenuActions? = nil
 
   /// Collapsed and holding only settled work: render one thin muted row with the
   /// count folded in, instead of a full-weight header over nothing.
@@ -404,6 +408,11 @@ struct WorkSidebarSectionHeader: View {
     .padding(.horizontal, 4)
     .padding(.vertical, isQuietRow ? 3 : 8)
     .opacity(isQuietRow ? 0.72 : 1)
+    .contextMenu {
+      if let lane, let laneMenu, group.laneId != nil, !group.isOrphaned {
+        WorkLaneContextMenuContent(lane: lane, actions: laneMenu)
+      }
+    }
   }
 
   /// Nothing to say when the worktree is clean and level with its base — an
@@ -513,12 +522,97 @@ struct WorkSessionLaneMenuActions {
   var colorAvailable: Bool = false
   var manageAvailable: Bool = false
   var onStartChat: (LaneSummary) -> Void = { _ in }
+  var onToggleWorkPin: (LaneSummary) -> Void = { _ in }
+  var isWorkPinned: (LaneSummary) -> Bool = { _ in false }
+  var onOpenInWeb: (LaneSummary) -> Void = { _ in }
   var onCopyLaneLink: (LaneSummary) -> Void = { _ in }
   var onCopyBranchLink: (LaneSummary) -> Void = { _ in }
   var onCopyLinearLink: (LaneSummary) -> Void = { _ in }
   var onCopyPath: (LaneSummary) -> Void = { _ in }
   var onSetColor: (LaneSummary, String?) -> Void = { _, _ in }
   var onManage: (LaneSummary) -> Void = { _ in }
+}
+
+/// Shared lane long-press contents for a session row's `Lane ▸` submenu and the
+/// lane divider itself, so the two surfaces cannot drift.
+struct WorkLaneContextMenuContent: View {
+  let lane: LaneSummary
+  let actions: WorkSessionLaneMenuActions
+
+  var body: some View {
+    Button {
+      actions.onStartChat(lane)
+    } label: {
+      Label("Start chat in lane", systemImage: "plus.bubble")
+    }
+    Button {
+      actions.onToggleWorkPin(lane)
+    } label: {
+      Label(
+        actions.isWorkPinned(lane) ? "Unpin from Work sidebar" : "Pin to Work sidebar",
+        systemImage: actions.isWorkPinned(lane) ? "pin.slash" : "pin"
+      )
+    }
+    Button {
+      actions.onOpenInWeb(lane)
+    } label: {
+      Label("Open in web", systemImage: "safari")
+    }
+    Menu {
+      Button {
+        actions.onCopyLaneLink(lane)
+      } label: {
+        Label("ADE lane link", systemImage: "link")
+      }
+      Button {
+        actions.onCopyBranchLink(lane)
+      } label: {
+        Label("Branch link", systemImage: "arrow.triangle.branch")
+      }
+      if primaryLaneLinearIssue(for: lane)?.url != nil {
+        Button {
+          actions.onCopyLinearLink(lane)
+        } label: {
+          Label("Linear issue link", systemImage: "square.on.square")
+        }
+      }
+      Button {
+        actions.onCopyPath(lane)
+      } label: {
+        Label("Path", systemImage: "folder")
+      }
+    } label: {
+      Label("Copy", systemImage: "doc.on.doc")
+    }
+    if actions.colorAvailable {
+      Menu {
+        ForEach(LaneColorPalette.entries) { entry in
+          Button {
+            actions.onSetColor(lane, entry.hex)
+          } label: {
+            Label(entry.name, systemImage: lane.color?.lowercased() == entry.hex.lowercased()
+              ? "checkmark.circle.fill"
+              : "circle.fill")
+          }
+        }
+        Divider()
+        Button {
+          actions.onSetColor(lane, nil)
+        } label: {
+          Label("No color", systemImage: "circle.dashed")
+        }
+      } label: {
+        Label("Color", systemImage: "paintpalette")
+      }
+    }
+    if actions.manageAvailable {
+      Button {
+        actions.onManage(lane)
+      } label: {
+        Label("Manage lane", systemImage: "slider.horizontal.3")
+      }
+    }
+  }
 }
 
 /// Single-row renderer for the session list that carries the swipe + context-menu action set.
@@ -587,6 +681,9 @@ struct WorkSessionListRow: View {
   /// Lane-scoped actions for the `Lane ▸` submenu. Nil (the default) renders no
   /// submenu at all, which is also what a row with no resolvable lane gets.
   var laneMenu: WorkSessionLaneMenuActions? = nil
+  /// The host advertises `chat.regenerateSessionMetadata`.
+  var generateNamesAvailable: Bool = false
+  var onGenerateNames: (TerminalSessionSummary, [String]) -> Void = { _, _ in }
 
   /// Observed so the muted glyph and menu label re-render the moment a mute
   /// flips anywhere (this menu, the open chat's header menu, settings).
@@ -892,6 +989,44 @@ struct WorkSessionListRow: View {
               systemImage: isMuted ? "bell" : "bell.slash")
       }
     }
+    generateNamesMenu
+  }
+
+  @ViewBuilder
+  private var generateNamesMenu: some View {
+    if isChat && generateNamesAvailable {
+      let cloudOwned = CursorCloudNaming.ownsName(session.cursorCloudAgentId)
+        || CursorCloudNaming.ownsName(chatSummary?.cursorCloudAgentId)
+      Menu {
+        if !cloudOwned {
+          Button {
+            onGenerateNames(session, ["title"])
+          } label: {
+            Label("Generate chat title", systemImage: "textformat")
+          }
+        }
+        Button {
+          onGenerateNames(session, ["laneName"])
+        } label: {
+          Label("Generate lane name", systemImage: "arrow.triangle.branch")
+        }
+        Button {
+          onGenerateNames(session, ["statusLine"])
+        } label: {
+          Label("Generate status line", systemImage: "text.alignleft")
+        }
+        Button {
+          onGenerateNames(
+            session,
+            cloudOwned ? ["laneName", "statusLine"] : ["title", "laneName", "statusLine"]
+          )
+        } label: {
+          Label(cloudOwned ? "Generate lane & status" : "Generate all three", systemImage: "sparkles")
+        }
+      } label: {
+        Label("Generate names", systemImage: "sparkles")
+      }
+    }
   }
 
   /// Everything that changes where the list files this row: stop (runtime),
@@ -1028,69 +1163,7 @@ struct WorkSessionListRow: View {
   private var laneMenuSection: some View {
     if let lane, let laneMenu {
       Menu {
-        Button {
-          laneMenu.onStartChat(lane)
-        } label: {
-          Label("Start chat in lane", systemImage: "plus.bubble")
-        }
-        Menu {
-          Button {
-            laneMenu.onCopyLaneLink(lane)
-          } label: {
-            Label("ADE lane link", systemImage: "link")
-          }
-          Button {
-            laneMenu.onCopyBranchLink(lane)
-          } label: {
-            Label("Branch link", systemImage: "arrow.triangle.branch")
-          }
-          // Only a lane that actually carries a Linear issue URL — the copy is
-          // that URL verbatim, so there is nothing to offer without one.
-          if primaryLaneLinearIssue(for: lane)?.url != nil {
-            Button {
-              laneMenu.onCopyLinearLink(lane)
-            } label: {
-              Label("Linear issue link", systemImage: "square.on.square")
-            }
-          }
-          Button {
-            laneMenu.onCopyPath(lane)
-          } label: {
-            Label("Path", systemImage: "folder")
-          }
-        } label: {
-          Label("Copy", systemImage: "doc.on.doc")
-        }
-        if laneMenu.colorAvailable {
-          Menu {
-            ForEach(LaneColorPalette.entries) { entry in
-              Button {
-                laneMenu.onSetColor(lane, entry.hex)
-              } label: {
-                Label(entry.name, systemImage: lane.color?.lowercased() == entry.hex.lowercased()
-                  ? "checkmark.circle.fill"
-                  : "circle.fill")
-              }
-            }
-            Divider()
-            Button {
-              laneMenu.onSetColor(lane, nil)
-            } label: {
-              Label("No color", systemImage: "circle.dashed")
-            }
-          } label: {
-            Label("Color", systemImage: "paintpalette")
-          }
-        }
-        if laneMenu.manageAvailable {
-          // Last inside the submenu, like desktop: it opens a surface that can
-          // archive or delete the lane.
-          Button {
-            laneMenu.onManage(lane)
-          } label: {
-            Label("Manage lane", systemImage: "slider.horizontal.3")
-          }
-        }
+        WorkLaneContextMenuContent(lane: lane, actions: laneMenu)
       } label: {
         Label("Lane", systemImage: "arrow.triangle.branch")
       }

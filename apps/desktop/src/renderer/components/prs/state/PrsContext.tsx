@@ -24,7 +24,6 @@ import type {
   AutoRebaseEventPayload,
   PrReviewThread,
   PrDeployment,
-  PrAiSummary,
   PrSnapshotHydration,
   PrAgentPermissionMode,
 } from "../../../../shared/types";
@@ -118,7 +117,6 @@ type PrsState = {
   detailComments: PrComment[];
   detailReviewThreads: PrReviewThread[];
   detailDeployments: PrDeployment[];
-  detailAiSummary: PrAiSummary | null;
   detailSnapshot: PrSnapshotHydration | null;
   detailSnapshotsByPrId: Record<string, PrSnapshotHydration>;
   detailLiveDataPrId: string | null;
@@ -137,7 +135,6 @@ type PrsState = {
   resolverPermissionMode: PrAgentPermissionMode;
   resolverSessionsByContextKey: Record<string, PrAiResolutionSessionInfo>;
 
-  dismissedAiSummaries: Record<string, boolean>;
   timelineFiltersByPrId: Record<string, PrTimelineFilters>;
   viewerLogin: string | null;
   writeViewerLogin?: string | null;
@@ -168,8 +165,6 @@ type PrsContextValue = PrsState & {
   refresh: (args?: { prId?: string; prIds?: string[] }) => Promise<void>;
 
   setTimelineFilters: (prId: string, filters: PrTimelineFilters) => void;
-  setAiSummaryDismissed: (prId: string, dismissed: boolean) => void;
-  regeneratePrAiSummary: (prId: string) => Promise<void>;
   setViewerLogin: (login: string | null) => void;
   setWriteViewerLogin: (login: string | null) => void;
   /** Record a merge/close the moment GitHub confirms it, before any refetch. */
@@ -193,7 +188,6 @@ const PrsContext = createContext<PrsContextValue | null>(null);
 const LS_MODEL_KEY = "ade:prs:resolverModel";
 const LS_REASONING_KEY = "ade:prs:resolverReasoningLevel";
 const LS_PERMISSION_KEY = "ade:prs:resolverPermissions";
-const LS_DISMISSED_SUMMARIES_KEY = "ade:prs:dismissedAiSummaries";
 const LS_TIMELINE_FILTERS_KEY = "ade:prs:timelineFiltersByPrId";
 const PRS_CONTEXT_CACHE_TTL_MS = 120_000;
 const PRS_DETAIL_CACHE_TTL_MS = 60_000;
@@ -214,7 +208,6 @@ type PrsContextWarmCache = {
   detailComments: PrComment[];
   detailReviewThreads: PrReviewThread[];
   detailDeployments: PrDeployment[];
-  detailAiSummary: PrAiSummary | null;
   detailSnapshotsByPrId: Record<string, PrSnapshotHydration>;
   rebaseNeeds: RebaseNeed[];
   autoRebaseStatuses: AutoRebaseLaneStatus[];
@@ -477,7 +470,6 @@ export function PrsProvider({ active = true, children }: { active?: boolean; chi
     () => warmCache?.detailReviewThreads ?? [],
   );
   const [detailDeployments, setDetailDeployments] = useState<PrDeployment[]>(() => warmCache?.detailDeployments ?? []);
-  const [detailAiSummary, setDetailAiSummary] = useState<PrAiSummary | null>(() => warmCache?.detailAiSummary ?? null);
   const [detailSnapshot, setDetailSnapshot] = useState<PrSnapshotHydration | null>(null);
   const [detailSnapshotsByPrId, setDetailSnapshotsByPrId] = useState<Record<string, PrSnapshotHydration>>(
     () => warmCache?.detailSnapshotsByPrId ?? {},
@@ -535,10 +527,8 @@ export function PrsProvider({ active = true, children }: { active?: boolean; chi
       || detailComments.length > 0
       || detailReviewThreads.length > 0
       || detailDeployments.length > 0
-      || detailAiSummary !== null
       || detailSnapshot !== null;
   }, [
-    detailAiSummary,
     detailChecks.length,
     detailComments.length,
     detailDeployments.length,
@@ -548,9 +538,6 @@ export function PrsProvider({ active = true, children }: { active?: boolean; chi
     detailStatus,
   ]);
 
-  const [dismissedAiSummaries, setDismissedAiSummaries] = useState<Record<string, boolean>>(
-    () => readJsonLs<Record<string, boolean>>(LS_DISMISSED_SUMMARIES_KEY, {}),
-  );
   const [timelineFiltersByPrId, setTimelineFiltersByPrId] = useState<Record<string, PrTimelineFilters>>(
     () => readJsonLs<Record<string, PrTimelineFilters>>(LS_TIMELINE_FILTERS_KEY, {}),
   );
@@ -561,29 +548,6 @@ export function PrsProvider({ active = true, children }: { active?: boolean; chi
       writeJsonLs(LS_TIMELINE_FILTERS_KEY, next);
       return next;
     });
-  }, []);
-
-  const setAiSummaryDismissed = useCallback((prId: string, dismissed: boolean) => {
-    setDismissedAiSummaries((prev) => {
-      if (Boolean(prev[prId]) === dismissed) return prev;
-      const next = { ...prev };
-      if (dismissed) next[prId] = true;
-      else delete next[prId];
-      writeJsonLs(LS_DISMISSED_SUMMARIES_KEY, next);
-      return next;
-    });
-  }, []);
-
-  const regeneratePrAiSummary = useCallback(async (prId: string) => {
-    const fn = window.ade?.prs?.regenerateAiSummary;
-    if (typeof fn !== "function") return;
-    try {
-      const summary = await fn(prId);
-      if (selectedPrIdRef.current !== prId) return;
-      setDetailAiSummary(summary);
-    } catch (err) {
-      console.warn("[PrsContext] regenerateAiSummary failed:", err);
-    }
   }, []);
 
   // Rebase state
@@ -1103,7 +1067,6 @@ export function PrsProvider({ active = true, children }: { active?: boolean; chi
       setDetailComments([]);
       setDetailReviewThreads([]);
       setDetailDeployments([]);
-      setDetailAiSummary(null);
       setDetailSnapshot(null);
       setDetailLiveDataPrId(null);
       return;
@@ -1122,7 +1085,6 @@ export function PrsProvider({ active = true, children }: { active?: boolean; chi
       setDetailComments([]);
       setDetailReviewThreads([]);
       setDetailDeployments([]);
-      setDetailAiSummary(null);
       setDetailSnapshot(null);
       setDetailLiveDataPrId(null);
       setSelectedPrId(null);
@@ -1140,7 +1102,6 @@ export function PrsProvider({ active = true, children }: { active?: boolean; chi
     const clearSecondaryDetail = () => {
       setDetailReviewThreads([]);
       setDetailDeployments([]);
-      setDetailAiSummary(null);
     };
     const applySnapshotPrefill = (snapshot: PrSnapshotHydration) => {
       snapshotForRequest = snapshot;
@@ -1183,7 +1144,6 @@ export function PrsProvider({ active = true, children }: { active?: boolean; chi
       setDetailComments([]);
       setDetailReviewThreads([]);
       setDetailDeployments([]);
-      setDetailAiSummary(null);
     }
     const yieldToPaint = () =>
       new Promise<void>((resolve) => {
@@ -1204,11 +1164,6 @@ export function PrsProvider({ active = true, children }: { active?: boolean; chi
             if (typeof api?.getDeployments !== "function") return;
             const deployments = await api.getDeployments(prId);
             if (!cancelled && selectedPrIdRef.current === prId) setDetailDeployments(deployments);
-          }],
-          ["getAiSummary", async () => {
-            if (typeof api?.getAiSummary !== "function") return;
-            const summary = await api.getAiSummary(prId);
-            if (!cancelled && selectedPrIdRef.current === prId) setDetailAiSummary(summary);
           }],
         ];
         for (const [name, step] of steps) {
@@ -1506,7 +1461,6 @@ export function PrsProvider({ active = true, children }: { active?: boolean; chi
       detailComments,
       detailReviewThreads,
       detailDeployments,
-      detailAiSummary,
       detailSnapshotsByPrId,
       rebaseNeeds,
       autoRebaseStatuses,
@@ -1521,7 +1475,6 @@ export function PrsProvider({ active = true, children }: { active?: boolean; chi
     activeTab,
     autoRebaseStatuses,
     cacheKey,
-    detailAiSummary,
     detailChecks,
     detailComments,
     detailDeployments,
@@ -1559,7 +1512,6 @@ export function PrsProvider({ active = true, children }: { active?: boolean; chi
       detailComments,
       detailReviewThreads,
       detailDeployments,
-      detailAiSummary,
       detailSnapshot,
       detailSnapshotsByPrId,
       detailLiveDataPrId,
@@ -1571,7 +1523,6 @@ export function PrsProvider({ active = true, children }: { active?: boolean; chi
       resolverReasoningLevel,
       resolverPermissionMode: resolverPermissions[resolvePermissionFamilyForModel(resolverModel)],
       resolverSessionsByContextKey,
-      dismissedAiSummaries,
       timelineFiltersByPrId,
       viewerLogin,
       writeViewerLogin,
@@ -1590,8 +1541,6 @@ export function PrsProvider({ active = true, children }: { active?: boolean; chi
       setInlineTerminal,
       refresh,
       setTimelineFilters,
-      setAiSummaryDismissed,
-      regeneratePrAiSummary,
       setViewerLogin,
       setWriteViewerLogin,
       isGithubPollStoodDown,
@@ -1624,7 +1573,6 @@ export function PrsProvider({ active = true, children }: { active?: boolean; chi
       detailComments,
       detailReviewThreads,
       detailDeployments,
-      detailAiSummary,
       detailSnapshot,
       detailSnapshotsByPrId,
       detailLiveDataPrId,
@@ -1636,7 +1584,6 @@ export function PrsProvider({ active = true, children }: { active?: boolean; chi
       resolverReasoningLevel,
       resolverPermissions,
       resolverSessionsByContextKey,
-      dismissedAiSummaries,
       timelineFiltersByPrId,
       viewerLogin,
       writeViewerLogin,
@@ -1647,8 +1594,6 @@ export function PrsProvider({ active = true, children }: { active?: boolean; chi
       clearResolverSession,
       refresh,
       setTimelineFilters,
-      setAiSummaryDismissed,
-      regeneratePrAiSummary,
       isGithubPollStoodDown,
       noteGithubReadFailure,
       noteGithubReadSuccess,
