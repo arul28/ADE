@@ -39370,6 +39370,7 @@ export function createAgentChatService(args: {
         request: req,
         policy,
         laneRoot: managed.laneWorktreePath,
+        projectRoot,
         sessionAllowedTools: runtime.sdkApprovedTools,
         userHomeDir: resolveCursorSdkUserHome(),
       });

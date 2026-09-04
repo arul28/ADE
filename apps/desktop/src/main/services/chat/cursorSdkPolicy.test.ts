@@ -403,6 +403,174 @@ describe("Cursor SDK policy", () => {
       },
     }, laneRoot);
     expect(evaluateCursorSdkHook({ request: writeTranscript, policy, laneRoot, userHomeDir })).toBe("deny");
+
+    const asset = summarizeCursorHook({
+      toolName: "read",
+      toolInput: {
+        path: path.join(userHomeDir, ".cursor", "projects", slug, "assets", "shot.png"),
+      },
+    }, laneRoot);
+    expect(evaluateCursorSdkHook({ request: asset, policy, laneRoot, userHomeDir })).toBe("allow");
+
+    const writeAsset = summarizeCursorHook({
+      toolName: "write",
+      toolInput: {
+        path: path.join(userHomeDir, ".cursor", "projects", slug, "assets", "shot.png"),
+        contents: "x",
+      },
+    }, laneRoot);
+    expect(evaluateCursorSdkHook({ request: writeAsset, policy, laneRoot, userHomeDir })).toBe("deny");
+
+    const otherSlug = `${slug}-other`;
+    const otherAsset = summarizeCursorHook({
+      toolName: "read",
+      toolInput: {
+        path: path.join(userHomeDir, ".cursor", "projects", otherSlug, "assets", "shot.png"),
+      },
+    }, laneRoot);
+    expect(evaluateCursorSdkHook({ request: otherAsset, policy, laneRoot, userHomeDir })).toBe("deny");
+  });
+
+  it("allows read-only access to staged project attachments from a lane worktree", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-cursor-attach-"));
+    const projectRoot = path.join(root, "repo");
+    const laneRoot = path.join(projectRoot, ".ade", "worktrees", "lane");
+    const attachmentsDir = path.join(projectRoot, ".ade", "attachments");
+    const secretsDir = path.join(projectRoot, ".ade", "secrets");
+    const imagePath = path.join(attachmentsDir, "00000000-0000-4000-8000-000000000001.png");
+    const otherProject = path.join(root, "other-repo");
+    const otherImage = path.join(otherProject, ".ade", "attachments", "shot.png");
+    fs.mkdirSync(laneRoot, { recursive: true });
+    fs.mkdirSync(attachmentsDir, { recursive: true });
+    fs.mkdirSync(secretsDir, { recursive: true });
+    fs.mkdirSync(path.dirname(otherImage), { recursive: true });
+    fs.writeFileSync(imagePath, "png");
+    fs.writeFileSync(path.join(secretsDir, "token"), "secret");
+    fs.writeFileSync(otherImage, "png");
+
+    try {
+      const policy = resolveCursorSdkPolicy({ cursorModeId: "full-auto" });
+      const read = summarizeCursorHook({
+        toolName: "read",
+        toolInput: { path: imagePath },
+      }, laneRoot);
+      expect(evaluateCursorSdkHook({
+        request: read,
+        policy,
+        laneRoot,
+        projectRoot,
+      })).toBe("allow");
+      expect(evaluateCursorSdkHook({
+        request: summarizeCursorHook({
+          toolName: "read",
+          toolInput: { path: imagePath },
+        }, laneRoot),
+        policy,
+        laneRoot,
+      })).toBe("deny");
+
+      const write = summarizeCursorHook({
+        toolName: "write",
+        toolInput: { path: imagePath, contents: "x" },
+      }, laneRoot);
+      expect(evaluateCursorSdkHook({
+        request: write,
+        policy,
+        laneRoot,
+        projectRoot,
+      })).toBe("deny");
+
+      const secret = summarizeCursorHook({
+        toolName: "read",
+        toolInput: { path: path.join(secretsDir, "token") },
+      }, laneRoot);
+      expect(evaluateCursorSdkHook({
+        request: secret,
+        policy,
+        laneRoot,
+        projectRoot,
+      })).toBe("deny");
+
+      const foreign = summarizeCursorHook({
+        toolName: "read",
+        toolInput: { path: otherImage },
+      }, laneRoot);
+      expect(evaluateCursorSdkHook({
+        request: foreign,
+        policy,
+        laneRoot,
+        projectRoot,
+      })).toBe("deny");
+
+      const shell = summarizeCursorHook({
+        toolName: "shell",
+        toolInput: { command: `cat ${imagePath}`, cwd: laneRoot },
+      }, laneRoot);
+      expect(evaluateCursorSdkHook({
+        request: shell,
+        policy,
+        laneRoot,
+        projectRoot,
+      })).toBe("deny");
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it.skipIf(process.platform === "win32")("denies project attachment reads when attachments is symlinked onto secrets", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-cursor-attach-secrets-"));
+    const projectRoot = path.join(root, "repo");
+    const laneRoot = path.join(projectRoot, ".ade", "worktrees", "lane");
+    const secretsDir = path.join(projectRoot, ".ade", "secrets");
+    const attachmentsLink = path.join(projectRoot, ".ade", "attachments");
+    fs.mkdirSync(laneRoot, { recursive: true });
+    fs.mkdirSync(secretsDir, { recursive: true });
+    fs.writeFileSync(path.join(secretsDir, "token"), "secret");
+    fs.symlinkSync(secretsDir, attachmentsLink, "dir");
+
+    try {
+      const policy = resolveCursorSdkPolicy({ cursorModeId: "full-auto" });
+      const request = summarizeCursorHook({
+        toolName: "read",
+        toolInput: { path: path.join(attachmentsLink, "token") },
+      }, laneRoot);
+      expect(evaluateCursorSdkHook({
+        request,
+        policy,
+        laneRoot,
+        projectRoot,
+      })).toBe("deny");
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it.skipIf(process.platform === "win32")("denies project attachment reads when attachments is symlinked outside the project", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-cursor-attach-link-"));
+    const projectRoot = path.join(root, "repo");
+    const laneRoot = path.join(projectRoot, ".ade", "worktrees", "lane");
+    const outside = path.join(root, "outside");
+    const attachmentsLink = path.join(projectRoot, ".ade", "attachments");
+    fs.mkdirSync(laneRoot, { recursive: true });
+    fs.mkdirSync(outside, { recursive: true });
+    fs.writeFileSync(path.join(outside, "shot.png"), "png");
+    fs.symlinkSync(outside, attachmentsLink, "dir");
+
+    try {
+      const policy = resolveCursorSdkPolicy({ cursorModeId: "full-auto" });
+      const request = summarizeCursorHook({
+        toolName: "read",
+        toolInput: { path: path.join(attachmentsLink, "shot.png") },
+      }, laneRoot);
+      expect(evaluateCursorSdkHook({
+        request,
+        policy,
+        laneRoot,
+        projectRoot,
+      })).toBe("deny");
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
   });
 
   it.skipIf(process.platform === "win32")("denies Cursor support reads when the active project support root is symlinked outside Cursor projects", () => {

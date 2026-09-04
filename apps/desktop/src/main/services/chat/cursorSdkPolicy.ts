@@ -1,7 +1,9 @@
 import fs from "node:fs";
 import path from "node:path";
 import type { AgentChatSession } from "../../../shared/types";
+import { projectAttachmentsDir } from "../../../shared/chatAttachmentStagingFs";
 import { cursorProjectSlug } from "../../../shared/cursorProjectSlug";
+import { pathComparisonKey } from "../shared/pathCompare";
 import {
   isOrchestrationLeadSession,
   ORCHESTRATION_LEAD_ALLOWED_CURSOR_TOOL_RISKS,
@@ -529,9 +531,12 @@ function cursorSupportReadRoots(laneRoot: string, userHomeDir?: string | null): 
   const home = userHomeDir?.trim();
   if (!home) return [];
   const projectRoot = path.join(home, ".cursor", "projects", cursorProjectSlugForPath(laneRoot));
+  // `assets` is Cursor's own copy of inlined chat images for this workspace.
+  // The model is told to Read those files; they live outside the lane worktree.
   return [
     path.join(projectRoot, "terminals"),
     path.join(projectRoot, "agent-transcripts"),
+    path.join(projectRoot, "assets"),
   ];
 }
 
@@ -559,12 +564,47 @@ function isAllowedCursorSupportRead(args: {
   return false;
 }
 
+function isAllowedProjectAttachmentRead(args: {
+  candidatePath: string;
+  projectRoot?: string | null;
+  risk: CursorSdkHookRequest["risk"];
+}): boolean {
+  if (args.risk !== "read") return false;
+  // Worker init always passes the ADE project root. Fail closed rather than
+  // guessing from the lane path — a worktree chat must not inherit the
+  // project's attachments grant from layout inference.
+  const explicit = args.projectRoot?.trim();
+  if (!explicit) return false;
+  const resolvedProject = path.resolve(explicit);
+  const projectReal = realPathWithNearestExistingAncestor(resolvedProject);
+  const adeReal = realPathWithNearestExistingAncestor(path.join(resolvedProject, ".ade"));
+  const attachmentsReal = realPathWithNearestExistingAncestor(
+    projectAttachmentsDir(resolvedProject),
+  );
+  const secretsReal = realPathWithNearestExistingAncestor(
+    path.join(resolvedProject, ".ade", "secrets"),
+  );
+  // Same shape as the Cursor projects symlink guard, plus a basename check
+  // after realpath so a junction/symlink from `attachments` onto `.ade` or
+  // `.ade/secrets` cannot inherit this grant.
+  if (!isWithinPath(projectReal, adeReal) || !isWithinPath(adeReal, attachmentsReal)) {
+    return false;
+  }
+  if (pathComparisonKey(path.basename(attachmentsReal)) !== pathComparisonKey("attachments")) {
+    return false;
+  }
+  const candidateReal = realPathWithNearestExistingAncestor(args.candidatePath);
+  if (isWithinPath(secretsReal, candidateReal)) return false;
+  return isWithinPath(attachmentsReal, candidateReal);
+}
+
 function pathGuardReason(args: {
   laneRoot: string;
   cwd: string;
   value: unknown;
   risk: CursorSdkHookRequest["risk"];
   userHomeDir?: string | null;
+  projectRoot?: string | null;
 }): string | null {
   const laneRoot = path.resolve(args.laneRoot);
   const laneRootReal = realPathWithNearestExistingAncestor(laneRoot);
@@ -601,6 +641,10 @@ function pathGuardReason(args: {
         laneRoot,
         userHomeDir: args.userHomeDir,
         risk: args.risk,
+      }) || isAllowedProjectAttachmentRead({
+        candidatePath: resolved,
+        projectRoot: args.projectRoot,
+        risk: args.risk,
       })) {
         continue;
       }
@@ -624,6 +668,7 @@ export function evaluateCursorSdkHook(args: {
   request: CursorSdkHookRequest;
   policy: CursorSdkPermissionPolicy;
   laneRoot: string;
+  projectRoot?: string | null;
   sessionAllowedTools?: Set<string>;
   userHomeDir?: string | null;
 }): "allow" | "deny" | "ask" {
@@ -634,6 +679,7 @@ export function evaluateCursorSdkHook(args: {
       value: args.request.toolInput ?? args.request.raw,
       risk: args.request.risk,
       userHomeDir: args.userHomeDir,
+      projectRoot: args.projectRoot,
     })
     : null;
   if (guardReason) {

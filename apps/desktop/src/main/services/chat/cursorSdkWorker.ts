@@ -413,6 +413,7 @@ async function handleHookSocketLine(init: CursorSdkWorkerInit, socket: net.Socke
     request,
     policy: init.policy,
     laneRoot: init.laneRoot,
+    projectRoot: init.projectRoot,
     userHomeDir: init.userHomeDir,
   });
   if (localDecision === "allow") {
