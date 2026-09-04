@@ -731,6 +731,15 @@ func providerFamilyKey(_ provider: String) -> String {
   return raw
 }
 
+/// Resolve a terminal session's tool type through the canonical provider-family
+/// mapping used by the rest of the Work surface. Empty tool types stay unknown
+/// so a missing summary cannot accidentally opt into a provider-specific UI.
+func workChatProviderFamilyFromToolType(_ toolType: String?) -> String? {
+  let raw = toolType?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
+  guard !raw.isEmpty else { return nil }
+  return providerFamilyKey(raw)
+}
+
 /// Collapse a free-form provider key to a chat-capable runtime family.
 /// Routed Pi models must stay on Pi rather than falling through to Claude.
 func workNormalizedChatProvider(_ provider: String) -> String {
