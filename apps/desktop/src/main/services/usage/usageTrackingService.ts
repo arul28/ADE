@@ -2327,18 +2327,27 @@ function isAdeUsageTranscriptSource(value: unknown): value is AdeUsageTranscript
     && value.roots.every((root) => typeof root === "string");
 }
 
+function isAccountRollup(value: unknown): value is AdeUsageRollup {
+  return isRecord(value)
+    && typeof value.machineKey === "string"
+    && typeof value.capturedAt === "string"
+    && isAdeUsageTranscriptSource(value.source)
+    && Array.isArray(value.rows)
+    && value.rows.every(isAdeUsageRollupRow);
+}
+
+function isAccountRollupFailure(
+  value: unknown,
+): value is AccountRollupFetchResult["failures"][number] {
+  return isRecord(value)
+    && typeof value.machineKey === "string"
+    && typeof value.message === "string";
+}
+
 export function isAccountRollupFetchResult(value: unknown): value is AccountRollupFetchResult {
   if (!isRecord(value)) return false;
   if (!Array.isArray(value.rollups) || !Array.isArray(value.failures)) return false;
-  return value.rollups.every((rollup) => isRecord(rollup)
-      && typeof rollup.machineKey === "string"
-      && typeof rollup.capturedAt === "string"
-      && isAdeUsageTranscriptSource(rollup.source)
-      && Array.isArray(rollup.rows)
-      && rollup.rows.every(isAdeUsageRollupRow))
-    && value.failures.every((failure) => isRecord(failure)
-      && typeof failure.machineKey === "string"
-      && typeof failure.message === "string");
+  return value.rollups.every(isAccountRollup) && value.failures.every(isAccountRollupFailure);
 }
 
 /** How long the opportunistic live pull may run before the stored rollups stand alone. */
@@ -2836,10 +2845,20 @@ export function createUsageTrackingService({
   ): void {
     // Crosses a process boundary (the desktop app pushes its fan-out result to
     // the brain over the local socket), so the shape is checked here rather
-    // than trusted from the call site.
-    if (!isAccountRollupFetchResult(result)) {
+    // than trusted from the call site. One stale peer must not wipe the rest
+    // of the account: keep typed entries and drop only the malformed ones.
+    const payload: unknown = result;
+    if (!isRecord(payload) || !Array.isArray(payload.rollups) || !Array.isArray(payload.failures)) {
       logger.warn("usage.account.apply_rollups_rejected");
       return;
+    }
+    const rollups = payload.rollups.filter(isAccountRollup);
+    const failures = payload.failures.filter(isAccountRollupFailure);
+    if (rollups.length !== payload.rollups.length || failures.length !== payload.failures.length) {
+      logger.warn("usage.account.apply_rollups_partially_rejected", {
+        droppedRollups: payload.rollups.length - rollups.length,
+        droppedFailures: payload.failures.length - failures.length,
+      });
     }
     // `publish` returns true only when it really wrote something. Counting
     // "did not throw" instead would emit an update for every refresh,
@@ -2851,7 +2870,7 @@ export function createUsageTrackingService({
     // machine's own `prune` deletes those rows and the next fetch puts them
     // straight back — the CRR delete/insert churn, arriving over the wire.
     const oldestDay = rollupOldestDay(startedAtMs);
-    for (const rollup of result.rollups) {
+    for (const rollup of rollups) {
       try {
         // Unknown identity cannot match anything, and nothing was published
         // under this machine's name either, so there is no self-row to skip.
@@ -2877,11 +2896,22 @@ export function createUsageTrackingService({
     // page emitting updates forever over news it already showed.
     const previousFailures = new Map(accountRollupFailures);
     accountRollupFailures.clear();
-    for (const failure of result.failures) {
+    const failureKeys = new Set(failures.map((failure) => failure.machineKey));
+    for (const failure of failures) {
       accountRollupFailures.set(failure.machineKey, {
         label: failure.label,
         platform: failure.platform,
         message: failure.message,
+      });
+    }
+    for (const raw of payload.rollups) {
+      if (isAccountRollup(raw) || !isRecord(raw) || typeof raw.machineKey !== "string") continue;
+      if (failureKeys.has(raw.machineKey)) continue;
+      failureKeys.add(raw.machineKey);
+      accountRollupFailures.set(raw.machineKey, {
+        label: typeof raw.label === "string" ? raw.label : raw.machineKey,
+        platform: typeof raw.platform === "string" ? raw.platform : null,
+        message: "malformed rollup",
       });
     }
     let failuresChanged = previousFailures.size !== accountRollupFailures.size;
@@ -3228,6 +3258,15 @@ export function createUsageTrackingService({
         key,
         projectCostsReady && previous ? carryForward(previous, scanned) : [...scanned],
       );
+    }
+    // A worker that reported no projection for a root the caller asked about
+    // must still leave that root marked as read. A missing key means "project
+    // history was never scanned", which forces a full ledger walk on every
+    // project-scoped read of that scope.
+    for (const root of scopeProjectRoots()) {
+      const key = scopeRootKey(root);
+      if (nextProjectCostsByRoot.has(key)) continue;
+      nextProjectCostsByRoot.set(key, cachedProjectCostsByRoot.get(key) ?? []);
     }
     const nextDaily7d: Partial<Record<UsageProvider, number[]>> = { ...scanResult.daily7d };
     for (const [provider, buckets] of Object.entries(cachedDaily7d) as [UsageProvider, number[]][]) {

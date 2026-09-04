@@ -97,10 +97,10 @@ describe("shouldApplyUsageSnapshot", () => {
       expect(shouldApplyUsageSnapshot(next, current)).toBe(true);
     });
 
-    it("lets an unstamped cache read land on a stamped snapshot rather than latching", () => {
+    it("rejects an unstamped cache once a stamped snapshot is on screen", () => {
       const current = snapshot({ revision: { producerId: "brain-a", seq: 7 } });
       const next = snapshot({ lastPolledAt: "2026-05-20T12:00:00.000Z" });
-      expect(shouldApplyUsageSnapshot(next, current)).toBe(true);
+      expect(shouldApplyUsageSnapshot(next, current)).toBe(false);
     });
   });
 

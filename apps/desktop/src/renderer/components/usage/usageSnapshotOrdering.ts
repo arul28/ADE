@@ -17,8 +17,8 @@
  * this window was handed is the best answer it has.
  *
  * The unstamped path below is the legacy one — an on-disk cache written before
- * `revision` existed. It stays lenient on purpose: a cache read that cannot be
- * ordered must not be able to latch the window against live pushes.
+ * `revision` existed. A stamped live snapshot always replaces that cache. An
+ * unstamped cache must not replace a stamped snapshot already on screen.
  */
 import type { UsageSnapshot } from "../../../shared/types";
 
@@ -70,10 +70,10 @@ export function shouldApplyUsageSnapshot(
     if (nextRevision.producerId !== currentRevision.producerId) return true;
     return nextRevision.seq >= currentRevision.seq;
   }
-  // Exactly one side is stamped. A stamped push must be able to replace an
-  // unstamped cache, and an unstamped cache read must not be able to latch the
-  // window either — neither direction has an ordering to appeal to, so accept.
-  if (nextRevision || currentRevision) return true;
+  // Exactly one side is stamped. A stamped push replaces an unstamped cache.
+  // An unstamped cache must not replace a stamped snapshot already on screen.
+  if (nextRevision && !currentRevision) return true;
+  if (!nextRevision && currentRevision) return false;
 
   // Legacy: neither side is stamped.
   const nextPolled = parseMs(nextSnapshot.lastPolledAt);

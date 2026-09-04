@@ -2147,8 +2147,111 @@ describe("createUsageTrackingService", () => {
       }],
       failures: [],
     } as never)).not.toThrow();
-    expect(logger.warn).toHaveBeenCalledWith("usage.account.apply_rollups_rejected");
+    expect(logger.warn).toHaveBeenCalledWith(
+      "usage.account.apply_rollups_partially_rejected",
+      expect.objectContaining({ droppedRollups: 1, droppedFailures: 0 }),
+    );
 
+    service.dispose();
+  });
+
+  it("keeps typed account rollups when a sibling peer sends a malformed payload", async () => {
+    const logger = createLogger();
+    const stored = new Map<string, { machineKey: string }>();
+    const service = createUsageTrackingService({
+      logger,
+      dependencies: {
+        ...createFastDependencies(),
+        accountRollupStore: {
+          publish: (rollup: { machineKey: string }) => {
+            stored.set(rollup.machineKey, rollup);
+            return true;
+          },
+          readAll: () => [...stored.values()],
+          prune: () => undefined,
+        },
+        localMachineIdentity: () => ({ machineKey: "this-machine", label: "Desk", platform: "darwin" }),
+      },
+    });
+    const valid = {
+      version: 1 as const,
+      machineKey: "peer-ok",
+      label: "Peer",
+      platform: "darwin",
+      capturedAt: "2026-09-04T00:00:00.000Z",
+      source: { sourceId: "peer-ok", roots: ["abc"] },
+      rows: [{
+        date: "2026-09-04",
+        provider: "claude",
+        model: "sonnet",
+        inputTokens: 1,
+        outputTokens: 1,
+        cachedTokens: 0,
+        totalTokens: 2,
+        costUsd: 0.01,
+        calls: 1,
+      }],
+    };
+
+    service.applyAccountRollups({
+      rollups: [
+        valid,
+        {
+          machineKey: "peer-bad",
+          capturedAt: "2026-09-04T00:00:00.000Z",
+          rows: [null],
+        },
+      ],
+      failures: [],
+    } as never);
+
+    expect(logger.warn).toHaveBeenCalledWith(
+      "usage.account.apply_rollups_partially_rejected",
+      expect.objectContaining({ droppedRollups: 1, droppedFailures: 0 }),
+    );
+    expect(logger.warn).not.toHaveBeenCalledWith("usage.account.apply_rollups_rejected");
+    const stats = await service.getAdeUsageStats({ preset: "all", scope: "account" });
+    expect(stats.machines?.map((machine) => machine.machineKey)).toEqual(
+      expect.arrayContaining(["peer-ok", "peer-bad"]),
+    );
+    expect(stats.machines?.find((machine) => machine.machineKey === "peer-bad")?.message)
+      .toBe("malformed rollup");
+
+    service.dispose();
+  });
+
+  it("marks attached roots scanned even when the worker omitted them", async () => {
+    const logger = createLogger();
+    const scanUsageLedgers = vi.fn(async () => ({
+      costs: [],
+      projectCosts: [],
+      daily7d: {},
+      entryCounts: {},
+      providerErrors: {},
+      incompleteProviders: [],
+    }));
+    const service = createUsageTrackingService({
+      logger,
+      projectRoot: "/repo-a",
+      dependencies: {
+        pollClaudeUsage: vi.fn(async () => ({ windows: [] as never[], extraUsage: null, errors: [] as never[] })),
+        pollCodexUsage: vi.fn(async () => ({ windows: [] as never[], errors: [] as never[] })),
+        scanUsageLedgers,
+      },
+    });
+    const other = service.attachProjectScope({
+      key: "repo-b",
+      projectRoot: "/repo-b",
+      logger,
+    });
+
+    await service.refreshHistory();
+    expect(scanUsageLedgers).toHaveBeenCalledTimes(1);
+    await other.getAdeUsageStats({ preset: "all", scope: "project" });
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(scanUsageLedgers).toHaveBeenCalledTimes(1);
+
+    other.dispose();
     service.dispose();
   });
 
