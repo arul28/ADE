@@ -2414,7 +2414,27 @@ export type PluginActionMessage = { text: string; ok: boolean };
  * `null` when the action said nothing. Silence is not an outcome to draw: most
  * actions change something the panel then re-renders, and a "Done" banner on
  * every press would be noise rather than feedback.
+ *
+ * A page-action *data* payload often has a field named `message` that is not
+ * an outcome sentence — History's `pageCommitDetail` returns the commit body
+ * under that name. Treating every `{ message: string }` as a toast is what
+ * popped a "History" card on every commit click. `ok` being a boolean is
+ * always an envelope; extra data keys without `ok` are never one.
  */
+const PLUGIN_ACTION_ENVELOPE_KEYS = new Set([
+  "ok",
+  "message",
+  "navigate",
+  "result",
+  "openUrl",
+  "openSettings",
+  "composer",
+  "dialog",
+  "prompt",
+  "authSession",
+  "openWebview",
+]);
+
 export function readPluginActionMessage(result: unknown): PluginActionMessage | null {
   if (typeof result === "string") {
     const text = result.trim();
@@ -2425,12 +2445,15 @@ export function readPluginActionMessage(result: unknown): PluginActionMessage | 
   if (typeof raw !== "string") return null;
   const text = raw.trim();
   if (!text) return null;
-  // `ok` is the envelope's field and a handler may write it too; they mean the
-  // same thing. Absent reads as success, because a handler that answered at all
-  // did not fail — the error path is a thrown rejection.
+  if (typeof result.ok === "boolean") {
+    return { text: text.slice(0, PLUGIN_ACTION_MESSAGE_MAX_CHARS), ok: result.ok };
+  }
+  for (const key of Object.keys(result)) {
+    if (!PLUGIN_ACTION_ENVELOPE_KEYS.has(key)) return null;
+  }
   return {
     text: text.slice(0, PLUGIN_ACTION_MESSAGE_MAX_CHARS),
-    ok: result.ok !== false,
+    ok: true,
   };
 }
 

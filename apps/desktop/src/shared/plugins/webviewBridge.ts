@@ -141,6 +141,33 @@ export function isPluginWebviewPlacement(value: unknown): value is PluginWebview
 }
 
 /**
+ * Whether a hidden guest should stay alive.
+ *
+ * Tabs and Work-rail panes are places the reader comes back to within a
+ * session. Destroying them on hide made every plugin tab flash a reload.
+ * Anchored placements (popover, picker, overlay, dialog) still die when
+ * hidden — those are not a surface the reader returns to.
+ */
+export function pluginWebviewKeepsGuestWhileHidden(placement: PluginWebviewPlacement): boolean {
+  switch (placement) {
+    case "tab":
+    case "pane":
+      return true;
+    case "drawer":
+    case "overlay":
+    case "popover":
+    case "settings-section":
+    case "composer-picker":
+    case "dialog-picker":
+      return false;
+    default: {
+      const exhaustive: never = placement;
+      return exhaustive;
+    }
+  }
+}
+
+/**
  * The whole context envelope, as bytes on the source URL, is capped here.
  *
  * It rides in the guest's `src` query and is captured host-side at attach, so it
@@ -720,16 +747,51 @@ export type PluginWebviewConfirm = {
 // ---------------------------------------------------------------------------
 
 /**
+ * A guest-relative box the page measured for the control that asked.
+ *
+ * `top`/`left` are in the guest's own viewport. The host adds the guest
+ * element's window box, which is what stops ADE's picker from opening at the
+ * webview's top-left corner.
+ */
+export type PluginWebviewPickerAnchorRect = {
+  top: number;
+  left: number;
+  width?: number;
+  height?: number;
+};
+
+export function readPluginWebviewPickerRect(value: unknown): PluginWebviewPickerAnchorRect | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const record = value as Record<string, unknown>;
+  const top = Number(record.top);
+  const left = Number(record.left);
+  if (!Number.isFinite(top) || !Number.isFinite(left)) return null;
+  const width = Number(record.width);
+  const height = Number(record.height);
+  return {
+    top,
+    left,
+    ...(Number.isFinite(width) && width >= 0 ? { width } : {}),
+    ...(Number.isFinite(height) && height >= 0 ? { height } : {}),
+  };
+}
+
+/**
  * What `ui.pickModel` answers.
  *
  * The id AND the fast-mode flag, because ADE's own picker sets both in one
  * gesture — a model row with a fast tier is chosen fast or standard — and a
  * page receiving only the id would silently drop half of what the reader did.
  * `fastMode` is false for a model with no fast tier.
+ *
+ * `provider` is ADE's provider group for the chosen model when the catalogue
+ * knows it. Pages that used to keep a separate Provider chip read this instead
+ * of inventing a mapping from a model id.
  */
 export type PluginWebviewModelChoice = {
   modelId: string;
   fastMode: boolean;
+  provider?: string;
 };
 
 /** What `ui.pickLane` answers. `laneId` is ADE's own lane id. */
@@ -1433,10 +1495,18 @@ export type AdePluginWebviewBridge = {
      * launch; omit it for ADE's whole catalogue. `value` preselects a row.
      */
     pickModel(
-      request?: { value?: string; availableModelIds?: string[] },
+      request?: {
+        value?: string;
+        availableModelIds?: string[];
+        provider?: string;
+        rect?: PluginWebviewPickerAnchorRect;
+      },
     ): Promise<PluginWebviewModelChoice | null>;
     /** Open ADE's own lane picker. Null when the reader dismissed it. */
-    pickLane(request?: { value?: string }): Promise<PluginWebviewLaneChoice | null>;
+    pickLane(request?: {
+      value?: string;
+      rect?: PluginWebviewPickerAnchorRect;
+    }): Promise<PluginWebviewLaneChoice | null>;
     /**
      * Open the permission control for one provider. Null when dismissed.
      *
@@ -1444,7 +1514,7 @@ export type AdePluginWebviewBridge = {
      * no provider has no list. `chat.capabilities()` names the providers.
      */
     pickPermissionMode(
-      request: { provider: string; value?: string },
+      request: { provider: string; value?: string; rect?: PluginWebviewPickerAnchorRect },
     ): Promise<PluginWebviewPermissionModeChoice | null>;
     /**
      * Open the reasoning ladder for one model. Null when dismissed.
@@ -1454,10 +1524,13 @@ export type AdePluginWebviewBridge = {
      * resolves null rather than drawing an empty control.
      */
     pickReasoningEffort(
-      request: { model: string; value?: string | null },
+      request: { model: string; value?: string | null; rect?: PluginWebviewPickerAnchorRect },
     ): Promise<PluginWebviewReasoningEffortChoice | null>;
     /** Open the provider rail. Null when the reader dismissed it. */
-    pickProvider(request?: { value?: string }): Promise<PluginWebviewProviderChoice | null>;
+    pickProvider(request?: {
+      value?: string;
+      rect?: PluginWebviewPickerAnchorRect;
+    }): Promise<PluginWebviewProviderChoice | null>;
     /**
      * Report this page's own content height so a size-to-content placement can
      * grow around it. Call it from a `ResizeObserver`.

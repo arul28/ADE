@@ -429,6 +429,14 @@ function RowMenu({
           <button type="button" role="menuitem" className={itemClass} onClick={() => { setOpen(false); onArchive(); }} disabled={busy}>
             {entry.agent.archived ? "Unarchive agent" : "Archive agent"}
           </button>
+          <button
+            type="button"
+            role="menuitem"
+            className={itemClass}
+            onClick={() => { setOpen(false); void openLink(entry.agent.webUrl || "https://cursor.com/agents"); }}
+          >
+            <ArrowSquareOut size={12} weight="bold" /> View on cursor.com
+          </button>
           {entry.prUrl ? (
             <button
               type="button"

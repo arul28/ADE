@@ -344,9 +344,13 @@ export function launchTarget(
   config: Pick<BatchLaunchIssueConfig, "modelId" | "provider">,
   models: readonly PageChatModel[],
 ): { provider: string; model: string } {
+  // The model owns the provider. A leftover Provider chip used to win here
+  // and launch Cursor against a Grok id.
+  const descriptor = findChatModel(config.modelId, models);
+  if (descriptor) return { provider: descriptor.provider, model: descriptor.id };
   const chosen = config.provider?.trim();
   if (chosen) return { provider: chosen, model: config.modelId };
-  return resolveLaunchProviderAndModel(config.modelId, models);
+  return { provider: "opencode", model: config.modelId };
 }
 
 /**
@@ -476,8 +480,6 @@ export type BatchLaunchDeps = {
     fastMode?: boolean;
     prompt: string;
   }) => Promise<{ sessionId: string }>;
-  /** Roll back a lane created in this run when the agent launch fails. */
-  deleteLane?: (args: { laneId: string }) => Promise<void>;
 };
 
 type RunOptions = {
@@ -512,8 +514,10 @@ export async function runBatchLaunch(
   const launchOne = async (entry: { issue: LaneLinearIssue; config: BatchLaunchIssueConfig }) => {
     const { issue, config } = entry;
     if (options.signal?.aborted) return;
-    // An existing-lane launch reuses a pre-existing lane: we did not create it
-    // this run, so it must never be rolled back on agent-launch failure.
+    // An existing-lane launch reuses a pre-existing lane. A failed agent
+    // launch leaves a newly created lane in place rather than deleting it:
+    // the reader still has the worktree, and "Lane deleted" toasts on a
+    // model-picker miss were treating that as cleanup.
     const existingLaneId = config.existingLaneId?.trim() || null;
     let laneId: string | null = null;
     let createdLane = false;
@@ -595,35 +599,7 @@ export async function runBatchLaunch(
       // this session instead of claiming the agent is already ready.
       options.onItem(issue.id, { sessionId: session.id, status: "initializing-agent" });
     } catch (error) {
-      let detail = error instanceof Error ? error.message : String(error);
-      // If the agent launch failed but we created the lane this run, roll the
-      // lane back so retries don't pile up orphan lanes for the same issue.
-      // Existing-lane launches are left untouched. If the rollback itself fails,
-      // do NOT swallow it: keep the lane visible (left in createdLaneIds and in
-      // the failed status' laneId) and surface the orphan so the user can
-      // open/clean it up, rather than leaving an invisible orphan.
-      if (laneId && createdLane && deps.deleteLane) {
-        try {
-          // Best-effort cleanup. The compiled call also asked the daemon to
-          // delete the lane's local and remote branch, deliberately without
-          // `requireRemoteBranchDelete` so a transient remote failure stayed
-          // non-fatal. `pageDeleteLane` takes a lane id and nothing else, so
-          // the branch-teardown flags have no page counterpart and the host's
-          // own default applies.
-          await deps.deleteLane({ laneId });
-          const idx = result.createdLaneIds.indexOf(laneId);
-          if (idx >= 0) result.createdLaneIds.splice(idx, 1);
-          laneId = null;
-        } catch (rollbackError) {
-          const rollbackMessage =
-            rollbackError instanceof Error ? rollbackError.message : String(rollbackError);
-          console.error("[Linear] Lane rollback failed after agent launch failure", {
-            laneId,
-            error: rollbackMessage,
-          });
-          detail = `${detail} — lane could not be rolled back and may need manual cleanup (${rollbackMessage})`;
-        }
-      }
+      const detail = error instanceof Error ? error.message : String(error);
       result.failedIssueIds.push(issue.id);
       options.onItem(issue.id, { status: "failed", error: detail, laneId });
     }

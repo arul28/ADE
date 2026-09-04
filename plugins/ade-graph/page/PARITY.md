@@ -39,13 +39,12 @@ answers `{navigate:{panelId:"graph"}}` alone.
 
 ## The canvas (`WorkspaceGraphPage`)
 
-Carried, moved rather than rewritten: the four view modes (Overview, Dependencies,
-Conflict Risk, Activity); the search and filter panel (status, type, tags, hide
-primary / attached / archived, root lane); drag-to-reparent; the context menu;
-the appearance editor; the conflict panel and pair matrix; the batch dock; the
-create-child and create-PR prompts; the merge-simulation card; the minimap; PR
-overlays on lane cards; contributed `graph-node` sockets; every auto-layout the
-compiled `graphLayout.ts` computed.
+The canvas is one stacked DAG: search, Filters overlay, Reset view, drag to
+reposition (reparent is menu-only), the context menu, the appearance editor, the
+conflict panel, the batch dock, the create-child and create-PR prompts, the
+merge-simulation card, the minimap, PR overlays on lane cards, and contributed
+`graph-node` sockets. View-mode tabs, the overlap web, the pair matrix, the
+environments overlay, and drag-to-reparent were removed on purpose.
 
 Changed on purpose:
 
@@ -84,11 +83,11 @@ page streamed `window.ade.pty.onData` / `.onExit` for a rebase console. A guest
 has no pty. Progress is `pageOperations` plus the `operation` host event, which
 is why that kind exists on this page.
 
-**G4 — the lane card has no live agent roster.** `LaneAgentList` was fed by
-`useLaneAgents`, which subscribes to the renderer's session store. A guest has
-none. The card keeps the pulsing dot that says sessions are running here, and
-drops the per-agent names. `LinearIssueBadge` is gone the same way: the card
-draws `primaryIssue.identifier`, which is provider-neutral.
+**G4 — the inspector lists issue chips and a chat count, not live agent names.**
+`LaneAgentList` was fed by `useLaneAgents`, which subscribes to the renderer's
+session store. A guest has none. The selected-lane inspector shows attached
+Linear issues from `issueLinks` / `primaryIssue` and an ongoing-chat count from
+the operation ledger. Per-agent names are a later read.
 
 **G5 — two compiled navigations have no deeplink.** `/prs?tab=integration&proposalId=…`
 and `/lanes?…&action=manage` are not URLs `shared/deeplinks.ts` parses. Both

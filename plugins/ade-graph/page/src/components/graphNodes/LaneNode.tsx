@@ -321,7 +321,7 @@ export function GraphLaneNode({ data, selected }: NodeProps<Node<GraphNodeData>>
       <div className="pointer-events-none mt-2 flex items-center justify-between border-t border-white/[0.05] pt-1.5 text-[9px] uppercase tracking-wide text-muted-fg/80">
         <span>Click · menu</span>
         <span>Double · lane</span>
-        <span>Drag · reparent</span>
+        <span>Drag · move</span>
       </div>
 
       <Handle

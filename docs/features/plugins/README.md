@@ -116,7 +116,7 @@ Renderer (desktop and web share this code):
 | `apps/desktop/src/renderer/components/plugins/vocabularyComponents.tsx` | The v1 component implementations |
 | `apps/desktop/src/renderer/components/plugins/PluginPanelHost.tsx`, `PluginTabPage.tsx` | Panel data loading and plugin tabs |
 | `apps/desktop/src/renderer/components/plugins/sockets/` | Socket rendering on the core surfaces (badges, toolbar actions, menu entries, detail sections, chips, empty states) |
-| `apps/desktop/src/renderer/components/plugins/MarketplacePage.tsx`, `MarketplaceDetailPage.tsx` | Gallery, facets, detail page, machine coverage matrix |
+| `apps/desktop/src/renderer/components/plugins/MarketplacePage.tsx`, `MarketplaceDetailPage.tsx` | Gallery, chips, detail page, machine coverage matrix |
 | `apps/desktop/src/renderer/components/plugins/PluginInstallDialog.tsx`, `PluginConfigForm.tsx`, `PluginThemePreview.tsx` | Install, settings, theme preview/apply |
 | `apps/desktop/src/renderer/components/plugins/marketplaceLocalIndex.ts` | Bundled offline index so the Marketplace works before a live registry exists |
 | `apps/desktop/src/renderer/components/plugins/PluginWebviewHost.tsx` | One guest, in whichever placement asked for it; the shared resize clamp, and the lazy load of the web page host |

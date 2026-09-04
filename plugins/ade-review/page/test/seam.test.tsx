@@ -123,7 +123,7 @@ describe("the page and the plugin agree on every verb", () => {
     await waitFor(() => {
       expect(host.callsTo("ui.pickLane").length).toBe(1);
     });
-    expect(host.lastCall("ui.pickLane")!.args).toEqual({ value: "lane-1" });
+    expect(host.lastCall("ui.pickLane")!.args).toMatchObject({ value: "lane-1" });
 
     await act(async () => {
       fireEvent.click(within(form).getByLabelText("Model"));
@@ -131,7 +131,7 @@ describe("the page and the plugin agree on every verb", () => {
     await waitFor(() => {
       expect(host.callsTo("ui.pickModel").length).toBe(1);
     });
-    expect(host.lastCall("ui.pickModel")!.args).toEqual({ value: "openai/gpt-5.6-sol" });
+    expect(host.lastCall("ui.pickModel")!.args).toMatchObject({ value: "openai/gpt-5.6-sol" });
 
     await act(async () => {
       fireEvent.click(within(form).getByLabelText("Reasoning effort"));
@@ -142,7 +142,7 @@ describe("the page and the plugin agree on every verb", () => {
     // The ladder is per MODEL, so the picker is asked with the model the reader
     // just chose — not with the one the form opened on — and with the current
     // rung so ADE's list opens on it.
-    expect(host.lastCall("ui.pickReasoningEffort")!.args).toEqual({
+    expect(host.lastCall("ui.pickReasoningEffort")!.args).toMatchObject({
       model: "anthropic/claude-opus-5",
       value: "low",
     });

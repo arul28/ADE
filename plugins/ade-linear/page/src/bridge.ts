@@ -132,11 +132,19 @@ export type PluginWebviewLaneChoice = PluginWebviewChoice & {
   path?: string | null;
 };
 
+export type PluginWebviewPickerRect = {
+  top: number;
+  left: number;
+  width?: number;
+  height?: number;
+};
+
 /** Host `ui.pickModel` request. `value` is the id to open on. */
 export type PluginWebviewModelPickRequest = {
   provider?: string | null;
   value?: string | null;
   availableModelIds?: string[];
+  rect?: PluginWebviewPickerRect;
 };
 
 /** Host answers. The page never invents a second shape for these. */
@@ -200,11 +208,15 @@ export type AdePluginBridge = {
      * back to a control of its own.
      */
     pickModel?(request?: PluginWebviewModelPickRequest): Promise<PluginWebviewModelHostChoice | null>;
-    pickProvider?(request?: { value?: string | null }): Promise<PluginWebviewProviderHostChoice | null>;
-    pickLane?(request?: { value?: string | null }): Promise<PluginWebviewLaneHostChoice | null>;
-    pickPermissionMode?(request: { provider: string; value?: string | null }): Promise<PluginWebviewPermissionHostChoice | null>;
+    pickProvider?(request?: { value?: string | null; rect?: PluginWebviewPickerRect }): Promise<PluginWebviewProviderHostChoice | null>;
+    pickLane?(request?: { value?: string | null; rect?: PluginWebviewPickerRect }): Promise<PluginWebviewLaneHostChoice | null>;
+    pickPermissionMode?(request: {
+      provider: string;
+      value?: string | null;
+      rect?: PluginWebviewPickerRect;
+    }): Promise<PluginWebviewPermissionHostChoice | null>;
     pickReasoningEffort?(
-      request: { model: string; value?: string | null },
+      request: { model: string; value?: string | null; rect?: PluginWebviewPickerRect },
     ): Promise<PluginWebviewReasoningHostChoice | null>;
     dismissToast(id: string): Promise<void>;
     prompt(prompt: unknown): Promise<unknown>;

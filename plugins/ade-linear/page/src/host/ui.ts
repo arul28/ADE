@@ -257,6 +257,18 @@ function asId(value: unknown): string | null {
   return typeof value === "string" && value.length > 0 ? value : null;
 }
 
+export function pickerRectFromClick(event: { currentTarget: EventTarget }): {
+  top: number;
+  left: number;
+  width: number;
+  height: number;
+} | undefined {
+  const node = event.currentTarget;
+  if (!(node instanceof Element)) return undefined;
+  const box = node.getBoundingClientRect();
+  return { top: box.top, left: box.left, width: box.width, height: box.height };
+}
+
 export async function pickModel(
   request?: PluginWebviewModelPickRequest,
 ): Promise<(PluginWebviewChoice & { fastMode?: boolean }) | null> {
@@ -266,6 +278,8 @@ export async function pickModel(
       ? () => ui.pickModel!({
         ...(request?.value ? { value: request.value } : {}),
         ...(request?.availableModelIds ? { availableModelIds: request.availableModelIds } : {}),
+        ...(request?.provider ? { provider: request.provider } : {}),
+        ...(request?.rect ? { rect: request.rect } : {}),
       })
       : undefined,
   );
@@ -291,11 +305,17 @@ export async function pickProvider(selected?: string | null): Promise<PluginWebv
   return { id: provider, label: provider };
 }
 
-export async function pickLane(selected?: string | null): Promise<PluginWebviewLaneChoice | null> {
+export async function pickLane(
+  selected?: string | null,
+  rect?: { top: number; left: number; width?: number; height?: number },
+): Promise<PluginWebviewLaneChoice | null> {
   const ui = bridge()?.ui;
   const raw = await pick(
     ui?.pickLane
-      ? () => ui.pickLane!({ ...(selected ? { value: selected } : {}) })
+      ? () => ui.pickLane!({
+        ...(selected ? { value: selected } : {}),
+        ...(rect ? { rect } : {}),
+      })
       : undefined,
   );
   const laneId = asId(raw?.laneId);
@@ -316,6 +336,7 @@ export async function pickLane(selected?: string | null): Promise<PluginWebviewL
 export async function pickPermissionMode(
   provider: string,
   selected?: string | null,
+  rect?: { top: number; left: number; width?: number; height?: number },
 ): Promise<PluginWebviewChoice | null> {
   const ui = bridge()?.ui;
   const raw = await pick(
@@ -323,6 +344,7 @@ export async function pickPermissionMode(
       ? () => ui.pickPermissionMode!({
         provider,
         ...(selected ? { value: selected } : {}),
+        ...(rect ? { rect } : {}),
       })
       : undefined,
   );
@@ -340,6 +362,7 @@ export async function pickReasoningEffort(
   _provider: string,
   model: string,
   selected?: string | null,
+  rect?: { top: number; left: number; width?: number; height?: number },
 ): Promise<PluginWebviewChoice | null> {
   const ui = bridge()?.ui;
   const raw = await pick(
@@ -347,6 +370,7 @@ export async function pickReasoningEffort(
       ? () => ui.pickReasoningEffort!({
         model,
         ...(selected ? { value: selected } : {}),
+        ...(rect ? { rect } : {}),
       })
       : undefined,
   );

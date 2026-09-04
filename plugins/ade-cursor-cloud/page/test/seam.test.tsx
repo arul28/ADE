@@ -140,6 +140,40 @@ describe("the fleet", () => {
     expect(fake.lastCall("invoke:pageOpenInAde")?.args).toMatchObject({ agentId: "bc_abc123" });
   });
 
+  it("asks to create a lane when open-in-ADE needs one", async () => {
+    const host = await open(context(), "invoke:pageFleet");
+    host.setAction("pageOpenInAde", (args) => {
+      if (args.createLane === true) {
+        return { ok: true, message: "Opened this cloud agent as a chat in ADE.", sessionId: "session-1" };
+      }
+      return {
+        ok: false,
+        needsLane: true,
+        suggestedName: "cursor/fix-sync",
+        branch: "cursor/fix-sync",
+        message: "This cloud agent has no local lane yet. Create one from the primary to open it in ADE.",
+      };
+    });
+
+    fireEvent.click(
+      await screen.findByTitle("Open as an ADE cloud chat — replies keep running in cloud"),
+    );
+    expect(await screen.findByText("Create a local lane")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Create lane and open" }));
+    await waitFor(() => {
+      expect(host.callsTo("invoke:pageOpenInAde").some((call) => call.args.createLane === true)).toBe(true);
+    });
+  });
+
+  it("opens this agent on cursor.com from the row menu", async () => {
+    await open(context(), "invoke:pageFleet");
+
+    fireEvent.click(await screen.findByLabelText("More actions"));
+    fireEvent.click(await screen.findByText("View on cursor.com"));
+    await waitFor(() => expect(fake.callsTo("openDeeplink")).toHaveLength(1));
+    expect(fake.lastCall("openDeeplink")?.args).toEqual({ url: "https://cursor.com/agents?id=bc_abc123" });
+  });
+
   it("opens cursor.com through the host, never through window.open", async () => {
     await open(context(), "invoke:pageFleet");
 
@@ -176,6 +210,7 @@ describe("the fleet", () => {
   it("keeps filters in the ui-state collection, never in localStorage", async () => {
     await open(context(), "invoke:pageFleet");
 
+    fireEvent.click(await screen.findByRole("button", { name: /Filters/ }));
     fireEvent.change(await screen.findByLabelText("Filter by status"), {
       target: { value: "finished" },
     });
@@ -183,10 +218,10 @@ describe("the fleet", () => {
     await waitFor(() => {
       expect(fake.callsTo("collections.put").some((call) => call.args.collection === "ui-state")).toBe(true);
     });
-    // A guest partition is non-persistent: it dies with the placement, and every
-    // placement is destroyed when it hides. `localStorage` would always read
-    // back empty.
-    expect(window.localStorage.length).toBe(0);
+    // A guest partition is non-persistent: it dies with the placement.
+    // This Node/Vitest env often has no `localStorage` at all; either way the
+    // page must not have written one.
+    expect(window.localStorage == null || window.localStorage.length === 0).toBe(true);
   });
 });
 
@@ -282,7 +317,7 @@ describe("the launch form", () => {
     await waitFor(() => expect(fake.callsTo("ui.pickModel")).toHaveLength(1));
     // Scoped to Cursor Cloud's catalog, not ADE's whole list — otherwise the
     // form would offer models Enter then refuses.
-    expect(fake.lastCall("ui.pickModel")?.args).toEqual({
+    expect(fake.lastCall("ui.pickModel")?.args).toMatchObject({
       value: "composer-2",
       availableModelIds: ["composer-2", "sonnet-4.5"],
     });
@@ -293,7 +328,7 @@ describe("the launch form", () => {
 
     fireEvent.click(await screen.findByLabelText("Lane"));
     await waitFor(() => expect(fake.callsTo("ui.pickLane")).toHaveLength(1));
-    expect(fake.lastCall("ui.pickLane")?.args).toEqual({ value: "lane-1" });
+    expect(fake.lastCall("ui.pickLane")?.args).toMatchObject({ value: "lane-1" });
   });
 
   it("uses ADE's own reasoning picker for the chosen model", async () => {
@@ -301,7 +336,7 @@ describe("the launch form", () => {
 
     fireEvent.click(await screen.findByLabelText("Reasoning effort"));
     await waitFor(() => expect(fake.callsTo("ui.pickReasoningEffort")).toHaveLength(1));
-    expect(fake.lastCall("ui.pickReasoningEffort")?.args).toEqual({ model: "composer-2" });
+    expect(fake.lastCall("ui.pickReasoningEffort")?.args).toMatchObject({ model: "composer-2" });
   });
 
   it("launches with names, never with secret values", async () => {

@@ -291,7 +291,6 @@ export function buildGraphModel(input: BuildGraphModelInput): GraphModel {
   }
 
   const nextEdges: Array<Edge<GraphEdgeData>> = [];
-  const primaryLane = primaryHierarchyMeta.primary;
   const riskPairsWithVisibleEdge = new Set<string>();
   const laneHasProposalConflict = (proposal: IntegrationProposal, sourceLaneId: string): boolean => {
     const steps = proposalSteps(proposal);
@@ -311,84 +310,22 @@ export function buildGraphModel(input: BuildGraphModelInput): GraphModel {
     );
   };
 
-  const riskEdgesVisible = viewMode === "risk" || (viewMode === "all" && showOverviewRiskEdges);
-
-  if (riskEdgesVisible) {
-    for (const [key, risk] of riskByPair.entries()) {
-      if (risk.riskLevel === "none" && risk.overlapCount === 0) continue;
-      const [laneAId, laneBId] = key.split("::");
-      if (!laneAId || !laneBId) continue;
-      if (hiddenByCollapse.has(laneAId) || hiddenByCollapse.has(laneBId)) continue;
-      if (!visibleNodeIds.has(laneAId) || !visibleNodeIds.has(laneBId)) continue;
-      riskPairsWithVisibleEdge.add(key);
-    }
-  }
-
-  if (viewMode === "all" || viewMode === "stack") {
-    for (const lane of lanes) {
-      if (!primaryLane || lane.id === primaryLane.id) continue;
-      // In Overview, stack edges already show the tree; skip redundant spokes.
-      if (viewMode === "all" && lane.parentLaneId && visibleNodeIds.has(lane.parentLaneId)) continue;
-      if (!visibleNodeIds.has(primaryLane.id) || !visibleNodeIds.has(lane.id)) continue;
-      const pair = edgePairKey(primaryLane.id, lane.id);
-      const pr = prOverlayByPair.get(pair);
-      nextEdges.push({
-        id: `topology:${primaryLane.id}:${lane.id}`,
-        source: primaryLane.id,
-        target: lane.id,
-        sourceHandle: "source",
-        targetHandle: "target",
-        type: "custom",
-        data: { edgeType: "topology", ...(pr && !riskPairsWithVisibleEdge.has(pair) ? { pr } : {}) },
-        markerEnd: { type: MarkerType.ArrowClosed },
-        animated: false,
-        selected: false,
-      });
-    }
-    for (const lane of lanes) {
-      if (!lane.parentLaneId || !laneById.has(lane.parentLaneId)) continue;
-      if (!visibleNodeIds.has(lane.parentLaneId) || !visibleNodeIds.has(lane.id)) continue;
-      const pair = edgePairKey(lane.parentLaneId, lane.id);
-      const pr = prOverlayByPair.get(pair);
-      nextEdges.push({
-        id: `stack:${lane.parentLaneId}:${lane.id}`,
-        source: lane.parentLaneId,
-        target: lane.id,
-        sourceHandle: "source",
-        targetHandle: "target",
-        type: "custom",
-        data: { edgeType: "stack", ...(pr && !riskPairsWithVisibleEdge.has(pair) ? { pr } : {}) },
-        markerEnd: { type: MarkerType.ArrowClosed },
-        selected: false,
-      });
-    }
-  }
-
-  if (riskEdgesVisible) {
-    for (const [key, risk] of riskByPair.entries()) {
-      if (risk.riskLevel === "none" && risk.overlapCount === 0) continue;
-      const [laneAId, laneBId] = key.split("::");
-      if (!laneAId || !laneBId) continue;
-      if (hiddenByCollapse.has(laneAId) || hiddenByCollapse.has(laneBId)) continue;
-      if (!visibleNodeIds.has(laneAId) || !visibleNodeIds.has(laneBId)) continue;
-      const pr = prOverlayByPair.get(key);
-      nextEdges.push({
-        id: `risk:${laneAId}:${laneBId}`,
-        source: laneAId,
-        target: laneBId,
-        sourceHandle: "source",
-        targetHandle: "target",
-        type: "custom",
-        data: {
-          edgeType: "risk",
-          riskLevel: risk.riskLevel,
-          overlapCount: risk.overlapCount,
-          stale: risk.stale,
-          ...(pr ? { pr } : {}),
-        },
-        selected: false,
-      });
-    }
+  for (const lane of lanes) {
+    if (!lane.parentLaneId || !laneById.has(lane.parentLaneId)) continue;
+    if (!visibleNodeIds.has(lane.parentLaneId) || !visibleNodeIds.has(lane.id)) continue;
+    const pair = edgePairKey(lane.parentLaneId, lane.id);
+    const pr = prOverlayByPair.get(pair);
+    nextEdges.push({
+      id: `stack:${lane.parentLaneId}:${lane.id}`,
+      source: lane.parentLaneId,
+      target: lane.id,
+      sourceHandle: "source",
+      targetHandle: "target",
+      type: "custom",
+      data: { edgeType: "stack", ...(pr && !riskPairsWithVisibleEdge.has(pair) ? { pr } : {}) },
+      markerEnd: { type: MarkerType.ArrowClosed },
+      selected: false,
+    });
   }
 
   for (const [integrationLaneId, integrationSources] of integrationSourcesByLaneId.entries()) {

@@ -10,7 +10,7 @@ vi.mock("../../shared/ModelPicker/ModelPicker", () => ({
   }: {
     onChange: (modelId: string, options?: { fastMode: boolean }) => void;
   }) => (
-    <button type="button" onClick={() => onChange("anthropic/claude-sonnet-4-5", { fastMode: true })}>
+    <button type="button" onClick={() => onChange("anthropic/claude-sonnet-5", { fastMode: true })}>
       pick-model
     </button>
   ),
@@ -76,8 +76,9 @@ describe("PluginWebviewPickerHost", () => {
       fireEvent.click(screen.getByText("pick-model"));
     });
     await expect(pending).resolves.toEqual({
-      modelId: "anthropic/claude-sonnet-4-5",
+      modelId: "anthropic/claude-sonnet-5",
       fastMode: true,
+      provider: "claude",
     });
   });
 
@@ -105,6 +106,29 @@ describe("PluginWebviewPickerHost", () => {
       field: "claudePermissionMode",
       value: "acceptEdits",
     });
+  });
+
+  it("anchors to the guest-relative rect the page measured", () => {
+    const guest = document.createElement("div");
+    guest.setAttribute("data-plugin-webview-guest", "guest-1");
+    Object.defineProperty(guest, "getBoundingClientRect", {
+      value: () => ({ top: 100, left: 200, width: 400, height: 300, right: 600, bottom: 400, x: 200, y: 100, toJSON: () => ({}) }),
+    });
+    document.body.appendChild(guest);
+    try {
+      openPluginWebviewPicker({
+        pluginId: "acme",
+        guestKey: "guest-1",
+        verb: "ui.pickProvider",
+        args: { rect: { top: 40, left: 80 } },
+      });
+      render(<PluginWebviewPickerHost />);
+      const holder = document.querySelector("[data-plugin-webview-picker='ui.pickProvider'] > div") as HTMLElement;
+      expect(holder.style.top).toBe("140px");
+      expect(holder.style.left).toBe("280px");
+    } finally {
+      guest.remove();
+    }
   });
 
   it("answers null when the dimmer is dismissed", async () => {

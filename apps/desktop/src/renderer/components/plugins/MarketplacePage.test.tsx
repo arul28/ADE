@@ -228,12 +228,14 @@ describe("the quick-action menu on a plugin row", () => {
     await waitFor(() => expect(screen.getByText(/operator/)).toBeTruthy());
   });
 
-  /** A plugin this machine does not have has nothing to turn off or remove. */
-  it("is absent on a row for a plugin that is not installed here", async () => {
+  /** A plugin this machine does not have still gets a kebab, with Install. */
+  it("offers Install on a row for a plugin that is not installed here", async () => {
     registry.plugins = [];
     renderGallery();
     await waitFor(() => expect(screen.getByText("Tipsy")).toBeTruthy());
-    expect(screen.queryByRole("button", { name: "More actions" })).toBeNull();
+    await openRowMenu();
+    expect(document.querySelector('[data-tour="plugin:marketplace.row-install-tipsy"]')).toBeTruthy();
+    expect(screen.queryByText("Remove…")).toBeNull();
   });
 });
 

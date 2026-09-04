@@ -84,8 +84,8 @@
       "entryHtml": "dist/index.html",
       "panelId": "issues",
       "popover": {
-        "width": 520,
-        "height": 560
+        "width": 940,
+        "height": 640
       },
       "mobile": false
     },
@@ -216,13 +216,6 @@
       "panelId": "issues",
       "dialog": "create-pr",
       "webviewSurfaceId": "dialog-picker"
-    },
-    {
-      "socket": "graph-node",
-      "surface": "lanes",
-      "id": "graph-issue",
-      "label": "Linear issue",
-      "icon": "brand:linear"
     },
     {
       "socket": "settings-section",

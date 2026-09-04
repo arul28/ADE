@@ -2811,7 +2811,7 @@ export function TopBar({
       ) : null}
 
       {/* Trailing controls. The shrinkable strip clips first so the pinned
-          right cluster — feedback, help, zoom, then usage, connections, bell —
+          right cluster — bell, connections, usage, then feedback, help, zoom —
           stays inside the native window-control reservation. */}
       <div className="flex min-w-0 items-center gap-2">
         <div className="flex min-w-0 items-center gap-2 overflow-hidden">
@@ -2841,6 +2841,9 @@ export function TopBar({
           data-plugin-header-pinned
           style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
         >
+          <HeaderActivityControl onOpenPane={handleOpenActivityPane} />
+          {headerConnectionsChip}
+          <HeaderUsageControl deferInitialRead={Boolean(remoteBinding)} />
         <div
           className="ade-shell-header-utility-cluster inline-flex shrink-0 items-center gap-px rounded-md border border-white/[0.08] bg-white/[0.03] p-px"
         >
@@ -2917,9 +2920,6 @@ export function TopBar({
             </SmartTooltip>
           </div>
         </div>
-          <HeaderUsageControl deferInitialRead={Boolean(remoteBinding)} />
-          {headerConnectionsChip}
-          <HeaderActivityControl onOpenPane={handleOpenActivityPane} />
         </div>
       </div>
 

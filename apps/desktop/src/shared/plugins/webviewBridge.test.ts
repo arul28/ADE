@@ -17,8 +17,10 @@ import {
   PLUGIN_WEBVIEW_UI_ASK_TIMEOUT_MS,
   PLUGIN_WEBVIEW_UI_TIMEOUT_MS,
   pluginWebviewGuestKey,
+  pluginWebviewKeepsGuestWhileHidden,
   pluginWebviewUiTimeoutMs,
   pluginWebviewUrl,
+  readPluginWebviewPickerRect,
   sanitizePluginWebviewTheme,
   type PluginWebviewContext,
 } from "./webviewBridge";
@@ -214,5 +216,28 @@ describe("plugin webview events", () => {
     expect(PLUGIN_WEBVIEW_EVENTS).toEqual(["changed", "theme", "host", "refresh"]);
     expect(isPluginWebviewEventName("refresh")).toBe(true);
     expect(isPluginWebviewEventName("unknown")).toBe(false);
+  });
+});
+
+describe("pluginWebviewKeepsGuestWhileHidden", () => {
+  it("keeps tabs and panes, and destroys anchored placements", () => {
+    expect(pluginWebviewKeepsGuestWhileHidden("tab")).toBe(true);
+    expect(pluginWebviewKeepsGuestWhileHidden("pane")).toBe(true);
+    expect(pluginWebviewKeepsGuestWhileHidden("popover")).toBe(false);
+    expect(pluginWebviewKeepsGuestWhileHidden("overlay")).toBe(false);
+    expect(pluginWebviewKeepsGuestWhileHidden("drawer")).toBe(false);
+    expect(pluginWebviewKeepsGuestWhileHidden("composer-picker")).toBe(false);
+    expect(pluginWebviewKeepsGuestWhileHidden("dialog-picker")).toBe(false);
+    expect(pluginWebviewKeepsGuestWhileHidden("settings-section")).toBe(false);
+  });
+});
+
+describe("readPluginWebviewPickerRect", () => {
+  it("reads a guest-relative box and drops anything else", () => {
+    expect(readPluginWebviewPickerRect({ top: 12, left: 40, width: 80, height: 24 }))
+      .toEqual({ top: 12, left: 40, width: 80, height: 24 });
+    expect(readPluginWebviewPickerRect({ top: 12, left: 40 })).toEqual({ top: 12, left: 40 });
+    expect(readPluginWebviewPickerRect({ top: "x", left: 1 })).toBeNull();
+    expect(readPluginWebviewPickerRect(null)).toBeNull();
   });
 });

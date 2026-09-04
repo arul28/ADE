@@ -1,7 +1,7 @@
 import React from "react";
 import { Navigate, useParams, useSearchParams } from "react-router-dom";
 
-import { COLORS, RADII, SANS_FONT, outlineButton } from "../lanes/laneDesignTokens";
+import { COLORS, outlineButton } from "../lanes/laneDesignTokens";
 import { useRootAppStore } from "../../state/appStore";
 import { openPluginLogs, restartPlugin, type InstalledPlugin } from "../../lib/pluginRuntimeBridge";
 import {
@@ -12,7 +12,6 @@ import {
 import { eventMatchesBinding } from "../../lib/keybindings";
 import { PluginWebviewHost, supportsPluginWebviews } from "./PluginWebviewHost";
 import { PluginFallbackCard } from "./VocabularyRenderer";
-import { pluginIcon } from "./pluginIcons";
 import { builtinRouteForPluginRoute } from "./builtinTabs";
 import { parseDeeplinkPluginContext } from "../../../shared/deeplinks";
 import { pluginRailTabSurface } from "../../../shared/plugins/manifest";
@@ -500,6 +499,10 @@ function RestartButton({
  * variable on the page root rather than written into styles directly, so the
  * accent participates in the cascade — and so a plugin cannot paint anything it
  * was not given a slot for.
+ *
+ * There is no name/version header. The rail already names the tab, and a
+ * second "Review 2.0.0" row on every plugin page was chrome the compiled
+ * surfaces never had.
  */
 function PluginPageShell({
   plugin,
@@ -517,9 +520,9 @@ function PluginPageShell({
   fill?: boolean;
   children?: React.ReactNode;
 }) {
-  const Icon = pluginIcon(plugin?.icon, plugin?.brandIcons);
   return (
     <div
+      aria-label={title}
       data-tour={`plugin:${pluginId}.page`}
       data-ade-animation-state={active ? "running" : "paused"}
       style={{
@@ -532,49 +535,6 @@ function PluginPageShell({
         ...(plugin?.accent ? ({ "--plugin-accent": plugin.accent } as React.CSSProperties) : {}),
       }}
     >
-      <header
-        style={{
-          display: "flex",
-          alignItems: "center",
-          gap: 10,
-          padding: "16px 20px 12px",
-          borderBottom: `1px solid ${COLORS.borderMuted}`,
-        }}
-      >
-        <Icon
-          size={17}
-          weight="regular"
-          color={plugin?.accent ? "var(--plugin-accent)" : COLORS.textMuted}
-          aria-hidden
-        />
-        <h1
-          style={{
-            margin: 0,
-            fontFamily: SANS_FONT,
-            fontSize: 14,
-            fontWeight: 600,
-            letterSpacing: "-0.01em",
-            color: COLORS.textPrimary,
-          }}
-        >
-          {title}
-        </h1>
-        {plugin ? (
-          <span
-            style={{
-              padding: "2px 6px",
-              fontFamily: SANS_FONT,
-              fontSize: 10.5,
-              color: COLORS.textDim,
-              background: COLORS.recessedBg,
-              border: `1px solid ${COLORS.borderMuted}`,
-              borderRadius: RADII.sm,
-            }}
-          >
-            {plugin.version}
-          </span>
-        ) : null}
-      </header>
       <div
         style={fill
           ? { display: "flex", flex: 1, minHeight: 0, minWidth: 0 }

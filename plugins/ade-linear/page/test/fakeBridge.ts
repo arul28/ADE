@@ -456,7 +456,7 @@ export function installFakeBridge(options: {
         record("ui.pickModel", (request ?? {}) as Record<string, unknown>);
         const answer = pickerAnswers.model;
         if (!answer) return null;
-        return { modelId: answer.id, fastMode: answer.fastMode === true };
+        return { modelId: answer.id, fastMode: answer.fastMode === true, provider: answer.provider ?? null };
       },
       async pickProvider(request?: { value?: string | null }) {
         record("ui.pickProvider", (request ?? {}) as Record<string, unknown>);

@@ -20,10 +20,10 @@
  */
 
 import React from "react";
-import { CaretDown, Lightning } from "@phosphor-icons/react";
+import { CaretDown } from "@phosphor-icons/react";
 import { cn } from "@ade-dev/ui";
 
-import { hostPickers, pickModel, pickReasoningEffort } from "../host/ui";
+import { hostPickers, pickModel, pickReasoningEffort, pickerRectFromClick } from "../host/ui";
 import { REVIEW_INPUT, REVIEW_INPUT_FOCUS } from "./ReviewShell";
 
 export type ReviewLaunchModelChoice = {
@@ -34,10 +34,8 @@ export type ReviewLaunchModelChoice = {
 export type ReviewLaunchModelControlsProps = {
   modelId: string;
   reasoningEffort: string;
-  fastMode?: boolean;
   onModelChange: (modelId: string, extras?: ReviewLaunchModelChoice) => void;
   onReasoningEffortChange: (value: string) => void;
-  onFastModeChange?: (value: boolean) => void;
   disabled?: boolean;
   className?: string;
 };
@@ -51,7 +49,7 @@ function PickerTrigger({
 }: {
   label: string;
   value: string;
-  onPress: () => void;
+  onPress: (event: React.MouseEvent<HTMLButtonElement>) => void;
   disabled: boolean;
   testId: string;
 }) {
@@ -76,10 +74,8 @@ function PickerTrigger({
 export function ReviewLaunchModelControls({
   modelId,
   reasoningEffort,
-  fastMode = false,
   onModelChange,
   onReasoningEffortChange,
-  onFastModeChange,
   disabled = false,
   className,
 }: ReviewLaunchModelControlsProps) {
@@ -87,8 +83,11 @@ export function ReviewLaunchModelControls({
   // property of the host, and it cannot change while the page is open.
   const pickers = React.useMemo(() => hostPickers(), []);
 
-  const handlePickModel = React.useCallback(async () => {
-    const choice = await pickModel(modelId ? { value: modelId } : undefined);
+  const handlePickModel = React.useCallback(async (event: React.MouseEvent<HTMLButtonElement>) => {
+    const choice = await pickModel({
+      ...(modelId ? { value: modelId } : {}),
+      rect: pickerRectFromClick(event),
+    });
     // Null is both "dismissed" and "this host has no picker", and both mean
     // leave the field exactly as the reader left it.
     if (!choice?.modelId) return;
@@ -98,11 +97,12 @@ export function ReviewLaunchModelControls({
     });
   }, [modelId, onModelChange]);
 
-  const handlePickEffort = React.useCallback(async () => {
+  const handlePickEffort = React.useCallback(async (event: React.MouseEvent<HTMLButtonElement>) => {
     if (!modelId) return;
     const choice = await pickReasoningEffort({
       model: modelId,
       value: reasoningEffort || null,
+      rect: pickerRectFromClick(event),
     });
     // Null is a dismissal. `effort: null` is a real choice — "no reasoning" —
     // and must not be folded into "leave it".
@@ -116,7 +116,7 @@ export function ReviewLaunchModelControls({
         <PickerTrigger
           label="Model"
           value={modelId || "Choose a model"}
-          onPress={() => void handlePickModel()}
+          onPress={(event) => void handlePickModel(event)}
           disabled={disabled}
           testId="model"
         />
@@ -138,7 +138,7 @@ export function ReviewLaunchModelControls({
         <PickerTrigger
           label="Reasoning effort"
           value={reasoningEffort || "Default effort"}
-          onPress={() => void handlePickEffort()}
+          onPress={(event) => void handlePickEffort(event)}
           disabled={disabled}
           testId="reasoning-effort"
         />
@@ -156,25 +156,6 @@ export function ReviewLaunchModelControls({
         </label>
       )}
 
-      {onFastModeChange ? (
-        <button
-          type="button"
-          onClick={() => onFastModeChange(!fastMode)}
-          disabled={disabled}
-          aria-pressed={fastMode}
-          data-review-action="fast-mode"
-          title="Run on the provider's fast service tier."
-          className={cn(
-            "inline-flex h-9 items-center gap-1.5 rounded-xl border px-3 text-[11px] font-semibold transition-colors disabled:cursor-not-allowed disabled:opacity-60",
-            fastMode
-              ? "border-amber-400/40 bg-amber-400/[0.10] text-amber-100"
-              : "border-white/[0.08] bg-[var(--color-muted)]/55 text-[#94A3B8] hover:text-[#F5FAFF]",
-          )}
-        >
-          <Lightning size={12} weight={fastMode ? "fill" : "regular"} />
-          Fast
-        </button>
-      ) : null}
     </div>
   );
 }

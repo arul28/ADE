@@ -676,11 +676,9 @@ async function loadModels() {
 /**
  * The Linear badge on every lane that carries an issue.
  *
- * Published as a `row-badge` and a `graph-node`, which is how a lane row on the
- * desktop, on the phone and in the graph all draw the same thing without any of
- * them knowing what Linear is. Two socket KINDS on one surface, so each publish
- * names its `id` — a row keyed only by kind would let the second publish
- * replace the first.
+ * Published as a `row-badge` on the lane row. Issue identifiers also draw on
+ * the Graph inspector from the lane's own issue links — a floating graph node
+ * would duplicate that.
  */
 async function publishLaneBadges() {
   if (!sdk || disposed) return;
@@ -702,7 +700,6 @@ async function publishLaneBadges() {
       count: links.length,
     };
     await sdk.contributions.publish("lane", laneId, "row-badge", payload).catch(() => {});
-    await sdk.contributions.publish("lane", laneId, "graph-node", { ...payload, id: "graph-issue" }).catch(() => {});
   }
 }
 

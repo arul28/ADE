@@ -217,9 +217,22 @@ export async function openPathInEditor(args: {
  * form asks `hostPickers` separately when it needs to draw a fallback control
  * rather than a trigger.
  */
+export function pickerRectFromClick(event: { currentTarget: EventTarget }): {
+  top: number;
+  left: number;
+  width: number;
+  height: number;
+} | undefined {
+  const node = event.currentTarget;
+  if (!(node instanceof Element)) return undefined;
+  const box = node.getBoundingClientRect();
+  return { top: box.top, left: box.left, width: box.width, height: box.height };
+}
+
 export async function pickModel(request?: {
   value?: string;
   availableModelIds?: string[];
+  rect?: { top: number; left: number; width?: number; height?: number };
 }): Promise<PluginWebviewModelChoice | null> {
   const api = bridge();
   if (!api?.ui?.pickModel) return null;
@@ -230,7 +243,10 @@ export async function pickModel(request?: {
   }
 }
 
-export async function pickLane(request?: { value?: string }): Promise<PluginWebviewLaneChoice | null> {
+export async function pickLane(request?: {
+  value?: string;
+  rect?: { top: number; left: number; width?: number; height?: number };
+}): Promise<PluginWebviewLaneChoice | null> {
   const api = bridge();
   if (!api?.ui?.pickLane) return null;
   try {
@@ -243,6 +259,7 @@ export async function pickLane(request?: { value?: string }): Promise<PluginWebv
 export async function pickReasoningEffort(request: {
   model: string;
   value?: string | null;
+  rect?: { top: number; left: number; width?: number; height?: number };
 }): Promise<PluginWebviewReasoningChoice | null> {
   const api = bridge();
   if (!api?.ui?.pickReasoningEffort) return null;

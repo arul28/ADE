@@ -2,9 +2,9 @@
  * ADE's Graph tab, inside a guest.
  *
  * Ported from `components/graph/WorkspaceGraphPage.tsx` (4,906 lines). The
- * canvas, the four view modes, the filters, the drag-to-reparent flow, the
- * context menu, the appearance editor, the conflict panel, the pair matrix and
- * the batch dock are the compiled page's, moved. What changed is the SEAM:
+ * canvas is one stacked DAG: search, filters, reset, drag-to-reposition
+ * (reparent is menu-only), the context menu, the appearance editor, the
+ * conflict panel and the batch dock. What changed is the SEAM:
  *
  * - `useAppStore(s => s.lanes)` → `useGraphData` over the plugin's page actions,
  *   with `host.subscribe` supplying the "something moved" signal the store used
@@ -84,7 +84,6 @@ import {
   edgePairKey,
   globToRegExp,
   laneStatusGroup,
-  nodeDimensions,
   prChecksLabel,
   sameIdSet,
   toRelativeTime,
@@ -117,7 +116,6 @@ import { GraphPluginNode } from "./graphNodes/PluginNode";
 import { GraphProposalNode } from "./graphNodes/ProposalNode";
 import { RiskEdge } from "./graphEdges/RiskEdge";
 import { ConflictPanel } from "./graphDialogs/ConflictPanel";
-import { RiskMatrix } from "./shared/RiskMatrix";
 import { GraphToolbar } from "./GraphToolbar";
 import { PrCard } from "./PrCard";
 import { LanePhoneList, buildPhoneRows } from "./LanePhoneList";
@@ -173,7 +171,7 @@ function GraphInner({ context }: { context: PluginWebviewContext }): React.React
 
   /* ── Persisted view preference ─────────────────────────────────────────── */
 
-  const [viewMode, setViewMode] = React.useState<GraphViewMode>("all");
+  const [viewMode] = React.useState<GraphViewMode>("stack");
   const [loadedPreferences, setLoadedPreferences] = React.useState(false);
   const skipNextPersistRef = React.useRef(false);
 
@@ -181,7 +179,6 @@ function GraphInner({ context }: { context: PluginWebviewContext }): React.React
     if (storedState === undefined) return;
     const normalized = normalizeGraphPreferences(storedState);
     skipNextPersistRef.current = true;
-    setViewMode(normalized.preferences.lastViewMode);
     setLoadedPreferences(true);
     if (normalized.migrated) void actions.saveGraphState(normalized.preferences).catch(() => {});
   }, [storedState]);
@@ -192,8 +189,8 @@ function GraphInner({ context }: { context: PluginWebviewContext }): React.React
       skipNextPersistRef.current = false;
       return;
     }
-    void actions.saveGraphState(createGraphPreferences(viewMode)).catch(() => {});
-  }, [loadedPreferences, viewMode]);
+    void actions.saveGraphState(createGraphPreferences("stack")).catch(() => {});
+  }, [loadedPreferences]);
 
   /* ── Local canvas state ────────────────────────────────────────────────── */
 
@@ -204,8 +201,6 @@ function GraphInner({ context }: { context: PluginWebviewContext }): React.React
   const [selectedLaneIds, setSelectedLaneIds] = React.useState<string[]>([]);
   const [contextMenu, setContextMenu] = React.useState<{ laneId: string; x: number; y: number } | null>(null);
   const [showFiltersPanel, setShowFiltersPanel] = React.useState(false);
-  const [showRiskMatrix, setShowRiskMatrix] = React.useState(false);
-  const [showOverviewRiskEdges, setShowOverviewRiskEdges] = React.useState(false);
   const [singleActionsOpen, setSingleActionsOpen] = React.useState(false);
   const [batchActionsOpen, setBatchActionsOpen] = React.useState(false);
   const [focusLaneId, setFocusLaneId] = React.useState<string | null>(null);
@@ -225,10 +220,6 @@ function GraphInner({ context }: { context: PluginWebviewContext }): React.React
   const [conflictOverlapFiles, setConflictOverlapFiles] = React.useState<Map<string, string[]>>(new Map());
   const [edgeSimulation, setEdgeSimulation] = React.useState<
     { laneAId: string; laneBId: string; loading: boolean; result: MergeSimulationResult | null; error: string | null }
-    | null
-  >(null);
-  const [dropPreview, setDropPreview] = React.useState<
-    { draggedLaneIds: string[]; targetLaneId: string; tone: "safe" | "warn" | "blocked"; message: string; detail: string }
     | null
   >(null);
   const [appearanceEditor, setAppearanceEditor] = React.useState<
@@ -262,8 +253,6 @@ function GraphInner({ context }: { context: PluginWebviewContext }): React.React
 
   const nodesRef = React.useRef<Array<Node<GraphNodeData>>>([]);
   const nodeDragActiveRef = React.useRef(false);
-  const dragOriginRef = React.useRef<Map<string, { x: number; y: number }>>(new Map());
-  const dropPreviewTimerRef = React.useRef<number | null>(null);
   const nodeHoverTimerRef = React.useRef<number | null>(null);
   const lastFitViewKeyRef = React.useRef("");
   const handledFocusLaneRef = React.useRef<string | null>(null);
@@ -274,10 +263,6 @@ function GraphInner({ context }: { context: PluginWebviewContext }): React.React
   React.useEffect(() => {
     nodesRef.current = nodes;
   }, [nodes]);
-
-  React.useEffect(() => {
-    if (viewMode !== "all") setShowOverviewRiskEdges(false);
-  }, [viewMode]);
 
   React.useEffect(() => {
     if (dataError) setErrorBanner((prev) => prev ?? dataError);
@@ -536,7 +521,7 @@ function GraphInner({ context }: { context: PluginWebviewContext }): React.React
       integrationProposals: proposals,
       prOverlayByPair,
       prOverlayByLaneId,
-      showOverviewRiskEdges,
+      showOverviewRiskEdges: false,
       appearanceDraft: appearanceEditor
         ? {
           laneId: appearanceEditor.laneId,
@@ -568,7 +553,6 @@ function GraphInner({ context }: { context: PluginWebviewContext }): React.React
     pressPluginNode,
     proposals,
     riskByPair,
-    showOverviewRiskEdges,
     statusByLane,
     syncByLaneId,
     viewMode,
@@ -612,7 +596,6 @@ function GraphInner({ context }: { context: PluginWebviewContext }): React.React
 
   React.useEffect(() => {
     if (!loadedPreferences) return;
-    if (nodeDragActiveRef.current) return;
     const edgeVisualState = (edgeId: string, source: string, target: string) => {
       const connectedToNodeHover = hoveredNodeId ? source === hoveredNodeId || target === hoveredNodeId : false;
       const highlightedByEdge = hoveredEdgeId ? hoveredEdgeId === edgeId : false;
@@ -622,24 +605,30 @@ function GraphInner({ context }: { context: PluginWebviewContext }): React.React
       };
     };
 
-    setNodes(model.nodes.map((node) => {
-      const connectedToHover = hoveredNodeId ? connectedToHoveredNode.has(node.id) : false;
-      const dimmedByHover = Boolean(hoveredNodeId) && !connectedToHover;
-      return {
-        ...node,
-        data: {
-          ...node.data,
-          dimmed: !model.visibleNodeIds.has(node.id) || dimmedByHover,
-          highlight: Boolean(hoveredNodeId) && connectedToHover,
-          rebaseFailed: !isSyntheticGraphNode(node.data) && rebaseFailedLaneId === node.id,
-          rebasePulse: !isSyntheticGraphNode(node.data) && rebaseFailedLaneId === node.id && rebaseFailedPulse,
-          mergeInProgress: !isSyntheticGraphNode(node.data) && Boolean(mergeInProgressByLaneId[node.id]),
-          mergeDisappearing: !isSyntheticGraphNode(node.data) && Boolean(mergeDisappearingAtByLaneId[node.id]),
-          focusGlow: focusLaneId === node.id,
-        },
-        selected: selectedLaneIds.includes(node.id),
-      };
-    }));
+    setNodes((prev) => {
+      const liveById = new Map(prev.map((node) => [node.id, node]));
+      return model.nodes.map((node) => {
+        const live = liveById.get(node.id);
+        const connectedToHover = hoveredNodeId ? connectedToHoveredNode.has(node.id) : false;
+        const dimmedByHover = Boolean(hoveredNodeId) && !connectedToHover;
+        return {
+          ...node,
+          position: live?.position ?? node.position,
+          dragging: live?.dragging,
+          data: {
+            ...node.data,
+            dimmed: !model.visibleNodeIds.has(node.id) || dimmedByHover,
+            highlight: Boolean(hoveredNodeId) && connectedToHover,
+            rebaseFailed: !isSyntheticGraphNode(node.data) && rebaseFailedLaneId === node.id,
+            rebasePulse: !isSyntheticGraphNode(node.data) && rebaseFailedLaneId === node.id && rebaseFailedPulse,
+            mergeInProgress: !isSyntheticGraphNode(node.data) && Boolean(mergeInProgressByLaneId[node.id]),
+            mergeDisappearing: !isSyntheticGraphNode(node.data) && Boolean(mergeDisappearingAtByLaneId[node.id]),
+            focusGlow: focusLaneId === node.id,
+          },
+          selected: selectedLaneIds.includes(node.id),
+        };
+      });
+    });
 
     setEdges(model.edges.map((edge) => {
       const visual = edgeVisualState(edge.id, edge.source, edge.target);
@@ -751,7 +740,6 @@ function GraphInner({ context }: { context: PluginWebviewContext }): React.React
 
   React.useEffect(() => {
     return () => {
-      if (dropPreviewTimerRef.current != null) window.clearTimeout(dropPreviewTimerRef.current);
       if (nodeHoverTimerRef.current != null) window.clearTimeout(nodeHoverTimerRef.current);
     };
   }, []);
@@ -1533,43 +1521,11 @@ function GraphInner({ context }: { context: PluginWebviewContext }): React.React
     [contextMenu, runLaneAction],
   );
 
-  /* ── Drag to reparent ──────────────────────────────────────────────────── */
+  /* ── Drag to reposition ────────────────────────────────────────────────── */
 
   const collapsedLaneIds = React.useMemo(
     () => new Set(activeSnapshot.collapsedLaneIds),
     [activeSnapshot.collapsedLaneIds],
-  );
-  const hiddenByCollapse = React.useMemo(() => {
-    const hidden = new Set<string>();
-    for (const laneId of collapsedLaneIds) {
-      for (const id of collectDescendants(lanes, laneId)) hidden.add(id);
-    }
-    return hidden;
-  }, [collapsedLaneIds, lanes]);
-
-  const findDropTarget = React.useCallback(
-    (node: Node<GraphNodeData>): Node<GraphNodeData> | null => {
-      if (isSyntheticGraphNode(node.data)) return null;
-      const candidates = nodes.filter(
-        (candidate) =>
-          candidate.id !== node.id
-          && !isSyntheticGraphNode(candidate.data)
-          && !hiddenByCollapse.has(candidate.id),
-      );
-      const dims = nodeDimensions(node.data.lane, node.data.activityBucket, viewMode);
-      const center = { x: node.position.x + dims.width / 2, y: node.position.y + dims.height / 2 };
-      for (const candidate of candidates) {
-        const candidateDims = nodeDimensions(candidate.data.lane, candidate.data.activityBucket, viewMode);
-        if (
-          center.x >= candidate.position.x
-          && center.x <= candidate.position.x + candidateDims.width
-          && center.y >= candidate.position.y
-          && center.y <= candidate.position.y + candidateDims.height
-        ) return candidate;
-      }
-      return null;
-    },
-    [hiddenByCollapse, nodes, viewMode],
   );
 
   const saveNodePositions = React.useCallback(
@@ -1620,26 +1576,6 @@ function GraphInner({ context }: { context: PluginWebviewContext }): React.React
     () => lanes.filter((lane) => !lane.parentLaneId).sort((a, b) => a.name.localeCompare(b.name)),
     [lanes],
   );
-
-  const environmentLegendEntries = React.useMemo(() => {
-    const compiled = environments
-      .map((mapping) => ({
-        env: mapping.env?.trim() ?? "",
-        branch: mapping.branch?.trim() ?? "",
-        color: mapping.color ?? null,
-        branchRegex: globToRegExp(mapping.branch ?? ""),
-      }))
-      .filter((mapping) => mapping.env.length > 0 && mapping.branch.length > 0);
-    return compiled
-      .map((mapping) => ({
-        env: mapping.env,
-        branch: mapping.branch,
-        color: mapping.color,
-        matchCount: lanes.filter((lane) => mapping.branchRegex.test(branchNameFromRef(lane.branchRef))).length,
-      }))
-      .sort((a, b) => a.env.localeCompare(b.env) || a.branch.localeCompare(b.branch))
-      .slice(0, 10);
-  }, [environments, lanes]);
 
   const matchingSearchNodes = React.useMemo(() => {
     if (!filters.search.trim()) return [];
@@ -1722,8 +1658,6 @@ function GraphInner({ context }: { context: PluginWebviewContext }): React.React
       <div className="absolute inset-0 h-full w-full bg-bg [background-image:radial-gradient(var(--color-border)_1px,transparent_1px)] [background-size:16px_16px] [opacity:0.3]" />
 
       <GraphToolbar
-        viewMode={viewMode}
-        onViewMode={setViewMode}
         filters={filters}
         onFilters={updateFilters}
         matchingCount={matchingSearchNodes.length}
@@ -1732,17 +1666,6 @@ function GraphInner({ context }: { context: PluginWebviewContext }): React.React
           void reactFlow.fitView({ nodes: matchingSearchNodes, duration: 320, padding: 0.25 });
         }}
         onResetView={resetView}
-        showOverviewRiskEdges={showOverviewRiskEdges}
-        onToggleOverviewRiskEdges={() => setShowOverviewRiskEdges((prev) => !prev)}
-        showRiskMatrix={showRiskMatrix}
-        onToggleRiskMatrix={() => {
-          setShowRiskMatrix((prev) => {
-            // Opening the matrix asks for the matrix, which is a narrower read
-            // than the whole batch assessment behind it.
-            if (!prev) void actions.getRiskMatrix().catch(() => {});
-            return !prev;
-          });
-        }}
         rootLaneOptions={rootLaneOptions}
         availableTags={availableTags}
         overflowNote={describePluginGraphOverflow(pluginOverlay)}
@@ -1751,7 +1674,7 @@ function GraphInner({ context }: { context: PluginWebviewContext }): React.React
         onToggleFiltersPanel={() => setShowFiltersPanel((prev) => !prev)}
       />
 
-      <div className="absolute inset-0 pt-[74px]">
+      <div className="absolute inset-0 pt-[52px]">
         <ReactFlow<Node<GraphNodeData>, Edge<GraphEdgeData>>
           nodes={nodes}
           edges={edges}
@@ -1763,96 +1686,18 @@ function GraphInner({ context }: { context: PluginWebviewContext }): React.React
           onNodeDragStart={(_event, node) => {
             if (isSyntheticGraphNode(node.data)) return;
             nodeDragActiveRef.current = true;
-            dragOriginRef.current.set(node.id, { x: node.position.x, y: node.position.y });
-            if (dropPreviewTimerRef.current != null) {
-              window.clearTimeout(dropPreviewTimerRef.current);
-              dropPreviewTimerRef.current = null;
-            }
-            setDropPreview(null);
             clearHover();
-          }}
-          onNodeDrag={(_event, node) => {
-            if (isSyntheticGraphNode(node.data)) return;
-            const target = findDropTarget(node);
-            if (!target) {
-              if (dropPreviewTimerRef.current != null) {
-                window.clearTimeout(dropPreviewTimerRef.current);
-                dropPreviewTimerRef.current = null;
-              }
-              setDropPreview(null);
-              return;
-            }
-            const draggedLaneIds = selectedLaneIds.includes(node.id) && selectedLaneIds.length > 1
-              ? selectedLaneIds
-              : [node.id];
-            const wouldCycle = draggedLaneIds.some(
-              (laneId) => laneId === target.id || collectDescendants(lanes, laneId).has(target.id),
-            );
-            let overlapCount = 0;
-            for (const laneId of draggedLaneIds) {
-              if (laneId === target.id) continue;
-              overlapCount = Math.max(
-                overlapCount,
-                (overlapFilesByPair.get(edgePairKey(laneId, target.id)) ?? []).length,
-              );
-            }
-            const nextPreview = wouldCycle
-              ? {
-                draggedLaneIds,
-                targetLaneId: target.id,
-                tone: "blocked" as const,
-                message: "Cannot change parent (cycle detected).",
-                detail: "Pick a lane that is not inside the dragged lane's descendant chain.",
-              }
-              : {
-                draggedLaneIds,
-                targetLaneId: target.id,
-                tone: overlapCount > 0 ? ("warn" as const) : ("safe" as const),
-                message: draggedLaneIds.length === 1
-                  ? `Drop '${laneById.get(draggedLaneIds[0]!)?.name ?? draggedLaneIds[0]}' onto '${target.data.lane.name}'${
-                    overlapCount > 0 ? ` (⚠ ${overlapCount} overlapping files)` : ""
-                  }.`
-                  : `Reparent ${draggedLaneIds.length} lanes under ${target.data.lane.name}${
-                    overlapCount > 0 ? ` (⚠ ${overlapCount} overlapping files)` : ""
-                  }.`,
-                detail: "Release to choose between integrating, reparenting, or opening a PR.",
-              };
-            if (dropPreviewTimerRef.current != null) window.clearTimeout(dropPreviewTimerRef.current);
-            dropPreviewTimerRef.current = window.setTimeout(() => setDropPreview(nextPreview), 200);
           }}
           onNodeDragStop={(_event, node) => {
             if (isSyntheticGraphNode(node.data)) return;
             nodeDragActiveRef.current = false;
-            const origin = dragOriginRef.current.get(node.id);
-            if (dropPreviewTimerRef.current != null) {
-              window.clearTimeout(dropPreviewTimerRef.current);
-              dropPreviewTimerRef.current = null;
-            }
-            setDropPreview(null);
             clearHover();
-            dragOriginRef.current.delete(node.id);
             const latestNodes = reactFlow.getNodes();
             saveNodePositions(
               latestNodes.map((existing) =>
                 existing.id === node.id ? { ...existing, position: node.position } : existing
               ),
             );
-
-            const target = findDropTarget(node);
-            if (!target) return;
-            if (origin) {
-              const dx = node.position.x - origin.x;
-              const dy = node.position.y - origin.y;
-              if (Math.sqrt(dx * dx + dy * dy) < 5) return;
-            }
-            const selectedIds = selectedLaneIds.includes(node.id) && selectedLaneIds.length > 1
-              ? selectedLaneIds
-              : [node.id];
-            if (selectedIds.length === 1 && laneById.get(target.id)?.laneType === "primary") {
-              openPrCreate(node.id, target.id);
-              return;
-            }
-            openReparentDialog(node.id, target.id, selectedIds);
           }}
           onNodeClick={(_event, node) => {
             // A plugin node selects visually and invokes; it is never a lane
@@ -2092,56 +1937,10 @@ function GraphInner({ context }: { context: PluginWebviewContext }): React.React
               ) : null}
             </div>
           </Panel>
-          {dropPreview ? (
-            <Panel position="top-left">
-              <div
-                className={cn(
-                  "rounded-xl border px-2 py-1 text-[11px]",
-                  dropPreview.tone === "safe" && "border-emerald-600/70 bg-emerald-900/20 text-emerald-200",
-                  dropPreview.tone === "warn" && "border-amber-600/70 bg-amber-900/20 text-amber-200",
-                  dropPreview.tone === "blocked" && "border-red-700/70 bg-red-900/25 text-red-200",
-                )}
-              >
-                <div className="font-semibold">{dropPreview.message}</div>
-                <div className="mt-0.5 text-[10px] opacity-85">{dropPreview.detail}</div>
-              </div>
-            </Panel>
-          ) : null}
-          <Panel position="top-right">
-            <div className="flex w-[280px] flex-col gap-2 text-[11px]">
-              <div className="rounded-xl bg-white/[0.03] backdrop-blur-xl p-3 shadow-card">
-                <div className="mb-2 font-sans font-semibold text-fg">Environments</div>
-                {environmentLegendEntries.length === 0 ? (
-                  <div className="text-muted-fg">No environment mappings configured.</div>
-                ) : (
-                  <div className="space-y-2">
-                    {environmentLegendEntries.map((entry) => (
-                      <div
-                        key={`${entry.env}:${entry.branch}`}
-                        className="rounded-xl border border-white/[0.06] bg-white/[0.02] px-2 py-1.5"
-                      >
-                        <div className="flex items-center gap-2">
-                          <span
-                            className="h-2.5 w-2.5 rounded-full ring-1 ring-border/30"
-                            style={{ backgroundColor: entry.color ?? "var(--color-muted-fg)" }}
-                          />
-                          <span className="font-medium text-fg">{entry.env}</span>
-                          <span className="ml-auto text-[10px] text-muted-fg">
-                            {entry.matchCount} lane{entry.matchCount === 1 ? "" : "s"}
-                          </span>
-                        </div>
-                        <div className="mt-1 truncate text-[10px] text-muted-fg">matches {entry.branch}</div>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
-            </div>
-          </Panel>
         </ReactFlow>
 
         {allNodesHidden ? (
-          <div className="pointer-events-none absolute inset-0 flex items-center justify-center pt-[74px]">
+          <div className="pointer-events-none absolute inset-0 flex items-center justify-center pt-[52px]">
             <div className="pointer-events-auto rounded-xl border border-white/[0.06] bg-white/[0.03] backdrop-blur-xl shadow-card px-5 py-4 text-center">
               <Funnel size={24} weight="regular" className="mx-auto mb-2 text-muted-fg" />
               <div className="text-sm font-medium text-fg">No visible lanes</div>
@@ -2651,6 +2450,30 @@ function GraphInner({ context }: { context: PluginWebviewContext }): React.React
                     activity {toRelativeTime(lastActivityByLaneId[selectedLane.id] ?? null)}
                   </span>
                 </div>
+                {selectedLane.primaryIssue || (selectedLane.issueLinks?.length ?? 0) > 0 || (activeSessionsByLaneId[selectedLane.id] ?? 0) > 0 ? (
+                  <div className="mt-1.5 flex flex-wrap items-center gap-1 text-[11px]">
+                    {(selectedLane.issueLinks?.length
+                      ? selectedLane.issueLinks.map((link) => link.issue)
+                      : selectedLane.primaryIssue
+                        ? [selectedLane.primaryIssue]
+                        : []
+                    ).map((issue) => (
+                      <Chip
+                        key={issue.identifier}
+                        className="px-1.5 py-0 text-sky-200"
+                        title={issue.title}
+                      >
+                        {issue.identifier}
+                      </Chip>
+                    ))}
+                    {(activeSessionsByLaneId[selectedLane.id] ?? 0) > 0 ? (
+                      <Chip className="px-1.5 py-0 text-violet-200">
+                        {activeSessionsByLaneId[selectedLane.id]} ongoing chat
+                        {activeSessionsByLaneId[selectedLane.id] === 1 ? "" : "s"}
+                      </Chip>
+                    ) : null}
+                  </div>
+                ) : null}
               </div>
               <div className="ml-auto flex flex-wrap items-center gap-1">
                 <Button
@@ -2965,52 +2788,6 @@ function GraphInner({ context }: { context: PluginWebviewContext }): React.React
           refreshRiskBatch={data.refreshRiskBatch}
           refreshLanes={data.refreshLanes}
         />
-      ) : null}
-
-      {showRiskMatrix ? (
-        <div
-          data-ade-graph-panel="risk-matrix"
-          className="absolute bottom-3 left-3 z-[88] rounded-xl border border-white/[0.06] bg-white/[0.03] backdrop-blur-xl p-3 shadow-float"
-          style={{ right: conflictPanel ? 450 : 12 }}
-        >
-          <div className="mb-3 flex items-center justify-between gap-3">
-            <div>
-              <div className="text-sm font-sans font-semibold text-fg">Pair Matrix</div>
-              <div className="text-[11px] text-muted-fg">
-                Pairwise overlap and conflict risk across {lanes.length} lane{lanes.length === 1 ? "" : "s"}.
-              </div>
-            </div>
-            <div className="flex items-center gap-2">
-              <Button
-                size="sm"
-                variant="outline"
-                className="h-7 px-2 text-[11px]"
-                onClick={() => void data.refreshRiskBatch()}
-              >
-                Refresh
-              </Button>
-              <Button
-                size="sm"
-                variant="outline"
-                className="h-7 px-2 text-[11px]"
-                onClick={() => setShowRiskMatrix(false)}
-              >
-                Close
-              </Button>
-            </div>
-          </div>
-          <div className="max-h-[340px] overflow-auto">
-            <RiskMatrix
-              lanes={lanes}
-              entries={batch?.matrix ?? []}
-              overlaps={batch?.overlaps ?? []}
-              selectedPair={conflictPanel ? { laneAId: conflictPanel.laneAId, laneBId: conflictPanel.laneBId } : null}
-              loading={loadingRisk}
-              progress={batch?.progress ?? null}
-              onSelectPair={(pair) => openConflictPanelForEdge(pair.laneAId, pair.laneBId)}
-            />
-          </div>
-        </div>
       ) : null}
 
       {nodeTooltip && hoveredTooltipLane ? (

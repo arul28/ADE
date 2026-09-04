@@ -20,6 +20,7 @@ import {
   clampPluginWebviewHeight,
   pluginWebviewGuestKey,
   pluginWebviewPartition,
+  pluginWebviewKeepsGuestWhileHidden,
   pluginWebviewUrl,
   type PluginWebviewContext,
   type PluginWebviewPlacement,
@@ -41,20 +42,14 @@ import {
  * wrong partition and no way to fix it after the fact. `ChatBuiltInBrowserPanel`
  * builds its guests the same way for the same reason.
  *
- * ## Destroyed when hidden
+ * ## Destroyed when hidden — except tabs and panes
  *
- * This host used to keep a revealed guest alive and merely stop painting it,
- * on the reasoning that a page can hold unsubmitted work. The page tier
- * replaces that rule (spec §1, "Memory"): a guest is a whole renderer process,
- * a plugin may now have pages in six placements, and six idle Chromium
- * processes behind tabs nobody is looking at is not a cost the product can
- * carry. The plugin keeps its state in its collections instead — which is
- * durable across a window close, a reload and a second machine, and therefore
- * strictly better than the guest memory it replaces.
- *
- * So: nothing is created until the surface is first shown, and everything is
- * destroyed the moment it is hidden or unmounted. One live guest per placement
- * falls out of that, because a placement draws one host at a time.
+ * Anchored placements (popover, picker, overlay, dialog) still die when they
+ * hide: they are not a surface the reader returns to, and leaving a Chromium
+ * process behind a closed card is the cost the page tier refused. Tabs and
+ * Work-rail panes are the opposite. Destroying those on every rail click made
+ * every official plugin flash a reload. Those guests stay mounted while the
+ * host is mounted, and only unmount when the host itself does.
  */
 
 /**
@@ -119,7 +114,7 @@ export function PluginWebviewHost({
   pluginId: string;
   /** Plugin-relative path from the manifest surface, already validated there. */
   entryHtml: string;
-  /** False while the surface is mounted but not visible. Destroys the guest. */
+  /** False while the surface is mounted but not visible. */
   active: boolean;
   /**
    * The subject to inject, for a page mounted onto a chat, lane or PR — a drawer
@@ -204,12 +199,12 @@ export function PluginWebviewHost({
   // `pluginWebviewReloadStore.ts`.
   const reloadKey = usePluginWebviewReloadKey(pluginId);
 
-  // The grace window, and nothing more: `mounted` follows `active` immediately
-  // on the way up and after `hideGraceMs` on the way down. With the default
-  // zero it is `active`, one render later at most.
-  const [mounted, setMounted] = React.useState(active);
+  // Tabs and panes stay mounted while this host does. Everything else follows
+  // `active` immediately on the way up and after `hideGraceMs` on the way down.
+  const keepWhileHidden = pluginWebviewKeepsGuestWhileHidden(placement);
+  const [mounted, setMounted] = React.useState(active || keepWhileHidden);
   React.useEffect(() => {
-    if (active) {
+    if (active || keepWhileHidden) {
       setMounted(true);
       return;
     }
@@ -219,7 +214,7 @@ export function PluginWebviewHost({
     }
     const timer = setTimeout(() => setMounted(false), hideGraceMs);
     return () => clearTimeout(timer);
-  }, [active, hideGraceMs]);
+  }, [active, hideGraceMs, keepWhileHidden]);
 
   // The context rides in the URL, so the source string is the whole dependency:
   // a change of subject changes the string and recreates the guest, and a parent

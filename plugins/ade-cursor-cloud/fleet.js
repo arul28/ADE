@@ -35,6 +35,11 @@ function readString(value) {
   return typeof value === "string" && value.trim() ? value.trim() : null;
 }
 
+function isLiveAgentListStatus(status) {
+  const lower = typeof status === "string" ? status.trim().toLowerCase() : "";
+  return lower === "running" || lower === "active" || lower === "creating" || status == null || status === "";
+}
+
 function readEpoch(value) {
   if (typeof value === "number" && Number.isFinite(value)) return value;
   if (typeof value === "string") {
@@ -203,8 +208,7 @@ async function assembleFleet(deps, args = {}) {
 
   // Only live rows are enriched. A finished agent's run adds nothing the list
   // did not already say, and it would cost one request per row.
-  const activeOnly = scoped.filter(({ agent }) => !agent.archived
-    && (agent.status === "running" || agent.status == null));
+  const activeOnly = scoped.filter(({ agent }) => !agent.archived && isLiveAgentListStatus(agent.status));
 
   await mapWithConcurrency(activeOnly, ENRICH_CONCURRENCY, async (entry) => {
     const page = await api.listRuns(entry.agent.agentId, { limit: 1 });

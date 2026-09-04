@@ -1813,7 +1813,6 @@ function listing(
 export const MARKETPLACE_LOCAL_INDEX: readonly MarketplaceListing[] = [
   listing(GRAPH, {
     author: "ADE",
-    featured: true,
     readme: [
       "## Graph",
       "",
@@ -1873,6 +1872,7 @@ export const MARKETPLACE_LOCAL_INDEX: readonly MarketplaceListing[] = [
   }),
   listing(LINEAR, {
     author: "ADE",
+    featured: true,
     readme: [
       "## Linear",
       "",
@@ -1893,6 +1893,7 @@ export const MARKETPLACE_LOCAL_INDEX: readonly MarketplaceListing[] = [
   }),
   listing(IOS_SIM, {
     author: "ADE",
+    featured: true,
     readme: [
       "## iOS Sim Control",
       "",
@@ -1935,7 +1936,6 @@ export const MARKETPLACE_LOCAL_INDEX: readonly MarketplaceListing[] = [
   }),
   listing(LOG_VIEWER, {
     author: "ADE",
-    featured: true,
     readme: [
       "## Log viewer",
       "",
@@ -1960,7 +1960,6 @@ export const MARKETPLACE_LOCAL_INDEX: readonly MarketplaceListing[] = [
   }),
   listing(VOICE, {
     author: "ADE",
-    featured: true,
     readme: [
       "## Voice",
       "",
@@ -1997,6 +1996,7 @@ export const MARKETPLACE_LOCAL_INDEX: readonly MarketplaceListing[] = [
 
   listing(CURSOR_CLOUD, {
     author: "ADE",
+    featured: true,
     readme: [
       "## Cursor Cloud",
       "",
@@ -2034,7 +2034,6 @@ export const MARKETPLACE_LOCAL_INDEX: readonly MarketplaceListing[] = [
   }),
   listing(PAPER, {
     author: "ADE",
-    featured: true,
     readme: [
       "## Paper",
       "",

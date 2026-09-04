@@ -12,7 +12,7 @@
  * pixels: an id the page invokes that the fake does not script throws by name,
  * and an argument shape that drifts fails on the assertion that reads it.
  *
- * The walk: the canvas's first read → the four view-mode buttons → a host
+ * The walk: the canvas's first read → Filters / Reset View → a host
  * `lane` frame that refetches → a contributed node listed over `sockets` → the
  * older-host path with no `sockets` at all → the phone list's lane press, which
  * is a deeplink rather than a renderer route.
@@ -80,15 +80,11 @@ describe("the page and the plugin agree on every verb", () => {
 
     const pane = await canvas();
     expect(pane.getAttribute("data-ade-graph-view")).toBe("canvas");
-    expect(screen.getByText("Overview")).toBeTruthy();
-    expect(screen.getByText("Dependencies")).toBeTruthy();
-    expect(screen.getByText("Conflict Risk")).toBeTruthy();
-    expect(screen.getByText("Activity")).toBeTruthy();
-
-    await act(async () => {
-      fireEvent.click(screen.getByText("Conflict Risk"));
-    });
-    expect(screen.getByText("Conflict Risk")).toBeTruthy();
+    expect(screen.getByLabelText("Filter lanes or tags")).toBeTruthy();
+    expect(screen.getByRole("button", { name: /Filters/ })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Reset View" })).toBeTruthy();
+    expect(screen.queryByText("Overview")).toBeNull();
+    expect(screen.queryByText("Pair Matrix")).toBeNull();
   });
 
   it("subscribes to the four host kinds and refetches lanes when one moves", async () => {
@@ -137,7 +133,7 @@ describe("the page and the plugin agree on every verb", () => {
     render(<WorkspaceGraph context={tabContext()} />);
     await canvas();
     expect(host.callsTo("sockets.list").length).toBe(0);
-    expect(screen.getByText("Overview")).toBeTruthy();
+    expect(screen.getByLabelText("Filter lanes or tags")).toBeTruthy();
   });
 
   it("opens a lane from the phone list through a deeplink, not a renderer route", async () => {

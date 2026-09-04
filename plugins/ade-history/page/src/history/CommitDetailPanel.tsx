@@ -16,7 +16,7 @@ import { cn } from "@ade-dev/ui";
 import { getCommitDetail, getCommitGraph, lookupCommit } from "../host/actions";
 import { writeClipboard } from "../host/ui";
 import { formatDate } from "../lib/format";
-import { buildCommitContextActions, runHistoryGitAction } from "./historyGitActions";
+import { buildCommitContextActions, groupCommitContextActions, runHistoryGitAction } from "./historyGitActions";
 
 function shortSha(sha: string): string {
   return sha.slice(0, 7);
@@ -30,6 +30,13 @@ function stripIpcError(err: unknown): string {
   const raw = err instanceof Error ? err.message : String(err);
   return raw.replace(/^Error invoking remote method '[^']+':\s*/i, "").trim();
 }
+
+const DETAIL_MENU_LABEL: Record<string, string> = {
+  inspect: "Open",
+  create: "Create",
+  apply: "Reset",
+  share: "Copy",
+};
 
 type CommitDetailPanelProps = {
   laneId: string | null;
@@ -154,6 +161,23 @@ export function CommitDetailPanel({
         : [],
     [headSha, laneHasWorktree, resolvedCommit, laneId, commitOnLaneHistory],
   );
+  const groups = useMemo(() => groupCommitContextActions(actions), [actions]);
+  const primaryActions = useMemo(() => {
+    const byId = new Map(actions.map((action) => [action.id, action]));
+    return ["checkout", "cherry_pick", "open_commit"]
+      .map((id) => byId.get(id as (typeof actions)[number]["id"]))
+      .filter((action): action is NonNullable<typeof action> => action != null);
+  }, [actions]);
+  const menuGroups = useMemo(
+    () =>
+      groups
+        .map((group) => ({
+          ...group,
+          actions: group.actions.filter((action) => !["checkout", "cherry_pick", "open_commit"].includes(action.id)),
+        }))
+        .filter((group) => group.actions.length > 0),
+    [groups],
+  );
   const actionDisabledReason = useMemo(() => {
     const reasons = actions
       .filter((action) => action.disabled && action.disabledReason)
@@ -258,23 +282,49 @@ export function CommitDetailPanel({
                 </div>
               ) : null}
               <div className="flex flex-wrap gap-1">
-                {actions
-                  .filter((a) => !["copy_sha", "copy_subject"].includes(a.id))
-                  .map((action) => (
-                    <button
-                      key={action.id}
-                      type="button"
-                      disabled={action.disabled}
-                      title={action.disabledReason}
-                      className={cn(
-                        "rounded border border-white/10 px-2 py-1 font-sans text-[11px] hover:bg-white/5 disabled:opacity-40",
-                        action.destructive ? "text-red-200" : "text-fg",
-                      )}
-                      onClick={() => runAction(action.id)}
+                {primaryActions.map((action) => (
+                  <button
+                    key={action.id}
+                    type="button"
+                    disabled={action.disabled}
+                    title={action.disabledReason}
+                    className={cn(
+                      "rounded border border-white/10 px-2 py-1 font-sans text-[11px] hover:bg-white/5 disabled:opacity-40",
+                      action.destructive ? "text-red-200" : "text-fg",
+                    )}
+                    onClick={() => runAction(action.id)}
+                  >
+                    {action.id === "checkout" ? "Inspect" : action.label}
+                  </button>
+                ))}
+              </div>
+              <div className="flex flex-wrap gap-1">
+                {menuGroups.map((group) => (
+                  <details key={group.id} className="relative">
+                    <summary
+                      className="cursor-pointer list-none rounded border border-white/10 px-2 py-1 font-sans text-[11px] text-fg hover:bg-white/5"
                     >
-                      {action.label}
-                    </button>
-                  ))}
+                      {DETAIL_MENU_LABEL[group.id] ?? group.label}
+                    </summary>
+                    <div className="absolute left-0 z-20 mt-1 min-w-[180px] rounded-md border border-white/10 bg-[var(--color-card)] p-1 shadow-xl">
+                      {group.actions.map((action) => (
+                        <button
+                          key={action.id}
+                          type="button"
+                          disabled={action.disabled}
+                          title={action.disabledReason}
+                          className={cn(
+                            "flex w-full items-center rounded px-2 py-1.5 text-left font-sans text-[11px] hover:bg-white/10 disabled:opacity-40",
+                            action.destructive ? "text-red-200" : "text-fg",
+                          )}
+                          onClick={() => runAction(action.id)}
+                        >
+                          {action.label}
+                        </button>
+                      ))}
+                    </div>
+                  </details>
+                ))}
               </div>
               {actionNotice ? (
                 <div className="font-mono text-[10px] text-accent">{actionNotice}</div>

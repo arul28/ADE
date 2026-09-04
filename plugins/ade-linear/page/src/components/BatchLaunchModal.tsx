@@ -5,7 +5,6 @@ import {
   ChatCircleDots,
   ClipboardText,
   GitBranch,
-  Lightning,
   Rocket,
   Terminal,
   WarningCircle,
@@ -25,8 +24,8 @@ import {
   pickLane,
   pickModel,
   pickPermissionMode,
-  pickProvider,
   pickReasoningEffort,
+  pickerRectFromClick,
 } from "../host/ui";
 import { linearIssueBranchName } from "../lib/linearIssueBranch";
 import {
@@ -288,7 +287,7 @@ function PickerChip({
   label: string;
   value: string | null;
   placeholder: string;
-  onPress: () => void;
+  onPress: (event: React.MouseEvent<HTMLButtonElement>) => void;
   available: boolean;
   disabled?: boolean;
   widthClass?: string;
@@ -313,21 +312,11 @@ function PickerChip({
 /**
  * The launch pill row.
  *
- * A port of `components/shared/SessionLaunchModelControls`, with the session
- * toggle kept verbatim and every other control now a chip over one of the
- * host's own pickers:
- *
- *  - PROVIDER and MODEL are `ui.pickProvider()` and `ui.pickModel()`. The page
- *    used to draw a select over `getChatModels()`, which was the same list
- *    without `ModelPicker`'s recents, grouping or per-provider icons — the one
- *    remaining gap in the compiled launch form, and this closes it.
- *  - REASONING EFFORT is `ui.pickReasoningEffort({provider, model})`, so the
- *    rungs are the model's own and a model with none opens nothing.
- *  - PERMISSIONS is `ui.pickPermissionMode({provider})`. The value that comes
- *    back is the provider's NATIVE one and is stored as such: the launch puts
- *    it in the field `permissionField` names, so nothing here translates it
- *    into ADE's unified vocabulary and nothing can get that translation wrong.
- *  - FAST MODE stays a toggle, because it is a boolean and not a list.
+ * A port of `components/shared/SessionLaunchModelControls`: session type, then
+ * ADE's own model picker (fast lives inside it), then reasoning, then
+ * permission. There is no separate Provider chip and no Fast toggle — those
+ * were the controls that made launches pick Cursor-plus-Grok and fly the
+ * picker to the webview's top-left corner.
  *
  * Dismissing a picker leaves the value alone, which is why every handler writes
  * state only for a non-null answer.
@@ -354,60 +343,26 @@ function SessionLaunchModelControls({
         />
       ) : null}
       <PickerChip
-        label="Provider"
-        value={config.providerLabel}
-        placeholder="Provider"
-        available={hasPicker("pickProvider")}
-        disabled={disabled}
-        onPress={() => void (async () => {
-          const chosen = await pickProvider(provider);
-          if (!chosen) return;
-          // A model belongs to a provider, and so do the permission words and
-          // the reasoning rungs behind it. Changing the provider clears all
-          // three rather than carrying a Claude mode into a Droid launch.
-          onChange({
-            provider: chosen.id,
-            providerLabel: chosen.label,
-            ...(chosen.id === provider
-              ? {}
-              : {
-                modelId: "",
-                modelLabel: null,
-                reasoningEffort: null,
-                reasoningEffortLabel: null,
-                permissionMode: null,
-                permissionModeLabel: null,
-                fastMode: false,
-              }),
-          });
-        })()}
-      />
-      <PickerChip
         label="Model"
         value={config.modelLabel}
         placeholder="Model"
         widthClass={COMPOSER_MODEL_TRIGGER}
         available={hasPicker("pickModel")}
         disabled={disabled}
-        onPress={() => void (async () => {
-          const chosen = await pickModel({ provider: provider ?? null, value: config.modelId || null });
+        onPress={(event) => void (async () => {
+          const chosen = await pickModel({
+            value: config.modelId || null,
+            rect: pickerRectFromClick(event),
+          });
           if (!chosen) return;
           const nextProvider = chosen.provider ?? provider;
           onChange({
             modelId: chosen.id,
             modelLabel: chosen.label,
-            ...(nextProvider ? { provider: nextProvider } : {}),
-            // ADE's picker sets the model and the fast tier in one gesture.
-            // Dropping that flag would silently run standard after the reader
-            // chose Fast inside the same popover.
+            ...(nextProvider ? { provider: nextProvider, providerLabel: nextProvider } : {}),
             fastMode: chosen.fastMode === true,
-            // A reasoning rung the new model does not offer would be sent and
-            // refused. Cleared with the model that carried it.
             reasoningEffort: null,
             reasoningEffortLabel: null,
-            // The permission vocabularies are native and differ per provider,
-            // so a value chosen for a Claude model is not one a Droid model
-            // offers — and it would go in a different launch field besides.
             ...(nextProvider === provider
               ? {}
               : { permissionMode: null, permissionModeLabel: null }),
@@ -418,38 +373,31 @@ function SessionLaunchModelControls({
         label="Reasoning effort"
         value={config.reasoningEffortLabel}
         placeholder="Default"
-        available={hasPicker("pickReasoningEffort") && Boolean(provider) && Boolean(config.modelId)}
+        available={hasPicker("pickReasoningEffort") && Boolean(config.modelId)}
         disabled={disabled}
-        onPress={() => void (async () => {
-          const chosen = await pickReasoningEffort(provider ?? "", config.modelId, config.reasoningEffort);
+        onPress={(event) => void (async () => {
+          const chosen = await pickReasoningEffort(
+            provider ?? "",
+            config.modelId,
+            config.reasoningEffort,
+            pickerRectFromClick(event),
+          );
           if (!chosen) return;
           onChange({ reasoningEffort: chosen.id || null, reasoningEffortLabel: chosen.id ? chosen.label : null });
         })()}
       />
-      <button
-        type="button"
-        role="switch"
-        aria-checked={config.fastMode}
-        disabled={disabled || !config.modelId}
-        title="Run this launch on the provider's fast service tier"
-        onClick={() => onChange({ fastMode: !config.fastMode })}
-        className={cn(
-          PERMISSION_TRIGGER_CLASS,
-          "shrink-0 gap-1",
-          config.fastMode && "border-violet-400/30 bg-violet-500/[0.08] text-fg",
-        )}
-      >
-        <Lightning size={10} weight={config.fastMode ? "fill" : "regular"} />
-        Fast
-      </button>
       <PickerChip
         label="Permissions"
         value={config.permissionModeLabel}
         placeholder="Default"
         available={hasPicker("pickPermissionMode") && Boolean(provider)}
         disabled={disabled}
-        onPress={() => void (async () => {
-          const chosen = await pickPermissionMode(provider ?? "", config.permissionMode);
+        onPress={(event) => void (async () => {
+          const chosen = await pickPermissionMode(
+            provider ?? "",
+            config.permissionMode,
+            pickerRectFromClick(event),
+          );
           if (!chosen) return;
           onChange({ permissionMode: chosen.id || null, permissionModeLabel: chosen.id ? chosen.label : null });
         })()}
@@ -939,8 +887,8 @@ export function BatchLaunchModal({
                             placeholder="Select a lane…"
                             widthClass="min-w-[220px] flex-1"
                             available={hasPicker("pickLane")}
-                            onPress={() => void (async () => {
-                              const chosen = await pickLane(state.existingLaneId);
+                            onPress={(event) => void (async () => {
+                              const chosen = await pickLane(state.existingLaneId, pickerRectFromClick(event));
                               if (!chosen) return;
                               patchIssue(issue.id, {
                                 existingLaneId: chosen.id || null,

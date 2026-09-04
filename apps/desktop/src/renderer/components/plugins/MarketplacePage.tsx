@@ -1,7 +1,7 @@
 import React from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import * as Popover from "@radix-ui/react-popover";
-import { ArrowClockwise, DotsThree, MagnifyingGlass, Plus } from "@phosphor-icons/react";
+import { ArrowClockwise, CaretDown, CaretUp, DotsThree, DownloadSimple, MagnifyingGlass, Plus, Power, Trash } from "@phosphor-icons/react";
 
 import {
   COLORS,
@@ -37,10 +37,8 @@ import {
 } from "./marketplaceUi";
 import {
   DEFAULT_MARKETPLACE_QUERY,
-  SURFACE_LABELS,
   describeMarketplaceRegistry,
   deriveMachineCoverage,
-  deriveSurfaceFacets,
   featuredListings,
   installStateFor,
   installedPluginIds,
@@ -54,7 +52,6 @@ import {
   type MarketplaceRegistryState,
   type MarketplaceSort,
 } from "./marketplaceModel";
-import type { PluginSurfaceId } from "../../../shared/plugins/sockets";
 import type { InstalledPlugin } from "../../lib/pluginRuntimeBridge";
 
 /**
@@ -75,11 +72,8 @@ import type { InstalledPlugin } from "../../lib/pluginRuntimeBridge";
 
 const CHIPS: { id: MarketplaceChip; label: string }[] = [
   { id: "all", label: "All" },
-  // Second, because "what do I already have" is the question people arrive with
-  // most often after their first visit.
   { id: "installed", label: "Installed" },
   { id: "official", label: "Official" },
-  { id: "featured", label: "Featured" },
   { id: "themes", label: "Themes" },
 ];
 
@@ -157,10 +151,6 @@ function MarketplaceGallery() {
 
   const visible = React.useMemo(
     () => queryMarketplace(catalogue.listings, query, installedIds),
-    [catalogue.listings, installedIds, query],
-  );
-  const facets = React.useMemo(
-    () => deriveSurfaceFacets(catalogue.listings, query, installedIds),
     [catalogue.listings, installedIds, query],
   );
   const featured = React.useMemo(() => featuredListings(catalogue.listings), [catalogue.listings]);
@@ -263,7 +253,6 @@ function MarketplaceGallery() {
 
             <FilterBar
               query={query}
-              facets={facets}
               installedCount={installedIds.size}
               onChange={setQuery}
             />
@@ -645,25 +634,13 @@ function FeaturedRow({
 
 function FilterBar({
   query,
-  facets,
   installedCount,
   onChange,
 }: {
   query: MarketplaceQuery;
-  facets: { surface: PluginSurfaceId; label: string; total: number }[];
-  /** Counted on the chip, and only when there is something to count. */
   installedCount: number;
   onChange: React.Dispatch<React.SetStateAction<MarketplaceQuery>>;
 }) {
-  const toggleSurface = (surface: PluginSurfaceId) => {
-    onChange((previous) => ({
-      ...previous,
-      surfaces: previous.surfaces.includes(surface)
-        ? previous.surfaces.filter((entry) => entry !== surface)
-        : [...previous.surfaces, surface],
-    }));
-  };
-
   return (
     <div
       data-tour="plugin:marketplace.filters"
@@ -686,23 +663,6 @@ function FilterBar({
         />
       ))}
 
-      {facets.length > 0 ? (
-        <span
-          aria-hidden
-          style={{ width: 1, height: 16, background: COLORS.borderMuted, margin: "0 2px" }}
-        />
-      ) : null}
-      {facets.map((facet) => (
-        <FilterChip
-          key={facet.surface}
-          label={`Extends ${SURFACE_LABELS[facet.surface]}`}
-          count={facet.total}
-          active={query.surfaces.includes(facet.surface)}
-          onClick={() => toggleSurface(facet.surface)}
-          tour={`plugin:marketplace.facet-${facet.surface}`}
-        />
-      ))}
-
       <span style={{ flex: 1 }} />
       <span
         role="radiogroup"
@@ -718,29 +678,72 @@ function FilterBar({
       >
         {SORTS.map((sort) => {
           const active = query.sort === sort.id;
+          const Arrow = query.sortDir === "asc" ? CaretUp : CaretDown;
           return (
-            <button
+            <span
               key={sort.id}
-              type="button"
-              role="radio"
-              aria-checked={active}
-              onClick={() => onChange((previous) => ({ ...previous, sort: sort.id }))}
-              data-tour={`plugin:marketplace.sort-${sort.id}`}
               style={{
+                display: "inline-flex",
+                alignItems: "center",
                 height: 22,
-                padding: "0 9px",
+                paddingLeft: 9,
+                paddingRight: active ? 2 : 9,
                 fontFamily: SANS_FONT,
                 fontSize: 11,
                 fontWeight: active ? 600 : 500,
                 color: active ? COLORS.textPrimary : COLORS.textMuted,
                 background: active ? "color-mix(in srgb, var(--color-fg) 8%, transparent)" : "transparent",
-                border: "none",
                 borderRadius: 7,
-                cursor: "pointer",
               }}
             >
-              {sort.label}
-            </button>
+              <button
+                type="button"
+                role="radio"
+                aria-checked={active}
+                onClick={() => onChange((previous) => ({
+                  ...previous,
+                  sort: sort.id,
+                  sortDir: previous.sort === sort.id ? previous.sortDir : "desc",
+                }))}
+                data-tour={`plugin:marketplace.sort-${sort.id}`}
+                style={{
+                  padding: 0,
+                  font: "inherit",
+                  fontWeight: "inherit",
+                  color: "inherit",
+                  background: "transparent",
+                  border: "none",
+                  cursor: "pointer",
+                }}
+              >
+                {sort.label}
+              </button>
+              {active ? (
+                <button
+                  type="button"
+                  aria-label={query.sortDir === "asc" ? "Sort descending" : "Sort ascending"}
+                  onClick={() => onChange((previous) => ({
+                    ...previous,
+                    sort: sort.id,
+                    sortDir: previous.sortDir === "asc" ? "desc" : "asc",
+                  }))}
+                  style={{
+                    display: "inline-flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    width: 18,
+                    height: 18,
+                    marginLeft: 2,
+                    color: "inherit",
+                    background: "transparent",
+                    border: "none",
+                    cursor: "pointer",
+                  }}
+                >
+                  <Arrow size={10} weight="bold" aria-hidden />
+                </button>
+              ) : null}
+            </span>
           );
         })}
       </span>
@@ -802,7 +805,6 @@ function ListingRow({
      — a context menu that lands under the pointer on one route and at the row's
      edge on the other reads as two different menus. */
   const [menuOpen, setMenuOpen] = React.useState(false);
-  const manageable = canManage && installedPlugin !== null;
 
   return (
     <li>
@@ -817,7 +819,7 @@ function ListingRow({
             onOpen();
           }
         }}
-        onContextMenu={manageable ? (event) => {
+        onContextMenu={canManage ? (event) => {
           event.preventDefault();
           setMenuOpen(true);
         } : undefined}
@@ -901,7 +903,11 @@ function ListingRow({
                 minWidth: 70,
               }}
             >
-              {installActionLabel(state)}
+              <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+                {state.kind === "update" ? <ArrowClockwise size={12} weight="bold" aria-hidden /> : null}
+                {state.kind === "available" ? <DownloadSimple size={12} weight="bold" aria-hidden /> : null}
+                {installActionLabel(state)}
+              </span>
             </button>
           ) : (
             /* Nothing here can be pressed on a machine that cannot manage
@@ -926,16 +932,19 @@ function ListingRow({
             </span>
           )}
 
-          {manageable ? (
+          {canManage ? (
             <RowQuickActions
               open={menuOpen}
               onOpenChange={setMenuOpen}
               pluginId={listing.pluginId}
               busy={busy}
+              installed={installedPlugin !== null}
               enabled={installedPlugin?.enabled ?? false}
               /* A plugin with no child process has nothing to restart, and
                  `status: "none"` is that fact without a manifest round trip. */
-              showRestart={(installedPlugin?.status ?? "none") !== "none"}
+              showRestart={installedPlugin != null && (installedPlugin.status ?? "none") !== "none"}
+              showInstall={state.kind === "available" || state.kind === "update"}
+              onInstall={onInstall}
               onToggleEnabled={onToggleEnabled}
               onRestart={onRestart}
               onRemove={onRemove}
@@ -966,8 +975,11 @@ function RowQuickActions({
   onOpenChange,
   pluginId,
   busy,
+  installed,
   enabled,
   showRestart,
+  showInstall,
+  onInstall,
   onToggleEnabled,
   onRestart,
   onRemove,
@@ -976,8 +988,11 @@ function RowQuickActions({
   onOpenChange: (open: boolean) => void;
   pluginId: string;
   busy: boolean;
+  installed: boolean;
   enabled: boolean;
   showRestart: boolean;
+  showInstall: boolean;
+  onInstall: () => void;
   onToggleEnabled: () => void;
   onRestart: () => void;
   onRemove: () => void;
@@ -1028,24 +1043,39 @@ function RowQuickActions({
               boxShadow: "var(--shadow-panel)",
             }}
           >
-            <RowMenuItem
-              label={enabled ? "Turn off" : "Turn on"}
-              tour={`plugin:marketplace.row-toggle-${pluginId}`}
-              onClick={onToggleEnabled}
-            />
+            {showInstall ? (
+              <RowMenuItem
+                icon={<DownloadSimple size={13} weight="bold" />}
+                label="Install"
+                tour={`plugin:marketplace.row-install-${pluginId}`}
+                onClick={onInstall}
+              />
+            ) : null}
+            {installed ? (
+              <RowMenuItem
+                icon={<Power size={13} weight="bold" />}
+                label={enabled ? "Turn off" : "Turn on"}
+                tour={`plugin:marketplace.row-toggle-${pluginId}`}
+                onClick={onToggleEnabled}
+              />
+            ) : null}
             {showRestart ? (
               <RowMenuItem
+                icon={<ArrowClockwise size={13} weight="bold" />}
                 label="Restart"
                 tour={`plugin:marketplace.row-restart-${pluginId}`}
                 onClick={onRestart}
               />
             ) : null}
-            <RowMenuItem
-              label="Remove…"
-              danger
-              tour={`plugin:marketplace.row-remove-${pluginId}`}
-              onClick={onRemove}
-            />
+            {installed ? (
+              <RowMenuItem
+                icon={<Trash size={13} weight="bold" />}
+                label="Remove…"
+                danger
+                tour={`plugin:marketplace.row-remove-${pluginId}`}
+                onClick={onRemove}
+              />
+            ) : null}
           </div>
         </Popover.Content>
       </Popover.Portal>
@@ -1055,11 +1085,13 @@ function RowQuickActions({
 
 /** A row in the quick-action menu. Mirrors the detail page's `MenuItem`. */
 function RowMenuItem({
+  icon,
   label,
   danger = false,
   tour,
   onClick,
 }: {
+  icon?: React.ReactNode;
   label: string;
   danger?: boolean;
   tour: string;
@@ -1078,6 +1110,7 @@ function RowMenuItem({
         style={{
           display: "flex",
           alignItems: "center",
+          gap: 8,
           height: 28,
           padding: "0 8px",
           fontFamily: SANS_FONT,
@@ -1090,6 +1123,7 @@ function RowMenuItem({
           cursor: "pointer",
         }}
       >
+        {icon ? <span style={{ display: "inline-flex", width: 14 }}>{icon}</span> : null}
         {label}
       </button>
     </Popover.Close>

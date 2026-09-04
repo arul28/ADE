@@ -431,9 +431,9 @@ describe("the page and the plugin agree on every verb", () => {
     expect(host.callsTo("clipboard.write").length).toBe(0);
   });
 
-  it("opens ADE's own pickers for model, lane, permission, reasoning and provider", async () => {
-    // The launch form is chips over host verbs, not selects this page keeps in
-    // step. Fast mode stays a toggle because it is a boolean and not a list.
+  it("opens ADE's own pickers for model, lane, permission and reasoning", async () => {
+    // Native order: session type, ModelPicker (fast inside), reasoning,
+    // permission. No Provider chip and no Fast toggle.
     connected({
       lanes: [{
         id: "lane-1",
@@ -456,15 +456,13 @@ describe("the page and the plugin agree on every verb", () => {
       fireEvent.click(within(dock!).getByRole("button", { name: /Launch lane \+ agent/i }));
     });
 
-    await act(async () => {
-      fireEvent.click(await screen.findByRole("button", { name: "Provider" }, { timeout: 3_000 }));
-    });
-    await waitFor(() => {
-      expect(host.callsTo("ui.pickProvider").length).toBe(1);
-    });
+    expect(screen.queryByRole("button", { name: "Provider" })).toBeNull();
+    expect(screen.queryByRole("switch", { name: "Fast" })).toBeNull();
 
     await chooseModel();
     expect(host.callsTo("ui.pickModel").length).toBeGreaterThan(0);
+    expect(host.lastCall("ui.pickModel")!.args).toHaveProperty("rect");
+    expect(host.lastCall("ui.pickModel")!.args).not.toHaveProperty("selected");
 
     await act(async () => {
       fireEvent.click(screen.getByRole("button", { name: "Reasoning effort" }));
@@ -484,7 +482,6 @@ describe("the page and the plugin agree on every verb", () => {
       expect(host.lastCall("ui.pickPermissionMode")!.args).toMatchObject({ provider: "claude" });
     });
 
-    expect(screen.getByRole("switch", { name: "Fast" })).toBeTruthy();
     expect(screen.queryByRole("combobox")).toBeNull();
 
     await act(async () => {

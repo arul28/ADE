@@ -295,6 +295,19 @@ function isLanesRoutePath(pathname: string): boolean {
   return pathname === "/lanes" || pathname.startsWith("/lanes/");
 }
 
+function pluginIdFromRoute(route: string): string | null {
+  const path = route.split(/[?#]/, 1)[0] || "";
+  if (!path.startsWith("/plugin/")) return null;
+  try {
+    const id = decodeURIComponent(path.slice("/plugin/".length).split("/")[0] ?? "");
+    return id || null;
+  } catch {
+    return null;
+  }
+}
+
+const PLUGIN_TAB_KEEP_ALIVE_LIMIT = 8;
+
 const WARM_PROJECT_SURFACE_LIMIT = 8;
 const EMPTY_PROJECT_TAB_ROOTS: string[] = [];
 const EMPTY_PROJECT_INFO_BY_ROOT: Record<string, ProjectInfo> = {};
@@ -430,22 +443,86 @@ function ProjectTransitionVeil({ label }: { label: string }) {
   );
 }
 
+function KeptPluginSurface({
+  pluginId,
+  location,
+  visible,
+  active,
+}: {
+  pluginId: string;
+  location: string;
+  visible: boolean;
+  active: boolean;
+}) {
+  const ref = React.useRef<HTMLDivElement | null>(null);
+  React.useEffect(() => {
+    const node = ref.current;
+    if (!node) return;
+    if (visible) node.removeAttribute("inert");
+    else node.setAttribute("inert", "");
+  }, [visible]);
+
+  return (
+    <div
+      ref={ref}
+      className="h-full min-h-0 w-full"
+      aria-hidden={!visible}
+      data-ade-kept-plugin={pluginId}
+      data-ade-animation-state={visible ? "running" : "paused"}
+      style={!visible
+        ? {
+          position: "absolute",
+          inset: 0,
+          zIndex: -1,
+          opacity: 0,
+          pointerEvents: "none",
+        }
+        : undefined}
+    >
+      <Routes location={location}>
+        <Route path="/plugin/:pluginId" element={
+          <PageErrorBoundary>
+            <React.Suspense fallback={LazyFallback}>
+              <PluginTabPage active={active} />
+            </React.Suspense>
+          </PageErrorBoundary>
+        } />
+      </Routes>
+    </div>
+  );
+}
+
 function ProjectRouteContent({ active, route }: { active: boolean; route: string }) {
   const navigate = useNavigate();
   const projectRoot = useAppStore(selectActiveProjectRoot);
   const setWorkViewState = useAppStore((s) => s.setWorkViewState);
   const workSurfaceRef = React.useRef<HTMLDivElement | null>(null);
   const lanesSurfaceRef = React.useRef<HTMLDivElement | null>(null);
-  const isWorkRoute = isWorkRoutePath(route.split(/[?#]/, 1)[0] || "/work");
-  const isLanesRoute = isLanesRoutePath(route.split(/[?#]/, 1)[0] || "/work");
+  const pathname = route.split(/[?#]/, 1)[0] || "/work";
+  const isWorkRoute = isWorkRoutePath(pathname);
+  const isLanesRoute = isLanesRoutePath(pathname);
+  const currentPluginId = pluginIdFromRoute(route);
+  const isPluginRoute = currentPluginId !== null;
   const [workRoute, setWorkRoute] = React.useState(() => isWorkRoute ? route : "/work");
   const [workMounted, setWorkMounted] = React.useState(isWorkRoute);
   const [lanesRoute, setLanesRoute] = React.useState(() => isLanesRoute ? route : "/lanes");
+  const [keptPluginIds, setKeptPluginIds] = React.useState<string[]>(() => (
+    currentPluginId ? [currentPluginId] : []
+  ));
+  const [pluginRoutesById, setPluginRoutesById] = React.useState<Record<string, string>>(() => (
+    currentPluginId ? { [currentPluginId]: route } : {}
+  ));
   const routeProps = { active } as { active?: boolean };
   const shouldRenderWork = workMounted || isWorkRoute;
   const shouldRenderLanes = active && isLanesRoute;
   const visibleWorkRoute = isWorkRoute ? route : workRoute;
   const visibleLanesRoute = isLanesRoute ? route : lanesRoute;
+  const displayedPluginIds = React.useMemo(() => {
+    if (!currentPluginId) return keptPluginIds;
+    if (keptPluginIds[0] === currentPluginId) return keptPluginIds;
+    return [currentPluginId, ...keptPluginIds.filter((id) => id !== currentPluginId)]
+      .slice(0, PLUGIN_TAB_KEEP_ALIVE_LIMIT);
+  }, [currentPluginId, keptPluginIds]);
 
   React.useEffect(() => {
     if (!isWorkRoute) return;
@@ -457,6 +534,28 @@ function ProjectRouteContent({ active, route }: { active: boolean; route: string
     if (!isLanesRoute) return;
     setLanesRoute(route);
   }, [isLanesRoute, route]);
+
+  React.useEffect(() => {
+    const id = pluginIdFromRoute(route);
+    if (!id) return;
+    setKeptPluginIds((prev) => (
+      [id, ...prev.filter((entry) => entry !== id)].slice(0, PLUGIN_TAB_KEEP_ALIVE_LIMIT)
+    ));
+    setPluginRoutesById((prev) => ({ ...prev, [id]: route }));
+  }, [route]);
+
+  React.useEffect(() => {
+    setPluginRoutesById((prev) => {
+      const keep = new Set(keptPluginIds);
+      let dropped = false;
+      const next: Record<string, string> = {};
+      for (const [key, value] of Object.entries(prev)) {
+        if (keep.has(key)) next[key] = value;
+        else dropped = true;
+      }
+      return dropped ? next : prev;
+    });
+  }, [keptPluginIds]);
 
   React.useEffect(() => {
     if (active && isWorkRoute) return;
@@ -590,11 +689,26 @@ function ProjectRouteContent({ active, route }: { active: boolean; route: string
     </Routes>
   ) : null;
 
+  const pluginSurfaces = displayedPluginIds.map((id) => {
+    const isCurrent = isPluginRoute && currentPluginId === id;
+    const location = isCurrent ? route : (pluginRoutesById[id] ?? `/plugin/${id}`);
+    return (
+      <KeptPluginSurface
+        key={id}
+        pluginId={id}
+        location={location}
+        visible={isCurrent}
+        active={active && isCurrent}
+      />
+    );
+  });
+
   return (
     <div className="relative h-full min-h-0 w-full">
       {workSurface}
       {lanesSurface}
-      {active && !isWorkRoute && !isLanesRoute ? (
+      {pluginSurfaces}
+      {active && !isWorkRoute && !isLanesRoute && !isPluginRoute ? (
         <Routes location={route}>
           <Route path="/" element={<Navigate to="/work" replace />} />
           <Route path="/onboarding" element={<Navigate to="/work" replace />} />
@@ -644,15 +758,9 @@ function ProjectRouteContent({ active, route }: { active: boolean; route: string
               <React.Suspense fallback={LazyFallback}>{React.createElement(CtoPage as React.ComponentType<{ active?: boolean }>, routeProps)}</React.Suspense>
             </PageErrorBoundary>
           } />
-          {/* Plugin tabs are project surfaces: they sit in the tool group of the
-              rail and a plugin's data is scoped to the machine the project is
-              open on. The Marketplace is not — it is machine-level, alongside
-              Chats and Account, so it still works with no project open. */}
-          <Route path="/plugin/:pluginId" element={
-            <PageErrorBoundary>
-              <React.Suspense fallback={LazyFallback}>{React.createElement(PluginTabPage as React.ComponentType<{ active?: boolean }>, routeProps)}</React.Suspense>
-            </PageErrorBoundary>
-          } />
+          {/* Plugin tabs stay mounted in `pluginSurfaces` so switching away
+              does not destroy the guest. The Marketplace is still here: it is
+              machine-level, alongside Chats and Account. */}
           <Route path="/settings" element={
             <PageErrorBoundary>
               <React.Suspense fallback={LazyFallback}>{React.createElement(SettingsPage as React.ComponentType<{ active?: boolean }>, routeProps)}</React.Suspense>

@@ -37,6 +37,7 @@ import {
   pluginOpenSettingsTarget,
   readPluginActionWebview,
   readPluginNotificationDeeplink,
+  readPluginActionMessage,
 } from "./sdk";
 import { VOCAB_LIMITS } from "./vocabulary";
 
@@ -552,6 +553,50 @@ describe("a prompt in an action response", () => {
     // its character count suggests — the same rule the composer verb uses.
     const multiByte = "é".repeat(PLUGIN_PROMPT_TEXT_MAX_BYTES / 2 + 1);
     expect(buildPluginActionPromptAnswer({ id: "note" }, multiByte)).toBeNull();
+  });
+});
+
+describe("readPluginActionMessage", () => {
+  it("treats a bare string as a successful outcome", () => {
+    expect(readPluginActionMessage("Created lane 'x'.")).toEqual({
+      text: "Created lane 'x'.",
+      ok: true,
+    });
+  });
+
+  it("treats { ok, message } as an envelope even when extra keys ride along", () => {
+    expect(readPluginActionMessage({
+      ok: true,
+      message: "Lane created.",
+      sessionId: "sess-1",
+    })).toEqual({ text: "Lane created.", ok: true });
+    expect(readPluginActionMessage({
+      ok: false,
+      message: "That model is unknown.",
+    })).toEqual({ text: "That model is unknown.", ok: false });
+  });
+
+  it("toasts a message-only envelope that carries no other keys", () => {
+    expect(readPluginActionMessage({ message: "Copied." })).toEqual({
+      text: "Copied.",
+      ok: true,
+    });
+  });
+
+  it("does not toast a data payload that happens to have a message field", () => {
+    // History's pageCommitDetail: the commit body, not an outcome sentence.
+    expect(readPluginActionMessage({
+      commit: { sha: "abc" },
+      message: "fix the auth fallback",
+      files: [],
+    })).toBeNull();
+  });
+
+  it("is silent when there is no sentence", () => {
+    expect(readPluginActionMessage({ ok: true })).toBeNull();
+    expect(readPluginActionMessage({ navigate: { panelId: "main" } })).toBeNull();
+    expect(readPluginActionMessage(null)).toBeNull();
+    expect(readPluginActionMessage("   ")).toBeNull();
   });
 });
 

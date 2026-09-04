@@ -67,7 +67,7 @@ vi.mock("../onboarding/HelpMenu", () => ({
 }));
 
 vi.mock("../usage/HeaderUsageControl", () => ({
-  HeaderUsageControl: () => null,
+  HeaderUsageControl: () => <div data-testid="header-usage" />,
 }));
 
 vi.mock("../../lib/sessions", () => ({
@@ -508,14 +508,17 @@ describe("TopBar", () => {
     const zoomIn = screen.getByRole("button", { name: "Zoom in" });
     const connections = getConnectionsControl();
     const bell = screen.getByTestId("header-activity-trigger");
+    const usage = screen.getByTestId("header-usage");
     expect(pinned?.contains(feedback)).toBe(true);
     expect(pinned?.contains(zoomIn)).toBe(true);
     expect(pinned?.contains(connections)).toBe(true);
     expect(pinned?.contains(bell)).toBe(true);
+    expect(pinned?.contains(usage)).toBe(true);
     expect(flexible?.contains(feedback)).toBe(false);
+    expect(bell.compareDocumentPosition(connections) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(connections.compareDocumentPosition(usage) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(usage.compareDocumentPosition(feedback) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(feedback.compareDocumentPosition(zoomIn) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-    expect(zoomIn.compareDocumentPosition(connections) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-    expect(connections.compareDocumentPosition(bell) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
   it("shows connections before a project is open without immediate polling", async () => {

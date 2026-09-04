@@ -104,6 +104,22 @@ describe("enriching a row", () => {
     assert.equal(live.branch, "ade/fix");
   });
 
+  it("enriches Cursor's ACTIVE list status, which is a live run", async () => {
+    const asked = [];
+    const result = await assembleFleet(deps({
+      api: api({
+        listAgentsPaged: async () => [agent("live")],
+        listRuns: async (agentId) => {
+          asked.push(agentId);
+          return { items: [{ id: "r1", status: "RUNNING", git: { branches: [{ repoUrl: ORIGIN, branch: "ade/fix" }] } }] };
+        },
+      }),
+    }));
+    assert.deepEqual(asked, ["live"]);
+    assert.equal(result.items[0].runStatus, "running");
+    assert.equal(result.items[0].branch, "ade/fix");
+  });
+
   it("survives an agent whose run cannot be read", async () => {
     const result = await assembleFleet(deps({
       api: api({

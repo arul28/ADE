@@ -83,6 +83,18 @@ function text(value) {
   return typeof value === "string" && value.trim() ? value.trim() : null;
 }
 
+function branchName(ref) {
+  const value = text(ref);
+  if (!value) return null;
+  return value.replace(/^refs\/heads\//, "");
+}
+
+function laneMatchingBranch(lanes, branch) {
+  const wanted = branchName(branch);
+  if (!wanted) return null;
+  return lanes.find((lane) => branchName(lane.branchRef) === wanted || branchName(lane.branch) === wanted) ?? null;
+}
+
 function integer(value) {
   if (Number.isFinite(value)) return Math.trunc(value);
   if (typeof value === "string" && /^-?\d+$/.test(value.trim())) return Number.parseInt(value.trim(), 10);
@@ -596,12 +608,41 @@ function createPageActions(deps) {
       const agentId = readAgentId(args);
       if (!agentId) return { ok: false, message: "This action needs an agent id." };
       const entry = await deps.findEntry(agentId).catch(() => null);
-      const laneId = laneFor(entry, args);
+      let laneId = laneFor(entry, args);
+      const branch = text(entry?.branch);
       if (!laneId) {
-        return {
-          ok: false,
-          message: "Open a lane first — a cloud chat belongs to the lane whose branch it works on.",
-        };
+        const lanes = await deps.listLanes().catch(() => []);
+        const match = laneMatchingBranch(lanes, branch);
+        if (match) laneId = text(match.id) ?? text(match.laneId);
+        if (!laneId && args.createLane === true) {
+          const primary = lanes.find((lane) => lane.laneType === "primary")
+            ?? lanes.find((lane) => !lane.parentLaneId);
+          if (!primary) {
+            return { ok: false, message: "No primary lane to create from." };
+          }
+          const name = text(args.laneName) ?? branch ?? text(entry?.agent?.name) ?? "cloud-agent";
+          try {
+            const created = await deps.sdk.actions.invoke("lane", "createChild", {
+              parentLaneId: text(primary.id),
+              name,
+            });
+            laneId = text(created && created.id) ?? text(created && created.laneId);
+          } catch (error) {
+            return failure(error, "Could not create a lane for this cloud agent.");
+          }
+        }
+        if (!laneId) {
+          const primary = lanes.find((lane) => lane.laneType === "primary")
+            ?? lanes.find((lane) => !lane.parentLaneId);
+          return {
+            ok: false,
+            needsLane: true,
+            branch: branch ?? null,
+            suggestedName: branch ?? text(entry?.agent?.name) ?? "cloud-agent",
+            primaryLaneId: text(primary && primary.id),
+            message: "This cloud agent has no local lane yet. Create one from the primary to open it in ADE.",
+          };
+        }
       }
       try {
         const ref = await deps.runtime.openAgent({

@@ -1,8 +1,9 @@
 import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 
 import { MODEL_PICKER_PROVIDER_ORDER, providerLabel } from "../../../../shared/modelCatalog";
-import type { ProviderFamily } from "../../../../shared/modelRegistry";
+import { getModelById, resolveProviderGroupForModel, type ProviderFamily } from "../../../../shared/modelRegistry";
 import { pluginChatProviderCapabilities } from "../../../../shared/plugins/chatCapabilities";
+import { readPluginWebviewPickerRect } from "../../../../shared/plugins/webviewBridge";
 import { useAppStore } from "../../../state/appStore";
 import { ModelPicker } from "../../shared/ModelPicker/ModelPicker";
 import { ModelPickerRail, type RailEntry, type RailSelection } from "../../shared/ModelPicker/ModelPickerRail";
@@ -55,20 +56,39 @@ const PICKER_FAMILY_BY_GROUP: Record<(typeof MODEL_PICKER_PROVIDER_ORDER)[number
   lmstudio: "lmstudio",
 };
 
-function guestAnchor(guestKey: string): { top: number; left: number } {
+function clampPickerAnchor(top: number, left: number): { top: number; left: number } {
+  return {
+    top: Math.min(Math.max(12, top), Math.max(12, window.innerHeight - 72)),
+    left: Math.min(Math.max(12, left), Math.max(12, window.innerWidth - 280)),
+  };
+}
+
+function guestBox(guestKey: string): DOMRect | null {
   const escaped = guestKey.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
   const node = document.querySelector(`[data-plugin-webview-guest="${escaped}"]`);
   const rect = node?.getBoundingClientRect();
-  if (!rect || (rect.width === 0 && rect.height === 0)) {
-    return {
-      top: Math.max(24, Math.round(window.innerHeight / 2) - 24),
-      left: Math.max(24, Math.round(window.innerWidth / 2) - 140),
-    };
+  if (!rect || (rect.width === 0 && rect.height === 0)) return null;
+  return rect;
+}
+
+function pickerAnchor(request: PluginWebviewPickerRequest): { top: number; left: number } {
+  const guest = guestBox(request.guestKey);
+  const local = readPluginWebviewPickerRect(request.args.rect);
+  if (guest && local) {
+    return clampPickerAnchor(guest.top + local.top, guest.left + local.left);
   }
-  return {
-    top: Math.min(Math.max(12, rect.top + 12), Math.max(12, window.innerHeight - 72)),
-    left: Math.min(Math.max(12, rect.left + 12), Math.max(12, window.innerWidth - 280)),
-  };
+  if (!guest) {
+    return clampPickerAnchor(
+      Math.round(window.innerHeight / 2) - 24,
+      Math.round(window.innerWidth / 2) - 140,
+    );
+  }
+  // Center in the guest. Pinning to its top-left is why Linear/Review pickers
+  // jumped to the corner of the page instead of the chip that asked.
+  return clampPickerAnchor(
+    guest.top + guest.height / 2 - 24,
+    guest.left + guest.width / 2 - 140,
+  );
 }
 
 function AutoOpen({ children }: { children: React.ReactNode }) {
@@ -132,8 +152,14 @@ function ModelPick({ request }: { request: PluginWebviewPickerRequest }) {
       onFastModeChange={setFastMode}
       openRequestKey={request.token}
       onChange={(modelId, options) => {
+        const descriptor = getModelById(modelId);
+        const provider = descriptor ? resolveProviderGroupForModel(descriptor) : undefined;
         settlePluginWebviewPicker(
-          { modelId, fastMode: options?.fastMode === true || fastMode },
+          {
+            modelId,
+            fastMode: options?.fastMode === true || fastMode,
+            ...(provider ? { provider } : {}),
+          },
           request.token,
         );
       }}
@@ -292,7 +318,7 @@ export function PluginWebviewPickerHost() {
 
   useLayoutEffect(() => {
     if (!request) return;
-    setAnchor(guestAnchor(request.guestKey));
+    setAnchor(pickerAnchor(request));
   }, [request]);
 
   useEffect(() => {

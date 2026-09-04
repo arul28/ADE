@@ -403,6 +403,11 @@ describe("queryMarketplace", () => {
     expect(byNew.map((entry) => entry.pluginId).slice(0, 2)).toEqual(["slate-theme", "beacon"]);
   });
 
+  it("reverses ranked counts when sortDir is asc, and still puts unknown last", () => {
+    const asc = queryMarketplace(catalogue, { ...DEFAULT_MARKETPLACE_QUERY, sort: "installs", sortDir: "asc" });
+    expect(asc.map((entry) => entry.pluginId)).toEqual(["beacon", "graph", "history", "slate-theme"]);
+  });
+
   it("counts facets against the chip and search but not the facet selection", () => {
     const facets = deriveSurfaceFacets(catalogue, { ...DEFAULT_MARKETPLACE_QUERY, surfaces: ["lanes"] });
     expect(facets).toEqual([

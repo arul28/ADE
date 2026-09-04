@@ -29,7 +29,7 @@ import { CaretDown, Lock, Play } from "@phosphor-icons/react";
 import { Button, Chip, cn } from "@ade-dev/ui";
 
 import { startRun as startRunAction } from "../host/actions";
-import { hostPickers, pickLane } from "../host/ui";
+import { hostPickers, pickLane, pickerRectFromClick } from "../host/ui";
 import {
   buildTargetConfig,
   describeLaunchCommit,
@@ -319,8 +319,11 @@ export function ReviewLaunchForm({
     [commitOrder, laneCommits],
   );
 
-  const handlePickLane = React.useCallback(async () => {
-    const choice = await pickLane(draft.laneId ? { value: draft.laneId } : undefined);
+  const handlePickLane = React.useCallback(async (event: React.MouseEvent<HTMLButtonElement>) => {
+    const choice = await pickLane({
+      ...(draft.laneId ? { value: draft.laneId } : {}),
+      rect: pickerRectFromClick(event),
+    });
     if (!choice?.laneId) return;
     setDraft((prev) => ({ ...prev, laneId: choice.laneId, compareLaneId: "" }));
   }, [draft.laneId]);
@@ -440,7 +443,7 @@ export function ReviewLaunchForm({
         ) : pickers.lane ? (
           <button
             type="button"
-            onClick={() => void handlePickLane()}
+            onClick={(event) => void handlePickLane(event)}
             disabled={busy}
             aria-label="Lane to review"
             data-review-picker="lane"
@@ -622,7 +625,6 @@ export function ReviewLaunchForm({
         <ReviewLaunchModelControls
           modelId={draft.modelId}
           reasoningEffort={draft.reasoningEffort}
-          fastMode={draft.fastMode}
           onModelChange={(modelId, extras) =>
             setDraft((prev) => ({
               ...prev,
@@ -631,7 +633,6 @@ export function ReviewLaunchForm({
               ...(typeof extras?.fastMode === "boolean" ? { fastMode: extras.fastMode } : {}),
             }))}
           onReasoningEffortChange={(value) => update("reasoningEffort", value)}
-          onFastModeChange={(value) => update("fastMode", value)}
           disabled={busy}
         />
         <p className="text-[13px] text-[#C5D2E6]">

@@ -42,6 +42,7 @@ import {
 import {
   PLUGIN_WEBVIEW_LIST_MAX_ROWS,
   PLUGIN_WEBVIEW_MAX_HEIGHT_PX,
+  pluginWebviewKeepsGuestWhileHidden,
   type PluginWebviewChatTurn,
   type PluginWebviewContext,
   type PluginWebviewHostEvent,
@@ -140,6 +141,8 @@ export function WebPluginPageHost({
   guestKeyRef.current = onGuestKey;
 
   const placement: PluginWebviewPlacement = context?.placement ?? "tab";
+  const keepWhileHidden = pluginWebviewKeepsGuestWhileHidden(placement);
+  const shouldBoot = active || keepWhileHidden;
   // The two placements that sit INSIDE a taller ADE surface and therefore have
   // no height of their own to fill, exactly as `ui.resize` is documented. Every
   // other placement fills a frame this client already sized.
@@ -149,9 +152,9 @@ export function WebPluginPageHost({
   const contextKey = React.useMemo(() => (context ? JSON.stringify(context) : ""), [context]);
 
   React.useEffect(() => {
-    // Destroy when hidden. The effect keys on `active`, so leaving the surface
-    // runs the teardown below and returning builds a fresh guest.
-    if (!active) return;
+    // Tabs and panes stay alive while this host is mounted. Anchored placements
+    // still die when they hide — the effect keys on `shouldBoot`.
+    if (!shouldBoot) return;
     let cancelled = false;
     let bootTimer: ReturnType<typeof setTimeout> | null = null;
     let liveNonce: string | null = null;
@@ -322,20 +325,20 @@ export function WebPluginPageHost({
       frameRef.current?.setAttribute("src", "about:blank");
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps -- contextKey folds `context`; the rest are primitives.
-  }, [pluginId, entryHtml, active, contextKey, reloadToken, placement]);
+  }, [pluginId, entryHtml, shouldBoot, contextKey, reloadToken, placement]);
 
   // The theme is republished rather than polled: the app paints `data-theme` on
   // the document element, so one observer on that attribute is the whole feed.
   React.useEffect(() => {
-    if (!active) return;
+    if (!shouldBoot) return;
     const observer = new MutationObserver(() => {
       bridgeRef.current?.publish("theme", readPluginPageTheme(document, window));
     });
     observer.observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] });
     return () => observer.disconnect();
-  }, [active]);
+  }, [shouldBoot]);
 
-  if (!active) return null;
+  if (!shouldBoot) return null;
 
   const errorMessage = state.status === "failed"
     ? state.message

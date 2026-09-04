@@ -114,8 +114,15 @@ export const launchAgent = (args: PageLaunchArgs): Promise<CloudLaunchResult> =>
  * opened the chat, then announced the new session to the Work tab. All three
  * are one child action now, because only the child can do the middle one.
  */
-export const openInAde = (agentId: string): Promise<PageActionResult> =>
-  call("pageOpenInAde", { agentId });
+export const openInAde = (
+  agentId: string,
+  extras?: { createLane?: boolean; laneName?: string },
+): Promise<PageActionResult> =>
+  call("pageOpenInAde", {
+    agentId,
+    ...(extras?.createLane === true ? { createLane: true } : {}),
+    ...(extras?.laneName ? { laneName: extras.laneName } : {}),
+  });
 
 export const stopRun = (agentId: string): Promise<PageActionResult> =>
   call("pageStopRun", { agentId });

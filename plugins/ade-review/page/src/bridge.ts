@@ -167,9 +167,13 @@ export type AdePluginBridge = {
     pickModel?(request?: {
       value?: string;
       availableModelIds?: string[];
+      rect?: { top: number; left: number; width?: number; height?: number };
     }): Promise<PluginWebviewModelChoice | null>;
     /** ADE's own lane picker. `value` is the current lane id. */
-    pickLane?(request?: { value?: string }): Promise<PluginWebviewLaneChoice | null>;
+    pickLane?(request?: {
+      value?: string;
+      rect?: { top: number; left: number; width?: number; height?: number };
+    }): Promise<PluginWebviewLaneChoice | null>;
     /**
      * ADE's own reasoning-effort picker, for one model.
      *
@@ -180,6 +184,7 @@ export type AdePluginBridge = {
     pickReasoningEffort?(request: {
       model: string;
       value?: string | null;
+      rect?: { top: number; left: number; width?: number; height?: number };
     }): Promise<PluginWebviewReasoningChoice | null>;
   };
   clipboard?: { read(): Promise<string>; write(text: string): Promise<void> };

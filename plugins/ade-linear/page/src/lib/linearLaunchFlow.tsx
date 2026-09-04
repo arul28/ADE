@@ -18,7 +18,6 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { bridge } from "../bridge";
 import {
   createLaneForIssue,
-  deleteLane,
   getChatModels,
   launchAgentOnIssue,
   launchCliOnIssue,
@@ -206,7 +205,6 @@ export function useLinearBatchLaunch({
             }
             return { sessionId: launched.sessionId ?? "" };
           }),
-        deleteLane: (args) => deleteLane(args.laneId).then(() => undefined),
       },
       {
         models,

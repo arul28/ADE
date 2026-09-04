@@ -59,6 +59,8 @@ export type LaneSummary = {
   archivedAt?: string | null;
   /** Drawn as a badge on the lane card when the host reports one. */
   primaryIssue?: LaneIssueRef | null;
+  /** Every issue link on the lane, across trackers. */
+  issueLinks?: Array<{ issue: LaneIssueRef }>;
 };
 
 export type AutoRebaseLaneState = "autoRebased" | "rebasePending" | "rebaseConflict" | "rebaseFailed";

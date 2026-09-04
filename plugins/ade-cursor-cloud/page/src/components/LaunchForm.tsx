@@ -29,7 +29,7 @@
  */
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { CaretDown, CircleNotch, Info, Lightning } from "@phosphor-icons/react";
+import { CaretDown, CircleNotch, Info } from "@phosphor-icons/react";
 import { cn } from "@ade-dev/ui";
 
 import type { CloudExistingPr, CloudLaunchContext, CloudModelOption } from "../types";
@@ -41,6 +41,7 @@ import {
   pickLane,
   pickModel,
   pickReasoningEffort,
+  pickerRectFromClick,
   type PickOutcome,
 } from "../host/pickers";
 import { SecretsList } from "./SecretsList";
@@ -84,7 +85,7 @@ function ChoiceField({
   options: { value: string; label: string }[];
   available: boolean;
   disabled?: boolean;
-  onPick: () => Promise<PickOutcome>;
+  onPick: (event: React.MouseEvent<HTMLButtonElement>) => Promise<PickOutcome>;
   onSelect: (value: string) => void;
 }): React.ReactElement {
   const [forcedInline, setForcedInline] = useState(false);
@@ -117,7 +118,7 @@ function ChoiceField({
         type="button"
         aria-label={label}
         disabled={disabled}
-        onClick={() => void onPick().then((outcome) => {
+        onClick={(event) => void onPick(event).then((outcome) => {
           if (outcome.kind === "inline") setForcedInline(true);
         })}
         className={cn(CONTROL, "inline-flex items-center gap-1 text-left")}
@@ -226,7 +227,6 @@ export function LaunchForm({
     ? selectedModel.reasoningEfforts
     : context?.reasoningOptions ?? [];
 
-  const showSpeed = context?.showSpeed === true && selectedModel?.speed === true;
   const attachPr = context?.existingPr ?? null;
   const busy = submitting || loading;
 
@@ -337,8 +337,8 @@ export function LaunchForm({
           options={(context?.lanes ?? []).map((lane) => ({ value: lane.id, label: lane.name }))}
           available={hasPicker("pickLane")}
           disabled={busy}
-          onPick={async () => {
-            const outcome = await pickLane(laneId);
+          onPick={async (event) => {
+            const outcome = await pickLane(laneId, pickerRectFromClick(event));
             if (outcome.kind === "picked") {
               setLaneLabel(outcome.label);
               // A lane switch re-reads the lane-derived fields, exactly as the
@@ -361,10 +361,11 @@ export function LaunchForm({
           options={models.map((model) => ({ value: model.id, label: model.label }))}
           available={hasPicker("pickModel") && models.length > 0}
           disabled={busy}
-          onPick={async () => {
+          onPick={async (event) => {
             const outcome = await pickModel({
               value: modelId,
               availableModelIds: models.map((model) => model.id),
+              rect: pickerRectFromClick(event),
             });
             if (outcome.kind === "picked") {
               setModelId(outcome.id);
@@ -399,8 +400,8 @@ export function LaunchForm({
             options={reasoningOptions.map((option) => ({ value: option.value, label: option.label }))}
             available={hasPicker("pickReasoningEffort") && Boolean(modelId)}
             disabled={busy}
-            onPick={async () => {
-              const outcome = await pickReasoningEffort(modelId, reasoningEffort);
+            onPick={async (event) => {
+              const outcome = await pickReasoningEffort(modelId, reasoningEffort, pickerRectFromClick(event));
               if (outcome.kind === "picked") {
                 // Empty id is "no reasoning" — a real choice the host encodes
                 // as `effort: null`, not a dismissal.
@@ -418,28 +419,6 @@ export function LaunchForm({
               setReasoningLabel(reasoningOptions.find((option) => option.value === next)?.label ?? null);
             }}
           />
-        ) : null}
-
-        {showSpeed ? (
-          <div className="space-y-1">
-            <span className={cn(FIELD_LABEL, "block")}>Speed</span>
-            <button
-              type="button"
-              role="switch"
-              aria-checked={fastMode}
-              disabled={busy}
-              title="Run this launch on the provider's fast service tier"
-              onClick={() => setFastMode((current) => !current)}
-              className={cn(
-                CONTROL,
-                "inline-flex items-center gap-1",
-                fastMode && "border-violet-400/30 bg-violet-500/[0.08] text-fg",
-              )}
-            >
-              <Lightning size={10} weight={fastMode ? "fill" : "regular"} />
-              Fast
-            </button>
-          </div>
         ) : null}
       </div>
 

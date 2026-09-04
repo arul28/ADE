@@ -11,7 +11,7 @@
  * What is kept, exactly:
  *
  * - the five bodies, with the compiled sentence for each
- * - the two filter selects, their labels, their options and their aria-labels
+ * - the Filters overlay (status, lane, archived) and refresh
  * - the section order (Active runs, then lanes, then Unlinked) and the archived
  *   reveal
  * - the relay banner's two sentences and the rule that a ready relay draws none
@@ -26,7 +26,7 @@
  */
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ArrowSquareOut, ArrowsClockwise, CircleNotch, CloudArrowUp, Warning, X } from "@phosphor-icons/react";
+import { ArrowSquareOut, ArrowsClockwise, CircleNotch, CloudArrowUp, Funnel, Warning, X } from "@phosphor-icons/react";
 import { cn } from "@ade-dev/ui";
 
 import type { CloudFleetEntry, CloudFleetPage, CloudUsage } from "../types";
@@ -71,6 +71,18 @@ function isDefaultFilters(filters: FleetFilters): boolean {
     && filters.lane === DEFAULT_FILTERS.lane
     && filters.showArchived === DEFAULT_FILTERS.showArchived;
 }
+
+function activeFilterCount(filters: FleetFilters): number {
+  return (filters.status !== DEFAULT_FILTERS.status ? 1 : 0)
+    + (filters.lane !== DEFAULT_FILTERS.lane ? 1 : 0)
+    + (filters.showArchived ? 1 : 0);
+}
+
+type PendingLaneCreate = {
+  agentId: string;
+  suggestedName: string;
+  branch: string | null;
+};
 
 /**
  * The stored-value validation the compiled modal never needed.
@@ -133,6 +145,10 @@ export function Fleet({
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
   const [usageByAgentId, setUsageByAgentId] = useState<Record<string, CloudUsage>>({});
   const [pulledNotice, setPulledNotice] = useState<string | null>(null);
+  const [showFiltersPanel, setShowFiltersPanel] = useState(false);
+  const [pendingLane, setPendingLane] = useState<PendingLaneCreate | null>(null);
+  const [laneNameDraft, setLaneNameDraft] = useState("");
+  const filtersPanelRef = useRef<HTMLDivElement | null>(null);
 
   /**
    * The generation guard, and the two write counters that go with it.
@@ -174,6 +190,17 @@ export function Fleet({
   useEffect(() => {
     load(false);
   }, [load]);
+
+  useEffect(() => {
+    if (!showFiltersPanel) return;
+    const onDocClick = (event: MouseEvent) => {
+      if (filtersPanelRef.current && !filtersPanelRef.current.contains(event.target as Node)) {
+        setShowFiltersPanel(false);
+      }
+    };
+    document.addEventListener("mousedown", onDocClick);
+    return () => document.removeEventListener("mousedown", onDocClick);
+  }, [showFiltersPanel]);
 
   /* ── Persistence ──────────────────────────────────────────────────────── */
 
@@ -275,10 +302,55 @@ export function Fleet({
     // navigated to it behind the backdrop. `closeSurface` is that same act and
     // is a no-op in a tab or a pane, which is the host's call and not this
     // page's guess.
-    runAction(entry.agent.agentId, () => openInAde(entry.agent.agentId), {
-      onOk: () => void closeSurface(),
+    //
+    // `needsLane` is not a row error: the agent has a branch but no local
+    // lane yet, and the next step is a create-from-primary confirm.
+    const agentId = entry.agent.agentId;
+    setBusyAgentId(agentId);
+    setRowError(null);
+    void openInAde(agentId)
+      .then((result) => {
+        if (result.needsLane === true) {
+          const suggestedName = typeof result.suggestedName === "string" && result.suggestedName.trim()
+            ? result.suggestedName.trim()
+            : entry.branch ?? entry.agent.name ?? "cloud-agent";
+          setPendingLane({
+            agentId,
+            suggestedName,
+            branch: typeof result.branch === "string" ? result.branch : entry.branch,
+          });
+          setLaneNameDraft(suggestedName);
+          return;
+        }
+        if (!result.ok) {
+          setRowError({ agentId, message: result.message || "Cursor refused that." });
+          return;
+        }
+        void closeSurface();
+        load(true);
+      })
+      .catch((err: unknown) => {
+        setRowError({
+          agentId,
+          message: err instanceof Error ? err.message : "Cursor Cloud request failed.",
+        });
+      })
+      .finally(() => setBusyAgentId(null));
+  }, [load]);
+
+  const onConfirmCreateLane = useCallback(() => {
+    if (!pendingLane) return;
+    const name = laneNameDraft.trim() || pendingLane.suggestedName;
+    runAction(pendingLane.agentId, () => openInAde(pendingLane.agentId, {
+      createLane: true,
+      laneName: name,
+    }), {
+      onOk: () => {
+        setPendingLane(null);
+        void closeSurface();
+      },
     });
-  }, [runAction]);
+  }, [laneNameDraft, pendingLane, runAction]);
 
   const onStop = useCallback((entry: CloudFleetEntry) => {
     runAction(entry.agent.agentId, () => stopRun(entry.agent.agentId));
@@ -402,51 +474,104 @@ export function Fleet({
         {/*
          * The toolbar.
          *
-         * What is left of the compiled header once the brand block and the
-         * close button go: the two selects and refresh. Below 560px the selects
-         * stack and go full width, because two 140px selects and a 28px button
-         * on one line is a horizontal scroll on a phone.
+         * Filters live in an overlay so the header stays one row, the same
+         * pattern Graph uses. Refresh stays on the bar.
          */}
-        <div className="flex shrink-0 flex-col gap-1.5 border-b border-white/10 px-3.5 py-2 min-[560px]:flex-row min-[560px]:items-center min-[560px]:justify-end">
-          <div className="flex items-center gap-1.5">
-            <select
-              value={filters.status}
-              onChange={(event) => updateFilters({ status: event.target.value as FleetFilter })}
-              aria-label="Filter by status"
-              className="h-7 flex-1 rounded-md border border-white/[0.08] bg-white/[0.03] px-1.5 text-[11px] text-fg/70 outline-none hover:border-white/[0.16] min-[560px]:flex-none"
-            >
-              <option value="all">All</option>
-              <option value="active">Active</option>
-              <option value="finished">Finished</option>
-              <option value="failed">Failed</option>
-            </select>
-            {laneOptions.length > 0 ? (
-              <select
-                value={filters.lane}
-                onChange={(event) => updateFilters({ lane: event.target.value })}
-                aria-label="Filter by lane"
-                className="h-7 max-w-[140px] flex-1 rounded-md border border-white/[0.08] bg-white/[0.03] px-1.5 text-[11px] text-fg/70 outline-none hover:border-white/[0.16] min-[560px]:flex-none"
-              >
-                <option value="all">All lanes</option>
-                {laneOptions.map((lane) => (
-                  <option key={lane.id} value={lane.id}>{lane.name}</option>
-                ))}
-              </select>
-            ) : null}
+        <div className="flex shrink-0 items-center justify-end gap-1.5 border-b border-white/10 px-3.5 py-2">
+          <div className="relative" ref={filtersPanelRef}>
             <button
               type="button"
-              onClick={() => load(true)}
-              disabled={loading || refreshing}
+              onClick={() => setShowFiltersPanel((current) => !current)}
+              aria-expanded={showFiltersPanel}
               className={cn(
-                "inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md border border-white/[0.07] text-fg/50",
-                "transition-colors hover:border-white/[0.16] hover:text-fg/85 disabled:opacity-40",
+                "inline-flex h-7 items-center gap-1.5 rounded-md border px-2 text-[11px] font-medium",
+                showFiltersPanel || activeFilterCount(filters) > 0
+                  ? "border-violet-300/30 bg-violet-500/[0.10] text-violet-100/90"
+                  : "border-white/[0.07] text-fg/60 hover:border-white/[0.16] hover:text-fg/85",
               )}
-              title="Refresh"
-              aria-label="Refresh fleet"
             >
-              <ArrowsClockwise size={12} weight="bold" className={refreshing ? "animate-spin" : undefined} />
+              <Funnel size={12} weight="bold" />
+              Filters
+              {activeFilterCount(filters) > 0 ? (
+                <span className="rounded-full bg-violet-400/30 px-1.5 py-px text-[10px]">
+                  {activeFilterCount(filters)}
+                </span>
+              ) : null}
             </button>
+            {showFiltersPanel ? (
+              <div className="absolute right-0 top-8 z-40 w-[280px] rounded-lg border border-white/[0.10] bg-[#17151f] p-2.5 shadow-xl shadow-black/50">
+                <div className="mb-2 text-[10px] font-semibold uppercase tracking-[0.8px] text-fg/40">
+                  Status
+                </div>
+                <select
+                  value={filters.status}
+                  onChange={(event) => updateFilters({ status: event.target.value as FleetFilter })}
+                  aria-label="Filter by status"
+                  className="mb-2 h-7 w-full rounded-md border border-white/[0.08] bg-white/[0.03] px-1.5 text-[11px] text-fg/70 outline-none hover:border-white/[0.16]"
+                >
+                  <option value="all">All</option>
+                  <option value="active">Active</option>
+                  <option value="finished">Finished</option>
+                  <option value="failed">Failed</option>
+                </select>
+                {laneOptions.length > 0 ? (
+                  <>
+                    <div className="mb-2 text-[10px] font-semibold uppercase tracking-[0.8px] text-fg/40">
+                      Lane
+                    </div>
+                    <select
+                      value={filters.lane}
+                      onChange={(event) => updateFilters({ lane: event.target.value })}
+                      aria-label="Filter by lane"
+                      className="mb-2 h-7 w-full rounded-md border border-white/[0.08] bg-white/[0.03] px-1.5 text-[11px] text-fg/70 outline-none hover:border-white/[0.16]"
+                    >
+                      <option value="all">All lanes</option>
+                      {laneOptions.map((lane) => (
+                        <option key={lane.id} value={lane.id}>{lane.name}</option>
+                      ))}
+                    </select>
+                  </>
+                ) : null}
+                <label className="mb-2 flex items-center gap-2 text-[11px] text-fg/70">
+                  <input
+                    type="checkbox"
+                    checked={filters.showArchived}
+                    onChange={(event) => updateFilters({ showArchived: event.target.checked })}
+                  />
+                  Show archived
+                </label>
+                <div className="flex justify-end gap-1.5 border-t border-white/[0.06] pt-2">
+                  <button
+                    type="button"
+                    onClick={() => updateFilters(DEFAULT_FILTERS)}
+                    className="h-7 rounded-md px-2 text-[11px] text-fg/50 hover:text-fg/80"
+                  >
+                    Reset
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setShowFiltersPanel(false)}
+                    className="h-7 rounded-md border border-white/[0.10] px-2 text-[11px] text-fg/75 hover:border-white/[0.2]"
+                  >
+                    Close
+                  </button>
+                </div>
+              </div>
+            ) : null}
           </div>
+          <button
+            type="button"
+            onClick={() => load(true)}
+            disabled={loading || refreshing}
+            className={cn(
+              "inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md border border-white/[0.07] text-fg/50",
+              "transition-colors hover:border-white/[0.16] hover:text-fg/85 disabled:opacity-40",
+            )}
+            title="Refresh"
+            aria-label="Refresh fleet"
+          >
+            <ArrowsClockwise size={12} weight="bold" className={refreshing ? "animate-spin" : undefined} />
+          </button>
         </div>
 
         {relayBanner}
@@ -603,6 +728,50 @@ export function Fleet({
             >
               <X size={11} weight="bold" />
             </button>
+          </div>
+        ) : null}
+
+        {pendingLane ? (
+          <div
+            className="absolute inset-0 z-40 flex items-center justify-center bg-black/50 px-4"
+            role="dialog"
+            aria-labelledby="cloud-create-lane-title"
+          >
+            <div className="w-full max-w-[380px] rounded-xl border border-white/[0.10] bg-[#17151f] p-4 shadow-xl shadow-black/50">
+              <div id="cloud-create-lane-title" className="text-[13px] font-semibold text-fg/90">
+                Create a local lane
+              </div>
+              <p className="mt-1.5 text-[12px] leading-relaxed text-fg/55">
+                This cloud agent has no local lane yet
+                {pendingLane.branch ? ` for ${pendingLane.branch}` : ""}.
+                Create one from the primary, then open the chat in ADE.
+              </p>
+              <label className="mt-3 block text-[10px] font-semibold uppercase tracking-[0.8px] text-fg/40">
+                Lane name
+                <input
+                  value={laneNameDraft}
+                  onChange={(event) => setLaneNameDraft(event.target.value)}
+                  className="mt-1 h-8 w-full rounded-md border border-white/[0.10] bg-white/[0.03] px-2 text-[12px] font-normal normal-case tracking-normal text-fg outline-none"
+                />
+              </label>
+              <div className="mt-3 flex justify-end gap-1.5">
+                <button
+                  type="button"
+                  onClick={() => setPendingLane(null)}
+                  className="h-7 rounded-md px-2 text-[11px] text-fg/55 hover:text-fg/85"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={onConfirmCreateLane}
+                  disabled={busyAgentId === pendingLane.agentId}
+                  className="h-7 rounded-md border border-violet-300/30 bg-violet-500/[0.12] px-2.5 text-[11px] font-semibold text-violet-100/90 disabled:opacity-40"
+                >
+                  Create lane and open
+                </button>
+              </div>
+            </div>
           </div>
         ) : null}
       </div>

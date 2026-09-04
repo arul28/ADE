@@ -66,12 +66,27 @@ async function attempt<T>(
   }
 }
 
+export function pickerRectFromClick(event: { currentTarget: EventTarget }): {
+  top: number;
+  left: number;
+  width: number;
+  height: number;
+} | undefined {
+  const node = event.currentTarget;
+  if (!(node instanceof Element)) return undefined;
+  const box = node.getBoundingClientRect();
+  return { top: box.top, left: box.left, width: box.width, height: box.height };
+}
+
 /** ADE's lane picker. `value` is the lane already on the form, so it opens there. */
-export async function pickLane(value?: string | null): Promise<PickOutcome> {
+export async function pickLane(
+  value?: string | null,
+  rect?: { top: number; left: number; width?: number; height?: number },
+): Promise<PickOutcome> {
   const ui = bridge()?.ui;
   const result = await attempt(
     ui?.pickLane
-      ? () => ui.pickLane!({ ...(value ? { value } : {}) })
+      ? () => ui.pickLane!({ ...(value ? { value } : {}), ...(rect ? { rect } : {}) })
       : undefined,
   );
   if (result === "inline") return INLINE;
@@ -97,6 +112,7 @@ export async function pickLane(value?: string | null): Promise<PickOutcome> {
 export async function pickModel(args: {
   value?: string | null;
   availableModelIds: string[];
+  rect?: { top: number; left: number; width?: number; height?: number };
 }): Promise<PickOutcome> {
   const ui = bridge()?.ui;
   const result = await attempt(
@@ -104,6 +120,7 @@ export async function pickModel(args: {
       ? () => ui.pickModel!({
         ...(args.value ? { value: args.value } : {}),
         availableModelIds: args.availableModelIds,
+        ...(args.rect ? { rect: args.rect } : {}),
       })
       : undefined,
   );
@@ -129,6 +146,7 @@ export async function pickModel(args: {
 export async function pickReasoningEffort(
   model: string | null,
   selected?: string | null,
+  rect?: { top: number; left: number; width?: number; height?: number },
 ): Promise<PickOutcome> {
   if (!model) return INLINE;
   const ui = bridge()?.ui;
@@ -137,6 +155,7 @@ export async function pickReasoningEffort(
       ? () => ui.pickReasoningEffort!({
         model,
         ...(selected ? { value: selected } : {}),
+        ...(rect ? { rect } : {}),
       })
       : undefined,
   );

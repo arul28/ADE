@@ -154,6 +154,10 @@ describe("plugin tab page", () => {
     mount();
 
     expect(screen.getByTestId("webview-host")).toBeTruthy();
+    // The rail already names the tab. A second "Notes 1.2.0" header was chrome
+    // the compiled surfaces never had.
+    expect(screen.queryByRole("heading", { name: "Notes" })).toBeNull();
+    expect(screen.queryByText("1.2.0")).toBeNull();
     // The page wins outright: the declared panel is the fallback, not a second
     // thing to draw beside a working guest.
     expect(screen.queryByTestId("panel-host")).toBeNull();

@@ -159,14 +159,25 @@ export type AdePluginBridge = {
      * lists, which is why the fallbacks in `host/pickers.ts` are not dead code.
      */
     pickModel?(
-      request?: { value?: string; availableModelIds?: string[] },
+      request?: {
+        value?: string;
+        availableModelIds?: string[];
+        rect?: { top: number; left: number; width?: number; height?: number };
+      },
     ): Promise<PluginWebviewModelChoice | null>;
-    pickLane?(request?: { value?: string }): Promise<PluginWebviewLaneChoice | null>;
+    pickLane?(request?: {
+      value?: string;
+      rect?: { top: number; left: number; width?: number; height?: number };
+    }): Promise<PluginWebviewLaneChoice | null>;
     pickPermissionMode?(
       request: { provider: string; value?: string },
     ): Promise<PluginWebviewPermissionModeChoice | null>;
     pickReasoningEffort?(
-      request: { model: string; value?: string | null },
+      request: {
+        model: string;
+        value?: string | null;
+        rect?: { top: number; left: number; width?: number; height?: number };
+      },
     ): Promise<PluginWebviewReasoningEffortChoice | null>;
     pickProvider?(request?: { value?: string }): Promise<PluginWebviewProviderChoice | null>;
   };

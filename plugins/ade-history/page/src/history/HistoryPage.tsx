@@ -1,6 +1,5 @@
 import React, { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Clock } from "@phosphor-icons/react";
-import { LaneIcon } from "@ade-dev/ui/icons";
 import { EmptyState } from "@ade-dev/ui";
 
 import type { PluginWebviewContext } from "../bridge";
@@ -428,17 +427,6 @@ function HistoryPageContent({
               onCommitGitActionComplete={() => setCommitRefreshToken((value) => value + 1)}
               navigate={handleNavigate}
             />
-            {surface === "commits" ? (
-              <div className="flex shrink-0 items-center gap-2 border-b border-white/[0.06] bg-white/[0.02] px-3 py-1.5">
-                <LaneIcon size={14} className="shrink-0 text-accent" weight="bold" />
-                <span className="font-sans text-[11px] font-bold uppercase tracking-[1px] text-muted-fg">
-                  Lane
-                </span>
-                <span className="truncate font-mono text-[12px] text-fg">
-                  {focusLane?.name ?? (focusLaneId ? focusLaneId : "Select a lane")}
-                </span>
-              </div>
-            ) : null}
             {timelineBody}
           </div>
         )}

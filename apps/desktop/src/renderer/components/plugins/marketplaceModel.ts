@@ -497,8 +497,9 @@ export function describePluginAdds(listing: MarketplaceListing): string[] {
 
 /* ── Filter, sort, search ───────────────────────────────────────────────── */
 
-export type MarketplaceChip = "all" | "installed" | "official" | "featured" | "themes";
+export type MarketplaceChip = "all" | "installed" | "official" | "themes";
 export type MarketplaceSort = "installs" | "stars" | "new";
+export type MarketplaceSortDir = "asc" | "desc";
 
 /**
  * Plugin ids present on this machine, in the shape the chip filter wants.
@@ -519,6 +520,7 @@ export type MarketplaceQuery = {
   /** Facet: keep only listings that extend every selected surface. */
   surfaces: readonly PluginSurfaceId[];
   sort: MarketplaceSort;
+  sortDir: MarketplaceSortDir;
 };
 
 export const DEFAULT_MARKETPLACE_QUERY: MarketplaceQuery = {
@@ -526,6 +528,7 @@ export const DEFAULT_MARKETPLACE_QUERY: MarketplaceQuery = {
   chip: "all",
   surfaces: [],
   sort: "installs",
+  sortDir: "desc",
 };
 
 function matchesSearch(listing: MarketplaceListing, search: string): boolean {
@@ -552,8 +555,6 @@ function matchesChip(
       return installed.has(listing.pluginId);
     case "official":
       return listing.official;
-    case "featured":
-      return listing.featured;
     case "themes":
       return listing.isTheme;
     case "all":
@@ -569,22 +570,28 @@ function matchesChip(
  * nobody has published numbers for is unranked, not unpopular. Ties and
  * unranked entries fall back to name so the order is stable across renders.
  */
-function compareListings(a: MarketplaceListing, b: MarketplaceListing, sort: MarketplaceSort): number {
+function compareListings(
+  a: MarketplaceListing,
+  b: MarketplaceListing,
+  sort: MarketplaceSort,
+  dir: MarketplaceSortDir = "desc",
+): number {
   const byName = a.displayName.localeCompare(b.displayName);
+  const sign = dir === "asc" ? -1 : 1;
   if (sort === "new") {
     const left = a.publishedAt ? Date.parse(a.publishedAt) : null;
     const right = b.publishedAt ? Date.parse(b.publishedAt) : null;
     if (left === right) return byName;
     if (left === null) return 1;
     if (right === null) return -1;
-    return right - left;
+    return (right - left) * sign;
   }
   const left = sort === "stars" ? a.stars : a.installs;
   const right = sort === "stars" ? b.stars : b.installs;
   if (left === right) return byName;
   if (left === null) return 1;
   if (right === null) return -1;
-  return right - left;
+  return (right - left) * sign;
 }
 
 export function queryMarketplace(
@@ -598,7 +605,7 @@ export function queryMarketplace(
     .filter((listing) => matchesChip(listing, query.chip, installed))
     .filter((listing) => surfaces.every((surface) => listing.surfaces.includes(surface)))
     .filter((listing) => matchesSearch(listing, query.search))
-    .sort((a, b) => compareListings(a, b, query.sort));
+    .sort((a, b) => compareListings(a, b, query.sort, query.sortDir));
 }
 
 export type SurfaceFacet = { surface: PluginSurfaceId; label: string; total: number };

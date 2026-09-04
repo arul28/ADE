@@ -149,6 +149,10 @@ function makeDeps(options = {}) {
         if (domain === "git" && action === "getOpenPrForBranch") {
           return options.openPr ?? { prUrl: null, prNumber: null, title: null };
         }
+        if (domain === "lane" && action === "createChild") {
+          invoked.push({ kind: "createChild", args });
+          return { id: "lane-new", name: args?.name ?? "cloud-agent" };
+        }
         return null;
       },
     },
@@ -454,12 +458,40 @@ describe("every mutation answers {ok, message} and never throws", () => {
     });
   });
 
-  it("refuses to adopt an agent with no lane, in the compiled sentence", async () => {
-    const laneless = fleetEntry({ ownership: { sessionId: null, sessionTitle: null, laneId: null, laneName: null, linearIssueId: null } });
+  it("opens in the local lane that already has the agent's branch", async () => {
+    const laneless = fleetEntry({
+      branch: "ade/sync-fix",
+      ownership: { sessionId: null, sessionTitle: null, laneId: null, laneName: null, linearIssueId: null },
+    });
+    const { actions, invoked } = makeDeps({ items: [laneless] });
+    const result = await actions.pageOpenInAde({ agentId: "bc_abc123" });
+    assert.equal(result.ok, true);
+    assert.equal(invoked.find((call) => call.kind === "openAgent")?.laneId, "lane-1");
+  });
+
+  it("asks to create a lane when no local lane has the branch", async () => {
+    const laneless = fleetEntry({
+      ownership: { sessionId: null, sessionTitle: null, laneId: null, laneName: null, linearIssueId: null },
+    });
     const { actions } = makeDeps({ items: [laneless] });
     const result = await actions.pageOpenInAde({ agentId: "bc_abc123" });
     assert.equal(result.ok, false);
-    assert.match(result.message, /Open a lane first/);
+    assert.equal(result.needsLane, true);
+    assert.match(result.message, /no local lane yet/);
+  });
+
+  it("creates a lane from primary when the page confirms", async () => {
+    const laneless = fleetEntry({
+      branch: "ade/cloud-run",
+      ownership: { sessionId: null, sessionTitle: null, laneId: null, laneName: null, linearIssueId: null },
+    });
+    const { actions, invoked } = makeDeps({
+      items: [laneless],
+      lanes: [{ id: "lane-primary", name: "main", laneType: "primary", branchRef: "main" }],
+    });
+    const result = await actions.pageOpenInAde({ agentId: "bc_abc123", createLane: true });
+    assert.equal(result.ok, true);
+    assert.equal(invoked.find((call) => call.kind === "openAgent")?.laneId, "lane-new");
   });
 
   it("answers a chat binding Cursor accepted but ADE refused", async () => {

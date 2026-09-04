@@ -10,9 +10,9 @@
       "sha256": "0691188c35bd6d43ff4877f3ae0dfbf6e45964d59b4d589d221713fd014b1956"
     },
     {
-      "path": "assets/index-DD7jvd_U.js",
-      "bytes": 651362,
-      "sha256": "7eb368b6e52651c23976df5f239247173e779bb51b4caa0df187aec393115060"
+      "path": "assets/index-Cv9RtdrC.js",
+      "bytes": 650339,
+      "sha256": "ee4f88a60a2a598de3fa9c6046847be485c276f37f2a7a75baaf220fc4bec05e"
     },
     {
       "path": "fonts/Geist-Variable.woff2",
@@ -32,7 +32,7 @@
     {
       "path": "index.html",
       "bytes": 367,
-      "sha256": "37725db5273763a49844394d6ce39d4ea8bf5b4dd26e200f83fc7aebba1dd2bb"
+      "sha256": "88458c0db8567ab1db0a1f57f1e506e3bfc35a13e26552ce8320b2ec70da6513"
     }
   ]
 }

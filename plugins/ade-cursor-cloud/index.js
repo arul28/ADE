@@ -910,10 +910,23 @@ exports.actions = {
   async openInAde(args) {
     const agentId = requireAgentId(args);
     const entry = await findEntry(agentId);
-    const laneId = laneFor(entry, args);
+    let laneId = laneFor(entry, args);
+    if (!laneId) {
+      const wanted = typeof entry?.branch === "string"
+        ? entry.branch.replace(/^refs\/heads\//, "")
+        : null;
+      if (wanted) {
+        const lanes = await listLanes().catch(() => []);
+        const match = lanes.find((lane) => {
+          const ref = String(lane.branchRef ?? lane.branch ?? "").replace(/^refs\/heads\//, "");
+          return ref === wanted;
+        });
+        laneId = match?.id ?? null;
+      }
+    }
     if (!laneId) {
       return {
-        message: "Open a lane first — a cloud chat belongs to the lane whose branch it works on.",
+        message: "This cloud agent has no local lane yet. Open it from the Cursor Cloud tab to create one.",
         ok: false,
       };
     }

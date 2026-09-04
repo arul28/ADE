@@ -130,20 +130,53 @@ describe("the injected context", () => {
 });
 
 describe("destroy when hidden", () => {
-  it("creates nothing until the surface is first shown", () => {
+  it("creates a tab guest even while the surface is hidden", () => {
     const view = render(
       <PluginWebviewHost pluginId="acme" entryHtml="dist/index.html" active={false} />,
     );
-    expect(guests(view.container)).toHaveLength(0);
+    expect(guests(view.container)).toHaveLength(1);
   });
 
-  it("removes the guest element when the surface is hidden", () => {
+  it("keeps a tab guest when the surface is hidden", () => {
     const view = render(
       <PluginWebviewHost pluginId="acme" entryHtml="dist/index.html" active />,
     );
     expect(guests(view.container)).toHaveLength(1);
     view.rerender(
       <PluginWebviewHost pluginId="acme" entryHtml="dist/index.html" active={false} />,
+    );
+    expect(guests(view.container)).toHaveLength(1);
+  });
+
+  it("creates nothing until a popover is first shown", () => {
+    const view = render(
+      <PluginWebviewHost
+        pluginId="acme"
+        entryHtml="dist/index.html"
+        active={false}
+        placement="popover"
+      />,
+    );
+    expect(guests(view.container)).toHaveLength(0);
+  });
+
+  it("removes a popover guest when the surface is hidden", () => {
+    const view = render(
+      <PluginWebviewHost
+        pluginId="acme"
+        entryHtml="dist/index.html"
+        active
+        placement="popover"
+      />,
+    );
+    expect(guests(view.container)).toHaveLength(1);
+    view.rerender(
+      <PluginWebviewHost
+        pluginId="acme"
+        entryHtml="dist/index.html"
+        active={false}
+        placement="popover"
+      />,
     );
     expect(guests(view.container)).toHaveLength(0);
   });

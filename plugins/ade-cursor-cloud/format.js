@@ -43,9 +43,10 @@ function normalizeRunStatus(value) {
 function fleetRunStatus(entry) {
   if (entry.runStatus) return entry.runStatus;
   const lower = typeof entry.agent.status === "string" ? entry.agent.status.toLowerCase() : "";
-  if (lower === "running") return "running";
+  if (lower === "running" || lower === "active") return "running";
   if (lower === "finished") return "finished";
   if (lower === "error") return "error";
+  if (lower === "creating") return "creating";
   return "creating";
 }
 

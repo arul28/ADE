@@ -5,14 +5,14 @@
   "entry": "index.html",
   "files": [
     {
-      "path": "assets/index-BABLZIb1.css",
-      "bytes": 84950,
-      "sha256": "3610ab78ba3fbb121bfbc5c7d5f819eac4e78e6d8b5cb70ac23e8dee8d841e9e"
+      "path": "assets/index-B1fkSLcn.js",
+      "bytes": 436636,
+      "sha256": "9bf22a006061e1554e5d81610ea425b30b2f62df443634fe9f8701a1e9eda530"
     },
     {
-      "path": "assets/index-CNyTHlop.js",
-      "bytes": 439371,
-      "sha256": "1a41393b481212d5f0ef2561aea0ed1d9587d98ec62260886f671012b6280781"
+      "path": "assets/index-BWtsQKdW.css",
+      "bytes": 84766,
+      "sha256": "29d2fa49ad1d53e896851136b278a177af89fb960aa095d0a6d0bbf404911987"
     },
     {
       "path": "fonts/Geist-Variable.woff2",
@@ -32,7 +32,7 @@
     {
       "path": "index.html",
       "bytes": 367,
-      "sha256": "2fb26a3ef325125c2c3ee7a468d61059a8b137ab970af03c80b04ae198dca28b"
+      "sha256": "1f5aa9e0e9f826c6a195c72f1b047798ed3d9527c804d561f7cad74ac8a573cd"
     }
   ]
 }
