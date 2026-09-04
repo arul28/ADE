@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   decodePluginWebviewContext,
+  pluginWebviewGuestKey,
   PLUGIN_WEBVIEW_CONTEXT_QUERY_PARAM,
   PLUGIN_WEBVIEW_MAX_HEIGHT_PX,
   PLUGIN_WEBVIEW_SURFACE_REVEALED_EVENT,
@@ -36,12 +37,14 @@ import {
  */
 
 const setSurfaceState = vi.fn();
+const publishContext = vi.fn();
 
 vi.mock("../../lib/pluginRuntimeBridge", () => ({
   pluginWebviewRelayBridge: () => ({
     onUiRequest: () => () => undefined,
     respondUi: () => undefined,
     publishTheme: () => undefined,
+    publishContext: (payload: unknown) => publishContext(payload),
     setSurfaceState: (state: unknown) => setSurfaceState(state),
     onReload: () => () => undefined,
   }),
@@ -83,6 +86,7 @@ beforeEach(() => {
   resetPluginWebviewReloads();
   resetPluginWebviewPageErrors();
   setSurfaceState.mockClear();
+  publishContext.mockClear();
   client.web = false;
   client.webPages = true;
 });
@@ -127,6 +131,130 @@ describe("the injected context", () => {
     const src = guests(view.container)[0]?.getAttribute("src") ?? "";
     const raw = new URL(src).searchParams.get(PLUGIN_WEBVIEW_CONTEXT_QUERY_PARAM);
     expect(JSON.parse(decodeURIComponent(raw ?? "")).placement).toBe("tab");
+  });
+});
+
+/**
+ * A subject that MOVES, under a page that outlives it.
+ *
+ * A rail tab is opened once and lives as long as the reader stays in it, while
+ * the lane they are working on changes many times. Recreating the guest on each
+ * selection would throw away the page's scroll and everything it had loaded, so
+ * the host publishes instead — and only under `republishSubject`, because the
+ * placements that had a subject first (a drawer tab, a button-opened overlay)
+ * really are a different page for a different subject.
+ */
+describe("a moving subject", () => {
+  const lane = (id: string) => ({
+    subject: { kind: "lane" as const, id, name: id, branch: null, machineKey: null, dirty: false },
+  });
+
+  it("publishes the move to the live guest instead of rebuilding it", () => {
+    const view = render(
+      <PluginWebviewHost
+        pluginId="acme"
+        entryHtml="dist/index.html"
+        active
+        placement="tab"
+        surfaceId="board"
+        republishSubject
+        context={lane("lane-1")}
+      />,
+    );
+    const guest = guests(view.container)[0]!;
+    readyGuest(guest, 401);
+    // The attach restates what the URL already carried, which is what closes
+    // the race of a selection landing before the guest key arrives.
+    expect(publishContext).toHaveBeenLastCalledWith({
+      guestKey: pluginWebviewGuestKey(401),
+      subject: expect.objectContaining({ id: "lane-1" }),
+    });
+
+    view.rerender(
+      <PluginWebviewHost
+        pluginId="acme"
+        entryHtml="dist/index.html"
+        active
+        placement="tab"
+        surfaceId="board"
+        republishSubject
+        context={lane("lane-2")}
+      />,
+    );
+
+    // The SAME guest, still in the document: the page keeps its scroll, its
+    // filters and everything it had loaded.
+    expect(guests(view.container)[0]).toBe(guest);
+    expect(publishContext).toHaveBeenLastCalledWith({
+      guestKey: pluginWebviewGuestKey(401),
+      subject: expect.objectContaining({ id: "lane-2" }),
+    });
+  });
+
+  it("publishes null when the selection goes away", () => {
+    const view = render(
+      <PluginWebviewHost
+        pluginId="acme" entryHtml="dist/index.html" active republishSubject context={lane("lane-1")}
+      />,
+    );
+    readyGuest(guests(view.container)[0]!, 402);
+    view.rerender(
+      <PluginWebviewHost
+        pluginId="acme" entryHtml="dist/index.html" active republishSubject context={{ subject: null }}
+      />,
+    );
+    expect(publishContext).toHaveBeenLastCalledWith({ guestKey: pluginWebviewGuestKey(402), subject: null });
+  });
+
+  it("still recreates the guest for a change of pointer", () => {
+    // Only the SUBJECT is pushed. A pointer is what an `openWebview` action
+    // chose to pass, so a different one is a different opening of the page.
+    const view = render(
+      <PluginWebviewHost
+        pluginId="acme" entryHtml="dist/index.html" active republishSubject
+        context={{ subject: null, pointer: { issue: "ADE-1" } }}
+      />,
+    );
+    const guest = guests(view.container)[0]!;
+    view.rerender(
+      <PluginWebviewHost
+        pluginId="acme" entryHtml="dist/index.html" active republishSubject
+        context={{ subject: null, pointer: { issue: "ADE-2" } }}
+      />,
+    );
+    expect(guests(view.container)[0]).not.toBe(guest);
+  });
+
+  it("rebuilds rather than publishes when the host did not ask to follow", () => {
+    // The default, and the honest one for a drawer or an overlay: a different
+    // subject there is a different page.
+    const view = render(
+      <PluginWebviewHost
+        pluginId="acme" entryHtml="dist/index.html" active placement="drawer" context={lane("lane-1")}
+      />,
+    );
+    const guest = guests(view.container)[0]!;
+    readyGuest(guest, 403);
+    publishContext.mockClear();
+
+    view.rerender(
+      <PluginWebviewHost
+        pluginId="acme" entryHtml="dist/index.html" active placement="drawer" context={lane("lane-2")}
+      />,
+    );
+    expect(guests(view.container)[0]).not.toBe(guest);
+    expect(publishContext).not.toHaveBeenCalled();
+  });
+
+  it("carries the subject in the URL as well, so a page reads it before it runs", () => {
+    const view = render(
+      <PluginWebviewHost
+        pluginId="acme" entryHtml="dist/index.html" active republishSubject context={lane("lane-7")}
+      />,
+    );
+    const src = guests(view.container)[0]?.getAttribute("src") ?? "";
+    const raw = new URL(src).searchParams.get(PLUGIN_WEBVIEW_CONTEXT_QUERY_PARAM);
+    expect(decodePluginWebviewContext(raw)).toMatchObject({ subject: { id: "lane-7" } });
   });
 });
 

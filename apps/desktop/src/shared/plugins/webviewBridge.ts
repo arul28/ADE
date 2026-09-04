@@ -47,8 +47,14 @@ import type { PluginActionPrompt, PluginActionPromptAnswer } from "./sdk";
  * settings, the composer, toasts, prompts, confirmations, the clipboard, the
  * theme, live host entities and the project the window is bound to — plus the
  * `theme` and `host` events. Nothing from v1 moved.
+ *
+ * v3 adds the `context` event, so a page can be told its subject MOVED rather
+ * than only being told it at attach. Nothing from v1 or v2 moved. A page that
+ * needs the event should check `adePlugin.version >= 3` before subscribing:
+ * `events.on` refuses a name its host has never heard of, on purpose, so a page
+ * cannot sit forever waiting for an event that will not come.
  */
-export const PLUGIN_WEBVIEW_BRIDGE_VERSION = 2;
+export const PLUGIN_WEBVIEW_BRIDGE_VERSION = 3;
 
 /**
  * The host-injected subject a plugin page is attached to.
@@ -268,13 +274,12 @@ export function decodePluginWebviewContext(raw: string | null | undefined): Plug
   }
   if (!decoded || typeof decoded !== "object" || Array.isArray(decoded)) return null;
   const record = decoded as Record<string, unknown>;
-  const subject = record.subject;
   // A subject is one of the typed context objects, every one of which carries a
   // string `kind`. Anything else — including a page's attempt to smuggle a bare
-  // record — is dropped to null rather than passed through as a subject.
-  const subjectValue = subject && typeof subject === "object" && typeof (subject as Record<string, unknown>).kind === "string"
-    ? (subject as PluginSurfaceContext)
-    : null;
+  // record — is dropped to null rather than passed through as a subject. Shared
+  // with the `context` event's own check so a subject that arrives late is held
+  // to exactly the same shape as one that arrived in the URL.
+  const subjectValue = sanitizePluginWebviewSubject(record.subject);
   const pointer = record.pointer;
   const pointerValue = pointer && typeof pointer === "object" && !Array.isArray(pointer)
     ? (pointer as Record<string, unknown>)
@@ -479,8 +484,41 @@ export type PluginWebviewChangeEvent = {
   collection?: string;
 };
 
+/**
+ * What the page hears when the host moves its SUBJECT.
+ *
+ * The full-page placements are why this exists. A tab is opened once and lives
+ * as long as the reader stays in it, while the thing the reader is working on —
+ * the selected lane — changes underneath it many times. A page that only heard
+ * its subject at attach would follow the lane that happened to be selected when
+ * it was opened, and every later selection would be invisible to it.
+ *
+ * `subject` is the whole answer, not a delta, and `null` is a real one: no lane
+ * is selected, or the window has no project. A page treats it exactly as it
+ * treats `adePlugin.context.subject`, because it is the same field arriving
+ * later.
+ */
+export type PluginWebviewContextEvent = {
+  subject: PluginSurfaceContext | null;
+};
+
+/**
+ * Read a subject off an untrusted frame, or answer null.
+ *
+ * The same shape check {@link decodePluginWebviewContext} applies to the URL,
+ * shared rather than restated: a subject is one of the typed context objects
+ * and every one of them carries a string `kind`. Anything else is null, which
+ * is a real subject value and therefore always a safe degradation.
+ */
+export function sanitizePluginWebviewSubject(value: unknown): PluginSurfaceContext | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  return typeof (value as Record<string, unknown>).kind === "string"
+    ? (value as PluginSurfaceContext)
+    : null;
+}
+
 /** The event names {@link AdePluginWebviewBridge.events.on} accepts. */
-export const PLUGIN_WEBVIEW_EVENTS = ["changed", "theme", "host", "refresh"] as const;
+export const PLUGIN_WEBVIEW_EVENTS = ["changed", "theme", "host", "refresh", "context"] as const;
 
 export type PluginWebviewEventName = (typeof PLUGIN_WEBVIEW_EVENTS)[number];
 
@@ -1377,12 +1415,15 @@ export type AdePluginWebviewBridge = {
   /**
    * The subject the host attached this page to, or null.
    *
-   * Null for a full tab or pane webview — the plugin's own front page belongs to
-   * no chat, lane or PR. Present when a plugin page is mounted as a drawer tab or
-   * summoned as an overlay from a button: `subject` is the host's own word about
-   * which chat/lane/PR, unforgeable, and `pointer` is a hint the plugin's own
-   * action chose to pass. See {@link PluginWebviewContext}. Reported at attach
-   * and stable for the life of the guest.
+   * `subject` is the host's own word about which chat, lane or PR this page is
+   * looking at, and it is unforgeable — captured from the source URL at attach,
+   * before the page runs a line of script. `pointer` is a hint the plugin's own
+   * action chose to pass. See {@link PluginWebviewContext}.
+   *
+   * Read this at attach, and follow `events.on("context", …)` after: a rail tab
+   * is opened once and outlives many selections, so its subject MOVES. Whether
+   * this property moves with it is a host detail a page must not depend on —
+   * the event is the contract.
    */
   readonly context: PluginWebviewContext | null;
 
@@ -1444,6 +1485,12 @@ export type AdePluginWebviewBridge = {
      * nothing, and the page re-reads whatever this surface reads.
      */
     on(event: "refresh", listener: () => void): () => void;
+    /**
+     * The host moved this page's subject. See {@link PluginWebviewContextEvent}.
+     *
+     * v3 and later; check `adePlugin.version >= 3` before subscribing.
+     */
+    on(event: "context", listener: (payload: PluginWebviewContextEvent) => void): () => void;
   };
 
   /**

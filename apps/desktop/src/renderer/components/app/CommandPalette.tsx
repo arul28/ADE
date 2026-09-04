@@ -75,6 +75,7 @@ import { fadeScale } from "../../lib/motion";
 import { isMacPlatform, modifierKeyLabel } from "../../lib/platform";
 import { PROJECT_BROWSER_CLOSE_EVENT } from "../../lib/projectBrowserEvents";
 import { isWebClientMode, pluginTabsAvailable, WEB_CLIENT_TAB_PATHS } from "../../lib/webClientMode";
+import { pluginRailTabSurface } from "../../../shared/plugins/manifest";
 import { pluginOwnsBuiltinTab } from "../plugins/builtinTabs";
 import {
   PLUGIN_PALETTE_GROUP,
@@ -790,19 +791,30 @@ export function CommandPalette({
         }]),
       ...(pluginTabsAvailable()
         ? installedPlugins
-            .filter((plugin) => plugin.enabled
-              && (plugin.tabs?.length ?? 0) > 0
+            .flatMap((plugin) => {
+              if (!plugin.enabled) return [];
               // Gating plugins have no page of their own; the tab they own is
               // already offered above under its built-in name.
-              && !pluginOwnsBuiltinTab(plugin))
-            .map((plugin) => ({
-              id: `go-plugin-${plugin.pluginId}`,
-              title: `Go to ${plugin.tabs[0]!.title || plugin.displayName}`,
-              hint: `${plugin.displayName} plugin`,
-              keywords: ["plugin", plugin.pluginId, plugin.displayName],
-              group: "Navigation",
-              run: () => navigate(`/plugin/${plugin.pluginId}`),
-            }))
+              if (pluginOwnsBuiltinTab(plugin)) return [];
+              // The RAIL surface, by the one rule every client shares, rather
+              // than `tabs[0]`. Two things follow, and the palette got both
+              // wrong: a plugin whose first surface is not its rail surface was
+              // offered under the wrong title, and a plugin that declares no
+              // rail surface at all — one whose page is reached through its own
+              // sockets, like iOS Sim Control — was offered a "Go to" entry to
+              // a sidebar tab that is not in the sidebar, beside the palette
+              // action the plugin itself declares for that page.
+              const rail = pluginRailTabSurface(plugin.tabs);
+              if (!rail) return [];
+              return [{
+                id: `go-plugin-${plugin.pluginId}`,
+                title: `Go to ${rail.title || plugin.displayName}`,
+                hint: `${plugin.displayName} plugin`,
+                keywords: ["plugin", plugin.pluginId, plugin.displayName],
+                group: "Navigation",
+                run: () => navigate(`/plugin/${plugin.pluginId}`),
+              }];
+            })
         : []),
       // One command per settings *tab*, generated from the manifest. The
       // manifest reports only the tabs this renderer can serve, so the web

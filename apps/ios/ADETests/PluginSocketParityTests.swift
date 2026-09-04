@@ -217,6 +217,101 @@ final class PluginSocketParityTests: XCTestCase {
     )
   }
 
+  /// `pluginRailTabSurface` in `manifest.ts` again, for the OPT-OUT.
+  ///
+  /// `ade-ios-sim` and `ade-app-control` declare a webview only so their Work
+  /// pane has a page to draw; neither wants a rail entry, and both say so with
+  /// `railTab: false`. The wire drops `kind`, so on this client that field is
+  /// the ONLY thing left that can answer "is this a tab" — a phone that ignored
+  /// it would list two entries the desktop and the terminal both hide.
+  func testRailTabSurfaceHonoursTheOptOut() throws {
+    let record = try JSONDecoder().decode(PluginInstallRecordEntry.self, from: Data(#"""
+    {
+      "pluginId": "ade-ios-sim",
+      "enabled": true,
+      "sockets": [],
+      "tabs": [
+        { "id": "sim", "title": "iOS Sim Control", "panelId": "main", "railTab": false }
+      ]
+    }
+    """#.utf8))
+    XCTAssertEqual(record.tabs?.count, 1, "the surface stays on the wire; only the rail skips it")
+    XCTAssertEqual(record.tabs?.first?.railTab, false)
+    XCTAssertNil(pluginRailTabSurface(record.tabs), "an opted-out page claims no rail tab")
+    XCTAssertNil(PluginSocketDeclarations(records: [record]).railTabSurfaceId(for: "ade-ios-sim"))
+
+    // Skipped rather than ending the search: a later surface still rails.
+    XCTAssertEqual(
+      pluginRailTabSurface([
+        PluginManifestTabWire(id: "sim", railTab: false),
+        PluginManifestTabWire(id: "fleet"),
+      ])?.id,
+      "fleet"
+    )
+    // Read BEFORE the kind, because the wire carries no kind at all.
+    XCTAssertEqual(
+      pluginRailTabSurface([
+        PluginManifestTabWire(id: "sim", kind: "webview", railTab: false),
+        PluginManifestTabWire(id: "fleet", kind: "tab"),
+      ])?.id,
+      "fleet"
+    )
+    // Absent means "claims a tab", which is what a host too old to send the
+    // field was already drawing.
+    XCTAssertEqual(pluginRailTabSurface([PluginManifestTabWire(id: "sim")])?.id, "sim")
+    XCTAssertEqual(
+      pluginRailTabSurface([PluginManifestTabWire(id: "sim", railTab: true)])?.id,
+      "sim"
+    )
+  }
+
+  /// `PluginManifestSurface.mobile` on a `webview`, which is an OPT-IN.
+  ///
+  /// The phone draws plugin pages now, so a webview surface can be a phone
+  /// screen — but only when its author said so. Two conditions gate it here and
+  /// both matter: `kind == "webview"` says there is a page at all, and
+  /// `mobile == true` says it was meant for a phone. Promoting every webview on
+  /// the first condition alone would redraw every installed plugin's desktop
+  /// layout here at the next launch.
+  func testPhonePageIsDrawnOnlyForAWebviewOptedIntoMobile() throws {
+    func declarations(_ tabsJSON: String) throws -> PluginSocketDeclarations {
+      let record = try JSONDecoder().decode(PluginInstallRecordEntry.self, from: Data("""
+      { "pluginId": "cloud", "enabled": true, "sockets": [], "tabs": \(tabsJSON) }
+      """.utf8))
+      return PluginSocketDeclarations(records: [record])
+    }
+
+    // Opted in: the entry menu opens the plugin's own page.
+    let optedIn = try declarations(#"""
+    [{ "id": "fleet", "title": "Fleet", "panelId": "main", "kind": "webview", "mobile": true }]
+    """#)
+    XCTAssertEqual(optedIn.railWebviewSurfaceId(for: "cloud"), "fleet")
+    XCTAssertEqual(optedIn.railTabSurfaceId(for: "cloud"), "fleet", "the badge address is unchanged")
+
+    // The default: a page, but not one meant for this phone. The panel behind
+    // it is what the entry menu opens, exactly as before.
+    let notOptedIn = try declarations(#"""
+    [{ "id": "fleet", "title": "Fleet", "panelId": "main", "kind": "webview" }]
+    """#)
+    XCTAssertNil(notOptedIn.railWebviewSurfaceId(for: "cloud"))
+    XCTAssertEqual(notOptedIn.railTabSurfaceId(for: "cloud"), "fleet")
+
+    // A `tab` is a panel on every client. `mobile` is true by default there and
+    // must never turn it into a page.
+    let panelTab = try declarations(#"""
+    [{ "id": "fleet", "title": "Fleet", "panelId": "main", "kind": "tab", "mobile": true }]
+    """#)
+    XCTAssertNil(panelTab.railWebviewSurfaceId(for: "cloud"))
+
+    // A host too old to send `kind` sends no `mobile` either, and its readers
+    // were already drawing the panel. That must not change under it.
+    let olderHost = try declarations(#"""
+    [{ "id": "fleet", "title": "Fleet", "panelId": "main" }]
+    """#)
+    XCTAssertNil(olderHost.railWebviewSurfaceId(for: "cloud"))
+    XCTAssertEqual(olderHost.railTabSurfaceId(for: "cloud"), "fleet")
+  }
+
   // MARK: - Brand glyph viewBox
 
   /// `VIEWBOX_PATTERN` in `vocabularyBrandIcons.ts`. `Double(_:)` used to

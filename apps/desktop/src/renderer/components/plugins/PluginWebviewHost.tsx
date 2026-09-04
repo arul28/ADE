@@ -106,6 +106,7 @@ export function PluginWebviewHost({
   entryHtml,
   active,
   context = null,
+  republishSubject = false,
   placement = "tab",
   surfaceId = null,
   onRequestClose,
@@ -126,6 +127,22 @@ export function PluginWebviewHost({
    * forge it. A change recreates the guest, the same as a change of page.
    */
   context?: PluginWebviewContext | null;
+  /**
+   * Follow a moving subject with a PUSH rather than a new guest.
+   *
+   * Off by default, and the default is the honest one for the placements that
+   * had a subject first: a drawer and a button-opened overlay are mounted ONTO
+   * one chat or one row, so a different subject is a different page and tearing
+   * the guest down is what a plugin author expects.
+   *
+   * A full-page placement is the opposite. A rail tab is opened once and
+   * outlives many lane selections, and recreating its guest on each one would
+   * throw away the page's scroll, its filters and everything it had loaded —
+   * every time the reader clicked a lane. With this on, a subject-only change
+   * publishes the `context` event to the live guest instead, and only a change
+   * of page, plugin, placement or pointer still recreates it.
+   */
+  republishSubject?: boolean;
   /**
    * Where this guest is drawn. Rides in `__adeCtx` so the page can lay itself
    * out for the space it actually got, and is what the relay's `surface.close`
@@ -223,19 +240,35 @@ export function PluginWebviewHost({
   // that hands a fresh-but-equal context object each render does not, because
   // the string is what the effect keys on.
   //
+  // Under `republishSubject` the SUBJECT is lifted out of that key: the guest is
+  // rebuilt for a change of pointer, placement or surface, and a change of
+  // subject alone is pushed to the live page instead. The subject still goes
+  // into the URL — a page must be able to read it before it runs a line of
+  // script, and the value that goes in is this render's, held in a ref that was
+  // assigned just above.
+  //
   // `surfaceId` and `placement` are folded in HERE rather than by the caller so
   // every placement carries them without each host remembering to. Main reads
   // them back off the URL at attach and stamps them onto its own guest record,
   // which is what makes a relayed request able to say where it came from.
+  const contextRef = React.useRef(context);
+  contextRef.current = context;
+  const contextKey = React.useMemo(
+    () => JSON.stringify(republishSubject ? { pointer: context?.pointer ?? null } : context ?? null),
+    [republishSubject, context],
+  );
   const envelope = React.useMemo<PluginWebviewContext>(
-    () => ({
-      subject: context?.subject ?? null,
-      ...(context?.pointer ? { pointer: context.pointer } : {}),
-      ...(surfaceId ? { surfaceId } : {}),
-      placement,
-    }),
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- context is folded into the string below.
-    [placement, surfaceId, context ? JSON.stringify(context) : ""],
+    () => {
+      const current = contextRef.current;
+      return {
+        subject: current?.subject ?? null,
+        ...(current?.pointer ? { pointer: current.pointer } : {}),
+        ...(surfaceId ? { surfaceId } : {}),
+        placement,
+      };
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- the context is folded into `contextKey`.
+    [placement, surfaceId, contextKey],
   );
   const src = React.useMemo(
     () => pluginWebviewUrl(pluginId, entryHtml, envelope),
@@ -376,6 +409,29 @@ export function PluginWebviewHost({
       guestRef.current = null;
     };
   }, [webClient, pluginId, src, reloadToken, reloadKey, mounted, placement, surfaceId]);
+
+  /**
+   * Push a moved subject to the live guest, under {@link republishSubject}.
+   *
+   * Keyed on the guest as well as on the subject, so the first run after an
+   * attach restates what the URL already carried. That restatement is
+   * deliberate: it costs one frame nobody reads and it removes the race where a
+   * selection lands between the guest being created and its key arriving, which
+   * would otherwise leave the page on the lane it was opened with and nothing
+   * to correct it.
+   *
+   * The publish is host→guest and the payload is the host's own word. A page
+   * cannot reach this: main takes the window id from the IPC sender and matches
+   * it against the guest's own before it moves anything.
+   */
+  const subjectKey = JSON.stringify(context?.subject ?? null);
+  React.useEffect(() => {
+    if (!republishSubject || !liveGuestKey) return;
+    const relay = pluginWebviewRelayBridge();
+    if (!relay?.publishContext) return;
+    relay.publishContext({ guestKey: liveGuestKey, subject: contextRef.current?.subject ?? null });
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- the subject is folded into `subjectKey`.
+  }, [republishSubject, liveGuestKey, subjectKey]);
 
   const wasActiveRef = React.useRef(active);
   React.useEffect(() => {

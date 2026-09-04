@@ -40,6 +40,7 @@
 import { CURSOR_AVAILABLE_MODE_IDS } from "../cursorModes";
 import {
   MODEL_REGISTRY,
+  getDefaultModelDescriptor,
   getDynamicAcpModelDescriptors,
   getDynamicOpenCodeModelDescriptors,
   getDynamicPiModelDescriptors,
@@ -132,10 +133,69 @@ export type PluginChatModelCapability = {
   deprecated: boolean;
 };
 
+/**
+ * The selection ADE's OWN launch form starts on.
+ *
+ * ## Why the two lists are not enough
+ *
+ * `providers` and `models` answer "what MAY the reader choose", and a form can
+ * be drawn from them alone. What they cannot answer is "what is it set to
+ * before the reader touches anything", and that answer is not derivable from
+ * either list: ADE's own launch form opens on the model the user launched LAST,
+ * which is per-user state in the project database, and falls back to the
+ * registry default only for a user who has launched nothing. A page rebuilding
+ * that form therefore opened on whatever its own author hard-coded — the ported
+ * Linear launch modal opened on a fixed Claude id while the composer beside it
+ * opened on the user's actual last model.
+ *
+ * So this is the composer's seed, computed on the HOST from the same recents
+ * the composer reads, and offered as one object rather than five fields because
+ * the five are only correct together: `effort` is the default rung of THIS
+ * model, and `permissionMode` the default mode of THIS model's provider.
+ *
+ * Null only when the registry itself offers no model — a host with no Claude
+ * and no OpenCode descriptors, which is a broken install rather than a user
+ * with no history. A page that gets null draws its picker unset rather than
+ * guessing an id.
+ */
+export type PluginChatDefaultModel = {
+  /** The join to {@link PluginChatProviderCapability}, as on a model. */
+  provider: ModelProviderGroup;
+  modelId: string;
+  /**
+   * The rung to preselect, absent when this model has no reasoning ladder.
+   * Always a member of the model's own `reasoningEfforts`.
+   */
+  effort?: string;
+  /**
+   * The provider's own default permission mode, in the provider's NATIVE
+   * vocabulary — the same value `defaultPermissionMode` carries, which is what
+   * `permissionField` takes back. Absent when the model's provider has no entry
+   * in `providers` (a Pi or ACP model, whose permission control ADE does not
+   * draw either).
+   */
+  permissionMode?: string;
+  /**
+   * Whether to start with the fast service tier ON. Always false today, because
+   * ADE's own composer starts every launch on the standard tier and fast is a
+   * per-launch opt-in. Reported rather than omitted so a page has the field to
+   * bind its toggle to, and never on a model whose `fastMode` is false.
+   */
+  fastMode?: boolean;
+};
+
 /** The whole answer to `chat.capabilities`. */
 export type PluginChatCapabilities = {
   providers: PluginChatProviderCapability[];
   models: PluginChatModelCapability[];
+  /**
+   * What the form opens on. See {@link PluginChatDefaultModel}.
+   *
+   * Present on every answer, `null` rather than absent when there is nothing to
+   * seed: absent would be indistinguishable from a host too old to compute it,
+   * and a page cannot tell "no default" from "no field" without that.
+   */
+  defaultModel: PluginChatDefaultModel | null;
 };
 
 const CLAUDE_PERMISSION_OPTIONS: PluginChatPermissionOption[] = [
@@ -281,10 +341,79 @@ export function pluginChatModelCapabilities(): PluginChatModelCapability[] {
   return out;
 }
 
+/**
+ * The launch-form seed, from this user's recent models.
+ *
+ * The selection rule is `BatchLaunchModal`'s, restated rather than imported for
+ * the reason the permission lists above are: that file is renderer code a
+ * shared module may not import and the plugin host cannot reach. The rule is
+ * "the most recent model that still exists, else the Claude default, else the
+ * OpenCode default", and `chatCapabilities.test.ts` pins it against the
+ * modal's own expression so the two cannot drift.
+ *
+ * Recents that name a model this host no longer has are SKIPPED rather than
+ * ending the search: a user whose last launch was a dynamic OpenCode model that
+ * is no longer installed still has a second-most-recent, and falling straight
+ * to the Claude default there would move their form under them for one absent
+ * catalog entry.
+ *
+ * `recents` is newest-first, exactly as `modelPicker.getRecents` answers it. An
+ * empty list is the ordinary state for a new user, not an error.
+ */
+export function pluginChatDefaultModel(
+  recents: readonly string[] = [],
+): PluginChatDefaultModel | null {
+  const models = pluginChatModelCapabilities();
+  const byId = new Map(models.map((model) => [model.id, model] as const));
+  let chosen: PluginChatModelCapability | undefined;
+  for (const modelId of recents) {
+    const match = byId.get(modelId);
+    if (match) {
+      chosen = match;
+      break;
+    }
+  }
+  if (!chosen) {
+    for (const provider of ["claude", "opencode"] as const) {
+      const descriptor = getDefaultModelDescriptor(provider);
+      const match = descriptor ? byId.get(descriptor.id) : undefined;
+      if (match) {
+        chosen = match;
+        break;
+      }
+    }
+  }
+  if (!chosen) return null;
+  const model = chosen;
+  const providerCap = pluginChatProviderCapabilities()
+    .find((entry) => entry.provider === model.provider);
+  return {
+    provider: model.provider,
+    modelId: model.id,
+    ...(model.defaultReasoningEffort ? { effort: model.defaultReasoningEffort } : {}),
+    ...(providerCap ? { permissionMode: providerCap.defaultPermissionMode } : {}),
+    ...(model.fastMode ? { fastMode: false } : {}),
+  };
+}
+
+/** What the host knows that the registry does not. */
+export type PluginChatCapabilitiesInput = {
+  /**
+   * This user's recently launched model ids, newest first — the answer to
+   * `modelPicker.getRecents`. Absent on a host that cannot read them (no
+   * project bound, or a read that failed), which resolves to the registry
+   * default rather than to no default at all.
+   */
+  recents?: readonly string[];
+};
+
 /** The whole answer. See {@link PluginChatCapabilities}. */
-export function pluginChatCapabilities(): PluginChatCapabilities {
+export function pluginChatCapabilities(
+  input: PluginChatCapabilitiesInput = {},
+): PluginChatCapabilities {
   return {
     providers: pluginChatProviderCapabilities(),
     models: pluginChatModelCapabilities(),
+    defaultModel: pluginChatDefaultModel(input.recents ?? []),
   };
 }

@@ -1545,15 +1545,23 @@ struct PluginSocketDeclarations: Equatable {
   /// from the panel rows.
   private(set) var railTabSurfaceByPlugin: [String: String] = [:]
 
-  /// Which plugins declare their rail tab as a `webview` surface — a page the
-  /// plugin draws itself — rather than a vocabulary panel.
+  /// Which plugins draw their rail tab as a PAGE on this phone — a `webview`
+  /// surface whose author opted it in — rather than as a vocabulary panel.
+  ///
+  /// TWO conditions, and both are load-bearing. `kind == "webview"` says the
+  /// plugin has a page at all. `mobile == true` says its author meant that page
+  /// for a phone: the default is false, because a layout written for a desktop
+  /// tab is not a phone screen until someone says it is, and promoting every
+  /// webview silently would redraw every installed plugin here at the next
+  /// launch.
   ///
   /// A separate map rather than a flag inside the one above, because the two
   /// answers have different lifetimes: the surface id is what every badge and
   /// contribution join keys on and must exist for every tab, and this is only
   /// ever consulted at the moment a tab is opened. A plugin missing from here
-  /// simply opens the panel, which is also what a host too old to report `kind`
-  /// produces.
+  /// simply opens the panel — which is also what a host too old to report
+  /// `kind` or `mobile` produces, and what every plugin that has not opted in
+  /// keeps doing.
   private(set) var railWebviewSurfaceByPlugin: [String: String] = [:]
 
   /// The `webview` surface this plugin's tab draws, or nil when it draws a panel.
@@ -1689,7 +1697,7 @@ struct PluginSocketDeclarations: Equatable {
       // `sockets`: a plugin can declare a tab and no sockets at all.
       if let rail = pluginRailTabSurface(record.tabs), !rail.id.isEmpty {
         railTabSurfaceByPlugin[record.pluginId] = rail.id
-        if rail.kind == "webview" {
+        if rail.kind == "webview", rail.mobile == true {
           railWebviewSurfaceByPlugin[record.pluginId] = rail.id
         }
       }

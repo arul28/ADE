@@ -16,6 +16,8 @@ import {
   tuiLaneContext,
   tuiSessionContext,
 } from "../pluginSockets";
+import { pluginRailTabSurface } from "../../../../desktop/src/shared/plugins/manifest";
+import { defaultPluginPanelId } from "../adeApi";
 
 function summary(overrides: Partial<PluginSummary> = {}): PluginSummary {
   return {
@@ -405,5 +407,41 @@ describe("plugin tab badges", () => {
     expect(pluginTabBadgeText(badgeFor("ade-cursor-cloud/console").app, plugin)).toBe("7");
     // The later tab is not the rail surface, and its address reads nothing.
     expect(pluginTabBadgeText(badgeFor("ade-cursor-cloud/fleet").app, plugin)).toBeNull();
+  });
+
+  /**
+   * The rail OPT-OUT, in the terminal. `ade-ios-sim` and `ade-app-control`
+   * declare a webview only so their Work pane has a page to draw; neither wants
+   * a rail entry. A client that honoured the opt-out on the desktop and not
+   * here would put the entry back in one of the two places, which is the
+   * per-client divergence `pluginRailTabSurface` exists to end.
+   */
+  it("gives no rail tab to a plugin whose only page opted out", () => {
+    const simOnly = summary({
+      pluginId: "ade-ios-sim",
+      displayName: "iOS Sim Control",
+      surfaces: [
+        { kind: "webview", id: "sim", title: "iOS Sim Control", panelId: "main", railTab: false },
+      ],
+    });
+    expect(pluginRailTabSurface(simOnly.surfaces)).toBeNull();
+    // No rail surface means no address to read a pill from, whatever is published.
+    expect(pluginTabBadgeText({ badges: [], menu: [], actions: [] } as never, simOnly)).toBeNull();
+
+    // The panel is still the plugin's front door for `/plugin-view`, which is
+    // the fallback the terminal draws in place of the page it cannot host.
+    expect(defaultPluginPanelId(simOnly)).toBe("main");
+  });
+
+  it("rails the next surface when an earlier one opted out", () => {
+    const mixed = summary({
+      pluginId: "acme",
+      surfaces: [
+        { kind: "webview", id: "picker", title: "Picker", panelId: "picker", railTab: false },
+        { kind: "tab", id: "board", title: "Board", panelId: "board" },
+      ],
+    });
+    expect(pluginRailTabSurface(mixed.surfaces)?.id).toBe("board");
+    expect(defaultPluginPanelId(mixed)).toBe("board");
   });
 });

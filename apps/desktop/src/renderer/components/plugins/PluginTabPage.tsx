@@ -2,7 +2,7 @@ import React from "react";
 import { Navigate, useParams, useSearchParams } from "react-router-dom";
 
 import { COLORS, outlineButton } from "../lanes/laneDesignTokens";
-import { useRootAppStore } from "../../state/appStore";
+import { useAppStore, useRootAppStore } from "../../state/appStore";
 import { openPluginLogs, restartPlugin, type InstalledPlugin } from "../../lib/pluginRuntimeBridge";
 import {
   PluginPanelHost,
@@ -15,6 +15,8 @@ import { PluginFallbackCard } from "./VocabularyRenderer";
 import { builtinRouteForPluginRoute } from "./builtinTabs";
 import { parseDeeplinkPluginContext } from "../../../shared/deeplinks";
 import { pluginRailTabSurface } from "../../../shared/plugins/manifest";
+import type { PluginWebviewContext } from "../../../shared/plugins/webviewBridge";
+import { pluginLaneContext } from "./sockets/surfaceContexts";
 
 /**
  * The route page for a plugin tab (`/plugin/:pluginId`).
@@ -349,6 +351,33 @@ function PluginBody({
   backLabel: string | null;
   restoreState: PluginPanelSnapshot | null;
 }) {
+  /**
+   * The lane the app is on, as this page's subject.
+   *
+   * A rail tab used to be handed no subject at all, on the reasoning that a
+   * plugin's own front page belongs to no chat, lane or PR. That is true of
+   * OWNERSHIP and false of ATTENTION: History and Graph are pages ABOUT the
+   * lane the reader has selected in the Work rail, and with no subject they
+   * could only guess — usually by showing the whole project and hoping.
+   *
+   * Selected-lane rather than route-derived, so this page follows exactly what
+   * the rest of the app is pointed at. Null is a real answer and a common one:
+   * no lane is selected, no project is bound, or the lane in the store has
+   * since gone. A page reads null as "the whole project", which is the answer
+   * it was already giving itself.
+   *
+   * It MOVES — that is the point — so `PluginWebviewHost` publishes it instead
+   * of rebuilding the guest, and a page follows it with `events.on("context")`.
+   */
+  const selectedLaneId = useAppStore((state) => state.selectedLaneId);
+  const lanes = useAppStore((state) => state.lanes);
+  const projectHydrated = useAppStore((state) => state.projectHydrated);
+  const laneSubject = React.useMemo<PluginWebviewContext | null>(() => {
+    if (!projectHydrated) return null;
+    const lane = selectedLaneId ? lanes.find((entry) => entry.id === selectedLaneId) ?? null : null;
+    return { subject: lane ? pluginLaneContext(lane) : null };
+  }, [lanes, projectHydrated, selectedLaneId]);
+
   if (!plugin.enabled) {
     return (
       <PluginFallbackCard
@@ -386,6 +415,8 @@ function PluginBody({
           active={active}
           placement="tab"
           surfaceId={surfaceId}
+          context={laneSubject}
+          republishSubject
         />
       </>
     );

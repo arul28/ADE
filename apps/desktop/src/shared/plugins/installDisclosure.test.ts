@@ -129,6 +129,58 @@ describe("surface disclosure", () => {
     expect(describeManifestAdds(manifest)).toEqual(["Focus tab — desktop only, custom UI"]);
   });
 
+  it("says desktop and phone for a page whose author opted into the phone", () => {
+    // "desktop only" is a claim about WHERE, and `mobile` decides it. A webview
+    // is desktop-and-web by default and reaches the phone only on an opt-in, so
+    // the card has to say which of the two this package is.
+    const manifest = manifestWithSurfaces([
+      {
+        kind: "webview",
+        id: "focus-web",
+        title: "Focus",
+        panelId: "focus",
+        entryHtml: "ui/index.html",
+        mobile: true,
+      },
+    ]);
+    expect(describeManifestAdds(manifest)).toEqual(["Focus tab — custom UI on desktop and phone"]);
+  });
+
+  it("promises no tab for a page the plugin reaches through its own sockets", () => {
+    // `ade-ios-sim` and `ade-app-control` declare a webview so their Work pane
+    // has a page to draw, and opt out of the rail. Disclosing "iOS Sim Control
+    // tab — desktop only, custom UI" promised a sidebar tab the user will never
+    // find; the socket that DOES draw it is counted in the Work line instead.
+    const manifest = manifestWithSurfaces([
+      {
+        kind: "webview",
+        id: "focus-web",
+        title: "Focus",
+        panelId: "focus",
+        entryHtml: "ui/index.html",
+        railTab: false,
+      },
+    ]);
+    expect(describeManifestAdds(manifest)).toEqual([]);
+  });
+
+  it("does not pair an opted-out webview with a tab that shares its panel", () => {
+    // The pairing line says "custom UI on desktop", which would be a claim
+    // about a tab this page never renders.
+    const manifest = manifestWithSurfaces([
+      { kind: "tab", id: "focus-tab", title: "Focus", panelId: "focus" },
+      {
+        kind: "webview",
+        id: "focus-web",
+        title: "Focus",
+        panelId: "focus",
+        entryHtml: "ui/index.html",
+        railTab: false,
+      },
+    ]);
+    expect(describeManifestAdds(manifest)).toEqual(["Focus tab"]);
+  });
+
   it("collapses popover pages instead of listing each as a tab", () => {
     const manifest = manifestWithSurfaces([
       { kind: "webview", id: "issues", title: "Linear", panelId: "issues", entryHtml: "ui/index.html" },

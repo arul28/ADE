@@ -74,6 +74,35 @@ export type SyncPluginRecordTab = {
   title: string;
   panelId: string;
   icon?: string | null;
+  /**
+   * `"tab"` or `"webview"` — the list is already filtered to those two.
+   *
+   * Carried because a reader that CAN host a guest has to know which surface is
+   * a page: the phone opens a webview surface as the plugin's own page and a
+   * tab surface as the vocabulary panel, and with no kind on the wire it opened
+   * the panel for both. Absent from a host too old to send it, which reads as
+   * "panel", the answer that host's readers were already giving.
+   */
+  kind?: string;
+  /**
+   * `true` when this surface's author opted the PAGE into the phone.
+   *
+   * Only meaningful on a `webview`, where the default is false and the phone
+   * shows the surface's panel instead. Absent means false — on a host too old
+   * to send it as well, which is why the absent case must stay "panel".
+   */
+  mobile?: boolean;
+  /**
+   * `false` when this surface must not claim a rail tab — the plugin reaches
+   * its page through its own sockets. Carried even though no reader here can
+   * host a webview, because the READER still has to decide whether to list a
+   * tab for it, and the phone's `pluginRailTabSurface` answers that from this
+   * field alone: the wire drops `kind`, so there is nothing else left to ask.
+   *
+   * Absent means it claims a tab, which is what a host too old to send the
+   * field was already doing.
+   */
+  railTab?: boolean;
 };
 
 /**

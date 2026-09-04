@@ -19,6 +19,7 @@
  */
 
 import { isPluginsUnavailable } from "../../shared/plugins/sdk";
+import type { PluginSurfaceContext } from "../../shared/plugins/context";
 import type {
   PluginWebviewChatTurn,
   PluginWebviewSurfaceState,
@@ -238,6 +239,12 @@ export type PluginWebviewRelayMembers = {
   onUiRequest: (cb: (request: unknown) => void) => () => void;
   respondUi: (response: PluginWebviewUiResponse) => void;
   publishTheme: (snapshot: PluginWebviewThemeSnapshot) => void;
+  /**
+   * One guest's subject moved. Addressed to a guest, not a window: a window
+   * draws one palette and many subjects, so a window-wide push would tell a
+   * chat drawer that its conversation had changed.
+   */
+  publishContext: (payload: { guestKey: string; subject: PluginSurfaceContext | null }) => void;
   publishChatTurn: (turn: PluginWebviewChatTurn) => void;
   /**
    * "An operation, conflict or review moved." Identity only — see the channel.

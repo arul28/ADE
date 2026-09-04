@@ -10,6 +10,8 @@ import {
   type PluginCollectionPutOptions,
 } from "../../../shared/plugins/sdk";
 import { CORE_ISSUE_PLUGIN_ID, type IssueRef } from "../../../shared/issueRef";
+import { getDefaultModelDescriptor } from "../../../shared/modelRegistry";
+import { pluginChatCapabilities } from "../../../shared/plugins/chatCapabilities";
 import type { IssueLink, LaneSummary } from "../../../shared/types/lanes";
 import type { PluginDataStore } from "./pluginDataStore";
 import type { PluginSecretStore } from "./pluginSecretStore";
@@ -905,6 +907,49 @@ describe("createPluginSdkServer chat", () => {
     expect(claude.permissionModes.map((option) => option.value)).toContain(claude.defaultPermissionMode);
     expect(answer.models.length).toBeGreaterThan(0);
     expect(answer.models.some((model) => model.fastMode)).toBe(true);
+  });
+
+  it("seeds defaultModel from the host's recents, newest first", async () => {
+    // The one part of the answer that is NOT the same for everyone. ADE's own
+    // launch form opens on the model the user launched last, and a page that
+    // could not read that opened on whatever its author hard-coded.
+    const models = pluginChatCapabilities().models;
+    const wanted = models[2] ?? models[0]!;
+    const { handle } = createServer({
+      modelRecents: async () => [wanted.id],
+    } as never);
+
+    const answer = await handle("chat.capabilities", {}) as {
+      defaultModel: { modelId: string; provider: string } | null;
+    };
+    expect(answer.defaultModel?.modelId).toBe(wanted.id);
+    expect(answer.defaultModel?.provider).toBe(wanted.provider);
+  });
+
+  it("falls back to the registry default when the host binds no recents reader", async () => {
+    const { handle } = createServer();
+    const answer = await handle("chat.capabilities", {}) as {
+      defaultModel: { modelId: string } | null;
+    };
+    expect(answer.defaultModel?.modelId).toBe(getDefaultModelDescriptor("claude")?.id);
+  });
+
+  it("answers a seed rather than failing when the recents read rejects", async () => {
+    // Recents live in the project database, and a projectless window or an
+    // older database has none. A launch form that could not open at all there
+    // would be worse than one that opens on the registry default.
+    const { handle } = createServer({
+      modelRecents: async () => {
+        throw new Error("no project is attached");
+      },
+    } as never);
+
+    const answer = await handle("chat.capabilities", {}) as {
+      defaultModel: { modelId: string } | null;
+      models: unknown[];
+    };
+    expect(answer.defaultModel?.modelId).toBe(getDefaultModelDescriptor("claude")?.id);
+    expect(answer.models.length).toBeGreaterThan(0);
   });
 
   it("binds a session to a runtime the manifest declares", async () => {

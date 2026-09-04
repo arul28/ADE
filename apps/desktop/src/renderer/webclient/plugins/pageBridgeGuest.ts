@@ -58,7 +58,13 @@ export function pluginPageGuestMain(config: PluginPageGuestConfig): void {
   var parentOrigin = config.parentOrigin;
   var nextRequestId = 1;
   var pending: Record<string, { resolve: (value: unknown) => void; reject: (error: Error) => void }> = {};
-  var listeners: Record<string, Array<(payload: unknown) => void>> = { changed: [], theme: [], host: [], refresh: [] };
+  // One bucket per event name the bridge defines. `on` refuses a name with no
+  // bucket, so a name missing here is a page that subscribes and never hears
+  // anything — which is why `context` is listed even though the web host does
+  // not publish it yet: a page written once must behave the same in both hosts,
+  // and hearing nothing is the correct degradation, not a silent refusal.
+  var listeners: Record<string, Array<(payload: unknown) => void>> =
+    { changed: [], theme: [], host: [], refresh: [], context: [] };
   var booted = false;
 
   function post(body: Record<string, unknown>): void {
@@ -274,6 +280,16 @@ export function pluginPageGuestMain(config: PluginPageGuestConfig): void {
     bridge.version = typeof payload.bridgeVersion === "number" ? payload.bridgeVersion : BRIDGE_FALLBACK_VERSION;
     bridge.pluginId = typeof payload.pluginId === "string" ? payload.pluginId : config.pluginId;
     bridge.context = payload.context || null;
+    // The subject can move under a page that outlives many selections. The web
+    // host does not publish it today, so this only fires where a host does —
+    // but the write must live here, beside the initial one, or a page that
+    // reads `adePlugin.context.subject` after a move would read the value it
+    // was opened with.
+    on("context", function (event) {
+      var moved = event && typeof event === "object" ? (event as Record<string, unknown>).subject : null;
+      if (!bridge.context) bridge.context = { subject: null };
+      (bridge.context as Record<string, unknown>).subject = moved && typeof moved === "object" ? moved : null;
+    });
     applyTheme(payload.theme as Record<string, unknown> | null);
     on("theme", function (snapshot) {
       applyTheme(snapshot as Record<string, unknown> | null);

@@ -3765,6 +3765,14 @@ export type PluginSummary = {
      * `PluginManifestSurface.popover`.
      */
     popover?: { width: number; height: number };
+    /**
+     * `webview` surfaces only: `false` when the page is reached through this
+     * plugin's sockets and must NOT also claim a sidebar tab. Absent means it
+     * does claim one — on a host too old to report the field as well, which is
+     * the tab that host was already drawing. See
+     * `PluginManifestSurface.railTab`.
+     */
+    railTab?: boolean;
   }[];
   /** Present only for theme plugins; the renderer's theme engine consumes it. */
   theme: { displayName: string; tokens: { dark?: Record<string, string>; light?: Record<string, string> } } | null;
@@ -4497,6 +4505,13 @@ export type PluginClientTabDescriptor = {
    * means "not a gate" and never "hidden".
    */
   builtin?: string | null;
+  /**
+   * `false` when this page must NOT claim a sidebar tab — it is reached through
+   * the plugin's own sockets instead. The descriptor stays on the list either
+   * way, because the socket hosts read it to find the page they mount; only
+   * `pluginRailTabSurface` skips it. Absent means it does claim a tab.
+   */
+  railTab?: boolean;
 };
 
 export type PluginClientInstalled = {

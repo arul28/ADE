@@ -27,6 +27,13 @@ const registry = {
 
 let webviewsSupported = true;
 
+/** What the app is pointed at, which is what a rail tab's subject follows. */
+const app = {
+  selectedLaneId: null as string | null,
+  lanes: [] as Array<{ id: string; name: string; branchRef?: string | null }>,
+  projectHydrated: true,
+};
+
 vi.mock("../../state/appStore", () => ({
   useRootAppStore: (select: (state: unknown) => unknown) =>
     select({
@@ -36,6 +43,7 @@ vi.mock("../../state/appStore", () => ({
       setLastPluginPanel: () => {},
       refreshInstalledPlugins: async () => {},
     }),
+  useAppStore: (select: (state: unknown) => unknown) => select(app),
 }));
 
 vi.mock("../../lib/pluginRuntimeBridge", () => ({
@@ -107,7 +115,20 @@ vi.mock("./PluginPanelHost", () => ({
 }));
 
 vi.mock("./PluginWebviewHost", () => ({
-  PluginWebviewHost: () => <div data-testid="webview-host" />,
+  PluginWebviewHost: ({
+    context,
+    republishSubject,
+  }: {
+    context?: { subject: unknown } | null;
+    republishSubject?: boolean;
+  }) => (
+    <div
+      data-testid="webview-host"
+      data-republish={republishSubject ? "yes" : "no"}
+    >
+      {JSON.stringify(context?.subject ?? null)}
+    </div>
+  ),
   supportsPluginWebviews: () => webviewsSupported,
 }));
 
@@ -144,6 +165,9 @@ afterEach(() => {
   registry.loaded = true;
   registry.lastPanelByPlugin = {};
   webviewsSupported = true;
+  app.selectedLaneId = null;
+  app.lanes = [];
+  app.projectHydrated = true;
 });
 
 describe("plugin tab page", () => {
@@ -161,6 +185,74 @@ describe("plugin tab page", () => {
     // The page wins outright: the declared panel is the fallback, not a second
     // thing to draw beside a working guest.
     expect(screen.queryByTestId("panel-host")).toBeNull();
+  });
+
+  /**
+   * The lane a rail tab is looking at.
+   *
+   * A tab used to be handed no subject at all, on the reasoning that a plugin's
+   * front page belongs to no lane. That is true of OWNERSHIP and false of
+   * ATTENTION: History and Graph are pages about the lane the reader has
+   * selected, and with no subject they could only show the whole project and
+   * hope. The page outlives many selections, so the subject has to MOVE without
+   * the guest being rebuilt underneath it.
+   */
+  describe("the selected lane as the page's subject", () => {
+    const webviewPlugin = () => installed({
+      tabs: [{ id: "main", title: "Overview", kind: "webview", panelId: "overview", entryHtml: "ui/index.html" }],
+    });
+
+    it("hands the page the lane the app is on, and follows the selection", () => {
+      registry.plugins = [webviewPlugin()];
+      app.lanes = [
+        { id: "lane-1", name: "Fix login", branchRef: "refs/heads/fix/login" },
+        { id: "lane-2", name: "Ship docs", branchRef: "refs/heads/docs" },
+      ];
+      app.selectedLaneId = "lane-1";
+      const view = mount();
+
+      expect(JSON.parse(screen.getByTestId("webview-host").textContent ?? "null")).toMatchObject({
+        kind: "lane",
+        id: "lane-1",
+        name: "Fix login",
+        branch: "fix/login",
+      });
+      // Published rather than remounted, or every lane click would throw away
+      // the page's scroll and everything it had loaded.
+      expect(screen.getByTestId("webview-host").getAttribute("data-republish")).toBe("yes");
+
+      app.selectedLaneId = "lane-2";
+      view.rerender(
+        <MemoryRouter initialEntries={["/plugin/acme-notes?panel=overview"]}>
+          <Routes>
+            <Route path="/plugin/:pluginId" element={<PluginTabPage />} />
+          </Routes>
+        </MemoryRouter>,
+      );
+
+      expect(JSON.parse(screen.getByTestId("webview-host").textContent ?? "null")).toMatchObject({
+        id: "lane-2",
+        name: "Ship docs",
+      });
+    });
+
+    it("hands null when nothing is selected, which a page reads as the whole project", () => {
+      registry.plugins = [webviewPlugin()];
+      app.lanes = [{ id: "lane-1", name: "Fix login" }];
+      app.selectedLaneId = null;
+      mount();
+      expect(screen.getByTestId("webview-host").textContent).toBe("null");
+    });
+
+    it("hands null for a selection whose lane the store no longer holds", () => {
+      // The lane was deleted, or the list has not caught up. Naming a lane that
+      // is gone would send the page looking for rows that do not exist.
+      registry.plugins = [webviewPlugin()];
+      app.lanes = [];
+      app.selectedLaneId = "lane-gone";
+      mount();
+      expect(screen.getByTestId("webview-host").textContent).toBe("null");
+    });
   });
 
   it("draws the panel, and says nothing, for a webview surface this client cannot host", () => {

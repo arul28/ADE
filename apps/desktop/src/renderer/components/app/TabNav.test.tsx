@@ -249,6 +249,69 @@ describe("TabNav", () => {
     );
   });
 
+  it("draws no sidebar tab for a plugin whose only page opted out of the rail", () => {
+    // iOS Sim Control and Electron Control draw through their `work-rail-pane`
+    // socket, exactly as those panes did before the plugin system. The rail
+    // rule counts `webview` as a tab kind, so without the opt-out each got a
+    // second entry point in the main sidebar that nobody asked for.
+    Object.defineProperty(globalThis.window, "ade", {
+      configurable: true,
+      writable: true,
+      value: {
+        ...((globalThis.window as unknown as { ade?: Record<string, unknown> }).ade ?? {}),
+        plugins: {
+          getPanel: async () => null,
+          getCollection: async () => [],
+        },
+      },
+    });
+    rootAppStoreApi.setState({
+      installedPlugins: [
+        {
+          pluginId: "ade-ios-sim",
+          displayName: "iOS Sim Control",
+          version: "2.0.0",
+          enabled: true,
+          icon: null,
+          accent: null,
+          status: "running",
+          tabs: [{
+            id: "sim",
+            title: "iOS Sim Control",
+            kind: "webview" as const,
+            panelId: "main",
+            entryHtml: "dist/index.html",
+            railTab: false,
+          }],
+          theme: null,
+        },
+        // A plugin that did NOT opt out, so the assertion below proves the rail
+        // is still drawing tabs at all rather than silently drawing none.
+        {
+          pluginId: "acme-notes",
+          displayName: "Notes",
+          version: "1.0.0",
+          enabled: true,
+          icon: null,
+          accent: null,
+          status: "running",
+          tabs: [{ id: "inbox", title: "Notes", panelId: "inbox" }],
+          theme: null,
+        },
+      ],
+      pluginsLoaded: true,
+    });
+
+    render(
+      <MemoryRouter initialEntries={["/work"]}>
+        <TabNav />
+      </MemoryRouter>,
+    );
+
+    expect(screen.queryByRole("link", { name: "iOS Sim Control" })).toBeNull();
+    expect(screen.getByRole("link", { name: "Notes" })).toBeTruthy();
+  });
+
   it("draws a published plugin-tab badge and hides it while that tab is active", () => {
     Object.defineProperty(globalThis.window, "ade", {
       configurable: true,

@@ -76,6 +76,7 @@ import {
   PLUGIN_WEBVIEW_TOAST_LABEL_MAX_CHARS,
   PLUGIN_WEBVIEW_TOAST_MESSAGE_MAX_CHARS,
   sanitizePluginWebviewChatTurn,
+  sanitizePluginWebviewSubject,
   sanitizePluginWebviewTheme,
   type PluginWebviewChangeEvent,
   type PluginWebviewChatTurn,
@@ -104,6 +105,7 @@ import {
   guestPlacement,
   guestSurfaceId,
   listPluginWebviewGuests,
+  setPluginWebviewGuestSubject,
   type PluginWebviewGuest,
 } from "./pluginWebviewGuests";
 
@@ -238,6 +240,19 @@ export type PluginWebviewBridgeServer = {
    * window's guests as the `theme` event.
    */
   publishTheme(hostWindowId: number | null, payload: unknown): void;
+  /**
+   * One guest's subject moved, published by the window that draws it.
+   *
+   * Addressed to a GUEST rather than to a window, unlike the theme: a window
+   * draws one palette and many subjects, and pushing a lane to every guest in
+   * the window would tell a chat drawer that its conversation had changed.
+   *
+   * The window id is read from the IPC sender and checked against the guest's
+   * own, so one window cannot move a subject in another. A key that names no
+   * live guest is dropped: that is the ordinary race of a selection landing a
+   * frame after the guest went away, not an error anyone can act on.
+   */
+  publishContext(hostWindowId: number | null, payload: unknown): void;
   /**
    * One chat turn's move, published by the renderer of the window it happened
    * in, for that window's guests subscribed to the `chat` kind.
@@ -1393,6 +1408,24 @@ export function createPluginWebviewBridgeServer(
         if (hostWindowId != null && guest.hostWindowId !== hostWindowId) continue;
         push(guest, "theme", theme);
       }
+    },
+
+    publishContext(hostWindowId, payload) {
+      if (!payload || typeof payload !== "object") return;
+      const record = payload as Record<string, unknown>;
+      const guestKey = typeof record.guestKey === "string" ? record.guestKey : "";
+      if (!guestKey) return;
+      const target = listAllPluginWebviewGuests()
+        .find((guest) => guestKeyOf(guest) === guestKey);
+      if (!target) return;
+      // A window may move only its OWN guests' subjects. The id comes from the
+      // sender, never from the frame, so this is a fact about who called and
+      // not a claim the caller made.
+      if (hostWindowId != null && target.hostWindowId !== hostWindowId) return;
+      const subject = sanitizePluginWebviewSubject(record.subject);
+      const updated = setPluginWebviewGuestSubject(guestKey, subject);
+      if (!updated) return;
+      push(updated, "context", { subject });
     },
 
     publishChatTurn(hostWindowId, payload) {

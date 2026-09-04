@@ -679,6 +679,20 @@ export function createPluginSdkServer(deps: {
     status?: (pluginId: string) => Promise<PluginWebhookIngressStatus>;
   };
   /**
+   * This user's recently launched model ids, newest first, for the
+   * `defaultModel` half of `chat.capabilities`.
+   *
+   * Separate from {@link chat} and optional on its own, because the two answer
+   * to different things: `chat` is the write surface a host binds when it can
+   * run sessions, and this is a READ of per-user picker state that a host with
+   * no chat service still has. Binding one must not require binding the other,
+   * or a page could not seed a form on a host it can still list models from.
+   *
+   * A rejection is treated as "no recents" by the case, so a supplier may throw
+   * rather than answering an empty list it cannot vouch for.
+   */
+  modelRecents?: () => Promise<readonly string[]>;
+  /**
    * The chat sessions this plugin owns, for `ade.chat.*`.
    *
    * **Every method here is already ownership-checked by the supplier.** This
@@ -1313,11 +1327,26 @@ export function createPluginSdkServer(deps: {
         case "chat.capabilities": {
           // A pure READ of the model registry and the permission unions: no
           // args to validate, nothing owned to check, and no `requireChat()` —
-          // the answer is the same for every plugin, every project and every
-          // lane, so there is no ownership question to ask and no host binding
-          // to require. A plugin building a launch form can read it on a host
-          // that binds no chat service at all.
-          return pluginChatCapabilities();
+          // the answer is the same for every plugin and every lane, so there is
+          // no ownership question to ask and no host binding to require. A
+          // plugin building a launch form can read it on a host that binds no
+          // chat service at all.
+          //
+          // `defaultModel` is the one part that is NOT the same for everyone:
+          // it seeds the form from this user's recent launches, so it needs the
+          // project database the model picker stores them in. Read here rather
+          // than required, and a failed or unbound read answers no recents
+          // rather than failing the call — the seed then falls back to the
+          // registry default, which is what a user with no history gets anyway.
+          let recents: readonly string[] = [];
+          if (deps.modelRecents) {
+            try {
+              recents = await deps.modelRecents();
+            } catch {
+              recents = [];
+            }
+          }
+          return pluginChatCapabilities({ recents });
         }
 
         case "chat.createSession": {

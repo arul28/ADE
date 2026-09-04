@@ -506,6 +506,16 @@ export const IPC = {
    */
   pluginWebviewThemePublish: "ade.plugin.webview.themePublish",
   /**
+   * Renderer → main: one guest's SUBJECT moved. Payload
+   * `{ guestKey: string; subject: PluginSurfaceContext | null }`.
+   *
+   * Addressed to a guest rather than to a window, unlike the theme above: a
+   * window draws one palette and many subjects. Main checks the sender's window
+   * against the guest's own, replaces the subject on its guest record, and
+   * pushes the `context` event to that one guest.
+   */
+  pluginWebviewContextPublish: "ade.plugin.webview.contextPublish",
+  /**
    * Renderer → main: one chat turn moved. Payload {@link PluginWebviewChatTurn}.
    * Main fans it out to that window's guests that subscribed to the `chat`
    * host kind, coalesced the way the entity families are.

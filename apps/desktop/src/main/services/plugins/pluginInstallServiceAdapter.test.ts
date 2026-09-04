@@ -274,7 +274,7 @@ describe("record detail for peers", () => {
 
     // A pane is not a rail entry; only full-page surfaces become navigable.
     expect(record.tabs).toEqual([
-      { id: "graph", title: "Graph", panelId: "main", icon: "network" },
+      { id: "graph", title: "Graph", panelId: "main", icon: "network", kind: "tab" },
     ]);
     expect(record.theme).toEqual({
       displayName: "Graph",
@@ -289,8 +289,9 @@ describe("record detail for peers", () => {
    * surface is a webview reached the phone and the web client with ZERO tabs —
    * invisible there while the desktop rail, which reads the preload's own
    * mapping, listed it (docs/reports/ade-plugins-agent-diagnostic-2026-08-26.md
-   * §3). `entryHtml` stays off the record on purpose: no reader of it can host a
-   * guest, and each renders the surface's panel instead.
+   * §3). `entryHtml` stays off the record on purpose: a reader that can host a
+   * guest loads the page from its own cached bundle, and one that cannot renders
+   * the surface's panel — either way the ADE machine's own path is no use.
    */
   it("carries a webview surface as a rail tab, without its entryHtml", async () => {
     const { service } = stubInstallService({
@@ -314,8 +315,38 @@ describe("record detail for peers", () => {
 
     const [record] = await adapter.list();
 
+    // `kind` rides along, and it has to: this record is the ONLY thing the
+    // phone can ask "is this surface a page or the panel behind it", and with
+    // no kind on the wire it drew the panel for every webview ever shipped.
     expect(record.tabs).toEqual([
-      { id: "dashboard", title: "Dashboard", panelId: "main", icon: "beer" },
+      { id: "dashboard", title: "Dashboard", panelId: "main", icon: "beer", kind: "webview" },
+    ]);
+    // Absent, not false: the author did not opt this page into the phone, and
+    // absence is what every host too old to send the field also means.
+    expect(record.tabs?.[0]).not.toHaveProperty("mobile");
+  });
+
+  it("carries the phone opt-in for a webview whose author asked for it", async () => {
+    const { service } = stubInstallService({
+      list: () => [installed({
+        manifest: manifest({
+          surfaces: [{
+            kind: "webview",
+            id: "fleet",
+            title: "Fleet",
+            panelId: "main",
+            entryHtml: "web/index.html",
+            mobile: true,
+          }],
+        }),
+      })],
+    });
+    const adapter = createPluginInstallServiceAdapter({ install: service });
+
+    const [record] = await adapter.list();
+
+    expect(record.tabs).toEqual([
+      { id: "fleet", title: "Fleet", panelId: "main", icon: null, kind: "webview", mobile: true },
     ]);
   });
 

@@ -184,6 +184,18 @@ enum PluginPageBridgeEvent: String, Equatable {
     /// no argument, and a page that needed one would be asking the host to
     /// decide what it should redraw.
     case refresh
+    /// The host moved this page's SUBJECT.
+    ///
+    /// Desktop-only today, and listed here anyway. A rail tab on the desktop is
+    /// opened once and outlives many lane selections, so its subject moves; the
+    /// phone presents a page as a sheet whose subject is fixed by the press that
+    /// opened it, so nothing here publishes one. What the phone must not do is
+    /// REFUSE the name: one page runs in both hosts, and a page that subscribes
+    /// here should hear nothing rather than fail to subscribe at all.
+    ///
+    /// Payload is `{ subject }` — the whole subject, never a delta, and null is
+    /// a real answer.
+    case context
 }
 
 /// The host-side entity kinds `host.subscribe` accepts.

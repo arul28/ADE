@@ -302,8 +302,14 @@ function runningLayer(snapshot: PluginDoctorSnapshot): PluginDoctorLayer {
 function railSurfaces(manifest: PluginManifest | null): PluginManifest["surfaces"] {
   // The kind list itself lives in `manifest.ts` beside `pluginRailTabSurface`,
   // so "which kinds are rail kinds" has one home rather than a copy per client.
+  //
+  // `railTab: false` is excluded for the same reason the rule excludes it: the
+  // doctor's whole job is to say what the author will actually see, and
+  // counting a sidebar tab that no client draws is the "green while broken"
+  // reading the rest of this command exists to prevent.
   return (manifest?.surfaces ?? []).filter(
-    (surface) => PLUGIN_RAIL_TAB_SURFACE_KINDS.some((kind) => kind === surface.kind),
+    (surface) => surface.railTab !== false
+      && PLUGIN_RAIL_TAB_SURFACE_KINDS.some((kind) => kind === surface.kind),
   );
 }
 

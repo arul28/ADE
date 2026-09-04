@@ -137,16 +137,19 @@ export const PLUGIN_THEME_TOKEN_NAME_PATTERN = /^--[a-z0-9-]{1,60}$/;
  *
  * A tab or a pane renders a panel schema, which every client interprets with its
  * own widgets — that is what lets one plugin work on desktop, iOS, web and the
- * TUI at once. A webview renders the plugin's own HTML inside a sandboxed guest
- * on the desktop and nowhere else, so it buys unlimited UI at the cost of being
- * a single-platform surface. Choose it when the vocabulary genuinely cannot say
- * what the plugin needs to draw, not to avoid learning the vocabulary.
+ * TUI at once. A webview renders the plugin's own HTML inside a sandboxed guest,
+ * so it buys unlimited UI at the cost of being drawn only where a guest can be
+ * hosted: the desktop, the hosted web client, and the phone for a surface whose
+ * author opted in with `mobile: true`. Never the terminal. Choose it when the
+ * vocabulary genuinely cannot say what the plugin needs to draw, not to avoid
+ * learning the vocabulary.
  *
- * Every webview surface still declares a `panelId`. That panel is what iOS, the
- * web client and the TUI show in its place, so "desktop-only" degrades to the
- * plugin's own sentence and an open-on-desktop link rather than to a blank
- * space. It is required, not optional, precisely because the fallback is the
- * thing that keeps the cross-surface promise honest.
+ * Every webview surface still declares a `panelId`. That panel is what the TUI
+ * shows in its place, what the phone shows for a page it has not cached or was
+ * not opted into, and what any client that cannot host a guest falls back to —
+ * so a page that is missing degrades to the plugin's own sentence rather than to
+ * a blank space. It is required, not optional, precisely because the fallback is
+ * the thing that keeps the cross-surface promise honest.
  */
 export type PluginSurfaceKind = "tab" | "pane" | "webview";
 
@@ -213,14 +216,46 @@ export type PluginManifestSurface = {
    */
   popover?: { width: number; height: number };
   /**
+   * `webview` only: whether this surface also claims a SIDEBAR TAB.
+   *
+   * A webview is a rail tab by default, and has to be — that default is what
+   * makes a custom-UI plugin visible at all, and filtering webviews out of the
+   * rail is the bug `PLUGIN_RAIL_TAB_SURFACE_KINDS` exists to have fixed.
+   *
+   * But a webview surface is also how a plugin declares a PAGE, and a page is
+   * not always a tab: `ade-ios-sim` and `ade-app-control` draw theirs inside
+   * Work, through a `work-rail-pane` socket that names the same surface, which
+   * is exactly where those two panes lived before they were plugins. Giving
+   * them a second entry point in the main sidebar moved a compiled pane the
+   * user already knew, in exchange for nothing.
+   *
+   * `false` says "this page is reached through my sockets, not through the
+   * rail". It NARROWS only: there is no `railTab: true` that promotes a `pane`,
+   * a socket-only page or any non-webview surface into the sidebar, for the
+   * same reason `mobile` is a narrowing switch — the ceiling comes from what
+   * the surface is.
+   *
+   * Absent means true, on every host and in every hand-written literal, so an
+   * older manifest and an older reader both keep the tab they had.
+   */
+  railTab?: boolean;
+  /**
    * Whether this surface appears on the phone.
    *
    * The parser always sets it, and sets the RESOLVED answer rather than the raw
-   * manifest value: what the author asked for is only ever narrowed, by the two
-   * ceilings in {@link parseSurfaces}. Optional in the type because a
-   * hand-written surface literal (the bundled Marketplace index, a fixture) is
-   * not obliged to restate a default — absent reads as "whatever this kind does
-   * today", which is what {@link pluginPanelShowsOnMobile} applies.
+   * manifest value: what the author asked for is narrowed by the built-in
+   * ceiling in {@link parseSurfaces}, and defaulted per kind there.
+   *
+   * On a `webview` the default is FALSE and saying `true` is a real opt-in: the
+   * phone draws the plugin's own page for that surface instead of the panel it
+   * names. A page written for a desktop tab is not a phone screen until its
+   * author says so, which is why the opt-in is explicit rather than inherited.
+   * On every other kind the default is true.
+   *
+   * Optional in the type because a hand-written surface literal (the bundled
+   * Marketplace index, a fixture) is not obliged to restate a default — absent
+   * reads as "whatever this kind does today", which is what
+   * {@link pluginPanelShowsOnMobile} applies.
    */
   mobile?: boolean;
 };
@@ -1168,11 +1203,40 @@ function parseSurfaces(raw: unknown, ctx: ParseContext, official: boolean): Plug
         + ` — declare a "work-rail-pane" socket for panel "${panelId}" instead`,
       );
     }
-    // `mobile` is a narrowing switch, not a grant. The ceiling comes from what
-    // the surface IS — a webview draws a desktop-only page, a gated built-in
-    // draws whatever compiled page the phone ships for it — and the manifest may
-    // only turn a mobile-capable surface off. A malformed value is treated as
-    // absent rather than fatal: it costs the author a default, not a plugin.
+    // The rail opt-out. Narrowing only, and only on a `webview`: see
+    // `PluginManifestSurface.railTab`. A `tab` that claimed no rail entry, and
+    // a `pane` that claimed one, would each be a surface no client draws —
+    // the state the `pane` refusal above exists to prevent — so the field is
+    // ignored with a warning off a webview rather than honoured into a hole.
+    let railTab = true;
+    if (entry.railTab !== undefined) {
+      if (typeof entry.railTab !== "boolean") {
+        ctx.warnings.push(`${label}.railTab must be true or false — ignored`);
+      } else if (kind !== "webview") {
+        ctx.warnings.push(`${label}.railTab applies only to a "webview" surface — ignored`);
+      } else {
+        railTab = entry.railTab;
+      }
+    }
+    // `mobile` is a narrowing switch over a CEILING and a DEFAULT, and the two
+    // are different questions.
+    //
+    // The ceiling is what the surface CAN do. A gated built-in draws compiled
+    // ADE code, so the ceiling there is whether the phone ships that screen —
+    // a table this manifest cannot argue with. Everything else is capable.
+    //
+    // A webview used to be pinned at a ceiling of false, and that was true of
+    // the product it was written for: the phone had no page host, so a webview
+    // could only ever be the panel it names. The phone draws plugin pages now,
+    // from a cached bundle, and falls back to that panel on its own when there
+    // is none — so the ceiling is lifted and `mobile: true` is honoured with no
+    // warning. What stays is the DEFAULT: false, because a page written for a
+    // desktop tab is not a phone screen until its author says it is, and a
+    // silent promotion would put every existing plugin's desktop layout on a
+    // phone at the next launch.
+    //
+    // A malformed value is treated as absent rather than fatal: it costs the
+    // author a default, not a plugin.
     let declaredMobile: boolean | null = null;
     if (entry.mobile !== undefined) {
       if (typeof entry.mobile === "boolean") {
@@ -1181,16 +1245,11 @@ function parseSurfaces(raw: unknown, ctx: ParseContext, official: boolean): Plug
         ctx.warnings.push(`${label}.mobile must be true or false — ignored`);
       }
     }
-    const mobileCeiling = kind === "webview"
-      ? false
-      : builtin
-        ? PLUGIN_BUILTIN_SURFACE_MOBILE[builtin]
-        : true;
+    const mobileCeiling = builtin ? PLUGIN_BUILTIN_SURFACE_MOBILE[builtin] : true;
+    const mobileDefault = kind !== "webview";
     if (declaredMobile === true && !mobileCeiling) {
       ctx.warnings.push(
-        kind === "webview"
-          ? `${label}.mobile cannot be true on a "webview" surface — the phone renders its panelId panel instead`
-          : `${label}.mobile cannot be true for the built-in "${String(builtin)}" surface, which the phone has no page for — ignored`,
+        `${label}.mobile cannot be true for the built-in "${String(builtin)}" surface, which the phone has no page for — ignored`,
       );
     }
     return {
@@ -1203,7 +1262,13 @@ function parseSurfaces(raw: unknown, ctx: ParseContext, official: boolean): Plug
       ...(builtin ? { builtin } : {}),
       ...(entryHtml ? { entryHtml } : {}),
       ...(popover ? { popover } : {}),
-      mobile: mobileCeiling && (declaredMobile ?? true),
+      // Emitted only when the author opted OUT, unlike `mobile`, which always
+      // carries its resolved answer. The default here is true for every surface
+      // on every host, so `railTab: true` on the wire would be a byte per
+      // surface that says what its absence already says — and every literal
+      // that restates a manifest would have to grow a line to stay equal.
+      ...(railTab ? {} : { railTab: false }),
+      mobile: mobileCeiling && (declaredMobile ?? mobileDefault),
     };
   });
 }
@@ -1211,12 +1276,16 @@ function parseSurfaces(raw: unknown, ctx: ParseContext, official: boolean): Plug
 /**
  * Whether the phone should LIST the panel a surface names.
  *
- * Not the same question as `surface.mobile`, and the webview is why. A webview
- * page is desktop-only by construction, but the panel it names is exactly what
- * every non-desktop client renders in its place — filtering that panel out would
- * delete the fallback the surface exists to provide. A gated built-in has no
- * such consolation: the phone either ships the compiled page or has nothing at
- * all to show, so there the surface's answer is the panel's answer.
+ * Not the same question as `surface.mobile`, and the webview is why. `mobile`
+ * on a webview says whether the phone draws its PAGE; this says whether the
+ * phone keeps the panel behind it. Both answers are yes for a webview, and the
+ * one that matters is the second: the panel is what the phone shows when the
+ * page is not cached yet, when the plugin ships no bundle for this device, and
+ * for every webview whose author has not opted into the phone at all — which is
+ * the default. Filtering it out would delete the fallback the surface exists to
+ * provide. A gated built-in has no such consolation: the phone either ships the
+ * compiled page or has nothing at all to show, so there the surface's answer is
+ * the panel's answer.
  *
  * Exported because two layers ask it — the panel seeder and the SDK's
  * `panels.update` — and a second spelling of this rule is a second answer.
@@ -1254,11 +1323,20 @@ export const PLUGIN_RAIL_TAB_SURFACE_KINDS = ["tab", "webview"] as const;
  * Accepts a surface with no `kind` as a rail surface, so the same function
  * serves a wire record whose surfaces were already filtered to rail kinds and
  * therefore carry no kind of their own.
+ *
+ * A surface that opted out with `railTab: false` is SKIPPED rather than ending
+ * the search, and the checks are in that order for a reason: the opt-out has to
+ * be read on a wire surface that carries no `kind`, which is every surface the
+ * phone sees. A plugin whose first page opts out and whose second does not
+ * therefore rails the second, and one whose only page opts out rails nothing —
+ * which is the whole point, and what `ade-ios-sim` and `ade-app-control` ask
+ * for. See `PluginManifestSurface.railTab`.
  */
-export function pluginRailTabSurface<T extends { kind?: string }>(
+export function pluginRailTabSurface<T extends { kind?: string; railTab?: boolean }>(
   surfaces: readonly T[] | null | undefined,
 ): T | null {
   for (const surface of surfaces ?? []) {
+    if (surface.railTab === false) continue;
     if (surface.kind === undefined) return surface;
     if (PLUGIN_RAIL_TAB_SURFACE_KINDS.some((kind) => kind === surface.kind)) return surface;
   }

@@ -774,6 +774,7 @@ import type {
   PluginClientUsageRow as PluginUsageRow,
   PluginWebhookIngressStatus,
 } from "../shared/plugins/sdk";
+import type { PluginSurfaceContext } from "../shared/plugins/context";
 import type {
   PluginWebviewChatTurn,
   PluginWebviewSurfaceState,
@@ -2571,6 +2572,14 @@ declare global {
           onUiRequest: (cb: (request: unknown) => void) => () => void;
           respondUi: (response: PluginWebviewUiResponse) => void;
           publishTheme: (snapshot: PluginWebviewThemeSnapshot) => void;
+          /**
+           * One guest's subject moved. Addressed to a guest, not a window: a
+           * window draws one palette and many subjects.
+           */
+          publishContext: (payload: {
+            guestKey: string;
+            subject: PluginSurfaceContext | null;
+          }) => void;
           /**
            * One chat turn's move, for the guests of THIS window that follow the
            * `chat` host kind. Published by the renderer because it is the only

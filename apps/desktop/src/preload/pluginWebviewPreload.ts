@@ -47,6 +47,7 @@ import {
   isPluginWebviewEventName,
   PLUGIN_WEBVIEW_BRIDGE_VERSION,
   PLUGIN_WEBVIEW_EVENTS,
+  sanitizePluginWebviewSubject,
   PLUGIN_WEBVIEW_RESIZE_CHANNEL,
   PLUGIN_WEBVIEW_PAGE_ERROR_MESSAGE_MAX_CHARS,
   PLUGIN_WEBVIEW_PAGE_ERROR_SOURCE_MAX_CHARS,
@@ -151,6 +152,16 @@ function subscribeToEvent(
       const named = isRecord(frame) && isPluginWebviewEventName(frame.event) ? frame.event : null;
       const name: PluginWebviewEventName = named ?? "changed";
       const payload = named ? (frame as Record<string, unknown>).payload : frame;
+      // The subject moved. Written back onto the handshake object as well as
+      // fanned out, so a page that reads `adePlugin.context.subject` after the
+      // move sees the move — where the host's object bridge is live enough to
+      // carry it. That is a best effort and NOT the contract: the event is,
+      // which is why the bridge type says to follow it.
+      if (name === "context" && handshake.context) {
+        handshake.context.subject = isRecord(payload)
+          ? sanitizePluginWebviewSubject(payload.subject)
+          : null;
+      }
       for (const registered of [...(eventListeners.get(name) ?? [])]) {
         try {
           registered(payload ?? {});

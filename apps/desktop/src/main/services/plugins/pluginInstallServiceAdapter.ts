@@ -66,9 +66,17 @@ function toRecordStatus(status: PluginRuntimeStatus): SyncPluginRecordRuntimeSta
  * only full-page surface is a `webview` ZERO tabs on the wire, so the phone and
  * the web client did not list it at all while the desktop rail showed it.
  *
- * `entryHtml` is deliberately NOT carried: no reader of this record can host a
- * guest, and every one of them renders the surface's panel. That is the
- * cross-surface fallback working as designed, not a field lost in transit.
+ * `entryHtml` is deliberately NOT carried: a reader that can host a guest gets
+ * the page from its own cached bundle, keyed by plugin and surface id, and one
+ * that cannot renders the surface's panel. Either way the path on the ADE
+ * machine's disk is no use to it.
+ *
+ * `kind` and `mobile` ARE carried, and both are recent. The phone draws plugin
+ * pages now, so "is this surface a page" and "was this page opted into the
+ * phone" are questions the reader has to answer, and the reader has only this
+ * record to answer them from. Sending neither is what left the phone showing a
+ * panel for every webview: `railWebviewSurfaceByPlugin` is keyed on
+ * `kind == "webview"`, which no wire record has ever satisfied.
  */
 function toRecordTabs(installed: PluginInstalledPlugin): SyncPluginRecordTab[] {
   return (installed.manifest?.surfaces ?? [])
@@ -78,6 +86,16 @@ function toRecordTabs(installed: PluginInstalledPlugin): SyncPluginRecordTab[] {
       title: surface.title,
       panelId: surface.panelId,
       icon: surface.icon ?? null,
+      kind: surface.kind,
+      // Sent only when TRUE, and only a webview can be true here that the
+      // reader cares about: a `tab` is mobile by default and its absence
+      // already says so. On a webview absence means "the phone shows the
+      // panel", which is both the default and what every reader too old to
+      // know the field already does.
+      ...(surface.mobile === true ? { mobile: true } : {}),
+      // The rail opt-out. The one field of the manifest surface the kind filter
+      // cannot stand in for: whether a reader lists a TAB for this page.
+      ...(surface.railTab === false ? { railTab: false } : {}),
     }));
 }
 

@@ -166,7 +166,12 @@ function surfacesAreTwoHalvesOfOne(
  */
 function pairedSurfaceHalves(manifest: PluginManifest): Map<string, string> {
   const pairs = new Map<string, string>();
-  const webviews = manifest.surfaces.filter((surface) => surface.kind === "webview");
+  // A webview that opted out of the rail is not the other half of any tab: it
+  // is a page reached through a socket, and pairing it would print "custom UI
+  // on desktop" against a tab it never renders.
+  const webviews = manifest.surfaces.filter(
+    (surface) => surface.kind === "webview" && surface.railTab !== false,
+  );
   if (webviews.length === 0) return pairs;
   const claimed = new Set<string>();
   for (const tab of manifest.surfaces.filter((surface) => surface.kind === "tab")) {
@@ -202,17 +207,23 @@ function webviewIsEmbeddedChrome(manifest: PluginManifest, webviewId: string): b
 }
 
 function unpairedTabWebviews(manifest: PluginManifest): {
-  tabs: Array<{ id: string; title: string }>;
+  tabs: Array<{ id: string; title: string; mobile: boolean }>;
   extraPickers: boolean;
 } {
   const pairs = pairedSurfaceHalves(manifest);
   const pairedWebviewIds = new Set(pairs.values());
-  const tabs: Array<{ id: string; title: string }> = [];
+  const tabs: Array<{ id: string; title: string; mobile: boolean }> = [];
   const seenTitles = new Set<string>();
   let extraPickers = false;
   for (const surface of manifest.surfaces) {
     if (surface.kind !== "webview") continue;
     if (pairedWebviewIds.has(surface.id)) continue;
+    // A page that opted out of the rail is NOT a tab, so it must not be
+    // disclosed as one. `ade-ios-sim` and `ade-app-control` draw theirs through
+    // a `work-rail-pane` socket, and that socket is already counted in the
+    // "N additions to Work" line below — the card would otherwise promise a
+    // sidebar tab the user will never find.
+    if (surface.railTab === false) continue;
     if (webviewIsEmbeddedChrome(manifest, surface.id)) {
       extraPickers = extraPickers
         || Boolean(surface.popover)
@@ -222,7 +233,7 @@ function unpairedTabWebviews(manifest: PluginManifest): {
     }
     if (seenTitles.has(surface.title)) continue;
     seenTitles.add(surface.title);
-    tabs.push({ id: surface.id, title: surface.title });
+    tabs.push({ id: surface.id, title: surface.title, mobile: surface.mobile === true });
   }
   return { tabs, extraPickers };
 }
@@ -254,7 +265,14 @@ export function describeManifestAdds(manifest: PluginManifest): string[] {
   for (const pane of panes) lines.push(`${pane.title} pane`);
   const unpaired = unpairedTabWebviews(manifest);
   for (const webview of unpaired.tabs) {
-    lines.push(`${webview.title} tab — desktop only, custom UI`);
+    // "desktop only" is a claim about WHERE, and `mobile` is what decides it. A
+    // webview is desktop-and-web by default and reaches the phone only when its
+    // author opted in — so the card says which of the two this package is,
+    // rather than printing the old sentence over a page the reader will also
+    // find on their phone.
+    lines.push(webview.mobile
+      ? `${webview.title} tab — custom UI on desktop and phone`
+      : `${webview.title} tab — desktop only, custom UI`);
   }
   if (unpaired.extraPickers) {
     lines.push("Issue pickers and cards on desktop");

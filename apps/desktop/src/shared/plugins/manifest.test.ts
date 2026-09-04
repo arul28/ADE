@@ -9,6 +9,7 @@ import {
   findPluginChatRuntime,
   pluginHasRuntimeEntry,
   pluginPanelShowsOnMobile,
+  pluginRailTabSurface,
 } from "./manifest";
 import { sanitizePluginActionColor } from "./sockets";
 import {
@@ -614,12 +615,15 @@ describe("webview surfaces", () => {
     expect(result.manifest!.surfaces[0]?.icon).toBe("brand:cursor");
   });
 
-  it("resolves a webview surface to desktop-only while keeping its panel on the phone", () => {
-    const result = parsePluginManifest(webviewSurface({ mobile: true }));
+  it("defaults a webview surface to the panel on the phone, and keeps that panel", () => {
+    // `mobile: true` used to be refused here with a warning, because the phone
+    // had no page host. It draws plugin pages now, so the opt-in is honoured —
+    // see "a webview surface" under the mobile flag suite. What is unchanged is
+    // the DEFAULT and the panel behind it: the fallback is the whole reason
+    // panelId is required on a webview.
+    const result = parsePluginManifest(webviewSurface());
+    expect(result.warnings).toEqual([]);
     expect(result.manifest!.surfaces[0]?.mobile).toBe(false);
-    expect(result.warnings.join(" ")).toMatch(/cannot be true on a "webview" surface/);
-    // The panel the webview names is what the phone renders in its place, so it
-    // stays listed there — that fallback is the whole reason panelId is required.
     expect(pluginPanelShowsOnMobile(result.manifest!.surfaces[0]!)).toBe(true);
   });
 
@@ -717,6 +721,150 @@ describe("surface mobile flag", () => {
     expect(parsed.manifest!.surfaces).toHaveLength(1);
     expect(parsed.manifest!.surfaces[0]?.mobile).toBe(true);
     expect(parsed.warnings.join(" ")).toMatch(/mobile must be true or false/);
+  });
+
+  /**
+   * A webview's phone answer, which is now an OPT-IN rather than a refusal.
+   *
+   * The old rule pinned every webview at `mobile: false` and warned at an
+   * author who asked otherwise. That was true of the product it was written
+   * for — the phone had no page host, so a webview could only ever be the panel
+   * it names. The phone draws plugin pages now, so the ceiling is gone; what
+   * stays is the default, because a layout built for a desktop tab is not a
+   * phone screen until its author says so.
+   */
+  describe("a webview surface", () => {
+    const webview = (overrides: Record<string, unknown> = {}) => parsePluginManifest(validManifest({
+      surfaces: [{
+        kind: "webview",
+        id: "board",
+        title: "Board",
+        panelId: "main",
+        entryHtml: "web/index.html",
+        ...overrides,
+      }],
+    }));
+
+    it("defaults to the panel on the phone, with no warning", () => {
+      const parsed = webview();
+      expect(parsed.warnings).toEqual([]);
+      expect(parsed.manifest!.surfaces[0]?.mobile).toBe(false);
+    });
+
+    it("honours an author who opts the page into the phone", () => {
+      const parsed = webview({ mobile: true });
+      expect(parsed.errors).toEqual([]);
+      // The refusal is gone, and so is the sentence that used to explain it.
+      expect(parsed.warnings).toEqual([]);
+      expect(parsed.manifest!.surfaces[0]?.mobile).toBe(true);
+    });
+
+    it("keeps the panel listed on the phone either way", () => {
+      // `mobile` says whether the phone draws the PAGE. The panel behind it is
+      // what the phone shows when the page is not cached, and dropping that
+      // would delete the fallback the surface exists to provide.
+      expect(pluginPanelShowsOnMobile(webview().manifest!.surfaces[0]!)).toBe(true);
+      expect(pluginPanelShowsOnMobile(webview({ mobile: true }).manifest!.surfaces[0]!)).toBe(true);
+    });
+
+    it("does not change the default for any other kind", () => {
+      // The default is split by kind, not lifted for everyone: a `tab` renders
+      // a panel schema every client can draw, so it stays on the phone unless
+      // its author turns it off.
+      const parsed = parsePluginManifest(validManifest({
+        surfaces: [{ kind: "tab", id: "notes", title: "Notes", panelId: "main" }],
+      }));
+      expect(parsed.manifest!.surfaces[0]?.mobile).toBe(true);
+    });
+  });
+});
+
+/**
+ * The rail OPT-OUT, and the rule that honours it.
+ *
+ * A webview is a sidebar tab by default, and has to be: that default is what
+ * makes a custom-UI plugin visible at all. But a webview is also how a plugin
+ * declares a PAGE, and `ade-ios-sim` and `ade-app-control` draw theirs inside
+ * Work through a `work-rail-pane` socket — exactly where those panes lived
+ * before they were plugins. The default gave each of them a second entry point
+ * in the main sidebar that nobody asked for.
+ */
+describe("surface railTab flag", () => {
+  const webview = (overrides: Record<string, unknown> = {}) => validManifest({
+    surfaces: [{
+      kind: "webview",
+      id: "sim",
+      title: "Sim",
+      panelId: "main",
+      entryHtml: "web/index.html",
+      ...overrides,
+    }],
+  });
+
+  it("leaves the field off a webview that claims its tab", () => {
+    const parsed = parsePluginManifest(webview());
+    expect(parsed.warnings).toEqual([]);
+    // Absent, not `true`: the default is true on every host and in every
+    // hand-written literal, so emitting it would be a byte that says what its
+    // absence already says.
+    expect(parsed.manifest!.surfaces[0]).not.toHaveProperty("railTab");
+    expect(pluginRailTabSurface(parsed.manifest!.surfaces)?.id).toBe("sim");
+  });
+
+  it("honours an author who opts a webview out of the sidebar", () => {
+    const parsed = parsePluginManifest(webview({ railTab: false }));
+    expect(parsed.errors).toEqual([]);
+    expect(parsed.warnings).toEqual([]);
+    expect(parsed.manifest!.surfaces[0]?.railTab).toBe(false);
+    // The surface still EXISTS — the socket hosts mount its page from this same
+    // list. Only the rail rule skips it.
+    expect(parsed.manifest!.surfaces).toHaveLength(1);
+    expect(pluginRailTabSurface(parsed.manifest!.surfaces)).toBeNull();
+  });
+
+  it("ignores the field on a non-webview surface rather than making a hole", () => {
+    // A `tab` that claimed no rail entry would be a surface no client draws —
+    // the state the `pane` refusal exists to prevent.
+    const parsed = parsePluginManifest(validManifest({
+      surfaces: [{ kind: "tab", id: "notes", title: "Notes", panelId: "main", railTab: false }],
+    }));
+    expect(parsed.errors).toEqual([]);
+    expect(parsed.manifest!.surfaces[0]).not.toHaveProperty("railTab");
+    expect(parsed.warnings.join(" ")).toMatch(/railTab applies only to a "webview" surface/);
+    expect(pluginRailTabSurface(parsed.manifest!.surfaces)?.id).toBe("notes");
+  });
+
+  it("treats a non-boolean as absent rather than failing the surface", () => {
+    const parsed = parsePluginManifest(webview({ railTab: "no" }));
+    expect(parsed.errors).toEqual([]);
+    expect(parsed.manifest!.surfaces).toHaveLength(1);
+    expect(parsed.manifest!.surfaces[0]).not.toHaveProperty("railTab");
+    expect(parsed.warnings.join(" ")).toMatch(/railTab must be true or false/);
+  });
+
+  it("rails the NEXT surface when the first one opted out", () => {
+    const parsed = parsePluginManifest(validManifest({
+      surfaces: [
+        { kind: "webview", id: "sim", title: "Sim", panelId: "main", entryHtml: "web/a.html", railTab: false },
+        { kind: "tab", id: "notes", title: "Notes", panelId: "main" },
+      ],
+    }));
+    expect(pluginRailTabSurface(parsed.manifest!.surfaces)?.id).toBe("notes");
+  });
+
+  it("skips an opted-out surface that carries no kind, as the phone's wire sends it", () => {
+    // `toRecordTabs` filters to rail kinds and drops `kind`, so on that wire the
+    // opt-out is the only field left that can answer the question.
+    expect(pluginRailTabSurface([{ id: "sim", railTab: false }, { id: "notes" }])?.id).toBe("notes");
+    expect(pluginRailTabSurface([{ id: "sim", railTab: false }])).toBeNull();
+  });
+
+  it("keeps the phone's panel fallback for an opted-out webview", () => {
+    // The rail is the only thing it loses. Every non-desktop client still
+    // renders the panel the surface names, which is the whole cross-surface
+    // fallback and is what the Work pane shows.
+    const parsed = parsePluginManifest(webview({ railTab: false }));
+    expect(pluginPanelShowsOnMobile(parsed.manifest!.surfaces[0]!)).toBe(true);
   });
 });
 

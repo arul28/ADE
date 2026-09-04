@@ -17,6 +17,7 @@
  * and both halves are testable without a browser.
  */
 
+import type { PluginSurfaceContext } from "../../../shared/plugins/context";
 import {
   pluginWebviewGuestKey,
   type PluginWebviewContext,
@@ -95,6 +96,35 @@ export function setPluginWebviewGuestAttached(guestKey: string, attached: boolea
     return true;
   }
   return false;
+}
+
+/**
+ * Move a guest's subject, by the key the renderer holds.
+ *
+ * The one field of `context` that is allowed to change after attach, and only
+ * from the HOST side: a rail tab outlives many lane selections, and a page that
+ * only ever heard its subject at attach would follow whichever lane happened to
+ * be selected when the reader opened it. `surfaceId` and `placement` stay fixed
+ * — they describe where the guest IS, which cannot change without a new guest —
+ * and nothing here reads the page's own word for any of it.
+ *
+ * Returns the guest so the caller can push the event to the same record it just
+ * updated, or null for a key nothing is registered under: the ordinary race of
+ * a selection landing a frame after the guest went away.
+ */
+export function setPluginWebviewGuestSubject(
+  guestKey: string,
+  subject: PluginSurfaceContext | null,
+): PluginWebviewGuest | null {
+  for (const guest of guests.values()) {
+    if (guestKeyOf(guest) !== guestKey) continue;
+    // Replaced rather than mutated in place: `context` is handed out at
+    // handshake, and a reader holding the old object must not see it change
+    // under them halfway through building a reply.
+    guest.context = { ...(guest.context ?? { subject: null }), subject };
+    return guest;
+  }
+  return null;
 }
 
 /** Every live guest, whatever plugin it belongs to. */

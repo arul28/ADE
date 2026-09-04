@@ -2,6 +2,7 @@ import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from "re
 
 import { MODEL_PICKER_PROVIDER_ORDER, providerLabel } from "../../../../shared/modelCatalog";
 import { getModelById, resolveProviderGroupForModel, type ProviderFamily } from "../../../../shared/modelRegistry";
+import { resolveModelDescriptorWithRuntimeCatalog } from "../../shared/ModelPicker/modelCatalog";
 import {
   pluginChatModelCapabilities,
   pluginChatProviderCapabilities,
@@ -112,10 +113,36 @@ function pickerAnchor(request: PluginWebviewPickerRequest): {
 }
 
 function modelPickAnswer(modelId: string, fastMode: boolean): Record<string, unknown> {
-  const descriptor = getModelById(modelId);
-  const provider = descriptor ? resolveProviderGroupForModel(descriptor) : undefined;
+  /**
+   * The descriptor, through the RUNTIME CATALOG first.
+   *
+   * `getModelById` reads the module-level registries, and the picker this host
+   * just rendered offers more than those: the Cursor and Droid CLI models are
+   * built per checkout from what the CLI reports and live only in the runtime
+   * catalog. A reader could therefore pick a model from ADE's own list that
+   * this line could not name. `resolveChatRuntimeProvider` in
+   * `nativeLaunchControls.ts` resolves it in exactly this order, and the two
+   * have to agree — they answer the same question about the same pick.
+   */
+  const descriptor = resolveModelDescriptorWithRuntimeCatalog(modelId) ?? getModelById(modelId);
   const modelCap = pluginChatModelCapabilities().find((entry) => entry.id === modelId);
-  const family = resolvePluginWebviewPermissionFamily(provider ?? modelCap?.provider);
+  /**
+   * The provider, resolved ONCE and reported whatever the source.
+   *
+   * A model the lookup cannot name reports no provider at all, and that was the
+   * whole answer for a catalog-only model: `provider` absent, and with it
+   * `defaultPermissionMode`, because the family is derived from the same value.
+   * `ui.pickPermissionMode` takes `provider` as its argument, so the page's next
+   * question could not be asked — the reader picked a model from ADE's own list
+   * and the permission control beside it went dead.
+   *
+   * The capability list is the last fallback rather than the first: every id it
+   * carries is one the registries resolve today, so it only matters if that
+   * stops being true. One resolution feeds both the family and the reply, so
+   * the two cannot disagree about which provider the reader just picked.
+   */
+  const provider = descriptor ? resolveProviderGroupForModel(descriptor) : modelCap?.provider;
+  const family = resolvePluginWebviewPermissionFamily(provider);
   const providerCap = family
     ? pluginChatProviderCapabilities().find((entry) => entry.provider === family)
     : undefined;

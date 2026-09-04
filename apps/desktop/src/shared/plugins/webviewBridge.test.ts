@@ -11,6 +11,7 @@ import {
   PLUGIN_WEBVIEW_CONTEXT_MAX_BYTES,
   PLUGIN_WEBVIEW_CONTEXT_QUERY_PARAM,
   PLUGIN_WEBVIEW_EVENTS,
+  sanitizePluginWebviewSubject,
   PLUGIN_WEBVIEW_MAX_HEIGHT_PX,
   PLUGIN_WEBVIEW_METHODS,
   PLUGIN_WEBVIEW_RESIZE_CHANNEL,
@@ -124,7 +125,9 @@ describe("bridge v2 shape", () => {
       expect(isPluginWebviewMethod(method)).toBe(false);
     }
     expect(new Set(PLUGIN_WEBVIEW_METHODS).size).toBe(PLUGIN_WEBVIEW_METHODS.length);
-    expect(PLUGIN_WEBVIEW_BRIDGE_VERSION).toBe(2);
+    // At or past v2, because that is what "every v2 verb is here" means. The
+    // exact number is pinned beside the event that last moved it.
+    expect(PLUGIN_WEBVIEW_BRIDGE_VERSION).toBeGreaterThanOrEqual(2);
   });
 
   it("waits on a person longer than on a renderer", () => {
@@ -213,10 +216,30 @@ describe("size-to-content", () => {
 });
 
 describe("plugin webview events", () => {
-  it("accepts refresh alongside changed, theme and host", () => {
-    expect(PLUGIN_WEBVIEW_EVENTS).toEqual(["changed", "theme", "host", "refresh"]);
+  it("accepts refresh and context alongside changed, theme and host", () => {
+    expect(PLUGIN_WEBVIEW_EVENTS).toEqual(["changed", "theme", "host", "refresh", "context"]);
     expect(isPluginWebviewEventName("refresh")).toBe(true);
+    expect(isPluginWebviewEventName("context")).toBe(true);
     expect(isPluginWebviewEventName("unknown")).toBe(false);
+  });
+
+  it("bumps the bridge version for the context event, so a page can check first", () => {
+    // `events.on` refuses a name its host has never heard of, on purpose. That
+    // makes the version the only way a page can tell whether subscribing is
+    // safe, so an added event has to move it.
+    expect(PLUGIN_WEBVIEW_BRIDGE_VERSION).toBe(3);
+  });
+
+  it("holds a moved subject to the same shape the source URL is held to", () => {
+    // Every typed context carries a string `kind`. A bare record is a page's
+    // attempt to name a subject, and null is a real subject value, so dropping
+    // to null is always the safe degradation.
+    const lane = { kind: "lane", id: "lane-1", name: "Fix login", branch: null, machineKey: null, dirty: false };
+    expect(sanitizePluginWebviewSubject(lane)).toEqual(lane);
+    expect(sanitizePluginWebviewSubject({ laneId: "lane-1" })).toBeNull();
+    expect(sanitizePluginWebviewSubject(null)).toBeNull();
+    expect(sanitizePluginWebviewSubject("lane-1")).toBeNull();
+    expect(sanitizePluginWebviewSubject([{ kind: "lane" }])).toBeNull();
   });
 
   it("names the surface-revealed event the guest listens for", () => {

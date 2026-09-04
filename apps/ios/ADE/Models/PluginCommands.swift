@@ -1235,10 +1235,13 @@ struct PluginManifestSocketWire: Decodable, Equatable {
 
 /// One rail surface of a plugin's manifest, as `SyncPluginRecordTab` sends it.
 ///
-/// `kind` is absent on today's wire because `toRecordTabs` has already filtered
-/// the list to the rail kinds. It is decoded anyway so
-/// ``pluginRailTabSurface(_:)`` can apply the same rule to a future host that
-/// sends the unfiltered list, exactly as `pluginRailTabSurface` in
+/// `kind` is absent from a host too old to send it, because `toRecordTabs` used
+/// to drop it: the list is already filtered to the rail kinds, so it looked
+/// redundant. It is not. This app asks a question those hosts never had to
+/// answer — "is this surface a PAGE I can draw, or the panel behind it" — and
+/// `kind` is the answer. Absent reads as the panel, which is what those hosts'
+/// readers were already showing. ``pluginRailTabSurface(_:)`` still accepts a
+/// surface with no kind, exactly as `pluginRailTabSurface` in
 /// `shared/plugins/manifest.ts` does.
 struct PluginManifestTabWire: Decodable, Equatable {
   var id: String = ""
@@ -1246,17 +1249,41 @@ struct PluginManifestTabWire: Decodable, Equatable {
   var panelId: String?
   var icon: String?
   var kind: String?
+  /// `true` when a `webview` surface's author opted its PAGE into the phone.
+  ///
+  /// Mirrors `PluginManifestSurface.mobile`, whose default on a webview is
+  /// false: a page written for a desktop tab is not a phone screen until its
+  /// author says so. Nil therefore means "draw the panel", which is both the
+  /// desktop default and what a host too old to send the field intends.
+  var mobile: Bool?
+  /// `false` when this surface must NOT be listed as a rail tab — the plugin
+  /// reaches its page through its own sockets, as `ade-ios-sim` and
+  /// `ade-app-control` do. Mirrors `PluginManifestSurface.railTab`.
+  ///
+  /// Nil on a host too old to send the field, and nil is the tab that host was
+  /// already drawing, so the absent case must stay "yes".
+  var railTab: Bool?
 
   private enum CodingKeys: String, CodingKey {
-    case id, title, panelId, icon, kind
+    case id, title, panelId, icon, kind, mobile, railTab
   }
 
-  init(id: String, title: String? = nil, panelId: String? = nil, icon: String? = nil, kind: String? = nil) {
+  init(
+    id: String,
+    title: String? = nil,
+    panelId: String? = nil,
+    icon: String? = nil,
+    kind: String? = nil,
+    mobile: Bool? = nil,
+    railTab: Bool? = nil
+  ) {
     self.id = id
     self.title = title
     self.panelId = panelId
     self.icon = icon
     self.kind = kind
+    self.mobile = mobile
+    self.railTab = railTab
   }
 
   init(from decoder: Decoder) throws {
@@ -1266,6 +1293,12 @@ struct PluginManifestTabWire: Decodable, Equatable {
     panelId = (try? container.decodeIfPresent(String.self, forKey: .panelId)) ?? nil
     icon = (try? container.decodeIfPresent(String.self, forKey: .icon)) ?? nil
     kind = (try? container.decodeIfPresent(String.self, forKey: .kind)) ?? nil
+    // A non-boolean `mobile` decodes to nil, which reads as "draw the panel" —
+    // the safe half, and the one every older host means.
+    mobile = (try? container.decodeIfPresent(Bool.self, forKey: .mobile)) ?? nil
+    // A non-boolean `railTab` decodes to nil, which reads as "claims a tab" —
+    // the same judgement the desktop parser makes when it warns and ignores.
+    railTab = (try? container.decodeIfPresent(Bool.self, forKey: .railTab)) ?? nil
   }
 }
 
@@ -1289,8 +1322,15 @@ let pluginRailTabSurfaceKinds: Set<String> = ["tab", "webview"]
 ///
 /// A surface carrying no `kind` counts as a rail surface, which is what lets
 /// the same rule serve a wire list that was already filtered.
+///
+/// A surface that opted out with `railTab == false` is SKIPPED, and skipped
+/// BEFORE the kind is read — the wire drops `kind`, so on this client the
+/// opt-out is the only field left that can answer the question. A plugin whose
+/// only page opts out has no rail tab here, exactly as it has none on the
+/// desktop and none in the terminal.
 func pluginRailTabSurface(_ surfaces: [PluginManifestTabWire]?) -> PluginManifestTabWire? {
   for surface in surfaces ?? [] {
+    if surface.railTab == false { continue }
     guard let kind = surface.kind else { return surface }
     if pluginRailTabSurfaceKinds.contains(kind) { return surface }
   }

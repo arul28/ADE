@@ -42,6 +42,7 @@ import type {
   PluginUsageSummary,
   PluginWebhookIngressStatus,
 } from "../shared/plugins/sdk";
+import type { PluginSurfaceContext } from "../shared/plugins/context";
 import type {
   PluginWebviewChatTurn,
   PluginWebviewSurfaceState,
@@ -124,6 +125,11 @@ export function toInstalledPlugin(summary: PluginSummary): PluginClientInstalled
         // tab on it, and inferring the owner from a name would be a guess about
         // which of two tabs the user sees.
         ...(surface.builtin ? { builtin: surface.builtin } : {}),
+        // The rail opt-out rides with the descriptor rather than filtering it
+        // out here: `TabNav` must not draw a tab for this page, and the Work
+        // rail pane must still find it to mount the guest. One list, two
+        // readers, and only one of them skips the opt-out.
+        ...(surface.railTab === false ? { railTab: false } : {}),
       })),
     theme: summary.theme,
     // The per-contribution kill switch is stored per plugin in the machine
@@ -446,6 +452,9 @@ export function createPluginBridge(deps: PluginBridgeDeps) {
       },
       publishTheme: (snapshot: PluginWebviewThemeSnapshot): void => {
         sendMain(IPC.pluginWebviewThemePublish, snapshot);
+      },
+      publishContext: (payload: { guestKey: string; subject: PluginSurfaceContext | null }): void => {
+        sendMain(IPC.pluginWebviewContextPublish, payload);
       },
       publishChatTurn: (turn: PluginWebviewChatTurn): void => {
         sendMain(IPC.pluginWebviewChatPublish, turn);

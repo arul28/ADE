@@ -6750,6 +6750,16 @@ export function registerIpc({
     pluginWebviewBridgeServer.publishTheme(win.id, arg);
   });
 
+  ipcMain.on(IPC.pluginWebviewContextPublish, (event, arg: unknown) => {
+    // Same rule as the theme publish: only a real ADE window may speak for its
+    // own guests, and the window id is read from the sender rather than taken
+    // from the payload. A guest posting here would be moving its own subject,
+    // which is the one thing `context.subject` exists to make impossible.
+    const win = BrowserWindow.fromWebContents(event.sender);
+    if (!win) return;
+    pluginWebviewBridgeServer.publishContext(win.id, arg);
+  });
+
   ipcMain.on(IPC.pluginWebviewChatPublish, (event, arg: unknown) => {
     // Same shape as the theme publish, and for the same reason: only a real ADE
     // window may speak for its own guests, and the window id is read from the

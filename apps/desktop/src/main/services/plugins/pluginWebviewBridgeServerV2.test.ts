@@ -21,6 +21,7 @@ import {
   PLUGIN_WEBVIEW_BRIDGE_VERSION,
   PLUGIN_WEBVIEW_CHAT_TURNS_MAX,
   PLUGIN_WEBVIEW_LIST_MAX_ROWS,
+  pluginWebviewGuestKey,
   type PluginWebviewEventFrame,
   type PluginWebviewHostEvent,
   type PluginWebviewUiRequest,
@@ -32,7 +33,11 @@ import {
   type PluginWebviewBridgeServer,
   type PluginWebviewDomain,
 } from "./pluginWebviewBridgeServer";
-import { registerPluginWebviewGuest, resetPluginWebviewGuestsForTests } from "./pluginWebviewGuests";
+import {
+  getPluginWebviewGuest,
+  registerPluginWebviewGuest,
+  resetPluginWebviewGuestsForTests,
+} from "./pluginWebviewGuests";
 
 const GUEST_ID = 77;
 const SENDER = { webContentsId: GUEST_ID, frameUrl: "ade-plugin://demo-plugin/page/index.html" };
@@ -409,6 +414,75 @@ describe("clipboard and theme", () => {
   it("does not paint a guest with another window's theme", () => {
     const h = harness();
     h.server.publishTheme(9, { scheme: "light", tokens: {} });
+    expect(h.sent).toHaveLength(0);
+  });
+});
+
+/**
+ * The SUBJECT moving under a page that outlives it.
+ *
+ * A rail tab is opened once and lives as long as the reader stays in it, while
+ * the lane they are working on changes many times. Recreating the guest on each
+ * selection would throw away the page's scroll and everything it had loaded, so
+ * the host pushes instead — and the push is addressed to a GUEST rather than to
+ * a window, unlike the theme: a window draws one palette and many subjects.
+ */
+describe("publishContext", () => {
+  const guestKey = pluginWebviewGuestKey(GUEST_ID);
+  const lane = { kind: "lane", id: "lane-1", name: "Fix login", branch: "fix/login", machineKey: null, dirty: false };
+
+  it("moves one guest's subject and tells that guest", () => {
+    const h = harness();
+    h.server.publishContext(5, { guestKey, subject: lane });
+
+    expect(h.sent).toEqual([{ event: "context", payload: { subject: lane } }]);
+    // And the guest RECORD moved with it, so a handshake after the move — a
+    // reload of the same page — reports the lane the reader is on rather than
+    // the one they opened the tab with.
+    expect(getPluginWebviewGuest(GUEST_ID)?.context?.subject).toEqual(lane);
+    // Everything else about where the guest is drawn is untouched: those
+    // describe the placement, which cannot change without a new guest.
+    expect(getPluginWebviewGuest(GUEST_ID)?.context?.surfaceId).toBe("browser");
+    expect(getPluginWebviewGuest(GUEST_ID)?.context?.placement).toBe("popover");
+  });
+
+  it("carries null as a real subject", () => {
+    // No lane selected, or no project bound. A page reads null as "the whole
+    // project", so it has to arrive rather than be swallowed as "no change".
+    const h = harness();
+    h.server.publishContext(5, { guestKey, subject: lane });
+    h.server.publishContext(5, { guestKey, subject: null });
+    expect(h.sent[1]).toEqual({ event: "context", payload: { subject: null } });
+    expect(getPluginWebviewGuest(GUEST_ID)?.context?.subject).toBeNull();
+  });
+
+  it("refuses a subject that is not one of the typed contexts", () => {
+    // Held to the same shape check the URL is: every typed context carries a
+    // string `kind`, and a bare record is not one.
+    const h = harness();
+    h.server.publishContext(5, { guestKey, subject: { laneId: "lane-1" } });
+    expect(h.sent).toEqual([{ event: "context", payload: { subject: null } }]);
+  });
+
+  it("does not let one window move another window's guest", () => {
+    const h = harness();
+    h.server.publishContext(9, { guestKey, subject: lane });
+    expect(h.sent).toHaveLength(0);
+    expect(getPluginWebviewGuest(GUEST_ID)?.context?.subject).toBeNull();
+  });
+
+  it("drops a key that names no live guest", () => {
+    // The ordinary race of a selection landing a frame after the guest went
+    // away. Nothing anyone can act on, so nothing is thrown.
+    const h = harness();
+    expect(() => h.server.publishContext(5, { guestKey: "guest:404", subject: lane })).not.toThrow();
+    expect(h.sent).toHaveLength(0);
+  });
+
+  it("ignores a frame with no guest key at all", () => {
+    const h = harness();
+    h.server.publishContext(5, { subject: lane });
+    h.server.publishContext(5, null);
     expect(h.sent).toHaveLength(0);
   });
 });

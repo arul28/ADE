@@ -16,8 +16,10 @@ import { findPluginWebviewSocket, listPluginWebviewSockets } from "./pluginWebvi
 import type { PluginActionPrompt } from "../../../../shared/plugins/sdk";
 import {
   buildPluginActionPromptAnswer,
+  hasPluginActionWebviewRequest,
   readPluginActionComposerEdit,
   readPluginActionNavigation,
+  readPluginActionWebview,
 } from "../../../../shared/plugins/sdk";
 import { dismissToast, showToast, type ToastTone } from "../../app/toast/toastStore";
 import { applyPluginActionOpenSettings } from "../pluginActionOpenSettings";
@@ -26,9 +28,10 @@ import { rootAppStoreApi } from "../../../state/appStore";
 import { applyPluginComposerEdit } from "./composerTarget";
 import { applyPluginDialogEdit } from "./dialogTarget";
 import { submitPluginWebviewDialogAnswer } from "./pluginWebviewDialogStore";
-import { applyPluginActionNavigation } from "./pluginActionDispatch";
+import { applyPluginActionNavigation, openPluginActionWebview } from "./pluginActionDispatch";
 import { closePluginWebviewGuest, getPluginWebviewGuest } from "./pluginWebviewGuestRegistry";
 import { openPluginWebviewConfirm } from "./pluginWebviewConfirmStore";
+import { getPluginWebviewPopover } from "./pluginWebviewPopoverStore";
 import { pickPluginWebviewUi } from "./pluginWebviewPickerStore";
 import {
   closePluginPrompt,
@@ -370,6 +373,54 @@ export async function handlePluginWebviewUiRequest(
       if (edit) applyPluginComposerEdit(edit, { pluginId, actionId });
       applyPluginDialogEdit(result, { pluginId, actionId });
       const openedSettings = applyPluginActionOpenSettings(result, { pluginId, actionId });
+      // `{openWebview}`, which this path used to drop on the floor.
+      //
+      // The socket press has honoured it since the page tier shipped; an invoke
+      // from a PAGE did not, so a plugin whose own page answered `{openWebview}`
+      // got nothing at all and no error anywhere. Linear's Attach is the case:
+      // its issue popover answers `{openWebview:{surfaceId:"picker"}}`, and the
+      // picker replaces that popover because both are the one anchored card the
+      // popover store holds — stacking would leave the reader two things to
+      // dismiss.
+      //
+      // Two differences from the socket path, both forced by where this runs.
+      // The SUBJECT is null: a page's subject is main's word, captured at
+      // attach and never carried on this verb, so the relay has none to pass on
+      // and must not invent one from the calling guest. The ANCHOR comes from
+      // the standing card when this guest IS that card, so a picker opens where
+      // the control the reader pressed was rather than in the middle of the
+      // window; a tab or pane guest has no anchor and answers null.
+      const overlay = readPluginActionWebview(result);
+      if (overlay) {
+        const plugin = rootAppStoreApi.getState().installedPlugins
+          .find((entry) => entry.pluginId === pluginId);
+        // Checked against the plugin's REAL surfaces, exactly as the socket path
+        // does, so an unresolvable id never opens an empty frame.
+        const surfaceExists = plugin?.enabled
+          && plugin.tabs.some((tab) => tab.id === overlay.surfaceId);
+        if (surfaceExists) {
+          const caller = getPluginWebviewGuest(request.guestKey);
+          const standing = getPluginWebviewPopover();
+          const anchor = caller
+            && standing
+            && standing.pluginId === caller.pluginId
+            && standing.surfaceId === caller.surfaceId
+            ? standing.anchor
+            : null;
+          openPluginActionWebview({
+            pluginId,
+            surfaceId: overlay.surfaceId,
+            ...(overlay.placement ? { placement: overlay.placement } : {}),
+            subject: null,
+            ...(overlay.context ? { pointer: overlay.context } : {}),
+            anchor,
+          });
+        } else {
+          console.warn("[plugin webview] openWebview named an unknown surface", pluginId, overlay.surfaceId);
+        }
+      } else if (hasPluginActionWebviewRequest(result)) {
+        console.warn("[plugin webview] ignored a malformed openWebview request", pluginId, actionId);
+      }
       // The same one-destination rule the socket path applies: `{openSettings}`
       // and `{navigate}` in one result are one destination written twice, and
       // honouring both sends the reader to Settings over a tab they never chose.

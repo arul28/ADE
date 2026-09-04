@@ -32,6 +32,15 @@ import {
   getPluginWebviewPageError,
   resetPluginWebviewPageErrors,
 } from "./pluginWebviewPageErrorStore";
+import {
+  getPluginWebviewPopover,
+  openPluginWebviewPopover,
+  resetPluginWebviewPopover,
+} from "./pluginWebviewPopoverStore";
+import {
+  closePluginWebviewOverlay,
+  getPluginWebviewOverlay,
+} from "./pluginWebviewOverlayStore";
 
 /**
  * The relay's contract in one sentence: every request is answered exactly once.
@@ -67,6 +76,8 @@ beforeEach(() => {
   resetPluginWebviewConfirm();
   resetPluginWebviewPicker();
   resetPluginWebviewPageErrors();
+  resetPluginWebviewPopover();
+  closePluginWebviewOverlay();
   for (const toast of getToasts()) dismissToast(toast.id);
   closePluginPrompt();
   rootAppStoreApi.setState({
@@ -265,6 +276,175 @@ describe("actionResult", () => {
     }));
     expect(answer).toEqual({ ok: true });
     expect(insertText).toHaveBeenCalledWith("ADE-9");
+  });
+
+  /**
+   * `{openWebview}`, which this path used to drop on the floor.
+   *
+   * The socket press has honoured it since the page tier shipped; an invoke
+   * from a PAGE did not, so a plugin whose own page answered `{openWebview}`
+   * got nothing at all and no error anywhere. Linear's Attach is the case: its
+   * issue popover answers `{openWebview:{surfaceId:"picker"}}`, and the picker
+   * has to REPLACE that popover rather than stack under it.
+   */
+  describe("openWebview", () => {
+    const withSurfaces = (tabs: Array<{ id: string; title: string; panelId: string }>) => {
+      rootAppStoreApi.setState({
+        installedPlugins: [{
+          pluginId: "acme",
+          displayName: "Acme",
+          version: "1.0.0",
+          enabled: true,
+          icon: "puzzle",
+          accent: "#fff",
+          status: "running",
+          tabs,
+          theme: null,
+        }],
+      } as never);
+    };
+
+    it("opens the page the answer named, in the placement it asked for", async () => {
+      withSurfaces([{ id: "picker", title: "Attach", panelId: "picker" }]);
+      const answer = await handlePluginWebviewUiRequest(request("actionResult", {
+        action: "attach",
+        result: { openWebview: { surfaceId: "picker", placement: "picker", context: { issue: "ADE-9" } } },
+      }));
+      expect(answer).toEqual({ ok: true });
+
+      const card = getPluginWebviewPopover();
+      expect(card).toMatchObject({
+        pluginId: "acme",
+        surfaceId: "picker",
+        kind: "composer-picker",
+        // The page's plugin-authored hint rides through as the pointer.
+        pointer: { issue: "ADE-9" },
+      });
+      // A page's subject is main's word, captured at attach and not carried on
+      // this verb. The relay has none to pass on and must not invent one from
+      // the calling guest.
+      expect(card?.subject).toBeNull();
+    });
+
+    it("replaces the calling popover rather than stacking under it", async () => {
+      withSurfaces([
+        { id: "issues", title: "Issue", panelId: "issues" },
+        { id: "picker", title: "Attach", panelId: "picker" },
+      ]);
+      // The card the Attach button was pressed in, with the anchor the host
+      // measured for it.
+      openPluginWebviewPopover({
+        pluginId: "acme",
+        surfaceId: "issues",
+        kind: "popover",
+        subject: null,
+        anchor: { x: 340, y: 120, width: 280, height: 200 },
+      });
+      registerPluginWebviewGuest({
+        guestKey: "guest-7",
+        pluginId: "acme",
+        surfaceId: "issues",
+        placement: "popover",
+      });
+
+      await handlePluginWebviewUiRequest(request("actionResult", {
+        action: "attach",
+        result: { openWebview: { surfaceId: "picker", placement: "picker" } },
+      }));
+
+      // One anchored card at a time, so the picker took the popover's place.
+      const card = getPluginWebviewPopover();
+      expect(card).toMatchObject({ surfaceId: "picker", kind: "composer-picker" });
+      // And it opened where the control the reader pressed was, not in the
+      // middle of the window.
+      expect(card?.anchor).toEqual({ x: 340, y: 120, width: 280, height: 200 });
+    });
+
+    it("anchors nowhere when the calling guest is not the standing card", async () => {
+      withSurfaces([{ id: "picker", title: "Attach", panelId: "picker" }]);
+      // A tab guest has no anchor. Borrowing another surface's would put the
+      // picker over a control the reader never pressed.
+      openPluginWebviewPopover({
+        pluginId: "acme",
+        surfaceId: "someone-else",
+        kind: "popover",
+        subject: null,
+        anchor: { x: 20, y: 10, width: 100, height: 100 },
+      });
+      registerPluginWebviewGuest({
+        guestKey: "guest-7",
+        pluginId: "acme",
+        surfaceId: "board",
+        placement: "tab",
+      });
+
+      await handlePluginWebviewUiRequest(request("actionResult", {
+        action: "attach",
+        result: { openWebview: { surfaceId: "picker", placement: "picker" } },
+      }));
+      expect(getPluginWebviewPopover()?.anchor).toBeNull();
+    });
+
+    it("opens nothing for a surface the plugin does not declare", async () => {
+      // The same check the socket path makes, and for the same reason: an
+      // unresolvable id would open an empty frame the reader has to dismiss.
+      withSurfaces([{ id: "picker", title: "Attach", panelId: "picker" }]);
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+      const answer = await handlePluginWebviewUiRequest(request("actionResult", {
+        action: "attach",
+        result: { openWebview: { surfaceId: "not-a-surface", placement: "picker" } },
+      }));
+      // The invoke still succeeded; only the open was refused.
+      expect(answer).toEqual({ ok: true });
+      expect(getPluginWebviewPopover()).toBeNull();
+      expect(warn).toHaveBeenCalled();
+    });
+
+    it("opens nothing for a plugin that is switched off", async () => {
+      rootAppStoreApi.setState({
+        installedPlugins: [{
+          pluginId: "acme",
+          displayName: "Acme",
+          version: "1.0.0",
+          enabled: false,
+          icon: "puzzle",
+          accent: "#fff",
+          status: "stopped",
+          tabs: [{ id: "picker", title: "Attach", panelId: "picker" }],
+          theme: null,
+        }],
+      } as never);
+      vi.spyOn(console, "warn").mockImplementation(() => undefined);
+      await handlePluginWebviewUiRequest(request("actionResult", {
+        action: "attach",
+        result: { openWebview: { surfaceId: "picker", placement: "picker" } },
+      }));
+      expect(getPluginWebviewPopover()).toBeNull();
+    });
+
+    it("warns rather than opening when the answer is malformed", async () => {
+      withSurfaces([{ id: "picker", title: "Attach", panelId: "picker" }]);
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+      const answer = await handlePluginWebviewUiRequest(request("actionResult", {
+        action: "attach",
+        result: { openWebview: { placement: "picker" } },
+      }));
+      expect(answer).toEqual({ ok: true });
+      expect(getPluginWebviewPopover()).toBeNull();
+      expect(warn).toHaveBeenCalled();
+    });
+
+    it("defaults to the overlay a plugin written before the page tier meant", async () => {
+      withSurfaces([{ id: "board", title: "Board", panelId: "board" }]);
+      const answer = await handlePluginWebviewUiRequest(request("actionResult", {
+        action: "attach",
+        result: { openWebview: { surfaceId: "board" } },
+      }));
+      expect(answer).toEqual({ ok: true });
+      // The overlay is a different host from the anchored card.
+      expect(getPluginWebviewPopover()).toBeNull();
+      expect(getPluginWebviewOverlay()).toMatchObject({ pluginId: "acme", surfaceId: "board" });
+    });
   });
 });
 
