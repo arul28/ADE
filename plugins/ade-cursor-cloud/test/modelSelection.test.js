@@ -43,6 +43,26 @@ const catalog = readCatalog([
   { id: "composer-2.5" },
 ]);
 
+describe("a model's label", () => {
+  it("prefers the title Cursor sent", () => {
+    const [row] = readCatalog([{ id: "composer-2", displayName: "Composer 2 (preview)" }]);
+    assert.equal(row.label, "Composer 2 (preview)");
+  });
+
+  it("turns an id into words when Cursor sent no title", () => {
+    // A presentation rule, not a mapping table: a table would go stale the
+    // week Cursor adds a model.
+    const rows = readCatalog(["composer-2", "sonnet-4.5", "gpt-5.6-sol", "opus"]);
+    assert.deepEqual(rows.map((row) => row.label), [
+      "Composer 2",
+      "Sonnet 4.5",
+      // A segment with no vowel and at most four letters reads as an acronym.
+      "GPT 5.6 Sol",
+      "Opus",
+    ]);
+  });
+});
+
 describe("verifyCreateModel", () => {
   it("omits model when the form left Cursor's default", () => {
     assert.deepEqual(verifyCreateModel({}), { ok: true, model: null });
@@ -89,6 +109,22 @@ describe("verifyCreateModel", () => {
     });
     assert.equal(result.ok, false);
     assert.match(result.message, /does not list model mystery/);
+  });
+
+  it("launches a model with no service tier when nobody asked for one", () => {
+    /*
+     * The regression the launch form caused: it initialised `fastMode` to
+     * `false` and always sent it, and `false` here is an explicit request for
+     * the STANDARD tier — which a model whose row names no service tier cannot
+     * express, so every such launch was refused. `null` is "Cursor's default"
+     * and is the only correct value for a control nobody touched.
+     */
+    const asked = verifyCreateModel({ modelId: "composer-2.5", fastMode: false, catalog });
+    assert.equal(asked.ok, false, "asking for a tier the model has not is still refused");
+    assert.match(asked.message, /standard speed/);
+
+    const untouched = verifyCreateModel({ modelId: "composer-2.5", fastMode: null, catalog });
+    assert.deepEqual(untouched, { ok: true, model: { id: "composer-2.5" } });
   });
 
   it("sends { id, params } when the catalog can express the pick", () => {

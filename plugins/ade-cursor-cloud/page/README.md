@@ -157,15 +157,21 @@ seam test walks the product against it — an id the page invokes that the fake
 does not script throws by name. It is owned by neither half. A change to the
 page and a change to `pageActions.js` both have to keep it passing.
 
-The fourteen ids the child answers:
+The fifteen ids the child answers:
 
 ```
-pageFleet   pageAgent        pageLaunchContext  pageLaunch
-pageOpenInAde  pageStopRun   pageFollowUp       pagePullIntoLane
-pageArchiveAgent  pageUnarchiveAgent  pageDeleteAgent  pageAckBadge
-pageConnection  pageCopyWebhookUrl
+pageFleet   pageAgent        pageArtifactUrls   pageLaunchContext
+pageLaunch  pageOpenInAde    pageStopRun        pageFollowUp
+pagePullIntoLane   pageArchiveAgent   pageUnarchiveAgent
+pageDeleteAgent    pageAckBadge
+pageConnection     pageCopyWebhookUrl
 ```
 
-The page invokes the first twelve. `pageConnection` and `pageCopyWebhookUrl` are
-handlers a host can ask; the fleet's key state rides on `pageFleet` instead of
-a second round trip, and the webhook URL is the Automations tile's.
+The page invokes the first thirteen. `pageConnection` and `pageCopyWebhookUrl`
+are handlers a host can ask; the fleet's key state rides on `pageFleet` instead
+of a second round trip, and the webhook URL is the Automations tile's.
+
+`pageArtifactUrls` is the one read the page makes on a gesture rather than on
+arrival. Cursor mints a signed download per FILE and a pane may list fifty, so
+`pageAgent` lists the paths and this mints every link at once, when the reader
+opens the artifacts section.

@@ -163,7 +163,15 @@ const CONNECTED_LAUNCH: CloudLaunchContext = {
   ],
   showSpeed: true,
   reasoningOptions: [{ value: "high", label: "High" }],
-  secretNames: ["DATABASE_URL", "STRIPE_KEY"],
+  /*
+   * Empty, because the CHILD cannot answer anything else by default.
+   * `pageLaunchContext` returns the names this lane already REMEMBERS, and no
+   * SDK verb enumerates ADE's project secrets or the plugin's own store. A
+   * fake that offered two names scripted a child that does not exist, and hid
+   * the fact that the form's secrets control has nothing to draw. A walk that
+   * wants the remembered-names path passes `launch: { secretNames: [...] }`.
+   */
+  secretNames: [],
   selectedSecrets: [],
   rememberSecretNames: false,
   autoOpenPr: false,
@@ -221,9 +229,12 @@ export function installFakeBridge(options: {
     const visible = entries.filter((entry) => !entry.agent.archived);
     const groups = group(visible);
     return {
-      state: visible.length === 0 ? "empty" : "list",
+      // Every row, archived included: the "Show archived (n)" reveal is the
+      // page's own filter over `entries`, so a child that stripped them left
+      // that button revealing nothing. `counts.total` stays the visible count.
+      state: entries.length === 0 ? "empty" : "list",
       error: null,
-      entries: visible,
+      entries,
       groups,
       laneOptions: [{ id: "lane-1", name: "sync-fix" }],
       archivedCount: entries.filter((entry) => entry.agent.archived).length,
@@ -266,8 +277,10 @@ export function installFakeBridge(options: {
           age: "30m",
         }]
         : [],
+      // No URL, ever: the child lists the files and `pageArtifactUrls` mints
+      // every link at once when the reader opens the section.
       artifacts: entry
-        ? [{ path: "reports/coverage.json", bytes: 4096, url: "https://files.cursor.com/a.json" }]
+        ? [{ path: "reports/coverage.json", bytes: 4096, url: null }]
         : [],
       sessionId: entry?.ownership.sessionId ?? null,
       error: entry ? null : "It is not in this project's fleet.",
@@ -278,6 +291,13 @@ export function installFakeBridge(options: {
     /* Reads */
     pageFleet: () => fleetPage(),
     pageAgent: (args) => agentPage(String(args.agentId ?? "")),
+    pageArtifactUrls: (args) => {
+      const entry = entries.find((row) => row.agent.agentId === args.agentId) ?? null;
+      return {
+        urls: entry ? [{ path: "reports/coverage.json", url: "https://files.cursor.com/a.json" }] : [],
+        error: null,
+      };
+    },
     pageLaunchContext: () => (connected
       ? { ...CONNECTED_LAUNCH, ...(options.launch ?? {}) }
       : {

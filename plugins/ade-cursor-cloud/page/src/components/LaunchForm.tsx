@@ -152,7 +152,16 @@ export function LaunchForm({
   const [modelLabel, setModelLabel] = useState<string | null>(null);
   const [reasoningEffort, setReasoningEffort] = useState<string | null>(null);
   const [reasoningLabel, setReasoningLabel] = useState<string | null>(null);
-  const [fastMode, setFastMode] = useState(false);
+  /**
+   * The speed tier, unset until somebody sets it.
+   *
+   * `null` is not "off": it is "Cursor's default", and it is the only correct
+   * starting value. `modelSelection.js:verifyCreateModel` treats `false` as an
+   * explicit request for the standard tier and refuses a launch whose model
+   * names no service tier — so a form that started at `false` fail-closed every
+   * model without a speed parameter, which is most of Cursor's catalog.
+   */
+  const [fastMode, setFastMode] = useState<boolean | null>(null);
   const [openPr, setOpenPr] = useState(false);
   const [secretNames, setSecretNames] = useState<string[]>([]);
   const [rememberSecretNames, setRememberSecretNames] = useState(false);
@@ -226,6 +235,16 @@ export function LaunchForm({
   const reasoningOptions = selectedModel?.reasoningEfforts?.length
     ? selectedModel.reasoningEfforts
     : context?.reasoningOptions ?? [];
+
+  /**
+   * Whether there is a speed tier to choose at all.
+   *
+   * Per MODEL once one is picked, and the catalog's answer before that — the
+   * same narrowing `reasoningOptions` does above, and for the same reason.
+   * Offering Fast on a model whose row names no service tier would produce a
+   * launch `modelSelection.js` refuses.
+   */
+  const showSpeed = selectedModel ? selectedModel.speed === true : context?.showSpeed === true;
 
   const attachPr = context?.existingPr ?? null;
   const busy = submitting || loading;
@@ -368,10 +387,22 @@ export function LaunchForm({
               rect: pickerRectFromClick(event),
             });
             if (outcome.kind === "picked") {
+              const picked = models.find((model) => model.id === outcome.id) ?? null;
               setModelId(outcome.id);
-              setModelLabel(outcome.label ?? models.find((m) => m.id === outcome.id)?.label ?? null);
-              // ADE's picker sets the model and the fast tier in one gesture.
-              if (typeof outcome.fastMode === "boolean") setFastMode(outcome.fastMode);
+              setModelLabel(outcome.label ?? picked?.label ?? null);
+              /*
+               * ADE's picker sets the model and the fast tier in one gesture —
+               * but only for a model that HAS a tier. The host answers
+               * `fastMode: false` for every model, including the ones whose
+               * catalog row names no service tier, and carrying that through
+               * would be an explicit request for a tier the model cannot
+               * express: the launch would then fail closed at verify time.
+               */
+              setFastMode(
+                picked?.speed === true && typeof outcome.fastMode === "boolean"
+                  ? outcome.fastMode
+                  : null,
+              );
               // The rungs belong to the model, so a model change drops a rung
               // the new model may not have.
               setReasoningEffort(null);
@@ -382,10 +413,35 @@ export function LaunchForm({
           onSelect={(next) => {
             setModelId(next || null);
             setModelLabel(models.find((model) => model.id === next)?.label ?? null);
+            // The rungs and the speed tier both belong to the model.
+            setFastMode(null);
             setReasoningEffort(null);
             setReasoningLabel(null);
           }}
         />
+
+        {showSpeed ? (
+          <ChoiceField
+            label="Speed"
+            value={fastMode == null ? null : fastMode ? "fast" : "standard"}
+            valueLabel={fastMode == null ? null : fastMode ? "Fast" : "Standard"}
+            placeholder="Cursor's default"
+            options={[
+              { value: "fast", label: "Fast" },
+              { value: "standard", label: "Standard" },
+            ]}
+            /*
+             * No host picker of its own. ADE's model picker sets the tier in
+             * the same gesture it sets the model, and this control is the
+             * compiled Advanced menu's own — the place a reader changes the
+             * tier without changing the model.
+             */
+            available={false}
+            disabled={busy}
+            onPick={async () => ({ kind: "inline" })}
+            onSelect={(next) => setFastMode(next === "" ? null : next === "fast")}
+          />
+        ) : null}
 
         {reasoningOptions.length > 0 ? (
           <ChoiceField
@@ -462,15 +518,30 @@ export function LaunchForm({
             </span>
           </label>
         )}
-        <div className="my-1.5 border-t border-white/[0.06]" />
-        <SecretsList
-          availableNames={context?.secretNames ?? []}
-          selectedNames={secretNames}
-          remember={rememberSecretNames}
-          disabled={busy}
-          onSelectedNamesChange={setSecretNames}
-          onRememberChange={setRememberSecretNames}
-        />
+        {/*
+          * Drawn only when there is something to attach.
+          *
+          * `context.secretNames` is what the child could offer, and today that
+          * is exactly the names this lane already remembers: no SDK verb
+          * enumerates ADE's project secrets, and none enumerates the plugin's
+          * own store either — `sdk.secrets` reads one name at a time. So a
+          * fleet with nothing remembered drew a heading, a `Select all` row and
+          * `No project secrets to inject.`, which is three controls for a
+          * choice the reader cannot make. See `page/PARITY.md`.
+          */}
+        {(context?.secretNames?.length ?? 0) > 0 ? (
+          <>
+            <div className="my-1.5 border-t border-white/[0.06]" />
+            <SecretsList
+              availableNames={context?.secretNames ?? []}
+              selectedNames={secretNames}
+              remember={rememberSecretNames}
+              disabled={busy}
+              onSelectedNamesChange={setSecretNames}
+              onRememberChange={setRememberSecretNames}
+            />
+          </>
+        ) : null}
       </div>
 
       <div className="flex items-center justify-between gap-3">

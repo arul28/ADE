@@ -49,6 +49,7 @@ import {
   stopRun,
   unarchiveAgent,
 } from "../host/actions";
+import { forgetAgentPage, prefetchAgentPage } from "../host/agentPageCache";
 import { closeSurface, openLink, openSettings } from "../host/ui";
 import { useHostRefresh } from "../host/refresh";
 import { useCollectionChanges, useHostEntities, useVisible } from "../host/useHostEntities";
@@ -441,6 +442,8 @@ export function Fleet({
   const onDelete = useCallback((entry: CloudFleetEntry) => {
     setConfirmDeleteId(null);
     if (selectedAgentId === entry.agent.agentId) selectAgent(null);
+    // An agent deleted on Cursor must not still be paintable from memory.
+    forgetAgentPage(entry.agent.agentId);
     runAction(entry.agent.agentId, () => deleteAgent(entry.agent.agentId));
   }, [runAction, selectAgent, selectedAgentId]);
 
@@ -477,6 +480,28 @@ export function Fleet({
     rows.sort((a, b) => (b.agent.createdAt ?? 0) - (a.agent.createdAt ?? 0));
     return rows;
   }, [keep, page]);
+
+  /** The open row, straight from the list the fleet already holds. */
+  const selectedEntry = useMemo(
+    () => visibleEntries.find((entry) => entry.agent.agentId === selectedAgentId) ?? null,
+    [selectedAgentId, visibleEntries],
+  );
+
+  /**
+   * Warm the rows either side of the open one.
+   *
+   * Reading a fleet is a walk, and the two rows a reader can reach with one
+   * press are the two above and below. Fetching them while the reader is
+   * looking at this one turns the next press into a paint rather than a wait,
+   * and costs two reads that the memory in `agentPageCache` then reuses.
+   */
+  useEffect(() => {
+    if (!selectedAgentId) return;
+    const index = visibleEntries.findIndex((entry) => entry.agent.agentId === selectedAgentId);
+    if (index < 0) return;
+    prefetchAgentPage(visibleEntries[index - 1]?.agent.agentId);
+    prefetchAgentPage(visibleEntries[index + 1]?.agent.agentId);
+  }, [selectedAgentId, visibleEntries]);
 
   const laneOptions = page?.laneOptions ?? [];
   const archivedCount = page?.archivedCount ?? 0;
@@ -843,6 +868,7 @@ export function Fleet({
         <div className="fixed inset-0 z-30 min-[860px]:relative min-[860px]:inset-auto min-[860px]:z-auto min-[860px]:w-[380px] min-[860px]:shrink-0 min-[860px]:border-l min-[860px]:border-white/[0.07]">
           <AgentDetail
             agentId={selectedAgentId}
+            initialEntry={selectedEntry}
             onClose={() => selectAgent(null)}
             onUsage={rememberUsage}
             onChanged={softRefresh}

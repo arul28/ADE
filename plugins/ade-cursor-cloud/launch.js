@@ -411,17 +411,42 @@ function clearIdempotencyKey(promptText, repoUrl) {
   idempotencyByDraft.delete(draftKey(promptText, repoUrl));
 }
 
+/**
+ * The same memo, for a follow-up rather than a create.
+ *
+ * A follow-up is a new RUN on an agent that already exists, and it needs the
+ * guarantee a create needs: a press that failed after Cursor accepted the POST
+ * must be retryable without producing a second run. The agent id takes the
+ * repository's place in the key, because the pair that identifies a follow-up
+ * is "which agent" and "what was said".
+ *
+ * This is the PAGE's key. The chat runtime derives its own from the session and
+ * the turn (`runtime.js:handleTurn`) — a turn has an id, so its key can be a
+ * function of that id and therefore survive a child restart, which a memo
+ * cannot.
+ */
+function followUpKeyFor(agentId, promptText) {
+  return idempotencyKeyFor(promptText, `followup:${String(agentId ?? "")}`);
+}
+
+/** Called ONLY on a follow-up Cursor accepted. See `followUpKeyFor`. */
+function clearFollowUpKey(agentId, promptText) {
+  clearIdempotencyKey(promptText, `followup:${String(agentId ?? "")}`);
+}
+
 module.exports = {
   BRANCH_DIVERGED_MESSAGE,
   MAX_ATTACHED_SECRETS,
   RESERVED_ENV_PREFIX,
   agentNameFromPrompt,
   buildCreateRequest,
+  clearFollowUpKey,
   clearIdempotencyKey,
   collectSecretValues,
   describePushFailure,
   ensureExistingLaneOriginReady,
   findConnectedRepo,
+  followUpKeyFor,
   idempotencyKeyFor,
   isInjectableSecretName,
   laneSecretsKey,

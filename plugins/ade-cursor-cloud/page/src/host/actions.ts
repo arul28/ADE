@@ -8,6 +8,7 @@
  * |-------------------------------------------------|---------------------------------|
  * | `window.ade.ai.cursorCloudFleet`                 | `invoke("pageFleet")`           |
  * | `window.ade.ai.cursorCloudListRuns` + `…GetUsage`| `invoke("pageAgent")`           |
+ * | a signed artifact download, once per file        | `invoke("pageArtifactUrls")`    |
  * | `window.ade.ai.cursorCloudListRepositories`      | `invoke("pageLaunchContext")`   |
  * | `window.ade.projectSecrets.list` (names)         | `invoke("pageLaunchContext")`   |
  * | `window.ade.ai.cursorCloudGetLaneSecretNames`    | `invoke("pageLaunchContext")`   |
@@ -43,6 +44,7 @@
 import { requireBridge } from "../bridge";
 import type {
   CloudAgentPage,
+  CloudArtifactUrls,
   CloudFleetPage,
   CloudLaunchContext,
   CloudLaunchResult,
@@ -65,9 +67,25 @@ function call<T>(action: string, args?: Record<string, unknown>): Promise<T> {
  */
 export const getFleetPage = (): Promise<CloudFleetPage> => call("pageFleet");
 
-/** One agent in full: the entry, its usage, its runs and its artifacts. */
+/**
+ * One agent in full: the entry, its usage, its runs and its artifacts.
+ *
+ * Called through `host/agentPageCache.ts` rather than directly, so a reader
+ * walking back up a list does not pay for a read they already paid for.
+ */
 export const getAgentPage = (agentId: string): Promise<CloudAgentPage> =>
   call("pageAgent", { agentId });
+
+/**
+ * Every signed artifact download for one agent, in one call.
+ *
+ * Deliberately NOT part of `pageAgent`. Cursor mints a link per file and the
+ * pane may list fifty, so minting them inside the detail read put fifty
+ * sequential requests in front of the first paint — for links most readers
+ * never press. The page asks for them when it opens the artifacts section.
+ */
+export const getArtifactUrls = (agentId: string): Promise<CloudArtifactUrls> =>
+  call("pageArtifactUrls", { agentId });
 
 /**
  * Everything the launch form may offer for one lane.
@@ -90,7 +108,17 @@ export type PageLaunchArgs = {
   laneId: string | null;
   model: string | null;
   reasoningEffort: string | null;
-  fastMode: boolean;
+  /**
+   * The speed tier, as a THREE-state field.
+   *
+   * `null` is "Cursor's default", and it is the default here for a reason the
+   * form cannot express any other way: `modelSelection.js` reads `false` as an
+   * explicit request for the standard tier, and refuses the launch when the
+   * chosen model's catalog row names no service tier at all. A form that always
+   * sent `false` therefore failed closed on every model without a speed
+   * parameter — which is most of them.
+   */
+  fastMode: boolean | null;
   openPr: boolean;
   /**
    * Secret NAMES. Never a value.

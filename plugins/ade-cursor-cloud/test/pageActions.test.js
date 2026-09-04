@@ -103,12 +103,16 @@ function makeDeps(options = {}) {
         { id: "sonnet-4.5" },
       ],
     }),
-    getAgentUsage: async () => ({
-      totalUsage: { totalTokens: 128_000, inputTokens: 96_000, outputTokens: 32_000 },
-      cost: { chargedCents: 120 },
-    }),
+    getAgentUsage: async () => {
+      if (options.usageThrows) throw options.usageThrows;
+      return {
+        totalUsage: { totalTokens: 128_000, inputTokens: 96_000, outputTokens: 32_000 },
+        cost: { chargedCents: 120 },
+      };
+    },
     listRuns: async (agentId, params) => {
       invoked.push({ kind: "listRuns", agentId, params });
+      if (options.runsThrows) throw options.runsThrows;
       return {
         items: [{
           id: "run_1",
@@ -119,13 +123,17 @@ function makeDeps(options = {}) {
         }],
       };
     },
-    listArtifacts: async () => ({ items: [{ path: "/reports/coverage.json", sizeBytes: 4096 }] }),
-    getArtifactDownloadUrl: async () => {
+    listArtifacts: async () => {
+      if (options.artifactsThrows) throw options.artifactsThrows;
+      return { items: [{ path: "/reports/coverage.json", sizeBytes: 4096 }] };
+    },
+    getArtifactDownloadUrl: async (agentId, artifactPath) => {
+      invoked.push({ kind: "getArtifactDownloadUrl", agentId, artifactPath });
       if (options.downloadThrows) throw options.downloadThrows;
       return { url: options.downloadUrl ?? "https://files.cursor.com/a.json" };
     },
-    createRun: async (agentId, body) => {
-      created.push({ agentId, body });
+    createRun: async (agentId, body, init) => {
+      created.push({ agentId, body, init });
       if (options.followUpThrows) throw options.followUpThrows;
       return { run: { id: "run_2" } };
     },
@@ -259,12 +267,33 @@ describe("pageFleet answers the CloudFleetPage the types declare", () => {
     assert.match(page.error, /rate limiting/);
   });
 
-  it("hides an archived agent from the list and still counts it", async () => {
+  it("sends the archived agent too, because the page is what hides it", async () => {
+    /*
+     * The regression: the child stripped archived rows, so the page's own
+     * "Show archived (2)" reveal — a filter over `entries` — revealed nothing,
+     * and Unarchive, the one gesture only an archived row offers, could not be
+     * reached at all.
+     *
+     * `counts.total` stays the VISIBLE count: the footer counts what the reader
+     * is looking at, not what the fleet holds.
+     */
     const archived = fleetEntry({ agent: { agentId: "bc_old", archived: true, status: undefined } });
     const { actions } = makeDeps({ items: [fleetEntry(), archived] });
     const page = await actions.pageFleet();
-    assert.equal(page.entries.length, 1);
+    assert.deepEqual(page.entries.map((entry) => entry.agent.agentId), ["bc_abc123", "bc_old"]);
+    assert.equal(page.counts.total, 1);
     assert.equal(page.counts.archived, 1);
+    assert.equal(page.archivedCount, 1);
+  });
+
+  it("calls a fleet of nothing but archived agents a list, not an empty state", async () => {
+    // An empty body would draw "No cloud agents for this project" over a
+    // project that has two, and would take the reveal away with it.
+    const archived = fleetEntry({ agent: { agentId: "bc_old", archived: true, status: undefined } });
+    const { actions } = makeDeps({ items: [archived] });
+    const page = await actions.pageFleet();
+    assert.equal(page.state, "list");
+    assert.equal(page.counts.total, 0);
     assert.equal(page.archivedCount, 1);
   });
 });
@@ -283,24 +312,69 @@ describe("pageAgent answers the CloudAgentPage the types declare", () => {
     assert.equal(page.runs[0].status, "running");
     assert.equal(page.runs[0].branch, "cursor/fix-sync");
     // The leading slash is stripped: the page renders it as a relative path.
+    // The URL is null on purpose — a signed download is minted per file, and
+    // `pageArtifactUrls` mints every one of them in one later call.
     assert.deepEqual(page.artifacts, [
-      { path: "reports/coverage.json", bytes: 4096, url: "https://files.cursor.com/a.json" },
+      { path: "reports/coverage.json", bytes: 4096, url: null },
     ]);
     // Never a page bigger than Cursor's ceiling.
     const runsCall = invoked.find((call) => call.kind === "listRuns");
     assert.ok(runsCall.params.limit <= 100, "Cursor refuses limit above 100");
   });
 
+  it("mints no signed URL at all, so the pane costs one round trip per read", async () => {
+    // The regression this replaces: one awaited mint per artifact, up to 50 of
+    // them, all of it in front of the pane's first paint.
+    const { actions, invoked } = makeDeps();
+    await actions.pageAgent({ agentId: "bc_abc123" });
+    assert.deepEqual(invoked.filter((call) => call.kind === "getArtifactDownloadUrl"), []);
+  });
+
+  it("keeps the pane when the usage, the runs and the artifacts all fail", async () => {
+    // Four independent reads run together. Each degrades on its own, so a key
+    // without the usage scope costs the pane its cost line and nothing else.
+    const { actions } = makeDeps({
+      usageThrows: new Error("no usage scope"),
+      runsThrows: new Error("runs are down"),
+      artifactsThrows: new Error("no artifact scope"),
+    });
+    const page = await actions.pageAgent({ agentId: "bc_abc123" });
+    assert.equal(page.entry.agent.agentId, "bc_abc123");
+    assert.equal(page.error, null);
+    assert.equal(page.usage, null);
+    assert.deepEqual(page.runs, []);
+    assert.deepEqual(page.artifacts, []);
+  });
+});
+
+describe("pageArtifactUrls mints every download in one call", () => {
+  it("answers one row per artifact, with its signed URL", async () => {
+    const { actions } = makeDeps();
+    const answer = await actions.pageArtifactUrls({ agentId: "bc_abc123" });
+    assert.deepEqual(answer, {
+      urls: [{ path: "reports/coverage.json", url: "https://files.cursor.com/a.json" }],
+      error: null,
+    });
+  });
+
   it("lists the artifact with no URL when the mint fails", async () => {
     const { actions } = makeDeps({ downloadThrows: new Error("no artifact scope") });
-    const page = await actions.pageAgent({ agentId: "bc_abc123" });
-    assert.deepEqual(page.artifacts, [{ path: "reports/coverage.json", bytes: 4096, url: null }]);
+    const answer = await actions.pageArtifactUrls({ agentId: "bc_abc123" });
+    assert.deepEqual(answer.urls, [{ path: "reports/coverage.json", url: null }]);
+    assert.equal(answer.error, null);
   });
 
   it("refuses a URL that is not HTTPS, because the page hands it to a browser", async () => {
     const { actions } = makeDeps({ downloadUrl: "file:///etc/passwd" });
-    const page = await actions.pageAgent({ agentId: "bc_abc123" });
-    assert.equal(page.artifacts[0].url, null);
+    const answer = await actions.pageArtifactUrls({ agentId: "bc_abc123" });
+    assert.equal(answer.urls[0].url, null);
+  });
+
+  it("answers a drawable sentence when the artifact list itself fails", async () => {
+    const { actions } = makeDeps({ artifactsThrows: new Error("no artifact scope") });
+    const answer = await actions.pageArtifactUrls({ agentId: "bc_abc123" });
+    assert.deepEqual(answer.urls, []);
+    assert.equal(answer.error, "Could not list this agent's artifacts.");
   });
 
   it("answers a drawable not-found state rather than throwing", async () => {
@@ -329,6 +403,9 @@ describe("pageLaunchContext runs the same ladder Enter runs", () => {
     assert.deepEqual(context.reasoningOptions, [{ value: "high", label: "High" }]);
     // Per-model, not per-catalog: `sonnet-4.5` names no parameters at all.
     assert.deepEqual(context.models.map((model) => model.id), ["composer-2", "sonnet-4.5"]);
+    // A NAME, not an id. Every other model chip in ADE prints a name, and the
+    // host's `pickModel` answers no label of its own — see `modelLabel`.
+    assert.deepEqual(context.models.map((model) => model.label), ["Composer 2", "Sonnet 4.5"]);
     assert.equal(context.models[0].speed, true);
     assert.deepEqual(context.models[1].reasoningEfforts, []);
     assert.equal(context.models[1].speed, false);
@@ -504,7 +581,41 @@ describe("every mutation answers {ok, message} and never throws", () => {
     const { actions, created } = makeDeps();
     const result = await actions.pageFollowUp({ agentId: "bc_abc123", prompt: "  also fix the lint  " });
     assert.deepEqual(result, { ok: true, message: "Sent to Cursor Cloud.", runId: "run_2" });
-    assert.deepEqual(created[0], { agentId: "bc_abc123", body: { prompt: { text: "also fix the lint" } } });
+    assert.equal(created[0].agentId, "bc_abc123");
+    assert.deepEqual(created[0].body, { prompt: { text: "also fix the lint" } });
+    // Never a run Cursor cannot recognise as a repeat. See below.
+    assert.equal(typeof created[0].init.idempotencyKey, "string");
+    assert.ok(created[0].init.idempotencyKey.length > 0);
+  });
+
+  it("keeps one key across a retry of the same send, and drops it once it lands", async () => {
+    /*
+     * The case this exists for: the POST reaches Cursor, the answer does not
+     * reach us, and the reader presses Send again. Without the key that second
+     * press is a SECOND run and the agent works on the prompt twice. With it,
+     * Cursor hands back the run it already made.
+     *
+     * The key is cleared on success, so saying the same thing again later is a
+     * new run rather than a silent no-op.
+     */
+    const failing = makeDeps({ followUpThrows: new Error("network went away") });
+    await failing.actions.pageFollowUp({ agentId: "bc_abc123", prompt: "keep going" });
+    await failing.actions.pageFollowUp({ agentId: "bc_abc123", prompt: "keep going" });
+    const [first, second] = failing.created.map((call) => call.init.idempotencyKey);
+    assert.equal(first, second, "a retry of the same send must reuse the key");
+
+    // A different agent is a different follow-up, even with the same words.
+    await failing.actions.pageFollowUp({ agentId: "bc_other", prompt: "keep going" });
+    assert.notEqual(failing.created[2].init.idempotencyKey, first);
+
+    const landing = makeDeps();
+    await landing.actions.pageFollowUp({ agentId: "bc_abc123", prompt: "keep going" });
+    await landing.actions.pageFollowUp({ agentId: "bc_abc123", prompt: "keep going" });
+    assert.notEqual(
+      landing.created[0].init.idempotencyKey,
+      landing.created[1].init.idempotencyKey,
+      "a send that landed must not make the next identical prompt a no-op",
+    );
   });
 
   it("answers a follow-up Cursor refused rather than throwing at the page", async () => {
@@ -634,6 +745,7 @@ describe("nothing a page handler answers carries a credential", () => {
     const calls = [
       ["pageFleet", {}],
       ["pageAgent", { agentId: "bc_abc123" }],
+      ["pageArtifactUrls", { agentId: "bc_abc123" }],
       ["pageLaunchContext", { laneId: "lane-1" }],
       ["pageConnection", {}],
       ["pageLaunch", { prompt: "fix it", laneId: "lane-1" }],

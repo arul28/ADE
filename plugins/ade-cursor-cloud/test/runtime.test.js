@@ -246,8 +246,8 @@ describe("the user types into a cloud chat", () => {
     const created = [];
     const { runtime, host } = runtimeWith({
       api: fakeApi({
-        createRun: async (agentId, body) => {
-          created.push({ agentId, body });
+        createRun: async (agentId, body, init) => {
+          created.push({ agentId, body, init });
           return { run: { id: "r2", status: "CREATING" } };
         },
       }),
@@ -262,12 +262,46 @@ describe("the user types into a cloud chat", () => {
     });
 
     assert.equal(result.runId, "r2");
-    assert.deepEqual(created, [{ agentId: "a1", body: { prompt: { text: "also fix the lint" } } }]);
+    assert.deepEqual(created, [{
+      agentId: "a1",
+      body: { prompt: { text: "also fix the lint" } },
+      init: { idempotencyKey: "ade:s-1:t-1:cursor-cloud:followup" },
+    }]);
     // Running is reported BEFORE the API call, so the composer settles the
     // moment the user presses send rather than a network round trip later.
     assert.deepEqual(host.of("emitStatus")[0].args[1], { state: "running", turnId: "t-1" });
     // Somebody just typed into this chat, so the ladder is on it.
     assert.deepEqual(runtime.watchedSessionIds(), ["s-1"]);
+  });
+
+  it("sends one key per turn, so a redelivered turn is not a second run", async () => {
+    /*
+     * The host can deliver the same turn twice — a reconnect, or a retry after
+     * a timeout the request itself survived. Without a key each delivery is a
+     * new run on the same agent, and the agent works the same prompt twice and
+     * pushes both. The key is DERIVED rather than remembered, so it still
+     * matches after this child restarts.
+     */
+    const keys = [];
+    const { runtime } = runtimeWith({
+      api: fakeApi({
+        createRun: async (_agentId, _body, init) => {
+          keys.push(init?.idempotencyKey ?? null);
+          return { run: { id: "r2", status: "CREATING" } };
+        },
+      }),
+    });
+
+    const turn = { sessionId: "s-1", externalId: "a1", message: "go", event: "chat.turn" };
+    await runtime.handleTurn({ ...turn, turnId: "t-1" });
+    await runtime.handleTurn({ ...turn, turnId: "t-1" });
+    await runtime.handleTurn({ ...turn, turnId: "t-2" });
+
+    assert.equal(keys[0], keys[1], "the same turn must carry the same key");
+    assert.notEqual(keys[1], keys[2], "a different turn is a different run");
+    // The session is part of it: two chats on one agent are two conversations.
+    await runtime.handleTurn({ ...turn, sessionId: "s-2", turnId: "t-1" });
+    assert.notEqual(keys[3], keys[0]);
   });
 
   it("fails the turn visibly when Cursor refuses it", async () => {

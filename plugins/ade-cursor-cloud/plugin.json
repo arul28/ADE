@@ -1,6 +1,6 @@
 {
   "name": "ade-cursor-cloud",
-  "version": "2.0.1",
+  "version": "2.0.3",
   "displayName": "Cursor Cloud",
   "description": "Launch, watch and adopt Cursor Cloud agents from ADE. Needs a Cursor API key.",
   "icon": "brand:cursor",
@@ -25,7 +25,7 @@
       "entryHtml": "dist/index.html",
       "panelId": "fleet",
       "order": 60,
-      "mobile": false
+      "mobile": true
     },
     {
       "kind": "webview",
@@ -34,7 +34,7 @@
       "icon": "brand:cursor",
       "entryHtml": "dist/index.html",
       "panelId": "agent",
-      "mobile": false
+      "mobile": true
     },
     {
       "kind": "webview",
@@ -44,7 +44,7 @@
       "entryHtml": "dist/index.html",
       "panelId": "launch",
       "popover": { "width": 560, "height": 620 },
-      "mobile": false
+      "mobile": true
     }
   ],
   "panels": [
@@ -67,36 +67,6 @@
       "modelsAction": "listCloudModels"
     },
     {
-      "socket": "chat-header-action",
-      "surface": "work",
-      "id": "open-fleet",
-      "label": "Cursor Cloud",
-      "icon": "cloud",
-      "actionId": "openAgentWebFromChat",
-      "menu": [
-        { "label": "Open the Cursor Cloud fleet", "actionId": "openFleet", "icon": "cloud" },
-        { "label": "Pull this run into the lane", "actionId": "pullIntoLaneFromChat", "icon": "git-branch" },
-        { "label": "Stop this cloud run", "actionId": "stopRunFromChat", "icon": "cloud" }
-      ]
-    },
-    {
-      "socket": "work-rail-pane",
-      "surface": "work",
-      "id": "fleet-pane",
-      "label": "Cursor Cloud",
-      "icon": "cloud",
-      "panelId": "fleet",
-      "webviewSurfaceId": "fleet"
-    },
-    {
-      "socket": "command-palette-action",
-      "surface": "app",
-      "id": "palette-fleet",
-      "label": "Cursor Cloud fleet",
-      "icon": "cloud",
-      "actionId": "openFleet"
-    },
-    {
       "socket": "row-badge",
       "surface": "app",
       "id": "tab-badge",
@@ -109,13 +79,39 @@
       "label": "Cursor Cloud",
       "icon": "brand:cursor",
       "triggers": [
-        { "id": "cloud_finished", "label": "A Cursor Cloud agent finishes", "description": "Fires when Cursor reports a run FINISHED." },
-        { "id": "cloud_error", "label": "A Cursor Cloud agent errors", "description": "Fires when Cursor reports a run ERROR." }
+        {
+          "id": "cloud_finished",
+          "label": "A Cursor Cloud agent finishes",
+          "description": "Fires when Cursor reports a run FINISHED."
+        },
+        {
+          "id": "cloud_error",
+          "label": "A Cursor Cloud agent errors",
+          "description": "Fires when Cursor reports a run ERROR."
+        }
       ],
       "filters": [
-        { "key": "laneId", "label": "Lane", "kind": "select", "collection": "fleet", "hint": "Only agents working on this lane's branch." },
-        { "key": "repo", "label": "Repository", "kind": "text", "placeholder": "owner/repo", "hint": "Match the repository Cursor cloned." },
-        { "key": "agentName", "label": "Agent name contains", "kind": "text", "placeholder": "sync", "hint": "Match the agent's name, which is its first prompt line." }
+        {
+          "key": "laneId",
+          "label": "Lane",
+          "kind": "select",
+          "collection": "fleet",
+          "hint": "Only agents working on this lane's branch."
+        },
+        {
+          "key": "repo",
+          "label": "Repository",
+          "kind": "text",
+          "placeholder": "owner/repo",
+          "hint": "Match the repository Cursor cloned."
+        },
+        {
+          "key": "agentName",
+          "label": "Agent name contains",
+          "kind": "text",
+          "placeholder": "sync",
+          "hint": "Match the agent's name, which is its first prompt line."
+        }
       ],
       "webhook": {
         "statusAction": "webhookStatus",

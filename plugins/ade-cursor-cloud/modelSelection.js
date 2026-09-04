@@ -124,13 +124,41 @@ function readVariants(value) {
  * A string item is an id with no parameters — still a valid model, just one
  * that cannot express reasoning or speed.
  */
+/**
+ * What a person should see for one model id.
+ *
+ * Cursor's catalog names a model with an id, not a title, so a picker that
+ * printed `row.id` printed `composer-2` where every other model chip in ADE
+ * prints `Composer 2`. Cursor's own answer wins when it sends one; otherwise
+ * the id is turned into words, which is a presentation rule and not a mapping
+ * table — a table would go stale the week Cursor adds a model.
+ *
+ * A segment with no vowel and at most four letters is an acronym (`gpt` →
+ * `GPT`), and a segment that starts with a digit is a version and is left
+ * alone (`4.5` stays `4.5`).
+ */
+function modelLabel(record, id) {
+  const given = typeof record?.displayName === "string" ? record.displayName.trim() : "";
+  const named = given || (typeof record?.name === "string" ? record.name.trim() : "");
+  if (named) return named;
+  return id
+    .split(/[-_]/)
+    .filter(Boolean)
+    .map((part) => {
+      if (/^\d/.test(part)) return part;
+      if (part.length <= 4 && !/[aeiou]/i.test(part)) return part.toUpperCase();
+      return part.charAt(0).toUpperCase() + part.slice(1);
+    })
+    .join(" ") || id;
+}
+
 function readCatalog(items) {
   const rows = [];
   const list = Array.isArray(items) ? items : [];
   for (const entry of list) {
     if (typeof entry === "string") {
       const id = entry.trim();
-      if (id) rows.push({ id, aliases: [], parameters: [], variants: [] });
+      if (id) rows.push({ id, label: modelLabel(null, id), aliases: [], parameters: [], variants: [] });
       continue;
     }
     const record = entry && typeof entry === "object" ? entry : null;
@@ -141,6 +169,7 @@ function readCatalog(items) {
       : [];
     rows.push({
       id,
+      label: modelLabel(record, id),
       aliases,
       parameters: readParameterDefinitions(record.parameters),
       variants: readVariants(record.variants),

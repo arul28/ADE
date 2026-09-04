@@ -408,7 +408,21 @@ function createChatRuntime(deps) {
     await host.chat.emitStatus(sessionId, { state: "running", turnId });
     let run;
     try {
-      const created = await api.createRun(agentId, { prompt: { text: message } });
+      /*
+       * One key per TURN, derived rather than remembered.
+       *
+       * The host may deliver the same turn twice — a reconnect, a retry after a
+       * timeout the request survived — and without this each delivery is a
+       * second run on the same agent, which is the agent working on the same
+       * prompt twice and pushing both. It is derived from the session and the
+       * turn rather than memoized because a derived key still matches after
+       * this child restarts, and a map does not.
+       */
+      const created = await api.createRun(
+        agentId,
+        { prompt: { text: message } },
+        { idempotencyKey: `ade:${sessionId}:${turnId}:cursor-cloud:followup` },
+      );
       run = created?.run ?? created;
     } catch (error) {
       await host.chat.emitStatus(sessionId, {

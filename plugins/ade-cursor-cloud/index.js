@@ -502,20 +502,6 @@ function laneFor(entry, args) {
     ?? null;
 }
 
-/**
- * The cloud agent behind a chat, or null when the chat is somebody else's.
- *
- * Walks this plugin's own session index rather than asking ADE: the session
- * store answers "which plugin owns this" and the plugin owns the other half of
- * the mapping.
- */
-async function agentForSession(args) {
-  const sessionId = args?.context?.kind === "session" ? args.context.id : args?.sessionId ?? null;
-  if (!sessionId) return null;
-  const rows = await links.list().catch(() => []);
-  return rows.find((row) => row?.sessionId === sessionId)?.agentId ?? null;
-}
-
 function requireAgentId(args) {
   const agentId = typeof args?.agentId === "string" ? args.agentId.trim() : "";
   if (!agentId) throw new Error("This action needs an agent id.");
@@ -1079,43 +1065,6 @@ exports.actions = {
 
   async openAllAgents() {
     return { openUrl: ALL_AGENTS_URL };
-  },
-
-  /**
-   * The chat header's two menu entries.
-   *
-   * A chat-scoped socket receives a `session` context, which names the ADE
-   * session and not the cloud agent behind it — so the agent id comes from this
-   * plugin's own session index, walked in reverse. That reverse walk is why the
-   * index is a collection rather than an in-memory map: the child restarts, and
-   * a header button that stopped working after a restart would be a bug nobody
-   * could reproduce on purpose.
-   */
-  async pullIntoLaneFromChat(args) {
-    const agentId = await agentForSession(args);
-    if (!agentId) return { message: "This chat is not a Cursor Cloud agent.", ok: false };
-    return await exports.actions.pullIntoLane({ ...args, agentId });
-  },
-
-  async stopRunFromChat(args) {
-    const agentId = await agentForSession(args);
-    if (!agentId) return { message: "This chat is not a Cursor Cloud agent.", ok: false };
-    return await exports.actions.stopRun({ ...args, agentId });
-  },
-
-  /**
-   * The chat header's primary press: this agent's page on cursor.com.
-   *
-   * Built from the id rather than read from the fleet, because a chat's header
-   * must answer on a machine whose fleet read failed — and the URL is a pure
-   * function of the id (`cursorCloudAgentWebUrl`).
-   */
-  async openAgentWebFromChat(args) {
-    const agentId = await agentForSession(args);
-    if (!agentId) return { message: "This chat is not a Cursor Cloud agent.", ok: false };
-    const url = agentWebUrl(agentId);
-    if (!url) return { message: "That agent has no page to open.", ok: false };
-    return { openUrl: url };
   },
 
   /**

@@ -17,15 +17,40 @@
  * The artifacts list has no compiled ancestor at all. It exists because the
  * plugin declares `capabilities.artifacts` on its chat runtime and the child
  * answers `CloudArtifact[]`, and it is deliberately the plainest thing on the
- * page: a path, a size and a press that hands the signed URL to the host.
+ * page: a path, a size and a press that hands the signed URL to the host. It
+ * is a DISCLOSURE rather than a list, because the links are minted per file and
+ * minting fifty of them for a section nobody opened is fifty requests spent on
+ * nothing.
+ *
+ * ## Why it never draws the agent before last
+ *
+ * The pane's `agentId` changes under it — the fleet keeps ONE mounted and hands
+ * it the selected id — so every piece of state here belongs to an id, and the
+ * moment the id changes all of it is wrong. Three things keep the pane honest:
+ *
+ * - the state resets in the RENDER that first sees a new id, so no frame is
+ *   ever painted with the last agent's runs, usage or artifacts;
+ * - `initialEntry` is the row the fleet already has, so the header paints the
+ *   right name, status and age immediately rather than after `pageAgent`;
+ * - the generation guard drops an answer for an id that is no longer shown.
  */
 
 import React, { useCallback, useEffect, useRef, useState } from "react";
-import { ArrowSquareOut, CircleNotch, GitPullRequest, PaperPlaneRight, Stop, X } from "@phosphor-icons/react";
+import {
+  ArrowSquareOut,
+  CaretDown,
+  CaretRight,
+  CircleNotch,
+  GitPullRequest,
+  PaperPlaneRight,
+  Stop,
+  X,
+} from "@phosphor-icons/react";
 import { cn } from "@ade-dev/ui";
 
-import type { CloudAgentPage, CloudUsage } from "../types";
-import { followUp as sendFollowUp, getAgentPage, stopRun } from "../host/actions";
+import type { CloudAgentPage, CloudFleetEntry, CloudUsage } from "../types";
+import { followUp as sendFollowUp, getArtifactUrls, stopRun } from "../host/actions";
+import { AGENT_PAGE_FRESH_MS, cachedAgentPage, fetchAgentPage } from "../host/agentPageCache";
 import { openLink } from "../host/ui";
 import { useHostRefresh } from "../host/refresh";
 import { useCollectionChanges } from "../host/useHostEntities";
@@ -34,11 +59,22 @@ import { StatusPill } from "./FleetRow";
 
 export function AgentDetail({
   agentId,
+  initialEntry,
   onClose,
   onUsage,
   onChanged,
 }: {
   agentId: string;
+  /**
+   * The fleet's own row for this agent, when the fleet is what opened the pane.
+   *
+   * It is not a shortcut: it is the difference between a pane that names the
+   * agent the reader just clicked and a pane that names the previous one until
+   * the network answers. `pageAgent` still runs, and its `entry` replaces this
+   * the moment it lands — including replacing it with NOTHING, which is how an
+   * agent deleted on cursor.com still reaches its "not in this fleet" sentence.
+   */
+  initialEntry?: CloudFleetEntry | null;
   /** Given by the fleet, absent on the standalone surface, which has no pane to close. */
   onClose?: () => void;
   /** Hands the usage back up so the fleet row can wear its cost chip. */
@@ -46,12 +82,37 @@ export function AgentDetail({
   /** Something changed on Cursor's side; the fleet should re-read. */
   onChanged?: () => void;
 }): React.ReactElement {
-  const [page, setPage] = useState<CloudAgentPage | null>(null);
+  const [page, setPage] = useState<CloudAgentPage | null>(() => cachedAgentPage(agentId));
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [draft, setDraft] = useState("");
   const [notice, setNotice] = useState<string | null>(null);
+  const [artifactsOpen, setArtifactsOpen] = useState(false);
+  const [artifactUrls, setArtifactUrls] = useState<Record<string, string> | null>(null);
+  const [artifactsBusy, setArtifactsBusy] = useState(false);
+
+  /**
+   * The id this render's state belongs to.
+   *
+   * Reset DURING render rather than in an effect: an effect runs after the
+   * browser has already been handed a frame, and that frame would carry the
+   * previous agent's facts under the new agent's name. React supports exactly
+   * this — a `setState` while rendering re-renders the component before it
+   * commits anything, and nothing stale is ever painted.
+   */
+  const [shownAgentId, setShownAgentId] = useState(agentId);
+  if (shownAgentId !== agentId) {
+    setShownAgentId(agentId);
+    setPage(cachedAgentPage(agentId));
+    setError(null);
+    setBusy(false);
+    setDraft("");
+    setNotice(null);
+    setArtifactsOpen(false);
+    setArtifactUrls(null);
+    setArtifactsBusy(false);
+  }
 
   /**
    * One read wins, and it is the newest one.
@@ -64,11 +125,25 @@ export function AgentDetail({
   const usageRef = useRef(onUsage);
   usageRef.current = onUsage;
 
-  const load = useCallback(() => {
+  /**
+   * Read this agent, painting whatever is already known first.
+   *
+   * `fresh` is what every re-read after a mutation or a relay wake passes: the
+   * remembered page may answer a first mount, but never a read made BECAUSE
+   * something changed.
+   */
+  const load = useCallback((options: { fresh?: boolean } = {}) => {
     const generation = requestRef.current + 1;
     requestRef.current = generation;
-    setLoading(true);
-    void getAgentPage(agentId)
+    const known = cachedAgentPage(agentId);
+    if (known) {
+      setPage(known);
+      setError(null);
+      usageRef.current?.(agentId, known.usage);
+    }
+    // A spinner belongs only where there is nothing to look at.
+    setLoading(!known);
+    void fetchAgentPage(agentId, { maxAgeMs: options.fresh ? 0 : AGENT_PAGE_FRESH_MS })
       .then((next) => {
         if (requestRef.current !== generation) return;
         setPage(next);
@@ -85,18 +160,64 @@ export function AgentDetail({
   }, [agentId]);
 
   useEffect(() => {
-    setDraft("");
-    setNotice(null);
     load();
   }, [load]);
 
   // Both freshness channels, and no timer: the reader's pull-down, and the
-  // child writing the `fleet` collection when a relay delivery lands.
-  useHostRefresh(load);
-  useCollectionChanges(load, "fleet");
+  // child writing the `fleet` collection when a relay delivery lands. Both are
+  // news, so both bypass what this page already remembers.
+  const reload = useCallback(() => load({ fresh: true }), [load]);
+  useHostRefresh(reload);
+  useCollectionChanges(reload, "fleet");
 
-  const entry = page?.entry ?? null;
+  /**
+   * Mint every signed download, once, when the section is opened.
+   *
+   * Re-opening a section already minted asks again only if the last answer had
+   * nothing in it: a signed URL expires, but not inside one visit to one pane,
+   * and asking on every toggle would be a request per press.
+   */
+  const toggleArtifacts = useCallback(() => {
+    const opening = !artifactsOpen;
+    setArtifactsOpen(opening);
+    if (!opening || artifactUrls || artifactsBusy) return;
+    setArtifactsBusy(true);
+    const generation = requestRef.current;
+    void getArtifactUrls(agentId)
+      .then((answer) => {
+        if (requestRef.current !== generation) return;
+        const minted: Record<string, string> = {};
+        for (const row of answer.urls) if (row.url) minted[row.path] = row.url;
+        setArtifactUrls(minted);
+      })
+      .catch(() => {
+        // A mint that failed leaves the paths listed with no download beside
+        // them, which is what the row already draws for a file this key cannot
+        // sign. It is not worth a banner over the pane.
+        if (requestRef.current === generation) setArtifactUrls({});
+      })
+      .finally(() => {
+        if (requestRef.current === generation) setArtifactsBusy(false);
+      });
+  }, [agentId, artifactUrls, artifactsBusy, artifactsOpen]);
+
+  /**
+   * The row the pane draws from: the child's answer once it has one, and the
+   * fleet's own row until then. `page` replacing it with a null entry is a
+   * fact, not a gap, which is why this is a branch on `page` and not a `??`.
+   */
+  const entry = page ? page.entry : (initialEntry ?? null);
   const active = entry?.active === true;
+  /**
+   * Whether another turn can be sent, which is NOT the same as "still running".
+   *
+   * A follow-up is a new run on an agent that already exists — that is how
+   * Cursor spells "keep going", and a finished agent is exactly the one a
+   * reader wants to say "now do the tests" to. The only agent that cannot take
+   * one is an ARCHIVED agent, so that is what the box gates on. Stop still
+   * gates on `active`, because there is nothing to stop otherwise.
+   */
+  const canFollowUp = entry != null && entry.agent.archived !== true;
   /**
    * The one sentence that replaces the body, or null.
    *
@@ -108,7 +229,7 @@ export function AgentDetail({
    */
   const problem = error
     ?? page?.error
-    ?? (page && !entry ? "It is not in this project's fleet." : null);
+    ?? (page && !page.entry ? "It is not in this project's fleet." : null);
 
   const runStop = useCallback(() => {
     setBusy(true);
@@ -117,7 +238,7 @@ export function AgentDetail({
       .then((result) => {
         setNotice(result.message ?? null);
         if (result.ok) {
-          load();
+          load({ fresh: true });
           onChanged?.();
         }
       })
@@ -129,7 +250,7 @@ export function AgentDetail({
 
   const submitFollowUp = useCallback(() => {
     const prompt = draft.trim();
-    if (!prompt || !active) return;
+    if (!prompt || !canFollowUp) return;
     setBusy(true);
     setNotice(null);
     void sendFollowUp(agentId, prompt)
@@ -137,7 +258,7 @@ export function AgentDetail({
         setNotice(result.message ?? null);
         if (result.ok) {
           setDraft("");
-          load();
+          load({ fresh: true });
           onChanged?.();
         }
       })
@@ -145,7 +266,7 @@ export function AgentDetail({
         setNotice(err instanceof Error ? err.message : "Could not send that to Cursor Cloud.");
       })
       .finally(() => setBusy(false));
-  }, [active, agentId, draft, load, onChanged]);
+  }, [agentId, canFollowUp, draft, load, onChanged]);
 
   return (
     <div className="flex h-full min-h-0 flex-col bg-[color:var(--color-bg)]">
@@ -179,7 +300,7 @@ export function AgentDetail({
       </div>
 
       <div className="min-h-0 flex-1 overflow-y-auto px-4 py-3">
-        {loading && !page ? (
+        {loading && !page && !entry ? (
           <div className="flex h-full flex-col items-center justify-center gap-2 text-fg/45">
             <CircleNotch size={18} weight="bold" className="animate-spin" />
             <span className="text-[12px]">Loading cloud agents…</span>
@@ -277,41 +398,59 @@ export function AgentDetail({
 
             {page && page.artifacts.length > 0 ? (
               <section>
-                <span className="font-sans text-[10px] font-semibold uppercase tracking-[1px] text-fg/45">
-                  Artifacts
-                </span>
-                <div className="mt-1.5 space-y-1.5">
-                  {page.artifacts.map((artifact) => {
-                    const size = artifactSizeLabel(artifact.bytes);
-                    return (
-                      <div
-                        key={artifact.path}
-                        className="flex items-center gap-2 rounded-md border border-white/[0.06] bg-white/[0.015] px-2.5 py-1.5"
-                      >
-                        <span className="min-w-0 flex-1 truncate font-mono text-[10.5px] text-fg/60">
-                          {artifact.path}
-                        </span>
-                        {size ? <span className="shrink-0 font-mono text-[10px] text-fg/35">{size}</span> : null}
-                        {artifact.url ? (
-                          <button
-                            type="button"
-                            /*
-                             * The URL is a signed download that expires, and the
-                             * page never touches its bytes: the host opens it,
-                             * exactly as it opens a PR. A guest fetching it
-                             * would need `api.cursor.com` in its own allowlist
-                             * and would have nowhere to put the result.
-                             */
-                            onClick={() => void openLink(artifact.url!)}
-                            className="inline-flex h-6 shrink-0 items-center gap-1 rounded-md border border-white/[0.07] px-2 font-sans text-[10.5px] text-fg/60 transition-colors hover:border-white/[0.16] hover:text-fg/85"
-                          >
-                            <ArrowSquareOut size={9} weight="bold" /> Open
-                          </button>
-                        ) : null}
-                      </div>
-                    );
-                  })}
-                </div>
+                {/*
+                 * A disclosure, not a list. Opening it is what mints the signed
+                 * downloads, in one call for every file — see `toggleArtifacts`.
+                 */}
+                <button
+                  type="button"
+                  onClick={toggleArtifacts}
+                  aria-expanded={artifactsOpen}
+                  className="flex w-full items-center gap-1.5 font-sans text-[10px] font-semibold uppercase tracking-[1px] text-fg/45 transition-colors hover:text-fg/70"
+                >
+                  {artifactsOpen
+                    ? <CaretDown size={9} weight="bold" />
+                    : <CaretRight size={9} weight="bold" />}
+                  Artifacts ({page.artifacts.length})
+                  {artifactsBusy ? (
+                    <CircleNotch size={10} weight="bold" className="animate-spin" />
+                  ) : null}
+                </button>
+                {artifactsOpen ? (
+                  <div className="mt-1.5 space-y-1.5">
+                    {page.artifacts.map((artifact) => {
+                      const size = artifactSizeLabel(artifact.bytes);
+                      const url = artifact.url ?? artifactUrls?.[artifact.path] ?? null;
+                      return (
+                        <div
+                          key={artifact.path}
+                          className="flex items-center gap-2 rounded-md border border-white/[0.06] bg-white/[0.015] px-2.5 py-1.5"
+                        >
+                          <span className="min-w-0 flex-1 truncate font-mono text-[10.5px] text-fg/60">
+                            {artifact.path}
+                          </span>
+                          {size ? <span className="shrink-0 font-mono text-[10px] text-fg/35">{size}</span> : null}
+                          {url ? (
+                            <button
+                              type="button"
+                              /*
+                               * The URL is a signed download that expires, and
+                               * the page never touches its bytes: the host opens
+                               * it, exactly as it opens a PR. A guest fetching it
+                               * would need `api.cursor.com` in its own allowlist
+                               * and would have nowhere to put the result.
+                               */
+                              onClick={() => void openLink(url)}
+                              className="inline-flex h-6 shrink-0 items-center gap-1 rounded-md border border-white/[0.07] px-2 font-sans text-[10.5px] text-fg/60 transition-colors hover:border-white/[0.16] hover:text-fg/85"
+                            >
+                              <ArrowSquareOut size={9} weight="bold" /> Open
+                            </button>
+                          ) : null}
+                        </div>
+                      );
+                    })}
+                  </div>
+                ) : null}
               </section>
             ) : null}
           </div>
@@ -327,9 +466,13 @@ export function AgentDetail({
       {/*
        * The follow-up composer.
        *
-       * Drawn always, enabled only while the agent is active — a disabled box
-       * with its own reason beats a box that disappears, because "where did the
-       * reply field go" is the question a finished run would otherwise raise.
+       * Drawn always, and enabled for every agent that is not archived. A
+       * finished agent still takes a follow-up: Cursor has no separate verb for
+       * "keep going", so another turn IS another run on the same agent, and
+       * "now run the tests" on a run that just finished is the commonest thing
+       * a reader wants to say. A disabled box with its own reason beats a box
+       * that disappears, because "where did the reply field go" is the question
+       * an archived agent would otherwise raise.
        */}
       <div className="shrink-0 border-t border-white/[0.07] px-4 py-2.5">
         <div className="flex items-end gap-2">
@@ -343,15 +486,17 @@ export function AgentDetail({
               }
             }}
             rows={2}
-            disabled={!active || busy}
+            disabled={!canFollowUp || busy}
             aria-label="Follow-up prompt"
-            placeholder={active ? "Send another turn to this agent…" : "This agent is no longer running."}
+            placeholder={canFollowUp
+              ? "Send another turn to this agent…"
+              : "This agent is archived."}
             className="min-h-[44px] w-full flex-1 resize-y rounded-md border border-white/[0.08] bg-white/[0.03] px-2.5 py-1.5 font-sans text-[11.5px] text-fg/85 outline-none transition-colors placeholder:text-fg/30 hover:border-white/[0.16] focus:border-violet-300/35 disabled:opacity-40"
           />
           <button
             type="button"
             onClick={submitFollowUp}
-            disabled={!active || busy || draft.trim().length === 0}
+            disabled={!canFollowUp || busy || draft.trim().length === 0}
             className={cn(
               "inline-flex h-8 shrink-0 items-center gap-1 rounded-md border border-violet-300/25 bg-violet-500/[0.10] px-2.5 font-sans text-[11px] font-semibold text-violet-100/90 transition-colors",
               "hover:border-violet-300/40 hover:bg-violet-500/[0.18] disabled:opacity-40",

@@ -61,6 +61,8 @@ const {
 } = require("./format");
 const {
   agentNameFromPrompt,
+  clearFollowUpKey,
+  followUpKeyFor,
   isInjectableSecretName,
   laneSecretsKey,
   launchUnavailableReason,
@@ -71,7 +73,7 @@ const { repoLabel } = require("./repoMatch");
 
 /** Runs one agent's detail pane shows. Cursor caps a page at 100 either way. */
 const AGENT_RUNS_PAGE = 20;
-/** Artifact rows one detail pane mints a signed URL for. */
+/** Artifact rows one detail pane lists, and mints a signed URL for. */
 const MAX_ARTIFACT_ROWS = 50;
 /** Lanes the launch form's picker offers. */
 const MAX_LANE_CHOICES = 40;
@@ -99,6 +101,30 @@ function integer(value) {
   if (Number.isFinite(value)) return Math.trunc(value);
   if (typeof value === "string" && /^-?\d+$/.test(value.trim())) return Number.parseInt(value.trim(), 10);
   return null;
+}
+
+/** The sentence a settled rejection carries, for a debug line and nothing else. */
+function reasonText(settled) {
+  const reason = settled?.reason;
+  return reason?.message ?? String(reason ?? "unknown");
+}
+
+/**
+ * The artifact rows one agent has, capped and with their paths normalised.
+ *
+ * Shared by `pageAgent`, which lists them, and `pageArtifactUrls`, which mints
+ * a download for each — so the two can never disagree about WHICH files the
+ * pane is talking about, or about how many of them there are.
+ */
+function artifactRows(listed) {
+  const rows = [];
+  for (const raw of (Array.isArray(listed?.items) ? listed.items : []).slice(0, MAX_ARTIFACT_ROWS)) {
+    // The leading slash is stripped: the page renders it as a relative path.
+    const path = String(raw?.path ?? "").replace(/^\/+/, "");
+    if (!path) continue;
+    rows.push({ path, sizeBytes: raw?.sizeBytes });
+  }
+  return rows;
 }
 
 /** The empty `groups` every fleet state carries, so a page never branches on undefined. */
@@ -334,10 +360,20 @@ function createPageActions(deps) {
       }
 
       const snapshot = deps.fleetSnapshot();
-      // Archived rows are assembled but not drawn: the page's own "Show
-      // archived (n)" affordance is a filter over `entries`, and `counts`
-      // carries the number so the label can be written without a second read.
-      const visible = snapshot.items.filter((entry) => !entry.agent.archived);
+      /*
+       * EVERY row, archived included.
+       *
+       * The page's "Show archived (n)" reveal is a filter over `entries`
+       * (`Fleet.tsx:keep`), so a child that stripped archived rows first left
+       * that button revealing nothing and made Unarchive unreachable — the one
+       * gesture that only an archived row offers. `counts.total` stays the
+       * VISIBLE count, because the footer counts what the reader sees.
+       *
+       * `groups` keeps the visible set: it is what the vocabulary panel draws
+       * on a client with no page, and that panel has its own archived door.
+       */
+      const rows = snapshot.items;
+      const visible = rows.filter((entry) => !entry.agent.archived);
       const groups = decorateGroups(deps.groupFleet(visible), now);
       const counts = {
         active: groups.active.length,
@@ -347,9 +383,11 @@ function createPageActions(deps) {
         archived: snapshot.archivedCount,
       };
       return {
-        state: visible.length === 0 ? "empty" : "list",
+        // A project whose only agents are archived is not empty: it is a list
+        // the reader has to press "Show archived" to see.
+        state: rows.length === 0 ? "empty" : "list",
         error: null,
-        entries: visible.map((entry) => decorate(entry, now)),
+        entries: rows.map((entry) => decorate(entry, now)),
         groups,
         laneOptions: snapshot.lanes,
         archivedCount: snapshot.archivedCount,
@@ -366,6 +404,25 @@ function createPageActions(deps) {
      * `entry` is null with a sentence in `error` for an agent this project's
      * fleet does not hold — deleted on cursor.com, or somebody else's — which
      * is a state the page draws rather than a rejection it has to catch.
+     *
+     * ## Why the four reads run together
+     *
+     * Usage, runs, artifacts and the session link are INDEPENDENT: none of them
+     * reads a field another one produces. Awaiting them one after another made
+     * the pane cost the sum of four round trips to Cursor rather than the
+     * longest of them, which is what a reader clicking down a list feels as a
+     * pane that lags a row behind. `Promise.allSettled` is the right combinator
+     * rather than `Promise.all`, because each of the four already degrades on
+     * its own: a key without the usage scope must cost the pane its cost line
+     * and nothing else.
+     *
+     * ## Why no artifact carries a URL here
+     *
+     * A signed download is minted per FILE, and this pane lists up to 50 of
+     * them. Minting them inside this handler put up to 50 more sequential
+     * requests in front of the first paint, for links most readers never press.
+     * The rows carry `url: null`, and `pageArtifactUrls` mints all of them in
+     * one call when the reader opens the artifacts section.
      */
     async pageAgent(args = {}) {
       const now = Date.now();
@@ -377,9 +434,18 @@ function createPageActions(deps) {
       const entry = await deps.findEntry(agentId).catch(() => null);
       if (!entry) return { ...empty, error: "It is not in this project's fleet." };
 
+      const [usageRead, runsRead, artifactsRead, linkRead] = await Promise.allSettled([
+        deps.api.getAgentUsage(agentId),
+        deps.api.listRuns(agentId, { limit: AGENT_RUNS_PAGE }),
+        deps.api.listArtifacts(agentId),
+        deps.links.get(agentId),
+      ]);
+
+      // Usage is a decoration. A key without the usage scope must not cost the
+      // page the rest of the pane.
       let usage = null;
-      try {
-        const raw = await deps.api.getAgentUsage(agentId);
+      if (usageRead.status === "fulfilled") {
+        const raw = usageRead.value;
         const costCents = Number.isFinite(raw?.cost?.chargedCents) ? raw.cost.chargedCents : null;
         usage = {
           totalTokens: integer(raw?.totalUsage?.totalTokens),
@@ -388,51 +454,72 @@ function createPageActions(deps) {
           costCents,
           cost: formatCost(costCents),
         };
-      } catch {
-        // Usage is a decoration. A key without the usage scope must not cost
-        // the page the rest of the pane.
       }
 
       let runs = [];
-      try {
-        const page = await deps.api.listRuns(agentId, { limit: AGENT_RUNS_PAGE });
-        runs = (Array.isArray(page?.items) ? page.items : [])
+      if (runsRead.status === "fulfilled") {
+        runs = (Array.isArray(runsRead.value?.items) ? runsRead.value.items : [])
           .map((raw) => pageRun(raw, now))
           .filter(Boolean);
-      } catch (error) {
-        log("debug", `Could not list the runs for ${agentId}: ${error?.message ?? error}`);
+      } else {
+        log("debug", `Could not list the runs for ${agentId}: ${reasonText(runsRead)}`);
       }
 
       const artifacts = [];
-      try {
-        const listed = await deps.api.listArtifacts(agentId);
-        for (const raw of (Array.isArray(listed?.items) ? listed.items : []).slice(0, MAX_ARTIFACT_ROWS)) {
-          const artifactPath = String(raw?.path ?? "").replace(/^\/+/, "");
-          if (!artifactPath) continue;
-          let url = null;
-          try {
-            const download = await deps.api.getArtifactDownloadUrl(agentId, artifactPath);
-            const signed = text(download?.url);
-            // HTTPS only. A `file:` or `data:` URL from a compromised answer
-            // would be a link the page hands the reader's browser.
-            if (signed && signed.startsWith("https:")) url = signed;
-          } catch {
-            // A signed URL this child cannot mint still lists the file. The row
-            // draws the path with no download rather than vanishing.
-          }
-          artifacts.push({ path: artifactPath, bytes: integer(raw?.sizeBytes), url });
+      if (artifactsRead.status === "fulfilled") {
+        for (const raw of artifactRows(artifactsRead.value)) {
+          artifacts.push({ path: raw.path, bytes: integer(raw.sizeBytes), url: null });
         }
-      } catch (error) {
-        log("debug", `Could not list the artifacts for ${agentId}: ${error?.message ?? error}`);
+      } else {
+        log("debug", `Could not list the artifacts for ${agentId}: ${reasonText(artifactsRead)}`);
       }
 
-      const link = await deps.links.get(agentId).catch(() => null);
+      const link = linkRead.status === "fulfilled" ? linkRead.value : null;
       return {
         entry: decorate(entry, now),
         usage,
         runs,
         artifacts,
         sessionId: text(link?.sessionId) ?? entry.ownership.sessionId ?? null,
+        error: null,
+      };
+    },
+
+    /**
+     * Every signed download for one agent, minted in one call.
+     *
+     * The reader opens the artifacts section and the page asks once; it never
+     * asks per row. Cursor mints a URL per path, so the fan-out still happens —
+     * it happens HERE, in parallel, off the pane's first paint, and it costs one
+     * bridge round trip instead of one per file.
+     *
+     * A path this child cannot mint answers `url: null`, exactly as the row
+     * already draws: the file is still listed, with no download beside it.
+     */
+    async pageArtifactUrls(args = {}) {
+      const empty = { urls: [], error: null };
+      if (!ready()) return { ...empty, error: STARTING_UP };
+      const agentId = readAgentId(args);
+      if (!agentId) return { ...empty, error: "This action needs an agent id." };
+
+      let rows;
+      try {
+        rows = artifactRows(await deps.api.listArtifacts(agentId));
+      } catch {
+        return { ...empty, error: "Could not list this agent's artifacts." };
+      }
+
+      const minted = await Promise.allSettled(
+        rows.map((row) => deps.api.getArtifactDownloadUrl(agentId, row.path)),
+      );
+      return {
+        urls: rows.map((row, index) => {
+          const result = minted[index];
+          const signed = result.status === "fulfilled" ? text(result.value?.url) : null;
+          // HTTPS only. A `file:` or `data:` URL from a compromised answer
+          // would be a link the page hands the reader's browser.
+          return { path: row.path, url: signed && signed.startsWith("https:") ? signed : null };
+        }),
         error: null,
       };
     },
@@ -505,7 +592,10 @@ function createPageActions(deps) {
         showSpeed = controls.speed;
         models = catalog.map((row) => ({
           id: row.id,
-          label: row.id,
+          // Cursor's own title when it sends one, else the id turned into
+          // words. A chip that printed `composer-2` was the only model chip in
+          // ADE that printed an id — see `modelSelection.js:modelLabel`.
+          label: row.label ?? row.id,
           // Per-model, not per-catalog: `reasoningOptions` above is the union
           // the form's shared control offers, and this is what THIS model can
           // actually express. A page that offered a tier the row cannot take
@@ -691,12 +781,26 @@ function createPageActions(deps) {
       if (!agentId) return { ok: false, message: "This action needs an agent id." };
       const prompt = text(args?.prompt) ?? text(args?.message);
       if (!prompt) return { ok: false, message: "Say what the agent should do next." };
+      /*
+       * The same key across a retry of the same send, and a new one after it
+       * lands — exactly what `launch.js` does for a create, and for the same
+       * reason. A send that failed after Cursor accepted the POST is the case
+       * this exists for: without a key the reader's second press is a SECOND
+       * run on the same agent, and the agent then works on two prompts.
+       */
+      const idempotencyKey = followUpKeyFor(agentId, prompt);
       try {
-        const created = await deps.api.createRun(agentId, { prompt: { text: prompt } });
+        const created = await deps.api.createRun(
+          agentId,
+          { prompt: { text: prompt } },
+          { idempotencyKey },
+        );
         const runId = text(created?.run?.id) ?? text(created?.id);
+        clearFollowUpKey(agentId, prompt);
         void deps.refreshFleet();
         return { ok: true, message: "Sent to Cursor Cloud.", runId: runId ?? null };
       } catch (error) {
+        // The key is KEPT, so the retry adopts the run Cursor may already hold.
         return failure(error, "Cursor refused the follow-up.");
       }
     },

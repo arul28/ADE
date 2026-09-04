@@ -429,12 +429,17 @@ describe("installing it the way a user does", () => {
       "launch",
     ]);
     expect(installed.manifest?.surfaces.every((surface) => Boolean(surface.panelId))).toBe(true);
+    // All three reach the phone. The webview mobile ceiling is lifted — the
+    // phone has a page host now — so `mobile: true` parses with no warning,
+    // which the `warnings` assertion above is what actually proves. The DEFAULT
+    // is still false, so each surface has to declare it, and a surface that did
+    // not would be a placement a reader can reach on a Mac and not on a phone.
+    expect(installed.manifest?.surfaces.map((surface) => surface.mobile)).toEqual([true, true, true]);
     expect(installed.manifest?.sockets.map((socket) => socket.socket)).toEqual([
       // The launch row in the machine picker. `machine-entry` replaced the
       // composer button: launching a cloud agent is choosing where work runs,
       // and that question is asked once, in the picker.
       "machine-entry",
-      "command-palette-action",
       "row-badge",
       // The Automations grid tile carrying the cloud run triggers.
       "automation-trigger-tile",

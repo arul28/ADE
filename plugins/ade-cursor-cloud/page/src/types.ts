@@ -131,11 +131,24 @@ export type CloudUsage = {
   cost: string | null;
 };
 
-/** One file a finished run produced. `url` is a signed HTTPS download. */
+/**
+ * One file a finished run produced.
+ *
+ * `url` is always null on a `CloudAgentPage`: a signed download is minted per
+ * file and expires, so `pageAgent` lists the files and `pageArtifactUrls` mints
+ * every link at once when the reader opens the section. The field stays on the
+ * row because that is where the page puts the minted link.
+ */
 export type CloudArtifact = {
   path: string;
   bytes: number | null;
   url: string | null;
+};
+
+/** What `pageArtifactUrls` answers: one signed link per listed artifact. */
+export type CloudArtifactUrls = {
+  urls: { path: string; url: string | null }[];
+  error: string | null;
 };
 
 /** One run of one agent, for the detail pane's run strip. */

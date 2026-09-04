@@ -98,11 +98,17 @@ describe("the manifest's action ids", () => {
     const ids = new Set(surfaces.map((s) => s.id));
     assert.deepEqual([...ids].sort(), ["agent", "fleet", "launch"]);
     for (const surface of surfaces) {
-      // `parseSurfaces` forbids `mobile: true` on a webview — it is a warning,
-      // and official packages must ship zero warnings. The iOS page host still
-      // draws these pages from the bundled cache; this flag is not the phone
-      // gate the name suggests.
-      assert.equal(surface.mobile, false, `${surface.id} must ship mobile: false`);
+      // All three are pages the PHONE draws, per the wave-2 spec: the fleet,
+      // one agent, and the form the composer row opens.
+      //
+      // The webview ceiling in `parseSurfaces` is lifted — the phone has a page
+      // host now — so `mobile: true` is honoured with no warning. It is not a
+      // no-op either: `pluginPanelShowsOnMobile` lists the PANEL behind a
+      // webview whatever this flag says, but only `mobile: true` gets the phone
+      // the PAGE. The DEFAULT is still false, which is why each surface has to
+      // say so itself, and why a surface left off here would be a placement a
+      // reader can reach on a Mac and not on a phone.
+      assert.equal(surface.mobile, true, `${surface.id} must ship mobile: true`);
     }
     for (const socket of manifest.sockets ?? []) {
       if (!socket.webviewSurfaceId) continue;
@@ -128,18 +134,18 @@ describe("the manifest's action ids", () => {
 
   it("publishes the sockets the spec named and no extras", () => {
     // Composer/chat menus are Linear's. This plugin's composer doorway is the
-    // machine-entry row; the chat header is the 1.x button, kept as today.
-    assert.deepEqual(
-      (manifest.sockets ?? []).map((socket) => socket.socket),
-      [
-        "machine-entry",
-        "chat-header-action",
-        "work-rail-pane",
-        "command-palette-action",
-        "row-badge",
-        "automation-trigger-tile",
-      ],
-    );
+    // machine-entry row, and its fleet is a rail-tab PAGE.
+    const sockets = (manifest.sockets ?? []).map((socket) => socket.socket);
+    assert.deepEqual(sockets, ["machine-entry", "row-badge", "automation-trigger-tile"]);
+    // Three placements are gone on purpose and must not come back by habit.
+    // The fleet is the rail TAB and nothing else: a Work-rail pane was the same
+    // list a second time in a column too narrow to read it in, and a palette
+    // row was a third door to a tab that is already in the rail. The chat keeps
+    // only the runtime's own chrome, so a cloud chat looks like every other
+    // chat rather than growing a header button no other runtime has.
+    for (const gone of ["work-rail-pane", "chat-header-action", "command-palette-action"]) {
+      assert.equal(sockets.includes(gone), false, `${gone} is not a Cursor Cloud placement`);
+    }
   });
 
   it("keeps every CLI word the 1.x plugin published", () => {
@@ -152,9 +158,9 @@ describe("the page's action ids", () => {
   it("answers exactly what the fake bridge scripts", () => {
     const scripted = fakeBridgeActionIds();
     assert.deepEqual(scripted, [
-      "pageAckBadge", "pageAgent", "pageArchiveAgent", "pageConnection", "pageCopyWebhookUrl",
-      "pageDeleteAgent", "pageFleet", "pageFollowUp", "pageLaunch", "pageLaunchContext",
-      "pageOpenInAde", "pagePullIntoLane", "pageStopRun", "pageUnarchiveAgent",
+      "pageAckBadge", "pageAgent", "pageArchiveAgent", "pageArtifactUrls", "pageConnection",
+      "pageCopyWebhookUrl", "pageDeleteAgent", "pageFleet", "pageFollowUp", "pageLaunch",
+      "pageLaunchContext", "pageOpenInAde", "pagePullIntoLane", "pageStopRun", "pageUnarchiveAgent",
     ]);
     const missing = scripted.filter((id) => typeof plugin.actions[id] !== "function");
     assert.deepEqual(missing, [], `the page invokes handlers this plugin does not answer: ${missing.join(", ")}`);

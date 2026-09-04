@@ -44,10 +44,7 @@ watching.
 | Where | What |
 |---|---|
 | Rail tab **Cursor Cloud** | The fleet: a flat recency list with search and status chips. An unread pill appears when a run finishes while you are not looking. |
-| Work rail pane | The same fleet, beside a chat. |
 | Chat composer | **Cursor Cloud** in the machine picker. Enter launches; Advanced opens the launch page. |
-| Chat header | **Cursor Cloud** opens the agent on cursor.com, with "Open the Cursor Cloud fleet", "Pull this run into the lane" and "Stop this cloud run" behind it. |
-| Command palette | **Cursor Cloud fleet**. |
 | The agent | `list_agents`, `launch_agent`, `stop_agent`, `pull_into_lane`. |
 | Automations | Its own trigger tile: fires when a run **finishes** or **errors**, filtered by lane, repository or agent name, with the relay's status and the URL to paste into Cursor. Steps to stop an agent or pull its branch. |
 | `ade` | `ade ade-cursor-cloud agents · runs · artifacts · repos · me` |
@@ -134,7 +131,7 @@ walks at most 200 rows, 100 to a page, because Cursor refuses a larger page.
 
 ## Uninstalling
 
-Takes the tab, the pane, the composer button, the chat runtime, the triggers and
-the CLI words with it. Chats already bound to a cloud agent keep their
+Takes the tab, the composer row, the chat runtime, the triggers and the CLI
+words with it. Chats already bound to a cloud agent keep their
 transcripts; they simply stop receiving new turns, because the thing that
 answered them is gone.

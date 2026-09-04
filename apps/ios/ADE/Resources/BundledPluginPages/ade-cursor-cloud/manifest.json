@@ -1,6 +1,6 @@
 {
   "pluginId": "ade-cursor-cloud",
-  "version": "2.0.1",
+  "version": "2.0.3",
   "revision": 0,
   "entry": "index.html",
   "files": [
@@ -10,9 +10,9 @@
       "sha256": "d6ee8466d473e65308b4460e5092ce17f1b123ef947ee53b6966b658bf592222"
     },
     {
-      "path": "assets/index-DzV22ntp.js",
-      "bytes": 260981,
-      "sha256": "c7bff21639030fbbbc7d655960173d015aa17cd33c5bb42193ca5bd03a885c84"
+      "path": "assets/index-DB55W40p.js",
+      "bytes": 264633,
+      "sha256": "af4cbe00463cfc3abbbcc46d1df5b60ffcaac6c3ce3c0629530164c4fa6cdbbb"
     },
     {
       "path": "fonts/Geist-Variable.woff2",
@@ -32,7 +32,7 @@
     {
       "path": "index.html",
       "bytes": 373,
-      "sha256": "14d2a9f6daf3ba87df4e2a8f3ddd0ad2107fa5f29732295f163b4a48a0c3ce42"
+      "sha256": "22d3873a8619ecb36b2a5534359abb21ceb9e3566f1b517759273a1619805cd6"
     }
   ]
 }

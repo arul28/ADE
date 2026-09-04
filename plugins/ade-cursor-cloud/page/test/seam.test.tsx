@@ -23,6 +23,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testi
 
 import { PageRouter } from "../src/PageRouter";
 import type { PluginWebviewContext } from "../src/bridge";
+import { forgetAllAgentPages } from "../src/host/agentPageCache";
 import { fakeEntry, installFakeBridge, uninstallFakeBridge, type FakeBridge } from "./fakeBridge";
 
 function context(overrides: Partial<PluginWebviewContext> = {}): PluginWebviewContext {
@@ -46,6 +47,10 @@ async function open(ctx: PluginWebviewContext, firstCall: string): Promise<FakeB
 let fake: FakeBridge;
 
 function install(options: Parameters<typeof installFakeBridge>[0] = {}): FakeBridge {
+  // The detail pane remembers agent pages for the life of the module, which is
+  // the life of this FILE. A walk that inherited the last one's fleet would
+  // paint rows nobody asked for, and would skip the read this test counts.
+  forgetAllAgentPages();
   fake = installFakeBridge(options);
   (globalThis as { __fake?: FakeBridge }).__fake = fake;
   return fake;
@@ -207,6 +212,59 @@ describe("the fleet", () => {
     await waitFor(() => expect(fake.callsTo("invoke:pageDeleteAgent")).toHaveLength(1));
   });
 
+  it("pulls a finished agent's branch into its lane through the child", async () => {
+    // A write with a git side effect, and the page must never do the fetch
+    // itself: the branch is on the machine the child runs on.
+    install({
+      entries: [fakeEntry({
+        active: false,
+        status: "finished",
+        runStatus: "finished",
+        agent: { status: "finished" },
+      })],
+    });
+    await open(context(), "invoke:pageFleet");
+
+    fireEvent.click(await screen.findByLabelText("More actions"));
+    fireEvent.click(await screen.findByText("Pull into lane…"));
+
+    await waitFor(() => expect(fake.callsTo("invoke:pagePullIntoLane")).toHaveLength(1));
+    expect(fake.lastCall("invoke:pagePullIntoLane")?.args).toEqual({ agentId: "bc_abc123" });
+  });
+
+  it("unarchives through the child, which is the gesture only an archived row has", async () => {
+    // Reachable only because the child now sends archived rows. Before that
+    // the reveal showed nothing and this row could not be put back.
+    install({
+      entries: [fakeEntry({
+        active: false,
+        status: "archived",
+        agent: { archived: true, status: undefined },
+      })],
+    });
+    await open(context(), "invoke:pageFleet");
+
+    fireEvent.click(await screen.findByText(/Show archived \(1\)/));
+    fireEvent.click(await screen.findByLabelText("More actions"));
+    fireEvent.click(await screen.findByText("Unarchive agent"));
+
+    await waitFor(() => expect(fake.callsTo("invoke:pageUnarchiveAgent")).toHaveLength(1));
+    expect(fake.lastCall("invoke:pageUnarchiveAgent")?.args).toEqual({ agentId: "bc_abc123" });
+  });
+
+  it("copies the live-update URL through the child, never off a page field", async () => {
+    // The relay URL is the child's to mint, and the clipboard write is the
+    // host's. A page that built the URL itself would be a page guessing at the
+    // relay's shape.
+    await open(context(), "invoke:pageFleet");
+
+    fireEvent.click(await screen.findByText("Filters"));
+    fireEvent.click(await screen.findByText("Copy live-update URL"));
+
+    await waitFor(() => expect(fake.callsTo("invoke:pageCopyWebhookUrl")).toHaveLength(1));
+    expect(await screen.findByText("Copied live-update URL")).toBeTruthy();
+  });
+
   it("keeps filters in the ui-state collection, never in localStorage", async () => {
     await open(context(), "invoke:pageFleet");
 
@@ -246,22 +304,104 @@ describe("the agent detail", () => {
     });
   });
 
-  it("refuses a follow-up once the run is no longer live", async () => {
+  it("still takes a follow-up after the run has finished", async () => {
+    // Cursor has no "keep going" verb: another turn IS another run on the same
+    // agent. So a finished agent is exactly the one a reader wants to say "now
+    // run the tests" to, and gating the box on `active` made that impossible.
     install({
       entries: [fakeEntry({ active: false, status: "finished", runStatus: "finished", agent: { status: "finished" } })],
     });
     await open(context({ surfaceId: "agent", subject: { kind: "agent", agentId: "bc_abc123" } }), "invoke:pageAgent");
 
-    // Drawn but disabled, with its own reason. A box that disappeared would
-    // raise "where did the reply field go".
+    const box = await screen.findByLabelText("Follow-up prompt") as HTMLTextAreaElement;
+    expect(box.disabled).toBe(false);
+
+    fireEvent.change(box, { target: { value: "Now run the tests." } });
+    fireEvent.click(await screen.findByText("Send"));
+    await waitFor(() => expect(fake.callsTo("invoke:pageFollowUp")).toHaveLength(1));
+  });
+
+  it("refuses a follow-up on an archived agent", async () => {
+    // The one state Cursor cannot take another run in. Drawn but disabled,
+    // with its own reason: a box that disappeared would raise "where did the
+    // reply field go".
+    install({
+      entries: [fakeEntry({
+        active: false,
+        status: "archived",
+        agent: { archived: true, status: undefined },
+      })],
+    });
+    await open(context({ surfaceId: "agent", subject: { kind: "agent", agentId: "bc_abc123" } }), "invoke:pageAgent");
+
     expect((await screen.findByLabelText("Follow-up prompt") as HTMLTextAreaElement).disabled).toBe(true);
+  });
+
+  it("paints the agent the reader just chose, never the one before it", async () => {
+    // The pane is mounted once and its `agentId` changes under it. Before the
+    // fleet handed it the row it already had, `pageAgent` was the only source
+    // of a name — and it answers after six network steps, so the pane kept the
+    // PREVIOUS agent's name, runs and usage on screen for the whole of them.
+    install({
+      entries: [
+        fakeEntry(),
+        fakeEntry({ agent: { agentId: "bc_second", name: "Port the importer" } }),
+      ],
+    });
+    await open(context(), "invoke:pageFleet");
+
+    // Nothing answers a detail read for the rest of this walk, so everything
+    // the pane shows came from the row the fleet already held.
+    fake.setAction("pageAgent", () => new Promise(() => {}));
+
+    fireEvent.click(await screen.findByText("Fix the flaky sync test"));
+    const pane = (await screen.findByLabelText("Close agent detail"))
+      .closest("div.flex.h-full.min-h-0.flex-col") as HTMLElement;
+    await waitFor(() => expect(within(pane).getByText(/^agent bc_abc123/)).toBeTruthy());
+
+    fireEvent.click(screen.getByText("Port the importer"));
+    // Scoped to the PANE, so it proves the pane repainted rather than that the
+    // list happens to hold both rows. Both halves matter: the new agent named,
+    // and no trace of the one the reader left.
+    await waitFor(() => expect(within(pane).getByText(/^agent bc_second/)).toBeTruthy());
+    expect(within(pane).queryByText(/^agent bc_abc123/)).toBeNull();
+  });
+
+  it("prefetches the row next to the open one so the next press paints", async () => {
+    install({
+      entries: [
+        fakeEntry(),
+        fakeEntry({ agent: { agentId: "bc_second", name: "Port the importer" } }),
+      ],
+    });
+    await open(context(), "invoke:pageFleet");
+
+    fireEvent.click(await screen.findByText("Fix the flaky sync test"));
+    // Two reads: the open row, and the row a single press away from it.
+    await waitFor(() => expect(fake.callsTo("invoke:pageAgent")).toHaveLength(2));
+    expect(fake.callsTo("invoke:pageAgent").map((call) => call.args.agentId))
+      .toEqual(["bc_abc123", "bc_second"]);
+  });
+
+  it("mints every artifact link in one call, and only when the section opens", async () => {
+    await open(context({ surfaceId: "agent", subject: { kind: "agent", agentId: "bc_abc123" } }), "invoke:pageAgent");
+
+    // Closed, the pane costs nothing: Cursor mints a link per FILE, and a pane
+    // may list fifty.
+    await screen.findByText(/Artifacts \(1\)/);
+    expect(fake.callsTo("invoke:pageArtifactUrls")).toHaveLength(0);
+
+    fireEvent.click(screen.getByText(/Artifacts \(1\)/));
+    await waitFor(() => expect(fake.callsTo("invoke:pageArtifactUrls")).toHaveLength(1));
+    expect(fake.lastCall("invoke:pageArtifactUrls")?.args).toEqual({ agentId: "bc_abc123" });
   });
 
   it("opens an artifact through the host rather than fetching it itself", async () => {
     await open(context({ surfaceId: "agent", subject: { kind: "agent", agentId: "bc_abc123" } }), "invoke:pageAgent");
 
+    fireEvent.click(await screen.findByText(/Artifacts \(1\)/));
     const row = (await screen.findByText("reports/coverage.json")).closest("div")!;
-    fireEvent.click(within(row).getByText("Open"));
+    fireEvent.click(await within(row).findByText("Open"));
 
     await waitFor(() => expect(fake.callsTo("openDeeplink")).toHaveLength(1));
     // A signed download that expires. The host opens it, exactly as it opens a
@@ -286,10 +426,28 @@ describe("the launch form", () => {
   });
 
   it("reports its height so the popover can size to the form", async () => {
+    // jsdom lays nothing out, so every element measures zero and the page's own
+    // "do not report a height no content had" guard would correctly suppress
+    // the call. A measurable root is what makes this a test of the channel
+    // rather than a test of jsdom.
+    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockReturnValue({
+      height: 320,
+      width: 560,
+      top: 0,
+      left: 0,
+      right: 560,
+      bottom: 320,
+      x: 0,
+      y: 0,
+      toJSON: () => ({}),
+    } as DOMRect);
+
     await open(LAUNCH, "invoke:pageLaunchContext");
+
     // A composer picker is not a viewport. `ui.resize` is the one height
     // channel; without it the host draws the frame at the size page.css gives.
     await waitFor(() => expect(fake.callsTo("ui.resize").length).toBeGreaterThan(0));
+    expect(fake.lastCall("ui.resize")?.args).toEqual({ height: 320 });
   });
 
   it("draws the child's refusal instead of its fields", async () => {
@@ -338,6 +496,9 @@ describe("the launch form", () => {
   });
 
   it("launches with names, never with secret values", async () => {
+    // The names this lane REMEMBERS, which is the only list the child can
+    // answer — see the note on `secretNames` in `fakeBridge.ts`.
+    install({ launch: { secretNames: ["DATABASE_URL", "STRIPE_KEY"] } });
     await open(LAUNCH, "invoke:pageLaunchContext");
 
     fireEvent.click(await screen.findByLabelText("DATABASE_URL"));
@@ -347,11 +508,62 @@ describe("the launch form", () => {
     const args = fake.lastCall("invoke:pageLaunch")!.args;
     expect(args.prompt).toBe("Fix the flaky sync test");
     expect(args.model).toBe("composer-2");
-    expect(args.fastMode).toBe(false);
     expect(args.secretNames).toEqual(["DATABASE_URL"]);
     // A page that could read a secret value would be a page that could
     // exfiltrate one. Every value stays in the child.
     expect(JSON.stringify(args)).not.toContain("=");
+  });
+
+  it("draws no secrets control when the child has no name to offer", async () => {
+    // Nothing enumerates ADE's project secrets, so a fleet with nothing
+    // remembered has nothing to attach. The compiled control drew a heading, a
+    // `Select all` row and `No project secrets to inject.` — three controls for
+    // a choice the reader cannot make.
+    await open(LAUNCH, "invoke:pageLaunchContext");
+
+    await screen.findByLabelText("Prompt");
+    expect(screen.queryByText("No project secrets to inject.")).toBeNull();
+    expect(screen.queryByText(/Select all/)).toBeNull();
+  });
+
+  it("sends no speed tier for a model that has none, so the launch is not refused", async () => {
+    // The regression: the form initialised `fastMode` to `false` and always
+    // sent it, and `modelSelection.js` reads `false` as an explicit request for
+    // the standard tier — which it then refuses for a model whose catalog row
+    // names no service tier at all.
+    install({ modelPick: { modelId: "sonnet-4.5", fastMode: false } });
+    await open(LAUNCH, "invoke:pageLaunchContext");
+
+    fireEvent.click(await screen.findByLabelText("Model"));
+    await waitFor(() => expect(fake.callsTo("ui.pickModel")).toHaveLength(1));
+    fireEvent.click(await screen.findByText("Launch"));
+
+    await waitFor(() => expect(fake.callsTo("invoke:pageLaunch")).toHaveLength(1));
+    const args = fake.lastCall("invoke:pageLaunch")!.args;
+    expect(args.model).toBe("sonnet-4.5");
+    expect(args.fastMode).toBeNull();
+  });
+
+  it("offers the Fast tier the compiled Advanced menu had", async () => {
+    install({ hostPickers: false, modelPick: { modelId: "composer-2", fastMode: false } });
+    await open(LAUNCH, "invoke:pageLaunchContext");
+
+    // `composer-2` names a service tier; the control is drawn for it and the
+    // reader can set the tier without touching the model.
+    fireEvent.change(await screen.findByLabelText("Model"), { target: { value: "composer-2" } });
+    fireEvent.change(await screen.findByLabelText("Speed"), { target: { value: "fast" } });
+    fireEvent.click(await screen.findByText("Launch"));
+
+    await waitFor(() => expect(fake.callsTo("invoke:pageLaunch")).toHaveLength(1));
+    expect(fake.lastCall("invoke:pageLaunch")!.args.fastMode).toBe(true);
+  });
+
+  it("draws no Speed control for a model with no service tier", async () => {
+    install({ hostPickers: false });
+    await open(LAUNCH, "invoke:pageLaunchContext");
+
+    fireEvent.change(await screen.findByLabelText("Model"), { target: { value: "sonnet-4.5" } });
+    expect(screen.queryByLabelText("Speed")).toBeNull();
   });
 
   it("keeps the fast tier ADE's picker set", async () => {
