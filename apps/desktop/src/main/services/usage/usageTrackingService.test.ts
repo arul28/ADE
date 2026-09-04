@@ -43,7 +43,8 @@ import {
   isAccountRollupFetchResult,
   _testing,
 } from "./usageTrackingService";
-import type { UsageSnapshot } from "../../../shared/types/usage";
+import type { AdeUsageRollup, UsageSnapshot } from "../../../shared/types/usage";
+import type { UsageLedgerScanResult } from "./usageLedgerWorkerClient";
 import { tokenPriceSource, _testing as _pricingTesting } from "./usagePricing";
 import { encodeActiveDayBits } from "../lanes/laneUsageTombstone";
 // Cross-layer on purpose: the daily split is only useful if the renderer's
@@ -2157,13 +2158,13 @@ describe("createUsageTrackingService", () => {
 
   it("keeps typed account rollups when a sibling peer sends a malformed payload", async () => {
     const logger = createLogger();
-    const stored = new Map<string, { machineKey: string }>();
+    const stored = new Map<string, AdeUsageRollup>();
     const service = createUsageTrackingService({
       logger,
       dependencies: {
         ...createFastDependencies(),
         accountRollupStore: {
-          publish: (rollup: { machineKey: string }) => {
+          publish: (rollup: AdeUsageRollup) => {
             stored.set(rollup.machineKey, rollup);
             return true;
           },
@@ -2171,6 +2172,21 @@ describe("createUsageTrackingService", () => {
           prune: () => undefined,
         },
         localMachineIdentity: () => ({ machineKey: "this-machine", label: "Desk", platform: "darwin" }),
+        scanGitHubStats: vi.fn(async () => ({
+          repo: null,
+          available: false,
+          fetchedAt: null,
+          error: null,
+          commitsCreated: 0,
+          prsTracked: 0,
+          prsOpen: 0,
+          prsMerged: 0,
+          prsClosed: 0,
+          prAdditions: 0,
+          prDeletions: 0,
+          filesChanged: 0,
+          daily: [],
+        })),
       },
     });
     const valid = {
@@ -2222,14 +2238,14 @@ describe("createUsageTrackingService", () => {
 
   it("marks attached roots scanned even when the worker omitted them", async () => {
     const logger = createLogger();
-    const scanUsageLedgers = vi.fn(async () => ({
+    const scanUsageLedgers = vi.fn(async (): Promise<UsageLedgerScanResult> => ({
       costs: [],
       projectCosts: [],
       daily7d: {},
       entryCounts: {},
       providerErrors: {},
       incompleteProviders: [],
-    }));
+    } as unknown as UsageLedgerScanResult));
     const service = createUsageTrackingService({
       logger,
       projectRoot: "/repo-a",
@@ -2237,6 +2253,21 @@ describe("createUsageTrackingService", () => {
         pollClaudeUsage: vi.fn(async () => ({ windows: [] as never[], extraUsage: null, errors: [] as never[] })),
         pollCodexUsage: vi.fn(async () => ({ windows: [] as never[], errors: [] as never[] })),
         scanUsageLedgers,
+        scanGitHubStats: vi.fn(async () => ({
+          repo: null,
+          available: false,
+          fetchedAt: null,
+          error: null,
+          commitsCreated: 0,
+          prsTracked: 0,
+          prsOpen: 0,
+          prsMerged: 0,
+          prsClosed: 0,
+          prAdditions: 0,
+          prDeletions: 0,
+          filesChanged: 0,
+          daily: [],
+        })),
       },
     });
     const other = service.attachProjectScope({
