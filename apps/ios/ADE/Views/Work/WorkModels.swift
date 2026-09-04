@@ -981,7 +981,6 @@ struct WorkToolGroupModel: Identifiable, Equatable {
   let id: String
   let members: [WorkToolGroupMember]
 
-  var hasRunning: Bool { members.contains { $0.status == .running } }
   var latest: WorkToolGroupMember? { members.last }
   var count: Int { members.count }
 }
@@ -1004,10 +1003,7 @@ struct WorkChangedFilesGroupModel: Identifiable, Equatable {
   let id: String
   let files: [WorkChangedFileEntry]
 
-  var hasRunning: Bool { files.contains { $0.status == .running } }
   var count: Int { files.count }
-  var totalAdditions: Int { files.reduce(0) { $0 + $1.additions } }
-  var totalDeletions: Int { files.reduce(0) { $0 + $1.deletions } }
 }
 
 struct WorkTurnSeparator: Equatable {

@@ -1152,7 +1152,10 @@ struct WorkChatSessionView: View {
     if rebuildToolActivityIndex {
       turnToolActivity = workTurnToolActivityIndex(from: timeline)
     }
-    let presentedTimeline = workPresentedTimelineEntries(timeline)
+    let presentedTimeline = workPresentedTimelineEntries(
+      timeline,
+      provider: chatSummaryContext.provider
+    )
     var budgetFloors = assistantBudgetFloors
     var nextPresentation = makeWorkTimelinePresentation(
       timeline: presentedTimeline,

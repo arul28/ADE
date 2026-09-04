@@ -15007,6 +15007,43 @@ final class ADETests: XCTestCase {
     XCTAssertTrue(activityBundles[1].body?.contains("Second turn cron") == true)
   }
 
+  func testWorkTimelineOmitsPromptSuggestionsForClaudeButPreservesOtherProviders() {
+    let raw = """
+    {"sessionId":"chat-1","timestamp":"2026-07-07T00:00:00.000Z","sequence":1,"event":{"type":"todo_update","turnId":"turn-1","items":[{"id":"task-1","description":"Review mobile activity rows","status":"in_progress"}]}}
+    {"sessionId":"chat-1","timestamp":"2026-07-07T00:00:01.000Z","sequence":2,"event":{"type":"scheduled_work_update","id":"cron-1","kind":"cron","status":"scheduled","origin":"schedule_cron","title":"CI follow-up","turnId":"turn-1"}}
+    {"sessionId":"chat-1","timestamp":"2026-07-07T00:00:02.000Z","sequence":3,"event":{"type":"prompt_suggestion","suggestion":"Keep going till it is merged","turnId":"turn-1"}}
+    {"sessionId":"chat-1","timestamp":"2026-07-07T00:00:03.000Z","sequence":4,"event":{"type":"text","text":"Visible answer","turnId":"turn-1"}}
+    """
+
+    let snapshot = buildWorkChatTimelineSnapshot(
+      transcript: parseWorkChatTranscript(raw),
+      fallbackEntries: [],
+      artifacts: [],
+      localEchoMessages: []
+    )
+    let rawCards = snapshot.timeline.compactMap { entry -> WorkEventCardModel? in
+      guard case .eventCard(let card) = entry.payload else { return nil }
+      return card
+    }
+    let claudePresented = workPresentedTimelineEntries(snapshot.timeline, provider: "claude")
+    let codexPresented = workPresentedTimelineEntries(snapshot.timeline, provider: "codex")
+
+    XCTAssertTrue(rawCards.contains { $0.kind == "activityBundle" })
+    XCTAssertTrue(rawCards.contains { $0.kind == "promptSuggestion" })
+    XCTAssertTrue(claudePresented.contains { entry in
+      guard case .message(let message) = entry.payload else { return false }
+      return message.markdown == "Visible answer"
+    })
+    XCTAssertFalse(claudePresented.contains { entry in
+      guard case .eventCard(let card) = entry.payload else { return false }
+      return ["activity", "activityBundle", "todo", "promptSuggestion"].contains(card.kind)
+    })
+    XCTAssertTrue(codexPresented.contains { entry in
+      guard case .eventCard(let card) = entry.payload else { return false }
+      return card.kind == "promptSuggestion"
+    })
+  }
+
   func testParseWorkChatTranscriptAppliesTranscriptRetractionsByMessageId() {
     let raw = """
     {"sessionId":"chat-1","timestamp":"2026-07-07T00:00:01.000Z","sequence":1,"event":{"type":"text","text":"Superseded answer","messageId":"provider-message-1","turnId":"turn-1"}}

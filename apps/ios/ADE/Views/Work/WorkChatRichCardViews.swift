@@ -421,8 +421,7 @@ struct WorkToolCallsPanelView: View {
     .accessibilityLabel("Tool calls cluster, \(group.count) calls, \(isExpanded ? "expanded" : "collapsed")")
   }
 
-  /// Same grammar as every other collapsed card row: leading glyph, one-line
-  /// summary, right-aligned count, trailing chevron.
+  /// Compact centered summary with the full-width button retaining its hit area.
   private var header: some View {
     Button(action: onToggle) {
       HStack(alignment: .center, spacing: 6) {
@@ -433,33 +432,15 @@ struct WorkToolCallsPanelView: View {
         Text("Tool calls")
           .font(.caption.weight(.medium))
           .foregroundStyle(ADEColor.textMuted)
-        if !isExpanded, let latest = group.latest {
-          WorkToolStatusGlyph(status: latest.status)
-          Text(memberSlug(latest))
-            .font(.caption2.monospaced().weight(.semibold))
-            .foregroundStyle(ADEColor.textSecondary)
-            .lineLimit(1)
-          if let target = memberTarget(latest), !target.isEmpty {
-            Text(target)
-              .font(.caption)
-              .foregroundStyle(ADEColor.textPrimary.opacity(0.88))
-              .lineLimit(1)
-              .truncationMode(.tail)
-          }
-        }
-        Spacer(minLength: 6)
         Text("\(group.count)")
-          .font(.caption.weight(.semibold).monospacedDigit())
+          .font(.caption.weight(.medium).monospacedDigit())
           .foregroundStyle(ADEColor.textMuted)
-          .padding(.horizontal, 7)
-          .padding(.vertical, 2)
-          .background(ADEColor.textMuted.opacity(0.10), in: Capsule(style: .continuous))
         Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
           .font(.system(size: 10, weight: .semibold))
           .foregroundStyle(ADEColor.textMuted)
       }
       .padding(.vertical, 2)
-      .frame(minHeight: 44)
+      .frame(maxWidth: .infinity, minHeight: 44, alignment: .center)
       .contentShape(Rectangle())
     }
     .buttonStyle(.plain)
@@ -673,22 +654,15 @@ struct WorkChangedFilesPanelView: View {
           Text("Files changed")
             .font(.caption.weight(.medium))
             .foregroundStyle(ADEColor.textMuted)
-          if !isExpanded {
-            collapsedPreview
-          }
-          Spacer(minLength: 6)
           Text("\(group.count)")
-            .font(.caption.weight(.semibold).monospacedDigit())
+            .font(.caption.weight(.medium).monospacedDigit())
             .foregroundStyle(ADEColor.textMuted)
-            .padding(.horizontal, 7)
-            .padding(.vertical, 2)
-            .background(ADEColor.textMuted.opacity(0.10), in: Capsule(style: .continuous))
           Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
             .font(.system(size: 10, weight: .semibold))
             .foregroundStyle(ADEColor.textMuted)
         }
         .padding(.vertical, 2)
-        .frame(minHeight: 44)
+        .frame(maxWidth: .infinity, minHeight: 44, alignment: .center)
         .contentShape(Rectangle())
       }
       .buttonStyle(.plain)
@@ -707,32 +681,6 @@ struct WorkChangedFilesPanelView: View {
         }
         .buttonStyle(.plain)
       }
-    }
-  }
-
-  @ViewBuilder
-  private var collapsedPreview: some View {
-    if group.hasRunning {
-      Circle()
-        .fill(ADEColor.warning.opacity(0.85))
-        .frame(width: 6, height: 6)
-    }
-    if group.totalAdditions > 0 {
-      Text("+\(group.totalAdditions)")
-        .font(.caption2.monospacedDigit())
-        .foregroundStyle(ADEColor.success.opacity(0.85))
-    }
-    if group.totalDeletions > 0 {
-      Text("−\(group.totalDeletions)")
-        .font(.caption2.monospacedDigit())
-        .foregroundStyle(ADEColor.danger.opacity(0.85))
-    }
-    if let latest = group.files.last {
-      Text(workReferenceLabel(for: latest.path))
-        .font(.caption)
-        .foregroundStyle(ADEColor.textPrimary.opacity(0.88))
-        .lineLimit(1)
-        .truncationMode(.middle)
     }
   }
 

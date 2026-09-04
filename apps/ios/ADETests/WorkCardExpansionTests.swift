@@ -359,6 +359,23 @@ final class WorkCardExpansionTests: XCTestCase {
     XCTAssertTrue(hasToolCluster, "so read-only clusters have to render too")
   }
 
+  func testPresentationHidesMobileActivityOnlyRows() {
+    let entries = [
+      eventCardEntry(id: "activity", kind: "activity"),
+      eventCardEntry(id: "activity-bundle", kind: "activityBundle"),
+      eventCardEntry(id: "todo", kind: "todo"),
+      message("visible", role: "assistant", markdown: "Visible answer"),
+    ]
+
+    let presented = workPresentedTimelineEntries(entries)
+
+    XCTAssertEqual(presented.map(\.id), ["message-visible"])
+    XCTAssertFalse(presented.contains { entry in
+      guard case .eventCard(let card) = entry.payload else { return false }
+      return ["activity", "activityBundle", "todo"].contains(card.kind)
+    })
+  }
+
   /// Nothing streams in a reopened chat, so the cluster lands on its own default
   /// — the one-line row, not the member list.
   func testFinishedToolClusterDefaultsToItsCollapsedRow() {
@@ -482,6 +499,27 @@ final class WorkCardExpansionTests: XCTestCase {
           timestamp: "2026-01-01T00:00:00.000Z",
           turnId: "turn-1",
           itemId: nil
+        )
+      )
+    )
+  }
+
+  private func eventCardEntry(id: String, kind: String) -> WorkTimelineEntry {
+    WorkTimelineEntry(
+      id: id,
+      timestamp: "2026-01-01T00:00:00.000Z",
+      rank: 0,
+      payload: .eventCard(
+        WorkEventCardModel(
+          id: id,
+          kind: kind,
+          title: kind,
+          icon: "sparkles",
+          tint: .accent,
+          timestamp: "2026-01-01T00:00:00.000Z",
+          body: nil,
+          bullets: [],
+          metadata: []
         )
       )
     )
