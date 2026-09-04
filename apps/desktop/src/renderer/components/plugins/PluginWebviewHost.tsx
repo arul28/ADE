@@ -383,11 +383,24 @@ export function PluginWebviewHost({
     wasActiveRef.current = active;
     if (!becameActive) return;
     const guest = guestRef.current;
-    const run = guest?.executeJavaScript;
-    if (typeof run !== "function") return;
-    void run(
-      `window.dispatchEvent(new Event(${JSON.stringify(PLUGIN_WEBVIEW_SURFACE_REVEALED_EVENT)}))`,
-    ).catch(() => undefined);
+    if (typeof guest?.executeJavaScript !== "function") return;
+    // Called ON the element, never through a saved reference. A `<webview>`
+    // method is a prototype function that finds its own guest through
+    // `this.getWebContentsId()`, so `const run = guest.executeJavaScript`
+    // followed by `run(...)` throws "Cannot read properties of undefined
+    // (reading 'getWebContentsId')". A tab keeps its guest while hidden, so the
+    // reference is live on every re-entry and the crash is the re-entry itself.
+    try {
+      // Attached-ness is the other half. Before `dom-ready` the element has no
+      // `webContents` id at all and Electron throws from the call itself rather
+      // than rejecting, so a reveal that raced the attach must be swallowed
+      // here — the page is about to be built and will not have missed anything.
+      void guest.executeJavaScript(
+        `window.dispatchEvent(new Event(${JSON.stringify(PLUGIN_WEBVIEW_SURFACE_REVEALED_EVENT)}))`,
+      )?.catch(() => undefined);
+    } catch {
+      // Not attached yet. The next activation delivers the reveal.
+    }
   }, [active]);
 
   // The frame the host actually drew, for the engine clamp. Measured with a

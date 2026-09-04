@@ -44,7 +44,6 @@ import {
 import type { OrchestrationEventPayload } from "../shared/types/orchestration";
 import type { ProjectRecoveryDiagnosis, ProjectRepairReport, RepairStepResult } from "../shared/types/recovery";
 import type {
-  DiagnosticReportPayload,
   DiagnosticReportRequestPayload,
   DiagnosticsAutoSentPayload,
   DiagnosticsManualSendResult,
@@ -4198,14 +4197,12 @@ const adeBridge = {
     },
   },
   diagnostics: {
-    openIssue: (
-      context: DiagnosticReportRequestPayload,
-    ): Promise<DiagnosticReportPayload> =>
-      ipcRenderer.invoke(IPC.diagnosticsOpenIssue, context),
     autoReport: (context: DiagnosticReportRequestPayload): Promise<void> =>
       ipcRenderer.invoke(IPC.diagnosticsAutoReport, context),
-    sendManual: (): Promise<DiagnosticsManualSendResult> =>
-      ipcRenderer.invoke(IPC.diagnosticsSendManual),
+    sendManual: (
+      context?: DiagnosticReportRequestPayload,
+    ): Promise<DiagnosticsManualSendResult> =>
+      ipcRenderer.invoke(IPC.diagnosticsSendManual, context ?? null),
     getSharing: (): Promise<DiagnosticsSharingStatus> =>
       ipcRenderer.invoke(IPC.diagnosticsGetSharing),
     setSharing: (enabled: boolean): Promise<DiagnosticsSharingStatus> =>

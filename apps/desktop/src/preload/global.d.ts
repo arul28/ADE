@@ -748,7 +748,6 @@ import type {
 } from "../shared/types/storage";
 import type { ProjectRecoveryDiagnosis, ProjectRepairReport, RepairStepResult } from "../shared/types/recovery";
 import type {
-  DiagnosticReportPayload,
   DiagnosticReportRequestPayload,
   DiagnosticsAutoSentPayload,
   DiagnosticsManualSendResult,
@@ -964,7 +963,6 @@ declare global {
        * `?.()` chains that can never fire.
        */
       diagnostics?: {
-        openIssue: (context: DiagnosticReportRequestPayload) => Promise<DiagnosticReportPayload>;
         /**
          * Ask main to consider ONE automatic send for a failure the renderer
          * detected. Main owns the setting and the budget, so this is a request,
@@ -974,11 +972,14 @@ declare global {
         /**
          * The one member here that IS individually optional, and the exception
          * proves the group's rule: `diagnostics` shipped before this existed,
-         * so a preload that exposes the group need not expose this. The
-         * settings control checks for it and hides itself rather than offering
-         * a button that cannot work.
+         * so a preload that exposes the group need not expose this. Every
+         * caller — the settings control and each error screen's Report button —
+         * checks for it and hides itself rather than offering a button that
+         * cannot work.
          */
-        sendManual?: () => Promise<DiagnosticsManualSendResult>;
+        sendManual?: (
+          context?: DiagnosticReportRequestPayload,
+        ) => Promise<DiagnosticsManualSendResult>;
         getSharing: () => Promise<DiagnosticsSharingStatus>;
         setSharing: (enabled: boolean) => Promise<DiagnosticsSharingStatus>;
         revealReport: (reportPath: string) => Promise<void>;

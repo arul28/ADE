@@ -8,6 +8,7 @@ import {
   decodePluginWebviewContext,
   PLUGIN_WEBVIEW_CONTEXT_QUERY_PARAM,
   PLUGIN_WEBVIEW_MAX_HEIGHT_PX,
+  PLUGIN_WEBVIEW_SURFACE_REVEALED_EVENT,
 } from "../../../shared/plugins/webviewBridge";
 import {
   PLUGIN_WEBVIEW_RESIZE_CHANNEL,
@@ -278,6 +279,71 @@ describe("the guest registry", () => {
     // Detached BEFORE the element goes, so a request already in flight from a
     // page on its way out is refused rather than acted on.
     expect(setSurfaceState).toHaveBeenLastCalledWith({ guestKey: "guest-42", attached: false });
+  });
+});
+
+describe("the reveal on re-entry", () => {
+  /**
+   * The tab crash, as a unit: `<webview>` methods are prototype functions that
+   * resolve their own guest from `this`, so a saved reference called bare threw
+   * "Cannot read properties of undefined (reading 'getWebContentsId')" — and a
+   * tab keeps its guest while hidden, which made every return to the tab the
+   * moment it fired.
+   */
+  it("calls executeJavaScript on the guest rather than through a detached reference", () => {
+    const view = render(
+      <PluginWebviewHost pluginId="acme" entryHtml="dist/index.html" active />,
+    );
+    const guest = guests(view.container)[0]!;
+    const revealed: string[] = [];
+    Object.assign(guest, {
+      executeJavaScript: function (this: unknown, code: string) {
+        if (this !== guest) {
+          throw new TypeError("Cannot read properties of undefined (reading 'getWebContentsId')");
+        }
+        revealed.push(code);
+        return Promise.resolve(undefined);
+      },
+    });
+
+    expect(() => {
+      view.rerender(
+        <PluginWebviewHost pluginId="acme" entryHtml="dist/index.html" active={false} />,
+      );
+      view.rerender(
+        <PluginWebviewHost pluginId="acme" entryHtml="dist/index.html" active />,
+      );
+    }).not.toThrow();
+    // The same element the host is drawing, and exactly once per re-entry.
+    expect(guests(view.container)[0]).toBe(guest);
+    expect(revealed).toHaveLength(1);
+    expect(revealed[0]).toContain(PLUGIN_WEBVIEW_SURFACE_REVEALED_EVENT);
+  });
+
+  it("swallows a guest that throws synchronously because it is not attached yet", () => {
+    const view = render(
+      <PluginWebviewHost pluginId="acme" entryHtml="dist/index.html" active />,
+    );
+    const guest = guests(view.container)[0]!;
+    let attempts = 0;
+    Object.assign(guest, {
+      // Electron throws out of the call itself before `dom-ready`, rather than
+      // returning a promise that rejects, so a `.catch` alone never sees this.
+      executeJavaScript: () => {
+        attempts += 1;
+        throw new Error("The WebView must be attached to the DOM and the dom-ready event emitted");
+      },
+    });
+
+    expect(() => {
+      view.rerender(
+        <PluginWebviewHost pluginId="acme" entryHtml="dist/index.html" active={false} />,
+      );
+      view.rerender(
+        <PluginWebviewHost pluginId="acme" entryHtml="dist/index.html" active />,
+      );
+    }).not.toThrow();
+    expect(attempts).toBe(1);
   });
 });
 

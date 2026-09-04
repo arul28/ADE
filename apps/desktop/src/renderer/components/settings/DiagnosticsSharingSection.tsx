@@ -4,6 +4,7 @@ import type {
   DiagnosticsManualSendResult,
   DiagnosticsSharingStatus,
 } from "../../../shared/types/diagnostics";
+import { describeManualDiagnosticsSendFailure } from "../../../shared/diagnosticsManualSend";
 import { COLORS, SANS_FONT, outlineButton } from "../lanes/laneDesignTokens";
 import { ConsentToggleSection } from "./settingsSectionUi";
 
@@ -62,38 +63,6 @@ const LINK_STYLE: React.CSSProperties = {
   font: "inherit",
   textDecoration: "underline",
 };
-
-/**
- * One short sentence per outcome, and never a status code.
- *
- * The two refusals a person can act on differently are deliberately worded
- * differently: `rate_limited` is the account directory saying THIS computer has
- * stored its allowance today, `unavailable` is it saying it is not taking
- * reports from anyone right now. The route answers those as two distinct 429
- * bodies precisely so a client can tell them apart, and telling someone to come
- * back tomorrow when the truth is "ADE is full" would waste their time.
- */
-function describeManualSendFailure(result: Extract<DiagnosticsManualSendResult, { ok: false }>): string {
-  switch (result.reason) {
-    case "local_limit":
-      return `You've already sent ${result.limit ?? 5} reports from this computer today. Try again tomorrow.`;
-    case "rate_limited":
-      return "You've already sent several reports today. Try again tomorrow.";
-    case "unavailable":
-      return "ADE isn't accepting reports right now. Try again later.";
-    case "too_large":
-      // Two situations, and only one of them leaves the user something to do.
-      // The local copy is written before the upload is attempted, so it usually
-      // exists — but when it could not be written the main process answers
-      // without a path, and telling someone to open a file that is not there
-      // sends them looking for it. The offer is made only when it is real.
-      return result.reportPath
-        ? "This report is too big to send. It's saved on this computer — open it and attach it to a GitHub issue."
-        : "This report is too big to send, and ADE couldn't save a copy on this computer.";
-    default:
-      return "ADE couldn't send the report. Check your connection and try again.";
-  }
-}
 
 /**
  * "Send a report to ADE", for when nothing is visibly broken.
@@ -165,7 +134,7 @@ function ManualDiagnosticsSend({ sharingEnabled }: { sharingEnabled: boolean }) 
         >
           {result.ok
             ? `Report sent. Reference ${result.reference} — quote it if you get in touch.`
-            : describeManualSendFailure(result)}
+            : describeManualDiagnosticsSendFailure(result)}
           {reportPath ? (
             <>
               {" "}

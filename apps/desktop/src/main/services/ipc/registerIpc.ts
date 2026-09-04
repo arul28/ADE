@@ -912,10 +912,8 @@ import { probeLocalhostPort } from "../probeLocalhostPort";
 import type { ProcessRegistryService } from "../runtime/processRegistryService";
 import { openExternalUrl } from "../shared/externalLinks";
 import {
-  collectDiagnosticReport,
   diagnosticReportRoots,
   resolveRevealableDiagnosticReport,
-  writeDiagnosticReportFile,
 } from "../diagnostics/diagnosticReportService";
 import type { AutoDiagnosticsService } from "../diagnostics/autoDiagnosticsService";
 import {
@@ -923,7 +921,6 @@ import {
   MAX_MANUAL_DIAGNOSTICS_PER_WINDOW,
 } from "../diagnostics/autoDiagnosticsStore";
 import type {
-  DiagnosticReportPayload,
   DiagnosticReportRequestPayload,
   DiagnosticsAutoSentPayload,
   DiagnosticsManualSendResult,
@@ -4776,93 +4773,6 @@ export function registerIpc({
   });
 
   /**
-   * Assembles the redacted diagnostic report for whichever error screen asked.
-   * Read-only and best effort: a missing log, a wedged brain or a runtime mode
-   * without a recovery service must never stop someone from filing an issue,
-   * so every optional input degrades to "unknown" rather than throwing.
-   */
-  const buildDiagnosticsReport = async (
-    arg: DiagnosticReportRequestPayload | undefined,
-  ) => {
-    const surface = typeof arg?.surface === "string" && arg.surface.trim() ? arg.surface.trim() : "unknown";
-    const requestedRoot = typeof arg?.projectRoot === "string" ? arg.projectRoot.trim() : "";
-    const resolvedRoot = requestedRoot ? resolveRequestedProjectRoot(requestedRoot) : null;
-    // A root the renderer named but main does not recognise is dropped rather
-    // than quietly swapped for the currently open project: substituting one
-    // would put another project's logs, volumes and recovery diagnosis under a
-    // report about this failure. Reporting stays possible either way — the
-    // report degrades to machine-level state and says so.
-    const rootWasRejected = Boolean(requestedRoot) && !resolvedRoot;
-    const projectRoot = rootWasRejected
-      ? null
-      : resolvedRoot ?? openProjectRootOrNull();
-    return await collectDiagnosticReport(
-      {
-        appVersion: app.getVersion(),
-        packageChannel: normalizeAppPackageChannel(process.env.ADE_PACKAGE_CHANNEL),
-        isPackaged: app.isPackaged,
-        userDataPath: app.getPath("userData"),
-        reportsDir: path.join(app.getPath("userData"), "diagnostic-reports"),
-        installId: productAnalyticsService?.getDistinctId() ?? null,
-        accountUserId: getCurrentAccountOwnerId?.() ?? null,
-        getLocalRuntimeStatus: () => localRuntimeConnectionPool?.getStatus() ?? null,
-        getRemoteRuntimeSnapshot: () => runtimeBridge.snapshot(),
-        diagnoseProject: projectRecoveryService
-          ? (root: string) => projectRecoveryService.diagnose(root)
-          : undefined,
-      },
-      {
-        surface,
-        headline: typeof arg?.headline === "string" ? arg.headline.slice(0, 300) : null,
-        code: typeof arg?.code === "string" ? arg.code.slice(0, 120) : null,
-        technicalDetail: typeof arg?.technicalDetail === "string" ? arg.technicalDetail.slice(0, 16_000) : null,
-        projectRoot,
-        extraNotes: rootWasRejected
-          ? ["requested project root was not recognised; machine-level state only"]
-          : undefined,
-      },
-    );
-  };
-
-  ipcMain.handle(
-    IPC.diagnosticsOpenIssue,
-    async (_event, arg: DiagnosticReportRequestPayload): Promise<DiagnosticReportPayload> => {
-      const result = await buildDiagnosticsReport(arg);
-      const written = writeDiagnosticReportFile(result.filePath, result.report);
-      let copied = false;
-      try {
-        clipboard.writeText(result.report);
-        copied = true;
-      } catch {
-        copied = false;
-      }
-      let opened = false;
-      try {
-        await openExternalUrl(result.issueUrl);
-        opened = true;
-      } catch {
-        opened = false;
-      }
-      productAnalyticsService?.capture({
-        event: "ade_feature_used",
-        surface: "desktop",
-        properties: { feature: "connections", action: "issue_report", outcome: opened ? "opened" : "failed" },
-        projectId: null,
-        dedupeKey: `issue_report:${opened ? "opened" : "failed"}`,
-        minimumIntervalMs: 60 * 60 * 1_000,
-      });
-      return {
-        report: result.report,
-        filePath: written ? result.filePath : "",
-        issueUrl: result.issueUrl,
-        installId: result.installId,
-        copied,
-        opened,
-      };
-    },
-  );
-
-  /**
    * The renderer's failure surfaces (the crash boundaries) asking for one
    * automatic send. Main decides: the setting, the budget and the send all live
    * there, so a renderer that fires this repeatedly changes nothing.
@@ -4892,13 +4802,19 @@ export function registerIpc({
   );
 
   /**
-   * "Send a report to ADE" from the Diagnostics sharing settings section.
+   * "Send a report to ADE" — from the Diagnostics settings section, and from
+   * every error screen's Report button.
    *
-   * Takes no argument on purpose. Every other report carries a surface and a
-   * context from the screen that failed; this one is about nothing in
-   * particular, so main names the surface itself (`settings_manual`) and uses
-   * the project it already has open. A renderer choosing either would be a
-   * renderer choosing whose logs go in the report.
+   * The payload describes the failure and nothing else. A screen that crashed
+   * knows the one thing main cannot reconstruct — which surface it was and what
+   * it threw — and a report stamped "settings_manual" for a renderer crash
+   * files it under the pane nobody was looking at. Absent, the surface defaults
+   * to the settings one, which is what a send from the pane is.
+   *
+   * `projectRoot` is deliberately NOT taken from the payload, exactly as the
+   * automatic path refuses it: it selects whose log directory gets read into
+   * the report, and a renderer is the one participant here that must not choose
+   * that. Main uses the project it already has open, or none.
    *
    * `null` rather than a throw when the service is absent (a runtime mode
    * without it): the caller renders "unavailable right now", which is true,
@@ -4906,8 +4822,19 @@ export function registerIpc({
    */
   ipcMain.handle(
     IPC.diagnosticsSendManual,
-    async (): Promise<DiagnosticsManualSendResult> =>
-      (await autoDiagnosticsService?.sendManual()) ?? { ok: false, reason: "failed" },
+    async (
+      _event,
+      arg: DiagnosticReportRequestPayload | undefined,
+    ): Promise<DiagnosticsManualSendResult> =>
+      (await autoDiagnosticsService?.sendManual({
+        surface: typeof arg?.surface === "string" ? arg.surface.trim() : null,
+        code: typeof arg?.code === "string" ? arg.code.slice(0, 120) : null,
+        headline: typeof arg?.headline === "string" ? arg.headline.slice(0, 300) : null,
+        technicalDetail: typeof arg?.technicalDetail === "string"
+          ? arg.technicalDetail.slice(0, 16_000)
+          : null,
+        projectRoot: getCtx().project?.rootPath ?? null,
+      })) ?? { ok: false, reason: "failed" },
   );
 
   const diagnosticsSharingStatus = (): DiagnosticsSharingStatus =>

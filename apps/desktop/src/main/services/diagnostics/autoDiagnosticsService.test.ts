@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ProductAnalyticsCapture } from "../../../shared/types/productAnalytics";
 import {
   createAutoDiagnosticsService,
+  type AutoDiagnosticsRequest,
   type AutoDiagnosticsServiceDeps,
 } from "./autoDiagnosticsService";
 import {
@@ -287,6 +288,56 @@ describe("createAutoDiagnosticsService.sendManual", () => {
     // No toast: the person who pressed the button is already reading the answer.
     expect(onSent).not.toHaveBeenCalled();
     expect(service.listPendingNotices()).toEqual([]);
+  });
+
+  it("stamps the asking screen's surface and code onto the report", async () => {
+    const buildReport = vi.fn(async (_request: AutoDiagnosticsRequest) => ({
+      report: "# report",
+      filePath: "/tmp/reports/report.md",
+      installId: "install-1",
+    }));
+    const { service, upload } = harness({ buildReport });
+
+    await expect(service.sendManual({
+      surface: "renderer_crash",
+      code: "boundary_threw",
+      headline: "ADE needs to reload this window",
+      technicalDetail: "TypeError: undefined is not a function",
+      projectRoot: "/tmp/photon",
+    })).resolves.toMatchObject({ ok: true });
+
+    // The report is filed under the screen that broke, not the settings pane.
+    expect(buildReport).toHaveBeenCalledWith({
+      failureCode: "boundary_threw",
+      surface: "renderer_crash",
+      headline: "ADE needs to reload this window",
+      technicalDetail: "TypeError: undefined is not a function",
+      projectRoot: "/tmp/photon",
+    });
+    // The budget and the upload still count this as what it is: one person
+    // pressing one button, whichever screen they pressed it on.
+    expect(upload.mock.calls[0]?.[0]).toMatchObject({ auto: false, failureCode: "user_requested" });
+    expect(service.getStatus().manualSendsInWindow).toBe(1);
+  });
+
+  it("falls back to the settings surface when no screen names one", async () => {
+    const buildReport = vi.fn(async (_request: AutoDiagnosticsRequest) => ({
+      report: "# report",
+      filePath: "/tmp/reports/report.md",
+      installId: "install-1",
+    }));
+    const { service } = harness({ buildReport });
+
+    // Blank is not a surface: a payload that arrived empty must not file the
+    // report under "" or under whatever the last caller said.
+    await expect(service.sendManual({ surface: "  ", code: "" }))
+      .resolves.toMatchObject({ ok: true });
+    await expect(service.sendManual()).resolves.toMatchObject({ ok: true });
+
+    for (const call of buildReport.mock.calls) {
+      expect(call[0]).toMatchObject({ surface: "settings_manual", failureCode: "user_requested" });
+    }
+    expect(buildReport).toHaveBeenCalledTimes(2);
   });
 
   it("refuses past the fifth send of the day, in the user's own words", async () => {

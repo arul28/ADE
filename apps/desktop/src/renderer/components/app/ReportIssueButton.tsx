@@ -1,15 +1,9 @@
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useState } from "react";
 import type {
-  DiagnosticReportPayload,
   DiagnosticReportRequestPayload,
+  DiagnosticsManualSendResult,
 } from "../../../shared/types/diagnostics";
-import {
-  describeDiagnosticUploadFailure,
-  resolveDiagnosticsUploadBaseUrl,
-  uploadDiagnosticReport,
-  type DiagnosticUploadResult,
-} from "../../../shared/diagnosticsUpload";
-import { useCopyToClipboard } from "../../hooks/useCopyToClipboard";
+import { describeManualDiagnosticsSendFailure } from "../../../shared/diagnosticsManualSend";
 import {
   ERROR_DISCLOSURE_CARET,
   ERROR_PRIMARY_BUTTON,
@@ -32,17 +26,21 @@ const VARIANT_CLASS: Record<ReportIssueVariant, string> = {
 };
 
 /**
- * Every error screen's escape hatch: collect a redacted diagnostic report,
- * put it on the clipboard and on disk, and open a prefilled GitHub issue —
- * then optionally hand that exact report straight to ADE.
+ * Every error screen's escape hatch: one press sends a redacted report to ADE.
  *
- * The send runs here rather than in the main process because the diagnostics
- * preload bridge exposes only `openIssue`; the renderer already holds the
- * finished, redacted report that call returns, so it posts those same bytes.
- * One consequence, deliberate: the renderer has no access to the account token
- * (it lives in the brain's credential store), so a desktop upload is anonymous
- * and identified only by the install id the report already carries.
- * `ade report-issue --send` reads the store directly and does send a token.
+ * It is the SAME send the Settings pane offers — `sendManual` in the main
+ * process — and that is the whole point of the button. Collecting the report,
+ * redacting it, spending the per-device daily budget and uploading it all
+ * happen in main, so a renderer that has just crashed is trusted with none of
+ * it; this component presses the button, hands over what the screen knows about
+ * its own failure, and reads the answer back honestly.
+ *
+ * The failure context matters because the report is filed under it. A screen
+ * names its surface, its code and the text it already showed, and a report that
+ * arrived stamped with the settings surface instead would file a renderer crash
+ * under the pane nobody was looking at. `projectRoot` is the exception: main
+ * ignores what the renderer names there and uses the project it has open, so
+ * nothing here can decide whose logs are read.
  *
  * Deliberately self-contained — one import and one element per host screen —
  * so the error surfaces can be redesigned without untangling it.
@@ -64,143 +62,77 @@ export function ReportIssueButton({
    */
   showDisclosure?: boolean;
 }) {
-  const [pending, setPending] = useState(false);
-  const [result, setResult] = useState<DiagnosticReportPayload | null>(null);
-  const [error, setError] = useState<string | null>(null);
   const [sending, setSending] = useState(false);
-  const [sent, setSent] = useState<DiagnosticUploadResult | null>(null);
-  const { copy, copied } = useCopyToClipboard();
-  /**
-   * Which report the upload result belongs to. "Report issue" stays live while
-   * a send is in flight, so a user who reports twice can have the first
-   * upload's reply land after the second report exists — and a reference that
-   * points at the older report is worse than none.
-   */
-  const reportGenerationRef = useRef(0);
+  const [result, setResult] = useState<DiagnosticsManualSendResult | null>(null);
 
   const bridge = typeof window !== "undefined" ? window.ade?.diagnostics : undefined;
-
-  const run = useCallback(async () => {
-    if (!bridge?.openIssue || pending) return;
-    reportGenerationRef.current += 1;
-    setPending(true);
-    setError(null);
-    setSent(null);
-    try {
-      const payload = await bridge.openIssue(context);
-      setResult(payload);
-    } catch (caught) {
-      setError(caught instanceof Error ? caught.message : String(caught));
-      setResult(null);
-    } finally {
-      setPending(false);
-    }
-  }, [bridge, context, pending]);
+  const sendManual = bridge?.sendManual;
 
   const send = useCallback(async () => {
-    if (!result || sending) return;
-    const generation = reportGenerationRef.current;
+    if (!sendManual || sending) return;
     setSending(true);
+    setResult(null);
     try {
-      const outcome = await uploadDiagnosticReport({
-        // The very bytes the clipboard holds. Redaction already happened in
-        // the main process; nothing here reshapes the report.
-        report: result.report,
-        // "unknown" is the report's stand-in for "analytics is switched off";
-        // sending it as an install id would attach a value that matches nothing.
-        installId: result.installId === "unknown" ? null : result.installId,
-        // Resolved here rather than inside the upload: the CLI resolves its own
-        // origin the way the brain does, so the client itself takes a base URL
-        // its caller already decided on.
-        baseUrl: resolveDiagnosticsUploadBaseUrl(
-          typeof import.meta.env.VITE_ADE_ACCOUNT_DIRECTORY_URL === "string"
-            ? import.meta.env.VITE_ADE_ACCOUNT_DIRECTORY_URL
-            : null,
-        ),
-      });
-      if (reportGenerationRef.current !== generation) return;
-      setSent(outcome);
+      setResult(await sendManual(context));
+    } catch {
+      // The bridge is documented to answer rather than throw, but a screen that
+      // is already broken must not be able to break again on the way to asking
+      // for help. An unnamed failure is still a named outcome here.
+      setResult({ ok: false, reason: "failed" });
     } finally {
-      // Cleared unconditionally: `sending` is the only thing keeping a second
-      // upload out, so a stale reply that left it set would strand the newer
-      // report with a permanently disabled Send.
       setSending(false);
     }
-  }, [result, sending]);
+  }, [context, sendManual, sending]);
 
-  // An older preload has no diagnostics bridge; offering a dead button is
-  // worse than offering nothing on a screen that is already failing.
-  if (!bridge?.openIssue) return null;
+  // An older preload has no manual send; offering a dead button is worse than
+  // offering nothing on a screen that is already failing.
+  if (!sendManual) return null;
 
   const isGhost = variant === "ghost";
   const disclosed = showDisclosure ?? !isGhost;
+  // Present on a success and on the refusals that still wrote a local copy.
+  const reportPath = (result?.ok ? result.reportPath : result?.reportPath) || "";
 
   return (
     <span className={className}>
       <span className="inline-flex flex-wrap items-center gap-2">
         <button
           type="button"
-          onClick={() => void run()}
-          disabled={pending}
+          onClick={() => void send()}
+          disabled={sending}
           className={VARIANT_CLASS[variant]}
           title={
             disclosed
               ? undefined
-              : "Collects your ADE version, what went wrong here, and the last part of ADE's logs. Personal details are removed."
+              : "Sends your ADE version, what went wrong here, and the last part of ADE's logs. Personal details are removed."
           }
         >
-          {pending ? "Preparing report…" : "Report issue"}
+          {sending ? "Sending…" : "Send a report to ADE"}
         </button>
 
         {result ? (
           <span
             className={
-              (isGhost ? "text-[11px] " : "text-[12px] ") + "text-fg/60"
+              (isGhost ? "text-[11px] " : "text-[12px] ")
+              + (result.ok ? "text-fg/60" : "text-amber-300/90")
             }
             role="status"
           >
-            {result.copied
-              ? "Report copied — paste it into the GitHub issue that just opened."
-              : "Report saved — copy it below and paste it into the GitHub issue."}{" "}
-            <button
-              type="button"
-              onClick={() => void copy(result.report)}
-              className={REPORT_LINK_BUTTON}
-            >
-              {copied ? "Copied" : "Copy again"}
-            </button>
-            {sent?.ok ? null : (
+            {result.ok
+              ? `Report sent. Reference ${result.reference} — quote it if you get in touch.`
+              : describeManualDiagnosticsSendFailure(result)}
+            {reportPath ? (
               <>
-                {" · "}
+                {" "}
                 <button
                   type="button"
-                  onClick={() => void send()}
-                  disabled={sending}
+                  onClick={() => void bridge?.revealReport(reportPath)}
                   className={REPORT_LINK_BUTTON}
                 >
-                  {sending ? "Sending…" : sent ? "Try sending again" : "Send to ADE"}
+                  View report
                 </button>
               </>
-            )}
-            {sent
-              ? (
-                <span className={sent.ok ? "text-fg/60" : "text-amber-300/90"}>
-                  {" "}
-                  {sent.ok
-                    ? `Sent — reference ${sent.reference}`
-                    : describeDiagnosticUploadFailure(sent.reason)}
-                </span>
-              )
-              : null}
-          </span>
-        ) : null}
-
-        {error ? (
-          <span
-            className={(isGhost ? "text-[11px] " : "text-[12px] ") + "text-amber-300/90"}
-            role="status"
-          >
-            ADE couldn't prepare the report. Try again in a moment.
+            ) : null}
           </span>
         ) : null}
       </span>
@@ -237,8 +169,7 @@ export function ReportIssueButton({
             }
           >
             File paths, your name, email addresses and any sign-in codes are removed
-            before the report is created. Nothing leaves this computer unless you post
-            the issue or choose "Send to ADE".
+            before the report is created. Nothing is sent until you press the button.
           </p>
         </details>
       ) : null}

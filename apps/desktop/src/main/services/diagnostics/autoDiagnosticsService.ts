@@ -60,6 +60,26 @@ export type AutoDiagnosticsRequest = {
   technicalDetail?: string | null;
 };
 
+/**
+ * What the screen that asked for a manual send knows about its own failure.
+ *
+ * Every field is optional and every field is a report field, not a control: a
+ * caller describes what broke, and nothing here can change the budget, the
+ * consent rule or where the report goes. Absent entirely, the send is the
+ * Settings one — a person reporting with nothing visibly broken.
+ *
+ * `projectRoot` names whose logs get read, so the IPC handler fills it from the
+ * project main already has open and never from the renderer's payload.
+ */
+export type ManualDiagnosticsContext = {
+  surface?: string | null;
+  /** The screen's own failure code, for the report. Never the budget's. */
+  code?: string | null;
+  headline?: string | null;
+  technicalDetail?: string | null;
+  projectRoot?: string | null;
+};
+
 export type { AutoDiagnosticsOutcome, AutoDiagnosticsSentNotice };
 
 export type AutoDiagnosticsReport = {
@@ -99,7 +119,7 @@ export type AutoDiagnosticsService = {
    * One report, because a person asked for it. Never throws and never rejects;
    * every outcome comes back named so the surface can say what happened.
    */
-  sendManual: () => Promise<DiagnosticsManualSendResult>;
+  sendManual: (context?: ManualDiagnosticsContext) => Promise<DiagnosticsManualSendResult>;
   isEnabled: () => boolean;
   setEnabled: (enabled: boolean) => boolean;
   getStatus: () => {
@@ -119,6 +139,12 @@ export type AutoDiagnosticsService = {
   /** Retires the notices a renderer has actually rendered. Idempotent. */
   ackNotices: (references: readonly string[]) => void;
 };
+
+/** A present, non-blank string, or null. Blank is not a surface or a code. */
+function trimmedOrNull(value: string | null | undefined): string | null {
+  const trimmed = typeof value === "string" ? value.trim() : "";
+  return trimmed ? trimmed : null;
+}
 
 export function createAutoDiagnosticsService(
   deps: AutoDiagnosticsServiceDeps,
@@ -183,7 +209,9 @@ export function createAutoDiagnosticsService(
    * wrong here. A user watching a button has to be told the answer, and telling
    * them twice — inline and again in a toast — is worse than once.
    */
-  const sendManual = async (): Promise<DiagnosticsManualSendResult> => {
+  const sendManual = async (
+    context?: ManualDiagnosticsContext,
+  ): Promise<DiagnosticsManualSendResult> => {
     // A collection already running is not a budget event: nothing is claimed,
     // so a retry a moment later costs the user nothing.
     if (inFlight) return { ok: false, reason: "failed" };
@@ -206,8 +234,20 @@ export function createAutoDiagnosticsService(
       let built: AutoDiagnosticsReport;
       try {
         built = await deps.buildReport({
-          failureCode: MANUAL_DIAGNOSTICS_FAILURE_CODE,
-          surface: "settings_manual",
+          // Two codes, on purpose. The ledger and the upload below keep
+          // `MANUAL_DIAGNOSTICS_FAILURE_CODE`, because what they count is "a
+          // person pressed the button", which is one thing however it was
+          // reached. The REPORT's code is the screen's own when the screen has
+          // one, because that is the line someone reading the report needs.
+          failureCode: trimmedOrNull(context?.code) ?? MANUAL_DIAGNOSTICS_FAILURE_CODE,
+          // "settings_manual" is the default rather than the only answer: a
+          // send from a crash screen that arrived stamped "settings_manual"
+          // would file every renderer crash under the pane nobody was looking
+          // at, and the surface is the first thing triage reads.
+          surface: trimmedOrNull(context?.surface) ?? "settings_manual",
+          headline: context?.headline ?? null,
+          technicalDetail: context?.technicalDetail ?? null,
+          projectRoot: context?.projectRoot ?? null,
         });
       } catch (error) {
         deps.logger?.warn?.("diagnostics.manual_send_build_failed", {
