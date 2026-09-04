@@ -187,8 +187,11 @@ iOS companion (`apps/ios/ADE/Views/Lanes/`):
   `LaneAdvancedScreen`, `LaneCommitSheet`, `LaneCommitHistoryScreen`,
   `LaneStashesScreen`, and `LaneDetailContentSections` files.
   `LaneManageSheet.swift` is now a tabbed manage dialog (delete /
-  appearance / stack / archive) mirroring desktop's `ManageLaneDialog`;
-  its stack tab keeps the parent-lane picker, optional base-branch
+  appearance / stack / archive) mirroring desktop's `ManageLaneDialog`.
+  The nav bar keeps the lane name with a trailing pencil rename (hidden
+  for the primary lane and hosts that omit `lanes.rename`); the body
+  shows branch and path as icon rows, then the tabs. Its stack tab keeps
+  the parent-lane picker, optional base-branch
   override, "Runs git rebase" disclosure, dirty/rebase-in-progress
   guards, and `lanes.reparent` payloads that omit `stackBaseBranchRef`
   when the override is blank. A confirmed delete dismisses the manage
@@ -556,7 +559,11 @@ a lane parented to primary would always show zero behind.
    values, blocks primary-lane renames, and rejects duplicate display
    names among active lanes (case-insensitive). The desktop **Manage Lane**
    dialog exposes rename via a pencil control beside the lane name in the
-   header. `reparent({ laneId, newParentLaneId,
+   header. The iOS **Manage Lane** sheet puts that pencil in the nav bar
+   (hidden for the primary lane and for hosts that omit `lanes.rename`),
+   keeps the name only in the nav title, and shows branch and path as
+   icon rows underneath — no second oversized title, and no "Branch" /
+   "Path" text labels. `reparent({ laneId, newParentLaneId,
    stackBaseBranchRef? })` refuses to move a lane under one of its own
    descendants and refuses to reparent the primary lane. When
    `stackBaseBranchRef` is supplied the service resolves it in the project
